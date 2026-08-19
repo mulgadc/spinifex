@@ -1,6 +1,7 @@
 ---
 title: "ECS Quickstart"
-description: "Stand up a complete AWS-compatible ECS stack on Spinifex with Terraform — a VPC, IAM roles, a cluster, a task definition with a task role, container instances launched from the ECS node image, and an awsvpc service fronted by an Application Load Balancer."
+seoTitle: "Terraform ECS Quickstart on Spinifex — Spinifex Docs"
+description: "Stand up a full AWS-compatible ECS stack with Terraform: a VPC, IAM roles, a cluster, a task definition, container instances, and a load-balanced service."
 category: "Terraform Workbooks"
 tags:
   - terraform

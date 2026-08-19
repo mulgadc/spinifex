@@ -1,6 +1,7 @@
 ---
 title: "Arcee Trinity 400B FP8 on AMD MI350X with Spinifex"
-description: "Provision, load, and benchmark arcee-ai/Trinity-Large-Preview-FP8 across two AMD MI350X GPUs on a Supermicro H14 using Spinifex's EC2-compatible API."
+seoTitle: "Arcee Trinity 400B FP8 on AMD MI350X — Spinifex Docs"
+description: "Provision, load, and benchmark arcee-ai/Trinity-Large-Preview-FP8 across two AMD MI350X GPUs on a Supermicro H14 node using Spinifex's EC2-compatible API."
 category: "Reference Architectures"
 tags:
   - supermicro

@@ -1,6 +1,7 @@
 ---
 title: "RDS Quickstart (PostgreSQL)"
-description: "Stand up a managed PostgreSQL database on Spinifex with Terraform — a VPC, a DB subnet group, a parameter group, an aws_db_instance, and a client VM inside the VPC that connects to it with psql."
+seoTitle: "Terraform RDS PostgreSQL Quickstart — Spinifex Docs"
+description: "Stand up a managed PostgreSQL database on Spinifex with Terraform: a VPC, DB subnet group, parameter group, aws_db_instance, and a client VM that runs psql."
 category: "Terraform Workbooks"
 tags:
   - terraform

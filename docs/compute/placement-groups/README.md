@@ -1,6 +1,7 @@
 ---
 title: "Placement Groups"
-description: "Create and manage spread and cluster placement groups for hardware-level instance placement control."
+seoTitle: "AWS EC2 Placement Groups on Spinifex — Spinifex Docs"
+description: "Create and manage spread and cluster placement groups to control how Spinifex places EC2 instances across physical hosts for fault isolation or low latency."
 category: "Compute"
 tags:
   - ec2

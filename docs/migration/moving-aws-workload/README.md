@@ -1,6 +1,7 @@
 ---
 title: "Moving an AWS Workload to Mulga"
-description: "Migrate existing AWS workloads to Spinifex using compatible APIs, SDKs, and Terraform."
+seoTitle: "Migrate an AWS Workload to Spinifex — Spinifex Docs"
+description: "Move existing AWS workloads onto Spinifex using compatible APIs, SDKs, and Terraform across EC2, VPC, EBS, S3, IAM, STS, ELBv2, ACM, ECR, ECS, and EKS."
 category: "Migration"
 tags:
   - migration

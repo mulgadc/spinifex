@@ -1,6 +1,7 @@
 ---
 title: "Nginx Web Server"
-description: "Deploy a VPC with a public subnet and an EC2 instance running Nginx using Terraform on Spinifex."
+seoTitle: "Terraform Nginx Web Server on Spinifex — Spinifex Docs"
+description: "Provision a VPC, public subnet, internet gateway, route table, security group, and an EC2 instance that installs and starts Nginx from cloud-init user-data."
 category: "Terraform Workbooks"
 tags:
   - terraform

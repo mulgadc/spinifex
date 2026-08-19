@@ -1,6 +1,7 @@
 ---
 title: "Launching Instances"
-description: "Launch, manage, and connect to EC2-compatible virtual machines on Spinifex."
+seoTitle: "Launching AWS EC2 Instances on Spinifex — Spinifex Docs"
+description: "Launch, manage, and connect to EC2-compatible virtual machines on Spinifex, with cloud-init, SSH key injection, VPC networking, and AWS lifecycle operations."
 category: "Compute"
 tags:
   - ec2

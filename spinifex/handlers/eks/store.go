@@ -229,20 +229,23 @@ func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accou
 // replica count (clamped to a minimum of 1). The bucket is configured with
 // History=1 and a 60s TTL so stale leases expire on their own when a leader
 // dies mid-cycle. kvutil.GetOrCreateBucketWithReplicas doesn't expose a TTL
-// knob, so this function sets Replicas directly on its own js.CreateKeyValue
-// call and falls back to js.KeyValue on already-exists.
+// knob, so this function sets Replicas on its own create call, which runs only
+// when the bucket is absent.
 func InitLeaderBucket(ctx context.Context, js jetstream.JetStream, replicas int) (jetstream.KeyValue, error) {
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:   KVBucketEKSLeader,
-		History:  1,
-		TTL:      KVBucketEKSLeaderTTL,
-		Replicas: max(replicas, 1),
-	})
+	// Attach before create, so replicas applies to a genuine first creation only.
+	// CreateKeyValue against a bucket that exists with any other config is a
+	// STREAM.CREATE the meta leader answers with an error rather than a no-op.
+	kv, err := js.KeyValue(ctx, KVBucketEKSLeader)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+			Bucket:   KVBucketEKSLeader,
+			History:  1,
+			TTL:      KVBucketEKSLeaderTTL,
+			Replicas: max(replicas, 1),
+		})
+	}
 	if err != nil {
-		kv, err = js.KeyValue(ctx, KVBucketEKSLeader)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create or open EKS leader bucket %s: %w", KVBucketEKSLeader, err)
-		}
+		return nil, fmt.Errorf("failed to create or open EKS leader bucket %s: %w", KVBucketEKSLeader, err)
 	}
 	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketEKSLeader, kv, KVBucketEKSLeaderVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketEKSLeader, err)

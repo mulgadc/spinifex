@@ -35,10 +35,7 @@ func (s *Service) CheckVCPU(ctx context.Context, accountID string, want int) err
 	if err != nil {
 		return err
 	}
-	if current+want > s.limits.VCPUs {
-		return errors.New(awserrors.ErrorResourceLimitExceeded)
-	}
-	return nil
+	return exceeds(current, want, s.limitsFor(ctx, accountID).VCPUs)
 }
 
 // casVCPU applies next to accountID's counter under bounded JetStream CAS so

@@ -25,6 +25,15 @@ const KVBucketAccountUsage = "spinifex-account-usage"
 // the two independent loops never share one mutex and block each other.
 const KVBucketQuotaReconcile = "spinifex-quota-reconcile"
 
+// KVBucketAccountQuota holds the per-account limit overrides, keyed by
+// accountID. It is separate from the accounts bucket so a quota write never
+// contends with an identity write on the same revision.
+const KVBucketAccountQuota = "spinifex-account-quota"
+
+// Unlimited disables one dimension for one account. Zero is a real limit that
+// denies every request, so "no cap" needs a value of its own.
+const Unlimited = -1
+
 // Limits mirrors the [quota] block in awsgw.toml. The zero value (Enabled
 // false) is a valid no-op, so gateways without a [quota] block are unaffected.
 //
@@ -42,6 +51,12 @@ type Limits struct {
 	Subnets    int  `toml:"subnets"`
 	EIPs       int  `toml:"eips"`
 	VolumesGiB int  `toml:"volumes_gib"`
+
+	// Volumes caps the number of EBS volumes, independently of VolumesGiB: a
+	// tenant can exhaust per-volume overhead long before it exhausts capacity.
+	Volumes       int `toml:"volumes"`
+	RDSInstances  int `toml:"rds_instances"`
+	LoadBalancers int `toml:"load_balancers"`
 
 	TokensPerMonthEnabled    bool  `toml:"tokens_per_month_enabled"`
 	TokensPerMonth           int64 `toml:"tokens_per_month"`
@@ -69,6 +84,10 @@ type Service struct {
 	// the requests-per-minute dimension. Always non-nil so CheckBedrockRPM
 	// never needs a nil guard beyond Service itself.
 	rpm *rpmLimiter
+
+	// overrides holds the per-account limit overrides. Nil leaves every account
+	// on the configured limits, which is also what an absent key means.
+	overrides jetstream.KeyValue
 }
 
 // New constructs a quota Service from the configured limits and the gateway-owned
@@ -76,6 +95,15 @@ type Service struct {
 // short-circuits every check before the counter is read.
 func New(limits Limits, usage jetstream.KeyValue) *Service {
 	return &Service{limits: limits, usage: usage, rpm: newRPMLimiter()}
+}
+
+// SetOverrides attaches the per-account override bucket. Called once at wiring
+// time; a nil Service or bucket leaves every account on the configured limits.
+func (s *Service) SetOverrides(kv jetstream.KeyValue) {
+	if s == nil {
+		return
+	}
+	s.overrides = kv
 }
 
 // Exempt returns true for the global/system account and whenever quotas are

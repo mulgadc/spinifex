@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -55,7 +56,12 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 	}
 
 	xmlOutput, err := gateway_rds.Dispatch(r.Context(), action, queryArgs, gw.NATSConn, caller,
-		gateway_rds.Env{ExpectedNodes: gw.ExpectedNodes})
+		gateway_rds.Env{
+			ExpectedNodes: gw.ExpectedNodes,
+			QuotaCheck: func(ctx context.Context, accountID string, want int) error {
+				return gw.Quota.EnforceRDSInstances(ctx, gw.NATSConn, accountID, want)
+			},
+		})
 	if err != nil {
 		return err
 	}

@@ -10,7 +10,12 @@ import (
 
 // The whole orchestration runs on the daemon side, so this only carries the
 // caller's account through — the request body never names the owner.
-func CreateDBInstance(ctx context.Context, input *rds.CreateDBInstanceInput, nc *nats.Conn, caller Caller) (any, error) {
+func CreateDBInstance(ctx context.Context, input *rds.CreateDBInstanceInput, nc *nats.Conn, caller Caller, env Env) (any, error) {
+	if env.QuotaCheck != nil {
+		if err := env.QuotaCheck(ctx, caller.AccountID, 1); err != nil {
+			return nil, err
+		}
+	}
 	return handlers_rds.NewNATSService(nc).CreateDBInstance(ctx, input, caller.AccountID)
 }
 

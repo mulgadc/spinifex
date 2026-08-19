@@ -36,6 +36,11 @@ type Env struct {
 	// How many nodes a fan-out waits for before it stops waiting. Without it a
 	// gather burns its full timeout on every call instead of early-exiting.
 	ExpectedNodes int
+
+	// QuotaCheck gates a create on the account's DB-instance cap. It is a
+	// function so this package stays free of the quota dependency; nil skips
+	// the check, which is what a gateway with quotas disabled supplies.
+	QuotaCheck func(ctx context.Context, accountID string, want int) error
 }
 
 type Handler func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error)
@@ -94,7 +99,7 @@ type actionDef struct {
 // distinct from an unknown one.
 var actions = map[string]actionDef{
 	// Instance lifecycle.
-	"CreateDBInstance":    {handler: typed(CreateDBInstance)},
+	"CreateDBInstance":    {handler: typedEnv(CreateDBInstance)},
 	"DescribeDBInstances": {handler: typed(DescribeDBInstances)},
 	"ModifyDBInstance":    {handler: typed(ModifyDBInstance), scope: dbInstanceScope},
 	"DeleteDBInstance":    {handler: typed(DeleteDBInstance), scope: dbInstanceScope},

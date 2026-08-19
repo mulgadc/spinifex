@@ -57,6 +57,18 @@ func TestEnforceLiveExemptShortCircuits(t *testing.T) {
 		{"vpc system account", func() error { return enabled.EnforceVPCs(context.Background(), nil, utils.GlobalAccountID, 1) }},
 		{"subnet system account", func() error { return enabled.EnforceSubnets(context.Background(), nil, utils.GlobalAccountID, 1) }},
 		{"eip system account", func() error { return enabled.EnforceEIPs(context.Background(), nil, utils.GlobalAccountID, 1) }},
+		{"lb disabled", func() error {
+			return disabled.EnforceLoadBalancers(context.Background(), nil, normalAccount, 1)
+		}},
+		{"lb system account", func() error {
+			return enabled.EnforceLoadBalancers(context.Background(), nil, utils.GlobalAccountID, 1)
+		}},
+		{"rds disabled", func() error {
+			return disabled.EnforceRDSInstances(context.Background(), nil, normalAccount, 1)
+		}},
+		{"rds system account", func() error {
+			return enabled.EnforceRDSInstances(context.Background(), nil, utils.GlobalAccountID, 1)
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

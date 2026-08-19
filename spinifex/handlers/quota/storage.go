@@ -13,15 +13,22 @@ import (
 // VolumesGiB cap. Storage is live-counted, so a delete frees quota on the next
 // describe. Root/AMI volumes are created out-of-band by the launch path and
 // never appear in DescribeVolumes, so they are neither summed nor charged.
+// The volume count is checked alongside the capacity sum: a tenant can exhaust
+// per-volume overhead long before it exhausts GiB.
 func (s *Service) EnforceVolumeCreate(ctx context.Context, natsConn *nats.Conn, accountID string, requestedGiB int) error {
 	if s.Exempt(accountID) {
 		return nil
 	}
-	total, _, err := s.volumeUsage(ctx, natsConn, accountID, "")
+	out, err := gateway_ec2_volume.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, natsConn, accountID)
 	if err != nil {
 		return err
 	}
-	return exceeds(total, requestedGiB, s.limits.VolumesGiB)
+	limits := s.limitsFor(ctx, accountID)
+	if err := exceeds(len(out.Volumes), 1, limits.Volumes); err != nil {
+		return err
+	}
+	total, _ := sumVolumeGiB(out.Volumes, "")
+	return exceeds(total, requestedGiB, limits.VolumesGiB)
 }
 
 // EnforceVolumeModify gates ModifyVolume on the account's live storage usage.
@@ -36,7 +43,7 @@ func (s *Service) EnforceVolumeModify(ctx context.Context, natsConn *nats.Conn, 
 	if err != nil {
 		return err
 	}
-	return exceeds(total-oldGiB, newGiB, s.limits.VolumesGiB)
+	return exceeds(total-oldGiB, newGiB, s.limitsFor(ctx, accountID).VolumesGiB)
 }
 
 // volumeUsage sums the account's volume sizes in GiB via a single DescribeVolumes

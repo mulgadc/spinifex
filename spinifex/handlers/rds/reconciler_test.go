@@ -56,7 +56,7 @@ func newReconcileHarness(t *testing.T, opts ...func(*Deps)) *reconcileHarness {
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	state := &fakeInstanceState{state: instanceStateRunning}
-	deps := Deps{LoadCA: newTestCA(t), InstanceState: state}
+	deps := Deps{LoadCA: newTestCA(t), InstanceState: state, ServingCertKeyBits: testServingCertKeyBits}
 	for _, opt := range opts {
 		opt(&deps)
 	}

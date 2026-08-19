@@ -49,12 +49,13 @@ func newSnapshotHarness(t *testing.T, agentFails bool) *snapshotHarness {
 	stubDNSWriter(t, nc)
 
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
-		LoadCA:    newTestCA(t),
-		MasterKey: testMasterKey,
-		Launch:    h.launch.deps(),
-		Network:   h.network,
-		IAM:       testIAMProvider(h.iam),
-		Snapshots: h.snaps,
+		LoadCA:             newTestCA(t),
+		MasterKey:          testMasterKey,
+		Launch:             h.launch.deps(),
+		Network:            h.network,
+		IAM:                testIAMProvider(h.iam),
+		Snapshots:          h.snaps,
+		ServingCertKeyBits: testServingCertKeyBits,
 	})
 	return h
 }

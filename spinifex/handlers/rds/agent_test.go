@@ -22,6 +22,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Every test service mints its serving certs at 1024 bits. The path under test
+// is the same one production runs; only the keygen, which dominated it under
+// GOFIPS140, gets cheaper.
+const testServingCertKeyBits = 1024
+
 const (
 	testDBID     = "orders-db"
 	testInstance = "i-0abc123"
@@ -68,7 +73,9 @@ func newTestCA(t *testing.T) CALoader {
 func newTestService(t *testing.T) *Service {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	return NewService(nc, testRegion).WithDeps(Deps{LoadCA: newTestCA(t), MasterKey: testMasterKey})
+	return NewService(nc, testRegion).WithDeps(Deps{
+		LoadCA: newTestCA(t), MasterKey: testMasterKey, ServingCertKeyBits: testServingCertKeyBits,
+	})
 }
 
 // seedInstance writes a DB instance record without the payload a pending
@@ -317,6 +324,7 @@ func TestGetDBBootstrapConfig_BackfillsVpcCIDR(t *testing.T) {
 	network := newFakeNetwork()
 	svc := NewService(nc, testRegion).WithDeps(Deps{
 		LoadCA: newTestCA(t), MasterKey: testMasterKey, Network: network,
+		ServingCertKeyBits: testServingCertKeyBits,
 	})
 	rec := defaultRecord()
 	rec.VpcID = testDefaultVPC
@@ -381,7 +389,8 @@ func TestGetDBBootstrapConfig_UnloadableCALeavesPasswordRecoverable(t *testing.T
 	loadErr := errors.New("read CA key /etc/spinifex/ca.key: permission denied")
 	broken := true
 	svc := NewService(nc, testRegion).WithDeps(Deps{
-		MasterKey: testMasterKey,
+		MasterKey:          testMasterKey,
+		ServingCertKeyBits: testServingCertKeyBits,
 		LoadCA: func() (*x509.Certificate, *rsa.PrivateKey, error) {
 			if broken {
 				return nil, nil, loadErr

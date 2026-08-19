@@ -608,6 +608,7 @@ func (s *Service) mintServingCert(rec *DBInstanceRecord) (*bootstrapCert, error)
 		DBInstanceIdentifier: rec.DBInstanceIdentifier,
 		PrivateIP:            rec.ENIPrivateIP,
 		DNSName:              rec.DNSName,
+		KeyBits:              s.deps.ServingCertKeyBits,
 	})
 	if err != nil {
 		return nil, err

@@ -165,12 +165,13 @@ func newCreateHarness(t *testing.T, baseDomain string) *createHarness {
 	h.stubDNSWriter(t)
 
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
-		LoadCA:     newTestCA(t),
-		MasterKey:  testMasterKey,
-		Launch:     h.launch.deps(),
-		Network:    h.network,
-		IAM:        testIAMProvider(h.iam),
-		BaseDomain: baseDomain,
+		LoadCA:             newTestCA(t),
+		MasterKey:          testMasterKey,
+		Launch:             h.launch.deps(),
+		Network:            h.network,
+		IAM:                testIAMProvider(h.iam),
+		BaseDomain:         baseDomain,
+		ServingCertKeyBits: testServingCertKeyBits,
 	})
 	return h
 }

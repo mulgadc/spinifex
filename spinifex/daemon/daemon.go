@@ -1692,8 +1692,20 @@ func (d *Daemon) startCluster() error {
 		slog.Info("EIP service disabled — no external IPAM; serving empty/unsupported responses")
 	}
 
-	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, d.externalIPAM, d.tagsService)
-	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, d.externalIPAM)
+	// A nil *ExternalIPAM stored in an interface is not a nil interface, so hand
+	// the concrete value over only once init succeeded — otherwise the service's
+	// own nil checks pass and the allocate path derefs a nil receiver.
+	var (
+		ipAllocator handlers_ec2_instance.PublicIPAllocator
+		ipReleaser  handlers_ec2_instance.PublicIPReleaser
+	)
+	if d.externalIPAM != nil {
+		ipAllocator = d.externalIPAM
+		ipReleaser = d.externalIPAM
+	}
+
+	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, ipReleaser, d.tagsService)
+	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, ipAllocator)
 
 	if d.gpuManager != nil {
 		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})

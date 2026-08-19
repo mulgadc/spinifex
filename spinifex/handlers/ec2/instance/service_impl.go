@@ -716,74 +716,69 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 				"mac", instance.ENIMac,
 			)
 
-			if s.ipAllocator != nil {
-				subnet, subErr := s.eniCreator.GetSubnet(ctx, accountID, *input.SubnetId)
-				wantPublic := subErr == nil && subnet != nil && subnet.MapPublicIpOnLaunch
-				if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil && input.NetworkInterfaces[0].AssociatePublicIpAddress != nil {
-					wantPublic = *input.NetworkInterfaces[0].AssociatePublicIpAddress
-				}
-				if wantPublic {
-					region := s.config.Region
-					az := s.config.AZ
-					publicIP, poolName, allocErr := s.ipAllocator.AllocateIP(ctx, region, az, handlers_ec2_vpc.PurposeENIPublic, "", *eni.NetworkInterfaceId, instance.ID)
-					if allocErr != nil {
-						// Fail rather than boot an unreachable instance;
-						// detach before delete since in-use ENIs reject deletion.
-						slog.ErrorContext(ctx, "PrepareRunInstances: public IP allocation failed — aborting launch",
-							"instanceId", instance.ID, "eniId", *eni.NetworkInterfaceId, "err", allocErr)
-						if detErr := s.eniCreator.DetachENI(ctx, accountID, *eni.NetworkInterfaceId); detErr != nil {
-							slog.WarnContext(ctx, "PrepareRunInstances: failed to detach ENI after public-IP allocation failure",
-								"eniId", *eni.NetworkInterfaceId, "err", detErr)
-						}
-						if _, delErr := s.eniDeleter.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
-							NetworkInterfaceId: eni.NetworkInterfaceId,
-						}, accountID); delErr != nil {
-							slog.WarnContext(ctx, "PrepareRunInstances: failed to delete ENI after public-IP allocation failure",
-								"eniId", *eni.NetworkInterfaceId, "err", delErr)
-						}
-						// Carry the allocator's own error rather than a flat
-						// capacity code: the gateway resolves the AWS code out
-						// of the wrap chain, so a genuinely exhausted pool still
-						// surfaces InsufficientAddressCapacity while an upstream
-						// DHCP or IPAM fault reports as itself instead of
-						// wearing a capacity code it did not earn.
-						lastRunErr = fmt.Errorf("allocate public IP for %s: %w", instance.ID, allocErr)
-						if reservationID == "" {
-							s.resourceMgr.Deallocate(instanceType)
-						} else {
-							s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
-						}
-						continue
-					} else {
-						if updateErr := s.eniCreator.UpdateENIPublicIP(ctx, accountID, *eni.NetworkInterfaceId, publicIP, poolName); updateErr != nil {
-							slog.WarnContext(ctx, "PrepareRunInstances: failed to update ENI with public IP", "eniId", *eni.NetworkInterfaceId, "err", updateErr)
-						}
-						portName := topology.Port(*eni.NetworkInterfaceId)
-						if natErr := utils.AddNAT(s.natsConn, *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress); natErr != nil {
-							slog.ErrorContext(ctx, "PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
-								"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
-							// Neutralise before releasing in case timeout committed the rule.
-							utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
-							s.rollbackAutoAssignedPublicIP(ctx, accountID, instance.ID, *eni.NetworkInterfaceId, publicIP, poolName)
-							lastRunErr = natErr
-							if reservationID == "" {
-								s.resourceMgr.Deallocate(instanceType)
-							} else {
-								s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
-							}
-							continue
-						}
-						ec2Instance.PublicIpAddress = aws.String(publicIP)
-						instance.PublicIP = publicIP
-						instance.PublicIPPool = poolName
-						slog.InfoContext(ctx, "PrepareRunInstances: auto-assigned public IP",
-							"instanceId", instance.ID,
-							"publicIp", publicIP,
-							"privateIp", *eni.PrivateIpAddress,
-							"pool", poolName,
-						)
+			subnet, subErr := s.eniCreator.GetSubnet(ctx, accountID, *input.SubnetId)
+			wantPublic := subErr == nil && subnet != nil && subnet.MapPublicIpOnLaunch
+			if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil && input.NetworkInterfaces[0].AssociatePublicIpAddress != nil {
+				wantPublic = *input.NetworkInterfaces[0].AssociatePublicIpAddress
+			}
+			if wantPublic {
+				publicIP, poolName, allocErr := s.allocatePublicIP(ctx, *eni.NetworkInterfaceId, instance.ID)
+				if allocErr != nil {
+					// Fail rather than boot an unreachable instance;
+					// detach before delete since in-use ENIs reject deletion.
+					slog.ErrorContext(ctx, "PrepareRunInstances: public IP allocation failed — aborting launch",
+						"instanceId", instance.ID, "eniId", *eni.NetworkInterfaceId, "err", allocErr)
+					if detErr := s.eniCreator.DetachENI(ctx, accountID, *eni.NetworkInterfaceId); detErr != nil {
+						slog.WarnContext(ctx, "PrepareRunInstances: failed to detach ENI after public-IP allocation failure",
+							"eniId", *eni.NetworkInterfaceId, "err", detErr)
 					}
+					if _, delErr := s.eniDeleter.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
+						NetworkInterfaceId: eni.NetworkInterfaceId,
+					}, accountID); delErr != nil {
+						slog.WarnContext(ctx, "PrepareRunInstances: failed to delete ENI after public-IP allocation failure",
+							"eniId", *eni.NetworkInterfaceId, "err", delErr)
+					}
+					// Carry the allocator's own error rather than a flat
+					// capacity code: the gateway resolves the AWS code out
+					// of the wrap chain, so a genuinely exhausted pool still
+					// surfaces InsufficientAddressCapacity while an upstream
+					// DHCP or IPAM fault reports as itself instead of
+					// wearing a capacity code it did not earn.
+					lastRunErr = fmt.Errorf("allocate public IP for %s: %w", instance.ID, allocErr)
+					if reservationID == "" {
+						s.resourceMgr.Deallocate(instanceType)
+					} else {
+						s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+					}
+					continue
 				}
+				if updateErr := s.eniCreator.UpdateENIPublicIP(ctx, accountID, *eni.NetworkInterfaceId, publicIP, poolName); updateErr != nil {
+					slog.WarnContext(ctx, "PrepareRunInstances: failed to update ENI with public IP", "eniId", *eni.NetworkInterfaceId, "err", updateErr)
+				}
+				portName := topology.Port(*eni.NetworkInterfaceId)
+				if natErr := utils.AddNAT(s.natsConn, *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress); natErr != nil {
+					slog.ErrorContext(ctx, "PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
+						"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
+					// Neutralise before releasing in case timeout committed the rule.
+					utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
+					s.rollbackAutoAssignedPublicIP(ctx, accountID, instance.ID, *eni.NetworkInterfaceId, publicIP, poolName)
+					lastRunErr = natErr
+					if reservationID == "" {
+						s.resourceMgr.Deallocate(instanceType)
+					} else {
+						s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+					}
+					continue
+				}
+				ec2Instance.PublicIpAddress = aws.String(publicIP)
+				instance.PublicIP = publicIP
+				instance.PublicIPPool = poolName
+				slog.InfoContext(ctx, "PrepareRunInstances: auto-assigned public IP",
+					"instanceId", instance.ID,
+					"publicIp", publicIP,
+					"privateIp", *eni.PrivateIpAddress,
+					"pool", poolName,
+				)
 			}
 		}
 
@@ -2506,6 +2501,22 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instanc
 	}
 
 	_ = instanceID
+}
+
+// allocatePublicIP allocates an auto-assigned public IP for a new ENI. A node
+// whose external IPAM never initialised has no allocator wired: report no
+// capacity so the caller aborts rather than booting an unreachable instance.
+func (s *InstanceServiceImpl) allocatePublicIP(ctx context.Context, eniID, instanceID string) (string, string, error) {
+	if s.ipAllocator == nil {
+		return "", "", fmt.Errorf("no public IP allocator on this node: %w", errors.New(awserrors.ErrorInsufficientAddressCapacity))
+	}
+	region := ""
+	az := ""
+	if s.config != nil {
+		region = s.config.Region
+		az = s.config.AZ
+	}
+	return s.ipAllocator.AllocateIP(ctx, region, az, handlers_ec2_vpc.PurposeENIPublic, "", eniID, instanceID)
 }
 
 // rollbackAutoAssignedPublicIP unwinds a failed auto-assign: clears the ENI

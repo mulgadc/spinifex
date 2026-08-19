@@ -79,7 +79,12 @@ func (m *ExternalIPAM) EnableDHCP(client *dhcp.NATSClient) error {
 
 // AllocateIP allocates the next available external IP from the best pool
 // matching the given region/AZ. Returns the allocated IP and pool name.
+// Nil-receiver tolerant: a node whose IPAM never initialised reports no
+// capacity rather than panicking through a typed-nil interface.
 func (m *ExternalIPAM) AllocateIP(ctx context.Context, region, az, purpose, allocID, eniID, instanceID string) (string, string, error) {
+	if m == nil {
+		return "", "", fmt.Errorf("external IPAM unavailable on this node: %w", errors.New(awserrors.ErrorInsufficientAddressCapacity))
+	}
 	pool := m.findPool(region, az)
 	if pool == nil {
 		return "", "", fmt.Errorf("no external pool available for region=%q az=%q: %w", region, az, errors.New(awserrors.ErrorInsufficientAddressCapacity))
@@ -113,7 +118,11 @@ func (m *ExternalIPAM) AllocateFromPool(ctx context.Context, poolName, purpose, 
 // ReleaseIP releases a previously allocated external IP back to its pool.
 // ownerENIID, when non-empty, scopes the release to the ENI that currently owns
 // the lease so a stale or duplicated teardown for a recycled IP is a no-op.
+// Nil-receiver tolerant for the same reason as AllocateIP.
 func (m *ExternalIPAM) ReleaseIP(ctx context.Context, poolName, ip, ownerENIID string) error {
+	if m == nil {
+		return errors.New("external IPAM unavailable on this node")
+	}
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return fmt.Errorf("parse release IP %q: %w", ip, err)

@@ -39,16 +39,13 @@ func headroom(t *testing.T, accountID, dimension string, used int) {
 
 func itoa(v int) string { return strconv.Itoa(v) }
 
-// skipIfEIPUnsupported turns the disabled-EIP stub's refusal into a skip. A node
-// with no external IPAM answers allocations with UnsupportedOperation and
-// describes with an empty list, so where a cell's nodes do not all hold a pool
-// there is no count for the cap to be asserted against. On a cluster that does
-// serve EIPs the quota refuses first and this never fires.
-func skipIfEIPUnsupported(t *testing.T, err error) {
+// requireEIPSupported fails rather than skips when a node answers from the
+// disabled-EIP stub. A cell whose nodes disagree about whether EIPs exist
+// cannot count addresses, and the cap under test is what exposes it.
+func requireEIPSupported(t *testing.T, err error) {
 	t.Helper()
-	if harness.ErrorCodeIs(err, "UnsupportedOperation") {
-		t.Skip("external IPAM is not served by every node in this cell; EIP allocation is unsupported")
-	}
+	require.False(t, harness.ErrorCodeIs(err, "UnsupportedOperation"),
+		"a node answered from the disabled-EIP stub: this cell does not serve external IPAM from every node")
 }
 
 func countVPCs(t *testing.T, c *harness.AWSClient) int {

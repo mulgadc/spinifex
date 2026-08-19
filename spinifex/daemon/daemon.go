@@ -1402,6 +1402,33 @@ func publicExternalPools(pools []config.ExternalPool) []config.ExternalPool {
 	return public
 }
 
+// externalPoolConfigs converts the node's public pools into IPAM pool configs
+// and reports whether any of them leases from DHCP. The transit pool never
+// enters IPAM — its addresses are gateway-LRP plumbing, not EIPs.
+func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, anyDHCP bool) {
+	for _, p := range publicExternalPools(d.clusterConfig.Network.ExternalPools) {
+		pools = append(pools, external.ExternalPoolConfig{
+			Name:            p.Name,
+			Source:          p.Source,
+			BindBridge:      p.BindBridge,
+			DHCPMAC:         p.DHCPMAC,
+			RangeStart:      p.RangeStart,
+			RangeEnd:        p.RangeEnd,
+			Gateway:         p.Gateway,
+			GatewayIP:       p.GatewayIP,
+			PrefixLen:       p.PrefixLen,
+			Region:          p.Region,
+			AZ:              p.AZ,
+			GwLrpRangeStart: p.GwLrpRangeStart,
+			GwLrpRangeEnd:   p.GwLrpRangeEnd,
+		})
+		if p.Source == "dhcp" {
+			anyDHCP = true
+		}
+	}
+	return pools, anyDHCP
+}
+
 // hasPublicIPPools reports whether the cluster can allocate routable public
 // IPs: pool mode always, nat mode only with a public pool beside the transit.
 func (d *Daemon) hasPublicIPPools() bool {
@@ -1615,74 +1642,57 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize NatGateway service: %w", err)
 	}
 
-	// Initialize external IPAM when public IP pools exist (pool mode, or nat
-	// mode with a public pool alongside the transit segment). The transit pool
-	// never enters IPAM — its addresses are gateway-LRP plumbing, not EIPs.
+	// A node declaring public pools must serve EIPs or refuse to start: EIP
+	// subjects are a queue group, so one node silently on the disabled stub
+	// answers cluster-wide with an empty address list on the requests it wins.
 	if d.hasPublicIPPools() {
-		js, jsErr := jetstream.New(d.natsConn)
-		if jsErr != nil {
-			slog.Warn("Failed to get JetStream for external IPAM", "err", jsErr)
-		} else {
-			var pools []external.ExternalPoolConfig
-			anyDHCP := false
-			for _, p := range publicExternalPools(d.clusterConfig.Network.ExternalPools) {
-				pools = append(pools, external.ExternalPoolConfig{
-					Name:            p.Name,
-					Source:          p.Source,
-					BindBridge:      p.BindBridge,
-					DHCPMAC:         p.DHCPMAC,
-					RangeStart:      p.RangeStart,
-					RangeEnd:        p.RangeEnd,
-					Gateway:         p.Gateway,
-					GatewayIP:       p.GatewayIP,
-					PrefixLen:       p.PrefixLen,
-					Region:          p.Region,
-					AZ:              p.AZ,
-					GwLrpRangeStart: p.GwLrpRangeStart,
-					GwLrpRangeEnd:   p.GwLrpRangeEnd,
-				})
-				if p.Source == "dhcp" {
-					anyDHCP = true
+		pools, anyDHCP := d.externalPoolConfigs()
+		d.externalIPAM, err = initServiceWithRetry("external IPAM", func() (*handlers_ec2_vpc.ExternalIPAM, error) {
+			js, jsErr := jetstream.New(d.natsConn)
+			if jsErr != nil {
+				return nil, fmt.Errorf("jetstream handle: %w", jsErr)
+			}
+			ipam, ipamErr := handlers_ec2_vpc.NewExternalIPAM(d.ctx, js, pools)
+			if ipamErr != nil {
+				return nil, ipamErr
+			}
+			if anyDHCP {
+				if dhcpErr := ipam.EnableDHCP(dhcp.NewNATSClient(d.natsConn, 0)); dhcpErr != nil {
+					return nil, fmt.Errorf("enable DHCP allocator: %w", dhcpErr)
 				}
 			}
-			d.externalIPAM, err = handlers_ec2_vpc.NewExternalIPAM(d.ctx, js, pools)
-			if err != nil {
-				slog.Warn("Failed to initialize external IPAM", "err", err)
-			} else {
-				if anyDHCP {
-					dhcpClient := dhcp.NewNATSClient(d.natsConn, 0)
-					if dhcpErr := d.externalIPAM.EnableDHCP(dhcpClient); dhcpErr != nil {
-						slog.Warn("Failed to enable DHCP allocator on external IPAM", "err", dhcpErr)
-					}
-				}
-				slog.Info("External IPAM initialized", "mode", d.clusterConfig.Network.ExternalMode, "pools", len(pools), "dhcp", anyDHCP)
-			}
+			return ipam, nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to initialize external IPAM: %w", err)
 		}
+		slog.Info("External IPAM initialized", "mode", d.clusterConfig.Network.ExternalMode, "pools", len(pools), "dhcp", anyDHCP)
 	}
 
 	// Initialize EIP service if external IPAM is available
 	if d.externalIPAM != nil && d.vpcService != nil {
-		eipSvc, eipErr := handlers_ec2_eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
+		eipSvc, eipErr := initServiceWithRetry("EIP service", func() (*handlers_ec2_eip.EIPServiceImpl, error) {
+			return handlers_ec2_eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
+		})
 		if eipErr != nil {
-			slog.Warn("Failed to initialize EIP service", "err", eipErr)
-		} else {
-			d.eipService = eipSvc
-			slog.Info("EIP service initialized")
+			return fmt.Errorf("failed to initialize EIP service: %w", eipErr)
 		}
+		d.eipService = eipSvc
+		slog.Info("EIP service initialized")
 
 		// Inject external IPAM + EIP KV into VPC service so DeleteNetworkInterface
 		// can release auto-assigned public IPs and NAT rules.
-		eipJS, eipJSErr := jetstream.New(d.natsConn)
-		if eipJSErr != nil {
-			slog.Warn("Failed to get JetStream for VPC external IPAM injection", "err", eipJSErr)
-		} else {
-			eipKV, eipKVErr := kvutil.GetOrCreateBucket(d.ctx, eipJS, handlers_ec2_eip.KVBucketEIPs, 10)
-			if eipKVErr != nil {
-				slog.Warn("Failed to get EIP KV bucket for VPC service", "err", eipKVErr)
-			} else {
-				d.vpcService.SetExternalIPAM(d.externalIPAM, eipKV)
+		eipKV, eipKVErr := initServiceWithRetry("EIP KV bucket", func() (jetstream.KeyValue, error) {
+			eipJS, jsErr := jetstream.New(d.natsConn)
+			if jsErr != nil {
+				return nil, fmt.Errorf("jetstream handle: %w", jsErr)
 			}
+			return kvutil.GetOrCreateBucket(d.ctx, eipJS, handlers_ec2_eip.KVBucketEIPs, 10)
+		})
+		if eipKVErr != nil {
+			return fmt.Errorf("failed to get EIP KV bucket for VPC service: %w", eipKVErr)
 		}
+		d.vpcService.SetExternalIPAM(d.externalIPAM, eipKV)
 	}
 
 	// Without external IPAM (nat mode or external disabled) serve EIP requests

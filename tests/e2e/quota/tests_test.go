@@ -96,13 +96,9 @@ func TestQuotaSubnetLimit(t *testing.T) {
 // Elastic IPs are the scarcest thing a cluster hands out — the pool is finite
 // and shared — so this gate is the one that decides how many tenants fit.
 //
-// Both AllocateAddress and DescribeAddresses are queue-group requests answered
-// by whichever node picks them up, and a node with no external IPAM answers
-// from the disabled stub: an empty address list, and UnsupportedOperation on a
-// mutation. Where a cell's nodes do not all hold a pool the count this cap reads
-// is whichever node replied, so the boundary is not assertable — hence the skip
-// rather than a failure. A cluster with one static pool, which is what
-// production runs, answers identically from every node.
+// Both calls are queue-group requests answered by whichever node picks them up,
+// so this leg also proves every node serves external IPAM: one that does not
+// answers an empty address list the cap cannot count against.
 func TestQuotaEIPLimit(t *testing.T) {
 	fix := requireQuotaFixture(t)
 	harness.Phase(t, "Quota — Elastic IPs")
@@ -116,7 +112,7 @@ func TestQuotaEIPLimit(t *testing.T) {
 	headroom(t, fix.Tenant.AccountID, "eips", countAddresses(t, tenant))
 
 	alloc, err := allocate()
-	skipIfEIPUnsupported(t, err)
+	requireEIPSupported(t, err)
 	require.NoError(t, err, "the address the account has room for")
 	allocID := aws.StringValue(alloc.AllocationId)
 	released := false
@@ -127,7 +123,7 @@ func TestQuotaEIPLimit(t *testing.T) {
 	})
 
 	_, err = allocate()
-	skipIfEIPUnsupported(t, err)
+	requireEIPSupported(t, err)
 	harness.AssertAWSError(t, err, quotaExceeded)
 
 	harness.Step(t, "releasing the address frees the allowance")
@@ -136,7 +132,7 @@ func TestQuotaEIPLimit(t *testing.T) {
 	released = true
 
 	regained, err := allocate()
-	skipIfEIPUnsupported(t, err)
+	requireEIPSupported(t, err)
 	require.NoError(t, err, "a released address must free room for another")
 	t.Cleanup(func() {
 		_, _ = tenant.EC2.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: regained.AllocationId})

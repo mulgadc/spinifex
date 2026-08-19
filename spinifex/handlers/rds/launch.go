@@ -239,6 +239,10 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 			ENIIP:     customerENI.ip,
 			SubnetID:  in.SubnetID,
 			AccountID: in.AccountID,
+			// The endpoint is the ENI's address, so it has to survive the
+			// terminate half of a replace the way the datadir volume does.
+			// A DeleteDBInstance deletes it explicitly once the VM is gone.
+			DeleteOnTermination: aws.Bool(false),
 		}},
 		UserData:              in.UserData,
 		IamInstanceProfileArn: in.IamInstanceProfileArn,

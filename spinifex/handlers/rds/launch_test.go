@@ -598,6 +598,9 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 		ENIIP:     out.CustomerENIIP,
 		SubnetID:  testDBSubnet,
 		AccountID: testCustomerAccount,
+		// The endpoint address lives on this NIC, so it has to survive the
+		// terminate half of a replace the way the datadir volume does.
+		DeleteOnTermination: aws.Bool(false),
 	}, in.ExtraENIs[0], "the extra NIC must carry the customer account, or the daemon updates the wrong ENI record")
 	assert.Equal(t, "#cloud-config\n", in.UserData)
 	assert.Equal(t, "arn:aws:iam::000000000000:instance-profile/rdsInstanceRole", in.IamInstanceProfileArn)

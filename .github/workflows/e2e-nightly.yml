@@ -342,6 +342,14 @@ jobs:
               | tar -C "${ARTIFACT_DIR}/vm-console-node${idx}" -xf - 2>/dev/null
             ssh "${SSH_OPTS[@]}" tf-user@${IP} 'sudo journalctl -u "spinifex-*" --no-pager --output=short-iso --since "60 min ago"' \
               > "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null
+            ssh "${SSH_OPTS[@]}" tf-user@${IP} 'sudo journalctl -u openvswitch-ipsec.service --no-pager --output=short-iso --since "60 min ago"' \
+              > "${ARTIFACT_DIR}/openvswitch-ipsec-node${idx}.log" 2>/dev/null
+            # ovn-controller and ovs-vswitchd log to files, never to journald:
+            # without these a cross-chassis black-hole cannot be attributed to
+            # IPsec versus SB port binding.
+            mkdir -p "${ARTIFACT_DIR}/ovs-logs-node${idx}"
+            ssh "${SSH_OPTS[@]}" tf-user@${IP} 'sudo tar -C /var/log -cf - ovn openvswitch 2>/dev/null || true' \
+              | tar -C "${ARTIFACT_DIR}/ovs-logs-node${idx}" -xf - 2>/dev/null
           done
 
           cat "${ARTIFACT_DIR}"/spinifex-journal-node*.log \

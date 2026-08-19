@@ -208,6 +208,18 @@ func TestLookupServingSpec_SelfHostEntry(t *testing.T) {
 	assert.NotEmpty(t, spec.InstanceType)
 	assert.Positive(t, spec.MinVRAMMiB)
 	assert.NotEmpty(t, spec.VLLMArgs)
+	assert.Equal(t, "meta-llama/Llama-3.2-1B-Instruct", spec.HFRepo)
+}
+
+// TestLookupServingSpec_EmbedderCarriesPinnedRevision guards the durable pin
+// weights pull defaults to: nomic must surface a non-empty HFRevision, so a
+// bare pull cannot silently grab the regressed upstream main.
+func TestLookupServingSpec_EmbedderCarriesPinnedRevision(t *testing.T) {
+	spec, found, selfHost := LookupServingSpec("nomic-embed-text-v1.5")
+	require.True(t, found)
+	require.True(t, selfHost)
+	assert.Equal(t, "nomic-ai/nomic-embed-text-v1.5", spec.HFRepo)
+	assert.NotEmpty(t, spec.HFRevision, "the embedder must pin a pre-v5 revision")
 }
 
 // TestLookupServingSpec_ProviderEntry covers the refusal case 'stage' must

@@ -60,6 +60,8 @@ type catalogEntry struct {
 	Provider                      string // "self-host" or "provider:<vendor>"
 	Family                        string // self-host only; selects the invoke adapter (see familyMeta, familyTEI)
 	CoServeGroup                  string // self-host only; shared co-serve group id, empty = standalone
+	HFRepo                        string // self-host only; canonical Hugging Face repo 'weights pull' defaults to
+	HFRevision                    string // self-host only; pinned HF commit/tag 'weights pull' defaults to, empty = main
 	InputModalities               []string
 	OutputModalities              []string
 	ResponseStreamingSupported    bool
@@ -83,6 +85,7 @@ var catalog = []catalogEntry{
 		Provider:                   tierSelfHost,
 		Family:                     familyMeta,
 		CoServeGroup:               coServeGroupOchreDemo,
+		HFRepo:                     "meta-llama/Llama-3.2-1B-Instruct",
 		InputModalities:            []string{"TEXT"},
 		OutputModalities:           []string{"TEXT"},
 		ResponseStreamingSupported: false,
@@ -100,6 +103,7 @@ var catalog = []catalogEntry{
 		ProviderName:               "Meta",
 		Provider:                   tierSelfHost,
 		Family:                     familyMeta,
+		HFRepo:                     "meta-llama/Llama-3.2-3B-Instruct",
 		InputModalities:            []string{"TEXT"},
 		OutputModalities:           []string{"TEXT"},
 		ResponseStreamingSupported: false,
@@ -115,21 +119,23 @@ var catalog = []catalogEntry{
 		},
 	},
 	{
-		ModelID:                    "nomic-embed-text-v1.5",
-		ModelName:                  "Nomic Embed Text v1.5",
-		ProviderName:               "Nomic AI",
-		Provider:                   tierSelfHost,
-		Family:                     familyTEI,
-		CoServeGroup:               coServeGroupOchreDemo,
+		ModelID:      "nomic-embed-text-v1.5",
+		ModelName:    "Nomic Embed Text v1.5",
+		ProviderName: "Nomic AI",
+		Provider:     tierSelfHost,
+		Family:       familyTEI,
+		CoServeGroup: coServeGroupOchreDemo,
+		HFRepo:       "nomic-ai/nomic-embed-text-v1.5",
+		// Pin a pre-v5 revision: current main's config.json carries both
+		// max_position_embeddings and n_positions, which TEI rejects as a
+		// duplicate field. This revision keeps the 768-dim, 8k-context model.
+		HFRevision:                 "e5cf08a",
 		InputModalities:            []string{"TEXT"},
 		OutputModalities:           []string{"EMBEDDING"},
 		ResponseStreamingSupported: false,
 		InferenceTypesSupported:    []string{"ON_DEMAND"},
-		// 768-dim, 8k context. Serve a pre-v5 HF revision: current main's
-		// config.json carries both max_position_embeddings and n_positions,
-		// which TEI's parser rejects as a duplicate field.
-		MinVRAMMiB:   512,
-		InstanceType: "g5.xlarge",
+		MinVRAMMiB:                 512,
+		InstanceType:               "g5.xlarge",
 		// Mean pooling stated explicitly: the flat weights layout omits
 		// 1_Pooling/config.json, so TEI would otherwise default to CLS.
 		VLLMArgs: []string{"--pooling", "mean"},
@@ -141,6 +147,7 @@ var catalog = []catalogEntry{
 		Provider:                   tierSelfHost,
 		Family:                     familyTEI,
 		CoServeGroup:               "",
+		HFRepo:                     "BAAI/bge-base-en-v1.5",
 		InputModalities:            []string{"TEXT"},
 		OutputModalities:           []string{"EMBEDDING"},
 		ResponseStreamingSupported: false,
@@ -157,6 +164,7 @@ var catalog = []catalogEntry{
 		Provider:                   tierSelfHost,
 		Family:                     familyTEI,
 		CoServeGroup:               coServeGroupOchreDemo,
+		HFRepo:                     "BAAI/bge-reranker-v2-m3",
 		InputModalities:            []string{"TEXT"},
 		OutputModalities:           []string{"RERANK"},
 		ResponseStreamingSupported: false,
@@ -427,6 +435,8 @@ type ServingSpec struct {
 	MinVRAMMiB   int
 	InstanceType string
 	VLLMArgs     []string
+	HFRepo       string
+	HFRevision   string
 }
 
 // LookupServingSpec returns modelID's serving spec. found reports whether
@@ -446,6 +456,8 @@ func LookupServingSpec(modelID string) (spec ServingSpec, found, selfHost bool) 
 		MinVRAMMiB:   entry.MinVRAMMiB,
 		InstanceType: entry.InstanceType,
 		VLLMArgs:     entry.VLLMArgs,
+		HFRepo:       entry.HFRepo,
+		HFRevision:   entry.HFRevision,
 	}, true, true
 }
 

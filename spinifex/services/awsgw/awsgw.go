@@ -166,6 +166,32 @@ func openAccountUsageBucket(ctx context.Context, js jetstream.KeyValueManager, r
 	return kv, nil
 }
 
+// openAccountQuotaBucket opens (or idempotently creates) the per-account quota
+// override bucket. History is 1: each key holds the current override set, and
+// no earlier revision of a limit is worth keeping.
+func openAccountQuotaBucket(ctx context.Context, js jetstream.KeyValueManager, replicas int) (jetstream.KeyValue, error) {
+	kv, err := js.KeyValue(ctx, handlers_quota.KVBucketAccountQuota)
+	if err == nil {
+		return kv, nil
+	}
+	if !errors.Is(err, jetstream.ErrBucketNotFound) {
+		return nil, fmt.Errorf("open account quota bucket: %w", err)
+	}
+
+	kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:   handlers_quota.KVBucketAccountQuota,
+		History:  1,
+		Replicas: max(replicas, 1),
+	})
+	if errors.Is(err, jetstream.ErrBucketExists) {
+		return js.KeyValue(ctx, handlers_quota.KVBucketAccountQuota)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create account quota bucket: %w", err)
+	}
+	return kv, nil
+}
+
 func launchService(config *config.ClusterConfig) error {
 	nodeConfig := config.Nodes[config.Node]
 
@@ -480,14 +506,19 @@ func launchService(config *config.ClusterConfig) error {
 	// Per-account service quotas. Only the enabled path opens the gateway-owned
 	// usage KV bucket, leaving existing default-off gateways untouched; a disabled
 	// config builds a no-op Service whose Exempt short-circuits every check.
-	var usageBucket jetstream.KeyValue
+	var usageBucket, quotaOverrides jetstream.KeyValue
 	if quotaCfg.Enabled {
 		usageBucket, err = openAccountUsageBucket(janitorCtx, js, len(config.Nodes))
 		if err != nil {
 			return fmt.Errorf("init account usage bucket: %w", err)
 		}
+		quotaOverrides, err = openAccountQuotaBucket(janitorCtx, js, len(config.Nodes))
+		if err != nil {
+			return fmt.Errorf("init account quota bucket: %w", err)
+		}
 	}
 	gw.Quota = handlers_quota.New(quotaCfg, usageBucket)
+	gw.Quota.SetOverrides(quotaOverrides)
 
 	// Bedrock token quota reads the stream-fed usage counters built above,
 	// independent of whether the standing-infra dimensions are enabled.

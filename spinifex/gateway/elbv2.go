@@ -44,6 +44,9 @@ func elbv2Handler[In any](handler func(context.Context, *In, *GatewayConfig, str
 
 var elbv2Actions = map[string]ELBv2Handler{
 	"CreateLoadBalancer": elbv2Handler(func(ctx context.Context, input *elbv2.CreateLoadBalancerInput, gw *GatewayConfig, accountID string) (any, error) {
+		if err := gw.Quota.EnforceLoadBalancers(ctx, gw.NATSConn, accountID, 1); err != nil {
+			return nil, err
+		}
 		return gateway_elbv2.CreateLoadBalancer(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteLoadBalancer": elbv2Handler(func(ctx context.Context, input *elbv2.DeleteLoadBalancerInput, gw *GatewayConfig, accountID string) (any, error) {

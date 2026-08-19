@@ -40,11 +40,17 @@ burst = 5
 [signup]
 max_accounts = 128
 
-# Per-account service quotas (default off)
+# Per-account service quotas (default off). These values are the baseline every
+# account inherits; raise an individual account with
+# `spx admin account quota set`, which stores an override in NATS KV.
+# A dimension set to -1 is uncapped for accounts that inherit it.
 [quota]
 enabled = false
-vcpus = 8
-vpcs = 8
+vcpus = 16
+vpcs = 4
 subnets = 16
 eips = 4
-volumes_gib = 100
+volumes = 16
+volumes_gib = 200
+rds_instances = 2
+load_balancers = 2

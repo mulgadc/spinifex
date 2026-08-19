@@ -154,6 +154,34 @@ describe("useModifyDBInstance", () => {
     // An unset password must not be sent as an empty reset.
     expect(input.MasterUserPassword).toBeUndefined()
   })
+
+  it("invalidates the automated backups and snapshots as well as the instance", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useModifyDBInstance(), { wrapper })
+
+    result.current.mutate({
+      dbInstanceIdentifier: "orders-db",
+      currentAllocatedStorage: 20,
+      dbInstanceClass: "db.t3.micro",
+      allocatedStorage: 20,
+      dbParameterGroupName: "",
+      vpcSecurityGroupIds: [],
+      deletionProtection: false,
+      backupRetentionPeriod: 0,
+      preferredBackupWindow: "",
+      preferredMaintenanceWindow: "",
+      masterUserPassword: "",
+      applyImmediately: true,
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["rds", "dbInstances"] })
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["rds", "automatedBackups", "orders-db"],
+    })
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["rds", "dbSnapshots"] })
+  })
 })
 
 describe("useDeleteDBInstance", () => {
@@ -189,6 +217,27 @@ describe("useDeleteDBInstance", () => {
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.SkipFinalSnapshot).toBeTruthy()
     expect(input.FinalDBSnapshotIdentifier).toBeUndefined()
+  })
+
+  // The final snapshot appears and the automated backups go, neither of which
+  // is reachable from the instance list alone.
+  it("invalidates the automated backups and snapshots as well as the instance", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useDeleteDBInstance(), { wrapper })
+
+    result.current.mutate({
+      dbInstanceIdentifier: "orders-db",
+      skipFinalSnapshot: false,
+      finalSnapshotIdentifier: "orders-db-final-20260817-1200",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["rds", "dbInstances"] })
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["rds", "automatedBackups", "orders-db"],
+    })
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["rds", "dbSnapshots"] })
   })
 })
 

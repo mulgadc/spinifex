@@ -32,6 +32,7 @@ import type {
 
 const DB_INSTANCES_KEY = ["rds", "dbInstances"]
 const DB_SNAPSHOTS_KEY = ["rds", "dbSnapshots"]
+const AUTOMATED_BACKUPS_KEY = ["rds", "automatedBackups"]
 const SUBNET_GROUPS_KEY = ["rds", "subnetGroups"]
 const PARAMETER_GROUPS_KEY = ["rds", "parameterGroups"]
 
@@ -105,8 +106,14 @@ export function useModifyDBInstance() {
       })
       return await getRdsClient().send(command)
     },
-    onSuccess: () => {
+    onSuccess: (_data, params) => {
       void queryClient.invalidateQueries({ queryKey: DB_INSTANCES_KEY })
+      // A retention of zero purges the instance's automated backups along with
+      // the snapshots they hold, and neither is projected onto the instance.
+      void queryClient.invalidateQueries({
+        queryKey: [...AUTOMATED_BACKUPS_KEY, params.dbInstanceIdentifier],
+      })
+      void queryClient.invalidateQueries({ queryKey: DB_SNAPSHOTS_KEY })
     },
   })
 }
@@ -130,8 +137,14 @@ export function useDeleteDBInstance() {
       })
       return await getRdsClient().send(command)
     },
-    onSuccess: () => {
+    onSuccess: (_data, params) => {
       void queryClient.invalidateQueries({ queryKey: DB_INSTANCES_KEY })
+      // The teardown takes the instance's automated backups with it and leaves
+      // the final snapshot behind, so both snapshot views are stale too.
+      void queryClient.invalidateQueries({
+        queryKey: [...AUTOMATED_BACKUPS_KEY, params.dbInstanceIdentifier],
+      })
+      void queryClient.invalidateQueries({ queryKey: DB_SNAPSHOTS_KEY })
     },
   })
 }

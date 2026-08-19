@@ -1,14 +1,19 @@
 package viperblockd
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	vbtypes "github.com/mulgadc/viperblock/types"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -444,6 +449,46 @@ func TestMountedVolumePortRange(t *testing.T) {
 		assert.GreaterOrEqual(t, vol.Port, 10809)
 		assert.LessOrEqual(t, vol.Port, 65535)
 	}
+}
+
+func TestConfigLoadStateRetryPolicy(t *testing.T) {
+	attempts, delay := (&Config{}).loadStateRetryPolicy()
+	assert.Equal(t, defaultLoadStateRetryAttempts, attempts)
+	assert.Equal(t, defaultLoadStateRetryBaseDelay, delay)
+
+	cfg := &Config{loadStateRetryAttempts: 2, loadStateRetryBaseDelay: time.Nanosecond}
+	attempts, delay = cfg.loadStateRetryPolicy()
+	assert.Equal(t, 2, attempts)
+	assert.Equal(t, time.Nanosecond, delay)
+}
+
+// TestReadVolumeState_BadRequestFailsFast covers all three retry layers with
+// the production budgets: one HTTP 400 must produce one prompt request.
+func TestReadVolumeState_BadRequestFailsFast(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &Config{
+		S3Host:    srv.URL,
+		Bucket:    "bucket",
+		Region:    "us-east-1",
+		AccessKey: "access-key",
+		SecretKey: "secret-key",
+		BaseDir:   t.TempDir(),
+	}
+
+	start := time.Now()
+	_, err := readVolumeState(context.Background(), cfg, "vol-rejected")
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, vbtypes.ErrBackendNonRetryable)
+	assert.Equal(t, int32(1), requests.Load())
+	assert.Less(t, elapsed, time.Second)
 }
 
 // TestRetryLoadState pins the retry policy: transient errors retry with backoff,

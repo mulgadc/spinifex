@@ -387,3 +387,42 @@ func TestList_ReturnsEndpointsAcrossAllAccountsIncludingPinned(t *testing.T) {
 	assert.Equal(t, testAccountID, pinned.AccountID)
 	assert.True(t, pinned.Pinned)
 }
+
+// TestEnsure_GroupMemberConvergesOnOneBundle guards the co-serve seam: a second
+// member of an already-serving group must resolve to the ONE shared VM, not
+// launch a second. testModelID (the vLLM primary) and the embedder below both
+// resolve to coServeGroupOchreDemo, so Ensure keys them the same. Each member
+// still resolves to its own port on that VM.
+func TestEnsure_GroupMemberConvergesOnOneBundle(t *testing.T) {
+	const embedModelID = "nomic-embed-text-v1.5"
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	out, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: embedModelID}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+	assert.EqualValues(t, 1, h.launcher.launchCount.Load(), "a group member must not launch a second VM")
+	assert.Equal(t, embedModelID, out.Endpoint.ModelID, "the record mirrors the member actually asked for")
+
+	list, err := s.List(t.Context(), &ListEndpointsInput{}, "")
+	require.NoError(t, err)
+	require.Len(t, list.Endpoints, 1, "the whole group is one endpoint record")
+
+	llmDesc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	embDesc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: embedModelID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateReady, embDesc.Endpoint.State)
+
+	llmURL := llmDesc.Endpoint.MemberBaseURL(testModelID)
+	embURL := embDesc.Endpoint.MemberBaseURL(embedModelID)
+	require.NotEmpty(t, llmURL)
+	require.NotEmpty(t, embURL)
+	assert.NotEqual(t, llmURL, embURL, "each member resolves to its own port on the shared VM")
+	assert.Contains(t, llmURL, ":8000", "the vLLM primary keeps the well-known port")
+	assert.Contains(t, embURL, ":8001", "a TEI member takes a port above the vLLM one")
+}

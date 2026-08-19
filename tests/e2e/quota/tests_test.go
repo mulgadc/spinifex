@@ -95,15 +95,28 @@ func TestQuotaSubnetLimit(t *testing.T) {
 
 // Elastic IPs are the scarcest thing a cluster hands out — the pool is finite
 // and shared — so this gate is the one that decides how many tenants fit.
+//
+// Both AllocateAddress and DescribeAddresses are queue-group requests answered
+// by whichever node picks them up, and a node with no external IPAM answers
+// from the disabled stub: an empty address list, and UnsupportedOperation on a
+// mutation. Where a cell's nodes do not all hold a pool the count this cap reads
+// is whichever node replied, so the boundary is not assertable — hence the skip
+// rather than a failure. A cluster with one static pool, which is what
+// production runs, answers identically from every node.
 func TestQuotaEIPLimit(t *testing.T) {
 	fix := requireQuotaFixture(t)
 	harness.Phase(t, "Quota — Elastic IPs")
 	tenant := fix.Tenant.Client
 
+	allocate := func() (*ec2.AllocateAddressOutput, error) {
+		// e2e:allow-create — the allocation is the checked operation.
+		return tenant.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
+	}
+
 	headroom(t, fix.Tenant.AccountID, "eips", countAddresses(t, tenant))
 
-	// e2e:allow-create — the allocation is the checked operation.
-	alloc, err := tenant.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
+	alloc, err := allocate()
+	skipIfEIPUnsupported(t, err)
 	require.NoError(t, err, "the address the account has room for")
 	allocID := aws.StringValue(alloc.AllocationId)
 	released := false
@@ -113,8 +126,8 @@ func TestQuotaEIPLimit(t *testing.T) {
 		}
 	})
 
-	// e2e:allow-create — the refusal is the assertion.
-	_, err = tenant.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
+	_, err = allocate()
+	skipIfEIPUnsupported(t, err)
 	harness.AssertAWSError(t, err, quotaExceeded)
 
 	harness.Step(t, "releasing the address frees the allowance")
@@ -122,8 +135,8 @@ func TestQuotaEIPLimit(t *testing.T) {
 	require.NoError(t, err, "release-address")
 	released = true
 
-	// e2e:allow-create — proves the release, not the allocation.
-	regained, err := tenant.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
+	regained, err := allocate()
+	skipIfEIPUnsupported(t, err)
 	require.NoError(t, err, "a released address must free room for another")
 	t.Cleanup(func() {
 		_, _ = tenant.EC2.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: regained.AllocationId})

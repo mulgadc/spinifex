@@ -21,10 +21,31 @@ import (
 // run-e2e.sh:3243-3248 (Phase 8e step 2). Passed as base64 — aws-sdk-go
 // expects UserData already base64-encoded, unlike the AWS CLI which encodes
 // plaintext for you.
+//
+// The trailing loop reports whether the listener actually came up on the
+// serial console: target-sg has no SSH ingress, so the console is the only
+// channel back to the test, and without it a slow cloud-init here reads as a
+// datapath failure in AllowedTraffic below.
 const targetUserData = `#!/bin/bash
 systemd-run --unit=sge-http --description="Phase 8e HTTP server" \
     /usr/bin/python3 -m http.server 8080 --bind 0.0.0.0
+for _ in $(seq 1 60); do
+  if curl -fsS -m 2 -o /dev/null http://127.0.0.1:8080/; then
+    echo "SGE-TARGET-HTTP-READY" | tee /dev/console
+    exit 0
+  fi
+  sleep 1
+done
+echo "SGE-TARGET-HTTP-FAIL" | tee /dev/console
+systemctl status sge-http --no-pager | tee /dev/console
 `
+
+// Serial-console markers targetUserData prints once it knows whether
+// python3 -m http.server bound :8080.
+const (
+	targetHTTPReadyMarker = "SGE-TARGET-HTTP-READY"
+	targetHTTPFailMarker  = "SGE-TARGET-HTTP-FAIL"
+)
 
 // sgDatapathRevokeRounds returns how many times the revoke/re-authorize
 // ingress round-trip repeats against the same client/target pair,
@@ -49,14 +70,21 @@ func sgDatapathRevokeRounds() int {
 //     address_set) and waits for client SSH. Every later stage depends on a
 //     working SSH session, so its failure aborts the rest of the scenario
 //     rather than let four more stages time out for the same reason.
+//   - TargetHTTPReady waits for the target guest to report its listener up
+//     on the serial console. AllowedTraffic below cannot pass without it, and
+//     a curl probe run before it would fail with "connection refused" —
+//     indistinguishable at a glance from an ACL that never programmed, and
+//     the reason this scenario used to flake. So it gates AllowedTraffic,
+//     which then only has to cover chassis flow install.
 //   - AllowedTraffic proves the sg-to-sg 8080 rule actually passes traffic.
 //     DeniedTraffic (client -> target:22) checks a different port and an
-//     unrelated rule, so it runs regardless of AllowedTraffic's outcome — a
-//     real, independent signal either way. But the revoke/restore round-trip
-//     below is only meaningful against a *proven* working baseline: if
-//     AllowedTraffic never actually worked, "traffic is now blocked after
-//     revoke" would trivially and misleadingly pass for the wrong reason. So
-//     AllowedTraffic gates the revoke rounds.
+//     unrelated rule — and asserts a drop, so it needs no listener at all —
+//     so it runs regardless of either outcome above, a real independent
+//     signal either way. But the revoke/restore round-trip below is only
+//     meaningful against a *proven* working baseline: if AllowedTraffic never
+//     actually worked, "traffic is now blocked after revoke" would trivially
+//     and misleadingly pass for the wrong reason. So AllowedTraffic gates the
+//     revoke rounds.
 //   - Each revoke round's restore half only depends on the revoke API call
 //     having actually removed the rule (tracked separately from the
 //     ICMP-style "verify blocked" assertion) — a flaky drop-detection
@@ -237,21 +265,69 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 		t.Fatalf("PortGroupMembership stage failed; skipping every later stage that depends on client SSH")
 	}
 
-	// --- AllowedTraffic: client -> target:8080 must succeed ---
+	// --- TargetHTTPReady: the target's listener is actually up ---
 
-	allowedOK := t.Run("AllowedTraffic", func(t *testing.T) {
-		// Retry to give target's cloud-init time to start python3 -m http.server.
-		// Bash uses up to 30 attempts at 2s — keep the same outer budget.
-		harness.Step(t, "8e-4 allowed traffic client -> target:%s:8080", targetPriv)
-		harness.EventuallyErr(t, func() error {
-			out, err := runSSHCombined(clientTgt, curlCmd)
-			if err != nil {
-				return fmt.Errorf("client -> target:8080 failed: %w (out=%q)", err, out)
+	targetReadyOK := t.Run("TargetHTTPReady", func(t *testing.T) {
+		harness.Step(t, "8e-3 wait for target-vm HTTP listener marker on the serial console")
+		var console string
+		t.Cleanup(func() {
+			if t.Failed() {
+				harness.DumpFile(t, fix.ArtifactDir(t), "target-console.log", []byte(console))
 			}
-			return nil
-		}, 60*time.Second, 2*time.Second)
-		harness.Detail(t, "step4", "allowed_traffic_ok")
+		})
+		// Boot-and-cloud-init scale, not propagation scale: the guest's own
+		// user-data spends up to 60s waiting on the listener before it gives
+		// up and reports the failure marker.
+		harness.EventuallyErr(t, func() error {
+			var err error
+			console, err = harness.InstanceConsole(fix.AWS, targetID)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(console, targetHTTPReadyMarker) || strings.Contains(console, targetHTTPFailMarker) {
+				return nil
+			}
+			return fmt.Errorf("no HTTP readiness marker on target-vm console yet (%d bytes)", len(console))
+		}, 5*time.Minute, 5*time.Second)
+
+		if strings.Contains(console, targetHTTPFailMarker) {
+			t.Fatalf("target-vm reported %s: python3 -m http.server never bound :8080 (console saved to artifacts)",
+				targetHTTPFailMarker)
+		}
+		harness.Detail(t, "step3", "target_http_ready")
 	})
+
+	// --- AllowedTraffic: client -> target:8080 must succeed ---
+	//
+	// Skipped outright when the listener never came up: the probe could only
+	// re-report that failure under a name pointing at the wrong subsystem.
+	allowedOK := false
+	if targetReadyOK {
+		allowedOK = t.Run("AllowedTraffic", func(t *testing.T) {
+			harness.Step(t, "8e-4 allowed traffic client -> target:%s:8080", targetPriv)
+			t.Cleanup(func() {
+				if t.Failed() {
+					harness.DumpVPCFlowDiagnostics(t, fix.AWS, targetID,
+						fmt.Sprintf("8e-4 target %s:8080 unreachable from client %s", targetPriv, clientPriv),
+						harness.VPCDiagnosticsOpts{
+							LogicalIP:   targetPriv,
+							ArtifactDir: fix.ArtifactDir(t),
+						})
+				}
+			})
+			// Port groups, address set and listener are all proven by here,
+			// so the only variable left is ovn-controller installing the
+			// chassis flows. Bash used 30 attempts at 2s; keep that budget.
+			harness.EventuallyErr(t, func() error {
+				out, err := runSSHCombined(clientTgt, curlCmd)
+				if err != nil {
+					return fmt.Errorf("client -> target:8080 failed: %w (out=%q)", err, out)
+				}
+				return nil
+			}, 60*time.Second, 2*time.Second)
+			harness.Detail(t, "step4", "allowed_traffic_ok")
+		})
+	}
 
 	// --- DeniedTraffic: client -> target:22 must fail ---
 	//
@@ -272,7 +348,7 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 	// never actually got through, "blocked after revoke" would trivially and
 	// misleadingly pass for the wrong reason.
 	if !allowedOK {
-		t.Fatalf("AllowedTraffic never succeeded; skipping the revoke/restore round-trip since it would have nothing to detect a change from")
+		t.Fatalf("no proven-working 8080 baseline (target listener readiness or AllowedTraffic failed); skipping the revoke/restore round-trip since it would have nothing to detect a change from")
 	}
 
 	rounds := sgDatapathRevokeRounds()

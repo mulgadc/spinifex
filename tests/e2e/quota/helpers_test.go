@@ -166,6 +166,20 @@ func (s launchSpec) launchOne(t *testing.T, c *harness.AWSClient, instanceType s
 	return id, nil
 }
 
+// registerTerminate queues every instance in a reservation for termination and
+// returns their IDs.
+func registerTerminate(t *testing.T, c *harness.AWSClient, reservation *ec2.Reservation) []string {
+	t.Helper()
+	ids := make([]string, 0, len(reservation.Instances))
+	for _, inst := range reservation.Instances {
+		id := aws.StringValue(inst.InstanceId)
+		require.NotEmpty(t, id, "RunInstances returned an instance with no ID")
+		ids = append(ids, id)
+		t.Cleanup(func() { terminateInstance(c, id) })
+	}
+	return ids
+}
+
 func terminateInstance(c *harness.AWSClient, instanceID string) {
 	_, _ = c.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},

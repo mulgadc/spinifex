@@ -172,49 +172,69 @@ func TestQuotaVolumeLimits(t *testing.T) {
 }
 
 // The headline gate. A sandbox account is bounded by total vCPUs rather than by
-// instance count, so it may spend its 16 however it likes — but not in one
-// oversized launch, and not past the cap one nano at a time.
+// instance count, so it may spend its 16 however it likes — but not on one
+// instance too wide to fit, not on a count of instances that sums past the cap,
+// and not past the cap one at a time.
 func TestQuotaVCPULimit(t *testing.T) {
 	fix := requireQuotaFixture(t)
 	harness.Phase(t, "Quota — EC2 vCPUs")
 	tenant := fix.Tenant.Client
 
 	nanoType, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	nanoVCPUs := instanceTypeVCPUs(t, tenant, nanoType)
 	spec := launchSpec{
 		amiID:   harness.DiscoverUbuntuAMI(t, fix.Harness, arch),
 		keyName: tenantKeyPair(t, tenant),
 		subnet:  tenantSubnet(t, tenant),
 	}
 
-	t.Run("one launch cannot exceed the cap", func(t *testing.T) {
+	t.Run("one instance wider than the cap is refused", func(t *testing.T) {
 		wideType, wideVCPUs := widestInstanceType(t, tenant)
-		count := int64(fix.Baseline.VCPUs/wideVCPUs) + 1
-		harness.Detail(t, "type", wideType, "vcpus_each", wideVCPUs,
-			"count", count, "cap", fix.Baseline.VCPUs)
+		require.Greater(t, wideVCPUs, fix.Baseline.VCPUs,
+			"the widest offered type must exceed the cap or this asserts nothing")
+		harness.Detail(t, "type", wideType, "vcpus", wideVCPUs, "cap", fix.Baseline.VCPUs)
 
 		setLimit(t, fix.Tenant.AccountID, "vcpus", fix.Baseline.VCPUs)
 		before := countInstances(t, tenant)
 
-		_, err := spec.runInstances(tenant, wideType, count)
+		_, err := spec.runInstances(tenant, wideType, 1)
 		harness.AssertAWSError(t, err, quotaExceeded)
 
 		require.Equal(t, before, countInstances(t, tenant),
 			"a refused launch must not leave an instance behind")
 	})
 
-	t.Run("the cap is reached one instance at a time", func(t *testing.T) {
-		nanoVCPUs := instanceTypeVCPUs(t, tenant, nanoType)
-		setLimit(t, fix.Tenant.AccountID, "vcpus", nanoVCPUs)
+	// The count is multiplied by the type's vCPUs before the cap is consulted,
+	// so a type that fits on its own must still be refused in bulk. Asserting
+	// only the refusal would pass on a gateway that refuses everything, which is
+	// why the same type is then launched at a count that does fit.
+	t.Run("a launch is charged for every instance it asks for", func(t *testing.T) {
+		const room = 2
+		require.Zero(t, countInstances(t, tenant), "the tenant must start this subtest idle")
+		harness.Detail(t, "type", nanoType, "vcpus_each", nanoVCPUs,
+			"cap", room*nanoVCPUs, "refused_count", room+1)
 
-		instID, err := spec.launchOne(t, tenant, nanoType)
-		require.NoError(t, err, "the instance the account has room for")
+		setLimit(t, fix.Tenant.AccountID, "vcpus", room*nanoVCPUs)
 
+		_, err := spec.runInstances(tenant, nanoType, room+1)
+		harness.AssertAWSError(t, err, quotaExceeded)
+
+		out, err := spec.runInstances(tenant, nanoType, room)
+		require.NoError(t, err, "a request that fits must be allowed")
+		require.Len(t, out.Instances, room, "a permitted launch must deliver every instance")
+		launched := registerTerminate(t, tenant, out)
+
+		harness.Step(t, "the account is now at its cap")
 		_, err = spec.runInstances(tenant, nanoType, 1)
 		harness.AssertAWSError(t, err, quotaExceeded)
 
 		harness.Step(t, "terminating releases the reserved vCPUs")
-		terminateInstance(tenant, instID)
-		waitTerminated(t, tenant, instID)
+		for _, id := range launched {
+			terminateInstance(tenant, id)
+		}
+		for _, id := range launched {
+			waitTerminated(t, tenant, id)
+		}
 
 		// The counter is released by the gateway's periodic reconcile rather
 		// than by the terminate itself, so the retry window spans a sweep. A

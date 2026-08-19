@@ -9,6 +9,7 @@ import (
 
 func init() {
 	if !fips140.Enabled() {
+		//nolint:forbidigo // Refuse to start when the required FIPS mode is disabled.
 		panic("fipsboot: FIPS 140-3 mode is not enabled at runtime — refusing to start. " +
 			"Build with GOFIPS140=v1.0.0 and do not set GODEBUG=fips140=off.")
 	}

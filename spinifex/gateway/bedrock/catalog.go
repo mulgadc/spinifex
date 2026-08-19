@@ -125,8 +125,28 @@ var catalog = []catalogEntry{
 		OutputModalities:           []string{"EMBEDDING"},
 		ResponseStreamingSupported: false,
 		InferenceTypesSupported:    []string{"ON_DEMAND"},
-		// 768-dim, 8k context; TEI serves it comfortably in well under a
-		// GiB alongside the LLM and reranker in the shared bundle.
+		// 768-dim, 8k context. Serve a pre-v5 HF revision: current main's
+		// config.json carries both max_position_embeddings and n_positions,
+		// which TEI's parser rejects as a duplicate field.
+		MinVRAMMiB:   512,
+		InstanceType: "g5.xlarge",
+		// Mean pooling stated explicitly: the flat weights layout omits
+		// 1_Pooling/config.json, so TEI would otherwise default to CLS.
+		VLLMArgs: []string{"--pooling", "mean"},
+	},
+	{
+		ModelID:                    "bge-base-en-v1.5",
+		ModelName:                  "BGE Base EN v1.5",
+		ProviderName:               "BAAI",
+		Provider:                   tierSelfHost,
+		Family:                     familyTEI,
+		CoServeGroup:               "",
+		InputModalities:            []string{"TEXT"},
+		OutputModalities:           []string{"EMBEDDING"},
+		ResponseStreamingSupported: false,
+		InferenceTypesSupported:    []string{"ON_DEMAND"},
+		// 768-dim, 512-token context; standard BERT, TEI-native. Standalone
+		// alternative embedder to nomic.
 		MinVRAMMiB:   512,
 		InstanceType: "g5.xlarge",
 	},

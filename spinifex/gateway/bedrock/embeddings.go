@@ -124,10 +124,15 @@ func NewEmbedder(endpointResolver EndpointResolver) Embedder {
 	return newEmbeddingsProvider(endpointResolver)
 }
 
-// Embed resolves modelID's endpoint and batch-embeds inputs in a single
-// request, returning vectors ordered to match inputs regardless of the order
-// the endpoint's response lists them in. An empty inputs slice returns an
-// empty result without calling the endpoint.
+// maxEmbedClientBatch bounds inputs per embeddings request to TEI's default
+// max_client_batch_size, so a document with more chunks is split across
+// requests rather than rejected with a 422.
+const maxEmbedClientBatch = 32
+
+// Embed resolves modelID's endpoint once and batch-embeds inputs, splitting
+// them into requests of at most maxEmbedClientBatch so a large document does
+// not exceed the endpoint's client batch limit. Vectors are returned ordered
+// to match inputs; an empty inputs slice returns an empty result.
 func (p *embeddingsProvider) Embed(ctx context.Context, modelID string, inputs []string) ([][]float32, error) {
 	if len(inputs) == 0 {
 		return nil, nil
@@ -142,6 +147,22 @@ func (p *embeddingsProvider) Embed(ctx context.Context, modelID string, inputs [
 		return nil, errors.New(awserrors.ErrorModelNotReadyException)
 	}
 
+	out := make([][]float32, 0, len(inputs))
+	for start := 0; start < len(inputs); start += maxEmbedClientBatch {
+		end := min(start+maxEmbedClientBatch, len(inputs))
+		vectors, err := p.embedBatch(ctx, modelID, baseURL, inputs[start:end])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, vectors...)
+	}
+	return out, nil
+}
+
+// embedBatch embeds one already-bounded slice of inputs against baseURL in a
+// single request, ordering the response vectors back to inputs' order
+// regardless of the order the endpoint lists them in.
+func (p *embeddingsProvider) embedBatch(ctx context.Context, modelID, baseURL string, inputs []string) ([][]float32, error) {
 	reqBody, err := json.Marshal(embeddingsRequest{Model: modelID, Input: inputs})
 	if err != nil {
 		slog.Error("embeddings: failed to marshal request", "model", modelID, "err", err)

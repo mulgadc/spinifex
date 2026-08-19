@@ -314,6 +314,10 @@ type egressProbe struct {
 func phaseInstanceEgress(t *testing.T, fix *fixture, def harness.VPCInfo) egressProbe {
 	t.Helper()
 
+	// Whether the gateway router resolved the transit nexthop is the decisive
+	// question when egress fails, and nothing else in the bundle answers it.
+	harness.OnFailure(t, func() { dumpOVNRouting(t, fix.artifacts, def.VPCID) })
+
 	instType, arch := harness.DiscoverNanoInstanceType(t, fix.harness)
 	amiID := harness.DiscoverUbuntuAMI(t, fix.harness, arch)
 	keyName, _ := harness.EnsureKeyPair(t, fix.harness, fix.artifacts)
@@ -697,6 +701,19 @@ func sshHandshake(host string) error {
 }
 
 // --- Helpers ---------------------------------------------------------------
+
+// dumpOVNRouting writes the gateway router's nexthop and routing state to the
+// artifact bundle. Best-effort: DumpCmd records a non-zero exit rather than
+// failing, so a half-built router still yields whatever OVN has.
+func dumpOVNRouting(t *testing.T, dir, vpcID string) {
+	t.Helper()
+	harness.DumpCmd(t, dir, "ovn-static-mac-binding-list.txt",
+		"sudo", "-n", "ovn-nbctl", "static-mac-binding-list")
+	harness.DumpCmd(t, dir, "ovn-sb-mac-binding.txt",
+		"sudo", "-n", "ovn-sbctl", "list", "MAC_Binding")
+	harness.DumpCmd(t, dir, "ovn-lr-route-list.txt",
+		"sudo", "-n", "ovn-nbctl", "lr-route-list", "vpc-"+vpcID)
+}
 
 // hostCmd runs a local (non-sudo) command and fails the test on error.
 func hostCmd(t *testing.T, name string, args ...string) string {

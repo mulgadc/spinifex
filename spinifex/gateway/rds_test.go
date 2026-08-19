@@ -192,6 +192,89 @@ func TestRDSRequest_ResourceScopedPolicyRestrictsByIdentifier(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }
 
+func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
+	tests := []struct {
+		name      string
+		action    string
+		query     string
+		resources handlers_iam.StringOrArr
+	}{
+		{
+			name:   "create snapshot",
+			action: "rds:CreateDBSnapshot",
+			query: "Action=CreateDBSnapshot&DBInstanceIdentifier=orders-db" +
+				"&DBSnapshotIdentifier=orders-db-nightly",
+			resources: handlers_iam.StringOrArr{
+				handlers_rds.DBInstanceARN("ap-southeast-2", rdsTestAccountID, "orders-db"),
+				handlers_rds.DBSnapshotARN("ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
+			},
+		},
+		{
+			name:   "restore snapshot",
+			action: "rds:RestoreDBInstanceFromDBSnapshot",
+			query: "Action=RestoreDBInstanceFromDBSnapshot&DBSnapshotIdentifier=orders-db-nightly" +
+				"&DBInstanceIdentifier=orders-db-restored",
+			resources: handlers_iam.StringOrArr{
+				handlers_rds.DBSnapshotARN("ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
+				handlers_rds.DBInstanceARN("ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policies := []handlers_iam.PolicyDocument{{
+				Version: "2012-10-17",
+				Statement: []handlers_iam.Statement{{
+					Effect: "Allow", Action: handlers_iam.StringOrArr{tt.action}, Resource: tt.resources,
+				}},
+			}}
+			gw, probe := newRDSPolicyGateway(policies)
+			err := gw.RDS_Request(httptest.NewRecorder(), setupRDSUserRequest(tt.query, rdsTestAccountID))
+			require.Error(t, err)
+			assert.Equal(t, 2, probe.consulted)
+			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+		})
+	}
+}
+
+func TestRDSRequest_SnapshotActionsHonorTargetDeny(t *testing.T) {
+	tests := []struct {
+		name   string
+		action string
+		query  string
+		target string
+	}{
+		{
+			name: "create snapshot", action: "rds:CreateDBSnapshot",
+			query: "Action=CreateDBSnapshot&DBInstanceIdentifier=orders-db" +
+				"&DBSnapshotIdentifier=orders-db-nightly",
+			target: handlers_rds.DBSnapshotARN("ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
+		},
+		{
+			name: "restore snapshot", action: "rds:RestoreDBInstanceFromDBSnapshot",
+			query: "Action=RestoreDBInstanceFromDBSnapshot&DBSnapshotIdentifier=orders-db-nightly" +
+				"&DBInstanceIdentifier=orders-db-restored",
+			target: handlers_rds.DBInstanceARN("ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policies := []handlers_iam.PolicyDocument{{
+				Version: "2012-10-17",
+				Statement: []handlers_iam.Statement{
+					{Effect: "Allow", Action: handlers_iam.StringOrArr{tt.action}, Resource: handlers_iam.StringOrArr{"*"}},
+					{Effect: "Deny", Action: handlers_iam.StringOrArr{tt.action}, Resource: handlers_iam.StringOrArr{tt.target}},
+				},
+			}}
+			gw, probe := newRDSPolicyGateway(policies)
+			err := gw.RDS_Request(httptest.NewRecorder(), setupRDSUserRequest(tt.query, rdsTestAccountID))
+			require.Error(t, err)
+			assert.Equal(t, 2, probe.consulted)
+			assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+		})
+	}
+}
+
 // Creates and plural describes name no one resource, so a policy scoped to a
 // single instance must not be read as permitting them.
 func TestRDSRequest_UnscopedActionsEvaluateAgainstAnyResource(t *testing.T) {

@@ -75,8 +75,8 @@ func typed[In any](handler func(context.Context, *In, *nats.Conn, Caller) (any, 
 }
 
 // One entry per action: what serves it, whether it is agent-only, and which
-// resource its policy check evaluates against. Both authorization facts live on
-// the table so a new action cannot be added without deciding either.
+// resources its policy checks evaluate against. Both authorization facts live
+// here so a new action cannot be added without deciding either.
 type actionDef struct {
 	handler Handler
 	// Agent-only: refused to every customer principal by class, before any
@@ -87,7 +87,7 @@ type actionDef struct {
 	unsupported bool
 	// nil evaluates against "*", which is right for creates and for describes
 	// that filter rather than address one resource.
-	scope *resourceScope
+	scopes []*resourceScope
 }
 
 // The whole namespace is registered from day one, so an action outside v1 stays
@@ -96,19 +96,20 @@ var actions = map[string]actionDef{
 	// Instance lifecycle.
 	"CreateDBInstance":    {handler: typed(CreateDBInstance)},
 	"DescribeDBInstances": {handler: typed(DescribeDBInstances)},
-	"ModifyDBInstance":    {handler: typed(ModifyDBInstance), scope: dbInstanceScope},
-	"DeleteDBInstance":    {handler: typed(DeleteDBInstance), scope: dbInstanceScope},
-	"RebootDBInstance":    {handler: typed(RebootDBInstance), scope: dbInstanceScope},
-	"StartDBInstance":     {handler: typed(StartDBInstance), scope: dbInstanceScope},
-	"StopDBInstance":      {handler: typed(StopDBInstance), scope: dbInstanceScope},
+	"ModifyDBInstance":    {handler: typed(ModifyDBInstance), scopes: []*resourceScope{dbInstanceScope}},
+	"DeleteDBInstance":    {handler: typed(DeleteDBInstance), scopes: []*resourceScope{dbInstanceScope}},
+	"RebootDBInstance":    {handler: typed(RebootDBInstance), scopes: []*resourceScope{dbInstanceScope}},
+	"StartDBInstance":     {handler: typed(StartDBInstance), scopes: []*resourceScope{dbInstanceScope}},
+	"StopDBInstance":      {handler: typed(StopDBInstance), scopes: []*resourceScope{dbInstanceScope}},
 
-	// Snapshots. A create and a restore each name two resources, and both are
-	// scoped to the source: a deny written on an instance has to stop it being
-	// snapshotted, and a deny on a snapshot has to stop it being restored.
-	"CreateDBSnapshot":                {handler: typed(CreateDBSnapshot), scope: dbInstanceScope},
-	"DescribeDBSnapshots":             {handler: typed(DescribeDBSnapshots)},
-	"DeleteDBSnapshot":                {handler: typed(DeleteDBSnapshot), scope: dbSnapshotScope},
-	"RestoreDBInstanceFromDBSnapshot": {handler: typed(RestoreDBInstanceFromDBSnapshot), scope: dbSnapshotScope},
+	// Snapshot creates and restores evaluate both the source and target. A deny
+	// on either resource must block the operation.
+	"CreateDBSnapshot": {handler: typed(CreateDBSnapshot),
+		scopes: []*resourceScope{dbInstanceScope, dbSnapshotScope}},
+	"DescribeDBSnapshots": {handler: typed(DescribeDBSnapshots)},
+	"DeleteDBSnapshot":    {handler: typed(DeleteDBSnapshot), scopes: []*resourceScope{dbSnapshotScope}},
+	"RestoreDBInstanceFromDBSnapshot": {handler: typed(RestoreDBInstanceFromDBSnapshot),
+		scopes: []*resourceScope{dbSnapshotScope, dbInstanceScope}},
 
 	// Automated backups.
 	"DescribeDBInstanceAutomatedBackups": {handler: typed(DescribeDBInstanceAutomatedBackups)},
@@ -116,21 +117,24 @@ var actions = map[string]actionDef{
 	// Subnet groups.
 	"CreateDBSubnetGroup":    {handler: typed(CreateDBSubnetGroup)},
 	"DescribeDBSubnetGroups": {handler: typed(DescribeDBSubnetGroups)},
-	"DeleteDBSubnetGroup":    {handler: typed(DeleteDBSubnetGroup), scope: dbSubnetGroupScope},
+	"DeleteDBSubnetGroup":    {handler: typed(DeleteDBSubnetGroup), scopes: []*resourceScope{dbSubnetGroupScope}},
 
 	// Parameter groups. DescribeDBParameters is scoped despite being a describe:
 	// its parameter group is required and singular, so it addresses one resource.
 	"CreateDBParameterGroup":    {handler: typed(CreateDBParameterGroup)},
 	"DescribeDBParameterGroups": {handler: typed(DescribeDBParameterGroups)},
-	"ModifyDBParameterGroup":    {handler: typed(ModifyDBParameterGroup), scope: dbParameterGroupScope},
-	"DescribeDBParameters":      {handler: typed(DescribeDBParameters), scope: dbParameterGroupScope},
-	"DeleteDBParameterGroup":    {handler: typed(DeleteDBParameterGroup), scope: dbParameterGroupScope},
+	"ModifyDBParameterGroup": {handler: typed(ModifyDBParameterGroup),
+		scopes: []*resourceScope{dbParameterGroupScope}},
+	"DescribeDBParameters": {handler: typed(DescribeDBParameters),
+		scopes: []*resourceScope{dbParameterGroupScope}},
+	"DeleteDBParameterGroup": {handler: typed(DeleteDBParameterGroup),
+		scopes: []*resourceScope{dbParameterGroupScope}},
 
 	// Tags. The request names its resource by ARN, so the scope validates one
 	// rather than building it.
-	"AddTagsToResource":      {handler: typed(AddTagsToResource), scope: taggedResourceScope},
-	"RemoveTagsFromResource": {handler: typed(RemoveTagsFromResource), scope: taggedResourceScope},
-	"ListTagsForResource":    {handler: typed(ListTagsForResource), scope: taggedResourceScope},
+	"AddTagsToResource":      {handler: typed(AddTagsToResource), scopes: []*resourceScope{taggedResourceScope}},
+	"RemoveTagsFromResource": {handler: typed(RemoveTagsFromResource), scopes: []*resourceScope{taggedResourceScope}},
+	"ListTagsForResource":    {handler: typed(ListTagsForResource), scopes: []*resourceScope{taggedResourceScope}},
 
 	// Events. The ring is per-account and a filter names no single resource.
 	"DescribeEvents": {handler: typed(DescribeEvents)},

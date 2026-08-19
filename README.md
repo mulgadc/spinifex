@@ -137,11 +137,23 @@ Every AWS API call is authenticated at the gateway, published to a NATS subject,
 - **Edge-first architecture.** Designed for disconnected, contested, and resource-constrained environments from day one.
 - **Open core, no lock-in.** AGPL-3.0 with a commercial option. Inspect it, modify it, deploy it. The platform is yours to keep.
 
-## Installation
+# Live demo
+
+Create a live sandbox in under a minute. The fastest way to experience the stack. Try Spinifex against one of your own workloads on infrastructure we run for you. Nothing to install, nothing to size.
+
+* Live in under a minute. No card, no install.
+* Yours for 72 hours to test and experiment.
+* Real AWS-compatible endpoint, access keys and console.
+* EC2, EBS, S3, VPC, IAM, EKS and RDS, ready to call.
+* Point your existing AWS CLI or Terraform straight at it.
+
+Signup at [https://mulgadc.com/signup](https://mulgadc.com/signup)
+
+# Self-hosted Installation
 
 Installation requires an Ubuntu 26.04 or Debian 13 system. See the detailed documentation at [docs.mulgadc.com](https://docs.mulgadc.com) for installing Spinifex.
 
-### Bare Metal ISO
+## Bare Metal ISO
 
 The recommended installation is a [bootable x86 installer](https://iso.mulgadc.com/spinifex.iso) for bare-metal hardware.
 
@@ -151,7 +163,7 @@ curl -fLO https://iso.mulgadc.com/spinifex.iso
 
 Follow the [USB install guide](https://docs.mulgadc.com/docs/install-usb) to write the ISO to USB and install on your hardware.
 
-### Single Node Install
+## Single Node Install
 
 >*Prerequisite:* Spinifex requires a Linux bridge configured on the host for VM networking. See the [single-node install guide](https://docs.mulgadc.com/docs/install#prerequisites) for setup details.
 

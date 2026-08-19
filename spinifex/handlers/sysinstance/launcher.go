@@ -100,6 +100,11 @@ type ExtraENIInput struct {
 	// LB VM lives in the system CP VPC but fronts a customer-VPC ENI). Empty
 	// falls back to the primary AccountID — back-compat for same-account extras.
 	AccountID string `json:"account_id,omitempty"`
+	// DeleteOnTermination stamps an explicit value on the attached ENI record,
+	// for an ENI that has to outlive the VM it is plugged into (an RDS endpoint
+	// ENI across a class-change replace). Nil keeps the attach-time default,
+	// which deletes the ENI with the VM.
+	DeleteOnTermination *bool `json:"delete_on_termination,omitempty"`
 }
 
 // NICConfig describes a single network interface for a BootDirect microVM.

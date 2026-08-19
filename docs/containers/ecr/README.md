@@ -1,6 +1,6 @@
 ---
-title: "ECR (Container Registry)"
-description: "Store and serve container images from Spinifex's AWS-compatible Elastic Container Registry — create a repository, authenticate Docker, push and pull images, and let your EKS workers pull from it, using the AWS CLI, the Spinifex console, or Terraform."
+title: "AWS ECR Container Registry on Spinifex"
+description: "Store and serve container images from Spinifex's AWS-compatible ECR: create a repository, authenticate Docker, push and pull images, and let EKS workers pull."
 category: "Containers"
 tags:
   - ecr

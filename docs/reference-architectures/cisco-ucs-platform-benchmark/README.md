@@ -1,6 +1,6 @@
 ---
-title: "Spinifex Platform Benchmark on Cisco UCS (3-Node)"
-description: "Measured CPU, disk, network, and S3 performance of Spinifex on a 3-node Cisco Unified Edge cluster — host versus guest, Intel AMX confirmed executing at the ISA level, and EC2 instance worker concurrency limits."
+title: "Spinifex Benchmark on 3-Node Cisco UCS"
+description: "Measured CPU, disk, network, and S3 performance of Spinifex on a 3-node Cisco Unified Edge cluster, comparing host against guest with Intel AMX confirmed."
 category: "Reference Architectures"
 tags:
   - cisco

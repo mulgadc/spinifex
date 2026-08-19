@@ -1,6 +1,6 @@
 ---
-title: "Setting Up Your Cluster"
-description: "Import an AMI, create a VPC with a public subnet, and launch your first EC2 instance on Spinifex."
+title: "Set Up Your First Spinifex Cluster"
+description: "Import an AMI, create an SSH key pair and a VPC with a public subnet, then launch your first EC2 instance and connect to it on a fresh Spinifex cluster."
 category: "Admin"
 tags:
   - setup

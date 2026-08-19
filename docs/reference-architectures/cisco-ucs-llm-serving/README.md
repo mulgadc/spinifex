@@ -1,6 +1,6 @@
 ---
-title: "vLLM Serving on Cisco UCS: Intel AMX vs NVIDIA L4"
-description: "Qwen2.5-7B-Instruct served with vLLM on the same Cisco UCS Spinifex cluster, comparing Intel AMX-accelerated CPU serving against NVIDIA L4 GPU serving across input length and concurrency."
+title: "vLLM on Cisco UCS: Intel AMX vs NVIDIA L4"
+description: "Qwen2.5-7B-Instruct served with vLLM on a Cisco UCS Spinifex cluster, comparing Intel AMX-accelerated CPU serving with NVIDIA L4 GPU serving under concurrency."
 category: "Reference Architectures"
 tags:
   - cisco

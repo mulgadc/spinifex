@@ -1,5 +1,5 @@
 ---
-title: "Air-Gapped Install"
+title: "Install Spinifex in an Air-Gapped Network"
 description: "Deploy Spinifex in environments without internet connectivity. Covers using a pre-built release tarball, mirrored APT packages, and locally-staged cloud images."
 category: "Install"
 tags:

@@ -1,6 +1,6 @@
 ---
-title: "Multi-Tenant AI on Supermicro H14 with AMD MI350X"
-description: "Provision isolated GPU VMs for simultaneous AI workloads on a Supermicro H14 bare-metal node using Spinifex's EC2-compatible API."
+title: "Multi-Tenant AI on Supermicro H14 MI350X"
+description: "Provision isolated GPU VMs for simultaneous AI workloads on a Supermicro H14 bare-metal node with AMD MI350X GPUs, using Spinifex's EC2-compatible API."
 category: "Reference Architectures"
 tags:
   - supermicro

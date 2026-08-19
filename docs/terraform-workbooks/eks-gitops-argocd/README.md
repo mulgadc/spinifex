@@ -1,6 +1,6 @@
 ---
-title: "GitOps on EKS (Argo CD + EBS-CSI)"
-description: "Deliver a Spinifex-themed app to EKS with GitOps — the Argo CD addon syncs it from a git repo, an EBS-CSI (Viperblock) PersistentVolume holds its state, and it is served over HTTPS through the AWS Load Balancer Controller + ACM, using Terraform on Spinifex."
+title: "GitOps on EKS with Argo CD and EBS-CSI"
+description: "Deliver an app to EKS with GitOps: the Argo CD addon syncs it from git, an EBS-CSI PersistentVolume holds its state, and HTTPS is served via LBC and ACM."
 category: "Terraform Workbooks"
 tags:
   - terraform

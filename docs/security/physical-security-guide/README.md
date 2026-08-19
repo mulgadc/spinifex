@@ -1,6 +1,6 @@
 ---
-title: "Physical Security Operator Guide"
-description: "Operator guide for physical access controls, visitor handling, access logging, and access-device management at sites hosting Spinifex nodes"
+title: "Physical Security Guide for Operators"
+description: "Operator guide to physical access controls, visitor handling, access logging, and access-device management at sites hosting Spinifex nodes and network gear."
 category: "Security"
 sections:
   - overview

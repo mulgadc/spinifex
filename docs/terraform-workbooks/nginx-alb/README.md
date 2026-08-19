@@ -1,6 +1,6 @@
 ---
-title: "Nginx Web Server (Load Balanced)"
-description: "Deploy a VPC with two private EC2 instances running Nginx, fronted by an internet-facing ALB using Terraform on Spinifex."
+title: "Load-Balanced Nginx Behind an AWS ALB"
+description: "Deploy a VPC with two private EC2 instances running Nginx behind an internet-facing Application Load Balancer on Spinifex, using Terraform or OpenTofu."
 category: "Terraform Workbooks"
 tags:
   - terraform

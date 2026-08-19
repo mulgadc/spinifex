@@ -1,6 +1,6 @@
 ---
-title: "EKS HTTPS Ingress (LBC + ACM)"
-description: "Serve a Spinifex-themed demo app over HTTPS on EKS using the AWS Load Balancer Controller addon and an ACM certificate — an internet-facing ALB provisioned from a Kubernetes Ingress, using Terraform on Spinifex."
+title: "EKS HTTPS Ingress with LBC and ACM"
+description: "Serve a demo app over HTTPS on EKS using the AWS Load Balancer Controller addon and an ACM certificate, with an internet-facing ALB built from an Ingress."
 category: "Terraform Workbooks"
 tags:
   - terraform

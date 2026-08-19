@@ -1,6 +1,6 @@
 ---
-title: "Single-Node Install"
-description: "Install Spinifex on a single server using the binary installer."
+title: "Install Spinifex on a Single Server"
+description: "Install Spinifex on one Ubuntu or Debian server with the binary installer and get an AWS-compatible EC2, S3, and VPC stack running on your own hardware."
 category: "Install"
 tags:
   - install

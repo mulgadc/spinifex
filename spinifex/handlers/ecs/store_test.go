@@ -1,9 +1,13 @@
 package handlers_ecs
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,6 +59,48 @@ func TestInitLeaderBucket_Idempotent(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, kv2)
 	assert.Equal(t, KVBucketECSLeader, kv2.Bucket())
+}
+
+// The scheduler calls InitLeaderBucket on every tick. Creating first and falling
+// back on already-exists reaches the same handle, so idempotency alone cannot
+// tell the two orders apart — only the API traffic can.
+//
+// On a multi-node cluster the stored bucket is replicated while this call asks
+// for the default, and JetStream answers the mismatch with an error rather than
+// a no-op: 10058, once per tick, forever. That is invisible from the caller and
+// showed up only as a 16% JetStream API error rate on the meta leader.
+func TestInitLeaderBucket_AttachesWithoutCreating(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+
+	_, err := InitLeaderBucket(t.Context(), js)
+	require.NoError(t, err)
+
+	// Subscribe only after the bucket exists, so the first, legitimate create is
+	// not counted. The server drops advisories when nothing is listening, so the
+	// subscription has to be flushed before the call under test.
+	creates := make(chan string, 8)
+	sub, err := nc.Subscribe("$JS.EVENT.ADVISORY.API", func(m *nats.Msg) {
+		var adv struct {
+			Subject string `json:"subject"`
+		}
+		if json.Unmarshal(m.Data, &adv) == nil &&
+			strings.HasPrefix(adv.Subject, "$JS.API.STREAM.CREATE.") {
+			creates <- adv.Subject
+		}
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+	require.NoError(t, nc.Flush())
+
+	_, err = InitLeaderBucket(t.Context(), js)
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+
+	select {
+	case subject := <-creates:
+		t.Fatalf("InitLeaderBucket issued %s on an existing bucket; attach before create", subject)
+	case <-time.After(250 * time.Millisecond):
+	}
 }
 
 // Key-path helpers must produce the ecs-v1.md Q2 layout exactly: prefixes are

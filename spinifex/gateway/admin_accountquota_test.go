@@ -1,3 +1,4 @@
+//test:in-package — drives the unexported admin handlers and the request identity they read from the context.
 package gateway
 
 import (

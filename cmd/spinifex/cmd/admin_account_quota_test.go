@@ -1,3 +1,4 @@
+//test:in-package — drives the unexported flag table, parser and printer the quota subcommands are built from.
 package cmd
 
 import (

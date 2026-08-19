@@ -24,10 +24,14 @@
 # behaviour, so a second node adds no assertion. Its DB VMs are capped at four
 # concurrent by the suite's own semaphore, which is what keeps it inside the
 # job's 50-minute budget alongside the suites above.
-E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds"
+# quota belongs to both topologies because the gate it asserts is gateway code
+# that runs identically on either, and because a quota left switched on would
+# cap every suite sharing the environment — so it must be proved to restore
+# itself wherever it runs, not only on one node.
+E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota"
 
 # Suites runnable against a multi-node environment.
-E2E_SUITES_MULTI="multinode lb cert"
+E2E_SUITES_MULTI="multinode lb cert quota"
 
 # grep -xE alternation form, for narrowing a requested set to the eligible one.
 E2E_SUITES_SINGLE_RE="$(printf '%s' "${E2E_SUITES_SINGLE}" | tr ' ' '|')"

@@ -1,0 +1,308 @@
+//go:build e2e
+
+package quota
+
+import (
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
+	"github.com/stretchr/testify/require"
+)
+
+// A sandbox account is never configured, only defaulted, so the numbers it
+// inherits are the ones production actually enforces. Every dimension must
+// report as inherited: a value that silently arrived as an override would mean
+// account creation is writing limits nobody asked it to write.
+func TestQuotaBaselineIsInherited(t *testing.T) {
+	fix := requireQuotaFixture(t)
+	harness.Phase(t, "Quota — a new account inherits the configured baseline")
+
+	limits, source := harness.SpxAdminQuotaGet(t, fix.Tenant.AccountID)
+
+	want := map[string]int{
+		"vcpus":          fix.Baseline.VCPUs,
+		"vpcs":           fix.Baseline.VPCs,
+		"subnets":        fix.Baseline.Subnets,
+		"eips":           fix.Baseline.EIPs,
+		"volumes":        fix.Baseline.Volumes,
+		"volumes_gib":    fix.Baseline.VolumesGiB,
+		"rds_instances":  fix.Baseline.RDSInstances,
+		"load_balancers": fix.Baseline.LoadBalancers,
+	}
+	require.Len(t, limits, len(want), "every dimension must be reported")
+	for dimension, value := range want {
+		require.Equal(t, value, limits[dimension], "%s limit", dimension)
+		require.Equal(t, "config", source[dimension], "%s must be inherited, not set", dimension)
+	}
+}
+
+// The VPC gate, and with it the property the whole live-counted tier rests on:
+// deleting a resource releases its allowance with no uncharge path to go wrong.
+func TestQuotaVPCLimit(t *testing.T) {
+	fix := requireQuotaFixture(t)
+	harness.Phase(t, "Quota — VPCs")
+	tenant := fix.Tenant.Client
+
+	headroom(t, fix.Tenant.AccountID, "vpcs", countVPCs(t, tenant))
+
+	harness.Step(t, "the one VPC the account has room for is created")
+	vpcID := createVPC(t, tenant, "10.180.0.0/16")
+
+	harness.Step(t, "the next is refused")
+	// e2e:allow-create — the refusal is the assertion.
+	_, err := tenant.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String("10.181.0.0/16")})
+	harness.AssertAWSError(t, err, quotaExceeded)
+
+	harness.Step(t, "deleting releases the allowance")
+	deleteVPC(tenant, vpcID)
+	released := createVPC(t, tenant, "10.182.0.0/16")
+	require.NotEmpty(t, released, "a VPC deleted under the cap must free room for another")
+}
+
+// Subnets are capped per account rather than per VPC, so the count that matters
+// spans every VPC the account holds.
+func TestQuotaSubnetLimit(t *testing.T) {
+	fix := requireQuotaFixture(t)
+	harness.Phase(t, "Quota — subnets")
+	tenant := fix.Tenant.Client
+
+	vpcID := createVPC(t, tenant, "10.183.0.0/16")
+	headroom(t, fix.Tenant.AccountID, "subnets", countSubnets(t, tenant))
+
+	// e2e:allow-create — the create path is the subject under test.
+	out, err := tenant.EC2.CreateSubnet(&ec2.CreateSubnetInput{
+		VpcId:     aws.String(vpcID),
+		CidrBlock: aws.String("10.183.1.0/24"),
+	})
+	require.NoError(t, err, "the subnet the account has room for")
+	subnetID := aws.StringValue(out.Subnet.SubnetId)
+	t.Cleanup(func() {
+		_, _ = tenant.EC2.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)})
+	})
+
+	// e2e:allow-create — the refusal is the assertion.
+	_, err = tenant.EC2.CreateSubnet(&ec2.CreateSubnetInput{
+		VpcId:     aws.String(vpcID),
+		CidrBlock: aws.String("10.183.2.0/24"),
+	})
+	harness.AssertAWSError(t, err, quotaExceeded)
+}
+
+// Elastic IPs are the scarcest thing a cluster hands out — the pool is finite
+// and shared — so this gate is the one that decides how many tenants fit.
+func TestQuotaEIPLimit(t *testing.T) {
+	fix := requireQuotaFixture(t)
+	harness.Phase(t, "Quota — Elastic IPs")
+	tenant := fix.Tenant.Client
+
+	headroom(t, fix.Tenant.AccountID, "eips", countAddresses(t, tenant))
+
+	// e2e:allow-create — the allocation is the checked operation.
+	alloc, err := tenant.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
+	require.NoError(t, err, "the address the account has room for")
+	allocID := aws.StringValue(alloc.AllocationId)
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			_, _ = tenant.EC2.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(allocID)})
+		}
+	})
+
+	// e2e:allow-create — the refusal is the assertion.
+	_, err = tenant.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
+	harness.AssertAWSError(t, err, quotaExceeded)
+
+	harness.Step(t, "releasing the address frees the allowance")
+	_, err = tenant.EC2.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(allocID)})
+	require.NoError(t, err, "release-address")
+	released = true
+
+	// e2e:allow-create — proves the release, not the allocation.
+	regained, err := tenant.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
+	require.NoError(t, err, "a released address must free room for another")
+	t.Cleanup(func() {
+		_, _ = tenant.EC2.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: regained.AllocationId})
+	})
+}
+
+// EBS is capped twice over, and the two caps catch different abuse: a tenant can
+// exhaust per-volume overhead long before it exhausts capacity. Each must be
+// able to refuse a create on its own.
+func TestQuotaVolumeLimits(t *testing.T) {
+	fix := requireQuotaFixture(t)
+	harness.Phase(t, "Quota — EBS volumes")
+	tenant := fix.Tenant.Client
+	az := harness.DiscoverDefaultAZ(t, fix.Harness)
+
+	t.Run("count", func(t *testing.T) {
+		count, _ := volumeUsage(t, tenant)
+		harness.SpxAdminQuotaSet(t, fix.Tenant.AccountID,
+			"--volumes", itoa(count+1), "--volumes-gib", "-1")
+		t.Cleanup(func() { harness.SpxAdminQuotaClear(t, fix.Tenant.AccountID) })
+
+		volID := createVolume(t, tenant, az, 1)
+		require.NotEmpty(t, volID)
+
+		// e2e:allow-create — the refusal is the assertion.
+		_, err := tenant.EC2.CreateVolume(&ec2.CreateVolumeInput{
+			AvailabilityZone: aws.String(az), Size: aws.Int64(1),
+		})
+		harness.AssertAWSError(t, err, quotaExceeded)
+	})
+
+	t.Run("capacity", func(t *testing.T) {
+		_, gib := volumeUsage(t, tenant)
+		harness.SpxAdminQuotaSet(t, fix.Tenant.AccountID,
+			"--volumes", "-1", "--volumes-gib", itoa(gib+1))
+		t.Cleanup(func() { harness.SpxAdminQuotaClear(t, fix.Tenant.AccountID) })
+
+		require.NotEmpty(t, createVolume(t, tenant, az, 1), "the GiB the account has room for")
+
+		// e2e:allow-create — the refusal is the assertion.
+		_, err := tenant.EC2.CreateVolume(&ec2.CreateVolumeInput{
+			AvailabilityZone: aws.String(az), Size: aws.Int64(1),
+		})
+		harness.AssertAWSError(t, err, quotaExceeded)
+	})
+}
+
+// The headline gate. A sandbox account is bounded by total vCPUs rather than by
+// instance count, so it may spend its 16 however it likes — but not in one
+// oversized launch, and not past the cap one nano at a time.
+func TestQuotaVCPULimit(t *testing.T) {
+	fix := requireQuotaFixture(t)
+	harness.Phase(t, "Quota — EC2 vCPUs")
+	tenant := fix.Tenant.Client
+
+	nanoType, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	spec := launchSpec{
+		amiID:   harness.DiscoverUbuntuAMI(t, fix.Harness, arch),
+		keyName: tenantKeyPair(t, tenant),
+		subnet:  tenantSubnet(t, tenant),
+	}
+
+	t.Run("one launch cannot exceed the cap", func(t *testing.T) {
+		wideType, wideVCPUs := widestInstanceType(t, tenant)
+		count := int64(fix.Baseline.VCPUs/wideVCPUs) + 1
+		harness.Detail(t, "type", wideType, "vcpus_each", wideVCPUs,
+			"count", count, "cap", fix.Baseline.VCPUs)
+
+		setLimit(t, fix.Tenant.AccountID, "vcpus", fix.Baseline.VCPUs)
+		before := countInstances(t, tenant)
+
+		_, err := spec.runInstances(tenant, wideType, count)
+		harness.AssertAWSError(t, err, quotaExceeded)
+
+		require.Equal(t, before, countInstances(t, tenant),
+			"a refused launch must not leave an instance behind")
+	})
+
+	t.Run("the cap is reached one instance at a time", func(t *testing.T) {
+		nanoVCPUs := instanceTypeVCPUs(t, tenant, nanoType)
+		setLimit(t, fix.Tenant.AccountID, "vcpus", nanoVCPUs)
+
+		instID, err := spec.launchOne(t, tenant, nanoType)
+		require.NoError(t, err, "the instance the account has room for")
+
+		_, err = spec.runInstances(tenant, nanoType, 1)
+		harness.AssertAWSError(t, err, quotaExceeded)
+
+		harness.Step(t, "terminating releases the reserved vCPUs")
+		terminateInstance(tenant, instID)
+		waitTerminated(t, tenant, instID)
+
+		// The counter is released by the gateway's periodic reconcile rather
+		// than by the terminate itself, so the retry window spans a sweep. A
+		// refused attempt launches nothing, so polling costs only the denials.
+		harness.EventuallyErr(t, func() error {
+			_, rerr := spec.launchOne(t, tenant, nanoType)
+			return rerr
+		}, 3*time.Minute, 10*time.Second)
+	})
+}
+
+// Load balancers are refused at the gateway before any subnet is resolved, so
+// the two halves of this test differ only in the limit: at zero the quota is
+// what refuses, and uncapped the same call gets far enough to fail on its own
+// bad input. That contrast is what proves the quota was the cause.
+func TestQuotaLoadBalancerLimit(t *testing.T) {
+	fix := requireQuotaFixture(t)
+	harness.Phase(t, "Quota — load balancers")
+	tenant := fix.Tenant.Client
+
+	create := func() error {
+		// The gate runs before the input is validated, which is what lets this
+		// assert the limit without provisioning a balancer. e2e:allow-create
+		_, err := tenant.ELBv2.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+			Name:    aws.String("e2e-quota-lb"),
+			Type:    aws.String("network"),
+			Subnets: []*string{aws.String("subnet-00000000000000000")},
+		})
+		return err
+	}
+
+	setLimit(t, fix.Tenant.AccountID, "load-balancers", 0)
+	harness.AssertAWSError(t, create(), quotaExceeded)
+
+	harness.SpxAdminQuotaSet(t, fix.Tenant.AccountID, "--load-balancers", "-1")
+	err := create()
+	require.Error(t, err, "the bogus subnet must still be refused")
+	require.False(t, harness.ErrorCodeIs(err, quotaExceeded),
+		"an uncapped account must get past the quota gate, got: %v", err)
+}
+
+// RDS is capped by instance count rather than by vCPUs: the engine VM runs in
+// the system account, so a tenant's database consumes none of the tenant's own
+// vCPU allowance and the count is the only thing bounding it.
+func TestQuotaRDSInstanceLimit(t *testing.T) {
+	fix := requireQuotaFixture(t)
+	harness.Phase(t, "Quota — RDS instances")
+	tenant := fix.Tenant.Client
+
+	create := func() error {
+		// The gate runs before the input is validated, so the limit is asserted
+		// without booting a database.
+		_, err := tenant.RDS.CreateDBInstance(&rds.CreateDBInstanceInput{ //nolint:staticcheck // e2e:allow-create
+			DBInstanceIdentifier: aws.String("e2e-quota-db"),
+			DBInstanceClass:      aws.String("db.t3.micro"),
+			Engine:               aws.String("mariadb"),
+			MasterUsername:       aws.String("admin"),
+			MasterUserPassword:   aws.String("e2e-quota-password"),
+			AllocatedStorage:     aws.Int64(1),
+			DBSubnetGroupName:    aws.String("e2e-quota-missing-subnet-group"),
+		})
+		return err
+	}
+
+	setLimit(t, fix.Tenant.AccountID, "rds-instances", 0)
+	harness.AssertAWSError(t, create(), quotaExceeded)
+
+	harness.SpxAdminQuotaSet(t, fix.Tenant.AccountID, "--rds-instances", "-1")
+	err := create()
+	require.Error(t, err, "the missing subnet group must still be refused")
+	require.False(t, harness.ErrorCodeIs(err, quotaExceeded),
+		"an uncapped account must get past the quota gate, got: %v", err)
+}
+
+// A limit is a property of one account, not of the gateway. Two tenants served
+// by the same gateway, one capped and one not, is the whole reason overrides
+// exist: a special customer is raised without loosening anybody else.
+func TestQuotaOverrideIsPerAccount(t *testing.T) {
+	fix := requireQuotaFixture(t)
+	harness.Phase(t, "Quota — an override applies to one account only")
+
+	setLimit(t, fix.Tenant.AccountID, "vpcs", 0)
+
+	// e2e:allow-create — the refusal is the assertion.
+	_, err := fix.Tenant.Client.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String("10.184.0.0/16")})
+	harness.AssertAWSError(t, err, quotaExceeded)
+
+	harness.Step(t, "the neighbouring account is untouched")
+	require.NotEmpty(t, createVPC(t, fix.Peer.Client, "10.185.0.0/16"),
+		"one account's override must not cap another")
+}

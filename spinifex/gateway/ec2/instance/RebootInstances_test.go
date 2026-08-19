@@ -113,19 +113,24 @@ func TestRebootInstances_StoppedInstance(t *testing.T) {
 }
 
 func TestRebootInstances_DaemonError(t *testing.T) {
-	_, nc := startTestNATSServer(t)
+	for _, code := range []string{
+		awserrors.ErrorIncorrectInstanceState,
+		awserrors.ErrorServerInternal,
+	} {
+		t.Run(code, func(t *testing.T) {
+			_, nc := startTestNATSServer(t)
+			instanceID := "i-error"
 
-	instanceID := "i-error"
+			nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
+				msg.Respond(utils.GenerateErrorPayload(code))
+			})
 
-	nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
-		msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorIncorrectInstanceState))
-	})
-
-	input := &ec2.RebootInstancesInput{
-		InstanceIds: []*string{aws.String(instanceID)},
+			input := &ec2.RebootInstancesInput{
+				InstanceIds: []*string{aws.String(instanceID)},
+			}
+			_, err := RebootInstances(context.Background(), input, nc, "123456789012")
+			require.Error(t, err)
+			assert.Equal(t, code, err.Error())
+		})
 	}
-
-	_, err := RebootInstances(context.Background(), input, nc, "123456789012")
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }

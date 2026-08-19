@@ -3582,6 +3582,17 @@ func TestRebootInstance_NotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
 
+func TestRebootInstance_QMPFailureReturnsInternalError(t *testing.T) {
+	id := "i-qmp-failure"
+	instance := &vm.VM{ID: id, Status: vm.StateRunning}
+	mgr := mgrWith(map[string]*vm.VM{id: instance})
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+
+	err := svc.RebootInstance(context.Background(), instance, spxtypes.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
 // TestStartInstance_NotFound verifies that a missing instance returns
 // InvalidInstanceID.NotFound rather than a generic internal error.
 func TestStartInstance_NotFound(t *testing.T) {

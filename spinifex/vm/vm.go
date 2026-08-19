@@ -25,9 +25,8 @@ type InstanceHealthState struct {
 	RestartCount    int       `json:"restart_count"`
 	FirstCrashTime  time.Time `json:"first_crash_time"`
 
-	// QMP health monitoring. QMPConsecutiveFailures counts back-to-back
-	// query-status failures; at QMPMaxConsecutiveFailures the instance is
-	// impaired and ImpairedSince is stamped. A successful poll clears all three.
+	// QMP health monitoring. Consecutive failures include transport errors and
+	// non-running runstates; only a running poll clears impairment.
 	QMPConsecutiveFailures int       `json:"qmp_consecutive_failures"`
 	LastQMPSuccess         time.Time `json:"last_qmp_success,omitzero"`
 	ImpairedSince          time.Time `json:"impaired_since,omitzero"`

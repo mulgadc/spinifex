@@ -46,10 +46,8 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 	if err != nil {
 		return err
 	}
-	for _, resource := range resources {
-		if err := gw.checkPolicyResource(r, "rds", action, resource); err != nil {
-			return err
-		}
+	if err := gw.checkPolicyResources(r, "rds", action, resources); err != nil {
+		return err
 	}
 
 	if gw.NATSConn == nil {

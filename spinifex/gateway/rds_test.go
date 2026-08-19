@@ -231,10 +231,31 @@ func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
 			gw, probe := newRDSPolicyGateway(policies)
 			err := gw.RDS_Request(httptest.NewRecorder(), setupRDSUserRequest(tt.query, rdsTestAccountID))
 			require.Error(t, err)
-			assert.Equal(t, 2, probe.consulted)
+			assert.Equal(t, 1, probe.consulted)
 			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 		})
 	}
+}
+
+func TestRDSRequest_SnapshotActionsUseOnePolicySnapshot(t *testing.T) {
+	source := handlers_rds.DBInstanceARN("ap-southeast-2", rdsTestAccountID, "orders-db")
+	target := handlers_rds.DBSnapshotARN("ap-southeast-2", rdsTestAccountID, "orders-db-nightly")
+	resolution := 0
+	gw, probe := newRDSGatewayWithResolver(func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		resolution++
+		if resolution == 1 {
+			return allowPolicyResource("rds:CreateDBSnapshot", source), nil
+		}
+		return allowPolicyResource("rds:CreateDBSnapshot", target), nil
+	})
+
+	err := gw.RDS_Request(httptest.NewRecorder(), setupRDSUserRequest(
+		"Action=CreateDBSnapshot&DBInstanceIdentifier=orders-db&DBSnapshotIdentifier=orders-db-nightly",
+		rdsTestAccountID,
+	))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assert.Equal(t, 1, probe.consulted)
 }
 
 func TestRDSRequest_SnapshotActionsHonorTargetDeny(t *testing.T) {
@@ -269,7 +290,7 @@ func TestRDSRequest_SnapshotActionsHonorTargetDeny(t *testing.T) {
 			gw, probe := newRDSPolicyGateway(policies)
 			err := gw.RDS_Request(httptest.NewRecorder(), setupRDSUserRequest(tt.query, rdsTestAccountID))
 			require.Error(t, err)
-			assert.Equal(t, 2, probe.consulted)
+			assert.Equal(t, 1, probe.consulted)
 			assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 		})
 	}

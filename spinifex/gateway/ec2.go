@@ -126,7 +126,7 @@ var ec2Actions = map[string]EC2Handler{
 	}),
 	"RunInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
-			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+			return gw.checkPolicyResources(r, "iam", "PassRole", []string{roleARN})
 		}
 		launchQuotaCheck := func() error {
 			return gw.Quota.EnforceLaunch(ctx, accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount)))
@@ -144,7 +144,7 @@ var ec2Actions = map[string]EC2Handler{
 	}),
 	"AssociateIamInstanceProfile": ec2HandlerWithReq(func(ctx context.Context, input *ec2.AssociateIamInstanceProfileInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
-			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+			return gw.checkPolicyResources(r, "iam", "PassRole", []string{roleARN})
 		}
 		return gateway_ec2_instance.AssociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck)
 	}),
@@ -153,7 +153,7 @@ var ec2Actions = map[string]EC2Handler{
 	}),
 	"ReplaceIamInstanceProfileAssociation": ec2HandlerWithReq(func(ctx context.Context, input *ec2.ReplaceIamInstanceProfileAssociationInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
-			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+			return gw.checkPolicyResources(r, "iam", "PassRole", []string{roleARN})
 		}
 		return gateway_ec2_instance.ReplaceIamInstanceProfileAssociation(ctx, input, gw.NATSConn, gw.IAMService, gw.DiscoverActiveNodes(ctx), accountID, passRoleCheck)
 	}),
@@ -399,7 +399,7 @@ var ec2Actions = map[string]EC2Handler{
 	}),
 	"RequestSpotInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RequestSpotInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
-			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+			return gw.checkPolicyResources(r, "iam", "PassRole", []string{roleARN})
 		}
 		return gateway_ec2_spotinstance.RequestSpotInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, gw.AZ, passRoleCheck, gw.Quota, gw.ExpectedNodes)
 	}),

@@ -928,5 +928,41 @@ func TestLaunchDBInstanceVMFailsWithoutAnEngineAMI(t *testing.T) {
 	_, err := LaunchDBInstanceVM(t.Context(), h.deps(), testLaunchInput())
 	require.ErrorIs(t, err, ErrEngineAMINotFound,
 		"a missing engine image must be a named failure, never a fallback to some other AMI")
+	code, _, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "the launch must not swallow the code on its way out")
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
 	assert.Empty(t, h.enis.created)
+}
+
+func TestResolveEngineAMINotFoundCarriesAClientCode(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	h.images.images = nil
+
+	_, err := resolveEngineAMI(t.Context(), h.images, "postgres", "18")
+	require.ErrorIs(t, err, ErrEngineAMINotFound)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok,
+		"an uncoded error reaches the caller as a retried ServerInternal, which says nothing about what is missing")
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+	assert.Contains(t, message, "version 18 for postgres")
+	assert.Contains(t, message, "spinifex-rds-postgres",
+		"the message names the image an operator has to import")
+}
+
+func TestResolveEngineAMINotFoundWithoutARequestedVersion(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	h.images.images = nil
+
+	_, err := resolveEngineAMI(t.Context(), h.images, "mariadb", "")
+	require.ErrorIs(t, err, ErrEngineAMINotFound)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+	assert.Contains(t, message, "an engine image for mariadb",
+		"an unset version must not read back as an empty one")
+	assert.Contains(t, message, "spinifex-rds-mariadb")
 }

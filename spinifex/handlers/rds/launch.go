@@ -52,6 +52,24 @@ const (
 // validation failure rather than launching something else.
 var ErrEngineAMINotFound = errors.New("rds: no AMI found for engine")
 
+// The catalog registers every engine's system image under this prefix, so the
+// error can name the image an operator has to import.
+const engineImageNamePrefix = "spinifex-rds-"
+
+// An engine image no deployment ever imported is a gap no retry closes, so the
+// failure carries a code: a bare error resolves to ServerInternal, which the
+// caller reads as a transient fault and retries.
+func engineAMINotFound(engine, version string) error {
+	requested := "an engine image for " + engine
+	if version != "" {
+		requested = "version " + version + " for " + engine
+	}
+	return fmt.Errorf("%w: %w", ErrEngineAMINotFound, awserrors.Errorf(
+		awserrors.ErrorInvalidParameterCombination,
+		"Cannot find %s; this deployment has no %s%s system image installed",
+		requested, engineImageNamePrefix, engine))
+}
+
 type launchVPCProvisioner interface {
 	CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
 	DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
@@ -460,7 +478,7 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 		return "", fmt.Errorf("rds: describe %s AMI: %w", engine, err)
 	}
 	if out == nil {
-		return "", fmt.Errorf("%w: %s %s", ErrEngineAMINotFound, engine, version)
+		return "", engineAMINotFound(engine, version)
 	}
 
 	// Several builds of one engine version can be registered; skip malformed
@@ -485,7 +503,7 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 		}
 	}
 	if newestID == "" {
-		return "", fmt.Errorf("%w: %s %s", ErrEngineAMINotFound, engine, version)
+		return "", engineAMINotFound(engine, version)
 	}
 	if matches > 1 {
 		slog.WarnContext(ctx, "rds: multiple AMIs match the requested engine; using newest",

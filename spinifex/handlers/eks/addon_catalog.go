@@ -1,6 +1,9 @@
 package handlers_eks
 
-import "slices"
+import (
+	"fmt"
+	"slices"
+)
 
 // nvidiaDevicePluginAddonName is auto-staged on GPU nodegroup create (see
 // stageGPUDeviceAddon in nodegroup.go), never user-requested directly.
@@ -57,18 +60,18 @@ func hiddenAddonSpec(s AddonSpec) AddonSpec {
 	return s
 }
 
-// newAddonSpec builds a spec with DefaultVersion = versions[0]. Panics on empty versions.
+// newAddonSpec builds a spec with the first version as its default.
 func newAddonSpec(name string, requiresIRSA bool, description string, versions ...string) AddonSpec {
-	if len(versions) == 0 {
-		panic("eks: addon spec " + name + " has no versions")
+	spec := AddonSpec{
+		Name:         name,
+		Versions:     versions,
+		RequiresIRSA: requiresIRSA,
+		Description:  description,
 	}
-	return AddonSpec{
-		Name:           name,
-		Versions:       versions,
-		DefaultVersion: versions[0],
-		RequiresIRSA:   requiresIRSA,
-		Description:    description,
+	if len(versions) > 0 {
+		spec.DefaultVersion = versions[0]
 	}
+	return spec
 }
 
 // buildAddonCatalog indexes the specs by name.
@@ -78,6 +81,21 @@ func buildAddonCatalog(specs ...AddonSpec) map[string]AddonSpec {
 		out[s.Name] = s
 	}
 	return out
+}
+
+func validateAddonCatalog(catalog map[string]AddonSpec) error {
+	for name, spec := range catalog {
+		if spec.Name != name {
+			return fmt.Errorf("add-on catalog key %q does not match spec name %q", name, spec.Name)
+		}
+		if len(spec.Versions) == 0 {
+			return fmt.Errorf("add-on %q has no versions", name)
+		}
+		if !spec.supportsVersion(spec.DefaultVersion) {
+			return fmt.Errorf("add-on %q default version %q is not supported", name, spec.DefaultVersion)
+		}
+	}
+	return nil
 }
 
 // lookupAddon returns the spec for name and whether it is in the catalog.

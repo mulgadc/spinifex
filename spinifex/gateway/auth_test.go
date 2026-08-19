@@ -1971,7 +1971,7 @@ func setupPolicyResourceTestHandler(gw *GatewayConfig, service, action, resource
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, req *http.Request) {
-		if err := gw.checkPolicyResource(req, service, action, resource); err != nil {
+		if err := gw.checkPolicyResources(req, service, action, []string{resource}); err != nil {
 			gw.ErrorHandler(w, req, err)
 			return
 		}

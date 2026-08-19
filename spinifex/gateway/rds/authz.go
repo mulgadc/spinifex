@@ -15,9 +15,8 @@ import (
 // address.
 const anyResource = "*"
 
-// Which query parameter names the single resource an action acts on, and the ARN
-// type it resolves to. An action naming no resource, or more than one, carries no
-// scope at all.
+// Which query parameter names a resource an action acts on, and the ARN type it
+// resolves to. Actions carry one scope for each resource IAM evaluates.
 type resourceScope struct {
 	param string
 	// Empty when param already carries a full ARN — the tag actions — which is
@@ -62,33 +61,39 @@ func requireAgentPrincipal(ctx context.Context, caller Caller) error {
 	return nil
 }
 
-// ResourceARN builds the resource the action's policy check evaluates against. A
+// ResourceARN builds every resource the action's policy checks evaluate. A
 // policy written for arn:aws:rds:*:*:db:prod-* but checked against "*" would
 // permit every instance in the account, which is worse than no policy at all.
-func ResourceARN(action, region, accountID string, q map[string]string) (string, error) {
+func ResourceARN(action, region, accountID string, q map[string]string) ([]string, error) {
 	def, ok := actions[action]
 	// Rejected here too, not just by the dispatcher: a caller that skipped the
 	// action check must not get a resource back for rds:<garbage>.
 	if !ok {
-		return "", errors.New(awserrors.ErrorInvalidAction)
+		return nil, errors.New(awserrors.ErrorInvalidAction)
 	}
-	if def.scope == nil {
-		return anyResource, nil
+	if len(def.scopes) == 0 {
+		return []string{anyResource}, nil
 	}
-	identifier := q[def.scope.param]
-	// An absent identifier is a validation fault the handler reports precisely;
-	// answering it with a denial here would hide the real reason.
-	if identifier == "" {
-		return anyResource, nil
-	}
-	if def.scope.kind == "" {
-		// Parsed rather than passed through, so a foreign account or region is an
-		// InvalidParameterValue before the evaluator sees it: cross-account sharing
-		// is out of v1, and a permissive parser is how it arrives anyway.
-		if _, err := handlers_rds.ParseARN(identifier, region, accountID); err != nil {
-			return "", err
+
+	resources := make([]string, 0, len(def.scopes))
+	for _, scope := range def.scopes {
+		identifier := q[scope.param]
+		// A missing member contributes "*" independently. It remains the handler's
+		// validation fault rather than becoming an ARN resolution failure here.
+		if identifier == "" {
+			resources = append(resources, anyResource)
+			continue
 		}
-		return identifier, nil
+		if scope.kind == "" {
+			// Parsed rather than passed through, so a foreign account or region is an
+			// InvalidParameterValue before the evaluator sees it.
+			if _, err := handlers_rds.ParseARN(identifier, region, accountID); err != nil {
+				return nil, err
+			}
+			resources = append(resources, identifier)
+			continue
+		}
+		resources = append(resources, handlers_rds.FormatARN(scope.kind, region, accountID, identifier))
 	}
-	return handlers_rds.FormatARN(def.scope.kind, region, accountID, identifier), nil
+	return resources, nil
 }

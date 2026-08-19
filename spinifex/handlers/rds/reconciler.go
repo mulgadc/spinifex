@@ -100,19 +100,27 @@ func NewReconciler(svc *Service, holder string) *Reconciler {
 // Drives the leadership and reconcile loop until ctx is cancelled. Intended as
 // a daemon-boot goroutine; panics are the caller's recover concern.
 func (r *Reconciler) Run(ctx context.Context) {
-	leaseTicker := time.NewTicker(leaseRefresh)
+	leadershipCtx, cancelLeadership := context.WithCancel(ctx)
+	leadershipDone := make(chan struct{})
+	go func() {
+		defer close(leadershipDone)
+		r.maintainLeadership(leadershipCtx, leaseRefresh)
+	}()
+	defer func() {
+		cancelLeadership()
+		<-leadershipDone
+	}()
+
 	reconcileTicker := time.NewTicker(reconcileInterval)
-	defer leaseTicker.Stop()
 	defer reconcileTicker.Stop()
 
-	r.evaluateLeadership(ctx)
 	for {
 		select {
 		case <-ctx.Done():
+			cancelLeadership()
+			<-leadershipDone
 			r.relinquish()
 			return
-		case <-leaseTicker.C:
-			r.evaluateLeadership(ctx)
 		case <-reconcileTicker.C:
 			if !r.isLeader() {
 				continue
@@ -120,6 +128,23 @@ func (r *Reconciler) Run(ctx context.Context) {
 			if err := r.reconcileOnce(ctx); err != nil {
 				slog.ErrorContext(ctx, "rds reconciler: pass failed", "holder", r.holder, "err", err)
 			}
+		}
+	}
+}
+
+// Leadership refresh runs independently because a fleet pass can contain
+// blocking network I/O and must not outlive its lease.
+func (r *Reconciler) maintainLeadership(ctx context.Context, refresh time.Duration) {
+	leaseTicker := time.NewTicker(refresh)
+	defer leaseTicker.Stop()
+
+	r.evaluateLeadership(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-leaseTicker.C:
+			r.evaluateLeadership(ctx)
 		}
 	}
 }

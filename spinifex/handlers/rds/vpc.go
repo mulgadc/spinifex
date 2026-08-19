@@ -119,12 +119,25 @@ func EnsureSystemSecurityGroup(ctx context.Context, sgs systemSecurityGroupProvi
 	if err != nil {
 		return "", fmt.Errorf("rds: describe the system security group %s: %w", name, err)
 	}
+	var matches []*ec2.SecurityGroup
 	if out != nil {
 		for _, group := range out.SecurityGroups {
-			if id := aws.StringValue(group.GroupId); id != "" {
-				return id, nil
+			if group == nil || aws.StringValue(group.GroupId) == "" {
+				return "", fmt.Errorf("rds: describe the system security group %s: group has no id", name)
 			}
+			matches = append(matches, group)
 		}
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("rds: describe the system security group %s: found %d groups, want exactly one", name, len(matches))
+	}
+	if len(matches) == 1 {
+		group := matches[0]
+		id := aws.StringValue(group.GroupId)
+		if len(group.IpPermissions) != 0 {
+			return "", fmt.Errorf("rds: system security group %s (%s) has ingress rules; refusing to attach DB system NICs", name, id)
+		}
+		return id, nil
 	}
 
 	created, err := sgs.CreateSecurityGroup(ctx, &ec2.CreateSecurityGroupInput{

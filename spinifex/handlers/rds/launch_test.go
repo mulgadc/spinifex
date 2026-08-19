@@ -200,10 +200,11 @@ type fakeENIs struct {
 
 	// The region's RDS system group, ensured per launch. Recording both halves of
 	// the lookup-or-create is what makes its idempotence observable.
-	sgCreated   []*ec2.CreateSecurityGroupInput
-	sgDescribed []*ec2.DescribeSecurityGroupsInput
-	sgExisting  string
-	sgCreateErr error
+	sgCreated        []*ec2.CreateSecurityGroupInput
+	sgDescribed      []*ec2.DescribeSecurityGroupsInput
+	sgExisting       string
+	sgExistingGroups []*ec2.SecurityGroup
+	sgCreateErr      error
 }
 
 var _ launchVPCProvisioner = (*fakeENIs)(nil)
@@ -267,6 +268,9 @@ func (f *fakeENIs) ModifyNetworkInterfaceAttribute(_ context.Context, in *ec2.Mo
 
 func (f *fakeENIs) DescribeSecurityGroups(_ context.Context, in *ec2.DescribeSecurityGroupsInput, _ string) (*ec2.DescribeSecurityGroupsOutput, error) {
 	f.sgDescribed = append(f.sgDescribed, in)
+	if f.sgExistingGroups != nil {
+		return &ec2.DescribeSecurityGroupsOutput{SecurityGroups: f.sgExistingGroups}, nil
+	}
 	if f.sgExisting == "" {
 		return &ec2.DescribeSecurityGroupsOutput{}, nil
 	}
@@ -641,6 +645,36 @@ func TestLaunchDBInstanceVMFailsWhenTheSystemSecurityGroupCannotBeEnsured(t *tes
 	require.Error(t, err)
 	assert.Empty(t, h.enis.created, "no NIC may be created before its security group exists")
 	assert.Nil(t, h.launcher.input)
+}
+
+func TestLaunchDBInstanceVMRejectsAnExistingSystemSecurityGroupWithIngress(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	h.enis.sgExistingGroups = []*ec2.SecurityGroup{{
+		GroupId: aws.String(testSystemSG),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("-1"),
+		}},
+	}}
+
+	_, err := LaunchDBInstanceVM(t.Context(), h.deps(), testLaunchInput())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has ingress rules")
+	assert.Empty(t, h.enis.created, "an unvalidated group must never reach a system NIC")
+}
+
+func TestLaunchDBInstanceVMRejectsMultipleExistingSystemSecurityGroups(t *testing.T) {
+	t.Parallel()
+	h := newLaunchHarness()
+	h.enis.sgExistingGroups = []*ec2.SecurityGroup{
+		{GroupId: aws.String(testSystemSG)},
+		{GroupId: aws.String("sg-rdssystem02")},
+	}
+
+	_, err := LaunchDBInstanceVM(t.Context(), h.deps(), testLaunchInput())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "found 2 groups")
+	assert.Empty(t, h.enis.created, "an ambiguous group must never reach a system NIC")
 }
 
 func TestLaunchDBInstanceVMAttachesTheDataVolume(t *testing.T) {

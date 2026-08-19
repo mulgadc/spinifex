@@ -380,6 +380,37 @@ func TestReconciler_ElectsASingleLeader(t *testing.T) {
 	assert.False(t, h.rec.acquireOrRefresh(t.Context()))
 }
 
+func TestReconciler_RefreshesLeadershipOnAnIndependentLoop(t *testing.T) {
+	t.Parallel()
+	h := newReconcileHarness(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.rec.maintainLeadership(ctx, 5*time.Millisecond)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("leadership refresh did not stop after cancellation")
+		}
+	})
+
+	require.Eventually(t, h.rec.isLeader, time.Second, 5*time.Millisecond)
+	kv, err := h.rec.leaderBucket(t.Context())
+	require.NoError(t, err)
+	entry, err := kv.Get(t.Context(), reconcilerLeaderKey)
+	require.NoError(t, err)
+	firstRevision := entry.Revision()
+
+	require.Eventually(t, func() bool {
+		entry, err := kv.Get(t.Context(), reconcilerLeaderKey)
+		return err == nil && entry.Revision() > firstRevision
+	}, time.Second, 5*time.Millisecond, "the lease revision must advance without the reconcile loop driving it")
+}
+
 // A node that never won the lease must not delete the holder's key on shutdown.
 func TestReconciler_RelinquishOnlyReleasesItsOwnLease(t *testing.T) {
 	t.Parallel()

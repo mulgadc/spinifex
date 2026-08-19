@@ -3,8 +3,10 @@
 package rds
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"syscall"
 	"testing"
 	"time"
 
@@ -74,7 +76,12 @@ func TestDBVMIsolation(t *testing.T) {
 					id, mgmtIP, enginePort)
 				continue
 			}
-			t.Logf("%s: management bridge %s:%d refused as expected (%v)", id, mgmtIP, enginePort, err)
+			if !errors.Is(err, syscall.ECONNREFUSED) {
+				t.Errorf("%s: management bridge %s:%d could not be tested: want connection refused, got %v",
+					id, mgmtIP, enginePort, err)
+				continue
+			}
+			t.Logf("%s: management bridge %s:%d refused as expected", id, mgmtIP, enginePort)
 		}
 	})
 

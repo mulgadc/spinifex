@@ -53,6 +53,8 @@ The client subnet is public in that it has an internet-gateway route, which the 
 
 The database security group admits `5432` from the client security group and nothing else, which compiles to an ACL on the endpoint ENI itself — the port is deny-by-default for everything else in the VPC.
 
+That holds for the instance, not just for the endpoint ENI. The DB VM has two further NICs the platform uses to manage it, and no customer security group governs either; the engine binds the endpoint ENI's address alone, so it is not listening on them. PostgreSQL's client authentication rules are scoped to this VPC's own range as well, so the endpoint really is the whole of the reachable surface.
+
 ## Prerequisites
 
 - **Spinifex running**, with the AWS CLI configured for the `spinifex` profile (see [Installing Spinifex](/docs/install)) and OpenTofu (or Terraform) installed.

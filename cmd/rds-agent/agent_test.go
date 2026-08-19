@@ -207,6 +207,8 @@ func bootstrapOutput(password *string) *handlers_rds.GetDBBootstrapConfigOutput 
 		MasterUsername:       "master",
 		MasterUserPassword:   password,
 		Port:                 5432,
+		ListenAddress:        testListenAddress,
+		ClientCIDR:           testClientCIDR,
 		DataVolumeID:         "vol-data-01",
 		DataVolumeSerial:     "voldata01",
 		VMGeneration:         1,
@@ -216,6 +218,13 @@ func bootstrapOutput(password *string) *handlers_rds.GetDBBootstrapConfigOutput 
 }
 
 const testPayloadID = "bp-0123456789abcdef"
+
+// The customer ENI address the engine binds, and the VPC range its client
+// authentication admits. writeHandoff refuses a config without either.
+const (
+	testListenAddress = "10.0.1.20"
+	testClientCIDR    = "10.0.0.0/16"
+)
 
 // Writes the completion receipt rds-init leaves behind, so the acknowledgement
 // step finds what a finished initialization would have produced.

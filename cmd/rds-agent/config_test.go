@@ -26,8 +26,8 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.GatewayCA != defaultGatewayCA || cfg.HandoffDir != defaultHandoffDir {
 		t.Errorf("CA/handoff = %q/%q, want the built-in defaults", cfg.GatewayCA, cfg.HandoffDir)
 	}
-	if cfg.EngineHost != defaultEngineHost || cfg.PollWait != defaultPollWait {
-		t.Errorf("engine host/pollWait = %q/%v, want the built-in defaults", cfg.EngineHost, cfg.PollWait)
+	if cfg.PollWait != defaultPollWait {
+		t.Errorf("pollWait = %v, want the built-in default", cfg.PollWait)
 	}
 	if cfg.EngineProbeTimeout != defaultEngineProbeTimeout {
 		t.Errorf("engine probe timeout = %v, want %v", cfg.EngineProbeTimeout, defaultEngineProbeTimeout)

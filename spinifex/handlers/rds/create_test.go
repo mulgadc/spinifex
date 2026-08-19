@@ -24,10 +24,11 @@ import (
 )
 
 const (
-	testDefaultVPC   = "vpc-default01"
-	testDefaultSG    = "sg-default01"
-	testBaseDomain   = "spx3.net"
-	testDBInstanceID = "orders-db"
+	testDefaultVPC     = "vpc-default01"
+	testDefaultVPCCIDR = "10.0.0.0/16"
+	testDefaultSG      = "sg-default01"
+	testBaseDomain     = "spx3.net"
+	testDBInstanceID   = "orders-db"
 	// The one zone this platform exposes, which every subnet reports.
 	testZone = "spinifexz1"
 )
@@ -55,7 +56,11 @@ var _ networkResolver = (*fakeNetwork)(nil)
 
 func newFakeNetwork() *fakeNetwork {
 	return &fakeNetwork{
-		vpcs: []*ec2.Vpc{{VpcId: aws.String(testDefaultVPC), IsDefault: aws.Bool(true)}},
+		vpcs: []*ec2.Vpc{{
+			VpcId:     aws.String(testDefaultVPC),
+			IsDefault: aws.Bool(true),
+			CidrBlock: aws.String(testDefaultVPCCIDR),
+		}},
 		// Deliberately out of order: the resolver sorts, so the placement is the
 		// same on every repeat regardless of how the describe happened to order.
 		subnets: []*ec2.Subnet{
@@ -85,7 +90,17 @@ func (f *fakeNetwork) DescribeVpcs(_ context.Context, input *ec2.DescribeVpcsInp
 	if f.vpcErr != nil {
 		return nil, f.vpcErr
 	}
-	return &ec2.DescribeVpcsOutput{Vpcs: f.vpcs}, nil
+	if input == nil || len(input.VpcIds) == 0 {
+		return &ec2.DescribeVpcsOutput{Vpcs: f.vpcs}, nil
+	}
+	wanted := aws.StringValueSlice(input.VpcIds)
+	var matched []*ec2.Vpc
+	for _, vpc := range f.vpcs {
+		if slices.Contains(wanted, aws.StringValue(vpc.VpcId)) {
+			matched = append(matched, vpc)
+		}
+	}
+	return &ec2.DescribeVpcsOutput{Vpcs: matched}, nil
 }
 
 // Honours SubnetIds the way EC2 does — a named subnet that is not in this

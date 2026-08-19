@@ -41,8 +41,13 @@ var _ engine = (*postgresEngine)(nil)
 // is not there. Resolved on PATH, where the client package puts it.
 const postgresProbeBinary = "pg_isready"
 
+// The socket directory rather than loopback: the engine binds the customer ENI
+// and nothing else, so there is no TCP path for the probe to take. It also keeps
+// liveness independent of the network path, of the pg_hba scope and of the TLS
+// enforcement rule — libpq reads a host beginning with / as a socket directory,
+// and the generated `local ... peer` line covers it.
 func newPostgresProbe(cfg config, run probeRunner) *engineProbe {
-	return newEngineProbe(cfg.EnginePort, postgresProbeState(cfg.EngineHost, run))
+	return newEngineProbe(cfg.EnginePort, postgresProbeState(cfg.SocketDir, run))
 }
 
 func postgresProbeState(host string, run probeRunner) probeStateFn {

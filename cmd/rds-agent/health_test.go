@@ -110,6 +110,37 @@ func TestExecProbeRunner_CapturesTheClientsStderr(t *testing.T) {
 	}
 }
 
+// The engine binds the customer ENI and nothing else, so a loopback probe would
+// report a serving engine as absent. libpq reads a host beginning with / as a
+// socket directory, which is also what keeps liveness off the network path.
+func TestPostgresProbe_ProbesTheUnixSocket(t *testing.T) {
+	cfg := testProbeConfig()
+	var probed []string
+	probe := newPostgresProbe(cfg, func(_ context.Context, name string, args ...string) (int, string, error) {
+		probed = append([]string{name}, args...)
+		return 0, "", nil
+	})
+
+	if state, _ := probe.state(context.Background()); state != engineServing {
+		t.Fatalf("probe state = %v, want engineServing", state)
+	}
+	host := ""
+	for i, arg := range probed {
+		if arg == "-h" && i+1 < len(probed) {
+			host = probed[i+1]
+		}
+	}
+	if host != cfg.SocketDir {
+		t.Errorf("probe host = %q, want the socket directory %q", host, cfg.SocketDir)
+	}
+	if !strings.HasPrefix(host, "/") {
+		t.Errorf("probe host = %q, which libpq reads as a TCP host rather than a socket directory", host)
+	}
+}
+
 func testProbeConfig() config {
-	return config{EngineHost: defaultEngineHost, EnginePort: engineLayouts[enginePostgres].port}
+	return config{
+		SocketDir:  engineLayouts[enginePostgres].socketDir,
+		EnginePort: engineLayouts[enginePostgres].port,
+	}
 }

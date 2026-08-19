@@ -65,6 +65,18 @@ cat > "${STUBBIN}/ls" <<'EOF'
 exec "${REAL_LS}" "$@"
 EOF
 
+# ip stub: stands in for `ip -4 -o addr show`, printing one line per address in
+# IP_ADDR_LIST in the format the bind-address wait parses.
+cat > "${STUBBIN}/ip" <<'EOF'
+#!/bin/sh
+n=1
+for cidr in ${IP_ADDR_LIST:-}; do
+    echo "${n}: eth$((n - 1))    inet ${cidr} scope global eth$((n - 1))"
+    n=$((n + 1))
+done
+exit 0
+EOF
+
 # su stub: `su postgres -c "cmd"` runs cmd in the harness user's shell.
 cat > "${STUBBIN}/su" <<'EOF'
 #!/bin/sh
@@ -205,6 +217,11 @@ RECEIPT="${RECEIPT_DIR}/receipt.env"
 STAMP="${DATA_MOUNT}/.spinifex-rds/engine"
 HANDOFF="${WORK}/run/spinifex-rds"
 MOUNTS="${WORK}/mounts"
+
+# The customer ENI address the engine binds and the VPC range its client
+# authentication admits, as the control plane delivers them.
+LISTEN_ADDRESS_DEFAULT="10.30.1.15"
+CLIENT_CIDR_DEFAULT="10.30.0.0/16"
 KILL_PID_FILE="${WORK}/rds-init.pid"
 export KILL_PID_FILE
 
@@ -234,6 +251,12 @@ write_handoff() {
         [ -n "$3" ] && echo "RDS_DB_NAME='$3'"
         [ -n "${PENDING:-}" ] && echo "RDS_BOOTSTRAP_PENDING=${PENDING}"
         [ -n "${PAYLOAD_ID:-}" ] && echo "RDS_PAYLOAD_ID=${PAYLOAD_ID}"
+        # Written unset rather than defaulted when the case is about a handoff
+        # that omits one, which rds-init has to refuse rather than fill in.
+        [ "${OMIT_LISTEN_ADDRESS:-0}" = "1" ] ||
+            echo "RDS_LISTEN_ADDRESS=${LISTEN_ADDRESS:-${LISTEN_ADDRESS_DEFAULT}}"
+        [ "${OMIT_CLIENT_CIDR:-0}" = "1" ] ||
+            echo "RDS_CLIENT_CIDR=${CLIENT_CIDR:-${CLIENT_CIDR_DEFAULT}}"
         # Last, and unconditional: an optional line failing its test would make
         # the whole group's status non-zero and `set -e` would end the run here.
         echo "RDS_PORT=6543"
@@ -270,6 +293,10 @@ reset_state() {
     : > "${PSQL_CALLS}"
     unset INITDB_FAIL PG_HBA_AS_DIR PSQL_FAIL LS_FAIL RDS_ALLOW_LOCAL_DATADIR MASTER_USER || true
     unset PENDING PAYLOAD_ID DB_ID RECEIPT_DIR_OVERRIDE PSQL_STATUS_CORRUPT STAMP_OVERRIDE || true
+    unset LISTEN_ADDRESS CLIENT_CIDR OMIT_LISTEN_ADDRESS OMIT_CLIENT_CIDR || true
+    # The customer ENI carries its address by the time rds-init runs, which is
+    # the ordinary case; the cases about a late lease drop it themselves.
+    IP_ADDR_LIST="${LISTEN_ADDRESS_DEFAULT}/24 10.99.0.7/24"
     write_tls
 }
 
@@ -293,6 +320,8 @@ run_env() {
         RDS_RECEIPT_DIR="${RECEIPT_DIR_OVERRIDE:-${RECEIPT_DIR}}" \
         RDS_ENGINE_STAMP="${STAMP_OVERRIDE:-${STAMP}}" \
         RDS_ALLOW_LOCAL_DATADIR="${RDS_ALLOW_LOCAL_DATADIR:-0}" \
+        RDS_LISTEN_ADDRESS_TIMEOUT="${LISTEN_TIMEOUT:-0}" \
+        IP_ADDR_LIST="${IP_ADDR_LIST:-}" \
         INITDB_FAIL="${INITDB_FAIL:-0}" \
         PG_HBA_AS_DIR="${PG_HBA_AS_DIR:-0}" \
         PSQL_FAIL="${PSQL_FAIL:-0}" \
@@ -328,14 +357,24 @@ if run_ok "initialize"; then
     grep -q 'initdb' "${INITDB_CALLS}" && pass "initialize: initdb ran" || fail "initialize: no initdb"
     grep -q -- '--data-checksums' "${INITDB_CALLS}" \
         && pass "initialize: data checksums on" || fail "initialize: no --data-checksums"
-    grep -q 'host all all 0.0.0.0/0 scram-sha-256' "${PGDATA}/pg_hba.conf" \
-        && pass "initialize: remote scram hba rule written" || fail "initialize: no hba rule"
+    grep -q "host all all ${CLIENT_CIDR_DEFAULT} scram-sha-256" "${PGDATA}/pg_hba.conf" \
+        && pass "initialize: the scram hba rule is scoped to the customer VPC" || fail "initialize: no hba rule"
+
+    # The scope is the whole boundary this file carries: a catch-all here admits
+    # the system VPC and the management bridge, which no customer security group
+    # governs. IPv6 never appears — the platform's VPCs are IPv4-only.
+    grep -qE 'host .*(0\.0\.0\.0/0|::/0)' "${PGDATA}/pg_hba.conf" \
+        && fail "initialize: a catch-all host rule survived the VPC scoping" \
+        || pass "initialize: no catch-all host rule"
+    [ "$(grep -c '^host ' "${PGDATA}/pg_hba.conf")" = 1 ] \
+        && pass "initialize: exactly one host rule" \
+        || fail "initialize: more than one host rule, so the scope is not the boundary"
 
     # pg_hba is first-match-wins, so initdb's loopback rules sorting above the
-    # catch-all would shadow anything the platform appends below them. rds-init
-    # owns the whole file; the catch-alls cover loopback themselves.
+    # platform's would shadow it. rds-init owns the whole file, and the engine
+    # does not bind loopback at all.
     grep -qE '127\.0\.0\.1/32|::1/128' "${PGDATA}/pg_hba.conf" \
-        && fail "initialize: initdb's loopback TCP rules survived above the catch-all" \
+        && fail "initialize: initdb's loopback TCP rules survived" \
         || pass "initialize: initdb's loopback TCP rules are gone"
     grep -q 'replication' "${PGDATA}/pg_hba.conf" \
         && fail "initialize: initdb's replication rules survived" \
@@ -358,6 +397,12 @@ if run_ok "initialize"; then
         && pass "initialize: include_dir hooked" || fail "initialize: no include_dir"
     grep -q '^port = 6543' "${PGDATA}/conf.d/90-rds-init.conf" \
         && pass "initialize: delivered port applied" || fail "initialize: port not applied"
+    grep -q "^listen_addresses = '${LISTEN_ADDRESS_DEFAULT}'$" "${PGDATA}/conf.d/90-rds-init.conf" \
+        && pass "initialize: the engine binds the customer ENI" \
+        || fail "initialize: the engine does not bind the delivered address"
+    grep -q "^listen_addresses = '\*'" "${PGDATA}/conf.d/90-rds-init.conf" \
+        && fail "initialize: the engine still answers on every interface" \
+        || pass "initialize: no wildcard bind"
     grep -q '^ssl = on' "${PGDATA}/conf.d/90-rds-init.conf" \
         && pass "initialize: ssl enabled" || fail "initialize: ssl not enabled"
     grep -q "^ssl_min_protocol_version = 'TLSv1.3'$" "${PGDATA}/conf.d/90-rds-init.conf" \
@@ -1158,6 +1203,69 @@ run_fails "stamp-unwritable"
 grep -q 'engine stamp' "${WORK}/out" \
     && pass "stamp-unwritable: refusal names the stamp" || fail "stamp-unwritable: no refusal message"
 unset STAMP_OVERRIDE
+
+# --- Case 12: a handoff that cannot say what to bind is refused before initdb ---
+# The refusal is before the one-shot password is spent, so the create is still
+# retryable. The only readings rds-init could reach on its own are the wildcards
+# the bind exists to remove.
+for _case in omit-listen bad-listen omit-cidr bad-cidr; do
+    reset_state
+    case "${_case}" in
+        omit-listen) OMIT_LISTEN_ADDRESS=1 ;;
+        bad-listen) LISTEN_ADDRESS="db.internal" ;;
+        omit-cidr) OMIT_CLIENT_CIDR=1 ;;
+        bad-cidr) CLIENT_CIDR="10.30.0.0/33" ;;
+    esac
+    write_handoff initialize 's3cr3t' appdb
+    run_fails "${_case}"
+    [ -s "${INITDB_CALLS}" ] \
+        && fail "${_case}: initdb ran on a handoff that could not be read" \
+        || pass "${_case}: refused before initdb"
+done
+
+# --- Case 12a: an octet-shaped address that is not one is refused ---
+# 10.30.1.256 and 010.30.1.15 both parse as addresses to a permissive check, and
+# the second binds a different host to anything reading the leading zero as octal.
+for _addr in 10.30.1.256 010.30.1.15 10.30.1 10.30.1.15.1; do
+    reset_state
+    LISTEN_ADDRESS="${_addr}"
+    write_handoff initialize 's3cr3t' appdb
+    run_fails "listen-${_addr}"
+done
+
+# --- Case 13: the bind address must be on an interface before the engine starts ---
+# An engine asked to bind an address that is not there exits with `could not
+# bind`, which is the worst way to learn that DHCP lost its race.
+reset_state
+IP_ADDR_LIST="10.99.0.7/24"
+write_handoff initialize 's3cr3t' appdb
+run_fails "bind-wait"
+grep -q "${LISTEN_ADDRESS_DEFAULT}" "${WORK}/out" \
+    && pass "bind-wait: the refusal names the address" || fail "bind-wait: the refusal does not name the address"
+[ -s "${INITDB_CALLS}" ] \
+    && fail "bind-wait: initdb ran before the address existed" \
+    || pass "bind-wait: refused before initdb"
+
+# --- Case 13a: a restored volume takes the destination VPC's scope ---
+# A restore attaches a data volume carrying the source instance's pg_hba into a
+# possibly different VPC. Regenerating the whole file every boot is what stops
+# the restored instance locking out its own VPC's clients.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+write_parameters
+if run_ok "restore-scope-setup"; then
+    CLIENT_CIDR="172.31.0.0/16"
+    write_handoff attach '' appdb
+    write_parameters
+    if run_ok "restore-scope"; then
+        grep -q 'host all all 172.31.0.0/16 scram-sha-256' "${PGDATA}/pg_hba.conf" \
+            && pass "restore-scope: the destination VPC's range is admitted" \
+            || fail "restore-scope: the restored instance did not take its own VPC's scope"
+        grep -q "${CLIENT_CIDR_DEFAULT}" "${PGDATA}/pg_hba.conf" \
+            && fail "restore-scope: the source VPC's range survived the restore" \
+            || pass "restore-scope: the source VPC's range is gone"
+    fi
+fi
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all rds-init cases"

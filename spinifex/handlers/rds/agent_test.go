@@ -25,6 +25,8 @@ import (
 const (
 	testDBID     = "orders-db"
 	testInstance = "i-0abc123"
+	testVpcID    = "vpc-0aaa111"
+	testVpcCIDR  = "10.20.0.0/16"
 )
 
 // Minted once per package rather than per harness. An RSA-2048 keygen costs
@@ -93,6 +95,8 @@ func defaultRecord() DBInstanceRecord {
 		InstanceID:           testInstance,
 		VMGeneration:         firstVMGeneration,
 		ENIPrivateIP:         "10.20.30.40",
+		VpcID:                testVpcID,
+		VpcCIDR:              testVpcCIDR,
 		DNSName:              "orders-db.123456789012.ap-southeast-2.rds.example.internal",
 		Bootstrap: BootstrapState{
 			State:              BootstrapStatePending,
@@ -271,7 +275,11 @@ func TestGetDBBootstrapConfig_NoCAStillServesConfig(t *testing.T) {
 	assert.Equal(t, int64(5432), out.Port)
 }
 
-func TestGetDBBootstrapConfig_ConfiguredCARequiresENIPrivateIP(t *testing.T) {
+// The address the engine binds, so a record without one fails the fetch on
+// every deployment rather than only where TLS needs it as a SAN. The agent
+// retries, so this is a stuck bootstrap with a reason rather than an engine
+// that came up on the wildcard.
+func TestGetDBBootstrapConfig_RequiresENIPrivateIP(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t)
 	rec := defaultRecord()
@@ -280,7 +288,68 @@ func TestGetDBBootstrapConfig_ConfiguredCARequiresENIPrivateIP(t *testing.T) {
 
 	_, err := svc.GetDBBootstrapConfig(t.Context(), bootstrapInput(), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "configured TLS requires an ENI private IP")
+	assert.Contains(t, err.Error(), "no endpoint ENI address")
+
+	envelope, _ := storedPayload(t, svc, testDBID)
+	assert.NotNil(t, envelope, "a failed fetch must leave the payload replayable")
+}
+
+// The endpoint address and the VPC range reach the guest, which is what makes
+// the engine bind one NIC and admit one range.
+func TestGetDBBootstrapConfig_CarriesListenAddressAndClientCIDR(t *testing.T) {
+	t.Parallel()
+	svc := newTestService(t)
+	rec := defaultRecord()
+	seedInstance(t, svc, rec)
+
+	out, err := svc.GetDBBootstrapConfig(t.Context(),
+		&GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, rec.ENIPrivateIP, out.ListenAddress)
+	assert.Equal(t, testVpcCIDR, out.ClientCIDR)
+}
+
+// A record predating the field resolves its VPC once and keeps the answer, so
+// the describe is not paid on every boot of every instance.
+func TestGetDBBootstrapConfig_BackfillsVpcCIDR(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	network := newFakeNetwork()
+	svc := NewService(nc, testRegion).WithDeps(Deps{
+		LoadCA: newTestCA(t), MasterKey: testMasterKey, Network: network,
+	})
+	rec := defaultRecord()
+	rec.VpcID = testDefaultVPC
+	rec.VpcCIDR = ""
+	seedInstance(t, svc, rec)
+
+	in := &GetDBBootstrapConfigInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}
+	out, err := svc.GetDBBootstrapConfig(t.Context(), in, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, testDefaultVPCCIDR, out.ClientCIDR)
+
+	stored, _ := readRecord(t, svc)
+	assert.Equal(t, testDefaultVPCCIDR, stored.VpcCIDR, "the backfill must be persisted")
+
+	describes := len(network.accts)
+	_, err = svc.GetDBBootstrapConfig(t.Context(), in, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, network.accts, describes, "a backfilled record must not describe its VPC again")
+}
+
+// Without a VPC on the record there is nothing to scope client authentication
+// to, and the permissive reading is the one this plan exists to remove.
+func TestGetDBBootstrapConfig_UnresolvableClientCIDRFailsClosed(t *testing.T) {
+	t.Parallel()
+	svc := newTestService(t)
+	rec := defaultRecord()
+	rec.VpcID = ""
+	rec.VpcCIDR = ""
+	seedPending(t, svc, rec)
+
+	_, err := svc.GetDBBootstrapConfig(t.Context(), bootstrapInput(), testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "records no VPC")
 
 	envelope, _ := storedPayload(t, svc, testDBID)
 	assert.NotNil(t, envelope, "a failed fetch must leave the payload replayable")

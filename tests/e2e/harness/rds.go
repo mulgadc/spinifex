@@ -5,12 +5,14 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/mulgadc/spinifex/spinifex/daemon"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -314,6 +316,91 @@ func dbInstanceVolumes(system *AWSClient, id string) ([]*ec2.Volume, error) {
 		return nil, fmt.Errorf("describe-volumes tagged %s=%s: %w", rdsDBInstanceTagKey, id, err)
 	}
 	return out.Volumes, nil
+}
+
+// DBSystemENI returns the DB VM's management NIC in the shared RDS system VPC,
+// read with the system credentials that own it.
+//
+// This is the NIC no customer security group governs and no customer can see,
+// which is exactly why an isolation assertion has to look at it: every DB VM in
+// the deployment, across every account, has one in the same VPC.
+func DBSystemENI(t *testing.T, system *AWSClient, id string) *ec2.NetworkInterface {
+	t.Helper()
+	out, err := system.EC2.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("description"),
+			Values: []*string{aws.String("RDS management NIC for " + id)},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("DBSystemENI %s: describe-network-interfaces: %v", id, err)
+	}
+	if len(out.NetworkInterfaces) != 1 {
+		t.Fatalf("DBSystemENI %s: found %d matching ENIs, want 1", id, len(out.NetworkInterfaces))
+	}
+	return out.NetworkInterfaces[0]
+}
+
+// The prefix daemon namespaces its management-IP allocations under in the
+// cluster-state bucket. Duplicated rather than imported because the daemon keeps
+// the key unexported.
+const mgmtIPAMKeyPrefix = "mgmt-ipam."
+
+// DBInstanceMgmtIP resolves a DB VM's br-mgmt address from the cluster's
+// management IPAM record.
+//
+// No API exposes it: the management NIC is host-local plumbing rather than a VPC
+// interface. The runner sits on the same bridge, which makes this the one path
+// from which a DB VM's engine port can be dialled without a customer VPC — and
+// so the one place the bind can be proven from outside the guest.
+func DBInstanceMgmtIP(t *testing.T, env *Env, system *AWSClient, id string) string {
+	t.Helper()
+	vm := DBInstanceVM(t, system, id)
+	instanceID := aws.StringValue(vm.InstanceId)
+
+	host, token, ca := natsConn(t, env)
+	nc, err := utils.ConnectNATS(host, token, ca)
+	if err != nil {
+		t.Fatalf("DBInstanceMgmtIP %s: connect NATS %s: %v", id, host, err)
+	}
+	defer nc.Close()
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("DBInstanceMgmtIP %s: jetstream context: %v", id, err)
+	}
+	kv, err := js.KeyValue(t.Context(), daemon.ClusterStateBucket)
+	if err != nil {
+		t.Fatalf("DBInstanceMgmtIP %s: open %s: %v", id, daemon.ClusterStateBucket, err)
+	}
+	keys, err := kv.Keys(t.Context())
+	if err != nil {
+		t.Fatalf("DBInstanceMgmtIP %s: list %s: %v", id, daemon.ClusterStateBucket, err)
+	}
+
+	// br-mgmt can be more than one /24 across a cluster, so every allocation
+	// record is scanned rather than the local node's.
+	for _, key := range keys {
+		if !strings.HasPrefix(key, mgmtIPAMKeyPrefix) {
+			continue
+		}
+		entry, err := kv.Get(t.Context(), key)
+		if err != nil {
+			t.Fatalf("DBInstanceMgmtIP %s: read %s: %v", id, key, err)
+		}
+		var rec daemon.MgmtIPRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			t.Fatalf("DBInstanceMgmtIP %s: decode %s: %v", id, key, err)
+		}
+		for _, alloc := range rec.Allocated {
+			if alloc.InstanceID == instanceID && alloc.IP != "" {
+				t.Logf("DB instance %s VM %s has mgmt address %s", id, instanceID, alloc.IP)
+				return alloc.IP
+			}
+		}
+	}
+	t.Fatalf("DBInstanceMgmtIP %s: VM %s holds no management IP allocation", id, instanceID)
+	return ""
 }
 
 // dbEndpointENIs finds a DB instance's endpoint ENI in the tenant account. ENIs

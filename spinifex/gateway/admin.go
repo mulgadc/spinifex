@@ -23,7 +23,9 @@ var adminMethods = map[string]bool{
 	"CreateAccount":           true,
 	"DeleteAccount":           true,
 	"DescribeAccountDeletion": true,
+	"GetAccountQuota":         true,
 	"ListAccounts":            true,
+	"PutAccountQuota":         true,
 }
 
 // AdminMethodNames returns the callable /admin/<Method> names in sorted order.
@@ -129,6 +131,10 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 		output, err = gw.adminDescribeAccountDeletion(ctx, body)
 	case "ListAccounts":
 		output, err = gw.adminListAccounts(ctx, body)
+	case "GetAccountQuota":
+		output, err = gw.adminGetAccountQuota(ctx, body)
+	case "PutAccountQuota":
+		output, err = gw.adminPutAccountQuota(ctx, body)
 	default:
 		// Unreachable: adminMethods gates the switch. Fail closed anyway so
 		// adding a name to the map without a case cannot silently return 200.

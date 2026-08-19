@@ -1,3 +1,4 @@
+//test:in-package — exercises the unexported limitsFor resolver against a real KV bucket.
 package handlers_quota
 
 import (

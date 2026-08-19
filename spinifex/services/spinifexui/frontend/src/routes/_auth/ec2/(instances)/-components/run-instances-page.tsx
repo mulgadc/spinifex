@@ -34,6 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { isSystemManagedImage } from "@/lib/system-managed"
 import { formatVRAMMiB } from "@/lib/utils"
 import { useCreateInstance } from "@/mutations/ec2"
 import {
@@ -80,7 +81,9 @@ export function RunInstancesPage({
   const { data: sgData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
   const { data: ltData } = useSuspenseQuery(ec2LaunchTemplatesQueryOptions)
   const createMutation = useCreateInstance()
-  const images = imagesData.Images ?? []
+  const images = (imagesData.Images ?? []).filter(
+    (image) => !isSystemManagedImage(image),
+  )
   const keyPairs = keyPairsData.KeyPairs ?? []
   const subnets = subnetsData.Subnets ?? []
   const placementGroups = pgData.PlacementGroups ?? []

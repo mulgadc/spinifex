@@ -1,4 +1,4 @@
-import type { InstanceTypeInfo } from "@aws-sdk/client-ec2"
+import type { Image, InstanceTypeInfo } from "@aws-sdk/client-ec2"
 import { screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { ReactNode } from "react"
@@ -33,6 +33,14 @@ import {
 
 import { RunInstancesPage } from "./run-instances-page"
 
+const DEFAULT_IMAGE: Image = {
+  ImageId: "ami-1",
+  Name: "ubuntu-24.04",
+  Architecture: "x86_64",
+  RootDeviceName: "/dev/sda1",
+  BlockDeviceMappings: [{ DeviceName: "/dev/sda1", Ebs: { VolumeSize: 8 } }],
+}
+
 const INSTANCE_TYPES = [
   { InstanceType: "t3.nano" },
   { InstanceType: "t3.nano" },
@@ -52,21 +60,11 @@ const INSTANCE_TYPES = [
   },
 ] as InstanceTypeInfo[]
 
-function setup() {
+function setup(images: Image[] = [DEFAULT_IMAGE]) {
   const queryClient = createTestQueryClient()
   queryClient.setQueryData(ec2ImagesQueryOptions.queryKey, {
     $metadata: {},
-    Images: [
-      {
-        ImageId: "ami-1",
-        Name: "ubuntu-24.04",
-        Architecture: "x86_64",
-        RootDeviceName: "/dev/sda1",
-        BlockDeviceMappings: [
-          { DeviceName: "/dev/sda1", Ebs: { VolumeSize: 8 } },
-        ],
-      },
-    ],
+    Images: images,
   })
   queryClient.setQueryData(ec2KeyPairsQueryOptions.queryKey, {
     $metadata: {},
@@ -98,6 +96,34 @@ function setup() {
   })
   return renderWithClient(<RunInstancesPage />, queryClient)
 }
+
+describe("run-instances image picker", () => {
+  it("excludes system-managed images and defaults to a launchable image", async () => {
+    const user = userEvent.setup()
+    setup([
+      {
+        ImageId: "ami-rds",
+        Name: "spinifex-rds-postgres",
+        Architecture: "x86_64",
+        ImageOwnerAlias: "system",
+        Tags: [{ Key: "spinifex:managed-by", Value: "rds" }],
+      },
+      DEFAULT_IMAGE,
+    ])
+
+    const imageSelect = await screen.findByLabelText("Image")
+    expect(imageSelect).toHaveTextContent("ubuntu-24.04 (x86_64)")
+
+    await user.click(imageSelect)
+
+    expect(
+      screen.getByRole("option", { name: "ubuntu-24.04 (x86_64)" }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("option", { name: /spinifex-rds-postgres/ }),
+    ).not.toBeInTheDocument()
+  })
+})
 
 describe("run-instances instance type picker", () => {
   it("uses the shared GpuInstanceTypeSelect, grouping standard and GPU types", async () => {

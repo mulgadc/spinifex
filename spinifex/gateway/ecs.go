@@ -56,7 +56,7 @@ func (gw *GatewayConfig) ECS_Request(w http.ResponseWriter, r *http.Request) err
 	// enforce iam:PassRole against the caller's identity on this request, for
 	// whichever role ARN the action later resolves.
 	passRoleCheck := func(roleARN string) error {
-		return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+		return gw.checkPolicyResources(r, "iam", "PassRole", []string{roleARN})
 	}
 
 	output, err := handler(r.Context(), gw.NATSConn, accountID, body, passRoleCheck)

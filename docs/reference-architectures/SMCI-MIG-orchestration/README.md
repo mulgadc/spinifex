@@ -1,6 +1,7 @@
 ---
 title: "Mixed AI Workloads on a Single H200 Chassis: Guest-Managed MIG"
-description: "Install Spinifex from source, configure host-local networking, attach Predastore storage, and run four concurrent AI workloads across MIG partitions managed inside guest VMs."
+seoTitle: "Guest-Managed MIG on an H200 Chassis — Spinifex Docs"
+description: "Install Spinifex from source, configure host-local networking, attach Predastore storage, and run four concurrent AI workloads across guest-managed MIG slices."
 category: "Reference Architectures"
 tags:
   - nvidia

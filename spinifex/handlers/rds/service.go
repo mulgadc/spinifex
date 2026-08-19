@@ -23,6 +23,9 @@ type Deps struct {
 	CAKeyPath  string
 	// Overrides the file-backed CA loader in tests.
 	LoadCA CALoader
+	// Overrides the size of the RSA key each serving cert is minted with. Zero
+	// takes defaultServingCertKeyBits, which is what production runs.
+	ServingCertKeyBits int
 	// The cluster master key the staged bootstrap password is encrypted under.
 	// Mandatory: without it a create cannot stage a password at all, so it is
 	// resolved at construction rather than per operation.

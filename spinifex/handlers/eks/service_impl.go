@@ -289,6 +289,9 @@ const defaultK8sVersion = "1.32"
 
 // NewEKSServiceImpl initialises EKSServiceImpl, wiring the leader KV and reconciler registry.
 func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
+	if err := validateAddonCatalog(addonCatalog); err != nil {
+		return nil, fmt.Errorf("eks: validate add-on catalog: %w", err)
+	}
 	if deps.NATSConn == nil {
 		return nil, errors.New("eks: NewEKSServiceImpl nil NATSConn")
 	}

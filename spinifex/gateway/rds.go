@@ -43,11 +43,11 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	resource, err := gateway_rds.ResourceARN(action, gw.Region, caller.AccountID, queryArgs)
+	resources, err := gateway_rds.ResourceARN(action, gw.Region, caller.AccountID, queryArgs)
 	if err != nil {
 		return err
 	}
-	if err := gw.checkPolicyResource(r, "rds", action, resource); err != nil {
+	if err := gw.checkPolicyResources(r, "rds", action, resources); err != nil {
 		return err
 	}
 

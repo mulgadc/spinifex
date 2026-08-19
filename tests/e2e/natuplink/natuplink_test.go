@@ -45,22 +45,33 @@ const (
 	natExemptSetName = "spinifex_nat_exempt"
 )
 
+// A failing iteration costs two 10 s curl timeouts, a 3 s ping and a 5 s
+// sleep — ~28 s measured on the console clock. The verdict budget must cover
+// the whole loop plus boot and cloud-init, or the fail marker never prints
+// inside the window the test watches.
+const (
+	egressProbeIterations = 10
+	egressIterationBudget = 30 * time.Second
+	egressBootBudget      = 3 * time.Minute
+	egressVerdictBudget   = egressProbeIterations*egressIterationBudget + egressBootBudget
+)
+
 // egressUserData probes outbound WAN reachability from inside the guest and
 // reports the verdict on the serial console — the only channel back to the
 // test in nat mode. ping 8.8.8.8 is the DNS-free fallback; the curl targets
 // additionally prove DHCP-delivered DNS works through the masquerade.
-const egressUserData = `#!/bin/bash
-for i in $(seq 1 36); do
+var egressUserData = fmt.Sprintf(`#!/bin/bash
+for i in $(seq 1 %d); do
   if curl -fsS -m 10 -o /dev/null http://connectivity-check.ubuntu.com/ \
      || curl -fsS -m 10 -o /dev/null http://www.google.com/generate_204 \
      || ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
-    echo "NAT-E2E-EGRESS-OK" | tee /dev/console
+    echo "%s" | tee /dev/console
     exit 0
   fi
   sleep 5
 done
-echo "NAT-E2E-EGRESS-FAIL" | tee /dev/console
-`
+echo "%s" | tee /dev/console
+`, egressProbeIterations, egressOKMarker, egressFailMarker)
 
 type fixture struct {
 	env        *harness.Env
@@ -303,6 +314,10 @@ type egressProbe struct {
 func phaseInstanceEgress(t *testing.T, fix *fixture, def harness.VPCInfo) egressProbe {
 	t.Helper()
 
+	// Whether the gateway router resolved the transit nexthop is the decisive
+	// question when egress fails, and nothing else in the bundle answers it.
+	harness.OnFailure(t, func() { dumpOVNRouting(t, fix.artifacts, def.VPCID) })
+
 	instType, arch := harness.DiscoverNanoInstanceType(t, fix.harness)
 	amiID := harness.DiscoverUbuntuAMI(t, fix.harness, arch)
 	keyName, _ := harness.EnsureKeyPair(t, fix.harness, fix.artifacts)
@@ -348,16 +363,20 @@ func phaseInstanceEgress(t *testing.T, fix *fixture, def harness.VPCInfo) egress
 
 	harness.Step(t, "wait for egress verdict on serial console")
 	var console string
+	// Registered before the wait so a budget overrun — which Fatals inside
+	// EventuallyErr — still leaves the last console read behind.
+	harness.OnFailure(t, func() {
+		harness.DumpFile(t, fix.artifacts, "egress-console.log", []byte(console))
+	})
 	harness.EventuallyErr(t, func() error {
 		console = consoleOutput(t, fix, instanceID)
 		if strings.Contains(console, egressOKMarker) || strings.Contains(console, egressFailMarker) {
 			return nil
 		}
 		return fmt.Errorf("no egress marker on console yet (%d bytes)", len(console))
-	}, 8*time.Minute, 10*time.Second)
+	}, egressVerdictBudget, 10*time.Second)
 
 	if strings.Contains(console, egressFailMarker) {
-		harness.DumpFile(t, fix.artifacts, "egress-console.log", []byte(console))
 		t.Fatalf("guest reported %s — outbound WAN unreachable through routed NAT (console saved to artifacts)", egressFailMarker)
 	}
 	harness.Step(t, "guest reported %s", egressOKMarker)
@@ -682,6 +701,19 @@ func sshHandshake(host string) error {
 }
 
 // --- Helpers ---------------------------------------------------------------
+
+// dumpOVNRouting writes the gateway router's nexthop and routing state to the
+// artifact bundle. Best-effort: DumpCmd records a non-zero exit rather than
+// failing, so a half-built router still yields whatever OVN has.
+func dumpOVNRouting(t *testing.T, dir, vpcID string) {
+	t.Helper()
+	harness.DumpCmd(t, dir, "ovn-static-mac-binding-list.txt",
+		"sudo", "-n", "ovn-nbctl", "static-mac-binding-list")
+	harness.DumpCmd(t, dir, "ovn-sb-mac-binding.txt",
+		"sudo", "-n", "ovn-sbctl", "list", "MAC_Binding")
+	harness.DumpCmd(t, dir, "ovn-lr-route-list.txt",
+		"sudo", "-n", "ovn-nbctl", "lr-route-list", "vpc-"+vpcID)
+}
 
 // hostCmd runs a local (non-sudo) command and fails the test on error.
 func hostCmd(t *testing.T, name string, args ...string) string {

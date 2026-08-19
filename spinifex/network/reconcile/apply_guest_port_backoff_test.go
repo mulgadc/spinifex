@@ -1,3 +1,7 @@
+//test:in-package — the backoff is unexported state (guestPortBackoffBase /
+//guestPortBackoffMax and the per-port failure map), and the tests drive
+//ensureGuestPortDatapath and recordPortFailure directly.
+
 package reconcile
 
 import (

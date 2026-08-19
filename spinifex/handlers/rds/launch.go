@@ -52,6 +52,24 @@ const (
 // validation failure rather than launching something else.
 var ErrEngineAMINotFound = errors.New("rds: no AMI found for engine")
 
+// The catalog registers every engine's system image under this prefix, so the
+// error can name the image an operator has to import.
+const engineImageNamePrefix = "spinifex-rds-"
+
+// An engine image no deployment ever imported is a gap no retry closes, so the
+// failure carries a code: a bare error resolves to ServerInternal, which the
+// caller reads as a transient fault and retries.
+func engineAMINotFound(engine, version string) error {
+	requested := "an engine image for " + engine
+	if version != "" {
+		requested = "version " + version + " for " + engine
+	}
+	return fmt.Errorf("%w: %w", ErrEngineAMINotFound, awserrors.Errorf(
+		awserrors.ErrorInvalidParameterCombination,
+		"Cannot find %s; this deployment has no %s%s system image installed",
+		requested, engineImageNamePrefix, engine))
+}
+
 type launchVPCProvisioner interface {
 	CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
 	DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
@@ -62,6 +80,10 @@ type launchVPCProvisioner interface {
 	// Re-associates the customer ENI's security groups in place, which is what
 	// makes a VpcSecurityGroupIds modify need no VM replace and no new IP.
 	ModifyNetworkInterfaceAttribute(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, accountID string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error)
+	// The system NIC's own group, ensured per launch rather than at daemon
+	// start, so a deployment whose system VPC was rebuilt still gets one.
+	CreateSecurityGroup(ctx context.Context, input *ec2.CreateSecurityGroupInput, accountID string) (*ec2.CreateSecurityGroupOutput, error)
+	DescribeSecurityGroups(ctx context.Context, input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error)
 }
 
 // System-managed VMs get a mgmt-bridge NIC alongside their VPC NICs, which is
@@ -124,7 +146,10 @@ type LaunchOutput struct {
 	InstanceID string
 	// The system ENI is disposable — a replace makes a new one. The customer
 	// ENI is the stable endpoint: its IP is the DNS target and survives.
-	SystemENIID      string
+	SystemENIID string
+	// The region's RDS system group, re-derived on every launch so a record
+	// written before the group existed is corrected by the next replace.
+	SystemSGID       string
 	CustomerENIID    string
 	CustomerENIIP    string
 	DataVolumeID     string
@@ -160,6 +185,11 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 	}
 	systemSubnetID := sysRefs.PrivateSubnetIDs[0]
 
+	systemSGID, err := EnsureSystemSecurityGroup(ctx, deps.VPC, utils.GlobalAccountID, region, sysRefs.VpcID)
+	if err != nil {
+		return nil, err
+	}
+
 	// Unwind in reverse creation order on any failure below. Each step appends
 	// its own undo as soon as the resource exists.
 	var rollback []func(context.Context)
@@ -187,7 +217,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		}
 	}()
 
-	systemENI, err := createLaunchENI(ctx, deps.VPC, utils.GlobalAccountID, systemSubnetID, nil,
+	systemENI, err := createLaunchENI(ctx, deps.VPC, utils.GlobalAccountID, systemSubnetID, []string{systemSGID},
 		"RDS management NIC for "+in.DBInstanceIdentifier, in.DBInstanceIdentifier)
 	if err != nil {
 		return nil, err
@@ -227,6 +257,10 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 			ENIIP:     customerENI.ip,
 			SubnetID:  in.SubnetID,
 			AccountID: in.AccountID,
+			// The endpoint is the ENI's address, so it has to survive the
+			// terminate half of a replace the way the datadir volume does.
+			// A DeleteDBInstance deletes it explicitly once the VM is gone.
+			DeleteOnTermination: aws.Bool(false),
 		}},
 		UserData:              in.UserData,
 		IamInstanceProfileArn: in.IamInstanceProfileArn,
@@ -294,12 +328,14 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 
 	slog.InfoContext(ctx, "rds: DB VM launched",
 		"dbInstance", in.DBInstanceIdentifier, "instanceId", instanceID, "ami", amiID,
-		"systemEni", systemENI.id, "customerEni", customerENI.id, "customerEniIp", customerENI.ip,
+		"systemEni", systemENI.id, "systemSg", systemSGID,
+		"customerEni", customerENI.id, "customerEniIp", customerENI.ip,
 		"dataVolume", volumeID, "device", device)
 
 	return &LaunchOutput{
 		InstanceID:          instanceID,
 		SystemENIID:         systemENI.id,
+		SystemSGID:          systemSGID,
 		CustomerENIID:       customerENI.id,
 		CustomerENIIP:       customerENI.ip,
 		DataVolumeID:        volumeID,
@@ -332,8 +368,9 @@ type launchENI struct {
 	mac string
 }
 
-// groups is nil for the system NIC, which is unreachable from any customer VPC
-// and so needs no security group of its own.
+// groups must be non-empty for either NIC: an ENI created with none is placed in
+// its VPC's default group, whose sole ingress rule admits every other member of
+// itself — which for the shared system VPC is every DB VM in the deployment.
 func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID, subnetID string, groups []string, description, dbInstanceID string) (*launchENI, error) {
 	var groupIDs []*string
 	if len(groups) > 0 {
@@ -441,7 +478,7 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 		return "", fmt.Errorf("rds: describe %s AMI: %w", engine, err)
 	}
 	if out == nil {
-		return "", fmt.Errorf("%w: %s %s", ErrEngineAMINotFound, engine, version)
+		return "", engineAMINotFound(engine, version)
 	}
 
 	// Several builds of one engine version can be registered; skip malformed
@@ -466,7 +503,7 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 		}
 	}
 	if newestID == "" {
-		return "", fmt.Errorf("%w: %s %s", ErrEngineAMINotFound, engine, version)
+		return "", engineAMINotFound(engine, version)
 	}
 	if matches > 1 {
 		slog.WarnContext(ctx, "rds: multiple AMIs match the requested engine; using newest",

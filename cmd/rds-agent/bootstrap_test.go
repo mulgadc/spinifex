@@ -18,6 +18,8 @@ func TestWriteHandoff_WritesEveryFileRootOnly(t *testing.T) {
 		Mode:               handlers_rds.BootstrapModeInitialize,
 		Engine:             "postgres",
 		MasterUsername:     "master",
+		ListenAddress:      "10.0.1.20",
+		ClientCIDR:         "10.0.0.0/16",
 		MasterUserPassword: &password,
 		DBName:             "appdb",
 		Port:               5433,
@@ -85,6 +87,8 @@ func TestWriteHandoff_AttachOmitsPassword(t *testing.T) {
 		Mode:           handlers_rds.BootstrapModeAttach,
 		Engine:         "postgres",
 		MasterUsername: "master",
+		ListenAddress:  "10.0.1.20",
+		ClientCIDR:     "10.0.0.0/16",
 		Port:           5432,
 	}); err != nil {
 		t.Fatalf("writeHandoff: %v", err)
@@ -116,6 +120,8 @@ func TestWriteHandoff_QuotesShellMetacharacters(t *testing.T) {
 		Mode:               handlers_rds.BootstrapModeInitialize,
 		Engine:             "postgres",
 		MasterUsername:     "master",
+		ListenAddress:      "10.0.1.20",
+		ClientCIDR:         "10.0.0.0/16",
 		MasterUserPassword: &password,
 		Port:               5432,
 	}); err != nil {
@@ -137,6 +143,8 @@ func TestWriteHandoff_SkipsHalfATLSPair(t *testing.T) {
 		Mode:               handlers_rds.BootstrapModeAttach,
 		Engine:             "postgres",
 		MasterUsername:     "master",
+		ListenAddress:      "10.0.1.20",
+		ClientCIDR:         "10.0.0.0/16",
 		Port:               5432,
 		ServingCertificate: "CERT",
 	}); err != nil {
@@ -177,6 +185,8 @@ func TestWriteHandoff_TightensExistingDirectory(t *testing.T) {
 		Mode:           handlers_rds.BootstrapModeAttach,
 		Engine:         "postgres",
 		MasterUsername: "master",
+		ListenAddress:  "10.0.1.20",
+		ClientCIDR:     "10.0.0.0/16",
 		Port:           5432,
 	}); err != nil {
 		t.Fatalf("writeHandoff: %v", err)

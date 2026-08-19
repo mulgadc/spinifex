@@ -16,8 +16,8 @@ import (
 // The lifetime is deliberately short: the cert is re-minted on every bootstrap
 // fetch and never persisted, so a leaked key ages out on its own.
 const (
-	servingCertKeyBits  = 2048
-	servingCertLifetime = 90 * 24 * time.Hour
+	defaultServingCertKeyBits = 2048
+	servingCertLifetime       = 90 * 24 * time.Hour
 )
 
 // Injected so tests mint from a throwaway CA, and so the file-backed
@@ -30,6 +30,9 @@ type ServingCertRequest struct {
 	DBInstanceIdentifier string
 	PrivateIP            string
 	DNSName              string
+	// Zero takes defaultServingCertKeyBits. Only tests set it, to buy back the
+	// keygen a 2048-bit key costs on every mint.
+	KeyBits int
 }
 
 // PEM-encoded, in memory only.
@@ -52,7 +55,11 @@ func MintServingCert(caCert *x509.Certificate, caKey *rsa.PrivateKey, req Servin
 		return nil, fmt.Errorf("rds serving cert: invalid private IP %q", req.PrivateIP)
 	}
 
-	key, err := rsa.GenerateKey(rand.Reader, servingCertKeyBits)
+	bits := req.KeyBits
+	if bits <= 0 {
+		bits = defaultServingCertKeyBits
+	}
+	key, err := rsa.GenerateKey(rand.Reader, bits)
 	if err != nil {
 		return nil, fmt.Errorf("rds serving cert: generate key: %w", err)
 	}

@@ -129,10 +129,11 @@ func newScriptedTestMariaDBEngine(t *testing.T, run commandRunner) *mariadbEngin
 // that is registered: what a spec says about a parameter is what the guest must
 // see, and an unlisted name must read as static rather than as dynamic.
 func TestControlPlaneRulesFrom_TakesTheClassificationFromTheCatalog(t *testing.T) {
-	rules := controlPlaneRulesFrom(postgresEngineMeta)
+	meta := testPostgresEngineMeta(t)
+	rules := controlPlaneRulesFrom(meta)
 
 	for name, want := range map[string]bool{"shared_buffers": true, "work_mem": false} {
-		spec, ok := postgresEngineMeta.LookupParameter(name)
+		spec, ok := meta.LookupParameter(name)
 		if !ok {
 			t.Fatalf("the catalog no longer carries %s", name)
 		}

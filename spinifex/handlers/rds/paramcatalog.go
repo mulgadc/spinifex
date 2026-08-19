@@ -1,6 +1,7 @@
 package handlers_rds
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -89,27 +90,36 @@ type ParameterSpec struct {
 	optionFileName string
 }
 
-// Indexes the specs by name and fails the build-equivalent — process start — on
-// a malformed entry, so a catalog typo cannot reach a customer's create.
-func buildParameterCatalog(specs ...ParameterSpec) map[string]ParameterSpec {
+// Indexes the specs by name and returns malformed entries to startup validation.
+func buildParameterCatalog(specs ...ParameterSpec) (map[string]ParameterSpec, error) {
 	out := make(map[string]ParameterSpec, len(specs))
 	for _, spec := range specs {
 		switch {
 		case spec.Name == "":
-			panic("rds: parameter catalog holds an unnamed entry")
+			return nil, errors.New("rds: parameter catalog holds an unnamed entry")
 		case spec.Default == "" && spec.DefaultFor == nil:
-			panic("rds: parameter catalog entry " + spec.Name + " has no default")
+			return nil, fmt.Errorf("rds: parameter catalog entry %s has no default", spec.Name)
 		case spec.Default != "" && spec.DefaultFor != nil:
-			panic("rds: parameter catalog entry " + spec.Name + " has both a literal and a computed default")
+			return nil, fmt.Errorf("rds: parameter catalog entry %s has both a literal and a computed default", spec.Name)
 		case (spec.DefaultFor == nil) != (spec.MaxFor == nil):
-			panic("rds: parameter catalog entry " + spec.Name + " must pair its computed default and class ceiling")
+			return nil, fmt.Errorf("rds: parameter catalog entry %s must pair its computed default and class ceiling", spec.Name)
 		}
 		if _, exists := out[spec.Name]; exists {
-			panic("rds: parameter catalog entry " + spec.Name + " is duplicated")
+			return nil, fmt.Errorf("rds: parameter catalog entry %s is duplicated", spec.Name)
 		}
 		out[spec.Name] = spec
 	}
-	return out
+	return out, nil
+}
+
+func validateParameterCatalogs() error {
+	if postgresParameterCatalogErr != nil {
+		return fmt.Errorf("rds: validate PostgreSQL parameter catalog: %w", postgresParameterCatalogErr)
+	}
+	if mariadbParameterCatalogErr != nil {
+		return fmt.Errorf("rds: validate MariaDB parameter catalog: %w", mariadbParameterCatalogErr)
+	}
+	return nil
 }
 
 // The catalog entry for a parameter name, or false when the engine has no such

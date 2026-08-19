@@ -63,40 +63,45 @@ var engines = map[string]Engine{
 // The same registry keyed by parameter-group family, for the callers that hold
 // only a family string and have no instance to derive an engine from. Family
 // and engine are 1:1 by construction, so one registry serves both.
-var enginesByFamily = indexEnginesByFamily()
+var enginesByFamily, engineRegistryValidationErr = indexEnginesByFamily(engines)
 
-func indexEnginesByFamily() map[string]Engine {
-	out := make(map[string]Engine, len(engines))
-	for _, engine := range engines {
-		// An engine registered without its own name rule would panic on the first
-		// create that names a database, rather than here where every build sees it.
+// ValidateEngineRegistry reports invalid built-in engine metadata before RDS starts.
+func ValidateEngineRegistry() error {
+	if err := validateParameterCatalogs(); err != nil {
+		return err
+	}
+	return engineRegistryValidationErr
+}
+
+func indexEnginesByFamily(registry map[string]Engine) (map[string]Engine, error) {
+	out := make(map[string]Engine, len(registry))
+	for _, engine := range registry {
 		if engine.validateDBName == nil {
-			panic("rds: engine " + engine.Name + " registers no DBName rule")
+			return nil, errors.New("rds: engine " + engine.Name + " registers no DBName rule")
 		}
-		// An engine without these would tell a customer nothing about what a
-		// crash-consistent snapshot or an unclean stop of it recovers, on the two
-		// events that say so.
+		// Without these, snapshot and unclean-stop events cannot explain what the
+		// engine will recover.
 		if engine.crashRecoveryNote == "" {
-			panic("rds: engine " + engine.Name + " registers no crash-recovery note")
+			return nil, errors.New("rds: engine " + engine.Name + " registers no crash-recovery note")
 		}
 		if engine.uncleanStopNote == "" {
-			panic("rds: engine " + engine.Name + " registers no unclean-stop note")
+			return nil, errors.New("rds: engine " + engine.Name + " registers no unclean-stop note")
 		}
 		// A name no catalog entry answers to would leave the guest deriving
 		// enforcement from a key nothing ever writes, which reads as not enforcing.
 		if name := engine.tlsEnforcementParameter; name != "" {
 			spec, ok := engine.catalog[name]
 			if !ok || spec.DataType != ParamTypeBoolean {
-				panic("rds: engine " + engine.Name + " names " + name + ", which is not a boolean parameter it exposes")
+				return nil, errors.New("rds: engine " + engine.Name + " names " + name + ", which is not a boolean parameter it exposes")
 			}
 		}
 		family := engine.ParameterGroupFamily()
 		if _, exists := out[family]; exists {
-			panic("rds: parameter group family " + family + " is claimed by two engines")
+			return nil, errors.New("rds: parameter group family " + family + " is claimed by two engines")
 		}
 		out[family] = engine
 	}
-	return out
+	return out, nil
 }
 
 // The pinned version an AMI lookup resolves against, which is the major alone:

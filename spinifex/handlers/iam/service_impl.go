@@ -112,6 +112,9 @@ var _ IAMService = (*IAMServiceImpl)(nil)
 // clusterSize sets the replication factor; pass 1 for single-node or test setups.
 // The context bounds bucket creation and the schema migrations only.
 func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byte, clusterSize int) (*IAMServiceImpl, error) {
+	if builtinManagedPolicyParseErr != nil {
+		return nil, fmt.Errorf("init builtin managed policies: %w", builtinManagedPolicyParseErr)
+	}
 	if len(masterKey) != 32 {
 		return nil, fmt.Errorf("master key must be 32 bytes, got %d", len(masterKey))
 	}

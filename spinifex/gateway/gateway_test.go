@@ -1122,8 +1122,8 @@ func TestCheckPolicy_PassRoleFailsClosed(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 
-	err := gw.checkPolicyResource(req, "iam", "PassRole",
-		"arn:aws:iam::123456789012:role/app")
+	err := gw.checkPolicyResources(req, "iam", "PassRole",
+		[]string{"arn:aws:iam::123456789012:role/app"})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }

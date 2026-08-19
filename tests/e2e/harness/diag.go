@@ -54,24 +54,41 @@ func DumpVPCFlowDiagnostics(t *testing.T, c *AWSClient, instanceID, label string
 	fmt.Printf("%s%s── END DIAGNOSTICS ──%s\n\n", colorBold, colorCyan, colorReset)
 }
 
-func dumpConsoleOutput(t *testing.T, c *AWSClient, instanceID string) {
-	t.Helper()
+// InstanceConsole returns an instance's serial console, base64-decoded.
+// A payload that fails to decode is returned verbatim — the console is a
+// diagnostic channel and a partially-written one is still worth reading.
+// The error is returned rather than logged so a poll loop can fold it into
+// its own timeout message instead of repeating it every interval.
+func InstanceConsole(c *AWSClient, instanceID string) (string, error) {
 	out, err := c.EC2.GetConsoleOutput(&ec2.GetConsoleOutputInput{
 		InstanceId: aws.String(instanceID),
 	})
 	if err != nil {
-		fmt.Printf("  console-output: GetConsoleOutput failed: %v\n", err)
+		return "", fmt.Errorf("get-console-output %s: %w", instanceID, err)
+	}
+	encoded := aws.StringValue(out.Output)
+	if encoded == "" {
+		return "", nil
+	}
+	raw, derr := base64.StdEncoding.DecodeString(encoded)
+	if derr != nil {
+		return encoded, nil
+	}
+	return string(raw), nil
+}
+
+func dumpConsoleOutput(t *testing.T, c *AWSClient, instanceID string) {
+	t.Helper()
+	console, err := InstanceConsole(c, instanceID)
+	if err != nil {
+		fmt.Printf("  console-output: %v\n", err)
 		return
 	}
-	if out.Output == nil || aws.StringValue(out.Output) == "" {
+	if console == "" {
 		fmt.Println("  console-output: empty")
 		return
 	}
-	raw, derr := base64.StdEncoding.DecodeString(aws.StringValue(out.Output))
-	if derr != nil {
-		raw = []byte(aws.StringValue(out.Output))
-	}
-	tail := raw
+	tail := []byte(console)
 	if len(tail) > 4096 {
 		tail = tail[len(tail)-4096:]
 	}
@@ -88,23 +105,16 @@ func dumpConsoleOutput(t *testing.T, c *AWSClient, instanceID string) {
 // CI artifacts alone. Best-effort: failures log, they don't fail the test.
 func DumpInstanceConsole(t *testing.T, c *AWSClient, instanceID, dir, name string) {
 	t.Helper()
-	out, err := c.EC2.GetConsoleOutput(&ec2.GetConsoleOutputInput{
-		InstanceId: aws.String(instanceID),
-	})
+	console, err := InstanceConsole(c, instanceID)
 	if err != nil {
-		t.Logf("console capture: GetConsoleOutput(%s) failed: %v", instanceID, err)
+		t.Logf("console capture: %v", err)
 		return
 	}
-	encoded := aws.StringValue(out.Output)
-	if encoded == "" {
+	if console == "" {
 		t.Logf("console capture: %s empty", instanceID)
 		return
 	}
-	raw, derr := base64.StdEncoding.DecodeString(encoded)
-	if derr != nil {
-		raw = []byte(encoded)
-	}
-	DumpFile(t, dir, name, raw)
+	DumpFile(t, dir, name, []byte(console))
 }
 
 func dumpOVNState(t *testing.T, instanceID string) {

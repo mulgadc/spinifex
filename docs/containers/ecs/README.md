@@ -1,6 +1,7 @@
 ---
 title: "ECS (Elastic Container Service)"
-description: "Run AWS-compatible ECS workloads on Spinifex — create a cluster, register a task definition, boot container instances from the ECS node image, run tasks, and front a long-running service with an Application Load Balancer, all via the AWS CLI, the Spinifex console, or Terraform."
+seoTitle: "AWS ECS Elastic Container Service Guide — Spinifex Docs"
+description: "Create an ECS cluster on Spinifex, register a task definition, boot container instances, run tasks, and front a service with an Application Load Balancer."
 category: "Containers"
 tags:
   - ecs

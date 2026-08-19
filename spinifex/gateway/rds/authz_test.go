@@ -108,13 +108,6 @@ func TestResourceARN_ScopesSingleResourceActions(t *testing.T) {
 			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db"},
 		{"DeleteDBSnapshot", map[string]string{"DBSnapshotIdentifier": "orders-db-pre-upgrade"},
 			"arn:aws:rds:ap-southeast-2:123456789012:snapshot:orders-db-pre-upgrade"},
-		// Both name a source and a target; each is scoped to its source.
-		{"CreateDBSnapshot", map[string]string{
-			"DBInstanceIdentifier": "orders-db", "DBSnapshotIdentifier": "orders-db-pre-upgrade"},
-			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db"},
-		{"RestoreDBInstanceFromDBSnapshot", map[string]string{
-			"DBInstanceIdentifier": "orders-db-restored", "DBSnapshotIdentifier": "orders-db-pre-upgrade"},
-			"arn:aws:rds:ap-southeast-2:123456789012:snapshot:orders-db-pre-upgrade"},
 		{"DeleteDBSubnetGroup", map[string]string{"DBSubnetGroupName": "db-private"},
 			"arn:aws:rds:ap-southeast-2:123456789012:subgrp:db-private"},
 		{"ModifyDBParameterGroup", map[string]string{"DBParameterGroupName": "pg16-tuned"},
@@ -127,6 +120,32 @@ func TestResourceARN_ScopesSingleResourceActions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.action, func(t *testing.T) {
 			got, err := ResourceARN(tt.action, testRegion, testAccountID, tt.params)
+			require.NoError(t, err)
+			assert.Equal(t, []string{tt.want}, got)
+		})
+	}
+}
+
+func TestResourceARN_ScopesSnapshotActionsToSourceAndTarget(t *testing.T) {
+	tests := []struct {
+		action string
+		want   []string
+	}{
+		{"CreateDBSnapshot", []string{
+			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db",
+			"arn:aws:rds:ap-southeast-2:123456789012:snapshot:orders-db-pre-upgrade",
+		}},
+		{"RestoreDBInstanceFromDBSnapshot", []string{
+			"arn:aws:rds:ap-southeast-2:123456789012:snapshot:orders-db-pre-upgrade",
+			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db",
+		}},
+	}
+	params := map[string]string{
+		"DBInstanceIdentifier": "orders-db", "DBSnapshotIdentifier": "orders-db-pre-upgrade",
+	}
+	for _, tt := range tests {
+		t.Run(tt.action, func(t *testing.T) {
+			got, err := ResourceARN(tt.action, testRegion, testAccountID, params)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -153,7 +172,7 @@ func TestResourceARN_UnscopedActions(t *testing.T) {
 				"DBSnapshotIdentifier": "orders-db-pre-upgrade",
 			})
 			require.NoError(t, err)
-			assert.Equal(t, anyResource, got)
+			assert.Equal(t, []string{anyResource}, got)
 		})
 	}
 }
@@ -196,9 +215,15 @@ func TestResourceARN_ResourceScopedDenyReachesTheSnapshotActions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resource, err := ResourceARN(tt.action, testRegion, testAccountID, tt.params)
+			resources, err := ResourceARN(tt.action, testRegion, testAccountID, tt.params)
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, iampolicy.Evaluate(policy.IAMAction("rds", tt.action), resource, policies))
+			got := iampolicy.Allow
+			for _, resource := range resources {
+				if iampolicy.Evaluate(policy.IAMAction("rds", tt.action), resource, policies) == iampolicy.Deny {
+					got = iampolicy.Deny
+				}
+			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -211,7 +236,7 @@ func TestResourceARN_TagActionsUseTheSuppliedARN(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			got, err := ResourceARN(action, testRegion, testAccountID, map[string]string{"ResourceName": arn})
 			require.NoError(t, err)
-			assert.Equal(t, arn, got)
+			assert.Equal(t, []string{arn}, got)
 		})
 	}
 }
@@ -237,16 +262,30 @@ func TestResourceARN_RejectsUnusableARNs(t *testing.T) {
 	}
 }
 
-// A missing identifier is the handler's validation fault to report. Answering it
-// with a denial here would tell the caller the wrong thing about their policy.
-func TestResourceARN_MissingIdentifierFallsBackToAnyResource(t *testing.T) {
-	for _, action := range []string{
-		"DeleteDBInstance", "DescribeDBParameters", "ListTagsForResource",
-		"CreateDBSnapshot", "RestoreDBInstanceFromDBSnapshot",
-	} {
-		got, err := ResourceARN(action, testRegion, testAccountID, map[string]string{})
-		require.NoError(t, err, "action %q", action)
-		assert.Equal(t, anyResource, got, "action %q", action)
+// A missing identifier is the handler's validation fault to report. Each absent
+// member contributes "*" instead of failing ARN resolution.
+func TestResourceARN_MissingIdentifierFallsBackToAnyResourcePerMember(t *testing.T) {
+	tests := []struct {
+		action string
+		params map[string]string
+		want   []string
+	}{
+		{"DeleteDBInstance", nil, []string{anyResource}},
+		{"DescribeDBParameters", nil, []string{anyResource}},
+		{"ListTagsForResource", nil, []string{anyResource}},
+		{"CreateDBSnapshot", map[string]string{"DBInstanceIdentifier": "orders-db"}, []string{
+			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db", anyResource,
+		}},
+		{"RestoreDBInstanceFromDBSnapshot", map[string]string{"DBSnapshotIdentifier": "orders-db-snapshot"}, []string{
+			"arn:aws:rds:ap-southeast-2:123456789012:snapshot:orders-db-snapshot", anyResource,
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.action, func(t *testing.T) {
+			got, err := ResourceARN(tt.action, testRegion, testAccountID, tt.params)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }
 

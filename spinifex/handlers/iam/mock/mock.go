@@ -4,6 +4,7 @@ package mock
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -15,8 +16,13 @@ import (
 // handlers_iam.SystemInstanceRoleEnsurer. Roles and instance profiles are
 // stored keyed by name; Get* miss with NoSuchEntity until the matching
 // Create* call, and a repeat Create* reports EntityAlreadyExists, mirroring
-// the live IAM API.
+// the live IAM API. Every method is safe for concurrent use, so callers that
+// converge on one profile from several goroutines can be exercised under the
+// race detector; exported fields must only be touched while no call is in
+// flight.
 type SystemInstanceRoleEnsurer struct {
+	mu sync.Mutex
+
 	Roles    map[string]*iam.Role
 	Profiles map[string]*iam.InstanceProfile
 
@@ -64,15 +70,35 @@ func New() *SystemInstanceRoleEnsurer {
 	}
 }
 
+// copyRole and copyProfile hand callers a snapshot rather than a pointer into
+// the mock's state, so a concurrent AddRoleToInstanceProfile cannot mutate a
+// row another goroutine is still reading.
+func copyRole(r *iam.Role) *iam.Role {
+	c := *r
+	return &c
+}
+
+func copyProfile(p *iam.InstanceProfile) *iam.InstanceProfile {
+	c := *p
+	c.Roles = append([]*iam.Role(nil), p.Roles...)
+	return &c
+}
+
 func (e *SystemInstanceRoleEnsurer) GetRole(_ string, in *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	r, ok := e.Roles[aws.StringValue(in.RoleName)]
 	if !ok {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
-	return &iam.GetRoleOutput{Role: r}, nil
+	return &iam.GetRoleOutput{Role: copyRole(r)}, nil
 }
 
 func (e *SystemInstanceRoleEnsurer) CreateRole(accountID string, in *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	e.CreateRoleCalls++
 	e.LastTrustDoc = aws.StringValue(in.AssumeRolePolicyDocument)
 	e.LastRoleAcct = accountID
@@ -85,10 +111,13 @@ func (e *SystemInstanceRoleEnsurer) CreateRole(accountID string, in *iam.CreateR
 		Arn:      aws.String("arn:aws:iam::" + accountID + ":role/" + name),
 	}
 	e.Roles[name] = r
-	return &iam.CreateRoleOutput{Role: r}, nil
+	return &iam.CreateRoleOutput{Role: copyRole(r)}, nil
 }
 
 func (e *SystemInstanceRoleEnsurer) PutRolePolicy(_ string, in *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	e.PolicyCalls = append(e.PolicyCalls, *in)
 	e.RolePolicies[aws.StringValue(in.RoleName)] = aws.StringValue(in.PolicyDocument)
 	if e.PutRolePolicyErr != nil {
@@ -98,14 +127,20 @@ func (e *SystemInstanceRoleEnsurer) PutRolePolicy(_ string, in *iam.PutRolePolic
 }
 
 func (e *SystemInstanceRoleEnsurer) GetInstanceProfile(_ string, in *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	p, ok := e.Profiles[aws.StringValue(in.InstanceProfileName)]
 	if !ok {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
-	return &iam.GetInstanceProfileOutput{InstanceProfile: p}, nil
+	return &iam.GetInstanceProfileOutput{InstanceProfile: copyProfile(p)}, nil
 }
 
 func (e *SystemInstanceRoleEnsurer) CreateInstanceProfile(accountID string, in *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	e.CreateInstanceProfileCalls++
 	e.LastProfileAcct = accountID
 	if e.CreateInstanceProfileErr != nil {
@@ -124,10 +159,13 @@ func (e *SystemInstanceRoleEnsurer) CreateInstanceProfile(accountID string, in *
 		Arn:                 aws.String(arn),
 	}
 	e.Profiles[name] = p
-	return &iam.CreateInstanceProfileOutput{InstanceProfile: p}, nil
+	return &iam.CreateInstanceProfileOutput{InstanceProfile: copyProfile(p)}, nil
 }
 
 func (e *SystemInstanceRoleEnsurer) AddRoleToInstanceProfile(_ string, in *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	e.AddRoleToInstanceProfileCalls++
 	if e.AddRoleToInstanceProfileErr != nil {
 		return nil, e.AddRoleToInstanceProfileErr

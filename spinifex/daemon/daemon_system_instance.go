@@ -52,6 +52,25 @@ func (d *Daemon) recordENIInstanceOwner(eniAccountID, eniID, instanceOwnerID str
 	}
 }
 
+// attachExtraENI attaches one pre-created extra ENI and, when the caller asked
+// for an explicit DeleteOnTermination, persists it onto the record. An ENI that
+// has to outlive its VM is only safe once that flag is stored, so a failed stamp
+// fails the attach rather than leaving a disposable NIC behind.
+func (d *Daemon) attachExtraENI(eniAccountID string, extra sysinstance.ExtraENIInput, instanceID string, deviceIndex int64) error {
+	if _, err := d.vpcService.AttachENI(eniAccountID, extra.ENIID, instanceID, deviceIndex); err != nil {
+		return err
+	}
+	if extra.DeleteOnTermination == nil {
+		return nil
+	}
+	if err := d.vpcService.UpdateENI(eniAccountID, extra.ENIID, func(r *handlers_ec2_vpc.ENIRecord) {
+		r.DeleteOnTermination = extra.DeleteOnTermination
+	}); err != nil {
+		return fmt.Errorf("set DeleteOnTermination on ENI %s: %w", extra.ENIID, err)
+	}
+	return nil
+}
+
 // LaunchSystemInstance creates and starts a system-managed VM (ELBv2 LB).
 // The VM is owned by the system account (GlobalAccountID), is not visible to
 // customer DescribeInstances calls, and always boots via direct kernel boot
@@ -160,7 +179,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				// customer-VPC ENI) lives in its own account; the ENI record is
 				// account-keyed, so attach under extra.AccountID when set.
 				extraAccount := resolveENIAccount(extra.AccountID, eniAccountID)
-				if _, attachErr := d.vpcService.AttachENI(extraAccount, extra.ENIID, instance.ID, int64(idx+1)); attachErr != nil {
+				if attachErr := d.attachExtraENI(extraAccount, extra, instance.ID, int64(idx+1)); attachErr != nil {
 					slog.Error("LaunchSystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", instance.ID, "err", attachErr)
 					d.cleanupFailedSystemInstance(instance, instanceType)
 					return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)
@@ -488,7 +507,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 	for idx, extra := range input.ExtraENIs {
 		if d.vpcService != nil {
 			extraAccount := resolveENIAccount(extra.AccountID, input.AccountID)
-			if _, attachErr := d.vpcService.AttachENI(extraAccount, extra.ENIID, inst.ID, int64(idx+1)); attachErr != nil {
+			if attachErr := d.attachExtraENI(extraAccount, extra, inst.ID, int64(idx+1)); attachErr != nil {
 				slog.Error("launchAMISystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", inst.ID, "err", attachErr)
 				d.vmMgr.MarkFailed(context.Background(), inst, "extra_eni_attach_failed")
 				return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)

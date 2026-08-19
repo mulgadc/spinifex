@@ -246,12 +246,13 @@ func TestSweep_IsBoundedPerPassAndResumes(t *testing.T) {
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.svc = h.svc.WithDeps(Deps{
-		LoadCA:    newTestCA(t),
-		MasterKey: testMasterKey,
-		Launch:    h.launch.deps(),
-		Network:   h.network,
-		Snapshots: h.snaps,
-		Backup:    BackupPolicy{SweepDeleteLimit: 1},
+		LoadCA:             newTestCA(t),
+		MasterKey:          testMasterKey,
+		Launch:             h.launch.deps(),
+		Network:            h.network,
+		Snapshots:          h.snaps,
+		Backup:             BackupPolicy{SweepDeleteLimit: 1},
+		ServingCertKeyBits: testServingCertKeyBits,
 	})
 	seedInstance(t, h.svc, retainingRecord(0))
 	for _, age := range []time.Duration{oneDay, 2 * oneDay, 3 * oneDay} {

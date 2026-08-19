@@ -21,7 +21,10 @@ type networkResolver interface {
 
 // Where the customer-facing ENI lands.
 type endpointPlacement struct {
-	VpcID            string
+	VpcID string
+	// The VPC's own address range, which becomes the scope of the guest's client
+	// authentication rules.
+	VpcCIDR          string
 	SubnetID         string
 	SecurityGroupIDs []string
 }
@@ -60,7 +63,35 @@ func (s *Service) resolvePlacement(ctx context.Context, kv jetstream.KeyValue, a
 	if err != nil {
 		return nil, err
 	}
-	return &endpointPlacement{VpcID: vpcID, SubnetID: subnetID, SecurityGroupIDs: groupIDs}, nil
+	cidr, err := s.vpcCIDR(ctx, accountID, vpcID)
+	if err != nil {
+		return nil, err
+	}
+	return &endpointPlacement{VpcID: vpcID, VpcCIDR: cidr, SubnetID: subnetID, SecurityGroupIDs: groupIDs}, nil
+}
+
+// The VPC's address range. Resolved rather than derived from the subnet: the
+// guest's client authentication rules are scoped to the whole VPC, because an
+// app subnet reaching a DB subnet arrives carrying its own address.
+func (s *Service) vpcCIDR(ctx context.Context, accountID, vpcID string) (string, error) {
+	out, err := s.deps.Network.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
+		VpcIds: aws.StringSlice([]string{vpcID}),
+	}, accountID)
+	if err != nil {
+		return "", fmt.Errorf("rds: describe VPC %s: %w", vpcID, err)
+	}
+	if out != nil {
+		for _, vpc := range out.Vpcs {
+			if aws.StringValue(vpc.VpcId) != vpcID {
+				continue
+			}
+			if cidr := aws.StringValue(vpc.CidrBlock); cidr != "" {
+				return cidr, nil
+			}
+		}
+	}
+	return "", awserrors.Errorf(awserrors.ErrorDBInvalidVPCNetworkState,
+		"VPC %s has no address range to scope the DB instance's client authentication to", vpcID)
 }
 
 // The subnet a group places an instance in. Sorted rather than first-listed, so

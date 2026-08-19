@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
@@ -3161,6 +3162,55 @@ func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
 				assert.Empty(t, instances[0].PublicIPPool)
 				assert.Equal(t, 0, eni.updateCalls)
 			}
+		})
+	}
+}
+
+// TestPrepareRunInstances_PublicIPWithoutAllocator covers a node whose external
+// IPAM never initialised. A nil *ExternalIPAM in the interface reads as non-nil,
+// so the launch used to deref a nil receiver and take the daemon down with the
+// ENI already persisted; both wirings must now fail closed and unwind the ENI.
+func TestPrepareRunInstances_PublicIPWithoutAllocator(t *testing.T) {
+	cases := []struct {
+		name string
+		ipam PublicIPAllocator
+	}{
+		{name: "typed_nil_external_ipam", ipam: (*handlers_ec2_vpc.ExternalIPAM)(nil)},
+		{name: "no_allocator_wired", ipam: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eni := &fakeENICreator{
+				subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
+				createOut: &ec2.CreateNetworkInterfaceOutput{
+					NetworkInterface: &ec2.NetworkInterface{
+						NetworkInterfaceId: aws.String("eni-no-ipam"),
+						MacAddress:         aws.String("aa:bb:cc:dd:ee:11"),
+						PrivateIpAddress:   aws.String("10.0.0.40"),
+						VpcId:              aws.String("vpc-1"),
+					},
+				},
+			}
+			deleter := &fakeENIDeleter{}
+			svc, prov := prepareSvcWithENI(t, eni, nil)
+			svc.eniDeleter = deleter
+			svc.SetRunInstancesDeps(svc.amiLoader, nil, eni, tc.ipam)
+
+			_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				SubnetId:     aws.String("subnet-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}, "acc", "")
+
+			require.Error(t, err, "a public-IP launch with no allocator must fail, not boot an instance with no public address")
+			assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, err.Error())
+			assert.Empty(t, instances)
+			assert.Equal(t, 1, eni.detachCalls, "ENI must be detached before delete")
+			assert.Equal(t, []string{"eni-no-ipam"}, deleter.calls,
+				"the auto-created ENI must be deleted, otherwise it strands and blocks security group deletion")
+			assert.Len(t, prov.deallocated, 1, "capacity must be returned when the launch aborts")
 		})
 	}
 }

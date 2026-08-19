@@ -1,6 +1,7 @@
 ---
 title: "Bootable USB Install"
-description: "Install Spinifex on bare-metal hardware by flashing the Spinifex ISO to a USB drive and booting the target device from it."
+seoTitle: "Install Spinifex from a Bootable USB — Spinifex Docs"
+description: "Install Spinifex on bare-metal x86 hardware by flashing the Spinifex ISO to a USB drive, booting the target server from it, and wiping the disk you select."
 category: "Install"
 sections:
   - overview

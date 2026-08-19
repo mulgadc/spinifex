@@ -515,21 +515,15 @@ func isNATSTransient(err error) bool {
 }
 
 // checkPolicy evaluates IAM policies against resource "*".
-// Shorthand for checkPolicyResource(r, service, action, "*").
 func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) error {
-	return gw.checkPolicyResource(r, service, action, "*")
+	return gw.checkPolicyResources(r, service, action, []string{"*"})
 }
 
-// checkPolicyResource evaluates IAM policies against a specific resource ARN.
-// Root users bypass evaluation. A nil IAMService is a server fault and an
-// unauthenticated request is denied — neither can reach a gated handler through
-// the route tree. Used by EC2 paths that enforce iam:PassRole before attaching
-// an instance profile.
-func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, resource string) error {
+// checkPolicyResources evaluates every resource against one resolved policy
+// snapshot. Used when one API request authorizes multiple resource ARNs.
+func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action string, resources []string) error {
 	// Every dispatcher — query-protocol and REST-JSON alike — reaches this
-	// point with its resolved action, so telemetry enrichment lives here
-	// rather than duplicated per REST-JSON handler. Runs before the IAM
-	// checks below so it still fires when IAM is unconfigured.
+	// point with its resolved action, so telemetry enrichment lives here.
 	recordResolvedAction(r.Context(), service, action)
 
 	if gw.IAMService == nil {
@@ -566,7 +560,7 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 		assumedRoleID:     mustCtxString(r, ctxAssumedRoleID),
 		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
 	}
-	return gw.evaluatePrincipalPolicy(principal, policy.IAMAction(service, action), resource)
+	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources)
 }
 
 // mustCtxString reads a string context value, defaulting to "" for an absent
@@ -576,12 +570,11 @@ func mustCtxString(r *http.Request, key contextKey) string {
 	return v
 }
 
-// evaluatePrincipalPolicy is the request-shape-independent core of policy
-// enforcement: given an already-resolved principal (from SigV4 or, for /v2/*
-// ECR requests, a freshly rehydrated token identity), it resolves the
-// principal's current policies and evaluates iamAction against resource.
-// A nil IAMService fails closed here, matching checkPolicyResource.
-func (gw *GatewayConfig) evaluatePrincipalPolicy(principal principalContext, iamAction, resource string) error {
+// evaluatePrincipalPolicyResources resolves policies once and evaluates every
+// resource in the request against that same snapshot.
+func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
+	principal principalContext, iamAction string, resources []string,
+) error {
 	if gw.IAMService == nil {
 		slog.Error("evaluatePrincipalPolicy: IAM service not available", "action", iamAction)
 		return errors.New(awserrors.ErrorInternalError)
@@ -644,11 +637,13 @@ func (gw *GatewayConfig) evaluatePrincipalPolicy(principal principalContext, iam
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	if iampolicy.Evaluate(iamAction, resource, policies) == iampolicy.Deny {
-		slog.Info("evaluatePrincipalPolicy: access denied", "identity", logIdentity, "action", iamAction, "resource", resource)
-		return errors.New(awserrors.ErrorAccessDenied)
+	for _, resource := range resources {
+		if iampolicy.Evaluate(iamAction, resource, policies) == iampolicy.Deny {
+			slog.Info("evaluatePrincipalPolicy: access denied",
+				"identity", logIdentity, "action", iamAction, "resource", resource)
+			return errors.New(awserrors.ErrorAccessDenied)
+		}
 	}
-
 	return nil
 }
 

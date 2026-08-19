@@ -13,7 +13,6 @@ const (
 	defaultEnvFile    = "/etc/spinifex-rds/agent.env"
 	defaultGatewayCA  = "/etc/spinifex-rds/gateway-ca.pem"
 	defaultHandoffDir = "/run/spinifex-rds"
-	defaultEngineHost = "127.0.0.1"
 	// Where setup.sh stamps the engine the image bakes. The agent builds its
 	// engine implementation from this file rather than from anything delivered.
 	defaultEngineFile         = "/etc/spinifex-rds/engine"
@@ -38,7 +37,6 @@ type config struct {
 	// version alone rather than clearing it.
 	EngineVersion string
 	HandoffDir    string
-	EngineHost    string
 	EnginePort    int
 	PollWait      time.Duration
 
@@ -89,7 +87,6 @@ func loadConfig(envFile string) config {
 		EngineFile:           get("RDS_ENGINE_FILE"),
 		EngineVersion:        get("RDS_ENGINE_VERSION"),
 		HandoffDir:           get("RDS_HANDOFF_DIR"),
-		EngineHost:           get("RDS_ENGINE_HOST"),
 		EngineBinDir:         get("RDS_ENGINE_BIN"),
 		EngineDataDir:        get("RDS_ENGINE_DATA"),
 		SocketDir:            get("RDS_SOCKET_DIR"),
@@ -107,9 +104,6 @@ func loadConfig(envFile string) config {
 	}
 	if cfg.HandoffDir == "" {
 		cfg.HandoffDir = defaultHandoffDir
-	}
-	if cfg.EngineHost == "" {
-		cfg.EngineHost = defaultEngineHost
 	}
 	if cfg.EngineFile == "" {
 		cfg.EngineFile = defaultEngineFile

@@ -1,6 +1,7 @@
 ---
 title: "Flaw Remediation Policy"
-description: "CVSS-tiered SLAs for identifying, reporting, and correcting software flaws in Spinifex"
+seoTitle: "Spinifex Flaw Remediation Policy (CVSS) — Spinifex Docs"
+description: "CVSS-tiered SLAs for identifying, reporting, and correcting software flaws in Spinifex and its direct dependencies, for maintainers and CMMC Level 1 operators."
 category: "Security"
 sections:
   - overview

@@ -304,7 +304,10 @@ func TestAcknowledgeDBBootstrap_NeverDecrypts(t *testing.T) {
 	svc := newTestService(t)
 	payloadID := seedPending(t, svc, defaultRecord())
 
-	rotated := svc.WithDeps(Deps{LoadCA: newTestCA(t), MasterKey: []byte(testOtherMasterKeyS)})
+	rotated := svc.WithDeps(Deps{
+		LoadCA: newTestCA(t), MasterKey: []byte(testOtherMasterKeyS),
+		ServingCertKeyBits: testServingCertKeyBits,
+	})
 	_, err := rotated.AcknowledgeDBBootstrap(t.Context(), &AcknowledgeDBBootstrapInput{
 		DBInstanceIdentifier: testDBID,
 		InstanceID:           testInstance,
@@ -388,7 +391,10 @@ func TestGetDBBootstrapConfig_UnreadablePayloadAttachesAndReportsWhy(t *testing.
 	svc := newTestService(t)
 	seedPending(t, svc, defaultRecord())
 
-	rotated := svc.WithDeps(Deps{LoadCA: newTestCA(t), MasterKey: []byte(testOtherMasterKeyS)})
+	rotated := svc.WithDeps(Deps{
+		LoadCA: newTestCA(t), MasterKey: []byte(testOtherMasterKeyS),
+		ServingCertKeyBits: testServingCertKeyBits,
+	})
 	out, err := rotated.GetDBBootstrapConfig(t.Context(), bootstrapInput(), testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, BootstrapModeAttach, out.Mode)
@@ -433,10 +439,11 @@ func TestCreateDBInstance_WithoutAMasterKeyStagesNothing(t *testing.T) {
 	t.Parallel()
 	h := newCreateHarness(t, "")
 	h.svc = h.svc.WithDeps(Deps{
-		LoadCA:  newTestCA(t),
-		Launch:  h.launch.deps(),
-		Network: h.network,
-		IAM:     testIAMProvider(h.iam),
+		LoadCA:             newTestCA(t),
+		Launch:             h.launch.deps(),
+		Network:            h.network,
+		IAM:                testIAMProvider(h.iam),
+		ServingCertKeyBits: testServingCertKeyBits,
 	})
 
 	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)

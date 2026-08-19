@@ -12,10 +12,12 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -876,4 +878,51 @@ func TestReleaseSystemInstanceEIP_ReleasesEipServiceAllocation(t *testing.T) {
 	assert.Empty(t, inst.PublicIP, "instance public IP must be cleared")
 	assert.Empty(t, inst.PublicIPAllocID, "instance alloc ID must be cleared so externalIPAM teardown does not double-release")
 	assert.Empty(t, inst.PublicIPAssocID)
+}
+
+// --- attachExtraENI: DeleteOnTermination ---
+
+// TestAttachExtraENI_DeleteOnTerminationFalseSurvivesTerminate covers the RDS
+// replace: the customer/endpoint ENI is attached as an extra NIC and has to
+// outlive the VM, because a replacement launch resolves the endpoint by that
+// ENI ID. Without the explicit flag the terminate sweep deletes it and the
+// replacement fails with InvalidNetworkInterfaceID.NotFound.
+func TestAttachExtraENI_DeleteOnTerminationFalseSurvivesTerminate(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+	f.vmInst.AccountID = testAccountID
+
+	require.NoError(t, f.daemon.attachExtraENI(testAccountID, sysinstance.ExtraENIInput{
+		ENIID:               f.eniID,
+		DeleteOnTermination: aws.Bool(false),
+	}, f.vmInst.ID, 1))
+
+	rec, err := f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
+	require.NoError(t, err)
+	require.NotNil(t, rec.DeleteOnTermination, "the attach must stamp the flag, not leave the attach-time default")
+	assert.False(t, *rec.DeleteOnTermination)
+
+	require.NoError(t, newInstanceCleanerAdapter(f.daemon).DetachAndDeleteENI(f.vmInst))
+
+	rec, err = f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
+	require.NoError(t, err, "the endpoint ENI must survive the terminate half of a replace")
+	assert.Equal(t, "available", rec.Status, "it must be detached, so the replacement VM can re-attach it")
+	assert.Empty(t, rec.InstanceId)
+}
+
+// TestAttachExtraENI_NilDeleteOnTerminationStaysDisposable holds the ELBv2
+// multi-subnet ALB and EKS cross-account NLB extras at their current behaviour:
+// they carry no flag and are deleted with the VM.
+func TestAttachExtraENI_NilDeleteOnTerminationStaysDisposable(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+	f.vmInst.AccountID = testAccountID
+
+	require.NoError(t, f.daemon.attachExtraENI(testAccountID, sysinstance.ExtraENIInput{
+		ENIID: f.eniID,
+	}, f.vmInst.ID, 1))
+
+	require.NoError(t, newInstanceCleanerAdapter(f.daemon).DetachAndDeleteENI(f.vmInst))
+
+	_, err := f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
+	require.Error(t, err, "an extra ENI with no explicit flag stays disposable")
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound))
 }

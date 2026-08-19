@@ -49,7 +49,7 @@ var engineMariaDB = Engine{
 // Platform-owned settings are absent, except the ones AWS exposes as modifiable
 // and this platform pins: those are present and unmodifiable, so a refusal reads
 // as policy rather than as a missing feature.
-var mariadbParameterCatalog = buildParameterCatalog(
+var mariadbParameterCatalog, mariadbParameterCatalogErr = buildParameterCatalog(
 	// Connections and threads. max_connections is what a size-derived default
 	// matters most for: RDS's own formula is {DBInstanceClassMemory/12582880}.
 	ParameterSpec{

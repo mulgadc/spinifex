@@ -1,6 +1,7 @@
 ---
 title: "Single-Node Spinifex on OnLogic HX401"
-description: "Run a complete EC2, EBS and S3 stack on one fanless OnLogic edge node, and measure what the platform costs against bare metal."
+seoTitle: "Single-Node Spinifex on OnLogic HX401 — Spinifex Docs"
+description: "Run a complete EC2, EBS, and S3 stack on one fanless OnLogic HX401 edge node, and measure what the platform layer costs compared with bare-metal baselines."
 category: "Reference Architectures"
 tags:
   - onlogic

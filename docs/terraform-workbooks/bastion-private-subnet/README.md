@@ -1,6 +1,7 @@
 ---
 title: "Bastion with Private Subnet"
-description: "Deploy a bastion host to access an isolated private compute instance with no internet connectivity."
+seoTitle: "Terraform Bastion Host and Private Subnet — Spinifex Docs"
+description: "Deploy a VPC with public and private subnets on Spinifex, then use a bastion host as the only route to an isolated EC2 instance that has no internet access."
 category: "Terraform Workbooks"
 tags:
   - terraform

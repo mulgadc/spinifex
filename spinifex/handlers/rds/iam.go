@@ -31,7 +31,7 @@ var InternalAgentActions = []string{
 
 // Never rds:*: granting the customer surface here would let a Postgres RCE on
 // one DB VM manage its account's whole fleet.
-var instanceRoleInlinePolicy = func() string {
+func instanceRoleInlinePolicy() (string, error) {
 	actions := make(handlers_iam.StringOrArr, 0, len(InternalAgentActions))
 	for _, action := range InternalAgentActions {
 		actions = append(actions, "rds:"+action)
@@ -45,10 +45,10 @@ var instanceRoleInlinePolicy = func() string {
 		}},
 	})
 	if err != nil {
-		panic("rds: cannot marshal the instance-role policy: " + err.Error())
+		return "", fmt.Errorf("marshal instance-role policy: %w", err)
 	}
-	return string(doc)
-}()
+	return string(doc), nil
+}
 
 // Resolved per launch rather than held, mirroring EKS: the KV-backed IAM
 // service has no responders until JetStream is up, so an eager build races
@@ -65,8 +65,12 @@ func ensureInstanceProfile(provider IAMProvider, accountID string) (string, erro
 	if iamSvc == nil {
 		return "", errors.New("rds: IAM service is unavailable")
 	}
+	policy, err := instanceRoleInlinePolicy()
+	if err != nil {
+		return "", fmt.Errorf("rds: construct instance-role inline policy: %w", err)
+	}
 	profileARN, err := handlers_iam.EnsureSystemInstanceProfile(iamSvc, accountID,
-		InstanceRoleName, instanceRoleInlinePolicyName, instanceRoleInlinePolicy)
+		InstanceRoleName, instanceRoleInlinePolicyName, policy)
 	if err != nil {
 		return "", fmt.Errorf("rds: ensure instance profile %s for account %s: %w",
 			InstanceRoleName, accountID, err)

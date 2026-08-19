@@ -1,6 +1,7 @@
 ---
 title: "Spinifex Vision Pipeline on Cisco UCS"
-description: "A YOLO11m object-detection + Qwen2-VL scene-captioning pipeline on Spinifex, streaming from a shared Predastore bucket across two independent EC2-compatible instances, with Intel AMX and NVIDIA L4 acceleration compared head-to-head."
+seoTitle: "Spinifex Vision Pipeline on Cisco UCS — Spinifex Docs"
+description: "A YOLO11m detection and Qwen2-VL captioning pipeline streaming from a shared Predastore bucket across two EC2 instances, with Intel AMX and NVIDIA L4 compared."
 category: "Reference Architectures"
 tags:
   - cisco

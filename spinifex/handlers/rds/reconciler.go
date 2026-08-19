@@ -84,6 +84,12 @@ type Reconciler struct {
 	// every sweep and crowd the bounded ring.
 	reportedMu      sync.Mutex
 	reportedPending map[string]string
+
+	// The region's RDS system security group, resolved once. Ensuring it per
+	// instance per pass would be a VPC and group describe for every DB VM every
+	// 15s; the group is regional and nothing deletes it per instance.
+	systemSGMu sync.Mutex
+	systemSGID string
 }
 
 // holder identifies this daemon in the lease.
@@ -94,19 +100,27 @@ func NewReconciler(svc *Service, holder string) *Reconciler {
 // Drives the leadership and reconcile loop until ctx is cancelled. Intended as
 // a daemon-boot goroutine; panics are the caller's recover concern.
 func (r *Reconciler) Run(ctx context.Context) {
-	leaseTicker := time.NewTicker(leaseRefresh)
+	leadershipCtx, cancelLeadership := context.WithCancel(ctx)
+	leadershipDone := make(chan struct{})
+	go func() {
+		defer close(leadershipDone)
+		r.maintainLeadership(leadershipCtx, leaseRefresh)
+	}()
+	defer func() {
+		cancelLeadership()
+		<-leadershipDone
+	}()
+
 	reconcileTicker := time.NewTicker(reconcileInterval)
-	defer leaseTicker.Stop()
 	defer reconcileTicker.Stop()
 
-	r.evaluateLeadership(ctx)
 	for {
 		select {
 		case <-ctx.Done():
+			cancelLeadership()
+			<-leadershipDone
 			r.relinquish()
 			return
-		case <-leaseTicker.C:
-			r.evaluateLeadership(ctx)
 		case <-reconcileTicker.C:
 			if !r.isLeader() {
 				continue
@@ -114,6 +128,23 @@ func (r *Reconciler) Run(ctx context.Context) {
 			if err := r.reconcileOnce(ctx); err != nil {
 				slog.ErrorContext(ctx, "rds reconciler: pass failed", "holder", r.holder, "err", err)
 			}
+		}
+	}
+}
+
+// Leadership refresh runs independently because a fleet pass can contain
+// blocking network I/O and must not outlive its lease.
+func (r *Reconciler) maintainLeadership(ctx context.Context, refresh time.Duration) {
+	leaseTicker := time.NewTicker(refresh)
+	defer leaseTicker.Stop()
+
+	r.evaluateLeadership(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-leaseTicker.C:
+			r.evaluateLeadership(ctx)
 		}
 	}
 }
@@ -251,6 +282,10 @@ func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValu
 	if err := r.reportStalePendingBootstrap(ctx, kv, accountID, &rec); err != nil {
 		return err
 	}
+	remediated, err := r.remediateSystemENISG(ctx, kv, rev, &rec)
+	if err != nil || remediated {
+		return err
+	}
 	switch rec.Status {
 	case StatusCreating:
 		return r.reconcileCreating(ctx, kv, rev, accountID, &rec)
@@ -269,6 +304,67 @@ func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValu
 	default:
 		return nil
 	}
+}
+
+// Moves a system NIC launched before the RDS system security group existed onto
+// it, once. Reports whether it acted, so the caller yields this pass and the
+// status handler runs on the next tick against a fresh revision.
+//
+// vpcd applies the requested group list declaratively, so this removes the ENI
+// from the system VPC's default group rather than merely adding the new one
+// alongside it — and that default group is the whole of the exposure.
+func (r *Reconciler) remediateSystemENISG(ctx context.Context, kv jetstream.KeyValue,
+	rev uint64, rec *DBInstanceRecord) (bool, error) {
+	if rec.SystemENIID == "" || rec.Status == StatusDeleting {
+		return false, nil
+	}
+	sgID, err := r.ensuredSystemSG(ctx)
+	if err != nil {
+		return false, err
+	}
+	if rec.SystemSGID == sgID {
+		return false, nil
+	}
+
+	if _, err := r.svc.deps.Launch.VPC.ModifyNetworkInterfaceAttribute(ctx, &ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(rec.SystemENIID),
+		Groups:             aws.StringSlice([]string{sgID}),
+	}, utils.GlobalAccountID); err != nil {
+		return false, fmt.Errorf("rds: move the system NIC of %s onto %s: %w", rec.DBInstanceIdentifier, sgID, err)
+	}
+	// Recorded only once vpcd has accepted the change, so a failure above is
+	// retried next pass rather than remembered as done.
+	rec.SystemSGID = sgID
+	if _, err := updateJSONRevision(ctx, kv, DBInstanceKey(rec.DBInstanceIdentifier), rev, rec); err != nil {
+		return false, err
+	}
+	slog.InfoContext(ctx, "rds: system NIC moved onto the RDS system security group",
+		"dbInstance", rec.DBInstanceIdentifier, "eniId", rec.SystemENIID, "groupId", sgID)
+	return true, nil
+}
+
+// The region's system security group, ensured on first use and then cached for
+// the life of the process.
+func (r *Reconciler) ensuredSystemSG(ctx context.Context) (string, error) {
+	r.systemSGMu.Lock()
+	defer r.systemSGMu.Unlock()
+	if r.systemSGID != "" {
+		return r.systemSGID, nil
+	}
+	deps := r.svc.deps.Launch
+	if deps.VPC == nil || deps.Config == nil {
+		return "", errors.New("rds reconciler: no VPC path is configured to place system NICs on their own security group")
+	}
+	refs, err := EnsureSystemVPC(ctx, deps.SystemVPC, &deps.Config.RDS, utils.GlobalAccountID, deps.Config.Region)
+	if err != nil {
+		return "", err
+	}
+	sgID, err := EnsureSystemSecurityGroup(ctx, deps.VPC, utils.GlobalAccountID, deps.Config.Region, refs.VpcID)
+	if err != nil {
+		return "", err
+	}
+	r.systemSGID = sgID
+	return sgID, nil
 }
 
 // An available instance whose payload is still staged bootstrapped against an

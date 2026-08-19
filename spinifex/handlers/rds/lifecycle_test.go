@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -231,6 +232,7 @@ type lifecycleHarness struct {
 	cmdr     *fakeInstanceCommander
 	snaps    *fakeSnapshots
 	enis     *fakeENIs
+	sysvpc   *fakeSystemVPC
 	launcher *fakeLauncher
 	volumes  *fakeVolumes
 	agent    *stubAgent
@@ -251,22 +253,26 @@ func newLifecycleHarness(t *testing.T, agentFails bool) *lifecycleHarness {
 		cmdr:     &fakeInstanceCommander{vm: vmState},
 		snaps:    &fakeSnapshots{},
 		enis:     &fakeENIs{},
+		sysvpc:   &fakeSystemVPC{},
 		launcher: &fakeLauncher{},
 		volumes:  &fakeVolumes{},
 		vmState:  vmState,
 	}
 	h.agent = newStubAgent(t, nc, testAccountID, testDBID, agentFails)
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
-		LoadCA:        newTestCA(t),
-		MasterKey:     testMasterKey,
-		Instances:     h.cmdr,
-		Snapshots:     h.snaps,
-		InstanceState: h.vmState,
-		VMStopTimeout: testVMStopTimeout,
+		LoadCA:             newTestCA(t),
+		MasterKey:          testMasterKey,
+		Instances:          h.cmdr,
+		Snapshots:          h.snaps,
+		InstanceState:      h.vmState,
+		VMStopTimeout:      testVMStopTimeout,
+		ServingCertKeyBits: testServingCertKeyBits,
 		Launch: LaunchDeps{
-			VPC:      h.enis,
-			Instance: h.launcher,
-			Volume:   h.volumes,
+			Config:    &config.Config{Region: testRegion},
+			SystemVPC: h.sysvpc.deps(),
+			VPC:       h.enis,
+			Instance:  h.launcher,
+			Volume:    h.volumes,
 		},
 	})
 	return h
@@ -278,6 +284,9 @@ func availableRecord() DBInstanceRecord {
 	rec.Status = StatusAvailable
 	rec.ENIID = "eni-cust01"
 	rec.SystemENIID = "eni-sys01"
+	// Already on the region's system group, as a current launch records it, so a
+	// lifecycle case is not answering the retrofit sweep instead of its own step.
+	rec.SystemSGID = testSystemSG
 	rec.DataVolumeID = "vol-rdsdata01"
 	rec.CreatedAt = time.Now().UTC().Add(-time.Hour)
 	return rec

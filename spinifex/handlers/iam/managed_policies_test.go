@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
@@ -20,6 +21,52 @@ var rdsInternalActions = []string{
 	"rds:SubmitDBStateChange",
 	"rds:PollDBCommands",
 	"rds:GetDBBootstrapConfig",
+}
+
+func TestParseBuiltinManagedPolicies(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     map[string]string
+		wantErr string
+	}{
+		{
+			name: "valid document",
+			raw: map[string]string{
+				"arn:valid": `{"Version":"2012-10-17","Statement":[]}`,
+			},
+		},
+		{
+			name: "malformed document",
+			raw: map[string]string{
+				"arn:malformed": `{`,
+			},
+			wantErr: "parse managed policy arn:malformed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := parseBuiltinManagedPolicies(tt.raw)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Nil(t, parsed)
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, parsed, len(tt.raw))
+		})
+	}
+}
+
+func TestNewIAMServiceImpl_PropagatesBuiltinManagedPolicyParseError(t *testing.T) {
+	parseErr := errors.New("malformed builtin policy")
+	previousErr := builtinManagedPolicyParseErr
+	builtinManagedPolicyParseErr = parseErr
+	t.Cleanup(func() { builtinManagedPolicyParseErr = previousErr })
+
+	_, err := NewIAMServiceImpl(t.Context(), nil, make([]byte, 32), 1)
+	require.ErrorIs(t, err, parseErr)
+	assert.ErrorContains(t, err, "init builtin managed policies")
 }
 
 // A role whose permissions come entirely from an attached AWS-managed ARN has to

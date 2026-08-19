@@ -1,6 +1,7 @@
 ---
 title: "RDS Quickstart (PostgreSQL)"
-description: "Stand up a managed PostgreSQL database on Spinifex with Terraform — a VPC, a DB subnet group, a parameter group, an aws_db_instance, and a client VM inside the VPC that connects to it with psql."
+seoTitle: "Terraform RDS PostgreSQL Quickstart — Spinifex Docs"
+description: "Stand up a managed PostgreSQL database on Spinifex with Terraform: a VPC, DB subnet group, parameter group, aws_db_instance, and a client VM that runs psql."
 category: "Terraform Workbooks"
 tags:
   - terraform
@@ -52,6 +53,8 @@ The endpoint is reachable from **any subnet of the VPC**, so the client does not
 The client subnet is public in that it has an internet-gateway route, which the client needs to `apt-get` a psql. The DB subnet has no route table association, so it stays on the main route table `create-vpc` writes: intra-VPC routing and nothing else. The endpoint ENI gets no public address and `publicly_accessible = true` is rejected either way.
 
 The database security group admits `5432` from the client security group and nothing else, which compiles to an ACL on the endpoint ENI itself — the port is deny-by-default for everything else in the VPC.
+
+That holds for the instance, not just for the endpoint ENI. The DB VM has two further NICs the platform uses to manage it, and no customer security group governs either; the engine binds the endpoint ENI's address alone, so it is not listening on them. PostgreSQL's client authentication rules are scoped to this VPC's own range as well, so the endpoint really is the whole of the reachable surface.
 
 ## Prerequisites
 

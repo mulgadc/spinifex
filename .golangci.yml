@@ -26,7 +26,7 @@ linters:
     - errorlint # catches ==/!= on errors, type assertions on errors, and %v instead of %w — all break on wrapped errors
     - exptostd # detects golang.org/x/exp/ functions replaceable by stdlib
     - fatcontext # detects nested contexts in loops
-    - forbidigo # blocks the legacy JetStream/KV symbols
+    - forbidigo # blocks forbidden identifiers
     - gocheckcompilerdirectives # validates go compiler directive comments (//go:)
     - godot # checks that declaration comments end in a period
     - goprintffuncname # checks that printf-like functions are named with f at the end
@@ -92,6 +92,8 @@ linters:
     forbidigo:
       analyze-types: true
       forbid:
+        - pattern: '^panic$'
+          msg: panic terminates the process; return an error or explicitly justify the panic.
         - pattern: '\.JetStream$'
           pkg: '^github\.com/nats-io/nats\.go$'
           msg: legacy nc.JetStream() is superseded; construct with jetstream.New(nc).
@@ -166,6 +168,7 @@ linters:
           - bodyclose
           - errcheck
           - errchkjson
+          - forbidigo
           - gosec
 
       # spinifex-specific: gosec exclusions

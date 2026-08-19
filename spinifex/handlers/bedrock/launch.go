@@ -27,11 +27,6 @@ import (
 // serving VM's system-VPC ENI private IP.
 const vllmServePort = 8000
 
-// weightsVolumeDevice is where a serving VM's COW-cloned weights volume is
-// attached. Fixed like RDS's dataVolumeDevice: the guest locates it by
-// device, not by name, and one VM never carries more than one weights volume.
-const weightsVolumeDevice = "/dev/sdf"
-
 // bedrockInstanceTagKey links an ENI or volume back to its serving VM, so a
 // teardown or leak sweep can find them without the KV record.
 const bedrockInstanceTagKey = "spinifex:bedrock-endpoint"
@@ -80,31 +75,99 @@ type LaunchDeps struct {
 	NodeID string
 }
 
-// LaunchInput describes the serving VM to launch. Everything here is already
-// validated and admission-checked by the caller (Service.Ensure): the launch
-// helper resolves and wires, it does not re-police capacity or catalog rules.
+// LaunchMemberInput describes one model the shared VM must serve: its own
+// family (selecting the serving engine) and any extra engine args. The
+// launcher assigns its port and weights device deterministically — the
+// caller never has to pick around a collision.
+type LaunchMemberInput struct {
+	ModelID  string
+	Family   string
+	VLLMArgs []string
+}
+
+// LaunchInput describes the serving VM to launch: the bundle's group id (used
+// for the ENI/volume tags, and identical to a standalone model's own model id
+// in the bundle-of-one case), the instance type, and every member the shared
+// VM must serve. Everything here is already validated and admission-checked
+// by the caller (Service.Ensure): the launch helper resolves and wires, it
+// does not re-police capacity or catalog rules.
 type LaunchInput struct {
-	ModelID      string
+	GroupID      string
 	InstanceType string
-	VLLMArgs     []string
+	Members      []LaunchMemberInput
+}
+
+// LaunchMemberOutput is one member's own address within the bundle's shared
+// VM: its assigned port, and the weights volume cloned for it.
+type LaunchMemberOutput struct {
+	Port            int
+	WeightsVolumeID string
 }
 
 type LaunchOutput struct {
-	InstanceID      string
-	ENIID           string
-	PrivateIP       string
-	WeightsVolumeID string
-	// BaseURL is the vLLM server's base address, derived from PrivateIP.
-	BaseURL string
+	InstanceID string
+	ENIID      string
+	PrivateIP  string
+	// Members maps every launched member's model id to its own port and
+	// weights volume within this VM.
+	Members map[string]LaunchMemberOutput
+	// PrimaryModelID is the bundle's generative (vLLM) member, or the sole
+	// member for a bundle of one — the one EndpointRecord's BaseURL and
+	// WeightsVolumeID mirror for callers that only care about the generative
+	// model (the reaper's Prometheus scrape, the CLI's summary view).
+	PrimaryModelID string
 	// Tears down everything this launch created, for a caller whose readiness
 	// probe times out after it returned. The launch runs it itself on its own
 	// failures, so it is only ever invoked once.
 	Unwind func(context.Context)
 }
 
-// LaunchServingVM boots one self-hosted vLLM serving VM for in.ModelID. On any
-// failure every resource this call created is torn down, so a retried Ensure
-// does not accumulate orphan ENIs, volumes and VMs.
+// MemberBaseURLs returns every member's own "http://ip:port" base address,
+// keyed by model id — what the multi-service readiness wait probes.
+func (o *LaunchOutput) MemberBaseURLs() map[string]string {
+	out := make(map[string]string, len(o.Members))
+	for modelID, m := range o.Members {
+		out[modelID] = "http://" + net.JoinHostPort(o.PrivateIP, strconv.Itoa(m.Port))
+	}
+	return out
+}
+
+// teiBasePort is the first port assigned to a non-vLLM (TEI) member; members
+// beyond the first take the next port up. vllmServePort is never in this
+// range, so a vLLM member's well-known port can never collide with one.
+const teiBasePort = 8001
+
+// assignMemberPorts assigns each member a deterministic serving port: the
+// vLLM (familyMeta) member always takes vllmServePort, since that is the
+// well-known port real inference traffic already dials; every other member
+// takes the next port from teiBasePort up, in the order given. A bundle never
+// carries more than one vLLM member — LookupCoServeGroup's catalog data
+// guarantees that — so there is never a collision to resolve.
+func assignMemberPorts(members []LaunchMemberInput) map[string]int {
+	ports := make(map[string]int, len(members))
+	next := teiBasePort
+	for _, m := range members {
+		if m.Family == gateway_bedrock.FamilyMeta {
+			ports[m.ModelID] = vllmServePort
+			continue
+		}
+		ports[m.ModelID] = next
+		next++
+	}
+	return ports
+}
+
+// nthWeightsDevice returns the nth (0-based) member's weights-volume device
+// name: /dev/sdf, then /dev/sdg, and so on. One VM never carries more than a
+// handful of co-served members, so the alphabet is not a real ceiling.
+func nthWeightsDevice(n int) string {
+	return fmt.Sprintf("/dev/sd%c", 'f'+n)
+}
+
+// LaunchServingVM boots one shared self-hosted serving VM for every member in
+// in.Members — a bundle of one is a standalone model launched exactly as
+// before. On any failure every resource this call created is torn down, so a
+// retried Ensure does not accumulate orphan ENIs, volumes and VMs.
 func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out *LaunchOutput, err error) {
 	if err := validateLaunchInput(in); err != nil {
 		return nil, err
@@ -116,12 +179,19 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 		return nil, err
 	}
 
-	snapshotID, resolvable, err := deps.Weights.Resolve(ctx, in.ModelID)
-	if err != nil {
-		return nil, fmt.Errorf("bedrock: resolve weights for %s: %w", in.ModelID, err)
-	}
-	if !resolvable {
-		return nil, fmt.Errorf("%w: %s", ErrNoWeightsStaged, in.ModelID)
+	// Every member's weights must resolve before anything is created: a
+	// partially-stageable bundle must refuse the whole launch, not boot a VM
+	// that can only ever serve some of its members.
+	snapshotIDs := make(map[string]string, len(in.Members))
+	for _, m := range in.Members {
+		snapshotID, resolvable, err := deps.Weights.Resolve(ctx, m.ModelID)
+		if err != nil {
+			return nil, fmt.Errorf("bedrock: resolve weights for %s: %w", m.ModelID, err)
+		}
+		if !resolvable {
+			return nil, fmt.Errorf("%w: %s", ErrNoWeightsStaged, m.ModelID)
+		}
+		snapshotIDs[m.ModelID] = snapshotID
 	}
 
 	sysRefs, err := EnsureSystemVPC(ctx, deps.SystemVPC, &deps.Config.Bedrock, utils.GlobalAccountID, region)
@@ -163,7 +233,7 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 		}
 	}()
 
-	eni, err := createLaunchENI(ctx, deps.VPC, systemSubnetID, in.ModelID)
+	eni, err := createLaunchENI(ctx, deps.VPC, systemSubnetID, in.GroupID)
 	if err != nil {
 		return nil, err
 	}
@@ -171,22 +241,38 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 		deleteLaunchENI(ctx, deps.VPC, eni.id)
 	})
 
-	weightsVolumeID, err := createWeightsVolume(ctx, deps.Volume, az, snapshotID, in.ModelID)
-	if err != nil {
-		return nil, err
-	}
-	rollback = append(rollback, func(ctx context.Context) {
-		if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(weightsVolumeID)}, utils.GlobalAccountID); delErr != nil {
-			slog.WarnContext(ctx, "bedrock: rollback delete of orphaned weights volume failed",
-				"model", in.ModelID, "volumeId", weightsVolumeID, "err", delErr)
-		}
-	})
+	ports := assignMemberPorts(in.Members)
+	devices := make(map[string]string, len(in.Members))
+	volumeIDs := make(map[string]string, len(in.Members))
+	userDataMembers := make([]bundleMemberUserData, 0, len(in.Members))
+	for i, m := range in.Members {
+		device := nthWeightsDevice(i)
+		devices[m.ModelID] = device
 
-	userData := buildServeUserData(serveUserDataInput{
-		ModelID:       in.ModelID,
-		VLLMArgs:      in.VLLMArgs,
-		WeightsDevice: weightsVolumeDevice,
-		ServePort:     vllmServePort,
+		weightsVolumeID, err := createWeightsVolume(ctx, deps.Volume, az, snapshotIDs[m.ModelID], m.ModelID)
+		if err != nil {
+			return nil, err
+		}
+		volumeIDs[m.ModelID] = weightsVolumeID
+		rollback = append(rollback, func(ctx context.Context) {
+			if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(weightsVolumeID)}, utils.GlobalAccountID); delErr != nil {
+				slog.WarnContext(ctx, "bedrock: rollback delete of orphaned weights volume failed",
+					"model", m.ModelID, "volumeId", weightsVolumeID, "err", delErr)
+			}
+		})
+
+		userDataMembers = append(userDataMembers, bundleMemberUserData{
+			ModelID:       m.ModelID,
+			Family:        m.Family,
+			VLLMArgs:      m.VLLMArgs,
+			WeightsDevice: device,
+			Port:          ports[m.ModelID],
+		})
+	}
+
+	userData := buildBundleUserData(bundleUserDataInput{
+		GroupID: in.GroupID,
+		Members: userDataMembers,
 	})
 
 	sysOut, err := deps.Instance.LaunchSystemInstance(&sysinstance.SystemInstanceInput{
@@ -205,36 +291,47 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 		UserData:  userData,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bedrock: launch serving VM for %s: %w", in.ModelID, err)
+		return nil, fmt.Errorf("bedrock: launch serving VM for %s: %w", in.GroupID, err)
 	}
 	if sysOut == nil || sysOut.InstanceID == "" {
-		return nil, fmt.Errorf("bedrock: launch serving VM for %s: launcher returned no instance", in.ModelID)
+		return nil, fmt.Errorf("bedrock: launch serving VM for %s: launcher returned no instance", in.GroupID)
 	}
 	instanceID := sysOut.InstanceID
 	terminateVM = func(ctx context.Context) {
 		if termErr := deps.Instance.TerminateSystemInstance(instanceID); termErr != nil &&
 			!errors.Is(termErr, sysinstance.ErrSystemInstanceNotFound) {
 			slog.WarnContext(ctx, "bedrock: rollback terminate of failed serving VM failed",
-				"model", in.ModelID, "instanceId", instanceID, "err", termErr)
+				"group", in.GroupID, "instanceId", instanceID, "err", termErr)
 		}
 	}
 
-	device, err := deps.Attacher.AttachVolume(ctx, utils.GlobalAccountID, instanceID, weightsVolumeID, weightsVolumeDevice)
-	if err != nil {
-		return nil, fmt.Errorf("bedrock: attach weights volume %s to %s: %w", weightsVolumeID, instanceID, err)
+	memberOut := make(map[string]LaunchMemberOutput, len(in.Members))
+	primaryModelID := in.Members[0].ModelID
+	for _, m := range in.Members {
+		weightsVolumeID := volumeIDs[m.ModelID]
+		attachedDevice, err := deps.Attacher.AttachVolume(ctx, utils.GlobalAccountID, instanceID, weightsVolumeID, devices[m.ModelID])
+		if err != nil {
+			return nil, fmt.Errorf("bedrock: attach weights volume %s to %s: %w", weightsVolumeID, instanceID, err)
+		}
+		memberOut[m.ModelID] = LaunchMemberOutput{Port: ports[m.ModelID], WeightsVolumeID: weightsVolumeID}
+		if m.Family == gateway_bedrock.FamilyMeta {
+			primaryModelID = m.ModelID
+		}
+		slog.InfoContext(ctx, "bedrock: member weights volume attached",
+			"model", m.ModelID, "instanceId", instanceID, "device", attachedDevice)
 	}
 
 	slog.InfoContext(ctx, "bedrock: serving VM launched",
-		"model", in.ModelID, "instanceId", instanceID, "ami", amiID,
-		"eni", eni.id, "eniIp", eni.ip, "weightsVolume", weightsVolumeID, "device", device)
+		"group", in.GroupID, "instanceId", instanceID, "ami", amiID,
+		"eni", eni.id, "eniIp", eni.ip, "members", len(in.Members))
 
 	return &LaunchOutput{
-		InstanceID:      instanceID,
-		ENIID:           eni.id,
-		PrivateIP:       eni.ip,
-		WeightsVolumeID: weightsVolumeID,
-		BaseURL:         "http://" + net.JoinHostPort(eni.ip, strconv.Itoa(vllmServePort)),
-		Unwind:          unwind,
+		InstanceID:     instanceID,
+		ENIID:          eni.id,
+		PrivateIP:      eni.ip,
+		Members:        memberOut,
+		PrimaryModelID: primaryModelID,
+		Unwind:         unwind,
 	}, nil
 }
 
@@ -255,10 +352,13 @@ func TerminateServingVM(ctx context.Context, deps LaunchDeps, rec EndpointRecord
 	if rec.ENIID != "" {
 		deleteLaunchENI(ctx, deps.VPC, rec.ENIID)
 	}
-	if rec.WeightsVolumeID != "" {
-		if _, err := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(rec.WeightsVolumeID)}, utils.GlobalAccountID); err != nil &&
+	for modelID, member := range rec.Members {
+		if member.WeightsVolumeID == "" {
+			continue
+		}
+		if _, err := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(member.WeightsVolumeID)}, utils.GlobalAccountID); err != nil &&
 			!awserrors.IsNotFound(err) {
-			errs = append(errs, fmt.Errorf("delete weights volume %s: %w", rec.WeightsVolumeID, err))
+			errs = append(errs, fmt.Errorf("delete weights volume %s for %s: %w", member.WeightsVolumeID, modelID, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -266,10 +366,17 @@ func TerminateServingVM(ctx context.Context, deps LaunchDeps, rec EndpointRecord
 
 func validateLaunchInput(in LaunchInput) error {
 	switch {
-	case in.ModelID == "":
-		return errors.New("bedrock: LaunchServingVM empty model id")
+	case in.GroupID == "":
+		return errors.New("bedrock: LaunchServingVM empty group id")
 	case in.InstanceType == "":
 		return errors.New("bedrock: LaunchServingVM empty instance type")
+	case len(in.Members) == 0:
+		return errors.New("bedrock: LaunchServingVM no members")
+	}
+	for _, m := range in.Members {
+		if m.ModelID == "" {
+			return errors.New("bedrock: LaunchServingVM member with empty model id")
+		}
 	}
 	return nil
 }

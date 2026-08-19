@@ -123,7 +123,7 @@ func (f *reaperFixture) ready(t *testing.T) EndpointRecord {
 // endpoint that has been up and quiet for a while.
 func (f *reaperFixture) age(t *testing.T, readyAgo, activeAgo time.Duration) EndpointRecord {
 	t.Helper()
-	key := EndpointKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(utils.GlobalAccountID, testModelID)
 	rec, rev, found, err := getFullJSON(t.Context(), f.kv, key)
 	require.NoError(t, err)
 	require.True(t, found)
@@ -139,7 +139,7 @@ func (f *reaperFixture) age(t *testing.T, readyAgo, activeAgo time.Duration) End
 
 func (f *reaperFixture) current(t *testing.T) (EndpointRecord, bool) {
 	t.Helper()
-	rec, _, found, err := getFullJSON(t.Context(), f.kv, EndpointKey(utils.GlobalAccountID, testModelID))
+	rec, _, found, err := getFullJSON(t.Context(), f.kv, resolveKey(utils.GlobalAccountID, testModelID))
 	require.NoError(t, err)
 	return rec, found
 }
@@ -177,7 +177,7 @@ func TestReaper_NeverReapsPinnedEndpoint(t *testing.T) {
 	f.ready(t)
 	f.age(t, time.Hour, time.Hour)
 
-	key := EndpointKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(utils.GlobalAccountID, testModelID)
 	rec, rev, _, err := getFullJSON(t.Context(), f.kv, key)
 	require.NoError(t, err)
 	rec.Pinned = true
@@ -319,7 +319,7 @@ func TestReaper_UnchangedObservationWritesNothing(t *testing.T) {
 // scrapes neither, so a launch in progress cannot be torn down under it.
 func TestReaper_SkipsNonReadyRecords(t *testing.T) {
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Nanosecond})
-	key := EndpointKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(utils.GlobalAccountID, testModelID)
 	_, err := createJSONRevision(t.Context(), f.kv, key, EndpointRecord{
 		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateStarting, Generation: 1,
 	})

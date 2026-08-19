@@ -299,7 +299,7 @@ func (r *Reaper) persistObservation(ctx context.Context, kv jetstream.KeyValue, 
 		prev.SuccessTotal == next.SuccessTotal && prev.ScrapeFailures == next.ScrapeFailures {
 		return nil
 	}
-	key := EndpointKey(utils.GlobalAccountID, next.ModelID)
+	key := resolveKey(utils.GlobalAccountID, next.ModelID)
 	current, rev, found, err := getFullJSON(ctx, kv, key)
 	if err != nil {
 		return err

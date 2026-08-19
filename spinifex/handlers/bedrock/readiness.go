@@ -2,8 +2,10 @@ package handlers_bedrock
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -48,6 +50,30 @@ func waitReady(ctx context.Context, client *http.Client, baseURL string, pollInt
 		case <-ticker.C:
 		}
 	}
+}
+
+// waitReadyAll polls every baseURL in baseURLs (keyed by model id) in
+// parallel until each answers ready or ctx's deadline expires, joining every
+// member's failure so a caller learns exactly which member of the bundle
+// never came up rather than just "readiness failed".
+func waitReadyAll(ctx context.Context, client *http.Client, baseURLs map[string]string, pollInterval time.Duration) error {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+
+	wg.Add(len(baseURLs))
+	for modelID, baseURL := range baseURLs {
+		go func(modelID, baseURL string) {
+			defer wg.Done()
+			if err := waitReady(ctx, client, baseURL, pollInterval); err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("%s: %w", modelID, err))
+				mu.Unlock()
+			}
+		}(modelID, baseURL)
+	}
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
 // probeOnce issues a single GET and reports whether it returned HTTP 200.

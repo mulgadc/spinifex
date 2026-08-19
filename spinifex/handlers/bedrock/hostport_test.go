@@ -138,7 +138,8 @@ func TestLaunchServingVM_DaemonPortENIIsNotTheServingENI(t *testing.T) {
 	calls := h.hostPort.calls()
 	require.Len(t, calls, 1)
 	assert.NotEqual(t, out.ENIID, calls[0].eniID)
-	assert.Contains(t, out.BaseURL, out.PrivateIP, "BaseURL still names the serving VM's own address")
+	assert.Contains(t, out.MemberBaseURLs()[testModelID], out.PrivateIP,
+		"the member's base URL still names the serving VM's own address")
 }
 
 // The description is what idempotence keys off, since DescribeNetworkInterfaces

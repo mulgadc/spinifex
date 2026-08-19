@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
@@ -432,7 +433,7 @@ type launchHarness struct {
 	images   fakeAMIResolver
 	volumes  *fakeVolume
 	attacher *fakeAttacher
-	weights  fakeWeightsResolver
+	weights  gateway_bedrock.WeightsResolver
 	hostPort *fakeHostPort
 }
 
@@ -465,8 +466,10 @@ func (h *launchHarness) deps() LaunchDeps {
 
 func testLaunchInput() LaunchInput {
 	return LaunchInput{
-		ModelID:      testModelID,
+		GroupID:      testModelID,
 		InstanceType: "g5.xlarge",
-		VLLMArgs:     []string{"--dtype=bfloat16"},
+		Members: []LaunchMemberInput{
+			{ModelID: testModelID, Family: gateway_bedrock.FamilyMeta, VLLMArgs: []string{"--dtype=bfloat16"}},
+		},
 	}
 }

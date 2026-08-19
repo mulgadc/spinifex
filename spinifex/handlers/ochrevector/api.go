@@ -184,6 +184,9 @@ type vectorService struct {
 	registry indexGetter
 	backend  VectorBackend
 	embedder Embedder
+	// reranker is optional: nil leaves Query at plain KNN top-k, matching
+	// every deployment that has not configured a rerank endpoint.
+	reranker Reranker
 }
 
 var _ VectorService = (*vectorService)(nil)
@@ -192,9 +195,10 @@ var _ VectorService = (*vectorService)(nil)
 // dependencies. index/ingest/jobs/registry/backend/embedder are accepted as
 // the minimal interfaces above, so a *Service/*IngestService/*JobStore/
 // *Registry/VectorBackend/Embedder wired for the rest of the daemon can be
-// passed directly.
-func NewVectorService(index indexService, ingest ingestStarter, jobs jobGetter, registry indexGetter, backend VectorBackend, embedder Embedder) VectorService {
-	return &vectorService{index: index, ingest: ingest, jobs: jobs, registry: registry, backend: backend, embedder: embedder}
+// passed directly. reranker is optional -- a nil reranker leaves Query at
+// plain KNN top-k, so an existing caller passing nil is unaffected.
+func NewVectorService(index indexService, ingest ingestStarter, jobs jobGetter, registry indexGetter, backend VectorBackend, embedder Embedder, reranker Reranker) VectorService {
+	return &vectorService{index: index, ingest: ingest, jobs: jobs, registry: registry, backend: backend, embedder: embedder, reranker: reranker}
 }
 
 func (s *vectorService) CreateIndex(ctx context.Context, req *CreateIndexRequest, accountID string) (*CreateIndexResponse, error) {
@@ -282,8 +286,9 @@ func (s *vectorService) ListJobs(ctx context.Context, _ *ListJobsRequest, accoun
 
 // Query resolves IndexID's pinned embedding model from the registry (D8),
 // embeds Text against it, then runs the similarity search directly against
-// backend. A non-READY index (CREATING/DELETING/STALE) returns empty results
-// rather than an error (D4): it is not yet, or no longer, queryable.
+// backend, optionally over-fetching and reranking (rerankTopK). A non-READY
+// index (CREATING/DELETING/STALE) returns empty results rather than an
+// error (D4): it is not yet, or no longer, queryable.
 func (s *vectorService) Query(ctx context.Context, req *QueryRequest, accountID string) (*QueryResponse, error) {
 	if req == nil || req.IndexID == "" || req.Text == "" {
 		return nil, fmt.Errorf("ochrevector: query requires an indexId and text")
@@ -307,10 +312,17 @@ func (s *vectorService) Query(ctx context.Context, req *QueryRequest, accountID 
 		return nil, fmt.Errorf("ochrevector: query: embed returned %d vectors for 1 input", len(vectors))
 	}
 
-	results, err := s.backend.Query(ctx, accountID, req.IndexID, vectors[0], req.K, req.Filter)
+	finalK := clampQueryK(req.K)
+	fetchK := finalK
+	if s.reranker != nil {
+		fetchK = rerankFetchK(finalK)
+	}
+
+	results, err := s.backend.Query(ctx, accountID, req.IndexID, vectors[0], fetchK, req.Filter)
 	if err != nil {
 		return nil, fmt.Errorf("ochrevector: query: %w", err)
 	}
+	results = rerankTopK(ctx, s.reranker, req.Text, results, finalK)
 	for i := range results {
 		results[i].Chunk = truncateChunkForResponse(results[i].Chunk)
 	}

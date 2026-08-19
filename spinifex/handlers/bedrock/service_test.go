@@ -209,7 +209,7 @@ func TestDelete_RefusesNonReadyState(t *testing.T) {
 	js := testutil.NewJetStream(t, nc)
 	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
 	require.NoError(t, err)
-	key := EndpointKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(utils.GlobalAccountID, testModelID)
 	_, err = createJSONRevision(t.Context(), kv, key, EndpointRecord{
 		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateStarting, Generation: 1,
 	})
@@ -231,7 +231,7 @@ func TestDelete_ResumesFromDraining(t *testing.T) {
 	js := testutil.NewJetStream(t, nc)
 	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
 	require.NoError(t, err)
-	key := EndpointKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(utils.GlobalAccountID, testModelID)
 	_, err = createJSONRevision(t.Context(), kv, key, EndpointRecord{
 		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateDraining,
 		InstanceID: "i-stranded", Generation: 2,
@@ -269,7 +269,7 @@ func TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned(t *testing.T) {
 	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
 	require.NoError(t, err)
 	var rec EndpointRecord
-	found, err := getJSON(t.Context(), kv, EndpointKey(utils.GlobalAccountID, testModelID), &rec)
+	found, err := getJSON(t.Context(), kv, resolveKey(utils.GlobalAccountID, testModelID), &rec)
 	require.NoError(t, err)
 	require.True(t, found, "an empty AccountID must key the record under GlobalAccountID")
 	assert.False(t, rec.Pinned)
@@ -294,14 +294,14 @@ func TestEnsure_RealAccountIDKeysUnderAccountAndPersistsPinned(t *testing.T) {
 	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
 	require.NoError(t, err)
 	var rec EndpointRecord
-	found, err := getJSON(t.Context(), kv, EndpointKey(testAccountID, testModelID), &rec)
+	found, err := getJSON(t.Context(), kv, resolveKey(testAccountID, testModelID), &rec)
 	require.NoError(t, err)
 	require.True(t, found, "a real AccountID must key the record under that account, not Global")
 	assert.True(t, rec.Pinned)
 
 	// Nothing must have landed under the shared Global key.
 	var globalRec EndpointRecord
-	foundGlobal, err := getJSON(t.Context(), kv, EndpointKey(utils.GlobalAccountID, testModelID), &globalRec)
+	foundGlobal, err := getJSON(t.Context(), kv, resolveKey(utils.GlobalAccountID, testModelID), &globalRec)
 	require.NoError(t, err)
 	assert.False(t, foundGlobal)
 }

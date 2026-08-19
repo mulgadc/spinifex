@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -24,6 +25,13 @@ const (
 	// adapter. Any other self-host family is unhandled and refused explicitly
 	// rather than mis-served through Llama's native request schema.
 	familyMeta = "meta"
+	// familyTEI is the self-host family for the TEI engine (EMBEDDING and
+	// RERANK entries). No InvokeAdapter serves it yet, so it is unhandled and
+	// refused the same as any other family besides familyMeta.
+	familyTEI = "tei"
+	// coServeGroupOchreDemo is the one populated co-serve group: the demo
+	// LLM plus its embedder and reranker, admitted and launched as a bundle.
+	coServeGroupOchreDemo = "ochre-demo-bundle"
 )
 
 // catalogEntry is one static catalog record. Model IDs mirror AWS exactly so
@@ -41,12 +49,17 @@ const (
 // reads the two int fields without checking it first. Self-host entries leave
 // all three at their zero value: resolvePrice special-cases tierSelfHost to
 // always return a known zero price rather than consulting these fields.
+//
+// CoServeGroup ties self-host entries that co-reside in one serving VM: an
+// empty value is a standalone model (a bundle of one), a shared non-empty
+// value means the entries admit and launch together as a single GPU claim.
 type catalogEntry struct {
 	ModelID                       string
 	ModelName                     string
 	ProviderName                  string
 	Provider                      string // "self-host" or "provider:<vendor>"
-	Family                        string // self-host only; selects the invoke adapter (see familyMeta)
+	Family                        string // self-host only; selects the invoke adapter (see familyMeta, familyTEI)
+	CoServeGroup                  string // self-host only; shared co-serve group id, empty = standalone
 	InputModalities               []string
 	OutputModalities              []string
 	ResponseStreamingSupported    bool
@@ -69,6 +82,7 @@ var catalog = []catalogEntry{
 		ProviderName:               "Meta",
 		Provider:                   tierSelfHost,
 		Family:                     familyMeta,
+		CoServeGroup:               coServeGroupOchreDemo,
 		InputModalities:            []string{"TEXT"},
 		OutputModalities:           []string{"TEXT"},
 		ResponseStreamingSupported: false,
@@ -99,6 +113,36 @@ var catalog = []catalogEntry{
 			"--dtype=bfloat16", "--max-model-len=4096", "--gpu-memory-utilization=0.92",
 			"--max-num-seqs=8", "--enforce-eager",
 		},
+	},
+	{
+		ModelID:                    "nomic-embed-text-v1.5",
+		ModelName:                  "Nomic Embed Text v1.5",
+		ProviderName:               "Nomic AI",
+		Provider:                   tierSelfHost,
+		Family:                     familyTEI,
+		CoServeGroup:               coServeGroupOchreDemo,
+		InputModalities:            []string{"TEXT"},
+		OutputModalities:           []string{"EMBEDDING"},
+		ResponseStreamingSupported: false,
+		InferenceTypesSupported:    []string{"ON_DEMAND"},
+		// 768-dim, 8k context; TEI serves it comfortably in well under a
+		// GiB alongside the LLM and reranker in the shared bundle.
+		MinVRAMMiB:   512,
+		InstanceType: "g5.xlarge",
+	},
+	{
+		ModelID:                    "bge-reranker-v2-m3",
+		ModelName:                  "BGE Reranker v2 M3",
+		ProviderName:               "BAAI",
+		Provider:                   tierSelfHost,
+		Family:                     familyTEI,
+		CoServeGroup:               coServeGroupOchreDemo,
+		InputModalities:            []string{"TEXT"},
+		OutputModalities:           []string{"RERANK"},
+		ResponseStreamingSupported: false,
+		InferenceTypesSupported:    []string{"ON_DEMAND"},
+		MinVRAMMiB:                 1200,
+		InstanceType:               "g5.xlarge",
 	},
 	{
 		ModelID:                    "anthropic.claude-3-5-sonnet-20240620-v1:0",
@@ -215,6 +259,143 @@ func lookupCatalogEntry(modelID string) (catalogEntry, bool) {
 		}
 	}
 	return catalogEntry{}, false
+}
+
+// CoServeGroupVRAMMiB resolves modelID's co-serve group and returns the
+// summed MinVRAMMiB floor across every entry sharing it, plus every member's
+// model ID (modelID included). A model with no group is a bundle of one:
+// totalMinVRAMMiB is just its own floor and members holds only itself.
+func CoServeGroupVRAMMiB(modelID string) (totalMinVRAMMiB int, members []string, found bool) {
+	entry, ok := lookupCatalogEntry(modelID)
+	if !ok {
+		return 0, nil, false
+	}
+	if entry.CoServeGroup == "" {
+		return entry.MinVRAMMiB, []string{entry.ModelID}, true
+	}
+	for _, e := range catalog {
+		if e.CoServeGroup != entry.CoServeGroup {
+			continue
+		}
+		totalMinVRAMMiB += e.MinVRAMMiB
+		members = append(members, e.ModelID)
+	}
+	return totalMinVRAMMiB, members, true
+}
+
+// FamilyMeta and FamilyTEI are the exported aliases of familyMeta/familyTEI,
+// for callers outside this package that dispatch on a co-serve member's own
+// family (the launcher's engine choice, the userData port assignment).
+const (
+	FamilyMeta = familyMeta
+	FamilyTEI  = familyTEI
+)
+
+// defaultVLLMGPUMemoryUtilization is the ceiling assumed for a vLLM member
+// with no explicit --gpu-memory-utilization of its own, mirroring vLLM's own
+// server default.
+const defaultVLLMGPUMemoryUtilization = 0.9
+
+// CoServeMember is one model co-served on a bundle's shared VM. VLLMArgs is
+// the member's own launch args, already bundle-scaled for a vLLM member (see
+// scaleVLLMGPUMemoryUtilization) — the launcher uses it as-is, it does not
+// re-derive the group's VRAM split.
+type CoServeMember struct {
+	ModelID    string
+	Family     string
+	MinVRAMMiB int
+	VLLMArgs   []string
+}
+
+// CoServeGroupSpec is modelID's resolved co-serve group: every member sharing
+// the VM, the group's summed VRAM floor (matching CoServeGroupVRAMMiB's own
+// sum), and the instance type to boot. A standalone model resolves to a
+// bundle of one, GroupID equal to its own ModelID.
+type CoServeGroupSpec struct {
+	GroupID         string
+	Members         []CoServeMember
+	TotalMinVRAMMiB int
+	InstanceType    string
+}
+
+// scaleVLLMGPUMemoryUtilization replaces args' --gpu-memory-utilization (or
+// assumes vLLM's own default when args carries none) with a bundle-scaled
+// value: the solo ceiling times this member's share of the group's summed
+// VRAM floor. Without this a co-served vLLM process would claim its
+// solo-launch share of the whole card, leaving no headroom for the TEI
+// members sharing it.
+func scaleVLLMGPUMemoryUtilization(args []string, memberMinVRAMMiB, totalMinVRAMMiB int) []string {
+	if totalMinVRAMMiB <= 0 {
+		return args
+	}
+	solo := defaultVLLMGPUMemoryUtilization
+	out := make([]string, 0, len(args)+1)
+	for _, a := range args {
+		if v, ok := strings.CutPrefix(a, "--gpu-memory-utilization="); ok {
+			if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+				solo = parsed
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	share := float64(memberMinVRAMMiB) / float64(totalMinVRAMMiB)
+	out = append(out, fmt.Sprintf("--gpu-memory-utilization=%.2f", solo*share))
+	return out
+}
+
+// LookupCoServeGroup resolves modelID to the co-serve group it launches with.
+// A standalone self-host entry (no CoServeGroup) resolves to a bundle of one
+// carrying its own VLLMArgs unchanged, so the launch path needs no special
+// case for today's single-model behaviour. found and selfHost mirror
+// LookupServingSpec: found is false for an unknown model id; selfHost is
+// false for a known provider entry.
+func LookupCoServeGroup(modelID string) (spec CoServeGroupSpec, found, selfHost bool) {
+	entry, ok := lookupCatalogEntry(modelID)
+	if !ok {
+		return CoServeGroupSpec{}, false, false
+	}
+	if entry.Provider != tierSelfHost {
+		return CoServeGroupSpec{}, true, false
+	}
+
+	groupEntries := []catalogEntry{entry}
+	groupID := entry.ModelID
+	if entry.CoServeGroup != "" {
+		groupEntries = nil
+		groupID = entry.CoServeGroup
+		for _, e := range catalog {
+			if e.CoServeGroup == entry.CoServeGroup {
+				groupEntries = append(groupEntries, e)
+			}
+		}
+	}
+
+	total := 0
+	for _, e := range groupEntries {
+		total += e.MinVRAMMiB
+	}
+
+	members := make([]CoServeMember, 0, len(groupEntries))
+	for _, e := range groupEntries {
+		args := e.VLLMArgs
+		if e.Family == familyMeta && len(groupEntries) > 1 {
+			args = scaleVLLMGPUMemoryUtilization(e.VLLMArgs, e.MinVRAMMiB, total)
+		}
+		members = append(members, CoServeMember{
+			ModelID:    e.ModelID,
+			Family:     e.Family,
+			MinVRAMMiB: e.MinVRAMMiB,
+			VLLMArgs:   args,
+		})
+	}
+
+	return CoServeGroupSpec{
+		GroupID:         groupID,
+		Members:         members,
+		TotalMinVRAMMiB: total,
+		InstanceType:    entry.InstanceType,
+	}, true, true
 }
 
 // ServingSpec is the subset of a self-host catalog entry needed both by

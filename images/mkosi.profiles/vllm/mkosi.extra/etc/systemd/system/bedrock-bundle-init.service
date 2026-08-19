@@ -1,0 +1,15 @@
+[Unit]
+Description=Discover Bedrock bundle member env files and start each one's serving unit
+# Same ordering reasoning as bedrock-serve@.service: coldplug the EBS by-id
+# bridge first, and wait for cloud-init's write_files stage, which is what
+# actually delivers the member env files this unit enumerates.
+After=mulga-ebs-byid.service cloud-config.service
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/bedrock-bundle-init
+
+[Install]
+WantedBy=multi-user.target

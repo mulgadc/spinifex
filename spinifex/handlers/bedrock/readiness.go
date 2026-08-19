@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
 // defaultStartupTimeout bounds how long Ensure's launch goroutine polls a
-// freshly-launched serving VM's /v1/models endpoint before giving up and
-// reverting the record to ABSENT.
+// freshly-launched serving VM's per-member readiness route before giving up
+// and reverting the record to ABSENT.
 //
 // Measured once, on the only GPU available to test on: Llama 3.2 1B on an
 // RTX A1000 reached "Application startup complete" 257.6s after launch, of
@@ -23,20 +25,33 @@ import (
 // a stuck launch more time to give up.
 const defaultStartupTimeout = 15 * time.Minute
 
-// readinessPollInterval is the spacing between /v1/models probes. Short
+// readinessPollInterval is the spacing between readiness probes. Short
 // enough that a fast-booting VM isn't held back by the poll cadence, long
 // enough not to hammer a guest still bringing its network stack up.
 const readinessPollInterval = 2 * time.Second
 
-// waitReady polls baseURL + "/v1/models" every pollInterval until it returns
-// HTTP 200 or ctx's deadline (set by the caller from startupTimeout) expires.
-// Never a sleep in place of a real check: every non-200 (including connection
-// refused, while the guest is still booting) is swallowed and retried, since
-// readiness is the very thing being waited for. pollInterval is a parameter
-// (not just the readinessPollInterval constant) so tests can poll fast
-// without waiting out the production cadence.
-func waitReady(ctx context.Context, client *http.Client, baseURL string, pollInterval time.Duration) error {
-	url := baseURL + "/v1/models"
+// readinessPath returns the route a member's engine answers readiness on:
+// vLLM (familyMeta) serves OpenAI /v1/models; TEI has no such route, so every
+// other family is probed on /health. Mirrors engineForFamily's selection.
+func readinessPath(family string) string {
+	if family == gateway_bedrock.FamilyMeta {
+		return "/v1/models"
+	}
+	return "/health"
+}
+
+// readinessTarget is one bundle member's own base address and the path its
+// engine answers readiness on.
+type readinessTarget struct {
+	BaseURL string
+	Path    string
+}
+
+// waitReady polls target.BaseURL+target.Path every pollInterval until it
+// returns HTTP 200 or ctx's deadline expires; every non-200 (including a
+// refused connection while the guest boots) is swallowed and retried.
+func waitReady(ctx context.Context, client *http.Client, target readinessTarget, pollInterval time.Duration) error {
+	url := target.BaseURL + target.Path
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
@@ -52,25 +67,24 @@ func waitReady(ctx context.Context, client *http.Client, baseURL string, pollInt
 	}
 }
 
-// waitReadyAll polls every baseURL in baseURLs (keyed by model id) in
-// parallel until each answers ready or ctx's deadline expires, joining every
-// member's failure so a caller learns exactly which member of the bundle
-// never came up rather than just "readiness failed".
-func waitReadyAll(ctx context.Context, client *http.Client, baseURLs map[string]string, pollInterval time.Duration) error {
+// waitReadyAll polls every target (keyed by model id) in parallel, each on
+// its own engine's route, until all answer ready or ctx expires; member
+// failures are joined so the caller learns which member never came up.
+func waitReadyAll(ctx context.Context, client *http.Client, targets map[string]readinessTarget, pollInterval time.Duration) error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errs []error
 
-	wg.Add(len(baseURLs))
-	for modelID, baseURL := range baseURLs {
-		go func(modelID, baseURL string) {
+	wg.Add(len(targets))
+	for modelID, target := range targets {
+		go func(modelID string, target readinessTarget) {
 			defer wg.Done()
-			if err := waitReady(ctx, client, baseURL, pollInterval); err != nil {
+			if err := waitReady(ctx, client, target, pollInterval); err != nil {
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("%s: %w", modelID, err))
 				mu.Unlock()
 			}
-		}(modelID, baseURL)
+		}(modelID, target)
 	}
 	wg.Wait()
 	return errors.Join(errs...)

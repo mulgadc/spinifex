@@ -1,0 +1,34 @@
+[Unit]
+Description=Bedrock co-served bundle member %i (vLLM or TEI)
+# mulga-ebs-byid's coldplug pass mints the by-id link the wrapper's fallback
+# device resolution depends on. cloud-config.service is when cloud-init's
+# write_files stage has landed every member's env file. Both are belt and
+# braces: bedrock-bundle-init.service already waits for the handoff before it
+# ever starts an instance of this template, and the wrapper's own bounded
+# waits cover the AttachVolume race regardless of unit ordering.
+After=mulga-ebs-byid.service cloud-config.service bedrock-bundle-init.service
+# A start failure no retry can fix restarts forever otherwise, burying its own
+# first traceback under identical copies on the only console an operator has.
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+# ExecStart names the wrapper and passes only the systemd instance specifier
+# %i, which systemd substitutes at unit-parse time -- not a $VAR the unit's
+# own environment could expand to empty. The wrapper sources its member's own
+# /etc/conf.d/bedrock-bundle/%i.env in a shell it owns, the same reason
+# vllm-serve.service (this unit's single-model predecessor) never put a $VAR
+# in an Exec*= line either.
+ExecStart=/usr/local/sbin/bedrock-serve %i
+# Only load-bearing for the vllm engine (FlashInfer JIT-compiles its sampling
+# module and needs nvcc, which this image does not carry); harmless and
+# unread for a tei instance.
+Environment=VLLM_USE_FLASHINFER_SAMPLER=0
+Restart=on-failure
+RestartSec=5
+# Headless appliance: the serial console is the only view of cold start (env
+# wait, weights mount, engine load time) until this member's own port starts
+# answering.
+StandardOutput=journal+console
+StandardError=journal+console

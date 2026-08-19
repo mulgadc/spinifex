@@ -325,7 +325,7 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, s.startupTimeout())
 	defer cancel()
-	if err := waitReadyAll(timeoutCtx, s.httpClient(), out.MemberBaseURLs(), s.pollInterval()); err != nil {
+	if err := waitReadyAll(timeoutCtx, s.httpClient(), out.MemberReadinessTargets(), s.pollInterval()); err != nil {
 		slog.ErrorContext(ctx, "bedrock: readiness probe timed out; unwinding launch",
 			"group", spec.GroupID, "instanceId", rec.InstanceID, "err", err)
 		out.Unwind(ctx)

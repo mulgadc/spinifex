@@ -98,10 +98,13 @@ type LaunchInput struct {
 }
 
 // LaunchMemberOutput is one member's own address within the bundle's shared
-// VM: its assigned port, and the weights volume cloned for it.
+// VM: its assigned port, the weights volume cloned for it, and the family
+// (engine) it serves under, so a caller can pick that engine's own readiness
+// route without a second catalog lookup.
 type LaunchMemberOutput struct {
 	Port            int
 	WeightsVolumeID string
+	Family          string
 }
 
 type LaunchOutput struct {
@@ -123,11 +126,25 @@ type LaunchOutput struct {
 }
 
 // MemberBaseURLs returns every member's own "http://ip:port" base address,
-// keyed by model id — what the multi-service readiness wait probes.
+// keyed by model id.
 func (o *LaunchOutput) MemberBaseURLs() map[string]string {
 	out := make(map[string]string, len(o.Members))
 	for modelID, m := range o.Members {
 		out[modelID] = "http://" + net.JoinHostPort(o.PrivateIP, strconv.Itoa(m.Port))
+	}
+	return out
+}
+
+// MemberReadinessTargets returns every member's own base address paired with
+// the path its engine's readiness must be probed on — what the multi-service
+// readiness wait (waitReadyAll) polls.
+func (o *LaunchOutput) MemberReadinessTargets() map[string]readinessTarget {
+	out := make(map[string]readinessTarget, len(o.Members))
+	for modelID, m := range o.Members {
+		out[modelID] = readinessTarget{
+			BaseURL: "http://" + net.JoinHostPort(o.PrivateIP, strconv.Itoa(m.Port)),
+			Path:    readinessPath(m.Family),
+		}
 	}
 	return out
 }
@@ -313,7 +330,7 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 		if err != nil {
 			return nil, fmt.Errorf("bedrock: attach weights volume %s to %s: %w", weightsVolumeID, instanceID, err)
 		}
-		memberOut[m.ModelID] = LaunchMemberOutput{Port: ports[m.ModelID], WeightsVolumeID: weightsVolumeID}
+		memberOut[m.ModelID] = LaunchMemberOutput{Port: ports[m.ModelID], WeightsVolumeID: weightsVolumeID, Family: m.Family}
 		if m.Family == gateway_bedrock.FamilyMeta {
 			primaryModelID = m.ModelID
 		}

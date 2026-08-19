@@ -126,11 +126,14 @@ func (r EndpointRecord) LastActive() time.Time {
 }
 
 // MemberEndpoint is one co-served model's own address within a bundle's
-// shared VM: the port it listens on at the record's PrivateIP, and the
-// weights volume cloned for it.
+// shared VM: the port it listens on at the record's PrivateIP, the weights
+// volume cloned for it, and the family (engine) it serves under. Field order
+// mirrors LaunchMemberOutput so runLaunch's MemberEndpoint(m) conversion
+// between the two stays a plain type conversion.
 type MemberEndpoint struct {
 	Port            int    `json:"port"`
 	WeightsVolumeID string `json:"weights_volume_id,omitempty"`
+	Family          string `json:"family,omitempty"`
 }
 
 // MemberBaseURL returns modelID's own base address within this bundle:

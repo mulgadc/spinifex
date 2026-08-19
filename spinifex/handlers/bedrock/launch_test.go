@@ -167,6 +167,16 @@ func TestLaunchServingVM_BundleAssignsDeterministicPortsAndDistinctDevices(t *te
 	}
 	assert.Contains(t, in.UserData, "BEDROCK_ENGINE=vllm")
 	assert.Contains(t, in.UserData, "BEDROCK_ENGINE=tei")
+
+	// Each member's readiness target must probe the route its own engine
+	// actually serves: vLLM on /v1/models, every TEI member on /health.
+	targets := out.MemberReadinessTargets()
+	require.Contains(t, targets, testModelID)
+	assert.Equal(t, "/v1/models", targets[testModelID].Path)
+	for _, modelID := range []string{"nomic-embed-text-v1.5", "bge-reranker-v2-m3"} {
+		require.Contains(t, targets, modelID)
+		assert.Equal(t, "/health", targets[modelID].Path)
+	}
 }
 
 // TestLaunchServingVM_BundlePartialWeightsRefusesWholeLaunch guards a bundle

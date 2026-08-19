@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -281,6 +282,64 @@ func TestReaper_ScrapeFailuresEscalateToRelaunch(t *testing.T) {
 
 	assert.Contains(t, f.harness.launcher.terminated, rec.InstanceID)
 	assert.EqualValues(t, 2, f.harness.launcher.launchCount.Load(), "the endpoint must be relaunched, not just removed")
+}
+
+// A pinned endpoint is operator/commitment-managed: a persistent scrape
+// failure must never make the reaper tear it down, exactly as it never
+// idle-reclaims one.
+func TestReaper_PinnedEndpointNotReapedOnScrapeFailure(t *testing.T) {
+	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Hour})
+	f.ready(t)
+
+	key := resolveKey(utils.GlobalAccountID, testModelID)
+	rec, rev, found, err := getFullJSON(t.Context(), f.kv, key)
+	require.NoError(t, err)
+	require.True(t, found)
+	rec.Pinned = true
+	require.NoError(t, updateJSON(t.Context(), f.kv, key, rev, rec))
+
+	f.transport.breakScrapes()
+	for range maxScrapeFailures + 2 {
+		require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	}
+
+	got, found := f.current(t)
+	require.True(t, found, "a pinned endpoint is never reaped on scrape failure")
+	assert.Empty(t, f.harness.launcher.terminated)
+	assert.Positive(t, got.ScrapeFailures, "the failure is still counted and logged")
+}
+
+// A service-only bundle (no generative vLLM member) exposes no vLLM load
+// metrics, so it is liveness-probed on /health and kept warm rather than
+// idle-scraped and reaped — even with an aggressive idle TTL and aged
+// timestamps that would reap a vLLM endpoint instantly.
+func TestReaper_ServiceOnlyBundleLivenessProbedNotReaped(t *testing.T) {
+	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Nanosecond})
+
+	const embedModelID = "embed-only-bundle"
+	key := resolveKey(utils.GlobalAccountID, embedModelID)
+	_, err := createJSONRevision(t.Context(), f.kv, key, EndpointRecord{
+		AccountID:    utils.GlobalAccountID,
+		ModelID:      embedModelID,
+		State:        StateReady,
+		BaseURL:      "http://10.0.0.1:8001",
+		PrivateIP:    "10.0.0.1",
+		Members:      map[string]MemberEndpoint{embedModelID: {Port: 8001, Family: gateway_bedrock.FamilyTEI}},
+		ReadyAt:      time.Now().Add(-time.Hour),
+		LastActiveAt: time.Now().Add(-time.Hour),
+		Generation:   1,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+
+	rec, rev, found, err := getFullJSON(t.Context(), f.kv, key)
+	require.NoError(t, err)
+	require.True(t, found, "a warm service bundle is never idle-reaped")
+	assert.Empty(t, f.harness.launcher.terminated)
+	assert.Zero(t, f.transport.scrapeCount(), "a service-only bundle is never scraped for vLLM metrics")
+	assert.Zero(t, rec.ScrapeFailures, "a healthy /health probe leaves no failures")
+	_ = rev
 }
 
 func TestReaper_SuccessfulScrapeResetsFailureCount(t *testing.T) {

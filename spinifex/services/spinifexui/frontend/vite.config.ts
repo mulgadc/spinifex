@@ -8,7 +8,7 @@ import basicSsl from "@vitejs/plugin-basic-ssl"
 import react, { reactCompilerPreset } from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   envDir: "../",
   build: {
     target: "es2023",
@@ -29,9 +29,7 @@ export default defineConfig({
       routeFileIgnorePattern: "\\.test\\.(ts|tsx)$",
     }),
     react(),
-    babel({
-      presets: [reactCompilerPreset()],
-    }),
+    ...(mode === "test" ? [] : [babel({ presets: [reactCompilerPreset()] })]),
     tailwindcss(),
   ],
   resolve: {
@@ -61,4 +59,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

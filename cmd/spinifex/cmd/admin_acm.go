@@ -60,16 +60,12 @@ func init() {
 	certCreateTenantCACmd.Flags().StringSlice("domain", nil, "Domain the tenant CA is permitted to sign for (repeatable)")
 	certCreateTenantCACmd.Flags().Bool("regenerate", false, "Replace an existing tenant CA with a fresh root (invalidates every device's trust store — requires confirmation)")
 	certCreateTenantCACmd.Flags().Bool("yes", false, "Skip the --regenerate confirmation prompt")
-	if err := certCreateTenantCACmd.MarkFlagRequired("domain"); err != nil {
-		panic(err)
-	}
+	_ = certCreateTenantCACmd.MarkFlagRequired("domain")
 
 	certCmd.AddCommand(certForceRenewCmd)
 	certForceRenewCmd.Flags().String("arn", "", "Certificate ARN to force-renew (required)")
 	certForceRenewCmd.Flags().String("account", "", "Account ID that owns the certificate; defaults to the bootstrap account")
-	if err := certForceRenewCmd.MarkFlagRequired("arn"); err != nil {
-		panic(err)
-	}
+	_ = certForceRenewCmd.MarkFlagRequired("arn")
 }
 
 func runCertForceRenew(cmd *cobra.Command, _ []string) {

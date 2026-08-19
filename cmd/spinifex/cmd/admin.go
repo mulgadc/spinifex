@@ -415,15 +415,11 @@ func init() {
 	imagesRemoveCmd.Flags().String("image-id", "", "AMI ID to remove (required)")
 	imagesRemoveCmd.Flags().Bool("force", false, "Bypass dependency, ownership and config-corrupt checks (salvage mode)")
 	imagesRemoveCmd.Flags().Bool("yes", false, "Skip interactive confirmation prompt")
-	if err := imagesRemoveCmd.MarkFlagRequired("image-id"); err != nil {
-		panic(err)
-	}
+	_ = imagesRemoveCmd.MarkFlagRequired("image-id")
 
 	imagesPromoteCmd.Flags().String("image-id", "", "AMI ID to promote to system image (required)")
 	imagesPromoteCmd.Flags().Bool("yes", false, "Skip interactive confirmation prompt")
-	if err := imagesPromoteCmd.MarkFlagRequired("image-id"); err != nil {
-		panic(err)
-	}
+	_ = imagesPromoteCmd.MarkFlagRequired("image-id")
 }
 
 const bytesPerGiB = 1024 * 1024 * 1024

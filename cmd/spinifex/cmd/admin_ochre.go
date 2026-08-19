@@ -1138,15 +1138,11 @@ func init() {
 		c.Flags().String("account-id", "", "12-digit account ID to change (required)")
 		c.Flags().String("model-id", "", "Model ID to change (e.g. meta.llama3-2-1b-instruct-v1:0)")
 		c.Flags().Bool("all-models", false, "Apply to every model in the platform catalog")
-		if err := c.MarkFlagRequired("account-id"); err != nil {
-			panic(err)
-		}
+		_ = c.MarkFlagRequired("account-id")
 	}
 
 	adminOchreAccessListCmd.Flags().String("account-id", "", "12-digit account ID to inspect (required)")
-	if err := adminOchreAccessListCmd.MarkFlagRequired("account-id"); err != nil {
-		panic(err)
-	}
+	_ = adminOchreAccessListCmd.MarkFlagRequired("account-id")
 }
 
 // ochreAccessStore connects to the cluster and returns the grant store along

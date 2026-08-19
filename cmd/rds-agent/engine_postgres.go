@@ -70,19 +70,6 @@ func postgresProbeState(host string, run probeRunner) probeStateFn {
 	}
 }
 
-// Resolved once, under the name the control plane knows this implementation by.
-// A lookup failure is a mismatch between the agent and the control plane it was
-// built against, so it fails at startup rather than at the first rotation.
-var postgresEngineMeta = mustLookupEngine(enginePostgres)
-
-func mustLookupEngine(name string) handlers_rds.Engine {
-	engine, err := handlers_rds.LookupEngine(name)
-	if err != nil {
-		panic("rds-agent: " + err.Error())
-	}
-	return engine
-}
-
 // The include the resolved set is rendered to, and the copy of the last one the
 // engine accepted. Both live beside the data rather than in /etc, matching
 // rds-init: a class change boots a fresh root volume and would revert them.
@@ -114,9 +101,18 @@ hostnossl all all ::/0 reject
 	postgresForceSSLRuleCount = 2
 )
 
-func newPostgresEngine(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
+// The layout's factory resolves the control plane metadata during startup.
+func newPostgresEngineFromCatalog(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error) {
+	meta, err := handlers_rds.LookupEngine(enginePostgres)
+	if err != nil {
+		return nil, fmt.Errorf("this image bakes %s, which this build's control plane does not offer: %w", enginePostgres, err)
+	}
+	return newPostgresEngine(cfg, meta, run, startSess, probe), nil
+}
+
+func newPostgresEngine(cfg config, meta handlers_rds.Engine, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
 	return &postgresEngine{
-		meta:      postgresEngineMeta,
+		meta:      meta,
 		run:       run,
 		startSess: startSess,
 		psql:      filepath.Join(cfg.EngineBinDir, "psql"),

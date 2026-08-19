@@ -43,7 +43,7 @@ var enginePostgres = Engine{
 // Platform-owned settings are absent, except the ones AWS exposes as modifiable
 // and this platform pins: those are present and unmodifiable, so a refusal reads
 // as policy rather than as a missing feature.
-var postgresParameterCatalog = buildParameterCatalog(
+var postgresParameterCatalog, postgresParameterCatalogErr = buildParameterCatalog(
 	// Connections. max_connections is what a size-derived default matters most
 	// for: RDS's own formula is LEAST({DBInstanceClassMemory/9531392}, 5000).
 	ParameterSpec{

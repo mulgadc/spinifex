@@ -108,9 +108,7 @@ var engineLayouts = map[string]engineLayout{
 		dataMount: "/var/lib/postgresql",
 		port:      5432,
 		newProbe:  newPostgresProbe,
-		newEngine: func(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error) {
-			return newPostgresEngine(cfg, run, startSess, probe), nil
-		},
+		newEngine: newPostgresEngineFromCatalog,
 	},
 	engineMariaDB: {
 		binDir:    "/usr/bin",

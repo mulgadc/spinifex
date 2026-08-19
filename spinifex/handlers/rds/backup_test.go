@@ -321,13 +321,8 @@ func TestWindowBlock_FallsBackToTheBuiltInBlock(t *testing.T) {
 		MaintenanceWindowBlock: "19:00",
 	}})
 
-	builtIn, err := parseDailyWindow("block", defaultBackupWindowBlock)
-	require.NoError(t, err)
-	assert.Equal(t, builtIn, svc.backupWindowBlock())
-
-	builtIn, err = parseDailyWindow("block", defaultMaintenanceWindowBlock)
-	require.NoError(t, err)
-	assert.Equal(t, builtIn, svc.maintenanceWindowBlock())
+	assert.Equal(t, defaultBackupWindowBlock, svc.backupWindowBlock())
+	assert.Equal(t, defaultMaintenanceWindowBlock, svc.maintenanceWindowBlock())
 }
 
 func TestValidateRetentionPeriod_BoundsTheRetention(t *testing.T) {

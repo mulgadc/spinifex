@@ -15,6 +15,66 @@ import (
 // customer can reach it.
 var catalogEngines = []Engine{enginePostgres, engineMariaDB}
 
+func TestBuildParameterCatalog_ReturnsValidationErrors(t *testing.T) {
+	computedDefault := func(int64) string { return "1" }
+	classCeiling := func(int64) int64 { return 2 }
+	tests := []struct {
+		name    string
+		specs   []ParameterSpec
+		wantErr string
+	}{
+		{
+			name:  "valid entry",
+			specs: []ParameterSpec{{Name: "valid", Default: "1"}},
+		},
+		{
+			name:    "unnamed entry",
+			specs:   []ParameterSpec{{Default: "1"}},
+			wantErr: "holds an unnamed entry",
+		},
+		{
+			name:    "missing default",
+			specs:   []ParameterSpec{{Name: "missing"}},
+			wantErr: "has no default",
+		},
+		{
+			name: "literal and computed defaults",
+			specs: []ParameterSpec{{
+				Name: "both", Default: "1", DefaultFor: computedDefault, MaxFor: classCeiling,
+			}},
+			wantErr: "has both a literal and a computed default",
+		},
+		{
+			name: "computed default without ceiling",
+			specs: []ParameterSpec{{
+				Name: "unpaired", DefaultFor: computedDefault,
+			}},
+			wantErr: "must pair its computed default and class ceiling",
+		},
+		{
+			name: "duplicate entry",
+			specs: []ParameterSpec{
+				{Name: "duplicate", Default: "1"},
+				{Name: "duplicate", Default: "2"},
+			},
+			wantErr: "is duplicated",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog, err := buildParameterCatalog(tt.specs...)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Nil(t, catalog)
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, catalog, len(tt.specs))
+		})
+	}
+}
+
 // The failure this guards is the one the phase opens by warning about, arriving
 // through the default path rather than a customer typo: a catalog change that
 // makes the smallest class unbootable has to fail here rather than in a create.

@@ -34,18 +34,18 @@ var engineUnderTest = Engine{
 	reservedUsernamePrefixes: []string{"testdb_"},
 	maxUsernameLen:           80,
 	validateDBName:           dbNameRule(64),
-	catalog: buildParameterCatalog(
-		ParameterSpec{
+	catalog: map[string]ParameterSpec{
+		"buffer_size": {
 			Name: "buffer_size", DataType: ParamTypeInteger, ApplyType: ApplyTypeStatic,
 			IsModifiable: true, Min: 1, Max: 1024, Default: "64", Unit: "MB",
 			Description: "Buffer the server allocates at startup, in MB.",
 		},
-		ParameterSpec{
+		"connection_limit": {
 			Name: "connection_limit", DataType: ParamTypeInteger, ApplyType: ApplyTypeDynamic,
 			IsModifiable: true, Min: 1, Max: 1000, Default: "100",
 			Description: "Maximum concurrent connections to the server.",
 		},
-	),
+	},
 	validateCombinations: func([]Parameter) error { return nil },
 	crashRecoveryNote:    "It will recover when it is restored.",
 	uncleanStopNote:      "It will recover on the next start.",
@@ -57,11 +57,73 @@ func registerTestEngine(t *testing.T) {
 	t.Helper()
 	require.NotContains(t, engines, engineUnderTest.Name)
 	engines[engineUnderTest.Name] = engineUnderTest
-	enginesByFamily = indexEnginesByFamily()
+	indexed, err := indexEnginesByFamily(engines)
+	require.NoError(t, err)
+	enginesByFamily = indexed
 	t.Cleanup(func() {
 		delete(engines, engineUnderTest.Name)
-		enginesByFamily = indexEnginesByFamily()
+		indexed, err := indexEnginesByFamily(engines)
+		require.NoError(t, err)
+		enginesByFamily = indexed
 	})
+}
+
+func TestValidateEngineRegistry(t *testing.T) {
+	require.NoError(t, ValidateEngineRegistry())
+}
+
+func TestIndexEnginesByFamily_RejectsInvalidMetadata(t *testing.T) {
+	noDBNameRule := engineUnderTest
+	noDBNameRule.validateDBName = nil
+	noCrashRecoveryNote := engineUnderTest
+	noCrashRecoveryNote.crashRecoveryNote = ""
+	noUncleanStopNote := engineUnderTest
+	noUncleanStopNote.uncleanStopNote = ""
+	invalidTLSParameter := engineUnderTest
+	invalidTLSParameter.tlsEnforcementParameter = "not-a-boolean-parameter"
+
+	tests := []struct {
+		name     string
+		registry map[string]Engine
+		wantErr  string
+	}{
+		{
+			name:     "missing DB name rule",
+			registry: map[string]Engine{"test": noDBNameRule},
+			wantErr:  "registers no DBName rule",
+		},
+		{
+			name:     "missing crash recovery note",
+			registry: map[string]Engine{"test": noCrashRecoveryNote},
+			wantErr:  "registers no crash-recovery note",
+		},
+		{
+			name:     "missing unclean stop note",
+			registry: map[string]Engine{"test": noUncleanStopNote},
+			wantErr:  "registers no unclean-stop note",
+		},
+		{
+			name:     "invalid TLS enforcement parameter",
+			registry: map[string]Engine{"test": invalidTLSParameter},
+			wantErr:  "is not a boolean parameter it exposes",
+		},
+		{
+			name: "duplicate parameter group family",
+			registry: map[string]Engine{
+				"first":  engineUnderTest,
+				"second": engineUnderTest,
+			},
+			wantErr: "is claimed by two engines",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			indexed, err := indexEnginesByFamily(tt.registry)
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.Nil(t, indexed)
+		})
+	}
 }
 
 func testEngineGroupInput(name string) *rds.CreateDBParameterGroupInput {

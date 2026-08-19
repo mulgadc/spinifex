@@ -140,10 +140,19 @@ func (r *recordingRunner) run(_ context.Context, c command) (string, error) {
 	return r.out, r.err
 }
 
+func testPostgresEngineMeta(t *testing.T) handlers_rds.Engine {
+	t.Helper()
+	meta, err := handlers_rds.LookupEngine(enginePostgres)
+	if err != nil {
+		t.Fatalf("LookupEngine(%s): %v", enginePostgres, err)
+	}
+	return meta
+}
+
 func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 	t.Helper()
 	cfg := testEngineConfig(t)
-	return newPostgresEngine(cfg, withPostgresReadBacks(cfg.EngineDataDir, run), nil, newPostgresProbe(cfg, staticProbe(0)))
+	return newPostgresEngine(cfg, testPostgresEngineMeta(t), withPostgresReadBacks(cfg.EngineDataDir, run), nil, newPostgresProbe(cfg, staticProbe(0)))
 }
 
 // The same engine with the read-backs left to the runner, for the cases that are
@@ -152,7 +161,7 @@ func newTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 func newScriptedTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 	t.Helper()
 	cfg := testEngineConfig(t)
-	return newPostgresEngine(cfg, run, nil, newPostgresProbe(cfg, staticProbe(0)))
+	return newPostgresEngine(cfg, testPostgresEngineMeta(t), run, nil, newPostgresProbe(cfg, staticProbe(0)))
 }
 
 func testEngineConfig(t *testing.T) config {
@@ -479,10 +488,11 @@ func (r *tlsReadBackRunner) run(ctx context.Context, c command) (string, error) 
 	return r.recordingRunner.run(ctx, c)
 }
 
-func forceSSLParameter(value string) []handlers_rds.Parameter {
+func forceSSLParameter(t *testing.T, value string) []handlers_rds.Parameter {
+	t.Helper()
 	return []handlers_rds.Parameter{
 		{Name: "work_mem", Value: "4096"},
-		{Name: postgresEngineMeta.TLSEnforcementParameter(), Value: value},
+		{Name: testPostgresEngineMeta(t).TLSEnforcementParameter(), Value: value},
 	}
 }
 
@@ -492,7 +502,7 @@ func TestPostgresEngine_ApplyParametersWritesTheEnforcementRule(t *testing.T) {
 	runner := &tlsReadBackRunner{ssl: "on", ruleRows: postgresForceSSLRuleCount}
 	engine := newScriptedTestEngine(t, runner.run)
 
-	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("1")); err != nil {
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter(t, "1")); err != nil {
 		t.Fatalf("ApplyParameters: %v", err)
 	}
 	rule, err := os.ReadFile(engine.forceSSLRulePath())
@@ -516,7 +526,7 @@ func TestPostgresEngine_ApplyParametersRemovesAStaleEnforcementRule(t *testing.T
 		t.Fatalf("write the rule the restored volume carried: %v", err)
 	}
 
-	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("0")); err != nil {
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter(t, "0")); err != nil {
 		t.Fatalf("ApplyParameters: %v", err)
 	}
 	if _, err := os.Stat(engine.forceSSLRulePath()); !os.IsNotExist(err) {
@@ -547,7 +557,7 @@ func TestPostgresEngine_ApplyParametersRefusesAnUnparsableEnforcementValue(t *te
 	runner := &tlsReadBackRunner{ssl: "on"}
 	engine := newScriptedTestEngine(t, runner.run)
 
-	_, err := engine.ApplyParameters(t.Context(), forceSSLParameter("yes"))
+	_, err := engine.ApplyParameters(t.Context(), forceSSLParameter(t, "yes"))
 	if err == nil || !strings.Contains(err.Error(), "neither 1 nor 0") {
 		t.Fatalf("ApplyParameters error = %v, want a refusal naming the unreadable value", err)
 	}
@@ -562,7 +572,7 @@ func TestPostgresEngine_ApplyParametersRefusesToEnforceWithoutTLS(t *testing.T) 
 	runner := &tlsReadBackRunner{ssl: "off"}
 	engine := newScriptedTestEngine(t, runner.run)
 
-	_, err := engine.ApplyParameters(t.Context(), forceSSLParameter("1"))
+	_, err := engine.ApplyParameters(t.Context(), forceSSLParameter(t, "1"))
 	if err == nil || !strings.Contains(err.Error(), "serving without TLS") {
 		t.Fatalf("ApplyParameters error = %v, want a refusal naming the engine's own TLS state", err)
 	}
@@ -592,7 +602,7 @@ func TestPostgresEngine_ApplyParametersFailsAnUnverifiableEnforcement(t *testing
 			runner := &tlsReadBackRunner{ssl: "on", ruleRows: tc.ruleRows, brokenRows: tc.brokenRows}
 			engine := newScriptedTestEngine(t, runner.run)
 
-			_, err := engine.ApplyParameters(t.Context(), forceSSLParameter(tc.value))
+			_, err := engine.ApplyParameters(t.Context(), forceSSLParameter(t, tc.value))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("ApplyParameters error = %v, want %q", err, tc.want)
 			}
@@ -606,13 +616,13 @@ func TestPostgresEngine_ApplyParametersFailsAnUnverifiableEnforcement(t *testing
 func TestPostgresEngine_ApplyParametersWithdrawsBothFilesTogether(t *testing.T) {
 	runner := &tlsReadBackRunner{ssl: "on", ruleRows: postgresForceSSLRuleCount}
 	engine := newScriptedTestEngine(t, runner.run)
-	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("1")); err != nil {
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter(t, "1")); err != nil {
 		t.Fatalf("first ApplyParameters: %v", err)
 	}
 
 	// Turning enforcement off, verified against a pg_hba that still carries the
 	// rule — so the apply fails after both files have already been replaced.
-	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("0")); err == nil {
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter(t, "0")); err == nil {
 		t.Fatal("ApplyParameters succeeded against an unverifiable enforcement")
 	}
 	installed, err := os.ReadFile(engine.params.installedPath())
@@ -639,14 +649,14 @@ func TestPostgresEngine_RestoreLastKnownGoodReDerivesEnforcement(t *testing.T) {
 	runner := &tlsReadBackRunner{ssl: "on", ruleRows: postgresForceSSLRuleCount}
 	engine := newScriptedTestEngine(t, runner.run)
 
-	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("1")); err != nil {
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter(t, "1")); err != nil {
 		t.Fatalf("ApplyParameters(enforcing): %v", err)
 	}
 	if err := engine.RecordServingParameters(t.Context()); err != nil {
 		t.Fatalf("RecordServingParameters: %v", err)
 	}
 	runner.ruleRows = 0
-	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter("0")); err != nil {
+	if _, err := engine.ApplyParameters(t.Context(), forceSSLParameter(t, "0")); err != nil {
 		t.Fatalf("ApplyParameters(not enforcing): %v", err)
 	}
 	if _, err := os.Stat(engine.forceSSLRulePath()); !os.IsNotExist(err) {

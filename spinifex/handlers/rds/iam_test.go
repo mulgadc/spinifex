@@ -28,8 +28,10 @@ func rdsInstanceProfileARN(accountID string) string {
 // internal actions and nothing wildcarded that could reach the customer surface.
 func TestInstanceRolePolicy_GrantsOnlyTheInternalActions(t *testing.T) {
 	t.Parallel()
+	policy, err := instanceRoleInlinePolicy()
+	require.NoError(t, err)
 	var doc handlers_iam.PolicyDocument
-	require.NoError(t, json.Unmarshal([]byte(instanceRoleInlinePolicy), &doc))
+	require.NoError(t, json.Unmarshal([]byte(policy), &doc))
 	require.Len(t, doc.Statement, 1)
 
 	stmt := doc.Statement[0]
@@ -81,9 +83,11 @@ func TestEnsureInstanceProfile_IsIdempotent(t *testing.T) {
 	assert.Equal(t, 1, f.CreateRoleCalls, "the second launch must find the role, not create it")
 	assert.Equal(t, 1, f.CreateInstanceProfileCalls, "the second launch must find the instance profile")
 	require.Len(t, f.PolicyCalls, 2, "the grant is re-asserted on every launch")
+	policy, err := instanceRoleInlinePolicy()
+	require.NoError(t, err)
 	for _, put := range f.PolicyCalls {
 		assert.Equal(t, instanceRoleInlinePolicyName, aws.StringValue(put.PolicyName))
-		assert.Equal(t, instanceRoleInlinePolicy, aws.StringValue(put.PolicyDocument))
+		assert.Equal(t, policy, aws.StringValue(put.PolicyDocument))
 	}
 }
 

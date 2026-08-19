@@ -31,12 +31,6 @@ const (
 	// would pay the whole storage cost above for a fraction of the coverage.
 	defaultBackupRetentionDays = 7
 
-	// The UTC blocks an unnamed window is assigned inside. Deliberately disjoint:
-	// the two derived windows then cannot overlap, which is the pair AWS refuses
-	// to accept and the pair that would quiesce an engine mid-maintenance.
-	defaultBackupWindowBlock      = "03:00-11:00" //nolint:gosec // a UTC window block, not a credential
-	defaultMaintenanceWindowBlock = "11:00-19:00"
-
 	// How many automated snapshots one retention pass may delete. A pass that
 	// under-collects is corrected by the next one two minutes later; a pass that
 	// walks an unbounded number of snapshots is not.
@@ -58,6 +52,13 @@ const (
 	// until the next one — a missed window is never backfilled.
 	automatedBackupRetryBase     = time.Minute
 	automatedBackupRetryShiftCap = 3
+)
+
+// The UTC blocks an unnamed window is assigned inside. Deliberately disjoint,
+// so derived backup and maintenance windows cannot overlap.
+var (
+	defaultBackupWindowBlock      = dailyWindow{start: 3 * time.Hour, end: 11 * time.Hour}
+	defaultMaintenanceWindowBlock = dailyWindow{start: 11 * time.Hour, end: 19 * time.Hour}
 )
 
 // The operator-tunable backup settings: bounds and defaults, never a per-instance
@@ -114,20 +115,15 @@ func (s *Service) maintenanceWindowBlock() dailyWindow {
 	return s.windowBlock(s.deps.Backup.MaintenanceWindowBlock, defaultMaintenanceWindowBlock, "maintenance")
 }
 
-func (s *Service) windowBlock(configured, fallback, kind string) dailyWindow {
+func (s *Service) windowBlock(configured string, fallback dailyWindow, kind string) dailyWindow {
 	if configured != "" {
 		if block, err := parseDailyWindow("block", configured); err == nil {
 			return block
 		}
 		slog.Warn("rds: the configured "+kind+" window block is malformed; using the built-in block",
-			"block", configured, "fallback", fallback)
+			"block", configured, "fallback", fallback.String())
 	}
-	block, err := parseDailyWindow("block", fallback)
-	if err != nil {
-		// Unreachable: the fallbacks are constants this package's tests parse.
-		panic("rds: built-in " + kind + " window block is malformed: " + err.Error())
-	}
-	return block
+	return fallback
 }
 
 // The window in force for this instance. A record that names one uses it; one

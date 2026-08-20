@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -89,7 +89,7 @@ func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResol
 // X-Amzn-Bedrock-Guardrail* headers; an empty guardrailIdent leaves behaviour
 // byte-identical to a request with no guardrail at all.
 func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID string, body []byte, guardrailIdent, guardrailVersion string) (respBody []byte, contentType string, err error) {
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 	start := time.Now()
 	var backend string
 	defer func() {

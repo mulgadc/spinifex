@@ -14,12 +14,12 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
@@ -280,7 +280,7 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 	rec := &NodegroupRecord{
 		ClusterName:    cluster,
 		Name:           ng,
-		Arn:            NodegroupARN(s.deps.Region, accountID, cluster, ng, uuid.NewString()),
+		Arn:            NodegroupARN(s.deps.Region, accountID, cluster, ng, uuid.NewV4().String()),
 		Status:         eks.NodegroupStatusCreating,
 		Subnets:        subnets,
 		InstanceTypes:  instanceTypes,
@@ -574,7 +574,7 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 		instanceType = rec.InstanceTypes[0]
 	}
 	subnet := rec.Subnets[0]
-	shortID := uuid.NewString()[:8]
+	shortID := uuid.NewV4().String()[:8]
 
 	region := s.deps.Region
 	suffix := s.deps.InternalSuffix
@@ -836,7 +836,7 @@ func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV jetst
 	}
 
 	return &eks.UpdateNodegroupConfigOutput{Update: &eks.Update{
-		Id:        aws.String(uuid.NewString()),
+		Id:        aws.String(uuid.NewV4().String()),
 		Status:    aws.String(eks.UpdateStatusSuccessful),
 		Type:      aws.String(eks.UpdateTypeConfigUpdate),
 		CreatedAt: aws.Time(rec.ModifiedAt),

@@ -14,10 +14,10 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockagent"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
@@ -369,7 +369,7 @@ func CreateKnowledgeBase(ctx context.Context, accountID, region string, kb *hand
 			"bedrock-agent: embeddingModelConfiguration.bedrockEmbeddingModelConfiguration.dimensions is required")
 	}
 
-	id := uuid.NewString()
+	id := uuid.NewV4().String()
 	indexResp, err := vector.CreateIndex(ctx, &handlers_ochrevector.CreateIndexRequest{
 		IndexID:        id,
 		Name:           aws.StringValue(input.Name),
@@ -594,7 +594,7 @@ func CreateDataSource(ctx context.Context, accountID, region string, kb *handler
 		}
 	}
 
-	id := uuid.NewString()
+	id := uuid.NewV4().String()
 	now := time.Now().UTC()
 	rec := handlers_ochrevector.DataSourceRecord{
 		ID:              id,

@@ -25,8 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
@@ -2645,7 +2645,7 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	reservationOwner := "spx-cli-" + uuid.NewString()
+	reservationOwner := "spx-cli-" + uuid.NewV4().String()
 	switch err := names.Reserve(ctx, name, reservationOwner); {
 	case errors.Is(err, handlers_iam.ErrNameTaken):
 		fmt.Fprintf(os.Stderr, "Error: account %q already exists\n", name)

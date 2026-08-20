@@ -102,16 +102,40 @@ export function startConsoleHandoff(opts?: {
 
   window.addEventListener("message", onMessage)
 
-  // Announce readiness to each allowed opener origin. The ready ping carries no
+  // Announce readiness to each allowed opener origin. The ping carries no
   // secret, so posting to both is safe — only the real opener (whose origin
   // matches the targetOrigin) receives it, and it replies with the credentials.
-  for (const origin of ALLOWED_OPENER_ORIGINS) {
-    try {
-      opener.postMessage({ type: READY }, origin)
-    } catch {
-      // opener gone or blocked — ignore, the form still works
+  //
+  // Re-announce on a short interval rather than firing once: the ping is
+  // fire-and-forget with no ack, and the opener may not have attached its
+  // listener yet when we mount (it opened us, so its tab is now backgrounded
+  // and its timers/handlers can be briefly throttled). Retrying until the
+  // credentials arrive makes the handoff robust to that race — which is the
+  // difference between "works in a test" and "works when a real customer
+  // opens a new tab from the signup page". Stops the instant creds arrive
+  // (done) or after ~10s, and always on cleanup.
+  const announce = () => {
+    for (const origin of ALLOWED_OPENER_ORIGINS) {
+      try {
+        opener.postMessage({ type: READY }, origin)
+      } catch {
+        // opener gone or blocked — ignore, the form still works
+      }
     }
   }
+  announce()
+  let attempts = 0
+  const timer = setInterval(() => {
+    attempts += 1
+    if (done || attempts > 20) {
+      clearInterval(timer)
+      return
+    }
+    announce()
+  }, 500)
 
-  return () => window.removeEventListener("message", onMessage)
+  return () => {
+    clearInterval(timer)
+    window.removeEventListener("message", onMessage)
+  }
 }

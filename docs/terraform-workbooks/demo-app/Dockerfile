@@ -4,7 +4,7 @@
 # distroless base (no shell, no package manager) for a small, production-shaped
 # image suitable for pushing to ECR and pulling onto EKS workers.
 
-FROM golang:1.23-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod ./
 COPY main.go ./

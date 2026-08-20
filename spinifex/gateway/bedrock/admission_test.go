@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -179,6 +180,146 @@ func TestSlotReleasingInvokeSource_ClosesReleaseExactlyOnceAndIsIdempotent(t *te
 
 	assert.Equal(t, 1, releases)
 	assert.Equal(t, 2, inner.closeCalls)
+}
+
+// TestAdmitSelfHost_OnDemandAdmitsThenThrottles drives the ON_DEMAND path
+// (empty servingAccountID, units default to 1) end to end: the first request
+// is admitted, the second at capacity returns a ThrottlingException, and
+// capacity frees up once the in-flight release runs.
+func TestAdmitSelfHost_OnDemandAdmitsThenThrottles(t *testing.T) {
+	ctx := context.Background()
+	entry := catalogEntry{MaxConcurrency: 1}
+	const model = "admit-ondemand-throttle-model"
+
+	release, err := admitSelfHost(ctx, nil, "", model, entry)
+	require.NoError(t, err)
+	require.NotNil(t, release)
+
+	_, err = admitSelfHost(ctx, nil, "", model, entry)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorThrottlingException, err.Error(),
+		"a self-host request at capacity must return a ThrottlingException")
+
+	release()
+	release2, err := admitSelfHost(ctx, nil, "", model, entry)
+	require.NoError(t, err, "capacity must free up after the in-flight request releases")
+	release2()
+}
+
+// TestAdmitSelfHost_CommittedUnitsErrorPropagates asserts a store failure while
+// resolving committed ModelUnits surfaces as that error, never masquerading as
+// a throttle or admitting the request.
+func TestAdmitSelfHost_CommittedUnitsErrorPropagates(t *testing.T) {
+	store := NewProvisionedStore(nil, 1, ptTestRegion, newStubEndpointProvisioner())
+
+	release, err := admitSelfHost(context.Background(), store, ptCallerAccount, selfHostTestModel,
+		catalogEntry{MaxConcurrency: 1})
+	require.Error(t, err)
+	assert.Nil(t, release)
+	assert.NotEqual(t, awserrors.ErrorThrottlingException, err.Error(),
+		"a store failure must not masquerade as a throttle")
+}
+
+// TestAdmitSelfHost_ClampsZeroCommittedUnits covers a serving account with no
+// commitment for the model: committed units read zero and capacity clamps to
+// MaxConcurrency x 1 rather than collapsing to zero and rejecting everything.
+func TestAdmitSelfHost_ClampsZeroCommittedUnits(t *testing.T) {
+	stub := newStubEndpointProvisioner()
+	store := newProvisionedTestStore(t, stub)
+	ctx := context.Background()
+	entry := catalogEntry{MaxConcurrency: 1}
+
+	release, err := admitSelfHost(ctx, store, ptCallerAccount, selfHostTestModel, entry)
+	require.NoError(t, err)
+	require.NotNil(t, release)
+	defer release()
+
+	_, err = admitSelfHost(ctx, store, ptCallerAccount, selfHostTestModel, entry)
+	assert.Equal(t, awserrors.ErrorThrottlingException, err.Error(),
+		"clamped capacity is exactly 1, so a second concurrent request throttles")
+}
+
+// TestAdmitSelfHost_StacksCommittedModelUnits proves two commitments on the
+// same account+model stack their ModelUnits into one shared capacity: exactly
+// MaxConcurrency x (2+3) concurrent requests are admitted before throttling.
+func TestAdmitSelfHost_StacksCommittedModelUnits(t *testing.T) {
+	stub := newStubEndpointProvisioner()
+	store := newProvisionedTestStore(t, stub)
+	ctx := context.Background()
+
+	_, err := CreateProvisionedModelThroughput(ctx, ptCallerAccount, store, createInput(selfHostTestModel, "pt-a", 2))
+	require.NoError(t, err)
+	_, err = CreateProvisionedModelThroughput(ctx, ptCallerAccount, store, createInput(selfHostTestModel, "pt-b", 3))
+	require.NoError(t, err)
+
+	entry := catalogEntry{MaxConcurrency: 1}
+	const wantCapacity = 5
+
+	releases := make([]func(), 0, wantCapacity)
+	for i := range wantCapacity {
+		release, err := admitSelfHost(ctx, store, ptCallerAccount, selfHostTestModel, entry)
+		require.NoError(t, err, "acquire %d must be admitted within stacked capacity", i)
+		releases = append(releases, release)
+	}
+	_, err = admitSelfHost(ctx, store, ptCallerAccount, selfHostTestModel, entry)
+	assert.Equal(t, awserrors.ErrorThrottlingException, err.Error(),
+		"the request past stacked capacity must throttle")
+
+	for _, release := range releases {
+		release()
+	}
+}
+
+// TestCommittedModelUnits_EmptyAccountReturnsZero covers the shared ON_DEMAND
+// short-circuit: an empty serving account has no commitment to read and must
+// not touch the store, so a nil store is safe.
+func TestCommittedModelUnits_EmptyAccountReturnsZero(t *testing.T) {
+	units, err := committedModelUnits(context.Background(), nil, "", selfHostTestModel)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), units)
+}
+
+// TestCommittedModelUnits_BucketErrorPropagates asserts an unusable store
+// surfaces its error rather than silently reading zero committed units.
+func TestCommittedModelUnits_BucketErrorPropagates(t *testing.T) {
+	store := NewProvisionedStore(nil, 1, ptTestRegion, newStubEndpointProvisioner())
+	_, err := committedModelUnits(context.Background(), store, ptCallerAccount, selfHostTestModel)
+	require.Error(t, err)
+}
+
+// TestCommittedModelUnits_NoCommitmentsReturnsZero covers the empty-bucket path:
+// a store with no commitments at all reads zero without erroring.
+func TestCommittedModelUnits_NoCommitmentsReturnsZero(t *testing.T) {
+	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
+	units, err := committedModelUnits(context.Background(), store, ptCallerAccount, selfHostTestModel)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), units)
+}
+
+// TestCommittedModelUnits_ScopesToAccountAndModel proves the sum stacks only a
+// caller's own commitments for the requested model, skipping a different model
+// and a different account, and reads zero for a model with no commitment.
+func TestCommittedModelUnits_ScopesToAccountAndModel(t *testing.T) {
+	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
+	ctx := context.Background()
+
+	mustCreate := func(account, model, name string, units int64) {
+		t.Helper()
+		_, err := CreateProvisionedModelThroughput(ctx, account, store, createInput(model, name, units))
+		require.NoError(t, err)
+	}
+	mustCreate(ptCallerAccount, selfHostTestModel, "caller-a", 2)
+	mustCreate(ptCallerAccount, selfHostTestModel, "caller-b", 3)
+	mustCreate(ptCallerAccount, selfHostTestModel3B, "other-model", 4)
+	mustCreate(ptOtherCaller, selfHostTestModel, "other-account", 9)
+
+	units, err := committedModelUnits(ctx, store, ptCallerAccount, selfHostTestModel)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), units, "only the caller's own commitments for this model stack")
+
+	unknown, err := committedModelUnits(ctx, store, ptCallerAccount, "meta.does-not-exist-v1:0")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), unknown, "a model with no commitment reads zero")
 }
 
 func TestAdmissionKey_ScopesByAccountAndModel(t *testing.T) {

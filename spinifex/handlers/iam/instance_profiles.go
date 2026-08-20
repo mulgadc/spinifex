@@ -18,6 +18,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
+// Bound on optimistic-concurrency retries when a concurrent writer wins the
+// CAS race on an instance-profile record.
+const instanceProfileCASMaxRetries = 16
+
 func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
 	ctx := context.Background()
 	profileName := *input.InstanceProfileName
@@ -176,22 +180,15 @@ func (s *IAMServiceImpl) AddRoleToInstanceProfile(accountID string, input *iam.A
 		return nil, err
 	}
 
-	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
+	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
+		if p.RoleName != "" {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		p.RoleName = roleName
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if profile.RoleName != "" {
-		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
-	}
-
-	profile.RoleName = roleName
-	data, err := json.Marshal(profile)
-	if err != nil {
-		return nil, fmt.Errorf("marshal instance profile: %w", err)
-	}
-	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
-		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
 	slog.Info("IAM role added to instance profile",
@@ -204,22 +201,15 @@ func (s *IAMServiceImpl) RemoveRoleFromInstanceProfile(accountID string, input *
 	profileName := *input.InstanceProfileName
 	roleName := *input.RoleName
 
-	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
+	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
+		if p.RoleName == "" || p.RoleName != roleName {
+			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		p.RoleName = ""
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if profile.RoleName == "" || profile.RoleName != roleName {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-
-	profile.RoleName = ""
-	data, err := json.Marshal(profile)
-	if err != nil {
-		return nil, fmt.Errorf("marshal instance profile: %w", err)
-	}
-	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
-		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
 	slog.Info("IAM role removed from instance profile",
@@ -301,8 +291,9 @@ func parseInstanceProfileARN(arn string) (accountID, name string, err error) {
 	return parts[4], name, nil
 }
 
-// TagInstanceProfile upserts tags on an instance profile. Blind
-// read-modify-write Put like the other instance-profile writers (no CAS).
+// TagInstanceProfile upserts tags on an instance profile under CAS, like the
+// other instance-profile writers. A blind Put would write back a stale
+// RoleName and silently undo a concurrent role attach.
 func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
 	ctx := context.Background()
 	if err := validateTags(input.Tags); err != nil {
@@ -310,23 +301,16 @@ func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInst
 	}
 
 	profileName := *input.InstanceProfileName
-	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
+	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
+		merged := mergeTags(p.Tags, input.Tags)
+		if len(merged) > maxTagsPerResource {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		p.Tags = merged
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	merged := mergeTags(profile.Tags, input.Tags)
-	if len(merged) > maxTagsPerResource {
-		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
-	}
-	profile.Tags = merged
-
-	data, err := json.Marshal(profile)
-	if err != nil {
-		return nil, fmt.Errorf("marshal instance profile: %w", err)
-	}
-	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
-		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
 	slog.Info("IAM instance profile tagged", "accountID", accountID, "instanceProfileName", profileName)
@@ -338,19 +322,16 @@ func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInst
 func (s *IAMServiceImpl) UntagInstanceProfile(accountID string, input *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
 	ctx := context.Background()
 	profileName := *input.InstanceProfileName
-	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
+	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
+		kept := removeTagKeys(p.Tags, input.TagKeys)
+		if len(kept) == len(p.Tags) {
+			return false, nil
+		}
+		p.Tags = kept
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	profile.Tags = removeTagKeys(profile.Tags, input.TagKeys)
-
-	data, err := json.Marshal(profile)
-	if err != nil {
-		return nil, fmt.Errorf("marshal instance profile: %w", err)
-	}
-	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
-		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
 	slog.Info("IAM instance profile untagged", "accountID", accountID, "instanceProfileName", profileName)
@@ -385,6 +366,53 @@ func (s *IAMServiceImpl) getInstanceProfile(ctx context.Context, accountID, prof
 		return nil, fmt.Errorf("unmarshal instance profile: %w", err)
 	}
 	return &profile, nil
+}
+
+// updateInstanceProfileCAS applies mutate under optimistic concurrency,
+// re-reading and re-running mutate when a concurrent writer wins the race.
+// mutate reports whether it changed the record; a false return commits nothing.
+func (s *IAMServiceImpl) updateInstanceProfileCAS(ctx context.Context, accountID, profileName string, mutate func(*InstanceProfile) (bool, error)) error {
+	key := accountID + "." + profileName
+	for range instanceProfileCASMaxRetries {
+		entry, err := s.instanceProfilesBucket.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				return errors.New(awserrors.ErrorIAMNoSuchEntity)
+			}
+			return fmt.Errorf("get instance profile: %w", err)
+		}
+
+		var profile InstanceProfile
+		if err := json.Unmarshal(entry.Value(), &profile); err != nil {
+			return fmt.Errorf("unmarshal instance profile: %w", err)
+		}
+
+		changed, err := mutate(&profile)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return nil
+		}
+
+		data, err := json.Marshal(&profile)
+		if err != nil {
+			return fmt.Errorf("marshal instance profile: %w", err)
+		}
+		// ErrKeyRevisionMismatch is the only conflict signal that holds on both
+		// replicated and single-replica buckets; ErrKeyExists misses R>1.
+		if _, err := s.instanceProfilesBucket.Update(ctx, key, data, entry.Revision()); err != nil {
+			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+				continue // CAS conflict — another writer won, re-read and retry.
+			}
+			return fmt.Errorf("update instance profile: %w", err)
+		}
+		return nil
+	}
+
+	slog.Warn("IAM instance profile CAS exhausted retries",
+		"accountID", accountID, "instanceProfileName", profileName, "attempts", instanceProfileCASMaxRetries)
+	return errors.New(awserrors.ErrorServerInternal)
 }
 
 // profileToSDK converts the internal InstanceProfile to the AWS SDK shape.

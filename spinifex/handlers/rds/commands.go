@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 )
 
@@ -145,7 +145,7 @@ func (s *Service) issueCommand(ctx context.Context, accountID, dbInstanceIdentif
 	}
 	issuedAt := time.Now().UTC()
 	cmd := Command{
-		CommandID:  uuid.NewString(),
+		CommandID:  uuid.NewV4().String(),
 		Type:       commandType,
 		Parameters: params,
 		IssuedAt:   &issuedAt,

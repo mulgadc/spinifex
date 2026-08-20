@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -37,7 +37,7 @@ func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, a
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 	start := time.Now()
 
 	// Resolved here too (InvokeStreamRouter below resolves it again for

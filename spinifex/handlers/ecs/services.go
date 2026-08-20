@@ -6,12 +6,12 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
@@ -177,7 +177,7 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 		NetworkMode:        resolveNetworkMode(taskDef),
 		PlacementStrategy:  placementStrategyFromAWS(input.PlacementStrategy),
 		LoadBalancers:      loadBalancersFromAWS(input.LoadBalancers),
-		DeploymentID:       uuid.NewString(),
+		DeploymentID:       uuid.NewV4().String(),
 		Tags:               tagsToMap(input.Tags),
 		CreatedAt:          now,
 		UpdatedAt:          now,

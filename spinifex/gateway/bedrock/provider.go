@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -71,7 +71,7 @@ func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, r
 // deferred closure, matching pumpConverseStream's treatment of the streaming
 // path.
 func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput) (out *bedrockruntime.ConverseOutput, err error) {
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 	start := time.Now()
 	var backend string
 	defer func() {

@@ -14,10 +14,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/google/uuid"
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
@@ -334,7 +334,7 @@ const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check 
 // format. It emits XML directly (not via GenerateEC2ErrorResponse) to ensure the
 // /local/status hint is preserved in <Message>.
 func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.Request, svc string) {
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 
 	// EKS and ECS use AWS JSON 1.1.
 	if svc == "eks" || svc == "ecs" {
@@ -379,7 +379,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.
 
 // writeThrottleError writes the service-appropriate throttle rejection response.
 func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Request) {
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 	svc, _ := r.Context().Value(ctxService).(string)
 
 	errorCode := awserrors.ErrorRequestLimitExceeded
@@ -651,7 +651,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	svc, _ := gw.GetService(r)
 	slog.Debug("ErrorHandler", "service", svc, "error", err.Error())
 
-	var requestId = uuid.NewString()
+	var requestId = uuid.NewV4().String()
 	code, message, exists := awserrors.ResolveErrorDetail(err)
 	if !exists {
 		slog.Warn("Unknown error code", "error", err.Error())

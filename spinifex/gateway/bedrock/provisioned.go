@@ -9,10 +9,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
@@ -200,7 +200,7 @@ func CreateProvisionedModelThroughput(ctx context.Context, accountID string, sto
 		return nil, err
 	}
 
-	id := uuid.NewString()
+	id := uuid.NewV4().String()
 	arn := FormatProvisionedModelARN(store.region, accountID, id)
 
 	if err := store.endpoint.EnsurePinned(ctx, accountID, modelID); err != nil {

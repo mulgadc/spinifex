@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -105,7 +105,7 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 	start := time.Now()
 
 	input := new(bedrockruntime.ConverseStreamInput)

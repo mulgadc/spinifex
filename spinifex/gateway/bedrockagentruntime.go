@@ -11,11 +11,11 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockagentruntime"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
@@ -583,7 +583,7 @@ func RetrieveAndGenerate(ctx context.Context, accountID string, kb *handlers_och
 
 	sessionID := aws.StringValue(input.SessionId)
 	if sessionID == "" {
-		sessionID = uuid.NewString()
+		sessionID = uuid.NewV4().String()
 	}
 
 	// One aggregate citation covering the whole generated answer: the

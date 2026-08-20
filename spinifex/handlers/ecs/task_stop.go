@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go/jetstream"
@@ -81,7 +81,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 	out := &ecs.StartTaskOutput{}
 	for _, ref := range awsStringSlice(input.ContainerInstances) {
 		instanceID := containerInstanceShortID(ref)
-		taskID := uuid.NewString()
+		taskID := uuid.NewV4().String()
 		inst, rerr := s.reserveOnInstance(ctx, kv, cluster, instanceID, taskID, cpu, mem, gpu)
 		if rerr != nil {
 			out.Failures = append(out.Failures, &ecs.Failure{

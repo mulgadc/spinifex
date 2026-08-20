@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -380,7 +380,7 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 // Every auth rejection funnels through here, a rate-limit lockout included, so
 // this is the one place that has to record the verdict onto the request.
 func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request, errorCode string) {
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 	auditFrom(r.Context()).setAuthError(errorCode)
 
 	errorMsg, exists := awserrors.ErrorLookup[errorCode]

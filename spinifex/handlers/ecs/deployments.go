@@ -5,10 +5,10 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/google/uuid"
 )
 
 // deploymentStartedByPrefix is the AWS StartedBy prefix a service stamps on its
@@ -110,7 +110,7 @@ func (r *ServiceRecord) ensurePrimaryDeployment() {
 // new PRIMARY for td, mirroring the taskdef onto the service record.
 func (r *ServiceRecord) startDeployment(td *TaskDefRecord) {
 	r.demotePrimary()
-	r.DeploymentID = uuid.NewString()
+	r.DeploymentID = uuid.NewV4().String()
 	r.TaskDefFamily = td.Family
 	r.TaskDefRevision = td.Revision
 	r.TaskDefARN = td.ARN
@@ -221,7 +221,7 @@ func (r *ServiceRecord) rollbackToLastGood() {
 	family, rev := parseTaskDefRef(r.LastGoodTaskDefARN)
 	r.demotePrimary()
 	now := time.Now().UTC()
-	r.DeploymentID = uuid.NewString()
+	r.DeploymentID = uuid.NewV4().String()
 	r.Deployments = append(r.Deployments, Deployment{
 		ID:              r.DeploymentID,
 		Status:          DeploymentStatusPrimary,

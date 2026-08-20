@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go/jetstream"
@@ -60,7 +60,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 
 	out := &ecs.RunTaskOutput{}
 	for i := 0; i < count; i++ {
-		taskID := uuid.NewString()
+		taskID := uuid.NewV4().String()
 		inst, err := s.reservePlacement(ctx, kv, cluster, taskID, cpu, mem, gpu, strategy)
 		if err != nil {
 			out.Failures = append(out.Failures, &ecs.Failure{

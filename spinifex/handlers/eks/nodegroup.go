@@ -677,7 +677,7 @@ func (s *EKSServiceImpl) selectWorkerHost(ctx context.Context, instanceType stri
 			counts[host]++
 		}
 	}
-	rand.Shuffle(len(hosts), func(i, j int) { hosts[i], hosts[j] = hosts[j], hosts[i] })
+	rand.Shuffle(len(hosts), func(i, j int) { hosts[i], hosts[j] = hosts[j], hosts[i] }) //nolint:gosec // worker spread, not cryptographic
 	best := hosts[0]
 	for _, h := range hosts[1:] {
 		if counts[h] < counts[best] {

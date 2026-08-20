@@ -115,8 +115,7 @@ func ErrorCode(err error) string {
 	if err == nil {
 		return ""
 	}
-	var awsErr awserr.Error
-	if errors.As(err, &awsErr) {
+	if awsErr, ok := errors.AsType[awserr.Error](err); ok {
 		return awsErr.Code()
 	}
 	if errors.Is(err, ErrShed) {

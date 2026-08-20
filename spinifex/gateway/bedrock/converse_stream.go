@@ -231,8 +231,7 @@ func pumpConverseStream(ctx context.Context, fw *frameWriter, src converseStream
 		event, ok, err := src.Next(ctx)
 		if err != nil {
 			excType := excInternalServerException
-			var fault *streamFaultError
-			if errors.As(err, &fault) {
+			if _, ok := errors.AsType[*streamFaultError](err); ok {
 				excType = excModelStreamErrorException
 			}
 			errCode = awserrors.ValidErrorCodeFromError(err)

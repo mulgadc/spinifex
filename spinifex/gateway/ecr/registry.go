@@ -254,8 +254,7 @@ func (reg *Registry) getBlob(ctx context.Context, w http.ResponseWriter, _, dige
 func (reg *Registry) startUpload(w http.ResponseWriter, r *http.Request, name string) {
 	ctx := r.Context()
 	if err := reg.requireRepo(ctx, name); err != nil {
-		var mErr *ManifestStoreError
-		if errors.As(err, &mErr) {
+		if mErr, ok := errors.AsType[*ManifestStoreError](err); ok {
 			WriteError(w, mErr.Status, mErr.Code, mErr.Msg)
 			return
 		}
@@ -593,8 +592,7 @@ func (reg *Registry) putManifest(w http.ResponseWriter, r *http.Request, name, r
 
 	digest, err := reg.StoreManifest(ctx, reg.AccountID, name, reference, r.Header.Get("Content-Type"), body)
 	if err != nil {
-		var mErr *ManifestStoreError
-		if errors.As(err, &mErr) {
+		if mErr, ok := errors.AsType[*ManifestStoreError](err); ok {
 			WriteError(w, mErr.Status, mErr.Code, mErr.Msg)
 			return
 		}

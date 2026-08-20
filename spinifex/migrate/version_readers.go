@@ -91,7 +91,7 @@ func (r *NATSConfVersionReader) ReadVersion(path string) (int, error) {
 	}
 
 	// Check first line only.
-	firstLine := strings.SplitN(string(data), "\n", 2)[0]
+	firstLine, _, _ := strings.Cut(string(data), "\n")
 	match := natsVersionRe.FindStringSubmatch(firstLine)
 	if match == nil {
 		return 0, nil // no version marker

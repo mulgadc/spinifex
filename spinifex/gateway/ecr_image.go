@@ -385,8 +385,7 @@ func (gw *GatewayConfig) ecrListImages(ctx context.Context, accountID, repo stri
 // mapStoreManifestError translates the OCI manifest-store error codes into AWS
 // PutImage error codes.
 func mapStoreManifestError(ctx context.Context, err error, repo string) error {
-	var mErr *gateway_ecr.ManifestStoreError
-	if errors.As(err, &mErr) {
+	if mErr, ok := errors.AsType[*gateway_ecr.ManifestStoreError](err); ok {
 		switch mErr.Code {
 		case "DIGEST_INVALID":
 			return errors.New(awserrors.ErrorImageDigestDoesNotMatch)

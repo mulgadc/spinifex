@@ -165,8 +165,7 @@ func (p *GatewayClaimProber) GatewayReachable(ctx context.Context, gwIP string) 
 	}
 	cmd := exec.CommandContext(ctx, "ping", "-c", "1", "-W", "1", gwIP)
 	if err := cmd.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if _, ok := errors.AsType[*exec.ExitError](err); ok {
 			return false, nil
 		}
 		return false, fmt.Errorf("ping %s: %w", gwIP, err)

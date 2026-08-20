@@ -121,8 +121,7 @@ func isCASConflict(err error) bool {
 	if errors.Is(err, jetstream.ErrKeyExists) {
 		return true
 	}
-	var apiErr *jetstream.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*jetstream.APIError](err); ok {
 		return apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
 	}
 	return false

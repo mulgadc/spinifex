@@ -148,8 +148,7 @@ func (s *S3ObjectStore) EnsureBucket(ctx context.Context, bucket string) error {
 	}
 	_, err := s.client.CreateBucketWithContext(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
 	if err != nil {
-		var aerr awserr.Error
-		if errors.As(err, &aerr) {
+		if aerr, ok := errors.AsType[awserr.Error](err); ok {
 			switch aerr.Code() {
 			case s3.ErrCodeBucketAlreadyOwnedByYou, s3.ErrCodeBucketAlreadyExists:
 				return nil

@@ -407,7 +407,7 @@ func TestGenerateInstanceTypes_BurstableFlag(t *testing.T) {
 
 	for name, info := range broadwellTypes {
 		isBurstable := strings.HasPrefix(name, "t")
-		family := strings.SplitN(name, ".", 2)[0]
+		family, _, _ := strings.Cut(name, ".")
 		assert.Equal(t, isBurstable, *info.BurstablePerformanceSupported,
 			"%s burstable flag mismatch", name)
 		assert.Equal(t, !prevGen[family], *info.CurrentGeneration,

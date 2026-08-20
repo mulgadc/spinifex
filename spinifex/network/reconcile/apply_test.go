@@ -830,6 +830,9 @@ func TestReconcile_FailedAttachIGWReportsPassIncomplete(t *testing.T) {
 	ctx := context.Background()
 	attachErr := errors.New("allocate gateway LRP IP: dhcp gw-lrp acquire: context deadline exceeded")
 	rec.igw = &stubIGW{IGWManager: rec.igw, attachErr: attachErr}
+	// Without a chassis the rebind returns on its first line, which would make
+	// the assertion below pass whether or not the failure short-circuits it.
+	rec.chassis = []string{"chassis-1"}
 
 	err := rec.Reconcile(ctx, igwIntent(t))
 	if !errors.Is(err, ErrPassIncomplete) {
@@ -841,7 +844,11 @@ func TestReconcile_FailedAttachIGWReportsPassIncomplete(t *testing.T) {
 		t.Errorf("ENI port missing: a failed IGW attach must not abort the pass")
 	}
 	if _, ok := m.RouterPorts[topology.GatewayRouterPort("vpc-a")]; ok {
-		t.Errorf("gateway LRP present after a failed attach: chassis rebind must be skipped")
+		t.Errorf("gateway LRP present after a failed attach")
+	}
+	if m.SetGatewayChassisCalls != 0 {
+		t.Errorf("SetGatewayChassis called %d times after a failed attach, want 0 — "+
+			"rebinding chassis onto a gateway LRP that was never created", m.SetGatewayChassisCalls)
 	}
 }
 
@@ -850,12 +857,17 @@ func TestReconcile_FailedAttachIGWReportsPassIncomplete(t *testing.T) {
 func TestReconcile_AttachedIGWReportsConverged(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
+	rec.chassis = []string{"chassis-1"}
 
 	if err := rec.Reconcile(ctx, igwIntent(t)); err != nil {
 		t.Fatalf("Reconcile = %v, want nil", err)
 	}
 	if _, ok := m.RouterPorts[topology.GatewayRouterPort("vpc-a")]; !ok {
 		t.Errorf("gateway LRP missing after a successful attach")
+	}
+	if m.SetGatewayChassisCalls == 0 {
+		t.Errorf("SetGatewayChassis never called after a successful attach: the rebind " +
+			"must run, or a rebooted chassis never reclaims the gateway")
 	}
 }
 

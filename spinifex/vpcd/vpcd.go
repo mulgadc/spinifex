@@ -702,12 +702,15 @@ func launchService(cfg *Config) error {
 	// Startup reconcile (leader-gated, apply-only). Orphan pruning is skipped because intent may be stale:
 	// a peer's vpc.create-sg could be mid-flight and a prune would sweep those port groups as orphans.
 	// Drift loop uses full Reconcile.
+	// startupErr seeds the drift loop's backoff so a resource the bootstrap pass
+	// could not converge is retried on the short requeue, not a full interval.
+	var startupErr error
 	if isLeader {
 		intent, intentErr := reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
 		if intentErr != nil {
 			slog.Warn("vpcd: startup intent load failed", "err", intentErr)
-		} else if err := rec.ReconcileApplyOnly(ctx, intent); err != nil {
-			slog.Warn("vpcd: startup reconcile failed", "err", err)
+		} else if startupErr = rec.ReconcileApplyOnly(ctx, intent); startupErr != nil {
+			slog.Warn("vpcd: startup reconcile failed", "err", startupErr)
 		}
 		releaseLeader()
 	}
@@ -717,7 +720,7 @@ func launchService(cfg *Config) error {
 	defer loopCancel()
 	loopDone := make(chan struct{})
 	go func() {
-		reconcile.DriftLoop(loopCtx, rec, nc, cfg.AZ, holder)
+		reconcile.DriftLoop(loopCtx, rec, nc, cfg.AZ, holder, startupErr)
 		close(loopDone)
 	}()
 

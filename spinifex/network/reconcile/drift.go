@@ -28,15 +28,20 @@ const driftBackoffFactor = 3
 // DriftLoop runs Reconcile every DriftInterval, gated on AcquireLeader so
 // only one vpcd scans at a time. An incomplete pass requeues on a short
 // backoff instead. Returns when ctx is cancelled.
-func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, localAZ, holder string) {
+//
+// startup is the outcome of the bootstrap ReconcileApplyOnly pass, or nil when
+// this node did not run one. Seeding from it matters because the gateway LRP's
+// first DORA happens in that pass: without the seed a resource that failed
+// before the loop started waits a full DriftInterval for its first retry.
+func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, localAZ, holder string, startup error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		slog.Error("reconcile/drift: JetStream context unavailable, drift loop disabled", "err", err)
 		return
 	}
 
-	var backoff time.Duration
-	timer := time.NewTimer(DriftInterval)
+	backoff := nextDriftBackoff(0, startup)
+	timer := time.NewTimer(driftWait(backoff))
 	defer timer.Stop()
 
 	for {

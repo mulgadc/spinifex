@@ -400,6 +400,9 @@ func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID, eipIP stri
 	gwPortName := topology.GatewayRouterPort(vpcID)
 	lrp, err := r.ovn.GetLogicalRouterPort(ctx, gwPortName)
 	if err != nil {
+		slog.Warn("reconcile/apply: gateway LRP read failed; skipping chassis rebind and datapath gate",
+			"vpc_id", vpcID, "port", gwPortName, "err", err)
+		res.fail(classIGW, vpcID, err)
 		return
 	}
 	for i, chassis := range r.chassis {

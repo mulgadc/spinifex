@@ -455,8 +455,9 @@ func (s *vllmConverseStreamSource) consume(chunk vllmStreamChunk) {
 	}
 }
 
-// ensureStarted queues messageStart+contentBlockStart exactly once, so the stop
-// events can never appear without a preceding start on a zero-content stream.
+// ensureStarted queues messageStart exactly once. Real Bedrock text streams
+// carry no contentBlockStart, so contentBlockStop needs no preceding start
+// event on a zero-content stream.
 func (s *vllmConverseStreamSource) ensureStarted() {
 	if s.started {
 		return
@@ -466,10 +467,6 @@ func (s *vllmConverseStreamSource) ensureStarted() {
 		ConverseStreamEvent{
 			Kind:         converseStreamEventMessageStart,
 			MessageStart: &bedrockruntime.MessageStartEvent{Role: aws.String(bedrockruntime.ConversationRoleAssistant)},
-		},
-		ConverseStreamEvent{
-			Kind:              converseStreamEventContentBlockStart,
-			ContentBlockStart: &bedrockruntime.ContentBlockStartEvent{ContentBlockIndex: aws.Int64(0), Start: &bedrockruntime.ContentBlockStart{}},
 		},
 	)
 }

@@ -143,7 +143,7 @@ func (s *Store) ClaimLBName(ctx context.Context, name, accountID, lbID string) (
 		}
 		// Orphaned (crashed prior create, past its TTL) or already ours: CAS-take.
 		if _, uerr := s.kv.Update(ctx, key, claimBytes, entry.Revision()); uerr != nil {
-			if errors.Is(uerr, jetstream.ErrKeyExists) {
+			if errors.Is(uerr, jetstream.ErrKeyRevisionMismatch) {
 				continue // lost the CAS race; re-read
 			}
 			return false, false, fmt.Errorf("kv update %s: %w", key, uerr)

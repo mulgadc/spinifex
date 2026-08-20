@@ -238,7 +238,7 @@ func casUpdateMeta(ctx context.Context, kv jetstream.KeyValue, name string, muta
 		if err == nil {
 			return nil
 		}
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			continue
 		}
 		return fmt.Errorf("kv update %s: %w", ClusterMetaKey(name), err)

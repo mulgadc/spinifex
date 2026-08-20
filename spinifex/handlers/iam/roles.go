@@ -599,7 +599,7 @@ func (s *IAMServiceImpl) updateRoleCAS(ctx context.Context, accountID, roleName 
 			return fmt.Errorf("marshal role: %w", err)
 		}
 		if _, err := s.rolesBucket.Update(ctx, key, data, entry.Revision()); err != nil {
-			if errors.Is(err, jetstream.ErrKeyExists) {
+			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 				continue // CAS conflict — another writer won, re-read and retry.
 			}
 			return fmt.Errorf("update role: %w", err)

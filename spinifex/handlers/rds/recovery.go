@@ -154,7 +154,7 @@ func (r *Reconciler) recordFailure(ctx context.Context, kv jetstream.KeyValue, r
 func (r *Reconciler) persistFailureClock(ctx context.Context, kv jetstream.KeyValue, rev uint64, rec *DBInstanceRecord) error {
 	rec.UpdatedAt = time.Now().UTC()
 	err := updateJSON(ctx, kv, DBInstanceKey(rec.DBInstanceIdentifier), rev, rec)
-	if errors.Is(err, jetstream.ErrKeyExists) {
+	if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 		slog.DebugContext(ctx, "rds reconciler: failure clock lost a revision race; retrying next pass",
 			"dbInstance", rec.DBInstanceIdentifier)
 		return nil

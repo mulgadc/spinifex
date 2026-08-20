@@ -161,7 +161,7 @@ func (s *RouteTableServiceImpl) mutateRouteTableCAS(ctx context.Context, account
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if _, err := s.rtbKV.Update(ctx, key, data, entry.Revision()); err != nil {
-			if errors.Is(err, jetstream.ErrKeyExists) {
+			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 				continue // CAS conflict — another writer won, re-read and retry.
 			}
 			slog.ErrorContext(ctx, "Failed to write route table to KV", "routeTableId", rtbID, "err", err)

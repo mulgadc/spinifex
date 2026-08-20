@@ -364,7 +364,7 @@ func (s *Service) runMaintenanceWindow(ctx context.Context, kv jetstream.KeyValu
 	rec.Status = StatusModifying
 	rec.UpdatedAt = now
 	if err := updateJSON(ctx, kv, DBInstanceKey(rec.DBInstanceIdentifier), rev, rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			// Something else moved the record between the read and here; the next
 			// pass re-reads and the window is still open.
 			return false, nil

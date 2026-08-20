@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,6 +64,31 @@ func (f *fakeDumper) Restore(_ context.Context, dsn string, r io.Reader) error {
 }
 
 var _ PgDumper = (*fakeDumper)(nil)
+
+// TestExecPgDumper_Dump_MissingBinaryPropagatesError points PATH at an empty
+// directory so pg_dump can never be found, proving Dump builds the command
+// and wraps exec's failure without needing a live Postgres or binary.
+func TestExecPgDumper_Dump_MissingBinaryPropagatesError(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	var buf bytes.Buffer
+	schema := schemaName(backupTestAccount)
+
+	err := ExecPgDumper{}.Dump(context.Background(), "postgres://ignored", schema, &buf)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "pg_dump schema "+schema)
+	assert.Zero(t, buf.Len())
+}
+
+// TestExecPgDumper_Restore_MissingBinaryPropagatesError is Dump's
+// counterpart for Restore: psql is unreachable via PATH, so Restore must
+// wrap exec's failure rather than hang on stdin.
+func TestExecPgDumper_Restore_MissingBinaryPropagatesError(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	err := ExecPgDumper{}.Restore(context.Background(), "postgres://ignored", strings.NewReader("select 1;"))
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "psql restore")
+}
 
 // fakeAccountGranter is the AccountGranter test double: it records every
 // EnsureAccount/RegrantAccount call so Restore's post-import repair sequence
@@ -159,6 +185,60 @@ func TestBackupService_Backup_DumperErrorLeavesNoObjectUploaded(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "connection refused")
 	assert.Equal(t, 0, store.Count())
+}
+
+// failingStore wraps MemoryObjectStore so tests can script EnsureBucket/
+// PutObject failures the way a predastore outage would, without a live
+// backend.
+type failingStore struct {
+	*objectstore.MemoryObjectStore
+
+	ensureBucketErr error
+	putObjectErr    error
+}
+
+func (f *failingStore) EnsureBucket(ctx context.Context, bucket string) error {
+	if f.ensureBucketErr != nil {
+		return f.ensureBucketErr
+	}
+	return f.MemoryObjectStore.EnsureBucket(ctx, bucket)
+}
+
+func (f *failingStore) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+	if f.putObjectErr != nil {
+		return nil, f.putObjectErr
+	}
+	return f.MemoryObjectStore.PutObject(ctx, input)
+}
+
+var _ objectstore.ObjectStore = (*failingStore)(nil)
+
+func TestBackupService_Backup_EnsureBucketErrorPropagates(t *testing.T) {
+	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
+	store := &failingStore{
+		MemoryObjectStore: objectstore.NewMemoryObjectStore(),
+		ensureBucketErr:   errors.New("predastore: bucket quota exceeded"),
+	}
+	dumper := &fakeDumper{dumpContent: []byte("-- pg_dump output")}
+	svc := NewBackupService(appliance, &fakeAccountGranter{}, store, dumper)
+
+	_, err := svc.Backup(context.Background(), &BackupAccountRequest{AccountID: backupTestAccount}, "")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "bucket quota exceeded")
+}
+
+func TestBackupService_Backup_PutObjectErrorPropagates(t *testing.T) {
+	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
+	store := &failingStore{
+		MemoryObjectStore: objectstore.NewMemoryObjectStore(),
+		putObjectErr:      errors.New("predastore: connection reset"),
+	}
+	dumper := &fakeDumper{dumpContent: []byte("-- pg_dump output")}
+	svc := NewBackupService(appliance, &fakeAccountGranter{}, store, dumper)
+
+	_, err := svc.Backup(context.Background(), &BackupAccountRequest{AccountID: backupTestAccount}, "")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "connection reset")
 }
 
 func TestBackupService_Backup_ApplianceNotAvailablePropagates(t *testing.T) {
@@ -260,4 +340,75 @@ func TestBackupService_Restore_PsqlErrorSkipsRegrant(t *testing.T) {
 	_, err := svc.Restore(context.Background(), &RestoreAccountRequest{AccountID: backupTestAccount, ObjectKey: key}, "")
 	require.Error(t, err)
 	assert.Empty(t, granter.ensureCalls, "a failed import must not be followed by a grant repair")
+}
+
+func TestBackupService_Restore_InvalidAccountIDRejected(t *testing.T) {
+	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
+	dumper := &fakeDumper{}
+	svc := NewBackupService(appliance, &fakeAccountGranter{}, objectstore.NewMemoryObjectStore(), dumper)
+
+	_, err := svc.Restore(context.Background(), &RestoreAccountRequest{AccountID: "not-an-account", ObjectKey: "x/y.sql.gz"}, "")
+	require.Error(t, err)
+	assert.Equal(t, 0, dumper.restoreCalls, "dumper must never run for a rejected account id")
+}
+
+func TestBackupService_Restore_ApplianceNotAvailablePropagates(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	appliance, err := NewAppliance(js, testMasterKey(t), &fakeLauncher{})
+	require.NoError(t, err)
+	// Never seeded AVAILABLE: dsn() must refuse before the dumper ever runs.
+	dumper := &fakeDumper{}
+	svc := NewBackupService(appliance, &fakeAccountGranter{}, objectstore.NewMemoryObjectStore(), dumper)
+
+	_, err = svc.Restore(context.Background(), &RestoreAccountRequest{AccountID: backupTestAccount, ObjectKey: backupTestAccount + "/x.sql.gz"}, "")
+	require.Error(t, err)
+	assert.Equal(t, 0, dumper.restoreCalls)
+}
+
+func TestBackupService_Restore_CorruptGzipObjectRejected(t *testing.T) {
+	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
+	store := objectstore.NewMemoryObjectStore()
+	require.NoError(t, store.EnsureBucket(context.Background(), backupBucket))
+	key := backupTestAccount + "/not-gzip.sql.gz"
+	_, err := store.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String(backupBucket),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader([]byte("this is not a gzip stream")),
+	})
+	require.NoError(t, err)
+	dumper := &fakeDumper{}
+	svc := NewBackupService(appliance, &fakeAccountGranter{}, store, dumper)
+
+	_, err = svc.Restore(context.Background(), &RestoreAccountRequest{AccountID: backupTestAccount, ObjectKey: key}, "")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "open backup gzip stream")
+	assert.Equal(t, 0, dumper.restoreCalls)
+}
+
+func TestBackupService_Restore_EnsureAccountErrorPropagates(t *testing.T) {
+	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
+	store := objectstore.NewMemoryObjectStore()
+	key := seedBackupObject(t, store, backupTestAccount, "-- sql")
+	dumper := &fakeDumper{}
+	granter := &fakeAccountGranter{ensureErr: errors.New("grant: schema locked")}
+	svc := NewBackupService(appliance, granter, store, dumper)
+
+	_, err := svc.Restore(context.Background(), &RestoreAccountRequest{AccountID: backupTestAccount, ObjectKey: key}, "")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "schema locked")
+	assert.Empty(t, granter.regrantCalls, "must not attempt regrant when the ensure-account repair fails")
+}
+
+func TestBackupService_Restore_RegrantAccountErrorPropagates(t *testing.T) {
+	appliance := newBackupTestAppliance(t, "127.0.0.1", 5432)
+	store := objectstore.NewMemoryObjectStore()
+	key := seedBackupObject(t, store, backupTestAccount, "-- sql")
+	dumper := &fakeDumper{}
+	granter := &fakeAccountGranter{regrantErr: errors.New("grant: role missing")}
+	svc := NewBackupService(appliance, granter, store, dumper)
+
+	_, err := svc.Restore(context.Background(), &RestoreAccountRequest{AccountID: backupTestAccount, ObjectKey: key}, "")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "role missing")
+	assert.Equal(t, []string{backupTestAccount}, granter.ensureCalls, "ensure-account must still run before the failing regrant")
 }

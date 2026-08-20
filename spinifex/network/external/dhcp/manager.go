@@ -38,6 +38,19 @@ var defaultAcquireSchedule = []time.Duration{4 * time.Second, 8 * time.Second, 1
 // the daemon room to answer inside a 60s client read timeout, per the schedule.
 const defaultAcquireBudget = 45 * time.Second
 
+// gwLRPAcquireSchedule is the per-attempt ladder for purpose=gw-lrp. Longer than
+// the default because no client is timing this DORA: AttachInternetGateway
+// publishes vpc.igw-attach fire-and-forget and the allocator calls the manager
+// in-process, so the read-timeout ceiling that bounds the EIP path does not
+// apply. The two purposes split on that constraint, not only on cost of failure.
+var gwLRPAcquireSchedule = []time.Duration{4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second}
+
+// gwLRPAcquireBudget caps the wallclock for a gw-lrp DORA loop, with room over
+// the ladder for jitter. A lost gw-lrp lease costs the whole VPC its external
+// gateway until a reconcile pass returns, so it is worth waiting out a stall an
+// ENI or EIP acquire would rightly abandon.
+const gwLRPAcquireBudget = 90 * time.Second
+
 // acquireAttemptJitter is the ± window applied to each per-attempt
 // timeout so concurrent acquires across vpcds don't synchronise.
 const acquireAttemptJitter = time.Second
@@ -51,6 +64,10 @@ type ManagerConfig struct {
 	Now             func() time.Time
 	AcquireSchedule []time.Duration
 	AcquireBudget   time.Duration
+	// GatewayLRPAcquireSchedule/Budget override the outer DORA backoff for
+	// purpose=gw-lrp only; zero values fall back to the gw-lrp defaults.
+	GatewayLRPAcquireSchedule []time.Duration
+	GatewayLRPAcquireBudget   time.Duration
 	// IfaceIPs lists the IPs bound to a named interface; tests override.
 	// Used to detect MAC-keyed upstream routers on interface-MAC pools.
 	IfaceIPs func(iface string) ([]net.IP, error)
@@ -68,6 +85,8 @@ type Manager struct {
 	now             func() time.Time
 	acquireSchedule []time.Duration
 	acquireBudget   time.Duration
+	gwLRPSchedule   []time.Duration
+	gwLRPBudget     time.Duration
 	ifaceIPs        func(iface string) ([]net.IP, error)
 	nodeName        string
 
@@ -121,6 +140,14 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if budget <= 0 {
 		budget = defaultAcquireBudget
 	}
+	gwSchedule := cfg.GatewayLRPAcquireSchedule
+	if len(gwSchedule) == 0 {
+		gwSchedule = gwLRPAcquireSchedule
+	}
+	gwBudget := cfg.GatewayLRPAcquireBudget
+	if gwBudget <= 0 {
+		gwBudget = gwLRPAcquireBudget
+	}
 	ifaceIPs := cfg.IfaceIPs
 	if ifaceIPs == nil {
 		ifaceIPs = defaultIfaceIPs
@@ -136,6 +163,8 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		now:             now,
 		acquireSchedule: schedule,
 		acquireBudget:   budget,
+		gwLRPSchedule:   gwSchedule,
+		gwLRPBudget:     gwBudget,
 		ifaceIPs:        ifaceIPs,
 		nodeName:        nodeName,
 		loops:           map[string]*leaseLoop{},
@@ -408,7 +437,7 @@ func (m *Manager) run(ctx context.Context, self *leaseLoop, e Entry, reaffirm bo
 }
 
 func (m *Manager) doAcquire(ctx context.Context, e *Entry) error {
-	lease, err := m.acquireWithBackoff(ctx, AcquireRequest{
+	lease, err := m.acquireWithBackoff(ctx, e.Purpose, AcquireRequest{
 		Bridge:      e.Lease.Bridge,
 		ClientID:    e.Lease.ClientID,
 		Hostname:    e.Lease.Hostname,
@@ -456,16 +485,27 @@ func (m *Manager) applyLease(ctx context.Context, e *Entry, fresh *Lease) error 
 	return nil
 }
 
+// acquireBackoffFor returns the per-attempt ladder and wallclock budget for
+// purpose. gw-lrp gets its own, longer pair; every other purpose shares the
+// default one.
+func (m *Manager) acquireBackoffFor(purpose string) ([]time.Duration, time.Duration) {
+	if purpose == PurposeGatewayLRP {
+		return m.gwLRPSchedule, m.gwLRPBudget
+	}
+	return m.acquireSchedule, m.acquireBudget
+}
+
 // acquireWithBackoff drives client.Acquire with per-attempt timeouts from
-// the schedule, capped by AcquireBudget. Jitter prevents synchronised wakes.
+// purpose's schedule, capped by its budget. Jitter prevents synchronised wakes.
 // ctx.Err() short-circuits; returns last error when all attempts fail.
-func (m *Manager) acquireWithBackoff(ctx context.Context, req AcquireRequest) (*Lease, error) {
-	if len(m.acquireSchedule) == 0 {
+func (m *Manager) acquireWithBackoff(ctx context.Context, purpose string, req AcquireRequest) (*Lease, error) {
+	schedule, budget := m.acquireBackoffFor(purpose)
+	if len(schedule) == 0 {
 		return m.client.Acquire(ctx, req)
 	}
-	deadline := m.now().Add(m.acquireBudget)
+	deadline := m.now().Add(budget)
 	var lastErr error
-	for i, base := range m.acquireSchedule {
+	for i, base := range schedule {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -493,13 +533,13 @@ func (m *Manager) acquireWithBackoff(ctx context.Context, req AcquireRequest) (*
 		}
 		lastErr = err
 		slog.Warn("dhcp manager: acquire attempt failed",
-			"client_id", req.ClientID, "attempt", i+1, "of", len(m.acquireSchedule),
+			"client_id", req.ClientID, "purpose", purpose, "attempt", i+1, "of", len(schedule),
 			"timeout_ms", otelsetup.Millis(attempt), "err", err)
 	}
 	if lastErr == nil {
 		lastErr = errors.New("acquire budget exhausted before first attempt")
 	}
-	return nil, fmt.Errorf("acquire after %d attempts: %w", len(m.acquireSchedule), lastErr)
+	return nil, fmt.Errorf("acquire after %d attempts: %w", len(schedule), lastErr)
 }
 
 func (m *Manager) doRenew(ctx context.Context, e *Entry) error {
@@ -625,7 +665,7 @@ func (m *Manager) acquireLocked(ctx context.Context, req acquireWireRequest) (*E
 	if vendorClass == "" {
 		vendorClass = m.leaseVendorClass()
 	}
-	lease, err := m.acquireWithBackoff(ctx, AcquireRequest{
+	lease, err := m.acquireWithBackoff(ctx, req.Purpose, AcquireRequest{
 		Bridge:      req.Bridge,
 		ClientID:    req.ClientID,
 		Hostname:    hostname,

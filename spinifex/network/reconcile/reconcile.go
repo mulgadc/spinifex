@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -17,9 +19,18 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
+// ErrPassIncomplete marks a pass that applied what it could but left at least
+// one resource unconverged. A pass keeps applying past a per-resource failure,
+// so without this the caller cannot tell a clean pass from one that dropped ten
+// resources on the floor. DriftLoop tests for it with errors.Is and requeues on
+// a short backoff instead of waiting a full DriftInterval.
+var ErrPassIncomplete = errors.New("reconcile: pass incomplete")
+
 // Reconciler converges OVN NB DB to a declared IntentState. Implementations
 // are idempotent: a second call with the same IntentState is a no-op.
 type Reconciler interface {
+	// Reconcile returns a scan failure as-is, and wraps ErrPassIncomplete when
+	// the scan succeeded but some resources did not converge.
 	Reconcile(ctx context.Context, intent IntentState) error
 	// ReconcileApplyOnly skips orphan-pruning. Startup uses this to avoid
 	// racing peer subscribers that haven't processed in-flight create events
@@ -186,8 +197,58 @@ func New(cfg Config) (Reconciler, error) {
 	}, nil
 }
 
+// passFailure is one resource an apply stage could not converge.
+type passFailure struct {
+	class string
+	id    string
+	err   error
+}
+
+// passResult accumulates per-resource apply failures so a pass that logged and
+// continued past them still reports itself as incomplete to the drift loop.
+type passResult struct {
+	failures []passFailure
+}
+
+// fail records that id in class did not converge.
+func (p *passResult) fail(class, id string, err error) {
+	p.failures = append(p.failures, passFailure{class: class, id: id, err: err})
+}
+
+// summaryKV renders per-class failure counts as slog key/values, class-sorted so
+// the summary line is stable across passes.
+func (p *passResult) summaryKV() []any {
+	counts := make(map[string]int, len(p.failures))
+	for _, f := range p.failures {
+		counts[f.class]++
+	}
+	kv := make([]any, 0, 2+2*len(counts))
+	kv = append(kv, "unconverged", len(p.failures))
+	for _, class := range slices.Sorted(maps.Keys(counts)) {
+		kv = append(kv, class, counts[class])
+	}
+	return kv
+}
+
+// Failure classes for the per-pass convergence summary, one per apply stage so
+// the summary names the stage that did not converge.
+const (
+	classVPC          = "vpc"
+	classSubnet       = "subnet"
+	classSG           = "sg"
+	classPort         = "port"
+	classIGW          = "igw"
+	classEIP          = "eip"
+	classNATGW        = "natgw"
+	classIGWRoute     = "igw_route"
+	classNATGWRoute   = "natgw_route"
+	classDropGate     = "drop_gate"
+	classPublicEgress = "public_egress"
+)
+
 // Reconcile diffs intent vs. actual OVN state and applies in topological order.
-// Per-stage errors are logged; only a scan failure is returned.
+// Per-stage errors are logged and the pass continues; a scan failure is returned
+// as-is and an unconverged resource surfaces as ErrPassIncomplete.
 func (r *reconciler) Reconcile(ctx context.Context, intent IntentState) error {
 	return r.reconcile(ctx, intent, true)
 }
@@ -217,21 +278,26 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 		"intent_natgw_routes", len(intent.NATGWRoutes),
 	)
 
-	r.applyVPCs(ctx, intent, actual)
-	r.applySubnets(ctx, intent, actual)
-	r.applySGs(ctx, intent, actual, pruneOrphans)
-	r.applyPorts(ctx, intent, actual, pruneOrphans)
-	r.applyIGWs(ctx, intent, actual)
-	r.applyEIPs(ctx, intent, actual)
+	res := &passResult{}
+	r.applyVPCs(ctx, intent, actual, res)
+	r.applySubnets(ctx, intent, actual, res)
+	r.applySGs(ctx, intent, actual, pruneOrphans, res)
+	r.applyPorts(ctx, intent, actual, pruneOrphans, res)
+	r.applyIGWs(ctx, intent, actual, res)
+	r.applyEIPs(ctx, intent, actual, res)
 	if pruneOrphans {
-		r.pruneOrphanEIPs(ctx, intent)
+		r.pruneOrphanEIPs(ctx, intent, res)
 	}
-	r.applyNATGWs(ctx, intent, actual)
-	r.applyIGWRoutes(ctx, intent, actual)
-	r.applyNATGWRoutes(ctx, intent, actual)
-	r.applyDropGates(ctx, intent, actual)
-	r.applyPublicInstanceEgress(ctx, intent, actual)
+	r.applyNATGWs(ctx, intent, actual, res)
+	r.applyIGWRoutes(ctx, intent, actual, res)
+	r.applyNATGWRoutes(ctx, intent, actual, res)
+	r.applyDropGates(ctx, intent, actual, res)
+	r.applyPublicInstanceEgress(ctx, intent, actual, res)
 
-	slog.Info("reconcile: complete")
-	return nil
+	if len(res.failures) == 0 {
+		slog.Info("reconcile: complete", "converged", true)
+		return nil
+	}
+	slog.Warn("reconcile: pass incomplete", res.summaryKV()...)
+	return fmt.Errorf("reconcile: %d resource(s) unconverged: %w", len(res.failures), ErrPassIncomplete)
 }

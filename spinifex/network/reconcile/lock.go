@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -15,11 +16,20 @@ import (
 const (
 	KVBucketVPCDReconcile = "spinifex-vpcd-reconcile"
 	reconcileLeaderKey    = "leader"
-	reconcileLeaderTTL    = 60 * time.Second
 
 	// reconcileReleaseTimeout bounds the lock delete on the way out, which runs
 	// on a detached context and so cannot inherit the caller's deadline.
 	reconcileReleaseTimeout = 5 * time.Second
+)
+
+// Leader-key lifetime. Vars (not consts) so tests can shrink them.
+//
+// reconcileLeaderRenew is the gap between refreshes: a pass can outlive the TTL
+// on its own — one stalled gw-lrp DORA runs ~64s — so the key is renewed while
+// the pass runs rather than left to expire underneath it.
+var (
+	reconcileLeaderTTL   = 60 * time.Second
+	reconcileLeaderRenew = 20 * time.Second
 )
 
 // Bounded wait for JetStream quorum on cold multi-node start. Vars (not
@@ -72,20 +82,80 @@ func AcquireLeader(ctx context.Context, nc *nats.Conn, bucket, holder string) (f
 		}
 	}
 
-	if _, err := kv.Create(ctx, reconcileLeaderKey, []byte(holder)); err != nil {
+	rev, err := kv.Create(ctx, reconcileLeaderKey, []byte(holder))
+	if err != nil {
 		slog.Info("reconcile/lock: another holder is leader, skipping reconcile", "holder", holder, "bucket", bucket, "err", err)
 		return nil, false
 	}
 
 	slog.Info("reconcile/lock: elected", "holder", holder, "bucket", bucket)
+	lease := &leaderLease{kv: kv, rev: rev}
+	renewCtx, stopRenew := context.WithCancel(ctx)
+	go lease.renew(renewCtx, holder, bucket)
+
 	return func() {
+		stopRenew()
+		rev, held := lease.revision()
+		if !held {
+			// Renewal lost the key, so another node may already hold it. An
+			// unguarded delete here would drop that node's lock, not ours.
+			slog.Warn("reconcile/lock: lock already lost before release; not deleting", "holder", holder, "bucket", bucket)
+			return
+		}
 		// Release outlives ctx: shutdown is the common reason to release, and
 		// skipping the delete would park the lock for the full TTL and stall
 		// every other node's reconcile.
 		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileReleaseTimeout)
 		defer cancel()
-		if err := kv.Delete(releaseCtx, reconcileLeaderKey); err != nil {
+		if err := kv.Delete(releaseCtx, reconcileLeaderKey, jetstream.LastRevision(rev)); err != nil {
 			slog.Warn("reconcile/lock: failed to release lock (TTL will reap)", "holder", holder, "bucket", bucket, "err", err)
 		}
 	}, true
+}
+
+// leaderLease tracks the revision of a held leader key. Renewal and the final
+// delete are both CAS-guarded on it, so a pass that outlives the TTL can never
+// delete the key of the node that took over from it.
+type leaderLease struct {
+	mu   sync.Mutex
+	kv   jetstream.KeyValue
+	rev  uint64
+	lost bool
+}
+
+// revision returns the current revision and whether the lease is still held.
+func (l *leaderLease) revision() (uint64, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.rev, !l.lost
+}
+
+// renew refreshes the leader key until ctx is cancelled or a refresh loses the
+// CAS, which means the key expired and another node claimed it.
+func (l *leaderLease) renew(ctx context.Context, holder, bucket string) {
+	ticker := time.NewTicker(reconcileLeaderRenew)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			rev, held := l.revision()
+			if !held {
+				return
+			}
+			next, err := l.kv.Update(ctx, reconcileLeaderKey, []byte(holder), rev)
+			if err != nil {
+				l.mu.Lock()
+				l.lost = true
+				l.mu.Unlock()
+				slog.Warn("reconcile/lock: leader key renewal failed; another node may take over mid-pass",
+					"holder", holder, "bucket", bucket, "err", err)
+				return
+			}
+			l.mu.Lock()
+			l.rev = next
+			l.mu.Unlock()
+		}
+	}
 }

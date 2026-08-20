@@ -981,7 +981,7 @@ func (s *IAMServiceImpl) CreateAccount(name string) (*Account, error) {
 
 		newVal := []byte(strconv.FormatInt(nextID+1, 10))
 		if _, err := s.accountCounterBucket.Update(ctx, "next_id", newVal, entry.Revision()); err != nil {
-			if errors.Is(err, jetstream.ErrKeyExists) {
+			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 				continue // CAS conflict, retry
 			}
 			return nil, fmt.Errorf("update account counter: %w", err)

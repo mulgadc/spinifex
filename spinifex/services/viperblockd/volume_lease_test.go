@@ -1,9 +1,12 @@
 package viperblockd
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -115,6 +118,51 @@ func TestVolumeLease_OpenRefusesWithoutALeaseStore(t *testing.T) {
 	lease, err := cfg.acquireVolumeLease(t.Context(), "vol-nostore00000001")
 	require.Error(t, err, "no lease store must refuse the open, not wave it through")
 	assert.Nil(t, lease)
+}
+
+// conflictKV fails every Update with a wrong-last-sequence response under the
+// given code, which is how a renewal presents once another node has taken the
+// lease over. Single-replica streams report 10071, replicated ones 10164.
+type conflictKV struct {
+	jetstream.KeyValue
+
+	code jetstream.ErrorCode
+}
+
+func (k *conflictKV) Update(context.Context, string, []byte, uint64) (uint64, error) {
+	apiErr := &jetstream.APIError{
+		ErrorCode:   k.code,
+		Code:        400,
+		Description: "wrong last sequence: 3",
+	}
+	return 0, fmt.Errorf("%w: %w", apiErr, jetstream.ErrKeyRevisionMismatch)
+}
+
+// TestVolumeLease_RenewalConflictLosesTheLease is the multi-node regression: a
+// renewal refused on a replicated bucket must mark the lease lost, not shrug it
+// off as transient and keep renewing over whoever now holds the volume.
+func TestVolumeLease_RenewalConflictLosesTheLease(t *testing.T) {
+	for name, code := range map[string]jetstream.ErrorCode{
+		"single replica": jetstream.JSErrCodeStreamWrongLastSequence,
+		"replicated":     jetstream.JSErrCodeStreamWrongLastSequenceConstant,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, natsURL := setupEmbeddedNATS(t)
+			leases := newTestLeases(t, natsURL, "node-a")
+
+			lease, err := leases.acquire(t.Context(), "vol-renewconflict1")
+			require.NoError(t, err)
+			lease.stop()
+			<-lease.done
+
+			leases.kv = &conflictKV{KeyValue: leases.kv, code: code}
+			assert.False(t, lease.renew(t.Context()), "a refused renewal must not report the lease as still held")
+
+			lease.mu.Lock()
+			defer lease.mu.Unlock()
+			assert.True(t, lease.lost, "a refused renewal must mark the lease lost so the renew loop stops")
+		})
+	}
 }
 
 // TestVolumeLease_RejectsUnsafeKeys pins that a volume name off the wire

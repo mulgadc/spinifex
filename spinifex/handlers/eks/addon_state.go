@@ -173,7 +173,7 @@ func casUpdateAddon(ctx context.Context, kv jetstream.KeyValue, cluster, addon s
 		if err == nil {
 			return &rec, nil
 		}
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			continue
 		}
 		return nil, fmt.Errorf("kv update %s: %w", key, err)

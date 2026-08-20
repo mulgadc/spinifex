@@ -189,7 +189,7 @@ func convertIPAMRecord(ctx context.Context, kvc KVContext, key string, ownerInde
 			return fmt.Errorf("marshal %s: %w", key, err)
 		}
 		if _, err := kvc.KV.Update(ctx, key, data, entry.Revision()); err != nil {
-			if errors.Is(err, jetstream.ErrKeyExists) {
+			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 				kvc.Logger.Warn("internal IPAM migration CAS conflict, retrying", "key", key, "attempt", attempt+1)
 				lastErr = err
 				continue

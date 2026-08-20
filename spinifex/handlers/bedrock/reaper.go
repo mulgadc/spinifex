@@ -361,7 +361,7 @@ func (r *Reaper) persistObservation(ctx context.Context, kv jetstream.KeyValue, 
 	}
 	next.Generation = current.Generation + 1
 	if err := updateJSON(ctx, kv, key, rev, next); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return nil
 		}
 		return err

@@ -303,7 +303,7 @@ func (s *Service) beginTransition(ctx context.Context, accountID, id string, to 
 	rec.TransitionStartedAt = &now
 	rec.UpdatedAt = now
 	if err := updateJSON(ctx, kv, DBInstanceKey(id), rev, rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return nil, nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
 				"DB instance %s changed state concurrently; retry the operation", id)
 		}
@@ -372,7 +372,7 @@ func (s *Service) updateInstanceIf(ctx context.Context, kv jetstream.KeyValue, i
 		if err == nil {
 			return true, nil
 		}
-		if !errors.Is(err, jetstream.ErrKeyExists) {
+		if !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return false, err
 		}
 	}

@@ -461,7 +461,7 @@ func (s *KVMetaStore) UpdateUpload(ctx context.Context, accountID, uploadID stri
 	}
 	newRev, err := kv.Update(ctx, KVUploadKey(uploadID), data, rev)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return 0, ErrConflict
 		}
 		return 0, err

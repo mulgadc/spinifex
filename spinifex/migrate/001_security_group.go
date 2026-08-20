@@ -110,8 +110,8 @@ func backfillSGRuleIDs(ctx context.Context, kvc KVContext, key string) error {
 			return fmt.Errorf("marshal %s: %w", key, err)
 		}
 		if _, err := kvc.KV.Update(ctx, key, data, entry.Revision()); err != nil {
-			// jetstream.ErrKeyExists = revision mismatch (JSStreamWrongLastSequence).
-			if errors.Is(err, jetstream.ErrKeyExists) {
+			// A concurrent writer moved the record between the Get and here.
+			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 				kvc.Logger.Warn("SG migration CAS conflict, retrying", "key", key, "attempt", attempt+1)
 				lastErr = err
 				continue

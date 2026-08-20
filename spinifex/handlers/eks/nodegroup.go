@@ -1037,7 +1037,7 @@ func (s *EKSServiceImpl) casPutNodegroup(ctx context.Context, kv jetstream.KeyVa
 		return false, fmt.Errorf("marshal nodegroup %s: %w", rec.Name, err)
 	}
 	if _, err := kv.Update(ctx, NodegroupKey(rec.ClusterName, rec.Name), data, rev); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return false, nil
 		}
 		return false, fmt.Errorf("kv update nodegroup %s: %w", rec.Name, err)

@@ -599,13 +599,17 @@ func (s *IAMServiceImpl) updateRoleCAS(ctx context.Context, accountID, roleName 
 			return fmt.Errorf("marshal role: %w", err)
 		}
 		if _, err := s.rolesBucket.Update(ctx, key, data, entry.Revision()); err != nil {
-			if errors.Is(err, jetstream.ErrKeyExists) {
+			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 				continue // CAS conflict — another writer won, re-read and retry.
 			}
 			return fmt.Errorf("update role: %w", err)
 		}
 		return nil
 	}
+	// Only a CAS conflict reaches here, so the role is contended rather than
+	// broken; say so, or the caller's InternalError has no cause anywhere.
+	slog.Error("IAM role CAS retries exhausted under contention",
+		"accountID", accountID, "roleName", roleName, "attempts", roleCASMaxRetries)
 	return errors.New(awserrors.ErrorServerInternal)
 }
 

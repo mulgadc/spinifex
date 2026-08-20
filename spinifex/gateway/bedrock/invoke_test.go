@@ -192,3 +192,84 @@ func TestInvokeStreamRouter_SelfHostUnhandledFamilyReturnsValidationException(t 
 	assert.Equal(t, awserrors.ErrorValidationException, err.Error())
 	assert.False(t, called, "an unhandled self-host family must never reach the Llama-serving endpoint")
 }
+
+// TestInvokeRouter_SelfHostGatedAtCapacity proves InvokeModel's self-host
+// path shares the same admission gate as Converse: pre-occupying the
+// endpoint's only slot throttles the next call, and releasing it admits
+// the following one.
+func TestInvokeRouter_SelfHostGatedAtCapacity(t *testing.T) {
+	modelID := "self-host.throttle-invoke-v1:0"
+	withCatalogEntry(t, catalogEntry{ModelID: modelID, Provider: tierSelfHost, Family: familyMeta, MaxConcurrency: 1})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"choices": [{"text": "hi", "finish_reason": "stop"}],
+			"usage": {"prompt_tokens": 1, "completion_tokens": 1}
+		}`))
+	}))
+	defer ts.Close()
+
+	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, nil)
+
+	release, ok := selfHostLimiter.Acquire(admissionKey("", modelID), 1)
+	require.True(t, ok)
+
+	_, _, err := rt.InvokeModel(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorThrottlingException, err.Error())
+
+	release()
+
+	respBody, _, err := rt.InvokeModel(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
+	require.NoError(t, err)
+
+	var out llamaInvokeResponse
+	require.NoError(t, json.Unmarshal(respBody, &out))
+	assert.Equal(t, "hi", out.Generation)
+}
+
+// TestInvokeStreamRouter_SelfHostGatedAtCapacity mirrors the non-stream case
+// for InvokeModelWithResponseStream, and proves the slot stays held for the
+// whole stream lifetime — released only on the returned source's Close.
+func TestInvokeStreamRouter_SelfHostGatedAtCapacity(t *testing.T) {
+	modelID := "self-host.throttle-invoke-stream-v1:0"
+	withCatalogEntry(t, catalogEntry{ModelID: modelID, Provider: tierSelfHost, Family: familyMeta, MaxConcurrency: 1})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(llamaCompletionsStreamFixture))
+	}))
+	defer ts.Close()
+
+	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, nil, nil)
+
+	release, ok := selfHostLimiter.Acquire(admissionKey("", modelID), 1)
+	require.True(t, ok)
+
+	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorThrottlingException, err.Error())
+
+	release()
+
+	src, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
+	require.NoError(t, err)
+	chunks := drainInvokeStream(t, src)
+	assert.NotEmpty(t, chunks)
+
+	// The stream is drained but not yet closed: its own acquire still holds
+	// the endpoint's only slot, so a further concurrent request must throttle.
+	_, err = rt.InvokeModelWithResponseStream(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorThrottlingException, err.Error())
+
+	require.NoError(t, src.Close())
+
+	// Close released the slot; the endpoint is admissible again.
+	src2, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
+	require.NoError(t, err)
+	require.NoError(t, src2.Close())
+}

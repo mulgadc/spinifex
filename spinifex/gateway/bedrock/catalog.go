@@ -54,25 +54,29 @@ const (
 // empty value is a standalone model (a bundle of one), a shared non-empty
 // value means the entries admit and launch together as a single GPU claim.
 type catalogEntry struct {
-	ModelID                       string
-	ModelName                     string
-	ProviderName                  string
-	Provider                      string // "self-host" or "provider:<vendor>"
-	Family                        string // self-host only; selects the invoke adapter (see familyMeta, familyTEI)
-	CoServeGroup                  string // self-host only; shared co-serve group id, empty = standalone
-	HFRepo                        string // self-host only; canonical Hugging Face repo 'weights pull' defaults to
-	HFRevision                    string // self-host only; pinned HF commit/tag 'weights pull' defaults to, empty = main
-	InputModalities               []string
-	OutputModalities              []string
-	ResponseStreamingSupported    bool
-	InferenceTypesSupported       []string
-	CustomizationsSupported       []string
-	MinVRAMMiB                    int      // self-host only; 0 for provider entries
-	InstanceType                  string   // self-host only; system-instance type a launcher boots
-	VLLMArgs                      []string // self-host only; extra vLLM server args this model needs
-	InputPriceMicroUSDPerMillion  int64    // provider entries only; meaningless unless PriceKnown
-	OutputPriceMicroUSDPerMillion int64    // provider entries only; meaningless unless PriceKnown
-	PriceKnown                    bool     // provider entries only; self-host is always known-zero
+	ModelID                    string
+	ModelName                  string
+	ProviderName               string
+	Provider                   string // "self-host" or "provider:<vendor>"
+	Family                     string // self-host only; selects the invoke adapter (see familyMeta, familyTEI)
+	CoServeGroup               string // self-host only; shared co-serve group id, empty = standalone
+	HFRepo                     string // self-host only; canonical Hugging Face repo 'weights pull' defaults to
+	HFRevision                 string // self-host only; pinned HF commit/tag 'weights pull' defaults to, empty = main
+	InputModalities            []string
+	OutputModalities           []string
+	ResponseStreamingSupported bool
+	InferenceTypesSupported    []string
+	CustomizationsSupported    []string
+	MinVRAMMiB                 int      // self-host only; 0 for provider entries
+	InstanceType               string   // self-host only; system-instance type a launcher boots
+	VLLMArgs                   []string // self-host only; extra vLLM server args this model needs
+	// MaxConcurrency is the self-host admission-gate capacity and must stay
+	// equal to the entry's --max-num-seqs VLLMArgs value (or vLLM's own
+	// default when that flag is absent) — edit the two together.
+	MaxConcurrency                int
+	InputPriceMicroUSDPerMillion  int64 // provider entries only; meaningless unless PriceKnown
+	OutputPriceMicroUSDPerMillion int64 // provider entries only; meaningless unless PriceKnown
+	PriceKnown                    bool  // provider entries only; self-host is always known-zero
 }
 
 // catalog is the static model set: two self-hosted open models and one
@@ -93,9 +97,10 @@ var catalog = []catalogEntry{
 		// MinVRAMMiB is the admission-gate floor; --gpu-memory-utilization
 		// caps vLLM's own pool to roughly the same figure (8188 MiB * 0.6 ≈
 		// 4913 MiB) so the two stay consistent rather than drifting apart.
-		MinVRAMMiB:   5120,
-		InstanceType: "g5.xlarge",
-		VLLMArgs:     []string{"--dtype=bfloat16", "--max-model-len=8192", "--gpu-memory-utilization=0.6"},
+		MinVRAMMiB:     5120,
+		InstanceType:   "g5.xlarge",
+		VLLMArgs:       []string{"--dtype=bfloat16", "--max-model-len=8192", "--gpu-memory-utilization=0.6"},
+		MaxConcurrency: 256,
 	},
 	{
 		ModelID:                    "meta.llama3-2-3b-instruct-v1:0",
@@ -117,6 +122,7 @@ var catalog = []catalogEntry{
 			"--dtype=bfloat16", "--max-model-len=4096", "--gpu-memory-utilization=0.92",
 			"--max-num-seqs=8", "--enforce-eager",
 		},
+		MaxConcurrency: 8,
 	},
 	{
 		ModelID:      "nomic-embed-text-v1.5",
@@ -431,12 +437,13 @@ func LookupCoServeGroup(modelID string) (spec CoServeGroupSpec, found, selfHost 
 // before staging weights) and by the daemon-side launcher (placing and
 // booting the serving VM), without exposing catalogEntry's AWS-shaped fields.
 type ServingSpec struct {
-	ModelID      string
-	MinVRAMMiB   int
-	InstanceType string
-	VLLMArgs     []string
-	HFRepo       string
-	HFRevision   string
+	ModelID        string
+	MinVRAMMiB     int
+	InstanceType   string
+	VLLMArgs       []string
+	HFRepo         string
+	HFRevision     string
+	MaxConcurrency int
 }
 
 // LookupServingSpec returns modelID's serving spec. found reports whether
@@ -452,12 +459,13 @@ func LookupServingSpec(modelID string) (spec ServingSpec, found, selfHost bool) 
 		return ServingSpec{}, true, false
 	}
 	return ServingSpec{
-		ModelID:      entry.ModelID,
-		MinVRAMMiB:   entry.MinVRAMMiB,
-		InstanceType: entry.InstanceType,
-		VLLMArgs:     entry.VLLMArgs,
-		HFRepo:       entry.HFRepo,
-		HFRevision:   entry.HFRevision,
+		ModelID:        entry.ModelID,
+		MinVRAMMiB:     entry.MinVRAMMiB,
+		InstanceType:   entry.InstanceType,
+		VLLMArgs:       entry.VLLMArgs,
+		HFRepo:         entry.HFRepo,
+		HFRevision:     entry.HFRevision,
+		MaxConcurrency: entry.MaxConcurrency,
 	}, true, true
 }
 

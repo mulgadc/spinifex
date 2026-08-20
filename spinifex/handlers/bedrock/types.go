@@ -55,4 +55,9 @@ type DeleteEndpointInput struct {
 	AccountID string `json:"account_id,omitempty"`
 }
 
-type DeleteEndpointOutput struct{}
+// DeleteEndpointOutput reports whether a record was actually removed. Removed
+// is false when the target key held no record (the idempotent no-op), so a
+// caller can tell a genuine teardown from a lookup that found nothing.
+type DeleteEndpointOutput struct {
+	Removed bool `json:"removed"`
+}

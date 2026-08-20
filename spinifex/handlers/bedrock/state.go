@@ -7,7 +7,9 @@ package handlers_bedrock
 import (
 	"errors"
 	"fmt"
+	"net"
 	"slices"
+	"strconv"
 	"time"
 )
 
@@ -68,8 +70,21 @@ type EndpointRecord struct {
 	// ENIID and WeightsVolumeID are not in the bead's minimum field list but
 	// are required to tear the VM down cleanly on DRAINING->ABSENT: without
 	// them a delete has no way to find and release these resources again.
+	// For a bundle, WeightsVolumeID mirrors the generative (vLLM) member's own
+	// volume — see Members for every member's.
 	ENIID           string `json:"eni_id,omitempty"`
 	WeightsVolumeID string `json:"weights_volume_id,omitempty"`
+
+	// PrivateIP is the bundle's shared serving VM's own system-VPC address.
+	// Every member listens here, at its own Members[modelID].Port.
+	PrivateIP string `json:"private_ip,omitempty"`
+
+	// Members maps every co-served model this bundle's VM carries to its own
+	// port and weights volume. A standalone model is a bundle of one: a
+	// single entry keyed by its own ModelID. BaseURL/WeightsVolumeID above
+	// mirror the generative member for callers (the reaper's Prometheus
+	// scrape, the CLI summary) that only care about the bundle's primary model.
+	Members map[string]MemberEndpoint `json:"members,omitempty"`
 
 	CreatedAt time.Time `json:"created_at,omitzero"`
 	ReadyAt   time.Time `json:"ready_at,omitzero"`
@@ -108,4 +123,27 @@ func (r EndpointRecord) LastActive() time.Time {
 		return r.LastActiveAt
 	}
 	return r.ReadyAt
+}
+
+// MemberEndpoint is one co-served model's own address within a bundle's
+// shared VM: the port it listens on at the record's PrivateIP, the weights
+// volume cloned for it, and the family (engine) it serves under. Field order
+// mirrors LaunchMemberOutput so runLaunch's MemberEndpoint(m) conversion
+// between the two stays a plain type conversion.
+type MemberEndpoint struct {
+	Port            int    `json:"port"`
+	WeightsVolumeID string `json:"weights_volume_id,omitempty"`
+	Family          string `json:"family,omitempty"`
+}
+
+// MemberBaseURL returns modelID's own base address within this bundle:
+// "http://{PrivateIP}:{port}". Falls back to the legacy BaseURL field when
+// Members/PrivateIP are unpopulated for modelID (a record predating this
+// field, or a synthetic test fixture), so a bundle-of-one's resolution is
+// unaffected.
+func (r EndpointRecord) MemberBaseURL(modelID string) string {
+	if member, ok := r.Members[modelID]; ok && r.PrivateIP != "" {
+		return "http://" + net.JoinHostPort(r.PrivateIP, strconv.Itoa(member.Port))
+	}
+	return r.BaseURL
 }

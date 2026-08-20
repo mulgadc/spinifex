@@ -54,9 +54,13 @@ image_profiles() {
     case "$1" in
         ubuntu-gpu-nvidia)     echo "gpu-nvidia docker" ;;
         ubuntu-gpu-amd)        echo "gpu-amd docker" ;;
-        # docker is deliberately absent: the serving VM runs vLLM as a systemd
-        # service and never touches a Docker daemon. vllm comes second because
-        # it stacks onto the GPU driver gpu-nvidia installs.
+        # docker is deliberately absent: the serving VM runs vLLM/TEI as
+        # systemd services and never touches a Docker daemon. vllm comes
+        # second because it stacks onto the GPU driver gpu-nvidia installs.
+        # The profile now bakes both co-served-bundle engines (vLLM for TEXT,
+        # TEI for EMBEDDING/RERANK); TEI's own binary and CUDA runtime
+        # libraries are staged from HuggingFace's published CUDA image by
+        # stage_tei_binary() below, not built in this chroot.
         ubuntu-vllm-serving)   echo "gpu-nvidia vllm" ;;
         spinifex-eks-node-gpu) echo "gpu-nvidia eks-common eks-agent" ;;
         spinifex-ecs-node-gpu) echo "gpu-nvidia ecs" ;;
@@ -178,6 +182,50 @@ stage_profile_binaries() {
     fi
 }
 
+# TEI CUDA image tag the vllm profile extracts its embedding/rerank engine
+# binary and CUDA runtime libraries from. Ampere-86 matches the RTX A1000
+# (GA107, compute capability 8.6) this AMI runs on today; bumping this is a
+# deliberate edit, done alongside checking TEI's own release notes for
+# whatever GPU this image targets next.
+readonly TEI_IMAGE="ghcr.io/huggingface/text-embeddings-inference:86-1.9"
+
+# Extract text-embeddings-router and the CUDA runtime shared libraries its
+# cuda feature links against (nvidia/cuda:*-runtime base under the hood, not
+# just the driver) from HuggingFace's own published CUDA image, on the host.
+# No cargo/nvcc build in the mkosi chroot: compiling TEI's candle-cuda
+# kernels from source needs the CUDA toolkit as a build dependency, which is
+# exactly what this image otherwise deliberately does not carry (see the
+# vllm profile's own FlashInfer-disable note for why). `docker create` +
+# `docker cp` only, never `docker run` — no GPU, no privileged flags, the
+# same "extract a prebuilt artifact, stage it, ship the static result"
+# pattern stage_konnectivity_server above already uses for a non-Go binary.
+stage_tei_binary() {
+    local profile="$1" staging container_id
+    [[ "${profile}" == "vllm" ]] || return 0
+
+    staging="${IMAGE_DIR}/staging/vllm/opt/tei"
+    rm -rf "${staging}"
+    mkdir -p "${staging}/bin" "${staging}/cuda-lib64"
+
+    echo "[mkosi-build] pulling ${TEI_IMAGE} to extract the TEI binary"
+    docker pull "${TEI_IMAGE}"
+    container_id="$(docker create "${TEI_IMAGE}")"
+
+    echo "[mkosi-build] extracting text-embeddings-router -> staging/vllm/opt/tei/bin/"
+    docker cp "${container_id}:/usr/local/bin/text-embeddings-router" "${staging}/bin/text-embeddings-router"
+    echo "[mkosi-build] extracting CUDA runtime libraries -> staging/vllm/opt/tei/cuda-lib64/"
+    docker cp "${container_id}:/usr/local/cuda/lib64/." "${staging}/cuda-lib64/"
+
+    docker rm -f "${container_id}" >/dev/null 2>&1 || true
+
+    [[ -s "${staging}/bin/text-embeddings-router" ]] || {
+        echo "mkosi-build: text-embeddings-router extraction produced an empty file" >&2
+        exit 1
+    }
+    chmod 0755 "${staging}/bin/text-embeddings-router"
+    echo "[mkosi-build] staged text-embeddings-router + CUDA runtime libs from ${TEI_IMAGE}"
+}
+
 # Reject an unescaped $VAR/${VAR} in any Exec*= line of a profile's units.
 #
 # systemd expands those from the UNIT's environment before the command runs and
@@ -261,6 +309,7 @@ build_builder_image
 for p in "${PROFILES[@]+"${PROFILES[@]}"}"; do
     lint_unit_expansions "${p}"
     stage_profile_binaries "${p}"
+    stage_tei_binary "${p}"
 done
 
 mkdir -p "${OUTPUT_DIR}"

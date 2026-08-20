@@ -316,14 +316,14 @@ const BedrockDefaultSystemVPCSupernet = "10.244.0.0/14"
 // existing deployment is unaffected until an operator opts in.
 type OchreVectorConfig struct {
 	Enabled bool `json:"Enabled" mapstructure:"enabled"`
-	// EmbeddingsEndpoint is the base URL of the self-hosted OpenAI/TEI-
-	// compatible embeddings endpoint (gateway_bedrock.Embedder) serving
-	// EmbeddingModel.
-	EmbeddingsEndpoint string `json:"EmbeddingsEndpoint" mapstructure:"embeddings_endpoint"`
-	// EmbeddingModel is the model id sent to EmbeddingsEndpoint and stamped
-	// on every index record. Empty takes gateway_bedrock.DefaultEmbeddingModel
-	// ("nomic-embed-text-v1.5").
+	// EmbeddingModel documents this deployment's served embedding model id;
+	// each index still pins its own model id at CreateIndex time. Any
+	// self-host model id resolves via handlers_bedrock.DynamicEndpointResolver.
 	EmbeddingModel string `json:"EmbeddingModel" mapstructure:"embedding_model"`
+	// RerankModel is the served cross-encoder rerank model id, resolved the
+	// same way EmbeddingModel is. Empty disables reranking entirely: Query
+	// falls back to plain KNN top-k rather than resolving a default.
+	RerankModel string `json:"RerankModel" mapstructure:"rerank_model"`
 	// PostgresImage names the appliance's Postgres image. Currently
 	// informational only: RDS's CreateDBInstanceInput has no image-selection
 	// field, so this is not yet threaded into the appliance launch.

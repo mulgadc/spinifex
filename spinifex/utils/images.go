@@ -410,7 +410,7 @@ var AvailableImages = map[string]Images{
 	// resolveServingAMI filters on both, never by name.
 	"ubuntu-26.04-vllm-serving-x86_64": {
 		Name:         "ubuntu-26.04-vllm-serving-x86_64",
-		Description:  "Ubuntu 26.04 vLLM self-host serving image — NVIDIA GPU base + vLLM OpenAI-compatible server baked into a uv-managed venv, served by vllm-serve.service against a read-only weights mount",
+		Description:  "Ubuntu 26.04 Bedrock co-served bundle image — NVIDIA GPU base + vLLM and TEI baked side by side (uv-managed venv, TEI staged from HuggingFace's CUDA image), one bedrock-serve@ instance per bundle member against its own read-only weights mount",
 		Distro:       "ubuntu",
 		Version:      "26.04",
 		Arch:         "x86_64",

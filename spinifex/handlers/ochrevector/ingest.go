@@ -23,6 +23,16 @@ type Embedder interface {
 	Embed(ctx context.Context, modelID string, inputs []string) ([][]float32, error)
 }
 
+// TokenLimiter is the local seam for embedder token-budget introspection:
+// the same method set as gateway_bedrock.TokenLimiter's MaxInputLength,
+// restated here rather than imported so this package never depends on the
+// gateway. It is optional -- ingestObject type-asserts s.Embedder against
+// it rather than requiring it on Embedder, so a test double Embedder still
+// satisfies Embedder alone and falls back to DefaultMaxInputTokens.
+type TokenLimiter interface {
+	MaxInputLength(ctx context.Context, modelID string) int
+}
+
 const (
 	// ingestListPageSize bounds each ListObjectsV2 page; StartIngest's caller
 	// may point a job at a bucket/prefix far larger than fits in memory at
@@ -244,16 +254,29 @@ func (s *IngestService) ingestObject(ctx context.Context, accountID, indexID, ke
 		return &ingestDocError{err: fmt.Errorf("object exceeds max ingest size (%d bytes)", maxIngestObjectBytes)}
 	}
 
-	chunkSize := source.ChunkSize
-	if chunkSize <= 0 {
-		chunkSize = DefaultChunkSize
+	maxInputTokens := DefaultMaxInputTokens
+	if tl, ok := s.Embedder.(TokenLimiter); ok {
+		maxInputTokens = tl.MaxInputLength(ctx, source.EmbeddingModel)
 	}
-	chunkOverlap := source.ChunkOverlap
-	if chunkOverlap < 0 {
-		chunkOverlap = DefaultChunkOverlap
+	// source.ChunkSize (from Bedrock's FixedSizeChunkingConfiguration.MaxTokens,
+	// D3) is an operator token budget, not a rune count; honor it only when
+	// it asks for something tighter than the served embedder's real limit --
+	// a looser or unset value clamps down to what the embedder actually
+	// accepts, so operator config can never reopen the 413 this closes.
+	if source.ChunkSize > 0 && source.ChunkSize < maxInputTokens {
+		maxInputTokens = source.ChunkSize
+	}
+	overlapTokens := source.ChunkOverlap
+	if overlapTokens < 0 {
+		overlapTokens = DefaultChunkOverlapTokens
 	}
 
-	chunks := ChunkText(string(data), chunkSize, chunkOverlap)
+	var counter TokenCounter
+	if tc, ok := s.Embedder.(TokenCounter); ok {
+		counter = tc
+	}
+
+	chunks := ChunkTextForModel(ctx, string(data), source.EmbeddingModel, maxInputTokens, overlapTokens, counter)
 	if len(chunks) == 0 {
 		// An empty/whitespace-only document is not an error, but any
 		// previously-ingested rows for this key must still be cleared.

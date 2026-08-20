@@ -204,3 +204,38 @@ func TestAdmitCapacity_DelegatesToCheckCapacity(t *testing.T) {
 	assert.NoError(t, admitCapacity(snap, 5120))
 	assert.Error(t, admitCapacity(snap, 16384))
 }
+
+// TestAdmitBundleCapacity_SumsMemberVRAMAndTakesOneClaim proves a co-serve
+// group is admitted as one claim against the summed floor of its members
+// (5120 + 512 + 1200 = 6832), not three independent whole-GPU claims. A
+// device sized for the sum admits; one sized only under it must not, even
+// though it would comfortably fit the LLM member alone.
+func TestAdmitBundleCapacity_SumsMemberVRAMAndTakesOneClaim(t *testing.T) {
+	fits := &stubSnapshotter{entries: []gpu.PoolEntry{{Device: gpu.GPUDevice{MemoryMiB: 6832}, Available: true}}}
+	assert.NoError(t, admitBundleCapacity(fits, "meta.llama3-2-1b-instruct-v1:0"))
+
+	tooSmallForSum := &stubSnapshotter{entries: []gpu.PoolEntry{{Device: gpu.GPUDevice{MemoryMiB: 6000}, Available: true}}}
+	assert.Error(t, admitBundleCapacity(tooSmallForSum, "meta.llama3-2-1b-instruct-v1:0"),
+		"6000 MiB fits the 5120 MiB LLM alone but not the bundle's 6832 MiB summed floor")
+}
+
+// TestAdmitBundleCapacity_StandaloneModelUnchanged proves a model with no
+// co-serve group admits exactly as admitCapacity does today: bundle-of-one,
+// not a second code path with different behaviour.
+func TestAdmitBundleCapacity_StandaloneModelUnchanged(t *testing.T) {
+	snap := &stubSnapshotter{entries: []gpu.PoolEntry{{Device: gpu.GPUDevice{MemoryMiB: 7168}, Available: true}}}
+	assert.NoError(t, admitBundleCapacity(snap, "meta.llama3-2-3b-instruct-v1:0"))
+	assert.Equal(t, admitCapacity(snap, 7168), admitBundleCapacity(snap, "meta.llama3-2-3b-instruct-v1:0"))
+
+	tooSmall := &stubSnapshotter{entries: []gpu.PoolEntry{{Device: gpu.GPUDevice{MemoryMiB: 4096}, Available: true}}}
+	assert.Error(t, admitBundleCapacity(tooSmall, "meta.llama3-2-3b-instruct-v1:0"))
+}
+
+// TestAdmitBundleCapacity_UnknownModel reports the catalog's absence of the
+// model rather than falling through to a misleading capacity refusal.
+func TestAdmitBundleCapacity_UnknownModel(t *testing.T) {
+	snap := &stubSnapshotter{entries: []gpu.PoolEntry{{Device: gpu.GPUDevice{MemoryMiB: 16384}, Available: true}}}
+	err := admitBundleCapacity(snap, "not-a-real-model")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorResourceNotFoundException, awserrors.ValidErrorCodeFromError(err))
+}

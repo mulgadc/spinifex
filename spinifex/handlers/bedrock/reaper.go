@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -218,10 +219,33 @@ func (r *Reaper) sweepOnce(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-// sweepEndpoint decides one endpoint's fate from a single scrape.
+// reaperScrapesMetrics reports whether rec exposes the vLLM Prometheus series
+// idle-reclaim reads. Only a bundle with a generative (vLLM) member does; a
+// service-only bundle (embed/rerank) has no such load metrics and is
+// liveness-probed instead. A record with no members recorded (one predating
+// the Members field) is treated as vLLM, preserving the original behaviour.
+func reaperScrapesMetrics(rec EndpointRecord) bool {
+	if len(rec.Members) == 0 {
+		return true
+	}
+	for _, m := range rec.Members {
+		if m.Family == gateway_bedrock.FamilyMeta {
+			return true
+		}
+	}
+	return false
+}
+
+// sweepEndpoint decides one endpoint's fate from a single probe.
 func (r *Reaper) sweepEndpoint(ctx context.Context, kv jetstream.KeyValue, rec EndpointRecord) error {
 	scrapeCtx, cancel := context.WithTimeout(ctx, r.scrapeTimeout())
 	defer cancel()
+
+	// A bundle with no vLLM member exposes no load metrics to reclaim on, so
+	// it is kept warm and only liveness-probed rather than idle-scraped.
+	if !reaperScrapesMetrics(rec) {
+		return r.sweepLiveness(scrapeCtx, kv, rec)
+	}
 
 	sample, err := scrapeMetrics(scrapeCtx, r.svc.httpClient(), rec.BaseURL)
 	if err != nil {
@@ -249,6 +273,21 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, kv jetstream.KeyValue, rec E
 	return r.persistObservation(ctx, kv, rec, updated)
 }
 
+// sweepLiveness keeps a service-only bundle (embed/rerank, no generative
+// member) up without idle-reclaim: it probes /health and only escalates a
+// persistently unreachable, unpinned endpoint. A healthy probe refreshes the
+// warm clock; there is deliberately no scale-to-zero for a bundle whose whole
+// purpose is to stay warm on the retrieval hot path.
+func (r *Reaper) sweepLiveness(ctx context.Context, kv jetstream.KeyValue, rec EndpointRecord) error {
+	if !probeOnce(ctx, r.svc.httpClient(), rec.BaseURL+"/health") {
+		return r.recordScrapeFailure(ctx, kv, rec, fmt.Errorf("liveness probe of %s/health failed", rec.BaseURL))
+	}
+	updated := rec
+	updated.ScrapeFailures = 0
+	updated.LastActiveAt = time.Now().UTC()
+	return r.persistObservation(ctx, kv, rec, updated)
+}
+
 // shouldReap applies the two rules an idle endpoint must clear before its GPU
 // is taken back: it must be idle for a full idleTTL, and it must have been
 // READY for one. The second is not implied by the first — without it an
@@ -268,6 +307,17 @@ func (r *Reaper) shouldReap(rec EndpointRecord, now time.Time) bool {
 func (r *Reaper) recordScrapeFailure(ctx context.Context, kv jetstream.KeyValue, rec EndpointRecord, cause error) error {
 	updated := rec
 	updated.ScrapeFailures = rec.ScrapeFailures + 1
+
+	// A pinned endpoint is operator- or commitment-managed: the reaper never
+	// tears it down, exactly as shouldReap never idle-reclaims one. Keep
+	// counting and logging so the failure stays visible, but never escalate.
+	if rec.Pinned {
+		slog.WarnContext(ctx, "bedrock reaper: scrape failed for a pinned endpoint; not reaping",
+			"model", rec.ModelID, "instanceId", rec.InstanceID,
+			"consecutiveFailures", updated.ScrapeFailures, "err", cause)
+		return r.persistObservation(ctx, kv, rec, updated)
+	}
+
 	if updated.ScrapeFailures < maxScrapeFailures {
 		slog.WarnContext(ctx, "bedrock reaper: metrics scrape failed",
 			"model", rec.ModelID, "instanceId", rec.InstanceID,
@@ -299,7 +349,7 @@ func (r *Reaper) persistObservation(ctx context.Context, kv jetstream.KeyValue, 
 		prev.SuccessTotal == next.SuccessTotal && prev.ScrapeFailures == next.ScrapeFailures {
 		return nil
 	}
-	key := EndpointKey(utils.GlobalAccountID, next.ModelID)
+	key := resolveKey(utils.GlobalAccountID, next.ModelID)
 	current, rev, found, err := getFullJSON(ctx, kv, key)
 	if err != nil {
 		return err

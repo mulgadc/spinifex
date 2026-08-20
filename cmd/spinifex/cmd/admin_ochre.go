@@ -134,12 +134,11 @@ func init() {
 	_ = ochreWeightsRemoveCmd.MarkFlagRequired("model-id")
 
 	ochreWeightsPullCmd.Flags().String("model-id", "", "Self-host catalog model ID this pull is for (required)")
-	ochreWeightsPullCmd.Flags().String("hf-repo", "", "Hugging Face repo, e.g. meta-llama/Llama-3.2-1B-Instruct (required)")
-	ochreWeightsPullCmd.Flags().String("revision", "main", "Hugging Face branch, tag or commit SHA to resolve and pin")
+	ochreWeightsPullCmd.Flags().String("hf-repo", "", "Hugging Face repo, e.g. meta-llama/Llama-3.2-1B-Instruct (default: the catalog entry's repo)")
+	ochreWeightsPullCmd.Flags().String("revision", "main", "Hugging Face branch, tag or commit SHA to resolve and pin (default: the catalog entry's pinned revision)")
 	ochreWeightsPullCmd.Flags().String("s3-uri", "", "predastore destination prefix, e.g. s3://bucket/prefix/ (default: s3://ochre-weights/<repo>/<sha>/)")
 	ochreWeightsPullCmd.Flags().String("hf-token", "", "Hugging Face token for a gated repo (falls back to HF_TOKEN, then a stored platform credential)")
 	_ = ochreWeightsPullCmd.MarkFlagRequired("model-id")
-	_ = ochreWeightsPullCmd.MarkFlagRequired("hf-repo")
 
 	ochreCredentialsSetCmd.Flags().String("vendor", "", "Vendor to store a credential for, e.g. huggingface (required)")
 	ochreCredentialsSetCmd.Flags().String("account", "", "Account ID to store the credential under (default: platform account)")
@@ -180,18 +179,23 @@ type ochrePullManifest struct {
 	PulledAt    time.Time `json:"pulled_at"`
 }
 
-// allowedPullFileNames are the fixed-name Hugging Face artefacts pull fetches
-// alongside safetensors shards -- config and tokenizer files needed to serve,
-// never weights themselves. Matched by basename so a nested path (e.g.
-// Llama's original/tokenizer.model) still qualifies.
-var allowedPullFileNames = map[string]bool{
+// rootOnlyPullFileNames are the fixed-name config artefacts pull fetches only
+// at the repo root. A same-named file in a subdir is a component config, not
+// the model's -- e.g. sentence-transformers' 1_Pooling/config.json -- and must
+// never flatten onto the root config.json, so nested matches are dropped.
+var rootOnlyPullFileNames = map[string]bool{
 	"config.json":                  true,
 	"tokenizer_config.json":        true,
-	"tokenizer.json":               true,
-	"tokenizer.model":              true,
 	"generation_config.json":       true,
 	"special_tokens_map.json":      true,
 	"model.safetensors.index.json": true,
+}
+
+// nestablePullFileNames are the tokenizer artefacts matched by basename at any
+// depth: some repos keep them in a subdir (e.g. Llama's original/tokenizer.model).
+var nestablePullFileNames = map[string]bool{
+	"tokenizer.json":  true,
+	"tokenizer.model": true,
 }
 
 // selectPullFiles filters a Hugging Face tree listing down to the
@@ -205,7 +209,14 @@ func selectPullFiles(entries []hfhub.TreeEntry) []hfhub.TreeEntry {
 		if e.Type != "file" {
 			continue
 		}
-		if strings.HasSuffix(e.Path, ".safetensors") || allowedPullFileNames[path.Base(e.Path)] {
+		base := path.Base(e.Path)
+		nested := strings.Contains(e.Path, "/")
+		switch {
+		case strings.HasSuffix(e.Path, ".safetensors"):
+			selected = append(selected, e)
+		case nestablePullFileNames[base]:
+			selected = append(selected, e)
+		case rootOnlyPullFileNames[base] && !nested:
 			selected = append(selected, e)
 		}
 	}
@@ -324,8 +335,13 @@ func pullFilesToPrefix(ctx context.Context, hf *hfhub.Client, store objectstore.
 	defer os.RemoveAll(tmpDir)
 
 	var uploaded []string
+	seen := make(map[string]string, len(files))
 	for _, f := range files {
 		key := prefix + path.Base(f.Path)
+		if prev, dup := seen[key]; dup {
+			return uploaded, fmt.Errorf("refusing to overwrite %s: both %s and %s flatten to it", key, prev, f.Path)
+		}
+		seen[key] = f.Path
 		if err := pullOneFile(ctx, hf, store, hfRepo, sha, f.Path, bucket, key, tmpDir); err != nil {
 			return uploaded, fmt.Errorf("pull %s: %w", f.Path, err)
 		}
@@ -340,12 +356,26 @@ func pullFilesToPrefix(ctx context.Context, hf *hfhub.Client, store objectstore.
 // into predastore (D6), and finally the ochre-pull.json manifest. It never
 // touches the weights KV store; 'stage' consumes the printed s3:// URI
 // separately. A failure removes every object already written (D5).
-func runPullWeights(ctx context.Context, hf *hfhub.Client, store objectstore.ObjectStore, modelID, hfRepo, revision, s3URIFlag string) (string, error) {
-	if _, found, selfHost := gateway_bedrock.LookupServingSpec(modelID); !found || !selfHost {
+func runPullWeights(ctx context.Context, hf *hfhub.Client, store objectstore.ObjectStore, modelID, hfRepo, revision string, revisionExplicit bool, s3URIFlag string) (string, error) {
+	spec, found, selfHost := gateway_bedrock.LookupServingSpec(modelID)
+	if !found || !selfHost {
 		if !found {
 			return "", fmt.Errorf("unknown model ID %q: not present in the Ochre catalog", modelID)
 		}
 		return "", fmt.Errorf("%q is a provider-served model, not self-host; weights pull does not apply", modelID)
+	}
+
+	// The catalog carries the canonical repo and a pinned revision so a bare
+	// pull cannot silently grab a regressed upstream default; an explicit flag
+	// still overrides either.
+	if hfRepo == "" {
+		hfRepo = spec.HFRepo
+	}
+	if hfRepo == "" {
+		return "", fmt.Errorf("no --hf-repo given and %q has no catalog HF repo", modelID)
+	}
+	if !revisionExplicit && spec.HFRevision != "" {
+		revision = spec.HFRevision
 	}
 
 	fmt.Printf("Resolving %s@%s ...\n", hfRepo, revision)
@@ -989,6 +1019,7 @@ func runOchreWeightsPull(cmd *cobra.Command, _ []string) {
 	modelID, _ := cmd.Flags().GetString("model-id")
 	hfRepo, _ := cmd.Flags().GetString("hf-repo")
 	revision, _ := cmd.Flags().GetString("revision")
+	revisionExplicit := cmd.Flags().Changed("revision")
 	s3URI, _ := cmd.Flags().GetString("s3-uri")
 
 	appConfig, nc, err := loadConfigAndConnectFn()
@@ -1006,13 +1037,13 @@ func runOchreWeightsPull(cmd *cobra.Command, _ []string) {
 	hf := hfhub.NewClient(token)
 	store := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
 
-	finalURI, err := runPullWeights(ctx, hf, store, modelID, hfRepo, revision, s3URI)
+	finalURI, err := runPullWeights(ctx, hf, store, modelID, hfRepo, revision, revisionExplicit, s3URI)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		ochreExit(1)
 		return
 	}
-	fmt.Printf("✅ Pulled %s@%s into %s\n", hfRepo, revision, finalURI)
+	fmt.Printf("✅ Pulled into %s\n", finalURI)
 	fmt.Println(finalURI)
 }
 

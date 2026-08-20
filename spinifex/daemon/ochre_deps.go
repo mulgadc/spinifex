@@ -10,6 +10,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
@@ -113,13 +114,18 @@ func (d *Daemon) startOchreVector() {
 		return
 	}
 
-	embedModel := cfg.EmbeddingModel
-	if embedModel == "" {
-		embedModel = gateway_bedrock.DefaultEmbeddingModel
+	// Embedder/reranker are bundle members: DynamicEndpointResolver resolves
+	// each model id to the co-resident bundle VM's own port, in-process
+	// against d.bedrockService rather than a NATS round trip to itself.
+	endpointResolver := handlers_bedrock.NewDynamicEndpointResolver(d.bedrockService, nil, 0)
+	embedder := gateway_bedrock.NewEmbedder(endpointResolver)
+
+	// RerankModel unset leaves reranker nil: Query degrades to plain KNN
+	// rather than resolving a default rerank model nobody asked for.
+	var reranker handlers_ochrevector.Reranker
+	if cfg.RerankModel != "" {
+		reranker = gateway_bedrock.NewReranker(endpointResolver, cfg.RerankModel)
 	}
-	embedder := gateway_bedrock.NewEmbedder(gateway_bedrock.NewStaticEndpointResolver(map[string]string{
-		embedModel: cfg.EmbeddingsEndpoint,
-	}))
 
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host),
 		d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
@@ -129,7 +135,7 @@ func (d *Daemon) startOchreVector() {
 	service := handlers_ochrevector.NewService(registry, backend)
 	ingest := handlers_ochrevector.NewIngestService(jobs, registry, backend, store, embedder)
 
-	vectorService := handlers_ochrevector.NewVectorService(service, ingest, jobs, registry, backend, embedder)
+	vectorService := handlers_ochrevector.NewVectorService(service, ingest, jobs, registry, backend, embedder, reranker)
 
 	// A shutdown that lands in the gap between Connect succeeding above and
 	// this check does not leave anything to unwind: nothing has been

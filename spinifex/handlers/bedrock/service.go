@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -137,15 +139,21 @@ func resolveAccountID(accountID string) string {
 	return accountID
 }
 
-// Ensure idempotently guarantees modelID has a running or starting endpoint.
-// A model with no serving spec (unknown, or a provider entry) is rejected
-// before any KV touch. Capacity is admission-checked before the claim so a
-// refusal never leaves a STARTING record for a concurrent caller to observe.
+// Ensure idempotently guarantees modelID's co-serve bundle has a running or
+// starting endpoint. A model with no serving spec (unknown, or a provider
+// entry) is rejected before any KV touch. Every member of a bundle resolves
+// to the SAME key (see resolveKey), so a bundle is launched once for the
+// whole group regardless of which member's Ensure got there first — the
+// returned record always reports the state of that one shared launch, and
+// its ModelID mirrors the model actually asked for rather than whichever
+// member first created the record. Capacity is admission-checked before the
+// claim so a refusal never leaves a STARTING record for a concurrent caller
+// to observe.
 func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string) (*EnsureEndpointOutput, error) {
 	if in == nil || in.ModelID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	spec, specFound, selfHost := gateway_bedrock.LookupServingSpec(in.ModelID)
+	spec, specFound, selfHost := gateway_bedrock.LookupCoServeGroup(in.ModelID)
 	if !specFound || !selfHost {
 		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
 	}
@@ -155,7 +163,7 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 	// account. A caller that supplies its own AccountID (a pinned,
 	// account-scoped endpoint) gets a distinct key instead.
 	storeAccountID := resolveAccountID(in.AccountID)
-	key := EndpointKey(storeAccountID, in.ModelID)
+	key := EndpointKey(storeAccountID, spec.GroupID)
 
 	unlock := s.ensureMu.lock(key)
 	defer unlock()
@@ -173,6 +181,7 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 	if found {
 		switch existing.State {
 		case StateStarting, StateReady:
+			existing.ModelID = in.ModelID
 			return &EnsureEndpointOutput{Endpoint: existing}, nil
 		case StateDraining:
 			return nil, awserrors.Errorf(awserrors.ErrorModelNotReadyException,
@@ -180,14 +189,14 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 		}
 	}
 
-	if err := admitCapacity(s.deps.GPU, spec.MinVRAMMiB); err != nil {
+	if err := admitBundleCapacity(s.deps.GPU, in.ModelID); err != nil {
 		// No free device. A GPU held by a model nobody is calling is not a
 		// reason to refuse this one, so make room and re-check — but return the
 		// original refusal, unchanged, when nothing can be given up.
-		if !s.evictForCapacity(ctx, kv, in.ModelID, spec.MinVRAMMiB) {
+		if !s.evictForCapacity(ctx, kv, in.ModelID, spec.TotalMinVRAMMiB) {
 			return nil, err
 		}
-		if retryErr := admitCapacity(s.deps.GPU, spec.MinVRAMMiB); retryErr != nil {
+		if retryErr := admitBundleCapacity(s.deps.GPU, in.ModelID); retryErr != nil {
 			return nil, retryErr
 		}
 	}
@@ -211,6 +220,7 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 			// answer, not an error.
 			var winner EndpointRecord
 			if ok, gerr := getJSON(ctx, kv, key, &winner); gerr == nil && ok {
+				winner.ModelID = in.ModelID
 				return &EnsureEndpointOutput{Endpoint: winner}, nil
 			}
 		}
@@ -280,36 +290,51 @@ func (s *Service) evictForCapacity(ctx context.Context, kv jetstream.KeyValue, w
 // runLaunch performs the slow launch + readiness probe and writes the
 // terminal state. Only this goroutine writes key while the record is
 // STARTING (guaranteed by Ensure returning early for any concurrent caller
-// that observes STARTING), so no CAS-conflict retry loop is needed here.
-func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord, spec gateway_bedrock.ServingSpec) {
+// that observes STARTING), so no CAS-conflict retry loop is needed here. It
+// launches the VM exactly once for the whole group, never one per member.
+func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord, spec gateway_bedrock.CoServeGroupSpec) {
+	members := make([]LaunchMemberInput, 0, len(spec.Members))
+	for _, m := range spec.Members {
+		members = append(members, LaunchMemberInput{ModelID: m.ModelID, Family: m.Family, VLLMArgs: m.VLLMArgs})
+	}
 	out, err := LaunchServingVM(ctx, s.deps.Launch, LaunchInput{
-		ModelID:      rec.ModelID,
+		GroupID:      spec.GroupID,
 		InstanceType: spec.InstanceType,
-		VLLMArgs:     spec.VLLMArgs,
+		Members:      members,
 	})
 	if err != nil {
-		slog.ErrorContext(ctx, "bedrock: launch serving VM failed", "model", rec.ModelID, "err", err)
+		slog.ErrorContext(ctx, "bedrock: launch serving VM failed", "group", spec.GroupID, "err", err)
 		s.abortLaunch(ctx, key, rec.ModelID)
 		return
 	}
 
 	rec.InstanceID = out.InstanceID
 	rec.ENIID = out.ENIID
-	rec.WeightsVolumeID = out.WeightsVolumeID
-	rec.BaseURL = out.BaseURL
+	rec.PrivateIP = out.PrivateIP
+	rec.Members = make(map[string]MemberEndpoint, len(out.Members))
+	for modelID, m := range out.Members {
+		rec.Members[modelID] = MemberEndpoint(m)
+	}
+	// BaseURL/WeightsVolumeID mirror the generative member, for callers (the
+	// reaper's Prometheus scrape, the CLI summary) that only ever care about
+	// the bundle's primary model.
+	if primary, ok := out.Members[out.PrimaryModelID]; ok {
+		rec.BaseURL = "http://" + net.JoinHostPort(out.PrivateIP, strconv.Itoa(primary.Port))
+		rec.WeightsVolumeID = primary.WeightsVolumeID
+	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, s.startupTimeout())
 	defer cancel()
-	if err := waitReady(timeoutCtx, s.httpClient(), rec.BaseURL, s.pollInterval()); err != nil {
+	if err := waitReadyAll(timeoutCtx, s.httpClient(), out.MemberReadinessTargets(), s.pollInterval()); err != nil {
 		slog.ErrorContext(ctx, "bedrock: readiness probe timed out; unwinding launch",
-			"model", rec.ModelID, "instanceId", rec.InstanceID, "err", err)
+			"group", spec.GroupID, "instanceId", rec.InstanceID, "err", err)
 		out.Unwind(ctx)
 		s.abortLaunch(ctx, key, rec.ModelID)
 		return
 	}
 
 	if err := validateTransition(StateStarting, StateReady); err != nil {
-		slog.ErrorContext(ctx, "bedrock: illegal transition to READY", "model", rec.ModelID, "err", err)
+		slog.ErrorContext(ctx, "bedrock: illegal transition to READY", "group", spec.GroupID, "err", err)
 		return
 	}
 	rec.State = StateReady
@@ -318,17 +343,31 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 
 	kv, err := s.bucket(ctx)
 	if err != nil {
-		slog.ErrorContext(ctx, "bedrock: bucket unavailable to record READY", "model", rec.ModelID, "err", err)
+		slog.ErrorContext(ctx, "bedrock: bucket unavailable to record READY", "group", spec.GroupID, "err", err)
 		return
 	}
 	_, rev, gerr := readCurrent(ctx, kv, key)
 	if gerr != nil {
-		slog.ErrorContext(ctx, "bedrock: re-read endpoint before READY write failed", "model", rec.ModelID, "err", gerr)
+		slog.ErrorContext(ctx, "bedrock: re-read endpoint before READY write failed", "group", spec.GroupID, "err", gerr)
 		return
 	}
 	if err := updateJSON(ctx, kv, key, rev, rec); err != nil {
-		slog.ErrorContext(ctx, "bedrock: CAS write of READY state failed", "model", rec.ModelID, "err", err)
+		slog.ErrorContext(ctx, "bedrock: CAS write of READY state failed", "group", spec.GroupID, "err", err)
 	}
+}
+
+// resolveKey derives the bundle's KV storage key for modelID: the shared
+// group key when modelID belongs to a catalog co-serve group, or a literal
+// per-model key otherwise. The fallback covers both an uncatalogued model id
+// (a test fixture) and keeps a standalone model's key identical to what
+// EndpointKey(accountID, modelID) always produced, so today's behaviour is
+// unchanged for a non-grouped model.
+func resolveKey(accountID, modelID string) string {
+	spec, found, selfHost := gateway_bedrock.LookupCoServeGroup(modelID)
+	if !found || !selfHost {
+		return EndpointKey(accountID, modelID)
+	}
+	return EndpointKey(accountID, spec.GroupID)
 }
 
 // abortLaunch reverts a STARTING record to ABSENT (deletes the key) so a
@@ -377,12 +416,14 @@ func (s *Service) Describe(ctx context.Context, in *DescribeEndpointInput, _ str
 		return nil, err
 	}
 	var rec EndpointRecord
-	found, err := getJSON(ctx, kv, EndpointKey(storeAccountID, in.ModelID), &rec)
+	found, err := getJSON(ctx, kv, resolveKey(storeAccountID, in.ModelID), &rec)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: describe endpoint %s: %w", in.ModelID, err)
 	}
 	if !found {
 		rec = EndpointRecord{AccountID: storeAccountID, ModelID: in.ModelID, State: StateAbsent}
+	} else {
+		rec.ModelID = in.ModelID
 	}
 	return &DescribeEndpointOutput{Endpoint: rec}, nil
 }
@@ -413,7 +454,7 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	storeAccountID := resolveAccountID(in.AccountID)
-	key := EndpointKey(storeAccountID, in.ModelID)
+	key := resolveKey(storeAccountID, in.ModelID)
 
 	unlock := s.ensureMu.lock(key)
 	defer unlock()
@@ -427,7 +468,7 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 		return nil, fmt.Errorf("bedrock: read endpoint %s: %w", in.ModelID, err)
 	}
 	if !found {
-		return &DeleteEndpointOutput{}, nil
+		return &DeleteEndpointOutput{Removed: false}, nil
 	}
 	if rec.State != StateReady && rec.State != StateDraining {
 		return nil, awserrors.Errorf(awserrors.ErrorModelNotReadyException,
@@ -453,7 +494,7 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 	if err := deleteJSON(ctx, kv, key); err != nil {
 		return nil, fmt.Errorf("bedrock: remove endpoint %s record: %w", in.ModelID, err)
 	}
-	return &DeleteEndpointOutput{}, nil
+	return &DeleteEndpointOutput{Removed: true}, nil
 }
 
 // getFullJSON is getJSONRevision with the found flag surfaced alongside the

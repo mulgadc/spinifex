@@ -208,6 +208,18 @@ func TestLookupServingSpec_SelfHostEntry(t *testing.T) {
 	assert.NotEmpty(t, spec.InstanceType)
 	assert.Positive(t, spec.MinVRAMMiB)
 	assert.NotEmpty(t, spec.VLLMArgs)
+	assert.Equal(t, "meta-llama/Llama-3.2-1B-Instruct", spec.HFRepo)
+}
+
+// TestLookupServingSpec_EmbedderCarriesPinnedRevision guards the durable pin
+// weights pull defaults to: nomic must surface a non-empty HFRevision, so a
+// bare pull cannot silently grab the regressed upstream main.
+func TestLookupServingSpec_EmbedderCarriesPinnedRevision(t *testing.T) {
+	spec, found, selfHost := LookupServingSpec("nomic-embed-text-v1.5")
+	require.True(t, found)
+	require.True(t, selfHost)
+	assert.Equal(t, "nomic-ai/nomic-embed-text-v1.5", spec.HFRepo)
+	assert.NotEmpty(t, spec.HFRevision, "the embedder must pin a pre-v5 revision")
 }
 
 // TestLookupServingSpec_ProviderEntry covers the refusal case 'stage' must
@@ -242,19 +254,125 @@ func TestLookupServingSpec_SelfHost3BEntry(t *testing.T) {
 }
 
 // TestCatalog_SelfHostEntriesFitTheLlamaInvokeAdapter guards the assumption
-// baked into InvokeRouter: every self-host entry is dispatched to
-// llamaInvokeAdapter on tier alone, so a self-host model of another family
-// would be served with Llama's native request and response schema instead of
-// being refused. This fails the moment the catalog outgrows that dispatch.
+// baked into selfHostInvokeAdapter: every familyMeta entry is Llama-shaped, so
+// it is safe to dispatch through llamaInvokeAdapter. A non-meta family (TEI's
+// embedder/reranker included) is unhandled and refused instead, not silently
+// served with the wrong native schema.
 func TestCatalog_SelfHostEntriesFitTheLlamaInvokeAdapter(t *testing.T) {
 	for _, entry := range catalog {
-		if entry.Provider != tierSelfHost {
+		if entry.Provider != tierSelfHost || entry.Family != familyMeta {
 			continue
 		}
 		assert.True(t, strings.HasPrefix(entry.ModelID, "meta.llama"),
-			"self-host entry %q is not a Llama model; InvokeRouter would serve it "+
+			"familyMeta entry %q is not a Llama model; InvokeRouter would serve it "+
 				"through llamaInvokeAdapter with the wrong native schema", entry.ModelID)
 	}
+}
+
+// TestCoServeGroupVRAMMiB_StandaloneModel covers the bundle-of-one case: a
+// self-host entry with no CoServeGroup resolves to just its own floor.
+func TestCoServeGroupVRAMMiB_StandaloneModel(t *testing.T) {
+	total, members, found := CoServeGroupVRAMMiB(selfHostTestModel3B)
+	require.True(t, found)
+	assert.Equal(t, 7168, total)
+	assert.Equal(t, []string{selfHostTestModel3B}, members)
+}
+
+// TestCoServeGroupVRAMMiB_BundleSumsMembers covers the populated demo bundle:
+// the LLM, embedder and reranker share one group, so admission must see one
+// summed floor rather than three independent whole-GPU claims.
+func TestCoServeGroupVRAMMiB_BundleSumsMembers(t *testing.T) {
+	total, members, found := CoServeGroupVRAMMiB(selfHostTestModel)
+	require.True(t, found)
+	assert.Equal(t, 5120+512+1200, total)
+	assert.ElementsMatch(t, []string{selfHostTestModel, "nomic-embed-text-v1.5", "bge-reranker-v2-m3"}, members)
+}
+
+// TestCoServeGroupVRAMMiB_UnknownModel reports found=false rather than a
+// zero-value bundle, so callers can distinguish "no such model" from a
+// legitimately tiny group.
+func TestCoServeGroupVRAMMiB_UnknownModel(t *testing.T) {
+	total, members, found := CoServeGroupVRAMMiB("not-a-real-model")
+	assert.False(t, found)
+	assert.Zero(t, total)
+	assert.Nil(t, members)
+}
+
+// TestLookupCoServeGroup_StandaloneModel covers the bundle-of-one case: a
+// self-host entry with no CoServeGroup resolves to a group of one, GroupID
+// equal to its own ModelID, VLLMArgs unchanged from the catalog entry —
+// today's single-model behaviour, not a special case of it.
+func TestLookupCoServeGroup_StandaloneModel(t *testing.T) {
+	spec, found, selfHost := LookupCoServeGroup(selfHostTestModel3B)
+	require.True(t, found)
+	require.True(t, selfHost)
+	assert.Equal(t, selfHostTestModel3B, spec.GroupID)
+	assert.Equal(t, 7168, spec.TotalMinVRAMMiB)
+	assert.Equal(t, "g5.xlarge", spec.InstanceType)
+	require.Len(t, spec.Members, 1)
+	assert.Equal(t, selfHostTestModel3B, spec.Members[0].ModelID)
+	entry, _ := lookupCatalogEntry(selfHostTestModel3B)
+	assert.Equal(t, entry.VLLMArgs, spec.Members[0].VLLMArgs,
+		"a standalone model's VLLMArgs must be untouched by bundle scaling")
+}
+
+// TestLookupCoServeGroup_Bundle covers the populated demo bundle: every
+// member is present, the VRAM floor matches CoServeGroupVRAMMiB's own sum,
+// and the vLLM member's --gpu-memory-utilization is scaled down from its
+// solo value to leave headroom for the TEI members sharing the card, while
+// the TEI members keep no vLLM-specific args at all.
+func TestLookupCoServeGroup_Bundle(t *testing.T) {
+	spec, found, selfHost := LookupCoServeGroup(selfHostTestModel)
+	require.True(t, found)
+	require.True(t, selfHost)
+	assert.Equal(t, "ochre-demo-bundle", spec.GroupID)
+	assert.Equal(t, 5120+512+1200, spec.TotalMinVRAMMiB)
+	require.Len(t, spec.Members, 3)
+
+	byModel := make(map[string]CoServeMember, len(spec.Members))
+	for _, m := range spec.Members {
+		byModel[m.ModelID] = m
+	}
+	llm, ok := byModel[selfHostTestModel]
+	require.True(t, ok)
+	assert.Equal(t, FamilyMeta, llm.Family)
+	require.NotEmpty(t, llm.VLLMArgs)
+	var utilArg string
+	for _, a := range llm.VLLMArgs {
+		if strings.HasPrefix(a, "--gpu-memory-utilization=") {
+			utilArg = a
+		}
+	}
+	require.NotEmpty(t, utilArg, "the vLLM member must still carry a utilization cap")
+	assert.NotEqual(t, "--gpu-memory-utilization=0.6", utilArg,
+		"the bundle must not reuse the standalone solo-launch utilization unchanged")
+
+	embed, ok := byModel["nomic-embed-text-v1.5"]
+	require.True(t, ok)
+	assert.Equal(t, FamilyTEI, embed.Family)
+
+	rerank, ok := byModel["bge-reranker-v2-m3"]
+	require.True(t, ok)
+	assert.Equal(t, FamilyTEI, rerank.Family)
+}
+
+// TestLookupCoServeGroup_ProviderEntry covers the refusal case a launcher
+// must hit for a valid-but-wrong-tier model ID.
+func TestLookupCoServeGroup_ProviderEntry(t *testing.T) {
+	spec, found, selfHost := LookupCoServeGroup(anthropicTestModel)
+	require.True(t, found)
+	assert.False(t, selfHost)
+	assert.Zero(t, spec)
+}
+
+// TestLookupCoServeGroup_UnknownModel reports found=false rather than a
+// zero-value group, so callers can distinguish "no such model" from a
+// legitimately tiny group.
+func TestLookupCoServeGroup_UnknownModel(t *testing.T) {
+	spec, found, selfHost := LookupCoServeGroup("not-a-real-model")
+	assert.False(t, found)
+	assert.False(t, selfHost)
+	assert.Zero(t, spec)
 }
 
 // TestListFoundationModels_SelfHostGatingIsPerEntry proves weights gating

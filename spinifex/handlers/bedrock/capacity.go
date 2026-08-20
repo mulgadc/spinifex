@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 )
 
@@ -100,4 +101,17 @@ func admitCapacity(snapshotter gpuSnapshotter, minVRAMMiB int) error {
 		return awserrors.Errorf(awserrors.ErrorModelNotReadyException, "bedrock: no GPU manager on this node")
 	}
 	return checkCapacity(snapshotter.Snapshot(), minVRAMMiB)
+}
+
+// admitBundleCapacity resolves modelID's co-serve group in the catalog and
+// admits it as a single claim sized to the group's summed MinVRAMMiB floor,
+// never as independent per-member claims. A standalone model (no group) is
+// the degenerate one-member case, so it admits exactly as admitCapacity does
+// today — this is bundle-of-one, not a second code path.
+func admitBundleCapacity(snapshotter gpuSnapshotter, modelID string) error {
+	total, _, found := gateway_bedrock.CoServeGroupVRAMMiB(modelID)
+	if !found {
+		return awserrors.Errorf(awserrors.ErrorResourceNotFoundException, "bedrock: unknown model %s", modelID)
+	}
+	return admitCapacity(snapshotter, total)
 }

@@ -8,10 +8,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -88,6 +90,70 @@ func newIngestTestSetup(t *testing.T) (*IngestService, *Registry, *fakeBackend, 
 
 	svc := NewIngestService(jobs, registry, backend, store, embedder)
 	return svc, registry, backend, store, embedder
+}
+
+// tokenLimiterStubEmbedder wraps stubEmbedder with a configurable
+// TokenLimiter.MaxInputLength, so ingestObject's optional-interface wiring
+// to the served embedder's real budget can be exercised without a live TEI
+// endpoint.
+type tokenLimiterStubEmbedder struct {
+	*stubEmbedder
+
+	maxInputLength int
+}
+
+var _ Embedder = (*tokenLimiterStubEmbedder)(nil)
+var _ TokenLimiter = (*tokenLimiterStubEmbedder)(nil)
+
+func (e *tokenLimiterStubEmbedder) MaxInputLength(_ context.Context, _ string) int {
+	return e.maxInputLength
+}
+
+// tokenCounterStubEmbedder additionally implements TokenCounter, counting
+// its own invocations so tests can prove ingestObject actually consults it
+// rather than relying solely on the conservative rune estimate.
+type tokenCounterStubEmbedder struct {
+	*tokenLimiterStubEmbedder
+
+	mu         sync.Mutex
+	countCalls int
+}
+
+var _ TokenCounter = (*tokenCounterStubEmbedder)(nil)
+
+func (e *tokenCounterStubEmbedder) CountTokens(_ context.Context, _, text string) (int, bool) {
+	e.mu.Lock()
+	e.countCalls++
+	e.mu.Unlock()
+	return int(math.Ceil(float64(utf8.RuneCountInString(text)) / codeCharsPerToken)), true
+}
+
+func (e *tokenCounterStubEmbedder) callCountTokens() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.countCalls
+}
+
+// newIngestTestSetupWithEmbedder mirrors newIngestTestSetup but takes a
+// caller-supplied Embedder, so tests can exercise the TokenLimiter/
+// TokenCounter optional-interface wiring without a live TEI endpoint.
+func newIngestTestSetupWithEmbedder(t *testing.T, embedder Embedder) (*IngestService, *Registry, *fakeBackend, *objectstore.MemoryObjectStore) {
+	t.Helper()
+	_, _, js := testutil.StartTestJetStream(t)
+
+	registry := NewRegistry(js)
+	now := time.Now().UTC()
+	require.NoError(t, registry.Reserve(context.Background(), ingestAccountA, Record{
+		ID: "idx-one", Dimension: 2, EmbeddingModel: "stub-embed", State: StateCreating, CreatedAt: now, UpdatedAt: now,
+	}))
+	require.NoError(t, registry.SetState(context.Background(), ingestAccountA, "idx-one", StateReady))
+
+	backend := newFakeBackend()
+	store := objectstore.NewMemoryObjectStore()
+	jobs := NewJobStore(js)
+
+	svc := NewIngestService(jobs, registry, backend, store, embedder)
+	return svc, registry, backend, store
 }
 
 func testSource() SourceSpec {
@@ -571,4 +637,70 @@ func TestIngestService_Sweep_LeavesFreshRunningAndTerminalJobsAlone(t *testing.T
 	assert.Equal(t, JobStateFailed, gotFailed.State)
 
 	assert.Equal(t, 0, backend.replaceDocumentCallCount(ingestAccountA, "idx-one", freshKey))
+}
+
+// TestRunJob_ClampsOperatorChunkSizeToEmbedderMaxInputLength proves an
+// operator-requested ChunkSize looser than the served embedder's real
+// max_input_length is clamped down to the embedder's limit rather than
+// passed through unclamped -- the fix for the as-if-runes bug where an
+// oversized chunk could 413 against the embedder regardless of what the
+// operator configured.
+func TestRunJob_ClampsOperatorChunkSizeToEmbedderMaxInputLength(t *testing.T) {
+	embedder := &tokenLimiterStubEmbedder{stubEmbedder: &stubEmbedder{}, maxInputLength: 20}
+	svc, _, backend, store := newIngestTestSetupWithEmbedder(t, embedder)
+	ctx := context.Background()
+
+	// Long enough that a 20-token budget forces multiple chunks, but well
+	// under a single chunk at the operator's much larger requested size.
+	doc := strings.Repeat("word ", 80)
+	putObject(t, store, ingestPrefix+"doc1.txt", doc)
+
+	source := testSource()
+	source.ChunkSize = 1000 // operator asks for a far larger budget than the embedder allows
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", source, "")
+	require.NoError(t, err)
+	require.NoError(t, svc.RunJob(ctx, *job))
+
+	rows := backend.documentRows(ingestAccountA, "idx-one", ingestPrefix+"doc1.txt")
+	assert.Greater(t, len(rows), 1, "an oversized operator ChunkSize must clamp to the embedder's real max_input_length")
+}
+
+// TestRunJob_HonorsOperatorChunkSizeTighterThanEmbedderLimit proves an
+// operator-requested ChunkSize tighter than the embedder's own limit is
+// still honored -- clamping only ever tightens, never loosens, an operator's
+// request.
+func TestRunJob_HonorsOperatorChunkSizeTighterThanEmbedderLimit(t *testing.T) {
+	embedder := &tokenLimiterStubEmbedder{stubEmbedder: &stubEmbedder{}, maxInputLength: 512}
+	svc, _, backend, store := newIngestTestSetupWithEmbedder(t, embedder)
+	ctx := context.Background()
+
+	doc := strings.Repeat("word ", 80)
+	putObject(t, store, ingestPrefix+"doc1.txt", doc)
+
+	source := testSource()
+	source.ChunkSize = 10 // operator wants tighter chunks than the embedder's own limit
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", source, "")
+	require.NoError(t, err)
+	require.NoError(t, svc.RunJob(ctx, *job))
+
+	rows := backend.documentRows(ingestAccountA, "idx-one", ingestPrefix+"doc1.txt")
+	assert.Greater(t, len(rows), 1, "a tighter operator ChunkSize than the embedder limit must still be honored")
+}
+
+// TestRunJob_ConsultsTokenCounterWhenEmbedderProvidesOne proves ingestObject
+// type-asserts its Embedder for TokenCounter and actually calls it during
+// chunking verification, not just TokenLimiter.
+func TestRunJob_ConsultsTokenCounterWhenEmbedderProvidesOne(t *testing.T) {
+	embedder := &tokenCounterStubEmbedder{tokenLimiterStubEmbedder: &tokenLimiterStubEmbedder{stubEmbedder: &stubEmbedder{}, maxInputLength: 20}}
+	svc, _, _, store := newIngestTestSetupWithEmbedder(t, embedder)
+	ctx := context.Background()
+
+	doc := strings.Repeat("word ", 80)
+	putObject(t, store, ingestPrefix+"doc1.txt", doc)
+
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
+	require.NoError(t, err)
+	require.NoError(t, svc.RunJob(ctx, *job))
+
+	assert.Positive(t, embedder.callCountTokens(), "ingestObject must consult the embedder's TokenCounter when it implements one")
 }

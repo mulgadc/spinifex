@@ -151,10 +151,10 @@ func (r *DynamicEndpointResolver) describeAndEnsure(ctx context.Context, account
 
 	switch out.Endpoint.State {
 	case StateReady:
-		if out.Endpoint.BaseURL == "" {
-			return "", nil
+		if url := out.Endpoint.MemberBaseURL(modelID); url != "" {
+			return url, nil
 		}
-		return out.Endpoint.BaseURL, nil
+		return "", nil
 	case StateStarting:
 		// A launch is already in flight, so asking for another changes nothing.
 		// Waiting on it is still worth doing when the deployment asked for that.
@@ -198,8 +198,10 @@ func (r *DynamicEndpointResolver) awaitReady(ctx context.Context, accountID, mod
 		if err != nil {
 			return "", err
 		}
-		if out.Endpoint.State == StateReady && out.Endpoint.BaseURL != "" {
-			return out.Endpoint.BaseURL, nil
+		if out.Endpoint.State == StateReady {
+			if url := out.Endpoint.MemberBaseURL(modelID); url != "" {
+				return url, nil
+			}
 		}
 		if time.Now().After(deadline) {
 			return "", nil

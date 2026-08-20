@@ -32,10 +32,11 @@ import (
 // --- selectPullFiles / anySafetensors (D4) ---
 
 // TestSelectPullFiles_SafetensorsAndConfigOnly covers D4's filter: every
-// *.safetensors file, the fixed config/tokenizer set, and the shard index are
-// kept (matched by basename, so a nested path like Llama's
-// original/tokenizer.model still qualifies); a pickle .bin checkpoint and
-// directory entries are dropped.
+// *.safetensors file, the fixed config set (root only), tokenizer files (at
+// any depth, so Llama's original/tokenizer.model qualifies), and the shard
+// index are kept; a pickle .bin, a directory entry, and a nested config.json
+// (a sentence-transformers component config that must never flatten onto the
+// model's own config.json) are dropped.
 func TestSelectPullFiles_SafetensorsAndConfigOnly(t *testing.T) {
 	entries := []hfhub.TreeEntry{
 		{Type: "file", Path: "config.json"},
@@ -47,6 +48,7 @@ func TestSelectPullFiles_SafetensorsAndConfigOnly(t *testing.T) {
 		{Type: "file", Path: "model.safetensors.index.json"},
 		{Type: "directory", Path: "original"},
 		{Type: "file", Path: "original/tokenizer.model"},
+		{Type: "file", Path: "1_Pooling/config.json"},
 	}
 
 	selected := selectPullFiles(entries)
@@ -64,6 +66,7 @@ func TestSelectPullFiles_SafetensorsAndConfigOnly(t *testing.T) {
 		"model.safetensors.index.json",
 		"original/tokenizer.model",
 	}, paths)
+	assert.NotContains(t, paths, "1_Pooling/config.json", "a nested config.json must be dropped, never flattened onto the model config")
 }
 
 // TestAnySafetensors_TrueWhenPresent covers the pass case: at least one
@@ -227,7 +230,7 @@ const (
 // TestRunPullWeights_UnknownModelRefused covers the catalog gate: an
 // unrecognised model ID must refuse before any Hugging Face or S3 work.
 func TestRunPullWeights_UnknownModelRefused(t *testing.T) {
-	_, err := runPullWeights(context.Background(), deadHFClient(), explodingObjectStore{t: t}, "not-a-real-model", testHFRepo, "main", "")
+	_, err := runPullWeights(context.Background(), deadHFClient(), explodingObjectStore{t: t}, "not-a-real-model", testHFRepo, "main", true, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not present in the Ochre catalog")
 }
@@ -235,7 +238,7 @@ func TestRunPullWeights_UnknownModelRefused(t *testing.T) {
 // TestRunPullWeights_ProviderModelRefused covers the self-host gate: a
 // provider-served model must refuse before any network work, same as stage.
 func TestRunPullWeights_ProviderModelRefused(t *testing.T) {
-	_, err := runPullWeights(context.Background(), deadHFClient(), explodingObjectStore{t: t}, providerModelID, testHFRepo, "main", "")
+	_, err := runPullWeights(context.Background(), deadHFClient(), explodingObjectStore{t: t}, providerModelID, testHFRepo, "main", true, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not self-host")
 }
@@ -256,7 +259,7 @@ func TestRunPullWeights_ResolvesUploadsAndWritesManifest(t *testing.T) {
 	hf := &hfhub.Client{BaseURL: srv.URL, HTTP: srv.Client()}
 	store := objectstore.NewMemoryObjectStore()
 
-	finalURI, err := runPullWeights(context.Background(), hf, store, selfHostModelID, testHFRepo, "main", "")
+	finalURI, err := runPullWeights(context.Background(), hf, store, selfHostModelID, testHFRepo, "main", true, "")
 	require.NoError(t, err)
 	assert.Equal(t, defaultPullPrefix(testHFRepo, testHFSHA), finalURI)
 
@@ -287,7 +290,7 @@ func TestRunPullWeights_ExplicitS3URIOverridesDefault(t *testing.T) {
 	hf := &hfhub.Client{BaseURL: srv.URL, HTTP: srv.Client()}
 	store := objectstore.NewMemoryObjectStore()
 
-	finalURI, err := runPullWeights(context.Background(), hf, store, selfHostModelID, testHFRepo, "main", "s3://custom-bucket/my-prefix")
+	finalURI, err := runPullWeights(context.Background(), hf, store, selfHostModelID, testHFRepo, "main", true, "s3://custom-bucket/my-prefix")
 	require.NoError(t, err)
 	assert.Equal(t, "s3://custom-bucket/my-prefix/", finalURI)
 }
@@ -300,7 +303,7 @@ func TestRunPullWeights_NoSafetensorsAborts(t *testing.T) {
 	hf := &hfhub.Client{BaseURL: srv.URL, HTTP: srv.Client()}
 	store := objectstore.NewMemoryObjectStore()
 
-	_, err := runPullWeights(context.Background(), hf, store, selfHostModelID, testHFRepo, "main", "")
+	_, err := runPullWeights(context.Background(), hf, store, selfHostModelID, testHFRepo, "main", true, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no *.safetensors")
 	assert.Equal(t, 0, store.Count(), "a refused pull must land nothing")
@@ -315,7 +318,7 @@ func TestRunPullWeights_GatedRepoAbortsCleanBeforeAnyUpload(t *testing.T) {
 		hf := &hfhub.Client{BaseURL: srv.URL, HTTP: srv.Client()}
 		store := objectstore.NewMemoryObjectStore()
 
-		_, err := runPullWeights(context.Background(), hf, store, selfHostModelID, testHFRepo, "main", "")
+		_, err := runPullWeights(context.Background(), hf, store, selfHostModelID, testHFRepo, "main", true, "")
 		require.Error(t, err)
 		assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorAccessDeniedException), "status %d: got %v", status, err)
 		assert.Equal(t, 0, store.Count(), "a gated pull must land nothing")
@@ -356,9 +359,55 @@ func TestRunPullWeights_MidStreamFailureCleansUpPartialPrefix(t *testing.T) {
 	hf := &hfhub.Client{BaseURL: srv.URL, HTTP: srv.Client()}
 	store := &failAfterNPutsStore{MemoryObjectStore: objectstore.NewMemoryObjectStore(), n: 2}
 
-	_, err := runPullWeights(context.Background(), hf, store, selfHostModelID, testHFRepo, "main", "")
+	_, err := runPullWeights(context.Background(), hf, store, selfHostModelID, testHFRepo, "main", true, "")
 	require.Error(t, err)
 	assert.Equal(t, 0, store.Count(), "objects uploaded before the failure must be cleaned up")
+}
+
+// TestRunPullWeights_DefaultsRepoFromCatalog covers the catalog repo default:
+// with no --hf-repo, pull uses the self-host entry's canonical HFRepo rather
+// than refusing, so an operator need not restate a repo the catalog knows.
+func TestRunPullWeights_DefaultsRepoFromCatalog(t *testing.T) {
+	files := []fakeHFFile{{"config.json", "{}"}, {"tokenizer_config.json", "{}"}, {"tokenizer.json", "{}"}, {"model.safetensors", "x"}}
+	srv := newFakeHFServer(t, testHFRepo, "main", testHFSHA, files)
+	hf := &hfhub.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+	store := objectstore.NewMemoryObjectStore()
+
+	finalURI, err := runPullWeights(context.Background(), hf, store, selfHostModelID, "", "main", false, "")
+	require.NoError(t, err)
+	assert.Equal(t, defaultPullPrefix(testHFRepo, testHFSHA), finalURI)
+}
+
+// TestRunPullWeights_DefaultsRevisionFromCatalogPin covers the pinned-revision
+// default: a bare pull of an entry carrying HFRevision resolves that pin, not
+// the "main" flag default, so a regressed upstream main cannot be picked up.
+func TestRunPullWeights_DefaultsRevisionFromCatalogPin(t *testing.T) {
+	const nomicModelID = "nomic-embed-text-v1.5"
+	const nomicRepo = "nomic-ai/nomic-embed-text-v1.5"
+	const pinnedRevision = "e5cf08a"
+	files := []fakeHFFile{{"config.json", "{}"}, {"tokenizer_config.json", "{}"}, {"tokenizer.json", "{}"}, {"model.safetensors", "x"}}
+	srv := newFakeHFServer(t, nomicRepo, pinnedRevision, testHFSHA, files)
+	hf := &hfhub.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+	store := objectstore.NewMemoryObjectStore()
+
+	finalURI, err := runPullWeights(context.Background(), hf, store, nomicModelID, "", "main", false, "")
+	require.NoError(t, err)
+	assert.Equal(t, defaultPullPrefix(nomicRepo, testHFSHA), finalURI)
+}
+
+// TestPullFilesToPrefix_RefusesDuplicateFlattenedKey covers the flatten guard:
+// two source paths sharing a basename would collide at one destination key, so
+// the pull aborts rather than silently overwriting one with the other.
+func TestPullFilesToPrefix_RefusesDuplicateFlattenedKey(t *testing.T) {
+	files := []fakeHFFile{{"a/tokenizer.model", "first"}, {"b/tokenizer.model", "second"}}
+	srv := newFakeHFServer(t, testHFRepo, "main", testHFSHA, files)
+	hf := &hfhub.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+	store := objectstore.NewMemoryObjectStore()
+
+	entries := []hfhub.TreeEntry{{Type: "file", Path: "a/tokenizer.model"}, {Type: "file", Path: "b/tokenizer.model"}}
+	_, err := pullFilesToPrefix(context.Background(), hf, store, testHFRepo, testHFSHA, "ochre-weights", "prefix/", entries)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "flatten to it")
 }
 
 // --- resolveHFToken (D2) ---

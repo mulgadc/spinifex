@@ -238,16 +238,16 @@ func TestConverseStream_GuardrailInputBlock_SkipsBackend(t *testing.T) {
 	assert.Equal(t, int32(0), hits.Load(), "the backend stream must never be started on an INPUT block")
 
 	frames := decodeAllFrames(t, rec.Body.Bytes())
-	require.Len(t, frames, 6)
-	assert.Equal(t, []string{"messageStart", "contentBlockStart", "contentBlockDelta", "contentBlockStop", "messageStop", "metadata"},
-		[]string{frames[0].Type, frames[1].Type, frames[2].Type, frames[3].Type, frames[4].Type, frames[5].Type})
+	require.Len(t, frames, 5)
+	assert.Equal(t, []string{"messageStart", "contentBlockDelta", "contentBlockStop", "messageStop", "metadata"},
+		[]string{frames[0].Type, frames[1].Type, frames[2].Type, frames[3].Type, frames[4].Type})
 
 	var delta decodedDelta
-	require.NoError(t, json.Unmarshal(frames[2].Payload, &delta))
+	require.NoError(t, json.Unmarshal(frames[1].Payload, &delta))
 	assert.Equal(t, "Your input violates our policy.", delta.Delta.Text)
 
 	var stop decodedMessageStop
-	require.NoError(t, json.Unmarshal(frames[4].Payload, &stop))
+	require.NoError(t, json.Unmarshal(frames[3].Payload, &stop))
 	assert.Equal(t, bedrockruntime.StopReasonGuardrailIntervened, stop.StopReason)
 }
 
@@ -284,10 +284,10 @@ func TestConverseStream_NoGuardrailConfig_Regression(t *testing.T) {
 	require.NoError(t, err)
 
 	frames := decodeAllFrames(t, rec.Body.Bytes())
-	require.Len(t, frames, 7)
-	assert.Equal(t, "contentBlockDelta", frames[2].Type)
+	require.Len(t, frames, 6)
+	assert.Equal(t, "contentBlockDelta", frames[1].Type)
 	var delta decodedDelta
-	require.NoError(t, json.Unmarshal(frames[2].Payload, &delta))
+	require.NoError(t, json.Unmarshal(frames[1].Payload, &delta))
 	assert.Equal(t, "Hello", delta.Delta.Text)
 }
 
@@ -297,7 +297,6 @@ func TestConverseStream_NoGuardrailConfig_Regression(t *testing.T) {
 func guardrailStreamFixtureEvents(chunks ...string) []ConverseStreamEvent {
 	events := []ConverseStreamEvent{
 		{Kind: converseStreamEventMessageStart, MessageStart: &bedrockruntime.MessageStartEvent{Role: aws.String(bedrockruntime.ConversationRoleAssistant)}},
-		{Kind: converseStreamEventContentBlockStart, ContentBlockStart: &bedrockruntime.ContentBlockStartEvent{ContentBlockIndex: aws.Int64(0), Start: &bedrockruntime.ContentBlockStart{}}},
 	}
 	for _, c := range chunks {
 		events = append(events, ConverseStreamEvent{
@@ -336,16 +335,15 @@ func TestGuardrailStreamSource_OutputBlock_BuffersAndReplacesText(t *testing.T) 
 	}
 	assert.Equal(t, []converseStreamEventKind{
 		converseStreamEventMessageStart,
-		converseStreamEventContentBlockStart,
 		converseStreamEventContentBlockDelta,
 		converseStreamEventContentBlockStop,
 		converseStreamEventMessageStop,
 		converseStreamEventMetadata,
 	}, kinds)
 
-	deltaEvent := events[2]
+	deltaEvent := events[1]
 	assert.Equal(t, "The model response violates our policy.", aws.StringValue(deltaEvent.ContentBlockDelta.Delta.Text))
-	assert.Equal(t, bedrockruntime.StopReasonGuardrailIntervened, aws.StringValue(events[4].MessageStop.StopReason))
+	assert.Equal(t, bedrockruntime.StopReasonGuardrailIntervened, aws.StringValue(events[3].MessageStop.StopReason))
 }
 
 func TestGuardrailStreamSource_OutputAnonymize_RedactsAccumulatedText(t *testing.T) {
@@ -358,10 +356,10 @@ func TestGuardrailStreamSource_OutputAnonymize_RedactsAccumulatedText(t *testing
 	src := newGuardrailStreamSource(inner, store, grCallerAccount, aws.StringValue(createOut.GuardrailId), guardrailDraftVersion, false, nil)
 
 	events := drainConverseStream(t, src)
-	require.Len(t, events, 6)
-	assert.Equal(t, "contact {EMAIL} for support", aws.StringValue(events[2].ContentBlockDelta.Delta.Text))
+	require.Len(t, events, 5)
+	assert.Equal(t, "contact {EMAIL} for support", aws.StringValue(events[1].ContentBlockDelta.Delta.Text))
 	// Redaction alone leaves the model's own stop reason intact.
-	assert.Equal(t, bedrockruntime.StopReasonEndTurn, aws.StringValue(events[4].MessageStop.StopReason))
+	assert.Equal(t, bedrockruntime.StopReasonEndTurn, aws.StringValue(events[3].MessageStop.StopReason))
 }
 
 func TestGuardrailStreamSource_TraceEnabledSurfacesAssessment(t *testing.T) {

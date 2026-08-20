@@ -193,14 +193,13 @@ func TestConverseStream_SelfHostHappyPath_WritesFramedTaxonomy(t *testing.T) {
 	assert.Equal(t, eventStreamContentType, rec.Header().Get("Content-Type"))
 
 	frames := decodeAllFrames(t, rec.Body.Bytes())
-	require.Len(t, frames, 7)
+	require.Len(t, frames, 6)
 	assert.Equal(t, "messageStart", frames[0].Type)
-	assert.Equal(t, "contentBlockStart", frames[1].Type)
+	assert.Equal(t, "contentBlockDelta", frames[1].Type)
 	assert.Equal(t, "contentBlockDelta", frames[2].Type)
-	assert.Equal(t, "contentBlockDelta", frames[3].Type)
-	assert.Equal(t, "contentBlockStop", frames[4].Type)
-	assert.Equal(t, "messageStop", frames[5].Type)
-	assert.Equal(t, "metadata", frames[6].Type)
+	assert.Equal(t, "contentBlockStop", frames[3].Type)
+	assert.Equal(t, "messageStop", frames[4].Type)
+	assert.Equal(t, "metadata", frames[5].Type)
 }
 
 func TestPumpConverseStream_RecordsInvocationOnCleanEnd(t *testing.T) {

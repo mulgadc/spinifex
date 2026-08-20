@@ -334,5 +334,22 @@ if [ "$total_bytes" -gt "$max_bytes" ]; then
     exit 1
 fi
 echo "[build-microvm-image] artifact size gate: PASS (${total_mib} MiB / ${ARTIFACT_MAX_MiB} MiB)"
+
+# --- Guest-RAM initramfs gate (uncompressed) ---
+# The kernel unpacks the whole initramfs into RAM before init, so the
+# UNCOMPRESSED size — not the gzip artifact — sets the sys.micro memory floor.
+# Over budget => "Initramfs unpacking failed" panic before userspace.
+UNCOMPRESSED_MAX_MiB="${MICROVM_INITRAMFS_UNCOMPRESSED_MAX_MiB:-96}"
+uncompressed_bytes=$(zcat "$INITRAMFS_OUT" | wc -c)
+uncompressed_mib=$(( (uncompressed_bytes + 1048575) / 1048576 ))
+umax_bytes=$(( UNCOMPRESSED_MAX_MiB * 1024 * 1024 ))
+if [ "$uncompressed_bytes" -gt "$umax_bytes" ]; then
+    echo "ERROR: uncompressed initramfs ${uncompressed_mib} MiB exceeds ${UNCOMPRESSED_MAX_MiB} MiB guest-RAM gate" >&2
+    echo "       The LB microVM unpacks this into its 256 MiB guest RAM; a larger" >&2
+    echo "       footprint panics the kernel before init. Slim the initramfs, or raise" >&2
+    echo "       sys.micro memory AND MICROVM_INITRAMFS_UNCOMPRESSED_MAX_MiB together." >&2
+    exit 1
+fi
+echo "[build-microvm-image] initramfs guest-RAM gate: PASS (${uncompressed_mib} MiB / ${UNCOMPRESSED_MAX_MiB} MiB uncompressed)"
 echo ""
 echo "[build-microvm-image] done."

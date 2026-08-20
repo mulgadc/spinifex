@@ -49,8 +49,10 @@ const (
 // which is bounded by the dirty set rather than by anything the caller knows.
 const (
 	setPasswordTimeout = 30 * time.Second
-	applyParamsTimeout = 120 * time.Second
-	stopEngineTimeout  = 120 * time.Second
+	// Overridable via Deps.ApplyParamsTimeout, so a test exercising an
+	// unreachable agent does not have to wait out the real budget.
+	defaultApplyParamsTimeout = 120 * time.Second
+	stopEngineTimeout         = 120 * time.Second
 	// growpart plus an online resize2fs/xfs_growfs. Both scale with the
 	// filesystem's metadata rather than with the volume, so this is generous
 	// rather than proportional to the grow.
@@ -93,7 +95,7 @@ func (s *Service) setMasterPassword(ctx context.Context, accountID, dbInstanceId
 // Returns the settings the engine accepted but will not apply until it
 // restarts, which is what RebootDBInstance then clears.
 func (s *Service) applyParameters(ctx context.Context, accountID, dbInstanceIdentifier string, params []Parameter) ([]string, error) {
-	reply, err := s.issueCommand(ctx, accountID, dbInstanceIdentifier, CommandApplyParams, applyParamsTimeout, params)
+	reply, err := s.issueCommand(ctx, accountID, dbInstanceIdentifier, CommandApplyParams, s.applyParamsTimeout(), params)
 	if err != nil {
 		return nil, err
 	}

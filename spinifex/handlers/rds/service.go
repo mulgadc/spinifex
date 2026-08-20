@@ -64,6 +64,9 @@ type Deps struct {
 	// Overrides how long a stop waits for the fleet to report the VM down.
 	// Zero takes defaultVMStopTimeout.
 	VMStopTimeout time.Duration
+	// Overrides how long an apply-params command waits for the agent to
+	// answer. Zero takes defaultApplyParamsTimeout.
+	ApplyParamsTimeout time.Duration
 	// Override the modify lease lifetime and renewal cadence in tests. A zero
 	// TTL takes the default; a refresh outside (0, TTL) derives as TTL/3.
 	ModifyLeaseTTL     time.Duration
@@ -114,6 +117,13 @@ func (s *Service) vmStopTimeout() time.Duration {
 		return s.deps.VMStopTimeout
 	}
 	return defaultVMStopTimeout
+}
+
+func (s *Service) applyParamsTimeout() time.Duration {
+	if s.deps.ApplyParamsTimeout > 0 {
+		return s.deps.ApplyParamsTimeout
+	}
+	return defaultApplyParamsTimeout
 }
 
 func (s *Service) failureGrace() time.Duration {

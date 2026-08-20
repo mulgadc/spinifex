@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go"
 )
 
 // stubReconciler returns a canned outcome per pass, so the requeue schedule can
@@ -58,6 +59,27 @@ func shrinkDriftTiming(t *testing.T, interval, base time.Duration) {
 	t.Cleanup(func() { DriftInterval, driftBackoffBase = oldInterval, oldBase })
 }
 
+// startDriftLoop runs the loop and joins it on cleanup. Call it after
+// shrinkDriftTiming: cleanups run LIFO, so the join then happens first and no
+// loop is still reading the timing vars when they are restored.
+func startDriftLoop(t *testing.T, rec Reconciler, nc *nats.Conn, startup error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		DriftLoop(ctx, rec, nc, "us-east-1a", "node-1", startup)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("DriftLoop still running 5s after cancel, want a return on ctx.Done()")
+		}
+	})
+}
+
 // waitForCalls polls until rec has been called want times or within elapses.
 func waitForCalls(t *testing.T, rec *stubReconciler, want int, within time.Duration) int {
 	t.Helper()
@@ -80,7 +102,7 @@ func TestDriftLoop_IncompletePassRequeuesFast(t *testing.T) {
 	shrinkDriftTiming(t, 10*time.Second, time.Millisecond)
 
 	rec := &stubReconciler{outcomes: []error{incompleteErr()}}
-	go DriftLoop(t.Context(), rec, nc, "us-east-1a", "node-1", incompleteErr())
+	startDriftLoop(t, rec, nc, incompleteErr())
 
 	if got := waitForCalls(t, rec, 4, 5*time.Second); got < 4 {
 		t.Fatalf("reconcile called %d times, want >= 4 — an incomplete pass is waiting "+
@@ -97,7 +119,7 @@ func TestDriftLoop_SeedsBackoffFromStartupOutcome(t *testing.T) {
 
 	// Converged from here on: only the seed can bring the first pass forward.
 	rec := &stubReconciler{outcomes: []error{nil}}
-	go DriftLoop(t.Context(), rec, nc, "us-east-1a", "node-1", incompleteErr())
+	startDriftLoop(t, rec, nc, incompleteErr())
 
 	if got := waitForCalls(t, rec, 1, 5*time.Second); got < 1 {
 		t.Fatalf("reconcile never ran: a failed startup pass must seed the backoff "+
@@ -112,7 +134,7 @@ func TestDriftLoop_ConvergedStartupWaitsFullInterval(t *testing.T) {
 	shrinkDriftTiming(t, 10*time.Second, time.Millisecond)
 
 	rec := &stubReconciler{outcomes: []error{incompleteErr()}}
-	go DriftLoop(t.Context(), rec, nc, "us-east-1a", "node-1", nil)
+	startDriftLoop(t, rec, nc, nil)
 
 	time.Sleep(300 * time.Millisecond)
 	if got := rec.callCount(); got != 0 {
@@ -129,7 +151,7 @@ func TestDriftLoop_ConvergedPassReturnsToDriftInterval(t *testing.T) {
 
 	// Pass 1 incomplete (requeues in ~3ms), pass 2 converged (must requeue at 10s).
 	rec := &stubReconciler{outcomes: []error{incompleteErr(), nil}}
-	go DriftLoop(t.Context(), rec, nc, "us-east-1a", "node-1", incompleteErr())
+	startDriftLoop(t, rec, nc, incompleteErr())
 
 	if got := waitForCalls(t, rec, 2, 5*time.Second); got < 2 {
 		t.Fatalf("reconcile called %d times, want 2 before the loop settles", got)

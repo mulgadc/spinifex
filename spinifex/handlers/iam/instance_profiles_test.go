@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -295,6 +296,30 @@ func TestAddRoleToInstanceProfile_OneRoleLimit(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMLimitExceeded)
 }
 
+// raceRounds is how many times a concurrency test replays its race on a fresh
+// profile. One round can serialize and miss a lost update; a handful makes a
+// reintroduced blind Put fail reliably.
+const raceRounds = 8
+
+// runConcurrently calls fn n times in parallel, released together so the calls
+// overlap rather than serializing, and returns each call's error by index.
+func runConcurrently(n int, fn func(i int) error) []error {
+	start := make(chan struct{})
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = fn(i)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	return errs
+}
+
 // TestAddRoleToInstanceProfile_ConcurrentDistinctRoles pins the one-role
 // limit under concurrency: a blind read-modify-Put let both callers pass the
 // guard from the same revision, so the later write silently replaced the first
@@ -305,39 +330,37 @@ func TestAddRoleToInstanceProfile_ConcurrentDistinctRoles(t *testing.T) {
 	for _, r := range roles {
 		createTestRole(t, svc, r)
 	}
-	createTestInstanceProfile(t, svc, "race-profile")
 
-	var wg sync.WaitGroup
-	errs := make([]error, len(roles))
-	for i, roleName := range roles {
-		wg.Add(1)
-		go func(i int, roleName string) {
-			defer wg.Done()
-			_, errs[i] = svc.AddRoleToInstanceProfile(testAccountID, &iam.AddRoleToInstanceProfileInput{
-				InstanceProfileName: aws.String("race-profile"),
-				RoleName:            aws.String(roleName),
+	for round := range raceRounds {
+		profileName := fmt.Sprintf("race-profile-%d", round)
+		createTestInstanceProfile(t, svc, profileName)
+
+		errs := runConcurrently(len(roles), func(i int) error {
+			_, err := svc.AddRoleToInstanceProfile(testAccountID, &iam.AddRoleToInstanceProfileInput{
+				InstanceProfileName: aws.String(profileName),
+				RoleName:            aws.String(roles[i]),
 			})
-		}(i, roleName)
-	}
-	wg.Wait()
+			return err
+		})
 
-	var winner string
-	for i, err := range errs {
-		if err == nil {
-			require.Emptyf(t, winner, "both attaches succeeded: %v and %v", winner, roles[i])
-			winner = roles[i]
-			continue
+		var winner string
+		for i, err := range errs {
+			if err == nil {
+				require.Emptyf(t, winner, "both attaches succeeded: %v and %v", winner, roles[i])
+				winner = roles[i]
+				continue
+			}
+			assert.Containsf(t, err.Error(), awserrors.ErrorIAMLimitExceeded, "attach %s", roles[i])
 		}
-		assert.Containsf(t, err.Error(), awserrors.ErrorIAMLimitExceeded, "attach %s", roles[i])
-	}
-	require.NotEmpty(t, winner, "no attach succeeded: %v", errs)
+		require.NotEmptyf(t, winner, "no attach succeeded: %v", errs)
 
-	out, err := svc.GetInstanceProfile(testAccountID, &iam.GetInstanceProfileInput{
-		InstanceProfileName: aws.String("race-profile"),
-	})
-	require.NoError(t, err)
-	require.Len(t, out.InstanceProfile.Roles, 1)
-	assert.Equal(t, winner, *out.InstanceProfile.Roles[0].RoleName, "the profile must carry the attach that won")
+		out, err := svc.GetInstanceProfile(testAccountID, &iam.GetInstanceProfileInput{
+			InstanceProfileName: aws.String(profileName),
+		})
+		require.NoError(t, err)
+		require.Len(t, out.InstanceProfile.Roles, 1)
+		assert.Equal(t, winner, *out.InstanceProfile.Roles[0].RoleName, "the profile must carry the attach that won")
+	}
 }
 
 // TestRemoveRoleFromInstanceProfile_ConcurrentDetach is the mirror case: two
@@ -346,43 +369,108 @@ func TestAddRoleToInstanceProfile_ConcurrentDistinctRoles(t *testing.T) {
 func TestRemoveRoleFromInstanceProfile_ConcurrentDetach(t *testing.T) {
 	svc := setupTestIAMService(t)
 	createTestRole(t, svc, "detach-race-role")
-	createTestInstanceProfile(t, svc, "detach-race-profile")
 
-	_, err := svc.AddRoleToInstanceProfile(testAccountID, &iam.AddRoleToInstanceProfileInput{
-		InstanceProfileName: aws.String("detach-race-profile"),
-		RoleName:            aws.String("detach-race-role"),
-	})
-	require.NoError(t, err)
+	for round := range raceRounds {
+		profileName := fmt.Sprintf("detach-race-profile-%d", round)
+		createTestInstanceProfile(t, svc, profileName)
+		_, err := svc.AddRoleToInstanceProfile(testAccountID, &iam.AddRoleToInstanceProfileInput{
+			InstanceProfileName: aws.String(profileName),
+			RoleName:            aws.String("detach-race-role"),
+		})
+		require.NoError(t, err)
 
-	var wg sync.WaitGroup
-	errs := make([]error, 2)
-	for i := range errs {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			_, errs[i] = svc.RemoveRoleFromInstanceProfile(testAccountID, &iam.RemoveRoleFromInstanceProfileInput{
-				InstanceProfileName: aws.String("detach-race-profile"),
+		errs := runConcurrently(2, func(int) error {
+			_, err := svc.RemoveRoleFromInstanceProfile(testAccountID, &iam.RemoveRoleFromInstanceProfileInput{
+				InstanceProfileName: aws.String(profileName),
 				RoleName:            aws.String("detach-race-role"),
 			})
-		}(i)
-	}
-	wg.Wait()
+			return err
+		})
 
-	successes := 0
-	for _, err := range errs {
-		if err == nil {
-			successes++
-			continue
+		successes := 0
+		for _, err := range errs {
+			if err == nil {
+				successes++
+				continue
+			}
+			assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
 		}
-		assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
-	}
-	assert.Equal(t, 1, successes, "exactly one detach may succeed: %v", errs)
+		assert.Equalf(t, 1, successes, "exactly one detach may succeed: %v", errs)
 
-	out, err := svc.GetInstanceProfile(testAccountID, &iam.GetInstanceProfileInput{
-		InstanceProfileName: aws.String("detach-race-profile"),
+		out, err := svc.GetInstanceProfile(testAccountID, &iam.GetInstanceProfileInput{
+			InstanceProfileName: aws.String(profileName),
+		})
+		require.NoError(t, err)
+		assert.Empty(t, out.InstanceProfile.Roles)
+	}
+}
+
+// TestTagInstanceProfile_ConcurrentWithAttach pins the tag path against the
+// same lost update: a blind Put wrote back a stale RoleName and silently
+// undid a role attach that had already reported success.
+func TestTagInstanceProfile_ConcurrentWithAttach(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "tag-race-role")
+
+	for round := range raceRounds {
+		profileName := fmt.Sprintf("tag-race-profile-%d", round)
+		createTestInstanceProfile(t, svc, profileName)
+
+		errs := runConcurrently(2, func(i int) error {
+			if i == 0 {
+				_, err := svc.AddRoleToInstanceProfile(testAccountID, &iam.AddRoleToInstanceProfileInput{
+					InstanceProfileName: aws.String(profileName),
+					RoleName:            aws.String("tag-race-role"),
+				})
+				return err
+			}
+			_, err := svc.TagInstanceProfile(testAccountID, &iam.TagInstanceProfileInput{
+				InstanceProfileName: aws.String(profileName),
+				Tags:                []*iam.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+			})
+			return err
+		})
+
+		require.NoError(t, errs[0], "attach")
+		require.NoError(t, errs[1], "tag")
+
+		out, err := svc.GetInstanceProfile(testAccountID, &iam.GetInstanceProfileInput{
+			InstanceProfileName: aws.String(profileName),
+		})
+		require.NoError(t, err)
+		require.Len(t, out.InstanceProfile.Roles, 1, "tagging must not drop the attached role")
+		require.Len(t, out.InstanceProfile.Tags, 1, "the attach must not drop the tag")
+	}
+}
+
+// TestTagInstanceProfile_ConcurrentDistinctKeys pins tag writes against each
+// other: under a blind Put all but one of the racing keys were lost.
+func TestTagInstanceProfile_ConcurrentDistinctKeys(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestInstanceProfile(t, svc, "tag-keys-profile")
+
+	keys := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	errs := runConcurrently(len(keys), func(i int) error {
+		_, err := svc.TagInstanceProfile(testAccountID, &iam.TagInstanceProfileInput{
+			InstanceProfileName: aws.String("tag-keys-profile"),
+			Tags:                []*iam.Tag{{Key: aws.String(keys[i]), Value: aws.String("v")}},
+		})
+		return err
+	})
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "tag %s", keys[i])
+	}
+
+	out, err := svc.ListInstanceProfileTags(testAccountID, &iam.ListInstanceProfileTagsInput{
+		InstanceProfileName: aws.String("tag-keys-profile"),
 	})
 	require.NoError(t, err)
-	assert.Empty(t, out.InstanceProfile.Roles)
+	got := make([]string, 0, len(out.Tags))
+	for _, tag := range out.Tags {
+		got = append(got, *tag.Key)
+	}
+	assert.ElementsMatch(t, keys, got, "all concurrently-written tags must persist")
 }
 
 func TestRemoveRoleFromInstanceProfile(t *testing.T) {

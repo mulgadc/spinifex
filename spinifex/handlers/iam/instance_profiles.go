@@ -291,8 +291,9 @@ func parseInstanceProfileARN(arn string) (accountID, name string, err error) {
 	return parts[4], name, nil
 }
 
-// TagInstanceProfile upserts tags on an instance profile. Blind
-// read-modify-write Put like the other instance-profile writers (no CAS).
+// TagInstanceProfile upserts tags on an instance profile under CAS, like the
+// other instance-profile writers. A blind Put would write back a stale
+// RoleName and silently undo a concurrent role attach.
 func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
 	ctx := context.Background()
 	if err := validateTags(input.Tags); err != nil {
@@ -300,23 +301,16 @@ func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInst
 	}
 
 	profileName := *input.InstanceProfileName
-	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
+	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
+		merged := mergeTags(p.Tags, input.Tags)
+		if len(merged) > maxTagsPerResource {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		p.Tags = merged
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	merged := mergeTags(profile.Tags, input.Tags)
-	if len(merged) > maxTagsPerResource {
-		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
-	}
-	profile.Tags = merged
-
-	data, err := json.Marshal(profile)
-	if err != nil {
-		return nil, fmt.Errorf("marshal instance profile: %w", err)
-	}
-	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
-		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
 	slog.Info("IAM instance profile tagged", "accountID", accountID, "instanceProfileName", profileName)
@@ -328,19 +322,16 @@ func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInst
 func (s *IAMServiceImpl) UntagInstanceProfile(accountID string, input *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
 	ctx := context.Background()
 	profileName := *input.InstanceProfileName
-	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
+	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
+		kept := removeTagKeys(p.Tags, input.TagKeys)
+		if len(kept) == len(p.Tags) {
+			return false, nil
+		}
+		p.Tags = kept
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	profile.Tags = removeTagKeys(profile.Tags, input.TagKeys)
-
-	data, err := json.Marshal(profile)
-	if err != nil {
-		return nil, fmt.Errorf("marshal instance profile: %w", err)
-	}
-	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
-		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
 	slog.Info("IAM instance profile untagged", "accountID", accountID, "instanceProfileName", profileName)
@@ -377,11 +368,8 @@ func (s *IAMServiceImpl) getInstanceProfile(ctx context.Context, accountID, prof
 	return &profile, nil
 }
 
-// updateInstanceProfileCAS applies mutate to an instance profile under
-// optimistic concurrency: read the record with its revision, mutate, then
-// Update guarded by that revision, re-reading and re-running mutate when a
-// concurrent writer wins the race. A blind read-modify-Put lets two callers
-// pass the one-role guard from the same revision and clobber each other.
+// updateInstanceProfileCAS applies mutate under optimistic concurrency,
+// re-reading and re-running mutate when a concurrent writer wins the race.
 // mutate reports whether it changed the record; a false return commits nothing.
 func (s *IAMServiceImpl) updateInstanceProfileCAS(ctx context.Context, accountID, profileName string, mutate func(*InstanceProfile) (bool, error)) error {
 	key := accountID + "." + profileName
@@ -411,14 +399,19 @@ func (s *IAMServiceImpl) updateInstanceProfileCAS(ctx context.Context, accountID
 		if err != nil {
 			return fmt.Errorf("marshal instance profile: %w", err)
 		}
+		// ErrKeyRevisionMismatch is the only conflict signal that holds on both
+		// replicated and single-replica buckets; ErrKeyExists misses R>1.
 		if _, err := s.instanceProfilesBucket.Update(ctx, key, data, entry.Revision()); err != nil {
-			if errors.Is(err, jetstream.ErrKeyExists) {
+			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 				continue // CAS conflict — another writer won, re-read and retry.
 			}
 			return fmt.Errorf("update instance profile: %w", err)
 		}
 		return nil
 	}
+
+	slog.Warn("IAM instance profile CAS exhausted retries",
+		"accountID", accountID, "instanceProfileName", profileName, "attempts", instanceProfileCASMaxRetries)
 	return errors.New(awserrors.ErrorServerInternal)
 }
 

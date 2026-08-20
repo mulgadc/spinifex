@@ -2,6 +2,7 @@ package handlers_iam
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -292,6 +293,96 @@ func TestAddRoleToInstanceProfile_OneRoleLimit(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMLimitExceeded)
+}
+
+// TestAddRoleToInstanceProfile_ConcurrentDistinctRoles pins the one-role
+// limit under concurrency: a blind read-modify-Put let both callers pass the
+// guard from the same revision, so the later write silently replaced the first
+// role. Exactly one attach may win; the loser must see LimitExceeded.
+func TestAddRoleToInstanceProfile_ConcurrentDistinctRoles(t *testing.T) {
+	svc := setupTestIAMService(t)
+	roles := []string{"race-role-a", "race-role-b"}
+	for _, r := range roles {
+		createTestRole(t, svc, r)
+	}
+	createTestInstanceProfile(t, svc, "race-profile")
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(roles))
+	for i, roleName := range roles {
+		wg.Add(1)
+		go func(i int, roleName string) {
+			defer wg.Done()
+			_, errs[i] = svc.AddRoleToInstanceProfile(testAccountID, &iam.AddRoleToInstanceProfileInput{
+				InstanceProfileName: aws.String("race-profile"),
+				RoleName:            aws.String(roleName),
+			})
+		}(i, roleName)
+	}
+	wg.Wait()
+
+	var winner string
+	for i, err := range errs {
+		if err == nil {
+			require.Emptyf(t, winner, "both attaches succeeded: %v and %v", winner, roles[i])
+			winner = roles[i]
+			continue
+		}
+		assert.Containsf(t, err.Error(), awserrors.ErrorIAMLimitExceeded, "attach %s", roles[i])
+	}
+	require.NotEmpty(t, winner, "no attach succeeded: %v", errs)
+
+	out, err := svc.GetInstanceProfile(testAccountID, &iam.GetInstanceProfileInput{
+		InstanceProfileName: aws.String("race-profile"),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.InstanceProfile.Roles, 1)
+	assert.Equal(t, winner, *out.InstanceProfile.Roles[0].RoleName, "the profile must carry the attach that won")
+}
+
+// TestRemoveRoleFromInstanceProfile_ConcurrentDetach is the mirror case: two
+// callers detach the same role at once and exactly one may win, the loser
+// re-reading an empty profile and reporting NoSuchEntity.
+func TestRemoveRoleFromInstanceProfile_ConcurrentDetach(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "detach-race-role")
+	createTestInstanceProfile(t, svc, "detach-race-profile")
+
+	_, err := svc.AddRoleToInstanceProfile(testAccountID, &iam.AddRoleToInstanceProfileInput{
+		InstanceProfileName: aws.String("detach-race-profile"),
+		RoleName:            aws.String("detach-race-role"),
+	})
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = svc.RemoveRoleFromInstanceProfile(testAccountID, &iam.RemoveRoleFromInstanceProfileInput{
+				InstanceProfileName: aws.String("detach-race-profile"),
+				RoleName:            aws.String("detach-race-role"),
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	successes := 0
+	for _, err := range errs {
+		if err == nil {
+			successes++
+			continue
+		}
+		assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+	}
+	assert.Equal(t, 1, successes, "exactly one detach may succeed: %v", errs)
+
+	out, err := svc.GetInstanceProfile(testAccountID, &iam.GetInstanceProfileInput{
+		InstanceProfileName: aws.String("detach-race-profile"),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceProfile.Roles)
 }
 
 func TestRemoveRoleFromInstanceProfile(t *testing.T) {

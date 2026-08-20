@@ -18,6 +18,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
+// Bound on optimistic-concurrency retries when a concurrent writer wins the
+// CAS race on an instance-profile record.
+const instanceProfileCASMaxRetries = 16
+
 func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
 	ctx := context.Background()
 	profileName := *input.InstanceProfileName
@@ -176,22 +180,15 @@ func (s *IAMServiceImpl) AddRoleToInstanceProfile(accountID string, input *iam.A
 		return nil, err
 	}
 
-	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
+	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
+		if p.RoleName != "" {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		p.RoleName = roleName
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if profile.RoleName != "" {
-		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
-	}
-
-	profile.RoleName = roleName
-	data, err := json.Marshal(profile)
-	if err != nil {
-		return nil, fmt.Errorf("marshal instance profile: %w", err)
-	}
-	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
-		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
 	slog.Info("IAM role added to instance profile",
@@ -204,22 +201,15 @@ func (s *IAMServiceImpl) RemoveRoleFromInstanceProfile(accountID string, input *
 	profileName := *input.InstanceProfileName
 	roleName := *input.RoleName
 
-	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
+	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
+		if p.RoleName == "" || p.RoleName != roleName {
+			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		p.RoleName = ""
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if profile.RoleName == "" || profile.RoleName != roleName {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-
-	profile.RoleName = ""
-	data, err := json.Marshal(profile)
-	if err != nil {
-		return nil, fmt.Errorf("marshal instance profile: %w", err)
-	}
-	if _, err := s.instanceProfilesBucket.Put(ctx, accountID+"."+profileName, data); err != nil {
-		return nil, fmt.Errorf("update instance profile: %w", err)
 	}
 
 	slog.Info("IAM role removed from instance profile",
@@ -385,6 +375,51 @@ func (s *IAMServiceImpl) getInstanceProfile(ctx context.Context, accountID, prof
 		return nil, fmt.Errorf("unmarshal instance profile: %w", err)
 	}
 	return &profile, nil
+}
+
+// updateInstanceProfileCAS applies mutate to an instance profile under
+// optimistic concurrency: read the record with its revision, mutate, then
+// Update guarded by that revision, re-reading and re-running mutate when a
+// concurrent writer wins the race. A blind read-modify-Put lets two callers
+// pass the one-role guard from the same revision and clobber each other.
+// mutate reports whether it changed the record; a false return commits nothing.
+func (s *IAMServiceImpl) updateInstanceProfileCAS(ctx context.Context, accountID, profileName string, mutate func(*InstanceProfile) (bool, error)) error {
+	key := accountID + "." + profileName
+	for range instanceProfileCASMaxRetries {
+		entry, err := s.instanceProfilesBucket.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				return errors.New(awserrors.ErrorIAMNoSuchEntity)
+			}
+			return fmt.Errorf("get instance profile: %w", err)
+		}
+
+		var profile InstanceProfile
+		if err := json.Unmarshal(entry.Value(), &profile); err != nil {
+			return fmt.Errorf("unmarshal instance profile: %w", err)
+		}
+
+		changed, err := mutate(&profile)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return nil
+		}
+
+		data, err := json.Marshal(&profile)
+		if err != nil {
+			return fmt.Errorf("marshal instance profile: %w", err)
+		}
+		if _, err := s.instanceProfilesBucket.Update(ctx, key, data, entry.Revision()); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
+				continue // CAS conflict — another writer won, re-read and retry.
+			}
+			return fmt.Errorf("update instance profile: %w", err)
+		}
+		return nil
+	}
+	return errors.New(awserrors.ErrorServerInternal)
 }
 
 // profileToSDK converts the internal InstanceProfile to the AWS SDK shape.

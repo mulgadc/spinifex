@@ -606,6 +606,10 @@ func (s *IAMServiceImpl) updateRoleCAS(ctx context.Context, accountID, roleName 
 		}
 		return nil
 	}
+	// Only a CAS conflict reaches here, so the role is contended rather than
+	// broken; say so, or the caller's InternalError has no cause anywhere.
+	slog.Error("IAM role CAS retries exhausted under contention",
+		"accountID", accountID, "roleName", roleName, "attempts", roleCASMaxRetries)
 	return errors.New(awserrors.ErrorServerInternal)
 }
 

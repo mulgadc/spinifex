@@ -169,6 +169,10 @@ func (s *RouteTableServiceImpl) mutateRouteTableCAS(ctx context.Context, account
 		}
 		return nil
 	}
+	// Only a CAS conflict reaches here, so the record is contended rather than
+	// broken; say so, or the caller's InternalError has no cause anywhere.
+	slog.ErrorContext(ctx, "Route table CAS retries exhausted under contention",
+		"routeTableId", rtbID, "attempts", rtbCASMaxRetries)
 	return errors.New(awserrors.ErrorServerInternal)
 }
 

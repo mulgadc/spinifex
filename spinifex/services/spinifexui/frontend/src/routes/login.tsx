@@ -40,10 +40,13 @@ import { exchangeForSession } from "@/lib/sts"
 
 export const Route = createFileRoute("/login")({
   validateSearch: (
-    search: { reason?: string; handoff?: string } & SearchSchemaInput,
+    search: { reason?: string; handoff?: string | number } & SearchSchemaInput,
   ) => ({
     reason: search.reason === "expired" ? ("expired" as const) : undefined,
-    handoff: search.handoff === "1" ? ("1" as const) : undefined,
+    // TanStack Router's default search parser coerces `handoff=1` to the
+    // number 1, so compare via String() — otherwise `=== "1"` is false, the
+    // param is stripped from the URL, and the handoff silently never runs.
+    handoff: String(search.handoff) === "1" ? ("1" as const) : undefined,
   }),
   beforeLoad: () => {
     if (getCredentials()) {

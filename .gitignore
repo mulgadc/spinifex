@@ -37,6 +37,3 @@ Thumbs.db
 
 # Test reports
 *-report.txt
-
-# Per-worktree golangci-lint cache
-/.cache/

@@ -24,23 +24,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newMockQMPClient creates a QMPClient backed by an in-memory pipe. The
+// newMockQMPClient creates a QMPClient backed by a unix socket. The
 // responder is invoked for every command and returns the JSON object the
 // server should reply with (e.g. {"return": {}} or {"error": {...}}). A
 // nil responder reply defaults to an empty success.
+//
+// A real socket rather than net.Pipe, which is unbuffered and synchronous:
+// the decoder stops at the closing brace and leaves the encoder's trailing
+// newline unread, wedging the writer while the peer replies.
 func newMockQMPClient(t *testing.T, responder func(qmp.QMPCommand) map[string]any) (*qmp.QMPClient, func()) {
 	t.Helper()
-	clientConn, serverConn := net.Pipe()
 
-	client := &qmp.QMPClient{
-		Conn:    clientConn,
-		Decoder: json.NewDecoder(clientConn),
-		Encoder: json.NewEncoder(clientConn),
-	}
+	sockPath := filepath.Join(t.TempDir(), "qmp.sock")
+	ln, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		serverConn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer serverConn.Close()
+
 		dec := json.NewDecoder(serverConn)
 		enc := json.NewEncoder(serverConn)
 		for {
@@ -61,9 +68,18 @@ func newMockQMPClient(t *testing.T, responder func(qmp.QMPCommand) map[string]an
 		}
 	}()
 
+	clientConn, err := net.Dial("unix", sockPath)
+	require.NoError(t, err)
+
+	client := &qmp.QMPClient{
+		Conn:    clientConn,
+		Decoder: json.NewDecoder(clientConn),
+		Encoder: json.NewEncoder(clientConn),
+	}
+
 	cancel := func() {
+		_ = ln.Close()
 		_ = clientConn.Close()
-		_ = serverConn.Close()
 		<-done
 	}
 	return client, cancel

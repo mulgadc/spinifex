@@ -382,3 +382,123 @@ func TestRunOchreVectorQuery_ConnectFailureExits1(t *testing.T) {
 	code := withOchreExitCapture(t, func() { runOchreVectorQuery(&cmd, nil) })
 	require.Equal(t, 1, code)
 }
+
+const testBackupAccountID = "123456789012"
+
+func TestRunBackupAccount_PrintsObjectKeyAndSize(t *testing.T) {
+	backup := func(_ context.Context, accountID string) (*handlers_ochrevector.BackupAccountResponse, error) {
+		require.Equal(t, testBackupAccountID, accountID)
+		return &handlers_ochrevector.BackupAccountResponse{ObjectKey: testBackupAccountID + "/backup.sql.gz", SizeBytes: 4096}, nil
+	}
+
+	msg, err := runBackupAccount(context.Background(), testBackupAccountID, backup)
+	require.NoError(t, err)
+	require.Contains(t, msg, testBackupAccountID+"/backup.sql.gz")
+	require.Contains(t, msg, "4096")
+}
+
+func TestRunBackupAccount_ErrorSurfaces(t *testing.T) {
+	backup := func(context.Context, string) (*handlers_ochrevector.BackupAccountResponse, error) {
+		return nil, errors.New("ochrevector: appliance not available")
+	}
+
+	_, err := runBackupAccount(context.Background(), testBackupAccountID, backup)
+	require.ErrorContains(t, err, "not available")
+}
+
+func TestRunRestoreAccount_ReportsSuccess(t *testing.T) {
+	var gotAccount, gotKey string
+	restore := func(_ context.Context, accountID, objectKey string) error {
+		gotAccount, gotKey = accountID, objectKey
+		return nil
+	}
+
+	msg, err := runRestoreAccount(context.Background(), testBackupAccountID, testBackupAccountID+"/backup.sql.gz", restore)
+	require.NoError(t, err)
+	require.Equal(t, testBackupAccountID, gotAccount)
+	require.Equal(t, testBackupAccountID+"/backup.sql.gz", gotKey)
+	require.Contains(t, msg, testBackupAccountID)
+}
+
+func TestRunRestoreAccount_ErrorSurfaces(t *testing.T) {
+	restore := func(context.Context, string, string) error {
+		return errors.New("ochrevector: object key does not belong to account")
+	}
+
+	_, err := runRestoreAccount(context.Background(), testBackupAccountID, "wrong/backup.sql.gz", restore)
+	require.ErrorContains(t, err, "does not belong to account")
+}
+
+// withBackupAccount swaps backupAccountFn for one that never dials NATS, so
+// the Run wrapper's flag/exit control flow is exercised without a live
+// daemon, mirroring withApplianceTeardown.
+func withBackupAccount(t *testing.T, fn func(context.Context, string) (*handlers_ochrevector.BackupAccountResponse, error)) {
+	t.Helper()
+	orig := backupAccountFn
+	t.Cleanup(func() { backupAccountFn = orig })
+	backupAccountFn = fn
+}
+
+// withRestoreAccount mirrors withBackupAccount for restoreAccountFn.
+func withRestoreAccount(t *testing.T, fn func(context.Context, string, string) error) {
+	t.Helper()
+	orig := restoreAccountFn
+	t.Cleanup(func() { restoreAccountFn = orig })
+	restoreAccountFn = fn
+}
+
+func TestRunOchreVectorBackup_PrintsSuccess(t *testing.T) {
+	withBackupAccount(t, func(context.Context, string) (*handlers_ochrevector.BackupAccountResponse, error) {
+		return &handlers_ochrevector.BackupAccountResponse{ObjectKey: testBackupAccountID + "/backup.sql.gz", SizeBytes: 1024}, nil
+	})
+
+	cmd := *ochreVectorBackupCmd
+	require.NoError(t, cmd.Flags().Set("account", testBackupAccountID))
+
+	var out string
+	code := withOchreExitCapture(t, func() {
+		out = captureStdout(t, func() { runOchreVectorBackup(&cmd, nil) })
+	})
+	require.Equal(t, -1, code)
+	require.Contains(t, out, testBackupAccountID+"/backup.sql.gz")
+}
+
+func TestRunOchreVectorBackup_ErrorExits1(t *testing.T) {
+	withBackupAccount(t, func(context.Context, string) (*handlers_ochrevector.BackupAccountResponse, error) {
+		return nil, errors.New("ochrevector: appliance not available")
+	})
+
+	cmd := *ochreVectorBackupCmd
+	require.NoError(t, cmd.Flags().Set("account", testBackupAccountID))
+
+	code := withOchreExitCapture(t, func() { runOchreVectorBackup(&cmd, nil) })
+	require.Equal(t, 1, code)
+}
+
+func TestRunOchreVectorRestore_PrintsSuccess(t *testing.T) {
+	withRestoreAccount(t, func(context.Context, string, string) error { return nil })
+
+	cmd := *ochreVectorRestoreCmd
+	require.NoError(t, cmd.Flags().Set("account", testBackupAccountID))
+	require.NoError(t, cmd.Flags().Set("from", testBackupAccountID+"/backup.sql.gz"))
+
+	var out string
+	code := withOchreExitCapture(t, func() {
+		out = captureStdout(t, func() { runOchreVectorRestore(&cmd, nil) })
+	})
+	require.Equal(t, -1, code)
+	require.Contains(t, out, testBackupAccountID)
+}
+
+func TestRunOchreVectorRestore_ErrorExits1(t *testing.T) {
+	withRestoreAccount(t, func(context.Context, string, string) error {
+		return errors.New("ochrevector: restore requires an object key")
+	})
+
+	cmd := *ochreVectorRestoreCmd
+	require.NoError(t, cmd.Flags().Set("account", testBackupAccountID))
+	require.NoError(t, cmd.Flags().Set("from", testBackupAccountID+"/backup.sql.gz"))
+
+	code := withOchreExitCapture(t, func() { runOchreVectorRestore(&cmd, nil) })
+	require.Equal(t, 1, code)
+}

@@ -163,6 +163,7 @@ type Daemon struct {
 	acmRenewalWorker      *handlers_acm.Worker
 	ochreVectorService    handlers_ochrevector.VectorService
 	ochreAppliance        *handlers_ochrevector.Appliance
+	ochreBackupService    *handlers_ochrevector.BackupService
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl

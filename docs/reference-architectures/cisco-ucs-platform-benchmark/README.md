@@ -1,14 +1,15 @@
 ---
-title: "Spinifex Platform Benchmark on Cisco UCS (3-Node)"
-seoTitle: "Spinifex Benchmark on 3-Node Cisco UCS — Spinifex Docs"
-description: "Measured CPU, disk, network, and S3 performance of Spinifex on a 3-node Cisco Unified Edge cluster, comparing host against guest with Intel AMX confirmed."
+title: "Cisco UCS: AWS-compatible cloud at the edge"
+seoTitle: "Cisco UCS Edge Cloud with Spinifex — Spinifex Docs"
+description: "Place EC2 instances, EBS volumes, S3 object storage and Kubernetes workloads on a resilient three-node Cisco UCS cluster, using familiar AWS APIs and tooling."
 category: "Reference Architectures"
 tags:
   - cisco
   - ucs
+  - edge
+  - aws-compatible
   - xeon-6
   - intel-amx
-  - benchmark
   - predastore
   - viperblock
   - raft
@@ -21,12 +22,8 @@ resources:
     url: "/docs/launching-instances"
   - title: "GPU Passthrough"
     url: "/docs/gpu-passthrough"
-  - title: "AWS: Accelerate CPU-based AI inference with Intel AMX on EC2"
-    url: "https://aws.amazon.com/blogs/compute/accelerate-cpu-based-ai-inference-workloads-using-intel-amx-on-amazon-ec2/"
-  - title: "cisco-ucs-platform-benchmark (benchmark scripts and results)"
-    url: "https://github.com/mulgadc/cisco-ucs-platform-benchmark"
-  - title: "Dell EMC PowerEdge R7525 Review (inspiration for methodology)"
-    url: "https://www.servethehome.com/dell-emc-poweredge-r7525-review-flagship-dell-dual-socket-server-amd-epyc/4/"
+  - title: "cisco-ucs-platform-benchmark (scripts and raw results)"
+    url: "https://github.com/tomnewton-mulga/CISCO-refarch"
 sections:
   - overview
   - prerequisites
@@ -35,16 +32,14 @@ sections:
 
 ## Overview
 
-Spinifex is an open-source infrastructure platform that brings core AWS services — EC2,
-S3, EBS and EKS — to bare-metal, edge, and on-prem deployments, exposing a fully
-AWS-compatible API.
+This reference architecture turns three Cisco Unified Edge servers into a small,
+resilient cloud that can run where data is produced: a factory, retail estate,
+branch, lab, sovereign environment, or disconnected site. Spinifex exposes EC2,
+EBS, S3 and EKS-compatible APIs on the cluster, so the operational model is
+familiar: use the AWS CLI, SDKs, Terraform or OpenTofu, Kubernetes manifests and
+CI/CD systems already used for AWS. The change is the endpoint, not the workflow.
 
-This document characterizes the platform itself on a 3-node Cisco Unified Edge cluster,
-independent of any specific application: CPU, disk, network, and S3 (Predastore)
-throughput measured identically on bare metal and inside guest instances, and how many
-concurrent worker processes each instance can sustain before latency degrades.
-
-**Companion documents:** [Spinifex Vision Pipeline on Cisco UCS](../cisco-ucs-vision-pipeline/README.md) · [vLLM Serving on Cisco UCS: Intel AMX vs NVIDIA L4](../cisco-ucs-llm-serving/README.md)
+**Companion architectures:** [Vision Pipeline on Cisco UCS](../cisco-ucs-vision-pipeline/README.md) shows a local AI pipeline that streams inputs from S3; [vLLM Serving on Cisco UCS](../cisco-ucs-llm-serving/README.md) shows CPU and GPU model serving on the same cluster.
 
 ### Platform
 
@@ -56,185 +51,243 @@ concurrent worker processes each instance can sustain before latency degrades.
 | **ISA** | AVX-512 (F/DQ/BW/VL/VNNI/BF16/FP16), **Intel AMX** (tile/BF16/INT8), VT-x, VT-d |
 | **Memory** | 499 GiB usable per node (≈1.5 TiB aggregate) |
 | **GPU** | 1× NVIDIA L4 (23,034 MiB) via VFIO PCIe passthrough on one node; the other two nodes are CPU-only |
-| **Storage** | 4× KIOXIA CD8P NVMe (1.92 TB each) per node, raw — Predastore/Viperblock claim these directly |
+| **Storage** | 4× KIOXIA CD8P NVMe (1.92 TB each) per node, raw — Predastore and Viperblock claim these directly |
 | **Boot** | Cisco SATA RAID VD (Marvell 88SE9230 controller) |
-| **Network** | 2× Intel E825-C 25GbE ports per node, each its own bond: one for management/WAN (VLAN 1337, 1 Gbps upstream uplink), one dedicated to storage/cluster traffic (VLAN 1336, full 25GbE) |
+| **Network** | 2× Intel E825-C 25GbE ports per node — one bond for management/WAN (VLAN 1337), one dedicated to storage/cluster traffic (VLAN 1336, full 25GbE) |
 | **Aggregate** | 96 cores / 192 threads, ~1.5 TiB RAM, ~23 TiB raw NVMe, 1× L4 GPU |
 
-Single-NUMA-per-node is a meaningful simplification versus a typical dual-socket
-reference design — no vCPU/memory locality tuning required for VM placement. The GPU is
-present on one node only — GPU-accelerated instances are bound to that node, while
-CPU-only instances can schedule across all three.
+Single-NUMA-per-node simplifies placement — no vCPU/memory locality tuning required.
+GPU workloads schedule to the L4 node; CPU instances can use all three. Storage and
+object data are distributed across the cluster rather than tied to the node that
+launched an instance.
+
+## Architecture
+
+### AWS services exercised
+
+| Service | Role |
+|---|---|
+| **EC2** | Guest instances across all three nodes; spread placement groups distribute across physical nodes |
+| **EBS (Viperblock)** | Root and data volumes per instance, surviving termination independently when `delete_on_termination = false` |
+| **S3 (Predastore)** | Cluster-wide object storage for datasets, model weights, artifacts and backups |
+| **VPC (OVN)** | Overlay networking between instances |
+| **EKS** | (Optional) Kubernetes control plane with pod rescheduling on node failure |
 
 ## Prerequisites
 
 - 3-node Spinifex cluster installed and services healthy on all nodes — follow the [Multi-Node Install](/docs/install-multi-node) guide.
-- VPC, network pool, SSH key pair, and security group configured — see [VPC Networking](/docs/vpc-networking) and [Launching Instances](/docs/launching-instances)
-- GPU passthrough configured on the one node with the NVIDIA L4 — see [GPU Passthrough](/docs/gpu-passthrough):
+- VPC, subnet, network address pool, SSH key pair, and security group configured — see [VPC Networking](/docs/vpc-networking) and [Launching Instances](/docs/launching-instances).
+- GPU passthrough enabled on the L4 node when GPU instances are required — see [GPU Passthrough](/docs/gpu-passthrough):
 
 ```bash
 sudo spx admin gpu setup   # reboot required after this step
 sudo spx admin gpu enable
 ```
 
-- AWS CLI configured with `AWS_PROFILE=spinifex` pointing at the cluster's EC2-compatible endpoint
+- AWS CLI configured with `AWS_PROFILE=spinifex` pointing at the cluster's EC2-compatible endpoint (`https://<host>:9999`).
 
 ## Instructions
 
-Benchmark scripts and raw results for all sections below are available in the
-[platform benchmark repository](https://github.com/mulgadc/cisco-ucs-platform-benchmark).
+### 1. Verify the cluster and its control plane
 
-### 1. Matched-width CPU
-
-sysbench, identical thread counts, run on bare metal and inside a guest of the same vCPU
-width:
-
-| Scope | Target | Median events/s |
-|---|---|---:|
-| host | mulga-01 | 8,205.4 |
-| host | mulga-02 | 8,209.3 |
-| host | mulga-03 | 8,210.4 |
-| guest | cpu1 | 8,168.4 |
-| guest | cpu2 | 8,174.0 |
-| guest | gpu | 8,160.8 |
-
-Guests land within ~0.5% of host — virtualization overhead on this platform is
-negligible for CPU-bound work.
-
-### 2. Confirm Intel AMX is actually executing
-
-Intel AMX (Advanced Matrix Extensions) is a relatively new instruction set available on
-the Xeon 6543P-B, designed specifically to accelerate the matrix operations that dominate
-AI inference workloads. CPUID flags alone don't prove it's actually in use — the proof
-is oneDNN's own kernel-selection trace during a real inference run at each precision:
+Before placing workloads, confirm all three nodes are ready and that the storage and
+control-plane services are running on each:
 
 ```bash
-ONEDNN_VERBOSE=1 python3 <any BF16-hinted inference workload> 2> onednn-verbose.log
-grep -o 'avx10_1_512_amx[a-z_]*\|avx512_core[a-z_]*' onednn-verbose.log | sort -u
+spx get nodes
+systemctl is-active spinifex-predastore spinifex-viperblock spinifex-daemon
 ```
 
-| Precision | Kernel selected |
-|---|---|
-| FP32 (forced, negative control) | `avx512_core` only — **zero** AMX kernel selections |
-| BF16 | `avx10_1_512_amx` |
-| INT8 | `avx10_1_512_amx` (+ one `avx512_core` fallback for an unquantized matmul) |
+Predastore's Raft group and OVN's northbound/southbound databases are both distributed
+across all three nodes — losing one node triggers a clean leader re-election among the
+remaining two, and object storage and networking continue serving. Check that all three
+nodes are contributing to the Raft group before exposing the cluster to workload traffic.
 
-`avx10_1_512_amx` is the current kernel-naming scheme on this hardware generation — not
-the older `brgemm_avx512_amx*` string some documentation still references. Confirmed by
-direct trace inspection, not inferred from CPUID or throughput alone.
+### 2. Launch instances through the EC2-compatible API
 
-### 3. Disk — host versus guest
+Point an existing AWS profile at the Spinifex endpoint and use the standard EC2
+instance lifecycle. Terraform is the recommended path — Spinifex's spread placement
+group implementation holds node reservations that are not always released on destroy,
+so a fixed group name can cause a subsequent apply to hang. Using a per-deploy unique
+name (via `random_id` or equivalent) avoids this:
 
-fio, file-backed (non-destructive), identical parameters on bare metal and inside a
-guest:
+```hcl
+resource "random_id" "suffix" {
+  byte_length = 4
+}
 
-| Metric | Host (mulga-01) | Guest (cpu1, idle) | Ratio |
-|---|---:|---:|---:|
-| Random 4K read | 4,460.8 MiB/s | 11.6 MiB/s | ~1/385 |
-| Sequential 1M read | 7,122.6 MiB/s | 375.5 MiB/s | ~1/19 |
+resource "aws_placement_group" "spread" {
+  name     = "edge-spread-${random_id.suffix.hex}"
+  strategy = "spread"
+}
 
-<img src="../../../.github/assets/images/cisco-ucs-platform-benchmark/disk-host-vs-guest.png" alt="Host versus guest disk throughput, random 4K and sequential 1M read, log scale">
+resource "aws_instance" "worker" {
+  count                  = 2
+  ami                    = var.ami_id
+  instance_type          = "m8i.2xlarge"
+  subnet_id              = var.subnet_id
+  key_name               = var.key_name
+  placement_group        = aws_placement_group.spread.name
+  vpc_security_group_ids = [var.security_group_id]
+}
+```
 
-Guest I/O traverses Viperblock's NBD path; the random 4K gap is far larger than the sequential 1M gap because small requests pay the full per-request serialization overhead without amortizing it across a large transfer. This is a known area for improvement in upcoming Spinifex releases.
+For a one-off launch via the CLI, use a unique group name each time for the same reason:
 
-### 4. Network — physical fabric versus guest overlay
+```bash
+export AWS_PROFILE=spinifex
+GROUP="edge-spread-$(openssl rand -hex 4)"
 
-iperf3, matched methodology, on the physical storage fabric (bare metal) and between
-guest instances over the OVN/Geneve overlay:
+aws ec2 create-placement-group \
+  --group-name "$GROUP" \
+  --strategy spread
 
-| Path | Streams | Median Gbit/s |
+aws ec2 run-instances \
+  --image-id "$AMI" --instance-type m8i.2xlarge \
+  --count 2 \
+  --subnet-id "$SUBNET" --security-group-ids "$SECURITY_GROUP" \
+  --key-name "$KEY_NAME" \
+  --placement "{\"GroupName\":\"$GROUP\"}"
+```
+
+A `g6.2xlarge` instance type routes to the node with GPU passthrough configured;
+`m8i` types schedule across all three nodes.
+
+### 3. Attach Viperblock volumes and access Predastore object storage
+
+Create and attach an EBS-compatible data volume to a running instance:
+
+```bash
+VOLUME_ID=$(aws ec2 create-volume \
+  --availability-zone "$AZ" \
+  --size 100 --volume-type gp2 \
+  --query VolumeId --output text)
+
+aws ec2 attach-volume \
+  --volume-id "$VOLUME_ID" \
+  --instance-id "$INSTANCE_ID" \
+  --device /dev/sdf
+```
+
+Setting `delete_on_termination = false` in Terraform keeps the volume alive across
+instance replacement — relaunching a terminated instance re-attaches the same volume
+rather than starting from empty storage:
+
+```hcl
+resource "aws_ebs_volume" "data" {
+  availability_zone = var.az
+  size              = 100
+  type              = "gp2"
+}
+
+resource "aws_volume_attachment" "data" {
+  device_name           = "/dev/sdf"
+  volume_id             = aws_ebs_volume.data.id
+  instance_id           = aws_instance.worker[0].id
+  delete_on_termination = false
+}
+```
+
+Predastore presents an S3-compatible endpoint — standard S3 tooling works without
+modification:
+
+```bash
+aws s3 mb s3://my-bucket
+aws s3 cp ./dataset.tar.gz s3://my-bucket/
+aws s3 sync ./results/ s3://my-bucket/results/
+```
+
+All three nodes share the same bucket over the cluster's internal storage fabric, so
+datasets, model weights and pipeline outputs are accessible to any instance without
+mounting a shared filesystem.
+
+### 4. Optional: deploy Kubernetes workloads through the EKS-compatible API
+
+Spinifex also exposes an EKS-compatible control plane — this was not part of the Cisco
+exercise documented here, which used EC2, EBS and S3 directly. For workloads where
+automatic pod rescheduling matters, Spinifex supports the same `kubectl` workflows as
+a standard EKS cluster:
+
+```bash
+kubectl get nodes
+kubectl apply -f deployment.yaml
+kubectl get pods -n default
+```
+
+Kubernetes pod rescheduling is the platform's primary answer to node failure for
+scheduled workloads. The companion [vision pipeline](../cisco-ucs-vision-pipeline/README.md)
+and [vLLM serving](../cisco-ucs-llm-serving/README.md) architectures use raw EC2 instances;
+EKS is the pattern to reach for when automatic rescheduling matters over manual placement.
+
+### 5. Storage benchmark
+
+Predastore and Viperblock — Spinifex's S3 and EBS implementations — represent the
+most substantial engineering work in the platform. Implementing reliable erasure-coded
+object storage and a distributed block device stack on commodity NVMe, while exposing
+the AWS API surface that most workloads depend on, is where most of the hard problems
+live. Both subsystems are under active development, and a production-grade environment
+like this cluster is where integration-level issues surface before they reach users. Run this check after cluster setup or hardware
+changes to confirm both services are performing as expected.
+
+The methodology: one guest per physical node, fio against an ext4 Viperblock data
+volume (four jobs, iodepth 32, direct I/O, 512 MiB file, 30-second run), three
+sequential repetitions per guest.
+
+| Guest | 16K mixed read/write | 16K random read | 128K mixed read/write | 128K random read |
+|---|---:|---:|---:|---:|
+| GPU | 75 / 32 MiB/s | 75 MiB/s | 210 / 91 MiB/s | 332 MiB/s |
+| CPU1 | 74 / 32 MiB/s | 76 MiB/s | 218 / 94 MiB/s | 333 MiB/s |
+| CPU2 | 69 / 30 MiB/s | 107 MiB/s | 226 / 98 MiB/s | 405 MiB/s |
+
+The 128K guest random-read numbers (332–405 MiB/s) sit between the [AWS EBS gp3](https://docs.aws.amazon.com/ebs/latest/userguide/general-purpose.html)
+baseline (125 MiB/s) and its provisioned maximum (1,000 MiB/s) — a meaningful result
+given that gp3 baseline is what most AWS operators treat as the default floor for
+general-purpose block storage. The 16K numbers (75–107 MiB/s) land near that baseline.
+The gap to the raw NVMe host performance (the [KIOXIA CD8P](https://americas.kioxia.com/en-us/business/ssd/data-center-ssd/cd8p-r.html) delivers over 4,000 MiB/s
+host-side at comparable queue depths) is not architectural — it is the current
+single-queue virtio-blk attach path and unthreaded NBD backend, both of which have
+a clear source-level fix. These numbers are the baseline to improve against in future
+releases, not the ceiling.
+
+128K mixed I/O improves throughput but carries a high p99 latency envelope (roughly
+0.47–0.75 s); size queues and write patterns accordingly for latency-sensitive
+applications.
+
+Predastore S3 validation used 1 GiB objects with three sequential and three
+distributed-concurrent repetitions per host:
+
+| Workload | Write, median | Read, median |
 |---|---:|---:|
-| Physical storage fabric (bare metal) | 1 | 23.5 (≈94% of 25GbE line rate) |
-| Guest↔guest | 1 | 13.4–20.0 |
-| Guest↔guest | 2–4 | 14.5–19.0 |
-| Guest↔guest | 16 | 10.3–13.3 |
+| One host client | 121.9 MiB/s | 213.2 MiB/s |
+| Three-host aggregate | 184.2 MiB/s | 381.7 MiB/s |
 
-<img src="../../../.github/assets/images/cisco-ucs-platform-benchmark/network-guest-vs-fabric.png" alt="Guest-to-guest overlay throughput versus the physical storage fabric, by concurrent TCP stream count">
+The single-host sequential read (213 MiB/s) is a credible result for a single-node
+S3-compatible store at low-to-moderate concurrency with 1 GiB objects — throughput at
+this scale is typically network- and per-request-latency-bound rather than disk-bound,
+and 213 MiB/s uses roughly 17% of the 25GbE storage fabric. The three-node distributed read (381.7 MiB/s, 1.79× single-host) confirms
+Predastore is distributing reads across the cluster. The write scaling ratio (184.2 vs
+121.9 MiB/s, 1.51×) is narrower than read, so worth tracking as a leading indicator of
+backend contention as the cluster grows and write load increases.
 
-Guest-to-guest throughput lands 20–45% below the physical fabric depending on stream
-count and pairing.
+All sequential S3 checksum validations passed. Full methodology, raw fio JSON and S3
+metrics are in the [benchmark repository](https://github.com/tomnewton-mulga/CISCO-refarch).
 
-The gap is primarily single-queue virtio-net — `ethtool -l` on all three guest instances
-reports `Combined: 1` with no guest-configurable multiqueue support, concentrating all
-network work on a single core regardless of vCPU count. This explains why 16 concurrent
-streams perform *worse* than 1: they compete for the same queue rather than
-parallelizing. Geneve encapsulation reduces tenant MTU to 1408 (TCP MSS 1356), adding a
-smaller compounding overhead on top.
+## What this architecture unlocks
 
-### 5. Predastore (S3) throughput
+- **Cloud-to-edge placement:** run the same EC2, volume, S3 and Kubernetes patterns
+  at the site where latency, privacy, bandwidth or sovereignty requires it.
+- **Familiar operations:** keep AWS CLI profiles, Terraform/OpenTofu modules, SDKs,
+  CI/CD pipelines and deployment tooling rather than introducing a separate
+  edge-only platform.
+- **Local AI with shared data:** place GPU and AMX-capable CPU inference next to the
+  data source while keeping datasets and artifacts available to all instances through S3.
+- **A resilient foundation:** distribute control and storage services across three
+  physical Cisco nodes instead of concentrating the site on one server. Kubernetes
+  rescheduling and Raft-based storage both tolerate a single node loss without
+  operator intervention.
+- **A path back to cloud:** the same APIs at the edge and on AWS make workload
+  movement, burst strategies and consistent application packaging straightforward.
 
-Three simultaneous clients per side, one per physical node, over HTTPS to the cluster's
-S3 endpoint:
-
-| Direction | Guest-aggregate | Host-aggregate |
-|---|---:|---:|
-| Read | 175.1 MiB/s | 299.0 MiB/s |
-| Write | 293.1 MiB/s | 124.1 MiB/s |
-
-Reads run 1.71x faster on the host aggregate than guest. Write reverses — guests
-outperform the host (293.1 vs 124.1 MiB/s).
-
-### 6. Worker concurrency per instance — how many processes can each node sustain
-
-With one EC2 instance per physical node (3 instances fixed), we
-scale the number of concurrent worker processes within each instance from 1 to N, until
-p95 request latency exceeds 2x the single-worker baseline or aggregate throughput stops
-improving. Load generator: OpenVINO/YOLO11m inference against Predastore (CPU workers) and
-TensorRT/YOLO11m (GPU worker).
-
-| Workers/instance | Total workers | Aggregate img/s | cpu1 p95 (ms) | cpu2 p95 (ms) | gpu p95 (ms) |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 3 | 49.0 | 90.9 | 88.1 | 51.0 |
-| 2 | 6 | 82.6 | 140.9 | 141.7 | 49.8 |
-| 3 | 9 | 103.3 | 239.0 | 232.2 | 53.0 |
-| 4 | 12 | 121.1 | 319.3 | 318.4 | 53.0 |
-| 5 | 15 | 133.1 | 402.1 | 413.6 | 57.4 |
-| 6 | 18 | 142.5 | 490.4 | 493.6 | 62.2 |
-
-
-<img src="../../../.github/assets/images/cisco-ucs-platform-benchmark/consolidation-throughput.png" alt="Aggregate throughput versus concurrent workers per instance, by worker type and cluster total">
-
-<img src="../../../.github/assets/images/cisco-ucs-platform-benchmark/consolidation-p95-latency.png" alt="p95 request latency versus concurrent workers per instance, by worker type">
-
-Both CPU workers track each other closely across the entire sweep (e.g. 18.05 vs.
-18.25 img/s at N=2, 490.4 vs. 493.6 ms p95 at N=6), consistent with identical hardware
-on identical nodes.
-
-**CPU workers' aggregate throughput peaks at 2 workers/instance (~18.1 img/s each) and
-declines steadily from there** (~16.6 at N=4, ~14.8 at N=6), while p95 latency climbs
-almost linearly with N (91–88 ms → ~490 ms, a ~5.4–5.6x increase over the sweep) — **the
-2x-baseline SLA is breached at 3 workers/instance** (239.0 ms cpu1 / 232.2 ms cpu2 vs. a
-181.8 ms / 176.2 ms threshold respectively) and never recovers. Both signals agree: **the
-practical ceiling for this CPU-bound workload is 2 workers/instance (6/cluster)** if
-throughput is the priority, or 2 if latency matters at all — by 3 it's already costing
-more than it gains.
-
-**The GPU worker shows no strain through the full sweep** — p95 stays essentially flat
-(51.0–62.2 ms, well under its own 102.0 ms breach threshold) and aggregate throughput
-keeps climbing almost linearly through 6 workers/instance (22.85 → 112.82 img/s, a ~4.9x
-increase for 6x the load) — consistent with the L4 sitting at only 22–35% utilisation under a single worker. The sweep was capped at 6
-workers/instance by design; the GPU's actual ceiling is higher and wasn't reached here.
-
-**Predastore itself is not the limiting subsystem for this result.** mulga-01's
-Predastore CPU% is already elevated (85.4%) at N=1, briefly exceeds 100% at N=2
-(119.0%, multi-threaded process accounting), and settles at 93.2% by N=6 — it fluctuates
-around a high baseline rather than climbing *with* N the way the observed CPU-worker
-degradation does, and the other two nodes' Predastore CPU% (27–50%) never comes close.
-
-The cause is CPU-compute contention rather than storage or network: inference latency
-grows ~11x across the sweep while S3 read/write latency grows only ~24–40%, and each
-OpenVINO worker consumes roughly 3.5 cores unpinned — oversubscribing the 8-vCPU guest
-by N=3, which lines up exactly with the observed SLA breach.
-
-### 7. Conclusion
-
-On matched-width CPU work, guests cost virtually nothing versus bare metal (~0.5%), and
-Intel AMX is confirmed executing at the kernel-selection level, not just present in
-CPUID. Network and disk both show real overhead versus bare metal — guest network at 20–45% below the physical fabric, guest disk far more so,
-currently the platform's clearest area for near-term improvement. The practical ceiling
-for CPU-bound concurrent work is 2 worker processes per 8-vCPU instance before latency
-degrades — confirmed as compute contention rather than a storage or network ceiling —
-while the GPU instance shows no strain through the full sweep, consistent with the L4
-sitting at 22–35% utilisation under a single worker.
-
-All benchmark instances were provisioned through Spinifex's EC2-compatible endpoint using standard `aws ec2` CLI calls — the same instance types, placement groups, and security groups that work on AWS work here unchanged. Teams already operating AWS infrastructure can point their existing tooling at a Spinifex node with a single profile swap.
+The raw measurements are evidence that the platform is functioning as designed; the
+larger outcome is a portable, resilient operating model for workloads that need cloud
+interfaces outside a public-cloud region.

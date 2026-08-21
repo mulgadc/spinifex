@@ -1129,14 +1129,17 @@ const EBSHotPlugSlotCount = 11
 // which. The primary data ENI is marked DHCP (OVN serves it; it carries the
 // default route, and bringing it up before cloud-init's network stage is what
 // lets the Ec2 datasource reach IMDS — without it cloud-init brings up the mgmt
-// NIC instead and falls to DataSourceNone). Every extra ENI is DHCP too, but
-// never the default route. mgmt0 lives on br-mgmt with no DHCP, so its static
-// address is delivered here; it is never the default route either. The blob
-// must name every NIC QEMU is given: the guest configures by MAC, so a NIC the
-// blob omits is left down and address-less, unreachable at its own VPC IP. The
-// blob key format matches daemon.buildNetcfgBlob and build/microvm/init.sh.
-// No-op without a mgmt NIC, so single-NIC guests are untouched — cloud-init
-// brings their one NIC up.
+// NIC instead and falls to DataSourceNone). Every extra ENI is static when a
+// prefix and gateway were resolved at launch (an RDS DB VM's customer ENI is
+// the case): DHCP would depend on the OVN lease being renewed, which nothing
+// does, and the NIC goes address-less an hour after boot. mgmt0 lives on
+// br-mgmt with no DHCP, so its static address is delivered here too; neither
+// it nor an extra ENI is ever the default route. The blob must name every NIC
+// QEMU is given: the guest configures by MAC, so a NIC the blob omits is left
+// down and address-less, unreachable at its own VPC IP. The blob key format
+// matches daemon.buildNetcfgBlob and build/microvm/init.sh. No-op without a
+// mgmt NIC, so single-NIC guests are untouched — cloud-init brings their one
+// NIC up.
 func (m *Manager) appendSystemNetcfgFwCfg(instance *VM) error {
 	if instance.MgmtMAC == "" || instance.MgmtIP == "" {
 		return nil
@@ -1148,15 +1151,22 @@ func (m *Manager) appendSystemNetcfgFwCfg(instance *VM) error {
 		fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_DHCP=1\nNIC%d_DEFAULT=1\n", n, instance.ENIMac, n, n)
 		n++
 	}
-	// Additional VPC ENIs: an RDS DB VM's customer-VPC NIC is the case. OVN
-	// serves DHCP on each, which is also what supplies their subnet routes.
-	// None may take the default route — that stays with the primary ENI,
-	// which carries the IMDS path.
+	// Additional VPC ENIs: an RDS DB VM's customer-VPC NIC is the case. Static
+	// when the launcher resolved a prefix and gateway, so it never depends on
+	// the OVN lease being renewed. Falls back to DHCP for an extra ENI that
+	// predates this field or whose subnet could not be resolved. None may take
+	// the default route — that stays with the primary ENI, which carries the
+	// IMDS path.
 	for _, extra := range instance.ExtraENIs {
 		if extra.ENIMac == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_DHCP=1\nNIC%d_DEFAULT=0\n", n, extra.ENIMac, n, n)
+		if extra.ENICIDRPrefix > 0 && extra.Gateway != "" {
+			fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_CIDR=%s/%d\nNIC%d_GW=%s\nNIC%d_DEFAULT=0\n",
+				n, extra.ENIMac, n, extra.ENIIP, extra.ENICIDRPrefix, n, extra.Gateway, n)
+		} else {
+			fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_DHCP=1\nNIC%d_DEFAULT=0\n", n, extra.ENIMac, n, n)
+		}
 		n++
 	}
 	// Management NIC: static, off br-mgmt, never the default route.

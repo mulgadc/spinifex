@@ -105,6 +105,12 @@ type ExtraENIInput struct {
 	// ENI across a class-change replace). Nil keeps the attach-time default,
 	// which deletes the ENI with the VM.
 	DeleteOnTermination *bool `json:"delete_on_termination,omitempty"`
+
+	// ENICIDRPrefix and Gateway configure this ENI statically instead of via
+	// DHCP (an RDS DB VM's customer ENI, so it never depends on the OVN lease
+	// being renewed). Zero/empty keeps the DHCP path.
+	ENICIDRPrefix int    `json:"eni_cidr_prefix,omitempty"`
+	Gateway       string `json:"gateway,omitempty"`
 }
 
 // NICConfig describes a single network interface for a BootDirect microVM.

@@ -33,12 +33,19 @@ type InstanceHealthState struct {
 }
 
 // ExtraENI describes an additional VPC network interface attached to a VM
-// beyond the primary ENI. Only system VMs (ALBs) use multiple ENIs today.
+// beyond the primary ENI. Only system VMs (ALBs, RDS DB VMs) use multiple
+// ENIs today.
 type ExtraENI struct {
 	ENIID    string `json:"eni_id"`
 	ENIMac   string `json:"eni_mac"`
 	ENIIP    string `json:"eni_ip"`
 	SubnetID string `json:"subnet_id,omitempty"`
+
+	// ENICIDRPrefix and Gateway let this ENI be configured statically instead
+	// of via DHCP, so it never depends on the OVN lease being renewed (an RDS
+	// DB VM's customer ENI is the case). Zero/empty falls back to DHCP.
+	ENICIDRPrefix int    `json:"eni_cidr_prefix,omitempty"`
+	Gateway       string `json:"gateway,omitempty"`
 }
 
 type VM struct {

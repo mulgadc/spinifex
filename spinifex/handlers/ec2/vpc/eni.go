@@ -968,18 +968,14 @@ type portEventPayload struct {
 	SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
 }
 
-// publishPortEvent publishes a port lifecycle event fire-and-forget. Used for
-// vpc.delete-port — failure on delete is harmless (the port is going away
-// anyway and the reconciler converges any leftover OVN state).
+// publishPortEvent sends vpc.delete-port via request-reply so vpcd confirms
+// the LSP is gone before a same-IP recreate can collide with a stale one.
+// Non-fatal: the ENI KV row is already gone, so a failure is only logged.
 func (s *VPCServiceImpl) publishPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr string, sgIds []string) {
-	utils.PublishEvent(s.natsConn, topic, portEventPayload{
-		NetworkInterfaceId: eniId,
-		SubnetId:           subnetId,
-		VpcId:              vpcId,
-		PrivateIpAddress:   privateIP,
-		MacAddress:         macAddr,
-		SecurityGroupIds:   sgIds,
-	})
+	if err := s.requestPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr, sgIds); err != nil {
+		slog.Warn("vpc: delete-port request failed, relying on reconciler orphan prune",
+			"topic", topic, "eniId", eniId, "err", err)
+	}
 }
 
 // requestPortEvent sends a port lifecycle event via request-reply so vpcd

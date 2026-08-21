@@ -43,7 +43,7 @@ For operators who want to review migrations before they are applied, a manual up
 > [!WARNING]
 > **AMI metadata is exempt when upgrading from v1.16.0 or earlier to the release carrying the EBS-provider decoupling.** AMI metadata moved to `ebsmetadata` documents, and the legacy path that read it from `ami-<id>/config.json` was removed rather than migrated. There is no prefix scan, no fallback and no backfill at daemon start, so an AMI imported before the change becomes invisible to the control plane afterwards: `describe-images --image-ids` answers `InvalidAMIID.NotFound` and launches fail with `AMI has no snapshot ID, cannot perform zero-copy clone`. As with object storage above, `spx admin upgrade` reports nothing pending, because the gap is in stored data rather than in a config file.
 >
-> **Re-import affected AMIs after upgrading**, using [`spx admin images import`](/docs/admin/spinifex-admin-cli), which writes metadata in the new location. If the source images are no longer available, the installation has to be re-initialised. Verify before you rely on it — an AMI is only healthy if it resolves by ID, not merely if it appears in the list:
+> **Re-import affected AMIs after upgrading**, using [`spx admin images import`](/docs/spinifex-admin-cli), which writes metadata in the new location. If the source images are no longer available, the installation has to be re-initialised. Verify before you rely on it — an AMI is only healthy if it resolves by ID, not merely if it appears in the list:
 >
 > ```bash
 > aws ec2 describe-images --image-ids <ami-id>
@@ -113,7 +113,7 @@ Migrations modify config files on disk but do not restart running services, and 
 sudo systemctl restart spinifex.target
 ```
 
-A restart preserves any running guests — they are not rebooted, and storage returns within seconds. See [Host and Guest Lifecycle](/docs/admin/host-lifecycle) for the full contract.
+A restart preserves any running guests — they are not rebooted, and storage returns within seconds. See [Host and Guest Lifecycle](https://github.com/mulgadc/spinifex/blob/main/docs/admin/host-lifecycle/README.md) for the full contract.
 
 ## Checking for Unit Drift
 
@@ -165,7 +165,7 @@ Migrations edit config files on disk but the running daemons continue to use the
 sudo systemctl restart spinifex.target
 ```
 
-A restart preserves any running guests — they are not rebooted, and storage returns within seconds. See [Host and Guest Lifecycle](/docs/admin/host-lifecycle) for the full contract.
+A restart preserves any running guests — they are not rebooted, and storage returns within seconds. See [Host and Guest Lifecycle](https://github.com/mulgadc/spinifex/blob/main/docs/admin/host-lifecycle/README.md) for the full contract.
 
 ### A Node Answers Some Requests as if It Were Still on the Old Build
 

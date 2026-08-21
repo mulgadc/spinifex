@@ -77,7 +77,7 @@ ACCOUNT ID     NAME                 STATUS     CREATED
 000000000002   myteam               ACTIVE     2026-07-03 03:32
 ```
 
-Deleting an account, and creating or removing accounts from your own signup or provisioning system over the private admin API, are covered in [Account Management](/docs/admin/account-management).
+Deleting an account, and creating or removing accounts from your own signup or provisioning system over the private admin API, are covered in [Account Management](https://github.com/mulgadc/spinifex/blob/main/docs/admin/account-management/README.md).
 
 ## Node Management
 

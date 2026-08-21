@@ -39,7 +39,7 @@ resources:
 - [3. Remediation SLAs](#3-remediation-slas)
 - [4. Reporting Workflow](#4-reporting-workflow)
 - [5. Operator Responsibilities](#5-operator-responsibilities)
-- [6. Evidence](#6-evidence)
+- [6. Evidence](#6-evidence-and-record-keeping)
 - [7. Operator Checklist](#7-operator-checklist)
 
 ---
@@ -60,7 +60,7 @@ resources:
 
 Spinifex ships a short dependency chain and identification is already automated: Dependabot raises security PRs the moment GitHub links a CVE to a shipped dependency, `govulncheck` runs on every PR, and GitHub Security Advisories watch all three `mulgadc/*` repositories.
 
-Sections map to the three scored objectives: [§1](#1-identification) names the identification sources (objectives [a]/[b]); [§3](#3-remediation-slas) and [§4](#4-reporting-workflow) set the report and correct timeframes (objectives [c]–[f]). [§5](#5-operator-responsibilities) delineates layers the operator owns, and [§6](#6-evidence) covers the records needed to demonstrate compliance at assessment.
+Sections map to the three scored objectives: [§1](#1-identification) names the identification sources (objectives [a]/[b]); [§3](#3-remediation-slas) and [§4](#4-reporting-workflow) set the report and correct timeframes (objectives [c]–[f]). [§5](#5-operator-responsibilities) delineates layers the operator owns, and [§6](#6-evidence-and-record-keeping) covers the records needed to demonstrate compliance at assessment.
 
 ## 1. Identification
 
@@ -93,7 +93,7 @@ CVSS v3.1 base score from the upstream advisory; otherwise scored by maintainers
 
 ## 3. Remediation SLAs
 
-Clocks start at the moment of identification ([§1](#1-identification-sources)). All three objectives — identify [a], report [c], correct [e] — are time-bound.
+Clocks start at the moment of identification ([§1](#1-identification)). All three objectives — identify [a], report [c], correct [e] — are time-bound.
 
 | Severity | Identify | Report | Correct |
 |----------|----------|--------|---------|
@@ -130,7 +130,7 @@ Operators own remediation for layers Spinifex does not ship:
 | Host OS + kernel | Track distribution advisories (Debian DSA, Ubuntu USN) at matching cadence. |
 | OVN / OVS | Patched via the operator's package channel alongside the OS. |
 | QEMU / KVM / libvirt | As above — hypervisor CVEs affect tenant isolation. |
-| Host AV / EDR agent | See [Malware Protection §2](/docs/security/malware-protection#2-update-requirements-sil1-3144). |
+| Host AV / EDR agent | See [Malware Protection §2](/docs/malware-protection#2-update-requirements-sil1-3144). |
 
 Operators should subscribe to the `mulgadc/spinifex` release feed (Watch → Custom → Releases + Security Advisories) so Critical/High advisories arrive via GitHub's notification channel rather than polling.
 
@@ -151,4 +151,4 @@ These demonstrate objectives [b], [d], [f] — "within the specified time" — i
 - Change-management records patch-apply timestamps for every Spinifex release.
 - Operator subscribes to `mulgadc/spinifex`, `mulgadc/predastore`, `mulgadc/viperblock` releases and advisories.
 - OS / kernel / hypervisor patching cadence documented and at least as strict as [§3](#3-remediation-slas).
-- Annual review confirms at least one patch cycle completed within SLA in the prior 12 months, with evidence per [§6](#6-evidence).
+- Annual review confirms at least one patch cycle completed within SLA in the prior 12 months, with evidence per [§6](#6-evidence-and-record-keeping).

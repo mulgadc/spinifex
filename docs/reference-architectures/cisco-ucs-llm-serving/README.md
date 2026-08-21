@@ -19,9 +19,9 @@ resources:
   - title: "GPU Passthrough"
     url: "/docs/gpu-passthrough"
   - title: "Cisco UCS: AWS-compatible cloud at the edge (companion document)"
-    url: "../cisco-ucs-platform-benchmark/README.md"
+    url: "/docs/cisco-ucs-platform-benchmark"
   - title: "Vision pipeline (companion document)"
-    url: "../cisco-ucs-vision-pipeline/README.md"
+    url: "/docs/cisco-ucs-vision-pipeline"
   - title: "Benchmark and workload materials (CISCO-refarch)"
     url: "https://github.com/tomnewton-mulga/CISCO-refarch"
   - title: "vLLM"
@@ -45,7 +45,7 @@ cluster, comparing Intel AMX-accelerated CPU serving on an `m8i.2xlarge`-class i
 against NVIDIA L4 GPU serving on a `g6.2xlarge`-class instance — a real,
 production-representative LLM-serving stack, with the two accelerators measured independently at matched model, version, and serving configuration.
 
-**Companion architectures:** [Cisco UCS: AWS-compatible cloud at the edge](../cisco-ucs-platform-benchmark/README.md) · [Spinifex Vision Pipeline on Cisco UCS](../cisco-ucs-vision-pipeline/README.md)
+**Companion architectures:** [Cisco UCS: AWS-compatible cloud at the edge](/docs/cisco-ucs-platform-benchmark) · [Spinifex Vision Pipeline on Cisco UCS](/docs/cisco-ucs-vision-pipeline)
 
 ### Platform
 

@@ -27,7 +27,7 @@ resources:
 
 # Terraform: GitOps on EKS (Argo CD + EBS-CSI)
 
-> The top rung of the EKS ladder. It extends [EKS HTTPS Ingress](../eks-https-ingress) and changes how the app is delivered: the **Argo CD** addon syncs a more elaborate Spinifex-themed app from a **git repo**, an **EBS-CSI** PersistentVolume (Viperblock-backed) holds its state, and it is still served over **HTTPS** through the AWS Load Balancer Controller + ACM.
+> The top rung of the EKS ladder. It extends [EKS HTTPS Ingress](/docs/eks-https-ingress) and changes how the app is delivered: the **Argo CD** addon syncs a more elaborate Spinifex-themed app from a **git repo**, an **EBS-CSI** PersistentVolume (Viperblock-backed) holds its state, and it is still served over **HTTPS** through the AWS Load Balancer Controller + ACM.
 
 ## Table of Contents
 
@@ -39,7 +39,7 @@ resources:
 
 ## Overview
 
-This workbook keeps everything from [EKS HTTPS Ingress](../eks-https-ingress) — the public/private VPC, the NAT gateway, the LBC addon, the ACM cert, the HTTPS Ingress — and adds the parts you reach for once an app is real: **GitOps delivery** and **persistent storage**.
+This workbook keeps everything from [EKS HTTPS Ingress](/docs/eks-https-ingress) — the public/private VPC, the NAT gateway, the LBC addon, the ACM cert, the HTTPS Ingress — and adds the parts you reach for once an app is real: **GitOps delivery** and **persistent storage**.
 
 Three changes over the previous rung:
 
@@ -86,7 +86,7 @@ Terraform manages the cluster, the addons, the ACM cert, and the HTTPS Ingress; 
 
 - Spinifex running with an `eks-node` image carrying the LBC, Argo CD, and EBS-CSI bundles
 - OpenTofu or Terraform, plus `kubectl`, the AWS CLI, and Docker
-- The demo image built and pushed to ECR (see [`../demo-app/README.md`](../demo-app/README.md))
+- The demo image built and pushed to ECR (see [`docs/terraform-workbooks/demo-app`](https://github.com/mulgadc/spinifex/blob/main/docs/terraform-workbooks/demo-app/README.md))
 - A git repo with the app manifests ([`mulgadc/eks-demo-app`](https://github.com/mulgadc/eks-demo-app)); a read-only PAT if it is private
 
 ## Instructions

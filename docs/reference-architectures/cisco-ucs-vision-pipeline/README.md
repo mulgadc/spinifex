@@ -25,7 +25,7 @@ resources:
   - title: "GPU Passthrough"
     url: "/docs/gpu-passthrough"
   - title: "Cisco UCS: AWS-compatible cloud at the edge (companion document)"
-    url: "../cisco-ucs-platform-benchmark/README.md"
+    url: "/docs/cisco-ucs-platform-benchmark"
   - title: "Ultralytics YOLO"
     url: "https://docs.ultralytics.com"
   - title: "AWS: Accelerate CPU-based AI inference with Intel AMX on EC2"
@@ -48,7 +48,7 @@ cluster running Spinifex: real-time object detection plus a vision-language mode
 producing plain-English scene descriptions, both streaming from the same shared Predastore
 (S3-compatible) bucket as two entirely independent EC2-compatible instances.
 
-**Companion architectures:** [Cisco UCS: AWS-compatible cloud at the edge](../cisco-ucs-platform-benchmark/README.md) · [vLLM Serving on Cisco UCS: Intel AMX vs NVIDIA L4](../cisco-ucs-llm-serving/README.md)
+**Companion architectures:** [Cisco UCS: AWS-compatible cloud at the edge](/docs/cisco-ucs-platform-benchmark) · [vLLM Serving on Cisco UCS: Intel AMX vs NVIDIA L4](/docs/cisco-ucs-llm-serving)
 
 ### Platform
 

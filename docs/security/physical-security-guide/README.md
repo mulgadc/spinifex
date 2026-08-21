@@ -145,7 +145,7 @@ Every entry into a protected space must produce a log entry capturing:
 
 ### 4.3 Integration with Spinifex Logs
 
-Forward physical-access events to the same SIEM or log collector used for Spinifex service logs (see [Malware Protection §3](/docs/security/malware-protection#3-scan-schedule-sil1-3145)) so a `master.key` access attempt can be correlated with a physical entry into the rack.
+Forward physical-access events to the same SIEM or log collector used for Spinifex service logs (see [Malware Protection §3](/docs/malware-protection#3-scan-schedule-sil1-3145)) so a `master.key` access attempt can be correlated with a physical entry into the rack.
 
 ## 5. Manage Physical Access Devices (PE.L1-3.10.5)
 
@@ -200,7 +200,7 @@ Use this list to confirm a site meets the four CMMC practices before admitting S
 - CCTV or equivalent monitoring covers the rack fronts, rears, and console positions, with 30-day minimum retention.
 - Physical access logs are produced for every entry, retained 12 months, and reviewed on the cadence in [§4.2](#42-retention-and-review).
 - Door-forced, door-held, and out-of-hours events alert the on-call operator.
-- Physical access events forwarded to the SIEM used for Spinifex service logs (see [Malware Protection §3](/docs/security/malware-protection#3-scan-schedule-sil1-3145)).
+- Physical access events forwarded to the SIEM used for Spinifex service logs (see [Malware Protection §3](/docs/malware-protection#3-scan-schedule-sil1-3145)).
 - Device register reconciles quarterly against the access-control system and physical key count; discrepancies are closed before sign-off.
 - Lost-device and termination procedures trigger immediate revocation per [§5.2](#52-control-b).
 - System security plan references this guide and records the facility, access-control product, CCTV retention, and log-forwarding destination.

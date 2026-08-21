@@ -35,5 +35,8 @@ Thumbs.db
 .env
 .venv/
 
+# VScode
+.vscode/
+
 # Test reports
 *-report.txt

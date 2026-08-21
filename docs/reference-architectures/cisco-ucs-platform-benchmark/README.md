@@ -61,6 +61,10 @@ GPU workloads schedule to the L4 node; CPU instances can use all three. Storage 
 object data are distributed across the cluster rather than tied to the node that
 launched an instance.
 
+### Hardware Chassis
+
+<img src="../../../.github/assets/images/cisco-ucs-platform-benchmark/reference-architectures-cisco-ucs-platform-hardware1.png" alt="Cisco UCS x Spinifex">
+
 ## Architecture
 
 ### AWS services exercised

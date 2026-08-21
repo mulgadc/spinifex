@@ -1,3 +1,6 @@
+//test:in-package — reuses startTestNATSServer, the package's unexported NATS
+//fixture that every other gateway instance test is built on.
+
 package gateway_ec2_instance
 
 import (

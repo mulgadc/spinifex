@@ -1,3 +1,7 @@
+//test:in-package — monitorInstances/unmonitorInstances are unexported, and the
+//fixture reaches the daemon's own vmMgr and resourceMgr to seed a running
+//instance and read the tier back off the record.
+
 package daemon
 
 import (

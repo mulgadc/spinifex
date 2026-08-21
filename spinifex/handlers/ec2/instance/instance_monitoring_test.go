@@ -1,3 +1,7 @@
+//test:in-package — constructs InstanceServiceImpl with only its unexported
+//stoppedStore field set, so the stopped path is exercised without standing up
+//the rest of the service.
+
 package handlers_ec2_instance
 
 import (

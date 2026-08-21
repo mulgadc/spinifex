@@ -14,6 +14,7 @@ import (
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -707,7 +708,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 					"name", ebsRequest.Name, "id", instance.ID)
 				continue
 			}
-			if err := a.d.volumeService.DetachVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) {
+			if err := a.d.volumeService.DetachVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
 				slog.Error("Failed to detach volume on termination",
 					"name", ebsRequest.Name, "id", instance.ID, "err", err)
 				firstErr = cmp.Or(firstErr, err)
@@ -730,7 +731,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 		// (above, via terminateCleanup) deliberately never clears a Boot
 		// volume's attachment, so without this the root volume still hits
 		// DeleteVolume's in-use guard here.
-		if err := a.d.volumeService.DeleteVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) {
+		if err := a.d.volumeService.DeleteVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
 			slog.Error("Failed to delete volume on termination",
 				"name", ebsRequest.Name, "id", instance.ID, "err", err)
 			firstErr = cmp.Or(firstErr, err)

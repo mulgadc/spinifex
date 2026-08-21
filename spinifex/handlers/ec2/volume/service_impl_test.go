@@ -1773,6 +1773,34 @@ func TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
 }
 
+// TestDeleteVolumeOnTerminate_AlreadyGoneMetadataIsSuccess verifies GC
+// re-driving the volumes dependent on an instance whose volume metadata
+// document is already deleted is treated as success, not a hard failure that
+// pins the reaper backoff at its cap forever.
+func TestDeleteVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
+	kv := setupTestVolumeKV(t)
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = kv
+
+	// No metadata doc is ever written for this volume ID.
+	err := svc.DeleteVolumeOnTerminate(context.Background(), "vol-already-gone", "")
+	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
+}
+
+// TestDetachVolumeOnTerminate_AlreadyGoneMetadataIsSuccess mirrors
+// TestDeleteVolumeOnTerminate_AlreadyGoneMetadataIsSuccess for the
+// DeleteOnTermination=false path.
+func TestDetachVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
+	kv := setupTestVolumeKV(t)
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = kv
+
+	err := svc.DetachVolumeOnTerminate(context.Background(), "vol-already-gone", "")
+	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
+}
+
 // TestDeleteVolumeOnTerminate_SurfacesDeleteFailure verifies a DeleteVolume
 // failure downstream of the attachment clear is returned, not swallowed — the
 // caller (deleteInstanceVolumes / instanceCleanerAdapter.DeleteVolumes) relies

@@ -24,6 +24,7 @@ const (
 	testApplianceSubnet     = "subnet-appliance-0001"
 	testApplianceEndpoint   = "10.244.1.9"
 	testApplianceENIID      = "eni-appliance-0001"
+	testApplianceSG         = "sg-appliance-0001"
 )
 
 // fakeVPC is an in-memory vpcProvisioner: every CreateNetworkInterface call
@@ -32,11 +33,12 @@ const (
 // lookup and the description-filtered daemon-ENI describe-or-create.
 // subnets backs DescribeSubnets.
 type fakeVPC struct {
-	mu      sync.Mutex
-	nextID  int
-	created []string
-	records map[string]*ec2.NetworkInterface
-	subnets []*ec2.Subnet
+	mu         sync.Mutex
+	nextID     int
+	created    []string
+	sgModifies []string
+	records    map[string]*ec2.NetworkInterface
+	subnets    []*ec2.Subnet
 }
 
 var _ vpcProvisioner = (*fakeVPC)(nil)
@@ -54,12 +56,39 @@ func (f *fakeVPC) CreateNetworkInterface(_ context.Context, in *ec2.CreateNetwor
 		MacAddress:         aws.String("02:00:00:00:00:01"),
 		SubnetId:           in.SubnetId,
 		Description:        in.Description,
+		Groups:             groupIdentifiers(in.Groups),
 	}
 	if f.records == nil {
 		f.records = map[string]*ec2.NetworkInterface{}
 	}
 	f.records[eniID] = ni
 	return &ec2.CreateNetworkInterfaceOutput{NetworkInterface: ni}, nil
+}
+
+// ModifyNetworkInterfaceAttribute records the call and re-associates the
+// stored ENI's security groups, mirroring the in-place SG replace the real
+// service does.
+func (f *fakeVPC) ModifyNetworkInterfaceAttribute(_ context.Context, in *ec2.ModifyNetworkInterfaceAttributeInput, _ string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := aws.StringValue(in.NetworkInterfaceId)
+	f.sgModifies = append(f.sgModifies, id)
+	if ni, ok := f.records[id]; ok && in.Groups != nil {
+		ni.Groups = groupIdentifiers(in.Groups)
+	}
+	return &ec2.ModifyNetworkInterfaceAttributeOutput{}, nil
+}
+
+// groupIdentifiers maps SG IDs to the describe-shaped GroupIdentifier slice.
+func groupIdentifiers(ids []*string) []*ec2.GroupIdentifier {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]*ec2.GroupIdentifier, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, &ec2.GroupIdentifier{GroupId: id})
+	}
+	return out
 }
 
 // putRecord seeds an ENI the fake did not mint, so a test can present the
@@ -92,6 +121,7 @@ func (f *fakeVPC) putApplianceENI(eniID, identifier, subnetID, ip string) {
 		NetworkInterfaceId: aws.String(eniID),
 		SubnetId:           aws.String(subnetID),
 		PrivateIpAddress:   aws.String(ip),
+		Groups:             []*ec2.GroupIdentifier{{GroupId: aws.String(testApplianceSG)}},
 		TagSet: []*ec2.Tag{
 			{Key: aws.String(applianceInstanceTagKey), Value: aws.String(identifier)},
 		},
@@ -112,6 +142,7 @@ func (f *fakeVPC) putTaggedENIWithDescription(eniID, identifier, subnetID, ip, d
 		SubnetId:           aws.String(subnetID),
 		PrivateIpAddress:   aws.String(ip),
 		Description:        aws.String(description),
+		Groups:             []*ec2.GroupIdentifier{{GroupId: aws.String(testApplianceSG)}},
 		TagSet: []*ec2.Tag{
 			{Key: aws.String(applianceInstanceTagKey), Value: aws.String(identifier)},
 		},
@@ -291,6 +322,49 @@ func TestEnsureApplianceHostPort_CreatesENIAndHostPort(t *testing.T) {
 	assert.Equal(t, "02:00:00:00:00:01", calls[0].mac)
 }
 
+// The daemon's host-port ENI must join the appliance's security group, or the
+// customer ENI's self-referencing SG silently drops its traffic to pg.
+func TestEnsureApplianceHostPort_DaemonENIJoinsApplianceSG(t *testing.T) {
+	h := newHostPortHarness()
+	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
+	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
+
+	_, eniID, err := ensureApplianceHostPort(t.Context(), h.deps(), testApplianceIdentifier)
+	require.NoError(t, err)
+
+	h.vpc.mu.Lock()
+	defer h.vpc.mu.Unlock()
+	require.Contains(t, h.vpc.records, eniID)
+	got := []string{}
+	for _, g := range h.vpc.records[eniID].Groups {
+		got = append(got, aws.StringValue(g.GroupId))
+	}
+	assert.Equal(t, []string{testApplianceSG}, got, "the created daemon ENI must carry the appliance SG")
+}
+
+// A daemon ENI that predates SG inheritance (reused by description, no groups)
+// must be re-associated in place rather than left unauthorized.
+func TestEnsureApplianceHostPort_ReusedENIGetsApplianceSG(t *testing.T) {
+	h := newHostPortHarness()
+	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
+	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
+	h.vpc.putRecord("eni-legacy-daemon", testApplianceSubnet, daemonPortDescription(testNodeID), "10.244.1.50", "02:00:00:00:00:09")
+
+	_, eniID, err := ensureApplianceHostPort(t.Context(), h.deps(), testApplianceIdentifier)
+	require.NoError(t, err)
+	assert.Equal(t, "eni-legacy-daemon", eniID, "the existing daemon ENI should be reused")
+	assert.Empty(t, h.vpc.created, "reuse must not mint a new ENI")
+
+	h.vpc.mu.Lock()
+	defer h.vpc.mu.Unlock()
+	assert.Contains(t, h.vpc.sgModifies, "eni-legacy-daemon", "the reused ENI must be re-associated to the appliance SG")
+	got := []string{}
+	for _, g := range h.vpc.records["eni-legacy-daemon"].Groups {
+		got = append(got, aws.StringValue(g.GroupId))
+	}
+	assert.Equal(t, []string{testApplianceSG}, got)
+}
+
 // The port must carry the ENI address at the SUBNET's prefix length: a /32
 // addresses the port and still leaves the appliance unreachable, which is
 // the entire reason the port exists.
@@ -417,11 +491,12 @@ func TestResolveApplianceTarget_FindsTheTaggedApplianceENI(t *testing.T) {
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
 
-	dialIP, subnetID, cidr, err := resolveApplianceTarget(t.Context(), h.deps(), testApplianceIdentifier)
+	dialIP, subnetID, cidr, groupIDs, err := resolveApplianceTarget(t.Context(), h.deps(), testApplianceIdentifier)
 	require.NoError(t, err)
 	assert.Equal(t, testApplianceEndpoint, dialIP)
 	assert.Equal(t, testApplianceSubnet, subnetID)
 	assert.Equal(t, "10.244.1.0/24", cidr)
+	assert.Equal(t, []string{testApplianceSG}, groupIDs, "the appliance SG must be surfaced so the daemon ENI can join it")
 }
 
 // The endpoint ENI and the management NIC share the rds-db-instance tag, but
@@ -441,7 +516,7 @@ func TestResolveApplianceTarget_PrefersEndpointENIOverManagementNIC(t *testing.T
 		h.vpc.putTaggedENIWithDescription("eni-endpoint", testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint,
 			endpointENIDescriptionPrefix+testApplianceIdentifier)
 
-		dialIP, subnetID, cidr, err := resolveApplianceTarget(t.Context(), h.deps(), testApplianceIdentifier)
+		dialIP, subnetID, cidr, _, err := resolveApplianceTarget(t.Context(), h.deps(), testApplianceIdentifier)
 		require.NoError(t, err)
 		require.Equal(t, testApplianceEndpoint, dialIP, "must dial the endpoint ENI, never the management NIC")
 		require.Equal(t, testApplianceSubnet, subnetID)
@@ -455,7 +530,7 @@ func TestResolveApplianceTarget_IgnoresOtherIdentifiersTags(t *testing.T) {
 	h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
 	h.putApplianceENI("some-other-db", testApplianceSubnet, testApplianceEndpoint)
 
-	_, _, _, err := resolveApplianceTarget(t.Context(), h.deps(), testApplianceIdentifier)
+	_, _, _, _, err := resolveApplianceTarget(t.Context(), h.deps(), testApplianceIdentifier)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no customer ENI found")
 }
@@ -464,7 +539,7 @@ func TestResolveApplianceTarget_ErrorsWhenSubnetHasNoCIDR(t *testing.T) {
 	h := newHostPortHarness()
 	h.putApplianceENI(testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint)
 
-	_, _, _, err := resolveApplianceTarget(t.Context(), h.deps(), testApplianceIdentifier)
+	_, _, _, _, err := resolveApplianceTarget(t.Context(), h.deps(), testApplianceIdentifier)
 	require.Error(t, err)
 }
 
@@ -474,7 +549,7 @@ func TestResolveApplianceTarget_PropagatesDescribeFailure(t *testing.T) {
 	deps := h.deps()
 	deps.VPC = failing
 
-	_, _, _, err := resolveApplianceTarget(t.Context(), deps, testApplianceIdentifier)
+	_, _, _, _, err := resolveApplianceTarget(t.Context(), deps, testApplianceIdentifier)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nats timeout")
 }
@@ -483,7 +558,7 @@ func TestResolveApplianceTarget_RequiresVPC(t *testing.T) {
 	h := newHostPortHarness()
 	noVPC := h.deps()
 	noVPC.VPC = nil
-	_, _, _, err := resolveApplianceTarget(t.Context(), noVPC, testApplianceIdentifier)
+	_, _, _, _, err := resolveApplianceTarget(t.Context(), noVPC, testApplianceIdentifier)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "VPC provider")
 }

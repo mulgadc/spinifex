@@ -187,10 +187,12 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				d.recordENIInstanceOwner(extraAccount, extra.ENIID, accountID)
 			}
 			instance.ExtraENIs = append(instance.ExtraENIs, vm.ExtraENI{
-				ENIID:    extra.ENIID,
-				ENIMac:   extra.ENIMac,
-				ENIIP:    extra.ENIIP,
-				SubnetID: extra.SubnetID,
+				ENIID:         extra.ENIID,
+				ENIMac:        extra.ENIMac,
+				ENIIP:         extra.ENIIP,
+				SubnetID:      extra.SubnetID,
+				ENICIDRPrefix: extra.ENICIDRPrefix,
+				Gateway:       extra.Gateway,
 			})
 		}
 	} else if input.SubnetID != "" && d.vpcService != nil {
@@ -514,10 +516,12 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 			}
 		}
 		inst.ExtraENIs = append(inst.ExtraENIs, vm.ExtraENI{
-			ENIID:    extra.ENIID,
-			ENIMac:   extra.ENIMac,
-			ENIIP:    extra.ENIIP,
-			SubnetID: extra.SubnetID,
+			ENIID:         extra.ENIID,
+			ENIMac:        extra.ENIMac,
+			ENIIP:         extra.ENIIP,
+			SubnetID:      extra.SubnetID,
+			ENICIDRPrefix: extra.ENICIDRPrefix,
+			Gateway:       extra.Gateway,
 		})
 	}
 

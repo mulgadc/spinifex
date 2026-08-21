@@ -430,8 +430,9 @@ func (m *Manager) terminateCleanup(instance *VM) {
 			}
 		}
 
-		// ENI KV delete is sync; vpc.delete-port (OVN LSP) is fire-and-forget, so
-		// the OVN port removal is recorded pending (reconcile LSP prune reaps it).
+		// ENI KV delete is sync; vpc.delete-port (OVN LSP) is request-reply but
+		// non-fatal on failure, so the OVN port removal is recorded pending
+		// (reconcile LSP prune reaps anything the request-reply missed).
 		eniErr := m.deps.InstanceCleaner.DetachAndDeleteENI(instance)
 		if instance.ENIId != "" {
 			m.markTeardownResult(instance, TeardownENI, eniErr)

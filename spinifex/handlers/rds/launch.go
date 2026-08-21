@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"slices"
 	"time"
 
@@ -84,6 +85,10 @@ type launchVPCProvisioner interface {
 	// start, so a deployment whose system VPC was rebuilt still gets one.
 	CreateSecurityGroup(ctx context.Context, input *ec2.CreateSecurityGroupInput, accountID string) (*ec2.CreateSecurityGroupOutput, error)
 	DescribeSecurityGroups(ctx context.Context, input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error)
+	// Read to configure the customer ENI statically: it must not depend on the
+	// OVN DHCP lease being renewed, so its prefix and gateway are resolved once
+	// at launch time instead.
+	DescribeSubnets(ctx context.Context, input *ec2.DescribeSubnetsInput, accountID string) (*ec2.DescribeSubnetsOutput, error)
 }
 
 // System-managed VMs get a mgmt-bridge NIC alongside their VPC NICs, which is
@@ -239,6 +244,15 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		})
 	}
 
+	// The customer ENI is configured statically, not via DHCP: OVN's 3600s
+	// lease is never renewed by the guest's one-shot udhcpc, so a DHCP customer
+	// ENI goes address-less an hour after boot. Resolve its prefix and gateway
+	// once here instead of depending on the lease surviving the VM's lifetime.
+	customerPrefix, customerGateway, err := customerENISubnetGateway(ctx, deps.VPC, in.AccountID, in.SubnetID)
+	if err != nil {
+		return nil, fmt.Errorf("rds: resolve customer subnet network for %s: %w", in.DBInstanceIdentifier, err)
+	}
+
 	sysOut, err := deps.Instance.LaunchSystemInstance(&sysinstance.SystemInstanceInput{
 		BootMode:     sysinstance.BootAMI,
 		ManagedBy:    tags.ManagedByRDS,
@@ -252,11 +266,13 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		ENIMac:    systemENI.mac,
 		ENIIP:     systemENI.ip,
 		ExtraENIs: []sysinstance.ExtraENIInput{{
-			ENIID:     customerENI.id,
-			ENIMac:    customerENI.mac,
-			ENIIP:     customerENI.ip,
-			SubnetID:  in.SubnetID,
-			AccountID: in.AccountID,
+			ENIID:         customerENI.id,
+			ENIMac:        customerENI.mac,
+			ENIIP:         customerENI.ip,
+			SubnetID:      in.SubnetID,
+			AccountID:     in.AccountID,
+			ENICIDRPrefix: customerPrefix,
+			Gateway:       customerGateway,
 			// The endpoint is the ENI's address, so it has to survive the
 			// terminate half of a replace the way the datadir volume does.
 			// A DeleteDBInstance deletes it explicitly once the VM is gone.
@@ -443,6 +459,42 @@ func resolveCustomerENI(ctx context.Context, vpcSvc launchVPCProvisioner, in Lau
 	// Failing here is the only safe answer: minting a replacement would move the
 	// endpoint to a new address the DNS record and serving cert do not name.
 	return nil, fmt.Errorf("rds: endpoint ENI %s no longer exists", in.ExistingCustomerENI)
+}
+
+// customerENISubnetGateway resolves the customer subnet's prefix length and
+// gateway IP (network address +1), matching OVN's per-subnet router
+// placement (see network/topology.SubnetGatewayCIDR). Both are needed to
+// configure the customer ENI statically instead of via DHCP.
+func customerENISubnetGateway(ctx context.Context, vpcSvc launchVPCProvisioner, accountID, subnetID string) (prefixBits int, gateway string, err error) {
+	out, err := vpcSvc.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+		SubnetIds: aws.StringSlice([]string{subnetID}),
+	}, accountID)
+	if err != nil {
+		return 0, "", fmt.Errorf("rds: describe subnet %s: %w", subnetID, err)
+	}
+	if out == nil {
+		return 0, "", fmt.Errorf("rds: subnet %s not found", subnetID)
+	}
+	for _, subnet := range out.Subnets {
+		if aws.StringValue(subnet.SubnetId) != subnetID {
+			continue
+		}
+		_, ipNet, perr := net.ParseCIDR(aws.StringValue(subnet.CidrBlock))
+		if perr != nil {
+			return 0, "", fmt.Errorf("rds: subnet %s has an unparseable CIDR %q: %w",
+				subnetID, aws.StringValue(subnet.CidrBlock), perr)
+		}
+		ones, _ := ipNet.Mask.Size()
+		gw := ipNet.IP.To4()
+		if gw == nil {
+			return 0, "", fmt.Errorf("rds: subnet %s CIDR %q is not IPv4", subnetID, ipNet.String())
+		}
+		gwCopy := make(net.IP, len(gw))
+		copy(gwCopy, gw)
+		gwCopy[3]++
+		return ones, gwCopy.String(), nil
+	}
+	return 0, "", fmt.Errorf("rds: subnet %s not found", subnetID)
 }
 
 // Detach comes first because a terminated VM can leave the attachment record

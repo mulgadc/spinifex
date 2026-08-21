@@ -1007,6 +1007,11 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 // are returned, not swallowed.
 func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error {
 	if err := s.UpdateVolumeState(volumeID, "available", "", ""); err != nil {
+		// No metadata doc means the volume is already gone, per GetVolume's own
+		// contract, so absence here is success, not a teardown failure.
+		if objectstore.IsNoSuchKeyError(err) {
+			return nil
+		}
 		return fmt.Errorf("clear attachment before terminate delete: %w", err)
 	}
 	_, err := s.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: &volumeID}, accountID)
@@ -1020,7 +1025,15 @@ func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeI
 // as DeleteVolumeOnTerminate: there is no live QEMU to hot-unplug on either
 // terminate path.
 func (s *VolumeServiceImpl) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
-	return s.UpdateVolumeState(volumeID, "available", "", "")
+	if err := s.UpdateVolumeState(volumeID, "available", "", ""); err != nil {
+		// No metadata doc means the volume is already gone, per GetVolume's own
+		// contract, so absence here is success, not a teardown failure.
+		if objectstore.IsNoSuchKeyError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // ForceDetachVolume clears a volume's attachment in the control plane without

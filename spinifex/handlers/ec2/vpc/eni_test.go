@@ -582,6 +582,31 @@ func TestDeleteNetworkInterface_PublishesEvent(t *testing.T) {
 	}
 }
 
+// TestDeleteNetworkInterface_VpcdDeletePortError_NonFatal proves a vpcd-side
+// OVN LSP delete failure surfaces as a log, not an API error: the ENI KV row
+// is already gone by the time this runs, so a failed teardown must still let
+// the caller (instance terminate, appliance teardown) converge.
+func TestDeleteNetworkInterface_VpcdDeletePortError_NonFatal(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+
+	testutil.OverrideVpcdStubResponse(nc, "vpc.delete-port",
+		[]byte(`{"success":false,"error":"forced-delete-port-error"}`))
+
+	_, err := svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{
+		NetworkInterfaceId: aws.String(eniId),
+	}, testAccountID)
+	require.NoError(t, err, "a vpcd delete-port failure must not fail DeleteNetworkInterface")
+
+	// The ENI record itself is gone regardless of the OVN-side failure.
+	_, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	assert.Error(t, err)
+}
+
 func TestModifyNetworkInterfaceAttribute_SecurityGroups(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")

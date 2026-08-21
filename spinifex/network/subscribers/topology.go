@@ -131,12 +131,13 @@ func (s *Subscriber) handleCreatePort(msg *nats.Msg) {
 		return
 	}
 	if err := s.topology.EnsurePort(context.Background(), topology.PortSpec{
-		PortID:    evt.NetworkInterfaceId,
-		SubnetID:  evt.SubnetId,
-		VPCID:     evt.VpcId,
-		PrivateIP: ip,
-		MAC:       mac,
-		SGIDs:     evt.SecurityGroupIds,
+		PortID:       evt.NetworkInterfaceId,
+		SubnetID:     evt.SubnetId,
+		VPCID:        evt.VpcId,
+		PrivateIP:    ip,
+		MAC:          mac,
+		SGIDs:        evt.SecurityGroupIds,
+		SuppressDHCP: evt.SuppressDHCP,
 	}); err != nil {
 		slog.Error("subscribers: EnsurePort failed", "eni_id", evt.NetworkInterfaceId, "err", err)
 		respond(msg, err)

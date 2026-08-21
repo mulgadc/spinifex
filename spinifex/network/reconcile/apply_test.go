@@ -76,6 +76,44 @@ func TestReconcile_TopoOrder_VPCThenSubnetThenPort(t *testing.T) {
 	}
 }
 
+// TestReconcile_PortSuppressDHCP proves applyPorts' create branch never sets
+// DHCPv4Options for a SuppressDHCP port (a statically-addressed customer
+// ENI), while an ordinary port on the same subnet still gets one — this is
+// the drift/recreate path, distinct from EnsurePort's, that must not re-add
+// a lease the guest's dhcpcd would flush the static address on.
+func TestReconcile_PortSuppressDHCP(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	intent := freshIntent(t)
+	mac, _ := net.ParseMAC("02:00:00:00:00:09")
+	intent.Ports["eni-static"] = topology.PortSpec{
+		PortID: "eni-static", SubnetID: "subnet-a", VPCID: "vpc-a",
+		PrivateIP: netip.MustParseAddr("10.0.1.11"), MAC: mac,
+		SuppressDHCP: true,
+	}
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	dhcpLSP := m.Ports["port-"+intent.Ports["eni-a"].PortID]
+	if dhcpLSP == nil {
+		t.Fatal("ordinary ENI port not created")
+	}
+	if dhcpLSP.DHCPv4Options == nil {
+		t.Errorf("ordinary ENI's LSP must carry dhcpv4_options")
+	}
+
+	staticLSP := m.Ports["port-eni-static"]
+	if staticLSP == nil {
+		t.Fatal("static ENI port not created")
+	}
+	if staticLSP.DHCPv4Options != nil {
+		t.Errorf("SuppressDHCP ENI's LSP must not carry dhcpv4_options, got %q", *staticLSP.DHCPv4Options)
+	}
+}
+
 func TestReconcile_PortJoinsPortGroupAtomically(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()

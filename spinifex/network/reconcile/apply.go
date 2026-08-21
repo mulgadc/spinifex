@@ -302,8 +302,10 @@ func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual 
 					"spinifex:vpc_id":    spec.VPCID,
 				},
 			}
-			if dhcpOpts, derr := r.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", spec.SubnetID); derr == nil && dhcpOpts != nil {
-				lsp.DHCPv4Options = &dhcpOpts.UUID
+			if !spec.SuppressDHCP {
+				if dhcpOpts, derr := r.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", spec.SubnetID); derr == nil && dhcpOpts != nil {
+					lsp.DHCPv4Options = &dhcpOpts.UUID
+				}
 			}
 			if err := r.ovn.CreateLogicalSwitchPortInGroups(ctx, switchName, lsp, desiredPGs); err != nil {
 				slog.Error("reconcile/apply: create ENI port failed", "port", portName, "err", err)

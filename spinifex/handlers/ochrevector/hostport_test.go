@@ -98,6 +98,26 @@ func (f *fakeVPC) putApplianceENI(eniID, identifier, subnetID, ip string) {
 	}
 }
 
+// putTaggedENIWithDescription seeds an appliance-tagged ENI that also carries
+// a description, so a test can present both the endpoint ENI and the
+// management NIC that share the rds-db-instance tag at launch.
+func (f *fakeVPC) putTaggedENIWithDescription(eniID, identifier, subnetID, ip, description string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.records == nil {
+		f.records = map[string]*ec2.NetworkInterface{}
+	}
+	f.records[eniID] = &ec2.NetworkInterface{
+		NetworkInterfaceId: aws.String(eniID),
+		SubnetId:           aws.String(subnetID),
+		PrivateIpAddress:   aws.String(ip),
+		Description:        aws.String(description),
+		TagSet: []*ec2.Tag{
+			{Key: aws.String(applianceInstanceTagKey), Value: aws.String(identifier)},
+		},
+	}
+}
+
 // tagValue returns the value of key in tags, or "" if absent.
 func tagValue(tags []*ec2.Tag, key string) string {
 	for _, t := range tags {
@@ -402,6 +422,31 @@ func TestResolveApplianceTarget_FindsTheTaggedApplianceENI(t *testing.T) {
 	assert.Equal(t, testApplianceEndpoint, dialIP)
 	assert.Equal(t, testApplianceSubnet, subnetID)
 	assert.Equal(t, "10.244.1.0/24", cidr)
+}
+
+// The endpoint ENI and the management NIC share the rds-db-instance tag, but
+// only the endpoint ENI (described "RDS endpoint ENI for ...") is reachable
+// from the daemon. The resolver must pick it by description regardless of the
+// order DescribeNetworkInterfaces returns them -- map iteration is unordered,
+// so a repeat loop exercises both orderings.
+func TestResolveApplianceTarget_PrefersEndpointENIOverManagementNIC(t *testing.T) {
+	const mgmtSubnet = "subnet-mgmt-0001"
+	const mgmtIP = "10.251.185.4"
+	for range 16 {
+		h := newHostPortHarness()
+		h.putSubnet(testApplianceSubnet, "10.244.1.0/24")
+		h.putSubnet(mgmtSubnet, "10.251.185.0/24")
+		h.vpc.putTaggedENIWithDescription("eni-mgmt", testApplianceIdentifier, mgmtSubnet, mgmtIP,
+			"RDS management NIC for "+testApplianceIdentifier)
+		h.vpc.putTaggedENIWithDescription("eni-endpoint", testApplianceIdentifier, testApplianceSubnet, testApplianceEndpoint,
+			endpointENIDescriptionPrefix+testApplianceIdentifier)
+
+		dialIP, subnetID, cidr, err := resolveApplianceTarget(t.Context(), h.deps(), testApplianceIdentifier)
+		require.NoError(t, err)
+		require.Equal(t, testApplianceEndpoint, dialIP, "must dial the endpoint ENI, never the management NIC")
+		require.Equal(t, testApplianceSubnet, subnetID)
+		require.Equal(t, "10.244.1.0/24", cidr)
+	}
 }
 
 // An ENI tagged for a different identifier must never match.

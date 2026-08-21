@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -135,6 +136,11 @@ func ensureDaemonENI(ctx context.Context, vpcSvc vpcProvisioner, subnetID, nodeI
 // (tests/e2e/harness/rds.go) duplicates it the same way.
 const applianceInstanceTagKey = "spinifex:rds-db-instance"
 
+// endpointENIDescriptionPrefix mirrors the description handlers/rds gives the
+// customer (endpoint) ENI in resolveCustomerENI. The management NIC shares the
+// rds-db-instance tag, so description is what tells the reachable ENI apart.
+const endpointENIDescriptionPrefix = "RDS endpoint ENI for "
+
 // resolveApplianceTarget finds the appliance's own customer ENI by the tag
 // handlers/rds stamps on it at launch, returning the real private IP to dial
 // and the subnet it lives in -- never the vanity endpoint hostname, which is
@@ -152,12 +158,21 @@ func resolveApplianceTarget(ctx context.Context, deps HostPortDeps, identifier s
 	if err != nil {
 		return "", "", "", fmt.Errorf("ochrevector: describe appliance ENI for %s: %w", identifier, err)
 	}
+	// Both the endpoint ENI and the management NIC carry the rds-db-instance
+	// tag, but only the endpoint ENI (in the customer VPC) is reachable from the
+	// daemon. Prefer it by description; fall back to any usable tagged NIC.
 	var ni *ec2.NetworkInterface
 	if out != nil {
 		for _, cand := range out.NetworkInterfaces {
-			if aws.StringValue(cand.PrivateIpAddress) != "" && aws.StringValue(cand.SubnetId) != "" {
+			if aws.StringValue(cand.PrivateIpAddress) == "" || aws.StringValue(cand.SubnetId) == "" {
+				continue
+			}
+			if strings.HasPrefix(aws.StringValue(cand.Description), endpointENIDescriptionPrefix) {
 				ni = cand
 				break
+			}
+			if ni == nil {
+				ni = cand
 			}
 		}
 	}

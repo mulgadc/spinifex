@@ -193,8 +193,8 @@ The surface is unreachable until an operator runs `spx admin principal create`; 
 | `modify-instance-metadata-options` | `--instance-id`, `--http-put-response-hop-limit` (1–64), `--http-tokens` (`required`/`optional`), `--http-endpoint` (`enabled`), `--http-protocol-ipv6`/`--instance-metadata-tags` (`disabled`) — unmodelled values return `UnsupportedOperation` | `--dry-run` | **DONE** |
 | `describe-instance-credit-specifications` | `--instance-ids` | `--filters`, `--max-results`, `--dry-run` | **DONE** (stub — always returns `standard`) |
 | `describe-instance-status` | `--instance-ids`, `--include-all-instances`, `--filters` (availability-zone, instance-state-code, instance-state-name, tag:*) | `--max-results`, `--next-token`, `--dry-run`, event/instance-status/system-status filters | **DONE** (static health) |
-| `monitor-instances` | — | `--instance-ids` | **NOT STARTED** |
-| `unmonitor-instances` | — | `--instance-ids` | **NOT STARTED** |
+| `monitor-instances` | `--instance-ids` | `--dry-run` | **DONE** (60s detailed telemetry; state is `enabled`/`disabled` only, never `pending`/`disabling`) |
+| `unmonitor-instances` | `--instance-ids` | `--dry-run` | **DONE** (returns the instance to the 300s basic tier) |
 
 ### EC2 — Spot Instances
 

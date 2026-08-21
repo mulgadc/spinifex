@@ -194,6 +194,46 @@ func TestPollerPeriod(t *testing.T) {
 	}
 }
 
+// A tier change has to wake the run loop. Without the signal the reset waits
+// out the interval being replaced, so moving a 300s instance to the detailed
+// tier would take five minutes to take effect.
+func TestUpdateMetaSignalsOnlyTierChanges(t *testing.T) {
+	p := newPoller(&Config{}, nil, types.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 300})
+
+	signalled := func() bool {
+		select {
+		case <-p.retier:
+			return true
+		default:
+			return false
+		}
+	}
+
+	p.updateMeta(types.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 300, Taps: []string{"tap0"}})
+	if signalled() {
+		t.Error("a taps-only rewrite must not signal a tier change")
+	}
+
+	p.updateMeta(types.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 60})
+	if !signalled() {
+		t.Fatal("moving to the detailed tier must signal")
+	}
+	if got := p.period(); got != 60*time.Second {
+		t.Errorf("period = %v, want 60s", got)
+	}
+
+	// The signal is coalesced, so a poller that has not woken yet cannot
+	// accumulate a backlog of resets.
+	p.updateMeta(types.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 300})
+	p.updateMeta(types.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 60})
+	if !signalled() {
+		t.Fatal("a pending tier change must be visible")
+	}
+	if signalled() {
+		t.Error("repeated changes must coalesce into one pending signal")
+	}
+}
+
 func TestStaggerOffset(t *testing.T) {
 	period := 60 * time.Second
 	a := staggerOffset("i-0aaa", period)

@@ -90,3 +90,42 @@ func TestTelemetryMetaRoundtrip(t *testing.T) {
 		t.Error("metadata must be removed")
 	}
 }
+
+// A monitoring-tier change has to reach the discovery file, because that file
+// is the only thing the collector reads to decide a poller's interval.
+func TestRefreshTelemetryMetaCarriesTierChange(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	v := &VM{ID: "i-0abc", AccountID: "123456789012", RunInstancesInput: &ec2.RunInstancesInput{}}
+	v.Config.TelemetryQMPSocket = utils.TelemetryMetaPath(v.ID) + ".sock"
+
+	readPeriod := func() int {
+		t.Helper()
+		data, err := os.ReadFile(utils.TelemetryMetaPath(v.ID))
+		if err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		var meta types.GuestTelemetryMeta
+		if err := json.Unmarshal(data, &meta); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return meta.PeriodSeconds
+	}
+
+	v.RefreshTelemetryMeta()
+	if got := readPeriod(); got != 300 {
+		t.Fatalf("basic tier period = %d, want 300", got)
+	}
+
+	v.RunInstancesInput.Monitoring = &ec2.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)}
+	v.RefreshTelemetryMeta()
+	if got := readPeriod(); got != 60 {
+		t.Errorf("detailed tier period = %d, want 60", got)
+	}
+
+	v.RunInstancesInput.Monitoring.Enabled = aws.Bool(false)
+	v.RefreshTelemetryMeta()
+	if got := readPeriod(); got != 300 {
+		t.Errorf("period after disable = %d, want 300", got)
+	}
+}

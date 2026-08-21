@@ -419,6 +419,52 @@ func (s *InstanceServiceImpl) TagStoppedInstance(ctx context.Context, instanceID
 	return nil
 }
 
+// SetStoppedInstanceMonitoring applies a monitoring-tier change to a stopped
+// instance's shared KV record. Nothing polls a stopped instance, so there is
+// no discovery file to rewrite: the next start stamps one from this flag.
+func (s *InstanceServiceImpl) SetStoppedInstanceMonitoring(ctx context.Context, instanceID string, enabled bool, accountID string) error {
+	if s.stoppedStore == nil {
+		slog.ErrorContext(ctx, "SetStoppedInstanceMonitoring: stopped store not available")
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.ErrorContext(ctx, "SetStoppedInstanceMonitoring: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.WarnContext(ctx, "SetStoppedInstanceMonitoring: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	// CAS with createIfAbsent=false so a start-claim that deletes the record
+	// between the Load above and this write fails cleanly rather than
+	// resurrecting a stale stopped entry.
+	if _, err := s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
+		if v.RunInstancesInput == nil {
+			return
+		}
+		if v.RunInstancesInput.Monitoring == nil {
+			v.RunInstancesInput.Monitoring = &ec2.RunInstancesMonitoringEnabled{}
+		}
+		v.RunInstancesInput.Monitoring.Enabled = aws.Bool(enabled)
+	}); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			slog.WarnContext(ctx, "SetStoppedInstanceMonitoring: instance claimed concurrently, not resurrecting", "instanceId", instanceID)
+			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		}
+		slog.ErrorContext(ctx, "SetStoppedInstanceMonitoring: failed to write stopped instance", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	slog.InfoContext(ctx, "SetStoppedInstanceMonitoring: tier applied", "instanceId", instanceID, "enabled", enabled)
+	return nil
+}
+
 // deleteCentralInstanceTags removes a terminated instance's central tag store
 // entry so describe-tags stops reporting it, while the terminated record keeps
 // its tags until TTL. Best-effort: the terminate already succeeded, so a

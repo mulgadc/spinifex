@@ -970,6 +970,8 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.RevokeSecurityGroupEgress", handleNATSRequest(d.vpcService.RevokeSecurityGroupEgress), "spinifex-workers"},
 		{"ec2.ModifyInstanceAttribute", handleNATSRequest(d.instanceService.ModifyInstanceAttribute), "spinifex-workers"},
 		{"ec2.ModifyInstanceMetadataOptions", handleNATSRequest(d.instanceService.ModifyInstanceMetadataOptions), "spinifex-workers"},
+		{"ec2.MonitorInstances", handleNATSRequest(d.monitorInstances), "spinifex-workers"},
+		{"ec2.UnmonitorInstances", handleNATSRequest(d.unmonitorInstances), "spinifex-workers"},
 		{"ec2.start", d.handleEC2StartStoppedInstance, "spinifex-workers"},
 		// ec2.start.{node} is the node-targeted variant: it always starts locally
 		// and never re-forwards, so it goes straight to the service (no routing loop).

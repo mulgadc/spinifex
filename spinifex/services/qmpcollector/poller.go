@@ -49,20 +49,35 @@ type poller struct {
 	nc     *nats.Conn
 	cancel context.CancelFunc
 
+	// retier wakes run when the monitoring tier changes, so a period move is
+	// not queued behind a tick of the period being replaced.
+	retier chan struct{}
+
 	mu   sync.Mutex
 	meta types.GuestTelemetryMeta
 	prev *sample
 }
 
 func newPoller(cfg *Config, nc *nats.Conn, meta types.GuestTelemetryMeta) *poller {
-	return &poller{cfg: cfg, nc: nc, meta: meta}
+	return &poller{cfg: cfg, nc: nc, meta: meta, retier: make(chan struct{}, 1)}
 }
 
-// updateMeta refreshes taps/period after an ENI hot-plug rewrite.
+// updateMeta refreshes taps/period after an ENI hot-plug or monitoring-tier
+// rewrite, waking the run loop when the period moved.
 func (p *poller) updateMeta(meta types.GuestTelemetryMeta) {
 	p.mu.Lock()
+	retier := meta.PeriodSeconds != p.meta.PeriodSeconds
 	p.meta = meta
 	p.mu.Unlock()
+	if !retier {
+		return
+	}
+	// Non-blocking: the loop re-reads the period itself, so one pending
+	// signal is enough and a slow poller must not stall the collector.
+	select {
+	case p.retier <- struct{}{}:
+	default:
+	}
 }
 
 func (p *poller) snapshotMeta() types.GuestTelemetryMeta {
@@ -100,17 +115,32 @@ func (p *poller) run(ctx context.Context) {
 
 	ticker := time.NewTicker(period)
 	defer ticker.Stop()
-	for {
-		p.tick(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
+
+	applyPeriod := func() {
 		if next := p.period(); next != period {
 			period = next
 			ticker.Reset(period)
 		}
+	}
+
+	for {
+		p.tick(ctx)
+		// Reset on the retier signal rather than waiting out the interval
+		// being replaced: at 300s, moving to the detailed tier would
+		// otherwise take five minutes to take effect. The next sample still
+		// lands a full new period away, so a published delta always spans
+		// the period it declares.
+		for ticked := false; !ticked; {
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.retier:
+				applyPeriod()
+			case <-ticker.C:
+				ticked = true
+			}
+		}
+		applyPeriod()
 	}
 }
 

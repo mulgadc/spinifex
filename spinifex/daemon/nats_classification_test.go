@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -135,11 +136,17 @@ func TestEC2CommandNameCoversEveryCommand(t *testing.T) {
 		{"SetSpotLineage", func(a *types.EC2CommandAttributes) { a.SetSpotLineage = true }},
 		{"SetInstanceTags", func(a *types.EC2CommandAttributes) { a.SetInstanceTags = true }},
 		{"RemoveInstanceTags", func(a *types.EC2CommandAttributes) { a.RemoveInstanceTags = true }},
+		{"SetInstanceMonitoring", func(a *types.EC2CommandAttributes) { a.SetInstanceMonitoring = true }},
 		{"StartInstance", func(a *types.EC2CommandAttributes) { a.StartInstance = true }},
 		{"RebootInstance", func(a *types.EC2CommandAttributes) { a.RebootInstance = true }},
 		{"StopInstance", func(a *types.EC2CommandAttributes) { a.StopInstance = true }},
 		{"TerminateInstance", func(a *types.EC2CommandAttributes) { a.TerminateInstance = true }},
 	}
+	// The table is hand-written, so without this a new attribute would pass by
+	// simply not being listed — and its commands would report as "unknown".
+	assert.Len(t, tests, reflect.TypeFor[types.EC2CommandAttributes]().NumField(),
+		"every EC2CommandAttributes field needs a case here and in ec2CommandName")
+
 	for _, tc := range tests {
 		t.Run(tc.want, func(t *testing.T) {
 			assert.Equal(t, tc.want, ec2CommandName(commandFor("i-123", tc.set)))

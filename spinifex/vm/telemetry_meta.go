@@ -80,6 +80,13 @@ func refreshTelemetryMeta(v *VM) {
 	}
 }
 
+// RefreshTelemetryMeta rewrites the discovery file so the collector converges
+// on the VM's current monitoring tier and ENI set. Must not be called under
+// the manager lock: telemetryTaps takes the VM's own ENI lock.
+func (v *VM) RefreshTelemetryMeta() {
+	refreshTelemetryMeta(v)
+}
+
 // removeTelemetryArtifacts deletes the telemetry socket and discovery file so
 // the collector stops polling a gone VM.
 func removeTelemetryArtifacts(v *VM) {

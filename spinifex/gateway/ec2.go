@@ -169,6 +169,12 @@ var ec2Actions = map[string]EC2Handler{
 	"RebootInstances": ec2Handler(func(ctx context.Context, input *ec2.RebootInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.RebootInstances(ctx, input, gw.NATSConn, accountID)
 	}),
+	"MonitorInstances": ec2Handler(func(ctx context.Context, input *ec2.MonitorInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_instance.MonitorInstances(ctx, input, gw.NATSConn, accountID)
+	}),
+	"UnmonitorInstances": ec2Handler(func(ctx context.Context, input *ec2.UnmonitorInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_instance.UnmonitorInstances(ctx, input, gw.NATSConn, accountID)
+	}),
 	"TerminateInstances": ec2Handler(func(ctx context.Context, input *ec2.TerminateInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.TerminateInstances(ctx, input, gw.NATSConn, accountID)
 	}),

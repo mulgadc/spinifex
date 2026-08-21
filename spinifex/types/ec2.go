@@ -13,6 +13,7 @@ type EC2InstanceCommand struct {
 	IamProfileAssociationData *IamProfileAssociationData `json:"iam_profile_association_data,omitempty"`
 	SpotLineageData           *SpotLineageData           `json:"spot_lineage_data,omitempty"`
 	InstanceTagsData          *InstanceTagsData          `json:"instance_tags_data,omitempty"`
+	InstanceMonitoringData    *InstanceMonitoringData    `json:"instance_monitoring_data,omitempty"`
 }
 
 // EC2CommandAttributes indicates which action the daemon should perform.
@@ -30,6 +31,7 @@ type EC2CommandAttributes struct {
 	SetSpotLineage              bool `json:"set_spot_lineage,omitempty"`
 	SetInstanceTags             bool `json:"set_instance_tags,omitempty"`
 	RemoveInstanceTags          bool `json:"remove_instance_tags,omitempty"`
+	SetInstanceMonitoring       bool `json:"set_instance_monitoring,omitempty"`
 }
 
 // AttachVolumeData carries parameters for an attach-volume command.
@@ -98,6 +100,14 @@ type IamProfileAssociationData struct {
 type InstanceTagsData struct {
 	Tags    map[string]string `json:"tags,omitempty"`
 	TagKeys []string          `json:"tag_keys,omitempty"`
+}
+
+// InstanceMonitoringData carries the desired EC2 monitoring tier for a
+// set-instance-monitoring command: enabled is 60s detailed, disabled is 300s
+// basic. Carried as data rather than a second attribute so "disable" is an
+// explicit value, not the absence of one.
+type InstanceMonitoringData struct {
+	Enabled bool `json:"enabled"`
 }
 
 // SpotLineageData carries the SIR id stamped onto a spot-launched instance.

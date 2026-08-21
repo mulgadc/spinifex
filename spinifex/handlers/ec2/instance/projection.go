@@ -113,6 +113,17 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 		}
 	}
 
+	// Monitoring reads the same field the telemetry collector's period does, so
+	// a describe cannot disagree with the tier actually being collected. Only
+	// enabled/disabled: the collector converges within one discovery interval,
+	// leaving no pending/disabling window for a client to wait on.
+	monitoringState := ec2.MonitoringStateDisabled
+	if v.RunInstancesInput != nil && v.RunInstancesInput.Monitoring != nil &&
+		aws.BoolValue(v.RunInstancesInput.Monitoring.Enabled) {
+		monitoringState = ec2.MonitoringStateEnabled
+	}
+	instanceCopy.Monitoring = &ec2.Monitoring{State: aws.String(monitoringState)}
+
 	// Spot lineage stamped by the post-launch write-back survives a stop, so
 	// project it regardless of runtime state. Both empty for on-demand, so the
 	// fields stay absent there.

@@ -62,4 +62,8 @@ type PortSpec struct {
 	// It does not affect the L2 LSP; the reconciler reads it to exempt the
 	// instance from its subnet egress drop gate (the dnat_and_snat datapath).
 	PublicIP netip.Addr
+	// SuppressDHCP, when true, skips attaching the subnet's dhcpv4_options to
+	// this port's LSP. Set for statically-addressed ENIs whose guest must
+	// never take an OVN DHCP lease.
+	SuppressDHCP bool
 }

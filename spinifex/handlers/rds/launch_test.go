@@ -594,6 +594,13 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 		assert.Equal(t, "mydb", tagOf(eni.TagSpecifications, rdsInstanceTagKey))
 	}
 
+	// Only the customer endpoint ENI is statically addressed; the system NIC
+	// still needs its OVN DHCP lease for IMDS bootstrap.
+	assert.Empty(t, tagOf(sysENI.TagSpecifications, tags.DHCPDisabledKey),
+		"the system NIC must keep DHCP")
+	assert.Equal(t, tags.DHCPDisabledValue, tagOf(custENI.TagSpecifications, tags.DHCPDisabledKey),
+		"the customer endpoint ENI must be marked to suppress DHCP")
+
 	// The VM itself: a system-account instance off the engine AMI, carrying the
 	// managed-by tag that hides it from the customer's EC2 API, with the
 	// customer ENI injected cross-account as an extra NIC.

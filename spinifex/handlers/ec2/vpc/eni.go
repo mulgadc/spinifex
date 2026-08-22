@@ -14,6 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -83,6 +84,11 @@ type ENIRecord struct {
 	// interface and the value DescribeNetworkInterfaces already advertised
 	// before this field backed it.
 	DeleteOnTermination *bool `json:"delete_on_termination,omitempty"`
+	// SuppressDHCP marks a statically-addressed ENI whose port must never get
+	// an OVN DHCP lease, so the guest's dhcpcd never flushes its static
+	// address at lease expiry. Set from the internal dhcp-disabled tag at
+	// create; threaded straight through to the port layer.
+	SuppressDHCP bool `json:"suppress_dhcp,omitempty"`
 }
 
 // eniIsLiveAttachment reports whether the ENI record is a live attachment to
@@ -155,6 +161,13 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 		description = *input.Description
 	}
 
+	// The dhcp-disabled tag is an internal signal from the launch path (a
+	// statically-addressed customer ENI), not a customer-visible tag: strip it
+	// from the persisted tag set once consumed.
+	eniTags := utils.ExtractTags(input.TagSpecifications, "network-interface")
+	suppressDHCP := eniTags[tags.DHCPDisabledKey] == tags.DHCPDisabledValue
+	delete(eniTags, tags.DHCPDisabledKey)
+
 	record := ENIRecord{
 		NetworkInterfaceId: eniId,
 		SubnetId:           subnetId,
@@ -165,8 +178,9 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 		Description:        description,
 		Status:             "available",
 		SecurityGroupIds:   sgIdsIn,
-		Tags:               utils.ExtractTags(input.TagSpecifications, "network-interface"),
+		Tags:               eniTags,
 		CreatedAt:          time.Now(),
+		SuppressDHCP:       suppressDHCP,
 	}
 
 	data, err := json.Marshal(record)
@@ -183,7 +197,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	// caller. Fire-and-forget would let CreateNetworkInterface return success
 	// while the LSP joins zero port groups (NATS hiccup or vpcd OVSDB error),
 	// leaving the port unrestricted until the 30s reconciler heals it.
-	if err := s.requestPortEvent("vpc.create-port", eniId, subnetId, subnet.VpcId, privateIP, macAddr, sgIdsIn); err != nil {
+	if err := s.requestPortEvent("vpc.create-port", eniId, subnetId, subnet.VpcId, privateIP, macAddr, sgIdsIn, record.SuppressDHCP); err != nil {
 		slog.ErrorContext(ctx, "CreateNetworkInterface: vpcd create-port failed", "eniId", eniId, "err", err)
 		return nil, err
 	}
@@ -255,7 +269,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 	// Publish vpc.delete-port event for vpcd topology cleanup. SG IDs are
 	// included for consistency with create-port; vpcd's delete handler reads
 	// current memberships from the libovsdb cache rather than the event.
-	s.publishPortEvent("vpc.delete-port", eniId, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress, record.SecurityGroupIds)
+	s.publishPortEvent("vpc.delete-port", eniId, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress, record.SecurityGroupIds, false)
 
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
 }
@@ -364,7 +378,7 @@ func (s *VPCServiceImpl) DetachAndDeleteENI(ctx context.Context, accountID, eniI
 		s.releaseENISideEffects(ctx, eniID, accountID, &record)
 
 		slog.InfoContext(ctx, "DetachAndDeleteENI completed", "eniId", eniID, "accountID", accountID, "force", force)
-		s.publishPortEvent("vpc.delete-port", eniID, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress, record.SecurityGroupIds)
+		s.publishPortEvent("vpc.delete-port", eniID, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress, record.SecurityGroupIds, false)
 		return true, nil
 	}
 
@@ -966,13 +980,16 @@ type portEventPayload struct {
 	PrivateIpAddress   string   `json:"private_ip_address"`
 	MacAddress         string   `json:"mac_address"`
 	SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
+	// SuppressDHCP, set on create, skips attaching the subnet's dhcpv4_options
+	// to this port's LSP. Irrelevant on delete.
+	SuppressDHCP bool `json:"suppress_dhcp,omitempty"`
 }
 
 // publishPortEvent sends vpc.delete-port via request-reply so vpcd confirms
 // the LSP is gone before a same-IP recreate can collide with a stale one.
 // Non-fatal: the ENI KV row is already gone, so a failure is only logged.
-func (s *VPCServiceImpl) publishPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr string, sgIds []string) {
-	if err := s.requestPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr, sgIds); err != nil {
+func (s *VPCServiceImpl) publishPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr string, sgIds []string, suppressDHCP bool) {
+	if err := s.requestPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr, sgIds, suppressDHCP); err != nil {
 		slog.Warn("vpc: delete-port request failed, relying on reconciler orphan prune",
 			"topic", topic, "eniId", eniId, "err", err)
 	}
@@ -980,7 +997,7 @@ func (s *VPCServiceImpl) publishPortEvent(topic, eniId, subnetId, vpcId, private
 
 // requestPortEvent sends a port lifecycle event via request-reply so vpcd
 // OVSDB failures surface to the caller rather than being swallowed.
-func (s *VPCServiceImpl) requestPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr string, sgIds []string) error {
+func (s *VPCServiceImpl) requestPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr string, sgIds []string, suppressDHCP bool) error {
 	return utils.RequestEvent(s.natsConn, topic, portEventPayload{
 		NetworkInterfaceId: eniId,
 		SubnetId:           subnetId,
@@ -988,6 +1005,7 @@ func (s *VPCServiceImpl) requestPortEvent(topic, eniId, subnetId, vpcId, private
 		PrivateIpAddress:   privateIP,
 		MacAddress:         macAddr,
 		SecurityGroupIds:   sgIds,
+		SuppressDHCP:       suppressDHCP,
 	}, vpcdSGEventTimeout)
 }
 

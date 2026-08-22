@@ -322,8 +322,10 @@ func (m *liveManager) EnsurePort(ctx context.Context, spec PortSpec) error {
 			"spinifex:vpc_id":    spec.VPCID,
 		},
 	}
-	if dhcpOpts, err := m.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", spec.SubnetID); err == nil {
-		lsp.DHCPv4Options = &dhcpOpts.UUID
+	if !spec.SuppressDHCP {
+		if dhcpOpts, err := m.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", spec.SubnetID); err == nil {
+			lsp.DHCPv4Options = &dhcpOpts.UUID
+		}
 	}
 
 	pgNames := make([]string, 0, len(spec.SGIDs))

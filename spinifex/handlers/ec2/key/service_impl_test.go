@@ -1112,26 +1112,3 @@ func TestDescribeKeyPairs_AWSFilterWildcard(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, out.KeyPairs, 2)
 }
-
-func TestDescribeKeyPairs_AWSFilterNoResults(t *testing.T) {
-	svc, _ := newTestKeyService()
-	importTestKey(t, svc, "my-key")
-
-	out, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
-		Filters: []*ec2.Filter{
-			{Name: aws.String("key-name"), Values: []*string{aws.String("nonexistent")}},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-	assert.Empty(t, out.KeyPairs)
-}
-
-func TestDescribeKeyPairs_AWSFilterNoFilters(t *testing.T) {
-	svc, _ := newTestKeyService()
-	importTestKey(t, svc, "key-1")
-	importTestKey(t, svc, "key-2")
-
-	out, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{}, testAccountID)
-	require.NoError(t, err)
-	assert.Len(t, out.KeyPairs, 2)
-}

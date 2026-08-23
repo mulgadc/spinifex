@@ -223,47 +223,6 @@ func TestIntegration_FileUpload_PublicBucket(t *testing.T) {
 	t.Logf("Successfully uploaded and verified file: s3://%s/%s", publicBucket, key)
 }
 
-func TestIntegration_FileUpload_PublicBucket2(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	fixture := testpredastore.Start(t)
-
-	client := createS3Client(fixture, validAccessKey, validSecretKey)
-
-	// Upload test file
-	key := "test1.txt"
-	expectedContent := "hello-world-test-1-" + publicBucket
-	body := strings.NewReader(expectedContent)
-
-	_, err := client.PutObject(&s3.PutObjectInput{
-		Bucket: aws.String(publicBucket),
-		Key:    aws.String(key),
-		Body:   body,
-	})
-	assert.NoError(t, err, "File upload should succeed")
-
-	// Download and verify content
-	result, err := client.GetObject(&s3.GetObjectInput{
-		Bucket: aws.String(publicBucket),
-		Key:    aws.String(key),
-	})
-	if !assert.NoError(t, err, "File download should succeed") {
-		return
-	}
-	if !assert.NotNil(t, result, "Result should not be nil") {
-		return
-	}
-
-	defer result.Body.Close()
-	downloadedContent, err := io.ReadAll(result.Body)
-	assert.NoError(t, err, "Reading file content should succeed")
-	assert.Equal(t, expectedContent, string(downloadedContent), "File content should match")
-
-	t.Logf("Successfully uploaded and verified file: s3://%s/%s", publicBucket, key)
-}
-
 // TestIntegration_FileOperations_Complete tests full file lifecycle.
 func TestIntegration_FileOperations_Complete(t *testing.T) {
 	if testing.Short() {

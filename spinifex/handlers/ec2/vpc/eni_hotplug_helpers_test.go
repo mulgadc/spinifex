@@ -94,12 +94,6 @@ func TestFindENIByAttachment_NotFound(t *testing.T) {
 	assert.ErrorContains(t, err, "InvalidAttachmentID.NotFound")
 }
 
-func TestFindENIByAttachment_EmptyBucket(t *testing.T) {
-	svc := setupTestVPCService(t)
-	_, err := svc.FindENIByAttachment(testAccountID, "eni-attach-anything")
-	assert.ErrorContains(t, err, "InvalidAttachmentID.NotFound")
-}
-
 func TestFindENIByAttachment_AccountScoped(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")

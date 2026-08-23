@@ -339,13 +339,6 @@ func TestNoSuchKeyError(t *testing.T) {
 	assert.False(t, IsNoSuchKeyError(assert.AnError))
 }
 
-func TestIsNoSuchKeyError_WithWrappedError(t *testing.T) {
-	originalErr := &NoSuchKeyError{Key: "test"}
-
-	// Even when wrapped, IsNoSuchKeyError should work
-	assert.True(t, IsNoSuchKeyError(originalErr))
-}
-
 // Test that the interface is properly defined.
 var _ ObjectStore = (*MemoryObjectStore)(nil)
 var _ ObjectStore = (*S3ObjectStore)(nil)

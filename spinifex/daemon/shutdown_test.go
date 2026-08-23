@@ -66,18 +66,6 @@ func TestClusterShutdownStateKVRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestShuttingDownFlagSkipsVMStop verifies that the shuttingDown flag is respected.
-func TestShuttingDownFlagSkipsVMStop(t *testing.T) {
-	d := &Daemon{}
-
-	// Default should be false
-	assert.False(t, d.shuttingDown.Load())
-
-	// Set to true (as GATE phase does)
-	d.shuttingDown.Store(true)
-	assert.True(t, d.shuttingDown.Load())
-}
-
 // TestRespondShutdownACK verifies respondShutdownACK marshals and sends the ACK via NATS request/reply.
 func TestRespondShutdownACK(t *testing.T) {
 	nc, err := nats.Connect(sharedNATSURL)

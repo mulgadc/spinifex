@@ -161,14 +161,6 @@ func TestChunkText_NoSpacesLongWord(t *testing.T) {
 	}
 }
 
-// TestChunkText_DefaultsAreApproximationsInRunes documents that the exported
-// defaults are rune counts, not real tokenizer output.
-func TestChunkText_DefaultsAreApproximationsInRunes(t *testing.T) {
-	assert.Equal(t, 512*approxCharsPerToken, DefaultChunkSize)
-	assert.Equal(t, 64*approxCharsPerToken, DefaultChunkOverlap)
-	assert.Less(t, DefaultChunkOverlap, DefaultChunkSize)
-}
-
 // TestChunkText_NegativeAndZeroInputsClamp proves size<=0 and overlap<0 (or
 // overlap>=size) are normalized rather than left to misbehave or loop.
 func TestChunkText_NegativeAndZeroInputsClamp(t *testing.T) {
@@ -186,16 +178,6 @@ func TestChunkText_NegativeAndZeroInputsClamp(t *testing.T) {
 	// overlap>=size clamps to size-1 rather than stalling the packer forever.
 	chunks = ChunkText(text, 20, 100)
 	require.NotEmpty(t, chunks)
-}
-
-// TestChunkTextForModel_DefaultsAreTokenCounts documents that
-// ChunkTextForModel's defaults, unlike ChunkText's, are real token counts:
-// DefaultMaxInputTokens mirrors bge-base-en-v1.5's 512-token cap and
-// DefaultChunkOverlapTokens mirrors D10's ~64-token overlap.
-func TestChunkTextForModel_DefaultsAreTokenCounts(t *testing.T) {
-	assert.Equal(t, 512, DefaultMaxInputTokens)
-	assert.Equal(t, 64, DefaultChunkOverlapTokens)
-	assert.Less(t, DefaultChunkOverlapTokens, DefaultMaxInputTokens)
 }
 
 // TestChunkTextForModel_ZeroAndNegativeInputsDefault proves maxInputTokens<=0

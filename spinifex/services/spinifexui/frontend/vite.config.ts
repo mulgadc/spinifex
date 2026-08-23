@@ -1,14 +1,13 @@
 /// <reference types="vitest/config" />
 import { fileURLToPath, URL } from "node:url"
 
-import babel from "@rolldown/plugin-babel"
 import tailwindcss from "@tailwindcss/vite"
 import { tanstackRouter } from "@tanstack/router-plugin/vite"
 import basicSsl from "@vitejs/plugin-basic-ssl"
-import react, { reactCompilerPreset } from "@vitejs/plugin-react"
+import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig({
   envDir: "../",
   build: {
     target: "es2023",
@@ -28,8 +27,7 @@ export default defineConfig(({ mode }) => ({
       autoCodeSplitting: true,
       routeFileIgnorePattern: "\\.test\\.(ts|tsx)$",
     }),
-    react(),
-    ...(mode === "test" ? [] : [babel({ presets: [reactCompilerPreset()] })]),
+    react({ compiler: true }),
     tailwindcss(),
   ],
   resolve: {
@@ -60,4 +58,4 @@ export default defineConfig(({ mode }) => ({
       },
     },
   },
-}))
+})

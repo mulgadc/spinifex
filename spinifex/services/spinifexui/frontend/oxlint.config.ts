@@ -45,6 +45,7 @@ export default defineConfig({
       { namedComponents: "function-declaration" },
     ],
     "react/jsx-handler-names": "off",
+    "react/todo": "off",
     "react-you-might-not-need-an-effect/no-adjust-state-on-prop-change":
       "error",
     "react-you-might-not-need-an-effect/no-chain-state-updates": "error",

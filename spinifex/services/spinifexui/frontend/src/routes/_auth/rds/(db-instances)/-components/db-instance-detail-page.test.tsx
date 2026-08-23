@@ -375,16 +375,14 @@ describe("DBInstanceDetailPage", () => {
   it("refreshes the automated backup status after a modify", async () => {
     mockSend.mockImplementation(async (command: object) => {
       if (command.constructor.name === "DescribeDBInstancesCommand") {
-        return Promise.resolve({
-          DBInstances: [{ ...INSTANCE, BackupRetentionPeriod: 0 }],
-        })
+        return { DBInstances: [{ ...INSTANCE, BackupRetentionPeriod: 0 }] }
       }
       if (
         command.constructor.name === "DescribeDBInstanceAutomatedBackupsCommand"
       ) {
-        return Promise.resolve({ DBInstanceAutomatedBackups: [] })
+        return { DBInstanceAutomatedBackups: [] }
       }
-      return Promise.resolve({})
+      return {}
     })
     renderWithClient(
       <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,

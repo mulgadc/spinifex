@@ -9,113 +9,113 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthRouteRouteImport } from './routes/_auth/route'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthIndexRouteImport } from './routes/_auth/index'
 import { Route as AuthNodesRouteImport } from './routes/_auth/nodes'
 import { Route as AuthS3ServiceMetricsRouteImport } from './routes/_auth/s3/service-metrics'
-import { Route as AuthS3LsIndexRouteImport } from './routes/_auth/s3/ls/index'
-import { Route as AuthS3bucketsCreateBucketRouteImport } from './routes/_auth/s3/(buckets)/create-bucket'
-import { Route as AuthRdssubnetGroupsCreateDbSubnetGroupRouteImport } from './routes/_auth/rds/(subnet-groups)/create-db-subnet-group'
-import { Route as AuthRdsparameterGroupsCreateDbParameterGroupRouteImport } from './routes/_auth/rds/(parameter-groups)/create-db-parameter-group'
-import { Route as AuthRdsdbInstancesCreateDbInstanceRouteImport } from './routes/_auth/rds/(db-instances)/create-db-instance'
-import { Route as AuthIamusersCreateUserRouteImport } from './routes/_auth/iam/(users)/create-user'
-import { Route as AuthIamrolesCreateRoleRouteImport } from './routes/_auth/iam/(roles)/create-role'
-import { Route as AuthIampoliciesCreatePolicyRouteImport } from './routes/_auth/iam/(policies)/create-policy'
-import { Route as AuthIaminstanceProfilesCreateInstanceProfileRouteImport } from './routes/_auth/iam/(instance-profiles)/create-instance-profile'
-import { Route as AuthIamgroupsCreateGroupRouteImport } from './routes/_auth/iam/(groups)/create-group'
-import { Route as AuthEksclustersCreateClusterRouteImport } from './routes/_auth/eks/(clusters)/create-cluster'
-import { Route as AuthEcsclustersTaskDefinitionsRouteImport } from './routes/_auth/ecs/(clusters)/task-definitions'
-import { Route as AuthEcsclustersRunTaskRouteImport } from './routes/_auth/ecs/(clusters)/run-task'
-import { Route as AuthEcsclustersRegisterTaskDefinitionRouteImport } from './routes/_auth/ecs/(clusters)/register-task-definition'
-import { Route as AuthEcsclustersCreateServiceRouteImport } from './routes/_auth/ecs/(clusters)/create-service'
-import { Route as AuthEc2vpcCreateVpcRouteImport } from './routes/_auth/ec2/(vpc)/create-vpc'
-import { Route as AuthEc2volumesCreateVolumeRouteImport } from './routes/_auth/ec2/(volumes)/create-volume'
-import { Route as AuthEc2targetGroupsCreateTargetGroupRouteImport } from './routes/_auth/ec2/(target-groups)/create-target-group'
-import { Route as AuthEc2subnetCreateSubnetRouteImport } from './routes/_auth/ec2/(subnet)/create-subnet'
-import { Route as AuthEc2snapshotsCreateSnapshotRouteImport } from './routes/_auth/ec2/(snapshots)/create-snapshot'
-import { Route as AuthEc2securityGroupsCreateSecurityGroupRouteImport } from './routes/_auth/ec2/(security-groups)/create-security-group'
-import { Route as AuthEc2routeTablesCreateRouteTableRouteImport } from './routes/_auth/ec2/(route-tables)/create-route-table'
-import { Route as AuthEc2placementGroupsCreatePlacementGroupRouteImport } from './routes/_auth/ec2/(placement-groups)/create-placement-group'
-import { Route as AuthEc2natGatewaysCreateNatGatewayRouteImport } from './routes/_auth/ec2/(nat-gateways)/create-nat-gateway'
-import { Route as AuthEc2loadBalancersCreateLoadBalancerRouteImport } from './routes/_auth/ec2/(load-balancers)/create-load-balancer'
-import { Route as AuthEc2launchTemplatesCreateLaunchTemplateRouteImport } from './routes/_auth/ec2/(launch-templates)/create-launch-template'
-import { Route as AuthEc2keyImportKeyPairRouteImport } from './routes/_auth/ec2/(key)/import-key-pair'
-import { Route as AuthEc2keyCreateKeyPairRouteImport } from './routes/_auth/ec2/(key)/create-key-pair'
-import { Route as AuthEc2internetGatewaysCreateInternetGatewayRouteImport } from './routes/_auth/ec2/(internet-gateways)/create-internet-gateway'
-import { Route as AuthEc2instancesRunInstancesRouteImport } from './routes/_auth/ec2/(instances)/run-instances'
 import { Route as AuthEc2elasticIpsAllocateAddressRouteImport } from './routes/_auth/ec2/(elastic-ips)/allocate-address'
+import { Route as AuthEc2instancesRunInstancesRouteImport } from './routes/_auth/ec2/(instances)/run-instances'
+import { Route as AuthEc2internetGatewaysCreateInternetGatewayRouteImport } from './routes/_auth/ec2/(internet-gateways)/create-internet-gateway'
+import { Route as AuthEc2keyCreateKeyPairRouteImport } from './routes/_auth/ec2/(key)/create-key-pair'
+import { Route as AuthEc2keyImportKeyPairRouteImport } from './routes/_auth/ec2/(key)/import-key-pair'
+import { Route as AuthEc2launchTemplatesCreateLaunchTemplateRouteImport } from './routes/_auth/ec2/(launch-templates)/create-launch-template'
+import { Route as AuthEc2loadBalancersCreateLoadBalancerRouteImport } from './routes/_auth/ec2/(load-balancers)/create-load-balancer'
+import { Route as AuthEc2natGatewaysCreateNatGatewayRouteImport } from './routes/_auth/ec2/(nat-gateways)/create-nat-gateway'
+import { Route as AuthEc2placementGroupsCreatePlacementGroupRouteImport } from './routes/_auth/ec2/(placement-groups)/create-placement-group'
+import { Route as AuthEc2routeTablesCreateRouteTableRouteImport } from './routes/_auth/ec2/(route-tables)/create-route-table'
+import { Route as AuthEc2securityGroupsCreateSecurityGroupRouteImport } from './routes/_auth/ec2/(security-groups)/create-security-group'
+import { Route as AuthEc2snapshotsCreateSnapshotRouteImport } from './routes/_auth/ec2/(snapshots)/create-snapshot'
+import { Route as AuthEc2subnetCreateSubnetRouteImport } from './routes/_auth/ec2/(subnet)/create-subnet'
+import { Route as AuthEc2targetGroupsCreateTargetGroupRouteImport } from './routes/_auth/ec2/(target-groups)/create-target-group'
+import { Route as AuthEc2volumesCreateVolumeRouteImport } from './routes/_auth/ec2/(volumes)/create-volume'
+import { Route as AuthEc2vpcCreateVpcRouteImport } from './routes/_auth/ec2/(vpc)/create-vpc'
+import { Route as AuthEcsclustersCreateServiceRouteImport } from './routes/_auth/ecs/(clusters)/create-service'
+import { Route as AuthEcsclustersRegisterTaskDefinitionRouteImport } from './routes/_auth/ecs/(clusters)/register-task-definition'
+import { Route as AuthEcsclustersRunTaskRouteImport } from './routes/_auth/ecs/(clusters)/run-task'
+import { Route as AuthEcsclustersTaskDefinitionsRouteImport } from './routes/_auth/ecs/(clusters)/task-definitions'
+import { Route as AuthEksclustersCreateClusterRouteImport } from './routes/_auth/eks/(clusters)/create-cluster'
+import { Route as AuthIamgroupsCreateGroupRouteImport } from './routes/_auth/iam/(groups)/create-group'
+import { Route as AuthIaminstanceProfilesCreateInstanceProfileRouteImport } from './routes/_auth/iam/(instance-profiles)/create-instance-profile'
+import { Route as AuthIampoliciesCreatePolicyRouteImport } from './routes/_auth/iam/(policies)/create-policy'
+import { Route as AuthIamrolesCreateRoleRouteImport } from './routes/_auth/iam/(roles)/create-role'
+import { Route as AuthIamusersCreateUserRouteImport } from './routes/_auth/iam/(users)/create-user'
+import { Route as AuthRdsdbInstancesCreateDbInstanceRouteImport } from './routes/_auth/rds/(db-instances)/create-db-instance'
+import { Route as AuthRdsparameterGroupsCreateDbParameterGroupRouteImport } from './routes/_auth/rds/(parameter-groups)/create-db-parameter-group'
+import { Route as AuthRdssubnetGroupsCreateDbSubnetGroupRouteImport } from './routes/_auth/rds/(subnet-groups)/create-db-subnet-group'
+import { Route as AuthS3bucketsCreateBucketRouteImport } from './routes/_auth/s3/(buckets)/create-bucket'
+import { Route as AuthS3LsIndexRouteImport } from './routes/_auth/s3/ls/index'
 import { Route as AuthS3LsBucketRouteRouteImport } from './routes/_auth/s3/ls/$bucket/route'
-import { Route as AuthS3LsBucketIndexRouteImport } from './routes/_auth/s3/ls/$bucket/index'
-import { Route as AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRouteImport } from './routes/_auth/rds/(subnet-groups)/describe-db-subnet-groups/index'
-import { Route as AuthRdssnapshotsDescribeDbSnapshotsIndexRouteImport } from './routes/_auth/rds/(snapshots)/describe-db-snapshots/index'
-import { Route as AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRouteImport } from './routes/_auth/rds/(parameter-groups)/describe-db-parameter-groups/index'
-import { Route as AuthRdsdbInstancesDescribeDbInstancesIndexRouteImport } from './routes/_auth/rds/(db-instances)/describe-db-instances/index'
-import { Route as AuthIamusersListUsersIndexRouteImport } from './routes/_auth/iam/(users)/list-users/index'
-import { Route as AuthIamrolesListRolesIndexRouteImport } from './routes/_auth/iam/(roles)/list-roles/index'
-import { Route as AuthIampoliciesListPoliciesIndexRouteImport } from './routes/_auth/iam/(policies)/list-policies/index'
-import { Route as AuthIaminstanceProfilesListInstanceProfilesIndexRouteImport } from './routes/_auth/iam/(instance-profiles)/list-instance-profiles/index'
-import { Route as AuthIamgroupsListGroupsIndexRouteImport } from './routes/_auth/iam/(groups)/list-groups/index'
-import { Route as AuthEksclustersListClustersIndexRouteImport } from './routes/_auth/eks/(clusters)/list-clusters/index'
-import { Route as AuthEcsclustersListClustersIndexRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/index'
-import { Route as AuthEcrrepositoriesListRepositoriesIndexRouteImport } from './routes/_auth/ecr/(repositories)/list-repositories/index'
-import { Route as AuthEc2vpcDescribeVpcsIndexRouteImport } from './routes/_auth/ec2/(vpc)/describe-vpcs/index'
-import { Route as AuthEc2volumesDescribeVolumesIndexRouteImport } from './routes/_auth/ec2/(volumes)/describe-volumes/index'
-import { Route as AuthEc2targetGroupsDescribeTargetGroupsIndexRouteImport } from './routes/_auth/ec2/(target-groups)/describe-target-groups/index'
-import { Route as AuthEc2subnetDescribeSubnetsIndexRouteImport } from './routes/_auth/ec2/(subnet)/describe-subnets/index'
-import { Route as AuthEc2snapshotsDescribeSnapshotsIndexRouteImport } from './routes/_auth/ec2/(snapshots)/describe-snapshots/index'
-import { Route as AuthEc2securityGroupsDescribeSecurityGroupsIndexRouteImport } from './routes/_auth/ec2/(security-groups)/describe-security-groups/index'
-import { Route as AuthEc2routeTablesDescribeRouteTablesIndexRouteImport } from './routes/_auth/ec2/(route-tables)/describe-route-tables/index'
-import { Route as AuthEc2placementGroupsDescribePlacementGroupsIndexRouteImport } from './routes/_auth/ec2/(placement-groups)/describe-placement-groups/index'
-import { Route as AuthEc2natGatewaysDescribeNatGatewaysIndexRouteImport } from './routes/_auth/ec2/(nat-gateways)/describe-nat-gateways/index'
-import { Route as AuthEc2loadBalancersDescribeLoadBalancersIndexRouteImport } from './routes/_auth/ec2/(load-balancers)/describe-load-balancers/index'
-import { Route as AuthEc2launchTemplatesDescribeLaunchTemplatesIndexRouteImport } from './routes/_auth/ec2/(launch-templates)/describe-launch-templates/index'
-import { Route as AuthEc2keyDescribeKeyPairsIndexRouteImport } from './routes/_auth/ec2/(key)/describe-key-pairs/index'
-import { Route as AuthEc2internetGatewaysDescribeInternetGatewaysIndexRouteImport } from './routes/_auth/ec2/(internet-gateways)/describe-internet-gateways/index'
-import { Route as AuthEc2instancesDescribeInstancesIndexRouteImport } from './routes/_auth/ec2/(instances)/describe-instances/index'
-import { Route as AuthEc2imagesDescribeImagesIndexRouteImport } from './routes/_auth/ec2/(images)/describe-images/index'
 import { Route as AuthEc2elasticIpsDescribeAddressesIndexRouteImport } from './routes/_auth/ec2/(elastic-ips)/describe-addresses/index'
-import { Route as AuthS3LsBucketSplatRouteImport } from './routes/_auth/s3/ls/$bucket/$'
-import { Route as AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRouteImport } from './routes/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name'
-import { Route as AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRouteImport } from './routes/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id'
-import { Route as AuthRdssnapshotsDescribeDbSnapshotsIdRouteImport } from './routes/_auth/rds/(snapshots)/describe-db-snapshots/$id'
-import { Route as AuthRdsparameterGroupsDescribeDbParameterGroupsNameRouteImport } from './routes/_auth/rds/(parameter-groups)/describe-db-parameter-groups/$name'
-import { Route as AuthRdsdbInstancesDescribeDbInstancesIdRouteImport } from './routes/_auth/rds/(db-instances)/describe-db-instances/$id'
-import { Route as AuthIamusersListUsersUserNameRouteImport } from './routes/_auth/iam/(users)/list-users/$userName'
-import { Route as AuthIamrolesListRolesRoleNameRouteImport } from './routes/_auth/iam/(roles)/list-roles/$roleName'
-import { Route as AuthIampoliciesListPoliciesPolicyArnRouteImport } from './routes/_auth/iam/(policies)/list-policies/$policyArn'
-import { Route as AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRouteImport } from './routes/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName'
-import { Route as AuthIamgroupsListGroupsGroupNameRouteImport } from './routes/_auth/iam/(groups)/list-groups/$groupName'
-import { Route as AuthEksclustersListClustersClusterNameRouteImport } from './routes/_auth/eks/(clusters)/list-clusters/$clusterName'
-import { Route as AuthEcsclustersListClustersClusterNameRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/$clusterName'
-import { Route as AuthEcrrepositoriesListRepositoriesIdRouteImport } from './routes/_auth/ecr/(repositories)/list-repositories/$id'
-import { Route as AuthEc2vpcDescribeVpcsIdRouteImport } from './routes/_auth/ec2/(vpc)/describe-vpcs/$id'
-import { Route as AuthEc2volumesModifyVolumeIdRouteImport } from './routes/_auth/ec2/(volumes)/modify-volume/$id'
-import { Route as AuthEc2volumesDescribeVolumesIdRouteImport } from './routes/_auth/ec2/(volumes)/describe-volumes/$id'
-import { Route as AuthEc2targetGroupsDescribeTargetGroupsIdRouteImport } from './routes/_auth/ec2/(target-groups)/describe-target-groups/$id'
-import { Route as AuthEc2subnetDescribeSubnetsIdRouteImport } from './routes/_auth/ec2/(subnet)/describe-subnets/$id'
-import { Route as AuthEc2snapshotsDescribeSnapshotsIdRouteImport } from './routes/_auth/ec2/(snapshots)/describe-snapshots/$id'
-import { Route as AuthEc2securityGroupsDescribeSecurityGroupsIdRouteImport } from './routes/_auth/ec2/(security-groups)/describe-security-groups/$id'
-import { Route as AuthEc2routeTablesDescribeRouteTablesIdRouteImport } from './routes/_auth/ec2/(route-tables)/describe-route-tables/$id'
-import { Route as AuthEc2placementGroupsDescribePlacementGroupsIdRouteImport } from './routes/_auth/ec2/(placement-groups)/describe-placement-groups/$id'
-import { Route as AuthEc2natGatewaysDescribeNatGatewaysIdRouteImport } from './routes/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id'
-import { Route as AuthEc2loadBalancersDescribeLoadBalancersIdRouteImport } from './routes/_auth/ec2/(load-balancers)/describe-load-balancers/$id'
-import { Route as AuthEc2launchTemplatesDescribeLaunchTemplatesIdRouteImport } from './routes/_auth/ec2/(launch-templates)/describe-launch-templates/$id'
-import { Route as AuthEc2keyDescribeKeyPairsIdRouteImport } from './routes/_auth/ec2/(key)/describe-key-pairs/$id'
-import { Route as AuthEc2internetGatewaysDescribeInternetGatewaysIdRouteImport } from './routes/_auth/ec2/(internet-gateways)/describe-internet-gateways/$id'
-import { Route as AuthEc2instancesDescribeInstancesIdRouteImport } from './routes/_auth/ec2/(instances)/describe-instances/$id'
-import { Route as AuthEc2imagesDescribeImagesIdRouteImport } from './routes/_auth/ec2/(images)/describe-images/$id'
 import { Route as AuthEc2elasticIpsDescribeAddressesIdRouteImport } from './routes/_auth/ec2/(elastic-ips)/describe-addresses/$id'
-import { Route as AuthEcsclustersListClustersClusterNameTasksTaskIdRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId'
+import { Route as AuthEc2imagesDescribeImagesIndexRouteImport } from './routes/_auth/ec2/(images)/describe-images/index'
+import { Route as AuthEc2imagesDescribeImagesIdRouteImport } from './routes/_auth/ec2/(images)/describe-images/$id'
+import { Route as AuthEc2instancesDescribeInstancesIndexRouteImport } from './routes/_auth/ec2/(instances)/describe-instances/index'
+import { Route as AuthEc2instancesDescribeInstancesIdRouteImport } from './routes/_auth/ec2/(instances)/describe-instances/$id'
+import { Route as AuthEc2internetGatewaysDescribeInternetGatewaysIndexRouteImport } from './routes/_auth/ec2/(internet-gateways)/describe-internet-gateways/index'
+import { Route as AuthEc2internetGatewaysDescribeInternetGatewaysIdRouteImport } from './routes/_auth/ec2/(internet-gateways)/describe-internet-gateways/$id'
+import { Route as AuthEc2keyDescribeKeyPairsIndexRouteImport } from './routes/_auth/ec2/(key)/describe-key-pairs/index'
+import { Route as AuthEc2keyDescribeKeyPairsIdRouteImport } from './routes/_auth/ec2/(key)/describe-key-pairs/$id'
+import { Route as AuthEc2launchTemplatesDescribeLaunchTemplatesIndexRouteImport } from './routes/_auth/ec2/(launch-templates)/describe-launch-templates/index'
+import { Route as AuthEc2launchTemplatesDescribeLaunchTemplatesIdRouteImport } from './routes/_auth/ec2/(launch-templates)/describe-launch-templates/$id'
+import { Route as AuthEc2loadBalancersDescribeLoadBalancersIndexRouteImport } from './routes/_auth/ec2/(load-balancers)/describe-load-balancers/index'
+import { Route as AuthEc2loadBalancersDescribeLoadBalancersIdRouteImport } from './routes/_auth/ec2/(load-balancers)/describe-load-balancers/$id'
+import { Route as AuthEc2natGatewaysDescribeNatGatewaysIndexRouteImport } from './routes/_auth/ec2/(nat-gateways)/describe-nat-gateways/index'
+import { Route as AuthEc2natGatewaysDescribeNatGatewaysIdRouteImport } from './routes/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id'
+import { Route as AuthEc2placementGroupsDescribePlacementGroupsIndexRouteImport } from './routes/_auth/ec2/(placement-groups)/describe-placement-groups/index'
+import { Route as AuthEc2placementGroupsDescribePlacementGroupsIdRouteImport } from './routes/_auth/ec2/(placement-groups)/describe-placement-groups/$id'
+import { Route as AuthEc2routeTablesDescribeRouteTablesIndexRouteImport } from './routes/_auth/ec2/(route-tables)/describe-route-tables/index'
+import { Route as AuthEc2routeTablesDescribeRouteTablesIdRouteImport } from './routes/_auth/ec2/(route-tables)/describe-route-tables/$id'
+import { Route as AuthEc2securityGroupsDescribeSecurityGroupsIndexRouteImport } from './routes/_auth/ec2/(security-groups)/describe-security-groups/index'
+import { Route as AuthEc2securityGroupsDescribeSecurityGroupsIdRouteImport } from './routes/_auth/ec2/(security-groups)/describe-security-groups/$id'
+import { Route as AuthEc2snapshotsDescribeSnapshotsIndexRouteImport } from './routes/_auth/ec2/(snapshots)/describe-snapshots/index'
+import { Route as AuthEc2snapshotsDescribeSnapshotsIdRouteImport } from './routes/_auth/ec2/(snapshots)/describe-snapshots/$id'
+import { Route as AuthEc2subnetDescribeSubnetsIndexRouteImport } from './routes/_auth/ec2/(subnet)/describe-subnets/index'
+import { Route as AuthEc2subnetDescribeSubnetsIdRouteImport } from './routes/_auth/ec2/(subnet)/describe-subnets/$id'
+import { Route as AuthEc2targetGroupsDescribeTargetGroupsIndexRouteImport } from './routes/_auth/ec2/(target-groups)/describe-target-groups/index'
+import { Route as AuthEc2targetGroupsDescribeTargetGroupsIdRouteImport } from './routes/_auth/ec2/(target-groups)/describe-target-groups/$id'
+import { Route as AuthEc2volumesDescribeVolumesIndexRouteImport } from './routes/_auth/ec2/(volumes)/describe-volumes/index'
+import { Route as AuthEc2volumesDescribeVolumesIdRouteImport } from './routes/_auth/ec2/(volumes)/describe-volumes/$id'
+import { Route as AuthEc2volumesModifyVolumeIdRouteImport } from './routes/_auth/ec2/(volumes)/modify-volume/$id'
+import { Route as AuthEc2vpcDescribeVpcsIndexRouteImport } from './routes/_auth/ec2/(vpc)/describe-vpcs/index'
+import { Route as AuthEc2vpcDescribeVpcsIdRouteImport } from './routes/_auth/ec2/(vpc)/describe-vpcs/$id'
+import { Route as AuthEcrrepositoriesListRepositoriesIndexRouteImport } from './routes/_auth/ecr/(repositories)/list-repositories/index'
+import { Route as AuthEcrrepositoriesListRepositoriesIdRouteImport } from './routes/_auth/ecr/(repositories)/list-repositories/$id'
+import { Route as AuthEcsclustersListClustersIndexRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/index'
+import { Route as AuthEcsclustersListClustersClusterNameRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/$clusterName'
+import { Route as AuthEksclustersListClustersIndexRouteImport } from './routes/_auth/eks/(clusters)/list-clusters/index'
+import { Route as AuthEksclustersListClustersClusterNameRouteImport } from './routes/_auth/eks/(clusters)/list-clusters/$clusterName'
+import { Route as AuthIamgroupsListGroupsIndexRouteImport } from './routes/_auth/iam/(groups)/list-groups/index'
+import { Route as AuthIamgroupsListGroupsGroupNameRouteImport } from './routes/_auth/iam/(groups)/list-groups/$groupName'
+import { Route as AuthIaminstanceProfilesListInstanceProfilesIndexRouteImport } from './routes/_auth/iam/(instance-profiles)/list-instance-profiles/index'
+import { Route as AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRouteImport } from './routes/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName'
+import { Route as AuthIampoliciesListPoliciesIndexRouteImport } from './routes/_auth/iam/(policies)/list-policies/index'
+import { Route as AuthIampoliciesListPoliciesPolicyArnRouteImport } from './routes/_auth/iam/(policies)/list-policies/$policyArn'
+import { Route as AuthIamrolesListRolesIndexRouteImport } from './routes/_auth/iam/(roles)/list-roles/index'
+import { Route as AuthIamrolesListRolesRoleNameRouteImport } from './routes/_auth/iam/(roles)/list-roles/$roleName'
+import { Route as AuthIamusersListUsersIndexRouteImport } from './routes/_auth/iam/(users)/list-users/index'
+import { Route as AuthIamusersListUsersUserNameRouteImport } from './routes/_auth/iam/(users)/list-users/$userName'
+import { Route as AuthRdsdbInstancesDescribeDbInstancesIndexRouteImport } from './routes/_auth/rds/(db-instances)/describe-db-instances/index'
+import { Route as AuthRdsdbInstancesDescribeDbInstancesIdRouteImport } from './routes/_auth/rds/(db-instances)/describe-db-instances/$id'
+import { Route as AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRouteImport } from './routes/_auth/rds/(parameter-groups)/describe-db-parameter-groups/index'
+import { Route as AuthRdsparameterGroupsDescribeDbParameterGroupsNameRouteImport } from './routes/_auth/rds/(parameter-groups)/describe-db-parameter-groups/$name'
+import { Route as AuthRdssnapshotsDescribeDbSnapshotsIndexRouteImport } from './routes/_auth/rds/(snapshots)/describe-db-snapshots/index'
+import { Route as AuthRdssnapshotsDescribeDbSnapshotsIdRouteImport } from './routes/_auth/rds/(snapshots)/describe-db-snapshots/$id'
+import { Route as AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRouteImport } from './routes/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id'
+import { Route as AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRouteImport } from './routes/_auth/rds/(subnet-groups)/describe-db-subnet-groups/index'
+import { Route as AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRouteImport } from './routes/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name'
+import { Route as AuthS3LsBucketIndexRouteImport } from './routes/_auth/s3/ls/$bucket/index'
+import { Route as AuthS3LsBucketSplatRouteImport } from './routes/_auth/s3/ls/$bucket/$'
 import { Route as AuthEcsclustersListClustersClusterNameServicesServiceNameRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName'
+import { Route as AuthEcsclustersListClustersClusterNameTasksTaskIdRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId'
 
+const AuthRouteRoute = AuthRouteRouteImport.update({
+  id: '/_auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AuthRouteRoute = AuthRouteRouteImport.update({
-  id: '/_auth',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthIndexRoute = AuthIndexRouteImport.update({
@@ -133,171 +133,10 @@ const AuthS3ServiceMetricsRoute = AuthS3ServiceMetricsRouteImport.update({
   path: '/s3/service-metrics',
   getParentRoute: () => AuthRouteRoute,
 } as any)
-const AuthS3LsIndexRoute = AuthS3LsIndexRouteImport.update({
-  id: '/s3/ls/',
-  path: '/s3/ls/',
-  getParentRoute: () => AuthRouteRoute,
-} as any)
-const AuthS3bucketsCreateBucketRoute =
-  AuthS3bucketsCreateBucketRouteImport.update({
-    id: '/s3/(buckets)/create-bucket',
-    path: '/s3/create-bucket',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthRdssubnetGroupsCreateDbSubnetGroupRoute =
-  AuthRdssubnetGroupsCreateDbSubnetGroupRouteImport.update({
-    id: '/rds/(subnet-groups)/create-db-subnet-group',
-    path: '/rds/create-db-subnet-group',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthRdsparameterGroupsCreateDbParameterGroupRoute =
-  AuthRdsparameterGroupsCreateDbParameterGroupRouteImport.update({
-    id: '/rds/(parameter-groups)/create-db-parameter-group',
-    path: '/rds/create-db-parameter-group',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthRdsdbInstancesCreateDbInstanceRoute =
-  AuthRdsdbInstancesCreateDbInstanceRouteImport.update({
-    id: '/rds/(db-instances)/create-db-instance',
-    path: '/rds/create-db-instance',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthIamusersCreateUserRoute = AuthIamusersCreateUserRouteImport.update({
-  id: '/iam/(users)/create-user',
-  path: '/iam/create-user',
-  getParentRoute: () => AuthRouteRoute,
-} as any)
-const AuthIamrolesCreateRoleRoute = AuthIamrolesCreateRoleRouteImport.update({
-  id: '/iam/(roles)/create-role',
-  path: '/iam/create-role',
-  getParentRoute: () => AuthRouteRoute,
-} as any)
-const AuthIampoliciesCreatePolicyRoute =
-  AuthIampoliciesCreatePolicyRouteImport.update({
-    id: '/iam/(policies)/create-policy',
-    path: '/iam/create-policy',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthIaminstanceProfilesCreateInstanceProfileRoute =
-  AuthIaminstanceProfilesCreateInstanceProfileRouteImport.update({
-    id: '/iam/(instance-profiles)/create-instance-profile',
-    path: '/iam/create-instance-profile',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthIamgroupsCreateGroupRoute =
-  AuthIamgroupsCreateGroupRouteImport.update({
-    id: '/iam/(groups)/create-group',
-    path: '/iam/create-group',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEksclustersCreateClusterRoute =
-  AuthEksclustersCreateClusterRouteImport.update({
-    id: '/eks/(clusters)/create-cluster',
-    path: '/eks/create-cluster',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEcsclustersTaskDefinitionsRoute =
-  AuthEcsclustersTaskDefinitionsRouteImport.update({
-    id: '/ecs/(clusters)/task-definitions',
-    path: '/ecs/task-definitions',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEcsclustersRunTaskRoute = AuthEcsclustersRunTaskRouteImport.update({
-  id: '/ecs/(clusters)/run-task',
-  path: '/ecs/run-task',
-  getParentRoute: () => AuthRouteRoute,
-} as any)
-const AuthEcsclustersRegisterTaskDefinitionRoute =
-  AuthEcsclustersRegisterTaskDefinitionRouteImport.update({
-    id: '/ecs/(clusters)/register-task-definition',
-    path: '/ecs/register-task-definition',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEcsclustersCreateServiceRoute =
-  AuthEcsclustersCreateServiceRouteImport.update({
-    id: '/ecs/(clusters)/create-service',
-    path: '/ecs/create-service',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2vpcCreateVpcRoute = AuthEc2vpcCreateVpcRouteImport.update({
-  id: '/ec2/(vpc)/create-vpc',
-  path: '/ec2/create-vpc',
-  getParentRoute: () => AuthRouteRoute,
-} as any)
-const AuthEc2volumesCreateVolumeRoute =
-  AuthEc2volumesCreateVolumeRouteImport.update({
-    id: '/ec2/(volumes)/create-volume',
-    path: '/ec2/create-volume',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2targetGroupsCreateTargetGroupRoute =
-  AuthEc2targetGroupsCreateTargetGroupRouteImport.update({
-    id: '/ec2/(target-groups)/create-target-group',
-    path: '/ec2/create-target-group',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2subnetCreateSubnetRoute =
-  AuthEc2subnetCreateSubnetRouteImport.update({
-    id: '/ec2/(subnet)/create-subnet',
-    path: '/ec2/create-subnet',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2snapshotsCreateSnapshotRoute =
-  AuthEc2snapshotsCreateSnapshotRouteImport.update({
-    id: '/ec2/(snapshots)/create-snapshot',
-    path: '/ec2/create-snapshot',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2securityGroupsCreateSecurityGroupRoute =
-  AuthEc2securityGroupsCreateSecurityGroupRouteImport.update({
-    id: '/ec2/(security-groups)/create-security-group',
-    path: '/ec2/create-security-group',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2routeTablesCreateRouteTableRoute =
-  AuthEc2routeTablesCreateRouteTableRouteImport.update({
-    id: '/ec2/(route-tables)/create-route-table',
-    path: '/ec2/create-route-table',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2placementGroupsCreatePlacementGroupRoute =
-  AuthEc2placementGroupsCreatePlacementGroupRouteImport.update({
-    id: '/ec2/(placement-groups)/create-placement-group',
-    path: '/ec2/create-placement-group',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2natGatewaysCreateNatGatewayRoute =
-  AuthEc2natGatewaysCreateNatGatewayRouteImport.update({
-    id: '/ec2/(nat-gateways)/create-nat-gateway',
-    path: '/ec2/create-nat-gateway',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2loadBalancersCreateLoadBalancerRoute =
-  AuthEc2loadBalancersCreateLoadBalancerRouteImport.update({
-    id: '/ec2/(load-balancers)/create-load-balancer',
-    path: '/ec2/create-load-balancer',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2launchTemplatesCreateLaunchTemplateRoute =
-  AuthEc2launchTemplatesCreateLaunchTemplateRouteImport.update({
-    id: '/ec2/(launch-templates)/create-launch-template',
-    path: '/ec2/create-launch-template',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2keyImportKeyPairRoute = AuthEc2keyImportKeyPairRouteImport.update({
-  id: '/ec2/(key)/import-key-pair',
-  path: '/ec2/import-key-pair',
-  getParentRoute: () => AuthRouteRoute,
-} as any)
-const AuthEc2keyCreateKeyPairRoute = AuthEc2keyCreateKeyPairRouteImport.update({
-  id: '/ec2/(key)/create-key-pair',
-  path: '/ec2/create-key-pair',
-  getParentRoute: () => AuthRouteRoute,
-} as any)
-const AuthEc2internetGatewaysCreateInternetGatewayRoute =
-  AuthEc2internetGatewaysCreateInternetGatewayRouteImport.update({
-    id: '/ec2/(internet-gateways)/create-internet-gateway',
-    path: '/ec2/create-internet-gateway',
+const AuthEc2elasticIpsAllocateAddressRoute =
+  AuthEc2elasticIpsAllocateAddressRouteImport.update({
+    id: '/ec2/(elastic-ips)/allocate-address',
+    path: '/ec2/allocate-address',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthEc2instancesRunInstancesRoute =
@@ -306,176 +145,188 @@ const AuthEc2instancesRunInstancesRoute =
     path: '/ec2/run-instances',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2elasticIpsAllocateAddressRoute =
-  AuthEc2elasticIpsAllocateAddressRouteImport.update({
-    id: '/ec2/(elastic-ips)/allocate-address',
-    path: '/ec2/allocate-address',
+const AuthEc2internetGatewaysCreateInternetGatewayRoute =
+  AuthEc2internetGatewaysCreateInternetGatewayRouteImport.update({
+    id: '/ec2/(internet-gateways)/create-internet-gateway',
+    path: '/ec2/create-internet-gateway',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const AuthEc2keyCreateKeyPairRoute = AuthEc2keyCreateKeyPairRouteImport.update({
+  id: '/ec2/(key)/create-key-pair',
+  path: '/ec2/create-key-pair',
+  getParentRoute: () => AuthRouteRoute,
+} as any)
+const AuthEc2keyImportKeyPairRoute = AuthEc2keyImportKeyPairRouteImport.update({
+  id: '/ec2/(key)/import-key-pair',
+  path: '/ec2/import-key-pair',
+  getParentRoute: () => AuthRouteRoute,
+} as any)
+const AuthEc2launchTemplatesCreateLaunchTemplateRoute =
+  AuthEc2launchTemplatesCreateLaunchTemplateRouteImport.update({
+    id: '/ec2/(launch-templates)/create-launch-template',
+    path: '/ec2/create-launch-template',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2loadBalancersCreateLoadBalancerRoute =
+  AuthEc2loadBalancersCreateLoadBalancerRouteImport.update({
+    id: '/ec2/(load-balancers)/create-load-balancer',
+    path: '/ec2/create-load-balancer',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2natGatewaysCreateNatGatewayRoute =
+  AuthEc2natGatewaysCreateNatGatewayRouteImport.update({
+    id: '/ec2/(nat-gateways)/create-nat-gateway',
+    path: '/ec2/create-nat-gateway',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2placementGroupsCreatePlacementGroupRoute =
+  AuthEc2placementGroupsCreatePlacementGroupRouteImport.update({
+    id: '/ec2/(placement-groups)/create-placement-group',
+    path: '/ec2/create-placement-group',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2routeTablesCreateRouteTableRoute =
+  AuthEc2routeTablesCreateRouteTableRouteImport.update({
+    id: '/ec2/(route-tables)/create-route-table',
+    path: '/ec2/create-route-table',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2securityGroupsCreateSecurityGroupRoute =
+  AuthEc2securityGroupsCreateSecurityGroupRouteImport.update({
+    id: '/ec2/(security-groups)/create-security-group',
+    path: '/ec2/create-security-group',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2snapshotsCreateSnapshotRoute =
+  AuthEc2snapshotsCreateSnapshotRouteImport.update({
+    id: '/ec2/(snapshots)/create-snapshot',
+    path: '/ec2/create-snapshot',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2subnetCreateSubnetRoute =
+  AuthEc2subnetCreateSubnetRouteImport.update({
+    id: '/ec2/(subnet)/create-subnet',
+    path: '/ec2/create-subnet',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2targetGroupsCreateTargetGroupRoute =
+  AuthEc2targetGroupsCreateTargetGroupRouteImport.update({
+    id: '/ec2/(target-groups)/create-target-group',
+    path: '/ec2/create-target-group',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2volumesCreateVolumeRoute =
+  AuthEc2volumesCreateVolumeRouteImport.update({
+    id: '/ec2/(volumes)/create-volume',
+    path: '/ec2/create-volume',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2vpcCreateVpcRoute = AuthEc2vpcCreateVpcRouteImport.update({
+  id: '/ec2/(vpc)/create-vpc',
+  path: '/ec2/create-vpc',
+  getParentRoute: () => AuthRouteRoute,
+} as any)
+const AuthEcsclustersCreateServiceRoute =
+  AuthEcsclustersCreateServiceRouteImport.update({
+    id: '/ecs/(clusters)/create-service',
+    path: '/ecs/create-service',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEcsclustersRegisterTaskDefinitionRoute =
+  AuthEcsclustersRegisterTaskDefinitionRouteImport.update({
+    id: '/ecs/(clusters)/register-task-definition',
+    path: '/ecs/register-task-definition',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEcsclustersRunTaskRoute = AuthEcsclustersRunTaskRouteImport.update({
+  id: '/ecs/(clusters)/run-task',
+  path: '/ecs/run-task',
+  getParentRoute: () => AuthRouteRoute,
+} as any)
+const AuthEcsclustersTaskDefinitionsRoute =
+  AuthEcsclustersTaskDefinitionsRouteImport.update({
+    id: '/ecs/(clusters)/task-definitions',
+    path: '/ecs/task-definitions',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEksclustersCreateClusterRoute =
+  AuthEksclustersCreateClusterRouteImport.update({
+    id: '/eks/(clusters)/create-cluster',
+    path: '/eks/create-cluster',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthIamgroupsCreateGroupRoute =
+  AuthIamgroupsCreateGroupRouteImport.update({
+    id: '/iam/(groups)/create-group',
+    path: '/iam/create-group',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthIaminstanceProfilesCreateInstanceProfileRoute =
+  AuthIaminstanceProfilesCreateInstanceProfileRouteImport.update({
+    id: '/iam/(instance-profiles)/create-instance-profile',
+    path: '/iam/create-instance-profile',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthIampoliciesCreatePolicyRoute =
+  AuthIampoliciesCreatePolicyRouteImport.update({
+    id: '/iam/(policies)/create-policy',
+    path: '/iam/create-policy',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthIamrolesCreateRoleRoute = AuthIamrolesCreateRoleRouteImport.update({
+  id: '/iam/(roles)/create-role',
+  path: '/iam/create-role',
+  getParentRoute: () => AuthRouteRoute,
+} as any)
+const AuthIamusersCreateUserRoute = AuthIamusersCreateUserRouteImport.update({
+  id: '/iam/(users)/create-user',
+  path: '/iam/create-user',
+  getParentRoute: () => AuthRouteRoute,
+} as any)
+const AuthRdsdbInstancesCreateDbInstanceRoute =
+  AuthRdsdbInstancesCreateDbInstanceRouteImport.update({
+    id: '/rds/(db-instances)/create-db-instance',
+    path: '/rds/create-db-instance',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthRdsparameterGroupsCreateDbParameterGroupRoute =
+  AuthRdsparameterGroupsCreateDbParameterGroupRouteImport.update({
+    id: '/rds/(parameter-groups)/create-db-parameter-group',
+    path: '/rds/create-db-parameter-group',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthRdssubnetGroupsCreateDbSubnetGroupRoute =
+  AuthRdssubnetGroupsCreateDbSubnetGroupRouteImport.update({
+    id: '/rds/(subnet-groups)/create-db-subnet-group',
+    path: '/rds/create-db-subnet-group',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthS3bucketsCreateBucketRoute =
+  AuthS3bucketsCreateBucketRouteImport.update({
+    id: '/s3/(buckets)/create-bucket',
+    path: '/s3/create-bucket',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthS3LsIndexRoute = AuthS3LsIndexRouteImport.update({
+  id: '/s3/ls/',
+  path: '/s3/ls/',
+  getParentRoute: () => AuthRouteRoute,
+} as any)
 const AuthS3LsBucketRouteRoute = AuthS3LsBucketRouteRouteImport.update({
   id: '/s3/ls/$bucket',
   path: '/s3/ls/$bucket',
   getParentRoute: () => AuthRouteRoute,
 } as any)
-const AuthS3LsBucketIndexRoute = AuthS3LsBucketIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => AuthS3LsBucketRouteRoute,
-} as any)
-const AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute =
-  AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRouteImport.update({
-    id: '/rds/(subnet-groups)/describe-db-subnet-groups/',
-    path: '/rds/describe-db-subnet-groups/',
+const AuthEc2elasticIpsDescribeAddressesIndexRoute =
+  AuthEc2elasticIpsDescribeAddressesIndexRouteImport.update({
+    id: '/ec2/(elastic-ips)/describe-addresses/',
+    path: '/ec2/describe-addresses/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthRdssnapshotsDescribeDbSnapshotsIndexRoute =
-  AuthRdssnapshotsDescribeDbSnapshotsIndexRouteImport.update({
-    id: '/rds/(snapshots)/describe-db-snapshots/',
-    path: '/rds/describe-db-snapshots/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute =
-  AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRouteImport.update({
-    id: '/rds/(parameter-groups)/describe-db-parameter-groups/',
-    path: '/rds/describe-db-parameter-groups/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthRdsdbInstancesDescribeDbInstancesIndexRoute =
-  AuthRdsdbInstancesDescribeDbInstancesIndexRouteImport.update({
-    id: '/rds/(db-instances)/describe-db-instances/',
-    path: '/rds/describe-db-instances/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthIamusersListUsersIndexRoute =
-  AuthIamusersListUsersIndexRouteImport.update({
-    id: '/iam/(users)/list-users/',
-    path: '/iam/list-users/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthIamrolesListRolesIndexRoute =
-  AuthIamrolesListRolesIndexRouteImport.update({
-    id: '/iam/(roles)/list-roles/',
-    path: '/iam/list-roles/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthIampoliciesListPoliciesIndexRoute =
-  AuthIampoliciesListPoliciesIndexRouteImport.update({
-    id: '/iam/(policies)/list-policies/',
-    path: '/iam/list-policies/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthIaminstanceProfilesListInstanceProfilesIndexRoute =
-  AuthIaminstanceProfilesListInstanceProfilesIndexRouteImport.update({
-    id: '/iam/(instance-profiles)/list-instance-profiles/',
-    path: '/iam/list-instance-profiles/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthIamgroupsListGroupsIndexRoute =
-  AuthIamgroupsListGroupsIndexRouteImport.update({
-    id: '/iam/(groups)/list-groups/',
-    path: '/iam/list-groups/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEksclustersListClustersIndexRoute =
-  AuthEksclustersListClustersIndexRouteImport.update({
-    id: '/eks/(clusters)/list-clusters/',
-    path: '/eks/list-clusters/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEcsclustersListClustersIndexRoute =
-  AuthEcsclustersListClustersIndexRouteImport.update({
-    id: '/ecs/(clusters)/list-clusters/',
-    path: '/ecs/list-clusters/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEcrrepositoriesListRepositoriesIndexRoute =
-  AuthEcrrepositoriesListRepositoriesIndexRouteImport.update({
-    id: '/ecr/(repositories)/list-repositories/',
-    path: '/ecr/list-repositories/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2vpcDescribeVpcsIndexRoute =
-  AuthEc2vpcDescribeVpcsIndexRouteImport.update({
-    id: '/ec2/(vpc)/describe-vpcs/',
-    path: '/ec2/describe-vpcs/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2volumesDescribeVolumesIndexRoute =
-  AuthEc2volumesDescribeVolumesIndexRouteImport.update({
-    id: '/ec2/(volumes)/describe-volumes/',
-    path: '/ec2/describe-volumes/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2targetGroupsDescribeTargetGroupsIndexRoute =
-  AuthEc2targetGroupsDescribeTargetGroupsIndexRouteImport.update({
-    id: '/ec2/(target-groups)/describe-target-groups/',
-    path: '/ec2/describe-target-groups/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2subnetDescribeSubnetsIndexRoute =
-  AuthEc2subnetDescribeSubnetsIndexRouteImport.update({
-    id: '/ec2/(subnet)/describe-subnets/',
-    path: '/ec2/describe-subnets/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2snapshotsDescribeSnapshotsIndexRoute =
-  AuthEc2snapshotsDescribeSnapshotsIndexRouteImport.update({
-    id: '/ec2/(snapshots)/describe-snapshots/',
-    path: '/ec2/describe-snapshots/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2securityGroupsDescribeSecurityGroupsIndexRoute =
-  AuthEc2securityGroupsDescribeSecurityGroupsIndexRouteImport.update({
-    id: '/ec2/(security-groups)/describe-security-groups/',
-    path: '/ec2/describe-security-groups/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2routeTablesDescribeRouteTablesIndexRoute =
-  AuthEc2routeTablesDescribeRouteTablesIndexRouteImport.update({
-    id: '/ec2/(route-tables)/describe-route-tables/',
-    path: '/ec2/describe-route-tables/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2placementGroupsDescribePlacementGroupsIndexRoute =
-  AuthEc2placementGroupsDescribePlacementGroupsIndexRouteImport.update({
-    id: '/ec2/(placement-groups)/describe-placement-groups/',
-    path: '/ec2/describe-placement-groups/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2natGatewaysDescribeNatGatewaysIndexRoute =
-  AuthEc2natGatewaysDescribeNatGatewaysIndexRouteImport.update({
-    id: '/ec2/(nat-gateways)/describe-nat-gateways/',
-    path: '/ec2/describe-nat-gateways/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2loadBalancersDescribeLoadBalancersIndexRoute =
-  AuthEc2loadBalancersDescribeLoadBalancersIndexRouteImport.update({
-    id: '/ec2/(load-balancers)/describe-load-balancers/',
-    path: '/ec2/describe-load-balancers/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2launchTemplatesDescribeLaunchTemplatesIndexRoute =
-  AuthEc2launchTemplatesDescribeLaunchTemplatesIndexRouteImport.update({
-    id: '/ec2/(launch-templates)/describe-launch-templates/',
-    path: '/ec2/describe-launch-templates/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2keyDescribeKeyPairsIndexRoute =
-  AuthEc2keyDescribeKeyPairsIndexRouteImport.update({
-    id: '/ec2/(key)/describe-key-pairs/',
-    path: '/ec2/describe-key-pairs/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2internetGatewaysDescribeInternetGatewaysIndexRoute =
-  AuthEc2internetGatewaysDescribeInternetGatewaysIndexRouteImport.update({
-    id: '/ec2/(internet-gateways)/describe-internet-gateways/',
-    path: '/ec2/describe-internet-gateways/',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2instancesDescribeInstancesIndexRoute =
-  AuthEc2instancesDescribeInstancesIndexRouteImport.update({
-    id: '/ec2/(instances)/describe-instances/',
-    path: '/ec2/describe-instances/',
+const AuthEc2elasticIpsDescribeAddressesIdRoute =
+  AuthEc2elasticIpsDescribeAddressesIdRouteImport.update({
+    id: '/ec2/(elastic-ips)/describe-addresses/$id',
+    path: '/ec2/describe-addresses/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthEc2imagesDescribeImagesIndexRoute =
@@ -484,63 +335,238 @@ const AuthEc2imagesDescribeImagesIndexRoute =
     path: '/ec2/describe-images/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2elasticIpsDescribeAddressesIndexRoute =
-  AuthEc2elasticIpsDescribeAddressesIndexRouteImport.update({
-    id: '/ec2/(elastic-ips)/describe-addresses/',
-    path: '/ec2/describe-addresses/',
+const AuthEc2imagesDescribeImagesIdRoute =
+  AuthEc2imagesDescribeImagesIdRouteImport.update({
+    id: '/ec2/(images)/describe-images/$id',
+    path: '/ec2/describe-images/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthS3LsBucketSplatRoute = AuthS3LsBucketSplatRouteImport.update({
-  id: '/$',
-  path: '/$',
-  getParentRoute: () => AuthS3LsBucketRouteRoute,
-} as any)
-const AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute =
-  AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRouteImport.update({
-    id: '/rds/(subnet-groups)/describe-db-subnet-groups/$name',
-    path: '/rds/describe-db-subnet-groups/$name',
+const AuthEc2instancesDescribeInstancesIndexRoute =
+  AuthEc2instancesDescribeInstancesIndexRouteImport.update({
+    id: '/ec2/(instances)/describe-instances/',
+    path: '/ec2/describe-instances/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute =
-  AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRouteImport.update({
-    id: '/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id',
-    path: '/rds/restore-db-instance-from-db-snapshot/$id',
+const AuthEc2instancesDescribeInstancesIdRoute =
+  AuthEc2instancesDescribeInstancesIdRouteImport.update({
+    id: '/ec2/(instances)/describe-instances/$id',
+    path: '/ec2/describe-instances/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthRdssnapshotsDescribeDbSnapshotsIdRoute =
-  AuthRdssnapshotsDescribeDbSnapshotsIdRouteImport.update({
-    id: '/rds/(snapshots)/describe-db-snapshots/$id',
-    path: '/rds/describe-db-snapshots/$id',
+const AuthEc2internetGatewaysDescribeInternetGatewaysIndexRoute =
+  AuthEc2internetGatewaysDescribeInternetGatewaysIndexRouteImport.update({
+    id: '/ec2/(internet-gateways)/describe-internet-gateways/',
+    path: '/ec2/describe-internet-gateways/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthRdsparameterGroupsDescribeDbParameterGroupsNameRoute =
-  AuthRdsparameterGroupsDescribeDbParameterGroupsNameRouteImport.update({
-    id: '/rds/(parameter-groups)/describe-db-parameter-groups/$name',
-    path: '/rds/describe-db-parameter-groups/$name',
+const AuthEc2internetGatewaysDescribeInternetGatewaysIdRoute =
+  AuthEc2internetGatewaysDescribeInternetGatewaysIdRouteImport.update({
+    id: '/ec2/(internet-gateways)/describe-internet-gateways/$id',
+    path: '/ec2/describe-internet-gateways/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthRdsdbInstancesDescribeDbInstancesIdRoute =
-  AuthRdsdbInstancesDescribeDbInstancesIdRouteImport.update({
-    id: '/rds/(db-instances)/describe-db-instances/$id',
-    path: '/rds/describe-db-instances/$id',
+const AuthEc2keyDescribeKeyPairsIndexRoute =
+  AuthEc2keyDescribeKeyPairsIndexRouteImport.update({
+    id: '/ec2/(key)/describe-key-pairs/',
+    path: '/ec2/describe-key-pairs/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthIamusersListUsersUserNameRoute =
-  AuthIamusersListUsersUserNameRouteImport.update({
-    id: '/iam/(users)/list-users/$userName',
-    path: '/iam/list-users/$userName',
+const AuthEc2keyDescribeKeyPairsIdRoute =
+  AuthEc2keyDescribeKeyPairsIdRouteImport.update({
+    id: '/ec2/(key)/describe-key-pairs/$id',
+    path: '/ec2/describe-key-pairs/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthIamrolesListRolesRoleNameRoute =
-  AuthIamrolesListRolesRoleNameRouteImport.update({
-    id: '/iam/(roles)/list-roles/$roleName',
-    path: '/iam/list-roles/$roleName',
+const AuthEc2launchTemplatesDescribeLaunchTemplatesIndexRoute =
+  AuthEc2launchTemplatesDescribeLaunchTemplatesIndexRouteImport.update({
+    id: '/ec2/(launch-templates)/describe-launch-templates/',
+    path: '/ec2/describe-launch-templates/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthIampoliciesListPoliciesPolicyArnRoute =
-  AuthIampoliciesListPoliciesPolicyArnRouteImport.update({
-    id: '/iam/(policies)/list-policies/$policyArn',
-    path: '/iam/list-policies/$policyArn',
+const AuthEc2launchTemplatesDescribeLaunchTemplatesIdRoute =
+  AuthEc2launchTemplatesDescribeLaunchTemplatesIdRouteImport.update({
+    id: '/ec2/(launch-templates)/describe-launch-templates/$id',
+    path: '/ec2/describe-launch-templates/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2loadBalancersDescribeLoadBalancersIndexRoute =
+  AuthEc2loadBalancersDescribeLoadBalancersIndexRouteImport.update({
+    id: '/ec2/(load-balancers)/describe-load-balancers/',
+    path: '/ec2/describe-load-balancers/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2loadBalancersDescribeLoadBalancersIdRoute =
+  AuthEc2loadBalancersDescribeLoadBalancersIdRouteImport.update({
+    id: '/ec2/(load-balancers)/describe-load-balancers/$id',
+    path: '/ec2/describe-load-balancers/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2natGatewaysDescribeNatGatewaysIndexRoute =
+  AuthEc2natGatewaysDescribeNatGatewaysIndexRouteImport.update({
+    id: '/ec2/(nat-gateways)/describe-nat-gateways/',
+    path: '/ec2/describe-nat-gateways/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2natGatewaysDescribeNatGatewaysIdRoute =
+  AuthEc2natGatewaysDescribeNatGatewaysIdRouteImport.update({
+    id: '/ec2/(nat-gateways)/describe-nat-gateways/$id',
+    path: '/ec2/describe-nat-gateways/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2placementGroupsDescribePlacementGroupsIndexRoute =
+  AuthEc2placementGroupsDescribePlacementGroupsIndexRouteImport.update({
+    id: '/ec2/(placement-groups)/describe-placement-groups/',
+    path: '/ec2/describe-placement-groups/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2placementGroupsDescribePlacementGroupsIdRoute =
+  AuthEc2placementGroupsDescribePlacementGroupsIdRouteImport.update({
+    id: '/ec2/(placement-groups)/describe-placement-groups/$id',
+    path: '/ec2/describe-placement-groups/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2routeTablesDescribeRouteTablesIndexRoute =
+  AuthEc2routeTablesDescribeRouteTablesIndexRouteImport.update({
+    id: '/ec2/(route-tables)/describe-route-tables/',
+    path: '/ec2/describe-route-tables/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2routeTablesDescribeRouteTablesIdRoute =
+  AuthEc2routeTablesDescribeRouteTablesIdRouteImport.update({
+    id: '/ec2/(route-tables)/describe-route-tables/$id',
+    path: '/ec2/describe-route-tables/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2securityGroupsDescribeSecurityGroupsIndexRoute =
+  AuthEc2securityGroupsDescribeSecurityGroupsIndexRouteImport.update({
+    id: '/ec2/(security-groups)/describe-security-groups/',
+    path: '/ec2/describe-security-groups/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2securityGroupsDescribeSecurityGroupsIdRoute =
+  AuthEc2securityGroupsDescribeSecurityGroupsIdRouteImport.update({
+    id: '/ec2/(security-groups)/describe-security-groups/$id',
+    path: '/ec2/describe-security-groups/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2snapshotsDescribeSnapshotsIndexRoute =
+  AuthEc2snapshotsDescribeSnapshotsIndexRouteImport.update({
+    id: '/ec2/(snapshots)/describe-snapshots/',
+    path: '/ec2/describe-snapshots/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2snapshotsDescribeSnapshotsIdRoute =
+  AuthEc2snapshotsDescribeSnapshotsIdRouteImport.update({
+    id: '/ec2/(snapshots)/describe-snapshots/$id',
+    path: '/ec2/describe-snapshots/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2subnetDescribeSubnetsIndexRoute =
+  AuthEc2subnetDescribeSubnetsIndexRouteImport.update({
+    id: '/ec2/(subnet)/describe-subnets/',
+    path: '/ec2/describe-subnets/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2subnetDescribeSubnetsIdRoute =
+  AuthEc2subnetDescribeSubnetsIdRouteImport.update({
+    id: '/ec2/(subnet)/describe-subnets/$id',
+    path: '/ec2/describe-subnets/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2targetGroupsDescribeTargetGroupsIndexRoute =
+  AuthEc2targetGroupsDescribeTargetGroupsIndexRouteImport.update({
+    id: '/ec2/(target-groups)/describe-target-groups/',
+    path: '/ec2/describe-target-groups/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2targetGroupsDescribeTargetGroupsIdRoute =
+  AuthEc2targetGroupsDescribeTargetGroupsIdRouteImport.update({
+    id: '/ec2/(target-groups)/describe-target-groups/$id',
+    path: '/ec2/describe-target-groups/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2volumesDescribeVolumesIndexRoute =
+  AuthEc2volumesDescribeVolumesIndexRouteImport.update({
+    id: '/ec2/(volumes)/describe-volumes/',
+    path: '/ec2/describe-volumes/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2volumesDescribeVolumesIdRoute =
+  AuthEc2volumesDescribeVolumesIdRouteImport.update({
+    id: '/ec2/(volumes)/describe-volumes/$id',
+    path: '/ec2/describe-volumes/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2volumesModifyVolumeIdRoute =
+  AuthEc2volumesModifyVolumeIdRouteImport.update({
+    id: '/ec2/(volumes)/modify-volume/$id',
+    path: '/ec2/modify-volume/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2vpcDescribeVpcsIndexRoute =
+  AuthEc2vpcDescribeVpcsIndexRouteImport.update({
+    id: '/ec2/(vpc)/describe-vpcs/',
+    path: '/ec2/describe-vpcs/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2vpcDescribeVpcsIdRoute =
+  AuthEc2vpcDescribeVpcsIdRouteImport.update({
+    id: '/ec2/(vpc)/describe-vpcs/$id',
+    path: '/ec2/describe-vpcs/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEcrrepositoriesListRepositoriesIndexRoute =
+  AuthEcrrepositoriesListRepositoriesIndexRouteImport.update({
+    id: '/ecr/(repositories)/list-repositories/',
+    path: '/ecr/list-repositories/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEcrrepositoriesListRepositoriesIdRoute =
+  AuthEcrrepositoriesListRepositoriesIdRouteImport.update({
+    id: '/ecr/(repositories)/list-repositories/$id',
+    path: '/ecr/list-repositories/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEcsclustersListClustersIndexRoute =
+  AuthEcsclustersListClustersIndexRouteImport.update({
+    id: '/ecs/(clusters)/list-clusters/',
+    path: '/ecs/list-clusters/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEcsclustersListClustersClusterNameRoute =
+  AuthEcsclustersListClustersClusterNameRouteImport.update({
+    id: '/ecs/(clusters)/list-clusters/$clusterName',
+    path: '/ecs/list-clusters/$clusterName',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEksclustersListClustersIndexRoute =
+  AuthEksclustersListClustersIndexRouteImport.update({
+    id: '/eks/(clusters)/list-clusters/',
+    path: '/eks/list-clusters/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEksclustersListClustersClusterNameRoute =
+  AuthEksclustersListClustersClusterNameRouteImport.update({
+    id: '/eks/(clusters)/list-clusters/$clusterName',
+    path: '/eks/list-clusters/$clusterName',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthIamgroupsListGroupsIndexRoute =
+  AuthIamgroupsListGroupsIndexRouteImport.update({
+    id: '/iam/(groups)/list-groups/',
+    path: '/iam/list-groups/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthIamgroupsListGroupsGroupNameRoute =
+  AuthIamgroupsListGroupsGroupNameRouteImport.update({
+    id: '/iam/(groups)/list-groups/$groupName',
+    path: '/iam/list-groups/$groupName',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthIaminstanceProfilesListInstanceProfilesIndexRoute =
+  AuthIaminstanceProfilesListInstanceProfilesIndexRouteImport.update({
+    id: '/iam/(instance-profiles)/list-instance-profiles/',
+    path: '/iam/list-instance-profiles/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute =
@@ -551,142 +577,116 @@ const AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute =
       getParentRoute: () => AuthRouteRoute,
     } as any,
   )
-const AuthIamgroupsListGroupsGroupNameRoute =
-  AuthIamgroupsListGroupsGroupNameRouteImport.update({
-    id: '/iam/(groups)/list-groups/$groupName',
-    path: '/iam/list-groups/$groupName',
+const AuthIampoliciesListPoliciesIndexRoute =
+  AuthIampoliciesListPoliciesIndexRouteImport.update({
+    id: '/iam/(policies)/list-policies/',
+    path: '/iam/list-policies/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEksclustersListClustersClusterNameRoute =
-  AuthEksclustersListClustersClusterNameRouteImport.update({
-    id: '/eks/(clusters)/list-clusters/$clusterName',
-    path: '/eks/list-clusters/$clusterName',
+const AuthIampoliciesListPoliciesPolicyArnRoute =
+  AuthIampoliciesListPoliciesPolicyArnRouteImport.update({
+    id: '/iam/(policies)/list-policies/$policyArn',
+    path: '/iam/list-policies/$policyArn',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEcsclustersListClustersClusterNameRoute =
-  AuthEcsclustersListClustersClusterNameRouteImport.update({
-    id: '/ecs/(clusters)/list-clusters/$clusterName',
-    path: '/ecs/list-clusters/$clusterName',
+const AuthIamrolesListRolesIndexRoute =
+  AuthIamrolesListRolesIndexRouteImport.update({
+    id: '/iam/(roles)/list-roles/',
+    path: '/iam/list-roles/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEcrrepositoriesListRepositoriesIdRoute =
-  AuthEcrrepositoriesListRepositoriesIdRouteImport.update({
-    id: '/ecr/(repositories)/list-repositories/$id',
-    path: '/ecr/list-repositories/$id',
+const AuthIamrolesListRolesRoleNameRoute =
+  AuthIamrolesListRolesRoleNameRouteImport.update({
+    id: '/iam/(roles)/list-roles/$roleName',
+    path: '/iam/list-roles/$roleName',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2vpcDescribeVpcsIdRoute =
-  AuthEc2vpcDescribeVpcsIdRouteImport.update({
-    id: '/ec2/(vpc)/describe-vpcs/$id',
-    path: '/ec2/describe-vpcs/$id',
+const AuthIamusersListUsersIndexRoute =
+  AuthIamusersListUsersIndexRouteImport.update({
+    id: '/iam/(users)/list-users/',
+    path: '/iam/list-users/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2volumesModifyVolumeIdRoute =
-  AuthEc2volumesModifyVolumeIdRouteImport.update({
-    id: '/ec2/(volumes)/modify-volume/$id',
-    path: '/ec2/modify-volume/$id',
+const AuthIamusersListUsersUserNameRoute =
+  AuthIamusersListUsersUserNameRouteImport.update({
+    id: '/iam/(users)/list-users/$userName',
+    path: '/iam/list-users/$userName',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2volumesDescribeVolumesIdRoute =
-  AuthEc2volumesDescribeVolumesIdRouteImport.update({
-    id: '/ec2/(volumes)/describe-volumes/$id',
-    path: '/ec2/describe-volumes/$id',
+const AuthRdsdbInstancesDescribeDbInstancesIndexRoute =
+  AuthRdsdbInstancesDescribeDbInstancesIndexRouteImport.update({
+    id: '/rds/(db-instances)/describe-db-instances/',
+    path: '/rds/describe-db-instances/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2targetGroupsDescribeTargetGroupsIdRoute =
-  AuthEc2targetGroupsDescribeTargetGroupsIdRouteImport.update({
-    id: '/ec2/(target-groups)/describe-target-groups/$id',
-    path: '/ec2/describe-target-groups/$id',
+const AuthRdsdbInstancesDescribeDbInstancesIdRoute =
+  AuthRdsdbInstancesDescribeDbInstancesIdRouteImport.update({
+    id: '/rds/(db-instances)/describe-db-instances/$id',
+    path: '/rds/describe-db-instances/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2subnetDescribeSubnetsIdRoute =
-  AuthEc2subnetDescribeSubnetsIdRouteImport.update({
-    id: '/ec2/(subnet)/describe-subnets/$id',
-    path: '/ec2/describe-subnets/$id',
+const AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute =
+  AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRouteImport.update({
+    id: '/rds/(parameter-groups)/describe-db-parameter-groups/',
+    path: '/rds/describe-db-parameter-groups/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2snapshotsDescribeSnapshotsIdRoute =
-  AuthEc2snapshotsDescribeSnapshotsIdRouteImport.update({
-    id: '/ec2/(snapshots)/describe-snapshots/$id',
-    path: '/ec2/describe-snapshots/$id',
+const AuthRdsparameterGroupsDescribeDbParameterGroupsNameRoute =
+  AuthRdsparameterGroupsDescribeDbParameterGroupsNameRouteImport.update({
+    id: '/rds/(parameter-groups)/describe-db-parameter-groups/$name',
+    path: '/rds/describe-db-parameter-groups/$name',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2securityGroupsDescribeSecurityGroupsIdRoute =
-  AuthEc2securityGroupsDescribeSecurityGroupsIdRouteImport.update({
-    id: '/ec2/(security-groups)/describe-security-groups/$id',
-    path: '/ec2/describe-security-groups/$id',
+const AuthRdssnapshotsDescribeDbSnapshotsIndexRoute =
+  AuthRdssnapshotsDescribeDbSnapshotsIndexRouteImport.update({
+    id: '/rds/(snapshots)/describe-db-snapshots/',
+    path: '/rds/describe-db-snapshots/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2routeTablesDescribeRouteTablesIdRoute =
-  AuthEc2routeTablesDescribeRouteTablesIdRouteImport.update({
-    id: '/ec2/(route-tables)/describe-route-tables/$id',
-    path: '/ec2/describe-route-tables/$id',
+const AuthRdssnapshotsDescribeDbSnapshotsIdRoute =
+  AuthRdssnapshotsDescribeDbSnapshotsIdRouteImport.update({
+    id: '/rds/(snapshots)/describe-db-snapshots/$id',
+    path: '/rds/describe-db-snapshots/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2placementGroupsDescribePlacementGroupsIdRoute =
-  AuthEc2placementGroupsDescribePlacementGroupsIdRouteImport.update({
-    id: '/ec2/(placement-groups)/describe-placement-groups/$id',
-    path: '/ec2/describe-placement-groups/$id',
+const AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute =
+  AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRouteImport.update({
+    id: '/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id',
+    path: '/rds/restore-db-instance-from-db-snapshot/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2natGatewaysDescribeNatGatewaysIdRoute =
-  AuthEc2natGatewaysDescribeNatGatewaysIdRouteImport.update({
-    id: '/ec2/(nat-gateways)/describe-nat-gateways/$id',
-    path: '/ec2/describe-nat-gateways/$id',
+const AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute =
+  AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRouteImport.update({
+    id: '/rds/(subnet-groups)/describe-db-subnet-groups/',
+    path: '/rds/describe-db-subnet-groups/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2loadBalancersDescribeLoadBalancersIdRoute =
-  AuthEc2loadBalancersDescribeLoadBalancersIdRouteImport.update({
-    id: '/ec2/(load-balancers)/describe-load-balancers/$id',
-    path: '/ec2/describe-load-balancers/$id',
+const AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute =
+  AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRouteImport.update({
+    id: '/rds/(subnet-groups)/describe-db-subnet-groups/$name',
+    path: '/rds/describe-db-subnet-groups/$name',
     getParentRoute: () => AuthRouteRoute,
   } as any)
-const AuthEc2launchTemplatesDescribeLaunchTemplatesIdRoute =
-  AuthEc2launchTemplatesDescribeLaunchTemplatesIdRouteImport.update({
-    id: '/ec2/(launch-templates)/describe-launch-templates/$id',
-    path: '/ec2/describe-launch-templates/$id',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2keyDescribeKeyPairsIdRoute =
-  AuthEc2keyDescribeKeyPairsIdRouteImport.update({
-    id: '/ec2/(key)/describe-key-pairs/$id',
-    path: '/ec2/describe-key-pairs/$id',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2internetGatewaysDescribeInternetGatewaysIdRoute =
-  AuthEc2internetGatewaysDescribeInternetGatewaysIdRouteImport.update({
-    id: '/ec2/(internet-gateways)/describe-internet-gateways/$id',
-    path: '/ec2/describe-internet-gateways/$id',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2instancesDescribeInstancesIdRoute =
-  AuthEc2instancesDescribeInstancesIdRouteImport.update({
-    id: '/ec2/(instances)/describe-instances/$id',
-    path: '/ec2/describe-instances/$id',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2imagesDescribeImagesIdRoute =
-  AuthEc2imagesDescribeImagesIdRouteImport.update({
-    id: '/ec2/(images)/describe-images/$id',
-    path: '/ec2/describe-images/$id',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEc2elasticIpsDescribeAddressesIdRoute =
-  AuthEc2elasticIpsDescribeAddressesIdRouteImport.update({
-    id: '/ec2/(elastic-ips)/describe-addresses/$id',
-    path: '/ec2/describe-addresses/$id',
+const AuthS3LsBucketIndexRoute = AuthS3LsBucketIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AuthS3LsBucketRouteRoute,
+} as any)
+const AuthS3LsBucketSplatRoute = AuthS3LsBucketSplatRouteImport.update({
+  id: '/$',
+  path: '/$',
+  getParentRoute: () => AuthS3LsBucketRouteRoute,
+} as any)
+const AuthEcsclustersListClustersClusterNameServicesServiceNameRoute =
+  AuthEcsclustersListClustersClusterNameServicesServiceNameRouteImport.update({
+    id: '/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName',
+    path: '/ecs/list-clusters/$clusterName/services/$serviceName',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthEcsclustersListClustersClusterNameTasksTaskIdRoute =
   AuthEcsclustersListClustersClusterNameTasksTaskIdRouteImport.update({
     id: '/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId',
     path: '/ecs/list-clusters/$clusterName/tasks/$taskId',
-    getParentRoute: () => AuthRouteRoute,
-  } as any)
-const AuthEcsclustersListClustersClusterNameServicesServiceNameRoute =
-  AuthEcsclustersListClustersClusterNameServicesServiceNameRouteImport.update({
-    id: '/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName',
-    path: '/ecs/list-clusters/$clusterName/services/$serviceName',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 
@@ -1301,18 +1301,18 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/_auth': {
       id: '/_auth'
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof AuthRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_auth/': {
@@ -1336,207 +1336,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthS3ServiceMetricsRouteImport
       parentRoute: typeof AuthRouteRoute
     }
-    '/_auth/s3/ls/': {
-      id: '/_auth/s3/ls/'
-      path: '/s3/ls'
-      fullPath: '/s3/ls/'
-      preLoaderRoute: typeof AuthS3LsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/s3/(buckets)/create-bucket': {
-      id: '/_auth/s3/(buckets)/create-bucket'
-      path: '/s3/create-bucket'
-      fullPath: '/s3/create-bucket'
-      preLoaderRoute: typeof AuthS3bucketsCreateBucketRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/rds/(subnet-groups)/create-db-subnet-group': {
-      id: '/_auth/rds/(subnet-groups)/create-db-subnet-group'
-      path: '/rds/create-db-subnet-group'
-      fullPath: '/rds/create-db-subnet-group'
-      preLoaderRoute: typeof AuthRdssubnetGroupsCreateDbSubnetGroupRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/rds/(parameter-groups)/create-db-parameter-group': {
-      id: '/_auth/rds/(parameter-groups)/create-db-parameter-group'
-      path: '/rds/create-db-parameter-group'
-      fullPath: '/rds/create-db-parameter-group'
-      preLoaderRoute: typeof AuthRdsparameterGroupsCreateDbParameterGroupRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/rds/(db-instances)/create-db-instance': {
-      id: '/_auth/rds/(db-instances)/create-db-instance'
-      path: '/rds/create-db-instance'
-      fullPath: '/rds/create-db-instance'
-      preLoaderRoute: typeof AuthRdsdbInstancesCreateDbInstanceRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(users)/create-user': {
-      id: '/_auth/iam/(users)/create-user'
-      path: '/iam/create-user'
-      fullPath: '/iam/create-user'
-      preLoaderRoute: typeof AuthIamusersCreateUserRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(roles)/create-role': {
-      id: '/_auth/iam/(roles)/create-role'
-      path: '/iam/create-role'
-      fullPath: '/iam/create-role'
-      preLoaderRoute: typeof AuthIamrolesCreateRoleRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(policies)/create-policy': {
-      id: '/_auth/iam/(policies)/create-policy'
-      path: '/iam/create-policy'
-      fullPath: '/iam/create-policy'
-      preLoaderRoute: typeof AuthIampoliciesCreatePolicyRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(instance-profiles)/create-instance-profile': {
-      id: '/_auth/iam/(instance-profiles)/create-instance-profile'
-      path: '/iam/create-instance-profile'
-      fullPath: '/iam/create-instance-profile'
-      preLoaderRoute: typeof AuthIaminstanceProfilesCreateInstanceProfileRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(groups)/create-group': {
-      id: '/_auth/iam/(groups)/create-group'
-      path: '/iam/create-group'
-      fullPath: '/iam/create-group'
-      preLoaderRoute: typeof AuthIamgroupsCreateGroupRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/eks/(clusters)/create-cluster': {
-      id: '/_auth/eks/(clusters)/create-cluster'
-      path: '/eks/create-cluster'
-      fullPath: '/eks/create-cluster'
-      preLoaderRoute: typeof AuthEksclustersCreateClusterRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ecs/(clusters)/task-definitions': {
-      id: '/_auth/ecs/(clusters)/task-definitions'
-      path: '/ecs/task-definitions'
-      fullPath: '/ecs/task-definitions'
-      preLoaderRoute: typeof AuthEcsclustersTaskDefinitionsRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ecs/(clusters)/run-task': {
-      id: '/_auth/ecs/(clusters)/run-task'
-      path: '/ecs/run-task'
-      fullPath: '/ecs/run-task'
-      preLoaderRoute: typeof AuthEcsclustersRunTaskRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ecs/(clusters)/register-task-definition': {
-      id: '/_auth/ecs/(clusters)/register-task-definition'
-      path: '/ecs/register-task-definition'
-      fullPath: '/ecs/register-task-definition'
-      preLoaderRoute: typeof AuthEcsclustersRegisterTaskDefinitionRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ecs/(clusters)/create-service': {
-      id: '/_auth/ecs/(clusters)/create-service'
-      path: '/ecs/create-service'
-      fullPath: '/ecs/create-service'
-      preLoaderRoute: typeof AuthEcsclustersCreateServiceRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(vpc)/create-vpc': {
-      id: '/_auth/ec2/(vpc)/create-vpc'
-      path: '/ec2/create-vpc'
-      fullPath: '/ec2/create-vpc'
-      preLoaderRoute: typeof AuthEc2vpcCreateVpcRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(volumes)/create-volume': {
-      id: '/_auth/ec2/(volumes)/create-volume'
-      path: '/ec2/create-volume'
-      fullPath: '/ec2/create-volume'
-      preLoaderRoute: typeof AuthEc2volumesCreateVolumeRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(target-groups)/create-target-group': {
-      id: '/_auth/ec2/(target-groups)/create-target-group'
-      path: '/ec2/create-target-group'
-      fullPath: '/ec2/create-target-group'
-      preLoaderRoute: typeof AuthEc2targetGroupsCreateTargetGroupRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(subnet)/create-subnet': {
-      id: '/_auth/ec2/(subnet)/create-subnet'
-      path: '/ec2/create-subnet'
-      fullPath: '/ec2/create-subnet'
-      preLoaderRoute: typeof AuthEc2subnetCreateSubnetRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(snapshots)/create-snapshot': {
-      id: '/_auth/ec2/(snapshots)/create-snapshot'
-      path: '/ec2/create-snapshot'
-      fullPath: '/ec2/create-snapshot'
-      preLoaderRoute: typeof AuthEc2snapshotsCreateSnapshotRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(security-groups)/create-security-group': {
-      id: '/_auth/ec2/(security-groups)/create-security-group'
-      path: '/ec2/create-security-group'
-      fullPath: '/ec2/create-security-group'
-      preLoaderRoute: typeof AuthEc2securityGroupsCreateSecurityGroupRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(route-tables)/create-route-table': {
-      id: '/_auth/ec2/(route-tables)/create-route-table'
-      path: '/ec2/create-route-table'
-      fullPath: '/ec2/create-route-table'
-      preLoaderRoute: typeof AuthEc2routeTablesCreateRouteTableRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(placement-groups)/create-placement-group': {
-      id: '/_auth/ec2/(placement-groups)/create-placement-group'
-      path: '/ec2/create-placement-group'
-      fullPath: '/ec2/create-placement-group'
-      preLoaderRoute: typeof AuthEc2placementGroupsCreatePlacementGroupRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(nat-gateways)/create-nat-gateway': {
-      id: '/_auth/ec2/(nat-gateways)/create-nat-gateway'
-      path: '/ec2/create-nat-gateway'
-      fullPath: '/ec2/create-nat-gateway'
-      preLoaderRoute: typeof AuthEc2natGatewaysCreateNatGatewayRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(load-balancers)/create-load-balancer': {
-      id: '/_auth/ec2/(load-balancers)/create-load-balancer'
-      path: '/ec2/create-load-balancer'
-      fullPath: '/ec2/create-load-balancer'
-      preLoaderRoute: typeof AuthEc2loadBalancersCreateLoadBalancerRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(launch-templates)/create-launch-template': {
-      id: '/_auth/ec2/(launch-templates)/create-launch-template'
-      path: '/ec2/create-launch-template'
-      fullPath: '/ec2/create-launch-template'
-      preLoaderRoute: typeof AuthEc2launchTemplatesCreateLaunchTemplateRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(key)/import-key-pair': {
-      id: '/_auth/ec2/(key)/import-key-pair'
-      path: '/ec2/import-key-pair'
-      fullPath: '/ec2/import-key-pair'
-      preLoaderRoute: typeof AuthEc2keyImportKeyPairRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(key)/create-key-pair': {
-      id: '/_auth/ec2/(key)/create-key-pair'
-      path: '/ec2/create-key-pair'
-      fullPath: '/ec2/create-key-pair'
-      preLoaderRoute: typeof AuthEc2keyCreateKeyPairRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(internet-gateways)/create-internet-gateway': {
-      id: '/_auth/ec2/(internet-gateways)/create-internet-gateway'
-      path: '/ec2/create-internet-gateway'
-      fullPath: '/ec2/create-internet-gateway'
-      preLoaderRoute: typeof AuthEc2internetGatewaysCreateInternetGatewayRouteImport
+    '/_auth/ec2/(elastic-ips)/allocate-address': {
+      id: '/_auth/ec2/(elastic-ips)/allocate-address'
+      path: '/ec2/allocate-address'
+      fullPath: '/ec2/allocate-address'
+      preLoaderRoute: typeof AuthEc2elasticIpsAllocateAddressRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/ec2/(instances)/run-instances': {
@@ -1546,11 +1350,207 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthEc2instancesRunInstancesRouteImport
       parentRoute: typeof AuthRouteRoute
     }
-    '/_auth/ec2/(elastic-ips)/allocate-address': {
-      id: '/_auth/ec2/(elastic-ips)/allocate-address'
-      path: '/ec2/allocate-address'
-      fullPath: '/ec2/allocate-address'
-      preLoaderRoute: typeof AuthEc2elasticIpsAllocateAddressRouteImport
+    '/_auth/ec2/(internet-gateways)/create-internet-gateway': {
+      id: '/_auth/ec2/(internet-gateways)/create-internet-gateway'
+      path: '/ec2/create-internet-gateway'
+      fullPath: '/ec2/create-internet-gateway'
+      preLoaderRoute: typeof AuthEc2internetGatewaysCreateInternetGatewayRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(key)/create-key-pair': {
+      id: '/_auth/ec2/(key)/create-key-pair'
+      path: '/ec2/create-key-pair'
+      fullPath: '/ec2/create-key-pair'
+      preLoaderRoute: typeof AuthEc2keyCreateKeyPairRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(key)/import-key-pair': {
+      id: '/_auth/ec2/(key)/import-key-pair'
+      path: '/ec2/import-key-pair'
+      fullPath: '/ec2/import-key-pair'
+      preLoaderRoute: typeof AuthEc2keyImportKeyPairRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(launch-templates)/create-launch-template': {
+      id: '/_auth/ec2/(launch-templates)/create-launch-template'
+      path: '/ec2/create-launch-template'
+      fullPath: '/ec2/create-launch-template'
+      preLoaderRoute: typeof AuthEc2launchTemplatesCreateLaunchTemplateRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(load-balancers)/create-load-balancer': {
+      id: '/_auth/ec2/(load-balancers)/create-load-balancer'
+      path: '/ec2/create-load-balancer'
+      fullPath: '/ec2/create-load-balancer'
+      preLoaderRoute: typeof AuthEc2loadBalancersCreateLoadBalancerRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(nat-gateways)/create-nat-gateway': {
+      id: '/_auth/ec2/(nat-gateways)/create-nat-gateway'
+      path: '/ec2/create-nat-gateway'
+      fullPath: '/ec2/create-nat-gateway'
+      preLoaderRoute: typeof AuthEc2natGatewaysCreateNatGatewayRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(placement-groups)/create-placement-group': {
+      id: '/_auth/ec2/(placement-groups)/create-placement-group'
+      path: '/ec2/create-placement-group'
+      fullPath: '/ec2/create-placement-group'
+      preLoaderRoute: typeof AuthEc2placementGroupsCreatePlacementGroupRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(route-tables)/create-route-table': {
+      id: '/_auth/ec2/(route-tables)/create-route-table'
+      path: '/ec2/create-route-table'
+      fullPath: '/ec2/create-route-table'
+      preLoaderRoute: typeof AuthEc2routeTablesCreateRouteTableRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(security-groups)/create-security-group': {
+      id: '/_auth/ec2/(security-groups)/create-security-group'
+      path: '/ec2/create-security-group'
+      fullPath: '/ec2/create-security-group'
+      preLoaderRoute: typeof AuthEc2securityGroupsCreateSecurityGroupRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(snapshots)/create-snapshot': {
+      id: '/_auth/ec2/(snapshots)/create-snapshot'
+      path: '/ec2/create-snapshot'
+      fullPath: '/ec2/create-snapshot'
+      preLoaderRoute: typeof AuthEc2snapshotsCreateSnapshotRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(subnet)/create-subnet': {
+      id: '/_auth/ec2/(subnet)/create-subnet'
+      path: '/ec2/create-subnet'
+      fullPath: '/ec2/create-subnet'
+      preLoaderRoute: typeof AuthEc2subnetCreateSubnetRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(target-groups)/create-target-group': {
+      id: '/_auth/ec2/(target-groups)/create-target-group'
+      path: '/ec2/create-target-group'
+      fullPath: '/ec2/create-target-group'
+      preLoaderRoute: typeof AuthEc2targetGroupsCreateTargetGroupRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(volumes)/create-volume': {
+      id: '/_auth/ec2/(volumes)/create-volume'
+      path: '/ec2/create-volume'
+      fullPath: '/ec2/create-volume'
+      preLoaderRoute: typeof AuthEc2volumesCreateVolumeRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(vpc)/create-vpc': {
+      id: '/_auth/ec2/(vpc)/create-vpc'
+      path: '/ec2/create-vpc'
+      fullPath: '/ec2/create-vpc'
+      preLoaderRoute: typeof AuthEc2vpcCreateVpcRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ecs/(clusters)/create-service': {
+      id: '/_auth/ecs/(clusters)/create-service'
+      path: '/ecs/create-service'
+      fullPath: '/ecs/create-service'
+      preLoaderRoute: typeof AuthEcsclustersCreateServiceRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ecs/(clusters)/register-task-definition': {
+      id: '/_auth/ecs/(clusters)/register-task-definition'
+      path: '/ecs/register-task-definition'
+      fullPath: '/ecs/register-task-definition'
+      preLoaderRoute: typeof AuthEcsclustersRegisterTaskDefinitionRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ecs/(clusters)/run-task': {
+      id: '/_auth/ecs/(clusters)/run-task'
+      path: '/ecs/run-task'
+      fullPath: '/ecs/run-task'
+      preLoaderRoute: typeof AuthEcsclustersRunTaskRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ecs/(clusters)/task-definitions': {
+      id: '/_auth/ecs/(clusters)/task-definitions'
+      path: '/ecs/task-definitions'
+      fullPath: '/ecs/task-definitions'
+      preLoaderRoute: typeof AuthEcsclustersTaskDefinitionsRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/eks/(clusters)/create-cluster': {
+      id: '/_auth/eks/(clusters)/create-cluster'
+      path: '/eks/create-cluster'
+      fullPath: '/eks/create-cluster'
+      preLoaderRoute: typeof AuthEksclustersCreateClusterRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(groups)/create-group': {
+      id: '/_auth/iam/(groups)/create-group'
+      path: '/iam/create-group'
+      fullPath: '/iam/create-group'
+      preLoaderRoute: typeof AuthIamgroupsCreateGroupRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(instance-profiles)/create-instance-profile': {
+      id: '/_auth/iam/(instance-profiles)/create-instance-profile'
+      path: '/iam/create-instance-profile'
+      fullPath: '/iam/create-instance-profile'
+      preLoaderRoute: typeof AuthIaminstanceProfilesCreateInstanceProfileRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(policies)/create-policy': {
+      id: '/_auth/iam/(policies)/create-policy'
+      path: '/iam/create-policy'
+      fullPath: '/iam/create-policy'
+      preLoaderRoute: typeof AuthIampoliciesCreatePolicyRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(roles)/create-role': {
+      id: '/_auth/iam/(roles)/create-role'
+      path: '/iam/create-role'
+      fullPath: '/iam/create-role'
+      preLoaderRoute: typeof AuthIamrolesCreateRoleRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(users)/create-user': {
+      id: '/_auth/iam/(users)/create-user'
+      path: '/iam/create-user'
+      fullPath: '/iam/create-user'
+      preLoaderRoute: typeof AuthIamusersCreateUserRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(db-instances)/create-db-instance': {
+      id: '/_auth/rds/(db-instances)/create-db-instance'
+      path: '/rds/create-db-instance'
+      fullPath: '/rds/create-db-instance'
+      preLoaderRoute: typeof AuthRdsdbInstancesCreateDbInstanceRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(parameter-groups)/create-db-parameter-group': {
+      id: '/_auth/rds/(parameter-groups)/create-db-parameter-group'
+      path: '/rds/create-db-parameter-group'
+      fullPath: '/rds/create-db-parameter-group'
+      preLoaderRoute: typeof AuthRdsparameterGroupsCreateDbParameterGroupRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(subnet-groups)/create-db-subnet-group': {
+      id: '/_auth/rds/(subnet-groups)/create-db-subnet-group'
+      path: '/rds/create-db-subnet-group'
+      fullPath: '/rds/create-db-subnet-group'
+      preLoaderRoute: typeof AuthRdssubnetGroupsCreateDbSubnetGroupRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/s3/(buckets)/create-bucket': {
+      id: '/_auth/s3/(buckets)/create-bucket'
+      path: '/s3/create-bucket'
+      fullPath: '/s3/create-bucket'
+      preLoaderRoute: typeof AuthS3bucketsCreateBucketRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/s3/ls/': {
+      id: '/_auth/s3/ls/'
+      path: '/s3/ls'
+      fullPath: '/s3/ls/'
+      preLoaderRoute: typeof AuthS3LsIndexRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/s3/ls/$bucket': {
@@ -1560,417 +1560,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthS3LsBucketRouteRouteImport
       parentRoute: typeof AuthRouteRoute
     }
-    '/_auth/s3/ls/$bucket/': {
-      id: '/_auth/s3/ls/$bucket/'
-      path: '/'
-      fullPath: '/s3/ls/$bucket/'
-      preLoaderRoute: typeof AuthS3LsBucketIndexRouteImport
-      parentRoute: typeof AuthS3LsBucketRouteRoute
-    }
-    '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/': {
-      id: '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/'
-      path: '/rds/describe-db-subnet-groups'
-      fullPath: '/rds/describe-db-subnet-groups/'
-      preLoaderRoute: typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/rds/(snapshots)/describe-db-snapshots/': {
-      id: '/_auth/rds/(snapshots)/describe-db-snapshots/'
-      path: '/rds/describe-db-snapshots'
-      fullPath: '/rds/describe-db-snapshots/'
-      preLoaderRoute: typeof AuthRdssnapshotsDescribeDbSnapshotsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/': {
-      id: '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/'
-      path: '/rds/describe-db-parameter-groups'
-      fullPath: '/rds/describe-db-parameter-groups/'
-      preLoaderRoute: typeof AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/rds/(db-instances)/describe-db-instances/': {
-      id: '/_auth/rds/(db-instances)/describe-db-instances/'
-      path: '/rds/describe-db-instances'
-      fullPath: '/rds/describe-db-instances/'
-      preLoaderRoute: typeof AuthRdsdbInstancesDescribeDbInstancesIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(users)/list-users/': {
-      id: '/_auth/iam/(users)/list-users/'
-      path: '/iam/list-users'
-      fullPath: '/iam/list-users/'
-      preLoaderRoute: typeof AuthIamusersListUsersIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(roles)/list-roles/': {
-      id: '/_auth/iam/(roles)/list-roles/'
-      path: '/iam/list-roles'
-      fullPath: '/iam/list-roles/'
-      preLoaderRoute: typeof AuthIamrolesListRolesIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(policies)/list-policies/': {
-      id: '/_auth/iam/(policies)/list-policies/'
-      path: '/iam/list-policies'
-      fullPath: '/iam/list-policies/'
-      preLoaderRoute: typeof AuthIampoliciesListPoliciesIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(instance-profiles)/list-instance-profiles/': {
-      id: '/_auth/iam/(instance-profiles)/list-instance-profiles/'
-      path: '/iam/list-instance-profiles'
-      fullPath: '/iam/list-instance-profiles/'
-      preLoaderRoute: typeof AuthIaminstanceProfilesListInstanceProfilesIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(groups)/list-groups/': {
-      id: '/_auth/iam/(groups)/list-groups/'
-      path: '/iam/list-groups'
-      fullPath: '/iam/list-groups/'
-      preLoaderRoute: typeof AuthIamgroupsListGroupsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/eks/(clusters)/list-clusters/': {
-      id: '/_auth/eks/(clusters)/list-clusters/'
-      path: '/eks/list-clusters'
-      fullPath: '/eks/list-clusters/'
-      preLoaderRoute: typeof AuthEksclustersListClustersIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ecs/(clusters)/list-clusters/': {
-      id: '/_auth/ecs/(clusters)/list-clusters/'
-      path: '/ecs/list-clusters'
-      fullPath: '/ecs/list-clusters/'
-      preLoaderRoute: typeof AuthEcsclustersListClustersIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ecr/(repositories)/list-repositories/': {
-      id: '/_auth/ecr/(repositories)/list-repositories/'
-      path: '/ecr/list-repositories'
-      fullPath: '/ecr/list-repositories/'
-      preLoaderRoute: typeof AuthEcrrepositoriesListRepositoriesIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(vpc)/describe-vpcs/': {
-      id: '/_auth/ec2/(vpc)/describe-vpcs/'
-      path: '/ec2/describe-vpcs'
-      fullPath: '/ec2/describe-vpcs/'
-      preLoaderRoute: typeof AuthEc2vpcDescribeVpcsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(volumes)/describe-volumes/': {
-      id: '/_auth/ec2/(volumes)/describe-volumes/'
-      path: '/ec2/describe-volumes'
-      fullPath: '/ec2/describe-volumes/'
-      preLoaderRoute: typeof AuthEc2volumesDescribeVolumesIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(target-groups)/describe-target-groups/': {
-      id: '/_auth/ec2/(target-groups)/describe-target-groups/'
-      path: '/ec2/describe-target-groups'
-      fullPath: '/ec2/describe-target-groups/'
-      preLoaderRoute: typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(subnet)/describe-subnets/': {
-      id: '/_auth/ec2/(subnet)/describe-subnets/'
-      path: '/ec2/describe-subnets'
-      fullPath: '/ec2/describe-subnets/'
-      preLoaderRoute: typeof AuthEc2subnetDescribeSubnetsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(snapshots)/describe-snapshots/': {
-      id: '/_auth/ec2/(snapshots)/describe-snapshots/'
-      path: '/ec2/describe-snapshots'
-      fullPath: '/ec2/describe-snapshots/'
-      preLoaderRoute: typeof AuthEc2snapshotsDescribeSnapshotsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(security-groups)/describe-security-groups/': {
-      id: '/_auth/ec2/(security-groups)/describe-security-groups/'
-      path: '/ec2/describe-security-groups'
-      fullPath: '/ec2/describe-security-groups/'
-      preLoaderRoute: typeof AuthEc2securityGroupsDescribeSecurityGroupsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(route-tables)/describe-route-tables/': {
-      id: '/_auth/ec2/(route-tables)/describe-route-tables/'
-      path: '/ec2/describe-route-tables'
-      fullPath: '/ec2/describe-route-tables/'
-      preLoaderRoute: typeof AuthEc2routeTablesDescribeRouteTablesIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(placement-groups)/describe-placement-groups/': {
-      id: '/_auth/ec2/(placement-groups)/describe-placement-groups/'
-      path: '/ec2/describe-placement-groups'
-      fullPath: '/ec2/describe-placement-groups/'
-      preLoaderRoute: typeof AuthEc2placementGroupsDescribePlacementGroupsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(nat-gateways)/describe-nat-gateways/': {
-      id: '/_auth/ec2/(nat-gateways)/describe-nat-gateways/'
-      path: '/ec2/describe-nat-gateways'
-      fullPath: '/ec2/describe-nat-gateways/'
-      preLoaderRoute: typeof AuthEc2natGatewaysDescribeNatGatewaysIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(load-balancers)/describe-load-balancers/': {
-      id: '/_auth/ec2/(load-balancers)/describe-load-balancers/'
-      path: '/ec2/describe-load-balancers'
-      fullPath: '/ec2/describe-load-balancers/'
-      preLoaderRoute: typeof AuthEc2loadBalancersDescribeLoadBalancersIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(launch-templates)/describe-launch-templates/': {
-      id: '/_auth/ec2/(launch-templates)/describe-launch-templates/'
-      path: '/ec2/describe-launch-templates'
-      fullPath: '/ec2/describe-launch-templates/'
-      preLoaderRoute: typeof AuthEc2launchTemplatesDescribeLaunchTemplatesIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(key)/describe-key-pairs/': {
-      id: '/_auth/ec2/(key)/describe-key-pairs/'
-      path: '/ec2/describe-key-pairs'
-      fullPath: '/ec2/describe-key-pairs/'
-      preLoaderRoute: typeof AuthEc2keyDescribeKeyPairsIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(internet-gateways)/describe-internet-gateways/': {
-      id: '/_auth/ec2/(internet-gateways)/describe-internet-gateways/'
-      path: '/ec2/describe-internet-gateways'
-      fullPath: '/ec2/describe-internet-gateways/'
-      preLoaderRoute: typeof AuthEc2internetGatewaysDescribeInternetGatewaysIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(instances)/describe-instances/': {
-      id: '/_auth/ec2/(instances)/describe-instances/'
-      path: '/ec2/describe-instances'
-      fullPath: '/ec2/describe-instances/'
-      preLoaderRoute: typeof AuthEc2instancesDescribeInstancesIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(images)/describe-images/': {
-      id: '/_auth/ec2/(images)/describe-images/'
-      path: '/ec2/describe-images'
-      fullPath: '/ec2/describe-images/'
-      preLoaderRoute: typeof AuthEc2imagesDescribeImagesIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
     '/_auth/ec2/(elastic-ips)/describe-addresses/': {
       id: '/_auth/ec2/(elastic-ips)/describe-addresses/'
       path: '/ec2/describe-addresses'
       fullPath: '/ec2/describe-addresses/'
       preLoaderRoute: typeof AuthEc2elasticIpsDescribeAddressesIndexRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/s3/ls/$bucket/$': {
-      id: '/_auth/s3/ls/$bucket/$'
-      path: '/$'
-      fullPath: '/s3/ls/$bucket/$'
-      preLoaderRoute: typeof AuthS3LsBucketSplatRouteImport
-      parentRoute: typeof AuthS3LsBucketRouteRoute
-    }
-    '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name': {
-      id: '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name'
-      path: '/rds/describe-db-subnet-groups/$name'
-      fullPath: '/rds/describe-db-subnet-groups/$name'
-      preLoaderRoute: typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id': {
-      id: '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id'
-      path: '/rds/restore-db-instance-from-db-snapshot/$id'
-      fullPath: '/rds/restore-db-instance-from-db-snapshot/$id'
-      preLoaderRoute: typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/rds/(snapshots)/describe-db-snapshots/$id': {
-      id: '/_auth/rds/(snapshots)/describe-db-snapshots/$id'
-      path: '/rds/describe-db-snapshots/$id'
-      fullPath: '/rds/describe-db-snapshots/$id'
-      preLoaderRoute: typeof AuthRdssnapshotsDescribeDbSnapshotsIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/$name': {
-      id: '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/$name'
-      path: '/rds/describe-db-parameter-groups/$name'
-      fullPath: '/rds/describe-db-parameter-groups/$name'
-      preLoaderRoute: typeof AuthRdsparameterGroupsDescribeDbParameterGroupsNameRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/rds/(db-instances)/describe-db-instances/$id': {
-      id: '/_auth/rds/(db-instances)/describe-db-instances/$id'
-      path: '/rds/describe-db-instances/$id'
-      fullPath: '/rds/describe-db-instances/$id'
-      preLoaderRoute: typeof AuthRdsdbInstancesDescribeDbInstancesIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(users)/list-users/$userName': {
-      id: '/_auth/iam/(users)/list-users/$userName'
-      path: '/iam/list-users/$userName'
-      fullPath: '/iam/list-users/$userName'
-      preLoaderRoute: typeof AuthIamusersListUsersUserNameRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(roles)/list-roles/$roleName': {
-      id: '/_auth/iam/(roles)/list-roles/$roleName'
-      path: '/iam/list-roles/$roleName'
-      fullPath: '/iam/list-roles/$roleName'
-      preLoaderRoute: typeof AuthIamrolesListRolesRoleNameRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(policies)/list-policies/$policyArn': {
-      id: '/_auth/iam/(policies)/list-policies/$policyArn'
-      path: '/iam/list-policies/$policyArn'
-      fullPath: '/iam/list-policies/$policyArn'
-      preLoaderRoute: typeof AuthIampoliciesListPoliciesPolicyArnRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName': {
-      id: '/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName'
-      path: '/iam/list-instance-profiles/$instanceProfileName'
-      fullPath: '/iam/list-instance-profiles/$instanceProfileName'
-      preLoaderRoute: typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/iam/(groups)/list-groups/$groupName': {
-      id: '/_auth/iam/(groups)/list-groups/$groupName'
-      path: '/iam/list-groups/$groupName'
-      fullPath: '/iam/list-groups/$groupName'
-      preLoaderRoute: typeof AuthIamgroupsListGroupsGroupNameRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/eks/(clusters)/list-clusters/$clusterName': {
-      id: '/_auth/eks/(clusters)/list-clusters/$clusterName'
-      path: '/eks/list-clusters/$clusterName'
-      fullPath: '/eks/list-clusters/$clusterName'
-      preLoaderRoute: typeof AuthEksclustersListClustersClusterNameRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ecs/(clusters)/list-clusters/$clusterName': {
-      id: '/_auth/ecs/(clusters)/list-clusters/$clusterName'
-      path: '/ecs/list-clusters/$clusterName'
-      fullPath: '/ecs/list-clusters/$clusterName'
-      preLoaderRoute: typeof AuthEcsclustersListClustersClusterNameRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ecr/(repositories)/list-repositories/$id': {
-      id: '/_auth/ecr/(repositories)/list-repositories/$id'
-      path: '/ecr/list-repositories/$id'
-      fullPath: '/ecr/list-repositories/$id'
-      preLoaderRoute: typeof AuthEcrrepositoriesListRepositoriesIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(vpc)/describe-vpcs/$id': {
-      id: '/_auth/ec2/(vpc)/describe-vpcs/$id'
-      path: '/ec2/describe-vpcs/$id'
-      fullPath: '/ec2/describe-vpcs/$id'
-      preLoaderRoute: typeof AuthEc2vpcDescribeVpcsIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(volumes)/modify-volume/$id': {
-      id: '/_auth/ec2/(volumes)/modify-volume/$id'
-      path: '/ec2/modify-volume/$id'
-      fullPath: '/ec2/modify-volume/$id'
-      preLoaderRoute: typeof AuthEc2volumesModifyVolumeIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(volumes)/describe-volumes/$id': {
-      id: '/_auth/ec2/(volumes)/describe-volumes/$id'
-      path: '/ec2/describe-volumes/$id'
-      fullPath: '/ec2/describe-volumes/$id'
-      preLoaderRoute: typeof AuthEc2volumesDescribeVolumesIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(target-groups)/describe-target-groups/$id': {
-      id: '/_auth/ec2/(target-groups)/describe-target-groups/$id'
-      path: '/ec2/describe-target-groups/$id'
-      fullPath: '/ec2/describe-target-groups/$id'
-      preLoaderRoute: typeof AuthEc2targetGroupsDescribeTargetGroupsIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(subnet)/describe-subnets/$id': {
-      id: '/_auth/ec2/(subnet)/describe-subnets/$id'
-      path: '/ec2/describe-subnets/$id'
-      fullPath: '/ec2/describe-subnets/$id'
-      preLoaderRoute: typeof AuthEc2subnetDescribeSubnetsIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(snapshots)/describe-snapshots/$id': {
-      id: '/_auth/ec2/(snapshots)/describe-snapshots/$id'
-      path: '/ec2/describe-snapshots/$id'
-      fullPath: '/ec2/describe-snapshots/$id'
-      preLoaderRoute: typeof AuthEc2snapshotsDescribeSnapshotsIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(security-groups)/describe-security-groups/$id': {
-      id: '/_auth/ec2/(security-groups)/describe-security-groups/$id'
-      path: '/ec2/describe-security-groups/$id'
-      fullPath: '/ec2/describe-security-groups/$id'
-      preLoaderRoute: typeof AuthEc2securityGroupsDescribeSecurityGroupsIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(route-tables)/describe-route-tables/$id': {
-      id: '/_auth/ec2/(route-tables)/describe-route-tables/$id'
-      path: '/ec2/describe-route-tables/$id'
-      fullPath: '/ec2/describe-route-tables/$id'
-      preLoaderRoute: typeof AuthEc2routeTablesDescribeRouteTablesIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(placement-groups)/describe-placement-groups/$id': {
-      id: '/_auth/ec2/(placement-groups)/describe-placement-groups/$id'
-      path: '/ec2/describe-placement-groups/$id'
-      fullPath: '/ec2/describe-placement-groups/$id'
-      preLoaderRoute: typeof AuthEc2placementGroupsDescribePlacementGroupsIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id': {
-      id: '/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id'
-      path: '/ec2/describe-nat-gateways/$id'
-      fullPath: '/ec2/describe-nat-gateways/$id'
-      preLoaderRoute: typeof AuthEc2natGatewaysDescribeNatGatewaysIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(load-balancers)/describe-load-balancers/$id': {
-      id: '/_auth/ec2/(load-balancers)/describe-load-balancers/$id'
-      path: '/ec2/describe-load-balancers/$id'
-      fullPath: '/ec2/describe-load-balancers/$id'
-      preLoaderRoute: typeof AuthEc2loadBalancersDescribeLoadBalancersIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(launch-templates)/describe-launch-templates/$id': {
-      id: '/_auth/ec2/(launch-templates)/describe-launch-templates/$id'
-      path: '/ec2/describe-launch-templates/$id'
-      fullPath: '/ec2/describe-launch-templates/$id'
-      preLoaderRoute: typeof AuthEc2launchTemplatesDescribeLaunchTemplatesIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(key)/describe-key-pairs/$id': {
-      id: '/_auth/ec2/(key)/describe-key-pairs/$id'
-      path: '/ec2/describe-key-pairs/$id'
-      fullPath: '/ec2/describe-key-pairs/$id'
-      preLoaderRoute: typeof AuthEc2keyDescribeKeyPairsIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(internet-gateways)/describe-internet-gateways/$id': {
-      id: '/_auth/ec2/(internet-gateways)/describe-internet-gateways/$id'
-      path: '/ec2/describe-internet-gateways/$id'
-      fullPath: '/ec2/describe-internet-gateways/$id'
-      preLoaderRoute: typeof AuthEc2internetGatewaysDescribeInternetGatewaysIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(instances)/describe-instances/$id': {
-      id: '/_auth/ec2/(instances)/describe-instances/$id'
-      path: '/ec2/describe-instances/$id'
-      fullPath: '/ec2/describe-instances/$id'
-      preLoaderRoute: typeof AuthEc2instancesDescribeInstancesIdRouteImport
-      parentRoute: typeof AuthRouteRoute
-    }
-    '/_auth/ec2/(images)/describe-images/$id': {
-      id: '/_auth/ec2/(images)/describe-images/$id'
-      path: '/ec2/describe-images/$id'
-      fullPath: '/ec2/describe-images/$id'
-      preLoaderRoute: typeof AuthEc2imagesDescribeImagesIdRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/ec2/(elastic-ips)/describe-addresses/$id': {
@@ -1980,18 +1574,424 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthEc2elasticIpsDescribeAddressesIdRouteImport
       parentRoute: typeof AuthRouteRoute
     }
-    '/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId': {
-      id: '/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId'
-      path: '/ecs/list-clusters/$clusterName/tasks/$taskId'
-      fullPath: '/ecs/list-clusters/$clusterName/tasks/$taskId'
-      preLoaderRoute: typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRouteImport
+    '/_auth/ec2/(images)/describe-images/': {
+      id: '/_auth/ec2/(images)/describe-images/'
+      path: '/ec2/describe-images'
+      fullPath: '/ec2/describe-images/'
+      preLoaderRoute: typeof AuthEc2imagesDescribeImagesIndexRouteImport
       parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(images)/describe-images/$id': {
+      id: '/_auth/ec2/(images)/describe-images/$id'
+      path: '/ec2/describe-images/$id'
+      fullPath: '/ec2/describe-images/$id'
+      preLoaderRoute: typeof AuthEc2imagesDescribeImagesIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(instances)/describe-instances/': {
+      id: '/_auth/ec2/(instances)/describe-instances/'
+      path: '/ec2/describe-instances'
+      fullPath: '/ec2/describe-instances/'
+      preLoaderRoute: typeof AuthEc2instancesDescribeInstancesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(instances)/describe-instances/$id': {
+      id: '/_auth/ec2/(instances)/describe-instances/$id'
+      path: '/ec2/describe-instances/$id'
+      fullPath: '/ec2/describe-instances/$id'
+      preLoaderRoute: typeof AuthEc2instancesDescribeInstancesIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(internet-gateways)/describe-internet-gateways/': {
+      id: '/_auth/ec2/(internet-gateways)/describe-internet-gateways/'
+      path: '/ec2/describe-internet-gateways'
+      fullPath: '/ec2/describe-internet-gateways/'
+      preLoaderRoute: typeof AuthEc2internetGatewaysDescribeInternetGatewaysIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(internet-gateways)/describe-internet-gateways/$id': {
+      id: '/_auth/ec2/(internet-gateways)/describe-internet-gateways/$id'
+      path: '/ec2/describe-internet-gateways/$id'
+      fullPath: '/ec2/describe-internet-gateways/$id'
+      preLoaderRoute: typeof AuthEc2internetGatewaysDescribeInternetGatewaysIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(key)/describe-key-pairs/': {
+      id: '/_auth/ec2/(key)/describe-key-pairs/'
+      path: '/ec2/describe-key-pairs'
+      fullPath: '/ec2/describe-key-pairs/'
+      preLoaderRoute: typeof AuthEc2keyDescribeKeyPairsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(key)/describe-key-pairs/$id': {
+      id: '/_auth/ec2/(key)/describe-key-pairs/$id'
+      path: '/ec2/describe-key-pairs/$id'
+      fullPath: '/ec2/describe-key-pairs/$id'
+      preLoaderRoute: typeof AuthEc2keyDescribeKeyPairsIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(launch-templates)/describe-launch-templates/': {
+      id: '/_auth/ec2/(launch-templates)/describe-launch-templates/'
+      path: '/ec2/describe-launch-templates'
+      fullPath: '/ec2/describe-launch-templates/'
+      preLoaderRoute: typeof AuthEc2launchTemplatesDescribeLaunchTemplatesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(launch-templates)/describe-launch-templates/$id': {
+      id: '/_auth/ec2/(launch-templates)/describe-launch-templates/$id'
+      path: '/ec2/describe-launch-templates/$id'
+      fullPath: '/ec2/describe-launch-templates/$id'
+      preLoaderRoute: typeof AuthEc2launchTemplatesDescribeLaunchTemplatesIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(load-balancers)/describe-load-balancers/': {
+      id: '/_auth/ec2/(load-balancers)/describe-load-balancers/'
+      path: '/ec2/describe-load-balancers'
+      fullPath: '/ec2/describe-load-balancers/'
+      preLoaderRoute: typeof AuthEc2loadBalancersDescribeLoadBalancersIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(load-balancers)/describe-load-balancers/$id': {
+      id: '/_auth/ec2/(load-balancers)/describe-load-balancers/$id'
+      path: '/ec2/describe-load-balancers/$id'
+      fullPath: '/ec2/describe-load-balancers/$id'
+      preLoaderRoute: typeof AuthEc2loadBalancersDescribeLoadBalancersIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(nat-gateways)/describe-nat-gateways/': {
+      id: '/_auth/ec2/(nat-gateways)/describe-nat-gateways/'
+      path: '/ec2/describe-nat-gateways'
+      fullPath: '/ec2/describe-nat-gateways/'
+      preLoaderRoute: typeof AuthEc2natGatewaysDescribeNatGatewaysIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id': {
+      id: '/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id'
+      path: '/ec2/describe-nat-gateways/$id'
+      fullPath: '/ec2/describe-nat-gateways/$id'
+      preLoaderRoute: typeof AuthEc2natGatewaysDescribeNatGatewaysIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(placement-groups)/describe-placement-groups/': {
+      id: '/_auth/ec2/(placement-groups)/describe-placement-groups/'
+      path: '/ec2/describe-placement-groups'
+      fullPath: '/ec2/describe-placement-groups/'
+      preLoaderRoute: typeof AuthEc2placementGroupsDescribePlacementGroupsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(placement-groups)/describe-placement-groups/$id': {
+      id: '/_auth/ec2/(placement-groups)/describe-placement-groups/$id'
+      path: '/ec2/describe-placement-groups/$id'
+      fullPath: '/ec2/describe-placement-groups/$id'
+      preLoaderRoute: typeof AuthEc2placementGroupsDescribePlacementGroupsIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(route-tables)/describe-route-tables/': {
+      id: '/_auth/ec2/(route-tables)/describe-route-tables/'
+      path: '/ec2/describe-route-tables'
+      fullPath: '/ec2/describe-route-tables/'
+      preLoaderRoute: typeof AuthEc2routeTablesDescribeRouteTablesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(route-tables)/describe-route-tables/$id': {
+      id: '/_auth/ec2/(route-tables)/describe-route-tables/$id'
+      path: '/ec2/describe-route-tables/$id'
+      fullPath: '/ec2/describe-route-tables/$id'
+      preLoaderRoute: typeof AuthEc2routeTablesDescribeRouteTablesIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(security-groups)/describe-security-groups/': {
+      id: '/_auth/ec2/(security-groups)/describe-security-groups/'
+      path: '/ec2/describe-security-groups'
+      fullPath: '/ec2/describe-security-groups/'
+      preLoaderRoute: typeof AuthEc2securityGroupsDescribeSecurityGroupsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(security-groups)/describe-security-groups/$id': {
+      id: '/_auth/ec2/(security-groups)/describe-security-groups/$id'
+      path: '/ec2/describe-security-groups/$id'
+      fullPath: '/ec2/describe-security-groups/$id'
+      preLoaderRoute: typeof AuthEc2securityGroupsDescribeSecurityGroupsIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(snapshots)/describe-snapshots/': {
+      id: '/_auth/ec2/(snapshots)/describe-snapshots/'
+      path: '/ec2/describe-snapshots'
+      fullPath: '/ec2/describe-snapshots/'
+      preLoaderRoute: typeof AuthEc2snapshotsDescribeSnapshotsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(snapshots)/describe-snapshots/$id': {
+      id: '/_auth/ec2/(snapshots)/describe-snapshots/$id'
+      path: '/ec2/describe-snapshots/$id'
+      fullPath: '/ec2/describe-snapshots/$id'
+      preLoaderRoute: typeof AuthEc2snapshotsDescribeSnapshotsIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(subnet)/describe-subnets/': {
+      id: '/_auth/ec2/(subnet)/describe-subnets/'
+      path: '/ec2/describe-subnets'
+      fullPath: '/ec2/describe-subnets/'
+      preLoaderRoute: typeof AuthEc2subnetDescribeSubnetsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(subnet)/describe-subnets/$id': {
+      id: '/_auth/ec2/(subnet)/describe-subnets/$id'
+      path: '/ec2/describe-subnets/$id'
+      fullPath: '/ec2/describe-subnets/$id'
+      preLoaderRoute: typeof AuthEc2subnetDescribeSubnetsIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(target-groups)/describe-target-groups/': {
+      id: '/_auth/ec2/(target-groups)/describe-target-groups/'
+      path: '/ec2/describe-target-groups'
+      fullPath: '/ec2/describe-target-groups/'
+      preLoaderRoute: typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(target-groups)/describe-target-groups/$id': {
+      id: '/_auth/ec2/(target-groups)/describe-target-groups/$id'
+      path: '/ec2/describe-target-groups/$id'
+      fullPath: '/ec2/describe-target-groups/$id'
+      preLoaderRoute: typeof AuthEc2targetGroupsDescribeTargetGroupsIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(volumes)/describe-volumes/': {
+      id: '/_auth/ec2/(volumes)/describe-volumes/'
+      path: '/ec2/describe-volumes'
+      fullPath: '/ec2/describe-volumes/'
+      preLoaderRoute: typeof AuthEc2volumesDescribeVolumesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(volumes)/describe-volumes/$id': {
+      id: '/_auth/ec2/(volumes)/describe-volumes/$id'
+      path: '/ec2/describe-volumes/$id'
+      fullPath: '/ec2/describe-volumes/$id'
+      preLoaderRoute: typeof AuthEc2volumesDescribeVolumesIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(volumes)/modify-volume/$id': {
+      id: '/_auth/ec2/(volumes)/modify-volume/$id'
+      path: '/ec2/modify-volume/$id'
+      fullPath: '/ec2/modify-volume/$id'
+      preLoaderRoute: typeof AuthEc2volumesModifyVolumeIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(vpc)/describe-vpcs/': {
+      id: '/_auth/ec2/(vpc)/describe-vpcs/'
+      path: '/ec2/describe-vpcs'
+      fullPath: '/ec2/describe-vpcs/'
+      preLoaderRoute: typeof AuthEc2vpcDescribeVpcsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(vpc)/describe-vpcs/$id': {
+      id: '/_auth/ec2/(vpc)/describe-vpcs/$id'
+      path: '/ec2/describe-vpcs/$id'
+      fullPath: '/ec2/describe-vpcs/$id'
+      preLoaderRoute: typeof AuthEc2vpcDescribeVpcsIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ecr/(repositories)/list-repositories/': {
+      id: '/_auth/ecr/(repositories)/list-repositories/'
+      path: '/ecr/list-repositories'
+      fullPath: '/ecr/list-repositories/'
+      preLoaderRoute: typeof AuthEcrrepositoriesListRepositoriesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ecr/(repositories)/list-repositories/$id': {
+      id: '/_auth/ecr/(repositories)/list-repositories/$id'
+      path: '/ecr/list-repositories/$id'
+      fullPath: '/ecr/list-repositories/$id'
+      preLoaderRoute: typeof AuthEcrrepositoriesListRepositoriesIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ecs/(clusters)/list-clusters/': {
+      id: '/_auth/ecs/(clusters)/list-clusters/'
+      path: '/ecs/list-clusters'
+      fullPath: '/ecs/list-clusters/'
+      preLoaderRoute: typeof AuthEcsclustersListClustersIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ecs/(clusters)/list-clusters/$clusterName': {
+      id: '/_auth/ecs/(clusters)/list-clusters/$clusterName'
+      path: '/ecs/list-clusters/$clusterName'
+      fullPath: '/ecs/list-clusters/$clusterName'
+      preLoaderRoute: typeof AuthEcsclustersListClustersClusterNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/eks/(clusters)/list-clusters/': {
+      id: '/_auth/eks/(clusters)/list-clusters/'
+      path: '/eks/list-clusters'
+      fullPath: '/eks/list-clusters/'
+      preLoaderRoute: typeof AuthEksclustersListClustersIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/eks/(clusters)/list-clusters/$clusterName': {
+      id: '/_auth/eks/(clusters)/list-clusters/$clusterName'
+      path: '/eks/list-clusters/$clusterName'
+      fullPath: '/eks/list-clusters/$clusterName'
+      preLoaderRoute: typeof AuthEksclustersListClustersClusterNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(groups)/list-groups/': {
+      id: '/_auth/iam/(groups)/list-groups/'
+      path: '/iam/list-groups'
+      fullPath: '/iam/list-groups/'
+      preLoaderRoute: typeof AuthIamgroupsListGroupsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(groups)/list-groups/$groupName': {
+      id: '/_auth/iam/(groups)/list-groups/$groupName'
+      path: '/iam/list-groups/$groupName'
+      fullPath: '/iam/list-groups/$groupName'
+      preLoaderRoute: typeof AuthIamgroupsListGroupsGroupNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(instance-profiles)/list-instance-profiles/': {
+      id: '/_auth/iam/(instance-profiles)/list-instance-profiles/'
+      path: '/iam/list-instance-profiles'
+      fullPath: '/iam/list-instance-profiles/'
+      preLoaderRoute: typeof AuthIaminstanceProfilesListInstanceProfilesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName': {
+      id: '/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName'
+      path: '/iam/list-instance-profiles/$instanceProfileName'
+      fullPath: '/iam/list-instance-profiles/$instanceProfileName'
+      preLoaderRoute: typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(policies)/list-policies/': {
+      id: '/_auth/iam/(policies)/list-policies/'
+      path: '/iam/list-policies'
+      fullPath: '/iam/list-policies/'
+      preLoaderRoute: typeof AuthIampoliciesListPoliciesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(policies)/list-policies/$policyArn': {
+      id: '/_auth/iam/(policies)/list-policies/$policyArn'
+      path: '/iam/list-policies/$policyArn'
+      fullPath: '/iam/list-policies/$policyArn'
+      preLoaderRoute: typeof AuthIampoliciesListPoliciesPolicyArnRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(roles)/list-roles/': {
+      id: '/_auth/iam/(roles)/list-roles/'
+      path: '/iam/list-roles'
+      fullPath: '/iam/list-roles/'
+      preLoaderRoute: typeof AuthIamrolesListRolesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(roles)/list-roles/$roleName': {
+      id: '/_auth/iam/(roles)/list-roles/$roleName'
+      path: '/iam/list-roles/$roleName'
+      fullPath: '/iam/list-roles/$roleName'
+      preLoaderRoute: typeof AuthIamrolesListRolesRoleNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(users)/list-users/': {
+      id: '/_auth/iam/(users)/list-users/'
+      path: '/iam/list-users'
+      fullPath: '/iam/list-users/'
+      preLoaderRoute: typeof AuthIamusersListUsersIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/iam/(users)/list-users/$userName': {
+      id: '/_auth/iam/(users)/list-users/$userName'
+      path: '/iam/list-users/$userName'
+      fullPath: '/iam/list-users/$userName'
+      preLoaderRoute: typeof AuthIamusersListUsersUserNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(db-instances)/describe-db-instances/': {
+      id: '/_auth/rds/(db-instances)/describe-db-instances/'
+      path: '/rds/describe-db-instances'
+      fullPath: '/rds/describe-db-instances/'
+      preLoaderRoute: typeof AuthRdsdbInstancesDescribeDbInstancesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(db-instances)/describe-db-instances/$id': {
+      id: '/_auth/rds/(db-instances)/describe-db-instances/$id'
+      path: '/rds/describe-db-instances/$id'
+      fullPath: '/rds/describe-db-instances/$id'
+      preLoaderRoute: typeof AuthRdsdbInstancesDescribeDbInstancesIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/': {
+      id: '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/'
+      path: '/rds/describe-db-parameter-groups'
+      fullPath: '/rds/describe-db-parameter-groups/'
+      preLoaderRoute: typeof AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/$name': {
+      id: '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/$name'
+      path: '/rds/describe-db-parameter-groups/$name'
+      fullPath: '/rds/describe-db-parameter-groups/$name'
+      preLoaderRoute: typeof AuthRdsparameterGroupsDescribeDbParameterGroupsNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(snapshots)/describe-db-snapshots/': {
+      id: '/_auth/rds/(snapshots)/describe-db-snapshots/'
+      path: '/rds/describe-db-snapshots'
+      fullPath: '/rds/describe-db-snapshots/'
+      preLoaderRoute: typeof AuthRdssnapshotsDescribeDbSnapshotsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(snapshots)/describe-db-snapshots/$id': {
+      id: '/_auth/rds/(snapshots)/describe-db-snapshots/$id'
+      path: '/rds/describe-db-snapshots/$id'
+      fullPath: '/rds/describe-db-snapshots/$id'
+      preLoaderRoute: typeof AuthRdssnapshotsDescribeDbSnapshotsIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id': {
+      id: '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id'
+      path: '/rds/restore-db-instance-from-db-snapshot/$id'
+      fullPath: '/rds/restore-db-instance-from-db-snapshot/$id'
+      preLoaderRoute: typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/': {
+      id: '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/'
+      path: '/rds/describe-db-subnet-groups'
+      fullPath: '/rds/describe-db-subnet-groups/'
+      preLoaderRoute: typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name': {
+      id: '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name'
+      path: '/rds/describe-db-subnet-groups/$name'
+      fullPath: '/rds/describe-db-subnet-groups/$name'
+      preLoaderRoute: typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/s3/ls/$bucket/': {
+      id: '/_auth/s3/ls/$bucket/'
+      path: '/'
+      fullPath: '/s3/ls/$bucket/'
+      preLoaderRoute: typeof AuthS3LsBucketIndexRouteImport
+      parentRoute: typeof AuthS3LsBucketRouteRoute
+    }
+    '/_auth/s3/ls/$bucket/$': {
+      id: '/_auth/s3/ls/$bucket/$'
+      path: '/$'
+      fullPath: '/s3/ls/$bucket/$'
+      preLoaderRoute: typeof AuthS3LsBucketSplatRouteImport
+      parentRoute: typeof AuthS3LsBucketRouteRoute
     }
     '/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName': {
       id: '/_auth/ecs/(clusters)/list-clusters/$clusterName_/services/$serviceName'
       path: '/ecs/list-clusters/$clusterName/services/$serviceName'
       fullPath: '/ecs/list-clusters/$clusterName/services/$serviceName'
       preLoaderRoute: typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId': {
+      id: '/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId'
+      path: '/ecs/list-clusters/$clusterName/tasks/$taskId'
+      fullPath: '/ecs/list-clusters/$clusterName/tasks/$taskId'
+      preLoaderRoute: typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRouteImport
       parentRoute: typeof AuthRouteRoute
     }
   }

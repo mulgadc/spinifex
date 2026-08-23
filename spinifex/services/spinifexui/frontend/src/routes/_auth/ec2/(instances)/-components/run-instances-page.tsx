@@ -230,7 +230,7 @@ export function RunInstancesPage({
   // no BlockDeviceMappings (preserves today's backend default).
   useEffect(() => {
     setValue("rootDeviceName", selectedRoot.deviceName)
-  }, [selectedImageId, selectedRoot.deviceName, setValue])
+  }, [selectedRoot.deviceName, setValue])
 
   const onSubmit = async (data: CreateInstanceFormData) => {
     // Launch wholly from the template (plus count). Build params from only the

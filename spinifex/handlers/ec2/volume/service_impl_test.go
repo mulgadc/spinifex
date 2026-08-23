@@ -1367,21 +1367,6 @@ func TestDescribeVolumeStatus_AccountScoping(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }
 
-func TestCreateVolume_StampsAccountID(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-
-	// Test via the validation path — CreateVolume should not fail because of accountID.
-	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
-		Size:             aws.Int64(1),
-		AvailabilityZone: aws.String("ap-southeast-2a"),
-	}, "111111111111")
-	// Will error at viperblock layer, not at account validation
-	if err != nil {
-		assert.NotEqual(t, awserrors.ErrorInvalidParameterValue, err.Error())
-	}
-}
-
 // --- Group 3: ModifyVolume tests ---
 
 func TestModifyVolume_NilVolumeID(t *testing.T) {

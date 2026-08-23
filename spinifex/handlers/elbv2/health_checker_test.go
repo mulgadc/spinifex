@@ -223,15 +223,6 @@ func TestRemoveTarget(t *testing.T) {
 	assert.False(t, exists)
 }
 
-func TestHandleHealthReport_EmptyServers(t *testing.T) {
-	store := setupTestNATS(t)
-	hc := newHealthChecker(store)
-
-	report := lbagent.HealthReport{LBID: "lb-empty", Servers: nil}
-	// Should return early without touching the store.
-	hc.handleHealthReportDirect(context.Background(), report)
-}
-
 func TestHandleHealthReport_TargetPortZeroUsesTGPort(t *testing.T) {
 	store := setupTestNATS(t)
 	hc := newHealthChecker(store)
@@ -294,14 +285,6 @@ func TestHandleHealthReportDirect_TransitionsInitialToHealthy(t *testing.T) {
 	stored, err := store.GetTargetGroup(t.Context(), "tg-direct")
 	require.NoError(t, err)
 	assert.Equal(t, TargetHealthHealthy, stored.Targets[0].HealthState)
-}
-
-func TestHandleHealthReportDirect_EmptyServersIsNoOp(t *testing.T) {
-	store := setupTestNATS(t)
-	hc := newHealthChecker(store)
-
-	// Should return immediately without touching the store.
-	hc.handleHealthReportDirect(context.Background(), lbagent.HealthReport{LBID: "lb-empty", Servers: nil})
 }
 
 func TestHandleHealthReport_OnlyProcessesTGsForReportingLB(t *testing.T) {

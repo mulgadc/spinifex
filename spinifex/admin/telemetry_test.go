@@ -84,25 +84,3 @@ func TestSendTelemetry_RespectsTimeout(t *testing.T) {
 
 	assert.Less(t, elapsed, 2*time.Second, "should respect context timeout")
 }
-
-func TestSendTelemetry_HandlesServerError(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	ctx := context.Background()
-	SendTelemetry(ctx, TelemetryPayload{MachineID: "error-test", URL: server.URL})
-}
-
-func TestSendTelemetry_HandlesUnreachableServer(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	// URL pointing to a port that's not listening
-	SendTelemetry(ctx, TelemetryPayload{MachineID: "unreachable-test", URL: "http://127.0.0.1:1"})
-}

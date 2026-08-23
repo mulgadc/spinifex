@@ -5,9 +5,22 @@ import tailwindcss from "@tailwindcss/vite"
 import { tanstackRouter } from "@tanstack/router-plugin/vite"
 import basicSsl from "@vitejs/plugin-basic-ssl"
 import react from "@vitejs/plugin-react"
-import { defineConfig } from "vite"
+import { createLogger, defineConfig } from "vite"
+
+// React Compiler emits a Todo diagnostic per function it cannot compile. Those
+// are its own unimplemented syntax, not defects here, and they bury the build
+// output. Other compiler diagnostics still surface.
+const logger = createLogger()
+const warn = logger.warn.bind(logger)
+logger.warn = (msg, options) => {
+  if (msg.includes("react-compiler(Todo)")) {
+    return
+  }
+  warn(msg, options)
+}
 
 export default defineConfig({
+  customLogger: logger,
   envDir: "../",
   build: {
     target: "es2023",

@@ -223,7 +223,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 	}()
 
 	systemENI, err := createLaunchENI(ctx, deps.VPC, utils.GlobalAccountID, systemSubnetID, []string{systemSGID},
-		"RDS management NIC for "+in.DBInstanceIdentifier, in.DBInstanceIdentifier)
+		"RDS management NIC for "+in.DBInstanceIdentifier, in.DBInstanceIdentifier, false)
 	if err != nil {
 		return nil, err
 	}
@@ -387,10 +387,19 @@ type launchENI struct {
 // groups must be non-empty for either NIC: an ENI created with none is placed in
 // its VPC's default group, whose sole ingress rule admits every other member of
 // itself — which for the shared system VPC is every DB VM in the deployment.
-func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID, subnetID string, groups []string, description, dbInstanceID string) (*launchENI, error) {
+// suppressDHCP marks the customer endpoint ENI, which is always statically
+// addressed; the system/primary NIC keeps DHCP for IMDS bootstrap.
+func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID, subnetID string, groups []string, description, dbInstanceID string, suppressDHCP bool) (*launchENI, error) {
 	var groupIDs []*string
 	if len(groups) > 0 {
 		groupIDs = aws.StringSlice(groups)
+	}
+	eniTags := []*ec2.Tag{
+		{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByRDS)},
+		{Key: aws.String(rdsInstanceTagKey), Value: aws.String(dbInstanceID)},
+	}
+	if suppressDHCP {
+		eniTags = append(eniTags, &ec2.Tag{Key: aws.String(tags.DHCPDisabledKey), Value: aws.String(tags.DHCPDisabledValue)})
 	}
 	out, err := vpcSvc.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(subnetID),
@@ -398,10 +407,7 @@ func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID
 		Groups:      groupIDs,
 		TagSpecifications: []*ec2.TagSpecification{{
 			ResourceType: aws.String("network-interface"),
-			Tags: []*ec2.Tag{
-				{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByRDS)},
-				{Key: aws.String(rdsInstanceTagKey), Value: aws.String(dbInstanceID)},
-			},
+			Tags:         eniTags,
 		}},
 	}, accountID)
 	if err != nil {
@@ -427,7 +433,7 @@ func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, accountID
 func resolveCustomerENI(ctx context.Context, vpcSvc launchVPCProvisioner, in LaunchInput) (*launchENI, error) {
 	if in.ExistingCustomerENI == "" {
 		return createLaunchENI(ctx, vpcSvc, in.AccountID, in.SubnetID, in.SecurityGroupIDs,
-			"RDS endpoint ENI for "+in.DBInstanceIdentifier, in.DBInstanceIdentifier)
+			"RDS endpoint ENI for "+in.DBInstanceIdentifier, in.DBInstanceIdentifier, true)
 	}
 
 	// The old VM is gone by now but its attachment record can outlive it, and a

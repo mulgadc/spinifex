@@ -42,6 +42,15 @@ const (
 
 	// GPUVendorAMD identifies an AMD-driver GPU node AMI.
 	GPUVendorAMD = "amd"
+
+	// DHCPDisabledKey marks an ENI whose logical switch port must not get OVN
+	// DHCP options — used for statically-addressed customer ENIs whose lease
+	// would otherwise be flushed by the guest's dhcpcd at expiry. Internal:
+	// stripped from the persisted user-visible tag set at CreateNetworkInterface.
+	DHCPDisabledKey = "spinifex:dhcp"
+
+	// DHCPDisabledValue is the DHCPDisabledKey value that suppresses DHCP.
+	DHCPDisabledValue = "disabled"
 )
 
 // IsSystemManaged reports whether a ManagedBy value denotes a Spinifex

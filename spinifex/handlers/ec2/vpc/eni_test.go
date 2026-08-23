@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -101,6 +102,86 @@ func TestCreateNetworkInterface_WithTags(t *testing.T) {
 	require.Len(t, out.NetworkInterface.TagSet, 1)
 	assert.Equal(t, "Name", *out.NetworkInterface.TagSet[0].Key)
 	assert.Equal(t, "my-eni", *out.NetworkInterface.TagSet[0].Value)
+}
+
+// TestCreateNetworkInterface_DHCPDisabledTag_SuppressesDHCP proves the internal
+// dhcp-disabled tag (set by the RDS launch path on the customer endpoint ENI)
+// marks the ENIRecord SuppressDHCP, threads it into the vpc.create-port event
+// for vpcd, and never persists as a customer-visible tag.
+func TestCreateNetworkInterface_DHCPDisabledTag_SuppressesDHCP(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.create-port", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(subnetId),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("network-interface"),
+			Tags: []*ec2.Tag{
+				{Key: aws.String("Name"), Value: aws.String("rds-endpoint")},
+				{Key: aws.String(tags.DHCPDisabledKey), Value: aws.String(tags.DHCPDisabledValue)},
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	eniId := *out.NetworkInterface.NetworkInterfaceId
+
+	// The internal tag never reaches the customer-visible tag set.
+	require.Len(t, out.NetworkInterface.TagSet, 1)
+	assert.Equal(t, "Name", *out.NetworkInterface.TagSet[0].Key)
+
+	rec, err := svc.GetENIRecord(testAccountID, eniId)
+	require.NoError(t, err)
+	assert.True(t, rec.SuppressDHCP, "ENIRecord.SuppressDHCP must be set from the internal tag")
+	_, hasInternalTag := rec.Tags[tags.DHCPDisabledKey]
+	assert.False(t, hasInternalTag, "internal dhcp-disabled tag must not be persisted")
+
+	select {
+	case msg := <-eventCh:
+		assert.Contains(t, string(msg.Data), `"suppress_dhcp":true`)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for vpc.create-port event")
+	}
+}
+
+// TestCreateNetworkInterface_NoDHCPDisabledTag_LeavesDHCPEnabled proves an
+// ordinary ENI (no internal tag) is unaffected: SuppressDHCP stays false and
+// the wire event carries no suppress_dhcp marker.
+func TestCreateNetworkInterface_NoDHCPDisabledTag_LeavesDHCPEnabled(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.create-port", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(subnetId),
+	}, testAccountID)
+	require.NoError(t, err)
+	eniId := *out.NetworkInterface.NetworkInterfaceId
+
+	rec, err := svc.GetENIRecord(testAccountID, eniId)
+	require.NoError(t, err)
+	assert.False(t, rec.SuppressDHCP)
+
+	select {
+	case msg := <-eventCh:
+		assert.NotContains(t, string(msg.Data), `"suppress_dhcp":true`)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for vpc.create-port event")
+	}
 }
 
 func TestDeleteNetworkInterface(t *testing.T) {

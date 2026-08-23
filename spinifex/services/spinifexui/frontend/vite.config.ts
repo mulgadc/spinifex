@@ -19,7 +19,7 @@ logger.warn = (msg, options) => {
   warn(msg, options)
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   customLogger: logger,
   envDir: "../",
   build: {
@@ -40,7 +40,7 @@ export default defineConfig({
       autoCodeSplitting: true,
       routeFileIgnorePattern: "\\.test\\.(ts|tsx)$",
     }),
-    react({ compiler: true }),
+    react({ compiler: mode !== "test" }),
     tailwindcss(),
   ],
   resolve: {
@@ -71,4 +71,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

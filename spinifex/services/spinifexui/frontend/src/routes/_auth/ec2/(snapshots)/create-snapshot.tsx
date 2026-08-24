@@ -1,11 +1,8 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import {
-  createFileRoute,
-  type SearchSchemaInput,
-  useNavigate,
-} from "@tanstack/react-router"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { Controller, useForm, useWatch } from "react-hook-form"
+import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -28,10 +25,14 @@ import { useCreateSnapshot } from "@/mutations/ec2"
 import { ec2VolumesQueryOptions } from "@/queries/ec2"
 import { type CreateSnapshotFormData, createSnapshotSchema } from "@/types/ec2"
 
+/* oxlint-disable promise/prefer-await-to-then, unicorn/no-useless-undefined -- zod's .catch() supplies a schema fallback, not a promise handler */
+const searchSchema = z.object({
+  volumeId: z.string().optional().catch(undefined),
+})
+/* oxlint-enable promise/prefer-await-to-then, unicorn/no-useless-undefined */
+
 export const Route = createFileRoute("/_auth/ec2/(snapshots)/create-snapshot")({
-  validateSearch: (search: { volumeId?: string } & SearchSchemaInput) => ({
-    volumeId: typeof search.volumeId === "string" ? search.volumeId : undefined,
-  }),
+  validateSearch: searchSchema,
   loader: async ({ context }) => {
     await context.queryClient.ensureQueryData(ec2VolumesQueryOptions)
   },

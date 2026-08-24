@@ -1,3 +1,6 @@
+//test:in-package — ec2Actions is unexported here, and the completeness test
+// exists to compare it against the scope table.
+
 package gateway
 
 import (

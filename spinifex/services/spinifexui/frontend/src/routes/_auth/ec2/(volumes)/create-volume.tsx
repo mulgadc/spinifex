@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, type UseFormWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -141,12 +141,10 @@ function CreateVolume() {
 }
 
 function buildCreateVolumeCommands(
-  watch: (name?: string) => unknown,
+  watch: UseFormWatch<CreateVolumeFormData>,
 ): CliCommand[] {
-  const rawSize = watch("size")
-  const size = typeof rawSize === "number" ? rawSize : 0
-  const rawAz = watch("availabilityZone")
-  const az = typeof rawAz === "string" ? rawAz : ""
+  const size = watch("size")
+  const az = watch("availabilityZone")
 
   return [
     {

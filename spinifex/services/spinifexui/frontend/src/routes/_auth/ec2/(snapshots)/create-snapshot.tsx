@@ -1,7 +1,12 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
@@ -69,8 +74,6 @@ function CreateSnapshot() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateSnapshotFormData) => {
     await createMutation.mutateAsync(data)
@@ -137,7 +140,7 @@ function CreateSnapshot() {
           />
         </Field>
 
-        <CliCommandPanel commands={buildCreateSnapshotCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreateSnapshotCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
@@ -154,12 +157,10 @@ function CreateSnapshot() {
 }
 
 function buildCreateSnapshotCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateSnapshotFormData>,
 ): CliCommand[] {
-  const rawVolumeId = watch("volumeId")
-  const volumeId = typeof rawVolumeId === "string" ? rawVolumeId : ""
-  const rawDescription = watch("description")
-  const description = typeof rawDescription === "string" ? rawDescription : ""
+  const volumeId = values.volumeId ?? ""
+  const description = values.description ?? ""
 
   const parts = [
     {

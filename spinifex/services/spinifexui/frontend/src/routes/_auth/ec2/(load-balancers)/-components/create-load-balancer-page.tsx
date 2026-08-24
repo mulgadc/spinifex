@@ -3,7 +3,12 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  useForm,
+  type UseFormWatch,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -790,35 +795,20 @@ export function CreateLoadBalancerPage() {
 }
 
 function buildCreateLbCommands(
-  watch: (name?: string) => unknown,
-  tgWatch: (name?: string) => unknown,
+  watch: UseFormWatch<CreateLoadBalancerFormData>,
+  tgWatch: UseFormWatch<CreateTargetGroupFormData>,
 ): CliCommand[] {
-  const asString = (key: string): string => {
-    const raw = watch(key)
-    return typeof raw === "string" ? raw : ""
-  }
-  const asStringArray = (key: string): string[] => {
-    const raw = watch(key)
-    return Array.isArray(raw)
-      ? raw.filter((v): v is string => typeof v === "string")
-      : []
-  }
-  const asNumber = (key: string): number | undefined => {
-    const raw = watch(key)
-    return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined
-  }
-
-  const name = asString("name") || "<Name>"
-  const lbTypeValue = asString("type") || "application"
-  const scheme = asString("scheme") || "internet-facing"
-  const subnets = asStringArray("subnetIds")
-  const sgs = asStringArray("securityGroupIds")
-  const listenerProtocol = asString("listener.protocol") || "HTTP"
-  const listenerPort = asNumber("listener.port") ?? 80
-  const certificateArn = asString("listener.certificateArn")
-  const sslPolicy = asString("listener.sslPolicy")
-  const tgMode = asString("listener.targetGroupMode")
-  const existingTgArn = asString("listener.existingTargetGroupArn")
+  const name = watch("name") || "<Name>"
+  const lbTypeValue = watch("type") || "application"
+  const scheme = watch("scheme") || "internet-facing"
+  const subnets = watch("subnetIds")
+  const sgs = watch("securityGroupIds")
+  const listenerProtocol = watch("listener.protocol") || "HTTP"
+  const listenerPort = watch("listener.port") ?? 80
+  const certificateArn = watch("listener.certificateArn")
+  const sslPolicy = watch("listener.sslPolicy")
+  const tgMode = watch("listener.targetGroupMode")
+  const existingTgArn = watch("listener.existingTargetGroupArn")
 
   const commands: CliCommand[] = []
   const comment: CommandPart = {
@@ -829,21 +819,12 @@ function buildCreateLbCommands(
         : "# Create ALB with listener and default target group\n\n",
   }
 
-  const tgAsString = (key: string): string => {
-    const raw = tgWatch(key)
-    return typeof raw === "string" ? raw : ""
-  }
-  const tgAsNumber = (key: string): number | undefined => {
-    const raw = tgWatch(key)
-    return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined
-  }
-
   // Either a create-target-group step (mode=new) or just a TG_ARN= assignment
   if (tgMode === "new") {
-    const tgName = tgAsString("name") || "<TG-Name>"
-    const tgPort = tgAsNumber("port") ?? 80
-    const tgVpc = tgAsString("vpcId")
-    const tgProtocol = tgAsString("protocol") || "HTTP"
+    const tgName = tgWatch("name") || "<TG-Name>"
+    const tgPort = tgWatch("port") ?? 80
+    const tgVpc = tgWatch("vpcId")
+    const tgProtocol = tgWatch("protocol") || "HTTP"
     commands.push({
       label: "Create Target Group",
       parts: [

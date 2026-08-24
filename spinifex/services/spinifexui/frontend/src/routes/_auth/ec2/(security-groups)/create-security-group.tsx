@@ -1,7 +1,12 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -66,8 +71,6 @@ function CreateSecurityGroup() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateSecurityGroupFormData) => {
     const result = await createMutation.mutateAsync(data)
@@ -161,9 +164,7 @@ function CreateSecurityGroup() {
           <FieldError errors={[errors.vpcId]} />
         </Field>
 
-        <CliCommandPanel
-          commands={buildCreateSecurityGroupCommands(cliWatch)}
-        />
+        <CliCommandPanel commands={buildCreateSecurityGroupCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
@@ -180,14 +181,11 @@ function CreateSecurityGroup() {
 }
 
 function buildCreateSecurityGroupCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateSecurityGroupFormData>,
 ): CliCommand[] {
-  const rawName = watch("groupName")
-  const name = typeof rawName === "string" ? rawName : ""
-  const rawDesc = watch("description")
-  const desc = typeof rawDesc === "string" ? rawDesc : ""
-  const rawVpcId = watch("vpcId")
-  const vpcId = typeof rawVpcId === "string" ? rawVpcId : ""
+  const name = values.groupName ?? ""
+  const desc = values.description ?? ""
+  const vpcId = values.vpcId ?? ""
 
   const parts = [
     {

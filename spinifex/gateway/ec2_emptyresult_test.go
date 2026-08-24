@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"net/http"
 	"regexp"
 	"strings"
 	"testing"
@@ -22,7 +21,9 @@ func render[In any](t *testing.T, action string, out any) string {
 	h := ec2Handler(func(_ context.Context, _ *In, _ *GatewayConfig, _ string) (any, error) {
 		return out, nil
 	})
-	xmlOutput, err := h(action, map[string]string{}, &GatewayConfig{}, "acct-123", (*http.Request)(nil))
+	input, err := h.parse(map[string]string{})
+	require.NoError(t, err)
+	xmlOutput, err := h.dispatch(action, input, &GatewayConfig{}, "acct-123", nil)
 	require.NoError(t, err)
 	return string(xmlOutput)
 }

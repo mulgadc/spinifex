@@ -515,7 +515,10 @@ func isNATSTransient(err error) bool {
 		errors.Is(err, nats.ErrNoStreamResponse))
 }
 
-// checkPolicy evaluates IAM policies against resource "*".
+// checkPolicy evaluates IAM policies against the literal resource "*", so it
+// grants account-wide: a caller's resource-scoped statements do not participate
+// at all, neither a Deny that fences a resource nor an Allow that names one.
+// Prefer checkPolicyResources with the request's real ARNs.
 func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) error {
 	return gw.checkPolicyResources(r, service, action, []string{"*"})
 }

@@ -6,7 +6,7 @@ vi.mock("@/lib/awsClient", () => ({
   getRdsClient: () => ({ send: mockSend }),
 }))
 
-import { callQueryFn } from "@/test/query"
+import { callQueryFn, callRefetchInterval } from "@/test/query"
 
 import {
   rdsAutomatedBackupsQueryOptions,
@@ -259,82 +259,68 @@ describe("rds queries send the right command", () => {
   })
 })
 
-function refetchIntervalOf(options: {
-  refetchInterval?: unknown
-}): (query: unknown) => unknown {
-  const refetch = options.refetchInterval
-  if (typeof refetch !== "function") {
-    throw new TypeError("expected refetchInterval to be a function")
-  }
-  return refetch as (query: unknown) => unknown
-}
-
 describe("rds poll cadence", () => {
   it("polls the list while any instance is creating", () => {
-    const refetch = refetchIntervalOf(rdsDBInstancesQueryOptions)
     expect(
-      refetch({
-        state: { data: { DBInstances: [{ DBInstanceStatus: "creating" }] } },
+      callRefetchInterval(rdsDBInstancesQueryOptions, {
+        DBInstances: [{ DBInstanceStatus: "creating" }],
       }),
     ).toBe(5000)
   })
 
   it("stops polling the list once every instance is available", () => {
-    const refetch = refetchIntervalOf(rdsDBInstancesQueryOptions)
     expect(
-      refetch({
-        state: { data: { DBInstances: [{ DBInstanceStatus: "available" }] } },
+      callRefetchInterval(rdsDBInstancesQueryOptions, {
+        DBInstances: [{ DBInstanceStatus: "available" }],
       }),
     ).toBeFalsy()
   })
 
   it("does not treat a stopped instance as in flight", () => {
-    const refetch = refetchIntervalOf(rdsDBInstancesQueryOptions)
     expect(
-      refetch({
-        state: { data: { DBInstances: [{ DBInstanceStatus: "stopped" }] } },
+      callRefetchInterval(rdsDBInstancesQueryOptions, {
+        DBInstances: [{ DBInstanceStatus: "stopped" }],
       }),
     ).toBeFalsy()
   })
 
   it("polls the detail query while the instance is modifying", () => {
-    const refetch = refetchIntervalOf(rdsDBInstanceQueryOptions("orders-db"))
     expect(
-      refetch({
-        state: { data: { DBInstances: [{ DBInstanceStatus: "modifying" }] } },
+      callRefetchInterval(rdsDBInstanceQueryOptions("orders-db"), {
+        DBInstances: [{ DBInstanceStatus: "modifying" }],
       }),
     ).toBe(5000)
   })
 
   it("stops polling the detail query once the instance is available", () => {
-    const refetch = refetchIntervalOf(rdsDBInstanceQueryOptions("orders-db"))
     expect(
-      refetch({
-        state: { data: { DBInstances: [{ DBInstanceStatus: "available" }] } },
+      callRefetchInterval(rdsDBInstanceQueryOptions("orders-db"), {
+        DBInstances: [{ DBInstanceStatus: "available" }],
       }),
     ).toBeFalsy()
   })
 
   it("polls the snapshot list while one is still being taken", () => {
-    const refetch = refetchIntervalOf(rdsDBSnapshotsQueryOptions)
     expect(
-      refetch({ state: { data: { DBSnapshots: [{ Status: "creating" }] } } }),
+      callRefetchInterval(rdsDBSnapshotsQueryOptions, {
+        DBSnapshots: [{ Status: "creating" }],
+      }),
     ).toBe(5000)
   })
 
   it("stops polling the snapshot list once every snapshot is available", () => {
-    const refetch = refetchIntervalOf(rdsDBSnapshotsQueryOptions)
     expect(
-      refetch({ state: { data: { DBSnapshots: [{ Status: "available" }] } } }),
+      callRefetchInterval(rdsDBSnapshotsQueryOptions, {
+        DBSnapshots: [{ Status: "available" }],
+      }),
     ).toBeFalsy()
   })
 
   it("polls an instance's snapshots while one is still being taken", () => {
-    const refetch = refetchIntervalOf(
-      rdsInstanceDBSnapshotsQueryOptions("orders-db"),
-    )
     expect(
-      refetch({ state: { data: { DBSnapshots: [{ Status: "creating" }] } } }),
+      callRefetchInterval(rdsInstanceDBSnapshotsQueryOptions("orders-db"), {
+        DBSnapshots: [{ Status: "creating" }],
+      }),
     ).toBe(5000)
   })
 })

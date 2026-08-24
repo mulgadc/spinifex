@@ -373,17 +373,20 @@ describe("DBInstanceDetailPage", () => {
   // The status is the automated backup's own, so nothing the instance describe
   // returns can refresh it.
   it("refreshes the automated backup status after a modify", async () => {
-    mockSend.mockImplementation(async (command: object) => {
-      if (command.constructor.name === "DescribeDBInstancesCommand") {
-        return { DBInstances: [{ ...INSTANCE, BackupRetentionPeriod: 0 }] }
-      }
-      if (
-        command.constructor.name === "DescribeDBInstanceAutomatedBackupsCommand"
-      ) {
-        return { DBInstanceAutomatedBackups: [] }
-      }
-      return {}
-    })
+    mockSend.mockImplementation(
+      async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === "DescribeDBInstancesCommand") {
+          return { DBInstances: [{ ...INSTANCE, BackupRetentionPeriod: 0 }] }
+        }
+        if (
+          command.constructor.name ===
+          "DescribeDBInstanceAutomatedBackupsCommand"
+        ) {
+          return { DBInstanceAutomatedBackups: [] }
+        }
+        return {}
+      },
+    )
     renderWithClient(
       <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
       seed({ automatedBackups: [{ Status: "creating" }] }),

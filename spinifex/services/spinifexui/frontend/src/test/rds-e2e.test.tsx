@@ -41,11 +41,12 @@ interface Command {
   readonly input: unknown
 }
 
-function reject(input: unknown, names: string[], action: string) {
-  const record = input as Record<string, unknown>
-  for (const name of names) {
-    if (record[name] !== undefined) {
-      throw new Error(`InvalidParameterValue: ${action} rejects ${name}`)
+// A field the mutation left undefined is not sent on the wire, so only a
+// present, defined value counts as the caller asking for it.
+function reject(fields: [string, unknown][], names: string[], action: string) {
+  for (const [key, value] of fields) {
+    if (value !== undefined && names.includes(key)) {
+      throw new Error(`InvalidParameterValue: ${action} rejects ${key}`)
     }
   }
 }
@@ -194,7 +195,7 @@ const { sdk } = vi.hoisted(() => {
         DeletionProtection?: boolean
         BackupRetentionPeriod?: number
       }) => {
-        reject(i, REJECTED_ON_CREATE, "CreateDBInstance")
+        reject(Object.entries(i), REJECTED_ON_CREATE, "CreateDBInstance")
         if (
           state.instances.some((s) => s.identifier === i.DBInstanceIdentifier)
         ) {
@@ -253,7 +254,7 @@ const { sdk } = vi.hoisted(() => {
         DeletionProtection?: boolean
         BackupRetentionPeriod?: number
       }) => {
-        reject(i, REJECTED_ON_MODIFY, "ModifyDBInstance")
+        reject(Object.entries(i), REJECTED_ON_MODIFY, "ModifyDBInstance")
         const instance = find(i.DBInstanceIdentifier)
         if (
           i.AllocatedStorage !== undefined &&
@@ -381,7 +382,11 @@ const { sdk } = vi.hoisted(() => {
         Port?: number
         DeletionProtection?: boolean
       }) => {
-        reject(i, REJECTED_ON_RESTORE, "RestoreDBInstanceFromDBSnapshot")
+        reject(
+          Object.entries(i),
+          REJECTED_ON_RESTORE,
+          "RestoreDBInstanceFromDBSnapshot",
+        )
         const snapshot = findSnapshot(i.DBSnapshotIdentifier)
         if (snapshot.status !== "available") {
           throw new Error(

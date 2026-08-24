@@ -155,20 +155,16 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "DescribeListenersCommand",
-      (i: { LoadBalancerArn: string }) => {
-        return {
-          Listeners: state.listeners
-            .filter((l) => l.lbArn === i.LoadBalancerArn)
-            .map((l) => ({
-              ListenerArn: l.arn,
-              Port: l.port,
-              Protocol: l.protocol,
-              DefaultActions: [
-                { Type: "forward", TargetGroupArn: l.defaultTg },
-              ],
-            })),
-        }
-      },
+      (i: { LoadBalancerArn: string }) => ({
+        Listeners: state.listeners
+          .filter((l) => l.lbArn === i.LoadBalancerArn)
+          .map((l) => ({
+            ListenerArn: l.arn,
+            Port: l.port,
+            Protocol: l.protocol,
+            DefaultActions: [{ Type: "forward", TargetGroupArn: l.defaultTg }],
+          })),
+      }),
     ],
   ])
 

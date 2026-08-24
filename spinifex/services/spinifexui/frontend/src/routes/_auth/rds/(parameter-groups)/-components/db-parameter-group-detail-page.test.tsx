@@ -1,3 +1,4 @@
+import type { DBParameterGroup } from "@aws-sdk/client-rds"
 import { screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
@@ -48,7 +49,7 @@ const PARAMETERS = [
   },
 ]
 
-function seed(name: string, group: unknown) {
+function seed(name: string, group: DBParameterGroup | null) {
   const qc = createTestQueryClient()
   qc.setQueryData(["rds", "parameterGroups", name], {
     DBParameterGroups: group ? [group] : [],

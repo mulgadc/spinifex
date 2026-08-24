@@ -275,6 +275,7 @@ describe("create-load-balancer route", () => {
         (call) =>
           (call[0] as { constructor: { name: string } }).constructor.name ===
           name,
+        // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- the call log holds inputs of several command types; the assertions below name the fields
       )?.[0].input as Record<string, unknown> | undefined
 
     expect(byName("CreateLoadBalancerCommand")).toMatchObject({

@@ -6,7 +6,7 @@ vi.mock("@/lib/awsClient", () => ({
   getElbv2Client: () => ({ send: mockSend }),
 }))
 
-import { callQueryFn } from "@/test/query"
+import { callQueryFn, callRefetchInterval } from "@/test/query"
 
 import {
   elbv2ListenersQueryOptions,
@@ -163,28 +163,16 @@ describe("elbv2 implemented queries send the right command", () => {
 
 describe("elbv2 load balancer list poll cadence", () => {
   it("polls every 5s while any lb is provisioning", () => {
-    const refetch = elbv2LoadBalancersQueryOptions.refetchInterval
-    if (typeof refetch !== "function") {
-      throw new TypeError("expected refetchInterval to be a function")
-    }
-    const result = refetch({
-      state: {
-        data: { LoadBalancers: [{ State: { Code: "provisioning" } }] },
-      },
-    } as never)
+    const result = callRefetchInterval(elbv2LoadBalancersQueryOptions, {
+      LoadBalancers: [{ State: { Code: "provisioning" } }],
+    })
     expect(result).toBe(5000)
   })
 
   it("does not poll once all lbs are active", () => {
-    const refetch = elbv2LoadBalancersQueryOptions.refetchInterval
-    if (typeof refetch !== "function") {
-      throw new TypeError("expected refetchInterval to be a function")
-    }
-    const result = refetch({
-      state: {
-        data: { LoadBalancers: [{ State: { Code: "active" } }] },
-      },
-    } as never)
+    const result = callRefetchInterval(elbv2LoadBalancersQueryOptions, {
+      LoadBalancers: [{ State: { Code: "active" } }],
+    })
     expect(result).toBeFalsy()
   })
 })

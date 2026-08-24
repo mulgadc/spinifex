@@ -21,7 +21,7 @@ interface SignedProxyFetchOptions {
   target?: string
 }
 
-interface SignedFetchOptions {
+export interface SignedFetchOptions {
   action: string
   credentials: SessionCredentials
   service?: string

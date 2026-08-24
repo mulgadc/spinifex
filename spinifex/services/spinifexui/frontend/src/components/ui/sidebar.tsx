@@ -570,8 +570,8 @@ export function SidebarMenuButton({
     return comp
   }
 
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- the prop takes either tooltip text or the full props object
   const tooltipProps =
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- the prop takes either tooltip text or the full props object
     typeof tooltip === "string" ? { children: tooltip } : tooltip
 
   return (

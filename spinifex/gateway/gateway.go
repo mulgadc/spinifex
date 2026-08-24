@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,10 @@ const (
 	// Policy enforcement resolves the role name from this, never from ctxIdentity
 	// (attacker-influenced RoleSessionName).
 	ctxUnderlyingRoleARN contextKey = "sigv4.underlyingRoleARN"
+
+	// ctxClientIP carries the caller's source address for aws:SourceIp condition
+	// evaluation. Absent means the key is absent, which evaluates false.
+	ctxClientIP contextKey = "sigv4.clientIP"
 
 	// ctxTargetAccount carries the accountID parsed from a registry host
 	// ({accountID}.dkr.ecr.{region}.{suffix}) by the host-routing middleware.
@@ -560,7 +565,27 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 		assumedRoleID:     mustCtxString(r, ctxAssumedRoleID),
 		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
 	}
-	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources)
+	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources,
+		requestConditionKeys(r, principal))
+}
+
+// requestConditionKeys resolves the IAM condition context keys available on the
+// AWS API path. s3:prefix has no meaning here and is deliberately absent, so a
+// policy conditioned on it does not fire — the same document legitimately gives
+// a different answer at predastore's S3 door.
+func requestConditionKeys(r *http.Request, principal principalContext) iampolicy.ConditionKeys {
+	keys := iampolicy.ConditionKeys{
+		iampolicy.KeySecureTransport:  strconv.FormatBool(r.TLS != nil),
+		iampolicy.KeyUsername:         principal.identity,
+		iampolicy.KeyPrincipalAccount: principal.accountID,
+	}
+	// Left absent rather than empty when unknown: an empty aws:SourceIp would
+	// read as a real value that matches nothing, which is the same outcome but
+	// a misleading one to debug.
+	if ip := mustCtxString(r, ctxClientIP); ip != "" {
+		keys[iampolicy.KeySourceIP] = ip
+	}
+	return keys
 }
 
 // mustCtxString reads a string context value, defaulting to "" for an absent
@@ -573,7 +598,7 @@ func mustCtxString(r *http.Request, key contextKey) string {
 // evaluatePrincipalPolicyResources resolves policies once and evaluates every
 // resource in the request against that same snapshot.
 func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
-	principal principalContext, iamAction string, resources []string,
+	principal principalContext, iamAction string, resources []string, keys iampolicy.ConditionKeys,
 ) error {
 	if gw.IAMService == nil {
 		slog.Error("evaluatePrincipalPolicy: IAM service not available", "action", iamAction)
@@ -638,7 +663,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 	}
 
 	for _, resource := range resources {
-		if iampolicy.Evaluate(iamAction, resource, policies) == iampolicy.Deny {
+		if iampolicy.EvaluateWithKeys(iamAction, resource, policies, keys) == iampolicy.Deny {
 			slog.Info("evaluatePrincipalPolicy: access denied",
 				"identity", logIdentity, "action", iamAction, "resource", resource)
 			return errors.New(awserrors.ErrorAccessDenied)

@@ -25,6 +25,7 @@ import type { InlinePolicyKind } from "./inline-policies-panel"
 // Structural subset of a mutation result so one panel works with the user, role
 // and group hooks regardless of their differing command output types.
 interface PolicyMutation<TParams> {
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- the panel awaits the attach or detach and never reads its payload
   mutateAsync: (params: TParams) => Promise<unknown>
   error: Error | null
 }
@@ -32,6 +33,7 @@ interface PolicyMutation<TParams> {
 // Each kind's hooks name the principal differently in their params, so a bound
 // mutation pairs a hook with its param shape and exposes one arn-only call.
 interface BoundPolicyMutation {
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- the panel awaits the attach or detach and never reads its payload
   run: (policyArn: string) => Promise<unknown>
   error: Error | null
 }
@@ -72,7 +74,7 @@ export function AttachedPoliciesPanel({
   const detachRole = useDetachRolePolicy()
   const detachGroup = useDetachGroupPolicy()
 
-  const config: Record<InlinePolicyKind, KindConfig> = {
+  const config = {
     user: {
       listQuery: iamAttachedUserPoliciesQueryOptions,
       attach: bindPolicyMutation(attachUser, (policyArn) => ({
@@ -106,7 +108,7 @@ export function AttachedPoliciesPanel({
         policyArn,
       })),
     },
-  }
+  } satisfies Record<InlinePolicyKind, KindConfig>
   const { listQuery, attach, detach } = config[kind]
 
   const { data: attachedData } = useSuspenseQuery(listQuery(name))

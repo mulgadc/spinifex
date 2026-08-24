@@ -25,7 +25,7 @@ const { routerState, sdk } = vi.hoisted(() => {
     routerState: { navigate: vi.fn() },
     sdk: {
       send,
-      setHandler: (name: string, handler: (input: unknown) => unknown) =>
+      setHandler: (name: string, handler: (input: never) => unknown) =>
         handlers.set(name, handler),
       reset: () => {
         handlers.clear()

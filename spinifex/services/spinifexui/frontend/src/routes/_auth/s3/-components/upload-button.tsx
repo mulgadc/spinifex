@@ -3,15 +3,18 @@ import { useRef } from "react"
 
 import { Button } from "@/components/ui/button"
 
+interface UploadParams {
+  bucket: string
+  key: string
+  file: File
+}
+
 interface UploadButtonProps {
   bucket: string
   prefix?: string
   isPending: boolean
-  onUpload: (params: {
-    bucket: string
-    key: string
-    file: File
-  }) => Promise<unknown>
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- the button awaits the upload and never reads its payload
+  onUpload: (params: UploadParams) => Promise<unknown>
 }
 
 export function UploadButton({

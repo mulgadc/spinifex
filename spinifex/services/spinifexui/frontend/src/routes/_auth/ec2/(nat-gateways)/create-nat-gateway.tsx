@@ -230,9 +230,7 @@ function buildCreateNatGatewayCommands(
   values: DeepPartialSkipArrayKey<CreateNatGatewayFormData>,
 ): CliCommand[] {
   const subnetId = values.subnetId ?? ""
-  const rawAllocationId = values.allocationId
-  const allocationId =
-    typeof rawAllocationId === "string" ? rawAllocationId : ""
+  const allocationId = values.allocationId ?? ""
   const name = values.name ?? ""
 
   const parts = [

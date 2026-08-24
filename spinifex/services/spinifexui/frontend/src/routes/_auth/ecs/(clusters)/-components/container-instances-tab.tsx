@@ -21,20 +21,20 @@ interface PendingAction {
   action: Action
 }
 
-const ACTION_LABELS: Record<Action, string> = {
+const ACTION_LABELS = {
   drain: "Drain",
   activate: "Activate",
   deregister: "Deregister",
-}
+} satisfies Record<Action, string>
 
-const ACTION_DESCRIPTIONS: Record<Action, string> = {
+const ACTION_DESCRIPTIONS = {
   drain:
     "Draining force-stops the service-owned tasks on this instance so it can be retired.",
   activate:
     "This returns the instance to ACTIVE so the scheduler can place tasks on it again.",
   deregister:
     "This force-removes the container instance record. Any tasks it still holds are stopped.",
-}
+} satisfies Record<Action, string>
 
 export function ContainerInstancesTab({
   clusterName,

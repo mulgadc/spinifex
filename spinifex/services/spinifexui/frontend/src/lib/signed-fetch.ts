@@ -1,6 +1,7 @@
 import { Sha256 } from "@aws-crypto/sha256-browser"
 import { HttpRequest } from "@smithy/protocol-http"
 import { SignatureV4 } from "@smithy/signature-v4"
+import { z } from "zod"
 
 import type { SessionCredentials } from "./auth"
 import { getRegion } from "./cluster-config"
@@ -20,7 +21,7 @@ interface SignedProxyFetchOptions {
   target?: string
 }
 
-interface SignedFetchOptions {
+export interface SignedFetchOptions {
   action: string
   credentials: SessionCredentials
   service?: string
@@ -55,18 +56,20 @@ function parseXmlTag(body: string, tag: string): string | null {
   return body.slice(start + open.length, end)
 }
 
+// Gateways spell the field either way, so accept both and let the caller take
+// whichever one the body carried.
+const jsonErrorSchema = z.object({
+  message: z.string().optional(),
+  Message: z.string().optional(),
+})
+
 // jsonErrorMessage extracts a human-readable message from a JSON-1.1 error
 // body. Returns null when the body is not JSON or carries no message.
 function jsonErrorMessage(body: string): string | null {
   try {
-    const parsed: unknown = JSON.parse(body)
-    if (parsed && typeof parsed === "object") {
-      if ("message" in parsed && typeof parsed.message === "string") {
-        return parsed.message
-      }
-      if ("Message" in parsed && typeof parsed.Message === "string") {
-        return parsed.Message
-      }
+    const parsed = jsonErrorSchema.safeParse(JSON.parse(body))
+    if (parsed.success) {
+      return parsed.data.message ?? parsed.data.Message ?? null
     }
   } catch {
     // Non-JSON body.
@@ -105,17 +108,21 @@ export async function signedProxyFetch<T>({
   // Headers are set before signing so they are part of the signature, against
   // the real backend (localhost:9999) so the gateway's SigV4 verification sees
   // the host value it expects.
+  const baseHeaders = {
+    host: `localhost:${GATEWAY_PORT}`,
+    "content-type": contentType,
+  }
+  const requestHeaders = target
+    ? { ...baseHeaders, "x-amz-target": target }
+    : baseHeaders
+
   const request = new HttpRequest({
     method: "POST",
     protocol,
     hostname: "localhost",
     port: GATEWAY_PORT,
     path: "/",
-    headers: {
-      host: `localhost:${GATEWAY_PORT}`,
-      "content-type": contentType,
-      ...(target ? { "x-amz-target": target } : {}),
-    },
+    headers: requestHeaders,
     body,
   })
 
@@ -134,12 +141,7 @@ export async function signedProxyFetch<T>({
 
   const signed = await signer.sign(request)
 
-  const headers: Record<string, string> = {}
-  for (const [key, value] of Object.entries(signed.headers)) {
-    if (typeof value === "string") {
-      headers[key] = value
-    }
-  }
+  const headers = { ...signed.headers }
 
   // Send the request through the same-origin reverse proxy instead of
   // directly to the gateway, eliminating cross-origin requests.
@@ -155,6 +157,8 @@ export async function signedProxyFetch<T>({
     throw errorFromBody(label, response.status, detail)
   }
 
+  // The caller names the response shape its action returns, and the gateway has
+  // already been checked for a non-ok status above.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- response.json() returns Promise<any>
   return await (response.json() as Promise<T>)
 }

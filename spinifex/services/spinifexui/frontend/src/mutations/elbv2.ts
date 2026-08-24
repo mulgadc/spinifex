@@ -272,11 +272,16 @@ export type ListenerProtocol =
 // secure listener (HTTPS or NLB TLS), or empty undefined fields otherwise. The
 // server rejects certs on a non-secure protocol, so they are only emitted for
 // secure ones; SslPolicy is HTTPS-only (NLB TLS policies are not modelled).
+interface TlsListenerFields {
+  Certificates?: { CertificateArn: string }[]
+  SslPolicy?: string
+}
+
 function tlsListenerFields(
   protocol: ListenerProtocol,
   certificateArn?: string,
   sslPolicy?: string,
-): { Certificates?: { CertificateArn: string }[]; SslPolicy?: string } {
+): TlsListenerFields {
   const secure = protocol === "HTTPS" || protocol === "TLS"
   if (!secure || !certificateArn) {
     return {}

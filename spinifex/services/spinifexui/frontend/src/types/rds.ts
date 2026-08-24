@@ -33,6 +33,7 @@ interface EngineRules {
   maxDBNameLen: number
 }
 
+// oxlint-disable-next-line anti-slop/no-known-value-widening -- keyed by an engine name the catalog supplies, not by a closed set
 const ENGINE_RULES: Record<string, EngineRules> = {
   postgres: {
     reservedUsernames: ["rdsadmin", "postgres", "rds_superuser"],

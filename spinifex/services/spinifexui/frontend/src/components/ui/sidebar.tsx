@@ -77,6 +77,7 @@ export function SidebarProvider({
   const open = openProp ?? internalOpen
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- React's setState accepts a value or an updater
       const openState = typeof value === "function" ? value(open) : value
       if (setOpenProp) {
         setOpenProp(openState)
@@ -570,6 +571,7 @@ export function SidebarMenuButton({
   }
 
   const tooltipProps =
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- the prop takes either tooltip text or the full props object
     typeof tooltip === "string" ? { children: tooltip } : tooltip
 
   return (

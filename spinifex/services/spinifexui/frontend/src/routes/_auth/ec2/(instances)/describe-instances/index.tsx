@@ -24,6 +24,7 @@ export const Route = createFileRoute(
   component: Ec2,
 })
 
+// oxlint-disable-next-line anti-slop/no-known-value-widening -- keyed by the state name the SDK reports, not by a closed set
 const statePriority: Record<string, number> = {
   running: 0,
   pending: 1,

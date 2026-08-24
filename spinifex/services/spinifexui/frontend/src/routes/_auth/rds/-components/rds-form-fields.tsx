@@ -67,6 +67,7 @@ export function RdsSelectField<T extends FieldValues>({
         // react-hook-form cannot narrow a generic path's value, and Select
         // infers its own type from this prop, so it is pinned to a string here.
         const selected: string =
+          // oxlint-disable-next-line anti-slop/no-runtime-typeof -- the generic path's value has no narrower type to branch on
           typeof field.value === "string" ? field.value : ""
         // Select reports an explicit null when cleared; every form below holds
         // an empty string for "unset".

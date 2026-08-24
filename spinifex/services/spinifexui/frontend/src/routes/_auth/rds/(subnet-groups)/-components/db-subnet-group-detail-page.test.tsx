@@ -1,3 +1,4 @@
+import type { DBSubnetGroup } from "@aws-sdk/client-rds"
 import { screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
@@ -57,7 +58,7 @@ const GROUP = {
   ],
 }
 
-function seed(group: unknown) {
+function seed(group: DBSubnetGroup | null) {
   const qc = createTestQueryClient()
   qc.setQueryData(["rds", "subnetGroups", "orders-subnets"], {
     DBSubnetGroups: group ? [group] : [],

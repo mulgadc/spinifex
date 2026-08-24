@@ -46,6 +46,9 @@ export interface AttributesEditorAttribute {
   Value?: string
 }
 
+// Keyed by attribute key, which the caller's specs name rather than this type.
+type AttributeValues = Record<string, string>
+
 interface AttributesEditorProps {
   specs: AttributeSpec[]
   attributes: AttributesEditorAttribute[]
@@ -55,21 +58,21 @@ interface AttributesEditorProps {
   isSuccess?: boolean
 }
 
+// The editor is driven by its specs, so the initial values carry one entry per
+// spec key, defaulting to empty for an attribute the load balancer has not set.
 function buildInitial(
   specs: AttributeSpec[],
   attributes: AttributesEditorAttribute[],
-): Record<string, string> {
+): AttributeValues {
   const byKey = new Map<string, string>()
   for (const attr of attributes) {
     if (attr.Key !== undefined) {
       byKey.set(attr.Key, attr.Value ?? "")
     }
   }
-  const out: Record<string, string> = {}
-  for (const spec of specs) {
-    out[spec.key] = byKey.get(spec.key) ?? ""
-  }
-  return out
+  return Object.fromEntries(
+    specs.map((spec) => [spec.key, byKey.get(spec.key) ?? ""]),
+  )
 }
 
 function validate(spec: AttributeSpec, value: string): string | undefined {

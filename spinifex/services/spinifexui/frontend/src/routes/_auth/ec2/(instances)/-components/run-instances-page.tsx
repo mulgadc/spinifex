@@ -1090,19 +1090,12 @@ function buildRunInstancesCommands(
     rootVolumeType !== undefined ||
     rootDeleteOnTermination !== undefined
   if (hasStorageOverride) {
-    const ebs: {
-      VolumeSize?: number
-      VolumeType?: string
-      DeleteOnTermination?: boolean
-    } = {}
-    if (rootVolumeSize !== undefined) {
-      ebs.VolumeSize = rootVolumeSize
-    }
-    if (rootVolumeType) {
-      ebs.VolumeType = rootVolumeType
-    }
-    if (rootDeleteOnTermination !== undefined) {
-      ebs.DeleteOnTermination = rootDeleteOnTermination
+    // A field the form left unset stays undefined, which JSON.stringify omits,
+    // so the CLI preview shows only the overrides the user actually set.
+    const ebs = {
+      VolumeSize: rootVolumeSize,
+      VolumeType: rootVolumeType || undefined,
+      DeleteOnTermination: rootDeleteOnTermination,
     }
     const bdm = JSON.stringify([
       {

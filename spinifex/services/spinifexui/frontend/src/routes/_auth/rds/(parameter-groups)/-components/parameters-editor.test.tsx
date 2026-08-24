@@ -202,9 +202,9 @@ describe("ParametersEditor", () => {
     })
     fireEvent.click(screen.getByRole("button", { name: "Save Changes" }))
 
-    expect(
-      await screen.findByText(/parameter max_connections is static/),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByText(/parameter max_connections is static/),
+    ).resolves.toBeInTheDocument()
   })
 
   it("offers no control at all on a read-only group", () => {

@@ -51,8 +51,8 @@ describe("DeleteDBSubnetGroupDialog", () => {
     )
     render()
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
-    expect(
-      await screen.findByText(/is still used by orders-db/),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByText(/is still used by orders-db/),
+    ).resolves.toBeInTheDocument()
   })
 })

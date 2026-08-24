@@ -32,7 +32,7 @@ describe("CreateClusterDialog", () => {
     expect(createButton).toBeEnabled()
 
     fireEvent.click(createButton)
-    await waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(send).toHaveBeenCalledOnce())
     expect(send.mock.calls[0]![0].input).toStrictEqual({ clusterName: "web" })
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
   })
@@ -47,6 +47,8 @@ describe("CreateClusterDialog", () => {
       target: { value: "dupe" },
     })
     fireEvent.click(screen.getByRole("button", { name: "Create Cluster" }))
-    expect(await screen.findByText("ClusterAlreadyExists")).toBeInTheDocument()
+    await expect(
+      screen.findByText("ClusterAlreadyExists"),
+    ).resolves.toBeInTheDocument()
   })
 })

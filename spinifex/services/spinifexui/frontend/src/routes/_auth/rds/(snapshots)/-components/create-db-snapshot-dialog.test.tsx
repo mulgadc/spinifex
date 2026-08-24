@@ -80,7 +80,9 @@ describe("CreateDBSnapshotDialog opened from an instance", () => {
     await user.clear(field)
     await user.type(field, "rds:orders-db")
     submit()
-    expect(await screen.findByText(/may not begin with/)).toBeInTheDocument()
+    await expect(
+      screen.findByText(/may not begin with/),
+    ).resolves.toBeInTheDocument()
     expect(mockSend).not.toHaveBeenCalled()
   })
 
@@ -90,7 +92,9 @@ describe("CreateDBSnapshotDialog opened from an instance", () => {
     )
     render("orders-db")
     submit()
-    expect(await screen.findByText(/is not available/)).toBeInTheDocument()
+    await expect(
+      screen.findByText(/is not available/),
+    ).resolves.toBeInTheDocument()
   })
 })
 

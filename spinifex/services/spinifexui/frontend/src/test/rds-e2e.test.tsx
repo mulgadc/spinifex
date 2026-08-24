@@ -538,8 +538,8 @@ describe("RDS cross-slice flow (mocked SDK)", () => {
     expect(listed.DBInstances?.[0]?.Endpoint?.Port).toBe(5432)
 
     // The poll the conditional refetchInterval drives, run by hand.
-    expect(await statusOf(qc)).toBe("creating")
-    expect(await statusOf(qc)).toBe("available")
+    await expect(statusOf(qc)).resolves.toBe("creating")
+    await expect(statusOf(qc)).resolves.toBe("available")
 
     await result.current.modify.mutateAsync({
       dbInstanceIdentifier: "orders-db",

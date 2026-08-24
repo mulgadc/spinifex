@@ -305,7 +305,9 @@ describe("RestoreDBSnapshotPage form", () => {
     await selectInstanceClass(user)
     fireEvent.click(screen.getByRole("button", { name: "Restore Snapshot" }))
 
-    expect(await screen.findByText(/already exists/)).toBeInTheDocument()
+    await expect(
+      screen.findByText(/already exists/),
+    ).resolves.toBeInTheDocument()
   })
 
   it("builds a CLI command for the restore", () => {

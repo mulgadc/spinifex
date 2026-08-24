@@ -132,9 +132,9 @@ describe("InlinePoliciesPanel", () => {
     )
     fireEvent.click(screen.getByRole("button", { name: "Edit" }))
 
-    expect(
-      await screen.findByText("Failed to load inline policy"),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByText("Failed to load inline policy"),
+    ).resolves.toBeInTheDocument()
   })
 
   it("edits an inline policy and saves via PutUserPolicy", async () => {

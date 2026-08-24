@@ -134,7 +134,9 @@ describe("CreateDBSubnetGroupPage", () => {
     fireEvent.click(subnetCheckbox("subnet-a1"))
     fireEvent.click(screen.getByRole("button", { name: "Create Subnet Group" }))
 
-    expect(await screen.findByText(/the service reserves/)).toBeInTheDocument()
+    await expect(
+      screen.findByText(/the service reserves/),
+    ).resolves.toBeInTheDocument()
     expect(mockSend).not.toHaveBeenCalled()
   })
 })

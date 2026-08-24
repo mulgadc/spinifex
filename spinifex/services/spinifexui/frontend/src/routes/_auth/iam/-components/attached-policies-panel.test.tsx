@@ -135,9 +135,9 @@ describe("AttachedPoliciesPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Attach Policy" }))
     fireEvent.click(screen.getByRole("button", { name: /AvailablePolicy/ }))
 
-    expect(
-      await screen.findByText("Failed to attach policy"),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByText("Failed to attach policy"),
+    ).resolves.toBeInTheDocument()
     expect(screen.getByText("Select a policy to attach:")).toBeInTheDocument()
     expect(
       screen.getByRole("button", { name: /AvailablePolicy/ }),
@@ -152,9 +152,9 @@ describe("AttachedPoliciesPanel", () => {
     )
     fireEvent.click(screen.getByRole("button", { name: "Detach" }))
 
-    expect(
-      await screen.findByText("Failed to detach policy"),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByText("Failed to detach policy"),
+    ).resolves.toBeInTheDocument()
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Detach" })).toBeEnabled(),
     )

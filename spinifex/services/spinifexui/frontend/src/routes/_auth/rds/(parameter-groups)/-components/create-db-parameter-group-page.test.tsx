@@ -101,9 +101,9 @@ describe("CreateDBParameterGroupPage", () => {
       screen.getByRole("button", { name: "Create Parameter Group" }),
     )
 
-    expect(
-      await screen.findByText(/may not begin with "default\."/),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByText(/may not begin with "default\."/),
+    ).resolves.toBeInTheDocument()
     expect(mockSend).not.toHaveBeenCalled()
   })
 
@@ -117,9 +117,9 @@ describe("CreateDBParameterGroupPage", () => {
       screen.getByRole("button", { name: "Create Parameter Group" }),
     )
 
-    expect(
-      await screen.findByText("Description is required"),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByText("Description is required"),
+    ).resolves.toBeInTheDocument()
     expect(mockSend).not.toHaveBeenCalled()
   })
 })

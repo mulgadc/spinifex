@@ -34,7 +34,7 @@ describe("CreateRepositoryDialog", () => {
     expect(createButton).toBeEnabled()
 
     fireEvent.click(createButton)
-    await waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(send).toHaveBeenCalledOnce())
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       repositoryName: "team/app",
     })
@@ -51,8 +51,8 @@ describe("CreateRepositoryDialog", () => {
       target: { value: "dupe" },
     })
     fireEvent.click(screen.getByRole("button", { name: "Create Repository" }))
-    expect(
-      await screen.findByText("RepositoryAlreadyExists"),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByText("RepositoryAlreadyExists"),
+    ).resolves.toBeInTheDocument()
   })
 })

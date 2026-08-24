@@ -14,34 +14,46 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// IAMHandler processes parsed query args and returns XML response bytes.
-type IAMHandler func(action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error)
+// iamAction parses once so authorization and dispatch share one typed input.
+type iamAction struct {
+	parse    func(map[string]string) (any, error)
+	dispatch func(string, any, *GatewayConfig, string) ([]byte, error)
+}
 
-// iamHandler creates a type-safe IAMHandler: allocates the input struct,
-// parses query params, calls the handler, and marshals output to XML.
-func iamHandler[In any](handler func(string, *In, *GatewayConfig) (any, error)) IAMHandler {
-	return func(action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error) {
-		input := new(In)
-		if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
-			if errors.Is(err, awsec2query.ErrSliceTooLarge) {
-				return nil, errors.New(awserrors.ErrorMalformedQueryString)
+// iamHandler creates a type-safe IAM action with separate parse and dispatch
+// stages so policy resolution consumes the exact handler input.
+func iamHandler[In any](handler func(string, *In, *GatewayConfig) (any, error)) iamAction {
+	return iamAction{
+		parse: func(q map[string]string) (any, error) {
+			input := new(In)
+			if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
+				if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+					return nil, errors.New(awserrors.ErrorMalformedQueryString)
+				}
+				return nil, errors.New(awserrors.ErrorIAMInvalidInput)
 			}
-			return nil, errors.New(awserrors.ErrorIAMInvalidInput)
-		}
-		output, err := handler(accountID, input, gw)
-		if err != nil {
-			return nil, err
-		}
-		payload := utils.GenerateIAMXMLPayload(action, output)
-		xmlOutput, err := utils.MarshalToXML(payload)
-		if err != nil {
-			return nil, errors.New(awserrors.ErrorInternalError)
-		}
-		return xmlOutput, nil
+			return input, nil
+		},
+		dispatch: func(action string, parsed any, gw *GatewayConfig, accountID string) ([]byte, error) {
+			input, ok := parsed.(*In)
+			if !ok {
+				return nil, errors.New(awserrors.ErrorInternalError)
+			}
+			output, err := handler(accountID, input, gw)
+			if err != nil {
+				return nil, err
+			}
+			payload := utils.GenerateIAMXMLPayload(action, output)
+			xmlOutput, err := utils.MarshalToXML(payload)
+			if err != nil {
+				return nil, errors.New(awserrors.ErrorInternalError)
+			}
+			return xmlOutput, nil
+		},
 	}
 }
 
-var iamActions = map[string]IAMHandler{
+var iamActions = map[string]iamAction{
 	"CreateUser": iamHandler(func(accountID string, input *iam.CreateUserInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.CreateUser(accountID, input, gw.IAMService)
 	}),
@@ -323,17 +335,25 @@ func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	if err := gw.checkPolicy(r, "iam", action); err != nil {
-		return err
-	}
-
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.Error("IAM_Request: no account ID in auth context")
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	xmlOutput, err := handler(action, queryArgs, gw, accountID)
+	input, err := handler.parse(queryArgs)
+	if err != nil {
+		return err
+	}
+	resources, err := gateway_iam.ResourceARNs(action, accountID, input, gw.IAMService)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResources(r, "iam", action, resources); err != nil {
+		return err
+	}
+
+	xmlOutput, err := handler.dispatch(action, input, gw, accountID)
 	if err != nil {
 		return err
 	}

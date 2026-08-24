@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -72,7 +73,7 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 		RoleName:                 roleName,
 		RoleID:                   roleID,
 		AccountID:                accountID,
-		ARN:                      fmt.Sprintf("arn:aws:iam::%s:role%s%s", accountID, path, roleName),
+		ARN:                      arn.FormatIAMPath(arn.IAMRole, accountID, path, roleName),
 		Path:                     path,
 		Description:              aws.StringValue(input.Description),
 		AssumeRolePolicyDocument: *input.AssumeRolePolicyDocument,

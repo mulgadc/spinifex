@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
@@ -23,14 +24,16 @@ import (
 type flexMockIAMService struct {
 	handlers_iam.IAMService
 
-	createUserFn      func(string, *iam.CreateUserInput) (*iam.CreateUserOutput, error)
-	getUserFn         func(string, *iam.GetUserInput) (*iam.GetUserOutput, error)
-	listUsersFn       func(string, *iam.ListUsersInput) (*iam.ListUsersOutput, error)
-	deleteUserFn      func(string, *iam.DeleteUserInput) (*iam.DeleteUserOutput, error)
-	createAccessKeyFn func(string, *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error)
-	listAccessKeysFn  func(string, *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error)
-	deleteAccessKeyFn func(string, *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error)
-	updateAccessKeyFn func(string, *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error)
+	createUserFn           func(string, *iam.CreateUserInput) (*iam.CreateUserOutput, error)
+	getUserFn              func(string, *iam.GetUserInput) (*iam.GetUserOutput, error)
+	listUsersFn            func(string, *iam.ListUsersInput) (*iam.ListUsersOutput, error)
+	deleteUserFn           func(string, *iam.DeleteUserInput) (*iam.DeleteUserOutput, error)
+	createAccessKeyFn      func(string, *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error)
+	listAccessKeysFn       func(string, *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error)
+	deleteAccessKeyFn      func(string, *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error)
+	updateAccessKeyFn      func(string, *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error)
+	canonicalResourceARNFn func(string, arn.IAMResourceType, string) (string, error)
+	lookupAccessKeyFn      func(string) (*handlers_iam.AccessKey, error)
 
 	getAccountSummaryFn func(string, *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error)
 }
@@ -89,6 +92,20 @@ func (m *flexMockIAMService) UpdateAccessKey(accountID string, input *iam.Update
 		return m.updateAccessKeyFn(accountID, input)
 	}
 	return &iam.UpdateAccessKeyOutput{}, nil
+}
+
+func (m *flexMockIAMService) CanonicalResourceARN(accountID string, kind arn.IAMResourceType, name string) (string, error) {
+	if m.canonicalResourceARNFn != nil {
+		return m.canonicalResourceARNFn(accountID, kind, name)
+	}
+	return arn.FormatIAMPath(kind, accountID, "/", name), nil
+}
+
+func (m *flexMockIAMService) LookupAccessKey(accessKeyID string) (*handlers_iam.AccessKey, error) {
+	if m.lookupAccessKeyFn != nil {
+		return m.lookupAccessKeyFn(accessKeyID)
+	}
+	return &handlers_iam.AccessKey{AccessKeyID: accessKeyID, AccountID: "000000000000", UserName: "user"}, nil
 }
 
 func (m *flexMockIAMService) GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {

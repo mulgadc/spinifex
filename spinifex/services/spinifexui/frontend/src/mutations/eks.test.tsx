@@ -63,7 +63,9 @@ describe("eks mutations", () => {
         publicAccessCidrs: ["203.0.113.0/24"],
       })
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
         name: "c1",
         version: "1.32",
@@ -97,7 +99,9 @@ describe("eks mutations", () => {
         publicAccessCidrs: ["203.0.113.0/24"],
       })
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(
         mockSend.mock.calls[0]?.[0].input.resourcesVpcConfig,
       ).toStrictEqual({
@@ -116,7 +120,9 @@ describe("eks mutations", () => {
 
       result.current.mutate("c1")
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({ name: "c1" })
     })
   })
@@ -140,7 +146,9 @@ describe("eks mutations", () => {
         maxSize: 3,
       })
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
         clusterName: "c1",
         nodegroupName: "ng1",
@@ -168,7 +176,9 @@ describe("eks mutations", () => {
         desiredSize: 3,
       })
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
         clusterName: "c1",
         nodegroupName: "ng1",
@@ -190,7 +200,9 @@ describe("eks mutations", () => {
         version: "1.32",
       })
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
         clusterName: "c1",
         nodegroupName: "ng1",
@@ -206,7 +218,9 @@ describe("eks mutations", () => {
 
       result.current.mutate({ clusterName: "c1", nodegroupName: "ng1" })
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
         clusterName: "c1",
         nodegroupName: "ng1",
@@ -227,7 +241,9 @@ describe("eks mutations", () => {
         configurationValues: '{"replicaCount":2}',
       })
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
         clusterName: "c1",
         addonName: "coredns",
@@ -249,7 +265,9 @@ describe("eks mutations", () => {
         addonVersion: "v2.0.0",
       })
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
         clusterName: "c1",
         addonName: "coredns",
@@ -267,7 +285,9 @@ describe("eks mutations", () => {
 
       result.current.mutate({ clusterName: "c1", addonName: "coredns" })
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
         clusterName: "c1",
         addonName: "coredns",
@@ -286,7 +306,9 @@ describe("eks mutations", () => {
         kubernetesGroups: ["system:masters"],
       })
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
         clusterName: "c1",
         principalArn: "arn:p",
@@ -310,7 +332,9 @@ describe("eks mutations", () => {
         accessScopeType: "cluster",
       })
 
-      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
         clusterName: "c1",
         principalArn: "arn:p",

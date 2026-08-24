@@ -311,7 +311,9 @@ describe("DBInstanceDetailPage", () => {
       seed({ instances: [{ ...INSTANCE, DBInstanceStatus: "stopped" }] }),
     )
     fireEvent.click(screen.getByRole("button", { name: "Start" }))
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBInstanceIdentifier: "orders-db",
     })

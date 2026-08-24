@@ -78,7 +78,9 @@ describe("useCreateDBInstance", () => {
 
     result.current.mutate(CREATE_FORM)
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBInstanceIdentifier).toBe("orders-db")
     expect(input.Engine).toBe("postgres")
@@ -95,7 +97,9 @@ describe("useCreateDBInstance", () => {
 
     result.current.mutate(CREATE_FORM)
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input.Port).toBeUndefined()
   })
 
@@ -105,7 +109,9 @@ describe("useCreateDBInstance", () => {
 
     result.current.mutate({ ...CREATE_FORM, port: "5555" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input.Port).toBe(5555)
   })
 
@@ -115,7 +121,9 @@ describe("useCreateDBInstance", () => {
 
     result.current.mutate({ ...CREATE_FORM, dbName: "", engineVersion: "" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBName).toBeUndefined()
     expect(input.EngineVersion).toBeUndefined()
@@ -145,7 +153,9 @@ describe("useModifyDBInstance", () => {
       applyImmediately: true,
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBInstanceIdentifier).toBe("orders-db")
     expect(input.DBInstanceClass).toBe("db.t3.small")
@@ -175,7 +185,9 @@ describe("useModifyDBInstance", () => {
       applyImmediately: true,
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["rds", "dbInstances"] })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["rds", "automatedBackups", "orders-db"],
@@ -195,7 +207,9 @@ describe("useDeleteDBInstance", () => {
       finalSnapshotIdentifier: "orders-db-final-20260817-1200",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.SkipFinalSnapshot).toBeFalsy()
     expect(input.FinalDBSnapshotIdentifier).toBe(
@@ -213,7 +227,9 @@ describe("useDeleteDBInstance", () => {
       finalSnapshotIdentifier: "orders-db-final-20260817-1200",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.SkipFinalSnapshot).toBeTruthy()
     expect(input.FinalDBSnapshotIdentifier).toBeUndefined()
@@ -232,7 +248,9 @@ describe("useDeleteDBInstance", () => {
       finalSnapshotIdentifier: "orders-db-final-20260817-1200",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["rds", "dbInstances"] })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["rds", "automatedBackups", "orders-db"],
@@ -252,7 +270,9 @@ describe("rds lifecycle mutations", () => {
 
     result.current.mutate("orders-db")
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBInstanceIdentifier: "orders-db",
     })
@@ -270,7 +290,9 @@ describe("useUpdateRdsTags", () => {
       initialKeys: ["env", "owner"],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       ResourceName: "arn:db",
       Tags: [{ Key: "env", Value: "prod" }],
@@ -291,7 +313,9 @@ describe("useUpdateRdsTags", () => {
       initialKeys: [],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend).not.toHaveBeenCalled()
   })
 })
@@ -308,7 +332,9 @@ describe("useCreateDBSubnetGroup", () => {
       tags: [{ key: "env", value: "prod" }],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBSubnetGroupName).toBe("orders-subnets")
     expect(input.DBSubnetGroupDescription).toBe("Private subnets")
@@ -327,7 +353,9 @@ describe("useCreateDBSubnetGroup", () => {
       tags: [],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input.Tags).toBeUndefined()
   })
 })
@@ -346,7 +374,9 @@ describe("useCreateDBParameterGroup", () => {
       tags: [],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBParameterGroupName).toBe("orders-pg")
     expect(input.DBParameterGroupFamily).toBe("postgres18")
@@ -377,7 +407,9 @@ describe("useModifyDBParameterGroup", () => {
       ],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend).toHaveBeenCalledOnce()
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBParameterGroupName).toBe("orders-pg")
@@ -407,7 +439,9 @@ describe("useCreateDBSnapshot", () => {
       tags: [{ key: "env", value: "prod" }],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
       DBInstanceIdentifier: "orders-db",
@@ -423,7 +457,9 @@ describe("useDeleteDBSnapshot", () => {
 
     result.current.mutate("orders-db-snapshot-20260817-1432")
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
     })
@@ -460,7 +496,9 @@ describe("useRestoreDBInstanceFromDBSnapshot", () => {
       deletionProtection: true,
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBInstanceIdentifier: "orders-db-restored",
       DBSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
@@ -488,7 +526,9 @@ describe("useRestoreDBInstanceFromDBSnapshot", () => {
       dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.Engine).toBeUndefined()
     expect(input.EngineVersion).toBeUndefined()
@@ -513,7 +553,9 @@ describe("useRestoreDBInstanceFromDBSnapshot", () => {
       dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input.Port).toBeUndefined()
   })
 })
@@ -525,7 +567,9 @@ describe("rds group delete mutations", () => {
 
     result.current.mutate("orders-subnets")
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBSubnetGroupName: "orders-subnets",
     })
@@ -539,7 +583,9 @@ describe("rds group delete mutations", () => {
 
     result.current.mutate("orders-pg")
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBParameterGroupName: "orders-pg",
     })

@@ -136,7 +136,9 @@ describe("ModifyDBInstanceDialog", () => {
     fireEvent.click(screen.getByLabelText("Apply immediately"))
     fireEvent.click(screen.getByRole("button", { name: "Save Changes" }))
 
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBInstanceIdentifier).toBe("orders-db")
     expect(input.ApplyImmediately).toBeTruthy()

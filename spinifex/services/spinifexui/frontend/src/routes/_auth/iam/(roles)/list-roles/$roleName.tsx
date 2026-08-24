@@ -99,7 +99,9 @@ function RoleDetail() {
         <PageHeading
           actions={
             <Button
-              onClick={() => setShowDeleteDialog(true)}
+              onClick={() => {
+                setShowDeleteDialog(true)
+              }}
               size="sm"
               variant="destructive"
             >

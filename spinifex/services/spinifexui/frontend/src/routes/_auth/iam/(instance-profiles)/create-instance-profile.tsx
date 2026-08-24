@@ -94,9 +94,9 @@ function CreateInstanceProfile() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/iam/list-instance-profiles" })
-          }
+          }}
           pendingLabel="Creating..."
           submitLabel="Create Instance Profile"
         />

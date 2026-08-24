@@ -209,7 +209,12 @@ export function ListenersTab({
         <p className="text-xs text-muted-foreground">
           {listeners.length} listener{listeners.length === 1 ? "" : "s"}
         </p>
-        <Button onClick={() => setAddOpen(true)} size="sm">
+        <Button
+          onClick={() => {
+            setAddOpen(true)
+          }}
+          size="sm"
+        >
           Add listener
         </Button>
       </div>
@@ -251,9 +256,9 @@ export function ListenersTab({
                         <div className="flex justify-end gap-1">
                           <Button
                             aria-label={`${rulesOpen ? "Hide" : "Show"} rules for listener ${listener.Protocol}:${listener.Port}`}
-                            onClick={() =>
+                            onClick={() => {
                               setRulesOpenArn(rulesOpen ? undefined : arn)
-                            }
+                            }}
                             size="sm"
                             variant="ghost"
                           >
@@ -261,7 +266,9 @@ export function ListenersTab({
                           </Button>
                           <Button
                             aria-label={`Edit listener ${listener.Protocol}:${listener.Port}`}
-                            onClick={() => setEditTarget(listener)}
+                            onClick={() => {
+                              setEditTarget(listener)
+                            }}
                             size="sm"
                             variant="ghost"
                           >
@@ -269,7 +276,9 @@ export function ListenersTab({
                           </Button>
                           <Button
                             aria-label={`Delete listener ${listener.Protocol}:${listener.Port}`}
-                            onClick={() => setDeleteTarget(listener)}
+                            onClick={() => {
+                              setDeleteTarget(listener)
+                            }}
                             size="sm"
                             variant="ghost"
                           >
@@ -315,7 +324,11 @@ export function ListenersTab({
         certificates={certificates}
         isPending={modifyMutation.isPending}
         listener={editTarget}
-        onOpenChange={(open) => !open && setEditTarget(undefined)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditTarget(undefined)
+          }
+        }}
         onSubmit={handleEdit}
         protocols={protocols}
         sslPolicies={sslPolicies}
@@ -330,7 +343,11 @@ export function ListenersTab({
         }
         isPending={deleteMutation.isPending}
         onConfirm={handleDelete}
-        onOpenChange={(open) => !open && setDeleteTarget(undefined)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(undefined)
+          }
+        }}
         open={deleteTarget !== undefined}
         title="Delete listener"
       />

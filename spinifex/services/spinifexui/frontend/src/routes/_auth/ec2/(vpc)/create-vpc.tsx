@@ -197,7 +197,9 @@ function CreateVpc() {
                       aria-label="VPC only"
                       checked={field.value === "vpc-only"}
                       name="mode"
-                      onChange={() => field.onChange("vpc-only")}
+                      onChange={() => {
+                        field.onChange("vpc-only")
+                      }}
                       type="radio"
                     />
                     VPC only
@@ -207,7 +209,9 @@ function CreateVpc() {
                       aria-label="VPC and more"
                       checked={field.value === "vpc-and-more"}
                       name="mode"
-                      onChange={() => field.onChange("vpc-and-more")}
+                      onChange={() => {
+                        field.onChange("vpc-and-more")
+                      }}
                       type="radio"
                     />
                     VPC and more
@@ -236,7 +240,9 @@ function CreateVpc() {
                     <input
                       aria-label="Auto-generate name tags"
                       checked={field.value}
-                      onChange={(e) => field.onChange(e.target.checked)}
+                      onChange={(e) => {
+                        field.onChange(e.target.checked)
+                      }}
                       type="checkbox"
                     />
                     Auto-generate
@@ -294,7 +300,9 @@ function CreateVpc() {
                       {PUBLIC_SUBNET_COUNTS.map((n) => (
                         <Button
                           key={n}
-                          onClick={() => field.onChange(n)}
+                          onClick={() => {
+                            field.onChange(n)
+                          }}
                           size="sm"
                           type="button"
                           variant={field.value === n ? "default" : "outline"}
@@ -324,7 +332,9 @@ function CreateVpc() {
                       {PRIVATE_SUBNET_COUNTS.map((n) => (
                         <Button
                           key={n}
-                          onClick={() => field.onChange(n)}
+                          onClick={() => {
+                            field.onChange(n)
+                          }}
                           size="sm"
                           type="button"
                           variant={field.value === n ? "default" : "outline"}
@@ -381,7 +391,9 @@ function CreateVpc() {
           <FormActions
             isPending={isPending}
             isSubmitting={isSubmitting}
-            onCancel={async () => await navigate({ to: "/ec2/describe-vpcs" })}
+            onCancel={async () => {
+              await navigate({ to: "/ec2/describe-vpcs" })
+            }}
             pendingLabel="Creating…"
             submitLabel="Create VPC"
           />

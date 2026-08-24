@@ -92,7 +92,9 @@ const TGS: TargetGroup[] = [
 ]
 
 describe("describe-target-groups list route", () => {
-  beforeEach(() => sdk.reset())
+  beforeEach(() => {
+    sdk.reset()
+  })
   afterEach(() => vi.clearAllMocks())
 
   it("renders target-group rows with health summaries from the mocked SDK", async () => {

@@ -134,7 +134,9 @@ export function RepositoryDetailPage({
                         </td>
                         <td className="px-4 py-2 text-right">
                           <Button
-                            onClick={() => setDeleteTarget(digest)}
+                            onClick={() => {
+                              setDeleteTarget(digest)
+                            }}
                             size="sm"
                             variant="destructive"
                           >
@@ -166,7 +168,11 @@ export function RepositoryDetailPage({
       </Tabs>
 
       <AlertDialog
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null)
+          }
+        }}
         open={deleteTarget !== null}
       >
         <AlertDialogContent>

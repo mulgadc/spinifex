@@ -34,11 +34,15 @@ describe("CreateRepositoryDialog", () => {
     expect(createButton).toBeEnabled()
 
     fireEvent.click(createButton)
-    await waitFor(() => expect(send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledOnce()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       repositoryName: "team/app",
     })
-    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
+    await waitFor(() => {
+      expect(onOpenChange).toHaveBeenCalledWith(false)
+    })
   })
 
   it("surfaces a create error and stays open", async () => {

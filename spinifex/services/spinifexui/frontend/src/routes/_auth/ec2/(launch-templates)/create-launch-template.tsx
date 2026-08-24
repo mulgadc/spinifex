@@ -143,9 +143,9 @@ function CreateLaunchTemplate() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-launch-templates" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Launch Template"
         />

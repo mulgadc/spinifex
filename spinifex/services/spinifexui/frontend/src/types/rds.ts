@@ -244,8 +244,9 @@ function checkEngineIdentifier(
   value: string,
   maxLen: number,
 ) {
-  const issue = (message: string) =>
+  const issue = (message: string) => {
     ctx.addIssue({ code: "custom", path: [path], message })
+  }
 
   if (value.length > maxLen) {
     issue(`${field} must be at most ${maxLen} characters`)

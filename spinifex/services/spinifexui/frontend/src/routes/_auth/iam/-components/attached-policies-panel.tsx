@@ -156,7 +156,9 @@ export function AttachedPoliciesPanel({
         <div className="flex items-center justify-between">
           <span>Attached Policies</span>
           <Button
-            onClick={() => setShowAttachSelect(!showAttachSelect)}
+            onClick={() => {
+              setShowAttachSelect(!showAttachSelect)
+            }}
             size="sm"
           >
             Attach Policy

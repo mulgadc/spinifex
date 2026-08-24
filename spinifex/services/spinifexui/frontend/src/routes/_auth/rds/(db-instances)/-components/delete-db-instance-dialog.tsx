@@ -121,7 +121,9 @@ export function DeleteDBInstanceDialog({
             <label className="flex items-start gap-2 text-sm">
               <input
                 checked={!skipFinalSnapshot}
-                onChange={(e) => setSkipFinalSnapshot(!e.target.checked)}
+                onChange={(e) => {
+                  setSkipFinalSnapshot(!e.target.checked)
+                }}
                 type="checkbox"
               />
               <span>
@@ -142,7 +144,9 @@ export function DeleteDBInstanceDialog({
                 </FieldTitle>
                 <Input
                   id="confirmIdentifier"
-                  onChange={(e) => setTypedIdentifier(e.target.value)}
+                  onChange={(e) => {
+                    setTypedIdentifier(e.target.value)
+                  }}
                   placeholder={dbInstanceIdentifier}
                   value={typedIdentifier}
                 />
@@ -161,7 +165,9 @@ export function DeleteDBInstanceDialog({
                 <Input
                   aria-invalid={!!snapshotNameError}
                   id="finalSnapshotIdentifier"
-                  onChange={(e) => setSnapshotIdentifier(e.target.value)}
+                  onChange={(e) => {
+                    setSnapshotIdentifier(e.target.value)
+                  }}
                   value={snapshotIdentifier}
                 />
                 {snapshotNameError && (

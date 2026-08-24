@@ -282,18 +282,20 @@ describe("RestoreDBSnapshotPage form", () => {
     await selectInstanceClass(user)
     fireEvent.click(screen.getByRole("button", { name: "Restore Snapshot" }))
 
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBSnapshotIdentifier).toBe(ID)
     expect(input.DBInstanceClass).toBe("db.t3.micro")
     expect(input.AllocatedStorage).toBe(20)
     expect(input.Engine).toBeUndefined()
     expect(input.MasterUsername).toBeUndefined()
-    await waitFor(() =>
+    await waitFor(() => {
       expect(routerState.navigate).toHaveBeenCalledWith(
         expect.objectContaining({ to: "/rds/describe-db-instances/$id" }),
-      ),
-    )
+      )
+    })
   })
 
   it("surfaces the refusal when the restore fails", async () => {

@@ -119,7 +119,9 @@ function CreateRole() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => await navigate({ to: "/iam/list-roles" })}
+          onCancel={async () => {
+            await navigate({ to: "/iam/list-roles" })
+          }}
           pendingLabel="Creating..."
           submitLabel="Create Role"
         />

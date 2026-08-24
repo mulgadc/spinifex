@@ -104,7 +104,9 @@ export function ObjectListItem({
           <button
             aria-label={`Delete ${displayName}`}
             className="rounded-md p-2 text-destructive transition-colors hover:bg-accent"
-            onClick={() => setShowDeleteDialog(true)}
+            onClick={() => {
+              setShowDeleteDialog(true)
+            }}
             type="button"
           >
             <Trash2 className="size-4" />

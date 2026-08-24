@@ -389,7 +389,9 @@ export function CreateLoadBalancerPage() {
                     aria-label="Application Load Balancer"
                     checked={field.value === "application"}
                     name="lb-type"
-                    onChange={() => handleTypeChange("application")}
+                    onChange={() => {
+                      handleTypeChange("application")
+                    }}
                     type="radio"
                   />
                   Application (ALB)
@@ -399,7 +401,9 @@ export function CreateLoadBalancerPage() {
                     aria-label="Network Load Balancer"
                     checked={field.value === "network"}
                     name="lb-type"
-                    onChange={() => handleTypeChange("network")}
+                    onChange={() => {
+                      handleTypeChange("network")
+                    }}
                     type="radio"
                   />
                   Network (NLB)
@@ -421,7 +425,9 @@ export function CreateLoadBalancerPage() {
                     aria-label="Internet-facing"
                     checked={field.value === "internet-facing"}
                     name="scheme"
-                    onChange={() => field.onChange("internet-facing")}
+                    onChange={() => {
+                      field.onChange("internet-facing")
+                    }}
                     type="radio"
                   />
                   Internet-facing
@@ -431,7 +437,9 @@ export function CreateLoadBalancerPage() {
                     aria-label="Internal"
                     checked={field.value === "internal"}
                     name="scheme"
-                    onChange={() => field.onChange("internal")}
+                    onChange={() => {
+                      field.onChange("internal")
+                    }}
                     type="radio"
                   />
                   Internal
@@ -450,7 +458,9 @@ export function CreateLoadBalancerPage() {
             name="vpcId"
             render={({ field }) => (
               <Select
-                onValueChange={(v) => handleVpcChange(v)}
+                onValueChange={(v) => {
+                  handleVpcChange(v)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -495,7 +505,9 @@ export function CreateLoadBalancerPage() {
                         <input
                           aria-label={`Subnet ${subnetLabel(subnet)}`}
                           checked={selectedSubnetSet.has(subnet.SubnetId ?? "")}
-                          onChange={() => toggleSubnet(subnet.SubnetId ?? "")}
+                          onChange={() => {
+                            toggleSubnet(subnet.SubnetId ?? "")
+                          }}
                           type="checkbox"
                         />
                         <span className="font-mono">{subnetLabel(subnet)}</span>
@@ -526,7 +538,9 @@ export function CreateLoadBalancerPage() {
                     <input
                       aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
                       checked={selectedSgSet.has(sg.GroupId ?? "")}
-                      onChange={() => toggleSg(sg.GroupId ?? "")}
+                      onChange={() => {
+                        toggleSg(sg.GroupId ?? "")
+                      }}
                       type="checkbox"
                     />
                     <span className="font-mono">
@@ -635,7 +649,9 @@ export function CreateLoadBalancerPage() {
                   )}
                   <Button
                     className="ml-auto"
-                    onClick={() => setImportOpen(true)}
+                    onClick={() => {
+                      setImportOpen(true)
+                    }}
                     size="sm"
                     type="button"
                     variant="ghost"
@@ -694,7 +710,9 @@ export function CreateLoadBalancerPage() {
                       aria-label="Create new target group"
                       checked={field.value === "new"}
                       name="tg-mode"
-                      onChange={() => field.onChange("new")}
+                      onChange={() => {
+                        field.onChange("new")
+                      }}
                       type="radio"
                     />
                     Create new
@@ -704,7 +722,9 @@ export function CreateLoadBalancerPage() {
                       aria-label="Use existing target group"
                       checked={field.value === "existing"}
                       name="tg-mode"
-                      onChange={() => field.onChange("existing")}
+                      onChange={() => {
+                        field.onChange("existing")
+                      }}
                       type="radio"
                     />
                     Use existing
@@ -769,9 +789,9 @@ export function CreateLoadBalancerPage() {
         </div>
 
         <CertificateImportDialog
-          onImported={(arn) =>
+          onImported={(arn) => {
             setValue("listener.certificateArn", arn, { shouldValidate: true })
-          }
+          }}
           onOpenChange={setImportOpen}
           open={importOpen}
         />
@@ -783,9 +803,9 @@ export function CreateLoadBalancerPage() {
         <FormActions
           isPending={wizardMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-load-balancers" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Load Balancer"
         />

@@ -144,12 +144,12 @@ describe("DBSnapshotsListPage", () => {
   it("navigates to the restore page from the row action", async () => {
     renderWithClient(<DBSnapshotsListPage />, seed([MANUAL]))
     fireEvent.click(screen.getByRole("button", { name: "Restore" }))
-    await waitFor(() =>
+    await waitFor(() => {
       expect(routerState.navigate).toHaveBeenCalledWith({
         to: "/rds/restore-db-instance-from-db-snapshot/$id",
         params: { id: "orders-db-snapshot-20260817-1432" },
-      }),
-    )
+      })
+    })
   })
 
   it("opens the create dialog from the heading action", () => {

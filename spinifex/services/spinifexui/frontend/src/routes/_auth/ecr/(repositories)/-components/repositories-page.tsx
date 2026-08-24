@@ -46,7 +46,13 @@ export function RepositoriesPage() {
     <>
       <PageHeading
         actions={
-          <Button onClick={() => setCreateOpen(true)}>Create Repository</Button>
+          <Button
+            onClick={() => {
+              setCreateOpen(true)
+            }}
+          >
+            Create Repository
+          </Button>
         }
         title="Repositories"
       />
@@ -75,17 +81,19 @@ export function RepositoriesPage() {
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
                     key={name}
-                    onClick={async () =>
+                    onClick={async () => {
                       await navigate({
                         to: "/ecr/list-repositories/$id",
                         params: { id: encodeURIComponent(name) },
                       })
-                    }
+                    }}
                   >
                     <td className="px-4 py-2 font-medium">
                       <Link
                         className="text-primary hover:underline"
-                        onClick={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                        }}
                         params={{ id: encodeURIComponent(name) }}
                         to="/ecr/list-repositories/$id"
                       >
@@ -126,7 +134,11 @@ export function RepositoriesPage() {
       <CreateRepositoryDialog onOpenChange={setCreateOpen} open={createOpen} />
 
       <AlertDialog
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null)
+          }
+        }}
         open={deleteTarget !== null}
       >
         <AlertDialogContent>

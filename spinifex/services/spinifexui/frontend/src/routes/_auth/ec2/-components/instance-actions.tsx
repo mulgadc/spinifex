@@ -34,7 +34,9 @@ export function InstanceActions({ instanceId, state }: InstanceActionsProps) {
 
   const handleTerminate = () => {
     terminateMutation.mutate(instanceId, {
-      onSettled: () => setShowTerminateDialog(false),
+      onSettled: () => {
+        setShowTerminateDialog(false)
+      },
     })
   }
 
@@ -87,7 +89,9 @@ export function InstanceActions({ instanceId, state }: InstanceActionsProps) {
         {state === "stopped" && (
           <Button
             disabled={startMutation.isPending}
-            onClick={() => startMutation.mutate(instanceId)}
+            onClick={() => {
+              startMutation.mutate(instanceId)
+            }}
             size="sm"
             variant="default"
           >
@@ -99,7 +103,9 @@ export function InstanceActions({ instanceId, state }: InstanceActionsProps) {
           <>
             <Button
               disabled={stopMutation.isPending}
-              onClick={() => stopMutation.mutate(instanceId)}
+              onClick={() => {
+                stopMutation.mutate(instanceId)
+              }}
               size="sm"
               variant="outline"
             >
@@ -108,7 +114,9 @@ export function InstanceActions({ instanceId, state }: InstanceActionsProps) {
             </Button>
             <Button
               disabled={rebootMutation.isPending}
-              onClick={() => rebootMutation.mutate(instanceId)}
+              onClick={() => {
+                rebootMutation.mutate(instanceId)
+              }}
               size="sm"
               variant="outline"
             >
@@ -120,7 +128,9 @@ export function InstanceActions({ instanceId, state }: InstanceActionsProps) {
         {(state === "stopped" || state === "running") && (
           <Button
             disabled={terminateMutation.isPending}
-            onClick={() => setShowTerminateDialog(true)}
+            onClick={() => {
+              setShowTerminateDialog(true)
+            }}
             size="sm"
             variant="destructive"
           >

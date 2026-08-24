@@ -60,7 +60,9 @@ describe("CreateDBSnapshotDialog opened from an instance", () => {
   it("sends CreateDBSnapshot for that instance", async () => {
     render("orders-db")
     submit()
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBInstanceIdentifier).toBe("orders-db")
     expect(input.DBSnapshotIdentifier).toMatch(/^orders-db-snapshot-/)

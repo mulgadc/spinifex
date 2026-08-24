@@ -103,7 +103,9 @@ function CreateSnapshot() {
             name="volumeId"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -145,9 +147,9 @@ function CreateSnapshot() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-snapshots" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Snapshot"
         />

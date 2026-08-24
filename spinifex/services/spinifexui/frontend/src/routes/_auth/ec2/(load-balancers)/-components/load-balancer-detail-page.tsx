@@ -127,7 +127,9 @@ export function LoadBalancerDetailPage({ arn }: Props) {
           actions={
             <div className="flex items-center gap-2">
               <Button
-                onClick={() => setShowDeleteDialog(true)}
+                onClick={() => {
+                  setShowDeleteDialog(true)
+                }}
                 size="sm"
                 variant="destructive"
               >
@@ -218,12 +220,12 @@ export function LoadBalancerDetailPage({ arn }: Props) {
               error={setSubnetsMutation.error}
               isPending={setSubnetsMutation.isPending}
               isSuccess={setSubnetsMutation.isSuccess}
-              onSubmit={(subnetIds) =>
+              onSubmit={(subnetIds) => {
                 setSubnetsMutation.mutate({
                   loadBalancerArn: arn,
                   subnetIds,
                 })
-              }
+              }}
             />
           </TabsPanel>
 
@@ -235,12 +237,12 @@ export function LoadBalancerDetailPage({ arn }: Props) {
                 error={setSecurityGroupsMutation.error}
                 isPending={setSecurityGroupsMutation.isPending}
                 isSuccess={setSecurityGroupsMutation.isSuccess}
-                onSubmit={(securityGroupIds) =>
+                onSubmit={(securityGroupIds) => {
                   setSecurityGroupsMutation.mutate({
                     loadBalancerArn: arn,
                     securityGroupIds,
                   })
-                }
+                }}
               />
             </TabsPanel>
           )}
@@ -266,7 +268,7 @@ export function LoadBalancerDetailPage({ arn }: Props) {
               error={updateTagsMutation.error}
               isPending={updateTagsMutation.isPending}
               isSuccess={updateTagsMutation.isSuccess}
-              onSubmit={(tags) =>
+              onSubmit={(tags) => {
                 updateTagsMutation.mutate({
                   resourceArn: arn,
                   tags,
@@ -274,7 +276,7 @@ export function LoadBalancerDetailPage({ arn }: Props) {
                     .map((t) => t.Key ?? "")
                     .filter((k) => k.length > 0),
                 })
-              }
+              }}
               tags={lbTags}
             />
           </TabsPanel>

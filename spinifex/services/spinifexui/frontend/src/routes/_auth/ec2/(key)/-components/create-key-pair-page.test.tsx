@@ -51,7 +51,9 @@ describe("create-key-pair route", () => {
     await user.type(screen.getByLabelText("Key Pair Name"), "my-key")
     await user.click(screen.getByRole("button", { name: "Create Key Pair" }))
 
-    await waitFor(() => expect(send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledOnce()
+    })
     expect(send.mock.calls[0]?.[0].input).toStrictEqual({
       KeyName: "my-key",
       KeyType: "rsa",
@@ -67,7 +69,9 @@ describe("create-key-pair route", () => {
     await user.click(screen.getByRole("option", { name: "ED25519" }))
     await user.click(screen.getByRole("button", { name: "Create Key Pair" }))
 
-    await waitFor(() => expect(send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledOnce()
+    })
     expect(send.mock.calls[0]?.[0].input).toStrictEqual({
       KeyName: "my-key",
       KeyType: "ed25519",

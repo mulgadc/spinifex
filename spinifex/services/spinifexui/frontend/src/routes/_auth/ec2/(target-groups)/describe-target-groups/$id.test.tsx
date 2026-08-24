@@ -74,7 +74,9 @@ import { TargetGroupDetailPage } from "../-components/target-group-detail-page"
 const TG_ARN = "arn:tg:1"
 
 describe("target-group detail route", () => {
-  beforeEach(() => sdk.reset())
+  beforeEach(() => {
+    sdk.reset()
+  })
   afterEach(() => vi.clearAllMocks())
 
   function seed() {

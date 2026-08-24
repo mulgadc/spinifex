@@ -85,7 +85,9 @@ function CreateGroup() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => await navigate({ to: "/iam/list-groups" })}
+          onCancel={async () => {
+            await navigate({ to: "/iam/list-groups" })
+          }}
           pendingLabel="Creating..."
           submitLabel="Create Group"
         />

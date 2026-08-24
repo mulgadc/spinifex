@@ -98,7 +98,9 @@ export function CertificateImportDialog({
             <Textarea
               className="font-mono text-xs"
               id="cert-body"
-              onChange={(e) => setCertificate(e.target.value)}
+              onChange={(e) => {
+                setCertificate(e.target.value)
+              }}
               placeholder="-----BEGIN CERTIFICATE-----"
               rows={5}
               value={certificate}
@@ -112,7 +114,9 @@ export function CertificateImportDialog({
             <Textarea
               className="font-mono text-xs"
               id="cert-key"
-              onChange={(e) => setPrivateKey(e.target.value)}
+              onChange={(e) => {
+                setPrivateKey(e.target.value)
+              }}
               placeholder="-----BEGIN PRIVATE KEY-----"
               rows={5}
               value={privateKey}
@@ -126,7 +130,9 @@ export function CertificateImportDialog({
             <Textarea
               className="font-mono text-xs"
               id="cert-chain"
-              onChange={(e) => setCertificateChain(e.target.value)}
+              onChange={(e) => {
+                setCertificateChain(e.target.value)
+              }}
               placeholder="-----BEGIN CERTIFICATE-----"
               rows={4}
               value={certificateChain}

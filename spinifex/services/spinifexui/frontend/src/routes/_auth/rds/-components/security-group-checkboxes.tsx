@@ -50,12 +50,13 @@ export function SecurityGroupCheckboxes({
 
   const selectedIds = new Set(selected)
 
-  const toggle = (groupId: string) =>
+  const toggle = (groupId: string) => {
     onChange(
       selected.includes(groupId)
         ? selected.filter((id) => id !== groupId)
         : [...selected, groupId],
     )
+  }
 
   return (
     <div className="space-y-1">
@@ -64,7 +65,9 @@ export function SecurityGroupCheckboxes({
           <input
             aria-label={`Security group ${securityGroupLabel(group)}`}
             checked={selectedIds.has(group.GroupId ?? "")}
-            onChange={() => toggle(group.GroupId ?? "")}
+            onChange={() => {
+              toggle(group.GroupId ?? "")
+            }}
             type="checkbox"
           />
           <span className="font-mono">{securityGroupLabel(group)}</span>

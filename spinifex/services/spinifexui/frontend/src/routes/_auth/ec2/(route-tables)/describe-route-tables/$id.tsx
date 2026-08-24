@@ -190,7 +190,9 @@ function RouteTableDetail() {
             <div className="flex items-center gap-2">
               <Button
                 disabled={isMain || deleteRouteTable.isPending}
-                onClick={() => setShowDeleteDialog(true)}
+                onClick={() => {
+                  setShowDeleteDialog(true)
+                }}
                 size="sm"
                 variant="destructive"
               >
@@ -352,7 +354,9 @@ function RouteTableDetail() {
                   name="targetId"
                   render={({ field }) => (
                     <Select
-                      onValueChange={(value) => field.onChange(value)}
+                      onValueChange={(value) => {
+                        field.onChange(value)
+                      }}
                       value={field.value ?? ""}
                     >
                       <SelectTrigger
@@ -455,7 +459,9 @@ function RouteTableDetail() {
                   name="subnetId"
                   render={({ field }) => (
                     <Select
-                      onValueChange={(value) => field.onChange(value)}
+                      onValueChange={(value) => {
+                        field.onChange(value)
+                      }}
                       value={field.value ?? ""}
                     >
                       <SelectTrigger

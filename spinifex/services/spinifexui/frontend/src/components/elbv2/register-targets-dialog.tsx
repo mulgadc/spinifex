@@ -140,7 +140,9 @@ export function RegisterTargetsDialog({
                     aria-label={`Register target ${id}`}
                     checked={checked}
                     id={`register-target-${id}`}
-                    onChange={() => toggle(id)}
+                    onChange={() => {
+                      toggle(id)
+                    }}
                     type="checkbox"
                   />
                   <label
@@ -159,7 +161,9 @@ export function RegisterTargetsDialog({
                     <Input
                       aria-label={`Port override for ${id}`}
                       className="w-24"
-                      onChange={(e) => setPort(id, e.target.value)}
+                      onChange={(e) => {
+                        setPort(id, e.target.value)
+                      }}
                       placeholder={String(defaultPort)}
                       value={selection?.port ?? ""}
                     />

@@ -124,7 +124,9 @@ describe("ListenerForm", () => {
       return (
         <>
           <button
-            onClick={() => form.setValue("protocol", "HTTPS")}
+            onClick={() => {
+              form.setValue("protocol", "HTTPS")
+            }}
             type="button"
           >
             go-https

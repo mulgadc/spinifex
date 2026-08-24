@@ -23,7 +23,9 @@ describe("PushCommands", () => {
     })
     render(<PushCommands repositoryName="team/app" repositoryUri={URI} />)
     fireEvent.click(screen.getByRole("button", { name: "Copy" }))
-    await waitFor(() => expect(writeText).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledOnce()
+    })
     expect(writeText.mock.calls[0]![0]).toContain(`docker push ${URI}:latest`)
     await expect(screen.findByText("Copied")).resolves.toBeInTheDocument()
   })

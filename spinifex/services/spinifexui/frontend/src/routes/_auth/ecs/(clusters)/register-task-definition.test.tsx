@@ -84,7 +84,9 @@ describe("register-task-definition route", () => {
       screen.getByRole("button", { name: "Register Task Definition" }),
     )
 
-    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       family: string
       networkMode: string
@@ -136,7 +138,9 @@ describe("register-task-definition route", () => {
       screen.getByRole("button", { name: "Register Task Definition" }),
     )
 
-    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       containerDefinitions: { resourceRequirements?: unknown }[]
     }
@@ -161,7 +165,9 @@ describe("register-task-definition route", () => {
       screen.getByRole("button", { name: "Register Task Definition" }),
     )
 
-    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       containerDefinitions: {
         resourceRequirements?: { type: string; value: string }[]
@@ -188,7 +194,9 @@ describe("register-task-definition route", () => {
       screen.getByRole("button", { name: "Register Task Definition" }),
     )
 
-    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       containerDefinitions: {
         portMappings?: { containerPort: number; protocol: string }[]

@@ -131,7 +131,9 @@ function CreatePolicy() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => await navigate({ to: "/iam/list-policies" })}
+          onCancel={async () => {
+            await navigate({ to: "/iam/list-policies" })
+          }}
           pendingLabel="Creating..."
           submitLabel="Create Policy"
         />

@@ -106,9 +106,9 @@ function ImportKeyPair() {
         <FormActions
           isPending={importMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-key-pairs" })
-          }
+          }}
           pendingLabel="Importing…"
           submitLabel="Import Key Pair"
         />

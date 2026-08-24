@@ -74,7 +74,9 @@ import { LoadBalancerDetailPage } from "../-components/load-balancer-detail-page
 const LB_ARN = "arn:lb:1"
 
 describe("load-balancer detail route", () => {
-  beforeEach(() => sdk.reset())
+  beforeEach(() => {
+    sdk.reset()
+  })
   afterEach(() => vi.clearAllMocks())
 
   function seed() {

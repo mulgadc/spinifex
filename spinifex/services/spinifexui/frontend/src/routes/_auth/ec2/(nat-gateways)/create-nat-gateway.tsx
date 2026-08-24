@@ -131,7 +131,9 @@ function CreateNatGateway() {
             name="subnetId"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -172,7 +174,9 @@ function CreateNatGateway() {
               name="allocationId"
               render={({ field }) => (
                 <Select
-                  onValueChange={(value) => field.onChange(value)}
+                  onValueChange={(value) => {
+                    field.onChange(value)
+                  }}
                   value={field.value ?? ""}
                 >
                   <SelectTrigger
@@ -215,9 +219,9 @@ function CreateNatGateway() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-nat-gateways" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create NAT Gateway"
         />

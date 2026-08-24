@@ -136,7 +136,9 @@ function CreateSecurityGroup() {
             name="vpcId"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -169,9 +171,9 @@ function CreateSecurityGroup() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-security-groups" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Security Group"
         />

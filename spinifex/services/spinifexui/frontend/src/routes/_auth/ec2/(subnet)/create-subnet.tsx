@@ -112,7 +112,9 @@ function CreateSubnet() {
             name="vpcId"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -164,9 +166,9 @@ function CreateSubnet() {
             name="availabilityZone"
             render={({ field }) => (
               <Select
-                onValueChange={(value) =>
+                onValueChange={(value) => {
                   field.onChange(value === "none" ? undefined : value)
-                }
+                }}
                 value={field.value ?? "none"}
               >
                 <SelectTrigger className="w-full" id="availabilityZone">
@@ -195,7 +197,9 @@ function CreateSubnet() {
                 <input
                   aria-label="Enable auto-assign public IPv4 address"
                   checked={field.value ?? false}
-                  onChange={(e) => field.onChange(e.target.checked)}
+                  onChange={(e) => {
+                    field.onChange(e.target.checked)
+                  }}
                   type="checkbox"
                 />
                 Enable auto-assign public IPv4 address
@@ -209,7 +213,9 @@ function CreateSubnet() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => await navigate({ to: "/ec2/describe-subnets" })}
+          onCancel={async () => {
+            await navigate({ to: "/ec2/describe-subnets" })
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Subnet"
         />

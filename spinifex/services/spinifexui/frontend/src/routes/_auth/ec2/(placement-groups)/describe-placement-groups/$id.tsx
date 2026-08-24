@@ -94,7 +94,9 @@ function PlacementGroupDetail() {
           actions={
             <div className="flex items-center gap-2">
               <Button
-                onClick={() => setShowDeleteDialog(true)}
+                onClick={() => {
+                  setShowDeleteDialog(true)
+                }}
                 size="sm"
                 variant="destructive"
               >

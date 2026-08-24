@@ -21,10 +21,9 @@ export function useCopyToClipboard() {
     if (timerRef.current) {
       clearTimeout(timerRef.current)
     }
-    timerRef.current = setTimeout(
-      () => setCopied(false),
-      COPY_FEEDBACK_DURATION_MS,
-    )
+    timerRef.current = setTimeout(() => {
+      setCopied(false)
+    }, COPY_FEEDBACK_DURATION_MS)
   }
 
   return { copied, copy }

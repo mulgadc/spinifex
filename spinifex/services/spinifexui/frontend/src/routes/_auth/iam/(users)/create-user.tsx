@@ -82,7 +82,9 @@ function CreateUser() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => await navigate({ to: "/iam/list-users" })}
+          onCancel={async () => {
+            await navigate({ to: "/iam/list-users" })
+          }}
           pendingLabel="Creating..."
           submitLabel="Create User"
         />

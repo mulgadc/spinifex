@@ -31,7 +31,9 @@ export function SubnetCidrInputs({
     <div className="mt-2">
       <Button
         className="gap-1 px-0 text-xs text-muted-foreground"
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => {
+          setExpanded(!expanded)
+        }}
         type="button"
         variant="link"
       >

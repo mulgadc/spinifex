@@ -68,7 +68,9 @@ function AccessEntryRow({
         <div className="flex items-center justify-between gap-2">
           <span className="truncate font-mono text-xs">{principalArn}</span>
           <Button
-            onClick={() => onDelete(principalArn)}
+            onClick={() => {
+              onDelete(principalArn)
+            }}
             size="icon"
             variant="ghost"
           >
@@ -98,13 +100,13 @@ function AccessEntryRow({
                   >
                     <span>{shortPolicyName(p.policyArn)}</span>
                     <Button
-                      onClick={() =>
+                      onClick={() => {
                         disassociate.mutate({
                           clusterName,
                           principalArn,
                           policyArn: p.policyArn ?? "",
                         })
-                      }
+                      }}
                       size="sm"
                       variant="ghost"
                     >
@@ -122,7 +124,9 @@ function AccessEntryRow({
           <select
             aria-label="Access policy"
             className="h-7 flex-1 rounded-md border border-input bg-input/20 px-2 text-sm"
-            onChange={(e) => setPolicyArn(e.target.value)}
+            onChange={(e) => {
+              setPolicyArn(e.target.value)
+            }}
             value={policyArn}
           >
             {EKS_ACCESS_POLICIES.map((p) => (
@@ -133,14 +137,14 @@ function AccessEntryRow({
           </select>
           <Button
             disabled={associate.isPending}
-            onClick={() =>
+            onClick={() => {
               associate.mutate({
                 clusterName,
                 principalArn,
                 policyArn,
                 accessScopeType: "cluster",
               })
-            }
+            }}
             size="sm"
           >
             Associate
@@ -245,7 +249,12 @@ export function AccessTab({ clusterName }: { clusterName: string }) {
   return (
     <>
       <div className="mb-4 flex justify-end">
-        <Button onClick={() => setShowAdd(true)} size="sm">
+        <Button
+          onClick={() => {
+            setShowAdd(true)
+          }}
+          size="sm"
+        >
           Add access entry
         </Button>
       </div>
@@ -280,10 +289,18 @@ export function AccessTab({ clusterName }: { clusterName: string }) {
           }
           deleteEntry.mutate(
             { clusterName, principalArn: pendingDelete },
-            { onSuccess: () => setPendingDelete(undefined) },
+            {
+              onSuccess: () => {
+                setPendingDelete(undefined)
+              },
+            },
           )
         }}
-        onOpenChange={(o) => !o && setPendingDelete(undefined)}
+        onOpenChange={(o) => {
+          if (!o) {
+            setPendingDelete(undefined)
+          }
+        }}
         open={pendingDelete !== undefined}
         title="Delete access entry"
       />

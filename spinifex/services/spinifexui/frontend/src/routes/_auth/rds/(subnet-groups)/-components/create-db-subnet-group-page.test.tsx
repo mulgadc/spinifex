@@ -115,7 +115,9 @@ describe("CreateDBSubnetGroupPage", () => {
     fireEvent.click(subnetCheckbox("subnet-a2"))
     fireEvent.click(screen.getByRole("button", { name: "Create Subnet Group" }))
 
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBSubnetGroupName).toBe("orders-subnets")
     expect(input.DBSubnetGroupDescription).toBe("Private subnets")

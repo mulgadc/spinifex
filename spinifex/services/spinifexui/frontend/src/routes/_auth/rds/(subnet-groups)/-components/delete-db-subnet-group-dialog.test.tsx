@@ -37,7 +37,9 @@ describe("DeleteDBSubnetGroupDialog", () => {
   it("sends DeleteDBSubnetGroup on confirm", async () => {
     render()
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBSubnetGroupName: "orders-subnets",
     })

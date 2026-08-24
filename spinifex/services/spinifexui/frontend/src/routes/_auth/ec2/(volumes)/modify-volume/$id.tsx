@@ -110,12 +110,12 @@ function ModifyVolume() {
         <FormActions
           isPending={modifyMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({
               to: "/ec2/describe-volumes/$id",
               params: { id: volumeId },
             })
-          }
+          }}
           pendingLabel="Resizing\u2026"
           submitLabel="Resize Volume"
         />

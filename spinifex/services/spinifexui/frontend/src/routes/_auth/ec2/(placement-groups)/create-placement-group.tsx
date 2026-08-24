@@ -108,7 +108,9 @@ function CreatePlacementGroup() {
             name="strategy"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -133,9 +135,9 @@ function CreatePlacementGroup() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-placement-groups" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Placement Group"
         />

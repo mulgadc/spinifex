@@ -38,7 +38,9 @@ export function JsonEditor({
       aria-invalid={error}
       className={cn("font-mono text-sm", className)}
       onBlur={handleBlur}
-      onChange={(event) => onChange(event.target.value)}
+      onChange={(event) => {
+        onChange(event.target.value)
+      }}
       value={value}
       {...props}
     />

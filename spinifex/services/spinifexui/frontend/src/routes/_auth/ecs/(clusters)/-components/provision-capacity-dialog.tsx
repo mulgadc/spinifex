@@ -117,7 +117,9 @@ export function ProvisionCapacityDialog({
               id="provision-count"
               max={10}
               min={1}
-              onChange={(e) => setCount(Number(e.target.value))}
+              onChange={(e) => {
+                setCount(Number(e.target.value))
+              }}
               type="number"
               value={count}
             />
@@ -130,7 +132,9 @@ export function ProvisionCapacityDialog({
             <select
               className={SELECT_CLASS}
               id="provision-subnet"
-              onChange={(e) => setSubnetId(e.target.value)}
+              onChange={(e) => {
+                setSubnetId(e.target.value)
+              }}
               value={subnetId}
             >
               <option value="">Select a subnet</option>
@@ -150,7 +154,9 @@ export function ProvisionCapacityDialog({
             <select
               className={SELECT_CLASS}
               id="provision-sg"
-              onChange={(e) => setSecurityGroupId(e.target.value)}
+              onChange={(e) => {
+                setSecurityGroupId(e.target.value)
+              }}
               value={securityGroupId}
             >
               <option value="">Select a security group</option>
@@ -169,7 +175,9 @@ export function ProvisionCapacityDialog({
             <select
               className={SELECT_CLASS}
               id="provision-key"
-              onChange={(e) => setKeyName(e.target.value)}
+              onChange={(e) => {
+                setKeyName(e.target.value)
+              }}
               value={keyName}
             >
               <option value="">None</option>

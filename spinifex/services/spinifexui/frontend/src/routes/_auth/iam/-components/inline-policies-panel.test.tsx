@@ -84,7 +84,9 @@ describe("InlinePoliciesPanel", () => {
     })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
 
-    await waitFor(() => expect(send).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       UserName: USER,
       PolicyName: POLICY,
@@ -103,7 +105,9 @@ describe("InlinePoliciesPanel", () => {
     const dialog = await screen.findByRole("alertdialog")
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }))
 
-    await waitFor(() => expect(send).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       UserName: USER,
       PolicyName: POLICY,
@@ -152,7 +156,9 @@ describe("InlinePoliciesPanel", () => {
     })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
 
-    await waitFor(() => expect(send).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       UserName: USER,
       PolicyName: POLICY,

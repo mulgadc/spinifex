@@ -282,9 +282,9 @@ export function RunInstancesPage({
             name="launchTemplateId"
             render={({ field }) => (
               <Select
-                onValueChange={(value) =>
+                onValueChange={(value) => {
                   field.onChange(value === "none" ? undefined : value)
-                }
+                }}
                 value={field.value ?? "none"}
               >
                 <SelectTrigger className="w-full" id="launchTemplateId">
@@ -316,7 +316,9 @@ export function RunInstancesPage({
               name="launchTemplateVersion"
               render={({ field }) => (
                 <Select
-                  onValueChange={(value) => field.onChange(value)}
+                  onValueChange={(value) => {
+                    field.onChange(value)
+                  }}
                   value={field.value ?? "$Default"}
                 >
                   <SelectTrigger className="w-full" id="launchTemplateVersion">
@@ -381,7 +383,9 @@ export function RunInstancesPage({
                   )
                   return (
                     <Select
-                      onValueChange={(value) => field.onChange(value)}
+                      onValueChange={(value) => {
+                        field.onChange(value)
+                      }}
                       value={field.value ?? ""}
                     >
                       <SelectTrigger
@@ -454,7 +458,9 @@ export function RunInstancesPage({
                 name="keyName"
                 render={({ field }) => (
                   <Select
-                    onValueChange={(value) => field.onChange(value)}
+                    onValueChange={(value) => {
+                      field.onChange(value)
+                    }}
                     value={field.value ?? ""}
                   >
                     <SelectTrigger
@@ -490,9 +496,9 @@ export function RunInstancesPage({
                 name="subnetId"
                 render={({ field }) => (
                   <Select
-                    onValueChange={(value) =>
+                    onValueChange={(value) => {
                       field.onChange(value === "none" ? undefined : value)
-                    }
+                    }}
                     value={field.value ?? "none"}
                   >
                     <SelectTrigger className="w-full" id="subnetId">
@@ -531,7 +537,9 @@ export function RunInstancesPage({
                       <input
                         aria-label="Create new security group"
                         checked={field.value === "create"}
-                        onChange={() => field.onChange("create")}
+                        onChange={() => {
+                          field.onChange("create")
+                        }}
                         type="radio"
                       />
                       Create new
@@ -540,7 +548,9 @@ export function RunInstancesPage({
                       <input
                         aria-label="Select existing security group"
                         checked={field.value === "existing"}
-                        onChange={() => field.onChange("existing")}
+                        onChange={() => {
+                          field.onChange("existing")
+                        }}
                         type="radio"
                       />
                       Select existing
@@ -586,7 +596,9 @@ export function RunInstancesPage({
                             <input
                               aria-label="Allow SSH"
                               checked={field.value}
-                              onChange={(e) => field.onChange(e.target.checked)}
+                              onChange={(e) => {
+                                field.onChange(e.target.checked)
+                              }}
                               type="checkbox"
                             />
                             Allow SSH (tcp/22)
@@ -601,7 +613,9 @@ export function RunInstancesPage({
                             <input
                               aria-label="Allow HTTP"
                               checked={field.value}
-                              onChange={(e) => field.onChange(e.target.checked)}
+                              onChange={(e) => {
+                                field.onChange(e.target.checked)
+                              }}
                               type="checkbox"
                             />
                             Allow HTTP (tcp/80)
@@ -616,7 +630,9 @@ export function RunInstancesPage({
                             <input
                               aria-label="Allow HTTPS"
                               checked={field.value}
-                              onChange={(e) => field.onChange(e.target.checked)}
+                              onChange={(e) => {
+                                field.onChange(e.target.checked)
+                              }}
                               type="checkbox"
                             />
                             Allow HTTPS (tcp/443)
@@ -637,7 +653,9 @@ export function RunInstancesPage({
                             <input
                               aria-label="Source anywhere"
                               checked={field.value === "anywhere"}
-                              onChange={() => field.onChange("anywhere")}
+                              onChange={() => {
+                                field.onChange("anywhere")
+                              }}
                               type="radio"
                             />
                             Anywhere (0.0.0.0/0)
@@ -646,7 +664,9 @@ export function RunInstancesPage({
                             <input
                               aria-label="Source custom CIDR"
                               checked={field.value === "custom"}
-                              onChange={() => field.onChange("custom")}
+                              onChange={() => {
+                                field.onChange("custom")
+                              }}
                               type="radio"
                             />
                             Custom CIDR
@@ -683,7 +703,9 @@ export function RunInstancesPage({
                           <input
                             aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
                             checked={selectedSgIdSet.has(sg.GroupId ?? "")}
-                            onChange={() => toggleSg(sg.GroupId ?? "")}
+                            onChange={() => {
+                              toggleSg(sg.GroupId ?? "")
+                            }}
                             type="checkbox"
                           />
                           <span className="font-mono">
@@ -708,9 +730,9 @@ export function RunInstancesPage({
                 name="placementGroupName"
                 render={({ field }) => (
                   <Select
-                    onValueChange={(value) =>
+                    onValueChange={(value) => {
                       field.onChange(value === "none" ? undefined : value)
-                    }
+                    }}
                     value={field.value ?? "none"}
                   >
                     <SelectTrigger className="w-full" id="placementGroupName">
@@ -819,7 +841,9 @@ export function RunInstancesPage({
                     name="rootVolumeType"
                     render={({ field }) => (
                       <Select
-                        onValueChange={(value) => field.onChange(value)}
+                        onValueChange={(value) => {
+                          field.onChange(value)
+                        }}
                         value={field.value ?? DEFAULT_VOLUME_TYPE}
                       >
                         <SelectTrigger
@@ -851,7 +875,9 @@ export function RunInstancesPage({
                         <input
                           aria-label="Delete on termination"
                           checked={field.value ?? true}
-                          onChange={(e) => field.onChange(e.target.checked)}
+                          onChange={(e) => {
+                            field.onChange(e.target.checked)
+                          }}
                           type="checkbox"
                         />
                         Delete on termination
@@ -872,9 +898,9 @@ export function RunInstancesPage({
         <div className="flex gap-2">
           <Button
             disabled={isSubmitting || createMutation.isPending}
-            onClick={async () =>
+            onClick={async () => {
               await navigate({ to: "/ec2/describe-instances" })
-            }
+            }}
             type="button"
             variant="outline"
           >

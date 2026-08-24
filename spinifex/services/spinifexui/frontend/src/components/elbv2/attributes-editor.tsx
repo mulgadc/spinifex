@@ -165,9 +165,9 @@ export function AttributesEditor({
                     aria-label={spec.label}
                     checked={value === "true"}
                     id={id}
-                    onChange={(e) =>
+                    onChange={(e) => {
                       setValue(spec.key, e.target.checked ? "true" : "false")
-                    }
+                    }}
                     type="checkbox"
                   />
                 )}
@@ -176,21 +176,27 @@ export function AttributesEditor({
                     aria-invalid={!!fieldError}
                     id={id}
                     inputMode="numeric"
-                    onChange={(e) => setValue(spec.key, e.target.value)}
+                    onChange={(e) => {
+                      setValue(spec.key, e.target.value)
+                    }}
                     value={value}
                   />
                 )}
                 {spec.type === "text" && (
                   <Input
                     id={id}
-                    onChange={(e) => setValue(spec.key, e.target.value)}
+                    onChange={(e) => {
+                      setValue(spec.key, e.target.value)
+                    }}
                     placeholder={spec.placeholder}
                     value={value}
                   />
                 )}
                 {spec.type === "select" && (
                   <Select
-                    onValueChange={(v) => setValue(spec.key, v ?? "")}
+                    onValueChange={(v) => {
+                      setValue(spec.key, v ?? "")
+                    }}
                     value={value}
                   >
                     <SelectTrigger className="w-full" id={id}>

@@ -103,7 +103,9 @@ function CreateVolume() {
             name="availabilityZone"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -131,7 +133,9 @@ function CreateVolume() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => await navigate({ to: "/ec2/describe-volumes" })}
+          onCancel={async () => {
+            await navigate({ to: "/ec2/describe-volumes" })
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Volume"
         />

@@ -59,7 +59,9 @@ export function CreateClusterDialog({
           </FieldTitle>
           <Input
             id="clusterName"
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value)
+            }}
             placeholder="my-cluster"
             value={name}
           />

@@ -110,7 +110,9 @@ function ImageDetail() {
             <div className="flex items-center gap-2">
               {isAdmin && !isSystemImage && (
                 <Button
-                  onClick={() => setShowPromoteDialog(true)}
+                  onClick={() => {
+                    setShowPromoteDialog(true)
+                  }}
                   size="sm"
                   variant="outline"
                 >
@@ -119,7 +121,9 @@ function ImageDetail() {
                 </Button>
               )}
               <Button
-                onClick={() => setShowDeregisterDialog(true)}
+                onClick={() => {
+                  setShowDeregisterDialog(true)
+                }}
                 size="sm"
                 variant="destructive"
               >

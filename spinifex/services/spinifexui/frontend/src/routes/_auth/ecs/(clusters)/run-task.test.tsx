@@ -84,7 +84,9 @@ describe("run-task route", () => {
     await user.click(await screen.findByRole("option", { name: "app:1" }))
     await user.click(screen.getByRole("button", { name: "Run Task" }))
 
-    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       cluster: string
       taskDefinition: string
@@ -127,7 +129,9 @@ describe("run-task route", () => {
     await user.click(screen.getByText(/subnet-aaa/))
     await user.click(screen.getByRole("button", { name: "Run Task" }))
 
-    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       networkConfiguration?: {
         awsvpcConfiguration?: { subnets?: string[] }

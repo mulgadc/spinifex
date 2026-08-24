@@ -43,9 +43,9 @@ export function DBInstancesListPage() {
       <PageHeading
         actions={
           <Button
-            onClick={async () =>
+            onClick={async () => {
               await navigate({ to: "/rds/create-db-instance" })
-            }
+            }}
           >
             Create Database
           </Button>
@@ -87,17 +87,19 @@ export function DBInstancesListPage() {
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
                     key={id}
-                    onClick={async () =>
+                    onClick={async () => {
                       await navigate({
                         to: "/rds/describe-db-instances/$id",
                         params: { id },
                       })
-                    }
+                    }}
                   >
                     <td className="px-4 py-2 font-medium">
                       <Link
                         className="text-primary hover:underline"
-                        onClick={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                        }}
                         params={{ id }}
                         to="/rds/describe-db-instances/$id"
                       >
@@ -183,7 +185,11 @@ export function DBInstancesListPage() {
         <DeleteDBInstanceDialog
           dbInstanceIdentifier={deleteTarget.identifier}
           deletionProtection={deleteTarget.deletionProtection}
-          onOpenChange={(open) => !open && setDeleteTarget(null)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDeleteTarget(null)
+            }
+          }}
           open={true}
         />
       )}

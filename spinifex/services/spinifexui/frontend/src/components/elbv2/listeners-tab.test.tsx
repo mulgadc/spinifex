@@ -151,9 +151,9 @@ describe("ListenersTab", () => {
     expect(screen.getByText(/delete listener http:80/i)).toBeInTheDocument()
     const before = mockSend.mock.calls.length
     await user.click(screen.getByRole("button", { name: "Delete" }))
-    await waitFor(() =>
-      expect(mockSend.mock.calls.length).toBeGreaterThan(before),
-    )
+    await waitFor(() => {
+      expect(mockSend.mock.calls.length).toBeGreaterThan(before)
+    })
     const call = mockSend.mock.calls[before]?.[0]
     expect(call.input).toStrictEqual({ ListenerArn: "arn:listener/1" })
   })
@@ -243,9 +243,9 @@ describe("ListenersTab", () => {
     await user.type(portInput, "8080")
     const before = mockSend.mock.calls.length
     await user.click(screen.getByRole("button", { name: /save changes/i }))
-    await waitFor(() =>
-      expect(mockSend.mock.calls.length).toBeGreaterThan(before),
-    )
+    await waitFor(() => {
+      expect(mockSend.mock.calls.length).toBeGreaterThan(before)
+    })
     const call = mockSend.mock.calls[before]?.[0]
     expect(call.input).toStrictEqual({
       ListenerArn: "arn:listener/1",
@@ -286,9 +286,9 @@ describe("ListenersTab", () => {
     await user.click(await screen.findByText(/tg-a/))
     const before = mockSend.mock.calls.length
     await user.click(screen.getByRole("button", { name: /^add listener$/i }))
-    await waitFor(() =>
-      expect(mockSend.mock.calls.length).toBeGreaterThan(before),
-    )
+    await waitFor(() => {
+      expect(mockSend.mock.calls.length).toBeGreaterThan(before)
+    })
     const call = mockSend.mock.calls[before]?.[0]
     expect(call.input).toStrictEqual({
       LoadBalancerArn: LB_ARN,
@@ -360,9 +360,9 @@ describe("ListenersTab", () => {
 
     const before = mockSend.mock.calls.length
     await user.click(screen.getByRole("button", { name: /save changes/i }))
-    await waitFor(() =>
-      expect(mockSend.mock.calls.length).toBeGreaterThan(before),
-    )
+    await waitFor(() => {
+      expect(mockSend.mock.calls.length).toBeGreaterThan(before)
+    })
     const call = mockSend.mock.calls[before]?.[0]
     expect(call.input).toStrictEqual({
       ListenerArn: "arn:listener/1",

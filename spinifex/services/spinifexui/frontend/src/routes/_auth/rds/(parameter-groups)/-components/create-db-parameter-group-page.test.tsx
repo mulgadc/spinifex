@@ -81,7 +81,9 @@ describe("CreateDBParameterGroupPage", () => {
       screen.getByRole("button", { name: "Create Parameter Group" }),
     )
 
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBParameterGroupName).toBe("orders-pg")
     expect(input.DBParameterGroupFamily).toBe("postgres18")

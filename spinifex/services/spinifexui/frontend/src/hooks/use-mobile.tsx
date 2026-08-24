@@ -7,7 +7,9 @@ const mql = window.matchMedia(MEDIA_QUERY)
 // oxlint-disable-next-line promise/prefer-await-to-callbacks -- useSyncExternalStore subscriber API requires a callback
 function subscribe(callback: () => void): () => void {
   mql.addEventListener("change", callback)
-  return () => mql.removeEventListener("change", callback)
+  return () => {
+    mql.removeEventListener("change", callback)
+  }
 }
 
 function getSnapshot(): boolean {

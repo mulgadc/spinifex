@@ -82,7 +82,9 @@ function NatGatewayDetail() {
             <div className="flex items-center gap-2">
               <Button
                 disabled={deleteMutation.isPending}
-                onClick={() => setShowDeleteDialog(true)}
+                onClick={() => {
+                  setShowDeleteDialog(true)
+                }}
                 size="sm"
                 variant="destructive"
               >

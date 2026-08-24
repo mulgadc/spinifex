@@ -75,7 +75,9 @@ describe("DeleteDBInstanceDialog", () => {
   it("sends a FinalDBSnapshotIdentifier on the default path", async () => {
     render()
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.SkipFinalSnapshot).toBeFalsy()
     expect(input.FinalDBSnapshotIdentifier).toMatch(/^orders-db-final-/)
@@ -105,7 +107,9 @@ describe("DeleteDBInstanceDialog", () => {
     })
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
 
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.SkipFinalSnapshot).toBeTruthy()
     expect(input.FinalDBSnapshotIdentifier).toBeUndefined()

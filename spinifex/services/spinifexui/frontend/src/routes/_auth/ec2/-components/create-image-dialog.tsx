@@ -76,7 +76,9 @@ export function CreateImageDialog({
               </FieldTitle>
               <Input
                 id="imageName"
-                onChange={(e) => setImageName(e.target.value)}
+                onChange={(e) => {
+                  setImageName(e.target.value)
+                }}
                 placeholder="my-image"
                 value={imageName}
               />
@@ -87,7 +89,9 @@ export function CreateImageDialog({
               </FieldTitle>
               <Textarea
                 id="imageDescription"
-                onChange={(e) => setImageDescription(e.target.value)}
+                onChange={(e) => {
+                  setImageDescription(e.target.value)
+                }}
                 placeholder="Optional description"
                 rows={2}
                 value={imageDescription}

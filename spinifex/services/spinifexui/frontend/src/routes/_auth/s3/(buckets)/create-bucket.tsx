@@ -83,7 +83,9 @@ function CreateBucket() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => await navigate({ to: "/s3/ls" })}
+          onCancel={async () => {
+            await navigate({ to: "/s3/ls" })
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Bucket"
         />

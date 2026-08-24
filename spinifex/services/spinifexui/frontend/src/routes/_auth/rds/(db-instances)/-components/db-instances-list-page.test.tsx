@@ -93,7 +93,9 @@ describe("DBInstancesListPage", () => {
   it("sends StopDBInstance when Stop is clicked", async () => {
     renderWithClient(<DBInstancesListPage />, seed([AVAILABLE_INSTANCE]))
     fireEvent.click(screen.getByRole("button", { name: "Stop" }))
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBInstanceIdentifier: "orders-db",
     })

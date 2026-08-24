@@ -106,7 +106,9 @@ export function CreateKeyPairPage() {
             name="keyType"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value}
               >
                 <SelectTrigger
@@ -136,9 +138,9 @@ export function CreateKeyPairPage() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-key-pairs" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Key Pair"
         />

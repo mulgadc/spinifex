@@ -15,8 +15,9 @@ function Harness({ initial }: { initial: string }) {
   )
 }
 
-const blurAway = async (user: ReturnType<typeof userEvent.setup>) =>
+const blurAway = async (user: ReturnType<typeof userEvent.setup>) => {
   await user.click(screen.getByRole("button", { name: "elsewhere" }))
+}
 
 describe("JsonEditor", () => {
   it("pretty-prints valid JSON on blur", async () => {

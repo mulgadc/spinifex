@@ -123,17 +123,19 @@ export function CreateClusterPage() {
     setValue("publicAccessCidrs", next, { shouldValidate: true })
   }
 
-  const addCidr = () =>
+  const addCidr = () => {
     setValue("publicAccessCidrs", [...publicCidrs, ""], {
       shouldValidate: true,
     })
+  }
 
-  const removeCidr = (index: number) =>
+  const removeCidr = (index: number) => {
     setValue(
       "publicAccessCidrs",
       publicCidrs.filter((_, i) => i !== index),
       { shouldValidate: true },
     )
+  }
 
   const clusterName = useWatch({ control, name: "name" })
 
@@ -247,7 +249,9 @@ export function CreateClusterPage() {
               )}
             />
             <Button
-              onClick={() => setIsRoleDialogOpen(true)}
+              onClick={() => {
+                setIsRoleDialogOpen(true)
+              }}
               type="button"
               variant="outline"
             >
@@ -273,7 +277,9 @@ export function CreateClusterPage() {
             name="vpcId"
             render={({ field }) => (
               <Select
-                onValueChange={(v) => handleVpcChange(v)}
+                onValueChange={(v) => {
+                  handleVpcChange(v)
+                }}
                 value={field.value}
               >
                 <SelectTrigger
@@ -312,7 +318,9 @@ export function CreateClusterPage() {
                   <input
                     aria-label={`Subnet ${subnetLabel(subnet)}`}
                     checked={selectedSubnetSet.has(subnet.SubnetId ?? "")}
-                    onChange={() => toggleSubnet(subnet.SubnetId ?? "")}
+                    onChange={() => {
+                      toggleSubnet(subnet.SubnetId ?? "")
+                    }}
                     type="checkbox"
                   />
                   <span className="font-mono">{subnetLabel(subnet)}</span>
@@ -338,7 +346,9 @@ export function CreateClusterPage() {
                 <input
                   aria-label="Enable public access"
                   checked={field.value}
-                  onChange={(e) => field.onChange(e.target.checked)}
+                  onChange={(e) => {
+                    field.onChange(e.target.checked)
+                  }}
                   type="checkbox"
                 />
                 Public
@@ -353,7 +363,9 @@ export function CreateClusterPage() {
                 <input
                   aria-label="Enable private access"
                   checked={field.value}
-                  onChange={(e) => field.onChange(e.target.checked)}
+                  onChange={(e) => {
+                    field.onChange(e.target.checked)
+                  }}
                   type="checkbox"
                 />
                 Private
@@ -373,12 +385,16 @@ export function CreateClusterPage() {
                   <Input
                     aria-label={`Public access CIDR ${index + 1}`}
                     className="font-mono"
-                    onChange={(e) => updateCidr(index, e.target.value)}
+                    onChange={(e) => {
+                      updateCidr(index, e.target.value)
+                    }}
                     placeholder="203.0.113.0/24"
                     value={cidr}
                   />
                   <Button
-                    onClick={() => removeCidr(index)}
+                    onClick={() => {
+                      removeCidr(index)
+                    }}
                     size="sm"
                     type="button"
                     variant="ghost"
@@ -414,7 +430,9 @@ export function CreateClusterPage() {
                 <input
                   aria-label="Grant the cluster creator admin permissions"
                   checked={field.value}
-                  onChange={(e) => field.onChange(e.target.checked)}
+                  onChange={(e) => {
+                    field.onChange(e.target.checked)
+                  }}
                   type="checkbox"
                 />
                 Grant the cluster creator admin permissions
@@ -426,7 +444,9 @@ export function CreateClusterPage() {
         <FormActions
           isPending={createCluster.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => await navigate({ to: "/eks/list-clusters" })}
+          onCancel={async () => {
+            await navigate({ to: "/eks/list-clusters" })
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Cluster"
         />

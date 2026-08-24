@@ -199,7 +199,9 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
             <div className="flex gap-2">
               <Button
                 disabled={!canStart(status) || startInstance.isPending}
-                onClick={() => startInstance.mutate(dbInstanceIdentifier)}
+                onClick={() => {
+                  startInstance.mutate(dbInstanceIdentifier)
+                }}
                 size="sm"
                 variant="outline"
               >
@@ -207,7 +209,9 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
               </Button>
               <Button
                 disabled={!canStop(status) || stopInstance.isPending}
-                onClick={() => stopInstance.mutate(dbInstanceIdentifier)}
+                onClick={() => {
+                  stopInstance.mutate(dbInstanceIdentifier)
+                }}
                 size="sm"
                 variant="outline"
               >
@@ -215,7 +219,9 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
               </Button>
               <Button
                 disabled={!canReboot(status) || rebootInstance.isPending}
-                onClick={() => rebootInstance.mutate(dbInstanceIdentifier)}
+                onClick={() => {
+                  rebootInstance.mutate(dbInstanceIdentifier)
+                }}
                 size="sm"
                 variant="outline"
               >
@@ -223,7 +229,9 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
               </Button>
               <Button
                 disabled={!canSnapshot(status)}
-                onClick={() => setShowSnapshot(true)}
+                onClick={() => {
+                  setShowSnapshot(true)
+                }}
                 size="sm"
                 variant="outline"
               >
@@ -231,7 +239,9 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                 Take Snapshot
               </Button>
               <Button
-                onClick={() => setShowModify(true)}
+                onClick={() => {
+                  setShowModify(true)
+                }}
                 size="sm"
                 variant="outline"
               >
@@ -240,7 +250,9 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
               </Button>
               <Button
                 disabled={!canDelete(status)}
-                onClick={() => setShowDelete(true)}
+                onClick={() => {
+                  setShowDelete(true)
+                }}
                 size="sm"
                 variant="destructive"
               >
@@ -504,12 +516,12 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                                   disabled={
                                     !canRestoreSnapshot(snapshot.Status)
                                   }
-                                  onClick={async () =>
+                                  onClick={async () => {
                                     await navigate({
                                       to: "/rds/restore-db-instance-from-db-snapshot/$id",
                                       params: { id: snapshotId },
                                     })
-                                  }
+                                  }}
                                   size="sm"
                                   variant="outline"
                                 >
@@ -522,9 +534,9 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                                       snapshot.SnapshotType,
                                     )
                                   }
-                                  onClick={() =>
+                                  onClick={() => {
                                     setDeleteSnapshotTarget(snapshotId)
-                                  }
+                                  }}
                                   size="sm"
                                   variant="destructive"
                                 >
@@ -583,7 +595,11 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
       {deleteSnapshotTarget && (
         <DeleteDBSnapshotDialog
           dbSnapshotIdentifier={deleteSnapshotTarget}
-          onOpenChange={(open) => !open && setDeleteSnapshotTarget(null)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDeleteSnapshotTarget(null)
+            }
+          }}
           open={true}
         />
       )}
@@ -591,9 +607,9 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
       <DeleteDBInstanceDialog
         dbInstanceIdentifier={dbInstanceIdentifier}
         deletionProtection={instance.DeletionProtection ?? false}
-        onDeleted={async () =>
+        onDeleted={async () => {
           await navigate({ to: "/rds/describe-db-instances" })
-        }
+        }}
         onModify={() => {
           setShowDelete(false)
           setShowModify(true)

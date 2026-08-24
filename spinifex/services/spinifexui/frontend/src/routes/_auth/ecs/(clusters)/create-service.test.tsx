@@ -89,7 +89,9 @@ describe("create-service route", () => {
     await user.click(await screen.findByRole("option", { name: "app:1" }))
     await user.click(screen.getByRole("button", { name: "Create Service" }))
 
-    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       cluster: string
       serviceName: string

@@ -53,7 +53,6 @@ export default defineConfig({
       "error",
     "react-you-might-not-need-an-effect/no-pass-data-to-parent": "error",
     "react-you-might-not-need-an-effect/no-pass-live-state-to-parent": "error",
-    "typescript/no-confusing-void-expression": "off",
     "typescript/no-floating-promises": [
       "error",
       {

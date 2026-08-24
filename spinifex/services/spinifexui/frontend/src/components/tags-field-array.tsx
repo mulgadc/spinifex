@@ -64,7 +64,9 @@ export function TagsFieldArray<T extends FieldValues>({
             />
             <Button
               aria-label={`Remove tag ${index + 1}`}
-              onClick={() => remove(index)}
+              onClick={() => {
+                remove(index)
+              }}
               size="icon"
               type="button"
               variant="ghost"
@@ -74,10 +76,10 @@ export function TagsFieldArray<T extends FieldValues>({
           </div>
         ))}
         <Button
-          onClick={() =>
+          onClick={() => {
             // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- every caller's tags array is this row shape
             append({ key: "", value: "" } as FieldArray<T, ArrayPath<T>>)
-          }
+          }}
           size="sm"
           type="button"
           variant="outline"

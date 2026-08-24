@@ -38,7 +38,9 @@ export function SecurityGroupsEditor({
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     )
   }
-  const handleReset = () => setSelected(initial)
+  const handleReset = () => {
+    setSelected(initial)
+  }
 
   const dirty = !sameSet(selected, initial)
   // AWS requires at least one security group on an ALB.
@@ -86,7 +88,9 @@ export function SecurityGroupsEditor({
                 <input
                   aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
                   checked={selectedIds.has(sg.GroupId ?? "")}
-                  onChange={() => toggle(sg.GroupId ?? "")}
+                  onChange={() => {
+                    toggle(sg.GroupId ?? "")
+                  }}
                   type="checkbox"
                 />
                 <span className="font-mono">

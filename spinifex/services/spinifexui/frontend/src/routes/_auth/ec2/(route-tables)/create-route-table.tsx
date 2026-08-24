@@ -106,7 +106,9 @@ function CreateRouteTable() {
             name="vpcId"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -137,9 +139,9 @@ function CreateRouteTable() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-route-tables" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Route Table"
         />

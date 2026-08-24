@@ -98,7 +98,9 @@ describe("AttachedPoliciesPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Attach Policy" }))
     fireEvent.click(screen.getByRole("button", { name: /AvailablePolicy/ }))
 
-    await waitFor(() => expect(send).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       UserName: NAME,
       PolicyArn: AVAILABLE_ARN,
@@ -118,7 +120,9 @@ describe("AttachedPoliciesPanel", () => {
     )
     fireEvent.click(screen.getByRole("button", { name: "Detach" }))
 
-    await waitFor(() => expect(send).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       UserName: NAME,
       PolicyArn: ATTACHED_ARN,
@@ -169,7 +173,9 @@ describe("AttachedPoliciesPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Attach Policy" }))
     fireEvent.click(screen.getByRole("button", { name: /AvailablePolicy/ }))
 
-    await waitFor(() => expect(send).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       RoleName: NAME,
       PolicyArn: AVAILABLE_ARN,
@@ -184,7 +190,9 @@ describe("AttachedPoliciesPanel", () => {
     )
     fireEvent.click(screen.getByRole("button", { name: "Detach" }))
 
-    await waitFor(() => expect(send).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       GroupName: NAME,
       PolicyArn: ATTACHED_ARN,

@@ -85,7 +85,9 @@ const LBS: LoadBalancer[] = [
 ]
 
 describe("describe-load-balancers list route", () => {
-  beforeEach(() => sdk.reset())
+  beforeEach(() => {
+    sdk.reset()
+  })
   afterEach(() => vi.clearAllMocks())
 
   it("renders load-balancer rows with resolved fields", () => {

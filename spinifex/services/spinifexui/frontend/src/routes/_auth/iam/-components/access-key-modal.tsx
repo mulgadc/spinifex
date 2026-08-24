@@ -54,11 +54,11 @@ export function AccessKeyModal({
 
           <Button
             className="w-full"
-            onClick={async () =>
+            onClick={async () => {
               await copy(
                 `Access Key ID: ${accessKeyId}\nSecret Access Key: ${secretAccessKey}`,
               )
-            }
+            }}
             type="button"
             variant="outline"
           >

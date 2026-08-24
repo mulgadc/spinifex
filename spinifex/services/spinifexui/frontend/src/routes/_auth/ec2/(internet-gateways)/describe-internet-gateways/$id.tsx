@@ -126,7 +126,9 @@ function InternetGatewayDetail() {
           actions={
             <Button
               disabled={isAttached || deleteMutation.isPending}
-              onClick={() => setShowDeleteDialog(true)}
+              onClick={() => {
+                setShowDeleteDialog(true)
+              }}
               size="sm"
               variant="destructive"
             >
@@ -166,9 +168,9 @@ function InternetGatewayDetail() {
                 </Link>
                 <Button
                   disabled={detachMutation.isPending}
-                  onClick={async () =>
+                  onClick={async () => {
                     await handleDetach(attachment.VpcId ?? "")
-                  }
+                  }}
                   size="sm"
                   variant="outline"
                 >
@@ -179,7 +181,9 @@ function InternetGatewayDetail() {
               <div className="flex items-end gap-2">
                 <div className="flex-1">
                   <Select
-                    onValueChange={(value) => setSelectedVpcId(value ?? "")}
+                    onValueChange={(value) => {
+                      setSelectedVpcId(value ?? "")
+                    }}
                     value={selectedVpcId}
                   >
                     <SelectTrigger className="w-full">

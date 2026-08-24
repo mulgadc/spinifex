@@ -167,7 +167,9 @@ function InstanceDetail() {
               )}
               {(isRunning || isStopped) && (
                 <Button
-                  onClick={() => setShowCreateImage(true)}
+                  onClick={() => {
+                    setShowCreateImage(true)
+                  }}
                   size="sm"
                   variant="outline"
                 >

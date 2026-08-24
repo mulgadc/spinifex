@@ -66,7 +66,9 @@ export function GPUInventoryCard({ nodes }: { nodes: NodeInfo[] }) {
                         aria-label={
                           isExpanded ? "Collapse slices" : "Expand slices"
                         }
-                        onClick={() => toggle(key)}
+                        onClick={() => {
+                          toggle(key)
+                        }}
                         type="button"
                       >
                         {isExpanded ? (

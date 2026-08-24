@@ -444,9 +444,18 @@ func TestScheduler_AcquireLease_SingleLeader(t *testing.T) {
 	svc := NewService(nc, testRegion, "")
 	a := NewScheduler(nc, svc, "holder-a")
 	b := NewScheduler(nc, svc, "holder-b")
-	assert.True(t, a.acquireOrRefresh(t.Context()))
-	assert.False(t, b.acquireOrRefresh(t.Context()))
-	assert.True(t, a.acquireOrRefresh(t.Context())) // refresh keeps leadership
+	require.True(t, a.lease.TryAcquire(t.Context()))
+	assert.False(t, b.lease.TryAcquire(t.Context()))
+	assert.True(t, a.lease.TryAcquire(t.Context()), "a holder re-attempting keeps leadership")
+}
+
+func TestScheduler_BusSubscribeFailureStandsDown(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc := NewService(nc, testRegion, "")
+	a := NewScheduler(nc, svc, "holder-a")
+	a.nc.Close()
+	require.False(t, a.lease.TryAcquire(t.Context()))
+	assert.False(t, a.lease.Held())
 }
 
 // --- GPU placement dimension (Epic C2) ---

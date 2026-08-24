@@ -1,6 +1,10 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useForm, useWatch } from "react-hook-form"
+import {
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -36,8 +40,6 @@ function CreateUser() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateUserFormData) => {
     await createMutation.mutateAsync(data)
@@ -75,7 +77,7 @@ function CreateUser() {
           <FieldError errors={[errors.path]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateUserCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreateUserCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
@@ -90,12 +92,10 @@ function CreateUser() {
 }
 
 function buildCreateUserCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateUserFormData>,
 ): CliCommand[] {
-  const rawUserName = watch("userName")
-  const userName = typeof rawUserName === "string" ? rawUserName : ""
-  const rawPath = watch("path")
-  const path = typeof rawPath === "string" ? rawPath : ""
+  const userName = values.userName ?? ""
+  const path = values.path ?? ""
 
   const parts = [
     { type: "bin" as const, value: "AWS_PROFILE=spinifex aws iam create-user" },

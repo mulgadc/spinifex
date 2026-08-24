@@ -1,7 +1,12 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -51,8 +56,6 @@ export function CreateKeyPairPage() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateKeyPairData) => {
     const response = await createMutation.mutateAsync(data)
@@ -127,7 +130,7 @@ export function CreateKeyPairPage() {
           <FieldError errors={[errors.keyType]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateKeyPairCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreateKeyPairCommands(values)} />
 
         {/* Actions */}
         <FormActions
@@ -154,11 +157,10 @@ export function CreateKeyPairPage() {
 }
 
 function buildCreateKeyPairCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateKeyPairData>,
 ): CliCommand[] {
-  const rawKeyName = watch("keyName")
-  const keyName = typeof rawKeyName === "string" ? rawKeyName : ""
-  const rawKeyType = watch("keyType")
+  const keyName = values.keyName ?? ""
+  const rawKeyType = values.keyType
   const keyType = typeof rawKeyType === "string" ? rawKeyType : "rsa"
 
   return [

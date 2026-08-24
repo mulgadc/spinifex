@@ -1,7 +1,12 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  useForm,
+  type UseFormWatch,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -398,20 +403,16 @@ function CreateVpc() {
 }
 
 function buildCreateVpcCommands(
-  watch: (name?: string) => unknown,
+  watch: UseFormWatch<CreateVpcWizardFormData>,
   subnetCidrs: {
     publicSubnets: { cidr: string }[]
     privateSubnets: { cidr: string }[]
   },
 ): CliCommand[] {
-  const rawMode = watch("mode")
-  const mode = typeof rawMode === "string" ? rawMode : ""
-  const rawCidr = watch("cidrBlock")
-  const cidr = typeof rawCidr === "string" ? rawCidr : ""
-  const rawTenancy = watch("tenancy")
-  const tenancy = typeof rawTenancy === "string" ? rawTenancy : ""
-  const rawNat = watch("natGateway")
-  const natGateway = typeof rawNat === "string" ? rawNat : ""
+  const mode = watch("mode")
+  const cidr = watch("cidrBlock")
+  const tenancy = watch("tenancy")
+  const natGateway = watch("natGateway")
 
   if (mode === "vpc-only") {
     const parts: CommandPart[] = [

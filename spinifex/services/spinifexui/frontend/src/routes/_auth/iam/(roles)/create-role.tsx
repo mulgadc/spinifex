@@ -1,6 +1,11 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -44,8 +49,6 @@ function CreateRole() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateRoleFormData) => {
     await createMutation.mutateAsync(data)
@@ -111,7 +114,7 @@ function CreateRole() {
           <FieldError errors={[errors.assumeRolePolicyDocument]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateRoleCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreateRoleCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
@@ -126,14 +129,11 @@ function CreateRole() {
 }
 
 function buildCreateRoleCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateRoleFormData>,
 ): CliCommand[] {
-  const rawName = watch("roleName")
-  const name = typeof rawName === "string" ? rawName : ""
-  const rawDesc = watch("description")
-  const desc = typeof rawDesc === "string" ? rawDesc : ""
-  const rawDoc = watch("assumeRolePolicyDocument")
-  const doc = typeof rawDoc === "string" ? rawDoc : ""
+  const name = values.roleName ?? ""
+  const desc = values.description ?? ""
+  const doc = values.assumeRolePolicyDocument ?? ""
 
   const parts = [
     {

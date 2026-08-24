@@ -6,6 +6,8 @@ vi.mock("@/lib/awsClient", () => ({
   getRdsClient: () => ({ send: mockSend }),
 }))
 
+import { callQueryFn } from "@/test/query"
+
 import {
   rdsAutomatedBackupsQueryOptions,
   rdsDBInstanceQueryOptions,
@@ -148,25 +150,17 @@ describe("rds query keys", () => {
   })
 })
 
-type QueryFnWithSignal = (ctx: { signal: AbortSignal }) => Promise<unknown>
-
-async function callQueryFn(queryFn: unknown): Promise<unknown> {
-  return await (queryFn as QueryFnWithSignal)({
-    signal: new AbortController().signal,
-  })
-}
-
 describe("rds queries send the right command", () => {
   it("dbInstances list sends an unfiltered describe", async () => {
     mockSend.mockResolvedValueOnce({ DBInstances: [] })
-    await callQueryFn(rdsDBInstancesQueryOptions.queryFn)
+    await callQueryFn(rdsDBInstancesQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("dbInstance detail filters by identifier", async () => {
     mockSend.mockResolvedValueOnce({ DBInstances: [] })
-    await callQueryFn(rdsDBInstanceQueryOptions("orders-db").queryFn)
+    await callQueryFn(rdsDBInstanceQueryOptions("orders-db"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBInstanceIdentifier: "orders-db",
     })
@@ -174,7 +168,7 @@ describe("rds queries send the right command", () => {
 
   it("events asks for the whole 14-day ring, not the default hour", async () => {
     mockSend.mockResolvedValueOnce({ Events: [] })
-    await callQueryFn(rdsEventsQueryOptions("orders-db").queryFn)
+    await callQueryFn(rdsEventsQueryOptions("orders-db"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       SourceIdentifier: "orders-db",
       SourceType: "db-instance",
@@ -184,7 +178,7 @@ describe("rds queries send the right command", () => {
 
   it("tags sends the resource name", async () => {
     mockSend.mockResolvedValueOnce({ TagList: [] })
-    await callQueryFn(rdsTagsQueryOptions("arn:db").queryFn)
+    await callQueryFn(rdsTagsQueryOptions("arn:db"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       ResourceName: "arn:db",
     })
@@ -192,7 +186,7 @@ describe("rds queries send the right command", () => {
 
   it("orderable options filter by engine", async () => {
     mockSend.mockResolvedValueOnce({ OrderableDBInstanceOptions: [] })
-    await callQueryFn(rdsOrderableOptionsQueryOptions("mariadb").queryFn)
+    await callQueryFn(rdsOrderableOptionsQueryOptions("mariadb"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       Engine: "mariadb",
     })
@@ -200,18 +194,18 @@ describe("rds queries send the right command", () => {
 
   it("subnet groups and parameter groups send unfiltered describes", async () => {
     mockSend.mockResolvedValueOnce({ DBSubnetGroups: [] })
-    await callQueryFn(rdsSubnetGroupsQueryOptions.queryFn)
+    await callQueryFn(rdsSubnetGroupsQueryOptions)
     mockSend.mockResolvedValueOnce({ DBParameterGroups: [] })
-    await callQueryFn(rdsParameterGroupsQueryOptions.queryFn)
+    await callQueryFn(rdsParameterGroupsQueryOptions)
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
     expect(mockSend.mock.calls[1]?.[0].input).toStrictEqual({})
   })
 
   it("the single group describes filter by name", async () => {
     mockSend.mockResolvedValueOnce({ DBSubnetGroups: [] })
-    await callQueryFn(rdsSubnetGroupQueryOptions("orders-subnets").queryFn)
+    await callQueryFn(rdsSubnetGroupQueryOptions("orders-subnets"))
     mockSend.mockResolvedValueOnce({ DBParameterGroups: [] })
-    await callQueryFn(rdsParameterGroupQueryOptions("orders-pg").queryFn)
+    await callQueryFn(rdsParameterGroupQueryOptions("orders-pg"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBSubnetGroupName: "orders-subnets",
     })
@@ -222,7 +216,7 @@ describe("rds queries send the right command", () => {
 
   it("snapshot events ask the db-snapshot ring", async () => {
     mockSend.mockResolvedValueOnce({ Events: [] })
-    await callQueryFn(rdsSnapshotEventsQueryOptions("orders-snap").queryFn)
+    await callQueryFn(rdsSnapshotEventsQueryOptions("orders-snap"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       SourceIdentifier: "orders-snap",
       SourceType: "db-snapshot",
@@ -232,11 +226,11 @@ describe("rds queries send the right command", () => {
 
   it("the snapshot describes filter by snapshot and by instance", async () => {
     mockSend.mockResolvedValueOnce({ DBSnapshots: [] })
-    await callQueryFn(rdsDBSnapshotsQueryOptions.queryFn)
+    await callQueryFn(rdsDBSnapshotsQueryOptions)
     mockSend.mockResolvedValueOnce({ DBSnapshots: [] })
-    await callQueryFn(rdsDBSnapshotQueryOptions("orders-snap").queryFn)
+    await callQueryFn(rdsDBSnapshotQueryOptions("orders-snap"))
     mockSend.mockResolvedValueOnce({ DBSnapshots: [] })
-    await callQueryFn(rdsInstanceDBSnapshotsQueryOptions("orders-db").queryFn)
+    await callQueryFn(rdsInstanceDBSnapshotsQueryOptions("orders-db"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
     expect(mockSend.mock.calls[1]?.[0].input).toStrictEqual({
       DBSnapshotIdentifier: "orders-snap",
@@ -248,7 +242,7 @@ describe("rds queries send the right command", () => {
 
   it("automated backups filter by instance", async () => {
     mockSend.mockResolvedValueOnce({ DBInstanceAutomatedBackups: [] })
-    await callQueryFn(rdsAutomatedBackupsQueryOptions("orders-db").queryFn)
+    await callQueryFn(rdsAutomatedBackupsQueryOptions("orders-db"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBInstanceIdentifier: "orders-db",
     })
@@ -258,7 +252,7 @@ describe("rds queries send the right command", () => {
   // set is one round trip and the split is a client-side filter.
   it("parameters are fetched unfiltered by source", async () => {
     mockSend.mockResolvedValueOnce({ Parameters: [] })
-    await callQueryFn(rdsParametersQueryOptions("orders-pg").queryFn)
+    await callQueryFn(rdsParametersQueryOptions("orders-pg"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBParameterGroupName: "orders-pg",
     })

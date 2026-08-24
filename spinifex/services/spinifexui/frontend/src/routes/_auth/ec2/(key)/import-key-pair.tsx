@@ -1,6 +1,10 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useForm, useWatch } from "react-hook-form"
+import {
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -41,8 +45,6 @@ function ImportKeyPair() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: ImportKeyPairData) => {
     await importMutation.mutateAsync(data)
@@ -98,7 +100,7 @@ function ImportKeyPair() {
           <FieldError errors={[errors.publicKeyMaterial]} />
         </Field>
 
-        <CliCommandPanel commands={buildImportKeyPairCommands(cliWatch)} />
+        <CliCommandPanel commands={buildImportKeyPairCommands(values)} />
 
         {/* Actions */}
         <FormActions
@@ -116,10 +118,9 @@ function ImportKeyPair() {
 }
 
 function buildImportKeyPairCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<ImportKeyPairData>,
 ): CliCommand[] {
-  const rawKeyName = watch("keyName")
-  const keyName = typeof rawKeyName === "string" ? rawKeyName : ""
+  const keyName = values.keyName ?? ""
 
   return [
     {

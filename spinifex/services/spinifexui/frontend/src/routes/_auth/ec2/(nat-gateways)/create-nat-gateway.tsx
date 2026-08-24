@@ -1,7 +1,12 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -78,8 +83,6 @@ function CreateNatGateway() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateNatGatewayFormData) => {
     const result = await createMutation.mutateAsync({
@@ -207,7 +210,7 @@ function CreateNatGateway() {
           <FieldError errors={[errors.allocationId]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateNatGatewayCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreateNatGatewayCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
@@ -224,15 +227,13 @@ function CreateNatGateway() {
 }
 
 function buildCreateNatGatewayCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateNatGatewayFormData>,
 ): CliCommand[] {
-  const rawSubnetId = watch("subnetId")
-  const subnetId = typeof rawSubnetId === "string" ? rawSubnetId : ""
-  const rawAllocationId = watch("allocationId")
+  const subnetId = values.subnetId ?? ""
+  const rawAllocationId = values.allocationId
   const allocationId =
     typeof rawAllocationId === "string" ? rawAllocationId : ""
-  const rawName = watch("name")
-  const name = typeof rawName === "string" ? rawName : ""
+  const name = values.name ?? ""
 
   const parts = [
     {

@@ -32,7 +32,7 @@ const { sdk } = vi.hoisted(() => {
   }
   interface Command {
     readonly constructor: { name: string }
-    readonly input: unknown
+    readonly input: object
   }
 
   const state = {

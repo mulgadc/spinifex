@@ -1,6 +1,11 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -56,8 +61,6 @@ function CreatePlacementGroup() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreatePlacementGroupFormData) => {
     const result = await createMutation.mutateAsync(data)
@@ -125,9 +128,7 @@ function CreatePlacementGroup() {
           <FieldError errors={[errors.strategy]} />
         </Field>
 
-        <CliCommandPanel
-          commands={buildCreatePlacementGroupCommands(cliWatch)}
-        />
+        <CliCommandPanel commands={buildCreatePlacementGroupCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
@@ -148,12 +149,10 @@ function shellSingleQuote(value: string): string {
 }
 
 function buildCreatePlacementGroupCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreatePlacementGroupFormData>,
 ): CliCommand[] {
-  const rawName = watch("groupName")
-  const name = typeof rawName === "string" ? rawName : ""
-  const rawStrategy = watch("strategy")
-  const strategy = typeof rawStrategy === "string" ? rawStrategy : ""
+  const name = values.groupName ?? ""
+  const strategy = values.strategy ?? ""
   const nameValue = name ? shellSingleQuote(name) : "<GroupName>"
 
   return [

@@ -1,11 +1,12 @@
 import { defineConfig } from "oxlint"
+import antiSlop from "ultracite/oxlint/anti-slop"
 import core from "ultracite/oxlint/core"
 import react from "ultracite/oxlint/react"
 import tanstack from "ultracite/oxlint/tanstack"
 import vitest from "ultracite/oxlint/vitest"
 
 export default defineConfig({
-  extends: [core, react, vitest, tanstack],
+  extends: [core, react, vitest, tanstack, antiSlop],
   jsPlugins: [
     "@tanstack/eslint-plugin-query",
     "@tanstack/eslint-plugin-router",
@@ -94,9 +95,13 @@ export default defineConfig({
       files: [
         "**/*.{test,spec}.{ts,tsx,js,jsx}",
         "**/__tests__/**/*.{ts,tsx,js,jsx}",
+        "src/test/**/*.{ts,tsx}",
       ],
       plugins: ["vitest"],
       rules: {
+        "anti-slop/no-module-mocking": "off",
+        "anti-slop/no-unknown-returns": "off",
+        "anti-slop/require-safety-comment-for-type-assertion": "off",
         "eslint/prefer-destructuring": "off",
         "eslint/require-await": "off",
         "import/first": "off",

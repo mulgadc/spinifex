@@ -23,6 +23,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -339,7 +340,7 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 		UserName:         userName,
 		UserID:           userID,
 		AccountID:        accountID,
-		ARN:              fmt.Sprintf("arn:aws:iam::%s:user%s%s", accountID, path, userName),
+		ARN:              arn.FormatIAMPath(arn.IAMUser, accountID, path, userName),
 		Path:             path,
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
 		AccessKeys:       []string{},
@@ -836,7 +837,7 @@ func (s *IAMServiceImpl) seedAdminAccount(ctx context.Context, admin *AdminBoots
 	}
 
 	// Create AdministratorAccess policy
-	policyARN := fmt.Sprintf("arn:aws:iam::%s:policy/AdministratorAccess", admin.AccountID)
+	policyARN := arn.FormatIAMPath(arn.IAMPolicy, admin.AccountID, "/", "AdministratorAccess")
 	policyDoc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`
 	policyID, err := generateIAMID("ANPA")
 	if err != nil {
@@ -872,7 +873,7 @@ func (s *IAMServiceImpl) seedAdminAccount(ctx context.Context, admin *AdminBoots
 		UserName:         admin.UserName,
 		UserID:           adminUserID,
 		AccountID:        admin.AccountID,
-		ARN:              fmt.Sprintf("arn:aws:iam::%s:user/%s", admin.AccountID, admin.UserName),
+		ARN:              arn.FormatIAMPath(arn.IAMUser, admin.AccountID, "/", admin.UserName),
 		Path:             "/",
 		CreatedAt:        now,
 		AccessKeys:       []string{admin.AccessKeyID},
@@ -1191,7 +1192,7 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 	policy := Policy{
 		PolicyName:     policyName,
 		PolicyID:       newPolicyID,
-		ARN:            fmt.Sprintf("arn:aws:iam::%s:policy%s%s", accountID, path, policyName),
+		ARN:            arn.FormatIAMPath(arn.IAMPolicy, accountID, path, policyName),
 		Path:           path,
 		Description:    aws.StringValue(input.Description),
 		PolicyDocument: *input.PolicyDocument,

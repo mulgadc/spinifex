@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -49,7 +50,7 @@ func (s *IAMServiceImpl) CreateGroup(accountID string, input *iam.CreateGroupInp
 		GroupName:        groupName,
 		GroupID:          groupID,
 		AccountID:        accountID,
-		ARN:              fmt.Sprintf("arn:aws:iam::%s:group%s%s", accountID, path, groupName),
+		ARN:              arn.FormatIAMPath(arn.IAMGroup, accountID, path, groupName),
 		Path:             path,
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
 		AttachedPolicies: []string{},

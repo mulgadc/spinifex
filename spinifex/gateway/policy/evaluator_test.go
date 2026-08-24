@@ -151,6 +151,22 @@ func TestEvaluate_ResourceScopedStatementsNeedARealARN(t *testing.T) {
 // Resource "*" for the action, and "*" as a pattern matches any ARN value, so
 // handing the evaluator a real ARN cannot turn an Allow into a Deny — not even
 // a malformed one, which bounds a resolver bug to the newly-scoped statements.
+func TestEvaluate_IAMResourceARNs(t *testing.T) {
+	resources := []string{
+		"arn:aws:iam::123456789012:user/alice",
+		"arn:aws:iam::123456789012:role/service-roles/app",
+		"arn:aws:iam::123456789012:policy/team/app",
+		"arn:aws:iam::123456789012:instance-profile/eks/nodes",
+		"arn:aws:iam::123456789012:oidc-provider/issuer.example/id/cluster",
+	}
+	for _, resource := range resources {
+		policies := []handlers_iam.PolicyDocument{doc("Allow", "iam:Delete*", resource)}
+		if got := iampolicy.EvaluateWithKeys("iam:DeleteRole", resource, policies, nil); got != iampolicy.Allow {
+			t.Errorf("IAM scoped policy against %q: got %v, want Allow", resource, got)
+		}
+	}
+}
+
 func TestEvaluate_PassingARealARNCannotWithdrawAccess(t *testing.T) {
 	resources := []string{
 		"*",

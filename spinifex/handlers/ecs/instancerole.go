@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -80,7 +81,7 @@ func (s *Service) ensureECSRole(accountID string) error {
 // ensureECSRolePolicy creates the ecs:* policy (resolving an existing one on a
 // race) and attaches it to the role; an already-attached policy is success.
 func (s *Service) ensureECSRolePolicy(accountID string) error {
-	policyARN := fmt.Sprintf("arn:aws:iam::%s:policy/%s", accountID, ecsInstanceRolePolicyName)
+	policyARN := arn.FormatIAMPath(arn.IAMPolicy, accountID, "/", ecsInstanceRolePolicyName)
 
 	out, err := s.deps.IAM.CreatePolicy(accountID, &iam.CreatePolicyInput{
 		PolicyName:     aws.String(ecsInstanceRolePolicyName),

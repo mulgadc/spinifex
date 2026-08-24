@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -70,7 +71,7 @@ func ProvisionAccount(svc IAMService, accountID, name string) (*ProvisionedAccou
 		return nil, fmt.Errorf("create admin policy: %w", err)
 	}
 
-	policyARN := fmt.Sprintf("arn:aws:iam::%s:policy/%s", accountID, AdminPolicyName)
+	policyARN := arn.FormatIAMPath(arn.IAMPolicy, accountID, "/", AdminPolicyName)
 	if _, err := svc.AttachUserPolicy(accountID, &iam.AttachUserPolicyInput{
 		UserName:  aws.String(AdminUserName),
 		PolicyArn: aws.String(policyARN),

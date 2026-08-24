@@ -2,6 +2,7 @@ package handlers_iam
 
 import (
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 )
 
 // IAMService defines the interface for IAM operations.
@@ -117,6 +118,10 @@ type IAMService interface {
 	// EC2 paths only. Cross-account ARNs are rejected as a defence-in-depth
 	// check; the gateway also enforces this and returns AccessDenied.
 	ResolveInstanceProfile(accountID, nameOrARN string) (*InstanceProfile, error)
+
+	// CanonicalResourceARN resolves a name-addressed IAM object to the ARN
+	// persisted on its record, preserving the object's full path.
+	CanonicalResourceARN(accountID string, kind arn.IAMResourceType, name string) (string, error)
 
 	// Policy evaluation (internal — used by gateway enforcement)
 	GetUserPolicies(accountID, userName string) ([]PolicyDocument, error)

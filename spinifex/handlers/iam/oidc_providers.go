@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/nats-io/nats.go/jetstream"
 
+	resourcearn "github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -45,7 +46,7 @@ func OIDCProviderKey(issuer string) string {
 // OIDCProviderARN returns the arn:aws:iam::{accountID}:oidc-provider/{issuerHostPath} ARN.
 // issuerHostPath is the issuer URL with the https:// scheme stripped.
 func OIDCProviderARN(accountID, issuerHostPath string) string {
-	return fmt.Sprintf("arn:aws:iam::%s:oidc-provider/%s", accountID, issuerHostPath)
+	return resourcearn.FormatIAMResource(resourcearn.IAMOIDCProvider, accountID, issuerHostPath)
 }
 
 // GetOrCreateIAMAccountBucket opens the per-account IAM bucket, creating it on first use.
@@ -63,34 +64,51 @@ type OIDCProviderRecord struct {
 	Tags           []Tag    `json:"tags,omitempty"`
 }
 
-// issuerFromOIDCProviderARN reverses OIDCProviderARN, reconstructing the full https issuer URL.
-func issuerFromOIDCProviderARN(arn string) (string, error) {
-	_, hostPath, ok := strings.Cut(arn, ":oidc-provider/")
+// OIDCProviderHostPathFromARN extracts the provider component accepted by IAM
+// handlers. The account segment is intentionally not trusted by callers.
+func OIDCProviderHostPathFromARN(providerARN string) (string, error) {
+	_, hostPath, ok := strings.Cut(providerARN, ":oidc-provider/")
 	if !ok {
 		return "", errors.New("not an oidc-provider ARN")
 	}
 	if hostPath == "" {
 		return "", errors.New("oidc-provider ARN missing host/path")
 	}
+	return hostPath, nil
+}
+
+// OIDCProviderHostPathFromURL validates an issuer and returns its exact
+// resource component without normalizing host or path text.
+func OIDCProviderHostPathFromURL(raw string) (string, error) {
+	if raw == "" {
+		return "", errors.New("url is required")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse url: %w", err)
+	}
+	if u.Scheme != "https" {
+		return "", fmt.Errorf("url scheme must be https, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", errors.New("url missing host")
+	}
+	return strings.TrimPrefix(raw, "https://"), nil
+}
+
+// issuerFromOIDCProviderARN reverses OIDCProviderARN, reconstructing the full https issuer URL.
+func issuerFromOIDCProviderARN(providerARN string) (string, error) {
+	hostPath, err := OIDCProviderHostPathFromARN(providerARN)
+	if err != nil {
+		return "", err
+	}
 	return "https://" + hostPath, nil
 }
 
 // validateOIDCProviderURL enforces the issuer shape: a parseable https URL with a non-empty host.
 func validateOIDCProviderURL(raw string) error {
-	if raw == "" {
-		return errors.New("url is required")
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("parse url: %w", err)
-	}
-	if u.Scheme != "https" {
-		return fmt.Errorf("url scheme must be https, got %q", u.Scheme)
-	}
-	if u.Host == "" {
-		return errors.New("url missing host")
-	}
-	return nil
+	_, err := OIDCProviderHostPathFromURL(raw)
+	return err
 }
 
 func awsStrings(in []*string) []string {
@@ -135,7 +153,8 @@ func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *ia
 		return nil, fmt.Errorf("store OIDC provider: %w", err)
 	}
 
-	arn := OIDCProviderARN(accountID, strings.TrimPrefix(issuer, "https://"))
+	issuerHostPath, _ := OIDCProviderHostPathFromURL(issuer)
+	arn := OIDCProviderARN(accountID, issuerHostPath)
 	slog.Info("IAM OIDC provider created", "accountID", accountID, "url", issuer, "arn", arn)
 	return &iam.CreateOpenIDConnectProviderOutput{
 		OpenIDConnectProviderArn: aws.String(arn),

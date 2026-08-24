@@ -89,10 +89,17 @@ func (sc *Scheduler) Run(ctx context.Context) {
 	defer reconcileTicker.Stop()
 	defer sweepTicker.Stop()
 
-	go sc.lease.Run(ctx)
+	leaseDone := make(chan struct{})
+	go func() {
+		defer close(leaseDone)
+		sc.lease.Run(ctx)
+	}()
 	for {
 		select {
 		case <-ctx.Done():
+			// The daemon waits on Run, so the lease delete must complete before
+			// it returns, otherwise the next leader waits out the full TTL.
+			<-leaseDone
 			return
 		case <-reaperTicker.C:
 			sc.runIfLeader("instance reap", func() error { return sc.reap(ctx) })

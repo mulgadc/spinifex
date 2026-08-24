@@ -23,6 +23,14 @@ func newTestService(t *testing.T) (*Service, *nats.Conn) {
 	return NewService(nc, testRegion, "internal"), nc
 }
 
+// subCount reads the subscription set under the lock the scheduler writes it
+// with. Test-only, so the production struct keeps no accessor it does not need.
+func (sc *Scheduler) subCount() int {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return len(sc.subs)
+}
+
 func TestService_CreateCluster_Idempotent(t *testing.T) {
 	svc, _ := newTestService(t)
 	out, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
@@ -449,13 +457,56 @@ func TestScheduler_AcquireLease_SingleLeader(t *testing.T) {
 	assert.True(t, a.lease.TryAcquire(t.Context()), "a holder re-attempting keeps leadership")
 }
 
-func TestScheduler_BusSubscribeFailureStandsDown(t *testing.T) {
+// Leadership owns the Layer-2 bus subscriptions. This pins the wiring — gaining
+// the lease subscribes, losing it unsubscribes — which is the regression this
+// conversion could introduce and the one thing kvlease cannot check itself.
+func TestScheduler_LeadershipWiresBusSubscriptions(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc := NewService(nc, testRegion, "")
+	sc := NewScheduler(nc, svc, "holder-a")
+	require.NoError(t, sc.leaseErr)
+
+	require.Zero(t, sc.subCount(), "subscriptions must not exist before election")
+
+	require.True(t, sc.lease.TryAcquire(t.Context()))
+	assert.Equal(t, 3, sc.subCount(), "leader must own the register, heartbeat and task-state subscriptions")
+
+	sc.lease.Release(t.Context())
+	assert.Zero(t, sc.subCount(), "a released leader must drop its subscriptions")
+}
+
+// A node that loses the election must not hold bus subscriptions: both leader
+// and loser writing the same KV records is the split-brain this lease prevents.
+func TestScheduler_LoserHoldsNoSubscriptions(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "")
 	a := NewScheduler(nc, svc, "holder-a")
-	a.nc.Close()
-	require.False(t, a.lease.TryAcquire(t.Context()))
-	assert.False(t, a.lease.Held())
+	b := NewScheduler(nc, svc, "holder-b")
+
+	require.True(t, a.lease.TryAcquire(t.Context()))
+	require.False(t, b.lease.TryAcquire(t.Context()))
+	assert.Zero(t, b.subCount())
+	assert.Equal(t, 3, a.subCount())
+}
+
+func TestScheduler_RunReleasesLeaseOnShutdown(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	svc := NewService(nc, testRegion, "")
+	sc := NewScheduler(nc, svc, "holder-a")
+	require.NoError(t, sc.leaseErr)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); sc.Run(ctx) }()
+	require.Eventually(t, sc.lease.Held, 2*time.Second, 20*time.Millisecond)
+
+	cancel()
+	<-done
+
+	kv, err := InitLeaderBucket(t.Context(), js)
+	require.NoError(t, err)
+	_, err = kv.Get(t.Context(), schedulerLeaderKey)
+	require.Error(t, err, "Run returned with the lease key still present")
 }
 
 // --- GPU placement dimension (Epic C2) ---

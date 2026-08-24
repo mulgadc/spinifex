@@ -487,65 +487,64 @@ function buildCreateVpcCommands(
 
   // Internet gateway (only if public subnets)
   if (subnetCidrs.publicSubnets.length > 0) {
-    commands.push({
-      label: "Create Internet Gateway",
-      parts: [
-        { type: "variable", value: "IGW_ID=" },
-        {
-          type: "bin",
-          value: "$(AWS_PROFILE=spinifex aws ec2 create-internet-gateway",
-        },
-        { type: "flag", value: " \\\n  --query" },
-        { type: "value", value: " 'InternetGateway.InternetGatewayId'" },
-        { type: "flag", value: " --output" },
-        { type: "value", value: " text)" },
-      ],
-    })
-
-    commands.push({
-      label: "Attach Internet Gateway",
-      parts: [
-        {
-          type: "bin",
-          value: "AWS_PROFILE=spinifex aws ec2 attach-internet-gateway",
-        },
-        { type: "flag", value: " \\\n  --internet-gateway-id" },
-        { type: "variable", value: ' "$IGW_ID"' },
-        { type: "flag", value: " \\\n  --vpc-id" },
-        { type: "variable", value: ' "$VPC_ID"' },
-      ],
-    })
-
-    // Route table for public subnets
-    commands.push({
-      label: "Create Route Table",
-      parts: [
-        { type: "variable", value: "RT_ID=" },
-        {
-          type: "bin",
-          value: "$(AWS_PROFILE=spinifex aws ec2 create-route-table",
-        },
-        { type: "flag", value: " \\\n  --vpc-id" },
-        { type: "variable", value: ' "$VPC_ID"' },
-        { type: "flag", value: " \\\n  --query" },
-        { type: "value", value: " 'RouteTable.RouteTableId'" },
-        { type: "flag", value: " --output" },
-        { type: "value", value: " text)" },
-      ],
-    })
-
-    commands.push({
-      label: "Create Default Route",
-      parts: [
-        { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-route" },
-        { type: "flag", value: " \\\n  --route-table-id" },
-        { type: "variable", value: ' "$RT_ID"' },
-        { type: "flag", value: " \\\n  --destination-cidr-block" },
-        { type: "value", value: " 0.0.0.0/0" },
-        { type: "flag", value: " \\\n  --gateway-id" },
-        { type: "variable", value: ' "$IGW_ID"' },
-      ],
-    })
+    commands.push(
+      {
+        label: "Create Internet Gateway",
+        parts: [
+          { type: "variable", value: "IGW_ID=" },
+          {
+            type: "bin",
+            value: "$(AWS_PROFILE=spinifex aws ec2 create-internet-gateway",
+          },
+          { type: "flag", value: " \\\n  --query" },
+          { type: "value", value: " 'InternetGateway.InternetGatewayId'" },
+          { type: "flag", value: " --output" },
+          { type: "value", value: " text)" },
+        ],
+      },
+      {
+        label: "Attach Internet Gateway",
+        parts: [
+          {
+            type: "bin",
+            value: "AWS_PROFILE=spinifex aws ec2 attach-internet-gateway",
+          },
+          { type: "flag", value: " \\\n  --internet-gateway-id" },
+          { type: "variable", value: ' "$IGW_ID"' },
+          { type: "flag", value: " \\\n  --vpc-id" },
+          { type: "variable", value: ' "$VPC_ID"' },
+        ],
+      },
+      // Route table for public subnets
+      {
+        label: "Create Route Table",
+        parts: [
+          { type: "variable", value: "RT_ID=" },
+          {
+            type: "bin",
+            value: "$(AWS_PROFILE=spinifex aws ec2 create-route-table",
+          },
+          { type: "flag", value: " \\\n  --vpc-id" },
+          { type: "variable", value: ' "$VPC_ID"' },
+          { type: "flag", value: " \\\n  --query" },
+          { type: "value", value: " 'RouteTable.RouteTableId'" },
+          { type: "flag", value: " --output" },
+          { type: "value", value: " text)" },
+        ],
+      },
+      {
+        label: "Create Default Route",
+        parts: [
+          { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-route" },
+          { type: "flag", value: " \\\n  --route-table-id" },
+          { type: "variable", value: ' "$RT_ID"' },
+          { type: "flag", value: " \\\n  --destination-cidr-block" },
+          { type: "value", value: " 0.0.0.0/0" },
+          { type: "flag", value: " \\\n  --gateway-id" },
+          { type: "variable", value: ' "$IGW_ID"' },
+        ],
+      },
+    )
 
     // Associate route table with each public subnet
     for (let i = 0; i < subnetCidrs.publicSubnets.length; i++) {
@@ -571,71 +570,70 @@ function buildCreateVpcCommands(
     subnetCidrs.publicSubnets.length > 0 &&
     subnetCidrs.privateSubnets.length > 0
   ) {
-    commands.push({
-      label: "Allocate Elastic IP",
-      parts: [
-        { type: "variable", value: "EIP_ALLOC_ID=" },
-        {
-          type: "bin",
-          value: "$(AWS_PROFILE=spinifex aws ec2 allocate-address",
-        },
-        { type: "flag", value: " \\\n  --domain" },
-        { type: "value", value: " vpc" },
-        { type: "flag", value: " \\\n  --query" },
-        { type: "value", value: " 'AllocationId'" },
-        { type: "flag", value: " --output" },
-        { type: "value", value: " text)" },
-      ],
-    })
-
-    commands.push({
-      label: "Create NAT Gateway",
-      parts: [
-        { type: "variable", value: "NAT_ID=" },
-        {
-          type: "bin",
-          value: "$(AWS_PROFILE=spinifex aws ec2 create-nat-gateway",
-        },
-        { type: "flag", value: " \\\n  --subnet-id" },
-        { type: "variable", value: ' "$PUBLIC_SUBNET_1_ID"' },
-        { type: "flag", value: " \\\n  --allocation-id" },
-        { type: "variable", value: ' "$EIP_ALLOC_ID"' },
-        { type: "flag", value: " \\\n  --query" },
-        { type: "value", value: " 'NatGateway.NatGatewayId'" },
-        { type: "flag", value: " --output" },
-        { type: "value", value: " text)" },
-      ],
-    })
-
-    commands.push({
-      label: "Create Private Route Table",
-      parts: [
-        { type: "variable", value: "PRIV_RT_ID=" },
-        {
-          type: "bin",
-          value: "$(AWS_PROFILE=spinifex aws ec2 create-route-table",
-        },
-        { type: "flag", value: " \\\n  --vpc-id" },
-        { type: "variable", value: ' "$VPC_ID"' },
-        { type: "flag", value: " \\\n  --query" },
-        { type: "value", value: " 'RouteTable.RouteTableId'" },
-        { type: "flag", value: " --output" },
-        { type: "value", value: " text)" },
-      ],
-    })
-
-    commands.push({
-      label: "Create Private Default Route",
-      parts: [
-        { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-route" },
-        { type: "flag", value: " \\\n  --route-table-id" },
-        { type: "variable", value: ' "$PRIV_RT_ID"' },
-        { type: "flag", value: " \\\n  --destination-cidr-block" },
-        { type: "value", value: " 0.0.0.0/0" },
-        { type: "flag", value: " \\\n  --nat-gateway-id" },
-        { type: "variable", value: ' "$NAT_ID"' },
-      ],
-    })
+    commands.push(
+      {
+        label: "Allocate Elastic IP",
+        parts: [
+          { type: "variable", value: "EIP_ALLOC_ID=" },
+          {
+            type: "bin",
+            value: "$(AWS_PROFILE=spinifex aws ec2 allocate-address",
+          },
+          { type: "flag", value: " \\\n  --domain" },
+          { type: "value", value: " vpc" },
+          { type: "flag", value: " \\\n  --query" },
+          { type: "value", value: " 'AllocationId'" },
+          { type: "flag", value: " --output" },
+          { type: "value", value: " text)" },
+        ],
+      },
+      {
+        label: "Create NAT Gateway",
+        parts: [
+          { type: "variable", value: "NAT_ID=" },
+          {
+            type: "bin",
+            value: "$(AWS_PROFILE=spinifex aws ec2 create-nat-gateway",
+          },
+          { type: "flag", value: " \\\n  --subnet-id" },
+          { type: "variable", value: ' "$PUBLIC_SUBNET_1_ID"' },
+          { type: "flag", value: " \\\n  --allocation-id" },
+          { type: "variable", value: ' "$EIP_ALLOC_ID"' },
+          { type: "flag", value: " \\\n  --query" },
+          { type: "value", value: " 'NatGateway.NatGatewayId'" },
+          { type: "flag", value: " --output" },
+          { type: "value", value: " text)" },
+        ],
+      },
+      {
+        label: "Create Private Route Table",
+        parts: [
+          { type: "variable", value: "PRIV_RT_ID=" },
+          {
+            type: "bin",
+            value: "$(AWS_PROFILE=spinifex aws ec2 create-route-table",
+          },
+          { type: "flag", value: " \\\n  --vpc-id" },
+          { type: "variable", value: ' "$VPC_ID"' },
+          { type: "flag", value: " \\\n  --query" },
+          { type: "value", value: " 'RouteTable.RouteTableId'" },
+          { type: "flag", value: " --output" },
+          { type: "value", value: " text)" },
+        ],
+      },
+      {
+        label: "Create Private Default Route",
+        parts: [
+          { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-route" },
+          { type: "flag", value: " \\\n  --route-table-id" },
+          { type: "variable", value: ' "$PRIV_RT_ID"' },
+          { type: "flag", value: " \\\n  --destination-cidr-block" },
+          { type: "value", value: " 0.0.0.0/0" },
+          { type: "flag", value: " \\\n  --nat-gateway-id" },
+          { type: "variable", value: ' "$NAT_ID"' },
+        ],
+      },
+    )
 
     for (let i = 0; i < subnetCidrs.privateSubnets.length; i++) {
       commands.push({

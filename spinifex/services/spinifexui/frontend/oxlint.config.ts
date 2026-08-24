@@ -89,7 +89,6 @@ export default defineConfig({
       "error",
       { cases: { kebabCase: true, camelCase: true } },
     ],
-    "unicorn/prefer-single-call": "off",
   },
   overrides: [
     {

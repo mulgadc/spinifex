@@ -141,11 +141,7 @@ func (sc *Scheduler) acquireOrRefresh(ctx context.Context) bool {
 	if string(entry.Value()) != sc.holder {
 		return false // someone else holds it
 	}
-	// We hold it — refresh to reset the TTL.
-	if _, err := kv.Put(ctx, schedulerLeaderKey, []byte(sc.holder)); err != nil {
-		return false
-	}
-	return true
+	return refreshLease(ctx, kv, schedulerLeaderKey, sc.holder, entry.Revision())
 }
 
 // relinquish drops subscriptions and deletes the lease key on shutdown.
@@ -164,7 +160,7 @@ func (sc *Scheduler) relinquish() {
 		return
 	}
 	if entry, gerr := kv.Get(ctx, schedulerLeaderKey); gerr == nil && string(entry.Value()) == sc.holder {
-		_ = kv.Delete(ctx, schedulerLeaderKey)
+		_ = dropLease(ctx, kv, schedulerLeaderKey, entry.Revision())
 	}
 }
 
@@ -319,4 +315,19 @@ func accountIDFromBucket(bucket string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimPrefix(bucket, KVBucketECSAccountPrefix), true
+}
+
+// refreshLease renews the lease at the revision the caller observed. A revision
+// mismatch means the lease turned over between the read and here, so this node
+// is no longer the holder.
+func refreshLease(ctx context.Context, kv jetstream.KeyValue, key, holder string, rev uint64) bool {
+	_, err := kv.Update(ctx, key, []byte(holder), rev)
+	return err == nil
+}
+
+// releaseLease drops the lease only if it is still held at the revision the
+// caller observed. A mismatch means another node has taken over, so this node
+// must not delete a key it no longer owns.
+func dropLease(ctx context.Context, kv jetstream.KeyValue, key string, rev uint64) error {
+	return kv.Delete(ctx, key, jetstream.LastRevision(rev))
 }

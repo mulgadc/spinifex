@@ -65,7 +65,9 @@ export function DBParameterGroupDetailPage({ dbParameterGroupName }: Props) {
           actions={
             <Button
               disabled={isDefault}
-              onClick={() => setShowDelete(true)}
+              onClick={() => {
+                setShowDelete(true)
+              }}
               size="sm"
               variant="destructive"
             >
@@ -142,9 +144,9 @@ export function DBParameterGroupDetailPage({ dbParameterGroupName }: Props) {
 
       <DeleteDBParameterGroupDialog
         dbParameterGroupName={dbParameterGroupName}
-        onDeleted={async () =>
+        onDeleted={async () => {
           await navigate({ to: "/rds/describe-db-parameter-groups" })
-        }
+        }}
         onOpenChange={setShowDelete}
         open={showDelete}
       />

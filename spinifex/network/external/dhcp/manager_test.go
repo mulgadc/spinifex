@@ -118,10 +118,17 @@ func TestManagerStartReleasesExpiredLeaseUpstream(t *testing.T) {
 
 	require.NoError(t, mgr.Start(context.Background()))
 
+	// The release trails the KV write, so the persisted address alone is not a
+	// completion barrier — both halves of the reconcile have to be waited on.
 	require.Eventually(t, func() bool {
 		entry, getErr := store.Get(t.Context(), "eipalloc-stale")
-		return getErr == nil && entry.Lease.IP.String() == "192.0.2.100"
-	}, time.Second, 10*time.Millisecond, "the re-acquired address must be persisted")
+		return getErr == nil && entry.Lease.IP.String() == "192.0.2.100" && fake.ReleaseCount() == 1
+	}, time.Second, 10*time.Millisecond,
+		"the re-acquired address must be persisted and the superseded one returned upstream")
+
+	entry, err := store.Get(t.Context(), "eipalloc-stale")
+	require.NoError(t, err)
+	assert.Equal(t, "192.0.2.100", entry.Lease.IP.String(), "the KV record must name the new address")
 	assert.Equal(t, 1, fake.ReleaseCount(),
 		"the superseded address must be returned upstream once the re-DORA lands elsewhere")
 }

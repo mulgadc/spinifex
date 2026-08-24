@@ -96,9 +96,9 @@ function CreateInternetGateway() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-internet-gateways" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create"
         />

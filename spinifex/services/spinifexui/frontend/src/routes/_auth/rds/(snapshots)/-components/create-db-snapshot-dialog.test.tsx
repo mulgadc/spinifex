@@ -60,7 +60,9 @@ describe("CreateDBSnapshotDialog opened from an instance", () => {
   it("sends CreateDBSnapshot for that instance", async () => {
     render("orders-db")
     submit()
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.DBInstanceIdentifier).toBe("orders-db")
     expect(input.DBSnapshotIdentifier).toMatch(/^orders-db-snapshot-/)
@@ -80,7 +82,9 @@ describe("CreateDBSnapshotDialog opened from an instance", () => {
     await user.clear(field)
     await user.type(field, "rds:orders-db")
     submit()
-    expect(await screen.findByText(/may not begin with/)).toBeInTheDocument()
+    await expect(
+      screen.findByText(/may not begin with/),
+    ).resolves.toBeInTheDocument()
     expect(mockSend).not.toHaveBeenCalled()
   })
 
@@ -90,7 +94,9 @@ describe("CreateDBSnapshotDialog opened from an instance", () => {
     )
     render("orders-db")
     submit()
-    expect(await screen.findByText(/is not available/)).toBeInTheDocument()
+    await expect(
+      screen.findByText(/is not available/),
+    ).resolves.toBeInTheDocument()
   })
 })
 

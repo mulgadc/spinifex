@@ -109,6 +109,53 @@ func TestLoadIntentFromKV_TransitiveSubnetFilter(t *testing.T) {
 	}
 }
 
+// TestLoadIntentFromKV_PortSuppressDHCP proves loadPorts carries the ENI
+// record's SuppressDHCP flag into the intent PortSpec, so a delete+recreate
+// (drift) of a statically-addressed customer ENI's LSP never re-adds DHCP.
+func TestLoadIntentFromKV_PortSuppressDHCP(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-a": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a", CreatedAt: time.Now(),
+		}),
+	})
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketENIs, map[string][]byte{
+		"acct/eni-static": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+			NetworkInterfaceId: "eni-static", SubnetId: "subnet-a", VpcId: "vpc-a",
+			PrivateIpAddress: "10.0.1.10", MacAddress: "02:00:00:00:00:01",
+			SuppressDHCP: true, CreatedAt: time.Now(),
+		}),
+		"acct/eni-dhcp": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+			NetworkInterfaceId: "eni-dhcp", SubnetId: "subnet-a", VpcId: "vpc-a",
+			PrivateIpAddress: "10.0.1.11", MacAddress: "02:00:00:00:00:02",
+			CreatedAt: time.Now(),
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	staticPort, ok := intent.Ports["eni-static"]
+	if !ok {
+		t.Fatalf("static ENI missing from intent")
+	}
+	if !staticPort.SuppressDHCP {
+		t.Errorf("static ENI's PortSpec.SuppressDHCP = false, want true")
+	}
+
+	dhcpPort, ok := intent.Ports["eni-dhcp"]
+	if !ok {
+		t.Fatalf("dhcp ENI missing from intent")
+	}
+	if dhcpPort.SuppressDHCP {
+		t.Errorf("ordinary ENI's PortSpec.SuppressDHCP = true, want false")
+	}
+}
+
 func TestLoadIntentFromKV_EIPStateFilter(t *testing.T) {
 	js := startKV(t)
 

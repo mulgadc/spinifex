@@ -166,8 +166,9 @@ export function ModifyDBInstanceDialog({
     },
   )
 
-  const setSecurityGroups = (next: string[]) =>
+  const setSecurityGroups = (next: string[]) => {
     setValue("vpcSecurityGroupIds", next, { shouldValidate: true })
+  }
 
   const onSubmit = async (data: ModifyDBInstanceFormData) => {
     await modifyInstance.mutateAsync({
@@ -329,7 +330,9 @@ export function ModifyDBInstanceDialog({
                   <input
                     aria-label="Apply immediately"
                     checked={field.value}
-                    onChange={(e) => field.onChange(e.target.checked)}
+                    onChange={(e) => {
+                      field.onChange(e.target.checked)
+                    }}
                     type="checkbox"
                   />
                   <span>
@@ -361,7 +364,9 @@ export function ModifyDBInstanceDialog({
             <FormActions
               isPending={modifyInstance.isPending}
               isSubmitting={isSubmitting}
-              onCancel={() => onOpenChange(false)}
+              onCancel={() => {
+                onOpenChange(false)
+              }}
               pendingLabel="Saving…"
               submitLabel="Save Changes"
             />

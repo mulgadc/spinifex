@@ -122,7 +122,9 @@ function AddressDetail() {
           actions={
             <Button
               disabled={isAssociated || releaseMutation.isPending}
-              onClick={() => setShowReleaseDialog(true)}
+              onClick={() => {
+                setShowReleaseDialog(true)
+              }}
               size="sm"
               variant="destructive"
             >
@@ -170,9 +172,9 @@ function AddressDetail() {
               <div className="flex items-end gap-2">
                 <div className="flex-1">
                   <Select
-                    onValueChange={(value) =>
+                    onValueChange={(value) => {
                       setSelectedInstanceId(value ?? "")
-                    }
+                    }}
                     value={selectedInstanceId}
                   >
                     <SelectTrigger className="w-full">

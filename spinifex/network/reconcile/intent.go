@@ -392,13 +392,14 @@ func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string
 		// zero/invalid when absent. User EIPs come from the EIP bucket instead.
 		publicIP, _ := netip.ParseAddr(rec.PublicIpAddress)
 		out[rec.NetworkInterfaceId] = topology.PortSpec{
-			PortID:    rec.NetworkInterfaceId,
-			SubnetID:  rec.SubnetId,
-			VPCID:     rec.VpcId,
-			PrivateIP: addr,
-			MAC:       mac,
-			SGIDs:     append([]string(nil), rec.SecurityGroupIds...),
-			PublicIP:  publicIP,
+			PortID:       rec.NetworkInterfaceId,
+			SubnetID:     rec.SubnetId,
+			VPCID:        rec.VpcId,
+			PrivateIP:    addr,
+			MAC:          mac,
+			SGIDs:        append([]string(nil), rec.SecurityGroupIds...),
+			PublicIP:     publicIP,
+			SuppressDHCP: rec.SuppressDHCP,
 		}
 	}
 	return nil

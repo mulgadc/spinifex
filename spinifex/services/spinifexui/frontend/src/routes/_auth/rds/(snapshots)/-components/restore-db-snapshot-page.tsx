@@ -465,9 +465,9 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
           <FormActions
             isPending={restoreInstance.isPending}
             isSubmitting={isSubmitting}
-            onCancel={async () =>
+            onCancel={async () => {
               await navigate({ to: "/rds/describe-db-snapshots" })
-            }
+            }}
             pendingLabel="Restoring…"
             submitLabel="Restore Snapshot"
           />

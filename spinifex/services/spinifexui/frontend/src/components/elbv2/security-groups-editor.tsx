@@ -38,7 +38,9 @@ export function SecurityGroupsEditor({
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     )
   }
-  const handleReset = () => setSelected(initial)
+  const handleReset = () => {
+    setSelected(initial)
+  }
 
   const dirty = !sameSet(selected, initial)
   // AWS requires at least one security group on an ALB.
@@ -64,12 +66,9 @@ export function SecurityGroupsEditor({
         </div>
       )}
       {isSuccess && !dirty && (
-        <div
-          className="mb-4 rounded-md border border-emerald-500 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-400"
-          role="status"
-        >
+        <output className="mb-4 block rounded-md border border-emerald-500 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-400">
           Security groups updated.
-        </div>
+        </output>
       )}
       <div className="rounded-lg border bg-card">
         <div className="flex flex-col gap-1 p-4">
@@ -86,7 +85,9 @@ export function SecurityGroupsEditor({
                 <input
                   aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
                   checked={selectedIds.has(sg.GroupId ?? "")}
-                  onChange={() => toggle(sg.GroupId ?? "")}
+                  onChange={() => {
+                    toggle(sg.GroupId ?? "")
+                  }}
                   type="checkbox"
                 />
                 <span className="font-mono">

@@ -11,7 +11,7 @@ resources:
   - title: "Spinifex Repository"
     url: "https://github.com/mulgadc/spinifex"
   - title: "Updating Spinifex"
-    url: "/docs/admin/update"
+    url: "/docs/update"
 ---
 
 # Host and Guest Lifecycle

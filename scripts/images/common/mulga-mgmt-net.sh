@@ -8,11 +8,14 @@
 #   - NIC<n>_DHCP=1: the primary data ENI. OVN serves DHCP; we lease it (retrying
 #     one-shots on a budget until the cross-host datapath is up) so the Ec2 IMDS
 #     datasource can reach 169.254.169.254, and pin a /32 to it so a link-local
-#     169.254.0.0/16 route on another NIC cannot hijack IMDS. A DHCP NIC with
-#     NIC<n>_DEFAULT=0 (an RDS DB VM's customer ENI) instead loses its leased
-#     default route and gets a source-based policy table for its replies.
-#   - NIC<n>_CIDR: a static NIC (mgmt0 on br-mgmt, which has no DHCP). Applied
-#     address-only; NIC<n>_DEFAULT is 0, so mgmt0 is never the default route.
+#     169.254.0.0/16 route on another NIC cannot hijack IMDS.
+#   - NIC<n>_CIDR (+ optional NIC<n>_GW): a static NIC — mgmt0 on br-mgmt, and
+#     an RDS DB VM's customer ENI. The customer ENI is static rather than DHCP
+#     so it never depends on OVN's 3600s lease being renewed, which nothing
+#     does. NIC<n>_DEFAULT is 0 for both, so neither is ever the default
+#     route; when NIC<n>_GW is set, the NIC also gets the source-based
+#     return-path policy table a non-default DHCP NIC gets, so cross-subnet
+#     replies still egress correctly.
 #
 # The blob is shell KEY=value, matching daemon.buildNetcfgBlob and
 # build/microvm/init.sh; interfaces are matched by MAC. No-op when the blob is
@@ -128,6 +131,7 @@ cidr_network() {
 install_return_policy() {
     iface="$1"
     tid=$(( 100 + $2 ))
+    gw="${3:-}"
 
     addr=$(ip -4 addr show dev "$iface" 2>/dev/null | awk '$1 == "inet" { print $2; exit }')
     if [ -z "$addr" ]; then
@@ -136,9 +140,13 @@ install_return_policy() {
     fi
     ip4="${addr%%/*}"
     net=$(cidr_network "$addr")
-    # The lease's gateway is OVN's per-subnet router IP, which reaches every
-    # subnet of the VPC. Read it before the default route is dropped from main.
-    gw=$(ip -4 route show default dev "$iface" 2>/dev/null | awk '{print $3; exit}')
+    # OVN's per-subnet router IP reaches every subnet of the VPC. A static NIC
+    # has no lease to read it from, so the caller passes it explicitly
+    # (NIC<n>_GW); a DHCP NIC reads it from its own default route instead,
+    # before that route is dropped below.
+    if [ -z "$gw" ]; then
+        gw=$(ip -4 route show default dev "$iface" 2>/dev/null | awk '{print $3; exit}')
+    fi
 
     # Both passes rewrite the table, not just the rule: a rule survives an
     # interface bounce but the routes go down with the device, and a rule whose
@@ -174,6 +182,7 @@ for n in 0 1 2 3 4 5; do
 
     eval "dhcp=\${NIC${n}_DHCP:-}"
     eval "cidr=\${NIC${n}_CIDR:-}"
+    eval "gw=\${NIC${n}_GW:-}"
     eval "isdefault=\${NIC${n}_DEFAULT:-}"
     ip link set "$iface" up
 
@@ -243,9 +252,17 @@ for n in 0 1 2 3 4 5; do
 
     # NIC<n>_DEFAULT=0 means this NIC must never carry the default route: the
     # mgmt NIC reaches the gateway on-link and a default via it would blackhole
-    # egress and (with a link-local /16) hijack IMDS. Enforce it — a DHCP client
-    # racing this NIC may have added one before we set it static.
+    # egress and (with a link-local /16) hijack IMDS. Enforce it on every pass,
+    # not just setup: nothing else re-adds a route to a static NIC, but the
+    # policy table itself goes down with the device on a stop/start re-attach.
     if [ "$isdefault" != "1" ]; then
+        # A static NIC with a resolved gateway (an RDS DB VM's customer ENI) is
+        # cross-subnet reachable, so its replies need the same source-based
+        # return path a non-default DHCP NIC gets. mgmt0 has no NIC<n>_GW and
+        # is skipped — it only ever reaches the gateway on-link.
+        if [ -n "$gw" ]; then
+            install_return_policy "$iface" "$n" "$gw"
+        fi
         drop_default_route "$iface"
     fi
 done

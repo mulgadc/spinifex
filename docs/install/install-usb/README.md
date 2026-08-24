@@ -135,7 +135,7 @@ AWS_PROFILE=spinifex aws ec2 describe-instance-types
 
 That profile is the operator account, with administrator access. Copy it to your workstation to drive the node remotely — you will also need the cluster CA, available unauthenticated from `https://<node-address>:3000/api/ca.pem`.
 
-From here, [Setting Up Your Cluster](/docs/admin/setting-up-your-cluster) walks through importing an AMI, creating a key pair and a VPC, and launching your first instance.
+From here, [Setting Up Your Cluster](/docs/setting-up-your-cluster) walks through importing an AMI, creating a key pair and a VPC, and launching your first instance.
 
 ### Building a Cluster
 
@@ -180,10 +180,10 @@ sudo systemctl restart spinifex-daemon
 The node rewrites its peer list from the cluster it is now part of and re-arms itself, including at boot. Confirm every server can see the others:
 
 ```bash
-sudo nft list table inet spinifex_filter | grep spinifex_peers
+sudo nft list table inet spinifex_filter
 ```
 
-The addresses of **all** your servers should appear. If one is missing, that server's cluster traffic will be blocked — see [Firewall and cluster membership](/docs/install-multi-node#firewall-and-cluster-membership).
+Check the `ip saddr { ... }` addresses on the cluster-plane rules — the peer list is an nft variable expanded at load time, so it has no name of its own in the output. The addresses of **all** your servers should appear. If one is missing, that server's cluster traffic will be blocked — see [Firewall and cluster membership](/docs/install-multi-node#firewall-and-cluster-membership).
 
 ### Setup Complete
 

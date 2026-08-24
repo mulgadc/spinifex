@@ -270,7 +270,7 @@ func (s *Service) rollbackDBInstanceReservation(ctx context.Context, kv jetstrea
 		if rollbackErr == nil || errors.Is(rollbackErr, jetstream.ErrKeyNotFound) {
 			return
 		}
-		if !errors.Is(rollbackErr, jetstream.ErrKeyExists) {
+		if !errors.Is(rollbackErr, jetstream.ErrKeyRevisionMismatch) {
 			break
 		}
 

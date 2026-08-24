@@ -182,8 +182,7 @@ func ImportablePools() ([]string, error) {
 		// zpool exits non-zero when there is nothing to import, which is the
 		// normal case. Anything else — no binary, no /dev/zfs — must surface, or
 		// a machine with an existing pool looks empty to the caller.
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if _, ok := errors.AsType[*exec.ExitError](err); ok {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("zpool import: %w", err)

@@ -186,7 +186,9 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
                   >
                     <input
                       checked={selectedSubnetSet.has(s.SubnetId ?? "")}
-                      onChange={() => toggle("subnets", s.SubnetId ?? "")}
+                      onChange={() => {
+                        toggle("subnets", s.SubnetId ?? "")
+                      }}
                       type="checkbox"
                     />
                     <span className="font-mono">
@@ -206,9 +208,9 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
                   >
                     <input
                       checked={selectedSgSet.has(sg.GroupId ?? "")}
-                      onChange={() =>
+                      onChange={() => {
                         toggle("securityGroups", sg.GroupId ?? "")
-                      }
+                      }}
                       type="checkbox"
                     />
                     <span className="font-mono">
@@ -236,7 +238,9 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
               name="targetGroupArn"
               render={({ field: f }) => (
                 <Select
-                  onValueChange={(v) => f.onChange(v === "none" ? "" : v)}
+                  onValueChange={(v) => {
+                    f.onChange(v === "none" ? "" : v)
+                  }}
                   value={f.value === "" ? "none" : f.value}
                 >
                   <SelectTrigger className="w-full" id="targetGroupArn">

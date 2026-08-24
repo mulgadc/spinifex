@@ -25,7 +25,11 @@ export function TasksTab({ clusterName }: { clusterName: string }) {
     }
     stopTask.mutate(
       { cluster: clusterName, task: stopTarget },
-      { onSuccess: () => setStopTarget(null) },
+      {
+        onSuccess: () => {
+          setStopTarget(null)
+        },
+      },
     )
   }
 
@@ -83,7 +87,9 @@ export function TasksTab({ clusterName }: { clusterName: string }) {
                     <td className="px-4 py-2 text-right">
                       {stoppable && (
                         <Button
-                          onClick={() => setStopTarget(task.taskArn ?? id)}
+                          onClick={() => {
+                            setStopTarget(task.taskArn ?? id)
+                          }}
                           size="sm"
                           variant="destructive"
                         >
@@ -104,7 +110,11 @@ export function TasksTab({ clusterName }: { clusterName: string }) {
         description="This stops the task and releases its ENI and reserved capacity."
         isPending={stopTask.isPending}
         onConfirm={handleStop}
-        onOpenChange={(open) => !open && setStopTarget(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setStopTarget(null)
+          }
+        }}
         open={stopTarget !== null}
         pendingLabel="Stopping…"
         title="Stop task"

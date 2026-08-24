@@ -64,7 +64,10 @@ func (s *Service) casVCPU(ctx context.Context, accountID string, next func(curre
 		if err == nil {
 			return nil
 		}
-		if !isCASConflict(err) {
+		// Create reports a lost race as ErrKeyExists, Update as
+		// ErrKeyRevisionMismatch — and only the latter holds on a replicated
+		// bucket, where the conflict carries a different API error code.
+		if !errors.Is(err, jetstream.ErrKeyExists) && !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return err
 		}
 	}
@@ -111,21 +114,6 @@ func (s *Service) reconcileVCPU(ctx context.Context, accountID string, value int
 		return nil
 	}
 	return s.setVCPU(ctx, accountID, value)
-}
-
-// isCASConflict reports whether err is a lost optimistic-concurrency race: a
-// Create on an existing key or an Update against a stale revision. Both map to
-// JetStream's wrong-last-sequence code and are retryable; any other error is a
-// genuine failure the caller must surface.
-func isCASConflict(err error) bool {
-	if errors.Is(err, jetstream.ErrKeyExists) {
-		return true
-	}
-	var apiErr *jetstream.APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
-	}
-	return false
 }
 
 // EnforceLaunch is the check-before gate for RunInstances: it rejects when the

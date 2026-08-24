@@ -94,7 +94,7 @@ func queryNodeCapacity(ctx context.Context, natsConn *nats.Conn, instanceType st
 	}
 
 	// Random shuffle then stable-sort: fair distribution among equal-capacity nodes.
-	rand.Shuffle(len(nodes), func(i, j int) {
+	rand.Shuffle(len(nodes), func(i, j int) { //nolint:gosec // placement spread, not cryptographic
 		nodes[i], nodes[j] = nodes[j], nodes[i]
 	})
 	sort.SliceStable(nodes, func(i, j int) bool {

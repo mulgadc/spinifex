@@ -17,10 +17,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 )
@@ -254,8 +254,7 @@ func (reg *Registry) getBlob(ctx context.Context, w http.ResponseWriter, _, dige
 func (reg *Registry) startUpload(w http.ResponseWriter, r *http.Request, name string) {
 	ctx := r.Context()
 	if err := reg.requireRepo(ctx, name); err != nil {
-		var mErr *ManifestStoreError
-		if errors.As(err, &mErr) {
+		if mErr, ok := errors.AsType[*ManifestStoreError](err); ok {
 			WriteError(w, mErr.Status, mErr.Code, mErr.Msg)
 			return
 		}
@@ -280,7 +279,7 @@ func (reg *Registry) startUpload(w http.ResponseWriter, r *http.Request, name st
 		}
 	}
 
-	uploadID := uuid.NewString()
+	uploadID := uuid.NewV4().String()
 	h := sha256.New()
 	state, err := marshalHash(h)
 	if err != nil {
@@ -333,7 +332,7 @@ func (reg *Registry) patchUpload(w http.ResponseWriter, r *http.Request, name, u
 
 	prior := reg.readUploadBytesAt(ctx, st.BytesKey)
 	assembled := append(prior, chunk...)
-	newKey := ecr.UploadChunkKey(uploadID, uuid.NewString())
+	newKey := ecr.UploadChunkKey(uploadID, uuid.NewV4().String())
 	if err := reg.putUploadBytesAt(ctx, newKey, assembled); err != nil {
 		reg.internal(ctx, w, "store chunk", err)
 		return
@@ -593,8 +592,7 @@ func (reg *Registry) putManifest(w http.ResponseWriter, r *http.Request, name, r
 
 	digest, err := reg.StoreManifest(ctx, reg.AccountID, name, reference, r.Header.Get("Content-Type"), body)
 	if err != nil {
-		var mErr *ManifestStoreError
-		if errors.As(err, &mErr) {
+		if mErr, ok := errors.AsType[*ManifestStoreError](err); ok {
 			WriteError(w, mErr.Status, mErr.Code, mErr.Msg)
 			return
 		}

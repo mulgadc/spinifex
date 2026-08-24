@@ -380,8 +380,24 @@ func TestMaybeRestart_ResetsAfterWindow(t *testing.T) {
 		"restart count must reset to 0 once the window expires")
 }
 
+// countScheduledRestarts replaces the restart seam with a counter. RestartCount
+// only moves inside the scheduled callback, so a guard that refuses to restart
+// is observable here and nowhere on the instance itself.
+func countScheduledRestarts(t *testing.T) *atomic.Int32 {
+	t.Helper()
+	var scheduled atomic.Int32
+	prev := restartAfterFunc
+	t.Cleanup(func() { restartAfterFunc = prev })
+	restartAfterFunc = func(_ time.Duration, _ func()) *time.Timer {
+		scheduled.Add(1)
+		return time.NewTimer(time.Hour)
+	}
+	return &scheduled
+}
+
 func TestMaybeRestart_SkipsShuttingDown(t *testing.T) {
 	m, _, _, shuttingDown := crashTestManager(t)
+	scheduled := countScheduledRestarts(t)
 	shuttingDown.Store(true)
 
 	instance := &VM{
@@ -397,11 +413,12 @@ func TestMaybeRestart_SkipsShuttingDown(t *testing.T) {
 
 	m.MaybeRestart(instance)
 
-	assert.Equal(t, 0, instance.Health.RestartCount, "shutdown skip must not increment restart")
+	assert.Zero(t, scheduled.Load(), "shutdown skip must not schedule a restart")
 }
 
 func TestMaybeRestart_UnknownInstanceType(t *testing.T) {
 	m, _, _, _ := crashTestManager(t)
+	scheduled := countScheduledRestarts(t)
 
 	instance := &VM{
 		ID:           "i-restart-unknown",
@@ -416,12 +433,13 @@ func TestMaybeRestart_UnknownInstanceType(t *testing.T) {
 
 	m.MaybeRestart(instance)
 
-	assert.Equal(t, 0, instance.Health.RestartCount,
+	assert.Zero(t, scheduled.Load(),
 		"unknown instance type must not schedule a restart")
 }
 
 func TestMaybeRestart_InsufficientResources(t *testing.T) {
 	m, rc, _, _ := crashTestManager(t)
+	scheduled := countScheduledRestarts(t)
 	rc.canAllocateRet = 0
 
 	instance := &VM{
@@ -437,7 +455,7 @@ func TestMaybeRestart_InsufficientResources(t *testing.T) {
 
 	m.MaybeRestart(instance)
 
-	assert.Equal(t, 0, instance.Health.RestartCount,
+	assert.Zero(t, scheduled.Load(),
 		"insufficient resources must not schedule a restart")
 }
 

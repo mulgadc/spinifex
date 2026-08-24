@@ -212,8 +212,9 @@ func mutateTags(ctx context.Context, kv jetstream.KeyValue, resource taggableRes
 		if err == nil {
 			return nil
 		}
-		// jetstream.ErrKeyExists is a revision mismatch on Update, not a duplicate.
-		if !errors.Is(err, jetstream.ErrKeyExists) {
+		// A revision mismatch is a lost race with another writer, not a
+		// duplicate: re-read the record and re-apply the tag mutation.
+		if !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return err
 		}
 	}

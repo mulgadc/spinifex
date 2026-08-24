@@ -237,6 +237,8 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		return name, d.handleSetSpotLineage(ctx, msg, command)
 	case command.Attributes.SetInstanceTags, command.Attributes.RemoveInstanceTags:
 		return name, d.handleSetInstanceTags(ctx, msg, command, instance)
+	case command.Attributes.SetInstanceMonitoring:
+		return name, d.handleSetInstanceMonitoring(ctx, msg, command, instance)
 	case command.Attributes.StartInstance:
 		opCtx, opSpan := startOpSpan(ctx, "ec2.StartInstance", instance.ID)
 		err := d.instanceService.StartInstance(opCtx, instance, command)
@@ -305,6 +307,8 @@ func ec2CommandName(command types.EC2InstanceCommand) string {
 		return "SetInstanceTags"
 	case command.Attributes.RemoveInstanceTags:
 		return "RemoveInstanceTags"
+	case command.Attributes.SetInstanceMonitoring:
+		return "SetInstanceMonitoring"
 	case command.Attributes.StartInstance:
 		return "StartInstance"
 	case command.Attributes.RebootInstance:

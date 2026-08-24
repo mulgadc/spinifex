@@ -10,20 +10,26 @@ import { useInitialSidebar } from "./use-initial-sidebar"
 
 describe("useInitialSidebar", () => {
   it("calls setOpen with the provided value on first render", () => {
-    renderHook(() => useInitialSidebar(true))
+    renderHook(() => {
+      useInitialSidebar(true)
+    })
     expect(mockSetOpen).toHaveBeenCalledWith(true)
   })
 
   it("calls setOpen(false) when isOpen is false", () => {
     mockSetOpen.mockClear()
-    renderHook(() => useInitialSidebar(false))
+    renderHook(() => {
+      useInitialSidebar(false)
+    })
     expect(mockSetOpen).toHaveBeenCalledWith(false)
   })
 
   it("does not call setOpen again on re-render", () => {
     mockSetOpen.mockClear()
     const { rerender } = renderHook(
-      ({ isOpen }: { isOpen: boolean }) => useInitialSidebar(isOpen),
+      ({ isOpen }: { isOpen: boolean }) => {
+        useInitialSidebar(isOpen)
+      },
       { initialProps: { isOpen: true } },
     )
     expect(mockSetOpen).toHaveBeenCalledOnce()

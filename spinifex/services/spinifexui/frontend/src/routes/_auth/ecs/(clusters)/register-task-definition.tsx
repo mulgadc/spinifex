@@ -1,17 +1,16 @@
-import { createFileRoute, type SearchSchemaInput } from "@tanstack/react-router"
+import { createFileRoute } from "@tanstack/react-router"
+import { z } from "zod"
 
 import { RegisterTaskDefinitionPage } from "./-components/register-task-definition-page"
 
-interface RegisterSearch {
-  cluster: string
-}
+/* oxlint-disable promise/prefer-await-to-then -- zod's .catch() supplies a schema fallback, not a promise handler */
+const searchSchema = z.object({ cluster: z.string().catch("") })
+/* oxlint-enable promise/prefer-await-to-then */
 
 export const Route = createFileRoute(
   "/_auth/ecs/(clusters)/register-task-definition",
 )({
-  validateSearch: (search: RegisterSearch & SearchSchemaInput) => ({
-    cluster: typeof search.cluster === "string" ? search.cluster : "",
-  }),
+  validateSearch: searchSchema,
   head: () => ({
     meta: [{ title: "Register Task Definition | ECS | Mulga" }],
   }),

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -981,7 +983,7 @@ func (s *IAMServiceImpl) CreateAccount(name string) (*Account, error) {
 
 		newVal := []byte(strconv.FormatInt(nextID+1, 10))
 		if _, err := s.accountCounterBucket.Update(ctx, "next_id", newVal, entry.Revision()); err != nil {
-			if errors.Is(err, jetstream.ErrKeyExists) {
+			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 				continue // CAS conflict, retry
 			}
 			return nil, fmt.Errorf("update account counter: %w", err)
@@ -2016,9 +2018,63 @@ func ValidatePolicyDocument(docJSON string) (*PolicyDocument, error) {
 		if len(stmt.Resource) == 0 {
 			return nil, fmt.Errorf("statement %d: Resource is required", i)
 		}
+		if err := validateStatementRestrictions(i, stmt); err != nil {
+			return nil, err
+		}
 	}
 
 	return &doc, nil
+}
+
+// validateStatementRestrictions rejects the clauses the evaluator cannot enforce,
+// so an identity policy is never accepted with an inert restriction on it.
+// Conditions inside the supported allowlist are accepted and enforced.
+func validateStatementRestrictions(i int, stmt Statement) error {
+	if isRawJSONNonEmpty(stmt.Principal) {
+		return fmt.Errorf("statement %d: Principal is not valid on an identity policy; use a resource or trust policy instead", i)
+	}
+	if len(stmt.NotAction) > 0 {
+		return fmt.Errorf("statement %d: NotAction blocks are not supported in this release; use Action with an explicit list instead", i)
+	}
+	if len(stmt.NotResource) > 0 {
+		return fmt.Errorf("statement %d: NotResource blocks are not supported in this release; use Resource with an explicit list instead", i)
+	}
+	for op, keys := range stmt.Condition {
+		for key, values := range keys {
+			if !iampolicy.SupportedCondition(op, key) {
+				return fmt.Errorf("statement %d: Condition operator %q on key %q is not supported in this release", i, op, key)
+			}
+			if err := validateConditionValues(i, op, key, values); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateConditionValues rejects leaf values the matcher can only ever compare
+// false. An allowlisted operator over an unparseable value is still an inert
+// restriction, which is the failure this validation exists to prevent.
+func validateConditionValues(i int, op, key string, values ConditionValue) error {
+	if len(values) == 0 {
+		return fmt.Errorf("statement %d: Condition operator %q on key %q has no value", i, op, key)
+	}
+	for _, v := range values {
+		switch op {
+		case iampolicy.OpIPAddress:
+			if _, prefixErr := netip.ParsePrefix(v); prefixErr != nil {
+				if _, addrErr := netip.ParseAddr(v); addrErr != nil {
+					return fmt.Errorf("statement %d: Condition %s on key %q: %q is not a valid IP address or CIDR block",
+						i, op, key, v)
+				}
+			}
+		case iampolicy.OpBool:
+			if !strings.EqualFold(v, "true") && !strings.EqualFold(v, "false") {
+				return fmt.Errorf("statement %d: Condition %s on key %q: %q is not true or false", i, op, key, v)
+			}
+		}
+	}
+	return nil
 }
 
 // summaryQuotaDefaults holds the static SummaryMap entries returned by

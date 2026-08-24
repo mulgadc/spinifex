@@ -3,10 +3,11 @@ import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
 import type { SessionCredentials } from "@/lib/auth"
+import type { SignedFetchOptions } from "@/lib/signed-fetch"
 
 const mockGetCredentials = vi.fn<() => SessionCredentials | null>()
 const mockStsSend = vi.fn()
-const mockSignedFetch = vi.fn<(opts: unknown) => Promise<unknown>>()
+const mockSignedFetch = vi.fn<(opts: SignedFetchOptions) => Promise<unknown>>()
 
 vi.mock("@/lib/auth", () => ({
   getCredentials: () => mockGetCredentials(),
@@ -17,7 +18,7 @@ vi.mock("@/lib/sts", () => ({
 }))
 
 vi.mock("@/lib/signed-fetch", () => ({
-  signedFetch: async (opts: unknown) => await mockSignedFetch(opts),
+  signedFetch: async (opts: SignedFetchOptions) => await mockSignedFetch(opts),
 }))
 
 vi.mock("@aws-sdk/client-sts", () => ({

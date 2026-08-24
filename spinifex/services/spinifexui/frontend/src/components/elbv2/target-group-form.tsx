@@ -127,7 +127,9 @@ export function TargetGroupForm({
           name="vpcId"
           render={({ field }) => (
             <Select
-              onValueChange={(value) => field.onChange(value)}
+              onValueChange={(value) => {
+                field.onChange(value)
+              }}
               value={field.value ?? ""}
             >
               <SelectTrigger

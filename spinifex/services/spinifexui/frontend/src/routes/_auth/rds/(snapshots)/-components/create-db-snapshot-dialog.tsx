@@ -198,7 +198,9 @@ export function CreateDBSnapshotDialog({
 
           <div className="flex justify-end gap-2">
             <Button
-              onClick={() => onOpenChange(false)}
+              onClick={() => {
+                onOpenChange(false)
+              }}
               type="button"
               variant="outline"
             >

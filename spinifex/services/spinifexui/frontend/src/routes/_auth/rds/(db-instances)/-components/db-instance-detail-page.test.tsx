@@ -311,7 +311,9 @@ describe("DBInstanceDetailPage", () => {
       seed({ instances: [{ ...INSTANCE, DBInstanceStatus: "stopped" }] }),
     )
     fireEvent.click(screen.getByRole("button", { name: "Start" }))
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBInstanceIdentifier: "orders-db",
     })
@@ -373,19 +375,20 @@ describe("DBInstanceDetailPage", () => {
   // The status is the automated backup's own, so nothing the instance describe
   // returns can refresh it.
   it("refreshes the automated backup status after a modify", async () => {
-    mockSend.mockImplementation(async (command: object) => {
-      if (command.constructor.name === "DescribeDBInstancesCommand") {
-        return {
-          DBInstances: [{ ...INSTANCE, BackupRetentionPeriod: 0 }],
+    mockSend.mockImplementation(
+      async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === "DescribeDBInstancesCommand") {
+          return { DBInstances: [{ ...INSTANCE, BackupRetentionPeriod: 0 }] }
         }
-      }
-      if (
-        command.constructor.name === "DescribeDBInstanceAutomatedBackupsCommand"
-      ) {
-        return { DBInstanceAutomatedBackups: [] }
-      }
-      return {}
-    })
+        if (
+          command.constructor.name ===
+          "DescribeDBInstanceAutomatedBackupsCommand"
+        ) {
+          return { DBInstanceAutomatedBackups: [] }
+        }
+        return {}
+      },
+    )
     renderWithClient(
       <DBInstanceDetailPage dbInstanceIdentifier="orders-db" />,
       seed({ automatedBackups: [{ Status: "creating" }] }),

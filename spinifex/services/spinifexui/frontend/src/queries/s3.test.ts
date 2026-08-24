@@ -6,6 +6,8 @@ vi.mock("@/lib/awsClient", () => ({
   getS3Client: () => ({ send: mockSend }),
 }))
 
+import { callQueryFn } from "@/test/query"
+
 import { s3BucketObjectsQueryOptions, s3BucketsQueryOptions } from "./s3"
 
 describe("query keys", () => {
@@ -36,19 +38,13 @@ describe("queryFn", () => {
   })
 
   it("s3BucketsQueryOptions sends ListBucketsCommand", async () => {
-    const queryFn = s3BucketsQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(s3BucketsQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("s3BucketObjectsQueryOptions sends ListObjectsV2Command with bucket and delimiter", async () => {
-    const queryFn = s3BucketObjectsQueryOptions("my-bucket").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(s3BucketObjectsQueryOptions("my-bucket"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       Bucket: "my-bucket",
       Prefix: undefined,
@@ -57,9 +53,7 @@ describe("queryFn", () => {
   })
 
   it("s3BucketObjectsQueryOptions sends prefix when provided", async () => {
-    const queryFn = s3BucketObjectsQueryOptions("my-bucket", "docs/")
-      .queryFn as (ctx: never) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(s3BucketObjectsQueryOptions("my-bucket", "docs/"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       Bucket: "my-bucket",
       Prefix: "docs/",

@@ -90,7 +90,9 @@ export function GpuInstanceTypeSelect({
   return (
     <Select
       disabled={disabled}
-      onValueChange={(next) => onValueChange(next ?? "")}
+      onValueChange={(next) => {
+        onValueChange(next ?? "")
+      }}
       value={value}
     >
       <SelectTrigger aria-invalid={ariaInvalid} className={className} id={id}>

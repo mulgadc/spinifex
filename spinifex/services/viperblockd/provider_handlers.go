@@ -1161,7 +1161,7 @@ func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID
 	if err := vb.Backend.InitCtx(ctx); err != nil {
 		return nil, fmt.Errorf("backend init: %w", err)
 	}
-	if err := loadStateWithRetry(ctx, vb, volumeID); err != nil {
+	if err := loadStateWithRetry(ctx, cfg, vb, volumeID); err != nil {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
 	if err := checkSnapshotIDFree(vb, volumeID, snapshotID); err != nil {
@@ -1314,7 +1314,7 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 	}
 
 	// Retry on transient backend errors so daemon recovery doesn't tip a healthy volume into cleanup.
-	if err := loadStateWithRetry(ctx, vb, volumeName); err != nil {
+	if err := loadStateWithRetry(ctx, cfg, vb, volumeName); err != nil {
 		return nil, 0, err
 	}
 

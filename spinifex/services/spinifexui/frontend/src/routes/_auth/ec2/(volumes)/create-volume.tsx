@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, type UseFormWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -103,7 +103,9 @@ function CreateVolume() {
             name="availabilityZone"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -131,7 +133,9 @@ function CreateVolume() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => await navigate({ to: "/ec2/describe-volumes" })}
+          onCancel={async () => {
+            await navigate({ to: "/ec2/describe-volumes" })
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Volume"
         />
@@ -141,12 +145,10 @@ function CreateVolume() {
 }
 
 function buildCreateVolumeCommands(
-  watch: (name?: string) => unknown,
+  watch: UseFormWatch<CreateVolumeFormData>,
 ): CliCommand[] {
-  const rawSize = watch("size")
-  const size = typeof rawSize === "number" ? rawSize : 0
-  const rawAz = watch("availabilityZone")
-  const az = typeof rawAz === "string" ? rawAz : ""
+  const size = watch("size")
+  const az = watch("availabilityZone")
 
   return [
     {

@@ -83,6 +83,8 @@ export function Field({
       className={cn(fieldVariants({ orientation }), className)}
       data-orientation={orientation}
       data-slot="field"
+      // A fieldset would change the prop type and bring min-content sizing.
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
       role="group"
       {...props}
     />

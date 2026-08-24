@@ -46,7 +46,9 @@ export function SubnetsEditor({
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     )
   }
-  const handleReset = () => setSelected(initial)
+  const handleReset = () => {
+    setSelected(initial)
+  }
 
   const dirty = !sameSet(selected, initial)
   // A load balancer must front at least one subnet.
@@ -80,12 +82,9 @@ export function SubnetsEditor({
         </div>
       )}
       {isSuccess && !dirty && (
-        <div
-          className="mb-4 rounded-md border border-emerald-500 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-400"
-          role="status"
-        >
+        <output className="mb-4 block rounded-md border border-emerald-500 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-400">
           Subnets updated.
-        </div>
+        </output>
       )}
       <div className="rounded-lg border bg-card">
         <div className="flex flex-col gap-1 p-4">
@@ -102,7 +101,9 @@ export function SubnetsEditor({
                 <input
                   aria-label={`Subnet ${subnet.SubnetId}`}
                   checked={selectedIds.has(subnet.SubnetId ?? "")}
-                  onChange={() => toggle(subnet.SubnetId ?? "")}
+                  onChange={() => {
+                    toggle(subnet.SubnetId ?? "")
+                  }}
                   type="checkbox"
                 />
                 <span className="font-mono">{subnetLabel(subnet)}</span>

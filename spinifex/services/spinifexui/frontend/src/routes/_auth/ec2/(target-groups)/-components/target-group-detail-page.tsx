@@ -89,7 +89,9 @@ export function TargetGroupDetailPage({ arn }: Props) {
         <PageHeading
           actions={
             <Button
-              onClick={() => setShowDeleteDialog(true)}
+              onClick={() => {
+                setShowDeleteDialog(true)
+              }}
               size="sm"
               variant="destructive"
             >
@@ -201,7 +203,7 @@ export function TargetGroupDetailPage({ arn }: Props) {
               error={updateTagsMutation.error}
               isPending={updateTagsMutation.isPending}
               isSuccess={updateTagsMutation.isSuccess}
-              onSubmit={(tags) =>
+              onSubmit={(tags) => {
                 updateTagsMutation.mutate({
                   resourceArn: arn,
                   tags,
@@ -209,7 +211,7 @@ export function TargetGroupDetailPage({ arn }: Props) {
                     .map((t) => t.Key ?? "")
                     .filter((k) => k.length > 0),
                 })
-              }
+              }}
               tags={tgTags}
             />
           </TabsPanel>

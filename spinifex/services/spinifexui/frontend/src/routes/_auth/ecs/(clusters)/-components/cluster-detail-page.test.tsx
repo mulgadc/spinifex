@@ -1,3 +1,4 @@
+import type { Cluster } from "@aws-sdk/client-ecs"
 import { fireEvent, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
@@ -29,7 +30,7 @@ vi.mock("./container-instances-tab", () => ({
 
 import { ClusterDetailPage } from "./cluster-detail-page"
 
-function seedCluster(extra: Record<string, unknown> = {}) {
+function seedCluster(extra: Partial<Cluster> = {}) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ecs", "clusters", "web"], {
     clusterName: "web",

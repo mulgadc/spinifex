@@ -10,11 +10,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
@@ -341,7 +341,7 @@ func CreateGuardrail(ctx context.Context, accountID string, store *GuardrailStor
 		return nil, err
 	}
 
-	id := uuid.NewString()
+	id := uuid.NewV4().String()
 	arn := FormatGuardrailARN(store.region, accountID, id)
 	now := time.Now().UTC()
 

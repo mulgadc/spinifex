@@ -11,7 +11,7 @@ resources:
   - title: "Spinifex Repository"
     url: "https://github.com/mulgadc/spinifex"
   - title: "External Connection Inventory"
-    url: "/docs/security/network-connections"
+    url: "/docs/network-connections"
 ---
 
 # Air-Gapped Installation

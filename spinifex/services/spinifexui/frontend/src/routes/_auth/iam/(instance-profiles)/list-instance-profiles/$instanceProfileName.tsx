@@ -125,7 +125,9 @@ function InstanceProfileDetail() {
         <PageHeading
           actions={
             <Button
-              onClick={() => setShowDeleteDialog(true)}
+              onClick={() => {
+                setShowDeleteDialog(true)
+              }}
               size="sm"
               variant="destructive"
             >
@@ -157,7 +159,9 @@ function InstanceProfileDetail() {
             <div className="flex items-center justify-between">
               <span>Roles</span>
               <Button
-                onClick={() => setShowAddSelect(!showAddSelect)}
+                onClick={() => {
+                  setShowAddSelect(!showAddSelect)
+                }}
                 size="sm"
               >
                 Add Role

@@ -207,7 +207,6 @@ func writeBlockedConverseStream(ctx context.Context, w http.ResponseWriter, mode
 
 	events := []ConverseStreamEvent{
 		{Kind: converseStreamEventMessageStart, MessageStart: &bedrockruntime.MessageStartEvent{Role: aws.String(bedrockruntime.ConversationRoleAssistant)}},
-		{Kind: converseStreamEventContentBlockStart, ContentBlockStart: &bedrockruntime.ContentBlockStartEvent{ContentBlockIndex: aws.Int64(0), Start: &bedrockruntime.ContentBlockStart{}}},
 		{Kind: converseStreamEventContentBlockDelta, ContentBlockDelta: &bedrockruntime.ContentBlockDeltaEvent{ContentBlockIndex: aws.Int64(0), Delta: &bedrockruntime.ContentBlockDelta{Text: aws.String(message)}}},
 		{Kind: converseStreamEventContentBlockStop, ContentBlockStop: &bedrockruntime.ContentBlockStopEvent{ContentBlockIndex: aws.Int64(0)}},
 		{Kind: converseStreamEventMessageStop, MessageStop: &bedrockruntime.MessageStopEvent{StopReason: aws.String(bedrockruntime.StopReasonGuardrailIntervened)}},

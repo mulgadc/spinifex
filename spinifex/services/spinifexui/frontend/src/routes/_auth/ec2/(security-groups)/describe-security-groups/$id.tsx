@@ -169,7 +169,9 @@ function AddRuleDialog({
               name="ipProtocol"
               render={({ field }) => (
                 <Select
-                  onValueChange={(value) => field.onChange(value)}
+                  onValueChange={(value) => {
+                    field.onChange(value)
+                  }}
                   value={field.value}
                 >
                   <SelectTrigger className="w-full" id="ipProtocol">
@@ -396,7 +398,9 @@ function SecurityGroupDetail() {
           actions={
             <div className="flex items-center gap-2">
               <Button
-                onClick={() => setShowDeleteDialog(true)}
+                onClick={() => {
+                  setShowDeleteDialog(true)
+                }}
                 size="sm"
                 variant="destructive"
               >
@@ -441,7 +445,9 @@ function SecurityGroupDetail() {
               Inbound Rules ({ingressRules.length})
             </h2>
             <Button
-              onClick={() => setShowIngressDialog(true)}
+              onClick={() => {
+                setShowIngressDialog(true)
+              }}
               size="sm"
               variant="outline"
             >
@@ -476,7 +482,9 @@ function SecurityGroupDetail() {
               Outbound Rules ({egressRules.length})
             </h2>
             <Button
-              onClick={() => setShowEgressDialog(true)}
+              onClick={() => {
+                setShowEgressDialog(true)
+              }}
               size="sm"
               variant="outline"
             >

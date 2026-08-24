@@ -22,13 +22,13 @@ interface CliCommandPanelProps {
   commands: CliCommand[]
 }
 
-const partStyles: Record<CommandPartType, string> = {
+const partStyles = {
   bin: "text-tactical-cyan font-semibold",
   flag: "text-tactical-amber",
   value: "text-foreground",
   comment: "text-muted-foreground italic",
   variable: "text-tactical-green font-semibold",
-}
+} satisfies Record<CommandPartType, string>
 
 // Stands in for a value the form has not been given yet, so the panel shows the
 // shape of the command rather than one missing a flag's argument.
@@ -79,7 +79,9 @@ export function CliCommandPanel({ commands }: CliCommandPanelProps) {
     <div className="rounded-md border border-border">
       <button
         type="button"
-        onClick={() => setExpanded((prev) => !prev)}
+        onClick={() => {
+          setExpanded((prev) => !prev)
+        }}
         className="flex w-full items-center gap-2 px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
         aria-expanded={expanded}
       >
@@ -102,7 +104,9 @@ export function CliCommandPanel({ commands }: CliCommandPanelProps) {
               type="button"
               variant="ghost"
               size="xs"
-              onClick={async () => await copy(partsToText(commands))}
+              onClick={async () => {
+                await copy(partsToText(commands))
+              }}
             >
               {copied ? (
                 <Check className="size-2.5" />

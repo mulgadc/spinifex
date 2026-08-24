@@ -76,6 +76,44 @@ func TestReconcile_TopoOrder_VPCThenSubnetThenPort(t *testing.T) {
 	}
 }
 
+// TestReconcile_PortSuppressDHCP proves applyPorts' create branch never sets
+// DHCPv4Options for a SuppressDHCP port (a statically-addressed customer
+// ENI), while an ordinary port on the same subnet still gets one — this is
+// the drift/recreate path, distinct from EnsurePort's, that must not re-add
+// a lease the guest's dhcpcd would flush the static address on.
+func TestReconcile_PortSuppressDHCP(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	intent := freshIntent(t)
+	mac, _ := net.ParseMAC("02:00:00:00:00:09")
+	intent.Ports["eni-static"] = topology.PortSpec{
+		PortID: "eni-static", SubnetID: "subnet-a", VPCID: "vpc-a",
+		PrivateIP: netip.MustParseAddr("10.0.1.11"), MAC: mac,
+		SuppressDHCP: true,
+	}
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	dhcpLSP := m.Ports["port-"+intent.Ports["eni-a"].PortID]
+	if dhcpLSP == nil {
+		t.Fatal("ordinary ENI port not created")
+	}
+	if dhcpLSP.DHCPv4Options == nil {
+		t.Errorf("ordinary ENI's LSP must carry dhcpv4_options")
+	}
+
+	staticLSP := m.Ports["port-eni-static"]
+	if staticLSP == nil {
+		t.Fatal("static ENI port not created")
+	}
+	if staticLSP.DHCPv4Options != nil {
+		t.Errorf("SuppressDHCP ENI's LSP must not carry dhcpv4_options, got %q", *staticLSP.DHCPv4Options)
+	}
+}
+
 func TestReconcile_PortJoinsPortGroupAtomically(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
@@ -596,7 +634,7 @@ func TestReconcile_PruneOrphanEIPs_SweepsAbsentOwners(t *testing.T) {
 	}
 
 	intent := freshIntent(t) // Ports has eni-a only
-	r.pruneOrphanEIPs(ctx, intent)
+	r.pruneOrphanEIPs(ctx, intent, &passResult{})
 
 	if findNATByExternal(m, "dnat_and_snat", "192.168.1.10") == nil {
 		t.Errorf("live EIP row must survive the prune")
@@ -647,7 +685,7 @@ func TestReconcile_PruneOrphanEIPs_SparesMidPassLaunch(t *testing.T) {
 		return fresh, nil
 	}
 
-	r.pruneOrphanEIPs(ctx, snapshot)
+	r.pruneOrphanEIPs(ctx, snapshot, &passResult{})
 
 	if findNATByExternal(m, "dnat_and_snat", "192.168.1.20") == nil {
 		t.Errorf("mid-pass launch row must survive the prune via the fresh re-read")
@@ -676,7 +714,7 @@ func TestReconcile_PruneOrphanEIPs_SkipsOnReloadError(t *testing.T) {
 	r.reloadIntent = func(context.Context) (IntentState, error) {
 		return IntentState{}, errors.New("kv unavailable")
 	}
-	r.pruneOrphanEIPs(ctx, freshIntent(t))
+	r.pruneOrphanEIPs(ctx, freshIntent(t), &passResult{})
 
 	if findNATByExternal(m, "dnat_and_snat", "192.168.1.11") == nil {
 		t.Errorf("prune must be skipped when the fresh re-read fails")
@@ -795,5 +833,123 @@ func TestApplySubnets_ConvergesDriftedDHCPOptions(t *testing.T) {
 	}
 	if after.UUID != before.UUID {
 		t.Errorf("DHCP options row was replaced (%s -> %s), want an in-place update", before.UUID, after.UUID)
+	}
+}
+
+// stubIGW forces AttachIGW to fail while delegating everything else to a real
+// manager, so a pass fails exactly one resource and the rest still applies.
+type stubIGW struct {
+	external.IGWManager
+
+	attachErr error
+}
+
+func (s *stubIGW) AttachIGW(ctx context.Context, spec external.IGWSpec) error {
+	if s.attachErr != nil {
+		return s.attachErr
+	}
+	return s.IGWManager.AttachIGW(ctx, spec)
+}
+
+// igwIntent is freshIntent plus an IGW for vpc-a, the resource whose failed
+// attach a pass used to swallow.
+func igwIntent(t *testing.T) IntentState {
+	t.Helper()
+	intent := freshIntent(t)
+	intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a"}
+	return intent
+}
+
+// A failed AttachIGW must surface as ErrPassIncomplete rather than a nil return:
+// a swallowed failure is indistinguishable from a converged pass, so nothing
+// retries it until the next drift tick.
+func TestReconcile_FailedAttachIGWReportsPassIncomplete(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+	attachErr := errors.New("allocate gateway LRP IP: dhcp gw-lrp acquire: context deadline exceeded")
+	rec.igw = &stubIGW{IGWManager: rec.igw, attachErr: attachErr}
+	// Without a chassis the rebind returns on its first line, which would make
+	// the assertion below pass whether or not the failure short-circuits it.
+	rec.chassis = []string{"chassis-1"}
+
+	err := rec.Reconcile(ctx, igwIntent(t))
+	if !errors.Is(err, ErrPassIncomplete) {
+		t.Fatalf("Reconcile = %v, want ErrPassIncomplete — a swallowed AttachIGW failure "+
+			"leaves the drift loop unable to tell a converged pass from a broken one", err)
+	}
+	// The rest of the pass still applies: only the IGW is unconverged.
+	if _, ok := m.Ports[topology.Port("eni-a")]; !ok {
+		t.Errorf("ENI port missing: a failed IGW attach must not abort the pass")
+	}
+	if _, ok := m.RouterPorts[topology.GatewayRouterPort("vpc-a")]; ok {
+		t.Errorf("gateway LRP present after a failed attach")
+	}
+	if m.SetGatewayChassisCalls != 0 {
+		t.Errorf("SetGatewayChassis called %d times after a failed attach, want 0 — "+
+			"rebinding chassis onto a gateway LRP that was never created", m.SetGatewayChassisCalls)
+	}
+}
+
+// The converged path must stay clean: a pass with the same intent and a working
+// AttachIGW returns nil, so the drift loop resets to DriftInterval.
+func TestReconcile_AttachedIGWReportsConverged(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+	rec.chassis = []string{"chassis-1"}
+
+	if err := rec.Reconcile(ctx, igwIntent(t)); err != nil {
+		t.Fatalf("Reconcile = %v, want nil", err)
+	}
+	if _, ok := m.RouterPorts[topology.GatewayRouterPort("vpc-a")]; !ok {
+		t.Errorf("gateway LRP missing after a successful attach")
+	}
+	if m.SetGatewayChassisCalls == 0 {
+		t.Errorf("SetGatewayChassis never called after a successful attach: the rebind " +
+			"must run, or a rebooted chassis never reclaims the gateway")
+	}
+}
+
+// stubNAT forces AddEIP to fail, delegating everything else.
+type stubNAT struct {
+	policy.NATManager
+
+	addErr error
+}
+
+func (s *stubNAT) AddEIP(ctx context.Context, spec policy.EIPSpec) error {
+	if s.addErr != nil {
+		return s.addErr
+	}
+	return s.NATManager.AddEIP(ctx, spec)
+}
+
+// The incomplete signal is a per-pass contract, not an IGW special case: a stage
+// other than applyIGWs failing must report itself the same way.
+func TestReconcile_FailedAddEIPReportsPassIncomplete(t *testing.T) {
+	rec, _ := newTestReconciler(t)
+	ctx := context.Background()
+	rec.nat = &stubNAT{NATManager: rec.nat, addErr: errors.New("ovsdb unreachable")}
+
+	intent := freshIntent(t)
+	intent.EIPs["10.0.1.10"] = policy.EIPSpec{
+		VPCID: "vpc-a", ExternalIP: "192.168.1.10", LogicalIP: "10.0.1.10",
+		PortName: topology.Port("eni-a"),
+	}
+	if err := rec.Reconcile(ctx, intent); !errors.Is(err, ErrPassIncomplete) {
+		t.Fatalf("Reconcile = %v, want ErrPassIncomplete for a failed AddEIP", err)
+	}
+}
+
+// The convergence summary counts failures per class, so an operator reading one
+// line knows which stage did not converge and how widely.
+func TestPassResult_SummaryCountsPerClass(t *testing.T) {
+	res := &passResult{}
+	res.fail(classIGW, "vpc-a", errors.New("x"))
+	res.fail(classEIP, "192.168.1.10", errors.New("y"))
+	res.fail(classEIP, "192.168.1.11", errors.New("z"))
+
+	want := []any{"unconverged", 3, classEIP, 2, classIGW, 1}
+	if got := res.summaryKV(); !slices.Equal(got, want) {
+		t.Errorf("summaryKV() = %v, want %v", got, want)
 	}
 }

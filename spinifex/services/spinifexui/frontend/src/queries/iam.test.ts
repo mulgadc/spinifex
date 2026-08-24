@@ -6,6 +6,8 @@ vi.mock("@/lib/awsClient", () => ({
   getIamClient: () => ({ send: mockSend }),
 }))
 
+import { callQueryFn } from "@/test/query"
+
 import {
   iamAccessKeysQueryOptions,
   iamAttachedGroupPoliciesQueryOptions,
@@ -225,57 +227,39 @@ describe("queryFn", () => {
   })
 
   it("iamUsersQueryOptions sends ListUsersCommand", async () => {
-    const queryFn = iamUsersQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamUsersQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("iamUserQueryOptions sends GetUserCommand with userName", async () => {
-    const queryFn = iamUserQueryOptions("admin").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamUserQueryOptions("admin"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
     })
   })
 
   it("iamAccessKeysQueryOptions sends ListAccessKeysCommand", async () => {
-    const queryFn = iamAccessKeysQueryOptions("admin").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamAccessKeysQueryOptions("admin"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
     })
   })
 
   it("iamPoliciesQueryOptions sends ListPoliciesCommand with Local scope", async () => {
-    const queryFn = iamPoliciesQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamPoliciesQueryOptions)
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({ Scope: "Local" })
   })
 
   it("iamPolicyQueryOptions sends GetPolicyCommand with policyArn", async () => {
-    const queryFn = iamPolicyQueryOptions("arn:test").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamPolicyQueryOptions("arn:test"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       PolicyArn: "arn:test",
     })
   })
 
   it("iamPolicyVersionQueryOptions sends GetPolicyVersionCommand", async () => {
-    const queryFn = iamPolicyVersionQueryOptions("arn:test", "v1").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamPolicyVersionQueryOptions("arn:test", "v1"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       PolicyArn: "arn:test",
       VersionId: "v1",
@@ -283,112 +267,78 @@ describe("queryFn", () => {
   })
 
   it("iamAttachedUserPoliciesQueryOptions sends ListAttachedUserPoliciesCommand", async () => {
-    const queryFn = iamAttachedUserPoliciesQueryOptions("admin").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamAttachedUserPoliciesQueryOptions("admin"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
     })
   })
 
   it("iamRolesQueryOptions sends ListRolesCommand", async () => {
-    const queryFn = iamRolesQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamRolesQueryOptions)
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("iamRoleQueryOptions sends GetRoleCommand with roleName", async () => {
-    const queryFn = iamRoleQueryOptions("my-role").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamRoleQueryOptions("my-role"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
     })
   })
 
   it("iamAttachedRolePoliciesQueryOptions sends ListAttachedRolePoliciesCommand", async () => {
-    const queryFn = iamAttachedRolePoliciesQueryOptions("my-role").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamAttachedRolePoliciesQueryOptions("my-role"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
     })
   })
 
   it("iamInstanceProfilesQueryOptions sends ListInstanceProfilesCommand", async () => {
-    const queryFn = iamInstanceProfilesQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamInstanceProfilesQueryOptions)
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("iamInstanceProfileQueryOptions sends GetInstanceProfileCommand", async () => {
-    const queryFn = iamInstanceProfileQueryOptions("my-profile").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamInstanceProfileQueryOptions("my-profile"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       InstanceProfileName: "my-profile",
     })
   })
 
   it("iamInstanceProfilesForRoleQueryOptions sends ListInstanceProfilesForRoleCommand", async () => {
-    const queryFn = iamInstanceProfilesForRoleQueryOptions("my-role")
-      .queryFn as (ctx: never) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamInstanceProfilesForRoleQueryOptions("my-role"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
     })
   })
 
   it("iamGroupsQueryOptions sends ListGroupsCommand", async () => {
-    const queryFn = iamGroupsQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamGroupsQueryOptions)
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("iamGroupQueryOptions sends GetGroupCommand with groupName", async () => {
-    const queryFn = iamGroupQueryOptions("my-group").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamGroupQueryOptions("my-group"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
     })
   })
 
   it("iamAttachedGroupPoliciesQueryOptions sends ListAttachedGroupPoliciesCommand", async () => {
-    const queryFn = iamAttachedGroupPoliciesQueryOptions("my-group")
-      .queryFn as (ctx: never) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamAttachedGroupPoliciesQueryOptions("my-group"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
     })
   })
 
   it("iamGroupsForUserQueryOptions sends ListGroupsForUserCommand with userName", async () => {
-    const queryFn = iamGroupsForUserQueryOptions("admin").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamGroupsForUserQueryOptions("admin"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
     })
   })
 
   it("iamUserPoliciesQueryOptions sends ListUserPoliciesCommand", async () => {
-    const queryFn = iamUserPoliciesQueryOptions("admin").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamUserPoliciesQueryOptions("admin"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
     })
@@ -398,10 +348,9 @@ describe("queryFn", () => {
     mockSend.mockResolvedValueOnce({
       PolicyDocument: encodeURIComponent('{"Version":"2012-10-17"}'),
     })
-    const queryFn = iamUserPolicyQueryOptions("admin", "s3-read").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    const document = await queryFn({} as never)
+    const document = await callQueryFn(
+      iamUserPolicyQueryOptions("admin", "s3-read"),
+    )
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
       PolicyName: "s3-read",
@@ -410,10 +359,7 @@ describe("queryFn", () => {
   })
 
   it("iamRolePoliciesQueryOptions sends ListRolePoliciesCommand", async () => {
-    const queryFn = iamRolePoliciesQueryOptions("my-role").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamRolePoliciesQueryOptions("my-role"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
     })
@@ -423,10 +369,9 @@ describe("queryFn", () => {
     mockSend.mockResolvedValueOnce({
       PolicyDocument: '{"Version":"2012-10-17"}',
     })
-    const queryFn = iamRolePolicyQueryOptions("my-role", "s3-read").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    const document = await queryFn({} as never)
+    const document = await callQueryFn(
+      iamRolePolicyQueryOptions("my-role", "s3-read"),
+    )
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
       PolicyName: "s3-read",
@@ -435,19 +380,14 @@ describe("queryFn", () => {
   })
 
   it("iamGroupPoliciesQueryOptions sends ListGroupPoliciesCommand", async () => {
-    const queryFn = iamGroupPoliciesQueryOptions("my-group").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamGroupPoliciesQueryOptions("my-group"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
     })
   })
 
   it("iamGroupPolicyQueryOptions sends GetGroupPolicyCommand with names", async () => {
-    const queryFn = iamGroupPolicyQueryOptions("my-group", "s3-read")
-      .queryFn as (ctx: never) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(iamGroupPolicyQueryOptions("my-group", "s3-read"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
       PolicyName: "s3-read",

@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { useForm } from "react-hook-form"
+import { useForm, type UseFormWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -94,9 +94,9 @@ export function CreateTargetGroupPage() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-target-groups" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Target Group"
         />
@@ -106,29 +106,20 @@ export function CreateTargetGroupPage() {
 }
 
 function buildCreateTargetGroupCommands(
-  watch: (name?: string) => unknown,
+  watch: UseFormWatch<CreateTargetGroupFormData>,
 ): CliCommand[] {
-  const asString = (key: string): string => {
-    const raw = watch(key)
-    return typeof raw === "string" ? raw : ""
-  }
-  const asNumber = (key: string): number | undefined => {
-    const raw = watch(key)
-    return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined
-  }
-
-  const name = asString("name")
-  const protocol = asString("protocol") || "HTTP"
-  const port = asNumber("port")
-  const vpcId = asString("vpcId")
-  const hcProtocol = asString("healthCheck.protocol") || "HTTP"
-  const hcPath = asString("healthCheck.path") || "/"
-  const hcPort = asString("healthCheck.port") || "traffic-port"
-  const hcInterval = asNumber("healthCheck.intervalSeconds")
-  const hcTimeout = asNumber("healthCheck.timeoutSeconds")
-  const hcHealthy = asNumber("healthCheck.healthyThresholdCount")
-  const hcUnhealthy = asNumber("healthCheck.unhealthyThresholdCount")
-  const hcMatcher = asString("healthCheck.matcher") || "200"
+  const name = watch("name")
+  const protocol = watch("protocol") || "HTTP"
+  const port = watch("port")
+  const vpcId = watch("vpcId")
+  const hcProtocol = watch("healthCheck.protocol") || "HTTP"
+  const hcPath = watch("healthCheck.path") || "/"
+  const hcPort = watch("healthCheck.port") || "traffic-port"
+  const hcInterval = watch("healthCheck.intervalSeconds")
+  const hcTimeout = watch("healthCheck.timeoutSeconds")
+  const hcHealthy = watch("healthCheck.healthyThresholdCount")
+  const hcUnhealthy = watch("healthCheck.unhealthyThresholdCount")
+  const hcMatcher = watch("healthCheck.matcher") || "200"
 
   const parts: CommandPart[] = [
     {

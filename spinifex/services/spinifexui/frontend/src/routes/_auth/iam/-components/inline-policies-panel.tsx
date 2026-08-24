@@ -53,6 +53,7 @@ type InlinePolicyQueryOptions = ReturnType<typeof iamUserPolicyQueryOptions>
 // Structural subset of a mutation result so one form works with the user, role
 // and group hooks regardless of their differing command output types.
 interface InlineMutation<TParams> {
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- the panel awaits the put or delete and never reads its payload
   mutateAsync: (params: TParams) => Promise<unknown>
   isPending: boolean
   error: Error | null
@@ -78,7 +79,7 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
   const deleteRole = useDeleteRolePolicy()
   const deleteGroup = useDeleteGroupPolicy()
 
-  const config: Record<InlinePolicyKind, KindConfig> = {
+  const config = {
     user: {
       listQuery: iamUserPoliciesQueryOptions,
       policyQuery: iamUserPolicyQueryOptions,
@@ -97,7 +98,7 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
       put: putGroup,
       remove: deleteGroup,
     },
-  }
+  } satisfies Record<InlinePolicyKind, KindConfig>
   const { listQuery, policyQuery, put, remove } = config[kind]
 
   const { data: listData } = useSuspenseQuery(listQuery(name))
@@ -153,7 +154,9 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
             <div className="col-span-2">
               <AddInlinePolicyForm
                 name={name}
-                onClose={() => setAdding(false)}
+                onClose={() => {
+                  setAdding(false)
+                }}
                 put={put}
               />
             </div>
@@ -167,18 +170,20 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
                     <p className="text-sm font-medium">{policyName}</p>
                     <div className="flex gap-2">
                       <Button
-                        onClick={() =>
+                        onClick={() => {
                           setEditing((current) =>
                             current === policyName ? null : policyName,
                           )
-                        }
+                        }}
                         size="sm"
                         variant="outline"
                       >
                         {editing === policyName ? "Close" : "Edit"}
                       </Button>
                       <Button
-                        onClick={() => setConfirmDelete(policyName)}
+                        onClick={() => {
+                          setConfirmDelete(policyName)
+                        }}
                         size="sm"
                         variant="destructive"
                       >
@@ -190,7 +195,9 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
                     <div className="border-t p-3">
                       <EditInlinePolicyForm
                         name={name}
-                        onClose={() => setEditing(null)}
+                        onClose={() => {
+                          setEditing(null)
+                        }}
                         policyName={policyName}
                         put={put}
                         queryOptions={policyQuery(name, policyName)}
@@ -268,7 +275,9 @@ function AddInlinePolicyForm({ name, put, onClose }: AddInlinePolicyFormProps) {
         <Input
           aria-invalid={showNameError}
           id="inline-policy-name"
-          onChange={(event) => setPolicyName(event.target.value)}
+          onChange={(event) => {
+            setPolicyName(event.target.value)
+          }}
           placeholder="my-inline-policy"
           value={policyName}
         />

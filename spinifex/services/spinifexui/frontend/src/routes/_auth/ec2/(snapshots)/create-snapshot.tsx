@@ -1,11 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import {
-  createFileRoute,
-  type SearchSchemaInput,
-  useNavigate,
-} from "@tanstack/react-router"
-import { Controller, useForm, useWatch } from "react-hook-form"
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
+import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -28,10 +30,14 @@ import { useCreateSnapshot } from "@/mutations/ec2"
 import { ec2VolumesQueryOptions } from "@/queries/ec2"
 import { type CreateSnapshotFormData, createSnapshotSchema } from "@/types/ec2"
 
+/* oxlint-disable promise/prefer-await-to-then, unicorn/no-useless-undefined -- zod's .catch() supplies a schema fallback, not a promise handler */
+const searchSchema = z.object({
+  volumeId: z.string().optional().catch(undefined),
+})
+/* oxlint-enable promise/prefer-await-to-then, unicorn/no-useless-undefined */
+
 export const Route = createFileRoute("/_auth/ec2/(snapshots)/create-snapshot")({
-  validateSearch: (search: { volumeId?: string } & SearchSchemaInput) => ({
-    volumeId: typeof search.volumeId === "string" ? search.volumeId : undefined,
-  }),
+  validateSearch: searchSchema,
   loader: async ({ context }) => {
     await context.queryClient.ensureQueryData(ec2VolumesQueryOptions)
   },
@@ -68,8 +74,6 @@ function CreateSnapshot() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateSnapshotFormData) => {
     await createMutation.mutateAsync(data)
@@ -99,7 +103,9 @@ function CreateSnapshot() {
             name="volumeId"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -136,14 +142,14 @@ function CreateSnapshot() {
           />
         </Field>
 
-        <CliCommandPanel commands={buildCreateSnapshotCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreateSnapshotCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-snapshots" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Snapshot"
         />
@@ -153,12 +159,10 @@ function CreateSnapshot() {
 }
 
 function buildCreateSnapshotCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateSnapshotFormData>,
 ): CliCommand[] {
-  const rawVolumeId = watch("volumeId")
-  const volumeId = typeof rawVolumeId === "string" ? rawVolumeId : ""
-  const rawDescription = watch("description")
-  const description = typeof rawDescription === "string" ? rawDescription : ""
+  const volumeId = values.volumeId ?? ""
+  const description = values.description ?? ""
 
   const parts = [
     {

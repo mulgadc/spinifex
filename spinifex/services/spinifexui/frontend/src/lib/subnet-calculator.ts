@@ -7,8 +7,14 @@
  * a /16 VPC (adjusted proportionally for other prefix lengths).
  */
 
+export interface ParsedCidr {
+  /** Network address as a 32-bit number. */
+  network: number
+  prefix: number
+}
+
 /** Parse a CIDR string into its network address (as a 32-bit number) and prefix length. */
-export function parseCidr(cidr: string): { network: number; prefix: number } {
+export function parseCidr(cidr: string): ParsedCidr {
   const parts = cidr.split("/")
   const ip = parts[0] ?? ""
   const prefixStr = parts[1] ?? "0"
@@ -57,11 +63,16 @@ export interface SubnetCidr {
  * Public subnets occupy the first half of the VPC address space,
  * private subnets occupy the second half.
  */
+export interface SubnetCidrPlan {
+  publicSubnets: SubnetCidr[]
+  privateSubnets: SubnetCidr[]
+}
+
 export function calculateSubnetCidrs(
   vpcCidr: string,
   publicCount: number,
   privateCount: number,
-): { publicSubnets: SubnetCidr[]; privateSubnets: SubnetCidr[] } {
+): SubnetCidrPlan {
   const { network, prefix: vpcPrefix } = parseCidr(vpcCidr)
   const subPrefix = subnetPrefix(vpcPrefix)
   const subSize = cidrSize(subPrefix)

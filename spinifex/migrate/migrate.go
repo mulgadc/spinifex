@@ -91,6 +91,14 @@ type Registry struct {
 // via init() functions so they are available before any service starts.
 var DefaultRegistry = NewRegistry()
 
+// spinifexTarget is registered even with no migrations against it, so
+// `spx admin upgrade` still reports the version on disk.
+const spinifexTarget = "spinifex.toml"
+
+func init() {
+	DefaultRegistry.RegisterConfigTarget(spinifexTarget, spinifexTarget, &TOMLVersionReader{})
+}
+
 // NewRegistry creates an empty migration registry.
 func NewRegistry() *Registry {
 	return &Registry{

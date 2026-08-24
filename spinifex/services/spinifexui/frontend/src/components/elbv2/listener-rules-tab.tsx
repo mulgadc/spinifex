@@ -134,7 +134,12 @@ export function ListenerRulesTab({
         <p className="text-xs text-muted-foreground">
           {rules.length} rule{rules.length === 1 ? "" : "s"} (including default)
         </p>
-        <Button onClick={() => setAddOpen(true)} size="sm">
+        <Button
+          onClick={() => {
+            setAddOpen(true)
+          }}
+          size="sm"
+        >
           Add rule
         </Button>
       </div>
@@ -173,7 +178,9 @@ export function ListenerRulesTab({
                     <div className="flex justify-end gap-1">
                       <Button
                         aria-label={`Edit rule ${rule.Priority}`}
-                        onClick={() => setEditTarget(rule)}
+                        onClick={() => {
+                          setEditTarget(rule)
+                        }}
                         size="sm"
                         variant="ghost"
                       >
@@ -181,7 +188,9 @@ export function ListenerRulesTab({
                       </Button>
                       <Button
                         aria-label={`Delete rule ${rule.Priority}`}
-                        onClick={() => setDeleteTarget(rule)}
+                        onClick={() => {
+                          setDeleteTarget(rule)
+                        }}
                         size="sm"
                         variant="ghost"
                       >
@@ -212,7 +221,11 @@ export function ListenerRulesTab({
         initialRule={editTarget}
         isPending={modifyMutation.isPending}
         mode="edit"
-        onOpenChange={(open) => !open && setEditTarget(undefined)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditTarget(undefined)
+          }
+        }}
         onSubmit={handleEdit}
         open={editTarget !== undefined}
         targetGroups={targetGroups}
@@ -226,7 +239,11 @@ export function ListenerRulesTab({
         }
         isPending={deleteMutation.isPending}
         onConfirm={handleDelete}
-        onOpenChange={(open) => !open && setDeleteTarget(undefined)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(undefined)
+          }
+        }}
         open={deleteTarget !== undefined}
         title="Delete rule"
       />
@@ -422,7 +439,9 @@ function RuleDialog({
               <FieldTitle>Conditions</FieldTitle>
               <Button
                 disabled={fields.length >= 5}
-                onClick={() => append({ field: "path-pattern", rawValues: "" })}
+                onClick={() => {
+                  append({ field: "path-pattern", rawValues: "" })
+                }}
                 size="sm"
                 type="button"
                 variant="outline"
@@ -435,7 +454,13 @@ function RuleDialog({
                 form={form}
                 index={idx}
                 key={field.id}
-                onRemove={fields.length > 1 ? () => remove(idx) : undefined}
+                onRemove={
+                  fields.length > 1
+                    ? () => {
+                        remove(idx)
+                      }
+                    : undefined
+                }
               />
             ))}
           </div>

@@ -21,20 +21,20 @@ interface PendingAction {
   action: Action
 }
 
-const ACTION_LABELS: Record<Action, string> = {
+const ACTION_LABELS = {
   drain: "Drain",
   activate: "Activate",
   deregister: "Deregister",
-}
+} satisfies Record<Action, string>
 
-const ACTION_DESCRIPTIONS: Record<Action, string> = {
+const ACTION_DESCRIPTIONS = {
   drain:
     "Draining force-stops the service-owned tasks on this instance so it can be retired.",
   activate:
     "This returns the instance to ACTIVE so the scheduler can place tasks on it again.",
   deregister:
     "This force-removes the container instance record. Any tasks it still holds are stopped.",
-}
+} satisfies Record<Action, string>
 
 export function ContainerInstancesTab({
   clusterName,
@@ -53,7 +53,9 @@ export function ContainerInstancesTab({
     if (!pending) {
       return
     }
-    const onSuccess = () => setPending(null)
+    const onSuccess = () => {
+      setPending(null)
+    }
     if (pending.action === "deregister") {
       deregister.mutate(
         { cluster: clusterName, containerInstance: pending.arn },
@@ -78,7 +80,12 @@ export function ContainerInstancesTab({
   return (
     <>
       <div className="mb-4 flex justify-end">
-        <Button onClick={() => setShowProvision(true)} size="sm">
+        <Button
+          onClick={() => {
+            setShowProvision(true)
+          }}
+          size="sm"
+        >
           Provision EC2 capacity
         </Button>
       </div>
@@ -132,21 +139,21 @@ export function ContainerInstancesTab({
                               ? "Activate container instance"
                               : "Drain container instance"
                           }
-                          onClick={() =>
+                          onClick={() => {
                             setPending({
                               arn,
                               action: draining ? "activate" : "drain",
                             })
-                          }
+                          }}
                           size="sm"
                           variant="outline"
                         >
                           {draining ? "Activate" : "Drain"}
                         </Button>
                         <Button
-                          onClick={() =>
+                          onClick={() => {
                             setPending({ arn, action: "deregister" })
-                          }
+                          }}
                           size="sm"
                           variant="destructive"
                         >
@@ -173,7 +180,11 @@ export function ContainerInstancesTab({
         description={pending ? ACTION_DESCRIPTIONS[pending.action] : ""}
         isPending={isPending}
         onConfirm={handleConfirm}
-        onOpenChange={(open) => !open && setPending(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPending(null)
+          }
+        }}
         open={pending !== null}
         title="Container instance"
       />

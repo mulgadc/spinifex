@@ -360,6 +360,37 @@ This requests an IP from the **router's DHCP** (e.g., 192.168.1.1 serving addres
 
 If no Linux bridge owns the default route, `setup-ovn.sh` exits with guidance rather than silently breaking host connectivity.
 
+## OVN Control Plane on Multi-Node Clusters
+
+How OVN is deployed depends on the size of the cluster, and this is the main reason three servers is the recommended minimum for a multi-server deployment.
+
+| Cluster size | OVN databases | Tolerates |
+|---|---|---|
+| 1–2 servers | standalone, on the first node | nothing — that node is a single point of failure for the control plane |
+| 3 or more | clustered (RAFT) across the first three nodes | loss of any one database node |
+
+Servers beyond the third run the full set of Spinifex services, but do not join the OVN database cluster — they connect to it as clients. The quorum stays at three however large the cluster gets, which is what keeps control-plane write latency stable.
+
+### What a control-plane outage actually costs
+
+Less than it sounds. `ovn-controller` has already programmed the forwarding rules into each host, so **running instances keep full networking** — east-west, north-south, NAT and security groups all continue to work with the databases down.
+
+What stops is *change*. Creating a VPC, launching an instance, and updating a security group all need the control plane, because each has to write new logical topology before anything can program it.
+
+So a standalone OVN deployment is a reasonable choice for a lab or a single-server install. It is a poor one for production, where the inability to launch an instance during an outage is usually as bad as the instances being down.
+
+### Clustering the databases
+
+The three database nodes are set up with `--db-cluster-local-addr`, and nodes 2 and 3 additionally point at node 1 with `--db-cluster-remote-addr`. Compute nodes take `--ovn-remote` listing all three, so they survive any one of them failing. See [Multi-Node Install](/docs/install-multi-node) for the exact commands in sequence.
+
+A clustered database can only be created from scratch — the `ovn-central` package starts a standalone one on install, so the cluster setup passes `--recreate-db` to replace it. Confirm the result with:
+
+```bash
+sudo ovn-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/status OVN_Northbound
+```
+
+Three servers should be listed with exactly one leader. A report of a standalone database means the cluster flags did not take.
+
 ## Per-Node Configuration
 
 Different nodes in a cluster can have different WAN bridges and NICs:

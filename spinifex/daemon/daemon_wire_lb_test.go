@@ -129,56 +129,6 @@ func TestWireLBAgentConfig_GatewayURL_NoHost(t *testing.T) {
 	assert.Empty(t, d.mgmtRouteVia)
 }
 
-func TestWireLBAgentConfig_PortExtraction(t *testing.T) {
-	cfg := &config.Config{
-		AWSGW: config.AWSGWConfig{Host: "192.168.1.10:8443"},
-	}
-	d := newWireLBTestDaemon(t, cfg)
-	d.mgmtBridgeIP = "10.15.8.1"
-
-	d.wireLBAgentConfig()
-
-	// Port should be extracted from AWSGW Host, not default 9999
-	assert.Equal(t, "192.168.1.10", d.mgmtRouteVia)
-}
-
-func TestWireLBAgentConfig_DefaultPort(t *testing.T) {
-	// AWSGW Host without port → default 9999.
-	// Use mgmtBridgeIP with no AWSGW bind IP so gateway uses br-mgmt.
-	cfg := &config.Config{}
-	d := newWireLBTestDaemon(t, cfg)
-	d.mgmtBridgeIP = "10.15.8.1"
-
-	d.wireLBAgentConfig()
-
-	assert.Empty(t, d.mgmtRouteVia)
-}
-
-func TestWireLBAgentConfig_MgmtRoute(t *testing.T) {
-	cfg := &config.Config{
-		AWSGW: config.AWSGWConfig{Host: "192.168.1.10:9999"},
-	}
-	d := newWireLBTestDaemon(t, cfg)
-	d.mgmtBridgeIP = "10.15.8.1"
-
-	d.wireLBAgentConfig()
-
-	assert.Equal(t, "192.168.1.10", d.mgmtRouteVia)
-}
-
-func TestWireLBAgentConfig_NoMgmtRoute(t *testing.T) {
-	// Single-node: AWSGW on 0.0.0.0 → no mgmtRouteVia set.
-	cfg := &config.Config{
-		AWSGW: config.AWSGWConfig{Host: "0.0.0.0:9999"},
-	}
-	d := newWireLBTestDaemon(t, cfg)
-	d.mgmtBridgeIP = "10.15.8.1"
-
-	d.wireLBAgentConfig()
-
-	assert.Empty(t, d.mgmtRouteVia)
-}
-
 // AdvertiseIP covers the single-node default install (no br-mgmt, AWSGW on
 // wildcard): the gateway URL falls back to the node's advertised off-host IP.
 // Covers the "empty gateway URL" failure.

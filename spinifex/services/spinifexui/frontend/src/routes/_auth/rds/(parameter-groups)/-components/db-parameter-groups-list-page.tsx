@@ -21,9 +21,9 @@ export function DBParameterGroupsListPage() {
       <PageHeading
         actions={
           <Button
-            onClick={async () =>
+            onClick={async () => {
               await navigate({ to: "/rds/create-db-parameter-group" })
-            }
+            }}
           >
             Create Parameter Group
           </Button>
@@ -56,17 +56,19 @@ export function DBParameterGroupsListPage() {
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
                     key={name}
-                    onClick={async () =>
+                    onClick={async () => {
                       await navigate({
                         to: "/rds/describe-db-parameter-groups/$name",
                         params: { name },
                       })
-                    }
+                    }}
                   >
                     <td className="px-4 py-2 font-medium">
                       <Link
                         className="text-primary hover:underline"
-                        onClick={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                        }}
                         params={{ name }}
                         to="/rds/describe-db-parameter-groups/$name"
                       >
@@ -114,7 +116,11 @@ export function DBParameterGroupsListPage() {
       {deleteTarget && (
         <DeleteDBParameterGroupDialog
           dbParameterGroupName={deleteTarget}
-          onOpenChange={(open) => !open && setDeleteTarget(null)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDeleteTarget(null)
+            }
+          }}
           open={true}
         />
       )}

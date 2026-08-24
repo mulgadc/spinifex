@@ -111,7 +111,9 @@ export function IamRolePanel({ instanceId }: { instanceId: string }) {
             {profiles.length > 0 ? (
               <div className="flex items-center gap-2">
                 <Select
-                  onValueChange={(value) => setSelectedProfile(value ?? "")}
+                  onValueChange={(value) => {
+                    setSelectedProfile(value ?? "")
+                  }}
                   value={selectedProfile}
                 >
                   <SelectTrigger className="w-full">

@@ -82,7 +82,7 @@ func TestGenerateSystemTypes(t *testing.T) {
 	sysMicro, ok := types["sys.micro"]
 	require.True(t, ok, "sys.micro must exist")
 	assert.Equal(t, int64(1), *sysMicro.VCpuInfo.DefaultVCpus, "sys.micro should have 1 vCPU")
-	assert.Equal(t, int64(128), *sysMicro.MemoryInfo.SizeInMiB, "sys.micro should have 128 MiB")
+	assert.Equal(t, int64(256), *sysMicro.MemoryInfo.SizeInMiB, "sys.micro should have 256 MiB")
 	assert.False(t, *sysMicro.BurstablePerformanceSupported, "sys.micro should not be burstable")
 
 	sysMedium, ok := types["sys.medium"]
@@ -407,7 +407,7 @@ func TestGenerateInstanceTypes_BurstableFlag(t *testing.T) {
 
 	for name, info := range broadwellTypes {
 		isBurstable := strings.HasPrefix(name, "t")
-		family := strings.SplitN(name, ".", 2)[0]
+		family, _, _ := strings.Cut(name, ".")
 		assert.Equal(t, isBurstable, *info.BurstablePerformanceSupported,
 			"%s burstable flag mismatch", name)
 		assert.Equal(t, !prevGen[family], *info.CurrentGeneration,

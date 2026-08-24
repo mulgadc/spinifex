@@ -246,8 +246,7 @@ var localSystemID = func() (string, error) {
 	out, err := sudoCommand("ovs-vsctl", "get", "open_vswitch", ".", "external-ids:system-id").Output()
 	if err != nil {
 		var stderr string
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			stderr = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		return "", fmt.Errorf("ovs-vsctl get system-id: %s: %w", stderr, err)
@@ -274,8 +273,7 @@ var discoverChassis = func(sbAddr string) ([]string, error) {
 	out, err := sudoCommand("ovn-sbctl", args...).Output()
 	if err != nil {
 		var stderr string
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			stderr = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		return nil, fmt.Errorf("ovn-sbctl list Chassis: %s: %w", stderr, err)
@@ -702,12 +700,15 @@ func launchService(cfg *Config) error {
 	// Startup reconcile (leader-gated, apply-only). Orphan pruning is skipped because intent may be stale:
 	// a peer's vpc.create-sg could be mid-flight and a prune would sweep those port groups as orphans.
 	// Drift loop uses full Reconcile.
+	// startupErr seeds the drift loop's backoff so a resource the bootstrap pass
+	// could not converge is retried on the short requeue, not a full interval.
+	var startupErr error
 	if isLeader {
 		intent, intentErr := reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
 		if intentErr != nil {
 			slog.Warn("vpcd: startup intent load failed", "err", intentErr)
-		} else if err := rec.ReconcileApplyOnly(ctx, intent); err != nil {
-			slog.Warn("vpcd: startup reconcile failed", "err", err)
+		} else if startupErr = rec.ReconcileApplyOnly(ctx, intent); startupErr != nil {
+			slog.Warn("vpcd: startup reconcile failed", "err", startupErr)
 		}
 		releaseLeader()
 	}
@@ -717,7 +718,7 @@ func launchService(cfg *Config) error {
 	defer loopCancel()
 	loopDone := make(chan struct{})
 	go func() {
-		reconcile.DriftLoop(loopCtx, rec, nc, cfg.AZ, holder)
+		reconcile.DriftLoop(loopCtx, rec, nc, cfg.AZ, holder, startupErr)
 		close(loopDone)
 	}()
 
@@ -992,8 +993,7 @@ var portToBr = func(port string) (string, error) {
 	out, err := sudoCommand("ovs-vsctl", "port-to-br", port).Output()
 	if err != nil {
 		var stderr string
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			stderr = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		return "", fmt.Errorf("ovs-vsctl port-to-br %s: %s: %w", port, stderr, err)

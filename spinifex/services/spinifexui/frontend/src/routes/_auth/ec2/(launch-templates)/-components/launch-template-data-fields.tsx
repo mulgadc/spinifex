@@ -93,7 +93,9 @@ export function LaunchTemplateDataFields({
             )
             return (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -130,7 +132,9 @@ export function LaunchTemplateDataFields({
           name="instanceType"
           render={({ field }) => (
             <Select
-              onValueChange={(value) => field.onChange(value)}
+              onValueChange={(value) => {
+                field.onChange(value)
+              }}
               value={field.value || ""}
             >
               <SelectTrigger
@@ -162,9 +166,9 @@ export function LaunchTemplateDataFields({
           name="keyName"
           render={({ field }) => (
             <Select
-              onValueChange={(value) =>
+              onValueChange={(value) => {
                 field.onChange(value === "none" ? undefined : value)
-              }
+              }}
               value={field.value ?? "none"}
             >
               <SelectTrigger className="w-full" id="keyName">
@@ -195,9 +199,9 @@ export function LaunchTemplateDataFields({
           name="subnetId"
           render={({ field }) => (
             <Select
-              onValueChange={(value) =>
+              onValueChange={(value) => {
                 field.onChange(value === "none" ? undefined : value)
-              }
+              }}
               value={field.value ?? "none"}
             >
               <SelectTrigger className="w-full" id="subnetId">
@@ -256,7 +260,9 @@ export function LaunchTemplateDataFields({
                     <input
                       aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
                       checked={selectedSet.has(sg.GroupId ?? "")}
-                      onChange={() => toggle(sg.GroupId ?? "")}
+                      onChange={() => {
+                        toggle(sg.GroupId ?? "")
+                      }}
                       type="checkbox"
                     />
                     <span className="font-mono">
@@ -329,7 +335,9 @@ export function LaunchTemplateDataFields({
               name="rootVolumeType"
               render={({ field }) => (
                 <Select
-                  onValueChange={(value) => field.onChange(value)}
+                  onValueChange={(value) => {
+                    field.onChange(value)
+                  }}
                   value={field.value ?? DEFAULT_VOLUME_TYPE}
                 >
                   <SelectTrigger

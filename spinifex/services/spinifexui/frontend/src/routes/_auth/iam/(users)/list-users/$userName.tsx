@@ -185,7 +185,9 @@ function UserDetail() {
         <PageHeading
           actions={
             <Button
-              onClick={() => setShowDeleteDialog(true)}
+              onClick={() => {
+                setShowDeleteDialog(true)
+              }}
               size="sm"
               variant="destructive"
             >
@@ -245,7 +247,9 @@ function UserDetail() {
                       <StateBadge state={key.Status} />
                       <Button
                         disabled={pendingKeyAction === key.AccessKeyId}
-                        onClick={async () => await handleToggleAccessKey(key)}
+                        onClick={async () => {
+                          await handleToggleAccessKey(key)
+                        }}
                         size="sm"
                         variant="outline"
                       >
@@ -334,7 +338,9 @@ function UserDetail() {
       {newAccessKey && (
         <AccessKeyModal
           accessKeyId={newAccessKey.accessKeyId}
-          onClose={() => setNewAccessKey(null)}
+          onClose={() => {
+            setNewAccessKey(null)
+          }}
           secretAccessKey={newAccessKey.secretAccessKey}
         />
       )}

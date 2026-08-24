@@ -1,11 +1,6 @@
 GO_PROJECT_NAME := spx
 SHELL := /bin/bash
 
-# golangci-lint's default cache (~/.cache/golangci-lint) is keyed by module
-# path, not worktree path, so parallel worktrees of this module collide and
-# surface each other's issues. Scope it per worktree.
-export GOLANGCI_LINT_CACHE := $(CURDIR)/.cache/golangci-lint
-
 # GOFIPS140 is a global build-config change: it alters every package's action ID,
 # stdlib included, so a target that omits it shares no build-cache entry with one
 # that sets it. Exported once here rather than per-recipe so the two can't drift.
@@ -344,9 +339,9 @@ install-system:
 		ovn-central ovn-host openvswitch-switch dhcpcd-base
 
 install-go:
-	@echo -e "\n....Installing Go 1.26.6 for $(ARCH) ($(GO_ARCH))...."
+	@echo -e "\n....Installing Go 1.27.0 for $(ARCH) ($(GO_ARCH))...."
 	@if [ ! -d "/usr/local/go" ]; then \
-		curl -L https://go.dev/dl/go1.26.6.linux-$(GO_ARCH).tar.gz | tar -C /usr/local -xz; \
+		curl -L https://go.dev/dl/go1.27.0.linux-$(GO_ARCH).tar.gz | tar -C /usr/local -xz; \
 	else \
 		echo "Go already installed in /usr/local/go"; \
 	fi

@@ -32,7 +32,7 @@ const { sdk } = vi.hoisted(() => {
   }
   interface Command {
     readonly constructor: { name: string }
-    readonly input: unknown
+    readonly input: object
   }
 
   const state = {
@@ -48,11 +48,10 @@ const { sdk } = vi.hoisted(() => {
     return state.seq
   }
 
-  const handlers = new Map<string, (input: unknown) => unknown>([
+  const handlers = new Map<string, (i: never) => unknown>([
     [
       "CreateTargetGroupCommand",
-      (input) => {
-        const i = input as { Name: string; VpcId: string }
+      (i: { Name: string; VpcId: string }) => {
         const tg = {
           arn: `arn:tg:${nextSeq()}`,
           name: i.Name,
@@ -65,8 +64,7 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "CreateLoadBalancerCommand",
-      (input) => {
-        const i = input as { Name: string; Subnets: string[] }
+      (i: { Name: string; Subnets: string[] }) => {
         const lb = {
           arn: `arn:lb:${nextSeq()}`,
           name: i.Name,
@@ -79,14 +77,13 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "CreateListenerCommand",
-      (input) => {
-        const i = input as {
-          LoadBalancerArn: string
-          Port: number
-          Protocol: string
-          DefaultActions: { TargetGroupArn: string }[]
-        }
-        const action = i.DefaultActions[0]
+      (i: {
+        LoadBalancerArn: string
+        Port: number
+        Protocol: string
+        DefaultActions: { TargetGroupArn: string }[]
+      }) => {
+        const [action] = i.DefaultActions
         if (!action) {
           throw new Error("CreateListenerCommand requires DefaultActions[0]")
         }
@@ -103,11 +100,10 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "RegisterTargetsCommand",
-      (input) => {
-        const i = input as {
-          TargetGroupArn: string
-          Targets: { Id: string; Port?: number }[]
-        }
+      (i: {
+        TargetGroupArn: string
+        Targets: { Id: string; Port?: number }[]
+      }) => {
         const existing = state.targets.get(i.TargetGroupArn) ?? []
         const next = [
           ...existing,
@@ -123,8 +119,7 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "DescribeTargetHealthCommand",
-      (input) => {
-        const i = input as { TargetGroupArn: string }
+      (i: { TargetGroupArn: string }) => {
         const targets = state.targets.get(i.TargetGroupArn) ?? []
         return {
           TargetHealthDescriptions: targets.map((t) => ({
@@ -160,21 +155,16 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "DescribeListenersCommand",
-      (input) => {
-        const i = input as { LoadBalancerArn: string }
-        return {
-          Listeners: state.listeners
-            .filter((l) => l.lbArn === i.LoadBalancerArn)
-            .map((l) => ({
-              ListenerArn: l.arn,
-              Port: l.port,
-              Protocol: l.protocol,
-              DefaultActions: [
-                { Type: "forward", TargetGroupArn: l.defaultTg },
-              ],
-            })),
-        }
-      },
+      (i: { LoadBalancerArn: string }) => ({
+        Listeners: state.listeners
+          .filter((l) => l.lbArn === i.LoadBalancerArn)
+          .map((l) => ({
+            ListenerArn: l.arn,
+            Port: l.port,
+            Protocol: l.protocol,
+            DefaultActions: [{ Type: "forward", TargetGroupArn: l.defaultTg }],
+          })),
+      }),
     ],
   ])
 
@@ -185,7 +175,7 @@ const { sdk } = vi.hoisted(() => {
         `No E2E handler for SDK command ${command.constructor.name}`,
       )
     }
-    return handler(command.input)
+    return handler(command.input as never)
   })
 
   return {

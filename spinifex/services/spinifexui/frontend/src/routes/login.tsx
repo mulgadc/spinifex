@@ -1,11 +1,8 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import {
-  createFileRoute,
-  redirect,
-  type SearchSchemaInput,
-} from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 import { useEffect, useState } from "react"
 import { useForm } from "react-hook-form"
+import { z } from "zod"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -38,16 +35,28 @@ import { startConsoleHandoff } from "@/lib/console-handoff"
 import { isDirectHostAccess } from "@/lib/host-access"
 import { exchangeForSession } from "@/lib/sts"
 
+// Any reason other than the one the session-expiry redirect sends is dropped,
+// so a hand-typed value cannot put copy on the login page.
+/* oxlint-disable promise/prefer-await-to-then, unicorn/no-useless-undefined -- zod's .catch() supplies a schema fallback, not a promise handler */
+const searchSchema = z.object({
+  reason: z.literal("expired").optional().catch(undefined),
+  // The router's search parser coerces `handoff=1` to the number 1, so accept
+  // either and normalise. Matching only the string strips the param from the
+  // URL and the handoff then silently never runs.
+  handoff: z
+    .union([z.literal("1"), z.literal(1)])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : ("1" as const)))
+    .catch(undefined),
+})
+/* oxlint-enable promise/prefer-await-to-then, unicorn/no-useless-undefined */
+
+function noHandoffCleanup(): void {
+  /* the page was not opened for a handoff, so no listener was attached */
+}
+
 export const Route = createFileRoute("/login")({
-  validateSearch: (
-    search: { reason?: string; handoff?: string | number } & SearchSchemaInput,
-  ) => ({
-    reason: search.reason === "expired" ? ("expired" as const) : undefined,
-    // TanStack Router's default search parser coerces `handoff=1` to the
-    // number 1, so compare via String() — otherwise `=== "1"` is false, the
-    // param is stripped from the URL, and the handoff silently never runs.
-    handoff: String(search.handoff) === "1" ? ("1" as const) : undefined,
-  }),
+  validateSearch: searchSchema,
   beforeLoad: () => {
     if (getCredentials()) {
       throw redirect({ to: "/" })
@@ -66,9 +75,9 @@ function LoginPage() {
   const [handingOff, setHandingOff] = useState(handoff === "1")
   useEffect(() => {
     if (handoff !== "1") {
-      return
+      return noHandoffCleanup
     }
-    const stop = startConsoleHandoff({
+    return startConsoleHandoff({
       onFailure: () => {
         setHandingOff(false)
         setAuthError(
@@ -76,7 +85,6 @@ function LoginPage() {
         )
       },
     })
-    return stop
   }, [handoff])
   const {
     register,

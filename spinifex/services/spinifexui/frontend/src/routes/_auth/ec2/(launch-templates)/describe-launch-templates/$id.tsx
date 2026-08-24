@@ -240,7 +240,9 @@ function LaunchTemplateDetail() {
             <div className="flex items-center gap-2">
               <Button
                 disabled={deleteTemplate.isPending}
-                onClick={() => setShowDeleteDialog(true)}
+                onClick={() => {
+                  setShowDeleteDialog(true)
+                }}
                 size="sm"
                 variant="destructive"
               >
@@ -327,9 +329,9 @@ function LaunchTemplateDetail() {
                             {!isDefault && versionNumber !== undefined && (
                               <Button
                                 disabled={setDefault.isPending}
-                                onClick={async () =>
+                                onClick={async () => {
                                   await handleSetDefault(versionNumber)
-                                }
+                                }}
                                 size="sm"
                                 variant="ghost"
                               >
@@ -382,7 +384,9 @@ function LaunchTemplateDetail() {
                   <label htmlFor="sourceVersion">Clone from version</label>
                 </FieldTitle>
                 <Select
-                  onValueChange={(value) => applySourceVersion(value ?? "none")}
+                  onValueChange={(value) => {
+                    applySourceVersion(value ?? "none")
+                  }}
                   value={getValues("sourceVersion") ?? "none"}
                 >
                   <SelectTrigger className="w-full" id="sourceVersion">

@@ -77,6 +77,7 @@ export function SidebarProvider({
   const open = openProp ?? internalOpen
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- React's setState accepts a value or an updater
       const openState = typeof value === "function" ? value(open) : value
       if (setOpenProp) {
         setOpenProp(openState)
@@ -92,11 +93,13 @@ export function SidebarProvider({
   )
 
   // Helper to toggle the sidebar.
-  const toggleSidebar = React.useCallback(
-    () =>
-      isMobile ? setOpenMobile((prev) => !prev) : setOpen((prev) => !prev),
-    [isMobile, setOpen, setOpenMobile],
-  )
+  const toggleSidebar = React.useCallback(() => {
+    if (isMobile) {
+      setOpenMobile((prev) => !prev)
+    } else {
+      setOpen((prev) => !prev)
+    }
+  }, [isMobile, setOpen, setOpenMobile])
 
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
@@ -111,7 +114,9 @@ export function SidebarProvider({
     }
 
     window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown)
+    }
   }, [toggleSidebar])
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
@@ -570,6 +575,7 @@ export function SidebarMenuButton({
   }
 
   const tooltipProps =
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- the prop takes either tooltip text or the full props object
     typeof tooltip === "string" ? { children: tooltip } : tooltip
 
   return (

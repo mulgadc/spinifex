@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"uuid"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -81,7 +81,7 @@ type adminErrorDetail struct {
 // Authorization is fail-closed at every step and every denial returns the same
 // AccessDenied, so a caller cannot probe which gate rejected it.
 func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 	w.Header().Set("X-Amzn-Requestid", requestID)
 
 	method := chi.URLParam(r, "method")

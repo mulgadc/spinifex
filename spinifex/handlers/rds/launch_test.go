@@ -26,7 +26,11 @@ import (
 const (
 	testCustomerAccount = "123456789012"
 	testDBSubnet        = "subnet-customer-db"
-	testEngineAMI       = "ami-rds-postgres-18"
+	// The customer subnet's CIDR, resolved so the launcher can configure the
+	// customer ENI statically. Gives a gateway of 10.0.0.1, matching the fake
+	// customer ENI IPs CreateNetworkInterface hands out.
+	testDBSubnetCIDR = "10.0.0.0/24"
+	testEngineAMI    = "ami-rds-postgres-18"
 
 	// The persisted endpoint a replace re-attaches: its address is the DNS
 	// target and its MAC is what the replacement VM's NIC has to come up with.
@@ -264,6 +268,16 @@ func (f *fakeENIs) ModifyNetworkInterfaceAttribute(_ context.Context, in *ec2.Mo
 	}
 	f.modified = append(f.modified, in)
 	return &ec2.ModifyNetworkInterfaceAttributeOutput{}, nil
+}
+
+// DescribeSubnets answers the customer subnet's CIDR, which the launcher
+// resolves into the prefix and gateway it configures the customer ENI with.
+func (f *fakeENIs) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInput, _ string) (*ec2.DescribeSubnetsOutput, error) {
+	var subnets []*ec2.Subnet
+	for _, id := range aws.StringValueSlice(in.SubnetIds) {
+		subnets = append(subnets, &ec2.Subnet{SubnetId: aws.String(id), CidrBlock: aws.String(testDBSubnetCIDR)})
+	}
+	return &ec2.DescribeSubnetsOutput{Subnets: subnets}, nil
 }
 
 func (f *fakeENIs) DescribeSecurityGroups(_ context.Context, in *ec2.DescribeSecurityGroupsInput, _ string) (*ec2.DescribeSecurityGroupsOutput, error) {
@@ -580,6 +594,13 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 		assert.Equal(t, "mydb", tagOf(eni.TagSpecifications, rdsInstanceTagKey))
 	}
 
+	// Only the customer endpoint ENI is statically addressed; the system NIC
+	// still needs its OVN DHCP lease for IMDS bootstrap.
+	assert.Empty(t, tagOf(sysENI.TagSpecifications, tags.DHCPDisabledKey),
+		"the system NIC must keep DHCP")
+	assert.Equal(t, tags.DHCPDisabledValue, tagOf(custENI.TagSpecifications, tags.DHCPDisabledKey),
+		"the customer endpoint ENI must be marked to suppress DHCP")
+
 	// The VM itself: a system-account instance off the engine AMI, carrying the
 	// managed-by tag that hides it from the customer's EC2 API, with the
 	// customer ENI injected cross-account as an extra NIC.
@@ -601,6 +622,10 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 		// The endpoint address lives on this NIC, so it has to survive the
 		// terminate half of a replace the way the datadir volume does.
 		DeleteOnTermination: aws.Bool(false),
+		// Resolved from the customer subnet's CIDR so the guest configures this
+		// NIC statically instead of depending on the OVN DHCP lease.
+		ENICIDRPrefix: 24,
+		Gateway:       "10.0.0.1",
 	}, in.ExtraENIs[0], "the extra NIC must carry the customer account, or the daemon updates the wrong ENI record")
 	assert.Equal(t, "#cloud-config\n", in.UserData)
 	assert.Equal(t, "arn:aws:iam::000000000000:instance-profile/rdsInstanceRole", in.IamInstanceProfileArn)

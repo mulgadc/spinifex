@@ -118,7 +118,9 @@ function AddAddonDialog({
               aria-invalid={!!errors.addonName}
               className={selectClassName}
               id="addon-name"
-              onChange={(e) => handleAddonChange(e.target.value)}
+              onChange={(e) => {
+                handleAddonChange(e.target.value)
+              }}
               value={addonName}
             >
               <option value="">Select add-on</option>
@@ -140,11 +142,11 @@ function AddAddonDialog({
               className={selectClassName}
               disabled={versions.length === 0}
               id="addon-version"
-              onChange={(e) =>
+              onChange={(e) => {
                 setValue("addonVersion", e.target.value, {
                   shouldValidate: true,
                 })
-              }
+              }}
               value={addonVersion}
             >
               {versions.map((v, i) => (
@@ -268,7 +270,11 @@ function UpdateAddonDialog({
         serviceAccountRoleArn: role.trim() || undefined,
         configurationValues: config.trim() || undefined,
       },
-      { onSuccess: () => onOpenChange(false) },
+      {
+        onSuccess: () => {
+          onOpenChange(false)
+        },
+      },
     )
   }
 
@@ -288,7 +294,9 @@ function UpdateAddonDialog({
               className={selectClassName}
               disabled={versions.length === 0}
               id="update-addon-version"
-              onChange={(e) => setVersion(e.target.value)}
+              onChange={(e) => {
+                setVersion(e.target.value)
+              }}
               value={version}
             >
               {versions.map((v) => (
@@ -307,7 +315,9 @@ function UpdateAddonDialog({
             </FieldTitle>
             <Input
               id="update-addon-role"
-              onChange={(e) => setRole(e.target.value)}
+              onChange={(e) => {
+                setRole(e.target.value)
+              }}
               placeholder="arn:aws:iam::…:role/…"
               value={role}
             />
@@ -386,7 +396,9 @@ function AddonRow({
             </Badge>
             <Button
               aria-label="Update add-on"
-              onClick={() => setShowUpdate(true)}
+              onClick={() => {
+                setShowUpdate(true)
+              }}
               size="icon"
               variant="ghost"
             >
@@ -394,7 +406,9 @@ function AddonRow({
             </Button>
             <Button
               aria-label="Remove add-on"
-              onClick={() => onDelete(addonName)}
+              onClick={() => {
+                onDelete(addonName)
+              }}
               size="icon"
               variant="ghost"
             >
@@ -447,7 +461,12 @@ export function AddonsTab({ clusterName }: { clusterName: string }) {
           Add-on manifests are staged; activation completes when the cluster
           reports the workload ready.
         </p>
-        <Button onClick={() => setShowAdd(true)} size="sm">
+        <Button
+          onClick={() => {
+            setShowAdd(true)
+          }}
+          size="sm"
+        >
           Add add-on
         </Button>
       </div>
@@ -486,10 +505,18 @@ export function AddonsTab({ clusterName }: { clusterName: string }) {
           }
           deleteAddon.mutate(
             { clusterName, addonName: pendingDelete },
-            { onSuccess: () => setPendingDelete(undefined) },
+            {
+              onSuccess: () => {
+                setPendingDelete(undefined)
+              },
+            },
           )
         }}
-        onOpenChange={(o) => !o && setPendingDelete(undefined)}
+        onOpenChange={(o) => {
+          if (!o) {
+            setPendingDelete(undefined)
+          }
+        }}
         open={pendingDelete !== undefined}
         pendingLabel="Removing…"
         title="Remove add-on"

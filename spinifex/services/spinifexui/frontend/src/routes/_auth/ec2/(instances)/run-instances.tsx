@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
+import { z } from "zod"
 
 import {
   ec2ImagesQueryOptions,
@@ -13,19 +14,15 @@ import {
 
 import { RunInstancesPage } from "./-components/run-instances-page"
 
+/* oxlint-disable promise/prefer-await-to-then, unicorn/no-useless-undefined -- zod's .catch() supplies a schema fallback, not a promise handler */
+const searchSchema = z.object({
+  launchTemplateId: z.string().optional().catch(undefined),
+  launchTemplateVersion: z.string().optional().catch(undefined),
+})
+/* oxlint-enable promise/prefer-await-to-then, unicorn/no-useless-undefined */
+
 export const Route = createFileRoute("/_auth/ec2/(instances)/run-instances")({
-  validateSearch: (
-    search: Record<string, unknown>,
-  ): { launchTemplateId?: string; launchTemplateVersion?: string } => ({
-    launchTemplateId:
-      typeof search.launchTemplateId === "string"
-        ? search.launchTemplateId
-        : undefined,
-    launchTemplateVersion:
-      typeof search.launchTemplateVersion === "string"
-        ? search.launchTemplateVersion
-        : undefined,
-  }),
+  validateSearch: searchSchema,
   loader: async ({ context }) => {
     await Promise.all([
       context.queryClient.ensureQueryData(ec2ImagesQueryOptions),

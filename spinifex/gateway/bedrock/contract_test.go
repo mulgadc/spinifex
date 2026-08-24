@@ -97,7 +97,7 @@ func TestContract_ConverseStream_SelfHost_RealSDKConsumerDecodesFrames(t *testin
 	require.NoError(t, resp.GetStream().Err())
 
 	assert.Equal(t, []string{
-		"messageStart", "contentBlockStart", "contentBlockDelta", "contentBlockDelta",
+		"messageStart", "contentBlockDelta", "contentBlockDelta",
 		"contentBlockStop", "messageStop", "metadata",
 	}, kinds)
 	assert.Equal(t, []string{"Hello", " world"}, deltas)
@@ -174,7 +174,7 @@ func TestContract_ConverseStream_Anthropic_RealSDKConsumerDecodesFrames(t *testi
 	require.NoError(t, resp.GetStream().Err())
 
 	assert.Equal(t, []string{
-		"messageStart", "contentBlockStart", "contentBlockDelta", "contentBlockDelta", "contentBlockStop",
+		"messageStart", "contentBlockDelta", "contentBlockDelta", "contentBlockStop",
 		"contentBlockStart", "contentBlockDelta", "contentBlockStop", "messageStop", "metadata",
 	}, kinds)
 	assert.True(t, sawToolUse)

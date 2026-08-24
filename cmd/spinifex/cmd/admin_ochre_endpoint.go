@@ -79,6 +79,7 @@ func init() {
 	_ = ochreEndpointDescribeCmd.MarkFlagRequired("model-id")
 
 	ochreEndpointDeleteCmd.Flags().String("model-id", "", "Model ID whose endpoint to tear down (required)")
+	ochreEndpointDeleteCmd.Flags().String("account", "", "Account ID scoping the target (defaults to the shared platform account; set to tear down a pinned provisioned-throughput endpoint)")
 	_ = ochreEndpointDeleteCmd.MarkFlagRequired("model-id")
 }
 
@@ -331,8 +332,35 @@ func runOchreEndpointList(_ *cobra.Command, _ []string) {
 	fmt.Println(msg)
 }
 
+// deleteEndpointOutput is the testable core of 'ochre endpoint delete': it
+// tears the endpoint down and returns an honest message — a no-op that found
+// no record must not claim a teardown, and it points the operator at --account
+// so a pinned, account-scoped record they can see in 'list' is reachable.
+func deleteEndpointOutput(ctx context.Context, svc handlers_bedrock.EndpointService, modelID, accountID string) (string, error) {
+	out, err := svc.Delete(ctx, &handlers_bedrock.DeleteEndpointInput{ModelID: modelID, AccountID: accountID}, utils.GlobalAccountID)
+	if err != nil {
+		return "", err
+	}
+	if !out.Removed {
+		return fmt.Sprintf("No serving endpoint for %s under account %s; nothing to tear down. "+
+			"If 'endpoint list' shows one under a different account, pass --account.\n",
+			modelID, resolveAccountLabel(accountID)), nil
+	}
+	return fmt.Sprintf("Endpoint for %s torn down.\n", modelID), nil
+}
+
+// resolveAccountLabel renders the account an empty flag resolves to, so the
+// no-op message names the shared platform account rather than an empty string.
+func resolveAccountLabel(accountID string) string {
+	if accountID == "" {
+		return utils.GlobalAccountID + " (shared platform)"
+	}
+	return accountID
+}
+
 func runOchreEndpointDelete(cmd *cobra.Command, _ []string) {
 	modelID, _ := cmd.Flags().GetString("model-id")
+	accountID, _ := cmd.Flags().GetString("account")
 
 	svc, closeFn, err := endpointServiceFn()
 	if err != nil {
@@ -342,10 +370,11 @@ func runOchreEndpointDelete(cmd *cobra.Command, _ []string) {
 	}
 	defer closeFn()
 
-	if _, err := svc.Delete(context.Background(), &handlers_bedrock.DeleteEndpointInput{ModelID: modelID}, utils.GlobalAccountID); err != nil {
+	msg, err := deleteEndpointOutput(context.Background(), svc, modelID, accountID)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		ochreExit(1)
 		return
 	}
-	fmt.Printf("Endpoint for %s torn down.\n", modelID)
+	fmt.Print(msg)
 }

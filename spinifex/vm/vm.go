@@ -25,21 +25,27 @@ type InstanceHealthState struct {
 	RestartCount    int       `json:"restart_count"`
 	FirstCrashTime  time.Time `json:"first_crash_time"`
 
-	// QMP health monitoring. QMPConsecutiveFailures counts back-to-back
-	// query-status failures; at QMPMaxConsecutiveFailures the instance is
-	// impaired and ImpairedSince is stamped. A successful poll clears all three.
+	// QMP health monitoring. Consecutive failures include transport errors and
+	// non-running runstates; only a running poll clears impairment.
 	QMPConsecutiveFailures int       `json:"qmp_consecutive_failures"`
 	LastQMPSuccess         time.Time `json:"last_qmp_success,omitzero"`
 	ImpairedSince          time.Time `json:"impaired_since,omitzero"`
 }
 
 // ExtraENI describes an additional VPC network interface attached to a VM
-// beyond the primary ENI. Only system VMs (ALBs) use multiple ENIs today.
+// beyond the primary ENI. Only system VMs (ALBs, RDS DB VMs) use multiple
+// ENIs today.
 type ExtraENI struct {
 	ENIID    string `json:"eni_id"`
 	ENIMac   string `json:"eni_mac"`
 	ENIIP    string `json:"eni_ip"`
 	SubnetID string `json:"subnet_id,omitempty"`
+
+	// ENICIDRPrefix and Gateway let this ENI be configured statically instead
+	// of via DHCP, so it never depends on the OVN lease being renewed (an RDS
+	// DB VM's customer ENI is the case). Zero/empty falls back to DHCP.
+	ENICIDRPrefix int    `json:"eni_cidr_prefix,omitempty"`
+	Gateway       string `json:"gateway,omitempty"`
 }
 
 type VM struct {

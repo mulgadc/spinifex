@@ -37,7 +37,7 @@ func TestEvaluate_IAMInstanceProfileActionStrings(t *testing.T) {
 		doc("Allow", "*", "*"),
 	}
 	for _, a := range actions {
-		if got := iampolicy.Evaluate(a, "*", policies); got != iampolicy.Allow {
+		if got := iampolicy.EvaluateWithKeys(a, "*", policies, nil); got != iampolicy.Allow {
 			t.Errorf("expected Allow for action %q under wildcard policy, got %v", a, got)
 		}
 	}
@@ -60,7 +60,7 @@ func TestEvaluate_IAMInstanceProfileActionStrings(t *testing.T) {
 		{"ec2:RunInstances", "*", iampolicy.Deny},
 	}
 	for _, tt := range scopedTests {
-		got := iampolicy.Evaluate(tt.action, tt.resource, scoped)
+		got := iampolicy.EvaluateWithKeys(tt.action, tt.resource, scoped, nil)
 		if got != tt.want {
 			t.Errorf("scoped policy, action=%s resource=%s: expected %v, got %v",
 				tt.action, tt.resource, tt.want, got)
@@ -83,17 +83,17 @@ func TestEvaluate_STSActionStrings(t *testing.T) {
 	scoped := []handlers_iam.PolicyDocument{doc("Allow", "sts:*", "*")}
 
 	for _, a := range actions {
-		if got := iampolicy.Evaluate(a, "*", wildcard); got != iampolicy.Allow {
+		if got := iampolicy.EvaluateWithKeys(a, "*", wildcard, nil); got != iampolicy.Allow {
 			t.Errorf("wildcard policy: expected Allow for %q, got %v", a, got)
 		}
-		if got := iampolicy.Evaluate(a, "*", scoped); got != iampolicy.Allow {
+		if got := iampolicy.EvaluateWithKeys(a, "*", scoped, nil); got != iampolicy.Allow {
 			t.Errorf("sts:* policy: expected Allow for %q, got %v", a, got)
 		}
 	}
 
 	// Non-STS action must NOT match an sts:*-scoped policy — guards against a
 	// pattern regression that would over-allow.
-	if got := iampolicy.Evaluate("ec2:RunInstances", "*", scoped); got != iampolicy.Deny {
+	if got := iampolicy.EvaluateWithKeys("ec2:RunInstances", "*", scoped, nil); got != iampolicy.Deny {
 		t.Errorf("sts:* policy: expected Deny for ec2:RunInstances, got %v", got)
 	}
 }
@@ -104,5 +104,70 @@ func TestIAMAction(t *testing.T) {
 	got := IAMAction("ec2", "RunInstances")
 	if got != "ec2:RunInstances" {
 		t.Fatalf("IAMAction(ec2, RunInstances) = %q, want %q", got, "ec2:RunInstances")
+	}
+}
+
+// --- Resource scoping ---
+
+// TestEvaluate_ResourceScopedStatementsNeedARealARN pins why the gateway must
+// pass the request's ARN rather than "*". The evaluator matches the statement's
+// Resource as a pattern against the request's resource as a value, so a scoped
+// statement never matches "*" in either direction: a Deny fails open and an
+// Allow fails closed.
+func TestEvaluate_ResourceScopedStatementsNeedARealARN(t *testing.T) {
+	const prod = "arn:aws:ec2:ap-southeast-2:123456789012:instance/i-prod"
+	const dev = "arn:aws:ec2:ap-southeast-2:123456789012:instance/i-dev"
+
+	fenced := []handlers_iam.PolicyDocument{
+		doc("Allow", "ec2:*", "*"),
+		doc("Deny", "ec2:TerminateInstances", "arn:aws:ec2:*:*:instance/i-prod"),
+	}
+	if got := iampolicy.EvaluateWithKeys("ec2:TerminateInstances", "*", fenced, nil); got != iampolicy.Allow {
+		t.Errorf("fenced policy against %q: got %v, want Allow — the guardrail is inert", "*", got)
+	}
+	if got := iampolicy.EvaluateWithKeys("ec2:TerminateInstances", prod, fenced, nil); got != iampolicy.Deny {
+		t.Errorf("fenced policy against the fenced instance: got %v, want Deny", got)
+	}
+	if got := iampolicy.EvaluateWithKeys("ec2:TerminateInstances", dev, fenced, nil); got != iampolicy.Allow {
+		t.Errorf("fenced policy against an unfenced instance: got %v, want Allow", got)
+	}
+
+	scopedAllow := []handlers_iam.PolicyDocument{
+		doc("Allow", "ec2:*", "arn:aws:ec2:*:*:instance/i-dev"),
+	}
+	if got := iampolicy.EvaluateWithKeys("ec2:TerminateInstances", "*", scopedAllow, nil); got != iampolicy.Deny {
+		t.Errorf("scoped Allow against %q: got %v, want Deny — least privilege is unexpressible", "*", got)
+	}
+	if got := iampolicy.EvaluateWithKeys("ec2:TerminateInstances", dev, scopedAllow, nil); got != iampolicy.Allow {
+		t.Errorf("scoped Allow against the named instance: got %v, want Allow", got)
+	}
+	if got := iampolicy.EvaluateWithKeys("ec2:TerminateInstances", prod, scopedAllow, nil); got != iampolicy.Deny {
+		t.Errorf("scoped Allow against a sibling instance: got %v, want Deny", got)
+	}
+}
+
+// TestEvaluate_PassingARealARNCannotWithdrawAccess is the property the
+// per-service rollout rests on. Every policy that functions today carries
+// Resource "*" for the action, and "*" as a pattern matches any ARN value, so
+// handing the evaluator a real ARN cannot turn an Allow into a Deny — not even
+// a malformed one, which bounds a resolver bug to the newly-scoped statements.
+func TestEvaluate_PassingARealARNCannotWithdrawAccess(t *testing.T) {
+	resources := []string{
+		"*",
+		"arn:aws:ec2:ap-southeast-2:123456789012:instance/i-abc",
+		"arn:aws:ec2:ap-southeast-2:123456789012:instance/*",
+		"arn:aws:ec2:ap-southeast-2:123456789012:instance/i-abc/admin",
+		"not-an-arn",
+	}
+	policies := [][]handlers_iam.PolicyDocument{
+		{doc("Allow", "ec2:*", "*")},
+		{doc("Allow", "*", "*")},
+	}
+	for _, p := range policies {
+		for _, resource := range resources {
+			if got := iampolicy.EvaluateWithKeys("ec2:RunInstances", resource, p, nil); got != iampolicy.Allow {
+				t.Errorf("account-wide Allow against %q: got %v, want Allow", resource, got)
+			}
+		}
 	}
 }

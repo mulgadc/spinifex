@@ -21,8 +21,7 @@ func errCodeMessage(err error) (code, message string) {
 	if err == nil {
 		return "", ""
 	}
-	var aerr awserr.Error
-	if errors.As(err, &aerr) {
+	if aerr, ok := errors.AsType[awserr.Error](err); ok {
 		return aerr.Code(), aerr.Message()
 	}
 	return "non-aws-error", err.Error()

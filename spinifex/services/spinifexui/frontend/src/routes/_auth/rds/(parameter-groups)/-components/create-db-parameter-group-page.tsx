@@ -179,9 +179,9 @@ export function CreateDBParameterGroupPage() {
         <FormActions
           isPending={createGroup.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/rds/describe-db-parameter-groups" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Parameter Group"
         />

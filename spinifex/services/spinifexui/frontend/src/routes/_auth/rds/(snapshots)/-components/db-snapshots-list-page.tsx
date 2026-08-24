@@ -38,7 +38,13 @@ export function DBSnapshotsListPage() {
     <>
       <PageHeading
         actions={
-          <Button onClick={() => setShowCreate(true)}>Take Snapshot</Button>
+          <Button
+            onClick={() => {
+              setShowCreate(true)
+            }}
+          >
+            Take Snapshot
+          </Button>
         }
         title="Snapshots"
       />
@@ -47,7 +53,9 @@ export function DBSnapshotsListPage() {
         {TYPE_FILTERS.map((filter) => (
           <Button
             key={filter.value}
-            onClick={() => setTypeFilter(filter.value)}
+            onClick={() => {
+              setTypeFilter(filter.value)
+            }}
             size="sm"
             variant={typeFilter === filter.value ? "default" : "outline"}
           >
@@ -124,12 +132,12 @@ export function DBSnapshotsListPage() {
                     <td className="space-x-2 px-4 py-2 text-right">
                       <Button
                         disabled={!canRestoreSnapshot(snapshot.Status)}
-                        onClick={async () =>
+                        onClick={async () => {
                           await navigate({
                             to: "/rds/restore-db-instance-from-db-snapshot/$id",
                             params: { id },
                           })
-                        }
+                        }}
                         size="sm"
                         variant="outline"
                       >
@@ -142,7 +150,9 @@ export function DBSnapshotsListPage() {
                             snapshot.SnapshotType,
                           )
                         }
-                        onClick={() => setDeleteTarget(id)}
+                        onClick={() => {
+                          setDeleteTarget(id)
+                        }}
                         size="sm"
                         variant="destructive"
                       >
@@ -172,7 +182,11 @@ export function DBSnapshotsListPage() {
       {deleteTarget && (
         <DeleteDBSnapshotDialog
           dbSnapshotIdentifier={deleteTarget}
-          onOpenChange={(open) => !open && setDeleteTarget(null)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDeleteTarget(null)
+            }
+          }}
           open={true}
         />
       )}

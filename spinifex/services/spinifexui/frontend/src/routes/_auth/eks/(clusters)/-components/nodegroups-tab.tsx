@@ -109,7 +109,11 @@ function ScaleNodegroupDialog({
     }
     scaleNodegroup.mutate(
       { clusterName, nodegroupName, minSize, desiredSize, maxSize },
-      { onSuccess: () => onOpenChange(false) },
+      {
+        onSuccess: () => {
+          onOpenChange(false)
+        },
+      },
     )
   }
 
@@ -127,7 +131,9 @@ function ScaleNodegroupDialog({
             </FieldTitle>
             <Input
               id="scale-min"
-              onChange={(e) => setMinSize(Number(e.target.value))}
+              onChange={(e) => {
+                setMinSize(Number(e.target.value))
+              }}
               type="number"
               value={minSize}
             />
@@ -138,7 +144,9 @@ function ScaleNodegroupDialog({
             </FieldTitle>
             <Input
               id="scale-desired"
-              onChange={(e) => setDesiredSize(Number(e.target.value))}
+              onChange={(e) => {
+                setDesiredSize(Number(e.target.value))
+              }}
               type="number"
               value={desiredSize}
             />
@@ -149,7 +157,9 @@ function ScaleNodegroupDialog({
             </FieldTitle>
             <Input
               id="scale-max"
-              onChange={(e) => setMaxSize(Number(e.target.value))}
+              onChange={(e) => {
+                setMaxSize(Number(e.target.value))
+              }}
               type="number"
               value={maxSize}
             />
@@ -210,7 +220,9 @@ function NodegroupRow({
             {updateAvailable && (
               <Button
                 aria-label="Update node group version"
-                onClick={() => setShowUpdate(true)}
+                onClick={() => {
+                  setShowUpdate(true)
+                }}
                 size="icon"
                 variant="ghost"
               >
@@ -219,7 +231,9 @@ function NodegroupRow({
             )}
             <Button
               aria-label="Scale node group"
-              onClick={() => setShowScale(true)}
+              onClick={() => {
+                setShowScale(true)
+              }}
               size="icon"
               variant="ghost"
             >
@@ -227,7 +241,9 @@ function NodegroupRow({
             </Button>
             <Button
               aria-label="Delete node group"
-              onClick={() => onDelete(nodegroupName)}
+              onClick={() => {
+                onDelete(nodegroupName)
+              }}
               size="icon"
               variant="ghost"
             >
@@ -274,12 +290,16 @@ function NodegroupRow({
         confirmLabel="Update"
         description={`Update node group "${nodegroupName}" from ${ng?.version} to ${clusterVersion}? Nodes are replaced in a rolling update.`}
         isPending={updateVersion.isPending}
-        onConfirm={() =>
+        onConfirm={() => {
           updateVersion.mutate(
             { clusterName, nodegroupName, version: clusterVersion },
-            { onSuccess: () => setShowUpdate(false) },
+            {
+              onSuccess: () => {
+                setShowUpdate(false)
+              },
+            },
           )
-        }
+        }}
         onOpenChange={setShowUpdate}
         open={showUpdate}
         title="Update node group version"
@@ -421,7 +441,9 @@ function AddNodegroupDialog({
                     <input
                       aria-label={`Subnet ${subnet.SubnetId}`}
                       checked={selectedSubnetSet.has(subnet.SubnetId ?? "")}
-                      onChange={() => toggleSubnet(subnet.SubnetId ?? "")}
+                      onChange={() => {
+                        toggleSubnet(subnet.SubnetId ?? "")
+                      }}
                       type="checkbox"
                     />
                     <span className="font-mono">
@@ -578,7 +600,12 @@ export function NodegroupsTab({
   return (
     <>
       <div className="mb-4 flex justify-end">
-        <Button onClick={() => setShowAdd(true)} size="sm">
+        <Button
+          onClick={() => {
+            setShowAdd(true)
+          }}
+          size="sm"
+        >
           Add node group
         </Button>
       </div>
@@ -615,10 +642,18 @@ export function NodegroupsTab({
           }
           deleteNodegroup.mutate(
             { clusterName, nodegroupName: pendingDelete },
-            { onSuccess: () => setPendingDelete(undefined) },
+            {
+              onSuccess: () => {
+                setPendingDelete(undefined)
+              },
+            },
           )
         }}
-        onOpenChange={(o) => !o && setPendingDelete(undefined)}
+        onOpenChange={(o) => {
+          if (!o) {
+            setPendingDelete(undefined)
+          }
+        }}
         open={pendingDelete !== undefined}
         title="Delete node group"
       />

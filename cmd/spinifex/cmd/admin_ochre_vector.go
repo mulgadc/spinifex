@@ -96,6 +96,26 @@ truncated in the default table; pass --json for the full response.`,
 	Run: runOchreVectorQuery,
 }
 
+var ochreVectorBackupCmd = &cobra.Command{
+	Use:   "backup",
+	Short: "Back up an account's vector-store schema to predastore",
+	Long: `backup runs pg_dump against the platform appliance, scoped to --account's own
+kb_<account> schema, gzips the output, and uploads it to predastore under an
+account-scoped, timestamped object key. Backup is an explicit operator
+action -- it never runs automatically on appliance teardown.`,
+	Run: runOchreVectorBackup,
+}
+
+var ochreVectorRestoreCmd = &cobra.Command{
+	Use:   "restore",
+	Short: "Restore an account's vector-store schema from a predastore backup",
+	Long: `restore imports --from (an object key a prior backup wrote) back into
+--account's schema, replacing its existing tables cleanly, then repairs the
+account role's grants so query/ingest access resumes exactly as before the
+backup. Safe to run against an existing schema.`,
+	Run: runOchreVectorRestore,
+}
+
 func init() {
 	ochreCmd.AddCommand(ochreVectorCmd)
 	ochreVectorCmd.AddCommand(ochreVectorIndexCmd)
@@ -106,6 +126,8 @@ func init() {
 	ochreVectorCmd.AddCommand(ochreVectorJobCmd)
 	ochreVectorJobCmd.AddCommand(ochreVectorJobDescribeCmd)
 	ochreVectorCmd.AddCommand(ochreVectorQueryCmd)
+	ochreVectorCmd.AddCommand(ochreVectorBackupCmd)
+	ochreVectorCmd.AddCommand(ochreVectorRestoreCmd)
 
 	ochreVectorIndexCreateCmd.Flags().String("name", "", "Human-readable index name (required)")
 	ochreVectorIndexCreateCmd.Flags().Int("dimension", 0, "Embedding vector dimension (required)")
@@ -129,6 +151,14 @@ func init() {
 	ochreVectorQueryCmd.Flags().Bool("json", false, "Print full, untruncated results as JSON")
 	_ = ochreVectorQueryCmd.MarkFlagRequired("index")
 	_ = ochreVectorQueryCmd.MarkFlagRequired("text")
+
+	ochreVectorBackupCmd.Flags().String("account", "", "Account ID to back up (required)")
+	_ = ochreVectorBackupCmd.MarkFlagRequired("account")
+
+	ochreVectorRestoreCmd.Flags().String("account", "", "Account ID to restore into (required)")
+	ochreVectorRestoreCmd.Flags().String("from", "", "Backup object key to restore from, as printed by 'backup' (required)")
+	_ = ochreVectorRestoreCmd.MarkFlagRequired("account")
+	_ = ochreVectorRestoreCmd.MarkFlagRequired("from")
 }
 
 // vectorServiceFn indirects the NATS-backed client so the Run functions'
@@ -140,6 +170,59 @@ var vectorServiceFn = func() (handlers_ochrevector.VectorService, func(), error)
 		return nil, nil, err
 	}
 	return handlers_ochrevector.NewNATSVectorService(nc), nc.Close, nil
+}
+
+// vectorBackupRestoreTimeout bounds the backup/restore NATS round trip: it
+// covers the appliance's own pg_dump/psql run, not just a KV read/write, so
+// it is far more generous than the other vector subjects' timeouts.
+const vectorBackupRestoreTimeout = 10 * time.Minute
+
+// backupAccountFn indirects the NATS call so runBackupAccount is testable
+// without a live daemon, mirroring vectorServiceFn/applianceTeardownFn.
+// Backup/restore are operator-only (unlike VectorService's methods): the
+// target account is named in the request payload, not derived from the
+// caller's own header identity, since the operator CLI always connects as
+// the global account but must be able to target any tenant's schema.
+var backupAccountFn = func(ctx context.Context, accountID string) (*handlers_ochrevector.BackupAccountResponse, error) {
+	_, nc, err := loadConfigAndConnectFn()
+	if err != nil {
+		return nil, err
+	}
+	defer nc.Close()
+	return utils.NATSRequest[handlers_ochrevector.BackupAccountResponse](ctx, nc,
+		handlers_ochrevector.SubjectBackupAccount, &handlers_ochrevector.BackupAccountRequest{AccountID: accountID},
+		vectorBackupRestoreTimeout, utils.GlobalAccountID)
+}
+
+// restoreAccountFn indirects the NATS call so runRestoreAccount is testable
+// without a live daemon, mirroring backupAccountFn.
+var restoreAccountFn = func(ctx context.Context, accountID, objectKey string) error {
+	_, nc, err := loadConfigAndConnectFn()
+	if err != nil {
+		return err
+	}
+	defer nc.Close()
+	_, err = utils.NATSRequest[handlers_ochrevector.RestoreAccountResponse](ctx, nc,
+		handlers_ochrevector.SubjectRestoreAccount, &handlers_ochrevector.RestoreAccountRequest{AccountID: accountID, ObjectKey: objectKey},
+		vectorBackupRestoreTimeout, utils.GlobalAccountID)
+	return err
+}
+
+// runBackupAccount is the testable core of 'ochre vector backup'.
+func runBackupAccount(ctx context.Context, accountID string, backup func(context.Context, string) (*handlers_ochrevector.BackupAccountResponse, error)) (string, error) {
+	out, err := backup(ctx, accountID)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("✅ Backed up account %s to %s (%d bytes).", accountID, out.ObjectKey, out.SizeBytes), nil
+}
+
+// runRestoreAccount is the testable core of 'ochre vector restore'.
+func runRestoreAccount(ctx context.Context, accountID, objectKey string, restore func(context.Context, string, string) error) (string, error) {
+	if err := restore(ctx, accountID, objectKey); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("✅ Restored account %s from %s.", accountID, objectKey), nil
 }
 
 // formatIndexRecord renders one index record as aligned key/value lines.
@@ -447,4 +530,29 @@ func runOchreVectorQuery(cmd *cobra.Command, _ []string) {
 		return
 	}
 	fmt.Println(out)
+}
+
+func runOchreVectorBackup(cmd *cobra.Command, _ []string) {
+	accountID, _ := cmd.Flags().GetString("account")
+
+	msg, err := runBackupAccount(context.Background(), accountID, backupAccountFn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		ochreExit(1)
+		return
+	}
+	fmt.Println(msg)
+}
+
+func runOchreVectorRestore(cmd *cobra.Command, _ []string) {
+	accountID, _ := cmd.Flags().GetString("account")
+	objectKey, _ := cmd.Flags().GetString("from")
+
+	msg, err := runRestoreAccount(context.Background(), accountID, objectKey, restoreAccountFn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		ochreExit(1)
+		return
+	}
+	fmt.Println(msg)
 }

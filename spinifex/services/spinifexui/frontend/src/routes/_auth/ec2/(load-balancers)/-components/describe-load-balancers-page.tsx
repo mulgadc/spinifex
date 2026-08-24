@@ -19,9 +19,9 @@ export function DescribeLoadBalancersPage() {
       <PageHeading
         actions={
           <Button
-            onClick={async () =>
+            onClick={async () => {
               await navigate({ to: "/ec2/create-load-balancer" })
-            }
+            }}
           >
             Create Load Balancer
           </Button>
@@ -53,17 +53,19 @@ export function DescribeLoadBalancersPage() {
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
                     key={arn}
-                    onClick={async () =>
+                    onClick={async () => {
                       await navigate({
                         to: "/ec2/describe-load-balancers/$id",
                         params: { id: encodeURIComponent(arn) },
                       })
-                    }
+                    }}
                   >
                     <td className="px-4 py-2 font-medium">
                       <Link
                         className="text-primary hover:underline"
-                        onClick={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                        }}
                         params={{ id: encodeURIComponent(arn) }}
                         to="/ec2/describe-load-balancers/$id"
                       >

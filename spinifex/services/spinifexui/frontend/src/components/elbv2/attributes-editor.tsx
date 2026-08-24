@@ -46,6 +46,9 @@ export interface AttributesEditorAttribute {
   Value?: string
 }
 
+// Keyed by attribute key, which the caller's specs name rather than this type.
+type AttributeValues = Record<string, string>
+
 interface AttributesEditorProps {
   specs: AttributeSpec[]
   attributes: AttributesEditorAttribute[]
@@ -55,21 +58,21 @@ interface AttributesEditorProps {
   isSuccess?: boolean
 }
 
+// The editor is driven by its specs, so the initial values carry one entry per
+// spec key, defaulting to empty for an attribute the load balancer has not set.
 function buildInitial(
   specs: AttributeSpec[],
   attributes: AttributesEditorAttribute[],
-): Record<string, string> {
+): AttributeValues {
   const byKey = new Map<string, string>()
   for (const attr of attributes) {
     if (attr.Key !== undefined) {
       byKey.set(attr.Key, attr.Value ?? "")
     }
   }
-  const out: Record<string, string> = {}
-  for (const spec of specs) {
-    out[spec.key] = byKey.get(spec.key) ?? ""
-  }
-  return out
+  return Object.fromEntries(
+    specs.map((spec) => [spec.key, byKey.get(spec.key) ?? ""]),
+  )
 }
 
 function validate(spec: AttributeSpec, value: string): string | undefined {
@@ -139,12 +142,9 @@ export function AttributesEditor({
         </div>
       )}
       {isSuccess && changed.length === 0 && (
-        <div
-          className="mb-4 rounded-md border border-emerald-500 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-400"
-          role="status"
-        >
+        <output className="mb-4 block rounded-md border border-emerald-500 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-400">
           Attributes saved.
-        </div>
+        </output>
       )}
       <div className="rounded-lg border bg-card">
         <div className="grid gap-4 p-4 sm:grid-cols-2">
@@ -162,9 +162,9 @@ export function AttributesEditor({
                     aria-label={spec.label}
                     checked={value === "true"}
                     id={id}
-                    onChange={(e) =>
+                    onChange={(e) => {
                       setValue(spec.key, e.target.checked ? "true" : "false")
-                    }
+                    }}
                     type="checkbox"
                   />
                 )}
@@ -173,21 +173,27 @@ export function AttributesEditor({
                     aria-invalid={!!fieldError}
                     id={id}
                     inputMode="numeric"
-                    onChange={(e) => setValue(spec.key, e.target.value)}
+                    onChange={(e) => {
+                      setValue(spec.key, e.target.value)
+                    }}
                     value={value}
                   />
                 )}
                 {spec.type === "text" && (
                   <Input
                     id={id}
-                    onChange={(e) => setValue(spec.key, e.target.value)}
+                    onChange={(e) => {
+                      setValue(spec.key, e.target.value)
+                    }}
                     placeholder={spec.placeholder}
                     value={value}
                   />
                 )}
                 {spec.type === "select" && (
                   <Select
-                    onValueChange={(v) => setValue(spec.key, v ?? "")}
+                    onValueChange={(v) => {
+                      setValue(spec.key, v ?? "")
+                    }}
                     value={value}
                   >
                     <SelectTrigger className="w-full" id={id}>

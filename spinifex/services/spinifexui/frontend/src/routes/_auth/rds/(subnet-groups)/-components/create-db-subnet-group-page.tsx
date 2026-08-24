@@ -172,9 +172,9 @@ export function CreateDBSubnetGroupPage() {
                                 subnet.SubnetId ?? "",
                               )}
                               disabled={unreachable}
-                              onChange={() =>
+                              onChange={() => {
                                 toggleSubnet(subnet.SubnetId ?? "")
-                              }
+                              }}
                               type="checkbox"
                             />
                             <span className="font-mono">
@@ -209,9 +209,9 @@ export function CreateDBSubnetGroupPage() {
         <FormActions
           isPending={createGroup.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/rds/describe-db-subnet-groups" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Subnet Group"
         />

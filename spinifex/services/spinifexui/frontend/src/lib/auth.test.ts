@@ -23,9 +23,7 @@ let clearCredentials: typeof import("./auth").clearCredentials
 async function loadAuth() {
   vi.resetModules()
   const auth = await import("./auth")
-  getCredentials = auth.getCredentials
-  setSessionCredentials = auth.setSessionCredentials
-  clearCredentials = auth.clearCredentials
+  ;({ getCredentials, setSessionCredentials, clearCredentials } = auth)
 }
 
 describe("setSessionCredentials", () => {

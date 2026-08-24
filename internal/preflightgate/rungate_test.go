@@ -30,8 +30,7 @@ func runGate(t *testing.T, args ...string) (string, int) {
 	if err == nil {
 		return string(out), 0
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return string(out), exitErr.ExitCode()
 	}
 	t.Fatalf("running run-gate.sh: %v", err)

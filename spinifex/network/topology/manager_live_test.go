@@ -114,6 +114,56 @@ func TestLiveManager_EnsurePort(t *testing.T) {
 	}
 }
 
+// TestLiveManager_EnsurePort_SuppressDHCP proves a statically-addressed ENI's
+// LSP never gets dhcpv4_options, while an ordinary ENI on the same subnet
+// still does — the guest's dhcpcd must never take a lease on the static NIC.
+func TestLiveManager_EnsurePort_SuppressDHCP(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
+	ctx := context.Background()
+
+	vpc := VPCSpec{VPCID: "vpc-nodhcp", CIDR: netip.MustParsePrefix("10.7.0.0/16")}
+	sub := SubnetSpec{SubnetID: "subnet-nodhcp", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("10.7.1.0/24")}
+	if err := mgr.EnsureVPC(ctx, vpc); err != nil {
+		t.Fatalf("EnsureVPC: %v", err)
+	}
+	if err := mgr.EnsureSubnet(ctx, sub); err != nil {
+		t.Fatalf("EnsureSubnet: %v", err)
+	}
+
+	dhcpMAC, _ := net.ParseMAC("02:00:00:00:02:01")
+	dhcpPort := PortSpec{
+		PortID: "eni-dhcp", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
+		PrivateIP: netip.MustParseAddr("10.7.1.10"), MAC: dhcpMAC,
+	}
+	if err := mgr.EnsurePort(ctx, dhcpPort); err != nil {
+		t.Fatalf("EnsurePort(dhcp): %v", err)
+	}
+	dhcpLSP, err := mockClient.GetLogicalSwitchPort(ctx, Port(dhcpPort.PortID))
+	if err != nil {
+		t.Fatalf("dhcp port LSP missing: %v", err)
+	}
+	if dhcpLSP.DHCPv4Options == nil {
+		t.Errorf("ordinary ENI's LSP must carry dhcpv4_options")
+	}
+
+	staticMAC, _ := net.ParseMAC("02:00:00:00:02:02")
+	staticPort := PortSpec{
+		PortID: "eni-static", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
+		PrivateIP: netip.MustParseAddr("10.7.1.11"), MAC: staticMAC,
+		SuppressDHCP: true,
+	}
+	if err := mgr.EnsurePort(ctx, staticPort); err != nil {
+		t.Fatalf("EnsurePort(static): %v", err)
+	}
+	staticLSP, err := mockClient.GetLogicalSwitchPort(ctx, Port(staticPort.PortID))
+	if err != nil {
+		t.Fatalf("static port LSP missing: %v", err)
+	}
+	if staticLSP.DHCPv4Options != nil {
+		t.Errorf("SuppressDHCP ENI's LSP must not carry dhcpv4_options, got %q", *staticLSP.DHCPv4Options)
+	}
+}
+
 func TestLiveManager_DeletePort(t *testing.T) {
 	mgr, mockClient := newLiveManagerForTest(t)
 	ctx := context.Background()
@@ -134,6 +184,96 @@ func TestLiveManager_DeletePort(t *testing.T) {
 	}
 	if _, err := mockClient.GetLogicalSwitchPort(ctx, Port(port.PortID)); err == nil {
 		t.Fatal("expected LSP to be gone after DeletePort")
+	}
+}
+
+// TestLiveManager_DeletePort_AlreadyAbsentIsNoop proves DeletePort is
+// idempotent: a retry (or a race with the reconciler's orphan prune) against
+// an already-gone LSP must not error, matching how the codebase treats
+// already-gone resources elsewhere (e.g. ForceDeleteInstanceENI).
+func TestLiveManager_DeletePort_AlreadyAbsentIsNoop(t *testing.T) {
+	mgr, _ := newLiveManagerForTest(t)
+	ctx := context.Background()
+	vpc := VPCSpec{VPCID: "vpc-dp2", CIDR: netip.MustParsePrefix("10.5.0.0/16")}
+	sub := SubnetSpec{SubnetID: "subnet-DP2", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("10.5.1.0/24")}
+	_ = mgr.EnsureVPC(ctx, vpc)
+	_ = mgr.EnsureSubnet(ctx, sub)
+	port := PortSpec{PortID: "eni-never-created", SubnetID: sub.SubnetID, VPCID: vpc.VPCID}
+
+	if err := mgr.DeletePort(ctx, port); err != nil {
+		t.Fatalf("DeletePort on an absent LSP must be a no-op, got: %v", err)
+	}
+
+	// A second delete of a port that WAS created, once it's gone, is also a no-op.
+	mac, _ := net.ParseMAC("02:00:00:00:00:03")
+	port2 := PortSpec{
+		PortID: "eni-DP2", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
+		PrivateIP: netip.MustParseAddr("10.5.1.5"), MAC: mac,
+	}
+	if err := mgr.EnsurePort(ctx, port2); err != nil {
+		t.Fatalf("EnsurePort: %v", err)
+	}
+	if err := mgr.DeletePort(ctx, port2); err != nil {
+		t.Fatalf("first DeletePort: %v", err)
+	}
+	if err := mgr.DeletePort(ctx, port2); err != nil {
+		t.Fatalf("repeat DeletePort on an already-deleted LSP must be a no-op, got: %v", err)
+	}
+}
+
+// TestLiveManager_DeletePort_ThenRecreateSameIP_NoDuplicateLSP covers the
+// teardown+recreate-on-the-same-IP scenario: after DeletePort removes the
+// old ENI's LSP, a new ENI can EnsurePort the same private IP and OVN NB
+// ends up with exactly one LSP carrying that address, not two.
+func TestLiveManager_DeletePort_ThenRecreateSameIP_NoDuplicateLSP(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
+	ctx := context.Background()
+	vpc := VPCSpec{VPCID: "vpc-reuse", CIDR: netip.MustParsePrefix("172.31.0.0/16")}
+	sub := SubnetSpec{SubnetID: "subnet-reuse", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("172.31.0.0/24")}
+	_ = mgr.EnsureVPC(ctx, vpc)
+	_ = mgr.EnsureSubnet(ctx, sub)
+
+	oldMAC, _ := net.ParseMAC("02:00:00:00:01:01")
+	oldPort := PortSpec{
+		PortID: "eni-old", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
+		PrivateIP: netip.MustParseAddr("172.31.0.4"), MAC: oldMAC,
+	}
+	if err := mgr.EnsurePort(ctx, oldPort); err != nil {
+		t.Fatalf("EnsurePort(old): %v", err)
+	}
+	if err := mgr.DeletePort(ctx, oldPort); err != nil {
+		t.Fatalf("DeletePort(old): %v", err)
+	}
+
+	newMAC, _ := net.ParseMAC("02:00:00:00:01:02")
+	newPort := PortSpec{
+		PortID: "eni-new", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
+		PrivateIP: netip.MustParseAddr("172.31.0.4"), MAC: newMAC,
+	}
+	if err := mgr.EnsurePort(ctx, newPort); err != nil {
+		t.Fatalf("EnsurePort(new): %v", err)
+	}
+
+	lsps, err := mockClient.ListLogicalSwitchPorts(ctx)
+	if err != nil {
+		t.Fatalf("ListLogicalSwitchPorts: %v", err)
+	}
+	matching := 0
+	for _, lsp := range lsps {
+		for _, addr := range lsp.Addresses {
+			if addr == newMAC.String()+" 172.31.0.4" || addr == oldMAC.String()+" 172.31.0.4" {
+				matching++
+			}
+		}
+	}
+	if matching != 1 {
+		t.Fatalf("expected exactly one LSP carrying 172.31.0.4, found %d", matching)
+	}
+	if _, err := mockClient.GetLogicalSwitchPort(ctx, Port(oldPort.PortID)); err == nil {
+		t.Fatal("old ENI's LSP must be gone after DeletePort")
+	}
+	if _, err := mockClient.GetLogicalSwitchPort(ctx, Port(newPort.PortID)); err != nil {
+		t.Fatalf("new ENI's LSP must exist: %v", err)
 	}
 }
 

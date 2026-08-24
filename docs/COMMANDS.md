@@ -146,7 +146,7 @@ Operator surface over the daemon's `bedrock.endpoint.*` subjects. The gateway do
 | `spx admin ochre endpoint list` | — | Lists every endpoint record with its state, instance ID and base URL. |
 | `spx admin ochre endpoint delete` | `--model-id` (required) | Moves a `READY` endpoint to `DRAINING` and tears its VM down, releasing the GPU. Idempotent: an already-absent endpoint reports success. |
 
-Self-hosted models are served from the `ubuntu-26.04-vllm-serving-x86_64` system image (`spx admin images import --name ubuntu-26.04-vllm-serving-x86_64`), built by `scripts/mkosi-build.sh --image ubuntu-vllm-serving` (`gpu-nvidia` + `vllm` profiles). It carries the tags `spinifex:managed-by=bedrock` and `spinifex:bedrock-role=vllm-serving`, which is what `LaunchServingVM` filters on rather than resolving by name. The image bakes vLLM's OpenAI-compatible server into a uv-managed venv — no Docker daemon, no runtime container pull — and boots `vllm-serve.service`, which waits for cloud-init's `/etc/conf.d/vllm-serve` handoff, resolves and mounts the endpoint's cloned weights volume read-only, then execs `vllm serve` on port 8000.
+Self-hosted models are served from the `ubuntu-26.04-vllm-serving-x86_64` system image (`spx admin images import --name ubuntu-26.04-vllm-serving-x86_64`), built by `scripts/mkosi-build.sh --image ubuntu-vllm-serving` (`gpu-nvidia` + `vllm` profiles). It carries the tags `spinifex:managed-by=bedrock` and `spinifex:bedrock-role=vllm-serving`, which is what `LaunchServingVM` filters on rather than resolving by name. The image bakes vLLM's OpenAI-compatible server into a uv-managed venv and TEI's engine binary + CUDA runtime libraries (extracted from HuggingFace's own published CUDA image, no Docker daemon on the guest either way) side by side, one hand-stood image serving a whole co-served bundle rather than a single model. `LaunchServingVM` writes one `/etc/conf.d/bedrock-bundle/<instance>.env` file per bundle member; `bedrock-bundle-init.service` enumerates them at boot and starts one `bedrock-serve@<instance>.service` per member, which resolves and mounts that member's own cloned weights volume read-only and execs `vllm serve` (port 8000, the generative member) or `text-embeddings-router` directly (port 8001+, embedding/rerank members) — each engine's readiness is probed on the route it actually serves (`/v1/models` for vLLM, `/health` for TEI). A standalone model is the one-member case of the same path: it boots exactly as before, on port 8000.
 
 ### EKS Control-Plane Disaster Recovery
 
@@ -193,8 +193,8 @@ The surface is unreachable until an operator runs `spx admin principal create`; 
 | `modify-instance-metadata-options` | `--instance-id`, `--http-put-response-hop-limit` (1–64), `--http-tokens` (`required`/`optional`), `--http-endpoint` (`enabled`), `--http-protocol-ipv6`/`--instance-metadata-tags` (`disabled`) — unmodelled values return `UnsupportedOperation` | `--dry-run` | **DONE** |
 | `describe-instance-credit-specifications` | `--instance-ids` | `--filters`, `--max-results`, `--dry-run` | **DONE** (stub — always returns `standard`) |
 | `describe-instance-status` | `--instance-ids`, `--include-all-instances`, `--filters` (availability-zone, instance-state-code, instance-state-name, tag:*) | `--max-results`, `--next-token`, `--dry-run`, event/instance-status/system-status filters | **DONE** (static health) |
-| `monitor-instances` | — | `--instance-ids` | **NOT STARTED** |
-| `unmonitor-instances` | — | `--instance-ids` | **NOT STARTED** |
+| `monitor-instances` | `--instance-ids` | `--dry-run` | **DONE** (60s detailed telemetry; state is `enabled`/`disabled` only, never `pending`/`disabling`) |
+| `unmonitor-instances` | `--instance-ids` | `--dry-run` | **DONE** (returns the instance to the 300s basic tier) |
 
 ### EC2 — Spot Instances
 

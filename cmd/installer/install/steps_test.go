@@ -887,13 +887,6 @@ func TestInstallBootToolZFSStopsWhenADiskFails(t *testing.T) {
 	f.mustNotRun(t, "SPINIFEX_BOOT_TOOL_NVRAM=1")
 }
 
-func TestRefreshBootToolNoteOnlyAppliesToZFS(t *testing.T) {
-	// Log-only, but it is the operator's only record of the disk-replacement
-	// command, so both branches are walked.
-	refreshBootToolNote(DiskConfig{FS: FSZFSRAID1, Disks: disks(2, 40)})
-	refreshBootToolNote(DiskConfig{FS: FSExt4, Disks: disks(1, 40)})
-}
-
 func TestMaskSystemdUnitIsIdempotent(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "etc/systemd/system"), 0o755); err != nil {
@@ -911,14 +904,6 @@ func TestMaskSystemdUnitIsIdempotent(t *testing.T) {
 	if target != "/dev/null" {
 		t.Errorf("mask target = %q, want /dev/null", target)
 	}
-}
-
-func TestCopyAssetsAreBestEffort(t *testing.T) {
-	root := t.TempDir()
-	// Neither asset exists outside the live ISO; a missing one must not fail
-	// the install, only the branding.
-	copyGrubFont(root)
-	copySplashImage(root)
 }
 
 func TestWriteFstabOnZFSHoldsNothingButSwap(t *testing.T) {

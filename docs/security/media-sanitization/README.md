@@ -37,8 +37,8 @@ resources:
 - [Approach](#approach)
 - [1. Media in Scope](#1-media-in-scope)
 - [2. Sanitization Method Selection](#2-sanitization-method-selection)
-- [3. Volume-Level Sanitization — Before Reuse (MP.L1-3.8.3 [b])](#3-volume-level-sanitization--before-reuse-mpl1-383-b)
-- [4. Whole-Drive and Node Decommissioning — Before Disposal (MP.L1-3.8.3 [a])](#4-whole-drive-and-node-decommissioning--before-disposal-mpl1-383-a)
+- [3. Volume-Level Sanitization — Before Reuse (MP.L1-3.8.3 [b])](#3-volume-level-sanitization-before-reuse-mpl1-383-b)
+- [4. Whole-Drive and Node Decommissioning — Before Disposal (MP.L1-3.8.3 [a])](#4-whole-drive-and-node-decommissioning-before-disposal-mpl1-383-a)
 - [5. Key Destruction](#5-key-destruction)
 - [6. Removable and Backup Media](#6-removable-and-backup-media)
 - [7. Evidence and Record Keeping](#7-evidence-and-record-keeping)
@@ -92,7 +92,7 @@ The method depends on (a) media type and (b) whether the media remains inside th
 
 | Scenario | Minimum method | Reference |
 |----------|----------------|-----------|
-| Encrypted volume returning to free pool, DEK deletable | **Cryptographic Erase** (Purge) via DEK deletion | [§3](#3-volume-level-sanitization--before-reuse-mpl1-383-b) |
+| Encrypted volume returning to free pool, DEK deletable | **Cryptographic Erase** (Purge) via DEK deletion | [§3](#3-volume-level-sanitization-before-reuse-mpl1-383-b) |
 | SSD / NVMe leaving the node | **Cryptographic Erase** + **Purge** (SANITIZE block-erase or ATA Secure Erase) | [§4.1](#41-nvme-ssd) |
 | Magnetic HDD leaving the node, operational | **Purge** (single-pass overwrite with verify, or ATA Secure Erase on drives that support it) | [§4.3](#43-hdd) |
 | Magnetic HDD leaving the node, faulty (not writable) | **Destroy** (degauss followed by shred/incinerate) | [§4.3](#43-hdd) |
@@ -121,7 +121,7 @@ This is the sanitization-before-reuse path for every in-platform object. Operato
 
 ### 3.2 What Happens to the Physical Storage
 
-Cryptographic erase leaves ciphertext chunks in Predastore. These chunks are eventually overwritten as new volumes reuse the space. For CMMC purposes, the ciphertext without the DEK satisfies Purge. The underlying drive still requires whole-drive sanitization when it eventually leaves the cluster — see [§4](#4-whole-drive-and-node-decommissioning--before-disposal-mpl1-383-a).
+Cryptographic erase leaves ciphertext chunks in Predastore. These chunks are eventually overwritten as new volumes reuse the space. For CMMC purposes, the ciphertext without the DEK satisfies Purge. The underlying drive still requires whole-drive sanitization when it eventually leaves the cluster — see [§4](#4-whole-drive-and-node-decommissioning-before-disposal-mpl1-383-a).
 
 ## 4. Whole-Drive and Node Decommissioning — Before Disposal (MP.L1-3.8.3 [a])
 
@@ -211,11 +211,11 @@ Cryptographic erase relies on the key being unrecoverable. A drive that previous
 | `/etc/spinifex/master.key` | Node system disk (every node) | Overwrite the file (`shred -u /etc/spinifex/master.key`) before the drive is sanitized, in addition to drive sanitization. Once the master key is gone cluster-wide, every DEK it wrapped is effectively destroyed. |
 | Cluster CA private key (`/etc/spinifex/ca.key`) | Leader node system disk | Same treatment. Loss of the CA key does not sanitize data, but prevents impersonation of the cluster identity post-disposal. |
 | Per-node TLS private key (`/etc/spinifex/server.key`) | Each node system disk | `shred -u` before drive sanitization. |
-| Wrapped DEKs in NATS KV | `/var/lib/spinifex/nats/` on NATS-carrying nodes | Deleted via the `DeleteVolume` API; the KV record is compacted. Sanitization of the NATS JetStream disk per [§4](#4-whole-drive-and-node-decommissioning--before-disposal-mpl1-383-a) ensures no recoverable copies. |
+| Wrapped DEKs in NATS KV | `/var/lib/spinifex/nats/` on NATS-carrying nodes | Deleted via the `DeleteVolume` API; the KV record is compacted. Sanitization of the NATS JetStream disk per [§4](#4-whole-drive-and-node-decommissioning-before-disposal-mpl1-383-a) ensures no recoverable copies. |
 | Removable master-key media (USB) | USB flash token | Physically destroy the token when the cluster is decommissioned; alternatively retain inside a secured location as evidence of cluster-wide cryptographic erase. Do not reuse for another cluster without full sanitization (see [§6](#6-removable-and-backup-media)). |
 | Backup-copy keys | Any off-site or escrow copy | Destroy simultaneously with the primary. A surviving backup defeats the cryptographic erase. |
 
-If even one copy of the master key survives and the encrypted drives are recoverable, cryptographic erase has **not** been achieved. Track every key copy in the device register ([Physical Security Guide §5](/docs/security/physical-security-guide#5-manage-physical-access-devices-pel1-3105)).
+If even one copy of the master key survives and the encrypted drives are recoverable, cryptographic erase has **not** been achieved. Track every key copy in the device register ([Physical Security Guide §5](/docs/physical-security-guide#5-manage-physical-access-devices-pel1-3105)).
 
 ## 6. Removable and Backup Media
 
@@ -228,7 +228,7 @@ If even one copy of the master key survives and the encrypted drives are recover
 | Off-site cloud backup | Issue the cloud provider's delete-and-purge API; retain the provider's deletion-confirmation receipt. For cryptographically wrapped backups, destroy the wrapping key cluster-side and retain that deletion as evidence. |
 | Printed material (console photos, recovery codes, admin handover sheets) | Cross-cut shred. |
 
-Any removable medium that has entered the protected boundary and been written to must be tracked in the device register (see [Physical Security Guide §5](/docs/security/physical-security-guide#5-manage-physical-access-devices-pel1-3105)) and accounted for at decommissioning.
+Any removable medium that has entered the protected boundary and been written to must be tracked in the device register (see [Physical Security Guide §5](/docs/physical-security-guide#5-manage-physical-access-devices-pel1-3105)) and accounted for at decommissioning.
 
 ## 7. Evidence and Record Keeping
 
@@ -255,5 +255,5 @@ Use this list to confirm a Spinifex deployment meets MP.L1-3.8.3:
 - Every backup copy of any key is destroyed at the same time as the primary; surviving backup copies are tracked and accounted for.
 - Removable media (USB, tape, optical) is destroyed rather than erased unless the medium is an SED with documented cryptographic erase.
 - Decommissioning records capture method, tool output, verification, final disposition, and operator; certificates of destruction are reconciled against the asset register.
-- Drives awaiting sanitization or awaiting pickup by a destruction vendor are held inside the physical protection boundary ([Physical Security Guide §1](/docs/security/physical-security-guide#1-protected-assets)) with chain of custody logged.
+- Drives awaiting sanitization or awaiting pickup by a destruction vendor are held inside the physical protection boundary ([Physical Security Guide §1](/docs/physical-security-guide#1-protected-assets)) with chain of custody logged.
 - System security plan references this guide and names the sanitization tooling, destruction vendor (if any), retention period for records, and the security owner attesting annually.

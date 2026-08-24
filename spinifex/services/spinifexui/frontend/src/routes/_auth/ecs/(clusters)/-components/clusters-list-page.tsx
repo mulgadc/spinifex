@@ -45,7 +45,9 @@ export function ClustersListPage() {
       return
     }
     deleteCluster.mutate(deleteTarget, {
-      onSuccess: () => setDeleteTarget(null),
+      onSuccess: () => {
+        setDeleteTarget(null)
+      },
     })
   }
 
@@ -55,7 +57,9 @@ export function ClustersListPage() {
         actions={
           <Button
             disabled={!hasEcsSystemImage}
-            onClick={() => setCreateOpen(true)}
+            onClick={() => {
+              setCreateOpen(true)
+            }}
           >
             Create Cluster
           </Button>
@@ -112,17 +116,19 @@ export function ClustersListPage() {
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
                     key={name}
-                    onClick={async () =>
+                    onClick={async () => {
                       await navigate({
                         to: "/ecs/list-clusters/$clusterName",
                         params: { clusterName: name },
                       })
-                    }
+                    }}
                   >
                     <td className="px-4 py-2 font-medium">
                       <Link
                         className="text-primary hover:underline"
-                        onClick={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                        }}
                         params={{ clusterName: name }}
                         to="/ecs/list-clusters/$clusterName"
                       >
@@ -169,7 +175,11 @@ export function ClustersListPage() {
         description={`This permanently deletes cluster "${deleteTarget}" and force-stops every task it holds. This cannot be undone.`}
         isPending={deleteCluster.isPending}
         onConfirm={handleDelete}
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null)
+          }
+        }}
         open={deleteTarget !== null}
         title="Delete cluster"
       />

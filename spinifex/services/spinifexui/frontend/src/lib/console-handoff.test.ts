@@ -29,7 +29,11 @@ const SESSION = {
   expiration: new Date(Date.now() + 3_600_000).toISOString(),
 }
 
-let opener: { postMessage: ReturnType<typeof vi.fn> }
+function makeOpener() {
+  return { postMessage: vi.fn() }
+}
+
+let opener: ReturnType<typeof makeOpener>
 let assign: ReturnType<typeof vi.fn>
 
 /** Dispatch a message event with an explicit source (jsdom won't set it). */
@@ -49,37 +53,42 @@ function postToConsole(opts: {
   window.dispatchEvent(ev)
 }
 
-const tick = async () => await new Promise((r) => setTimeout(r, 0))
-
-beforeEach(() => {
-  vi.clearAllMocks()
-  vi.mocked(exchangeForSession).mockResolvedValue(SESSION)
-  opener = { postMessage: vi.fn() }
-  Object.defineProperty(window, "opener", {
-    value: opener,
-    configurable: true,
-    writable: true,
+/* oxlint-disable promise/avoid-new -- flushing a macrotask queue needs a real timer, which no library helper wraps */
+const tick = async () =>
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0)
   })
-  assign = vi.fn()
-  Object.defineProperty(window, "location", {
-    value: { ...window.location, assign },
-    configurable: true,
-    writable: true,
-  })
-})
-
-afterEach(() => {
-  Object.defineProperty(window, "opener", {
-    value: null,
-    configurable: true,
-    writable: true,
-  })
-})
+/* oxlint-enable promise/avoid-new */
 
 describe("startConsoleHandoff", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(exchangeForSession).mockResolvedValue(SESSION)
+    opener = makeOpener()
+    Object.defineProperty(window, "opener", {
+      value: opener,
+      configurable: true,
+      writable: true,
+    })
+    assign = vi.fn()
+    Object.defineProperty(window, "location", {
+      value: { assign, hostname: window.location.hostname },
+      configurable: true,
+      writable: true,
+    })
+  })
+
+  afterEach(() => {
+    Object.defineProperty(window, "opener", {
+      value: null,
+      configurable: true,
+      writable: true,
+    })
+  })
+
   it("announces readiness to the allowed opener origins on start", () => {
     startConsoleHandoff()
-    const targets = opener.postMessage.mock.calls.map((c) => c[1])
+    const targets = opener.postMessage.mock.calls.map((c: unknown[]) => c[1])
     expect(opener.postMessage).toHaveBeenCalledWith(
       { type: "spx-handoff-ready" },
       "https://mulgadc.com",
@@ -186,6 +195,6 @@ describe("startConsoleHandoff", () => {
       source: opener,
     })
     await tick()
-    expect(exchangeForSession).toHaveBeenCalledTimes(1)
+    expect(exchangeForSession).toHaveBeenCalledOnce()
   })
 })

@@ -109,7 +109,7 @@ Set the worker count with `node_desired_size` (`1` for a single node, `3` for an
 tofu apply -var node_desired_size=3
 ```
 
-Once the cluster is `ACTIVE`, **build and push the demo image** to the ECR repository this created (full commands in [`../demo-app/README.md`](../demo-app/README.md)):
+Once the cluster is `ACTIVE`, **build and push the demo image** to the ECR repository this created (full commands in [`docs/terraform-workbooks/demo-app`](https://github.com/mulgadc/spinifex/blob/main/docs/terraform-workbooks/demo-app/README.md)):
 
 ```bash
 cd ../demo-app

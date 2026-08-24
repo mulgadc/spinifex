@@ -443,6 +443,61 @@ func TestApplyPendingModifications_AFailedParameterApplyIsRecordedOnTheInstance(
 	assert.Equal(t, 1, failures)
 }
 
+// A class change is the recovery lever for a failed/agentless instance, so an
+// unreachable old agent must not abort it: the class-correct set lands on the
+// record directly for the replacement's fresh agent to adopt on boot.
+func TestApplyPendingModifications_ClassChangeSurvivesAnUnreachableAgent(t *testing.T) {
+	h := newModifyHarness(t)
+	h.agent.silenceType(CommandApplyParams)
+	rec := modifyingRecord(&PendingModifiedValues{
+		DBInstanceClass: "db.m5.xlarge",
+		RequestedAt:     time.Now().UTC(),
+	})
+	seedReplaceable(t, h, rec)
+
+	require.NoError(t, h.svc.applyPendingModifications(t.Context(), h.kv(t), testAccountID, &rec))
+
+	issued := h.agent.received()
+	require.NotEmpty(t, issued)
+	assert.Equal(t, CommandApplyParams, issued[0].Type, "the apply was attempted against the old agent first")
+
+	stored := h.record(t)
+	assert.Equal(t, "db.m5.xlarge", stored.DBInstanceClass)
+	assert.Equal(t, testReplacementInstance, stored.InstanceID, "the replace ran despite the unreachable agent")
+	assert.False(t, stored.ParameterApplyFailed)
+	assert.Empty(t, stored.PendingRebootParameters)
+
+	memoryMiB, err := classMemoryMiB("db.m5.xlarge")
+	require.NoError(t, err)
+	assert.Equal(t, sharedBuffersFor(memoryMiB), parameterValue(stored.Bootstrap.ResolvedParameters, "shared_buffers"),
+		"the stored set was resolved against the class the instance is becoming, for the replacement to boot on")
+}
+
+// A parameter-group-only change has no replacement VM to defer onto, so an
+// unreachable agent still fails it exactly as before — the class-change
+// tolerance must not leak into the path a live-agent rollback owns.
+func TestApplyPendingModifications_ParameterGroupOnlyStillFailsOnAnUnreachableAgent(t *testing.T) {
+	h := newModifyHarness(t)
+	h.agent.silenceType(CommandApplyParams)
+	rec := modifyingRecord(&PendingModifiedValues{
+		DBParameterGroupName: testDefaultGroup,
+		RequestedAt:          time.Now().UTC(),
+	})
+	seedInstance(t, h.svc, rec)
+
+	err := h.svc.applyPendingModifications(t.Context(), h.kv(t), testAccountID, &rec)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCommandUnreachable)
+	assert.True(t, rec.ParameterApplyFailed, "the caller's copy reports what the store holds")
+
+	stored := h.record(t)
+	assert.True(t, stored.ParameterApplyFailed)
+	require.NotNil(t, stored.PendingModifiedValues, "the modify is still outstanding for the reconciler")
+	groups := projectParameterGroup(&stored)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "failed-to-apply", aws.StringValue(groups[0].ParameterApplyStatus))
+}
+
 func parameterValue(params []Parameter, name string) string {
 	for _, param := range params {
 		if param.Name == name {

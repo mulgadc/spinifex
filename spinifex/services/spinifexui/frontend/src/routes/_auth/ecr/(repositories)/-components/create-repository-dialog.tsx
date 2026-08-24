@@ -58,7 +58,9 @@ export function CreateRepositoryDialog({
           </FieldTitle>
           <Input
             id="repositoryName"
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value)
+            }}
             placeholder="team/app"
             value={name}
           />

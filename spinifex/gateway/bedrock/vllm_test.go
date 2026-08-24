@@ -177,7 +177,7 @@ func TestVLLMProvider_ConverseStream_MapsSSEToTaxonomy(t *testing.T) {
 	defer func() { _ = src.Close() }()
 
 	events := drainConverseStream(t, src)
-	require.Len(t, events, 7)
+	require.Len(t, events, 6)
 
 	kinds := make([]converseStreamEventKind, len(events))
 	for i, ev := range events {
@@ -185,7 +185,6 @@ func TestVLLMProvider_ConverseStream_MapsSSEToTaxonomy(t *testing.T) {
 	}
 	assert.Equal(t, []converseStreamEventKind{
 		converseStreamEventMessageStart,
-		converseStreamEventContentBlockStart,
 		converseStreamEventContentBlockDelta,
 		converseStreamEventContentBlockDelta,
 		converseStreamEventContentBlockStop,
@@ -194,15 +193,18 @@ func TestVLLMProvider_ConverseStream_MapsSSEToTaxonomy(t *testing.T) {
 	}, kinds)
 
 	assert.Equal(t, bedrockruntime.ConversationRoleAssistant, *events[0].MessageStart.Role)
-	assert.Equal(t, int64(0), *events[1].ContentBlockStart.ContentBlockIndex)
-	assert.Equal(t, "Hello", *events[2].ContentBlockDelta.Delta.Text)
-	assert.Equal(t, " world", *events[3].ContentBlockDelta.Delta.Text)
-	assert.Equal(t, int64(0), *events[4].ContentBlockStop.ContentBlockIndex)
-	assert.Equal(t, bedrockruntime.StopReasonEndTurn, *events[5].MessageStop.StopReason)
-	assert.Equal(t, int64(8), *events[6].Metadata.Usage.InputTokens)
-	assert.Equal(t, int64(3), *events[6].Metadata.Usage.OutputTokens)
-	assert.Equal(t, int64(11), *events[6].Metadata.Usage.TotalTokens)
-	assert.GreaterOrEqual(t, *events[6].Metadata.Metrics.LatencyMs, int64(0))
+	assert.Equal(t, "Hello", *events[1].ContentBlockDelta.Delta.Text)
+	assert.Equal(t, " world", *events[2].ContentBlockDelta.Delta.Text)
+	assert.Equal(t, int64(0), *events[3].ContentBlockStop.ContentBlockIndex)
+	assert.Equal(t, bedrockruntime.StopReasonEndTurn, *events[4].MessageStop.StopReason)
+	assert.Equal(t, int64(8), *events[5].Metadata.Usage.InputTokens)
+	assert.Equal(t, int64(3), *events[5].Metadata.Usage.OutputTokens)
+	assert.Equal(t, int64(11), *events[5].Metadata.Usage.TotalTokens)
+	assert.GreaterOrEqual(t, *events[5].Metadata.Metrics.LatencyMs, int64(0))
+
+	for _, ev := range events {
+		assert.NotEqual(t, converseStreamEventContentBlockStart, ev.Kind, "real Bedrock text streams carry no contentBlockStart")
+	}
 }
 
 func TestVLLMProvider_ConverseStream_UnresolvedEndpointReturnsModelNotReady(t *testing.T) {
@@ -302,7 +304,6 @@ func TestVLLMProvider_ConverseStream_UsageWithoutFinishReasonKeepsOrder(t *testi
 	}
 	assert.Equal(t, []converseStreamEventKind{
 		converseStreamEventMessageStart,
-		converseStreamEventContentBlockStart,
 		converseStreamEventContentBlockDelta,
 		converseStreamEventContentBlockStop,
 		converseStreamEventMessageStop,
@@ -336,7 +337,6 @@ func TestVLLMProvider_ConverseStream_EmptyStreamIsWellFormed(t *testing.T) {
 	}
 	assert.Equal(t, []converseStreamEventKind{
 		converseStreamEventMessageStart,
-		converseStreamEventContentBlockStart,
 		converseStreamEventContentBlockStop,
 		converseStreamEventMessageStop,
 		converseStreamEventMetadata,
@@ -369,9 +369,9 @@ func TestVLLMConverseStreamSource_EstimatesOutputTokensBeforeUsageChunk(t *testi
 	require.NoError(t, err)
 	defer func() { _ = src.Close() }()
 
-	// Drain exactly the 4 events both chunks queue (messageStart,
-	// contentBlockStart, and two content deltas) without reaching EOF.
-	for range 4 {
+	// Drain exactly the 3 events both chunks queue (messageStart and two
+	// content deltas) without reaching EOF.
+	for range 3 {
 		_, ok, nerr := src.Next(context.Background())
 		require.NoError(t, nerr)
 		require.True(t, ok)

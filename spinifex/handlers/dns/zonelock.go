@@ -111,9 +111,11 @@ func (l *zoneLocker) lockZone(ctx context.Context, zone string) (*zoneLock, erro
 	deadline := time.Now().Add(zoneLockWaitFor)
 	step := zoneLockStep
 	for {
+		// Create maps a taken zone to ErrKeyExists on every replica count,
+		// which is the retryable case; anything else is a real failure.
 		if _, err := kv.Create(ctx, key, []byte(l.holder)); err == nil {
 			return &zoneLock{locker: l, kv: kv, key: key, zone: zone, acquired: time.Now()}, nil
-		} else if !isZoneLockHeld(err) {
+		} else if !errors.Is(err, jetstream.ErrKeyExists) {
 			return nil, fmt.Errorf("acquire dns zone lock %s: %w", zone, err)
 		}
 		if time.Now().After(deadline) {
@@ -194,20 +196,6 @@ func (l *zoneLocker) bucket(ctx context.Context) (jetstream.KeyValue, error) {
 
 	l.kv = kv
 	return kv, nil
-}
-
-// isZoneLockHeld reports whether the create failed because another writer holds
-// the zone, which is the retryable case. Mirrors the CAS-conflict test used by
-// the vCPU quota store.
-func isZoneLockHeld(err error) bool {
-	if errors.Is(err, jetstream.ErrKeyExists) {
-		return true
-	}
-	var apiErr *jetstream.APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
-	}
-	return false
 }
 
 // zoneLockKey maps a zone to a NATS KV key. DNS names are already within the

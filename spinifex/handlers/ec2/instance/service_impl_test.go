@@ -435,34 +435,52 @@ func TestRunInstance_WithTags(t *testing.T) {
 					{Key: aws.String("env"), Value: aws.String("dev")},
 				},
 			},
+			{
+				ResourceType: aws.String("volume"),
+				Tags:         []*ec2.Tag{{Key: aws.String("scope"), Value: aws.String("volume-only")}},
+			},
 		},
 	}
 
-	instance, _, err := svc.RunInstance(input)
+	instance, ec2Instance, err := svc.RunInstance(input)
 	require.NoError(t, err)
-	// Tags are stored in RunInstancesInput which is preserved on the VM
-	assert.Equal(t, input, instance.RunInstancesInput)
-	assert.Len(t, input.TagSpecifications, 1)
-	assert.Len(t, input.TagSpecifications[0].Tags, 2)
+
+	// DescribeInstances and tag filters read ec2Instance.Tags, not the echoed
+	// input, and only instance-scoped specs may land there.
+	got := map[string]string{}
+	for _, tag := range ec2Instance.Tags {
+		got[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
+	}
+	assert.Equal(t, map[string]string{"Name": "test-vm", "env": "dev"}, got)
+	assert.Equal(t, ec2Instance.Tags, instance.Instance.Tags)
 }
 
-func TestRunInstance_WithPlacement(t *testing.T) {
-	instanceTypes := map[string]*ec2.InstanceTypeInfo{
-		"t3.micro": {InstanceType: aws.String("t3.micro")},
-	}
-	svc := &InstanceServiceImpl{instanceTypes: instanceTypes}
-
-	input := &ec2.RunInstancesInput{
-		ImageId:      aws.String("ami-012345"),
-		InstanceType: aws.String("t3.micro"),
-		Placement: &ec2.Placement{
-			GroupName: aws.String("my-pg"),
+// Placement is projected onto the VM by PrepareRunInstances, not RunInstance,
+// so the assertion has to be driven through the entry point that reads it.
+func TestPrepareRunInstances_ProjectsPlacementGroup(t *testing.T) {
+	instanceTypes, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: instanceTypes,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc", PlatformDetails: "Linux/UNIX"},
+		}},
+		resourceMgr: &fakeResourceCapacityProvider{
+			instanceTypes: instanceTypes,
+			canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
 		},
 	}
 
-	instance, _, err := svc.RunInstance(input)
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		Placement:    &ec2.Placement{GroupName: aws.String("my-pg")},
+	}, "acc", "")
 	require.NoError(t, err)
-	assert.Equal(t, "my-pg", *instance.RunInstancesInput.Placement.GroupName)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "my-pg", instances[0].PlacementGroupName)
 }
 
 func TestParseVolumeParams_MultipleBlockDeviceMappings(t *testing.T) {
@@ -3580,6 +3598,17 @@ func TestRebootInstance_NotFound(t *testing.T) {
 	err := svc.RebootInstance(context.Background(), &vm.VM{ID: id}, spxtypes.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestRebootInstance_QMPFailureReturnsInternalError(t *testing.T) {
+	id := "i-qmp-failure"
+	instance := &vm.VM{ID: id, Status: vm.StateRunning}
+	mgr := mgrWith(map[string]*vm.VM{id: instance})
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+
+	err := svc.RebootInstance(context.Background(), instance, spxtypes.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
 // TestStartInstance_NotFound verifies that a missing instance returns

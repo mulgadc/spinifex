@@ -199,9 +199,9 @@ export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">Port mappings</span>
                 <Button
-                  onClick={() =>
+                  onClick={() => {
                     ports.append({ containerPort: 80, protocol: "tcp" })
-                  }
+                  }}
                   size="sm"
                   type="button"
                   variant="outline"
@@ -241,7 +241,9 @@ export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
                   />
                   <Button
                     aria-label="Remove port mapping"
-                    onClick={() => ports.remove(i)}
+                    onClick={() => {
+                      ports.remove(i)
+                    }}
                     size="icon"
                     type="button"
                     variant="ghost"

@@ -10,6 +10,7 @@ vi.mock("@/lib/signed-fetch", () => ({
 
 import { getCredentials } from "@/lib/auth"
 import { signedFetch } from "@/lib/signed-fetch"
+import { callQueryFn } from "@/test/query"
 
 import {
   adminNodesQueryOptions,
@@ -20,15 +21,6 @@ import {
 const mockGetCredentials = vi.mocked(getCredentials)
 const mockSignedFetch = vi.mocked(signedFetch)
 
-function getQueryFn(opts: {
-  queryFn?: unknown
-}): (ctx: never) => Promise<unknown> {
-  if (typeof opts.queryFn !== "function") {
-    throw new TypeError("queryFn is not defined")
-  }
-  return opts.queryFn as (ctx: never) => Promise<unknown>
-}
-
 describe("adminNodesQueryOptions", () => {
   it("has the correct query key", () => {
     expect(adminNodesQueryOptions.queryKey).toStrictEqual(["admin", "nodes"])
@@ -36,9 +28,9 @@ describe("adminNodesQueryOptions", () => {
 
   it("throws when not authenticated", async () => {
     mockGetCredentials.mockReturnValue(null)
-    await expect(
-      getQueryFn(adminNodesQueryOptions)({} as never),
-    ).rejects.toThrow("Not authenticated")
+    await expect(callQueryFn(adminNodesQueryOptions)).rejects.toThrow(
+      "Not authenticated",
+    )
   })
 
   it("calls signedFetch with GetNodes action", async () => {
@@ -51,7 +43,7 @@ describe("adminNodesQueryOptions", () => {
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({ nodes: [], cluster_mode: "single" })
 
-    await getQueryFn(adminNodesQueryOptions)({} as never)
+    await callQueryFn(adminNodesQueryOptions)
 
     expect(mockSignedFetch).toHaveBeenCalledWith({
       action: "GetNodes",
@@ -67,7 +59,7 @@ describe("adminVMsQueryOptions", () => {
 
   it("throws when not authenticated", async () => {
     mockGetCredentials.mockReturnValue(null)
-    await expect(getQueryFn(adminVMsQueryOptions)({} as never)).rejects.toThrow(
+    await expect(callQueryFn(adminVMsQueryOptions)).rejects.toThrow(
       "Not authenticated",
     )
   })
@@ -82,7 +74,7 @@ describe("adminVMsQueryOptions", () => {
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({ vms: [] })
 
-    await getQueryFn(adminVMsQueryOptions)({} as never)
+    await callQueryFn(adminVMsQueryOptions)
 
     expect(mockSignedFetch).toHaveBeenCalledWith({
       action: "GetVMs",
@@ -101,9 +93,9 @@ describe("adminStorageStatusQueryOptions", () => {
 
   it("throws when not authenticated", async () => {
     mockGetCredentials.mockReturnValue(null)
-    await expect(
-      getQueryFn(adminStorageStatusQueryOptions)({} as never),
-    ).rejects.toThrow("Not authenticated")
+    await expect(callQueryFn(adminStorageStatusQueryOptions)).rejects.toThrow(
+      "Not authenticated",
+    )
   })
 
   it("calls signedFetch with GetStorageStatus action", async () => {
@@ -116,7 +108,7 @@ describe("adminStorageStatusQueryOptions", () => {
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({})
 
-    await getQueryFn(adminStorageStatusQueryOptions)({} as never)
+    await callQueryFn(adminStorageStatusQueryOptions)
 
     expect(mockSignedFetch).toHaveBeenCalledWith({
       action: "GetStorageStatus",

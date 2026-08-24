@@ -83,7 +83,12 @@ function ParameterValueCell({
   }
   if (options) {
     return (
-      <Select onValueChange={(next) => onChange(next ?? "")} value={value}>
+      <Select
+        onValueChange={(next) => {
+          onChange(next ?? "")
+        }}
+        value={value}
+      >
         <SelectTrigger aria-label={`Value of ${name}`} className="w-40">
           <SelectValue />
         </SelectTrigger>
@@ -101,7 +106,9 @@ function ParameterValueCell({
     <Input
       aria-label={`Value of ${name}`}
       className="w-40"
-      onChange={(e) => onChange(e.target.value)}
+      onChange={(e) => {
+        onChange(e.target.value)
+      }}
       type={isNumeric(parameter) ? "number" : "text"}
       value={value}
     />
@@ -181,13 +188,17 @@ export function ParametersEditor({
           </label>
           <Input
             id="parameter-filter"
-            onChange={(e) => setFilterText(e.target.value)}
+            onChange={(e) => {
+              setFilterText(e.target.value)
+            }}
             placeholder="Filter by parameter name"
             value={filterText}
           />
         </div>
         <Select
-          onValueChange={(value) => setSourceFilter(value ?? "all")}
+          onValueChange={(value) => {
+            setSourceFilter(value ?? "all")
+          }}
           value={sourceFilter}
         >
           <SelectTrigger aria-label="Filter by source" className="w-56">
@@ -216,7 +227,13 @@ export function ParametersEditor({
           >
             {modifyGroup.isPending ? "Saving…" : "Save Changes"}
           </Button>
-          <Button onClick={() => setEdits({})} size="sm" variant="outline">
+          <Button
+            onClick={() => {
+              setEdits({})
+            }}
+            size="sm"
+            variant="outline"
+          >
             Discard
           </Button>
           {overLimit && (
@@ -275,7 +292,9 @@ export function ParametersEditor({
                     <td className="px-4 py-2">
                       <ParameterValueCell
                         editable={editable ?? false}
-                        onChange={(next) => setEdit(parameter, { value: next })}
+                        onChange={(next) => {
+                          setEdit(parameter, { value: next })
+                        }}
                         options={options}
                         parameter={parameter}
                         value={value}
@@ -292,11 +311,11 @@ export function ParametersEditor({
                     <td className="px-4 py-2">
                       {editable && edit && methods.length > 1 ? (
                         <Select
-                          onValueChange={(next) =>
+                          onValueChange={(next) => {
                             setEdit(parameter, {
                               applyMethod: next ?? APPLY_METHOD_PENDING_REBOOT,
                             })
-                          }
+                          }}
                           value={applyMethod}
                         >
                           <SelectTrigger
@@ -327,7 +346,9 @@ export function ParametersEditor({
                     <td className="px-4 py-2 text-right">
                       {edit && (
                         <Button
-                          onClick={() => clearEdit(name)}
+                          onClick={() => {
+                            clearEdit(name)
+                          }}
                           size="sm"
                           variant="ghost"
                         >

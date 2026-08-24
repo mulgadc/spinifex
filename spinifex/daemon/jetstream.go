@@ -263,15 +263,6 @@ func (m *JetStreamManager) recoverTerminatedKVBucket(ctx context.Context) (jetst
 // the key, not a single overlapping update — callers should surface an error.
 const maxCASRetries = 5
 
-// isRevisionConflict reports whether err is the nats.go "wrong last
-// sequence" error that KeyValue.Update/Create return when the key's
-// revision no longer matches what the caller expected, i.e. a concurrent
-// writer won the race. The jetstream package surfaces this as
-// jetstream.ErrKeyExists for both Update (stale revision) and Create (key already present).
-func isRevisionConflict(err error) bool {
-	return errors.Is(err, jetstream.ErrKeyExists)
-}
-
 // casUpdate performs an optimistic-concurrency read-modify-write against kv:
 // Get the current entry (or start from a zero value when absent and
 // createIfAbsent is set), apply mutate to the decoded value, then commit via
@@ -312,7 +303,10 @@ func casUpdate[T any](ctx context.Context, kv jetstream.KeyValue, key string, mu
 		if err == nil {
 			return &value, nil
 		}
-		if isRevisionConflict(err) {
+		// Create reports a lost race as ErrKeyExists, Update as
+		// ErrKeyRevisionMismatch — and only the latter holds on a replicated
+		// bucket, where the conflict carries a different API error code.
+		if errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			lastErr = err
 			continue
 		}
@@ -351,7 +345,10 @@ func casPut(ctx context.Context, kv jetstream.KeyValue, key string, data []byte,
 		if err == nil {
 			return nil
 		}
-		if isRevisionConflict(err) {
+		// Create reports a lost race as ErrKeyExists, Update as
+		// ErrKeyRevisionMismatch — and only the latter holds on a replicated
+		// bucket, where the conflict carries a different API error code.
+		if errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			lastErr = err
 			continue
 		}
@@ -386,7 +383,9 @@ func casClaim[T any](ctx context.Context, kv jetstream.KeyValue, key string) (va
 		}
 
 		if derr := kv.Delete(ctx, key, jetstream.LastRevision(entry.Revision())); derr != nil {
-			if isRevisionConflict(derr) {
+			// A revision-guarded Delete reports a lost race only as
+			// ErrKeyRevisionMismatch; ErrKeyExists never matches on R>1.
+			if errors.Is(derr, jetstream.ErrKeyRevisionMismatch) {
 				lastErr = derr
 				continue
 			}

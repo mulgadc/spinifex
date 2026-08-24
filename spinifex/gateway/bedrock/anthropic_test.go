@@ -197,7 +197,7 @@ func TestAnthropicProvider_ConverseStream_MapsSSEToTaxonomy(t *testing.T) {
 	assert.True(t, capturedBody.Stream)
 
 	events := drainConverseStream(t, src)
-	require.Len(t, events, 10)
+	require.Len(t, events, 9)
 
 	kinds := make([]converseStreamEventKind, len(events))
 	for i, ev := range events {
@@ -205,7 +205,6 @@ func TestAnthropicProvider_ConverseStream_MapsSSEToTaxonomy(t *testing.T) {
 	}
 	assert.Equal(t, []converseStreamEventKind{
 		converseStreamEventMessageStart,
-		converseStreamEventContentBlockStart,
 		converseStreamEventContentBlockDelta,
 		converseStreamEventContentBlockDelta,
 		converseStreamEventContentBlockStop,
@@ -217,22 +216,22 @@ func TestAnthropicProvider_ConverseStream_MapsSSEToTaxonomy(t *testing.T) {
 	}, kinds)
 
 	assert.Equal(t, bedrockruntime.ConversationRoleAssistant, *events[0].MessageStart.Role)
-	assert.Equal(t, "Hello", *events[2].ContentBlockDelta.Delta.Text)
-	assert.Equal(t, " there", *events[3].ContentBlockDelta.Delta.Text)
+	assert.Equal(t, "Hello", *events[1].ContentBlockDelta.Delta.Text)
+	assert.Equal(t, " there", *events[2].ContentBlockDelta.Delta.Text)
 
-	toolStart := events[5].ContentBlockStart
+	toolStart := events[4].ContentBlockStart
 	require.NotNil(t, toolStart.Start.ToolUse)
 	assert.Equal(t, "toolu_1", *toolStart.Start.ToolUse.ToolUseId)
 	assert.Equal(t, "get_weather", *toolStart.Start.ToolUse.Name)
 
-	toolDelta := events[6].ContentBlockDelta
+	toolDelta := events[5].ContentBlockDelta
 	require.NotNil(t, toolDelta.Delta.ToolUse)
 	assert.Equal(t, `{"city":`, *toolDelta.Delta.ToolUse.Input)
 
-	assert.Equal(t, bedrockruntime.StopReasonToolUse, *events[8].MessageStop.StopReason)
-	assert.Equal(t, int64(12), *events[9].Metadata.Usage.InputTokens)
-	assert.Equal(t, int64(5), *events[9].Metadata.Usage.OutputTokens)
-	assert.Equal(t, int64(17), *events[9].Metadata.Usage.TotalTokens)
+	assert.Equal(t, bedrockruntime.StopReasonToolUse, *events[7].MessageStop.StopReason)
+	assert.Equal(t, int64(12), *events[8].Metadata.Usage.InputTokens)
+	assert.Equal(t, int64(5), *events[8].Metadata.Usage.OutputTokens)
+	assert.Equal(t, int64(17), *events[8].Metadata.Usage.TotalTokens)
 }
 
 func TestAnthropicConverseStreamSource_MessageStopEmitsMetadata(t *testing.T) {

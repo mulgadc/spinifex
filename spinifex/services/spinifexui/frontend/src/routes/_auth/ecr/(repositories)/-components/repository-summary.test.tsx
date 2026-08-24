@@ -46,7 +46,9 @@ describe("RepositorySummary", () => {
     send.mockResolvedValue({})
     render("MUTABLE")
     fireEvent.click(screen.getByRole("button", { name: "Make immutable" }))
-    await waitFor(() => expect(send).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       repositoryName: REPO,
       imageTagMutability: "IMMUTABLE",
@@ -58,7 +60,9 @@ describe("RepositorySummary", () => {
     render("IMMUTABLE")
     expect(screen.getByText("Immutable")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Make mutable" }))
-    await waitFor(() => expect(send).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       repositoryName: REPO,
       imageTagMutability: "MUTABLE",

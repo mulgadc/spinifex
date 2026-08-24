@@ -40,7 +40,7 @@ describe("SystemImageRequired", () => {
 
     await user.click(screen.getByRole("button", { name: "Copy command" }))
 
-    expect(await navigator.clipboard.readText()).toBe(importCommand)
+    await expect(navigator.clipboard.readText()).resolves.toBe(importCommand)
   })
 
   it("calls onRecheck when Recheck is clicked", async () => {

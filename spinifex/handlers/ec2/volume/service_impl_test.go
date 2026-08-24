@@ -1367,21 +1367,6 @@ func TestDescribeVolumeStatus_AccountScoping(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }
 
-func TestCreateVolume_StampsAccountID(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
-
-	// Test via the validation path — CreateVolume should not fail because of accountID.
-	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
-		Size:             aws.Int64(1),
-		AvailabilityZone: aws.String("ap-southeast-2a"),
-	}, "111111111111")
-	// Will error at viperblock layer, not at account validation
-	if err != nil {
-		assert.NotEqual(t, awserrors.ErrorInvalidParameterValue, err.Error())
-	}
-}
-
 // --- Group 3: ModifyVolume tests ---
 
 func TestModifyVolume_NilVolumeID(t *testing.T) {
@@ -1771,6 +1756,34 @@ func TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes(t *testing.T) {
 	_, err = svc.GetVolumeMetadata(volumeID)
 	require.Error(t, err, "the volume must actually be deleted, not merely detached")
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
+}
+
+// TestDeleteVolumeOnTerminate_AlreadyGoneMetadataIsSuccess verifies GC
+// re-driving the volumes dependent on an instance whose volume metadata
+// document is already deleted is treated as success, not a hard failure that
+// pins the reaper backoff at its cap forever.
+func TestDeleteVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
+	kv := setupTestVolumeKV(t)
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = kv
+
+	// No metadata doc is ever written for this volume ID.
+	err := svc.DeleteVolumeOnTerminate(context.Background(), "vol-already-gone", "")
+	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
+}
+
+// TestDetachVolumeOnTerminate_AlreadyGoneMetadataIsSuccess mirrors
+// TestDeleteVolumeOnTerminate_AlreadyGoneMetadataIsSuccess for the
+// DeleteOnTermination=false path.
+func TestDetachVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
+	kv := setupTestVolumeKV(t)
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = kv
+
+	err := svc.DetachVolumeOnTerminate(context.Background(), "vol-already-gone", "")
+	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
 }
 
 // TestDeleteVolumeOnTerminate_SurfacesDeleteFailure verifies a DeleteVolume

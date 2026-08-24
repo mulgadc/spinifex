@@ -239,7 +239,10 @@ func (s *UsageStore) Apply(ctx context.Context, rec InvocationRecord, price Pric
 		if err == nil {
 			return nil
 		}
-		if !isUsageCASConflict(err) {
+		// Create reports a lost race as ErrKeyExists, Update as
+		// ErrKeyRevisionMismatch — and only the latter holds on a replicated
+		// bucket, where the conflict carries a different API error code.
+		if !errors.Is(err, jetstream.ErrKeyExists) && !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return fmt.Errorf("kv write usage counters for %s: %w", key, err)
 		}
 	}
@@ -284,21 +287,6 @@ func (s *UsageStore) TokensThisPeriod(ctx context.Context, accountID string) (in
 		total += counters.InputTokens + counters.OutputTokens
 	}
 	return total, nil
-}
-
-// isUsageCASConflict reports whether err is a lost optimistic-concurrency
-// race on the usage counter: a Create on an existing key or an Update
-// against a stale revision. Mirrors handlers_quota.isCASConflict — the two
-// packages don't share an import for this one four-line check.
-func isUsageCASConflict(err error) bool {
-	if errors.Is(err, jetstream.ErrKeyExists) {
-		return true
-	}
-	var apiErr *jetstream.APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
-	}
-	return false
 }
 
 // EnsureUsageConsumer idempotently creates (or updates) this package's

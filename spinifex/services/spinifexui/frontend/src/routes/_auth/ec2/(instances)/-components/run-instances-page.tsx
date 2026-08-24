@@ -4,7 +4,12 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { ChevronDown } from "lucide-react"
 import { useEffect } from "react"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  useForm,
+  type UseFormWatch,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -34,6 +39,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { isSystemManagedImage } from "@/lib/system-managed"
 import { formatVRAMMiB } from "@/lib/utils"
 import { useCreateInstance } from "@/mutations/ec2"
 import {
@@ -80,7 +86,9 @@ export function RunInstancesPage({
   const { data: sgData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
   const { data: ltData } = useSuspenseQuery(ec2LaunchTemplatesQueryOptions)
   const createMutation = useCreateInstance()
-  const images = imagesData.Images ?? []
+  const images = (imagesData.Images ?? []).filter(
+    (image) => !isSystemManagedImage(image),
+  )
   const keyPairs = keyPairsData.KeyPairs ?? []
   const subnets = subnetsData.Subnets ?? []
   const placementGroups = pgData.PlacementGroups ?? []
@@ -227,7 +235,7 @@ export function RunInstancesPage({
   // no BlockDeviceMappings (preserves today's backend default).
   useEffect(() => {
     setValue("rootDeviceName", selectedRoot.deviceName)
-  }, [selectedImageId, selectedRoot.deviceName, setValue])
+  }, [selectedRoot.deviceName, setValue])
 
   const onSubmit = async (data: CreateInstanceFormData) => {
     // Launch wholly from the template (plus count). Build params from only the
@@ -274,9 +282,9 @@ export function RunInstancesPage({
             name="launchTemplateId"
             render={({ field }) => (
               <Select
-                onValueChange={(value) =>
+                onValueChange={(value) => {
                   field.onChange(value === "none" ? undefined : value)
-                }
+                }}
                 value={field.value ?? "none"}
               >
                 <SelectTrigger className="w-full" id="launchTemplateId">
@@ -308,7 +316,9 @@ export function RunInstancesPage({
               name="launchTemplateVersion"
               render={({ field }) => (
                 <Select
-                  onValueChange={(value) => field.onChange(value)}
+                  onValueChange={(value) => {
+                    field.onChange(value)
+                  }}
                   value={field.value ?? "$Default"}
                 >
                   <SelectTrigger className="w-full" id="launchTemplateVersion">
@@ -373,7 +383,9 @@ export function RunInstancesPage({
                   )
                   return (
                     <Select
-                      onValueChange={(value) => field.onChange(value)}
+                      onValueChange={(value) => {
+                        field.onChange(value)
+                      }}
                       value={field.value ?? ""}
                     >
                       <SelectTrigger
@@ -446,7 +458,9 @@ export function RunInstancesPage({
                 name="keyName"
                 render={({ field }) => (
                   <Select
-                    onValueChange={(value) => field.onChange(value)}
+                    onValueChange={(value) => {
+                      field.onChange(value)
+                    }}
                     value={field.value ?? ""}
                   >
                     <SelectTrigger
@@ -482,9 +496,9 @@ export function RunInstancesPage({
                 name="subnetId"
                 render={({ field }) => (
                   <Select
-                    onValueChange={(value) =>
+                    onValueChange={(value) => {
                       field.onChange(value === "none" ? undefined : value)
-                    }
+                    }}
                     value={field.value ?? "none"}
                   >
                     <SelectTrigger className="w-full" id="subnetId">
@@ -523,7 +537,9 @@ export function RunInstancesPage({
                       <input
                         aria-label="Create new security group"
                         checked={field.value === "create"}
-                        onChange={() => field.onChange("create")}
+                        onChange={() => {
+                          field.onChange("create")
+                        }}
                         type="radio"
                       />
                       Create new
@@ -532,7 +548,9 @@ export function RunInstancesPage({
                       <input
                         aria-label="Select existing security group"
                         checked={field.value === "existing"}
-                        onChange={() => field.onChange("existing")}
+                        onChange={() => {
+                          field.onChange("existing")
+                        }}
                         type="radio"
                       />
                       Select existing
@@ -578,7 +596,9 @@ export function RunInstancesPage({
                             <input
                               aria-label="Allow SSH"
                               checked={field.value}
-                              onChange={(e) => field.onChange(e.target.checked)}
+                              onChange={(e) => {
+                                field.onChange(e.target.checked)
+                              }}
                               type="checkbox"
                             />
                             Allow SSH (tcp/22)
@@ -593,7 +613,9 @@ export function RunInstancesPage({
                             <input
                               aria-label="Allow HTTP"
                               checked={field.value}
-                              onChange={(e) => field.onChange(e.target.checked)}
+                              onChange={(e) => {
+                                field.onChange(e.target.checked)
+                              }}
                               type="checkbox"
                             />
                             Allow HTTP (tcp/80)
@@ -608,7 +630,9 @@ export function RunInstancesPage({
                             <input
                               aria-label="Allow HTTPS"
                               checked={field.value}
-                              onChange={(e) => field.onChange(e.target.checked)}
+                              onChange={(e) => {
+                                field.onChange(e.target.checked)
+                              }}
                               type="checkbox"
                             />
                             Allow HTTPS (tcp/443)
@@ -629,7 +653,9 @@ export function RunInstancesPage({
                             <input
                               aria-label="Source anywhere"
                               checked={field.value === "anywhere"}
-                              onChange={() => field.onChange("anywhere")}
+                              onChange={() => {
+                                field.onChange("anywhere")
+                              }}
                               type="radio"
                             />
                             Anywhere (0.0.0.0/0)
@@ -638,7 +664,9 @@ export function RunInstancesPage({
                             <input
                               aria-label="Source custom CIDR"
                               checked={field.value === "custom"}
-                              onChange={() => field.onChange("custom")}
+                              onChange={() => {
+                                field.onChange("custom")
+                              }}
                               type="radio"
                             />
                             Custom CIDR
@@ -675,7 +703,9 @@ export function RunInstancesPage({
                           <input
                             aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
                             checked={selectedSgIdSet.has(sg.GroupId ?? "")}
-                            onChange={() => toggleSg(sg.GroupId ?? "")}
+                            onChange={() => {
+                              toggleSg(sg.GroupId ?? "")
+                            }}
                             type="checkbox"
                           />
                           <span className="font-mono">
@@ -700,9 +730,9 @@ export function RunInstancesPage({
                 name="placementGroupName"
                 render={({ field }) => (
                   <Select
-                    onValueChange={(value) =>
+                    onValueChange={(value) => {
                       field.onChange(value === "none" ? undefined : value)
-                    }
+                    }}
                     value={field.value ?? "none"}
                   >
                     <SelectTrigger className="w-full" id="placementGroupName">
@@ -811,7 +841,9 @@ export function RunInstancesPage({
                     name="rootVolumeType"
                     render={({ field }) => (
                       <Select
-                        onValueChange={(value) => field.onChange(value)}
+                        onValueChange={(value) => {
+                          field.onChange(value)
+                        }}
                         value={field.value ?? DEFAULT_VOLUME_TYPE}
                       >
                         <SelectTrigger
@@ -843,7 +875,9 @@ export function RunInstancesPage({
                         <input
                           aria-label="Delete on termination"
                           checked={field.value ?? true}
-                          onChange={(e) => field.onChange(e.target.checked)}
+                          onChange={(e) => {
+                            field.onChange(e.target.checked)
+                          }}
                           type="checkbox"
                         />
                         Delete on termination
@@ -864,9 +898,9 @@ export function RunInstancesPage({
         <div className="flex gap-2">
           <Button
             disabled={isSubmitting || createMutation.isPending}
-            onClick={async () =>
+            onClick={async () => {
               await navigate({ to: "/ec2/describe-instances" })
-            }
+            }}
             type="button"
             variant="outline"
           >
@@ -932,21 +966,13 @@ function resolveTemplateVersion(
 }
 
 function buildRunInstancesCommands(
-  watch: (name?: string) => unknown,
+  watch: UseFormWatch<CreateInstanceFormData>,
   vpcId: string | undefined,
 ): CliCommand[] {
-  const rawLaunchTemplateId = watch("launchTemplateId")
-  const launchTemplateId =
-    typeof rawLaunchTemplateId === "string" ? rawLaunchTemplateId : ""
+  const launchTemplateId = watch("launchTemplateId") ?? ""
   if (launchTemplateId) {
-    const rawTemplateVersion = watch("launchTemplateVersion")
-    const templateVersion =
-      typeof rawTemplateVersion === "string" && rawTemplateVersion
-        ? rawTemplateVersion
-        : "$Default"
-    const rawTemplateCount = watch("count")
-    const templateCount =
-      typeof rawTemplateCount === "number" ? rawTemplateCount : 0
+    const templateVersion = watch("launchTemplateVersion") || "$Default"
+    const templateCount = watch("count") ?? 0
     return [
       {
         label: "Run Instances",
@@ -967,34 +993,16 @@ function buildRunInstancesCommands(
     ]
   }
 
-  const rawImageId = watch("imageId")
-  const imageId = typeof rawImageId === "string" ? rawImageId : ""
-  const rawInstanceType = watch("instanceType")
-  const instanceType =
-    typeof rawInstanceType === "string" ? rawInstanceType : ""
-  const rawKeyName = watch("keyName")
-  const keyName = typeof rawKeyName === "string" ? rawKeyName : ""
-  const rawSubnetId = watch("subnetId")
-  const subnetId = typeof rawSubnetId === "string" ? rawSubnetId : ""
-  const rawPlacementGroupName = watch("placementGroupName")
-  const placementGroupName =
-    typeof rawPlacementGroupName === "string" ? rawPlacementGroupName : ""
-  const rawCount = watch("count")
-  const count = typeof rawCount === "number" ? rawCount : 0
-  const rawRootDeviceName = watch("rootDeviceName")
-  const rootDeviceName =
-    typeof rawRootDeviceName === "string" ? rawRootDeviceName : ""
-  const rawRootVolumeSize = watch("rootVolumeSize")
-  const rootVolumeSize =
-    typeof rawRootVolumeSize === "number" ? rawRootVolumeSize : undefined
-  const rawRootVolumeType = watch("rootVolumeType")
-  const rootVolumeType =
-    typeof rawRootVolumeType === "string" ? rawRootVolumeType : ""
-  const rawRootDeleteOnTermination = watch("rootDeleteOnTermination")
-  const rootDeleteOnTermination =
-    typeof rawRootDeleteOnTermination === "boolean"
-      ? rawRootDeleteOnTermination
-      : true
+  const imageId = watch("imageId") ?? ""
+  const instanceType = watch("instanceType") ?? ""
+  const keyName = watch("keyName") ?? ""
+  const subnetId = watch("subnetId") ?? ""
+  const placementGroupName = watch("placementGroupName") ?? ""
+  const count = watch("count") ?? 0
+  const rootDeviceName = watch("rootDeviceName") ?? ""
+  const rootVolumeSize = watch("rootVolumeSize")
+  const rootVolumeType = watch("rootVolumeType")
+  const rootDeleteOnTermination = watch("rootDeleteOnTermination")
 
   const parts = [
     {
@@ -1030,17 +1038,11 @@ function buildRunInstancesCommands(
 
   // Security groups — create-new emits create + authorize commands and feeds
   // $SG_ID into run-instances; select-existing passes the chosen IDs.
-  const rawSgMode = watch("securityGroupMode")
-  const sgMode = typeof rawSgMode === "string" ? rawSgMode : "create"
-  const rawNewSgName = watch("newSgName")
-  const sgName = typeof rawNewSgName === "string" ? rawNewSgName : ""
-  const rawNewSgDesc = watch("newSgDescription")
-  const sgDesc = typeof rawNewSgDesc === "string" ? rawNewSgDesc : ""
-  const rawRuleSource = watch("ruleSource")
-  const ruleSource =
-    typeof rawRuleSource === "string" ? rawRuleSource : "anywhere"
-  const rawCustomCidr = watch("customCidr")
-  const customCidr = typeof rawCustomCidr === "string" ? rawCustomCidr : ""
+  const sgMode = watch("securityGroupMode") || "create"
+  const sgName = watch("newSgName") ?? ""
+  const sgDesc = watch("newSgDescription") ?? ""
+  const ruleSource = watch("ruleSource") || "anywhere"
+  const customCidr = watch("customCidr") ?? ""
   const sgCommands: CliCommand[] = []
   if (sgMode === "create") {
     sgCommands.push({
@@ -1100,10 +1102,7 @@ function buildRunInstancesCommands(
       { type: "value" as const, value: " $SG_ID" },
     )
   } else {
-    const rawSgIds = watch("securityGroupIds")
-    const sgIds = Array.isArray(rawSgIds)
-      ? rawSgIds.filter((id): id is string => typeof id === "string")
-      : []
+    const sgIds = watch("securityGroupIds") ?? []
     if (sgIds.length > 0) {
       parts.push(
         { type: "flag" as const, value: " \\\n  --security-group-ids" },
@@ -1114,18 +1113,15 @@ function buildRunInstancesCommands(
 
   const hasStorageOverride =
     rootVolumeSize !== undefined ||
-    rawRootVolumeType !== undefined ||
-    rawRootDeleteOnTermination !== undefined
+    rootVolumeType !== undefined ||
+    rootDeleteOnTermination !== undefined
   if (hasStorageOverride) {
-    const ebs: Record<string, unknown> = {}
-    if (rootVolumeSize !== undefined) {
-      ebs.VolumeSize = rootVolumeSize
-    }
-    if (rootVolumeType) {
-      ebs.VolumeType = rootVolumeType
-    }
-    if (rawRootDeleteOnTermination !== undefined) {
-      ebs.DeleteOnTermination = rootDeleteOnTermination
+    // A field the form left unset stays undefined, which JSON.stringify omits,
+    // so the CLI preview shows only the overrides the user actually set.
+    const ebs = {
+      VolumeSize: rootVolumeSize,
+      VolumeType: rootVolumeType || undefined,
+      DeleteOnTermination: rootDeleteOnTermination,
     }
     const bdm = JSON.stringify([
       {

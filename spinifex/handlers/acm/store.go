@@ -484,7 +484,7 @@ func (s *Store) updateInUseByCAS(ctx context.Context, certArn string, mutate fun
 			return fmt.Errorf("marshal cert: %w", err)
 		}
 		if _, err := s.kv.Update(ctx, key, data, entry.Revision()); err != nil {
-			if errors.Is(err, jetstream.ErrKeyExists) {
+			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 				// Another writer updated the record between our Get and
 				// Update; back off briefly (jittered, so contending writers
 				// don't all re-collide on the same revision) and retry
@@ -541,7 +541,7 @@ func (s *Store) AcquireLease(ctx context.Context, certArn, holderID string, ttl 
 		return false, fmt.Errorf("marshal cert: %w", err)
 	}
 	if _, err := s.kv.Update(ctx, key, data, entry.Revision()); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			// Lost the race to a concurrent acquirer between Get and Update;
 			// the caller skips this tick rather than retrying immediately.
 			return false, nil
@@ -578,7 +578,7 @@ func (s *Store) ReleaseLease(ctx context.Context, certArn, holderID string) erro
 		return fmt.Errorf("marshal cert: %w", err)
 	}
 	if _, err := s.kv.Update(ctx, key, data, entry.Revision()); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return nil // record changed concurrently; nothing to clean up
 		}
 		return err

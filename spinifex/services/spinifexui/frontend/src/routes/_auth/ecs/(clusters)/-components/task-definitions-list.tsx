@@ -25,7 +25,11 @@ export function TaskDefinitionsList({ clusterName }: { clusterName?: string }) {
     if (!target) {
       return
     }
-    deregister.mutate(target, { onSuccess: () => setTarget(null) })
+    deregister.mutate(target, {
+      onSuccess: () => {
+        setTarget(null)
+      },
+    })
   }
 
   return (
@@ -69,7 +73,9 @@ export function TaskDefinitionsList({ clusterName }: { clusterName?: string }) {
                     <td className="px-4 py-2 font-mono text-xs">{id}</td>
                     <td className="px-4 py-2 text-right">
                       <Button
-                        onClick={() => setTarget(id)}
+                        onClick={() => {
+                          setTarget(id)
+                        }}
                         size="sm"
                         variant="destructive"
                       >
@@ -89,7 +95,11 @@ export function TaskDefinitionsList({ clusterName }: { clusterName?: string }) {
         description={`This marks task definition "${target}" INACTIVE. Existing tasks keep running; no new tasks can use it.`}
         isPending={deregister.isPending}
         onConfirm={handleDeregister}
-        onOpenChange={(open) => !open && setTarget(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setTarget(null)
+          }
+        }}
         open={target !== null}
         pendingLabel="Deregistering…"
         title="Deregister task definition"

@@ -1,7 +1,12 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -78,8 +83,6 @@ function CreateNatGateway() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateNatGatewayFormData) => {
     const result = await createMutation.mutateAsync({
@@ -128,7 +131,9 @@ function CreateNatGateway() {
             name="subnetId"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -169,7 +174,9 @@ function CreateNatGateway() {
               name="allocationId"
               render={({ field }) => (
                 <Select
-                  onValueChange={(value) => field.onChange(value)}
+                  onValueChange={(value) => {
+                    field.onChange(value)
+                  }}
                   value={field.value ?? ""}
                 >
                   <SelectTrigger
@@ -207,14 +214,14 @@ function CreateNatGateway() {
           <FieldError errors={[errors.allocationId]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateNatGatewayCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreateNatGatewayCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-nat-gateways" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create NAT Gateway"
         />
@@ -224,15 +231,11 @@ function CreateNatGateway() {
 }
 
 function buildCreateNatGatewayCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateNatGatewayFormData>,
 ): CliCommand[] {
-  const rawSubnetId = watch("subnetId")
-  const subnetId = typeof rawSubnetId === "string" ? rawSubnetId : ""
-  const rawAllocationId = watch("allocationId")
-  const allocationId =
-    typeof rawAllocationId === "string" ? rawAllocationId : ""
-  const rawName = watch("name")
-  const name = typeof rawName === "string" ? rawName : ""
+  const subnetId = values.subnetId ?? ""
+  const allocationId = values.allocationId ?? ""
+  const name = values.name ?? ""
 
   const parts = [
     {

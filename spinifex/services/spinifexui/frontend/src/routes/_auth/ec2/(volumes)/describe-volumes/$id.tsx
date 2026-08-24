@@ -82,7 +82,9 @@ function VolumeDetail() {
     volume?.State === "available" &&
     (!volume.Attachments || volume.Attachments.length === 0)
 
-  const closeDialog = () => setActiveDialog(null)
+  const closeDialog = () => {
+    setActiveDialog(null)
+  }
 
   const handleDelete = async () => {
     try {
@@ -163,7 +165,9 @@ function VolumeDetail() {
             <div className="flex items-center gap-2">
               <Button
                 disabled={!isAvailable}
-                onClick={() => setActiveDialog("delete")}
+                onClick={() => {
+                  setActiveDialog("delete")
+                }}
                 size="sm"
                 variant="destructive"
               >
@@ -185,7 +189,9 @@ function VolumeDetail() {
               )}
               {isAvailable ? (
                 <Button
-                  onClick={() => setActiveDialog("attach")}
+                  onClick={() => {
+                    setActiveDialog("attach")
+                  }}
                   size="sm"
                   variant="outline"
                 >
@@ -195,7 +201,9 @@ function VolumeDetail() {
               ) : null}
               {volume.Attachments && volume.Attachments.length > 0 ? (
                 <Button
-                  onClick={() => setActiveDialog("detach")}
+                  onClick={() => {
+                    setActiveDialog("detach")
+                  }}
                   size="sm"
                   variant="outline"
                 >
@@ -311,7 +319,9 @@ function VolumeDetail() {
               <label htmlFor="attachInstance">Instance</label>
             </FieldTitle>
             <Select
-              onValueChange={(value) => setAttachInstanceId(value ?? "")}
+              onValueChange={(value) => {
+                setAttachInstanceId(value ?? "")
+              }}
               value={attachInstanceId}
             >
               <SelectTrigger className="w-full" id="attachInstance">
@@ -339,7 +349,9 @@ function VolumeDetail() {
             </FieldTitle>
             <Input
               id="attachDevice"
-              onChange={(e) => setAttachDevice(e.target.value)}
+              onChange={(e) => {
+                setAttachDevice(e.target.value)
+              }}
               placeholder="/dev/sdf"
               value={attachDevice}
             />
@@ -378,7 +390,9 @@ function VolumeDetail() {
             <input
               aria-label="Force detach"
               checked={detachForce}
-              onChange={(e) => setDetachForce(e.target.checked)}
+              onChange={(e) => {
+                setDetachForce(e.target.checked)
+              }}
               type="checkbox"
             />
             Force detach

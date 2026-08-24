@@ -34,7 +34,9 @@ export function TagEditor({ form }: TagEditorProps) {
             {...form.register(`tags.${index}.value`)}
           />
           <Button
-            onClick={() => removeTag(index)}
+            onClick={() => {
+              removeTag(index)
+            }}
             size="icon"
             type="button"
             variant="ghost"

@@ -6,6 +6,8 @@ vi.mock("@/lib/awsClient", () => ({
   getEc2Client: () => ({ send: mockSend }),
 }))
 
+import { callQueryFn } from "@/test/query"
+
 import {
   ec2AvailabilityZonesQueryOptions,
   ec2IamInstanceProfileAssociationsQueryOptions,
@@ -225,17 +227,13 @@ describe("queryFn", () => {
 
   it("ec2ImageQueryOptions returns empty result for undefined imageId", async () => {
     const options = ec2ImageQueryOptions(undefined)
-    const queryFn = options.queryFn as (ctx: never) => Promise<unknown>
-    const result = await queryFn({} as never)
+    const result = await callQueryFn(options)
     expect(result).toStrictEqual({ Images: [], $metadata: {} })
     expect(mockSend).not.toHaveBeenCalled()
   })
 
   it("ec2ImageQueryOptions sends DescribeImagesCommand for valid imageId", async () => {
-    const queryFn = ec2ImageQueryOptions("ami-123").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2ImageQueryOptions("ami-123"))
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       ImageIds: ["ami-123"],
@@ -243,210 +241,142 @@ describe("queryFn", () => {
   })
 
   it("ec2InstancesQueryOptions sends DescribeInstancesCommand", async () => {
-    const queryFn = ec2InstancesQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2InstancesQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("ec2LaunchTemplatesQueryOptions sends DescribeLaunchTemplatesCommand", async () => {
-    const queryFn = ec2LaunchTemplatesQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2LaunchTemplatesQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("ec2LaunchTemplateVersionsQueryOptions sends command with ID", async () => {
-    const queryFn = ec2LaunchTemplateVersionsQueryOptions("lt-123").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2LaunchTemplateVersionsQueryOptions("lt-123"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       LaunchTemplateId: "lt-123",
     })
   })
 
   it("ec2InstanceQueryOptions sends DescribeInstancesCommand with ID", async () => {
-    const queryFn = ec2InstanceQueryOptions("i-123").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2InstanceQueryOptions("i-123"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       InstanceIds: ["i-123"],
     })
   })
 
   it("ec2KeyPairsQueryOptions sends DescribeKeyPairsCommand", async () => {
-    const queryFn = ec2KeyPairsQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2KeyPairsQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("ec2KeyPairQueryOptions sends DescribeKeyPairsCommand with ID", async () => {
-    const queryFn = ec2KeyPairQueryOptions("kp-abc").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2KeyPairQueryOptions("kp-abc"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       KeyPairIds: ["kp-abc"],
     })
   })
 
   it("ec2VolumesQueryOptions sends DescribeVolumesCommand", async () => {
-    const queryFn = ec2VolumesQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2VolumesQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
   })
 
   it("ec2VolumeQueryOptions sends DescribeVolumesCommand with ID", async () => {
-    const queryFn = ec2VolumeQueryOptions("vol-1").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2VolumeQueryOptions("vol-1"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       VolumeIds: ["vol-1"],
     })
   })
 
   it("ec2SnapshotsQueryOptions sends DescribeSnapshotsCommand", async () => {
-    const queryFn = ec2SnapshotsQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2SnapshotsQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
   })
 
   it("ec2SnapshotQueryOptions sends DescribeSnapshotsCommand with ID", async () => {
-    const queryFn = ec2SnapshotQueryOptions("snap-1").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2SnapshotQueryOptions("snap-1"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       SnapshotIds: ["snap-1"],
     })
   })
 
   it("ec2VpcsQueryOptions sends DescribeVpcsCommand", async () => {
-    const queryFn = ec2VpcsQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2VpcsQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
   })
 
   it("ec2VpcQueryOptions sends DescribeVpcsCommand with ID", async () => {
-    const queryFn = ec2VpcQueryOptions("vpc-1").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2VpcQueryOptions("vpc-1"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       VpcIds: ["vpc-1"],
     })
   })
 
   it("ec2SubnetsQueryOptions sends DescribeSubnetsCommand", async () => {
-    const queryFn = ec2SubnetsQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2SubnetsQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
   })
 
   it("ec2SubnetQueryOptions sends DescribeSubnetsCommand with ID", async () => {
-    const queryFn = ec2SubnetQueryOptions("subnet-1").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2SubnetQueryOptions("subnet-1"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       SubnetIds: ["subnet-1"],
     })
   })
 
   it("ec2AvailabilityZonesQueryOptions sends DescribeAvailabilityZonesCommand", async () => {
-    const queryFn = ec2AvailabilityZonesQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2AvailabilityZonesQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
   })
 
   it("ec2RegionsQueryOptions sends DescribeRegionsCommand", async () => {
-    const queryFn = ec2RegionsQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2RegionsQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
   })
 
   it("ec2ImagesQueryOptions sends DescribeImagesCommand", async () => {
-    const queryFn = ec2ImagesQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2ImagesQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
   })
 
   it("ec2InstanceTypesQueryOptions sends DescribeInstanceTypesCommand with filter", async () => {
-    const queryFn = ec2InstanceTypesQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2InstanceTypesQueryOptions)
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       Filters: [{ Name: "capacity", Values: ["true"] }],
     })
   })
 
   it("ec2PlacementGroupsQueryOptions sends DescribePlacementGroupsCommand", async () => {
-    const queryFn = ec2PlacementGroupsQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2PlacementGroupsQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("ec2PlacementGroupQueryOptions sends DescribePlacementGroupsCommand with ID", async () => {
-    const queryFn = ec2PlacementGroupQueryOptions("pg-123").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2PlacementGroupQueryOptions("pg-123"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupIds: ["pg-123"],
     })
   })
 
   it("ec2SecurityGroupsQueryOptions sends DescribeSecurityGroupsCommand", async () => {
-    const queryFn = ec2SecurityGroupsQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2SecurityGroupsQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("ec2SecurityGroupQueryOptions sends DescribeSecurityGroupsCommand with ID", async () => {
-    const queryFn = ec2SecurityGroupQueryOptions("sg-123").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2SecurityGroupQueryOptions("sg-123"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupIds: ["sg-123"],
     })
   })
 
   it("ec2IamInstanceProfileAssociationsQueryOptions filters by instance-id", async () => {
-    const queryFn = ec2IamInstanceProfileAssociationsQueryOptions("i-123")
-      .queryFn as (ctx: never) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(ec2IamInstanceProfileAssociationsQueryOptions("i-123"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       Filters: [{ Name: "instance-id", Values: ["i-123"] }],
     })

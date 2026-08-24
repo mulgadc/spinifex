@@ -162,7 +162,9 @@ export function AdminDashboardPanel() {
             <button
               type="button"
               className="flex items-center gap-2 text-sm font-medium"
-              onClick={() => setNodesExpanded(!nodesExpanded)}
+              onClick={() => {
+                setNodesExpanded(!nodesExpanded)
+              }}
             >
               {nodesExpanded ? (
                 <ChevronDown className="size-3.5" />

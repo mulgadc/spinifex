@@ -3,7 +3,6 @@ package gateway_tagging
 import (
 	"context"
 	"errors"
-	"fmt"
 	"maps"
 	"slices"
 	"sort"
@@ -14,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	rgt "github.com/aws/aws-sdk-go/service/resourcegroupstaggingapi"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
@@ -194,10 +194,11 @@ func buildEC2Mappings(tagDescriptions []*ec2.TagDescription, region, accountID s
 	return mappings
 }
 
-// ec2ARN builds an arn:aws:ec2 ARN for a resource. fullType is "ec2:<type>".
+// ec2ARN builds an arn:aws:ec2 ARN for a resource. fullType is "ec2:<type>",
+// read from the stored tag record rather than from the id.
 func ec2ARN(region, accountID, fullType, id string) string {
-	resourceType := strings.TrimPrefix(fullType, "ec2:")
-	return fmt.Sprintf("arn:aws:ec2:%s:%s:%s/%s", region, accountID, resourceType, id)
+	kind := arn.EC2ResourceType(strings.TrimPrefix(fullType, "ec2:"))
+	return arn.FormatEC2(kind, region, accountID, id)
 }
 
 // matchesType reports whether fullType passes typeFilters. An empty filter set

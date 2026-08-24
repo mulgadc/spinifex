@@ -13,7 +13,7 @@ let recovering = false
 // Authorization denials (AccessDenied / UnauthorizedOperation) and other errors
 // fall through to the normal error UI.
 function recoverFromStaleCredentials(
-  error: unknown,
+  error: Error,
   queryClient: QueryClient,
 ): void {
   if (recovering || !isStaleCredentialsError(error)) {
@@ -31,10 +31,14 @@ function recoverFromStaleCredentials(
 export function createQueryClient(): QueryClient {
   const queryClient = new QueryClient({
     queryCache: new QueryCache({
-      onError: (error) => recoverFromStaleCredentials(error, queryClient),
+      onError: (error) => {
+        recoverFromStaleCredentials(error, queryClient)
+      },
     }),
     mutationCache: new MutationCache({
-      onError: (error) => recoverFromStaleCredentials(error, queryClient),
+      onError: (error) => {
+        recoverFromStaleCredentials(error, queryClient)
+      },
     }),
     defaultOptions: {
       queries: {

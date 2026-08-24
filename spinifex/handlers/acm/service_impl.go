@@ -13,10 +13,10 @@ import (
 	"maps"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/acm"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/nats-io/nats.go"
@@ -186,7 +186,7 @@ func (s *ACMServiceImpl) northstarHostsAll(domains []string) bool {
 
 // mintCertificateArn generates an ACM-style certificate ARN for accountID.
 func (s *ACMServiceImpl) mintCertificateArn(accountID string) string {
-	return fmt.Sprintf("arn:aws:acm:%s:%s:certificate/%s", s.region, accountID, uuid.NewString())
+	return fmt.Sprintf("arn:aws:acm:%s:%s:certificate/%s", s.region, accountID, uuid.NewV4().String())
 }
 
 // ImportCertificate validates the PEM material, parses the leaf for metadata,
@@ -315,7 +315,7 @@ func (s *ACMServiceImpl) RequestCertificate(ctx context.Context, input *acm.Requ
 		RenewalEligibility:      renewalEligibilityForMode(mode),
 		// Minted now regardless of mode so CNAME_DELEGATION, when it lands, has
 		// a stable target without changing an existing certificate's validation.
-		DelegationToken: uuid.NewString(),
+		DelegationToken: uuid.NewV4().String(),
 		Tags:            tagsToMap(input.Tags),
 	}
 

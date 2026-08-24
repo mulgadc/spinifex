@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -71,7 +71,7 @@ func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, r
 // deferred closure, matching pumpConverseStream's treatment of the streaming
 // path.
 func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput) (out *bedrockruntime.ConverseOutput, err error) {
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 	start := time.Now()
 	var backend string
 	defer func() {
@@ -131,6 +131,12 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 	var p Provider
 	switch {
 	case entry.Provider == tierSelfHost:
+		var release func()
+		release, err = admitSelfHost(ctx, rt.provisioned, ptAccountID, modelID, entry)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 		if ptAccountID != "" {
 			p = newVLLMProviderForAccount(rt.endpointResolver, ptAccountID)
 		} else {
@@ -253,8 +259,16 @@ func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string,
 	}
 
 	var p Provider
+	// selfHostRelease is non-nil only on the self-host branch below; it gates
+	// whether the eventual source gets slot-release wrapping and whether an
+	// error return past this point must release the slot explicitly.
+	var selfHostRelease func()
 	switch {
 	case entry.Provider == tierSelfHost:
+		selfHostRelease, err = admitSelfHost(ctx, rt.provisioned, ptAccountID, modelID, entry)
+		if err != nil {
+			return nil, err
+		}
 		if ptAccountID != "" {
 			p = newVLLMProviderForAccount(rt.endpointResolver, ptAccountID)
 		} else {
@@ -280,7 +294,21 @@ func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string,
 
 	sp, ok := p.(ConverseStreamProvider)
 	if !ok {
+		if selfHostRelease != nil {
+			selfHostRelease()
+		}
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
-	return sp.ConverseStream(ctx, modelID, input)
+
+	src, err := sp.ConverseStream(ctx, modelID, input)
+	if err != nil {
+		if selfHostRelease != nil {
+			selfHostRelease()
+		}
+		return nil, err
+	}
+	if selfHostRelease != nil {
+		src = newSlotReleasingSource(src, selfHostRelease)
+	}
+	return src, nil
 }

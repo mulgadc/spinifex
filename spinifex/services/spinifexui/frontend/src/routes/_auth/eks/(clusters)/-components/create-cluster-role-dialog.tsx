@@ -104,7 +104,9 @@ export function CreateClusterRoleDialog({
           </FieldTitle>
           <Input
             id="eks-role-name"
-            onChange={(e) => setRoleName(e.target.value)}
+            onChange={(e) => {
+              setRoleName(e.target.value)
+            }}
             placeholder="my-cluster-eks-cluster-role"
             value={roleName}
           />

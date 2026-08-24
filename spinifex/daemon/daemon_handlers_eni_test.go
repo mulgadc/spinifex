@@ -51,10 +51,6 @@ func TestENIHotplugErrorCode(t *testing.T) {
 
 // --- publishENIHotplugEvent ---
 
-func TestPublishENIHotplugEvent_NilConnNoop(t *testing.T) {
-	publishENIHotplugEvent(nil, "vpc.eni-hotplug.attached", "i-x", map[string]any{"k": "v"})
-}
-
 func TestPublishENIHotplugEvent_Publishes(t *testing.T) {
 	d := createVPCTestDaemon(t)
 

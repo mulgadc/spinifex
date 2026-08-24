@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -38,6 +39,7 @@ type vpcProvisioner interface {
 	CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
 	DescribeNetworkInterfaces(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error)
 	DescribeSubnets(ctx context.Context, input *ec2.DescribeSubnetsInput, accountID string) (*ec2.DescribeSubnetsOutput, error)
+	ModifyNetworkInterfaceAttribute(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, accountID string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error)
 }
 
 // HostPortDeps bundles the collaborators the daemon's appliance-VPC host
@@ -72,7 +74,7 @@ func daemonPortDescription(nodeID string) string {
 // handlers/bedrock's helper of the same shape: description-filtered
 // describe first, create only on a miss, so a restart reuses the same
 // address rather than leaking one per launch.
-func ensureDaemonENI(ctx context.Context, vpcSvc vpcProvisioner, subnetID, nodeID string) (*daemonENI, error) {
+func ensureDaemonENI(ctx context.Context, vpcSvc vpcProvisioner, subnetID, nodeID string, groupIDs []string) (*daemonENI, error) {
 	desc := daemonPortDescription(nodeID)
 	out, err := vpcSvc.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
@@ -93,6 +95,12 @@ func ensureDaemonENI(ctx context.Context, vpcSvc vpcProvisioner, subnetID, nodeI
 			// A record missing either field cannot back a host port, so fall
 			// through and mint a usable one rather than fail the connect.
 			if eni.id != "" && eni.ip != "" && eni.mac != "" {
+				// A reused ENI predates this node's SG membership, so re-assert
+				// it: without the appliance's groups the self-referencing SG
+				// drops the host port's traffic.
+				if err := ensureENIGroups(ctx, vpcSvc, ni, groupIDs); err != nil {
+					return nil, err
+				}
 				return eni, nil
 			}
 			slog.WarnContext(ctx, "ochrevector: ignoring incomplete daemon ENI record",
@@ -100,9 +108,14 @@ func ensureDaemonENI(ctx context.Context, vpcSvc vpcProvisioner, subnetID, nodeI
 		}
 	}
 
+	var groups []*string
+	if len(groupIDs) > 0 {
+		groups = aws.StringSlice(groupIDs)
+	}
 	created, err := vpcSvc.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(subnetID),
 		Description: aws.String(desc),
+		Groups:      groups,
 		TagSpecifications: []*ec2.TagSpecification{{
 			ResourceType: aws.String("network-interface"),
 			Tags: []*ec2.Tag{
@@ -129,19 +142,59 @@ func ensureDaemonENI(ctx context.Context, vpcSvc vpcProvisioner, subnetID, nodeI
 	return eni, nil
 }
 
+// ensureENIGroups makes the daemon ENI a member of the appliance's security
+// groups, so the customer ENI's self-referencing SG authorizes the host port
+// rather than dropping it. A no-op when the ENI already carries exactly those
+// groups, or when the appliance exposed none.
+func ensureENIGroups(ctx context.Context, vpcSvc vpcProvisioner, ni *ec2.NetworkInterface, groupIDs []string) error {
+	if len(groupIDs) == 0 || sameGroupSet(ni.Groups, groupIDs) {
+		return nil
+	}
+	_, err := vpcSvc.ModifyNetworkInterfaceAttribute(ctx, &ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: ni.NetworkInterfaceId,
+		Groups:             aws.StringSlice(groupIDs),
+	}, utils.GlobalAccountID)
+	if err != nil {
+		return fmt.Errorf("ochrevector: set daemon ENI %s security groups: %w", aws.StringValue(ni.NetworkInterfaceId), err)
+	}
+	return nil
+}
+
+// sameGroupSet reports whether current holds exactly the desired group IDs.
+func sameGroupSet(current []*ec2.GroupIdentifier, desired []string) bool {
+	if len(current) != len(desired) {
+		return false
+	}
+	have := make(map[string]struct{}, len(current))
+	for _, g := range current {
+		have[aws.StringValue(g.GroupId)] = struct{}{}
+	}
+	for _, id := range desired {
+		if _, ok := have[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // applianceInstanceTagKey mirrors the unexported rdsInstanceTagKey in
 // handlers/rds/launch.go, which stamps it on the appliance's customer ENI at
 // launch. Keep this literal in sync with that const; the e2e harness
 // (tests/e2e/harness/rds.go) duplicates it the same way.
 const applianceInstanceTagKey = "spinifex:rds-db-instance"
 
+// endpointENIDescriptionPrefix mirrors the description handlers/rds gives the
+// customer (endpoint) ENI in resolveCustomerENI. The management NIC shares the
+// rds-db-instance tag, so description is what tells the reachable ENI apart.
+const endpointENIDescriptionPrefix = "RDS endpoint ENI for "
+
 // resolveApplianceTarget finds the appliance's own customer ENI by the tag
 // handlers/rds stamps on it at launch, returning the real private IP to dial
 // and the subnet it lives in -- never the vanity endpoint hostname, which is
 // unresolvable and unroutable from the daemon host.
-func resolveApplianceTarget(ctx context.Context, deps HostPortDeps, identifier string) (dialIP, subnetID, subnetCIDR string, err error) {
+func resolveApplianceTarget(ctx context.Context, deps HostPortDeps, identifier string) (dialIP, subnetID, subnetCIDR string, groupIDs []string, err error) {
 	if deps.VPC == nil {
-		return "", "", "", errors.New("ochrevector: no VPC provider configured; cannot resolve the appliance's ENI")
+		return "", "", "", nil, errors.New("ochrevector: no VPC provider configured; cannot resolve the appliance's ENI")
 	}
 
 	out, err := deps.VPC.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
@@ -150,34 +203,50 @@ func resolveApplianceTarget(ctx context.Context, deps HostPortDeps, identifier s
 		},
 	}, utils.GlobalAccountID)
 	if err != nil {
-		return "", "", "", fmt.Errorf("ochrevector: describe appliance ENI for %s: %w", identifier, err)
+		return "", "", "", nil, fmt.Errorf("ochrevector: describe appliance ENI for %s: %w", identifier, err)
 	}
+	// Both the endpoint ENI and the management NIC carry the rds-db-instance
+	// tag, but only the endpoint ENI (in the customer VPC) is reachable from the
+	// daemon. Prefer it by description; fall back to any usable tagged NIC.
 	var ni *ec2.NetworkInterface
 	if out != nil {
 		for _, cand := range out.NetworkInterfaces {
-			if aws.StringValue(cand.PrivateIpAddress) != "" && aws.StringValue(cand.SubnetId) != "" {
+			if aws.StringValue(cand.PrivateIpAddress) == "" || aws.StringValue(cand.SubnetId) == "" {
+				continue
+			}
+			if strings.HasPrefix(aws.StringValue(cand.Description), endpointENIDescriptionPrefix) {
 				ni = cand
 				break
+			}
+			if ni == nil {
+				ni = cand
 			}
 		}
 	}
 	if ni == nil {
-		return "", "", "", fmt.Errorf("ochrevector: no customer ENI found for appliance %s", identifier)
+		return "", "", "", nil, fmt.Errorf("ochrevector: no customer ENI found for appliance %s", identifier)
 	}
 	dialIP = aws.StringValue(ni.PrivateIpAddress)
 	subnetID = aws.StringValue(ni.SubnetId)
+	// The daemon's host-port ENI must join these groups, or the customer ENI's
+	// self-referencing SG drops its traffic to the appliance.
+	for _, g := range ni.Groups {
+		if id := aws.StringValue(g.GroupId); id != "" {
+			groupIDs = append(groupIDs, id)
+		}
+	}
 
 	subOut, err := deps.VPC.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("subnet-id"), Values: aws.StringSlice([]string{subnetID})}},
 	}, utils.GlobalAccountID)
 	if err != nil {
-		return "", "", "", fmt.Errorf("ochrevector: describe subnet %s: %w", subnetID, err)
+		return "", "", "", nil, fmt.Errorf("ochrevector: describe subnet %s: %w", subnetID, err)
 	}
 	if subOut == nil || len(subOut.Subnets) == 0 || aws.StringValue(subOut.Subnets[0].CidrBlock) == "" {
-		return "", "", "", fmt.Errorf("ochrevector: subnet %s has no cidr block", subnetID)
+		return "", "", "", nil, fmt.Errorf("ochrevector: subnet %s has no cidr block", subnetID)
 	}
 	subnetCIDR = aws.StringValue(subOut.Subnets[0].CidrBlock)
-	return dialIP, subnetID, subnetCIDR, nil
+	return dialIP, subnetID, subnetCIDR, groupIDs, nil
 }
 
 // ensureApplianceHostPort gives this daemon a routed presence in the subnet
@@ -198,7 +267,7 @@ func ensureApplianceHostPort(ctx context.Context, deps HostPortDeps, identifier 
 		return "", "", errors.New("ochrevector: no VPC provider configured; cannot mint the daemon's appliance-VPC port")
 	}
 
-	dialIP, subnetID, subnetCIDR, err := resolveApplianceTarget(ctx, deps, identifier)
+	dialIP, subnetID, subnetCIDR, groupIDs, err := resolveApplianceTarget(ctx, deps, identifier)
 	if err != nil {
 		return "", "", err
 	}
@@ -207,7 +276,7 @@ func ensureApplianceHostPort(ctx context.Context, deps HostPortDeps, identifier 
 		return "", "", fmt.Errorf("ochrevector: parse appliance subnet CIDR %q: %w", subnetCIDR, err)
 	}
 
-	eni, err := ensureDaemonENI(ctx, deps.VPC, subnetID, deps.NodeID)
+	eni, err := ensureDaemonENI(ctx, deps.VPC, subnetID, deps.NodeID, groupIDs)
 	if err != nil {
 		return "", "", err
 	}

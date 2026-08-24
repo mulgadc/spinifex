@@ -1,11 +1,12 @@
 import { defineConfig } from "oxlint"
+import antiSlop from "ultracite/oxlint/anti-slop"
 import core from "ultracite/oxlint/core"
 import react from "ultracite/oxlint/react"
 import tanstack from "ultracite/oxlint/tanstack"
 import vitest from "ultracite/oxlint/vitest"
 
 export default defineConfig({
-  extends: [core, react, vitest, tanstack],
+  extends: [core, react, vitest, tanstack, antiSlop],
   jsPlugins: [
     "@tanstack/eslint-plugin-query",
     "@tanstack/eslint-plugin-router",
@@ -25,6 +26,7 @@ export default defineConfig({
     "@tanstack/query/stable-query-client": "error",
     "@tanstack/router/create-route-property-order": "error",
     "@tanstack/router/route-param-names": "error",
+    "anti-slop/require-safety-comment-for-type-assertion": "off",
     "eslint/complexity": "off",
     "eslint/func-style": [
       "error",
@@ -39,25 +41,17 @@ export default defineConfig({
     "eslint/require-unicode-regexp": "off",
     "eslint/sort-keys": "off",
     "import/consistent-type-specifier-style": "off",
-    "jsx-a11y/prefer-tag-over-role": "off",
     "react/function-component-definition": [
       "error",
       { namedComponents: "function-declaration" },
     ],
     "react/jsx-handler-names": "off",
-    "react-you-might-not-need-an-effect/no-adjust-state-on-prop-change":
-      "error",
-    "react-you-might-not-need-an-effect/no-chain-state-updates": "error",
-    "react-you-might-not-need-an-effect/no-derived-state": "error",
+    "react/todo": "off",
     "react-you-might-not-need-an-effect/no-event-handler": "error",
     "react-you-might-not-need-an-effect/no-external-store-subscription":
       "error",
-    "react-you-might-not-need-an-effect/no-initialize-state": "error",
     "react-you-might-not-need-an-effect/no-pass-data-to-parent": "error",
     "react-you-might-not-need-an-effect/no-pass-live-state-to-parent": "error",
-    "react-you-might-not-need-an-effect/no-reset-all-state-on-prop-change":
-      "error",
-    "typescript/no-confusing-void-expression": "off",
     "typescript/no-floating-promises": [
       "error",
       {
@@ -70,7 +64,10 @@ export default defineConfig({
         ],
       },
     ],
-    "typescript/no-misused-promises": "off",
+    "typescript/no-misused-promises": [
+      "error",
+      { checksVoidReturn: { attributes: false } },
+    ],
     "typescript/only-throw-error": [
       "error",
       {
@@ -93,17 +90,18 @@ export default defineConfig({
       "error",
       { cases: { kebabCase: true, camelCase: true } },
     ],
-    "unicorn/prefer-single-call": "off",
   },
   overrides: [
     {
       files: [
         "**/*.{test,spec}.{ts,tsx,js,jsx}",
         "**/__tests__/**/*.{ts,tsx,js,jsx}",
+        "src/test/**/*.{ts,tsx}",
       ],
       plugins: ["vitest"],
       rules: {
-        "eslint/prefer-destructuring": "off",
+        "anti-slop/no-module-mocking": "off",
+        "anti-slop/no-unknown-returns": "off",
         "eslint/require-await": "off",
         "import/first": "off",
         "typescript/consistent-type-imports": "off",
@@ -114,10 +112,8 @@ export default defineConfig({
         "typescript/no-unsafe-type-assertion": "off",
         "unicorn/no-useless-undefined": "off",
         "vitest/max-expects": "off",
-        "vitest/prefer-called-once": "off",
         "vitest/prefer-called-with": "off",
         "vitest/prefer-describe-function-title": "off",
-        "vitest/prefer-expect-resolves": "off",
         "vitest/prefer-import-in-mock": "off",
         "vitest/require-mock-type-parameters": "off",
       },

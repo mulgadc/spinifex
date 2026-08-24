@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/gpu"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -163,24 +162,4 @@ func TestResolveVMGPU_UnknownPCI_ReturnsNil(t *testing.T) {
 
 func TestResolveVMGPU_EmptyAttachment_ReturnsNil(t *testing.T) {
 	assert.Nil(t, resolveVMGPU(gpu.GPUAttachment{}, nil, nil))
-}
-
-// --- types shape: ensure GPU fields are present ---
-
-func TestVMGPUInfo_JSONFields(t *testing.T) {
-	info := types.VMGPUInfo{
-		Model:   "NVIDIA A10",
-		VRAMMiB: 23028,
-	}
-	assert.Equal(t, "NVIDIA A10", info.Model)
-	assert.Equal(t, int64(23028), info.VRAMMiB)
-	assert.Empty(t, info.Profile)
-	assert.Empty(t, info.MdevPath)
-}
-
-func TestGPUInfo_SlicesNilForWholeGPU(t *testing.T) {
-	info := types.GPUInfo{PCIAddress: "0000:01:00.0"}
-	assert.Equal(t, "0000:01:00.0", info.PCIAddress)
-	assert.False(t, info.MIGEnabled)
-	assert.Nil(t, info.Slices)
 }

@@ -591,8 +591,7 @@ func resolveErrorDetail(err error) (code, message string, ok bool) {
 	}
 	text := err.Error()
 	if _, exists := ErrorLookup[text]; exists {
-		var cause *codedError
-		if errors.As(err, &cause) {
+		if cause, ok := errors.AsType[*codedError](err); ok {
 			return text, cause.message, true
 		}
 		return text, "", true

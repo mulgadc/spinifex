@@ -44,11 +44,15 @@ describe("DeleteDBSnapshotDialog", () => {
     const onDeleted = vi.fn()
     render(onDeleted)
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
-    await waitFor(() => expect(mockSend).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBSnapshotIdentifier: ID,
     })
-    await waitFor(() => expect(onDeleted).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(onDeleted).toHaveBeenCalled()
+    })
   })
 
   // The refusal names the instance still reading through the snapshot, which
@@ -60,9 +64,9 @@ describe("DeleteDBSnapshotDialog", () => {
     const onDeleted = vi.fn()
     render(onDeleted)
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
-    expect(
-      await screen.findByText(/is in use by orders-db-restored/),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByText(/is in use by orders-db-restored/),
+    ).resolves.toBeInTheDocument()
     expect(onDeleted).not.toHaveBeenCalled()
   })
 })

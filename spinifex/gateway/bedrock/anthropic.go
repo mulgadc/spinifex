@@ -363,7 +363,14 @@ func (s *anthropicConverseStreamSource) Next(_ context.Context) (ConverseStreamE
 		case "message_start":
 			return s.handleMessageStart(ev.Data)
 		case "content_block_start":
-			return s.handleContentBlockStart(ev.Data)
+			event, emit, err := s.handleContentBlockStart(ev.Data)
+			if err != nil {
+				return ConverseStreamEvent{}, false, err
+			}
+			if !emit {
+				continue
+			}
+			return event, true, nil
 		case "content_block_delta":
 			return s.handleContentBlockDelta(ev.Data)
 		case "content_block_stop":
@@ -403,6 +410,9 @@ func (s *anthropicConverseStreamSource) handleMessageStart(data string) (Convers
 	}, true, nil
 }
 
+// handleContentBlockStart emits contentBlockStart only for tool_use blocks,
+// matching real Bedrock: a text block's start carries no union member, which
+// violates Smithy's exactly-one-of rule, so text blocks emit nothing here.
 func (s *anthropicConverseStreamSource) handleContentBlockStart(data string) (ConverseStreamEvent, bool, error) {
 	var payload struct {
 		Index        int64 `json:"index"`
@@ -415,12 +425,14 @@ func (s *anthropicConverseStreamSource) handleContentBlockStart(data string) (Co
 	if err := json.Unmarshal([]byte(data), &payload); err != nil {
 		return ConverseStreamEvent{}, false, newStreamFault(fmt.Errorf("anthropic stream: decode content_block_start: %w", err))
 	}
-	start := &bedrockruntime.ContentBlockStart{}
-	if payload.ContentBlock.Type == "tool_use" {
-		start.ToolUse = &bedrockruntime.ToolUseBlockStart{
+	if payload.ContentBlock.Type != "tool_use" {
+		return ConverseStreamEvent{}, false, nil
+	}
+	start := &bedrockruntime.ContentBlockStart{
+		ToolUse: &bedrockruntime.ToolUseBlockStart{
 			ToolUseId: aws.String(payload.ContentBlock.ID),
 			Name:      aws.String(payload.ContentBlock.Name),
-		}
+		},
 	}
 	return ConverseStreamEvent{
 		Kind: converseStreamEventContentBlockStart,

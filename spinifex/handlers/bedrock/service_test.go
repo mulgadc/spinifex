@@ -9,6 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -183,8 +184,9 @@ func TestDelete_ReadyToAbsent(t *testing.T) {
 	require.Equal(t, StateReady, desc.Endpoint.State)
 	instanceID := desc.Endpoint.InstanceID
 
-	_, err = s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
+	del, err := s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
 	require.NoError(t, err)
+	assert.True(t, del.Removed, "a real teardown must report Removed")
 
 	desc, err = s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID}, "")
 	require.NoError(t, err)
@@ -199,6 +201,7 @@ func TestDelete_IdempotentOnAbsent(t *testing.T) {
 	out, err := s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
 	require.NoError(t, err)
 	assert.NotNil(t, out)
+	assert.False(t, out.Removed, "a delete that found no record must not report Removed")
 	assert.Empty(t, h.launcher.terminated)
 }
 
@@ -209,7 +212,7 @@ func TestDelete_RefusesNonReadyState(t *testing.T) {
 	js := testutil.NewJetStream(t, nc)
 	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
 	require.NoError(t, err)
-	key := EndpointKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(utils.GlobalAccountID, testModelID)
 	_, err = createJSONRevision(t.Context(), kv, key, EndpointRecord{
 		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateStarting, Generation: 1,
 	})
@@ -231,7 +234,7 @@ func TestDelete_ResumesFromDraining(t *testing.T) {
 	js := testutil.NewJetStream(t, nc)
 	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
 	require.NoError(t, err)
-	key := EndpointKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(utils.GlobalAccountID, testModelID)
 	_, err = createJSONRevision(t.Context(), kv, key, EndpointRecord{
 		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateDraining,
 		InstanceID: "i-stranded", Generation: 2,
@@ -269,7 +272,7 @@ func TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned(t *testing.T) {
 	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
 	require.NoError(t, err)
 	var rec EndpointRecord
-	found, err := getJSON(t.Context(), kv, EndpointKey(utils.GlobalAccountID, testModelID), &rec)
+	found, err := getJSON(t.Context(), kv, resolveKey(utils.GlobalAccountID, testModelID), &rec)
 	require.NoError(t, err)
 	require.True(t, found, "an empty AccountID must key the record under GlobalAccountID")
 	assert.False(t, rec.Pinned)
@@ -294,14 +297,14 @@ func TestEnsure_RealAccountIDKeysUnderAccountAndPersistsPinned(t *testing.T) {
 	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
 	require.NoError(t, err)
 	var rec EndpointRecord
-	found, err := getJSON(t.Context(), kv, EndpointKey(testAccountID, testModelID), &rec)
+	found, err := getJSON(t.Context(), kv, resolveKey(testAccountID, testModelID), &rec)
 	require.NoError(t, err)
 	require.True(t, found, "a real AccountID must key the record under that account, not Global")
 	assert.True(t, rec.Pinned)
 
 	// Nothing must have landed under the shared Global key.
 	var globalRec EndpointRecord
-	foundGlobal, err := getJSON(t.Context(), kv, EndpointKey(utils.GlobalAccountID, testModelID), &globalRec)
+	foundGlobal, err := getJSON(t.Context(), kv, resolveKey(utils.GlobalAccountID, testModelID), &globalRec)
 	require.NoError(t, err)
 	assert.False(t, foundGlobal)
 }
@@ -331,6 +334,42 @@ func TestDescribeDelete_AccountScopedRoundTrip(t *testing.T) {
 
 	_, err = s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
 	require.NoError(t, err)
+
+	desc, err = s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateAbsent, desc.Endpoint.State)
+}
+
+// TestDelete_BareDeleteMissesAccountScopedPinnedButScopedClearsGoneVM is
+// 6z9vg's core: a bare (Global) delete resolves a key that never held the
+// pinned, account-scoped record, so it is a no-op that must report Removed=false
+// and leave the record; scoped to the owning account it clears the record even
+// when the VM was terminated out of band.
+func TestDelete_BareDeleteMissesAccountScopedPinnedButScopedClearsGoneVM(t *testing.T) {
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{
+		ModelID: testModelID, AccountID: testAccountID, Pinned: true,
+	}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	bare, err := s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	assert.False(t, bare.Removed, "a bare delete must not claim a teardown it did not do")
+
+	desc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateReady, desc.Endpoint.State, "the pinned record must survive a mis-scoped delete")
+
+	// The instance vanished out of band: the scoped delete must still clear the
+	// record rather than stall on a gone VM.
+	h.launcher.terminateErr = sysinstance.ErrSystemInstanceNotFound
+
+	scoped, err := s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
+	require.NoError(t, err)
+	assert.True(t, scoped.Removed, "a scoped delete of a gone-VM record must clear it")
 
 	desc, err = s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
 	require.NoError(t, err)
@@ -386,4 +425,43 @@ func TestList_ReturnsEndpointsAcrossAllAccountsIncludingPinned(t *testing.T) {
 	require.True(t, ok, "a pinned, account-scoped endpoint must appear in List")
 	assert.Equal(t, testAccountID, pinned.AccountID)
 	assert.True(t, pinned.Pinned)
+}
+
+// TestEnsure_GroupMemberConvergesOnOneBundle guards the co-serve seam: a second
+// member of an already-serving group must resolve to the ONE shared VM, not
+// launch a second. testModelID (the vLLM primary) and the embedder below both
+// resolve to coServeGroupOchreDemo, so Ensure keys them the same. Each member
+// still resolves to its own port on that VM.
+func TestEnsure_GroupMemberConvergesOnOneBundle(t *testing.T) {
+	const embedModelID = "nomic-embed-text-v1.5"
+	h := newLaunchHarness()
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
+
+	_, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+
+	out, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: embedModelID}, "")
+	require.NoError(t, err)
+	s.WaitLaunches()
+	assert.EqualValues(t, 1, h.launcher.launchCount.Load(), "a group member must not launch a second VM")
+	assert.Equal(t, embedModelID, out.Endpoint.ModelID, "the record mirrors the member actually asked for")
+
+	list, err := s.List(t.Context(), &ListEndpointsInput{}, "")
+	require.NoError(t, err)
+	require.Len(t, list.Endpoints, 1, "the whole group is one endpoint record")
+
+	llmDesc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: testModelID}, "")
+	require.NoError(t, err)
+	embDesc, err := s.Describe(t.Context(), &DescribeEndpointInput{ModelID: embedModelID}, "")
+	require.NoError(t, err)
+	assert.Equal(t, StateReady, embDesc.Endpoint.State)
+
+	llmURL := llmDesc.Endpoint.MemberBaseURL(testModelID)
+	embURL := embDesc.Endpoint.MemberBaseURL(embedModelID)
+	require.NotEmpty(t, llmURL)
+	require.NotEmpty(t, embURL)
+	assert.NotEqual(t, llmURL, embURL, "each member resolves to its own port on the shared VM")
+	assert.Contains(t, llmURL, ":8000", "the vLLM primary keeps the well-known port")
+	assert.Contains(t, embURL, ":8001", "a TEI member takes a port above the vLLM one")
 }

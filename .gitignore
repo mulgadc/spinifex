@@ -34,9 +34,10 @@ Thumbs.db
 # Environment
 .env
 .venv/
+.cache/
+
+# VScode
+.vscode/
 
 # Test reports
 *-report.txt
-
-# Per-worktree golangci-lint cache
-/.cache/

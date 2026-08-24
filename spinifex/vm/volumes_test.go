@@ -2,11 +2,13 @@ package vm
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -22,23 +24,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newMockQMPClient creates a QMPClient backed by an in-memory pipe. The
+// newMockQMPClient creates a QMPClient backed by a unix socket. The
 // responder is invoked for every command and returns the JSON object the
 // server should reply with (e.g. {"return": {}} or {"error": {...}}). A
 // nil responder reply defaults to an empty success.
+//
+// A real socket rather than net.Pipe, which is unbuffered and synchronous:
+// the decoder stops at the closing brace and leaves the encoder's trailing
+// newline unread, wedging the writer while the peer replies.
 func newMockQMPClient(t *testing.T, responder func(qmp.QMPCommand) map[string]any) (*qmp.QMPClient, func()) {
 	t.Helper()
-	clientConn, serverConn := net.Pipe()
 
-	client := &qmp.QMPClient{
-		Conn:    clientConn,
-		Decoder: json.NewDecoder(clientConn),
-		Encoder: json.NewEncoder(clientConn),
-	}
+	sockPath := filepath.Join(t.TempDir(), "qmp.sock")
+	ln, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		serverConn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer serverConn.Close()
+
 		dec := json.NewDecoder(serverConn)
 		enc := json.NewEncoder(serverConn)
 		for {
@@ -59,9 +68,18 @@ func newMockQMPClient(t *testing.T, responder func(qmp.QMPCommand) map[string]an
 		}
 	}()
 
+	clientConn, err := net.Dial("unix", sockPath)
+	require.NoError(t, err)
+
+	client := &qmp.QMPClient{
+		Conn:    clientConn,
+		Decoder: json.NewDecoder(clientConn),
+		Encoder: json.NewEncoder(clientConn),
+	}
+
 	cancel := func() {
+		_ = ln.Close()
 		_ = clientConn.Close()
-		_ = serverConn.Close()
 		<-done
 	}
 	return client, cancel
@@ -202,6 +220,12 @@ func (r *qmpRecorder) executes() []string {
 		out[i] = c.Execute
 	}
 	return out
+}
+
+func qmpStatusResponse(status string, running bool) map[string]any {
+	return map[string]any{"return": map[string]any{
+		"status": status, "running": running, "singlestep": false,
+	}}
 }
 
 func TestNextAvailableDevice(t *testing.T) {
@@ -596,7 +620,10 @@ func TestReboot_DoesNotFireHooks(t *testing.T) {
 	recorder := &qmpRecorder{}
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		recorder.record(cmd)
-		return nil // success
+		if cmd.Execute == "query-status" {
+			return qmpStatusResponse("running", true)
+		}
+		return nil
 	})
 	defer cancel()
 
@@ -612,15 +639,20 @@ func TestReboot_DoesNotFireHooks(t *testing.T) {
 
 	assert.Equal(t, 0, upCalls, "Reboot must not fire OnInstanceUp")
 	assert.Equal(t, 0, downCalls, "Reboot must not fire OnInstanceDown")
-	assert.Equal(t, []string{"system_reset"}, recorder.executes(),
-		"Reboot must issue exactly one system_reset QMP command")
+	assert.Equal(t, []string{"system_reset", "query-status"}, recorder.executes(),
+		"Reboot must verify QEMU resumed after system_reset")
 }
 
 // TestReboot_DoesNotChangeStatus asserts the VM stays in StateRunning across
 // reboot. Pairs with TestReboot_DoesNotFireHooks to lock down the hook
 // contract: status doesn't transition, so hooks shouldn't fire.
 func TestReboot_DoesNotChangeStatus(t *testing.T) {
-	qmpClient, cancel := newMockQMPClient(t, nil)
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		if cmd.Execute == "query-status" {
+			return qmpStatusResponse("running", true)
+		}
+		return nil
+	})
 	defer cancel()
 
 	m := NewManager()
@@ -650,6 +682,144 @@ func TestReboot_QMPFailureSurfacesError(t *testing.T) {
 	err := m.Reboot(t.Context(), "i-1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "QMP system_reset")
+}
+
+func TestReboot_ResumesPausedRunstates(t *testing.T) {
+	for _, runstate := range []string{"paused", "prelaunch"} {
+		t.Run(runstate, func(t *testing.T) {
+			recorder := &qmpRecorder{}
+			statusQueries := 0
+			qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+				recorder.record(cmd)
+				if cmd.Execute != "query-status" {
+					return nil
+				}
+				statusQueries++
+				if statusQueries == 1 {
+					return qmpStatusResponse(runstate, false)
+				}
+				return qmpStatusResponse("running", true)
+			})
+			defer cancel()
+
+			m := NewManager()
+			m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
+
+			require.NoError(t, m.Reboot(t.Context(), "i-1"))
+			assert.Equal(t, []string{"system_reset", "query-status", "cont", "query-status"}, recorder.executes())
+		})
+	}
+}
+
+func TestReboot_NonRunningTimesOut(t *testing.T) {
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		if cmd.Execute == "query-status" {
+			return qmpStatusResponse("shutdown", false)
+		}
+		return nil
+	})
+	defer cancel()
+
+	m := NewManager()
+	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
+	ctx, cancelContext := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancelContext()
+
+	err := m.Reboot(ctx, "i-1")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Contains(t, err.Error(), `last status "shutdown"`)
+}
+
+func TestReboot_MalformedStatusSurfacesError(t *testing.T) {
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		if cmd.Execute == "query-status" {
+			return map[string]any{"return": map[string]any{}}
+		}
+		return nil
+	})
+	defer cancel()
+
+	m := NewManager()
+	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
+
+	err := m.Reboot(t.Context(), "i-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing status")
+}
+
+func TestReboot_ContFailureSurfacesError(t *testing.T) {
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		if cmd.Execute == "query-status" {
+			return qmpStatusResponse("paused", false)
+		}
+		if cmd.Execute == "cont" {
+			return map[string]any{"error": map[string]any{
+				"class": "GenericError", "desc": "cannot resume",
+			}}
+		}
+		return nil
+	})
+	defer cancel()
+
+	m := NewManager()
+	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
+
+	err := m.Reboot(t.Context(), "i-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `QMP cont from status "paused"`)
+}
+
+func TestReboot_StateChangePreventsCont(t *testing.T) {
+	var m *Manager
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		if cmd.Execute == "query-status" {
+			m.UpdateState("i-1", func(v *VM) { v.Status = StateStopping })
+			return qmpStatusResponse("paused", false)
+		}
+		return nil
+	})
+	defer cancel()
+
+	m = NewManager()
+	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
+
+	err := m.Reboot(t.Context(), "i-1")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidTransition)
+	assert.Equal(t, []string{"system_reset", "query-status"}, recorder.executes())
+}
+
+func TestQMPHeartbeatPoll_UsesRunstate(t *testing.T) {
+	running := false
+	qmpClient, cancel := newMockQMPClient(t, func(qmp.QMPCommand) map[string]any {
+		if running {
+			return qmpStatusResponse("running", true)
+		}
+		return qmpStatusResponse("paused", false)
+	})
+	defer cancel()
+
+	m := NewManager()
+	instance := &VM{ID: "i-heartbeat-runstate", Status: StateRunning, QMPClient: qmpClient}
+	m.Insert(instance)
+	require.NoError(t, utils.WritePidFile(instance.ID, os.Getpid()))
+	t.Cleanup(func() { _ = utils.RemovePidFile(instance.ID) })
+
+	for range QMPMaxConsecutiveFailures {
+		assert.True(t, m.qmpHeartbeatPoll(instance))
+	}
+	assert.Equal(t, QMPMaxConsecutiveFailures, instance.Health.QMPConsecutiveFailures)
+	assert.False(t, instance.Health.ImpairedSince.IsZero())
+	assert.True(t, instance.Health.LastQMPSuccess.IsZero())
+
+	running = true
+	assert.True(t, m.qmpHeartbeatPoll(instance))
+	assert.Zero(t, instance.Health.QMPConsecutiveFailures)
+	assert.True(t, instance.Health.ImpairedSince.IsZero())
+	assert.False(t, instance.Health.LastQMPSuccess.IsZero())
 }
 
 // attachVolumeRunningInstance returns a manager with a single running VM

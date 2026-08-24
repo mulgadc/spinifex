@@ -662,7 +662,7 @@ func (r *Reconciler) resolveCreatingSnapshot(ctx context.Context, kv jetstream.K
 	if snapshotID == "" {
 		if err := kv.Delete(ctx, DBSnapshotKey(rec.DBSnapshotIdentifier), jetstream.LastRevision(rev)); err != nil {
 			switch {
-			case errors.Is(err, jetstream.ErrKeyNotFound), errors.Is(err, jetstream.ErrKeyExists):
+			case errors.Is(err, jetstream.ErrKeyNotFound), errors.Is(err, jetstream.ErrKeyRevisionMismatch):
 				// A concurrent completion or delete owns the newer revision.
 				return nil
 			default:
@@ -683,7 +683,7 @@ func (r *Reconciler) resolveCreatingSnapshot(ctx context.Context, kv jetstream.K
 	// conservative reading is the one that never overstates the snapshot.
 	rec.CrashConsistent = true
 	if err := updateJSON(ctx, kv, DBSnapshotKey(rec.DBSnapshotIdentifier), rev, rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return nil
 		}
 		return err
@@ -785,7 +785,7 @@ func (r *Reconciler) transition(ctx context.Context, kv jetstream.KeyValue, rev 
 	rec.UpdatedAt = time.Now().UTC()
 
 	if err := updateJSON(ctx, kv, DBInstanceKey(rec.DBInstanceIdentifier), rev, rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			slog.DebugContext(ctx, "rds reconciler: transition lost a revision race; retrying next pass",
 				"dbInstance", rec.DBInstanceIdentifier, "to", to)
 			return nil

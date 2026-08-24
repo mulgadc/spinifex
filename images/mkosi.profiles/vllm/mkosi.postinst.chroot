@@ -82,18 +82,50 @@ echo "[vllm] verified vllm ${installed_vllm} in ${VENV_DIR}"
 
 # 0644 in git, and ExtraTrees= preserves source mode — without this the unit
 # dies with EACCES on first boot and nowhere earlier.
-chmod 0755 /usr/local/sbin/vllm-serve
+chmod 0755 /usr/local/sbin/bedrock-serve /usr/local/sbin/bedrock-bundle-init
 
-systemctl enable vllm-serve.service
+# bedrock-bundle-init.service is the only unit enabled persistently: it
+# enumerates every bundle member's env file at boot and starts that member's
+# own bedrock-serve@<instance>.service instance, so a bundle-of-one and a
+# real multi-member bundle boot through the identical path. The per-member
+# template itself is never enabled — only ever started, per instance, by
+# bedrock-bundle-init.
+systemctl enable bedrock-bundle-init.service
 
 # Without this the failure is a runtime one, minutes into a GPU cold start:
-# FlashInfer JIT-builds its sampling module, finds no nvcc, and the endpoint
-# never reaches READY.
-UNIT=/etc/systemd/system/vllm-serve.service
+# FlashInfer JIT-builds its sampling module, finds no nvcc, and the vllm
+# member never reaches READY.
+UNIT=/etc/systemd/system/bedrock-serve@.service
 grep -q '^Environment=VLLM_USE_FLASHINFER_SAMPLER=0$' "${UNIT}" || {
     echo "ERROR: ${UNIT} does not disable the FlashInfer sampler; this image ships no CUDA toolkit for its JIT" >&2
     exit 1
 }
+
+# TEI's own engine binary and the CUDA 12.9 runtime libraries its cuda
+# feature dynamically links against, extracted from HuggingFace's own
+# published CUDA image by stage_tei_binary() (scripts/mkosi-build.sh) and
+# delivered here via this profile's ExtraTrees=. No apt/cargo/nvcc in this
+# chroot: compiling TEI's candle-cuda kernels from source needs the CUDA
+# toolkit as a build dependency, which is exactly the "no CUDA toolchain in
+# the image" property the vllm engine above also depends on (FlashInfer is
+# disabled for the same reason).
+TEI_BIN=/opt/tei/bin/text-embeddings-router
+[ -s "${TEI_BIN}" ] || {
+    echo "ERROR: ${TEI_BIN} is missing or empty — stage_tei_binary() did not stage it before this chroot ran" >&2
+    exit 1
+}
+chmod 0755 "${TEI_BIN}"
+if [ ! -d /opt/tei/cuda-lib64 ] || [ -z "$(ls -A /opt/tei/cuda-lib64 2>/dev/null)" ]; then
+    echo "ERROR: /opt/tei/cuda-lib64 is missing or empty — TEI's CUDA runtime libraries were not staged" >&2
+    exit 1
+fi
+# Not run here: `text-embeddings-router --version` would need libcuda.so
+# from the NVIDIA driver, which this unprivileged chroot build sandbox does
+# not load (same reason vllm's own postinst never imports vllm or runs
+# `vllm --version` — it dies "Failed to infer device type" with no GPU
+# present). File-presence and size are the only checks a build sandbox with
+# no GPU can make honestly.
+echo "[vllm] verified TEI binary staged at ${TEI_BIN} with CUDA runtime libraries in /opt/tei/cuda-lib64"
 
 # Assert the MERGED result, not the file's presence: the pin already existed at
 # a 90- prefix in the EKS image and did nothing there, shadowed by 90_dpkg.cfg.

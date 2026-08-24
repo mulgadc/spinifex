@@ -90,9 +90,9 @@ function AllocateAddress() {
         <FormActions
           isPending={allocateMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-addresses" })
-          }
+          }}
           pendingLabel="Allocating…"
           submitLabel="Allocate"
         />

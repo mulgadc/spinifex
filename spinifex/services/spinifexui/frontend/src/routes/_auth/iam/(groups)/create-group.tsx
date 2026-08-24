@@ -1,6 +1,10 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useForm, useWatch } from "react-hook-form"
+import {
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -36,8 +40,6 @@ function CreateGroup() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateGroupFormData) => {
     await createMutation.mutateAsync(data)
@@ -78,12 +80,14 @@ function CreateGroup() {
           <FieldError errors={[errors.path]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateGroupCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreateGroupCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => await navigate({ to: "/iam/list-groups" })}
+          onCancel={async () => {
+            await navigate({ to: "/iam/list-groups" })
+          }}
           pendingLabel="Creating..."
           submitLabel="Create Group"
         />
@@ -93,12 +97,10 @@ function CreateGroup() {
 }
 
 function buildCreateGroupCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateGroupFormData>,
 ): CliCommand[] {
-  const rawGroupName = watch("groupName")
-  const groupName = typeof rawGroupName === "string" ? rawGroupName : ""
-  const rawPath = watch("path")
-  const path = typeof rawPath === "string" ? rawPath : ""
+  const groupName = values.groupName ?? ""
+  const path = values.path ?? ""
 
   const parts = [
     {

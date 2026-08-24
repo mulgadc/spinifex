@@ -7,9 +7,9 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"uuid"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 )
 
 const (
@@ -129,7 +129,7 @@ func (i *Issuer) Mint(p Principal) (token string, expiresAt time.Time, err error
 			Audience:  jwt.ClaimStrings{i.audience},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(exp),
-			ID:        uuid.NewString(),
+			ID:        uuid.NewV4().String(),
 		},
 		AccountID:     p.AccountID,
 		PrincipalType: p.Type,

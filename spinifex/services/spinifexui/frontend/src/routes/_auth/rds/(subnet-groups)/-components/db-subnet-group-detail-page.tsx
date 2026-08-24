@@ -52,7 +52,9 @@ export function DBSubnetGroupDetailPage({ dbSubnetGroupName }: Props) {
         <PageHeading
           actions={
             <Button
-              onClick={() => setShowDelete(true)}
+              onClick={() => {
+                setShowDelete(true)
+              }}
               size="sm"
               variant="destructive"
             >
@@ -152,9 +154,9 @@ export function DBSubnetGroupDetailPage({ dbSubnetGroupName }: Props) {
 
       <DeleteDBSubnetGroupDialog
         dbSubnetGroupName={dbSubnetGroupName}
-        onDeleted={async () =>
+        onDeleted={async () => {
           await navigate({ to: "/rds/describe-db-subnet-groups" })
-        }
+        }}
         onOpenChange={setShowDelete}
         open={showDelete}
       />

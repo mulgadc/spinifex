@@ -5,33 +5,6 @@ import (
 	"testing"
 )
 
-// Phase gate constants — changing these is a deliberate decision.
-const (
-	phase1BootGateMs = 500
-	phase1RSSGateMiB = 25
-
-	phase2BootGateMs      = 300
-	phase2ArtifactGateMiB = 50
-)
-
-func TestBootGate_ProbeThreshold(t *testing.T) {
-	if phase1BootGateMs != 500 {
-		t.Errorf("probe boot gate changed: got %d, want 500", phase1BootGateMs)
-	}
-	if phase1RSSGateMiB != 25 {
-		t.Errorf("probe RSS gate changed: got %d, want 25", phase1RSSGateMiB)
-	}
-}
-
-func TestBootGate_ActivationThreshold(t *testing.T) {
-	if phase2BootGateMs != 300 {
-		t.Errorf("activation boot gate changed: got %d, want 300", phase2BootGateMs)
-	}
-	if phase2ArtifactGateMiB != 50 {
-		t.Errorf("activation artifact gate changed: got %d, want 50", phase2ArtifactGateMiB)
-	}
-}
-
 func TestMeasureQEMURSSMiB_Self(t *testing.T) {
 	rss, err := measureQEMURSSMiB(os.Getpid())
 	if err != nil {

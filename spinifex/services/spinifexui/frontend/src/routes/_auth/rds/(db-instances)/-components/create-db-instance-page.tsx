@@ -216,8 +216,9 @@ export function CreateDBInstancePage() {
     setValue("dbParameterGroupName", "")
   }
 
-  const setSecurityGroups = (next: string[]) =>
+  const setSecurityGroups = (next: string[]) => {
     setValue("vpcSecurityGroupIds", next, { shouldValidate: true })
+  }
 
   const handleSubnetGroupChange = (name: string) => {
     const nextVpcId =
@@ -313,7 +314,9 @@ export function CreateDBInstancePage() {
             name="engine"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => handleEngineChange(value ?? "")}
+                onValueChange={(value) => {
+                  handleEngineChange(value ?? "")
+                }}
                 value={field.value}
               >
                 <SelectTrigger
@@ -649,9 +652,9 @@ export function CreateDBInstancePage() {
         <FormActions
           isPending={createInstance.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/rds/describe-db-instances" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Database"
         />

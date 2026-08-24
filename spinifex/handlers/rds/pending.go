@@ -54,7 +54,10 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 		if class == "" {
 			class = rec.DBInstanceClass
 		}
-		if err := s.applyParameterGroup(ctx, kv, accountID, rec, group, class); err != nil {
+		// A class change replaces the VM next, and the fresh agent applies the
+		// resolved set itself on boot, so a dead old agent here is tolerated
+		// rather than blocking the one recovery lever a failed instance has.
+		if err := s.applyParameterGroup(ctx, kv, accountID, rec, group, class, pending.DBInstanceClass != ""); err != nil {
 			return err
 		}
 	}
@@ -143,7 +146,7 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 // A re-resolve, never a merge: the whole set is recomputed from the catalog and
 // the new group's overrides, so a parameter the old group set and the new one
 // does not reverts to its default rather than lingering.
-func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord, group, instanceClass string) error {
+func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord, group, instanceClass string, tolerateUnreachableAgent bool) error {
 	engine, err := LookupEngine(rec.Engine)
 	if err != nil {
 		return err
@@ -157,6 +160,9 @@ func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue
 	}
 	pendingReboot, err := s.applyParameters(ctx, accountID, rec.DBInstanceIdentifier, resolved)
 	if err != nil {
+		if tolerateUnreachableAgent && errors.Is(err, ErrCommandUnreachable) {
+			return s.deferParameterApplyToReplacement(ctx, kv, rec, resolved)
+		}
 		return s.recordParameterApplyFailure(ctx, kv, accountID, rec, group,
 			fmt.Errorf("apply the parameters of %s to %s: %w", group, rec.DBInstanceIdentifier, err))
 	}
@@ -172,6 +178,27 @@ func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue
 	return s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
 		stored.Bootstrap.ResolvedParameters = resolved
 		stored.PendingRebootParameters = pendingReboot
+		stored.ParametersRolledBack = false
+		stored.ParameterApplyFailed = false
+	})
+}
+
+// The replacement's fresh agent applies resolved on boot, so it is persisted
+// here in place of the dead agent's reply, with nothing pending a reboot.
+// Persistence uses a detached ctx: the budget that just found the agent
+// unreachable must not also fail the write that unblocks recovery from it.
+func (s *Service) deferParameterApplyToReplacement(ctx context.Context, kv jetstream.KeyValue, rec *DBInstanceRecord, resolved []Parameter) error {
+	slog.WarnContext(ctx, "rds: the instance agent is unreachable; deferring the parameter apply to the replacement VM's fresh agent",
+		"dbInstance", rec.DBInstanceIdentifier)
+	rec.Bootstrap.ResolvedParameters = resolved
+	rec.PendingRebootParameters = nil
+	rec.ParametersRolledBack = false
+	rec.ParameterApplyFailed = false
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+	defer cancel()
+	return s.updateInstance(persistCtx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
+		stored.Bootstrap.ResolvedParameters = resolved
+		stored.PendingRebootParameters = nil
 		stored.ParametersRolledBack = false
 		stored.ParameterApplyFailed = false
 	})

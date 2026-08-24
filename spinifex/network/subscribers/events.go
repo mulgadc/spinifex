@@ -49,6 +49,9 @@ type PortEvent struct {
 	PrivateIpAddress   string   `json:"private_ip_address"`
 	MacAddress         string   `json:"mac_address"`
 	SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
+	// SuppressDHCP, set on create, skips attaching the subnet's dhcpv4_options
+	// to this port's LSP. Irrelevant on delete.
+	SuppressDHCP bool `json:"suppress_dhcp,omitempty"`
 }
 
 // UpdatePortSGsEvent: vpc.update-port-sgs. Declarative — vpcd diffs

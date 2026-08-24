@@ -1,26 +1,14 @@
+import { z } from "zod"
+
 // The SPA is embedded in the spx binary, so anything baked in at build time
 // would pin one binary to one region. The serving node reports its own region
 // instead, which is the value awsgw verifies signatures against.
 
-interface ClusterConfig {
-  region: string
-}
+const clusterConfigSchema = z.object({ region: z.string().min(1) })
+
+type ClusterConfig = z.infer<typeof clusterConfigSchema>
 
 let config: ClusterConfig | null = null
-
-function readRegion(body: unknown): string {
-  if (typeof body !== "object" || body === null) {
-    throw new TypeError("cluster config was not an object")
-  }
-  if (!("region" in body)) {
-    throw new TypeError("cluster config did not include a region")
-  }
-  const { region } = body
-  if (typeof region !== "string" || region === "") {
-    throw new TypeError("cluster config did not include a region")
-  }
-  return region
-}
 
 // Fetched once before the app renders so every signing path can read the region
 // synchronously.
@@ -29,7 +17,18 @@ export async function loadClusterConfig(): Promise<void> {
   if (!response.ok) {
     throw new Error(`could not load cluster config: HTTP ${response.status}`)
   }
-  config = { region: readRegion(await response.json()) }
+  const parsed = clusterConfigSchema.safeParse(await response.json())
+  if (!parsed.success) {
+    // An issue at the root means the body was not an object at all; anything
+    // deeper means the region itself is missing or empty.
+    const atRoot = parsed.error.issues.some((issue) => issue.path.length === 0)
+    throw new TypeError(
+      atRoot
+        ? "cluster config was not an object"
+        : "cluster config did not include a region",
+    )
+  }
+  config = parsed.data
 }
 
 // Throws rather than falling back to a default: signing with the wrong region

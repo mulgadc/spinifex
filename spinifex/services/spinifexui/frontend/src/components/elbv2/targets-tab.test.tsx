@@ -130,9 +130,9 @@ describe("TargetsTab", () => {
     ).toBeInTheDocument()
     const deregCallsBefore = mockSend.mock.calls.length
     await user.click(screen.getByRole("button", { name: "Delete" }))
-    await waitFor(() =>
-      expect(mockSend.mock.calls.length).toBeGreaterThan(deregCallsBefore),
-    )
+    await waitFor(() => {
+      expect(mockSend.mock.calls.length).toBeGreaterThan(deregCallsBefore)
+    })
     const deregCall = mockSend.mock.calls[deregCallsBefore]?.[0]
     expect(deregCall.input).toStrictEqual({
       TargetGroupArn: TG_ARN,

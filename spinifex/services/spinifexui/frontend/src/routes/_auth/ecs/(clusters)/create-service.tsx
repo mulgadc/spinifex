@@ -1,4 +1,5 @@
-import { createFileRoute, type SearchSchemaInput } from "@tanstack/react-router"
+import { createFileRoute } from "@tanstack/react-router"
+import { z } from "zod"
 
 import {
   ec2SecurityGroupsQueryOptions,
@@ -9,14 +10,12 @@ import { elbv2TargetGroupsQueryOptions } from "@/queries/elbv2"
 
 import { CreateServicePage } from "./-components/create-service-page"
 
-interface CreateServiceSearch {
-  cluster: string
-}
+/* oxlint-disable promise/prefer-await-to-then -- zod's .catch() supplies a schema fallback, not a promise handler */
+const searchSchema = z.object({ cluster: z.string().catch("") })
+/* oxlint-enable promise/prefer-await-to-then */
 
 export const Route = createFileRoute("/_auth/ecs/(clusters)/create-service")({
-  validateSearch: (search: CreateServiceSearch & SearchSchemaInput) => ({
-    cluster: typeof search.cluster === "string" ? search.cluster : "",
-  }),
+  validateSearch: searchSchema,
   loader: async ({ context }) => {
     await Promise.all([
       context.queryClient.ensureQueryData(ecsTaskDefinitionsQueryOptions),

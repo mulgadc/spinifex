@@ -84,7 +84,7 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 			if reservation.creator {
 				s.rollbackFinalSnapshotReservation(ctx, kv, finalSnapshot, reservation.revision)
 			}
-			if errors.Is(err, jetstream.ErrKeyExists) {
+			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 				return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
 					"DB instance %s changed state concurrently; retry the delete", id)
 			}
@@ -428,7 +428,7 @@ func (s *Service) completeFinalSnapshot(ctx context.Context, kv jetstream.KeyVal
 		record.Status = SnapshotStatusAvailable
 		if err := updateJSON(ctx, kv, key, rev, &record); err == nil {
 			return true, nil
-		} else if !errors.Is(err, jetstream.ErrKeyExists) {
+		} else if !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return false, err
 		}
 	}

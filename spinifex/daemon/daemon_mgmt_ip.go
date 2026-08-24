@@ -38,7 +38,9 @@ func updateMgmtIPAMWithRetry(jsManager *JetStreamManager, subnet string, mutate 
 		if err == nil {
 			return record, nil
 		}
-		if !errors.Is(err, jetstream.ErrKeyExists) {
+		// casUpdate commits with Create or Update depending on whether the key
+		// existed, so exhaustion can wrap either conflict sentinel.
+		if !errors.Is(err, jetstream.ErrKeyExists) && !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return nil, err
 		}
 		lastErr = err

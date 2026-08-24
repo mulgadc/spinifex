@@ -110,7 +110,9 @@ export function SandboxWelcomeDialog() {
             <Link
               className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted"
               key={point.to}
-              onClick={() => handleOpenChange(false)}
+              onClick={() => {
+                handleOpenChange(false)
+              }}
               to={point.to}
             >
               {point.icon}
@@ -129,7 +131,11 @@ export function SandboxWelcomeDialog() {
           >
             Read the docs
           </a>
-          <AlertDialogAction onClick={() => handleOpenChange(false)}>
+          <AlertDialogAction
+            onClick={() => {
+              handleOpenChange(false)
+            }}
+          >
             Get started
           </AlertDialogAction>
         </AlertDialogFooter>

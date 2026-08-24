@@ -12,19 +12,20 @@ const { routerState, sdk } = vi.hoisted(() => {
     readonly constructor: { name: string }
     readonly input: unknown
   }
-  const handlers = new Map<string, (input: unknown) => unknown>()
+  type SdkHandler = (input: never) => unknown
+  const handlers = new Map<string, SdkHandler>()
   const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
     if (!handler) {
       throw new Error(`No handler for ${command.constructor.name}`)
     }
-    return handler(command.input)
+    return handler(command.input as never)
   })
   return {
     routerState: { navigate: vi.fn() },
     sdk: {
       send,
-      setHandler: (name: string, handler: (input: unknown) => unknown) =>
+      setHandler: (name: string, handler: (input: never) => unknown) =>
         handlers.set(name, handler),
       reset: () => {
         handlers.clear()
@@ -83,7 +84,9 @@ describe("register-task-definition route", () => {
       screen.getByRole("button", { name: "Register Task Definition" }),
     )
 
-    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       family: string
       networkMode: string
@@ -135,7 +138,9 @@ describe("register-task-definition route", () => {
       screen.getByRole("button", { name: "Register Task Definition" }),
     )
 
-    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       containerDefinitions: { resourceRequirements?: unknown }[]
     }
@@ -160,7 +165,9 @@ describe("register-task-definition route", () => {
       screen.getByRole("button", { name: "Register Task Definition" }),
     )
 
-    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       containerDefinitions: {
         resourceRequirements?: { type: string; value: string }[]
@@ -187,7 +194,9 @@ describe("register-task-definition route", () => {
       screen.getByRole("button", { name: "Register Task Definition" }),
     )
 
-    await waitFor(() => expect(sdk.send).toHaveBeenCalledOnce())
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       containerDefinitions: {
         portMappings?: { containerPort: number; protocol: string }[]

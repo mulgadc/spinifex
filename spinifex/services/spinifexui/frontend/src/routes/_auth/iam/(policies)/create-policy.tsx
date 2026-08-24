@@ -1,6 +1,11 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -55,8 +60,6 @@ function CreatePolicy() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreatePolicyFormData) => {
     await createMutation.mutateAsync(data)
@@ -123,12 +126,14 @@ function CreatePolicy() {
           <FieldError errors={[errors.policyDocument]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreatePolicyCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreatePolicyCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => await navigate({ to: "/iam/list-policies" })}
+          onCancel={async () => {
+            await navigate({ to: "/iam/list-policies" })
+          }}
           pendingLabel="Creating..."
           submitLabel="Create Policy"
         />
@@ -138,14 +143,11 @@ function CreatePolicy() {
 }
 
 function buildCreatePolicyCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreatePolicyFormData>,
 ): CliCommand[] {
-  const rawName = watch("policyName")
-  const name = typeof rawName === "string" ? rawName : ""
-  const rawDesc = watch("description")
-  const desc = typeof rawDesc === "string" ? rawDesc : ""
-  const rawDoc = watch("policyDocument")
-  const doc = typeof rawDoc === "string" ? rawDoc : ""
+  const name = values.policyName ?? ""
+  const desc = values.description ?? ""
+  const doc = values.policyDocument ?? ""
 
   const parts = [
     {

@@ -184,7 +184,9 @@ export function ListenerForm({
               )}
               <Button
                 className="ml-auto"
-                onClick={() => setImportOpen(true)}
+                onClick={() => {
+                  setImportOpen(true)
+                }}
                 size="sm"
                 type="button"
                 variant="ghost"
@@ -224,9 +226,9 @@ export function ListenerForm({
           )}
 
           <CertificateImportDialog
-            onImported={(arn) =>
+            onImported={(arn) => {
               setValue("certificateArn", arn, { shouldValidate: true })
-            }
+            }}
             onOpenChange={setImportOpen}
             open={importOpen}
           />

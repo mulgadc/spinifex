@@ -14,12 +14,12 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
@@ -280,7 +280,7 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 	rec := &NodegroupRecord{
 		ClusterName:    cluster,
 		Name:           ng,
-		Arn:            NodegroupARN(s.deps.Region, accountID, cluster, ng, uuid.NewString()),
+		Arn:            NodegroupARN(s.deps.Region, accountID, cluster, ng, uuid.NewV4().String()),
 		Status:         eks.NodegroupStatusCreating,
 		Subnets:        subnets,
 		InstanceTypes:  instanceTypes,
@@ -574,7 +574,7 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 		instanceType = rec.InstanceTypes[0]
 	}
 	subnet := rec.Subnets[0]
-	shortID := uuid.NewString()[:8]
+	shortID := uuid.NewV4().String()[:8]
 
 	region := s.deps.Region
 	suffix := s.deps.InternalSuffix
@@ -677,7 +677,7 @@ func (s *EKSServiceImpl) selectWorkerHost(ctx context.Context, instanceType stri
 			counts[host]++
 		}
 	}
-	rand.Shuffle(len(hosts), func(i, j int) { hosts[i], hosts[j] = hosts[j], hosts[i] })
+	rand.Shuffle(len(hosts), func(i, j int) { hosts[i], hosts[j] = hosts[j], hosts[i] }) //nolint:gosec // worker spread, not cryptographic
 	best := hosts[0]
 	for _, h := range hosts[1:] {
 		if counts[h] < counts[best] {
@@ -836,7 +836,7 @@ func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV jetst
 	}
 
 	return &eks.UpdateNodegroupConfigOutput{Update: &eks.Update{
-		Id:        aws.String(uuid.NewString()),
+		Id:        aws.String(uuid.NewV4().String()),
 		Status:    aws.String(eks.UpdateStatusSuccessful),
 		Type:      aws.String(eks.UpdateTypeConfigUpdate),
 		CreatedAt: aws.Time(rec.ModifiedAt),
@@ -1037,7 +1037,7 @@ func (s *EKSServiceImpl) casPutNodegroup(ctx context.Context, kv jetstream.KeyVa
 		return false, fmt.Errorf("marshal nodegroup %s: %w", rec.Name, err)
 	}
 	if _, err := kv.Update(ctx, NodegroupKey(rec.ClusterName, rec.Name), data, rev); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return false, nil
 		}
 		return false, fmt.Errorf("kv update nodegroup %s: %w", rec.Name, err)

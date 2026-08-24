@@ -1,8 +1,6 @@
-import {
-  awsCredentialsSchema,
-  setSessionCredentials,
-  type AwsCredentialsInput,
-} from "./auth"
+import { z } from "zod"
+
+import { awsCredentialsSchema, setSessionCredentials } from "./auth"
 import { clearClients } from "./awsClient"
 import { exchangeForSession } from "./sts"
 
@@ -16,6 +14,16 @@ const ALLOWED_OPENER_ORIGINS = [
 
 const READY = "spx-handoff-ready"
 const CREDS = "spx-handoff-creds"
+
+function noCleanup(): void {
+  /* no listener or timer was attached, so there is nothing to undo */
+}
+
+// The whole inbound message is parsed here, at the I/O boundary, so nothing
+// downstream branches on the shape of an untrusted value.
+const handoffMessageSchema = awsCredentialsSchema.extend({
+  type: z.literal(CREDS),
+})
 
 /**
  * Credential handoff receiver for the login page.
@@ -50,22 +58,22 @@ export function startConsoleHandoff(opts?: {
   onSuccess?: () => void
   onFailure?: () => void
 }): () => void {
-  // window.opener is typed `any` in lib.dom; launder it through `unknown`
-  // so the assertion isn't flagged, and confirm it can receive a message.
-  const openerRaw: unknown =
-    typeof window === "undefined" ? null : window.opener
-  const opener =
-    openerRaw &&
-    typeof (openerRaw as { postMessage?: unknown }).postMessage === "function"
-      ? (openerRaw as Window)
-      : null
+  // window.opener is a cross-realm WindowProxy typed `any` by lib.dom, so
+  // instanceof is unreliable across realms and a duck check is the only one
+  // that holds for the real sender.
+  const openerRaw: unknown = globalThis.window?.opener ?? null
+  /* oxlint-disable anti-slop/no-runtime-typeof, typescript/no-unsafe-type-assertion -- a cross-realm WindowProxy carries no narrower contract, so a duck check is the only reliable one */
+  const canPost =
+    typeof (openerRaw as { postMessage?: unknown })?.postMessage === "function"
+  const opener = canPost ? (openerRaw as Window) : null
+  /* oxlint-enable anti-slop/no-runtime-typeof, typescript/no-unsafe-type-assertion */
   if (!opener) {
-    return () => {}
+    return noCleanup
   }
 
   let done = false
 
-  const onMessage = async (ev: MessageEvent) => {
+  const handleMessage = async (ev: MessageEvent) => {
     if (done) {
       return
     }
@@ -75,13 +83,10 @@ export function startConsoleHandoff(opts?: {
     if (ev.source !== opener) {
       return
     }
-    const data = ev.data as { type?: string } | null
-    if (!data || data.type !== CREDS) {
-      return
-    }
 
-    // Validate the shape with the same schema the form uses before touching STS.
-    const parsed = awsCredentialsSchema.safeParse(ev.data)
+    // Shape and type are both established here; a message that fails is simply
+    // not ours, so it is dropped without touching STS.
+    const parsed = handoffMessageSchema.safeParse(ev.data)
     if (!parsed.success) {
       return
     }
@@ -89,7 +94,10 @@ export function startConsoleHandoff(opts?: {
     done = true
     window.removeEventListener("message", onMessage)
     try {
-      const session = await exchangeForSession(parsed.data)
+      const session = await exchangeForSession({
+        accessKeyId: parsed.data.accessKeyId,
+        secretAccessKey: parsed.data.secretAccessKey,
+      })
       setSessionCredentials(session)
       clearClients()
       opts?.onSuccess?.()
@@ -98,6 +106,12 @@ export function startConsoleHandoff(opts?: {
       // Credentials didn't validate against STS. Fall back to the form.
       opts?.onFailure?.()
     }
+  }
+
+  // The listener must return void, so the async work is kicked off rather than
+  // returned; nothing awaits it and failures are handled inside.
+  const onMessage = (ev: MessageEvent) => {
+    void handleMessage(ev)
   }
 
   window.addEventListener("message", onMessage)

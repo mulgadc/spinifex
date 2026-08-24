@@ -11,13 +11,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/google/uuid"
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
@@ -334,7 +335,7 @@ const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check 
 // format. It emits XML directly (not via GenerateEC2ErrorResponse) to ensure the
 // /local/status hint is preserved in <Message>.
 func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.Request, svc string) {
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 
 	// EKS and ECS use AWS JSON 1.1.
 	if svc == "eks" || svc == "ecs" {
@@ -379,7 +380,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.
 
 // writeThrottleError writes the service-appropriate throttle rejection response.
 func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Request) {
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 	svc, _ := r.Context().Value(ctxService).(string)
 
 	errorCode := awserrors.ErrorRequestLimitExceeded
@@ -514,7 +515,10 @@ func isNATSTransient(err error) bool {
 		errors.Is(err, nats.ErrNoStreamResponse))
 }
 
-// checkPolicy evaluates IAM policies against resource "*".
+// checkPolicy evaluates IAM policies against the literal resource "*", so it
+// grants account-wide: a caller's resource-scoped statements do not participate
+// at all, neither a Deny that fences a resource nor an Allow that names one.
+// Prefer checkPolicyResources with the request's real ARNs.
 func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) error {
 	return gw.checkPolicyResources(r, service, action, []string{"*"})
 }
@@ -560,7 +564,37 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 		assumedRoleID:     mustCtxString(r, ctxAssumedRoleID),
 		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
 	}
-	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources)
+	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources,
+		requestConditionKeys(r, principal))
+}
+
+// requestConditionKeys resolves the IAM condition context keys available on the
+// AWS API path. s3:prefix has no meaning here and is deliberately absent, so a
+// policy conditioned on it does not fire.
+//
+// Every key is omitted rather than set empty when unknown: an empty value reads
+// as a real value that matches nothing, and on a Deny that silently widens
+// access instead of narrowing it.
+func requestConditionKeys(r *http.Request, principal principalContext) iampolicy.ConditionKeys {
+	keys := iampolicy.ConditionKeys{
+		iampolicy.KeySecureTransport: strconv.FormatBool(r.TLS != nil),
+	}
+	// aws:username is user-only in AWS. A role session's identity is the
+	// caller-chosen RoleSessionName, so gating authorization on it here would
+	// let any principal that may assume the role satisfy the condition at will.
+	if principal.principalType == principalTypeUser && principal.identity != "" {
+		keys[iampolicy.KeyUsername] = principal.identity
+	}
+	if principal.accountID != "" {
+		keys[iampolicy.KeyPrincipalAccount] = principal.accountID
+	}
+	// Derived from the request rather than read from the context: the OCI
+	// registry chain never runs SigV4AuthMiddleware, so a context-carried
+	// address would be absent there and every aws:SourceIp condition inert.
+	if ip := utils.ClientIP(r.RemoteAddr); ip != "" {
+		keys[iampolicy.KeySourceIP] = ip
+	}
+	return keys
 }
 
 // mustCtxString reads a string context value, defaulting to "" for an absent
@@ -573,7 +607,7 @@ func mustCtxString(r *http.Request, key contextKey) string {
 // evaluatePrincipalPolicyResources resolves policies once and evaluates every
 // resource in the request against that same snapshot.
 func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
-	principal principalContext, iamAction string, resources []string,
+	principal principalContext, iamAction string, resources []string, keys iampolicy.ConditionKeys,
 ) error {
 	if gw.IAMService == nil {
 		slog.Error("evaluatePrincipalPolicy: IAM service not available", "action", iamAction)
@@ -638,7 +672,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 	}
 
 	for _, resource := range resources {
-		if iampolicy.Evaluate(iamAction, resource, policies) == iampolicy.Deny {
+		if iampolicy.EvaluateWithKeys(iamAction, resource, policies, keys) == iampolicy.Deny {
 			slog.Info("evaluatePrincipalPolicy: access denied",
 				"identity", logIdentity, "action", iamAction, "resource", resource)
 			return errors.New(awserrors.ErrorAccessDenied)
@@ -651,7 +685,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	svc, _ := gw.GetService(r)
 	slog.Debug("ErrorHandler", "service", svc, "error", err.Error())
 
-	var requestId = uuid.NewString()
+	var requestId = uuid.NewV4().String()
 	code, message, exists := awserrors.ResolveErrorDetail(err)
 	if !exists {
 		slog.Warn("Unknown error code", "error", err.Error())

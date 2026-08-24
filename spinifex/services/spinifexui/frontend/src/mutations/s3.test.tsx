@@ -48,7 +48,9 @@ describe("useCreateBucket", () => {
 
     result.current.mutate({ bucketName: "my-bucket" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       Bucket: "my-bucket",
     })
@@ -61,7 +63,9 @@ describe("useCreateBucket", () => {
 
     result.current.mutate({ bucketName: "my-bucket" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["s3", "buckets"] })
   })
 })
@@ -73,7 +77,9 @@ describe("useDeleteObject", () => {
 
     result.current.mutate({ bucket: "my-bucket", key: "photos/cat.jpg" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       Bucket: "my-bucket",
       Key: "photos/cat.jpg",
@@ -87,7 +93,9 @@ describe("useDeleteObject", () => {
 
     result.current.mutate({ bucket: "my-bucket", key: "file.txt" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["s3", "buckets", "my-bucket", "objects"],
     })
@@ -103,7 +111,9 @@ describe("useUploadObject", () => {
     const file = new File(["hello"], "test.txt", { type: "text/plain" })
     result.current.mutate({ bucket: "my-bucket", key: "test.txt", file })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["s3", "buckets", "my-bucket", "objects"],
     })

@@ -1,0 +1,58 @@
+#!/bin/sh
+# bedrock-bundle-init — discovers every bundle member's env file cloud-init
+# wrote and starts that member's own bedrock-serve@ instance. A bundle-of-one
+# writes exactly one file here, so this is the only startup path the image
+# needs: a standalone model boots through the same enumerate-and-start step
+# as a real bundle, it just finds one file instead of several.
+#
+# Handoff contract, written by the Bedrock launcher (buildBundleUserData) as
+# cloud-init write_files entries, one per member:
+#
+#   /etc/conf.d/bedrock-bundle/<instance>.env   0600
+#
+# <instance> is the launcher's sanitized model id and doubles as the
+# bedrock-serve@ systemd instance name, so this script never has to invent or
+# record a mapping of its own -- the filename IS the instance name.
+set -eu
+
+ENV_DIR="${BEDROCK_ENV_DIR:-/etc/conf.d/bedrock-bundle}"
+# The unit starts before cloud-init has necessarily delivered the handoff, so
+# this bounds that race rather than assuming it is already there.
+ENV_WAIT_SECS="${BEDROCK_BUNDLE_ENV_WAIT:-60}"
+
+log() { echo "[bedrock-bundle-init] $*"; }
+fail() { echo "[bedrock-bundle-init] ERROR: $*" >&2; exit 1; }
+
+# True as soon as at least one member's env file exists. Not concerned with
+# how many members the bundle ultimately has -- each bedrock-serve@ instance
+# discovers and waits on its own file independently once started.
+has_env_files() {
+    for _f in "${ENV_DIR}"/*.env; do
+        [ -e "${_f}" ] && return 0
+    done
+    return 1
+}
+
+_waited=0
+while ! has_env_files; do
+    if [ "${_waited}" -ge "${ENV_WAIT_SECS}" ]; then
+        fail "no member env files under ${ENV_DIR} after ${ENV_WAIT_SECS}s -- cloud-init has not delivered the bundle handoff"
+    fi
+    sleep 1
+    _waited=$((_waited + 1))
+done
+
+_count=0
+for _f in "${ENV_DIR}"/*.env; do
+    [ -e "${_f}" ] || continue
+    _name=$(basename "${_f}" .env)
+    log "starting bedrock-serve@${_name}.service"
+    # --no-block: this unit's own job must not wait on a member's full startup
+    # (weights mount + engine load can take minutes) -- it only has to queue
+    # every member's start and let each one supervise itself from there via
+    # its own Restart=on-failure.
+    systemctl start --no-block "bedrock-serve@${_name}.service"
+    _count=$((_count + 1))
+done
+
+log "started ${_count} bundle member unit(s)"

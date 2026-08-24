@@ -1,6 +1,10 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useForm, useWatch } from "react-hook-form"
+import {
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -41,8 +45,6 @@ function CreateInstanceProfile() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateInstanceProfileFormData) => {
     await createMutation.mutateAsync(data)
@@ -86,15 +88,15 @@ function CreateInstanceProfile() {
         </Field>
 
         <CliCommandPanel
-          commands={buildCreateInstanceProfileCommands(cliWatch)}
+          commands={buildCreateInstanceProfileCommands(values)}
         />
 
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/iam/list-instance-profiles" })
-          }
+          }}
           pendingLabel="Creating..."
           submitLabel="Create Instance Profile"
         />
@@ -104,12 +106,10 @@ function CreateInstanceProfile() {
 }
 
 function buildCreateInstanceProfileCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateInstanceProfileFormData>,
 ): CliCommand[] {
-  const rawName = watch("instanceProfileName")
-  const name = typeof rawName === "string" ? rawName : ""
-  const rawPath = watch("path")
-  const path = typeof rawPath === "string" ? rawPath : ""
+  const name = values.instanceProfileName ?? ""
+  const path = values.path ?? ""
 
   const parts = [
     {

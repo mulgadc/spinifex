@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -37,7 +37,7 @@ func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, a
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
-	requestID := uuid.NewString()
+	requestID := uuid.NewV4().String()
 	start := time.Now()
 
 	// Resolved here too (InvokeStreamRouter below resolves it again for
@@ -124,8 +124,7 @@ func pumpInvokeStream(ctx context.Context, fw *frameWriter, src invokeStreamSour
 		chunk, ok, err := src.Next(ctx)
 		if err != nil {
 			excType := excInternalServerException
-			var fault *streamFaultError
-			if errors.As(err, &fault) {
+			if _, ok := errors.AsType[*streamFaultError](err); ok {
 				excType = excModelStreamErrorException
 			}
 			errCode = awserrors.ValidErrorCodeFromError(err)

@@ -16,10 +16,10 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// instanceTagCommandTimeout bounds each ec2.cmd owner request. A stopped or
+// instanceOwnerCommandTimeout bounds each ec2.cmd owner request. A stopped or
 // absent instance has no subscriber and fails fast with no responders, so
 // only a partitioned-but-subscribed owner pays the full timeout.
-const instanceTagCommandTimeout = 5 * time.Second
+const instanceOwnerCommandTimeout = 5 * time.Second
 
 // recordTagMirror is implemented by every service whose resource records
 // mirror the central tag store, so tag-filtered describes observe tags
@@ -210,7 +210,7 @@ func (d *Daemon) tagInstance(ctx context.Context, instanceID string, data *types
 	reqMsg.Data = body
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
 
-	msg, err := d.natsConn.RequestMsg(reqMsg, instanceTagCommandTimeout)
+	msg, err := d.natsConn.RequestMsg(reqMsg, instanceOwnerCommandTimeout)
 	switch {
 	case errors.Is(err, nats.ErrNoResponders):
 		return d.instanceService.TagStoppedInstance(ctx, instanceID, data, remove, d.tagsService, accountID)

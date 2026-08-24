@@ -4,10 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { useCopyToClipboard } from "./use-copy-to-clipboard"
 
 describe("useCopyToClipboard", () => {
+  let writeText: ReturnType<typeof vi.fn>
+
   beforeEach(() => {
     vi.useFakeTimers()
+    writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, "clipboard", {
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      value: { writeText },
       writable: true,
       configurable: true,
     })
@@ -29,8 +32,7 @@ describe("useCopyToClipboard", () => {
       await result.current.copy("hello")
     })
 
-    // oxlint-disable-next-line typescript/unbound-method -- vitest mock
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("hello")
+    expect(writeText).toHaveBeenCalledWith("hello")
     expect(result.current.copied).toBeTruthy()
   })
 

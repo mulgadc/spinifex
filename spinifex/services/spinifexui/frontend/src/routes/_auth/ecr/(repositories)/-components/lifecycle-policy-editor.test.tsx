@@ -44,7 +44,9 @@ describe("LifecyclePolicyEditor", () => {
 
     fireEvent.change(textarea, { target: { value: `${POLICY} ` } })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
-    await waitFor(() => expect(send).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({
       repositoryName: REPO,
       lifecyclePolicyText: `${POLICY} `,
@@ -72,7 +74,9 @@ describe("LifecyclePolicyEditor", () => {
       seed(POLICY),
     )
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
-    await waitFor(() => expect(send).toHaveBeenCalled())
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
     expect(send.mock.calls[0]![0].input).toStrictEqual({ repositoryName: REPO })
   })
 

@@ -1,7 +1,12 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -51,8 +56,6 @@ export function CreateKeyPairPage() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateKeyPairData) => {
     const response = await createMutation.mutateAsync(data)
@@ -103,7 +106,9 @@ export function CreateKeyPairPage() {
             name="keyType"
             render={({ field }) => (
               <Select
-                onValueChange={(value) => field.onChange(value)}
+                onValueChange={(value) => {
+                  field.onChange(value)
+                }}
                 value={field.value}
               >
                 <SelectTrigger
@@ -127,15 +132,15 @@ export function CreateKeyPairPage() {
           <FieldError errors={[errors.keyType]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateKeyPairCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreateKeyPairCommands(values)} />
 
         {/* Actions */}
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-key-pairs" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Key Pair"
         />
@@ -154,12 +159,10 @@ export function CreateKeyPairPage() {
 }
 
 function buildCreateKeyPairCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateKeyPairData>,
 ): CliCommand[] {
-  const rawKeyName = watch("keyName")
-  const keyName = typeof rawKeyName === "string" ? rawKeyName : ""
-  const rawKeyType = watch("keyType")
-  const keyType = typeof rawKeyType === "string" ? rawKeyType : "rsa"
+  const keyName = values.keyName ?? ""
+  const keyType = values.keyType ?? "rsa"
 
   return [
     {

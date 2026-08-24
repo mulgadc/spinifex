@@ -97,8 +97,13 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	return m.launch(ctx, instance)
 }
 
-// Reboot issues a QMP system_reset; the VM stays in StateRunning while QEMU
-// re-runs firmware. Returns ErrInstanceNotFound or ErrInvalidTransition as appropriate.
+const (
+	rebootRunningTimeout     = 4 * time.Second
+	rebootStatusPollInterval = 100 * time.Millisecond
+)
+
+// Reboot resets QEMU and verifies its vCPUs resume. The VM remains in
+// StateRunning while firmware re-runs.
 func (m *Manager) Reboot(ctx context.Context, id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
@@ -108,10 +113,72 @@ func (m *Manager) Reboot(ctx context.Context, id string) error {
 		return fmt.Errorf("%w: cannot reboot instance %s in state %s",
 			ErrInvalidTransition, id, status)
 	}
-	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{Execute: "system_reset"}, id); err != nil {
+
+	rebootCtx, cancel := context.WithTimeout(ctx, rebootRunningTimeout)
+	defer cancel()
+
+	if _, err := sendQMPCommandWithTimeout(rebootCtx, instance.QMPClient,
+		qmp.QMPCommand{Execute: "system_reset"}, id, contextTimeRemaining(rebootCtx)); err != nil {
 		return fmt.Errorf("QMP system_reset: %w", err)
 	}
-	return nil
+	return m.waitForQMPRunning(rebootCtx, instance, rebootStatusPollInterval)
+}
+
+// waitForQMPRunning polls until QEMU reports running or ctx expires. Paused
+// and prelaunch guests receive cont so a reset cannot leave their vCPUs parked.
+func (m *Manager) waitForQMPRunning(ctx context.Context, instance *VM, pollInterval time.Duration) error {
+	var lastStatus qmp.Status
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait for QMP running (last status %q): %w", lastStatus.Status, err)
+		}
+		if status := m.Status(instance); status != StateRunning {
+			return fmt.Errorf("%w: reboot interrupted for instance %s in state %s",
+				ErrInvalidTransition, instance.ID, status)
+		}
+
+		qmpStatus, err := queryQMPStatus(ctx, instance, contextTimeRemaining(ctx))
+		if err != nil {
+			return fmt.Errorf("verify QMP running: %w", err)
+		}
+		lastStatus = qmpStatus
+		if qmpStatus.Running {
+			return nil
+		}
+
+		if qmpStatus.Status == "paused" || qmpStatus.Status == "prelaunch" {
+			if status := m.Status(instance); status != StateRunning {
+				return fmt.Errorf("%w: cannot resume instance %s in state %s",
+					ErrInvalidTransition, instance.ID, status)
+			}
+			if _, err := sendQMPCommandWithTimeout(ctx, instance.QMPClient,
+				qmp.QMPCommand{Execute: "cont"}, instance.ID, contextTimeRemaining(ctx)); err != nil {
+				return fmt.Errorf("QMP cont from status %q: %w", qmpStatus.Status, err)
+			}
+		}
+
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("wait for QMP running (last status %q): %w", lastStatus.Status, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+// contextTimeRemaining returns the active context deadline budget. Reboot
+// always installs a deadline before issuing QMP commands.
+func contextTimeRemaining(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return qmpCommandTimeout
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return time.Nanosecond
+	}
+	return remaining
 }
 
 // launchStillValid returns true when status is still pending/stopped/provisioning.
@@ -204,7 +271,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 		return err
 	}
 	instance.QMPClient = qmpClient
-	go m.qmpHeartbeat(instance) //nolint:gosec // heartbeat outlives the launch request; must not inherit its cancellation
+	go m.qmpHeartbeat(instance)
 
 	m.Insert(instance)
 
@@ -811,17 +878,13 @@ const (
 	QMPMaxConsecutiveFailures = 3
 )
 
-// qmpHeartbeat polls query-status every qmpHeartbeatInterval and acts on
-// failures: it tracks consecutive failures, and once they reach
-// QMPMaxConsecutiveFailures it checks process liveness. A dead process triggers
-// crash recovery; an alive-but-wedged QEMU stays impaired for an operator. The
-// goroutine exits and closes the QMP connection on any terminal/transitional state.
+// qmpHeartbeat polls query-status every qmpHeartbeatInterval. A dead process
+// triggers recovery; a live but non-running QEMU remains impaired for operators.
 func (m *Manager) qmpHeartbeat(instance *VM) {
 	for {
 		time.Sleep(qmpHeartbeatInterval)
 
 		status := m.Status(instance)
-
 		if status == StateStopping || status == StateStopped ||
 			status == StateShuttingDown || status == StateTerminated || status == StateError {
 			slog.Info("QMP heartbeat exiting - instance not running", "instance", instance.ID, "status", status)
@@ -833,28 +896,60 @@ func (m *Manager) qmpHeartbeat(instance *VM) {
 			return
 		}
 
-		slog.Debug("QMP heartbeat", "instance", instance.ID)
-		qmpStatus, err := sendQMPCommand(context.WithValue(context.Background(), noTraceKey{}, true),
-			instance.QMPClient, qmp.QMPCommand{Execute: "query-status"}, instance.ID)
-		if err != nil {
-			failures := m.recordQMPFailure(instance)
-			slog.Warn("QMP heartbeat failed", "instance", instance.ID, "consecutiveFailures", failures, "err", err)
-			if failures < QMPMaxConsecutiveFailures {
-				continue
-			}
-			if !isInstanceProcessRunning(instance) {
-				slog.Error("QEMU process dead and QMP unresponsive, triggering crash recovery",
-					"instance", instance.ID, "consecutiveFailures", failures)
-				m.HandleCrash(instance, fmt.Errorf("qmp unresponsive (%d failures), process dead", failures))
-				return
-			}
-			slog.Error("QEMU process alive but QMP unresponsive", "instance", instance.ID, "consecutiveFailures", failures)
-			continue
+		if !m.qmpHeartbeatPoll(instance) {
+			return
 		}
-
-		m.recordQMPSuccess(instance)
-		slog.Debug("QMP status", "instance", instance.ID, "status", string(qmpStatus.Return))
 	}
+}
+
+// qmpHeartbeatPoll performs one status check and returns false after crash
+// recovery takes ownership.
+func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
+	slog.Debug("QMP heartbeat", "instance", instance.ID)
+	ctx := context.WithValue(context.Background(), noTraceKey{}, true)
+	qmpStatus, err := queryQMPStatus(ctx, instance, qmpCommandTimeout)
+	if err == nil && !qmpStatus.Running && m.Status(instance) == StateRunning {
+		err = fmt.Errorf("QMP reported non-running status %q", qmpStatus.Status)
+	}
+	if err != nil {
+		failures := m.recordQMPFailure(instance)
+		slog.Warn("QMP heartbeat failed", "instance", instance.ID, "consecutiveFailures", failures, "err", err)
+		if failures < QMPMaxConsecutiveFailures {
+			return true
+		}
+		if !isInstanceProcessRunning(instance) {
+			slog.Error("QEMU process dead and QMP unhealthy, triggering crash recovery",
+				"instance", instance.ID, "consecutiveFailures", failures)
+			m.HandleCrash(instance, fmt.Errorf("qmp unhealthy (%d failures), process dead: %w", failures, err))
+			return false
+		}
+		slog.Error("QEMU process alive but QMP unhealthy", "instance", instance.ID, "consecutiveFailures", failures)
+		return true
+	}
+
+	if qmpStatus.Running {
+		m.recordQMPSuccess(instance)
+	}
+	slog.Debug("QMP status", "instance", instance.ID, "status", qmpStatus.Status, "running", qmpStatus.Running)
+	return true
+}
+
+// queryQMPStatus decodes query-status so monitor responsiveness is not
+// mistaken for a running guest.
+func queryQMPStatus(ctx context.Context, instance *VM, timeout time.Duration) (qmp.Status, error) {
+	resp, err := sendQMPCommandWithTimeout(ctx, instance.QMPClient,
+		qmp.QMPCommand{Execute: "query-status"}, instance.ID, timeout)
+	if err != nil {
+		return qmp.Status{}, err
+	}
+	var status qmp.Status
+	if err := json.Unmarshal(resp.Return, &status); err != nil {
+		return qmp.Status{}, fmt.Errorf("decode query-status response: %w", err)
+	}
+	if status.Status == "" {
+		return qmp.Status{}, fmt.Errorf("decode query-status response: missing status")
+	}
+	return status, nil
 }
 
 // recordQMPFailure increments the consecutive QMP failure counter, stamping
@@ -1034,14 +1129,17 @@ const EBSHotPlugSlotCount = 11
 // which. The primary data ENI is marked DHCP (OVN serves it; it carries the
 // default route, and bringing it up before cloud-init's network stage is what
 // lets the Ec2 datasource reach IMDS — without it cloud-init brings up the mgmt
-// NIC instead and falls to DataSourceNone). Every extra ENI is DHCP too, but
-// never the default route. mgmt0 lives on br-mgmt with no DHCP, so its static
-// address is delivered here; it is never the default route either. The blob
-// must name every NIC QEMU is given: the guest configures by MAC, so a NIC the
-// blob omits is left down and address-less, unreachable at its own VPC IP. The
-// blob key format matches daemon.buildNetcfgBlob and build/microvm/init.sh.
-// No-op without a mgmt NIC, so single-NIC guests are untouched — cloud-init
-// brings their one NIC up.
+// NIC instead and falls to DataSourceNone). Every extra ENI is static when a
+// prefix and gateway were resolved at launch (an RDS DB VM's customer ENI is
+// the case): DHCP would depend on the OVN lease being renewed, which nothing
+// does, and the NIC goes address-less an hour after boot. mgmt0 lives on
+// br-mgmt with no DHCP, so its static address is delivered here too; neither
+// it nor an extra ENI is ever the default route. The blob must name every NIC
+// QEMU is given: the guest configures by MAC, so a NIC the blob omits is left
+// down and address-less, unreachable at its own VPC IP. The blob key format
+// matches daemon.buildNetcfgBlob and build/microvm/init.sh. No-op without a
+// mgmt NIC, so single-NIC guests are untouched — cloud-init brings their one
+// NIC up.
 func (m *Manager) appendSystemNetcfgFwCfg(instance *VM) error {
 	if instance.MgmtMAC == "" || instance.MgmtIP == "" {
 		return nil
@@ -1053,15 +1151,22 @@ func (m *Manager) appendSystemNetcfgFwCfg(instance *VM) error {
 		fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_DHCP=1\nNIC%d_DEFAULT=1\n", n, instance.ENIMac, n, n)
 		n++
 	}
-	// Additional VPC ENIs: an RDS DB VM's customer-VPC NIC is the case. OVN
-	// serves DHCP on each, which is also what supplies their subnet routes.
-	// None may take the default route — that stays with the primary ENI,
-	// which carries the IMDS path.
+	// Additional VPC ENIs: an RDS DB VM's customer-VPC NIC is the case. Static
+	// when the launcher resolved a prefix and gateway, so it never depends on
+	// the OVN lease being renewed. Falls back to DHCP for an extra ENI that
+	// predates this field or whose subnet could not be resolved. None may take
+	// the default route — that stays with the primary ENI, which carries the
+	// IMDS path.
 	for _, extra := range instance.ExtraENIs {
 		if extra.ENIMac == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_DHCP=1\nNIC%d_DEFAULT=0\n", n, extra.ENIMac, n, n)
+		if extra.ENICIDRPrefix > 0 && extra.Gateway != "" {
+			fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_CIDR=%s/%d\nNIC%d_GW=%s\nNIC%d_DEFAULT=0\n",
+				n, extra.ENIMac, n, extra.ENIIP, extra.ENICIDRPrefix, n, extra.Gateway, n)
+		} else {
+			fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_DHCP=1\nNIC%d_DEFAULT=0\n", n, extra.ENIMac, n, n)
+		}
 		n++
 	}
 	// Management NIC: static, off br-mgmt, never the default route.

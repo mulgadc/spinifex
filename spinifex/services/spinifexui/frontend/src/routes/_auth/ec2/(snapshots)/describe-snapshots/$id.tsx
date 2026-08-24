@@ -162,7 +162,9 @@ function SnapshotDetail() {
             <div className="flex items-center gap-2">
               <Button
                 disabled={!canDelete}
-                onClick={() => setShowDeleteDialog(true)}
+                onClick={() => {
+                  setShowDeleteDialog(true)
+                }}
                 size="sm"
                 variant="destructive"
               >
@@ -171,7 +173,9 @@ function SnapshotDetail() {
               </Button>
               <Button
                 disabled={!canDelete}
-                onClick={() => setShowCopyDialog(true)}
+                onClick={() => {
+                  setShowCopyDialog(true)
+                }}
                 size="sm"
                 variant="outline"
               >
@@ -180,7 +184,9 @@ function SnapshotDetail() {
               </Button>
               <Button
                 disabled={!canRegister}
-                onClick={() => setShowRegisterDialog(true)}
+                onClick={() => {
+                  setShowRegisterDialog(true)
+                }}
                 size="sm"
                 variant="outline"
               >
@@ -252,7 +258,9 @@ function SnapshotDetail() {
             </FieldTitle>
             <Input
               id="copyDescription"
-              onChange={(e) => setCopyDescription(e.target.value)}
+              onChange={(e) => {
+                setCopyDescription(e.target.value)
+              }}
               placeholder="Description for the snapshot copy"
               value={copyDescription}
             />
@@ -301,7 +309,9 @@ function SnapshotDetail() {
                 </FieldTitle>
                 <Input
                   id="registerName"
-                  onChange={(e) => setRegisterName(e.target.value)}
+                  onChange={(e) => {
+                    setRegisterName(e.target.value)
+                  }}
                   placeholder="my-image"
                   value={registerName}
                 />
@@ -314,7 +324,9 @@ function SnapshotDetail() {
                 </FieldTitle>
                 <Textarea
                   id="registerDescription"
-                  onChange={(e) => setRegisterDescription(e.target.value)}
+                  onChange={(e) => {
+                    setRegisterDescription(e.target.value)
+                  }}
                   placeholder="Optional description"
                   rows={2}
                   value={registerDescription}

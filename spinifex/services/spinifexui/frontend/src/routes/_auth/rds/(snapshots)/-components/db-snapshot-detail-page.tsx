@@ -70,12 +70,12 @@ export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
             <div className="flex gap-2">
               <Button
                 disabled={!canRestoreSnapshot(status)}
-                onClick={async () =>
+                onClick={async () => {
                   await navigate({
                     to: "/rds/restore-db-instance-from-db-snapshot/$id",
                     params: { id: dbSnapshotIdentifier },
                   })
-                }
+                }}
                 size="sm"
                 variant="outline"
               >
@@ -83,7 +83,9 @@ export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
               </Button>
               <Button
                 disabled={!canDeleteSnapshot(status, snapshotType)}
-                onClick={() => setShowDelete(true)}
+                onClick={() => {
+                  setShowDelete(true)
+                }}
                 size="sm"
                 variant="destructive"
               >
@@ -204,9 +206,9 @@ export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
 
       <DeleteDBSnapshotDialog
         dbSnapshotIdentifier={dbSnapshotIdentifier}
-        onDeleted={async () =>
+        onDeleted={async () => {
           await navigate({ to: "/rds/describe-db-snapshots" })
-        }
+        }}
         onOpenChange={setShowDelete}
         open={showDelete}
       />

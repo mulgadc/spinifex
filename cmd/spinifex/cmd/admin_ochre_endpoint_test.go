@@ -14,17 +14,19 @@ import (
 // fakeEndpointService serves scripted Describe responses so the wait loop can
 // be exercised without a daemon, a VM or a real cold start.
 type fakeEndpointService struct {
-	ensure      handlers_bedrock.EndpointRecord
-	ensureErr   error
-	describes   []handlers_bedrock.EndpointRecord
-	describeErr error
-	list        []handlers_bedrock.EndpointRecord
-	listErr     error
-	deleteErr   error
+	ensure        handlers_bedrock.EndpointRecord
+	ensureErr     error
+	describes     []handlers_bedrock.EndpointRecord
+	describeErr   error
+	list          []handlers_bedrock.EndpointRecord
+	listErr       error
+	deleteErr     error
+	deleteRemoved bool
 
 	describeCalls  int
 	deleteCalls    int
 	describeInputs []*handlers_bedrock.DescribeEndpointInput
+	deleteInputs   []*handlers_bedrock.DeleteEndpointInput
 }
 
 func (f *fakeEndpointService) Ensure(_ context.Context, _ *handlers_bedrock.EnsureEndpointInput, _ string) (*handlers_bedrock.EnsureEndpointOutput, error) {
@@ -53,12 +55,13 @@ func (f *fakeEndpointService) List(_ context.Context, _ *handlers_bedrock.ListEn
 	return &handlers_bedrock.ListEndpointsOutput{Endpoints: f.list}, nil
 }
 
-func (f *fakeEndpointService) Delete(_ context.Context, _ *handlers_bedrock.DeleteEndpointInput, _ string) (*handlers_bedrock.DeleteEndpointOutput, error) {
+func (f *fakeEndpointService) Delete(_ context.Context, in *handlers_bedrock.DeleteEndpointInput, _ string) (*handlers_bedrock.DeleteEndpointOutput, error) {
 	f.deleteCalls++
+	f.deleteInputs = append(f.deleteInputs, in)
 	if f.deleteErr != nil {
 		return nil, f.deleteErr
 	}
-	return &handlers_bedrock.DeleteEndpointOutput{}, nil
+	return &handlers_bedrock.DeleteEndpointOutput{Removed: f.deleteRemoved}, nil
 }
 
 var _ handlers_bedrock.EndpointService = (*fakeEndpointService)(nil)
@@ -409,7 +412,7 @@ func TestRunOchreEndpointList_ConnectFailureExits1(t *testing.T) {
 }
 
 func TestRunOchreEndpointDelete_ReportsTeardown(t *testing.T) {
-	svc := &fakeEndpointService{}
+	svc := &fakeEndpointService{deleteRemoved: true}
 	withEndpointService(t, svc, nil)
 
 	cmd := *ochreEndpointDeleteCmd
@@ -422,6 +425,45 @@ func TestRunOchreEndpointDelete_ReportsTeardown(t *testing.T) {
 	require.Equal(t, -1, code)
 	require.Equal(t, 1, svc.deleteCalls)
 	require.Contains(t, out, "torn down")
+}
+
+// TestRunOchreEndpointDelete_NoRecordDoesNotClaimTeardown is 6z9vg's honesty
+// guard: a delete that removed nothing must not print "torn down", and must
+// point the operator at --account so a pinned, account-scoped record they can
+// see in 'list' is reachable.
+func TestRunOchreEndpointDelete_NoRecordDoesNotClaimTeardown(t *testing.T) {
+	svc := &fakeEndpointService{deleteRemoved: false}
+	withEndpointService(t, svc, nil)
+
+	cmd := *ochreEndpointDeleteCmd
+	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
+
+	var out string
+	code := withOchreExitCapture(t, func() {
+		out = captureStdout(t, func() { runOchreEndpointDelete(&cmd, nil) })
+	})
+	require.Equal(t, -1, code)
+	require.NotContains(t, out, "torn down")
+	require.Contains(t, out, "--account")
+}
+
+// TestRunOchreEndpointDelete_AccountFlagReachesInput is 6z9vg's core seam: the
+// --account flag must reach DeleteEndpointInput.AccountID, which is how an
+// operator tears down a pinned endpoint the bare GlobalAccountID key misses.
+func TestRunOchreEndpointDelete_AccountFlagReachesInput(t *testing.T) {
+	svc := &fakeEndpointService{deleteRemoved: true}
+	withEndpointService(t, svc, nil)
+
+	cmd := *ochreEndpointDeleteCmd
+	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
+	require.NoError(t, cmd.Flags().Set("account", testAccountID))
+
+	code := withOchreExitCapture(t, func() {
+		_ = captureStdout(t, func() { runOchreEndpointDelete(&cmd, nil) })
+	})
+	require.Equal(t, -1, code)
+	require.Len(t, svc.deleteInputs, 1)
+	require.Equal(t, testAccountID, svc.deleteInputs[0].AccountID)
 }
 
 func TestRunOchreEndpointDelete_ErrorExits1(t *testing.T) {

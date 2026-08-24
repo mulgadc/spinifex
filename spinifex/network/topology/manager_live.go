@@ -322,8 +322,10 @@ func (m *liveManager) EnsurePort(ctx context.Context, spec PortSpec) error {
 			"spinifex:vpc_id":    spec.VPCID,
 		},
 	}
-	if dhcpOpts, err := m.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", spec.SubnetID); err == nil {
-		lsp.DHCPv4Options = &dhcpOpts.UUID
+	if !spec.SuppressDHCP {
+		if dhcpOpts, err := m.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", spec.SubnetID); err == nil {
+			lsp.DHCPv4Options = &dhcpOpts.UUID
+		}
 	}
 
 	pgNames := make([]string, 0, len(spec.SGIDs))
@@ -347,6 +349,9 @@ func (m *liveManager) EnsurePort(ctx context.Context, spec PortSpec) error {
 }
 
 // DeletePort clears the ENI's port-group memberships and removes the LSP.
+// Idempotent: an already-absent LSP (a retry, or a race with the reconciler's
+// orphan prune) is a no-op success, not an error — mirrors ForceDeleteInstanceENI
+// tolerating an already-gone ENI.
 func (m *liveManager) DeletePort(ctx context.Context, spec PortSpec) error {
 	if m.ovn == nil {
 		return fmt.Errorf("OVN client not connected")
@@ -354,17 +359,25 @@ func (m *liveManager) DeletePort(ctx context.Context, spec PortSpec) error {
 	portName := Port(spec.PortID)
 	switchName := SubnetSwitch(spec.SubnetID)
 
-	if _, err := m.reconcilePortSGs(ctx, portName, nil); err != nil {
-		return fmt.Errorf("clear port group memberships for %q: %w", portName, err)
+	// Mirror EnsurePort's existence check: a Get that returns no error means
+	// the port is present, so delete it; any error means it is already gone
+	// (a retry, or a race with the reconciler's orphan prune) and we no-op.
+	if _, err := m.ovn.GetLogicalSwitchPort(ctx, portName); err == nil {
+		if _, err := m.reconcilePortSGs(ctx, portName, nil); err != nil {
+			return fmt.Errorf("clear port group memberships for %q: %w", portName, err)
+		}
+		if err := m.ovn.DeleteLogicalSwitchPort(ctx, switchName, portName); err != nil {
+			return fmt.Errorf("delete logical switch port %q on %q: %w", portName, switchName, err)
+		}
+		slog.Info("topology: DeletePort removed LSP",
+			"port", portName,
+			"switch", switchName,
+			"eni_id", spec.PortID,
+		)
+		return nil
 	}
-	if err := m.ovn.DeleteLogicalSwitchPort(ctx, switchName, portName); err != nil {
-		return fmt.Errorf("delete logical switch port %q on %q: %w", portName, switchName, err)
-	}
-	slog.Info("topology: DeletePort removed LSP",
-		"port", portName,
-		"switch", switchName,
-		"eni_id", spec.PortID,
-	)
+
+	slog.Info("topology: DeletePort found no LSP, already gone", "port", portName, "eni_id", spec.PortID)
 	return nil
 }
 

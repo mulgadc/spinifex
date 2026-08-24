@@ -132,7 +132,12 @@ export function TargetsTab({
                 descriptions.length === 1 ? "" : "s"
               }`}
         </p>
-        <Button onClick={() => setRegisterOpen(true)} size="sm">
+        <Button
+          onClick={() => {
+            setRegisterOpen(true)
+          }}
+          size="sm"
+        >
           Register targets
         </Button>
       </div>
@@ -190,7 +195,9 @@ export function TargetsTab({
                     <td className="px-4 py-2 text-right">
                       <Button
                         aria-label={`Deregister ${target.Id}`}
-                        onClick={() => setDeregisterTarget(target)}
+                        onClick={() => {
+                          setDeregisterTarget(target)
+                        }}
                         size="sm"
                         variant="ghost"
                       >
@@ -224,7 +231,11 @@ export function TargetsTab({
         }
         isPending={deregisterMutation.isPending}
         onConfirm={handleDeregister}
-        onOpenChange={(open) => !open && setDeregisterTarget(undefined)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeregisterTarget(undefined)
+          }
+        }}
         open={deregisterTarget !== undefined}
         title="Deregister target"
       />

@@ -128,8 +128,9 @@ func (s *Service) appendEvent(ctx context.Context, accountID, sourceType, source
 		if err == nil {
 			return nil
 		}
-		// jetstream.ErrKeyExists on Update is a revision mismatch, not a duplicate.
-		if !errors.Is(err, jetstream.ErrKeyExists) {
+		// A revision mismatch is a lost race with another appender, not a
+		// duplicate: re-read the ring and append to what they wrote.
+		if !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return err
 		}
 	}

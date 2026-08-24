@@ -98,7 +98,9 @@ function PolicyDetail() {
         <PageHeading
           actions={
             <Button
-              onClick={() => setShowDeleteDialog(true)}
+              onClick={() => {
+                setShowDeleteDialog(true)
+              }}
               size="sm"
               variant="destructive"
             >

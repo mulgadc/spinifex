@@ -66,7 +66,9 @@ describe("useCreateUser", () => {
 
     result.current.mutate({ userName: "admin" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
       Path: undefined,
@@ -79,7 +81,9 @@ describe("useCreateUser", () => {
 
     result.current.mutate({ userName: "admin", path: "/engineering/" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
       Path: "/engineering/",
@@ -93,7 +97,9 @@ describe("useCreateUser", () => {
 
     result.current.mutate({ userName: "admin" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "users"] })
   })
 })
@@ -105,7 +111,9 @@ describe("useDeleteUser", () => {
 
     result.current.mutate("admin")
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
     })
@@ -119,7 +127,9 @@ describe("useCreateAccessKey", () => {
 
     result.current.mutate("admin")
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
     })
@@ -132,7 +142,9 @@ describe("useCreateAccessKey", () => {
 
     result.current.mutate("admin")
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "access-keys"] })
   })
 })
@@ -144,7 +156,9 @@ describe("useDeleteAccessKey", () => {
 
     result.current.mutate({ userName: "admin", accessKeyId: "AKIA123" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
       AccessKeyId: "AKIA123",
@@ -163,7 +177,9 @@ describe("useUpdateAccessKey", () => {
       status: "Inactive",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
       AccessKeyId: "AKIA123",
@@ -182,7 +198,9 @@ describe("useCreatePolicy", () => {
       policyDocument: '{"Version":"2012-10-17"}',
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       PolicyName: "ReadOnly",
       Description: undefined,
@@ -200,7 +218,9 @@ describe("useCreatePolicy", () => {
       policyDocument: "{}",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input.Description).toBe(
       "Read-only access",
     )
@@ -213,7 +233,9 @@ describe("useCreatePolicy", () => {
 
     result.current.mutate({ policyName: "ReadOnly", policyDocument: "{}" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "policies"] })
   })
 })
@@ -225,7 +247,9 @@ describe("useDeletePolicy", () => {
 
     result.current.mutate("arn:aws:iam::123:policy/ReadOnly")
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       PolicyArn: "arn:aws:iam::123:policy/ReadOnly",
     })
@@ -239,7 +263,9 @@ describe("useAttachUserPolicy", () => {
 
     result.current.mutate({ userName: "admin", policyArn: "arn:test" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
       PolicyArn: "arn:test",
@@ -253,7 +279,9 @@ describe("useAttachUserPolicy", () => {
 
     result.current.mutate({ userName: "admin", policyArn: "arn:test" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["iam", "attached-user-policies"],
     })
@@ -267,7 +295,9 @@ describe("useDetachUserPolicy", () => {
 
     result.current.mutate({ userName: "admin", policyArn: "arn:test" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
       PolicyArn: "arn:test",
@@ -281,7 +311,9 @@ describe("useDetachUserPolicy", () => {
 
     result.current.mutate({ userName: "admin", policyArn: "arn:test" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["iam", "attached-user-policies"],
     })
@@ -299,7 +331,9 @@ describe("usePutUserPolicy", () => {
       policyDocument: "{}",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
       PolicyName: "s3-read",
@@ -318,7 +352,9 @@ describe("usePutUserPolicy", () => {
       policyDocument: "{}",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["iam", "user-inline-policies", "admin"],
     })
@@ -332,7 +368,9 @@ describe("useDeleteUserPolicy", () => {
 
     result.current.mutate({ name: "admin", policyName: "s3-read" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
       PolicyName: "s3-read",
@@ -346,7 +384,9 @@ describe("useDeleteUserPolicy", () => {
 
     result.current.mutate({ name: "admin", policyName: "s3-read" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["iam", "user-inline-policies", "admin"],
     })
@@ -364,7 +404,9 @@ describe("usePutRolePolicy", () => {
       policyDocument: "{}",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
       PolicyName: "s3-read",
@@ -383,7 +425,9 @@ describe("usePutRolePolicy", () => {
       policyDocument: "{}",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["iam", "role-inline-policies", "my-role"],
     })
@@ -397,7 +441,9 @@ describe("useDeleteRolePolicy", () => {
 
     result.current.mutate({ name: "my-role", policyName: "s3-read" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
       PolicyName: "s3-read",
@@ -416,7 +462,9 @@ describe("usePutGroupPolicy", () => {
       policyDocument: "{}",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
       PolicyName: "s3-read",
@@ -435,7 +483,9 @@ describe("usePutGroupPolicy", () => {
       policyDocument: "{}",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["iam", "group-inline-policies", "my-group"],
     })
@@ -449,7 +499,9 @@ describe("useDeleteGroupPolicy", () => {
 
     result.current.mutate({ name: "my-group", policyName: "s3-read" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
       PolicyName: "s3-read",
@@ -467,7 +519,9 @@ describe("useCreateRole", () => {
       assumeRolePolicyDocument: '{"Version":"2012-10-17"}',
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
       Path: undefined,
@@ -487,7 +541,9 @@ describe("useCreateRole", () => {
       assumeRolePolicyDocument: "{}",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
       Path: "/service/",
@@ -506,7 +562,9 @@ describe("useCreateRole", () => {
       assumeRolePolicyDocument: "{}",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "roles"] })
   })
 })
@@ -518,7 +576,9 @@ describe("useDeleteRole", () => {
 
     result.current.mutate("my-role")
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
     })
@@ -532,7 +592,9 @@ describe("useAttachRolePolicy", () => {
 
     result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
       PolicyArn: "arn:test",
@@ -546,7 +608,9 @@ describe("useAttachRolePolicy", () => {
 
     result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["iam", "attached-role-policies"],
     })
@@ -560,7 +624,9 @@ describe("useDetachRolePolicy", () => {
 
     result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
       PolicyArn: "arn:test",
@@ -575,7 +641,9 @@ describe("useCreateInstanceProfile", () => {
 
     result.current.mutate({ instanceProfileName: "my-profile" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       InstanceProfileName: "my-profile",
       Path: undefined,
@@ -589,7 +657,9 @@ describe("useCreateInstanceProfile", () => {
 
     result.current.mutate({ instanceProfileName: "my-profile" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["iam", "instance-profiles"],
     })
@@ -603,7 +673,9 @@ describe("useDeleteInstanceProfile", () => {
 
     result.current.mutate("my-profile")
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       InstanceProfileName: "my-profile",
     })
@@ -622,7 +694,9 @@ describe("useAddRoleToInstanceProfile", () => {
       roleName: "my-role",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       InstanceProfileName: "my-profile",
       RoleName: "my-role",
@@ -641,7 +715,9 @@ describe("useAddRoleToInstanceProfile", () => {
       roleName: "my-role",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["iam", "instance-profiles"],
     })
@@ -660,7 +736,9 @@ describe("useRemoveRoleFromInstanceProfile", () => {
       roleName: "my-role",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       InstanceProfileName: "my-profile",
       RoleName: "my-role",
@@ -675,7 +753,9 @@ describe("useCreateGroup", () => {
 
     result.current.mutate({ groupName: "my-group" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
       Path: undefined,
@@ -688,7 +768,9 @@ describe("useCreateGroup", () => {
 
     result.current.mutate({ groupName: "my-group", path: "/engineering/" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
       Path: "/engineering/",
@@ -702,7 +784,9 @@ describe("useCreateGroup", () => {
 
     result.current.mutate({ groupName: "my-group" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "groups"] })
   })
 })
@@ -714,7 +798,9 @@ describe("useDeleteGroup", () => {
 
     result.current.mutate("my-group")
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
     })
@@ -728,7 +814,9 @@ describe("useAttachGroupPolicy", () => {
 
     result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
       PolicyArn: "arn:test",
@@ -742,7 +830,9 @@ describe("useAttachGroupPolicy", () => {
 
     result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["iam", "attached-group-policies"],
     })
@@ -756,7 +846,9 @@ describe("useDetachGroupPolicy", () => {
 
     result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
       PolicyArn: "arn:test",
@@ -771,7 +863,9 @@ describe("useAddUserToGroup", () => {
 
     result.current.mutate({ groupName: "my-group", userName: "admin" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
       UserName: "admin",
@@ -785,7 +879,9 @@ describe("useAddUserToGroup", () => {
 
     result.current.mutate({ groupName: "my-group", userName: "admin" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "groups"] })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "groups-for-user"] })
   })
@@ -798,7 +894,9 @@ describe("useRemoveUserFromGroup", () => {
 
     result.current.mutate({ groupName: "my-group", userName: "admin" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
       UserName: "admin",
@@ -812,7 +910,9 @@ describe("useRemoveUserFromGroup", () => {
 
     result.current.mutate({ groupName: "my-group", userName: "admin" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "groups"] })
     expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "groups-for-user"] })
   })

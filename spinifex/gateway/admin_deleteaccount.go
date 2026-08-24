@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
@@ -363,7 +363,7 @@ func claimDeletionJob(
 ) (*accountDeletionJob, *accountDeletionJob, error) {
 	now := time.Now().UTC()
 	job := &accountDeletionJob{
-		DeletionID:  uuid.NewString(),
+		DeletionID:  uuid.NewV4().String(),
 		AccountID:   req.AccountID,
 		AccountName: req.AccountName,
 		ClientToken: req.ClientToken,

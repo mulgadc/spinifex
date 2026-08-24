@@ -78,6 +78,43 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 	return outcomeSuccess
 }
 
+// handleSetInstanceMonitoring flips a running instance's EC2 monitoring tier
+// and rewrites its collector discovery file, so the poller resets its interval
+// without a restart. Ownership is checked by checkInstanceOwnership before
+// dispatch.
+func (d *Daemon) handleSetInstanceMonitoring(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+	data := command.InstanceMonitoringData
+	if data == nil {
+		return respondErrorOutcome(msg, awserrors.ErrorMissingParameter)
+	}
+
+	found, err := d.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
+		if v.RunInstancesInput == nil {
+			return false
+		}
+		if v.RunInstancesInput.Monitoring == nil {
+			v.RunInstancesInput.Monitoring = &ec2.RunInstancesMonitoringEnabled{}
+		}
+		v.RunInstancesInput.Monitoring.Enabled = aws.Bool(data.Enabled)
+		return true
+	})
+	if err != nil {
+		return respondServiceErrorOutcome(msg, err)
+	}
+	if !found {
+		return respondErrorOutcome(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	// Off the manager lock: the refresh takes the VM's own ENI lock.
+	instance.RefreshTelemetryMeta()
+	slog.InfoContext(ctx, "SetInstanceMonitoring: tier applied", "instanceId", instance.ID, "enabled", data.Enabled)
+
+	if err := msg.Respond([]byte(`{}`)); err != nil {
+		slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
+	}
+	return outcomeSuccess
+}
+
 // handleEC2RunInstances orchestrates the RunInstances flow across
 // InstanceService.PrepareRunInstances (validation + ENI creation),
 // daemon-local Insert/WriteState/per-instance subscribe, and

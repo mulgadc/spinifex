@@ -3,7 +3,12 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  useForm,
+  type UseFormWatch,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -384,7 +389,9 @@ export function CreateLoadBalancerPage() {
                     aria-label="Application Load Balancer"
                     checked={field.value === "application"}
                     name="lb-type"
-                    onChange={() => handleTypeChange("application")}
+                    onChange={() => {
+                      handleTypeChange("application")
+                    }}
                     type="radio"
                   />
                   Application (ALB)
@@ -394,7 +401,9 @@ export function CreateLoadBalancerPage() {
                     aria-label="Network Load Balancer"
                     checked={field.value === "network"}
                     name="lb-type"
-                    onChange={() => handleTypeChange("network")}
+                    onChange={() => {
+                      handleTypeChange("network")
+                    }}
                     type="radio"
                   />
                   Network (NLB)
@@ -416,7 +425,9 @@ export function CreateLoadBalancerPage() {
                     aria-label="Internet-facing"
                     checked={field.value === "internet-facing"}
                     name="scheme"
-                    onChange={() => field.onChange("internet-facing")}
+                    onChange={() => {
+                      field.onChange("internet-facing")
+                    }}
                     type="radio"
                   />
                   Internet-facing
@@ -426,7 +437,9 @@ export function CreateLoadBalancerPage() {
                     aria-label="Internal"
                     checked={field.value === "internal"}
                     name="scheme"
-                    onChange={() => field.onChange("internal")}
+                    onChange={() => {
+                      field.onChange("internal")
+                    }}
                     type="radio"
                   />
                   Internal
@@ -445,7 +458,9 @@ export function CreateLoadBalancerPage() {
             name="vpcId"
             render={({ field }) => (
               <Select
-                onValueChange={(v) => handleVpcChange(v)}
+                onValueChange={(v) => {
+                  handleVpcChange(v)
+                }}
                 value={field.value ?? ""}
               >
                 <SelectTrigger
@@ -490,7 +505,9 @@ export function CreateLoadBalancerPage() {
                         <input
                           aria-label={`Subnet ${subnetLabel(subnet)}`}
                           checked={selectedSubnetSet.has(subnet.SubnetId ?? "")}
-                          onChange={() => toggleSubnet(subnet.SubnetId ?? "")}
+                          onChange={() => {
+                            toggleSubnet(subnet.SubnetId ?? "")
+                          }}
                           type="checkbox"
                         />
                         <span className="font-mono">{subnetLabel(subnet)}</span>
@@ -521,7 +538,9 @@ export function CreateLoadBalancerPage() {
                     <input
                       aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
                       checked={selectedSgSet.has(sg.GroupId ?? "")}
-                      onChange={() => toggleSg(sg.GroupId ?? "")}
+                      onChange={() => {
+                        toggleSg(sg.GroupId ?? "")
+                      }}
                       type="checkbox"
                     />
                     <span className="font-mono">
@@ -630,7 +649,9 @@ export function CreateLoadBalancerPage() {
                   )}
                   <Button
                     className="ml-auto"
-                    onClick={() => setImportOpen(true)}
+                    onClick={() => {
+                      setImportOpen(true)
+                    }}
                     size="sm"
                     type="button"
                     variant="ghost"
@@ -689,7 +710,9 @@ export function CreateLoadBalancerPage() {
                       aria-label="Create new target group"
                       checked={field.value === "new"}
                       name="tg-mode"
-                      onChange={() => field.onChange("new")}
+                      onChange={() => {
+                        field.onChange("new")
+                      }}
                       type="radio"
                     />
                     Create new
@@ -699,7 +722,9 @@ export function CreateLoadBalancerPage() {
                       aria-label="Use existing target group"
                       checked={field.value === "existing"}
                       name="tg-mode"
-                      onChange={() => field.onChange("existing")}
+                      onChange={() => {
+                        field.onChange("existing")
+                      }}
                       type="radio"
                     />
                     Use existing
@@ -764,9 +789,9 @@ export function CreateLoadBalancerPage() {
         </div>
 
         <CertificateImportDialog
-          onImported={(arn) =>
+          onImported={(arn) => {
             setValue("listener.certificateArn", arn, { shouldValidate: true })
-          }
+          }}
           onOpenChange={setImportOpen}
           open={importOpen}
         />
@@ -778,9 +803,9 @@ export function CreateLoadBalancerPage() {
         <FormActions
           isPending={wizardMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () =>
+          onCancel={async () => {
             await navigate({ to: "/ec2/describe-load-balancers" })
-          }
+          }}
           pendingLabel="Creating…"
           submitLabel="Create Load Balancer"
         />
@@ -790,35 +815,20 @@ export function CreateLoadBalancerPage() {
 }
 
 function buildCreateLbCommands(
-  watch: (name?: string) => unknown,
-  tgWatch: (name?: string) => unknown,
+  watch: UseFormWatch<CreateLoadBalancerFormData>,
+  tgWatch: UseFormWatch<CreateTargetGroupFormData>,
 ): CliCommand[] {
-  const asString = (key: string): string => {
-    const raw = watch(key)
-    return typeof raw === "string" ? raw : ""
-  }
-  const asStringArray = (key: string): string[] => {
-    const raw = watch(key)
-    return Array.isArray(raw)
-      ? raw.filter((v): v is string => typeof v === "string")
-      : []
-  }
-  const asNumber = (key: string): number | undefined => {
-    const raw = watch(key)
-    return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined
-  }
-
-  const name = asString("name") || "<Name>"
-  const lbTypeValue = asString("type") || "application"
-  const scheme = asString("scheme") || "internet-facing"
-  const subnets = asStringArray("subnetIds")
-  const sgs = asStringArray("securityGroupIds")
-  const listenerProtocol = asString("listener.protocol") || "HTTP"
-  const listenerPort = asNumber("listener.port") ?? 80
-  const certificateArn = asString("listener.certificateArn")
-  const sslPolicy = asString("listener.sslPolicy")
-  const tgMode = asString("listener.targetGroupMode")
-  const existingTgArn = asString("listener.existingTargetGroupArn")
+  const name = watch("name") || "<Name>"
+  const lbTypeValue = watch("type") || "application"
+  const scheme = watch("scheme") || "internet-facing"
+  const subnets = watch("subnetIds")
+  const sgs = watch("securityGroupIds")
+  const listenerProtocol = watch("listener.protocol") || "HTTP"
+  const listenerPort = watch("listener.port") ?? 80
+  const certificateArn = watch("listener.certificateArn")
+  const sslPolicy = watch("listener.sslPolicy")
+  const tgMode = watch("listener.targetGroupMode")
+  const existingTgArn = watch("listener.existingTargetGroupArn")
 
   const commands: CliCommand[] = []
   const comment: CommandPart = {
@@ -829,21 +839,12 @@ function buildCreateLbCommands(
         : "# Create ALB with listener and default target group\n\n",
   }
 
-  const tgAsString = (key: string): string => {
-    const raw = tgWatch(key)
-    return typeof raw === "string" ? raw : ""
-  }
-  const tgAsNumber = (key: string): number | undefined => {
-    const raw = tgWatch(key)
-    return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined
-  }
-
   // Either a create-target-group step (mode=new) or just a TG_ARN= assignment
   if (tgMode === "new") {
-    const tgName = tgAsString("name") || "<TG-Name>"
-    const tgPort = tgAsNumber("port") ?? 80
-    const tgVpc = tgAsString("vpcId")
-    const tgProtocol = tgAsString("protocol") || "HTTP"
+    const tgName = tgWatch("name") || "<TG-Name>"
+    const tgPort = tgWatch("port") ?? 80
+    const tgVpc = tgWatch("vpcId")
+    const tgProtocol = tgWatch("protocol") || "HTTP"
     commands.push({
       label: "Create Target Group",
       parts: [

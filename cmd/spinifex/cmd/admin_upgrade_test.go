@@ -15,32 +15,27 @@ import (
 )
 
 // TestUpgradeSeesEveryConfigTarget pins the registrations `spx admin upgrade`
-// depends on. A migration whose package is no longer linked here would leave
-// the command reporting nothing pending on an install that needs migrating.
+// depends on. A target whose package is no longer linked here would leave the
+// command reporting nothing at all for a config file it installs.
 //
 // spinifex.toml is the only config target: predastore.toml is not migrated at
 // all, so a predastore config on disk must contribute neither a version nor a
-// pending step.
+// pending step. No migrations are registered, so nothing is ever pending.
 func TestUpgradeSeesEveryConfigTarget(t *testing.T) {
 	configDir := t.TempDir()
 
 	// A target must exist on disk to be reported at all.
 	require.NoError(t, os.MkdirAll(filepath.Join(configDir, "predastore"), 0750))
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"3\"\n"), 0640))
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"4\"\n"), 0640))
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "predastore", "predastore.toml"), []byte("version = 1\n"), 0640))
 
 	versions, err := migrate.DefaultRegistry.ConfigVersions(configDir)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]int{"spinifex.toml": 3}, versions)
+	assert.Equal(t, map[string]int{"spinifex.toml": 4}, versions)
 
 	pending, err := migrate.DefaultRegistry.PendingConfig(configDir)
 	require.NoError(t, err)
-
-	targets := make(map[string][2]int, len(pending))
-	for _, p := range pending {
-		targets[p.Target] = [2]int{p.FromVersion, p.ToVersion}
-	}
-	assert.Equal(t, map[string][2]int{"spinifex.toml": {3, 4}}, targets)
+	assert.Empty(t, pending)
 }
 
 func TestValidateUpgradeFlags(t *testing.T) {
@@ -138,19 +133,6 @@ func TestReportConfigStatus_NoPendingMigrations(t *testing.T) {
 	assert.Empty(t, pending)
 	assert.Contains(t, out, "No pending config migrations.")
 	assert.Contains(t, out, "spinifex.toml:")
-}
-
-func TestReportConfigStatus_PendingMigrationIsListed(t *testing.T) {
-	configDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"3\"\n"), 0640))
-
-	var pending []migrate.PendingMigration
-	out := captureStdout(t, func() { pending = reportConfigStatus(configDir) })
-
-	require.Len(t, pending, 1)
-	assert.Equal(t, "spinifex.toml", pending[0].Target)
-	assert.Contains(t, out, "Pending config migrations:")
-	assert.Contains(t, out, "spinifex.toml 3 → 4")
 }
 
 // captureStderr redirects os.Stderr for the duration of fn and returns what
@@ -293,9 +275,9 @@ func TestRunAdminUpgrade_DryRunNothingPending(t *testing.T) {
 	assert.Contains(t, out, "Nothing pending — config and units are current.")
 }
 
-func TestRunAdminUpgrade_DryRunReportsBothPending(t *testing.T) {
+func TestRunAdminUpgrade_DryRunReportsUnitsPending(t *testing.T) {
 	configDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"3\"\n"), 0640))
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"4\"\n"), 0640))
 	withUnitRoot(t, t.TempDir()) // empty: every unit reports missing
 
 	cmd := newUpgradeTestCmd(t, configDir, t.TempDir())
@@ -307,15 +289,12 @@ func TestRunAdminUpgrade_DryRunReportsBothPending(t *testing.T) {
 	})
 	assert.Equal(t, -1, code)
 	assert.NotContains(t, out, "Nothing pending")
-	assert.Contains(t, out, "Pending config migrations:")
 	assert.Contains(t, out, "will install")
 }
 
 func TestRunAdminUpgrade_UnitsOnlySkipsConfigReporting(t *testing.T) {
 	configDir := t.TempDir()
-	// Version 3 would normally report a pending config migration; --units-only
-	// must never look at it.
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"3\"\n"), 0640))
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"4\"\n"), 0640))
 	withUnitRoot(t, t.TempDir())
 
 	cmd := newUpgradeTestCmd(t, configDir, t.TempDir())
@@ -332,7 +311,7 @@ func TestRunAdminUpgrade_UnitsOnlySkipsConfigReporting(t *testing.T) {
 
 func TestRunAdminUpgrade_SkipUnitsSkipsUnitReporting(t *testing.T) {
 	configDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"3\"\n"), 0640))
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"4\"\n"), 0640))
 	// Point systemdUnitRoot at a path Reconcile must never touch: if
 	// --skip-units leaked a call through, a nonexistent root would still
 	// "work" for a dry run, so the real proof is that its output never
@@ -348,31 +327,7 @@ func TestRunAdminUpgrade_SkipUnitsSkipsUnitReporting(t *testing.T) {
 	})
 	assert.Equal(t, -1, code)
 	assert.NotContains(t, out, "Reading installed systemd unit versions", "--skip-units must skip unit reporting")
-	assert.Contains(t, out, "Pending config migrations:")
-}
-
-func TestRunAdminUpgrade_ApplyRunsConfigMigrationAndUnitReconcile(t *testing.T) {
-	configDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"3\"\n"), 0640))
-	// Every unit already current: the real (non-dry-run) Reconcile call
-	// below finds nothing to change, so it never touches daemon-reload.
-	unitRoot := t.TempDir()
-	seedUnitRoot(t, unitRoot)
-	withUnitRoot(t, unitRoot)
-
-	cmd := newUpgradeTestCmd(t, configDir, t.TempDir())
-	setUpgradeFlags(t, cmd, map[string]string{"yes": "true"})
-
-	var code int
-	out := captureStdout(t, func() {
-		code = withUpgradeExitCapture(t, func() { runAdminUpgrade(cmd, nil) })
-	})
-	assert.Equal(t, -1, code, "the apply must succeed without exiting")
-	assert.Contains(t, out, "Done.")
-
-	migrated, err := os.ReadFile(filepath.Join(configDir, "spinifex.toml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(migrated), `version = "4"`, "spinifex.toml must have been migrated to the latest version")
+	assert.Contains(t, out, "Reading current config versions")
 }
 
 func TestRunAdminUpgrade_ApplyWithNonWritableUnitRootExitsWithRootHint(t *testing.T) {

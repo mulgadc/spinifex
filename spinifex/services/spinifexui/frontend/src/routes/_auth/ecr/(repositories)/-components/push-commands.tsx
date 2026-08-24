@@ -36,7 +36,9 @@ export function PushCommands({
   async function handleCopy() {
     await navigator.clipboard.writeText(commands.join("\n"))
     setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    setTimeout(() => {
+      setCopied(false)
+    }, 2000)
   }
 
   return (

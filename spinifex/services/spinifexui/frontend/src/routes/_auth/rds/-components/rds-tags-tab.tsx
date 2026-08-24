@@ -19,13 +19,13 @@ export function RdsTagsTab({ arn }: { arn: string }) {
       error={updateTags.error}
       isPending={updateTags.isPending}
       isSuccess={updateTags.isSuccess}
-      onSubmit={(next) =>
+      onSubmit={(next) => {
         updateTags.mutate({
           resourceName: arn,
           tags: next,
           initialKeys: tags.map((t) => t.Key ?? "").filter((k) => k.length > 0),
         })
-      }
+      }}
       tags={tags}
     />
   )

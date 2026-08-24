@@ -133,7 +133,9 @@ function GroupDetail() {
         <PageHeading
           actions={
             <Button
-              onClick={() => setShowDeleteDialog(true)}
+              onClick={() => {
+                setShowDeleteDialog(true)
+              }}
               size="sm"
               variant="destructive"
             >
@@ -165,7 +167,9 @@ function GroupDetail() {
             <div className="flex items-center justify-between">
               <span>Members</span>
               <Button
-                onClick={() => setShowAddUserSelect(!showAddUserSelect)}
+                onClick={() => {
+                  setShowAddUserSelect(!showAddUserSelect)
+                }}
                 size="sm"
               >
                 Add User

@@ -425,35 +425,12 @@ func TestDeleteTags_MissingResources(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
 }
 
-// TestGetResourceType tests the resource type detection helper.
-func TestGetResourceType(t *testing.T) {
-	tests := []struct {
-		resourceID   string
-		expectedType string
-	}{
-		{"i-abc123", "instance"},
-		{"vol-abc123", "volume"},
-		{"ami-abc123", "image"},
-		{"snap-abc123", "snapshot"},
-		{"vpc-abc123", "vpc"},
-		{"subnet-abc123", "subnet"},
-		{"sg-abc123", "security-group"},
-		{"rtb-abc123", "route-table"},
-		{"igw-abc123", "internet-gateway"},
-		{"eigw-abc123", "egress-only-internet-gateway"},
-		{"eni-abc123", "network-interface"},
-		{"eipalloc-abc123", "elastic-ip"},
-		{"nat-abc123", "natgateway"},
-		{"key-abc123", "key-pair"},
-		{"pg-abc123", "placement-group"},
-		{"unknown-abc123", "unknown"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.resourceID, func(t *testing.T) {
-			assert.Equal(t, tc.expectedType, getResourceType(tc.resourceID))
-		})
-	}
+// TestDescribeTagsResourceType pins the filter value DescribeTags reports. The
+// prefix table itself is tested in the arn package.
+func TestDescribeTagsResourceType(t *testing.T) {
+	assert.Equal(t, "instance", describeTagsResourceType("i-abc123"))
+	assert.Equal(t, "egress-only-internet-gateway", describeTagsResourceType("eigw-abc123"))
+	assert.Equal(t, "unknown", describeTagsResourceType("nope-abc123"))
 }
 
 // TestMemoryObjectStore tests the in-memory object store.

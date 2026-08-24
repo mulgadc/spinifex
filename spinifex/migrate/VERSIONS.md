@@ -5,7 +5,7 @@ Single source of truth for the current schema version of every config file Spini
 | Target | Current version | Canonical template |
 |---|---|---|
 | `nats.conf` | `3` | `cmd/spinifex/cmd/templates/nats.conf` |
-| `awsgw.toml` | `2` | `cmd/spinifex/cmd/templates/awsgw.toml` |
+| `awsgw.toml` | `3` | `cmd/spinifex/cmd/templates/awsgw.toml` |
 | `spinifex.toml` | `4` | `cmd/spinifex/cmd/templates/spinifex.toml` |
 | `predastore.toml` | `1` | `cmd/spinifex/cmd/templates/predastore.toml` |
 | `predastore-multinode.toml` | `1` | `cmd/spinifex/cmd/templates/predastore-multinode.toml` |
@@ -15,25 +15,22 @@ Single source of truth for the current schema version of every config file Spini
 1. **Fresh install (`spx admin init`)** — the version string is baked into the embedded template file and written verbatim to disk. There is no Go constant; the template is the source of truth.
 2. **Upgrade (`spx admin upgrade`)** — the migration framework (`Registry.RunConfig`) calls `ConfigVersionReader.WriteVersion` after each registered migration step. A target with no registered migration is left alone, and the upgrade command reports nothing pending for it.
 
-## Registered config migrations
+## Registered migrations
 
-| Target | Migration | File |
-|---|---|---|
-| `spinifex.toml` | `3` → `4`: rename `[nodes.*.predastore]` `node_id` → `host_id` | `spinifex/migrate/005_spinifex_predastore_host_id.go` |
+None. The migrations that used to live here predated a breaking change that required `spx admin init --force`, so no install can reach the current versions by migrating and the steps were dropped rather than left as dead code.
 
-## Registered object-store migrations
-
-These migrate data in Predastore rather than a config file. Predastore has no conditional write, so their version is stamped in a shared JetStream KV bucket instead of in an object; see `RunObject`.
-
-| Target | Migration | File | Version bucket |
-|---|---|---|---|
-| `ebsmetadata` | `0` → `1`: backfill `spinifex/ebsmetadata/v1` documents from legacy viperblock `config.json` | `spinifex/migrate/ebsmetadatabackfill/006_ebsmetadata_backfill.go` | `spinifex-ebsmetadata-migrate` |
-
-Unlike config migrations, these do not run from `spx admin upgrade`. The ebsmetadata backfill runs from `Daemon.configureEBSProvider`, and only when `[ebs] provider = "viperblockd"` is selected: backfilling while the embedded engine is still authoritative would produce documents that immediately go stale.
+`spinifex.toml` is still registered as a config target in `migrate.go` so `spx admin upgrade` reports its on-disk version. KV and object-store buckets have no registered migrations either, so `RunKV` and `RunObject` stamp their target version directly on first init.
 
 ## Where migrations live
 
 Register a `ConfigMigration` against `DefaultRegistry` in a new numbered file under `spinifex/migrate/`, and bump the version in both the template and the table above.
+
+There are no migrations in the tree to copy from. For worked examples of all three kinds, read the deleted files out of git history:
+
+```bash
+git log --diff-filter=D --name-only -- 'spinifex/migrate/0*.go'
+git show <commit>^:spinifex/migrate/003_ipam_purpose.go
+```
 
 ## Framework
 

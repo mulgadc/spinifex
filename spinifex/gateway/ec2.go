@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
 	gateway_ec2_account "github.com/mulgadc/spinifex/spinifex/gateway/ec2/account"
 	gateway_ec2_capacityreservation "github.com/mulgadc/spinifex/spinifex/gateway/ec2/capacityreservation"
 	gateway_ec2_eigw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eigw"
@@ -572,17 +573,26 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "ec2", action); err != nil {
+	// Hoisted above the policy check because the resolver builds ARNs from it.
+	// gw.Region, never the caller-supplied credential-scope region, which would
+	// let a caller sign for another region and slide out from under a Deny.
+	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	if accountID == "" {
+		slog.Error("EC2_Request: no account ID in auth context")
+		// InternalError, not ServerInternal: the policy gate used to reach this
+		// case first and that is the code the caller has always seen.
+		return errors.New(awserrors.ErrorInternalError)
+	}
+
+	resources, err := gateway_ec2.ResourceARNs(action, gw.Region, accountID, queryArgs)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResources(r, "ec2", action, resources); err != nil {
 		return err
 	}
 
 	if gw.NATSConn == nil && !ec2LocalActions[action] {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
-	if accountID == "" {
-		slog.Error("EC2_Request: no account ID in auth context")
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 

@@ -1343,9 +1343,8 @@ func TestImportKeyPair_Base64PaddingWorkaround(t *testing.T) {
 		"PublicKeyMaterial": "c3NoLXJzYSBBQUFBQjNOemFDMXljMkVBQUFBREFRQUJBQUFCZ1FD%3D%3D",
 	}
 
-	gw := &GatewayConfig{DisableLogging: true, NATSConn: nil, IAMService: allowAllIAMService()}
-	// NATS is nil so the handler errors, but PublicKeyMaterial is modified before that.
-	_, _ = handler("ImportKeyPair", q, gw, "123456789012", nil)
+	_, err := handler.parse(q)
+	require.NoError(t, err)
 
 	assert.True(t, strings.HasSuffix(q["PublicKeyMaterial"], "=="),
 		"Expected PublicKeyMaterial to end with == but got: %s", q["PublicKeyMaterial"])

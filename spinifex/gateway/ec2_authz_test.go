@@ -5,8 +5,11 @@ package gateway
 
 import (
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
@@ -107,10 +110,73 @@ func TestEC2Request_MultiResourceParity(t *testing.T) {
 	gw := scopedPolicyGateway(
 		statement("Allow", "ec2:*", "*"),
 		statement("Deny", "ec2:RunInstances", "arn:aws:ec2:*:*:image/ami-restricted"),
+		statement("Deny", "ec2:RunInstances", "arn:aws:ec2:*:*:subnet/subnet-restricted"),
 	)
 
 	assertDenied(t, dispatchEC2(t, gw, "Action=RunInstances&ImageId=ami-restricted&MinCount=1&MaxCount=1"))
+	assertDenied(t, dispatchEC2(t, gw,
+		"Action=RunInstances&ImageId=ami-allowed&NetworkInterface.1.SubnetId=subnet-restricted&MinCount=1&MaxCount=1"))
 	assertPermitted(t, dispatchEC2(t, gw, "Action=RunInstances&ImageId=ami-allowed&MinCount=1&MaxCount=1"))
+}
+
+func TestEC2Request_UsesCanonicalParsedResources(t *testing.T) {
+	t.Run("lower camel location name", func(t *testing.T) {
+		gw := scopedPolicyGateway(
+			statement("Allow", "ec2:*", "*"),
+			statement("Deny", "ec2:ModifyInstanceAttribute", "arn:aws:ec2:*:*:instance/i-prod"),
+		)
+		assertDenied(t, dispatchEC2(t, gw, "Action=ModifyInstanceAttribute&instanceId=i-prod"))
+	})
+
+	t.Run("location name list wrapper", func(t *testing.T) {
+		gw := scopedPolicyGateway(
+			statement("Allow", "ec2:*", "*"),
+			statement("Deny", "ec2:TerminateInstances", "arn:aws:ec2:*:*:instance/i-prod"),
+		)
+		assertDenied(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.InstanceId.1=i-prod"))
+	})
+
+	t.Run("handler field precedence", func(t *testing.T) {
+		gw := scopedPolicyGateway(
+			statement("Allow", "ec2:*", "*"),
+			statement("Deny", "ec2:DeleteKeyPair", "arn:aws:ec2:*:*:key-pair/key-prod"),
+		)
+		assertDenied(t, dispatchEC2(t, gw, "Action=DeleteKeyPair&KeyName=dev&KeyPairId=key-prod"))
+	})
+}
+
+func TestEC2Request_CreateRouteChecksNATGateway(t *testing.T) {
+	gw := scopedPolicyGateway(
+		statement("Allow", "ec2:*", "*"),
+		statement("Deny", "ec2:CreateRoute", "arn:aws:ec2:*:*:natgateway/nat-prod"),
+	)
+	assertDenied(t, dispatchEC2(t, gw, "Action=CreateRoute&RouteTableId=rtb-dev&NatGatewayId=nat-prod"))
+}
+
+func TestEC2Request_RequestSpotInstancesChecksLaunchResources(t *testing.T) {
+	gw := scopedPolicyGateway(
+		statement("Allow", "ec2:*", "*"),
+		statement("Deny", "ec2:RequestSpotInstances", "arn:aws:ec2:*:*:subnet/subnet-prod"),
+	)
+	body := "Action=RequestSpotInstances&LaunchSpecification.ImageId=ami-1&" +
+		"LaunchSpecification.InstanceType=t3.micro&LaunchSpecification.SubnetId=subnet-prod"
+	assertDenied(t, dispatchEC2(t, gw, body))
+}
+
+func TestEC2Request_RejectsOversizedResourceList(t *testing.T) {
+	var body strings.Builder
+	body.WriteString("Action=TerminateInstances")
+	for i := 1; i <= awsec2query.MaxSliceLen+1; i++ {
+		body.WriteString("&InstanceId.")
+		body.WriteString(strconv.Itoa(i))
+		body.WriteString("=i-")
+		body.WriteString(strconv.Itoa(i))
+	}
+
+	gw := scopedPolicyGateway(statement("Allow", "ec2:*", "*"))
+	err := dispatchEC2(t, gw, body.String())
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMalformedQueryString, err.Error())
 }
 
 // TestEC2Request_AccountWideAllowIsUnaffected is the property the remaining

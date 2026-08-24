@@ -5,11 +5,12 @@ package gateway_ec2
 
 import (
 	"errors"
+	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/arn"
+	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -18,18 +19,12 @@ import (
 // resolved without a lookup the gate cannot do.
 const anyResource = "*"
 
-// Where an action's identifier lives and what it resolves to. Actions carry one
-// scope per resource IAM evaluates, matching AWS.
-//
-// params is tried in order, covering both the aliases awsec2query accepts for
-// one field (Ids/Id) and the alternatives that name the same resource
-// (KeyName/KeyPairId). No params means kind is the resource the action creates,
-// whose id does not exist yet. An optional scope drops out when the request
-// does not name it; a required one widens to "*" instead.
+// Where an action's identifier lives in its parsed SDK input and what it
+// resolves to. Paths are tried in order, matching handler precedence. No paths
+// means kind is a resource the action creates, whose id does not exist yet.
 type resourceScope struct {
-	params   []string
+	paths    []string
 	kind     arn.EC2ResourceType
-	list     bool
 	byPrefix bool
 	optional bool
 }
@@ -42,68 +37,84 @@ type resourceScope struct {
 // template ARN carries the template id. A name-only request leaves the resource
 // unresolved rather than building an ARN that names nothing.
 var (
-	instanceListScope = &resourceScope{params: []string{"InstanceIds", "InstanceId"}, kind: arn.EC2Instance, list: true}
-	instanceScope     = &resourceScope{params: []string{"InstanceId"}, kind: arn.EC2Instance}
-	instanceOptScope  = &resourceScope{params: []string{"InstanceId"}, kind: arn.EC2Instance, optional: true}
+	instanceListScope = &resourceScope{paths: []string{"InstanceIds"}, kind: arn.EC2Instance}
+	instanceScope     = &resourceScope{paths: []string{"InstanceId"}, kind: arn.EC2Instance}
+	instanceOptScope  = &resourceScope{paths: []string{"InstanceId"}, kind: arn.EC2Instance, optional: true}
 	instanceNewScope  = &resourceScope{kind: arn.EC2Instance}
 
-	volumeScope    = &resourceScope{params: []string{"VolumeId"}, kind: arn.EC2Volume}
+	volumeScope    = &resourceScope{paths: []string{"VolumeId"}, kind: arn.EC2Volume}
 	volumeNewScope = &resourceScope{kind: arn.EC2Volume}
 
-	imageScope    = &resourceScope{params: []string{"ImageId"}, kind: arn.EC2Image}
+	imageScope    = &resourceScope{paths: []string{"ImageId"}, kind: arn.EC2Image}
 	imageNewScope = &resourceScope{kind: arn.EC2Image}
 
-	snapshotScope    = &resourceScope{params: []string{"SnapshotId"}, kind: arn.EC2Snapshot}
-	snapshotOptScope = &resourceScope{params: []string{"SnapshotId"}, kind: arn.EC2Snapshot, optional: true}
+	snapshotScope    = &resourceScope{paths: []string{"SnapshotId"}, kind: arn.EC2Snapshot}
+	snapshotOptScope = &resourceScope{paths: []string{"SnapshotId"}, kind: arn.EC2Snapshot, optional: true}
 	snapshotNewScope = &resourceScope{kind: arn.EC2Snapshot}
 
-	vpcScope    = &resourceScope{params: []string{"VpcId"}, kind: arn.EC2VPC}
-	vpcOptScope = &resourceScope{params: []string{"VpcId"}, kind: arn.EC2VPC, optional: true}
+	vpcScope    = &resourceScope{paths: []string{"VpcId"}, kind: arn.EC2VPC}
+	vpcOptScope = &resourceScope{paths: []string{"VpcId"}, kind: arn.EC2VPC, optional: true}
 	vpcNewScope = &resourceScope{kind: arn.EC2VPC}
 
-	subnetScope    = &resourceScope{params: []string{"SubnetId"}, kind: arn.EC2Subnet}
-	subnetOptScope = &resourceScope{params: []string{"SubnetId"}, kind: arn.EC2Subnet, optional: true}
-	subnetNewScope = &resourceScope{kind: arn.EC2Subnet}
+	subnetScope       = &resourceScope{paths: []string{"SubnetId"}, kind: arn.EC2Subnet}
+	subnetOptScope    = &resourceScope{paths: []string{"SubnetId"}, kind: arn.EC2Subnet, optional: true}
+	runSubnetOptScope = &resourceScope{paths: []string{"SubnetId", "NetworkInterfaces.SubnetId"}, kind: arn.EC2Subnet, optional: true}
+	subnetNewScope    = &resourceScope{kind: arn.EC2Subnet}
 
-	securityGroupScope    = &resourceScope{params: []string{"GroupId"}, kind: arn.EC2SecurityGroup}
-	securityGroupsOptList = &resourceScope{params: []string{"SecurityGroupIds", "SecurityGroupId", "Groups"}, kind: arn.EC2SecurityGroup, list: true, optional: true}
+	securityGroupScope    = &resourceScope{paths: []string{"GroupId"}, kind: arn.EC2SecurityGroup}
+	securityGroupsOptList = &resourceScope{paths: []string{"SecurityGroupIds", "Groups"}, kind: arn.EC2SecurityGroup, optional: true}
+	runSecurityGroups     = &resourceScope{paths: []string{"SecurityGroupIds", "NetworkInterfaces.Groups"}, kind: arn.EC2SecurityGroup, optional: true}
 	securityGroupNewScope = &resourceScope{kind: arn.EC2SecurityGroup}
 
-	routeTableScope    = &resourceScope{params: []string{"RouteTableId"}, kind: arn.EC2RouteTable}
+	routeTableScope    = &resourceScope{paths: []string{"RouteTableId"}, kind: arn.EC2RouteTable}
 	routeTableNewScope = &resourceScope{kind: arn.EC2RouteTable}
 
-	igwScope    = &resourceScope{params: []string{"InternetGatewayId"}, kind: arn.EC2InternetGateway}
+	igwScope    = &resourceScope{paths: []string{"InternetGatewayId"}, kind: arn.EC2InternetGateway}
 	igwNewScope = &resourceScope{kind: arn.EC2InternetGateway}
 
-	eigwScope    = &resourceScope{params: []string{"EgressOnlyInternetGatewayId"}, kind: arn.EC2EgressOnlyInternetGateway}
+	eigwScope    = &resourceScope{paths: []string{"EgressOnlyInternetGatewayId"}, kind: arn.EC2EgressOnlyInternetGateway}
 	eigwNewScope = &resourceScope{kind: arn.EC2EgressOnlyInternetGateway}
 
-	eniScope    = &resourceScope{params: []string{"NetworkInterfaceId"}, kind: arn.EC2NetworkInterface}
-	eniOptScope = &resourceScope{params: []string{"NetworkInterfaceId"}, kind: arn.EC2NetworkInterface, optional: true}
+	eniScope    = &resourceScope{paths: []string{"NetworkInterfaceId"}, kind: arn.EC2NetworkInterface}
+	eniOptScope = &resourceScope{paths: []string{"NetworkInterfaceId"}, kind: arn.EC2NetworkInterface, optional: true}
 	eniNewScope = &resourceScope{kind: arn.EC2NetworkInterface}
 
-	addressScope    = &resourceScope{params: []string{"AllocationId"}, kind: arn.EC2ElasticIP}
-	addressOptScope = &resourceScope{params: []string{"AllocationId"}, kind: arn.EC2ElasticIP, optional: true}
+	addressScope    = &resourceScope{paths: []string{"AllocationId"}, kind: arn.EC2ElasticIP}
+	addressOptScope = &resourceScope{paths: []string{"AllocationId"}, kind: arn.EC2ElasticIP, optional: true}
 	addressNewScope = &resourceScope{kind: arn.EC2ElasticIP}
 
-	natGatewayScope    = &resourceScope{params: []string{"NatGatewayId"}, kind: arn.EC2NATGateway}
+	natGatewayScope    = &resourceScope{paths: []string{"NatGatewayId"}, kind: arn.EC2NATGateway}
+	natGatewayOptScope = &resourceScope{paths: []string{"NatGatewayId"}, kind: arn.EC2NATGateway, optional: true}
 	natGatewayNewScope = &resourceScope{kind: arn.EC2NATGateway}
 
-	keyPairScope    = &resourceScope{params: []string{"KeyName", "KeyPairId"}, kind: arn.EC2KeyPair}
-	keyPairOptScope = &resourceScope{params: []string{"KeyName"}, kind: arn.EC2KeyPair, optional: true}
+	keyPairScope    = &resourceScope{paths: []string{"KeyPairId", "KeyName"}, kind: arn.EC2KeyPair}
+	keyPairOptScope = &resourceScope{paths: []string{"KeyName"}, kind: arn.EC2KeyPair, optional: true}
 
-	placementGroupScope = &resourceScope{params: []string{"GroupName"}, kind: arn.EC2PlacementGroup}
+	placementGroupScope = &resourceScope{paths: []string{"GroupName"}, kind: arn.EC2PlacementGroup}
 
-	launchTemplateScope    = &resourceScope{params: []string{"LaunchTemplateId"}, kind: arn.EC2LaunchTemplate}
+	launchTemplateScope    = &resourceScope{paths: []string{"LaunchTemplateId"}, kind: arn.EC2LaunchTemplate}
 	launchTemplateNewScope = &resourceScope{kind: arn.EC2LaunchTemplate}
 
-	capacityReservationScope    = &resourceScope{params: []string{"CapacityReservationId"}, kind: arn.EC2CapacityReservation}
+	capacityReservationScope    = &resourceScope{paths: []string{"CapacityReservationId"}, kind: arn.EC2CapacityReservation}
 	capacityReservationNewScope = &resourceScope{kind: arn.EC2CapacityReservation}
 
-	spotRequestListScope    = &resourceScope{params: []string{"SpotInstanceRequestIds", "SpotInstanceRequestId"}, kind: arn.EC2SpotInstancesRequest, list: true}
-	spotRequestNewScope     = &resourceScope{kind: arn.EC2SpotInstancesRequest}
-	taggedResourcesScope    = &resourceScope{params: []string{"Resources", "ResourceId", "resourceId"}, list: true, byPrefix: true}
-	gatewayByPrefixOptScope = &resourceScope{params: []string{"GatewayId"}, byPrefix: true, optional: true}
+	spotRequestListScope = &resourceScope{paths: []string{"SpotInstanceRequestIds"}, kind: arn.EC2SpotInstancesRequest}
+	spotRequestNewScope  = &resourceScope{kind: arn.EC2SpotInstancesRequest}
+	taggedResourcesScope = &resourceScope{paths: []string{"Resources"}, byPrefix: true}
+	gatewayOptScope      = &resourceScope{paths: []string{"GatewayId"}, byPrefix: true, optional: true}
+
+	spotImageScope  = &resourceScope{paths: []string{"LaunchSpecification.ImageId"}, kind: arn.EC2Image}
+	spotSubnetScope = &resourceScope{
+		paths:    []string{"LaunchSpecification.SubnetId", "LaunchSpecification.NetworkInterfaces.SubnetId"},
+		kind:     arn.EC2Subnet,
+		optional: true,
+	}
+	spotSecurityGroups = &resourceScope{
+		paths:    []string{"LaunchSpecification.SecurityGroupIds", "LaunchSpecification.NetworkInterfaces.Groups"},
+		kind:     arn.EC2SecurityGroup,
+		optional: true,
+	}
+	spotKeyPairScope = &resourceScope{paths: []string{"LaunchSpecification.KeyName"}, kind: arn.EC2KeyPair, optional: true}
 )
 
 // unscoped is the explicit "this action authorizes account-wide" entry. It is a
@@ -115,7 +126,7 @@ var unscoped = []*resourceScope{{}}
 // missing from here is a bug, not an unscoped action — see ResourceARNs.
 var ec2Scopes = map[string][]*resourceScope{
 	// Instances.
-	"RunInstances":                  {instanceNewScope, volumeNewScope, imageScope, subnetOptScope, securityGroupsOptList, keyPairOptScope},
+	"RunInstances":                  {instanceNewScope, volumeNewScope, imageScope, runSubnetOptScope, runSecurityGroups, keyPairOptScope},
 	"StartInstances":                {instanceListScope},
 	"StopInstances":                 {instanceListScope},
 	"RebootInstances":               {instanceListScope},
@@ -170,10 +181,10 @@ var ec2Scopes = map[string][]*resourceScope{
 	// Route tables.
 	"CreateRouteTable":             {routeTableNewScope, vpcScope},
 	"DeleteRouteTable":             {routeTableScope},
-	"CreateRoute":                  {routeTableScope, gatewayByPrefixOptScope},
-	"ReplaceRoute":                 {routeTableScope, gatewayByPrefixOptScope},
+	"CreateRoute":                  {routeTableScope, gatewayOptScope, natGatewayOptScope},
+	"ReplaceRoute":                 {routeTableScope, gatewayOptScope},
 	"DeleteRoute":                  {routeTableScope},
-	"AssociateRouteTable":          {routeTableScope, subnetOptScope, gatewayByPrefixOptScope},
+	"AssociateRouteTable":          {routeTableScope, subnetOptScope, gatewayOptScope},
 	"ReplaceRouteTableAssociation": {routeTableScope},
 	// Carries only an association id, which needs a lookup to reach the table.
 	"DisassociateRouteTable": unscoped,
@@ -225,7 +236,7 @@ var ec2Scopes = map[string][]*resourceScope{
 	// Capacity reservations and spot.
 	"CreateCapacityReservation":  {capacityReservationNewScope},
 	"CancelCapacityReservation":  {capacityReservationScope},
-	"RequestSpotInstances":       {spotRequestNewScope},
+	"RequestSpotInstances":       {spotRequestNewScope, instanceNewScope, volumeNewScope, spotImageScope, spotSubnetScope, spotSecurityGroups, spotKeyPairScope},
 	"CancelSpotInstanceRequests": {spotRequestListScope},
 
 	// Tags. The type comes from each id's prefix; an unrecognised prefix has no
@@ -297,24 +308,32 @@ func ScopedActions() []string {
 	return actions
 }
 
-// ResourceARNs builds every resource the action's policy check evaluates.
-// Unlike RDS there is no "action missing from the table" fallback to "*": the
-// table is exhaustive and the completeness test proves it, so a missing entry
-// is a programming error rather than a shape to tolerate. The dispatcher has
-// already rejected an unknown action one line above the check.
-func ResourceARNs(action, region, accountID string, q map[string]string) ([]string, error) {
+// ResourceARNs builds every resource the action's policy check evaluates from
+// the same parsed SDK input the handler receives. A missing action is a bug.
+func ResourceARNs(action, region, accountID string, input any) ([]string, error) {
 	scopes, ok := ec2Scopes[action]
-	// Rejected here too, not just by the dispatcher: a caller that skipped the
-	// action check must not get a resource back for ec2:<garbage>.
 	if !ok {
 		return nil, errors.New(awserrors.ErrorInvalidAction)
 	}
 
 	resources := make([]string, 0, len(scopes))
+	seen := make(map[string]struct{})
 	for _, scope := range scopes {
-		resources = append(resources, scope.resolve(region, accountID, q)...)
+		resolved, err := scope.resolve(region, accountID, input)
+		if err != nil {
+			return nil, err
+		}
+		for _, resource := range resolved {
+			if _, ok := seen[resource]; ok {
+				continue
+			}
+			seen[resource] = struct{}{}
+			resources = append(resources, resource)
+			if len(resources) > awsec2query.MaxSliceLen {
+				return nil, errors.New(awserrors.ErrorMalformedQueryString)
+			}
+		}
 	}
-	// Every member was optional and absent, so the request names nothing.
 	if len(resources) == 0 {
 		return []string{anyResource}, nil
 	}
@@ -322,24 +341,23 @@ func ResourceARNs(action, region, accountID string, q map[string]string) ([]stri
 }
 
 // resolve returns the ARNs one scope contributes, which may be none.
-func (s *resourceScope) resolve(region, accountID string, q map[string]string) []string {
-	if len(s.params) == 0 {
+func (s *resourceScope) resolve(region, accountID string, input any) ([]string, error) {
+	if len(s.paths) == 0 {
 		if s.kind == "" {
-			return []string{anyResource}
+			return []string{anyResource}, nil
 		}
-		// The resource the call creates has no id yet, which is the ARN AWS
-		// evaluates a create against.
-		return []string{arn.FormatEC2(s.kind, region, accountID, anyResource)}
+		return []string{arn.FormatEC2(s.kind, region, accountID, anyResource)}, nil
 	}
 
-	ids := s.identifiers(q)
+	ids := s.identifiers(input)
 	if len(ids) == 0 {
-		// A missing required member widens to "*" rather than failing here, so a
-		// malformed request stays the handler's validation fault.
 		if s.optional {
-			return nil
+			return nil, nil
 		}
-		return []string{anyResource}
+		return []string{anyResource}, nil
+	}
+	if len(ids) > awsec2query.MaxSliceLen {
+		return nil, errors.New(awserrors.ErrorMalformedQueryString)
 	}
 
 	resources := make([]string, 0, len(ids))
@@ -347,9 +365,6 @@ func (s *resourceScope) resolve(region, accountID string, q map[string]string) [
 		kind := s.kind
 		if s.byPrefix {
 			resolved, ok := arn.EC2TypeForID(id)
-			// An id whose prefix names no type cannot name a real resource, so
-			// the inert fence protects nothing; a sentinel type would fence the
-			// wrong object instead.
 			if !ok {
 				resources = append(resources, anyResource)
 				continue
@@ -358,66 +373,58 @@ func (s *resourceScope) resolve(region, accountID string, q map[string]string) [
 		}
 		resources = append(resources, arn.FormatEC2(kind, region, accountID, id))
 	}
-	return resources
+	return resources, nil
 }
 
-// identifiers takes the first parameter carrying a value, in the order
-// awsec2query resolves them.
-func (s *resourceScope) identifiers(q map[string]string) []string {
-	for _, param := range s.params {
-		if !s.list {
-			if v := q[param]; v != "" {
-				return []string{v}
+// identifiers reads the first populated field path, matching handler
+// precedence. Values are deduplicated before policy evaluation.
+func (s *resourceScope) identifiers(input any) []string {
+	for _, path := range s.paths {
+		values := stringValuesAt(reflect.ValueOf(input), strings.Split(path, "."))
+		seen := make(map[string]struct{}, len(values))
+		ids := make([]string, 0, len(values))
+		for _, value := range values {
+			if value == "" {
+				continue
 			}
-			continue
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			ids = append(ids, value)
 		}
-		if ids := collectIndexed(q, param); len(ids) > 0 {
+		if len(ids) > 0 {
 			return ids
 		}
 	}
 	return nil
 }
 
-// collectIndexed gathers an indexed list: param.1, param.2, or the member-wrapped
-// param.member.1 form the query parser also accepts.
-//
-// Gaps are not treated as terminators. A non-conforming client can send a
-// non-contiguous list, and stopping at the gap would silently drop the resources
-// after it, which is the under-check this exists to close.
-func collectIndexed(q map[string]string, param string) []string {
-	for _, prefix := range []string{param + ".member.", param + "."} {
-		if ids := collectNumbered(q, prefix); len(ids) > 0 {
-			return ids
+func stringValuesAt(value reflect.Value, path []string) []string {
+	for value.IsValid() && (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) {
+		if value.IsNil() {
+			return nil
 		}
+		value = value.Elem()
 	}
-	return nil
-}
-
-// collectNumbered returns the values of prefix+<digits>, ordered numerically so
-// the denial log is reproducible. The digits-only test is what stops
-// Filter.1.Value.1 being collected by a scope whose parameter is Filter.
-func collectNumbered(q map[string]string, prefix string) []string {
-	type indexed struct {
-		n     int
-		value string
+	if !value.IsValid() {
+		return nil
 	}
-	var found []indexed
-	for key, value := range q {
-		rest, ok := strings.CutPrefix(key, prefix)
-		if !ok || value == "" {
-			continue
+	if value.Kind() == reflect.Slice || value.Kind() == reflect.Array {
+		var values []string
+		for i := 0; i < value.Len(); i++ {
+			values = append(values, stringValuesAt(value.Index(i), path)...)
 		}
-		n, err := strconv.Atoi(rest)
-		if err != nil || n < 1 {
-			continue
+		return values
+	}
+	if len(path) == 0 {
+		if value.Kind() == reflect.String {
+			return []string{value.String()}
 		}
-		found = append(found, indexed{n: n, value: value})
+		return nil
 	}
-	sort.Slice(found, func(i, j int) bool { return found[i].n < found[j].n })
-
-	ids := make([]string, 0, len(found))
-	for _, f := range found {
-		ids = append(ids, f.value)
+	if value.Kind() != reflect.Struct {
+		return nil
 	}
-	return ids
+	return stringValuesAt(value.FieldByName(path[0]), path[1:])
 }

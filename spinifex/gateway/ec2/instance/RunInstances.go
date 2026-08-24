@@ -79,7 +79,7 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	// Expand a referenced launch template before validation so validation, quota,
 	// and downstream routing all see the effective (post-merge) parameters.
-	if err = expandLaunchTemplate(ctx, natsConn, input, accountID); err != nil {
+	if err = ExpandLaunchTemplate(ctx, natsConn, input, accountID); err != nil {
 		return reservation, err
 	}
 
@@ -243,9 +243,9 @@ func capacityReservationTargetID(input *ec2.RunInstancesInput) string {
 	return aws.StringValue(spec.CapacityReservationTarget.CapacityReservationId)
 }
 
-// expandLaunchTemplate folds a referenced launch template into input, delegating
+// ExpandLaunchTemplate folds a referenced launch template into input, delegating
 // to the launch-template service over NATS. A no-op when no template is referenced.
-func expandLaunchTemplate(ctx context.Context, natsConn *nats.Conn, input *ec2.RunInstancesInput, accountID string) error {
+func ExpandLaunchTemplate(ctx context.Context, natsConn *nats.Conn, input *ec2.RunInstancesInput, accountID string) error {
 	if input == nil || input.LaunchTemplate == nil {
 		return nil
 	}

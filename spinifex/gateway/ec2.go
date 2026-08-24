@@ -37,9 +37,23 @@ import (
 )
 
 // EC2Handler processes parsed query args and returns XML response bytes.
-// r is included for handlers that call gw.checkPolicyResource (e.g. iam:PassRole);
-// most handlers ignore it.
-type EC2Handler func(action string, q map[string]string, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error)
+// r is included for handlers that enforce iam:PassRole; most ignore it.
+type EC2Handler func(string, map[string]string, *GatewayConfig, string, *http.Request) ([]byte, error)
+
+// ec2Action parses once so authorization and dispatch share one typed input.
+type ec2Action struct {
+	parse    func(map[string]string) (any, error)
+	dispatch func(string, any, *GatewayConfig, string, *http.Request) ([]byte, error)
+}
+
+func (h ec2Action) withQueryPreprocessor(preprocess func(map[string]string)) ec2Action {
+	parse := h.parse
+	h.parse = func(q map[string]string) (any, error) {
+		preprocess(q)
+		return parse(q)
+	}
+	return h
+}
 
 // requestContext returns r's context, or Background for a nil request
 // (some callers and tests dispatch without an *http.Request). The SDK's
@@ -53,26 +67,32 @@ func requestContext(r *http.Request) context.Context {
 	return utils.WithIdempotencyKey(r.Context(), r.Header.Get(utils.SDKInvocationIDHeader))
 }
 
-// ec2Handler creates a type-safe EC2Handler: allocates the input struct,
-// parses query params, calls the handler, and marshals output to XML.
-func ec2Handler[In any](handler func(ctx context.Context, input *In, gw *GatewayConfig, accountID string) (any, error)) EC2Handler {
-	return func(action string, q map[string]string, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
-		input := new(In)
-		if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
-			if errors.Is(err, awsec2query.ErrSliceTooLarge) {
-				return nil, errors.New(awserrors.ErrorMalformedQueryString)
+// ec2Handler creates a type-safe EC2Handler. Parsing is separate from dispatch
+// so authorization and execution consume the exact same input.
+func ec2Handler[In any](handler func(ctx context.Context, input *In, gw *GatewayConfig, accountID string) (any, error)) ec2Action {
+	return ec2Action{
+		parse: func(q map[string]string) (any, error) {
+			input := new(In)
+			if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
+				return nil, err
 			}
-			return nil, err
-		}
-		output, err := handler(requestContext(r), input, gw, accountID)
-		if err != nil {
-			return nil, err
-		}
-		xmlOutput, err := marshalEC2Response(action, output)
-		if err != nil {
-			return nil, err
-		}
-		return xmlOutput, nil
+			return input, nil
+		},
+		dispatch: func(action string, parsed any, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
+			input, ok := parsed.(*In)
+			if !ok {
+				return nil, errors.New(awserrors.ErrorInternalError)
+			}
+			output, err := handler(requestContext(r), input, gw, accountID)
+			if err != nil {
+				return nil, err
+			}
+			xmlOutput, err := marshalEC2Response(action, output)
+			if err != nil {
+				return nil, err
+			}
+			return xmlOutput, nil
+		},
 	}
 }
 
@@ -95,28 +115,34 @@ func marshalEC2Response(action string, output any) ([]byte, error) {
 
 // ec2HandlerWithReq is ec2Handler for actions that need the original *http.Request,
 // e.g. RunInstances which enforces iam:PassRole on the supplied instance profile ARN.
-func ec2HandlerWithReq[In any](handler func(ctx context.Context, input *In, gw *GatewayConfig, accountID string, r *http.Request) (any, error)) EC2Handler {
-	return func(action string, q map[string]string, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
-		input := new(In)
-		if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
-			if errors.Is(err, awsec2query.ErrSliceTooLarge) {
-				return nil, errors.New(awserrors.ErrorMalformedQueryString)
+func ec2HandlerWithReq[In any](handler func(ctx context.Context, input *In, gw *GatewayConfig, accountID string, r *http.Request) (any, error)) ec2Action {
+	return ec2Action{
+		parse: func(q map[string]string) (any, error) {
+			input := new(In)
+			if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
+				return nil, err
 			}
-			return nil, err
-		}
-		output, err := handler(requestContext(r), input, gw, accountID, r)
-		if err != nil {
-			return nil, err
-		}
-		xmlOutput, err := marshalEC2Response(action, output)
-		if err != nil {
-			return nil, err
-		}
-		return xmlOutput, nil
+			return input, nil
+		},
+		dispatch: func(action string, parsed any, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
+			input, ok := parsed.(*In)
+			if !ok {
+				return nil, errors.New(awserrors.ErrorInternalError)
+			}
+			output, err := handler(requestContext(r), input, gw, accountID, r)
+			if err != nil {
+				return nil, err
+			}
+			xmlOutput, err := marshalEC2Response(action, output)
+			if err != nil {
+				return nil, err
+			}
+			return xmlOutput, nil
+		},
 	}
 }
 
-var ec2Actions = map[string]EC2Handler{
+var ec2Actions = map[string]ec2Action{
 	"DescribeInstances": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
 		out, err := gateway_ec2_instance.DescribeInstancesChecked(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 		if err != nil {
@@ -230,15 +256,14 @@ var ec2Actions = map[string]EC2Handler{
 	"DescribeKeyPairs": ec2Handler(func(ctx context.Context, input *ec2.DescribeKeyPairsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_key.DescribeKeyPairs(ctx, input, gw.NATSConn, accountID)
 	}),
-	"ImportKeyPair": func(action string, q map[string]string, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
+	"ImportKeyPair": ec2Handler(func(ctx context.Context, input *ec2.ImportKeyPairInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_key.ImportKeyPair(ctx, input, gw.NATSConn, accountID)
+	}).withQueryPreprocessor(func(q map[string]string) {
 		// Parser leaves Base64 padding URL-encoded; decode it before dispatch.
 		if strings.HasSuffix(q["PublicKeyMaterial"], "%3D%3D") {
 			q["PublicKeyMaterial"] = strings.Replace(q["PublicKeyMaterial"], "%3D%3D", "==", 1)
 		}
-		return ec2Handler(func(ctx context.Context, input *ec2.ImportKeyPairInput, gw *GatewayConfig, accountID string) (any, error) {
-			return gateway_ec2_key.ImportKeyPair(ctx, input, gw.NATSConn, accountID)
-		})(action, q, gw, accountID, r)
-	},
+	}),
 	"DescribeImages": ec2Handler(func(ctx context.Context, input *ec2.DescribeImagesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_image.DescribeImages(ctx, input, gw.NATSConn, accountID)
 	}),
@@ -584,7 +609,23 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	resources, err := gateway_ec2.ResourceARNs(action, gw.Region, accountID, queryArgs)
+	input, err := handler.parse(queryArgs)
+	if err != nil {
+		if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+			return errors.New(awserrors.ErrorMalformedQueryString)
+		}
+		return err
+	}
+
+	// Launch templates supply effective RunInstances resources. Resolve them
+	// before authorization, and dispatch the same expanded input afterwards.
+	if runInput, ok := input.(*ec2.RunInstancesInput); ok && action == "RunInstances" {
+		if err := gateway_ec2_instance.ExpandLaunchTemplate(r.Context(), gw.NATSConn, runInput, accountID); err != nil {
+			return err
+		}
+	}
+
+	resources, err := gateway_ec2.ResourceARNs(action, gw.Region, accountID, input)
 	if err != nil {
 		return err
 	}
@@ -596,7 +637,7 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	xmlOutput, err := handler(action, queryArgs, gw, accountID, r)
+	xmlOutput, err := handler.dispatch(action, input, gw, accountID, r)
 	if err != nil {
 		return err
 	}

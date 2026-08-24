@@ -5,6 +5,7 @@ package gateway_ec2
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -25,7 +26,12 @@ func ec2arn(kind, id string) string {
 
 func resolve(t *testing.T, action string, q map[string]string) []string {
 	t.Helper()
-	got, err := ResourceARNs(action, testRegion, testAccountID, q)
+	var input any
+	if prototype, ok := ec2Inputs[action]; ok {
+		input = reflect.New(reflect.TypeOf(prototype).Elem()).Interface()
+		require.NoError(t, awsec2query.QueryParamsToStruct(q, input))
+	}
+	got, err := ResourceARNs(action, testRegion, testAccountID, input)
 	require.NoError(t, err)
 	return got
 }
@@ -47,6 +53,13 @@ func TestResourceARNs(t *testing.T) {
 		}},
 		{"RunInstances", map[string]string{"ImageId": "ami-1"},
 			[]string{ec2arn("instance", "*"), ec2arn("volume", "*"), ec2arn("image", "ami-1")}},
+		{"RunInstances", map[string]string{
+			"ImageId": "ami-1", "NetworkInterface.1.SubnetId": "subnet-1",
+			"NetworkInterface.1.SecurityGroupId.1": "sg-1",
+		}, []string{
+			ec2arn("instance", "*"), ec2arn("volume", "*"), ec2arn("image", "ami-1"),
+			ec2arn("subnet", "subnet-1"), ec2arn("security-group", "sg-1"),
+		}},
 		{"StartInstances", map[string]string{"InstanceId.1": "i-1"}, []string{ec2arn("instance", "i-1")}},
 		{"StopInstances", map[string]string{"InstanceId.1": "i-1"}, []string{ec2arn("instance", "i-1")}},
 		{"RebootInstances", map[string]string{"InstanceId.1": "i-1"}, []string{ec2arn("instance", "i-1")}},
@@ -55,6 +68,7 @@ func TestResourceARNs(t *testing.T) {
 		{"TerminateInstances", map[string]string{"InstanceId.1": "i-1", "InstanceId.2": "i-2"},
 			[]string{ec2arn("instance", "i-1"), ec2arn("instance", "i-2")}},
 		{"ModifyInstanceAttribute", map[string]string{"InstanceId": "i-1"}, []string{ec2arn("instance", "i-1")}},
+		{"ModifyInstanceAttribute", map[string]string{"instanceId": "i-2"}, []string{ec2arn("instance", "i-2")}},
 		{"ModifyInstanceMetadataOptions", map[string]string{"InstanceId": "i-1"}, []string{ec2arn("instance", "i-1")}},
 		{"GetConsoleOutput", map[string]string{"InstanceId": "i-1"}, []string{ec2arn("instance", "i-1")}},
 		{"GetPasswordData", map[string]string{"InstanceId": "i-1"}, []string{ec2arn("instance", "i-1")}},
@@ -95,6 +109,7 @@ func TestResourceARNs(t *testing.T) {
 		{"ImportKeyPair", map[string]string{"KeyName": "k1"}, []string{ec2arn("key-pair", "k1")}},
 		{"DeleteKeyPair", map[string]string{"KeyName": "k1"}, []string{ec2arn("key-pair", "k1")}},
 		{"DeleteKeyPair", map[string]string{"KeyPairId": "key-1"}, []string{ec2arn("key-pair", "key-1")}},
+		{"DeleteKeyPair", map[string]string{"KeyName": "k1", "KeyPairId": "key-1"}, []string{ec2arn("key-pair", "key-1")}},
 
 		// VPCs and subnets.
 		{"CreateVpc", map[string]string{"CidrBlock": "10.0.0.0/16"}, []string{ec2arn("vpc", "*")}},
@@ -113,7 +128,7 @@ func TestResourceARNs(t *testing.T) {
 		{"CreateRoute", map[string]string{"RouteTableId": "rtb-1", "GatewayId": "igw-1"},
 			[]string{ec2arn("route-table", "rtb-1"), ec2arn("internet-gateway", "igw-1")}},
 		{"CreateRoute", map[string]string{"RouteTableId": "rtb-1", "NatGatewayId": "nat-1"},
-			[]string{ec2arn("route-table", "rtb-1")}},
+			[]string{ec2arn("route-table", "rtb-1"), ec2arn("natgateway", "nat-1")}},
 		{"ReplaceRoute", map[string]string{"RouteTableId": "rtb-1", "GatewayId": "igw-1"},
 			[]string{ec2arn("route-table", "rtb-1"), ec2arn("internet-gateway", "igw-1")}},
 		{"AssociateRouteTable", map[string]string{"RouteTableId": "rtb-1", "SubnetId": "subnet-1"},
@@ -141,6 +156,11 @@ func TestResourceARNs(t *testing.T) {
 		// Network interfaces.
 		{"CreateNetworkInterface", map[string]string{"SubnetId": "subnet-1", "SecurityGroupId.1": "sg-1"},
 			[]string{ec2arn("network-interface", "*"), ec2arn("subnet", "subnet-1"), ec2arn("security-group", "sg-1")}},
+		{"CreateNetworkInterface", map[string]string{
+			"SubnetId": "subnet-1", "Groups.1": "sg-handler", "SecurityGroupId.1": "sg-other",
+		}, []string{
+			ec2arn("network-interface", "*"), ec2arn("subnet", "subnet-1"), ec2arn("security-group", "sg-handler"),
+		}},
 		{"DeleteNetworkInterface", map[string]string{"NetworkInterfaceId": "eni-1"},
 			[]string{ec2arn("network-interface", "eni-1")}},
 		{"ModifyNetworkInterfaceAttribute", map[string]string{"NetworkInterfaceId": "eni-1"},
@@ -189,8 +209,14 @@ func TestResourceARNs(t *testing.T) {
 			[]string{ec2arn("capacity-reservation", "*")}},
 		{"CancelCapacityReservation", map[string]string{"CapacityReservationId": "cr-1"},
 			[]string{ec2arn("capacity-reservation", "cr-1")}},
-		{"RequestSpotInstances", map[string]string{"SpotPrice": "0.01"},
-			[]string{ec2arn("spot-instances-request", "*")}},
+		{"RequestSpotInstances", map[string]string{
+			"LaunchSpecification.ImageId": "ami-1", "LaunchSpecification.SubnetId": "subnet-1",
+			"LaunchSpecification.SecurityGroupId.1": "sg-1", "LaunchSpecification.KeyName": "k1",
+		}, []string{
+			ec2arn("spot-instances-request", "*"), ec2arn("instance", "*"), ec2arn("volume", "*"),
+			ec2arn("image", "ami-1"), ec2arn("subnet", "subnet-1"),
+			ec2arn("security-group", "sg-1"), ec2arn("key-pair", "k1"),
+		}},
 		{"CancelSpotInstanceRequests", map[string]string{"SpotInstanceRequestId.1": "sir-1"},
 			[]string{ec2arn("spot-instances-request", "sir-1")}},
 
@@ -236,14 +262,14 @@ func TestResourceARNsMissingIdentifier(t *testing.T) {
 }
 
 func TestResourceARNsUnknownAction(t *testing.T) {
-	_, err := ResourceARNs("NotAnAction", testRegion, testAccountID, map[string]string{})
+	_, err := ResourceARNs("NotAnAction", testRegion, testAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
 
-// TestCollectIndexed covers the list forms the query parser accepts and the
-// two ways a naive collector loses resources.
-func TestCollectIndexed(t *testing.T) {
+// TestParsedListInputs covers the list forms and ordering produced by the
+// canonical query parser used by authorization and dispatch.
+func TestParsedListInputs(t *testing.T) {
 	t.Run("member wrapper", func(t *testing.T) {
 		assert.Equal(t, []string{ec2arn("instance", "i-1")},
 			resolve(t, "TerminateInstances", map[string]string{"InstanceId.member.1": "i-1"}))
@@ -254,16 +280,20 @@ func TestCollectIndexed(t *testing.T) {
 			resolve(t, "TerminateInstances", map[string]string{"InstanceIds.1": "i-1"}))
 	})
 
-	t.Run("numeric order, not lexical", func(t *testing.T) {
-		q := map[string]string{"InstanceId.1": "i-1", "InstanceId.2": "i-2", "InstanceId.10": "i-10"}
-		assert.Equal(t, []string{ec2arn("instance", "i-1"), ec2arn("instance", "i-2"), ec2arn("instance", "i-10")},
+	t.Run("location-name-list wrapper", func(t *testing.T) {
+		assert.Equal(t, []string{ec2arn("instance", "i-1")},
+			resolve(t, "TerminateInstances", map[string]string{"InstanceId.InstanceId.1": "i-1"}))
+	})
+
+	t.Run("numeric order", func(t *testing.T) {
+		q := map[string]string{"InstanceId.1": "i-1", "InstanceId.2": "i-2", "InstanceId.3": "i-3"}
+		assert.Equal(t, []string{ec2arn("instance", "i-1"), ec2arn("instance", "i-2"), ec2arn("instance", "i-3")},
 			resolve(t, "TerminateInstances", q))
 	})
 
-	t.Run("gaps do not terminate the list", func(t *testing.T) {
+	t.Run("gap terminates the parsed list", func(t *testing.T) {
 		q := map[string]string{"InstanceId.1": "i-1", "InstanceId.3": "i-3"}
-		assert.Equal(t, []string{ec2arn("instance", "i-1"), ec2arn("instance", "i-3")},
-			resolve(t, "TerminateInstances", q))
+		assert.Equal(t, []string{ec2arn("instance", "i-1")}, resolve(t, "TerminateInstances", q))
 	})
 
 	t.Run("nested keys are not collected", func(t *testing.T) {
@@ -369,69 +399,42 @@ var ec2Inputs = map[string]any{
 	"UnmonitorInstances":                   &ec2.UnmonitorInstancesInput{},
 }
 
-// TestScopeParametersReachTheHandlerInput is the fidelity guard. A scope naming
-// a parameter the handler never reads produces a gate that appears to work and
-// authorizes against nothing, which is worse than "*": it fences the wrong
-// object silently. Each scope must have at least one parameter the query parser
-// binds, so the id the resolver reads is an id the handler acts on.
-func TestScopeParametersReachTheHandlerInput(t *testing.T) {
-	const sentinel = "sentinel-value"
-
+// TestScopePathsReachTheHandlerInput proves each resolver path exists in the
+// typed input consumed by the action's handler.
+func TestScopePathsReachTheHandlerInput(t *testing.T) {
 	for action, scopes := range ec2Scopes {
 		input, ok := ec2Inputs[action]
 		if !ok {
-			// Unscoped actions read no identifier, so there is nothing to bind.
 			continue
 		}
 		for i, scope := range scopes {
-			if len(scope.params) == 0 {
+			if len(scope.paths) == 0 {
 				continue
 			}
 			t.Run(action, func(t *testing.T) {
-				var bound []string
-				for _, param := range scope.params {
-					key := param
-					if scope.list {
-						key = param + ".1"
-					}
-					fresh := reflect.New(reflect.TypeOf(input).Elem()).Interface()
-					require.NoError(t, awsec2query.QueryParamsToStruct(map[string]string{key: sentinel}, fresh))
-					if containsString(reflect.ValueOf(fresh), sentinel) {
-						bound = append(bound, param)
+				var reachable []string
+				for _, path := range scope.paths {
+					if hasFieldPath(reflect.TypeOf(input), strings.Split(path, ".")) {
+						reachable = append(reachable, path)
 					}
 				}
-				assert.NotEmpty(t, bound,
-					"%s scope %d names %v, none of which the handler's input parses", action, i, scope.params)
+				assert.NotEmpty(t, reachable,
+					"%s scope %d paths %v do not reach its handler input", action, i, scope.paths)
 			})
 		}
 	}
 }
 
-// containsString reports whether any string reachable from v equals want.
-func containsString(v reflect.Value, want string) bool {
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Interface:
-		return !v.IsNil() && containsString(v.Elem(), want)
-	case reflect.Slice, reflect.Array:
-		for i := range v.Len() {
-			if containsString(v.Index(i), want) {
-				return true
-			}
-		}
-	case reflect.Map:
-		for _, key := range v.MapKeys() {
-			if containsString(v.MapIndex(key), want) {
-				return true
-			}
-		}
-	case reflect.Struct:
-		for i := range v.NumField() {
-			if v.Type().Field(i).PkgPath == "" && containsString(v.Field(i), want) {
-				return true
-			}
-		}
-	case reflect.String:
-		return v.String() == want
+func hasFieldPath(typ reflect.Type, path []string) bool {
+	for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array {
+		typ = typ.Elem()
 	}
-	return false
+	if len(path) == 0 {
+		return typ.Kind() == reflect.String
+	}
+	if typ.Kind() != reflect.Struct {
+		return false
+	}
+	field, ok := typ.FieldByName(path[0])
+	return ok && hasFieldPath(field.Type, path[1:])
 }

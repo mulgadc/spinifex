@@ -663,7 +663,7 @@ func TestQueryParamsToStruct_GapAtIndexOne(t *testing.T) {
 
 func TestQueryParamsToStruct_RejectsOversizedDenseList(t *testing.T) {
 	args := map[string]string{"Action": "DescribeInstances"}
-	for i := 1; i <= maxSliceLen+1; i++ {
+	for i := 1; i <= MaxSliceLen+1; i++ {
 		args[fmt.Sprintf("Filter.%d.Name", i)] = "x"
 		args[fmt.Sprintf("Filter.%d.Value.1", i)] = "y"
 	}

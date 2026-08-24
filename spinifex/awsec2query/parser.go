@@ -177,9 +177,9 @@ func setFieldValue(field reflect.Value, value string) error {
 	return nil
 }
 
-// maxSliceLen caps list materialisation to prevent unbounded allocation
-// from adversarial indexes like `Filter.999999`.
-const maxSliceLen = 1024
+// MaxSliceLen caps list materialisation to prevent unbounded allocation from
+// adversarial indexes like `Filter.999999`.
+const MaxSliceLen = 1024
 
 // Records the 1-based indices of the entries stored under prefix, reporting
 // whether it matched anything at all.
@@ -227,8 +227,8 @@ func setSliceField(field reflect.Value, params map[string]string, prefix, listNa
 	denseLen := 0
 	for indices[denseLen+1] {
 		denseLen++
-		if denseLen > maxSliceLen {
-			return fmt.Errorf("%w: %q (max %d)", ErrSliceTooLarge, prefix, maxSliceLen)
+		if denseLen > MaxSliceLen {
+			return fmt.Errorf("%w: %q (max %d)", ErrSliceTooLarge, prefix, MaxSliceLen)
 		}
 	}
 	if denseLen == 0 {

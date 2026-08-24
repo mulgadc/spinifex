@@ -102,7 +102,6 @@ export default defineConfig({
       rules: {
         "anti-slop/no-module-mocking": "off",
         "anti-slop/no-unknown-returns": "off",
-        "eslint/prefer-destructuring": "off",
         "eslint/require-await": "off",
         "import/first": "off",
         "typescript/consistent-type-imports": "off",

@@ -83,7 +83,7 @@ const { sdk } = vi.hoisted(() => {
         Protocol: string
         DefaultActions: { TargetGroupArn: string }[]
       }) => {
-        const action = i.DefaultActions[0]
+        const [action] = i.DefaultActions
         if (!action) {
           throw new Error("CreateListenerCommand requires DefaultActions[0]")
         }

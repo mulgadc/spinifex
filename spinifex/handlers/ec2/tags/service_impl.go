@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
@@ -58,54 +59,15 @@ func NewTagsServiceImplWithStore(cfg *config.Config, store objectstore.ObjectSto
 	}
 }
 
-// getResourceType extracts resource type from resource ID prefix.
-func getResourceType(resourceID string) string {
-	if strings.HasPrefix(resourceID, "i-") {
-		return "instance"
+// describeTagsResourceType is the resource-type filter value DescribeTags
+// reports. An unrecognised prefix keeps emitting "unknown" so the filter's wire
+// behaviour is unchanged; authorization treats it as unresolvable instead.
+func describeTagsResourceType(resourceID string) string {
+	kind, ok := arn.EC2TypeForID(resourceID)
+	if !ok {
+		return "unknown"
 	}
-	if strings.HasPrefix(resourceID, "vol-") {
-		return "volume"
-	}
-	if strings.HasPrefix(resourceID, "ami-") {
-		return "image"
-	}
-	if strings.HasPrefix(resourceID, "snap-") {
-		return "snapshot"
-	}
-	if strings.HasPrefix(resourceID, "vpc-") {
-		return "vpc"
-	}
-	if strings.HasPrefix(resourceID, "subnet-") {
-		return "subnet"
-	}
-	if strings.HasPrefix(resourceID, "sg-") {
-		return "security-group"
-	}
-	if strings.HasPrefix(resourceID, "rtb-") {
-		return "route-table"
-	}
-	if strings.HasPrefix(resourceID, "igw-") {
-		return "internet-gateway"
-	}
-	if strings.HasPrefix(resourceID, "eigw-") {
-		return "egress-only-internet-gateway"
-	}
-	if strings.HasPrefix(resourceID, "eni-") {
-		return "network-interface"
-	}
-	if strings.HasPrefix(resourceID, "eipalloc-") {
-		return "elastic-ip"
-	}
-	if strings.HasPrefix(resourceID, "nat-") {
-		return "natgateway"
-	}
-	if strings.HasPrefix(resourceID, "key-") {
-		return "key-pair"
-	}
-	if strings.HasPrefix(resourceID, "pg-") {
-		return "placement-group"
-	}
-	return "unknown"
+	return string(kind)
 }
 
 // getTagsKey returns the S3 key for storing tags for a resource, scoped by account.
@@ -286,7 +248,7 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 		// Extract resource ID from key (tags/{accountID}/i-xxx.json -> i-xxx)
 		resourceID := strings.TrimPrefix(*obj.Key, getTagsPrefix(accountID))
 		resourceID = strings.TrimSuffix(resourceID, ".json")
-		resourceType := getResourceType(resourceID)
+		resourceType := describeTagsResourceType(resourceID)
 
 		if !filterutil.MatchesAny(filters["resource-id"], resourceID) {
 			continue

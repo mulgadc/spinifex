@@ -6,6 +6,8 @@ vi.mock("@/lib/awsClient", () => ({
   getElbv2Client: () => ({ send: mockSend }),
 }))
 
+import { callQueryFn } from "@/test/query"
+
 import {
   elbv2ListenersQueryOptions,
   elbv2LoadBalancerAttributesQueryOptions,
@@ -88,25 +90,17 @@ describe("elbv2 query keys", () => {
   })
 })
 
-type QueryFnWithSignal = (ctx: { signal: AbortSignal }) => Promise<unknown>
-
-async function callQueryFn(queryFn: unknown): Promise<unknown> {
-  return await (queryFn as QueryFnWithSignal)({
-    signal: new AbortController().signal,
-  })
-}
-
 describe("elbv2 implemented queries send the right command", () => {
   it("loadBalancers list sends DescribeLoadBalancersCommand", async () => {
     mockSend.mockResolvedValueOnce({ LoadBalancers: [] })
-    await callQueryFn(elbv2LoadBalancersQueryOptions.queryFn)
+    await callQueryFn(elbv2LoadBalancersQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("loadBalancer detail filters by ARN", async () => {
     mockSend.mockResolvedValueOnce({ LoadBalancers: [] })
-    await callQueryFn(elbv2LoadBalancerQueryOptions("arn:lb").queryFn)
+    await callQueryFn(elbv2LoadBalancerQueryOptions("arn:lb"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       LoadBalancerArns: ["arn:lb"],
     })
@@ -114,7 +108,7 @@ describe("elbv2 implemented queries send the right command", () => {
 
   it("loadBalancer attributes sends arn", async () => {
     mockSend.mockResolvedValueOnce({ Attributes: [] })
-    await callQueryFn(elbv2LoadBalancerAttributesQueryOptions("arn:lb").queryFn)
+    await callQueryFn(elbv2LoadBalancerAttributesQueryOptions("arn:lb"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       LoadBalancerArn: "arn:lb",
     })
@@ -122,7 +116,7 @@ describe("elbv2 implemented queries send the right command", () => {
 
   it("listeners filters by load balancer arn", async () => {
     mockSend.mockResolvedValueOnce({ Listeners: [] })
-    await callQueryFn(elbv2ListenersQueryOptions("arn:lb").queryFn)
+    await callQueryFn(elbv2ListenersQueryOptions("arn:lb"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       LoadBalancerArn: "arn:lb",
     })
@@ -130,7 +124,7 @@ describe("elbv2 implemented queries send the right command", () => {
 
   it("tags sends resource arns", async () => {
     mockSend.mockResolvedValueOnce({ TagDescriptions: [] })
-    await callQueryFn(elbv2TagsQueryOptions(["arn:lb"]).queryFn)
+    await callQueryFn(elbv2TagsQueryOptions(["arn:lb"]))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       ResourceArns: ["arn:lb"],
     })
@@ -138,13 +132,13 @@ describe("elbv2 implemented queries send the right command", () => {
 
   it("targetGroups list sends DescribeTargetGroupsCommand", async () => {
     mockSend.mockResolvedValueOnce({ TargetGroups: [] })
-    await callQueryFn(elbv2TargetGroupsQueryOptions.queryFn)
+    await callQueryFn(elbv2TargetGroupsQueryOptions)
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("targetGroup detail filters by ARN", async () => {
     mockSend.mockResolvedValueOnce({ TargetGroups: [] })
-    await callQueryFn(elbv2TargetGroupQueryOptions("arn:tg").queryFn)
+    await callQueryFn(elbv2TargetGroupQueryOptions("arn:tg"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       TargetGroupArns: ["arn:tg"],
     })
@@ -152,7 +146,7 @@ describe("elbv2 implemented queries send the right command", () => {
 
   it("targetGroup attributes sends arn", async () => {
     mockSend.mockResolvedValueOnce({ Attributes: [] })
-    await callQueryFn(elbv2TargetGroupAttributesQueryOptions("arn:tg").queryFn)
+    await callQueryFn(elbv2TargetGroupAttributesQueryOptions("arn:tg"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       TargetGroupArn: "arn:tg",
     })
@@ -160,7 +154,7 @@ describe("elbv2 implemented queries send the right command", () => {
 
   it("targetHealth sends target group arn", async () => {
     mockSend.mockResolvedValueOnce({ TargetHealthDescriptions: [] })
-    await callQueryFn(elbv2TargetHealthQueryOptions("arn:tg").queryFn)
+    await callQueryFn(elbv2TargetHealthQueryOptions("arn:tg"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       TargetGroupArn: "arn:tg",
     })

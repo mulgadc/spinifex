@@ -12,7 +12,8 @@ const { routerState, sdk } = vi.hoisted(() => {
     readonly constructor: { name: string }
     readonly input: unknown
   }
-  const handlers = new Map<string, (input: unknown) => unknown>()
+  type SdkHandler = (input: never) => unknown
+  const handlers = new Map<string, SdkHandler>()
   const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
     if (!handler) {
@@ -20,13 +21,15 @@ const { routerState, sdk } = vi.hoisted(() => {
         `No handler registered for SDK command ${command.constructor.name}`,
       )
     }
-    return handler(command.input)
+    return handler(command.input as never)
   })
   return {
     routerState: { navigate: vi.fn() },
     sdk: {
       send,
-      setHandler: (name: string, handler: (input: unknown) => unknown) => {
+      // Handlers are keyed by command name, so each one declares the input type
+      // of its own command; the shared registry cannot name them all.
+      setHandler: (name: string, handler: SdkHandler) => {
         handlers.set(name, handler)
       },
       reset: () => {
@@ -46,7 +49,10 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
   return {
     ...actual,
-    createFileRoute: () => (options: Record<string, unknown>) => options,
+    createFileRoute:
+      () =>
+      <TOptions,>(options: TOptions): TOptions =>
+        options,
     useNavigate: () => routerState.navigate,
     Link: ({
       children,
@@ -90,18 +96,21 @@ describe("describe-target-groups list route", () => {
   afterEach(() => vi.clearAllMocks())
 
   it("renders target-group rows with health summaries from the mocked SDK", async () => {
-    sdk.setHandler("DescribeTargetHealthCommand", (input) => {
-      const arn = (input as { TargetGroupArn: string }).TargetGroupArn
-      if (arn === "arn:tg:1") {
-        return {
-          TargetHealthDescriptions: [
-            { TargetHealth: { State: "healthy" } },
-            { TargetHealth: { State: "unhealthy" } },
-          ],
+    sdk.setHandler(
+      "DescribeTargetHealthCommand",
+      (input: { TargetGroupArn: string }) => {
+        const arn = input.TargetGroupArn
+        if (arn === "arn:tg:1") {
+          return {
+            TargetHealthDescriptions: [
+              { TargetHealth: { State: "healthy" } },
+              { TargetHealth: { State: "unhealthy" } },
+            ],
+          }
         }
-      }
-      return { TargetHealthDescriptions: [] }
-    })
+        return { TargetHealthDescriptions: [] }
+      },
+    )
 
     const qc = createTestQueryClient()
     qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: TGS })

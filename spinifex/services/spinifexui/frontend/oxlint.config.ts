@@ -64,7 +64,10 @@ export default defineConfig({
         ],
       },
     ],
-    "typescript/no-misused-promises": "off",
+    "typescript/no-misused-promises": [
+      "error",
+      { checksVoidReturn: { attributes: false } },
+    ],
     "typescript/only-throw-error": [
       "error",
       {

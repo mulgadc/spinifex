@@ -13,7 +13,7 @@ let recovering = false
 // Authorization denials (AccessDenied / UnauthorizedOperation) and other errors
 // fall through to the normal error UI.
 function recoverFromStaleCredentials(
-  error: unknown,
+  error: Error,
   queryClient: QueryClient,
 ): void {
   if (recovering || !isStaleCredentialsError(error)) {

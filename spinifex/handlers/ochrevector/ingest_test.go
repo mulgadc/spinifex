@@ -218,6 +218,34 @@ func TestStartIngest_StampsDataSourceID(t *testing.T) {
 	assert.Empty(t, noDSJob.DataSourceID)
 }
 
+// TestReconcileFromSource_EnqueuesPendingJobWithNoDataSourceID proves the
+// startup-reconcile entry point enqueues a PENDING job from a bare
+// SourceSpec, tagged with no DataSourceID -- it re-populates the index's
+// table directly from the registry, not through a bedrock-agent DataSource.
+func TestReconcileFromSource_EnqueuesPendingJobWithNoDataSourceID(t *testing.T) {
+	svc, _, _, _, _ := newIngestTestSetup(t)
+	ctx := context.Background()
+
+	job, err := svc.ReconcileFromSource(ctx, ingestAccountA, "idx-one", testSource())
+	require.NoError(t, err)
+	require.NotNil(t, job)
+	assert.Equal(t, JobStatePending, job.State)
+	assert.Empty(t, job.DataSourceID)
+	assert.Equal(t, testSource(), job.Source)
+}
+
+// TestReconcileFromSource_MissingIndexErrors proves the entry point refuses
+// the same way StartIngest does for an index the registry does not have --
+// a reconcile pass must never enqueue a job against nothing.
+func TestReconcileFromSource_MissingIndexErrors(t *testing.T) {
+	svc, _, _, _, _ := newIngestTestSetup(t)
+	ctx := context.Background()
+
+	_, err := svc.ReconcileFromSource(ctx, ingestAccountA, "idx-does-not-exist", testSource())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrIndexNotFound)
+}
+
 func TestRunJob_HappyPath(t *testing.T) {
 	svc, registry, backend, store, embedder := newIngestTestSetup(t)
 	ctx := context.Background()

@@ -189,8 +189,60 @@ func (d *Daemon) startOchreVector() {
 	// (there is none today beyond observability) must never see a non-nil
 	// service whose subjects are not yet actually serving.
 	d.ochreVectorService = vectorService
+
+	// Reconcile before the scheduler starts sweeping, so a job this pass
+	// enqueues for a rebuilt index is already PENDING for the scheduler's
+	// first Sweep rather than waiting for its next tick.
+	d.reconcileOchreIndexes(d.ctx, registry, backend, ingest)
+
 	go d.runOchreIngestScheduler(ingest)
 	slog.Info("Ochre vector store enabled")
+}
+
+// reconcileOchreIndexes re-creates and re-ingests every registry index whose
+// backing Postgres table is missing -- the state left by a teardown that
+// preserved metadata (registry/KB/DataSource) but destroyed the RDS
+// instance, once Ensure has connected to a freshly-provisioned replacement.
+// An index whose table survived (a plain restart) is left alone: no
+// EnsureAccount/CreateIndex call and no ingest job for it. Best-effort: a
+// failure on one record is logged and the pass continues to the rest rather
+// than failing the appliance connect that already succeeded.
+func (d *Daemon) reconcileOchreIndexes(ctx context.Context, registry *handlers_ochrevector.Registry, backend handlers_ochrevector.VectorBackend, ingest *handlers_ochrevector.IngestService) {
+	recs, err := registry.ListAll(ctx)
+	if err != nil {
+		slog.Warn("Ochre vector store: reconcile indexes: list registry failed", "err", err)
+		return
+	}
+	for _, rec := range recs {
+		exists, err := backend.IndexExists(ctx, rec.AccountID, rec.ID)
+		if err != nil {
+			slog.Warn("Ochre vector store: reconcile indexes: check exists failed",
+				"account", rec.AccountID, "index", rec.ID, "err", err)
+			continue
+		}
+		if exists {
+			continue
+		}
+		if err := backend.EnsureAccount(ctx, rec.AccountID); err != nil {
+			slog.Warn("Ochre vector store: reconcile indexes: ensure account failed",
+				"account", rec.AccountID, "index", rec.ID, "err", err)
+			continue
+		}
+		spec := handlers_ochrevector.IndexSpec{ID: rec.ID, Dimension: rec.Dimension}
+		if err := backend.CreateIndex(ctx, rec.AccountID, spec); err != nil {
+			slog.Warn("Ochre vector store: reconcile indexes: create index failed",
+				"account", rec.AccountID, "index", rec.ID, "err", err)
+			continue
+		}
+		for _, source := range rec.SourceSpecs {
+			if _, err := ingest.ReconcileFromSource(ctx, rec.AccountID, rec.ID, source); err != nil {
+				slog.Warn("Ochre vector store: reconcile indexes: enqueue ingest failed",
+					"account", rec.AccountID, "index", rec.ID, "err", err)
+			}
+		}
+		slog.Info("Ochre vector store: reconcile indexes: re-created index absent from fresh appliance",
+			"account", rec.AccountID, "index", rec.ID, "sources", len(rec.SourceSpecs))
+	}
 }
 
 // ochreIngestSweepInterval paces the scheduler tick that drives PENDING ingest
@@ -225,7 +277,7 @@ func (d *Daemon) runOchreIngestScheduler(ingest *handlers_ochrevector.IngestServ
 // an earlier call) has nothing to act on, which is reported as an error
 // rather than silently accepted -- an operator asking to tear down expects
 // one to have existed.
-func (d *Daemon) handleOchreApplianceTeardown(ctx context.Context, _ *handlers_ochrevector.TeardownApplianceRequest, _ string) (*handlers_ochrevector.TeardownApplianceResponse, error) {
+func (d *Daemon) handleOchreApplianceTeardown(ctx context.Context, req *handlers_ochrevector.TeardownApplianceRequest, _ string) (*handlers_ochrevector.TeardownApplianceResponse, error) {
 	d.mu.Lock()
 	appliance := d.ochreAppliance
 	d.mu.Unlock()
@@ -233,7 +285,8 @@ func (d *Daemon) handleOchreApplianceTeardown(ctx context.Context, _ *handlers_o
 		return nil, errors.New("ochrevector: platform appliance is not enabled or not up on this node")
 	}
 
-	if err := appliance.Teardown(ctx); err != nil {
+	purgeMetadata := req != nil && req.PurgeMetadata
+	if err := appliance.Teardown(ctx, purgeMetadata); err != nil {
 		return nil, fmt.Errorf("ochrevector: teardown platform appliance: %w", err)
 	}
 

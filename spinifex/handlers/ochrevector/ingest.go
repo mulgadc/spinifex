@@ -107,6 +107,15 @@ func (s *IngestService) StartIngest(ctx context.Context, accountID, indexID stri
 	return &rec, nil
 }
 
+// ReconcileFromSource enqueues a PENDING ingest job for accountID/indexID
+// from a persisted SourceSpec -- the entry point a startup reconcile pass
+// calls to re-populate an index whose backing table survived only in the
+// registry, not the freshly-provisioned Postgres. StartIngest's own
+// reservation makes a repeat call safe: Sweep/RunJob never double-write.
+func (s *IngestService) ReconcileFromSource(ctx context.Context, accountID, indexID string, source SourceSpec) (*JobRecord, error) {
+	return s.StartIngest(ctx, accountID, indexID, source, "")
+}
+
 // RunJob is the synchronous ingestion worker: lists job.Source, and for each
 // object, reads/chunks/embeds/replaces its rows. A per-document failure
 // (unreadable object, oversize, exhausted embed retries) is skipped and

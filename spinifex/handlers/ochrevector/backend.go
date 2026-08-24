@@ -71,6 +71,12 @@ type VectorBackend interface {
 	// accountID's schema. Idempotent: safe to retry after a crash mid-create.
 	CreateIndex(ctx context.Context, accountID string, spec IndexSpec) error
 
+	// IndexExists reports whether indexID's backing table already exists
+	// under accountID's schema, so a caller can tell a survived-restart index
+	// from one whose Postgres was rebuilt out from under it without
+	// re-creating (and re-ingesting) one that is already there.
+	IndexExists(ctx context.Context, accountID, indexID string) (bool, error)
+
 	// DropIndex drops indexID's backing table under accountID's schema.
 	// Idempotent: dropping an already-absent index is a no-op success.
 	DropIndex(ctx context.Context, accountID, indexID string) error

@@ -47,7 +47,15 @@ func TestPgxBackend_Integration(t *testing.T) {
 		_ = backend.DropIndex(context.Background(), pgTestAccountA, indexID)
 	})
 
+	exists, err := backend.IndexExists(ctx, pgTestAccountA, indexID)
+	require.NoError(t, err)
+	assert.False(t, exists, "index must not exist before CreateIndex")
+
 	require.NoError(t, backend.CreateIndex(ctx, pgTestAccountA, IndexSpec{ID: indexID, Dimension: 8}))
+
+	exists, err = backend.IndexExists(ctx, pgTestAccountA, indexID)
+	require.NoError(t, err)
+	assert.True(t, exists, "index must exist after CreateIndex")
 
 	// Re-running CreateIndex must not error (IF NOT EXISTS), the property
 	// Reconcile's forward-retry depends on.
@@ -68,6 +76,10 @@ func TestPgxBackend_Integration(t *testing.T) {
 	assert.Error(t, err, "account B's role must not be able to read account A's table")
 
 	require.NoError(t, backend.DropIndex(ctx, pgTestAccountA, indexID))
+
+	exists, err = backend.IndexExists(ctx, pgTestAccountA, indexID)
+	require.NoError(t, err)
+	assert.False(t, exists, "index must not exist after DropIndex")
 
 	// Dropping an already-absent index is a no-op success.
 	require.NoError(t, backend.DropIndex(ctx, pgTestAccountA, indexID))

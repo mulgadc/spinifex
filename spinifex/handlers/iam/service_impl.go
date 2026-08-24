@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -2039,9 +2040,37 @@ func validateStatementRestrictions(i int, stmt Statement) error {
 		return fmt.Errorf("statement %d: NotResource blocks are not supported in this release; use Resource with an explicit list instead", i)
 	}
 	for op, keys := range stmt.Condition {
-		for key := range keys {
+		for key, values := range keys {
 			if !iampolicy.SupportedCondition(op, key) {
 				return fmt.Errorf("statement %d: Condition operator %q on key %q is not supported in this release", i, op, key)
+			}
+			if err := validateConditionValues(i, op, key, values); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateConditionValues rejects leaf values the matcher can only ever compare
+// false. An allowlisted operator over an unparseable value is still an inert
+// restriction, which is the failure this validation exists to prevent.
+func validateConditionValues(i int, op, key string, values ConditionValue) error {
+	if len(values) == 0 {
+		return fmt.Errorf("statement %d: Condition operator %q on key %q has no value", i, op, key)
+	}
+	for _, v := range values {
+		switch op {
+		case iampolicy.OpIPAddress:
+			if _, prefixErr := netip.ParsePrefix(v); prefixErr != nil {
+				if _, addrErr := netip.ParseAddr(v); addrErr != nil {
+					return fmt.Errorf("statement %d: Condition %s on key %q: %q is not a valid IP address or CIDR block",
+						i, op, key, v)
+				}
+			}
+		case iampolicy.OpBool:
+			if !strings.EqualFold(v, "true") && !strings.EqualFold(v, "false") {
+				return fmt.Errorf("statement %d: Condition %s on key %q: %q is not true or false", i, op, key, v)
 			}
 		}
 	}

@@ -175,7 +175,6 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, ctxRegion, sig.Credential.Region)
 			ctx = context.WithValue(ctx, ctxAccessKey, sig.Credential.AccessKeyID)
 			ctx = context.WithValue(ctx, ctxPrincipalType, principal.principalType)
-			ctx = context.WithValue(ctx, ctxClientIP, clientIP)
 			auditFrom(ctx).setIdentity(sig.Credential.AccessKeyID, principal.accountID,
 				sig.Credential.Region, sig.Credential.Service, principal.principalType)
 			if principal.assumedRoleARN != "" {

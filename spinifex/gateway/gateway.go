@@ -61,10 +61,6 @@ const (
 	// (attacker-influenced RoleSessionName).
 	ctxUnderlyingRoleARN contextKey = "sigv4.underlyingRoleARN"
 
-	// ctxClientIP carries the caller's source address for aws:SourceIp condition
-	// evaluation. Absent means the key is absent, which evaluates false.
-	ctxClientIP contextKey = "sigv4.clientIP"
-
 	// ctxTargetAccount carries the accountID parsed from a registry host
 	// ({accountID}.dkr.ecr.{region}.{suffix}) by the host-routing middleware.
 	ctxTargetAccount contextKey = "host.targetAccount"
@@ -571,18 +567,28 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 
 // requestConditionKeys resolves the IAM condition context keys available on the
 // AWS API path. s3:prefix has no meaning here and is deliberately absent, so a
-// policy conditioned on it does not fire — the same document legitimately gives
-// a different answer at predastore's S3 door.
+// policy conditioned on it does not fire.
+//
+// Every key is omitted rather than set empty when unknown: an empty value reads
+// as a real value that matches nothing, and on a Deny that silently widens
+// access instead of narrowing it.
 func requestConditionKeys(r *http.Request, principal principalContext) iampolicy.ConditionKeys {
 	keys := iampolicy.ConditionKeys{
-		iampolicy.KeySecureTransport:  strconv.FormatBool(r.TLS != nil),
-		iampolicy.KeyUsername:         principal.identity,
-		iampolicy.KeyPrincipalAccount: principal.accountID,
+		iampolicy.KeySecureTransport: strconv.FormatBool(r.TLS != nil),
 	}
-	// Left absent rather than empty when unknown: an empty aws:SourceIp would
-	// read as a real value that matches nothing, which is the same outcome but
-	// a misleading one to debug.
-	if ip := mustCtxString(r, ctxClientIP); ip != "" {
+	// aws:username is user-only in AWS. A role session's identity is the
+	// caller-chosen RoleSessionName, so gating authorization on it here would
+	// let any principal that may assume the role satisfy the condition at will.
+	if principal.principalType == principalTypeUser && principal.identity != "" {
+		keys[iampolicy.KeyUsername] = principal.identity
+	}
+	if principal.accountID != "" {
+		keys[iampolicy.KeyPrincipalAccount] = principal.accountID
+	}
+	// Derived from the request rather than read from the context: the OCI
+	// registry chain never runs SigV4AuthMiddleware, so a context-carried
+	// address would be absent there and every aws:SourceIp condition inert.
+	if ip := utils.ClientIP(r.RemoteAddr); ip != "" {
 		keys[iampolicy.KeySourceIP] = ip
 	}
 	return keys

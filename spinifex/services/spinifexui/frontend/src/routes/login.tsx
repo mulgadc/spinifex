@@ -1,11 +1,8 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import {
-  createFileRoute,
-  redirect,
-  type SearchSchemaInput,
-} from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 import { useState } from "react"
 import { useForm } from "react-hook-form"
+import { z } from "zod"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -37,10 +34,16 @@ import { clearClients } from "@/lib/awsClient"
 import { isDirectHostAccess } from "@/lib/host-access"
 import { exchangeForSession } from "@/lib/sts"
 
+// Any reason other than the one the session-expiry redirect sends is dropped,
+// so a hand-typed value cannot put copy on the login page.
+/* oxlint-disable promise/prefer-await-to-then, unicorn/no-useless-undefined -- zod's .catch() supplies a schema fallback, not a promise handler */
+const searchSchema = z.object({
+  reason: z.literal("expired").optional().catch(undefined),
+})
+/* oxlint-enable promise/prefer-await-to-then, unicorn/no-useless-undefined */
+
 export const Route = createFileRoute("/login")({
-  validateSearch: (search: { reason?: string } & SearchSchemaInput) => ({
-    reason: search.reason === "expired" ? ("expired" as const) : undefined,
-  }),
+  validateSearch: searchSchema,
   beforeLoad: () => {
     if (getCredentials()) {
       throw redirect({ to: "/" })

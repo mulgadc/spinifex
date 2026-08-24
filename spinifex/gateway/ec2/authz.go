@@ -20,27 +20,27 @@ const anyResource = "*"
 
 // Where an action's identifier lives and what it resolves to. Actions carry one
 // scope per resource IAM evaluates, matching AWS.
+//
+// params is tried in order, covering both the aliases awsec2query accepts for
+// one field (Ids/Id) and the alternatives that name the same resource
+// (KeyName/KeyPairId). No params means kind is the resource the action creates,
+// whose id does not exist yet. An optional scope drops out when the request
+// does not name it; a required one widens to "*" instead.
 type resourceScope struct {
-	// Query parameter names, tried in order. This covers both the aliases
-	// awsec2query accepts for one field (Ids/Id) and the alternative parameters
-	// that can name the same resource (KeyName/KeyPairId), so the resolver reads
-	// the key the handler read.
-	params []string
-	// The ARN type. With no params it is the resource the action creates, whose
-	// id does not exist yet, so it resolves to <type>/*.
-	kind arn.EC2ResourceType
-	// Indexed lists arrive as param.N or param.member.N.
-	list bool
-	// Type comes from the id prefix rather than kind: the tag actions only.
+	params   []string
+	kind     arn.EC2ResourceType
+	list     bool
 	byPrefix bool
-	// AWS evaluates this resource only when the request names it, so an absent
-	// identifier drops the member instead of widening it to "*". Required
-	// scopes keep the opposite rule: see ResourceARNs.
 	optional bool
 }
 
 // Scopes shared across actions. Names ending in New resolve to <type>/*, which
 // is what AWS evaluates for a resource the call is about to create.
+//
+// Where an action accepts a name as well as an id, only the id is read:
+// GroupName is EC2-Classic, PublicIp is not an allocation id, and a launch
+// template ARN carries the template id. A name-only request leaves the resource
+// unresolved rather than building an ARN that names nothing.
 var (
 	instanceListScope = &resourceScope{params: []string{"InstanceIds", "InstanceId"}, kind: arn.EC2Instance, list: true}
 	instanceScope     = &resourceScope{params: []string{"InstanceId"}, kind: arn.EC2Instance}
@@ -65,8 +65,6 @@ var (
 	subnetOptScope = &resourceScope{params: []string{"SubnetId"}, kind: arn.EC2Subnet, optional: true}
 	subnetNewScope = &resourceScope{kind: arn.EC2Subnet}
 
-	// GroupName names a security group only in EC2-Classic, which has no ARN, so
-	// a name-only request leaves the group unresolved rather than mis-ARN'd.
 	securityGroupScope    = &resourceScope{params: []string{"GroupId"}, kind: arn.EC2SecurityGroup}
 	securityGroupsOptList = &resourceScope{params: []string{"SecurityGroupIds", "SecurityGroupId", "Groups"}, kind: arn.EC2SecurityGroup, list: true, optional: true}
 	securityGroupNewScope = &resourceScope{kind: arn.EC2SecurityGroup}
@@ -84,8 +82,6 @@ var (
 	eniOptScope = &resourceScope{params: []string{"NetworkInterfaceId"}, kind: arn.EC2NetworkInterface, optional: true}
 	eniNewScope = &resourceScope{kind: arn.EC2NetworkInterface}
 
-	// PublicIp is the EC2-Classic alternative and is not an allocation id, so it
-	// is deliberately not a fallback here.
 	addressScope    = &resourceScope{params: []string{"AllocationId"}, kind: arn.EC2ElasticIP}
 	addressOptScope = &resourceScope{params: []string{"AllocationId"}, kind: arn.EC2ElasticIP, optional: true}
 	addressNewScope = &resourceScope{kind: arn.EC2ElasticIP}
@@ -98,8 +94,6 @@ var (
 
 	placementGroupScope = &resourceScope{params: []string{"GroupName"}, kind: arn.EC2PlacementGroup}
 
-	// A launch template ARN carries the template id; a name-only request leaves
-	// it unresolved rather than building an ARN from the name.
 	launchTemplateScope    = &resourceScope{params: []string{"LaunchTemplateId"}, kind: arn.EC2LaunchTemplate}
 	launchTemplateNewScope = &resourceScope{kind: arn.EC2LaunchTemplate}
 
@@ -285,9 +279,8 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DescribeVpcs":                           unscoped,
 }
 
-// HasScope reports whether the action has a scope table entry. The dispatch
-// table lives in package gateway, so its completeness test needs this rather
-// than reaching into ec2Scopes.
+// HasScope reports whether the action has a scope table entry. ec2Actions lives
+// in package gateway, so its completeness test needs this.
 func HasScope(action string) bool {
 	_, ok := ec2Scopes[action]
 	return ok
@@ -334,16 +327,15 @@ func (s *resourceScope) resolve(region, accountID string, q map[string]string) [
 		if s.kind == "" {
 			return []string{anyResource}
 		}
-		// The resource the call creates: its id does not exist yet, which is the
-		// same ARN AWS evaluates a create against.
+		// The resource the call creates has no id yet, which is the ARN AWS
+		// evaluates a create against.
 		return []string{arn.FormatEC2(s.kind, region, accountID, anyResource)}
 	}
 
 	ids := s.identifiers(q)
 	if len(ids) == 0 {
-		// A missing member contributes "*" independently, so it remains the
-		// handler's validation fault rather than an ARN resolution failure here.
-		// An optional member is simply not part of the request.
+		// A missing required member widens to "*" rather than failing here, so a
+		// malformed request stays the handler's validation fault.
 		if s.optional {
 			return nil
 		}
@@ -356,8 +348,8 @@ func (s *resourceScope) resolve(region, accountID string, q map[string]string) [
 		if s.byPrefix {
 			resolved, ok := arn.EC2TypeForID(id)
 			// An id whose prefix names no type cannot name a real resource, so
-			// the inert fence protects nothing. A plausible-looking ARN built
-			// from a sentinel type would fence the wrong object instead.
+			// the inert fence protects nothing; a sentinel type would fence the
+			// wrong object instead.
 			if !ok {
 				resources = append(resources, anyResource)
 				continue
@@ -369,8 +361,8 @@ func (s *resourceScope) resolve(region, accountID string, q map[string]string) [
 	return resources
 }
 
-// identifiers reads the scope's parameter, trying each name in turn and taking
-// the first that carries a value — the same order awsec2query resolves them in.
+// identifiers takes the first parameter carrying a value, in the order
+// awsec2query resolves them.
 func (s *resourceScope) identifiers(q map[string]string) []string {
 	for _, param := range s.params {
 		if !s.list {

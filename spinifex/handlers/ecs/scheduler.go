@@ -325,7 +325,7 @@ func refreshLease(ctx context.Context, kv jetstream.KeyValue, key, holder string
 	return err == nil
 }
 
-// releaseLease drops the lease only if it is still held at the revision the
+// dropLease drops the lease only if it is still held at the revision the
 // caller observed. A mismatch means another node has taken over, so this node
 // must not delete a key it no longer owns.
 func dropLease(ctx context.Context, kv jetstream.KeyValue, key string, rev uint64) error {

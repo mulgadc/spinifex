@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -76,8 +77,8 @@ type Reconciler struct {
 	svc    *Service
 	holder string
 
-	mu     sync.Mutex
-	leader bool
+	lease    *kvlease.Lease
+	leaseErr error
 
 	// The payloads already reported as stuck pending. The condition persists
 	// until an operator acts, so without this the event would be re-recorded
@@ -94,17 +95,31 @@ type Reconciler struct {
 
 // holder identifies this daemon in the lease.
 func NewReconciler(svc *Service, holder string) *Reconciler {
-	return &Reconciler{svc: svc, holder: holder, reportedPending: make(map[string]string)}
+	r := &Reconciler{svc: svc, holder: holder, reportedPending: make(map[string]string)}
+	r.lease, r.leaseErr = kvlease.New(kvlease.Config{
+		Name:   "rds/reconciler",
+		Bucket: r.leaderBucket,
+		Key:    reconcilerLeaderKey,
+		Holder: holder,
+		TTL:    KVBucketRDSLeaderTTL,
+		Renew:  leaseRefresh,
+		Retry:  leaseRefresh,
+	})
+	return r
 }
 
 // Drives the leadership and reconcile loop until ctx is cancelled. Intended as
 // a daemon-boot goroutine; panics are the caller's recover concern.
 func (r *Reconciler) Run(ctx context.Context) {
+	if r.leaseErr != nil {
+		slog.ErrorContext(ctx, "rds reconciler: lease config invalid", "holder", r.holder, "err", r.leaseErr)
+		return
+	}
 	leadershipCtx, cancelLeadership := context.WithCancel(ctx)
 	leadershipDone := make(chan struct{})
 	go func() {
 		defer close(leadershipDone)
-		r.maintainLeadership(leadershipCtx, leaseRefresh)
+		r.lease.Run(leadershipCtx)
 	}()
 	defer func() {
 		cancelLeadership()
@@ -117,9 +132,6 @@ func (r *Reconciler) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			cancelLeadership()
-			<-leadershipDone
-			r.relinquish()
 			return
 		case <-reconcileTicker.C:
 			if !r.isLeader() {
@@ -132,23 +144,6 @@ func (r *Reconciler) Run(ctx context.Context) {
 	}
 }
 
-// Leadership refresh runs independently because a fleet pass can contain
-// blocking network I/O and must not outlive its lease.
-func (r *Reconciler) maintainLeadership(ctx context.Context, refresh time.Duration) {
-	leaseTicker := time.NewTicker(refresh)
-	defer leaseTicker.Stop()
-
-	r.evaluateLeadership(ctx)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-leaseTicker.C:
-			r.evaluateLeadership(ctx)
-		}
-	}
-}
-
 // The shared GC backstop's cluster-wide gate. The reconciler's lease is already
 // cluster-singular and held continuously rather than claimed per sweep, so
 // holding it is the whole answer and there is nothing for the caller to release.
@@ -157,63 +152,7 @@ func (r *Reconciler) AcquireClusterLease() (func(), bool) {
 }
 
 func (r *Reconciler) isLeader() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.leader
-}
-
-func (r *Reconciler) evaluateLeadership(ctx context.Context) {
-	won := r.acquireOrRefresh(ctx)
-	r.mu.Lock()
-	was := r.leader
-	r.leader = won
-	r.mu.Unlock()
-
-	switch {
-	case won && !was:
-		slog.Info("rds reconciler: elected leader", "holder", r.holder)
-	case !won && was:
-		slog.Info("rds reconciler: lost leadership", "holder", r.holder)
-	}
-}
-
-// Claims the lease, or refreshes it (resetting the TTL) when we already hold it.
-func (r *Reconciler) acquireOrRefresh(ctx context.Context) bool {
-	kv, err := r.leaderBucket(ctx)
-	if err != nil {
-		return false
-	}
-	if _, err := kv.Create(ctx, reconcilerLeaderKey, []byte(r.holder)); err == nil {
-		return true
-	}
-	entry, err := kv.Get(ctx, reconcilerLeaderKey)
-	if err != nil {
-		return false
-	}
-	if string(entry.Value()) != r.holder {
-		return false
-	}
-	if _, err := kv.Put(ctx, reconcilerLeaderKey, []byte(r.holder)); err != nil {
-		return false
-	}
-	return true
-}
-
-// Releases the lease on shutdown so the next leader is elected immediately
-// rather than after the TTL.
-func (r *Reconciler) relinquish() {
-	// Run's ctx is already cancelled by the time this is called, so the release
-	// runs on its own — a cancelled ctx would fail the delete.
-	ctx := context.Background()
-	kv, err := r.leaderBucket(ctx)
-	if err != nil {
-		return
-	}
-	if entry, gerr := kv.Get(ctx, reconcilerLeaderKey); gerr == nil && string(entry.Value()) == r.holder {
-		if err := kv.Delete(ctx, reconcilerLeaderKey); err != nil {
-			slog.Debug("rds reconciler: release lease failed", "holder", r.holder, "err", err)
-		}
-	}
+	return r.lease.Held()
 }
 
 func (r *Reconciler) leaderBucket(ctx context.Context) (jetstream.KeyValue, error) {

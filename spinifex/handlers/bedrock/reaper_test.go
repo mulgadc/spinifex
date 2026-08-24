@@ -395,40 +395,41 @@ func TestReaper_LeaseAdmitsOneLeader(t *testing.T) {
 	f := newReaperFixture(t, ReaperDeps{})
 	other := NewReaper(f.svc, "node-b", ReaperDeps{})
 
-	f.reaper.evaluateLeadership(t.Context())
-	other.evaluateLeadership(t.Context())
+	require.True(t, f.reaper.lease.TryAcquire(t.Context()))
+	require.False(t, other.lease.TryAcquire(t.Context()),
+		"two nodes must never sweep the same endpoints at once")
 
 	assert.True(t, f.reaper.IsLeader())
-	assert.False(t, other.IsLeader(), "two nodes must never sweep the same endpoints at once")
+	assert.False(t, other.IsLeader())
 
 	// A refresh by the holder keeps it, and does not hand it away.
-	f.reaper.evaluateLeadership(t.Context())
+	require.True(t, f.reaper.lease.TryAcquire(t.Context()))
 	assert.True(t, f.reaper.IsLeader())
 }
 
 // Releasing on shutdown is what makes a rolling restart cost seconds rather
 // than a full lease TTL of no reclaim.
-func TestReaper_RelinquishFreesTheLeaseImmediately(t *testing.T) {
+func TestReaper_ReleaseFreesTheLeaseImmediately(t *testing.T) {
 	f := newReaperFixture(t, ReaperDeps{})
 	other := NewReaper(f.svc, "node-b", ReaperDeps{})
 
-	f.reaper.evaluateLeadership(t.Context())
+	f.reaper.lease.TryAcquire(t.Context())
 	require.True(t, f.reaper.IsLeader())
 
-	f.reaper.relinquish()
-	other.evaluateLeadership(t.Context())
+	f.reaper.lease.Release(t.Context())
+	other.lease.TryAcquire(t.Context())
 	assert.True(t, other.IsLeader())
 }
 
 // A node that lost the election does no work at all, so a leaderless gap
 // delays a reclaim rather than duplicating one.
 func TestReaper_NonLeaderSweepsNothing(t *testing.T) {
-	f := newReaperFixture(t, ReaperDeps{Interval: 5 * time.Millisecond, LeaseRefresh: time.Hour, IdleTTL: time.Nanosecond})
+	f := newReaperFixture(t, ReaperDeps{Interval: 5 * time.Millisecond, IdleTTL: time.Nanosecond})
 	f.ready(t)
 	f.age(t, time.Hour, time.Hour)
 
 	holder := NewReaper(f.svc, "node-b", ReaperDeps{})
-	holder.evaluateLeadership(t.Context())
+	holder.lease.TryAcquire(t.Context())
 	require.True(t, holder.IsLeader())
 
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Millisecond)
@@ -449,4 +450,24 @@ func TestEndpointRecord_LastActive(t *testing.T) {
 	assert.Equal(t, active, EndpointRecord{ReadyAt: ready, LastActiveAt: active}.LastActive())
 	assert.Equal(t, ready, EndpointRecord{ReadyAt: ready}.LastActive(),
 		"an endpoint quiet since launch is idle since launch, not since the zero time")
+}
+
+// Shutdown must delete the lease key before Run returns. The daemon waits on Run
+// via its shutdown group, so a key left behind parks the next election for the
+// full TTL rather than freeing it immediately.
+func TestReaper_RunReleasesLeaseOnShutdown(t *testing.T) {
+	f := newReaperFixture(t, ReaperDeps{Interval: time.Hour})
+	require.NoError(t, f.reaper.leaseErr)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); f.reaper.Run(ctx) }()
+	require.Eventually(t, f.reaper.IsLeader, 2*time.Second, 20*time.Millisecond)
+
+	cancel()
+	<-done
+
+	other := NewReaper(f.svc, "node-b", ReaperDeps{})
+	assert.True(t, other.lease.TryAcquire(t.Context()),
+		"Run returned with the lease key still present")
 }

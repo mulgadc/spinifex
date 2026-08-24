@@ -11,6 +11,17 @@ const credentials: SessionCredentials = {
   expiration: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
 }
 
+// Captures the rejection so the test can assert on the error object itself,
+// and fails loudly if the request unexpectedly resolves.
+async function rejection(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise
+  } catch (error) {
+    return error as Error
+  }
+  throw new Error("expected the request to reject")
+}
+
 function stubFetch(body: string, status: number) {
   vi.stubGlobal(
     "fetch",
@@ -54,10 +65,12 @@ describe("signedFetch", () => {
       403,
     )
 
-    const err = await signedFetch({
-      action: "GetVersion",
-      credentials,
-    }).catch((error: unknown) => error)
+    const err = await rejection(
+      signedFetch({
+        action: "GetVersion",
+        credentials,
+      }),
+    )
 
     expect(err).toBeInstanceOf(SignedFetchError)
     expect(err).toMatchObject({ name: "InvalidClientTokenId", status: 403 })
@@ -67,10 +80,12 @@ describe("signedFetch", () => {
   it("falls back to a generic name when the body has no <Code>", async () => {
     stubFetch("internal failure", 500)
 
-    const err = await signedFetch({
-      action: "GetVersion",
-      credentials,
-    }).catch((error: unknown) => error)
+    const err = await rejection(
+      signedFetch({
+        action: "GetVersion",
+        credentials,
+      }),
+    )
 
     expect(err).toBeInstanceOf(SignedFetchError)
     expect(err).toMatchObject({ name: "SignedFetchError", status: 500 })

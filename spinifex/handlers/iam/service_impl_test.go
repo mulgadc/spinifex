@@ -1551,6 +1551,58 @@ func TestValidatePolicyDocument_MissingResource(t *testing.T) {
 	assert.Contains(t, err.Error(), "Resource is required")
 }
 
+func TestValidatePolicyDocument_SupportedCondition(t *testing.T) {
+	doc, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
+	 "Condition":{"IpAddress":{"aws:SourceIp":"10.0.0.0/8"}}}]}`)
+	require.NoError(t, err)
+	assert.Equal(t, ConditionValue{"10.0.0.0/8"},
+		doc.Statement[0].Condition["IpAddress"]["aws:SourceIp"])
+}
+
+func TestValidatePolicyDocument_UnsupportedConditionOperator(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
+	 "Condition":{"StringEquals":{"aws:SourceIp":"10.0.0.1"}}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "is not supported in this release")
+}
+
+func TestValidatePolicyDocument_UnsupportedConditionKey(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
+	 "Condition":{"StringEquals":{"aws:PrincipalOrgID":"o-1234"}}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "aws:PrincipalOrgID")
+}
+
+// MFA does not exist in spinifex, so this key could never be true and accepting
+// it would mint a grant that silently never fires.
+func TestValidatePolicyDocument_RejectsMFACondition(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*",
+	 "Condition":{"Bool":{"aws:MultiFactorAuthPresent":"true"}}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "aws:MultiFactorAuthPresent")
+}
+
+func TestValidatePolicyDocument_RejectsPrincipal(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*",
+	 "Principal":{"AWS":"arn:aws:iam::123456789012:root"}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "Principal is not valid on an identity policy")
+}
+
+func TestValidatePolicyDocument_RejectsNotAction(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*",
+	 "NotAction":"sts:AssumeRole"}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "NotAction blocks are not supported")
+}
+
+func TestValidatePolicyDocument_RejectsNotResource(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*",
+	 "NotResource":"arn:aws:s3:::public/*"}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "NotResource blocks are not supported")
+}
+
 // ============================================================================
 // Sensitive Data Not Logged Tests
 // ============================================================================

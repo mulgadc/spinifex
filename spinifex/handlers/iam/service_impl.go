@@ -19,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -2016,9 +2017,35 @@ func ValidatePolicyDocument(docJSON string) (*PolicyDocument, error) {
 		if len(stmt.Resource) == 0 {
 			return nil, fmt.Errorf("statement %d: Resource is required", i)
 		}
+		if err := validateStatementRestrictions(i, stmt); err != nil {
+			return nil, err
+		}
 	}
 
 	return &doc, nil
+}
+
+// validateStatementRestrictions rejects the clauses the evaluator cannot enforce,
+// so an identity policy is never accepted with an inert restriction on it.
+// Conditions inside the supported allowlist are accepted and enforced.
+func validateStatementRestrictions(i int, stmt Statement) error {
+	if isRawJSONNonEmpty(stmt.Principal) {
+		return fmt.Errorf("statement %d: Principal is not valid on an identity policy; use a resource or trust policy instead", i)
+	}
+	if len(stmt.NotAction) > 0 {
+		return fmt.Errorf("statement %d: NotAction blocks are not supported in this release; use Action with an explicit list instead", i)
+	}
+	if len(stmt.NotResource) > 0 {
+		return fmt.Errorf("statement %d: NotResource blocks are not supported in this release; use Resource with an explicit list instead", i)
+	}
+	for op, keys := range stmt.Condition {
+		for key := range keys {
+			if !iampolicy.SupportedCondition(op, key) {
+				return fmt.Errorf("statement %d: Condition operator %q on key %q is not supported in this release", i, op, key)
+			}
+		}
+	}
+	return nil
 }
 
 // summaryQuotaDefaults holds the static SummaryMap entries returned by

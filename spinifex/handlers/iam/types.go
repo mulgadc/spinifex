@@ -29,6 +29,7 @@ type (
 	PolicyDocument = iampolicy.PolicyDocument
 	Statement      = iampolicy.Statement
 	StringOrArr    = iampolicy.StringOrArr
+	ConditionValue = iampolicy.ConditionValue
 )
 
 // User represents an IAM user stored in JetStream KV.

@@ -17,6 +17,8 @@ export function InputGroup({
         className,
       )}
       data-slot="input-group"
+      // A fieldset would change the prop type and bring min-content sizing.
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
       role="group"
       {...props}
     />
@@ -63,6 +65,8 @@ export function InputGroupAddon({
         }
         e.currentTarget.parentElement?.querySelector("input")?.focus()
       }}
+      // A fieldset would change the prop type and bring min-content sizing.
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
       role="group"
       {...props}
     />

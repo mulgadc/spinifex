@@ -41,7 +41,6 @@ export default defineConfig({
     "eslint/require-unicode-regexp": "off",
     "eslint/sort-keys": "off",
     "import/consistent-type-specifier-style": "off",
-    "jsx-a11y/prefer-tag-over-role": "off",
     "react/function-component-definition": [
       "error",
       { namedComponents: "function-declaration" },

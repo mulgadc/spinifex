@@ -3,6 +3,7 @@ package gateway_iam
 
 import (
 	"errors"
+	"log/slog"
 	"reflect"
 	"sort"
 
@@ -152,9 +153,10 @@ func ScopedActions() []string {
 func ResourceARNs(action, accountID string, input any, svc handlers_iam.IAMService) ([]string, error) {
 	scope, ok := iamScopes[action]
 	if !ok {
+		slog.Error("IAM authz: action is served but absent from the scope table", "action", action)
 		return nil, errors.New(awserrors.ErrorInvalidAction)
 	}
-	resource, err := scope.resolve(accountID, input, svc)
+	resource, err := scope.resolve(action, accountID, input, svc)
 	if err != nil {
 		return nil, err
 	}
@@ -164,15 +166,23 @@ func ResourceARNs(action, accountID string, input any, svc handlers_iam.IAMServi
 	return []string{resource}, nil
 }
 
-func (s resourceScope) resolve(accountID string, input any, svc handlers_iam.IAMService) (string, error) {
+func (s resourceScope) resolve(action, accountID string, input any, svc handlers_iam.IAMService) (string, error) {
 	if s.source == sourceAccount {
 		return anyResource, nil
 	}
+	target := lookupTarget{action: action, kind: string(s.kind), accountID: accountID}
 	name, err := stringField(input, s.nameField)
 	if err != nil {
+		slog.Error("IAM authz: scope field is unreadable on the handler input, failing closed",
+			"action", action, "field", s.nameField, "err", err)
 		return "", err
 	}
+	target.name = name
 	if name == "" {
+		// The handler rejects the request as a validation fault, so this
+		// widening cannot reach a mutation. Logged at Debug, not Warn.
+		slog.Debug("IAM authz: identifier absent, authorizing account-wide",
+			"action", action, "field", s.nameField, "account_id", accountID)
 		return anyResource, nil
 	}
 
@@ -180,54 +190,86 @@ func (s resourceScope) resolve(accountID string, input any, svc handlers_iam.IAM
 	case sourceCreate:
 		resourcePath, err := stringField(input, s.pathField)
 		if err != nil {
+			slog.Error("IAM authz: path field is unreadable on the handler input, failing closed",
+				"action", action, "field", s.pathField, "err", err)
 			return "", err
 		}
 		return arn.FormatIAMPath(s.kind, accountID, resourcePath, name), nil
 	case sourceExisting:
-		return canonicalARN(accountID, s.kind, name, svc)
+		return canonicalARN(target, s.kind, svc)
 	case sourcePolicyARN:
 		return name, nil
 	case sourceOIDCCreate:
-		hostPath, _ := handlers_iam.OIDCProviderHostPathFromURL(name)
+		hostPath, err := handlers_iam.OIDCProviderHostPathFromURL(name)
 		if hostPath == "" {
+			slog.Warn("IAM authz: issuer URL unresolvable, authorizing account-wide",
+				"action", action, "url", name, "account_id", accountID, "err", err)
 			return anyResource, nil
 		}
 		return arn.FormatIAMResource(arn.IAMOIDCProvider, accountID, hostPath), nil
 	case sourceOIDCARN:
-		hostPath, _ := handlers_iam.OIDCProviderHostPathFromARN(name)
+		hostPath, err := handlers_iam.OIDCProviderHostPathFromARN(name)
 		if hostPath == "" {
+			slog.Warn("IAM authz: provider ARN unresolvable, authorizing account-wide",
+				"action", action, "provider_arn", name, "account_id", accountID, "err", err)
 			return anyResource, nil
 		}
 		return arn.FormatIAMResource(arn.IAMOIDCProvider, accountID, hostPath), nil
 	case sourceAccessKeyOwner:
+		target.kind = "access-key"
 		key, err := svc.LookupAccessKey(name)
 		if err != nil {
-			return lookupResult("", err)
+			return lookupResult(target, "", err)
 		}
 		if key == nil || key.AccountID != accountID || key.UserName == "" {
+			slog.Warn("IAM authz: access key unknown, cross-account, or ownerless, authorizing account-wide",
+				"action", action, "access_key_id", name, "account_id", accountID)
 			return anyResource, nil
 		}
-		return canonicalARN(accountID, arn.IAMUser, key.UserName, svc)
+		target.kind, target.name = string(arn.IAMUser), key.UserName
+		return canonicalARN(target, arn.IAMUser, svc)
 	default:
+		slog.Error("IAM authz: unhandled resource source, failing closed",
+			"action", action, "source", s.source)
 		return "", errors.New(awserrors.ErrorInternalError)
 	}
 }
 
-func canonicalARN(accountID string, kind arn.IAMResourceType, name string, svc handlers_iam.IAMService) (string, error) {
-	resource, err := svc.CanonicalResourceARN(accountID, kind, name)
-	return lookupResult(resource, err)
+// lookupTarget carries the identity of the object being authorized so every
+// resolution outcome can be logged with enough context to act on.
+type lookupTarget struct {
+	action    string
+	kind      string
+	name      string
+	accountID string
 }
 
-func lookupResult(resource string, err error) (string, error) {
+func canonicalARN(t lookupTarget, kind arn.IAMResourceType, svc handlers_iam.IAMService) (string, error) {
+	resource, err := svc.CanonicalResourceARN(t.accountID, kind, t.name)
+	return lookupResult(t, resource, err)
+}
+
+// lookupResult widens authorization to account-wide for a missing object and
+// fails closed on a storage or decode fault. Both outcomes are logged because
+// neither is visible in the response the caller receives.
+func lookupResult(t lookupTarget, resource string, err error) (string, error) {
 	if err == nil {
 		if resource == "" {
+			slog.Error("IAM authz: stored record carries no ARN, failing closed",
+				"action", t.action, "kind", t.kind, "name", t.name, "account_id", t.accountID)
 			return "", errors.New(awserrors.ErrorInternalError)
 		}
 		return resource, nil
 	}
 	if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+		// Authorization widens to "*", so a Deny scoped to the real target
+		// will not fire. Without this line that widening leaves no trace.
+		slog.Warn("IAM authz: target not found, authorizing account-wide",
+			"action", t.action, "kind", t.kind, "name", t.name, "account_id", t.accountID)
 		return anyResource, nil
 	}
+	slog.Error("IAM authz: canonical ARN lookup failed, failing closed",
+		"action", t.action, "kind", t.kind, "name", t.name, "account_id", t.accountID, "err", err)
 	return "", errors.New(awserrors.ErrorInternalError)
 }
 

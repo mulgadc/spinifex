@@ -1,4 +1,4 @@
-package gateway_iam
+package gateway_iam_test
 
 import (
 	"errors"
@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,7 +74,7 @@ func TestResourceARNs_Fidelity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ResourceARNs(tt.action, testAccount, tt.input, svc)
+			got, err := gateway_iam.ResourceARNs(tt.action, testAccount, tt.input, svc)
 			require.NoError(t, err)
 			assert.Equal(t, []string{tt.want}, got)
 		})
@@ -100,7 +101,7 @@ func TestResourceARNs_SecondaryOperandsAreNotResources(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.action, func(t *testing.T) {
-			got, err := ResourceARNs(tt.action, testAccount, tt.input, svc)
+			got, err := gateway_iam.ResourceARNs(tt.action, testAccount, tt.input, svc)
 			require.NoError(t, err)
 			assert.Equal(t, []string{tt.want}, got)
 		})
@@ -118,13 +119,13 @@ func TestResourceARNs_UpdateAccessKeyUsesRecordedOwner(t *testing.T) {
 		AccessKeyId: aws.String("AKIAEXAMPLE"),
 		UserName:    aws.String("attacker-selected"),
 	}
-	got, err := ResourceARNs("UpdateAccessKey", testAccount, input, svc)
+	got, err := gateway_iam.ResourceARNs("UpdateAccessKey", testAccount, input, svc)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"arn:aws:iam::123456789012:user/team/owner"}, got)
 	assert.Equal(t, "owner", svc.gotName)
 
 	svc.key.AccountID = "999999999999"
-	got, err = ResourceARNs("UpdateAccessKey", testAccount, input, svc)
+	got, err = gateway_iam.ResourceARNs("UpdateAccessKey", testAccount, input, svc)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"*"}, got)
 }
@@ -132,20 +133,20 @@ func TestResourceARNs_UpdateAccessKeyUsesRecordedOwner(t *testing.T) {
 func TestResourceARNs_MissingAndLookupErrors(t *testing.T) {
 	svc := &resolverService{}
 
-	got, err := ResourceARNs("DeleteRole", testAccount, &iam.DeleteRoleInput{}, svc)
+	got, err := gateway_iam.ResourceARNs("DeleteRole", testAccount, &iam.DeleteRoleInput{}, svc)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"*"}, got)
 
-	got, err = ResourceARNs("DeleteRole", testAccount, &iam.DeleteRoleInput{RoleName: aws.String("missing")}, svc)
+	got, err = gateway_iam.ResourceARNs("DeleteRole", testAccount, &iam.DeleteRoleInput{RoleName: aws.String("missing")}, svc)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"*"}, got)
 
 	svc.arns = map[arn.IAMResourceType]map[string]string{}
 	svc.lookupErr = errors.New("storage unavailable")
-	_, err = ResourceARNs("UpdateAccessKey", testAccount,
+	_, err = gateway_iam.ResourceARNs("UpdateAccessKey", testAccount,
 		&iam.UpdateAccessKeyInput{AccessKeyId: aws.String("AKIAEXAMPLE")}, svc)
 	require.EqualError(t, err, awserrors.ErrorInternalError)
 
-	_, err = ResourceARNs("NotAnAction", testAccount, &iam.ListUsersInput{}, svc)
+	_, err = gateway_iam.ResourceARNs("NotAnAction", testAccount, &iam.ListUsersInput{}, svc)
 	require.EqualError(t, err, awserrors.ErrorInvalidAction)
 }

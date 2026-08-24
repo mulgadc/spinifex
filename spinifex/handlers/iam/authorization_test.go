@@ -1,3 +1,5 @@
+//test:in-package — uses setupTestIAMService and testAccountID, unexported fixtures shared with the other handler tests.
+
 package handlers_iam
 
 import (

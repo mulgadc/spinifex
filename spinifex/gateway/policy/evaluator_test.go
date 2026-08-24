@@ -37,7 +37,7 @@ func TestEvaluate_IAMInstanceProfileActionStrings(t *testing.T) {
 		doc("Allow", "*", "*"),
 	}
 	for _, a := range actions {
-		if got := iampolicy.Evaluate(a, "*", policies); got != iampolicy.Allow {
+		if got := iampolicy.EvaluateWithKeys(a, "*", policies, nil); got != iampolicy.Allow {
 			t.Errorf("expected Allow for action %q under wildcard policy, got %v", a, got)
 		}
 	}
@@ -60,7 +60,7 @@ func TestEvaluate_IAMInstanceProfileActionStrings(t *testing.T) {
 		{"ec2:RunInstances", "*", iampolicy.Deny},
 	}
 	for _, tt := range scopedTests {
-		got := iampolicy.Evaluate(tt.action, tt.resource, scoped)
+		got := iampolicy.EvaluateWithKeys(tt.action, tt.resource, scoped, nil)
 		if got != tt.want {
 			t.Errorf("scoped policy, action=%s resource=%s: expected %v, got %v",
 				tt.action, tt.resource, tt.want, got)
@@ -83,17 +83,17 @@ func TestEvaluate_STSActionStrings(t *testing.T) {
 	scoped := []handlers_iam.PolicyDocument{doc("Allow", "sts:*", "*")}
 
 	for _, a := range actions {
-		if got := iampolicy.Evaluate(a, "*", wildcard); got != iampolicy.Allow {
+		if got := iampolicy.EvaluateWithKeys(a, "*", wildcard, nil); got != iampolicy.Allow {
 			t.Errorf("wildcard policy: expected Allow for %q, got %v", a, got)
 		}
-		if got := iampolicy.Evaluate(a, "*", scoped); got != iampolicy.Allow {
+		if got := iampolicy.EvaluateWithKeys(a, "*", scoped, nil); got != iampolicy.Allow {
 			t.Errorf("sts:* policy: expected Allow for %q, got %v", a, got)
 		}
 	}
 
 	// Non-STS action must NOT match an sts:*-scoped policy — guards against a
 	// pattern regression that would over-allow.
-	if got := iampolicy.Evaluate("ec2:RunInstances", "*", scoped); got != iampolicy.Deny {
+	if got := iampolicy.EvaluateWithKeys("ec2:RunInstances", "*", scoped, nil); got != iampolicy.Deny {
 		t.Errorf("sts:* policy: expected Deny for ec2:RunInstances, got %v", got)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	"github.com/mulgadc/spinifex/spinifex/kvlease"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -40,36 +41,66 @@ type Scheduler struct {
 	svc    *Service
 	holder string
 
-	mu     sync.Mutex
-	leader bool
-	subs   []*nats.Subscription
+	lease    *kvlease.Lease
+	leaseErr error
+
+	mu   sync.Mutex
+	subs []*nats.Subscription
 }
 
 // NewScheduler constructs a Scheduler. holder identifies this daemon in the lease.
 func NewScheduler(nc *nats.Conn, svc *Service, holder string) *Scheduler {
-	return &Scheduler{nc: nc, svc: svc, holder: holder}
+	sc := &Scheduler{nc: nc, svc: svc, holder: holder}
+	sc.lease, sc.leaseErr = kvlease.New(kvlease.Config{
+		Name:   "ecs/scheduler",
+		Bucket: sc.leaderBucket,
+		Key:    schedulerLeaderKey,
+		Holder: holder,
+		TTL:    KVBucketECSLeaderTTL,
+		Renew:  leaseRefresh,
+		Retry:  leaseRefresh,
+		// The leader owns the Layer-2 bus subscriptions. A node that cannot wire them stands
+		// down rather than hold the lease and process nothing.
+		OnGained: sc.subscribeBus,
+		OnLost:   sc.unsubscribeBus,
+	})
+	return sc
+}
+
+func (sc *Scheduler) leaderBucket(ctx context.Context) (jetstream.KeyValue, error) {
+	js, err := jetstream.New(sc.nc)
+	if err != nil {
+		return nil, err
+	}
+	return InitLeaderBucket(ctx, js)
 }
 
 // Run drives the leadership + reaper loop until ctx is cancelled. It is intended
 // to run as a daemon-boot goroutine; panics are the caller's recover concern.
 func (sc *Scheduler) Run(ctx context.Context) {
-	leaseTicker := time.NewTicker(leaseRefresh)
+	if sc.leaseErr != nil {
+		slog.ErrorContext(ctx, "ECS scheduler: lease config invalid", "holder", sc.holder, "err", sc.leaseErr)
+		return
+	}
 	reaperTicker := time.NewTicker(reaperInterval)
 	reconcileTicker := time.NewTicker(reconcileInterval)
 	sweepTicker := time.NewTicker(sweepInterval)
-	defer leaseTicker.Stop()
 	defer reaperTicker.Stop()
 	defer reconcileTicker.Stop()
 	defer sweepTicker.Stop()
 
-	sc.evaluateLeadership(ctx)
+	leaseDone := make(chan struct{})
+	go func() {
+		defer close(leaseDone)
+		sc.lease.Run(ctx)
+	}()
 	for {
 		select {
 		case <-ctx.Done():
-			sc.relinquish()
+			// The daemon waits on Run, so the lease delete must complete before
+			// it returns, otherwise the next leader waits out the full TTL.
+			<-leaseDone
 			return
-		case <-leaseTicker.C:
-			sc.evaluateLeadership(ctx)
 		case <-reaperTicker.C:
 			sc.runIfLeader("instance reap", func() error { return sc.reap(ctx) })
 		case <-reconcileTicker.C:
@@ -84,83 +115,11 @@ func (sc *Scheduler) Run(ctx context.Context) {
 // A pass errors only when it could not observe the whole fleet, so this log is
 // the operator's signal that a tick was skipped rather than found nothing to do.
 func (sc *Scheduler) runIfLeader(pass string, run func() error) {
-	if !sc.isLeader() {
+	if !sc.lease.Held() {
 		return
 	}
 	if err := run(); err != nil {
 		slog.Error("ECS scheduler: pass failed", "pass", pass, "err", err)
-	}
-}
-
-func (sc *Scheduler) isLeader() bool {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.leader
-}
-
-// evaluateLeadership acquires or refreshes the lease, wiring up (or tearing down)
-// the bus subscriptions as leadership changes.
-func (sc *Scheduler) evaluateLeadership(ctx context.Context) {
-	won := sc.acquireOrRefresh(ctx)
-	sc.mu.Lock()
-	was := sc.leader
-	sc.leader = won
-	sc.mu.Unlock()
-
-	switch {
-	case won && !was:
-		if err := sc.subscribeBus(ctx); err != nil {
-			slog.Error("ECS scheduler: bus subscribe failed", "holder", sc.holder, "err", err)
-		} else {
-			slog.Info("ECS scheduler: elected leader, bus subscriptions active", "holder", sc.holder)
-		}
-	case !won && was:
-		sc.unsubscribeBus()
-		slog.Info("ECS scheduler: lost leadership, bus subscriptions dropped", "holder", sc.holder)
-	}
-}
-
-// acquireOrRefresh tries to claim the scheduler lease, refreshing it (resetting
-// the TTL) when we already hold it. Returns true when we are the leader.
-func (sc *Scheduler) acquireOrRefresh(ctx context.Context) bool {
-	js, err := jetstream.New(sc.nc)
-	if err != nil {
-		return false
-	}
-	kv, err := InitLeaderBucket(ctx, js)
-	if err != nil {
-		return false
-	}
-	if _, err := kv.Create(ctx, schedulerLeaderKey, []byte(sc.holder)); err == nil {
-		return true
-	}
-	entry, err := kv.Get(ctx, schedulerLeaderKey)
-	if err != nil {
-		return false
-	}
-	if string(entry.Value()) != sc.holder {
-		return false // someone else holds it
-	}
-	return refreshLease(ctx, kv, schedulerLeaderKey, sc.holder, entry.Revision())
-}
-
-// relinquish drops subscriptions and deletes the lease key on shutdown.
-func (sc *Scheduler) relinquish() {
-	sc.unsubscribeBus()
-	// Run's ctx is already cancelled by the time it calls relinquish, so the
-	// release runs on its own context — a captured ctx would fail the delete and
-	// leave the lease for the TTL to reap.
-	ctx := context.Background()
-	js, err := jetstream.New(sc.nc)
-	if err != nil {
-		return
-	}
-	kv, err := InitLeaderBucket(ctx, js)
-	if err != nil {
-		return
-	}
-	if entry, gerr := kv.Get(ctx, schedulerLeaderKey); gerr == nil && string(entry.Value()) == sc.holder {
-		_ = dropLease(ctx, kv, schedulerLeaderKey, entry.Revision())
 	}
 }
 
@@ -315,19 +274,4 @@ func accountIDFromBucket(bucket string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimPrefix(bucket, KVBucketECSAccountPrefix), true
-}
-
-// refreshLease renews the lease at the revision the caller observed. A revision
-// mismatch means the lease turned over between the read and here, so this node
-// is no longer the holder.
-func refreshLease(ctx context.Context, kv jetstream.KeyValue, key, holder string, rev uint64) bool {
-	_, err := kv.Update(ctx, key, []byte(holder), rev)
-	return err == nil
-}
-
-// dropLease drops the lease only if it is still held at the revision the
-// caller observed. A mismatch means another node has taken over, so this node
-// must not delete a key it no longer owns.
-func dropLease(ctx context.Context, kv jetstream.KeyValue, key string, rev uint64) error {
-	return kv.Delete(ctx, key, jetstream.LastRevision(rev))
 }

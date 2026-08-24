@@ -219,7 +219,7 @@ func TestResourceARN_ResourceScopedDenyReachesTheSnapshotActions(t *testing.T) {
 			require.NoError(t, err)
 			got := iampolicy.Allow
 			for _, resource := range resources {
-				if iampolicy.Evaluate(policy.IAMAction("rds", tt.action), resource, policies) == iampolicy.Deny {
+				if iampolicy.EvaluateWithKeys(policy.IAMAction("rds", tt.action), resource, policies, nil) == iampolicy.Deny {
 					got = iampolicy.Deny
 				}
 			}

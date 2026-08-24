@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -560,7 +561,37 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 		assumedRoleID:     mustCtxString(r, ctxAssumedRoleID),
 		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
 	}
-	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources)
+	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources,
+		requestConditionKeys(r, principal))
+}
+
+// requestConditionKeys resolves the IAM condition context keys available on the
+// AWS API path. s3:prefix has no meaning here and is deliberately absent, so a
+// policy conditioned on it does not fire.
+//
+// Every key is omitted rather than set empty when unknown: an empty value reads
+// as a real value that matches nothing, and on a Deny that silently widens
+// access instead of narrowing it.
+func requestConditionKeys(r *http.Request, principal principalContext) iampolicy.ConditionKeys {
+	keys := iampolicy.ConditionKeys{
+		iampolicy.KeySecureTransport: strconv.FormatBool(r.TLS != nil),
+	}
+	// aws:username is user-only in AWS. A role session's identity is the
+	// caller-chosen RoleSessionName, so gating authorization on it here would
+	// let any principal that may assume the role satisfy the condition at will.
+	if principal.principalType == principalTypeUser && principal.identity != "" {
+		keys[iampolicy.KeyUsername] = principal.identity
+	}
+	if principal.accountID != "" {
+		keys[iampolicy.KeyPrincipalAccount] = principal.accountID
+	}
+	// Derived from the request rather than read from the context: the OCI
+	// registry chain never runs SigV4AuthMiddleware, so a context-carried
+	// address would be absent there and every aws:SourceIp condition inert.
+	if ip := utils.ClientIP(r.RemoteAddr); ip != "" {
+		keys[iampolicy.KeySourceIP] = ip
+	}
+	return keys
 }
 
 // mustCtxString reads a string context value, defaulting to "" for an absent
@@ -573,7 +604,7 @@ func mustCtxString(r *http.Request, key contextKey) string {
 // evaluatePrincipalPolicyResources resolves policies once and evaluates every
 // resource in the request against that same snapshot.
 func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
-	principal principalContext, iamAction string, resources []string,
+	principal principalContext, iamAction string, resources []string, keys iampolicy.ConditionKeys,
 ) error {
 	if gw.IAMService == nil {
 		slog.Error("evaluatePrincipalPolicy: IAM service not available", "action", iamAction)
@@ -638,7 +669,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 	}
 
 	for _, resource := range resources {
-		if iampolicy.Evaluate(iamAction, resource, policies) == iampolicy.Deny {
+		if iampolicy.EvaluateWithKeys(iamAction, resource, policies, keys) == iampolicy.Deny {
 			slog.Info("evaluatePrincipalPolicy: access denied",
 				"identity", logIdentity, "action", iamAction, "resource", resource)
 			return errors.New(awserrors.ErrorAccessDenied)

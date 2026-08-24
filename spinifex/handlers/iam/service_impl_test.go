@@ -1551,6 +1551,108 @@ func TestValidatePolicyDocument_MissingResource(t *testing.T) {
 	assert.Contains(t, err.Error(), "Resource is required")
 }
 
+func TestValidatePolicyDocument_SupportedCondition(t *testing.T) {
+	doc, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
+	 "Condition":{"IpAddress":{"aws:SourceIp":"10.0.0.0/8"}}}]}`)
+	require.NoError(t, err)
+	assert.Equal(t, ConditionValue{"10.0.0.0/8"},
+		doc.Statement[0].Condition["IpAddress"]["aws:SourceIp"])
+}
+
+func TestValidatePolicyDocument_UnsupportedConditionOperator(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
+	 "Condition":{"StringEquals":{"aws:SourceIp":"10.0.0.1"}}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "is not supported in this release")
+}
+
+func TestValidatePolicyDocument_UnsupportedConditionKey(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
+	 "Condition":{"StringEquals":{"aws:PrincipalOrgID":"o-1234"}}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "aws:PrincipalOrgID")
+}
+
+// MFA does not exist in spinifex, so this key could never be true and accepting
+// it would mint a grant that silently never fires.
+func TestValidatePolicyDocument_RejectsMFACondition(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*",
+	 "Condition":{"Bool":{"aws:MultiFactorAuthPresent":"true"}}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "aws:MultiFactorAuthPresent")
+}
+
+func TestValidatePolicyDocument_RejectsPrincipal(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*",
+	 "Principal":{"AWS":"arn:aws:iam::123456789012:root"}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "Principal is not valid on an identity policy")
+}
+
+func TestValidatePolicyDocument_RejectsNotAction(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*",
+	 "NotAction":"sts:AssumeRole"}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "NotAction blocks are not supported")
+}
+
+// An allowlisted operator over a malformed value is still an inert grant: the
+// matcher cannot parse it, so the Allow never fires and the operator gets a bare
+// AccessDenied with nothing naming the cause.
+func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		cond    string
+		wantErr string
+	}{
+		{"truncated CIDR", `{"IpAddress":{"aws:SourceIp":"10.0.0/8"}}`, "not a valid IP address or CIDR block"},
+		{"comma string", `{"IpAddress":{"aws:SourceIp":"10.0.0.0/8, 192.168.0.0/16"}}`, "not a valid IP address or CIDR block"},
+		{"hostname", `{"IpAddress":{"aws:SourceIp":"office.example.com"}}`, "not a valid IP address or CIDR block"},
+		{"numeric bool", `{"Bool":{"aws:SecureTransport":1}}`, "not true or false"},
+		{"yes", `{"Bool":{"aws:SecureTransport":"yes"}}`, "not true or false"},
+		{"empty array", `{"IpAddress":{"aws:SourceIp":[]}}`, "has no value"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+			 "Action":"s3:*","Resource":"*","Condition":` + tt.cond + `}]}`)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// D4's lenient leaf parsing must survive at the API surface: a native JSON bool
+// is what Terraform emits, and rejecting it would fail ordinary valid policies.
+func TestValidatePolicyDocument_AcceptsNativeBoolAndCIDRForms(t *testing.T) {
+	for _, cond := range []string{
+		`{"Bool":{"aws:SecureTransport":true}}`,
+		`{"Bool":{"aws:SecureTransport":"TRUE"}}`,
+		`{"IpAddress":{"aws:SourceIp":["10.0.0.0/8","192.168.1.1"]}}`,
+		`{"IpAddress":{"aws:SourceIp":"2001:db8::/32"}}`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
+		assert.NoError(t, err, "condition %s must be accepted", cond)
+	}
+}
+
+// Map iteration order makes a break-instead-of-continue bug non-deterministic,
+// so a single-operator document cannot pin the loop.
+func TestValidatePolicyDocument_RejectsUnsupportedAlongsideSupported(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
+	 "Condition":{"IpAddress":{"aws:SourceIp":"10.0.0.0/8"},"StringEquals":{"aws:PrincipalOrgID":"o-1234"}}}]}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "aws:PrincipalOrgID")
+}
+
+func TestValidatePolicyDocument_RejectsNotResource(t *testing.T) {
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*",
+	 "NotResource":"arn:aws:s3:::public/*"}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "NotResource blocks are not supported")
+}
+
 // ============================================================================
 // Sensitive Data Not Logged Tests
 // ============================================================================

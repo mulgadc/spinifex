@@ -49,7 +49,7 @@ function postToConsole(opts: {
   window.dispatchEvent(ev)
 }
 
-const tick = async () => new Promise((r) => setTimeout(r, 0))
+const tick = async () => await new Promise((r) => setTimeout(r, 0))
 
 beforeEach(() => {
   vi.clearAllMocks()

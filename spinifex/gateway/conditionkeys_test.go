@@ -1,3 +1,7 @@
+//test:in-package — requestConditionKeys, checkPolicyResources, principalContext
+//and ctxAccountID are all unexported, and the file reuses the in-package
+//policyMockIAMService and withTestIdentity doubles.
+
 package gateway
 
 import (

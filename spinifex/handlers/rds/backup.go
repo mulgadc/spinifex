@@ -430,7 +430,7 @@ func (s *Service) DescribeDBInstanceAutomatedBackups(ctx context.Context,
 		if rec.BackupRetentionPeriod <= 0 {
 			continue
 		}
-		stamps, err := ListAutomatedBackupStamps(ctx, kv, id)
+		stamps, err := listNames(ctx, kv, AutomatedBackupsPrefix(id))
 		if err != nil {
 			return nil, err
 		}

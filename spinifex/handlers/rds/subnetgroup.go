@@ -105,7 +105,7 @@ func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.Describ
 		}
 	}
 
-	names, err := ListDBSubnetGroupNames(ctx, kv)
+	names, err := listNames(ctx, kv, DBSubnetGroupsPrefix())
 	if err != nil {
 		return nil, err
 	}

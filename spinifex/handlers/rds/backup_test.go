@@ -86,7 +86,7 @@ func (h *snapshotHarness) automatedStamps(t *testing.T, id string) []string {
 	t.Helper()
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	stamps, err := ListAutomatedBackupStamps(t.Context(), kv, id)
+	stamps, err := listNames(t.Context(), kv, AutomatedBackupsPrefix(id))
 	require.NoError(t, err)
 	return stamps
 }

@@ -1,3 +1,7 @@
+//test:in-package — drives the unexported CAS primitives (casUpdate, casPut and
+//the generic casClaim[T]) against maxCASRetries. A generic function cannot be
+//re-exported through export_test.go without a wrapper per instantiation.
+
 package daemon
 
 import (

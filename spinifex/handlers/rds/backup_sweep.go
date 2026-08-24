@@ -292,7 +292,7 @@ func (s *Service) dropAutomatedBackupIndex(ctx context.Context, kv jetstream.Key
 // volume after the instance is gone.
 func (s *Service) purgeAutomatedBackups(ctx context.Context, kv jetstream.KeyValue,
 	accountID, dbInstanceIdentifier string) error {
-	stamps, err := ListAutomatedBackupStamps(ctx, kv, dbInstanceIdentifier)
+	stamps, err := listNames(ctx, kv, AutomatedBackupsPrefix(dbInstanceIdentifier))
 	if err != nil {
 		return err
 	}
@@ -314,7 +314,7 @@ func (s *Service) purgeAutomatedBackups(ctx context.Context, kv jetstream.KeyVal
 // for a crash between those two steps — which is precisely what a KV-health-gated
 // cluster-wide sweep is for.
 func (s *Service) reclaimOrphanedVolumes(ctx context.Context, kv jetstream.KeyValue) (int, error) {
-	ids, err := ListRetainedVolumeIDs(ctx, kv)
+	ids, err := listNames(ctx, kv, RetainedVolumesPrefix())
 	if err != nil {
 		return 0, err
 	}

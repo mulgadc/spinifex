@@ -279,10 +279,6 @@ func ListDBSnapshotIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, er
 	return names, nil
 }
 
-func ListDBSubnetGroupNames(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
-	return listNames(ctx, kv, DBSubnetGroupsPrefix())
-}
-
 // Walks the .../meta keys, which is what makes a group's own record findable
 // among the per-parameter keys hanging off the same prefix.
 func ListDBParameterGroupNames(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
@@ -347,12 +343,6 @@ func ListAutomatedBackups(ctx context.Context, kv jetstream.KeyValue) (map[strin
 	return indexed, nil
 }
 
-// One instance's automated-backup stamps, for the callers that already know
-// which instance they are acting on.
-func ListAutomatedBackupStamps(ctx context.Context, kv jetstream.KeyValue, dbInstanceIdentifier string) ([]string, error) {
-	return listNames(ctx, kv, AutomatedBackupsPrefix(dbInstanceIdentifier))
-}
-
 // The DB instance and timestamp a backups/ key names. The instance identifier
 // cannot contain a slash, so anything shaped otherwise belongs to a key space
 // this does not own.
@@ -370,10 +360,6 @@ func splitAutomatedBackupKey(key string) (string, string, bool) {
 		return "", "", false
 	}
 	return id, stamp, true
-}
-
-func ListRetainedVolumeIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
-	return listNames(ctx, kv, RetainedVolumesPrefix())
 }
 
 // The leaf names directly under prefix. A nested key belongs to a sub-space and

@@ -11,7 +11,8 @@ const { routerState, sdk } = vi.hoisted(() => {
     readonly constructor: { name: string }
     readonly input: unknown
   }
-  const handlers = new Map<string, (input: unknown) => unknown>()
+  type SdkHandler = (input: never) => unknown
+  const handlers = new Map<string, SdkHandler>()
   const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
     if (!handler) {
@@ -19,13 +20,15 @@ const { routerState, sdk } = vi.hoisted(() => {
         `No handler registered for SDK command ${command.constructor.name}`,
       )
     }
-    return handler(command.input)
+    return handler(command.input as never)
   })
   return {
     routerState: { navigate: vi.fn() },
     sdk: {
       send,
-      setHandler: (name: string, handler: (input: unknown) => unknown) => {
+      // Handlers are keyed by command name, so each one declares the input type
+      // of its own command; the shared registry cannot name them all.
+      setHandler: (name: string, handler: SdkHandler) => {
         handlers.set(name, handler)
       },
       reset: () => {
@@ -45,7 +48,10 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
   return {
     ...actual,
-    createFileRoute: () => (options: Record<string, unknown>) => options,
+    createFileRoute:
+      () =>
+      <TOptions,>(options: TOptions): TOptions =>
+        options,
     useNavigate: () => routerState.navigate,
     Link: ({
       children,

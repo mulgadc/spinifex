@@ -6,6 +6,8 @@ vi.mock("@/lib/awsClient", () => ({
   getEksClient: () => ({ send: mockSend }),
 }))
 
+import { callQueryFn } from "@/test/query"
+
 import {
   eksAccessEntriesQueryOptions,
   eksAccessEntryQueryOptions,
@@ -114,27 +116,18 @@ describe("queryFn", () => {
   })
 
   it("clusters sends ListClustersCommand", async () => {
-    const queryFn = eksClustersQueryOptions.queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(eksClustersQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("cluster sends DescribeClusterCommand with name", async () => {
-    const queryFn = eksClusterQueryOptions("c1").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(eksClusterQueryOptions("c1"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({ name: "c1" })
   })
 
   it("nodegroup sends DescribeNodegroupCommand", async () => {
-    const queryFn = eksNodegroupQueryOptions("c1", "ng1").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(eksNodegroupQueryOptions("c1", "ng1"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       clusterName: "c1",
       nodegroupName: "ng1",
@@ -142,10 +135,7 @@ describe("queryFn", () => {
   })
 
   it("access entry sends DescribeAccessEntryCommand", async () => {
-    const queryFn = eksAccessEntryQueryOptions("c1", "arn:p").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(eksAccessEntryQueryOptions("c1", "arn:p"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       clusterName: "c1",
       principalArn: "arn:p",
@@ -153,20 +143,14 @@ describe("queryFn", () => {
   })
 
   it("addons sends ListAddonsCommand with cluster", async () => {
-    const queryFn = eksAddonsQueryOptions("c1").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(eksAddonsQueryOptions("c1"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       clusterName: "c1",
     })
   })
 
   it("addon sends DescribeAddonCommand", async () => {
-    const queryFn = eksAddonQueryOptions("c1", "coredns").queryFn as (
-      ctx: never,
-    ) => Promise<unknown>
-    await queryFn({} as never)
+    await callQueryFn(eksAddonQueryOptions("c1", "coredns"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       clusterName: "c1",
       addonName: "coredns",

@@ -12,13 +12,14 @@ const { routerState, sdk } = vi.hoisted(() => {
     readonly constructor: { name: string }
     readonly input: unknown
   }
-  const handlers = new Map<string, (input: unknown) => unknown>()
+  type SdkHandler = (input: never) => unknown
+  const handlers = new Map<string, SdkHandler>()
   const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
     if (!handler) {
       throw new Error(`No handler for ${command.constructor.name}`)
     }
-    return handler(command.input)
+    return handler(command.input as never)
   })
   return {
     routerState: { navigate: vi.fn() },

@@ -235,9 +235,9 @@ func (s *Service) projectEvent(accountID string, event Event) *rds.Event {
 	}
 	switch event.SourceType {
 	case EventSourceTypeDBInstance:
-		out.SourceArn = aws.String(DBInstanceARN(s.region, accountID, event.SourceIdentifier))
+		out.SourceArn = aws.String(FormatARN(ResourceKindDBInstance, s.region, accountID, event.SourceIdentifier))
 	case EventSourceTypeDBSnapshot:
-		out.SourceArn = aws.String(DBSnapshotARN(s.region, accountID, event.SourceIdentifier))
+		out.SourceArn = aws.String(FormatARN(ResourceKindDBSnapshot, s.region, accountID, event.SourceIdentifier))
 	}
 	return out
 }

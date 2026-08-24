@@ -11,25 +11,7 @@ import (
 // ECS/EKS ARNs, so resource-scoped IAM policies and Terraform state round-trip
 // against the real service.
 
-func DBInstanceARN(region, accountID, dbInstanceIdentifier string) string {
-	return FormatARN(ResourceKindDBInstance, region, accountID, dbInstanceIdentifier)
-}
-
-// Manual and automated snapshots share the one resource type.
-func DBSnapshotARN(region, accountID, dbSnapshotIdentifier string) string {
-	return FormatARN(ResourceKindDBSnapshot, region, accountID, dbSnapshotIdentifier)
-}
-
-func DBSubnetGroupARN(region, accountID, name string) string {
-	return FormatARN(ResourceKindDBSubnetGroup, region, accountID, name)
-}
-
-func DBParameterGroupARN(region, accountID, name string) string {
-	return FormatARN(ResourceKindDBParameterGroup, region, accountID, name)
-}
-
-// The one place the ARN shape is written, for callers that already hold a kind
-// rather than a resource type of their own.
+// The one place the ARN shape is written.
 func FormatARN(kind ResourceKind, region, accountID, identifier string) string {
 	return fmt.Sprintf("arn:aws:rds:%s:%s:%s:%s", region, accountID, kind, identifier)
 }
@@ -39,7 +21,8 @@ func FormatARN(kind ResourceKind, region, accountID, identifier string) string {
 type ResourceKind string
 
 const (
-	ResourceKindDBInstance       ResourceKind = "db"
+	ResourceKindDBInstance ResourceKind = "db"
+	// Manual and automated snapshots share the one resource type.
 	ResourceKindDBSnapshot       ResourceKind = "snapshot"
 	ResourceKindDBSubnetGroup    ResourceKind = "subgrp"
 	ResourceKindDBParameterGroup ResourceKind = "pg"

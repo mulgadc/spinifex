@@ -34,7 +34,7 @@ func TestCreateDBSubnetGroup_AcceptsASingleSubnet(t *testing.T) {
 	group := out.DBSubnetGroup
 	require.NotNil(t, group)
 	assert.Equal(t, testSubnetGroup, aws.StringValue(group.DBSubnetGroupName))
-	assert.Equal(t, DBSubnetGroupARN(testRegion, testAccountID, testSubnetGroup),
+	assert.Equal(t, FormatARN(ResourceKindDBSubnetGroup, testRegion, testAccountID, testSubnetGroup),
 		aws.StringValue(group.DBSubnetGroupArn))
 	assert.Equal(t, testDefaultVPC, aws.StringValue(group.VpcId))
 	require.Len(t, group.Subnets, 1)

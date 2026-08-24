@@ -298,7 +298,7 @@ func TestDispatch_DescribeDBInstancesReturnsEmptyResultSet(t *testing.T) {
 func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
 	body, err := Dispatch(t.Context(), "ListTagsForResource", map[string]string{
 		"Action":       "ListTagsForResource",
-		"ResourceName": handlers_rds.DBInstanceARN("ap-southeast-2", testAccountID, "orders-db"),
+		"ResourceName": handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db"),
 	}, newStubbedNATS(t), testCaller, testEnv)
 	require.NoError(t, err)
 
@@ -331,7 +331,7 @@ func TestDispatch_AddTagsToResourceParsesTheTagList(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	arn := handlers_rds.DBInstanceARN("ap-southeast-2", testAccountID, "orders-db")
+	arn := handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db")
 	_, err = Dispatch(t.Context(), "AddTagsToResource", map[string]string{
 		"Action":         "AddTagsToResource",
 		"ResourceName":   arn,
@@ -370,7 +370,7 @@ func TestDispatch_RemoveTagsFromResourceParsesMemberTagKeys(t *testing.T) {
 
 	_, err = Dispatch(t.Context(), "RemoveTagsFromResource", map[string]string{
 		"Action":           "RemoveTagsFromResource",
-		"ResourceName":     handlers_rds.DBInstanceARN("ap-southeast-2", testAccountID, "orders-db"),
+		"ResourceName":     handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db"),
 		"TagKeys.member.1": "env",
 		"TagKeys.member.2": "team",
 	}, nc, testCaller, testEnv)

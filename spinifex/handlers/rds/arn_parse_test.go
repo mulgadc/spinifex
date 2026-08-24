@@ -19,11 +19,11 @@ func TestParseARN_RoundTripsEveryResourceType(t *testing.T) {
 		identifier string
 		arn        string
 	}{
-		{"instance", ResourceKindDBInstance, "orders-db", DBInstanceARN(testRegion, testAccountID, "orders-db")},
-		{"manual snapshot", ResourceKindDBSnapshot, "orders-db-2026-07-24", DBSnapshotARN(testRegion, testAccountID, "orders-db-2026-07-24")},
-		{"automated snapshot", ResourceKindDBSnapshot, automated, DBSnapshotARN(testRegion, testAccountID, automated)},
-		{"subnet group", ResourceKindDBSubnetGroup, "prod-db-subnets", DBSubnetGroupARN(testRegion, testAccountID, "prod-db-subnets")},
-		{"parameter group", ResourceKindDBParameterGroup, "postgres16-tuned", DBParameterGroupARN(testRegion, testAccountID, "postgres16-tuned")},
+		{"instance", ResourceKindDBInstance, "orders-db", FormatARN(ResourceKindDBInstance, testRegion, testAccountID, "orders-db")},
+		{"manual snapshot", ResourceKindDBSnapshot, "orders-db-2026-07-24", FormatARN(ResourceKindDBSnapshot, testRegion, testAccountID, "orders-db-2026-07-24")},
+		{"automated snapshot", ResourceKindDBSnapshot, automated, FormatARN(ResourceKindDBSnapshot, testRegion, testAccountID, automated)},
+		{"subnet group", ResourceKindDBSubnetGroup, "prod-db-subnets", FormatARN(ResourceKindDBSubnetGroup, testRegion, testAccountID, "prod-db-subnets")},
+		{"parameter group", ResourceKindDBParameterGroup, "postgres16-tuned", FormatARN(ResourceKindDBParameterGroup, testRegion, testAccountID, "postgres16-tuned")},
 	}
 
 	for _, tc := range cases {
@@ -47,18 +47,18 @@ func TestParseARN_RejectsMalformedAndForeignARNs(t *testing.T) {
 		// "db/orders-db" as the resource type.
 		{"slash delimited", "arn:aws:rds:" + testRegion + ":" + testAccountID + ":db/orders-db"},
 		{"truncated", "arn:aws:rds:" + testRegion + ":" + testAccountID + ":db"},
-		{"extra segment", DBInstanceARN(testRegion, testAccountID, "orders-db") + ":extra"},
-		{"snapshot with a foreign namespace", DBSnapshotARN(testRegion, testAccountID, "other:orders-db")},
-		{"snapshot with two embedded colons", DBSnapshotARN(testRegion, testAccountID, "rds:orders-db:extra")},
-		{"snapshot with a slash", DBSnapshotARN(testRegion, testAccountID, "rds:orders/db")},
+		{"extra segment", FormatARN(ResourceKindDBInstance, testRegion, testAccountID, "orders-db") + ":extra"},
+		{"snapshot with a foreign namespace", FormatARN(ResourceKindDBSnapshot, testRegion, testAccountID, "other:orders-db")},
+		{"snapshot with two embedded colons", FormatARN(ResourceKindDBSnapshot, testRegion, testAccountID, "rds:orders-db:extra")},
+		{"snapshot with a slash", FormatARN(ResourceKindDBSnapshot, testRegion, testAccountID, "rds:orders/db")},
 		{"empty identifier", "arn:aws:rds:" + testRegion + ":" + testAccountID + ":db:"},
 		{"another service", "arn:aws:ec2:" + testRegion + ":" + testAccountID + ":db:orders-db"},
 		{"another partition", "arn:aws-cn:rds:" + testRegion + ":" + testAccountID + ":db:orders-db"},
 		{"unknown resource type", "arn:aws:rds:" + testRegion + ":" + testAccountID + ":cluster:orders"},
 		// Rejected at the ARN rather than at policy evaluation, so a foreign
 		// reference never reaches the evaluator at all.
-		{"foreign account", DBInstanceARN(testRegion, "210987654321", "orders-db")},
-		{"foreign region", DBInstanceARN("us-east-1", testAccountID, "orders-db")},
+		{"foreign account", FormatARN(ResourceKindDBInstance, testRegion, "210987654321", "orders-db")},
+		{"foreign region", FormatARN(ResourceKindDBInstance, "us-east-1", testAccountID, "orders-db")},
 		{"empty", ""},
 	}
 

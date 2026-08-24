@@ -136,7 +136,7 @@ func (s *Service) projectDBInstance(rec *DBInstanceRecord) *rds.DBInstance {
 	}
 	out := &rds.DBInstance{
 		DBInstanceIdentifier: aws.String(rec.DBInstanceIdentifier),
-		DBInstanceArn:        aws.String(DBInstanceARN(s.region, rec.AccountID, rec.DBInstanceIdentifier)),
+		DBInstanceArn:        aws.String(FormatARN(ResourceKindDBInstance, s.region, rec.AccountID, rec.DBInstanceIdentifier)),
 		DBInstanceStatus:     aws.String(string(rec.Status)),
 		Engine:               aws.String(rec.Engine),
 		EngineVersion:        aws.String(rec.EngineVersion),

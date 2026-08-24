@@ -500,7 +500,7 @@ func (s *Service) projectParameterGroupRecord(rec *DBParameterGroupRecord) *rds.
 	return &rds.DBParameterGroup{
 		DBParameterGroupName:   aws.String(rec.Name),
 		DBParameterGroupFamily: aws.String(rec.Family),
-		DBParameterGroupArn:    aws.String(DBParameterGroupARN(s.region, rec.AccountID, rec.Name)),
+		DBParameterGroupArn:    aws.String(FormatARN(ResourceKindDBParameterGroup, s.region, rec.AccountID, rec.Name)),
 		Description:            aws.String(rec.Description),
 	}
 }

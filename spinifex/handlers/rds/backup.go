@@ -472,7 +472,7 @@ func (s *Service) projectAutomatedBackup(rec *DBInstanceRecord, snapshots int) *
 	}
 	out := &rds.DBInstanceAutomatedBackup{
 		DBInstanceIdentifier:  aws.String(rec.DBInstanceIdentifier),
-		DBInstanceArn:         aws.String(DBInstanceARN(s.region, rec.AccountID, rec.DBInstanceIdentifier)),
+		DBInstanceArn:         aws.String(FormatARN(ResourceKindDBInstance, s.region, rec.AccountID, rec.DBInstanceIdentifier)),
 		Region:                aws.String(s.region),
 		Status:                aws.String(status),
 		Engine:                aws.String(rec.Engine),

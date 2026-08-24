@@ -27,7 +27,7 @@ func awsTags(kv ...string) []*rds.Tag {
 func listTags(t *testing.T, h *createHarness, id string) map[string]string {
 	t.Helper()
 	out, err := h.svc.ListTagsForResource(t.Context(), &rds.ListTagsForResourceInput{
-		ResourceName: aws.String(DBInstanceARN(testRegion, testAccountID, id)),
+		ResourceName: aws.String(FormatARN(ResourceKindDBInstance, testRegion, testAccountID, id)),
 	}, testAccountID)
 	require.NoError(t, err)
 	got := make(map[string]string, len(out.TagList))
@@ -88,7 +88,7 @@ func TestAddTagsToResource_MergesAndOverwrites(t *testing.T) {
 	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
-	arn := aws.String(DBInstanceARN(testRegion, testAccountID, testDBInstanceID))
+	arn := aws.String(FormatARN(ResourceKindDBInstance, testRegion, testAccountID, testDBInstanceID))
 
 	_, err := h.svc.AddTagsToResource(t.Context(), &rds.AddTagsToResourceInput{
 		ResourceName: arn, Tags: awsTags("env", "staging", "team", "platform"),
@@ -111,7 +111,7 @@ func TestAddTagsToResource_DuplicateKeyInOneRequestKeepsTheLastValue(t *testing.
 	seedCreated(t, h, testDBInstanceID)
 
 	_, err := h.svc.AddTagsToResource(t.Context(), &rds.AddTagsToResourceInput{
-		ResourceName: aws.String(DBInstanceARN(testRegion, testAccountID, testDBInstanceID)),
+		ResourceName: aws.String(FormatARN(ResourceKindDBInstance, testRegion, testAccountID, testDBInstanceID)),
 		Tags:         awsTags("env", "staging", "env", "prod"),
 	}, testAccountID)
 	require.NoError(t, err)
@@ -123,7 +123,7 @@ func TestRemoveTagsFromResource_RemovesNamedKeysAndIgnoresAbsentOnes(t *testing.
 	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
-	arn := aws.String(DBInstanceARN(testRegion, testAccountID, testDBInstanceID))
+	arn := aws.String(FormatARN(ResourceKindDBInstance, testRegion, testAccountID, testDBInstanceID))
 
 	_, err := h.svc.AddTagsToResource(t.Context(), &rds.AddTagsToResourceInput{
 		ResourceName: arn, Tags: awsTags("env", "prod", "team", "platform"),
@@ -164,7 +164,7 @@ func TestTagActions_RejectInvalidTags(t *testing.T) {
 			seedCreated(t, h, testDBInstanceID)
 
 			_, err := h.svc.AddTagsToResource(t.Context(), &rds.AddTagsToResourceInput{
-				ResourceName: aws.String(DBInstanceARN(testRegion, testAccountID, testDBInstanceID)),
+				ResourceName: aws.String(FormatARN(ResourceKindDBInstance, testRegion, testAccountID, testDBInstanceID)),
 				Tags:         tc.tags,
 			}, testAccountID)
 			require.Error(t, err)
@@ -180,7 +180,7 @@ func TestAddTagsToResource_LimitAppliesToTheMergedResult(t *testing.T) {
 	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
-	arn := aws.String(DBInstanceARN(testRegion, testAccountID, testDBInstanceID))
+	arn := aws.String(FormatARN(ResourceKindDBInstance, testRegion, testAccountID, testDBInstanceID))
 
 	half := make([]string, 0, maxTagsPerResource)
 	for i := range maxTagsPerResource / 2 {
@@ -209,7 +209,7 @@ func TestAddTagsToResource_LimitAppliesToTheMergedResult(t *testing.T) {
 func TestTagActions_MissingResourceIsTheResourcesOwnFault(t *testing.T) {
 	t.Parallel()
 	h := newCreateHarness(t, "")
-	arn := aws.String(DBInstanceARN(testRegion, testAccountID, "no-such-db"))
+	arn := aws.String(FormatARN(ResourceKindDBInstance, testRegion, testAccountID, "no-such-db"))
 
 	_, err := h.svc.ListTagsForResource(t.Context(), &rds.ListTagsForResourceInput{ResourceName: arn}, testAccountID)
 	require.Error(t, err)
@@ -235,7 +235,7 @@ func TestTagActions_MissingSnapshotIsRejected(t *testing.T) {
 	h := newCreateHarness(t, "")
 
 	_, err := h.svc.ListTagsForResource(t.Context(), &rds.ListTagsForResourceInput{
-		ResourceName: aws.String(DBSnapshotARN(testRegion, testAccountID, "orders-db-snap")),
+		ResourceName: aws.String(FormatARN(ResourceKindDBSnapshot, testRegion, testAccountID, "orders-db-snap")),
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorDBSnapshotNotFound)
@@ -254,7 +254,7 @@ func TestListTagsForResource_AcceptsAnAutomatedSnapshotARN(t *testing.T) {
 	}))
 
 	out, err := h.svc.ListTagsForResource(t.Context(), &rds.ListTagsForResourceInput{
-		ResourceName: aws.String(DBSnapshotARN(testRegion, testAccountID, id)),
+		ResourceName: aws.String(FormatARN(ResourceKindDBSnapshot, testRegion, testAccountID, id)),
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, awsTags("retention", "automated"), out.TagList)
@@ -266,7 +266,7 @@ func TestTagActions_ForeignAccountARNIsRejected(t *testing.T) {
 	seedCreated(t, h, testDBInstanceID)
 
 	_, err := h.svc.ListTagsForResource(t.Context(), &rds.ListTagsForResourceInput{
-		ResourceName: aws.String(DBInstanceARN(testRegion, "210987654321", testDBInstanceID)),
+		ResourceName: aws.String(FormatARN(ResourceKindDBInstance, testRegion, "210987654321", testDBInstanceID)),
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
@@ -278,7 +278,7 @@ func TestTagWrites_ConcurrentAddsAndRemovesDoNotLoseEachOther(t *testing.T) {
 	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
-	arn := aws.String(DBInstanceARN(testRegion, testAccountID, testDBInstanceID))
+	arn := aws.String(FormatARN(ResourceKindDBInstance, testRegion, testAccountID, testDBInstanceID))
 
 	// Seeded first so the concurrent removes have something to take away.
 	const writers = 4

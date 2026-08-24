@@ -686,7 +686,7 @@ func (s *Service) projectDBSnapshot(rec *DBSnapshotRecord) *rds.DBSnapshot {
 	}
 	out := &rds.DBSnapshot{
 		DBSnapshotIdentifier: aws.String(rec.DBSnapshotIdentifier),
-		DBSnapshotArn:        aws.String(DBSnapshotARN(s.region, rec.AccountID, rec.DBSnapshotIdentifier)),
+		DBSnapshotArn:        aws.String(FormatARN(ResourceKindDBSnapshot, s.region, rec.AccountID, rec.DBSnapshotIdentifier)),
 		DBInstanceIdentifier: aws.String(rec.DBInstanceIdentifier),
 		SnapshotType:         aws.String(rec.SnapshotType),
 		Status:               aws.String(rec.Status),

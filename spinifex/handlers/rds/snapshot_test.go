@@ -142,7 +142,7 @@ func TestCreateDBSnapshot_QuiescesTheEngineAndRecordsTheSnapshot(t *testing.T) {
 	assert.Equal(t, testSnapshotID, aws.StringValue(out.DBSnapshot.DBSnapshotIdentifier))
 	assert.Equal(t, SnapshotStatusAvailable, aws.StringValue(out.DBSnapshot.Status))
 	assert.Equal(t, SnapshotTypeManual, aws.StringValue(out.DBSnapshot.SnapshotType))
-	assert.Equal(t, DBSnapshotARN(testRegion, testAccountID, testSnapshotID),
+	assert.Equal(t, FormatARN(ResourceKindDBSnapshot, testRegion, testAccountID, testSnapshotID),
 		aws.StringValue(out.DBSnapshot.DBSnapshotArn))
 
 	// The engine is held at a checkpoint for the length of the EC2 call and let
@@ -818,14 +818,14 @@ func TestDBSnapshotTags_ReadBackThroughBothPaths(t *testing.T) {
 	require.Len(t, out.DBSnapshot.TagList, 1)
 
 	listed, err := h.svc.ListTagsForResource(t.Context(), &rds.ListTagsForResourceInput{
-		ResourceName: aws.String(DBSnapshotARN(testRegion, testAccountID, testSnapshotID)),
+		ResourceName: aws.String(FormatARN(ResourceKindDBSnapshot, testRegion, testAccountID, testSnapshotID)),
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, listed.TagList, 1)
 	assert.Equal(t, "prod", aws.StringValue(listed.TagList[0].Value))
 
 	_, err = h.svc.AddTagsToResource(t.Context(), &rds.AddTagsToResourceInput{
-		ResourceName: aws.String(DBSnapshotARN(testRegion, testAccountID, testSnapshotID)),
+		ResourceName: aws.String(FormatARN(ResourceKindDBSnapshot, testRegion, testAccountID, testSnapshotID)),
 		Tags:         []*rds.Tag{{Key: aws.String("team"), Value: aws.String("payments")}},
 	}, testAccountID)
 	require.NoError(t, err)

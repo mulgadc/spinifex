@@ -77,7 +77,7 @@ func TestCreateDBParameterGroup_StoresAnEmptyGroup(t *testing.T) {
 	require.NotNil(t, group)
 	assert.Equal(t, testParameterGroup, aws.StringValue(group.DBParameterGroupName))
 	assert.Equal(t, "postgres18", aws.StringValue(group.DBParameterGroupFamily))
-	assert.Equal(t, DBParameterGroupARN(testRegion, testAccountID, testParameterGroup),
+	assert.Equal(t, FormatARN(ResourceKindDBParameterGroup, testRegion, testAccountID, testParameterGroup),
 		aws.StringValue(group.DBParameterGroupArn))
 
 	// A fresh group and the default group resolve to the same effective set,
@@ -737,8 +737,8 @@ func TestTagActions_ReachBothGroupTypes(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, arn := range []string{
-		DBSubnetGroupARN(testRegion, testAccountID, testSubnetGroup),
-		DBParameterGroupARN(testRegion, testAccountID, testParameterGroup),
+		FormatARN(ResourceKindDBSubnetGroup, testRegion, testAccountID, testSubnetGroup),
+		FormatARN(ResourceKindDBParameterGroup, testRegion, testAccountID, testParameterGroup),
 	} {
 		_, err := h.svc.AddTagsToResource(t.Context(), &rds.AddTagsToResourceInput{
 			ResourceName: aws.String(arn),

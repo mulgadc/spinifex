@@ -252,7 +252,7 @@ func TestCreateDBInstance_ProvisionsAndRecordsTheInstance(t *testing.T) {
 	require.NotNil(t, out.DBInstance)
 	assert.Equal(t, string(StatusCreating), aws.StringValue(out.DBInstance.DBInstanceStatus))
 	assert.Equal(t, "postgres", aws.StringValue(out.DBInstance.Engine))
-	assert.Equal(t, DBInstanceARN(testRegion, testAccountID, testDBInstanceID),
+	assert.Equal(t, FormatARN(ResourceKindDBInstance, testRegion, testAccountID, testDBInstanceID),
 		aws.StringValue(out.DBInstance.DBInstanceArn))
 	require.NotNil(t, out.DBInstance.Endpoint)
 	assert.Equal(t, testDBInstanceID+"."+testAccountID+"."+testRegion+".rds."+testBaseDomain,

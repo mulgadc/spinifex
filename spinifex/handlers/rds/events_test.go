@@ -52,7 +52,7 @@ func TestDescribeEvents_ReturnsARecordedEventWithItsSourceARN(t *testing.T) {
 	assert.Equal(t, EventSourceTypeDBInstance, aws.StringValue(events[0].SourceType))
 	assert.Equal(t, "DB instance stopped.", aws.StringValue(events[0].Message))
 	assert.Equal(t, []string{EventCategoryAvailability}, aws.StringValueSlice(events[0].EventCategories))
-	assert.Equal(t, DBInstanceARN(testRegion, testAccountID, testDBID), aws.StringValue(events[0].SourceArn))
+	assert.Equal(t, FormatARN(ResourceKindDBInstance, testRegion, testAccountID, testDBID), aws.StringValue(events[0].SourceArn))
 }
 
 // AWS's default window is one hour, so an event outside it is not returned even

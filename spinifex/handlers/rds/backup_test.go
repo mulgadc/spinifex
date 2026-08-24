@@ -734,7 +734,7 @@ func TestDescribeDBInstanceAutomatedBackups_ReportsTheBackupSet(t *testing.T) {
 	backup := out.DBInstanceAutomatedBackups[0]
 	assert.Equal(t, "active", aws.StringValue(backup.Status))
 	assert.Equal(t, testDBID, aws.StringValue(backup.DBInstanceIdentifier))
-	assert.Equal(t, DBInstanceARN(testRegion, testAccountID, testDBID), aws.StringValue(backup.DBInstanceArn))
+	assert.Equal(t, FormatARN(ResourceKindDBInstance, testRegion, testAccountID, testDBID), aws.StringValue(backup.DBInstanceArn))
 	assert.Equal(t, int64(7), aws.Int64Value(backup.BackupRetentionPeriod))
 	assert.Equal(t, testRegion, aws.StringValue(backup.Region))
 

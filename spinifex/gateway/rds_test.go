@@ -205,8 +205,8 @@ func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
 			query: "Action=CreateDBSnapshot&DBInstanceIdentifier=orders-db" +
 				"&DBSnapshotIdentifier=orders-db-nightly",
 			resources: handlers_iam.StringOrArr{
-				handlers_rds.DBInstanceARN("ap-southeast-2", rdsTestAccountID, "orders-db"),
-				handlers_rds.DBSnapshotARN("ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
+				handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db"),
+				handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
 			},
 		},
 		{
@@ -215,8 +215,8 @@ func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
 			query: "Action=RestoreDBInstanceFromDBSnapshot&DBSnapshotIdentifier=orders-db-nightly" +
 				"&DBInstanceIdentifier=orders-db-restored",
 			resources: handlers_iam.StringOrArr{
-				handlers_rds.DBSnapshotARN("ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
-				handlers_rds.DBInstanceARN("ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
+				handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
+				handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
 			},
 		},
 	}
@@ -238,8 +238,8 @@ func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
 }
 
 func TestRDSRequest_SnapshotActionsUseOnePolicySnapshot(t *testing.T) {
-	source := handlers_rds.DBInstanceARN("ap-southeast-2", rdsTestAccountID, "orders-db")
-	target := handlers_rds.DBSnapshotARN("ap-southeast-2", rdsTestAccountID, "orders-db-nightly")
+	source := handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db")
+	target := handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly")
 	resolution := 0
 	gw, probe := newRDSGatewayWithResolver(func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
 		resolution++
@@ -269,13 +269,13 @@ func TestRDSRequest_SnapshotActionsHonorTargetDeny(t *testing.T) {
 			name: "create snapshot", action: "rds:CreateDBSnapshot",
 			query: "Action=CreateDBSnapshot&DBInstanceIdentifier=orders-db" +
 				"&DBSnapshotIdentifier=orders-db-nightly",
-			target: handlers_rds.DBSnapshotARN("ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
+			target: handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
 		},
 		{
 			name: "restore snapshot", action: "rds:RestoreDBInstanceFromDBSnapshot",
 			query: "Action=RestoreDBInstanceFromDBSnapshot&DBSnapshotIdentifier=orders-db-nightly" +
 				"&DBInstanceIdentifier=orders-db-restored",
-			target: handlers_rds.DBInstanceARN("ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
+			target: handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
 		},
 	}
 	for _, tt := range tests {
@@ -314,7 +314,7 @@ func TestRDSRequest_CrossAccountARNIsRejectedNotEvaluated(t *testing.T) {
 		t.Error("a cross-account ARN must never reach policy evaluation")
 		return nil, nil
 	})
-	foreign := handlers_rds.DBInstanceARN("ap-southeast-2", "999988887777", "orders-db")
+	foreign := handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", "999988887777", "orders-db")
 	err := gw.RDS_Request(httptest.NewRecorder(),
 		setupRDSUserRequest("Action=ListTagsForResource&ResourceName="+foreign, rdsTestAccountID))
 	require.Error(t, err)

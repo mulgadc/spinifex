@@ -815,7 +815,7 @@ func TestReconciler_ClusterLeaseFollowsLeadership(t *testing.T) {
 	require.NotNil(t, release)
 	assert.False(t, ok, "a node that does not hold the lease does not sweep")
 
-	h.rec.evaluateLeadership(t.Context())
+	require.True(t, h.rec.lease.TryAcquire(t.Context()))
 	release, ok = h.rec.AcquireClusterLease()
 	require.True(t, ok)
 

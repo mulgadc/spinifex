@@ -368,47 +368,34 @@ func TestReconciler_ElectsASingleLeader(t *testing.T) {
 	h := newReconcileHarness(t)
 	other := NewReconciler(h.svc, "node-b")
 
-	assert.True(t, h.rec.acquireOrRefresh(t.Context()))
-	assert.False(t, other.acquireOrRefresh(t.Context()))
+	assert.True(t, h.rec.lease.TryAcquire(t.Context()))
+	assert.False(t, other.lease.TryAcquire(t.Context()))
 
-	// The holder refreshes its own lease rather than losing it to itself.
-	assert.True(t, h.rec.acquireOrRefresh(t.Context()))
+	// The holder reports the leasership it already holds, and does not hand it away.
+	assert.True(t, h.rec.lease.TryAcquire(t.Context()))
 
 	// Releasing on shutdown hands over immediately instead of after the TTL.
-	h.rec.relinquish()
-	assert.True(t, other.acquireOrRefresh(t.Context()))
-	assert.False(t, h.rec.acquireOrRefresh(t.Context()))
+	h.rec.lease.Release(t.Context())
+	assert.True(t, other.lease.TryAcquire(t.Context()))
+	assert.False(t, h.rec.lease.TryAcquire(t.Context()))
 }
 
-func TestReconciler_RefreshesLeadershipOnAnIndependentLoop(t *testing.T) {
+func TestReconciler_RunHoldsLeadershipIndependentlyOfTheReconcileLoop(t *testing.T) {
 	t.Parallel()
 	h := newReconcileHarness(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		h.rec.maintainLeadership(ctx, 5*time.Millisecond)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Error("leadership refresh did not stop after cancellation")
-		}
-	})
+	go func() { defer close(done); h.rec.Run(ctx) }()
 
-	require.Eventually(t, h.rec.isLeader, time.Second, 5*time.Millisecond)
-	kv, err := h.rec.leaderBucket(t.Context())
-	require.NoError(t, err)
-	entry, err := kv.Get(t.Context(), reconcilerLeaderKey)
-	require.NoError(t, err)
-	firstRevision := entry.Revision()
+	require.Eventually(t, h.rec.isLeader, 2*time.Second, 10*time.Millisecond,
+		"Run must elect without waiting for a reconcile tick")
 
-	require.Eventually(t, func() bool {
-		entry, err := kv.Get(t.Context(), reconcilerLeaderKey)
-		return err == nil && entry.Revision() > firstRevision
-	}, time.Second, 5*time.Millisecond, "the lease revision must advance without the reconcile loop driving it")
+	cancel()
+	<-done
+
+	other := NewReconciler(h.svc, "node-b")
+	assert.True(t, other.lease.TryAcquire(t.Context()),
+		"Run returned with the lease key still present")
 }
 
 // A node that never won the lease must not delete the holder's key on shutdown.
@@ -417,8 +404,8 @@ func TestReconciler_RelinquishOnlyReleasesItsOwnLease(t *testing.T) {
 	h := newReconcileHarness(t)
 	other := NewReconciler(h.svc, "node-b")
 
-	require.True(t, h.rec.acquireOrRefresh(t.Context()))
-	other.relinquish()
+	require.True(t, h.rec.lease.TryAcquire(t.Context()))
+	other.lease.Release(t.Context())
 
-	assert.False(t, other.acquireOrRefresh(t.Context()), "the original holder still owns the lease")
+	assert.False(t, other.lease.TryAcquire(t.Context()), "the original holder still owns the lease")
 }

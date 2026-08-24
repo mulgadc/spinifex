@@ -34,6 +34,7 @@ Thumbs.db
 # Environment
 .env
 .venv/
+.cache/
 
 # VScode
 .vscode/

@@ -1,7 +1,12 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -70,8 +75,6 @@ function CreateSubnet() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateSubnetFormData) => {
     const result = await createMutation.mutateAsync(data)
@@ -201,7 +204,7 @@ function CreateSubnet() {
           />
         </Field>
 
-        <CliCommandPanel commands={buildCreateSubnetCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreateSubnetCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
@@ -216,14 +219,11 @@ function CreateSubnet() {
 }
 
 function buildCreateSubnetCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateSubnetFormData>,
 ): CliCommand[] {
-  const rawVpcId = watch("vpcId")
-  const vpcId = typeof rawVpcId === "string" ? rawVpcId : ""
-  const rawCidr = watch("cidrBlock")
-  const cidr = typeof rawCidr === "string" ? rawCidr : ""
-  const rawAz = watch("availabilityZone")
-  const az = typeof rawAz === "string" ? rawAz : ""
+  const vpcId = values.vpcId ?? ""
+  const cidr = values.cidrBlock ?? ""
+  const az = values.availabilityZone ?? ""
 
   const parts = [
     {
@@ -245,7 +245,7 @@ function buildCreateSubnetCommands(
 
   const commands: CliCommand[] = [{ label: "Create Subnet", parts }]
 
-  if (watch("mapPublicIpOnLaunch") === true) {
+  if (values.mapPublicIpOnLaunch === true) {
     commands.push({
       label: "Enable auto-assign public IPv4",
       parts: [

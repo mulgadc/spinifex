@@ -1,6 +1,10 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useForm, useWatch } from "react-hook-form"
+import {
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -40,8 +44,6 @@ function CreateBucket() {
   })
 
   const values = useWatch({ control })
-  const cliWatch = (name?: string): unknown =>
-    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateBucketFormData) => {
     await createMutation.mutateAsync(data)
@@ -76,7 +78,7 @@ function CreateBucket() {
           <FieldError errors={[errors.bucketName]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateBucketCommands(cliWatch)} />
+        <CliCommandPanel commands={buildCreateBucketCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
@@ -91,10 +93,9 @@ function CreateBucket() {
 }
 
 function buildCreateBucketCommands(
-  watch: (name?: string) => unknown,
+  values: DeepPartialSkipArrayKey<CreateBucketFormData>,
 ): CliCommand[] {
-  const rawBucket = watch("bucketName")
-  const bucket = typeof rawBucket === "string" ? rawBucket : ""
+  const bucket = values.bucketName ?? ""
 
   return [
     {

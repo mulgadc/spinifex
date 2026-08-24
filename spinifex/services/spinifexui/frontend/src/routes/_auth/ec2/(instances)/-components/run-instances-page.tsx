@@ -4,7 +4,12 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { ChevronDown } from "lucide-react"
 import { useEffect } from "react"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  Controller,
+  useForm,
+  type UseFormWatch,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -935,21 +940,13 @@ function resolveTemplateVersion(
 }
 
 function buildRunInstancesCommands(
-  watch: (name?: string) => unknown,
+  watch: UseFormWatch<CreateInstanceFormData>,
   vpcId: string | undefined,
 ): CliCommand[] {
-  const rawLaunchTemplateId = watch("launchTemplateId")
-  const launchTemplateId =
-    typeof rawLaunchTemplateId === "string" ? rawLaunchTemplateId : ""
+  const launchTemplateId = watch("launchTemplateId") ?? ""
   if (launchTemplateId) {
-    const rawTemplateVersion = watch("launchTemplateVersion")
-    const templateVersion =
-      typeof rawTemplateVersion === "string" && rawTemplateVersion
-        ? rawTemplateVersion
-        : "$Default"
-    const rawTemplateCount = watch("count")
-    const templateCount =
-      typeof rawTemplateCount === "number" ? rawTemplateCount : 0
+    const templateVersion = watch("launchTemplateVersion") || "$Default"
+    const templateCount = watch("count") ?? 0
     return [
       {
         label: "Run Instances",
@@ -970,34 +967,16 @@ function buildRunInstancesCommands(
     ]
   }
 
-  const rawImageId = watch("imageId")
-  const imageId = typeof rawImageId === "string" ? rawImageId : ""
-  const rawInstanceType = watch("instanceType")
-  const instanceType =
-    typeof rawInstanceType === "string" ? rawInstanceType : ""
-  const rawKeyName = watch("keyName")
-  const keyName = typeof rawKeyName === "string" ? rawKeyName : ""
-  const rawSubnetId = watch("subnetId")
-  const subnetId = typeof rawSubnetId === "string" ? rawSubnetId : ""
-  const rawPlacementGroupName = watch("placementGroupName")
-  const placementGroupName =
-    typeof rawPlacementGroupName === "string" ? rawPlacementGroupName : ""
-  const rawCount = watch("count")
-  const count = typeof rawCount === "number" ? rawCount : 0
-  const rawRootDeviceName = watch("rootDeviceName")
-  const rootDeviceName =
-    typeof rawRootDeviceName === "string" ? rawRootDeviceName : ""
-  const rawRootVolumeSize = watch("rootVolumeSize")
-  const rootVolumeSize =
-    typeof rawRootVolumeSize === "number" ? rawRootVolumeSize : undefined
-  const rawRootVolumeType = watch("rootVolumeType")
-  const rootVolumeType =
-    typeof rawRootVolumeType === "string" ? rawRootVolumeType : ""
-  const rawRootDeleteOnTermination = watch("rootDeleteOnTermination")
-  const rootDeleteOnTermination =
-    typeof rawRootDeleteOnTermination === "boolean"
-      ? rawRootDeleteOnTermination
-      : true
+  const imageId = watch("imageId") ?? ""
+  const instanceType = watch("instanceType") ?? ""
+  const keyName = watch("keyName") ?? ""
+  const subnetId = watch("subnetId") ?? ""
+  const placementGroupName = watch("placementGroupName") ?? ""
+  const count = watch("count") ?? 0
+  const rootDeviceName = watch("rootDeviceName") ?? ""
+  const rootVolumeSize = watch("rootVolumeSize")
+  const rootVolumeType = watch("rootVolumeType")
+  const rootDeleteOnTermination = watch("rootDeleteOnTermination")
 
   const parts = [
     {
@@ -1033,17 +1012,11 @@ function buildRunInstancesCommands(
 
   // Security groups — create-new emits create + authorize commands and feeds
   // $SG_ID into run-instances; select-existing passes the chosen IDs.
-  const rawSgMode = watch("securityGroupMode")
-  const sgMode = typeof rawSgMode === "string" ? rawSgMode : "create"
-  const rawNewSgName = watch("newSgName")
-  const sgName = typeof rawNewSgName === "string" ? rawNewSgName : ""
-  const rawNewSgDesc = watch("newSgDescription")
-  const sgDesc = typeof rawNewSgDesc === "string" ? rawNewSgDesc : ""
-  const rawRuleSource = watch("ruleSource")
-  const ruleSource =
-    typeof rawRuleSource === "string" ? rawRuleSource : "anywhere"
-  const rawCustomCidr = watch("customCidr")
-  const customCidr = typeof rawCustomCidr === "string" ? rawCustomCidr : ""
+  const sgMode = watch("securityGroupMode") || "create"
+  const sgName = watch("newSgName") ?? ""
+  const sgDesc = watch("newSgDescription") ?? ""
+  const ruleSource = watch("ruleSource") || "anywhere"
+  const customCidr = watch("customCidr") ?? ""
   const sgCommands: CliCommand[] = []
   if (sgMode === "create") {
     sgCommands.push({
@@ -1103,10 +1076,7 @@ function buildRunInstancesCommands(
       { type: "value" as const, value: " $SG_ID" },
     )
   } else {
-    const rawSgIds = watch("securityGroupIds")
-    const sgIds = Array.isArray(rawSgIds)
-      ? rawSgIds.filter((id): id is string => typeof id === "string")
-      : []
+    const sgIds = watch("securityGroupIds") ?? []
     if (sgIds.length > 0) {
       parts.push(
         { type: "flag" as const, value: " \\\n  --security-group-ids" },
@@ -1117,17 +1087,21 @@ function buildRunInstancesCommands(
 
   const hasStorageOverride =
     rootVolumeSize !== undefined ||
-    rawRootVolumeType !== undefined ||
-    rawRootDeleteOnTermination !== undefined
+    rootVolumeType !== undefined ||
+    rootDeleteOnTermination !== undefined
   if (hasStorageOverride) {
-    const ebs: Record<string, unknown> = {}
+    const ebs: {
+      VolumeSize?: number
+      VolumeType?: string
+      DeleteOnTermination?: boolean
+    } = {}
     if (rootVolumeSize !== undefined) {
       ebs.VolumeSize = rootVolumeSize
     }
     if (rootVolumeType) {
       ebs.VolumeType = rootVolumeType
     }
-    if (rawRootDeleteOnTermination !== undefined) {
+    if (rootDeleteOnTermination !== undefined) {
       ebs.DeleteOnTermination = rootDeleteOnTermination
     }
     const bdm = JSON.stringify([

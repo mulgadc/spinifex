@@ -21,7 +21,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.73
-	github.com/mulgadc/bluebottle v1.17.0
+	github.com/mulgadc/bluebottle v1.17.1-0.20260824024913-88edf0ac2a24
 	github.com/mulgadc/northstar v1.17.0
 	github.com/mulgadc/predastore v1.17.1-0.20260820015438-7883d5073cf0
 	github.com/mulgadc/viperblock v1.17.1-0.20260819232234-77b4fbe47481
@@ -62,10 +62,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.37 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.38 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.17 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.29 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.30 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.37 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.37 // indirect
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.38 // indirect
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.2 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.5.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.33.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.6 // indirect
@@ -74,7 +74,7 @@ require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/boltdb/bolt v1.3.1 // indirect
-	github.com/buraksezer/consistent v0.10.0 // indirect
+	github.com/buraksezer/consistent v1.0.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cenkalti/hub v1.0.2 // indirect
 	github.com/cenkalti/rpc2 v1.0.5 // indirect
@@ -134,7 +134,7 @@ require (
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
-	github.com/klauspost/reedsolomon v1.14.1 // indirect
+	github.com/klauspost/reedsolomon v1.14.2 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/lithammer/fuzzysearch v1.1.8 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect

@@ -22,13 +22,13 @@ interface CliCommandPanelProps {
   commands: CliCommand[]
 }
 
-const partStyles: Record<CommandPartType, string> = {
+const partStyles = {
   bin: "text-tactical-cyan font-semibold",
   flag: "text-tactical-amber",
   value: "text-foreground",
   comment: "text-muted-foreground italic",
   variable: "text-tactical-green font-semibold",
-}
+} satisfies Record<CommandPartType, string>
 
 // Stands in for a value the form has not been given yet, so the panel shows the
 // shape of the command rather than one missing a flag's argument.

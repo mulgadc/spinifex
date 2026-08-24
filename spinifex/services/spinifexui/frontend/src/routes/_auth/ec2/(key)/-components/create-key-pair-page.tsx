@@ -160,8 +160,7 @@ function buildCreateKeyPairCommands(
   values: DeepPartialSkipArrayKey<CreateKeyPairData>,
 ): CliCommand[] {
   const keyName = values.keyName ?? ""
-  const rawKeyType = values.keyType
-  const keyType = typeof rawKeyType === "string" ? rawKeyType : "rsa"
+  const keyType = values.keyType ?? "rsa"
 
   return [
     {

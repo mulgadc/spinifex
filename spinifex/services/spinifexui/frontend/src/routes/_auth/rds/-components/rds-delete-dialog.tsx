@@ -7,6 +7,7 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 interface DeleteMutation {
   error: Error | null
   isPending: boolean
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- the dialog awaits the delete and never reads its payload
   mutateAsync: (identifier: string) => Promise<unknown>
   reset: () => void
 }

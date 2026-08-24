@@ -26,6 +26,7 @@ export default defineConfig({
     "@tanstack/query/stable-query-client": "error",
     "@tanstack/router/create-route-property-order": "error",
     "@tanstack/router/route-param-names": "error",
+    "anti-slop/require-safety-comment-for-type-assertion": "off",
     "eslint/complexity": "off",
     "eslint/func-style": [
       "error",
@@ -101,7 +102,6 @@ export default defineConfig({
       rules: {
         "anti-slop/no-module-mocking": "off",
         "anti-slop/no-unknown-returns": "off",
-        "anti-slop/require-safety-comment-for-type-assertion": "off",
         "eslint/prefer-destructuring": "off",
         "eslint/require-await": "off",
         "import/first": "off",

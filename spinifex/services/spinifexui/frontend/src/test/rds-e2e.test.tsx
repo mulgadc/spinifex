@@ -136,6 +136,7 @@ const { sdk } = vi.hoisted(() => {
   // Two describes report `creating` before the instance settles, so the poll
   // path is exercised rather than the instance appearing available at once.
   const DESCRIBES_WHILE_CREATING = 2
+  // oxlint-disable-next-line anti-slop/no-known-value-widening -- keyed by the engine the command names, not by a closed set
   const ENGINE_PORTS: Record<string, number> = { postgres: 5432, mariadb: 3306 }
 
   const state = {
@@ -178,23 +179,22 @@ const { sdk } = vi.hoisted(() => {
     }
   }
 
-  const handlers = new Map<string, (input: unknown) => unknown>([
+  const handlers = new Map<string, (i: never) => unknown>([
     [
       "CreateDBInstanceCommand",
-      (input) => {
-        reject(input, REJECTED_ON_CREATE, "CreateDBInstance")
-        const i = input as {
-          DBInstanceIdentifier: string
-          Engine: string
-          EngineVersion?: string
-          DBInstanceClass: string
-          AllocatedStorage: number
-          MasterUsername: string
-          DBName?: string
-          Port?: number
-          DeletionProtection?: boolean
-          BackupRetentionPeriod?: number
-        }
+      (i: {
+        DBInstanceIdentifier: string
+        Engine: string
+        EngineVersion?: string
+        DBInstanceClass: string
+        AllocatedStorage: number
+        MasterUsername: string
+        DBName?: string
+        Port?: number
+        DeletionProtection?: boolean
+        BackupRetentionPeriod?: number
+      }) => {
+        reject(i, REJECTED_ON_CREATE, "CreateDBInstance")
         if (
           state.instances.some((s) => s.identifier === i.DBInstanceIdentifier)
         ) {
@@ -220,8 +220,7 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "DescribeDBInstancesCommand",
-      (input) => {
-        const i = input as { DBInstanceIdentifier?: string }
+      (i: { DBInstanceIdentifier?: string }) => {
         const matching = i.DBInstanceIdentifier
           ? [find(i.DBInstanceIdentifier)]
           : state.instances
@@ -247,15 +246,14 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "ModifyDBInstanceCommand",
-      (input) => {
-        reject(input, REJECTED_ON_MODIFY, "ModifyDBInstance")
-        const i = input as {
-          DBInstanceIdentifier: string
-          DBInstanceClass?: string
-          AllocatedStorage?: number
-          DeletionProtection?: boolean
-          BackupRetentionPeriod?: number
-        }
+      (i: {
+        DBInstanceIdentifier: string
+        DBInstanceClass?: string
+        AllocatedStorage?: number
+        DeletionProtection?: boolean
+        BackupRetentionPeriod?: number
+      }) => {
+        reject(i, REJECTED_ON_MODIFY, "ModifyDBInstance")
         const instance = find(i.DBInstanceIdentifier)
         if (
           i.AllocatedStorage !== undefined &&
@@ -279,12 +277,11 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "DeleteDBInstanceCommand",
-      (input) => {
-        const i = input as {
-          DBInstanceIdentifier: string
-          SkipFinalSnapshot?: boolean
-          FinalDBSnapshotIdentifier?: string
-        }
+      (i: {
+        DBInstanceIdentifier: string
+        SkipFinalSnapshot?: boolean
+        FinalDBSnapshotIdentifier?: string
+      }) => {
         const instance = find(i.DBInstanceIdentifier)
         if (instance.deletionProtection) {
           throw new Error("InvalidParameterCombination: deletion protection")
@@ -308,11 +305,7 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "CreateDBSnapshotCommand",
-      (input) => {
-        const i = input as {
-          DBSnapshotIdentifier: string
-          DBInstanceIdentifier: string
-        }
+      (i: { DBSnapshotIdentifier: string; DBInstanceIdentifier: string }) => {
         if (i.DBSnapshotIdentifier.startsWith("rds:")) {
           throw new Error("InvalidParameterValue: rds: is reserved")
         }
@@ -329,11 +322,7 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "DescribeDBSnapshotsCommand",
-      (input) => {
-        const i = input as {
-          DBSnapshotIdentifier?: string
-          DBInstanceIdentifier?: string
-        }
+      (i: { DBSnapshotIdentifier?: string; DBInstanceIdentifier?: string }) => {
         let matching = state.snapshots
         if (i.DBSnapshotIdentifier) {
           matching = [findSnapshot(i.DBSnapshotIdentifier)]
@@ -358,8 +347,7 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "DeleteDBSnapshotCommand",
-      (input) => {
-        const i = input as { DBSnapshotIdentifier: string }
+      (i: { DBSnapshotIdentifier: string }) => {
         if (i.DBSnapshotIdentifier.startsWith("rds:")) {
           throw new Error("InvalidParameterValue: rds: is reserved")
         }
@@ -385,16 +373,15 @@ const { sdk } = vi.hoisted(() => {
     ],
     [
       "RestoreDBInstanceFromDBSnapshotCommand",
-      (input) => {
-        reject(input, REJECTED_ON_RESTORE, "RestoreDBInstanceFromDBSnapshot")
-        const i = input as {
-          DBInstanceIdentifier: string
-          DBSnapshotIdentifier: string
-          DBInstanceClass: string
-          AllocatedStorage?: number
-          Port?: number
-          DeletionProtection?: boolean
-        }
+      (i: {
+        DBInstanceIdentifier: string
+        DBSnapshotIdentifier: string
+        DBInstanceClass: string
+        AllocatedStorage?: number
+        Port?: number
+        DeletionProtection?: boolean
+      }) => {
+        reject(i, REJECTED_ON_RESTORE, "RestoreDBInstanceFromDBSnapshot")
         const snapshot = findSnapshot(i.DBSnapshotIdentifier)
         if (snapshot.status !== "available") {
           throw new Error(
@@ -437,7 +424,7 @@ const { sdk } = vi.hoisted(() => {
         `No E2E handler for SDK command ${command.constructor.name}`,
       )
     }
-    return handler(command.input)
+    return handler(command.input as never)
   })
 
   return {

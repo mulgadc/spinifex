@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, redirect } from "@tanstack/react-router"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 
@@ -31,6 +31,7 @@ import {
   setSessionCredentials,
 } from "@/lib/auth"
 import { clearClients } from "@/lib/awsClient"
+import { startConsoleHandoff } from "@/lib/console-handoff"
 import { isDirectHostAccess } from "@/lib/host-access"
 import { exchangeForSession } from "@/lib/sts"
 
@@ -39,6 +40,14 @@ import { exchangeForSession } from "@/lib/sts"
 /* oxlint-disable promise/prefer-await-to-then, unicorn/no-useless-undefined -- zod's .catch() supplies a schema fallback, not a promise handler */
 const searchSchema = z.object({
   reason: z.literal("expired").optional().catch(undefined),
+  // The router's search parser coerces `handoff=1` to the number 1, so accept
+  // either and normalise. Matching only the string strips the param from the
+  // URL and the handoff then silently never runs.
+  handoff: z
+    .union([z.literal("1"), z.literal(1)])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : ("1" as const)))
+    .catch(undefined),
 })
 /* oxlint-enable promise/prefer-await-to-then, unicorn/no-useless-undefined */
 
@@ -53,8 +62,27 @@ export const Route = createFileRoute("/login")({
 })
 
 function LoginPage() {
-  const { reason } = Route.useSearch()
+  const { reason, handoff } = Route.useSearch()
   const [authError, setAuthError] = useState<string | null>(null)
+  // When mulgadc.com/signup opens us with ?handoff=1 it will postMessage the
+  // new account's credentials; receive them and sign in without the form. If
+  // nothing arrives (opened directly, or the exchange fails) we fall back to
+  // the form, so this is invisible when unused.
+  const [handingOff, setHandingOff] = useState(handoff === "1")
+  useEffect(
+    () =>
+      handoff === "1"
+        ? startConsoleHandoff({
+            onFailure: () => {
+              setHandingOff(false)
+              setAuthError(
+                "We couldn't sign you in automatically. Please enter your credentials.",
+              )
+            },
+          })
+        : undefined,
+    [handoff],
+  )
   const {
     register,
     handleSubmit,
@@ -79,6 +107,28 @@ function LoginPage() {
         "Invalid credentials. Please check your Access Key ID and Secret Access Key.",
       )
     }
+  }
+
+  if (handingOff) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <div className="flex w-full max-w-sm flex-col gap-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Signing you in…</CardTitle>
+              <CardDescription>
+                Connecting your new Spinifex account to the console.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                One moment — no need to copy your keys.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    )
   }
 
   return (

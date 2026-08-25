@@ -3,10 +3,9 @@ package gateway_ecs
 import (
 	"errors"
 	"log/slog"
-	"slices"
 	"sort"
-	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
@@ -20,6 +19,12 @@ const anyResource = "*"
 // cannot resolve without a store read. The literal "*" is a value, so it matches
 // the AWS-documented spelling without widening a grant.
 const anyRevision = "*"
+
+// Stands in for the name of every resource of a type, where a describe with no
+// list enumerates the account. It is a value, so a policy scoped to the type
+// matches it where "*" would not; a Deny naming one member cannot fire, which
+// would need a store read the gate does not do.
+const anyName = "*"
 
 // Where an action's resource is named in the JSON body. Cluster-scoped sources
 // read the request's "cluster" field alongside their own identifier.
@@ -75,10 +80,11 @@ var ecsScopes = map[string][]resourceSource{
 	"DescribeTasks": {sourceTasks},
 	// Internal agent report; it names the task it reports devices for.
 	"ReportTaskGPU": {sourceTask},
-	// AWS documents no resource type for ListTasks, and a state change names
-	// its task by ARN in a field the handler resolves rather than the gate.
-	"ListTasks":             {sourceAny},
-	"SubmitTaskStateChange": {sourceAny},
+	// The agent's state report names the task it reports, in the same two
+	// fields the handler resolves it from.
+	"SubmitTaskStateChange": {sourceTask},
+	// AWS documents no resource type for ListTasks.
+	"ListTasks": {sourceAny},
 
 	// Container instances.
 	"DeregisterContainerInstance":   {sourceContainerInstance},
@@ -141,8 +147,13 @@ func ResourceARNs(action, region, accountID string, body []byte) ([]string, erro
 		return nil, errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	scope := bodyscope.Parse(action, body)
+	scope, err := bodyscope.Parse(action, body)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
 	resources := make([]string, 0, len(sources))
+	seen := make(map[string]struct{}, len(sources))
 	for _, source := range sources {
 		resolved, err := resolve(source, action, region, accountID, scope)
 		if err != nil {
@@ -151,9 +162,16 @@ func ResourceARNs(action, region, accountID string, body []byte) ([]string, erro
 		for _, resource := range resolved {
 			// An unresolved member drops out rather than contributing "*", which
 			// no scoped Allow can match and which would deny a call AWS permits.
-			if resource == anyResource || slices.Contains(resources, resource) {
+			if resource == anyResource {
 				continue
 			}
+			if _, duplicate := seen[resource]; duplicate {
+				continue
+			}
+			if len(resources) >= awsec2query.MaxSliceLen {
+				return nil, errors.New(awserrors.ErrorMalformedQueryString)
+			}
+			seen[resource] = struct{}{}
 			resources = append(resources, resource)
 		}
 	}
@@ -180,9 +198,15 @@ func resolve(source resourceSource, action, region, accountID string, scope body
 		return one(clusterARN(region, accountID, name)), nil
 
 	case sourceClusters:
-		return each(scope.Strings("clusters"), func(ref string) string {
+		refs := scope.Strings("clusters")
+		if len(refs) == 0 {
+			// A describe naming no cluster describes the default one, exactly
+			// as the handler resolves it.
+			return one(clusterARN(region, accountID, cluster)), nil
+		}
+		return each(refs, func(ref string) string {
 			return clusterARN(region, accountID, handlers_ecs.ClusterShortName(ref))
-		}), nil
+		})
 
 	case sourceService:
 		return one(serviceARN(region, accountID, cluster, scope.String("service"))), nil
@@ -193,7 +217,7 @@ func resolve(source resourceSource, action, region, accountID string, scope body
 	case sourceServices:
 		return each(scope.Strings("services"), func(ref string) string {
 			return serviceARN(region, accountID, cluster, ref)
-		}), nil
+		})
 
 	case sourceTask:
 		return one(taskARN(region, accountID, cluster, scope.String("task"))), nil
@@ -201,7 +225,7 @@ func resolve(source resourceSource, action, region, accountID string, scope body
 	case sourceTasks:
 		return each(scope.Strings("tasks"), func(ref string) string {
 			return taskARN(region, accountID, cluster, ref)
-		}), nil
+		})
 
 	case sourceContainerInstance:
 		return one(containerInstanceARN(region, accountID, cluster, scope.String("containerInstance"))), nil
@@ -209,7 +233,7 @@ func resolve(source resourceSource, action, region, accountID string, scope body
 	case sourceContainerInstances:
 		return each(scope.Strings("containerInstances"), func(ref string) string {
 			return containerInstanceARN(region, accountID, cluster, ref)
-		}), nil
+		})
 
 	case sourceTaskDefinition:
 		return one(taskDefARN(region, accountID, scope.String("taskDefinition"))), nil
@@ -221,9 +245,14 @@ func resolve(source resourceSource, action, region, accountID string, scope body
 		return one(capacityProviderARN(region, accountID, scope.String("capacityProvider"))), nil
 
 	case sourceCapacityProviders:
-		return each(scope.Strings("capacityProviders"), func(ref string) string {
+		refs := scope.Strings("capacityProviders")
+		if len(refs) == 0 {
+			// A describe naming none enumerates every provider in the account.
+			return one(capacityProviderARN(region, accountID, anyName)), nil
+		}
+		return each(refs, func(ref string) string {
 			return capacityProviderARN(region, accountID, ref)
-		}), nil
+		})
 
 	case sourceTagARN:
 		return one(tagARN(region, accountID, scope.String("resourceArn"))), nil
@@ -238,12 +267,17 @@ func one(resource string) []string {
 	return []string{resource}
 }
 
-func each(refs []string, build func(string) string) []string {
+// each builds one ARN per reference, capped so a body-supplied list cannot make
+// the gate do unbounded work ahead of the authorization decision.
+func each(refs []string, build func(string) string) ([]string, error) {
+	if len(refs) > awsec2query.MaxSliceLen {
+		return nil, errors.New(awserrors.ErrorMalformedQueryString)
+	}
 	out := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		out = append(out, build(ref))
 	}
-	return out
+	return out, nil
 }
 
 // An absent identifier authorizes account-wide, so a malformed request stays
@@ -305,24 +339,16 @@ func taskDefARN(region, accountID, ref string) string {
 
 // tagARN re-anchors the caller-supplied resource ARN on gw.Region and the
 // caller's account, because the tag handler ignores those segments and operates
-// in the caller's own account bucket.
+// in the caller's own account bucket. The handler's own parser decides which
+// ARNs are acceptable, so the gate cannot come to name a different object.
 func tagARN(region, accountID, resourceARN string) string {
 	if region == "" || accountID == "" {
 		return anyResource
 	}
-	parts := strings.SplitN(resourceARN, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" || parts[2] != "ecs" {
-		return anyResource
-	}
-	kind, resource, found := strings.Cut(parts[5], "/")
-	if !found || resource == "" {
-		return anyResource
-	}
-	switch kind {
-	case "cluster", "task-definition", "service", "task", "container-instance":
-		return "arn:aws:ecs:" + region + ":" + accountID + ":" + parts[5]
-	default:
+	segment, err := handlers_ecs.ResourceARNSegment(resourceARN)
+	if err != nil {
 		// An ARN the tag handler rejects stays its own validation fault.
 		return anyResource
 	}
+	return "arn:aws:ecs:" + region + ":" + accountID + ":" + segment
 }

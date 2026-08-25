@@ -174,7 +174,11 @@ func resolve(source resourceSource, action, region, accountID string, params []s
 		return clusterARN(region, param(params, 1), param(params, 0)), nil
 
 	case sourceBodyAccountCluster:
-		return clusterARN(region, bodyscope.Parse(action, body).String("accountId"), param(params, 0)), nil
+		scope, err := bodyscope.Parse(action, body)
+		if err != nil {
+			return "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		return clusterARN(region, scope.String("accountId"), param(params, 0)), nil
 
 	case sourceNodegroup:
 		return nodegroupARN(region, accountID, param(params, 0), param(params, 1)), nil

@@ -139,7 +139,11 @@ func ResourceARNs(service, action, region, accountID string, params []string, bo
 		return nil, errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	scope := bodyscope.Parse(action, body)
+	scope, err := bodyscope.Parse(action, body)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
 	resources := make([]string, 0, len(sources))
 	for _, source := range sources {
 		resource, err := resolve(source, service, action, region, accountID, params, scope)
@@ -192,10 +196,15 @@ func resolve(source resourceSource, service, action, region, accountID string, p
 		return FormatKnowledgeBaseARN(region, accountID, anyID), nil
 
 	case sourceKnowledgeBaseBody:
-		id := scope.Object("retrieveAndGenerateConfiguration").
-			Object("knowledgeBaseConfiguration").
-			String("knowledgeBaseId")
-		return knowledgeBaseARN(region, accountID, id), nil
+		config, err := scope.Object("retrieveAndGenerateConfiguration")
+		if err != nil {
+			return "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		kb, err := config.Object("knowledgeBaseConfiguration")
+		if err != nil {
+			return "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		return knowledgeBaseARN(region, accountID, kb.String("knowledgeBaseId")), nil
 
 	default:
 		slog.Error("bedrock authz: unhandled resource source, failing closed",

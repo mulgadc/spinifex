@@ -92,6 +92,36 @@ func TestECSRequest_UnparseableBodyStaysTheHandlersFault(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }
 
+// A body spelling one field two ways is the bypass a case-folded lookup opens:
+// the handler reads the last spelling in document order, the gate's map cannot,
+// so the request is rejected rather than authorized against the wrong cluster.
+func TestECSRequest_FieldSpelledTwoWaysIsRejected(t *testing.T) {
+	gw := scopedPolicyGateway(
+		statement("Allow", "ecs:*", "*"),
+		statement("Deny", "ecs:DeleteCluster", ecsResourceARN("cluster/prod")),
+	)
+
+	// Repeated: the fold's disagreement is random, the rejection must not be.
+	for range 50 {
+		err := dispatchECS(t, gw, "DeleteCluster", `{"cluster":"dev","Cluster":"prod"}`)
+		require.Error(t, err)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	}
+}
+
+// A describe naming no cluster describes the default one in the handler, so a
+// fence on the default cluster fires against an empty list too.
+func TestECSRequest_OmittedClusterListIsFencedAsDefault(t *testing.T) {
+	gw := scopedPolicyGateway(
+		statement("Allow", "ecs:*", "*"),
+		statement("Deny", "ecs:DescribeClusters", ecsResourceARN("cluster/default")),
+	)
+
+	assertDenied(t, dispatchECS(t, gw, "DescribeClusters", `{}`))
+	assertDenied(t, dispatchECS(t, gw, "DescribeClusters", `{"clusters":[]}`))
+	assertReachedHandler(t, dispatchECS(t, gw, "DescribeClusters", `{"clusters":["prod"]}`))
+}
+
 // A body past the signed path's cap cannot be used to bypass the gate or to
 // exhaust memory: it is rejected before either the gate or the handler.
 func TestECSRequest_OversizedBodyIsRejected(t *testing.T) {

@@ -1,8 +1,12 @@
 package gateway_ecrapi_test
 
 import (
+	"encoding/json"
+	"strconv"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/awsec2query"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,4 +89,46 @@ func TestResourceARNs_UnparseableOrAbsentIdentifierAuthorizesAccountWide(t *test
 func TestResourceARNs_UnknownActionIsRejected(t *testing.T) {
 	_, err := gateway_ecrapi.ResourceARNs("MadeUpAction", testRegion, testAccountID, nil)
 	require.Error(t, err)
+}
+
+// A describe naming no repository enumerates the whole registry, so the gate
+// names the type rather than widening to "*", which no scoped statement reaches.
+func TestResourceARNs_OmittedRepositoryListEnumeratesTheRegistry(t *testing.T) {
+	assert.Equal(t, []string{ecrARN("repository/*")}, resolve(t, "DescribeRepositories", `{}`))
+	assert.Equal(t, []string{ecrARN("repository/*")},
+		resolve(t, "DescribeRepositories", `{"repositoryNames":[]}`))
+}
+
+// A body-supplied list is capped, so the gate cannot be made to do unbounded
+// work ahead of the authorization decision.
+func TestResourceARNs_OversizedListIsRejected(t *testing.T) {
+	namesBody := func(n int) []byte {
+		refs := make([]string, 0, n)
+		for i := range n {
+			refs = append(refs, "r-"+strconv.Itoa(i))
+		}
+		names, err := json.Marshal(refs)
+		require.NoError(t, err)
+		return []byte(`{"repositoryNames":` + string(names) + `}`)
+	}
+
+	_, err := gateway_ecrapi.ResourceARNs("DescribeRepositories", testRegion, testAccountID,
+		namesBody(awsec2query.MaxSliceLen+1))
+	require.EqualError(t, err, awserrors.ErrorMalformedQueryString)
+
+	resources, err := gateway_ecrapi.ResourceARNs("DescribeRepositories", testRegion, testAccountID,
+		namesBody(awsec2query.MaxSliceLen))
+	require.NoError(t, err)
+	assert.Len(t, resources, awsec2query.MaxSliceLen)
+}
+
+// encoding/json resolves two spellings of one field in document order when the
+// handler builds its input; the gate cannot, so it refuses rather than name a
+// different repository than the handler acts on.
+func TestResourceARNs_FieldSpelledTwoWaysIsRejected(t *testing.T) {
+	for range 50 {
+		_, err := gateway_ecrapi.ResourceARNs("DeleteRepository", testRegion, testAccountID,
+			[]byte(`{"repositoryName":"dev","RepositoryName":"prod"}`))
+		require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+	}
 }

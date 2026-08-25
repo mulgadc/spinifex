@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"sort"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
 )
@@ -15,6 +15,12 @@ import (
 // The resource a policy check evaluates against when the request names nothing
 // in particular, or when the identifier cannot be resolved at gate time.
 const anyResource = "*"
+
+// Stands in for the name of every repository, where a describe with no list
+// enumerates the registry. It is a value, so a policy scoped to the type
+// matches it where "*" would not; a Deny naming one repository cannot fire,
+// which would need a store read the gate does not do.
+const anyName = "*"
 
 // repositoryResourceType is the ARN resource-type segment for a repository.
 const repositoryResourceType = "repository"
@@ -118,8 +124,13 @@ func ResourceARNs(action, region, accountID string, body []byte) ([]string, erro
 		return nil, errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	scope := bodyscope.Parse(action, body)
+	scope, err := bodyscope.Parse(action, body)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
 	resources := make([]string, 0, len(sources))
+	seen := make(map[string]struct{}, len(sources))
 	for _, source := range sources {
 		resolved, err := resolve(source, action, region, accountID, scope)
 		if err != nil {
@@ -128,9 +139,16 @@ func ResourceARNs(action, region, accountID string, body []byte) ([]string, erro
 		for _, resource := range resolved {
 			// An unresolved member drops out rather than contributing "*", which
 			// no scoped Allow can match and which would deny a call AWS permits.
-			if resource == anyResource || slices.Contains(resources, resource) {
+			if resource == anyResource {
 				continue
 			}
+			if _, duplicate := seen[resource]; duplicate {
+				continue
+			}
+			if len(resources) >= awsec2query.MaxSliceLen {
+				return nil, errors.New(awserrors.ErrorMalformedQueryString)
+			}
+			seen[resource] = struct{}{}
 			resources = append(resources, resource)
 		}
 	}
@@ -150,6 +168,15 @@ func resolve(source resourceSource, action, region, accountID string, scope body
 
 	case sourceRepositories:
 		names := scope.Strings("repositoryNames")
+		if len(names) == 0 {
+			// A describe naming none enumerates every repository in the registry.
+			return []string{repositoryARN(region, accountID, anyName)}, nil
+		}
+		// Capped so a body-supplied list cannot make the gate do unbounded work
+		// ahead of the authorization decision.
+		if len(names) > awsec2query.MaxSliceLen {
+			return nil, errors.New(awserrors.ErrorMalformedQueryString)
+		}
 		out := make([]string, 0, len(names))
 		for _, name := range names {
 			out = append(out, repositoryARN(region, accountID, name))

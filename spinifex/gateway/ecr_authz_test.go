@@ -53,6 +53,46 @@ func TestECRRequest_ScopedAllowGrants(t *testing.T) {
 	assertDenied(t, dispatchECR(t, gw, "BatchCheckLayerAvailability", `{"repositoryName":"prod"}`))
 }
 
+// A body spelling one field two ways is rejected rather than authorized against
+// whichever spelling the case fold happened to keep.
+func TestECRRequest_FieldSpelledTwoWaysIsRejected(t *testing.T) {
+	gw := scopedPolicyGateway(
+		statement("Allow", "ecr:*", "*"),
+		statement("Deny", "ecr:BatchCheckLayerAvailability", "arn:aws:ecr:*:*:repository/prod"),
+	)
+
+	// Repeated: the fold's disagreement is random, the rejection must not be.
+	for range 50 {
+		err := dispatchECR(t, gw, "BatchCheckLayerAvailability",
+			`{"repositoryName":"dev","RepositoryName":"prod"}`)
+		require.Error(t, err)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	}
+}
+
+// DescribeRepositories naming no repository enumerates the whole registry, so a
+// grant scoped to one repository does not reach it.
+func TestECRRequest_OmittedRepositoryListEnumeratesTheRegistry(t *testing.T) {
+	scoped := scopedPolicyGateway(
+		statement("Allow", "ecr:DescribeRepositories", "arn:aws:ecr:*:*:repository/dev"),
+	)
+	assertDenied(t, dispatchECR(t, scoped, "DescribeRepositories", `{}`))
+	assertDenied(t, dispatchECR(t, scoped, "DescribeRepositories", `{"repositoryNames":[]}`))
+
+	wide := scopedPolicyGateway(
+		statement("Allow", "ecr:DescribeRepositories", "arn:aws:ecr:*:*:repository/*"),
+	)
+	assert.NotEqual(t, awserrors.ErrorAccessDenied,
+		errString(dispatchECR(t, wide, "DescribeRepositories", `{}`)))
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 // A caller-supplied registryId would let a request slide out from under a Deny
 // scoped to the real account, so the ARN is built under the caller's.
 func TestECRRequest_RegistryIDInTheBodyIsIgnored(t *testing.T) {

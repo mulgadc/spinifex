@@ -1,8 +1,12 @@
 package gateway_ecs_test
 
 import (
+	"encoding/json"
+	"strconv"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/awsec2query"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,7 +113,7 @@ func TestResourceARNs_AccountWideActionsStayAccountWide(t *testing.T) {
 		"ListClusters", "ListServices", "ListTasks", "ListTaskDefinitions",
 		"ListTaskDefinitionFamilies", "ListContainerInstances", "ListServicesByNamespace",
 		"RegisterTaskDefinition", "DescribeTaskDefinition", "RegisterContainerInstance",
-		"SubmitTaskStateChange", "PutAccountSetting", "ListAccountSettings",
+		"PutAccountSetting", "ListAccountSettings",
 	} {
 		assert.Equal(t, []string{"*"}, resolve(t, action, `{"cluster":"prod"}`), "action %q", action)
 	}
@@ -120,4 +124,70 @@ func TestResourceARNs_AccountWideActionsStayAccountWide(t *testing.T) {
 func TestResourceARNs_UnknownActionIsRejected(t *testing.T) {
 	_, err := gateway_ecs.ResourceARNs("MadeUpAction", testRegion, testAccountID, nil)
 	require.Error(t, err)
+}
+
+// The agent's state report names its task in the same two fields the handler
+// resolves it from, so a fence on the task applies to the report.
+func TestResourceARNs_SubmitTaskStateChangeIsScopedToItsTask(t *testing.T) {
+	assert.Equal(t, []string{ecsARN("task/prod/t-1")},
+		resolve(t, "SubmitTaskStateChange", `{"cluster":"prod","task":"t-1"}`))
+	assert.Equal(t, []string{ecsARN("task/prod/t-1")},
+		resolve(t, "SubmitTaskStateChange", `{"cluster":"prod","task":"`+ecsARN("task/prod/t-1")+`"}`))
+}
+
+// A describe naming no cluster describes the default one, and naming no
+// capacity provider enumerates them all. Either way the gate must not widen to
+// "*", which no scoped statement can reach.
+func TestResourceARNs_OmittedListResolvesTheWayTheHandlerDoes(t *testing.T) {
+	assert.Equal(t, []string{ecsARN("cluster/default")}, resolve(t, "DescribeClusters", `{}`))
+	assert.Equal(t, []string{ecsARN("cluster/default")}, resolve(t, "DescribeClusters", `{"clusters":[]}`))
+	assert.Equal(t, []string{ecsARN("capacity-provider/*")},
+		resolve(t, "DescribeCapacityProviders", `{}`))
+}
+
+// The gate accepts exactly the ARNs the tag handler accepts, because both go
+// through the handler's own parser. A wrong service segment is rejected by both.
+func TestResourceARNs_TagARNMatchesTheHandlersParser(t *testing.T) {
+	for _, resourceARN := range []string{
+		"arn:aws:ecsx:us-east-1:999999999999:cluster/prod",
+		"arn:aws:ecs:us-east-1:999999999999:service/web",
+		"arn:aws:ecs:us-east-1:999999999999:widget/prod",
+	} {
+		assert.Equal(t, []string{"*"},
+			resolve(t, "TagResource", `{"resourceArn":"`+resourceARN+`"}`), "arn %q", resourceARN)
+	}
+}
+
+// A body-supplied list is capped, so the gate cannot be made to do unbounded
+// work ahead of the authorization decision.
+func TestResourceARNs_OversizedListIsRejected(t *testing.T) {
+	clustersBody := func(n int) []byte {
+		refs := make([]string, 0, n)
+		for i := range n {
+			refs = append(refs, "c-"+strconv.Itoa(i))
+		}
+		names, err := json.Marshal(refs)
+		require.NoError(t, err)
+		return []byte(`{"clusters":` + string(names) + `}`)
+	}
+
+	_, err := gateway_ecs.ResourceARNs("DescribeClusters", testRegion, testAccountID,
+		clustersBody(awsec2query.MaxSliceLen+1))
+	require.EqualError(t, err, awserrors.ErrorMalformedQueryString)
+
+	resources, err := gateway_ecs.ResourceARNs("DescribeClusters", testRegion, testAccountID,
+		clustersBody(awsec2query.MaxSliceLen))
+	require.NoError(t, err)
+	assert.Len(t, resources, awsec2query.MaxSliceLen)
+}
+
+// encoding/json resolves two spellings of one field in document order when the
+// handler builds its input; the gate cannot, so it refuses rather than name a
+// different cluster than the handler acts on.
+func TestResourceARNs_FieldSpelledTwoWaysIsRejected(t *testing.T) {
+	for range 50 {
+		_, err := gateway_ecs.ResourceARNs("DeleteCluster", testRegion, testAccountID,
+			[]byte(`{"cluster":"dev","Cluster":"prod"}`))
+		require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+	}
 }

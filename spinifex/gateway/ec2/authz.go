@@ -5,9 +5,7 @@ package gateway_ec2
 
 import (
 	"errors"
-	"reflect"
 	"sort"
-	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
@@ -380,7 +378,7 @@ func (s *resourceScope) resolve(region, accountID string, input any) ([]string, 
 // precedence. Values are deduplicated before policy evaluation.
 func (s *resourceScope) identifiers(input any) []string {
 	for _, path := range s.paths {
-		values := stringValuesAt(reflect.ValueOf(input), strings.Split(path, "."))
+		values := awsec2query.StringValuesAt(input, path)
 		seen := make(map[string]struct{}, len(values))
 		ids := make([]string, 0, len(values))
 		for _, value := range values {
@@ -398,33 +396,4 @@ func (s *resourceScope) identifiers(input any) []string {
 		}
 	}
 	return nil
-}
-
-func stringValuesAt(value reflect.Value, path []string) []string {
-	for value.IsValid() && (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) {
-		if value.IsNil() {
-			return nil
-		}
-		value = value.Elem()
-	}
-	if !value.IsValid() {
-		return nil
-	}
-	if value.Kind() == reflect.Slice || value.Kind() == reflect.Array {
-		var values []string
-		for i := 0; i < value.Len(); i++ {
-			values = append(values, stringValuesAt(value.Index(i), path)...)
-		}
-		return values
-	}
-	if len(path) == 0 {
-		if value.Kind() == reflect.String {
-			return []string{value.String()}
-		}
-		return nil
-	}
-	if value.Kind() != reflect.Struct {
-		return nil
-	}
-	return stringValuesAt(value.FieldByName(path[0]), path[1:])
 }

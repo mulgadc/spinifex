@@ -16,31 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildLBArn(t *testing.T) {
-	arn := buildLBArn("us-east-1", "123456789012", "my-alb", "50dc6c495c0c9188", LoadBalancerTypeApplication)
-	assert.Equal(t, "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188", arn)
-}
-
-func TestBuildLBArn_Network(t *testing.T) {
-	arn := buildLBArn("us-east-1", "123456789012", "my-nlb", "50dc6c495c0c9188", LoadBalancerTypeNetwork)
-	assert.Equal(t, "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/my-nlb/50dc6c495c0c9188", arn)
-}
-
-func TestBuildTGArn(t *testing.T) {
-	arn := buildTGArn("us-west-2", "111222333444", "my-tg", "deadbeef")
-	assert.Equal(t, "arn:aws:elasticloadbalancing:us-west-2:111222333444:targetgroup/my-tg/deadbeef", arn)
-}
-
-func TestBuildListenerArn(t *testing.T) {
-	arn := buildListenerArn("eu-west-1", "999888777666", "my-alb", "lbid123", "listener456", LoadBalancerTypeApplication)
-	assert.Equal(t, "arn:aws:elasticloadbalancing:eu-west-1:999888777666:listener/app/my-alb/lbid123/listener456", arn)
-}
-
-func TestBuildListenerArn_NLB(t *testing.T) {
-	arn := buildListenerArn("eu-west-1", "999888777666", "my-nlb", "lbid123", "listener456", LoadBalancerTypeNetwork)
-	assert.Equal(t, "arn:aws:elasticloadbalancing:eu-west-1:999888777666:listener/net/my-nlb/lbid123/listener456", arn)
-}
-
 // TestBuildLBAgentEnv verifies that buildLBAgentEnv produces a KEY=value blob
 // containing all five env vars with the correct values.
 func TestBuildLBAgentEnv(t *testing.T) {

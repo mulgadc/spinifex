@@ -14,35 +14,44 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// ELBv2Handler processes parsed query args and returns XML response bytes.
-type ELBv2Handler func(ctx context.Context, action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error)
+// elbv2Action parses once so authorization and dispatch share one typed input.
+type elbv2Action struct {
+	parse    func(map[string]string) (any, error)
+	dispatch func(ctx context.Context, action string, parsed any, gw *GatewayConfig, accountID string) ([]byte, error)
+}
 
-// elbv2Handler creates a type-safe ELBv2Handler that allocates the typed input struct,
-// parses query params into it, calls the handler, and marshals the output to XML.
+// elbv2Handler creates a type-safe elbv2Action. Parsing is separate from
+// dispatch so the resolver authorizes the exact input the handler executes.
 // ELBv2 uses the IAM-style XML envelope: <ActionResponse><ActionResult>...</ActionResult></ActionResponse>.
-func elbv2Handler[In any](handler func(context.Context, *In, *GatewayConfig, string) (any, error)) ELBv2Handler {
-	return func(ctx context.Context, action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error) {
-		input := new(In)
-		if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
-			if errors.Is(err, awsec2query.ErrSliceTooLarge) {
-				return nil, errors.New(awserrors.ErrorMalformedQueryString)
+func elbv2Handler[In any](handler func(context.Context, *In, *GatewayConfig, string) (any, error)) elbv2Action {
+	return elbv2Action{
+		parse: func(q map[string]string) (any, error) {
+			input := new(In)
+			if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
+				return nil, err
 			}
-			return nil, err
-		}
-		output, err := handler(ctx, input, gw, accountID)
-		if err != nil {
-			return nil, err
-		}
-		payload := utils.GenerateIAMXMLPayload(action, output)
-		xmlOutput, err := utils.MarshalToXML(payload)
-		if err != nil {
-			return nil, errors.New("failed to marshal response to XML")
-		}
-		return xmlOutput, nil
+			return input, nil
+		},
+		dispatch: func(ctx context.Context, action string, parsed any, gw *GatewayConfig, accountID string) ([]byte, error) {
+			input, ok := parsed.(*In)
+			if !ok {
+				return nil, errors.New(awserrors.ErrorInternalError)
+			}
+			output, err := handler(ctx, input, gw, accountID)
+			if err != nil {
+				return nil, err
+			}
+			payload := utils.GenerateIAMXMLPayload(action, output)
+			xmlOutput, err := utils.MarshalToXML(payload)
+			if err != nil {
+				return nil, errors.New("failed to marshal response to XML")
+			}
+			return xmlOutput, nil
+		},
 	}
 }
 
-var elbv2Actions = map[string]ELBv2Handler{
+var elbv2Actions = map[string]elbv2Action{
 	"CreateLoadBalancer": elbv2Handler(func(ctx context.Context, input *elbv2.CreateLoadBalancerInput, gw *GatewayConfig, accountID string) (any, error) {
 		if err := gw.Quota.EnforceLoadBalancers(ctx, gw.NATSConn, accountID, 1); err != nil {
 			return nil, err
@@ -175,7 +184,30 @@ func (gw *GatewayConfig) ELBv2_Request(w http.ResponseWriter, r *http.Request) e
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "elasticloadbalancing", action); err != nil {
+	// Hoisted above the policy check because the resolver builds ARNs from it.
+	// gw.Region, never the caller-supplied credential-scope region, which would
+	// let a caller sign for another region and slide out from under a Deny.
+	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	if accountID == "" {
+		slog.ErrorContext(r.Context(), "ELBv2_Request: no account ID in auth context")
+		// InternalError, not ServerInternal: the policy gate used to reach this
+		// case first and that is the code the caller has always seen.
+		return errors.New(awserrors.ErrorInternalError)
+	}
+
+	input, err := handler.parse(queryArgs)
+	if err != nil {
+		if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+			return errors.New(awserrors.ErrorMalformedQueryString)
+		}
+		return err
+	}
+
+	resources, err := gateway_elbv2.ResourceARNs(action, gw.Region, accountID, input)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResources(r, "elasticloadbalancing", action, resources); err != nil {
 		return err
 	}
 
@@ -183,13 +215,7 @@ func (gw *GatewayConfig) ELBv2_Request(w http.ResponseWriter, r *http.Request) e
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
-	if accountID == "" {
-		slog.ErrorContext(r.Context(), "ELBv2_Request: no account ID in auth context")
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	xmlOutput, err := handler(r.Context(), action, queryArgs, gw, accountID)
+	xmlOutput, err := handler.dispatch(r.Context(), action, input, gw, accountID)
 	if err != nil {
 		return err
 	}

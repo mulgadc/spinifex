@@ -135,6 +135,7 @@ type ClusterReconciler struct {
 	holderID    string
 	healthURL   string
 
+	lease         *kvlease.Lease
 	leaseRefresh  time.Duration
 	interval      time.Duration
 	healthTimeout time.Duration
@@ -365,6 +366,19 @@ func NewClusterReconciler(leaderKV, acctKV jetstream.KeyValue, accountID, cluste
 	for _, o := range opts {
 		o(r)
 	}
+	lease, err := kvlease.New(kvlease.Config{
+		Name:   "eks/cluster-reconciler",
+		Bucket: kvlease.StaticBucket(leaderKV),
+		Key:    reconcilerLeaderKey(accountID, clusterName),
+		Holder: holderID,
+		Attrs:  []any{"account", accountID, "cluster", clusterName},
+		TTL:    KVBucketEKSLeaderTTL,
+		Renew:  r.leaseRefresh,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cluster reconciler lease: %w", err)
+	}
+	r.lease = lease
 	return r, nil
 }
 
@@ -376,49 +390,18 @@ func reconcilerLeaderKey(accountID, clusterName string) string {
 // (release, true) on success; (nil, false) otherwise. The bucket TTL reaps
 // stale leases when release does not run.
 func (r *ClusterReconciler) AcquireLease(ctx context.Context) (func(), bool) {
-	key := reconcilerLeaderKey(r.accountID, r.clusterName)
-	if _, err := r.leaderKV.Create(ctx, key, []byte(r.holderID)); err != nil {
-		slog.Debug("ClusterReconciler: lease held by another holder",
-			"key", key, "holderID", r.holderID, "err", err)
+	if !r.lease.TryAcquire(ctx) {
 		return nil, false
 	}
-	slog.Info("ClusterReconciler: lease acquired", "key", key, "holderID", r.holderID)
-	return func() {
-		// The registry cancels the reconciler's context before invoking release, so
-		// the delete runs on its own context — otherwise every release would fail
-		// and leave the lease for the TTL to reap.
-		releaseCtx := context.Background()
-		if err := r.leaderKV.Delete(releaseCtx, key); err != nil {
-			slog.Warn("ClusterReconciler: lease release failed (TTL will reap)",
-				"key", key, "holderID", r.holderID, "err", err)
-		}
-	}, true
-}
-
-// RefreshLease re-asserts ownership via a CAS update. Returns false if another holder won.
-func (r *ClusterReconciler) RefreshLease(ctx context.Context) bool {
-	key := reconcilerLeaderKey(r.accountID, r.clusterName)
-	entry, err := r.leaderKV.Get(ctx, key)
-	if err != nil {
-		slog.Warn("ClusterReconciler: lease get failed", "key", key, "err", err)
-		return false
-	}
-	if string(entry.Value()) != r.holderID {
-		slog.Info("ClusterReconciler: lease now held by another holder",
-			"key", key, "holderID", r.holderID, "got", string(entry.Value()))
-		return false
-	}
-	if _, err := r.leaderKV.Update(ctx, key, []byte(r.holderID), entry.Revision()); err != nil {
-		slog.Warn("ClusterReconciler: lease CAS update failed",
-			"key", key, "holderID", r.holderID, "err", err)
-		return false
-	}
-	return true
+	return func() { r.lease.Release(ctx) }, true
 }
 
 // Run drives reconcile until ctx is cancelled, the lease is lost, or the cluster
 // reaches a terminal state. Caller must AcquireLease first.
 func (r *ClusterReconciler) Run(ctx context.Context) error {
+	if r.lease == nil {
+		return errors.New("ClusterReconciler: Run called without AcquireLease")
+	}
 	if r.stateSub != nil && r.stateSubject != "" {
 		sub, err := r.stateSub.Subscribe(r.stateSubject, func(m *nats.Msg) {
 			report, perr := unmarshalServerStateReport(m.Data)
@@ -451,11 +434,10 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 		defer func() { _ = sub.Unsubscribe() }()
 	}
 
-	refreshT := time.NewTicker(r.leaseRefresh)
-	defer refreshT.Stop()
 	reconcileT := time.NewTicker(r.interval)
 	defer reconcileT.Stop()
 
+	lost := r.lease.Lost()
 	if err := r.reconcileOnce(ctx); err != nil {
 		if terminalReconcileErr(err) {
 			return err
@@ -468,10 +450,8 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-refreshT.C:
-			if !r.RefreshLease(ctx) {
-				return ErrReconcilerLeaseLost
-			}
+		case <-lost:
+			return ErrReconcilerLeaseLost
 		case <-reconcileT.C:
 			if err := r.reconcileOnce(ctx); err != nil {
 				if terminalReconcileErr(err) {

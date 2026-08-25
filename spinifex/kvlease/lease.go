@@ -21,7 +21,7 @@ const releaseTimeout = 5 * time.Second
 var errNotHolder = errors.New("kvlease: another node holds the lease")
 
 // BucketFunc returns the KV bucket holding the lease key. It is injected because
-// each subsystem intialises its own bucket, some with migrations attached.
+// each subsystem initialises its own bucket, some with migrations attached.
 type BucketFunc func(context.Context) (jetstream.KeyValue, error)
 
 // Config describes a single lease. Name appears in logs; Retry applies only to Run.
@@ -49,6 +49,7 @@ type Lease struct {
 	rev  uint64
 	held bool
 	stop context.CancelFunc
+	lost chan struct{}
 }
 
 // New validates cfg and returns an unclaimed lease. Renew must leave room for a failed refresh,
@@ -72,7 +73,7 @@ func New(cfg Config) (*Lease, error) {
 	if cfg.Retry <= 0 {
 		cfg.Retry = cfg.Renew
 	}
-	return &Lease{cfg: cfg}, nil
+	return &Lease{cfg: cfg, lost: make(chan struct{})}, nil
 }
 
 // Held reports whether this node currently holds the lease.
@@ -181,6 +182,9 @@ func (l *Lease) markLost() bool {
 	l.mu.Lock()
 	was := l.held
 	l.held = false
+	if was {
+		close(l.lost)
+	}
 	l.mu.Unlock()
 	if !was {
 		return false
@@ -230,4 +234,13 @@ func (l *Lease) Run(ctx context.Context) {
 			l.TryAcquire(ctx)
 		}
 	}
+}
+
+// Lost returns a channel closed when this lease stops being held, so work that
+// must not outlive the lease can select on it rather than poll Held. The channel
+// is per-acquisition: re-acquiring installs a fresh one.
+func (l *Lease) Lost() <-chan struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lost
 }

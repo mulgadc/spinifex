@@ -52,3 +52,9 @@ func NATSBucket(nc *nats.Conn, bucket string, ttl time.Duration) BucketFunc {
 		}
 	}
 }
+
+// StaticBucket adapts an already-open bucket to a BucketFunc, for callers handed
+// a KeyValue rather than opening one themselves.
+func StaticBucket(kv jetstream.KeyValue) BucketFunc {
+	return func(context.Context) (jetstream.KeyValue, error) { return kv, nil }
+}

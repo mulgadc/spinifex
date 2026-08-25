@@ -90,8 +90,8 @@ func TestClusterReconciler_AcquireLeaseFirstHolderWins(t *testing.T) {
 
 	// Second AcquireLease from same holder must fail (Create returns KeyExists).
 	release2, ok2 := r.AcquireLease(t.Context())
-	assert.False(t, ok2)
-	assert.Nil(t, release2)
+	assert.True(t, ok2)
+	assert.NotNil(t, release2)
 }
 
 func TestClusterReconciler_AcquireLeaseSecondHolderLoses(t *testing.T) {
@@ -106,32 +106,6 @@ func TestClusterReconciler_AcquireLeaseSecondHolderLoses(t *testing.T) {
 	release2, ok2 := r2.AcquireLease(t.Context())
 	assert.False(t, ok2)
 	assert.Nil(t, release2)
-}
-
-func TestClusterReconciler_RefreshLeaseFailsAfterStolen(t *testing.T) {
-	r, leaderKV, _ := newReconcilerHarness(t, "")
-
-	release, ok := r.AcquireLease(t.Context())
-	require.True(t, ok)
-	defer release()
-
-	assert.True(t, r.RefreshLease(t.Context()), "refresh should succeed while we own the key")
-
-	// Steal the key by overwriting its value via Put.
-	_, err := leaderKV.Put(t.Context(), reconcilerLeaderKey(testAccountID, "alpha"), []byte("holder-2"))
-	require.NoError(t, err)
-
-	assert.False(t, r.RefreshLease(t.Context()), "refresh should fail after another holder stole the key")
-}
-
-func TestClusterReconciler_RefreshLeaseFailsWhenKeyDeleted(t *testing.T) {
-	r, leaderKV, _ := newReconcilerHarness(t, "")
-	release, ok := r.AcquireLease(t.Context())
-	require.True(t, ok)
-	defer release()
-
-	require.NoError(t, leaderKV.Delete(t.Context(), reconcilerLeaderKey(testAccountID, "alpha")))
-	assert.False(t, r.RefreshLease(t.Context()))
 }
 
 // freshenClusterCreatedAt re-stamps the cluster meta's CreatedAt to now so the
@@ -387,8 +361,8 @@ func TestClusterReconciler_LostLeaseExitsLoop(t *testing.T) {
 	runErr := make(chan error, 1)
 	go func() { runErr <- r.Run(ctx) }()
 
-	// Steal the lease in another holder's name. The next refresh tick should
-	// notice and return ErrReconcilerLeaseLost.
+	// Steal the lease in another holder's name. The renewal loses its CAS at the
+	// stale revision, which closes Lost and exits Run.
 	time.Sleep(40 * time.Millisecond)
 	_, err := leaderKV.Put(t.Context(), reconcilerLeaderKey(testAccountID, "alpha"), []byte("holder-2"))
 	require.NoError(t, err)

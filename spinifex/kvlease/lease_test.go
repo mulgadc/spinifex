@@ -51,6 +51,16 @@ func testKV(t *testing.T, nc *nats.Conn, ttl time.Duration) jetstream.KeyValue {
 	return kv
 }
 
+// isOpen reports whether a Lost channel has not yet fired, without blocking.
+func isOpen(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return false
+	default:
+		return true
+	}
+}
+
 func TestTryAcquire_SecondHolderLoses(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	a := newTestLease(t, nc, "node-a", nil)
@@ -237,4 +247,90 @@ func TestRun_LoserTakesOverAfterLeaderStops(t *testing.T) {
 
 	stopA()
 	require.Eventually(t, b.Held, 2*time.Second, 20*time.Millisecond, "loser must take over on its retry tick, not at the TTL")
+}
+
+// Work gated on Lose must run while the lease is held. A channel closed at construction or on acquire would abort every pass before it started.
+func TestLost_OpenWhileHeld(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	a := newTestLease(t, nc, "node-a", nil)
+
+	assert.True(t, isOpen(a.Lost()), "an unclaimed lease has lost nothing")
+
+	require.True(t, a.TryAcquire(t.Context()))
+	assert.True(t, isOpen(a.Lost()))
+
+	// Well past two renewal intervals: a renewing holder must stay held.
+	time.Sleep(600 * time.Millisecond)
+	assert.True(t, isOpen(a.Lost()), "renewal succeeded but lost fired anyway")
+
+	a.Release(t.Context())
+}
+
+// The signal callers select on to abandon work. Polling Held cannot express "stop what you are doing now", which is what a lost lease requires.
+func TestLost_ClosesOnRenewalLoss(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	a := newTestLease(t, nc, "node-a", nil)
+	require.True(t, a.TryAcquire(t.Context()))
+	lost := a.Lost()
+
+	// Stand in for the key expiring and a peer claiming it.
+	kv := testKV(t, nc, time.Second)
+	require.NoError(t, kv.Delete(t.Context(), testKey))
+	_, err := kv.Create(t.Context(), testKey, []byte("node-b"))
+	require.NoError(t, err)
+
+	select {
+	case <-lost:
+	case <-time.After(3 * time.Second):
+		t.Fatal("renewal lost the CAS but Lost never closed")
+	}
+	assert.False(t, a.Held())
+}
+
+func TestLost_ClosesOnRelease(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	a := newTestLease(t, nc, "node-a", nil)
+	require.True(t, a.TryAcquire(t.Context()))
+	lost := a.Lost()
+
+	a.Release(t.Context())
+	assert.False(t, isOpen(lost), "release must close Lost so gated work stops")
+
+	// A second release must not close an already-closed channel.
+	assert.NotPanics(t, func() { a.Release(t.Context()) })
+}
+
+// The channel is per-acquisition. Handing a re-elected holder the closed channel from its previous term would abort its new pass immediately.
+func TestLost_FreshChannelAfterReacquire(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	a := newTestLease(t, nc, "node-a", nil)
+
+	require.True(t, a.TryAcquire(t.Context()))
+	first := a.Lost()
+	a.Release(t.Context())
+	require.False(t, isOpen(first))
+
+	require.True(t, a.TryAcquire(t.Context()))
+	second := a.Lost()
+	assert.True(t, isOpen(second), "a re-elected holder got its old term's closed channel")
+	assert.NotEqual(t, first, second, "Lost must be replaced on acquire, not reused")
+
+	a.Release(t.Context())
+}
+
+func TestAttrs_AppearOnLeaseOwnedLogLines(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	lease := newTestLease(t, nc, "node-a", func(cfg *kvlease.Config) {
+		cfg.Attrs = []any{"bucket", "quota-reconcile"}
+	})
+	require.True(t, lease.TryAcquire(t.Context()))
+	lease.Release(t.Context())
+
+	require.Contains(t, buf.String(), `"bucket":"quota-reconcile"`)
 }

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -58,7 +59,7 @@ func TestApplyAddonStatusReport(t *testing.T) {
 		now := time.Now().UTC()
 		require.NoError(t, PutAddonRecord(t.Context(), acctKV, "c1", &AddonRecord{
 			AddonName: "coredns", AddonVersion: "1.11.1", Status: AddonStatusCreating,
-			Arn: AddonARN("us-east-1", testAccountID, "c1", "coredns"), CreatedAt: now, ModifiedAt: now,
+			Arn: arn.FormatEKSAddon("us-east-1", testAccountID, "c1", "coredns"), CreatedAt: now, ModifiedAt: now,
 		}))
 	}
 	get := func(t *testing.T) *AddonRecord {

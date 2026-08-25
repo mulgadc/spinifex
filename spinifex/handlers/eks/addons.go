@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -96,7 +97,7 @@ func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddon
 		Status:                AddonStatusCreating,
 		ServiceAccountRoleArn: aws.StringValue(input.ServiceAccountRoleArn),
 		ConfigurationValues:   aws.StringValue(input.ConfigurationValues),
-		Arn:                   AddonARN(s.deps.Region, accountID, cluster, addonName),
+		Arn:                   arn.FormatEKSAddon(s.deps.Region, accountID, cluster, addonName),
 		Tags:                  aws.StringValueMap(input.Tags),
 		CreatedAt:             now,
 		ModifiedAt:            now,

@@ -43,11 +43,6 @@ type AddonRecord struct {
 // Callers translate it to ResourceNotFoundException at the service boundary.
 var ErrAddonNotFound = errors.New("eks: addon not found")
 
-// AddonARN composes the deterministic ARN for a managed add-on.
-func AddonARN(region, accountID, cluster, addon string) string {
-	return fmt.Sprintf("arn:aws:eks:%s:%s:addon/%s/%s", region, accountID, cluster, addon)
-}
-
 // PutAddonRecord writes the record unconditionally.
 func PutAddonRecord(ctx context.Context, kv jetstream.KeyValue, cluster string, rec *AddonRecord) error {
 	if rec == nil {

@@ -21,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/bluebottle/pkg/auth"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
@@ -78,13 +79,6 @@ const ngCASMaxRetries = 16
 // absent. Callers translate to the AWS shape (ResourceNotFoundException) at the
 // service boundary.
 var ErrNodegroupNotFound = errors.New("eks: nodegroup not found")
-
-// NodegroupARN composes a nodegroup ARN matching the AWS shape
-// (.../nodegroup/{cluster}/{ng}/{uuid}). The trailing UUID is the per-nodegroup
-// discriminator AWS appends; it is generated once at create time and persisted.
-func NodegroupARN(region, accountID, cluster, ng, id string) string {
-	return fmt.Sprintf("arn:aws:eks:%s:%s:nodegroup/%s/%s/%s", region, accountID, cluster, ng, id)
-}
 
 // PutNodegroupRecord writes the record unconditionally.
 func PutNodegroupRecord(ctx context.Context, kv jetstream.KeyValue, rec *NodegroupRecord) error {
@@ -281,7 +275,7 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 	rec := &NodegroupRecord{
 		ClusterName:    cluster,
 		Name:           ng,
-		Arn:            NodegroupARN(s.deps.Region, accountID, cluster, ng, uuid.NewV4().String()),
+		Arn:            arn.FormatEKSNodegroup(s.deps.Region, accountID, cluster, ng, uuid.NewV4().String()),
 		Status:         eks.NodegroupStatusCreating,
 		Subnets:        subnets,
 		InstanceTypes:  instanceTypes,

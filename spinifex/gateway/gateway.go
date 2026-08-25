@@ -515,10 +515,27 @@ func isNATSTransient(err error) bool {
 		errors.Is(err, nats.ErrNoStreamResponse))
 }
 
+// readBoundedBody reads a request body under the same cap the signed path
+// applies, so a body read ahead of the policy gate can neither be used to
+// bypass the gate nor to exhaust memory. On the signed path sigv4.Parse has
+// already buffered and rewound these bytes, so this re-reads a buffer.
+func readBoundedBody(r *http.Request) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if int64(len(body)) > sigv4.MaxPayloadLen {
+		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
+	}
+	return body, nil
+}
+
 // checkPolicy evaluates IAM policies against the literal resource "*", so it
 // grants account-wide: a caller's resource-scoped statements do not participate
 // at all, neither a Deny that fences a resource nor an Allow that names one.
-// Prefer checkPolicyResources with the request's real ARNs.
+// Prefer checkPolicyResources with the request's real ARNs: where the
+// identifier arrives in a JSON body, read the body ahead of the gate and
+// resolve it there rather than settling for "*".
 func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) error {
 	return gw.checkPolicyResources(r, service, action, []string{"*"})
 }

@@ -26,8 +26,8 @@ const defaultStopReason = "Task stopped by user"
 // so a freed port is never rebound while the old container still holds it
 // (ecs-v1.md:165).
 func (s *Service) StopTask(ctx context.Context, input *ecs.StopTaskInput, accountID string) (*ecs.StopTaskOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	taskID := taskShortID(aws.StringValue(input.Task))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
+	taskID := TaskShortID(aws.StringValue(input.Task))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -51,7 +51,7 @@ func (s *Service) StopTask(ctx context.Context, input *ecs.StopTaskInput, accoun
 // StartTask places one task per named container instance (explicit placement, no
 // scheduler bin-pack). Mirrors RunTask's reserve → record → ENI → assign flow.
 func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, accountID string) (*ecs.StartTaskOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -80,7 +80,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 
 	out := &ecs.StartTaskOutput{}
 	for _, ref := range awsStringSlice(input.ContainerInstances) {
-		instanceID := containerInstanceShortID(ref)
+		instanceID := ContainerInstanceShortID(ref)
 		taskID := uuid.NewV4().String()
 		inst, rerr := s.reserveOnInstance(ctx, kv, cluster, instanceID, taskID, cpu, mem, gpu)
 		if rerr != nil {

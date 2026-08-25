@@ -77,7 +77,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 		}
 		return rec.Tags, nil
 	case ecsResourceTaskDefinition:
-		family, rev := parseTaskDefRef(id)
+		family, rev := ParseTaskDefRef(id)
 		if family == "" || rev == 0 {
 			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 		}
@@ -142,7 +142,7 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 		rec.Tags = mutate(rec.Tags)
 		return putJSON(ctx, kv, ClusterMetaKey(id), &rec)
 	case ecsResourceTaskDefinition:
-		family, rev := parseTaskDefRef(id)
+		family, rev := ParseTaskDefRef(id)
 		if family == "" || rev == 0 {
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}

@@ -76,7 +76,7 @@ func TestReaper_ReleasesCapacityAndRecoversClean(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Tasks, 1)
-	taskID := containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
+	taskID := ContainerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
 
 	seeded := instanceStatus(t, svc, "web", "i-1")
 	require.Equal(t, 128, seeded.ReservedCPU)

@@ -218,7 +218,7 @@ func tripCircuitBreaker(svc *ServiceRecord, primary *Deployment) bool {
 // rollbackToLastGood demotes the failed PRIMARY and starts a fresh PRIMARY from
 // the last-good task definition ARN.
 func (r *ServiceRecord) rollbackToLastGood() {
-	family, rev := parseTaskDefRef(r.LastGoodTaskDefARN)
+	family, rev := ParseTaskDefRef(r.LastGoodTaskDefARN)
 	r.demotePrimary()
 	now := time.Now().UTC()
 	r.DeploymentID = uuid.NewV4().String()

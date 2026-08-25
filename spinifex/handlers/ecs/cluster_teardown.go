@@ -22,7 +22,7 @@ func clusterKeyPrefix(cluster string) string {
 // is marked INACTIVE, then the whole clusters/{name}/ prefix is deleted. Returns
 // the cluster with Status INACTIVE.
 func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInput, accountID string) (*ecs.DeleteClusterOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -58,8 +58,8 @@ func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInp
 // record and its assignment inbox are deleted; the response carries Status
 // INACTIVE.
 func (s *Service) DeregisterContainerInstance(ctx context.Context, input *ecs.DeregisterContainerInstanceInput, accountID string) (*ecs.DeregisterContainerInstanceOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	id := containerInstanceShortID(aws.StringValue(input.ContainerInstance))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
+	id := ContainerInstanceShortID(aws.StringValue(input.ContainerInstance))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -99,7 +99,7 @@ func (s *Service) DeregisterContainerInstance(ctx context.Context, input *ecs.De
 // relaunches them elsewhere; standalone (non-service) tasks are left running,
 // matching AWS. Unknown instances surface as Failures.
 func (s *Service) UpdateContainerInstancesState(ctx context.Context, input *ecs.UpdateContainerInstancesStateInput, accountID string) (*ecs.UpdateContainerInstancesStateOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	status := aws.StringValue(input.Status)
 	if status != InstanceStatusActive && status != InstanceStatusDraining {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
@@ -110,7 +110,7 @@ func (s *Service) UpdateContainerInstancesState(ctx context.Context, input *ecs.
 	}
 	out := &ecs.UpdateContainerInstancesStateOutput{}
 	for _, ref := range awsStringSlice(input.ContainerInstances) {
-		id := containerInstanceShortID(ref)
+		id := ContainerInstanceShortID(ref)
 		var rec InstanceRecord
 		found, gerr := getJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 		if gerr != nil {

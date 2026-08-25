@@ -25,7 +25,7 @@ const reservePlacementRetries = 5
 // publishes an assign on the Layer-2 bus for each. Placement failures for a task
 // are returned as RunTask failures; already-placed tasks in the same call stay.
 func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -219,14 +219,14 @@ func (s *Service) publishAssign(ctx context.Context, kv jetstream.KeyValue, acco
 
 // DescribeTasks returns task records for the named tasks in a cluster.
 func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInput, accountID string) (*ecs.DescribeTasksOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	out := &ecs.DescribeTasksOutput{}
 	for _, ref := range awsStringSlice(input.Tasks) {
-		taskID := containerInstanceShortID(ref)
+		taskID := ContainerInstanceShortID(ref)
 		var rec TaskRecord
 		found, err := getJSON(ctx, kv, TaskKey(cluster, taskID), &rec)
 		if err != nil {
@@ -243,7 +243,7 @@ func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInp
 
 // ListTasks returns the ARNs of all tasks in a cluster.
 func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err

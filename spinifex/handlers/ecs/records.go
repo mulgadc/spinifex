@@ -2,6 +2,7 @@ package handlers_ecs
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,7 +83,13 @@ func ClusterARN(region, accountID, name string) string {
 }
 
 func TaskDefARN(region, accountID, family string, rev int) string {
-	return fmt.Sprintf("arn:aws:ecs:%s:%s:task-definition/%s:%d", region, accountID, family, rev)
+	return TaskDefRefARN(region, accountID, family, strconv.Itoa(rev))
+}
+
+// TaskDefRefARN spells the revision verbatim, so a reference whose revision is
+// not yet resolved can render it as a wildcard.
+func TaskDefRefARN(region, accountID, family, revision string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:task-definition/%s:%s", region, accountID, family, revision)
 }
 
 func TaskARN(region, accountID, cluster, taskID string) string {

@@ -220,7 +220,7 @@ func TestService_RunTask_PlacesAndAssigns(t *testing.T) {
 	lt, err := svc.ListTasks(context.Background(), &ecs.ListTasksInput{Cluster: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, lt.TaskArns, 1)
-	assert.Equal(t, as.TaskID, containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn)))
+	assert.Equal(t, as.TaskID, ContainerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn)))
 }
 
 func TestService_RunTask_AssignCarriesTaskRole(t *testing.T) {
@@ -265,7 +265,7 @@ func TestService_PollAssignments_AckAndReclaim(t *testing.T) {
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
 	out, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
 	require.NoError(t, err)
-	taskID := containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
+	taskID := ContainerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
 
 	// Unacked re-poll re-delivers.
 	p1, err := svc.PollAssignments(context.Background(), &PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
@@ -285,7 +285,7 @@ func TestService_PollAssignments_AckAndReclaim(t *testing.T) {
 	// A fresh RunTask + STOPPED reclaims its inbox entry without an explicit ack.
 	out2, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
 	require.NoError(t, err)
-	task2 := containerInstanceShortID(aws.StringValue(out2.Tasks[0].TaskArn))
+	task2 := ContainerInstanceShortID(aws.StringValue(out2.Tasks[0].TaskArn))
 	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: task2,
 		LastStatus: bus.TaskStatusStopped,
@@ -326,7 +326,7 @@ func TestService_RecordTaskState_ReleasesCapacityOnStop(t *testing.T) {
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
 	out, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
 	require.NoError(t, err)
-	taskID := containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
+	taskID := ContainerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
 
 	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: taskID,
@@ -370,7 +370,7 @@ func TestService_SubmitTaskStateChange_StopsTask(t *testing.T) {
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
 	out, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
 	require.NoError(t, err)
-	taskARN := aws.StringValue(out.Tasks[0].TaskArn) // full ARN exercises taskShortID
+	taskARN := aws.StringValue(out.Tasks[0].TaskArn) // full ARN exercises TaskShortID
 
 	exit := int64(0)
 	ack, err := svc.SubmitTaskStateChange(context.Background(), &ecs.SubmitTaskStateChangeInput{
@@ -420,7 +420,7 @@ func TestScheduler_ReapBucket_StopsStaleInstanceTasks(t *testing.T) {
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
 	out, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
 	require.NoError(t, err)
-	taskID := containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
+	taskID := ContainerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
 
 	// Backdate LastSeen beyond the heartbeat timeout.
 	kv, err := svc.bucket(t.Context(), testAccountID)
@@ -557,7 +557,7 @@ func TestService_RunTask_GPU_ReservesOnPlacement(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.Tasks, 1)
 	assert.Empty(t, out.Failures)
-	taskID := containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
+	taskID := ContainerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
 
 	di, err := svc.DescribeContainerInstances(context.Background(), &ecs.DescribeContainerInstancesInput{
 		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},

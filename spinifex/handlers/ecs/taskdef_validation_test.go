@@ -153,7 +153,7 @@ func TestRunTask_AssignCarriesGPU(t *testing.T) {
 	assert.Equal(t, 1, poll.Assignments[0].Containers[0].GPU)
 	assert.Zero(t, poll.Assignments[0].Containers[1].GPU)
 
-	taskID := taskShortID(aws.StringValue(out.Tasks[0].TaskArn))
+	taskID := TaskShortID(aws.StringValue(out.Tasks[0].TaskArn))
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec TaskRecord

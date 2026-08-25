@@ -255,18 +255,15 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "eks", action); err != nil {
-		return err
-	}
-
-	if gw.NATSConn == nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
+	// Hoisted above the policy check because the resolver builds ARNs from it.
+	// gw.Region, never the caller-supplied credential-scope region, which would
+	// let a caller sign for another region and slide out from under a Deny.
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.ErrorContext(r.Context(), "EKS_Request: no account ID in auth context")
-		return errors.New(awserrors.ErrorServerInternal)
+		// InternalError, not ServerInternal: the policy gate used to reach this
+		// case first and that is the code the caller has always seen.
+		return errors.New(awserrors.ErrorInternalError)
 	}
 
 	body, err := io.ReadAll(r.Body)
@@ -287,6 +284,20 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 				body = qb
 			}
 		}
+	}
+
+	// After the body read: CreateCluster and the other create actions name their
+	// resource there rather than in the path.
+	resources, err := gateway_eks.ResourceARNs(action, gw.Region, accountID, params, body)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResources(r, "eks", action, resources); err != nil {
+		return err
+	}
+
+	if gw.NATSConn == nil {
+		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Best-effort caller ARN; only CreateCluster consumes it, degrades to "".

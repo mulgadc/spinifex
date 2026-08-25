@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	resourcearn "github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
@@ -564,14 +565,14 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 	}
 
 	region := s.deps.Region
-	arn := fmt.Sprintf("arn:aws:eks:%s:%s:cluster/%s", region, accountID, name)
+	clusterARN := resourcearn.FormatEKSCluster(region, accountID, name)
 
 	publicAccess, privateAccess := endpointAccess(input.ResourcesVpcConfig)
 	publicCidrs := publicAccessCidrs(input.ResourcesVpcConfig, publicAccess)
 
 	meta := &ClusterMeta{
 		Name:    name,
-		Arn:     arn,
+		Arn:     clusterARN,
 		Status:  ClusterStatusCreating,
 		Version: deref(input.Version, defaultK8sVersion),
 		RoleArn: aws.StringValue(input.RoleArn),

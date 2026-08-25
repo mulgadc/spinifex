@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -36,14 +37,6 @@ var supportedAccessPolicies = map[string]string{
 // ErrAccessEntryNotFound is returned when no entry exists for the principal.
 // Callers translate it to ResourceNotFoundException at the service boundary.
 var ErrAccessEntryNotFound = errors.New("eks: access entry not found")
-
-// AccessEntryARN composes the access-entry ARN, keying the discriminator off
-// the principal-ARN hash for determinism. Clients address entries by
-// principalArn, not this ARN, so the divergence from AWS's UUID is informational.
-func AccessEntryARN(region, accountID, cluster, principalARN string) string {
-	return fmt.Sprintf("arn:aws:eks:%s:%s:access-entry/%s/%s",
-		region, accountID, cluster, PrincipalARNHash(principalARN))
-}
 
 // PutAccessEntryRecord writes the entry unconditionally.
 func PutAccessEntryRecord(ctx context.Context, kv jetstream.KeyValue, rec *AccessEntryRecord) error {
@@ -239,7 +232,7 @@ func newAccessEntryRecord(region, accountID, cluster, principalARN, username str
 		username = principalARN
 	}
 	return &AccessEntryRecord{
-		ARN:                AccessEntryARN(region, accountID, cluster, principalARN),
+		ARN:                arn.FormatEKSAccessEntry(region, accountID, cluster, PrincipalARNHash(principalARN)),
 		ClusterName:        cluster,
 		PrincipalARN:       principalARN,
 		KubernetesUsername: username,

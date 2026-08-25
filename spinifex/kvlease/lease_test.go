@@ -1,8 +1,10 @@
 package kvlease_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"

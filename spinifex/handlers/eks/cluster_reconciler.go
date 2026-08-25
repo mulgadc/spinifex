@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/kvlease"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"

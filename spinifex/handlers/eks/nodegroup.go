@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
@@ -711,9 +712,14 @@ func gatewayHostIP(gatewayURL string) string {
 // provider, mirroring the implicit instance profile real EKS creates for a node
 // role. Idempotent: concurrent worker launches converge on the same profile.
 func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string) (string, error) {
-	roleName := roleNameFromARN(nodeRoleARN)
-	if roleName == "" {
-		return "", fmt.Errorf("node role ARN %q has no role name", nodeRoleARN)
+	roleAccount, roleName, err := auth.ParseRoleARN(nodeRoleARN)
+	if err != nil {
+		return "", fmt.Errorf("node role ARN %q: %w", nodeRoleARN, err)
+	}
+	// The profile is created under the caller's account, so a role from another
+	// account would silently bind a name that account does not own.
+	if roleAccount != accountID {
+		return "", fmt.Errorf("node role ARN %q is not in account %s", nodeRoleARN, accountID)
 	}
 	profileName := roleName
 
@@ -764,15 +770,6 @@ func (s *EKSServiceImpl) attachRoleToProfile(accountID, profileName, roleName, p
 		return "", fmt.Errorf("add role %q to instance profile %q: %w", roleName, profileName, err)
 	}
 	return profileARN, nil
-}
-
-// roleNameFromARN extracts the role name from an arn:aws:iam::<acct>:role/<name>
-// ARN, returning "" when the ARN does not carry the :role/ segment.
-func roleNameFromARN(arn string) string {
-	if _, after, ok := strings.Cut(arn, ":role/"); ok {
-		return after
-	}
-	return ""
 }
 
 func (s *EKSServiceImpl) describeNodegroup(ctx context.Context, acctKV jetstream.KeyValue, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {

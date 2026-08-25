@@ -72,14 +72,38 @@ func TestEnsureNodeInstanceProfile_AddRoleLimitExceededIsSuccess(t *testing.T) {
 	assert.NotEmpty(t, arn)
 }
 
-func TestEnsureNodeInstanceProfile_BadARN(t *testing.T) {
-	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: newFakeEnsurer()}}
-	_, err := s.ensureNodeInstanceProfile("000000000001", "not-an-arn")
-	require.Error(t, err)
+// A path-bearing role ARN names its profile after the final segment only; the
+// path is not a legal instance-profile name character.
+func TestEnsureNodeInstanceProfile_PathBearingRoleUsesFinalSegment(t *testing.T) {
+	f := newFakeEnsurer()
+	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
+
+	arn, err := s.ensureNodeInstanceProfile("000000000001", "arn:aws:iam::000000000001:role/team/Worker")
+	require.NoError(t, err)
+	assert.Equal(t, "arn:aws:iam::000000000001:instance-profile/Worker", arn)
+	assert.Len(t, f.Profiles["Worker"].Roles, 1)
+	assert.Equal(t, "Worker", aws.StringValue(f.Profiles["Worker"].Roles[0].RoleName))
 }
 
-func TestRoleNameFromARN(t *testing.T) {
-	assert.Equal(t, "eks-quickstart-node-role", roleNameFromARN(testNodeRoleARN))
-	assert.Empty(t, roleNameFromARN("arn:aws:iam::000000000001:user/bob"))
-	assert.Empty(t, roleNameFromARN(""))
+func TestEnsureNodeInstanceProfile_RejectsInvalidARNs(t *testing.T) {
+	cases := map[string]string{
+		"empty":             "",
+		"not an ARN":        "not-an-arn",
+		"bare role suffix":  "garbage:role/Worker",
+		"non-IAM service":   "arn:aws:sts::000000000001:role/Worker",
+		"non-role resource": "arn:aws:iam::000000000001:user/bob",
+		"empty role name":   "arn:aws:iam::000000000001:role/",
+		"empty account":     "arn:aws:iam:::role/Worker",
+		"cross-account":     "arn:aws:iam::000000000002:role/Worker",
+	}
+	for name, arn := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeEnsurer()
+			s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
+			_, err := s.ensureNodeInstanceProfile("000000000001", arn)
+			require.Error(t, err)
+			assert.Zero(t, f.CreateInstanceProfileCalls)
+			assert.Zero(t, f.AddRoleToInstanceProfileCalls)
+		})
+	}
 }

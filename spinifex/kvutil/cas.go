@@ -21,6 +21,14 @@ const casBackoffBase = 2 * time.Millisecond
 type CASConfig struct {
 	Attempts       int  // 0 selects casAttempts
 	CreateIfAbsent bool // start from a zero value when the key is missing
+
+	// NotFounc replaces the raw jetstream error when the key is absent and
+	// CreateIfAbsent is unset, so a caller can map it to its own API error.
+	NotFound error
+
+	// Exhausted builds the error returned when the attempt budget is spent, for callers that log the contention
+	// or return a specific API error.
+	Exhausted func(key string, attempts int) error
 }
 
 // isConflict reports a lost CAS race. Create reports one as ErrKeyExists and Update as ErrKeyRevisionMismatch.
@@ -54,6 +62,9 @@ func retryCAS(ctx context.Context, cfg CASConfig, op, key string, attempt func()
 			return ctx.Err()
 		}
 	}
+	if cfg.Exhausted != nil {
+		return cfg.Exhausted(key, attempts)
+	}
 	return fmt.Errorf("CAS %s exhausted %d attempts for key %s: %w", op, attempts, key, lastErr)
 }
 
@@ -74,6 +85,8 @@ func Update[T any](ctx context.Context, kv jetstream.KeyValue, key string, cfg C
 			revision = entry.Revision()
 		case errors.Is(err, jetstream.ErrKeyNotFound) && cfg.CreateIfAbsent:
 			revision = 0
+		case errors.Is(err, jetstream.ErrKeyNotFound) && cfg.NotFound != nil:
+			return cfg.NotFound
 		default:
 			return err
 		}
@@ -118,6 +131,8 @@ func Put(ctx context.Context, kv jetstream.KeyValue, key string, cfg CASConfig, 
 			revision = entry.Revision()
 		case errors.Is(err, jetstream.ErrKeyNotFound) && cfg.CreateIfAbsent:
 			revision = 0
+		case errors.Is(err, jetstream.ErrKeyNotFound) && cfg.NotFound != nil:
+			return cfg.NotFound
 		default:
 			return err
 		}

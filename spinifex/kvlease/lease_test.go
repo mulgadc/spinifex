@@ -334,3 +334,54 @@ func TestAttrs_AppearOnLeaseOwnedLogLines(t *testing.T) {
 
 	require.Contains(t, buf.String(), `"bucket":"quota-reconcile"`)
 }
+
+// A node that never won the lease still unwinds its Run loop through Release.
+// That is not a lost key, so it must not raise the warning that says one.
+func TestRelease_WithoutAcquireIsSilent(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	holder := newTestLease(t, nc, "node-a", nil)
+	require.True(t, holder.TryAcquire(t.Context()))
+	t.Cleanup(func() { holder.Release(t.Context()) })
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	loser := newTestLease(t, nc, "node-b", nil)
+	require.False(t, loser.TryAcquire(t.Context()))
+	loser.Release(t.Context())
+
+	assert.NotContains(t, buf.String(), "already lost before release")
+}
+
+// The warning still has to fire where it means something: renewal lost the key,
+// so a delete here would drop the successor's lease rather than.
+func TestRelease_AfterRenewalLossWarns(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	lost := make(chan struct{}, 4)
+	a := newTestLease(t, nc, "node-a", func(c *kvlease.Config) {
+		c.OnLost = func() { lost <- struct{}{} }
+	})
+	require.True(t, a.TryAcquire(t.Context()))
+
+	kv := testKV(t, nc, time.Second)
+	require.NoError(t, kv.Delete(t.Context(), testKey))
+	_, err := kv.Create(t.Context(), testKey, []byte("node-b"))
+	require.NoError(t, err)
+
+	select {
+	case <-lost:
+	case <-time.After(3 * time.Second):
+		t.Fatal("renewal lost the CAS but OnLost never fired")
+	}
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	a.Release(t.Context())
+	assert.Contains(t, buf.String(), "already lost before release")
+}

@@ -201,10 +201,14 @@ func (l *Lease) markLost() bool {
 func (l *Lease) Release(ctx context.Context) {
 	l.mu.Lock()
 	kv, rev, stop := l.kv, l.rev, l.stop
-	l.stop = nil
+	l.kv, l.stop = nil, nil
 	l.mu.Unlock()
 	if stop != nil {
 		stop()
+	}
+	if kv == nil {
+		// Never acquired, or already released.
+		return
 	}
 	if !l.markLost() {
 		// Renewal already lost the key, so another node may hold it now. An unguarded delete here

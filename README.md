@@ -15,7 +15,7 @@
   <a href="#aws-compatibility">AWS Compatibility</a> ·
   <a href="#core-components">Components</a> ·
   <a href="#architecture-at-a-glance">Architecture</a> ·
-  <a href="#installation">Installation</a> ·
+  <a href="#self-hosted-installation">Installation</a> ·
   <a href="https://docs.mulgadc.com">Docs</a>
 </p>
 
@@ -29,11 +29,9 @@ Spinifex, built by [Mulga](https://mulgadc.com), recreates the AWS services your
 
 Spinifex is an open-source infrastructure platform that recreates the AWS service surface (EC2, EBS, S3, VPC, IAM) on bare-metal, edge, and on-premises environments. Run cloud-native software without a hyperscaler.
 
-Most AWS alternatives wrap an API and call it a cloud. We rebuilt the engineering underneath: distributed object storage with erasure coding, block storage built to survive failure, and compute on bare metal. That depth is the reason your software runs unchanged, instead of rewritten.
+Built for teams that need:
 
-It's built for teams that need:
-
-- The AWS tooling they already use (AWS CLI, SDKs, Terraform), with nothing to rewrite
+- The AWS tooling you already use (AWS CLI, SDKs, Terraform), with nothing to rewrite
 - Full control of the stack: your hardware, your network, your data, your keys
 - A cloud that keeps running offline, through disconnection, with no external control plane
 - An open core (AGPL-3.0), auditable and yours to keep, with no lock-in
@@ -50,15 +48,15 @@ From commodity hardware up to unmodified AWS tooling, every layer is replaceable
 
 ## Three Ways To Deploy
 
-One AWS-compatible surface, three deployment shapes. Pick the one that matches your reality; the platform on top is the same.
+The same AWS-compatible platform runs in three shapes. Pick the one that matches your hardware.
 
 ### Neocloud
 
-Lift and shift onto a partner Neocloud. Move workloads off the hyperscalers and onto our Neocloud partner ecosystem without rewriting them. GPU capacity (H100 / H200 / B200), cheaper, available now. Change an endpoint, keep the software.
+Lift and shift onto a partner Neocloud without rewriting workloads. GPU capacity (H100 / H200 / B200), cheaper, available now. Change an endpoint, keep the software.
 
 ### On-premise
 
-Bring your own hardware and host Spinifex in your own data centre. A real multi-node HA cluster integrated with your storage and networking, with full control of stack, data, and jurisdiction. A predictable bill, no egress surprises, an auditable open-source core.
+Host Spinifex on your own hardware in your own data centre. You get a multi-node HA cluster integrated with your storage and networking, so the stack, the data, and the jurisdiction stay yours.
 
 ### Edge
 
@@ -66,7 +64,7 @@ Cloud where the cloud can't reach. Air-gapped sites, vehicles, vessels, factorie
 
 ## AWS Compatibility
 
-Speak the AWS API surface, natively. The AWS SDKs, AWS CLI, and Terraform: everything you deploy on AWS deploys on Spinifex unchanged. At the edge, on-premise, or on a partner Neocloud.
+Spinifex speaks the AWS API surface. The AWS SDKs, AWS CLI, and Terraform all work unchanged, whether you deploy at the edge, on-premise, or on a partner Neocloud.
 
 | Service | What it is | Status |
 | --- | --- | --- |
@@ -86,13 +84,19 @@ Roadmap items ship under the same AWS API surface. Code written for AWS today ke
 
 ## Core Components
 
-### Spinifex (Compute Service – EC2 Alternative)
+### Spinifex (Compute and Platform Services – EC2, EKS, ECS, RDS)
 
-Spinifex is a minimal VM orchestration layer built on top of QEMU, exposing APIs similar to EC2. It manages lifecycle operations like start, stop, and terminate, using QEMU's QMP interface. Designed to be straightforward and scriptable, Spinifex lets you launch VMs using the AWS CLI, SDKs, or Terraform—without needing Kubernetes or heavyweight orchestrators. Keep in mind, you can also setup a Kubernetes environment using Spinifex with underlying instances.
+Spinifex is a minimal VM orchestration layer built on top of QEMU, exposing an EC2 compatible API. It manages lifecycle operations like start, stop, and terminate through QEMU's QMP interface. Designed to be straightforward and scriptable, Spinifex lets you launch VMs with the AWS CLI, SDKs, or Terraform, without Kubernetes or a heavyweight orchestrator.
 
-- EC2-like VM management on bare metal
-- Launches with cloud-init metadata support
-- Works with standard AWS tooling
+The managed services build on that same instance layer. An EKS node group, an ECS container instance, and an RDS database are Spinifex VMs on your own hardware, each driven through its own AWS API.
+
+- **EC2** – VM lifecycle on bare metal, cloud-init and IMDS metadata, key pairs, tags, spot instances, capacity reservations, and GPU passthrough
+- **EKS** – Managed Kubernetes on k3s, with HA control planes, managed node groups, cluster add-ons, an OIDC provider, and IAM access entries
+- **ECS** – Task and service scheduling across container instances, with awsvpc ENIs, capacity providers, rolling deployments, and GPU-aware placement
+- **ECR** – Private container registry backed by Predastore, with content-addressed blobs deduplicated per account and lifecycle policies
+- **RDS** – Managed PostgreSQL and MariaDB, with parameter groups, automated backups, and DNS endpoints served by Northstar
+- **ALB / NLB** – Layer 7 load balancing on HAProxy and layer 4 on nginx `stream`, with health checks and ACM-issued listener certificates
+- **VPC and IAM** – OVN-backed networking and security groups, with roles, policies, and SigV4 auth applied across every service
 
 ### Viperblock (Block Storage – EBS Alternative)
 
@@ -101,12 +105,12 @@ Spinifex is a minimal VM orchestration layer built on top of QEMU, exposing APIs
 - Fast, durable virtual disks
 - Replication for resilience
 - Exposed over NBD or embedded in VMs
-- Supports high performance WAL logs using local NVMe drives to reduce IO traffic to S3.
-- In memory read/write block cache for blazing performance.
+- High performance WAL logs on local NVMe drives, reducing IO traffic to S3
+- In-memory read/write block cache
 
 ### Predastore (Object Storage – S3-Compatible)
 
-[Predastore](https://github.com/mulgadc/predastore) is a fully S3-compatible object storage system. It supports the AWS S3 API, including Signature V4 authentication, multipart uploads, and Terraform provisioning. Data is chunked and distributed across nodes using Reed-Solomon erasure coding, making it fault-tolerant and ideal for large-scale or low-bandwidth scenarios.
+[Predastore](https://github.com/mulgadc/predastore) is a fully S3-compatible object storage system. It supports the AWS S3 API, including Signature V4 authentication, multipart uploads, and Terraform provisioning. Predastore chunks data and distributes it across nodes using Reed-Solomon erasure coding, so it survives node loss and suits large-scale or low-bandwidth sites.
 
 - S3-compatible API and auth
 - Multipart uploads, streaming reads/writes
@@ -137,9 +141,9 @@ Every AWS API call is authenticated at the gateway, published to a NATS subject,
 - **Edge-first architecture.** Designed for disconnected, contested, and resource-constrained environments from day one.
 - **Open core, no lock-in.** AGPL-3.0 with a commercial option. Inspect it, modify it, deploy it. The platform is yours to keep.
 
-# Live demo
+## Live Demo
 
-Create a live sandbox in under a minute. The fastest way to experience the stack. Try Spinifex against one of your own workloads on infrastructure we run for you. Nothing to install, nothing to size.
+Create a live sandbox in under a minute. The fastest way to experience the stack. Try Spinifex against one of your own workloads on infrastructure we run for you.
 
 * Live in under a minute. No card, no install.
 * Yours for 72 hours to test and experiment.
@@ -147,13 +151,13 @@ Create a live sandbox in under a minute. The fastest way to experience the stack
 * EC2, EBS, S3, VPC, IAM, EKS and RDS, ready to call.
 * Point your existing AWS CLI or Terraform straight at it.
 
-Signup at [https://mulgadc.com/signup](https://mulgadc.com/signup)
+Sign up at [https://mulgadc.com/signup](https://mulgadc.com/signup)
 
-# Self-hosted Installation
+## Self-hosted Installation
 
 Installation requires an Ubuntu 26.04 or Debian 13 system. See the detailed documentation at [docs.mulgadc.com](https://docs.mulgadc.com) for installing Spinifex.
 
-## Bare Metal ISO
+### Bare Metal ISO
 
 The recommended installation is a [bootable x86 installer](https://iso.mulgadc.com/spinifex.iso) for bare-metal hardware.
 
@@ -163,7 +167,7 @@ curl -fLO https://iso.mulgadc.com/spinifex.iso
 
 Follow the [USB install guide](https://docs.mulgadc.com/docs/install-usb) to write the ISO to USB and install on your hardware.
 
-## Single Node Install
+### Single Node Install
 
 >*Prerequisite:* Spinifex requires a Linux bridge configured on the host for VM networking. See the [single-node install guide](https://docs.mulgadc.com/docs/install#prerequisites) for setup details.
 
@@ -197,19 +201,19 @@ Each component can be developed independently. See component-specific documentat
 
 ## Spinifex UI
 
-Spinifex ships with a built-in web console — an optional alternative to the AWS CLI, SDKs, and Terraform. If you're familiar with the AWS Management Console, the Spinifex UI fills the same role: a browser-based view of your instances, volumes, buckets, VPCs, and IAM resources, without leaving your own network.
+Spinifex ships with a built-in web console, an optional alternative to the AWS CLI, SDKs, and Terraform. If you know the AWS Management Console, the Spinifex UI fills the same role: a browser-based view of your instances, volumes, buckets, VPCs, and IAM resources, without leaving your own network.
 
 <p align="center">
-  <img src=".github/assets/spinifex-ui.jpg" alt="Spinifex web console — dashboard view" width="900">
+  <img src=".github/assets/spinifex-ui.jpg" alt="Spinifex web console dashboard" width="900">
 </p>
 
-The console is served by each node on port `3000` over TLS, and becomes available as soon as `spinifex.target` is up:
+Each node serves the console on port `3000` over TLS, and it comes up with `spinifex.target`:
 
-- **Same API, different surface.** Every action in the UI is the same AWS SigV4 call the CLI makes — so RBAC, audit trails, and IAM policies apply uniformly.
-- **Single sign-on against your AWS credentials.** Log in with the access keys from `~/.aws/credentials` on the node where Spinifex is installed — no separate user database.
-- **Self-hosted, works offline.** The UI is embedded in the Spinifex binary and served from the node itself. No external CDN, no analytics calls, no cloud dependency.
+- **Same API, different surface.** The UI issues the same AWS SigV4 calls the CLI does, so RBAC, audit trails, and IAM policies apply the same way.
+- **Single sign-on against your AWS credentials.** Log in with the access keys from `~/.aws/credentials` on the node where Spinifex is installed. There is no separate user database.
+- **Self-hosted, works offline.** The Spinifex binary embeds the UI and each node serves it directly, with no external CDN or analytics calls.
 
-For the full walkthrough — first-time TLS certificate trust, login, and feature tour — see [**Launching the Web UI**](https://docs.mulgadc.com/docs/setting-up-your-cluster#7-launching-the-web-ui) in the cluster setup guide.
+For the full walkthrough, covering first-time TLS certificate trust, login, and a feature tour, see [**Launching the Web UI**](https://docs.mulgadc.com/docs/setting-up-your-cluster#7-launching-the-web-ui) in the cluster setup guide.
 
 ## Development Philosophy
 

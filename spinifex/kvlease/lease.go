@@ -21,7 +21,7 @@ const releaseTimeout = 5 * time.Second
 var errNotHolder = errors.New("kvlease: another node holds the lease")
 
 // BucketFunc returns the KV bucket holding the lease key. It is injected because
-// each subsystem intialises its own bucket, some with migrations attached.
+// each subsystem initialises its own bucket, some with migrations attached.
 type BucketFunc func(context.Context) (jetstream.KeyValue, error)
 
 // Config describes a single lease. Name appears in logs; Retry applies only to Run.
@@ -30,6 +30,7 @@ type Config struct {
 	Bucket BucketFunc
 	Key    string
 	Holder string
+	Attrs  []any
 
 	TTL   time.Duration // must match the bucket's TTL
 	Renew time.Duration // gap between refreshes
@@ -48,6 +49,7 @@ type Lease struct {
 	rev  uint64
 	held bool
 	stop context.CancelFunc
+	lost chan struct{}
 }
 
 // New validates cfg and returns an unclaimed lease. Renew must leave room for a failed refresh,
@@ -71,7 +73,7 @@ func New(cfg Config) (*Lease, error) {
 	if cfg.Retry <= 0 {
 		cfg.Retry = cfg.Renew
 	}
-	return &Lease{cfg: cfg}, nil
+	return &Lease{cfg: cfg, lost: make(chan struct{})}, nil
 }
 
 // Held reports whether this node currently holds the lease.
@@ -79,6 +81,14 @@ func (l *Lease) Held() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.held
+}
+
+// logArgs prefixes the lease identity onto a log line's own fields.
+func (l *Lease) logArgs(extra ...any) []any {
+	args := make([]any, 0, 4+len(l.cfg.Attrs)+len(extra))
+	args = append(args, "lease", l.cfg.Name, "holder", l.cfg.Holder)
+	args = append(args, l.cfg.Attrs...)
+	return append(args, extra...)
 }
 
 // TryAcquire makes one attempt to claim the key, starting background renewal and firing OnGained on
@@ -89,8 +99,7 @@ func (l *Lease) TryAcquire(ctx context.Context) bool {
 	}
 	kv, err := l.cfg.Bucket(ctx)
 	if err != nil {
-		slog.WarnContext(ctx, "kvlease: bucket unavailable",
-			"lease", l.cfg.Name, "holder", l.cfg.Holder, "err", err)
+		slog.WarnContext(ctx, "kvlease: bucket unavailable", l.logArgs("err", err)...)
 		return false
 	}
 	rev, err := l.claim(ctx, kv)
@@ -103,16 +112,16 @@ func (l *Lease) TryAcquire(ctx context.Context) bool {
 	if l.stop != nil {
 		l.stop()
 	}
+	l.lost = make(chan struct{})
 	l.kv, l.rev, l.held, l.stop = kv, rev, true, stop
 	l.mu.Unlock()
 	go l.renew(renewCtx)
 
-	slog.InfoContext(ctx, "kvlease: elected", "lease", l.cfg.Name, "holder", l.cfg.Holder)
+	slog.InfoContext(ctx, "kvlease: elected", l.logArgs()...)
 	if l.cfg.OnGained != nil {
 		if err := l.cfg.OnGained(ctx); err != nil {
-			// A leader that cannot set up its work is work is worse than no leader. Stand down so a healthy node wins.
-			slog.ErrorContext(ctx, "kvlease: OnGained failed, standing down",
-				"lease", l.cfg.Name, "holder", l.cfg.Holder, "err", err)
+			// A leader that cannot set up its work is worse than no leader. Stand down so a healthy node wins.
+			slog.ErrorContext(ctx, "kvlease: OnGained failed, standing down", l.logArgs("err", err)...)
 			l.Release(ctx)
 			return false
 		}
@@ -156,8 +165,7 @@ func (l *Lease) renew(ctx context.Context) {
 			}
 			next, err := kv.Update(ctx, l.cfg.Key, []byte(l.cfg.Holder), rev)
 			if err != nil {
-				slog.WarnContext(ctx, "kvlease: renewal lost the key, another node may take over mid-pass",
-					"lease", l.cfg.Name, "holder", l.cfg.Holder, "err", err)
+				slog.WarnContext(ctx, "kvlease: renewal lost the key, another node may take over mid-pass", l.logArgs("err", err)...)
 				l.markLost()
 				return
 			}
@@ -174,6 +182,9 @@ func (l *Lease) markLost() bool {
 	l.mu.Lock()
 	was := l.held
 	l.held = false
+	if was {
+		close(l.lost)
+	}
 	l.mu.Unlock()
 	if !was {
 		return false
@@ -198,15 +209,13 @@ func (l *Lease) Release(ctx context.Context) {
 	if !l.markLost() {
 		// Renewal already lost the key, so another node may hold it now. An unguarded delete here
 		// would drop that node's lease, not ours.
-		slog.WarnContext(ctx, "kvlease: already lost before release, not deleting",
-			"lease", l.cfg.Name, "holder", l.cfg.Holder)
+		slog.WarnContext(ctx, "kvlease: already lost before release, not deleting", l.logArgs()...)
 		return
 	}
 	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
 	if err := kv.Delete(releaseCtx, l.cfg.Key, jetstream.LastRevision(rev)); err != nil {
-		slog.WarnContext(releaseCtx, "kvlease: release failed, TTL will reap",
-			"lease", l.cfg.Name, "holder", l.cfg.Holder, "err", err)
+		slog.WarnContext(releaseCtx, "kvlease: release failed, TTL will reap", l.logArgs("err", err)...)
 	}
 }
 
@@ -225,4 +234,13 @@ func (l *Lease) Run(ctx context.Context) {
 			l.TryAcquire(ctx)
 		}
 	}
+}
+
+// Lost returns a channel closed when this lease stops being held, so work that
+// must not outlive the lease can select on it rather than poll Held. The channel
+// is per-acquisition: re-acquiring installs a fresh one.
+func (l *Lease) Lost() <-chan struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lost
 }

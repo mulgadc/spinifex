@@ -35,6 +35,7 @@ func AcquireLeader(ctx context.Context, nc *nats.Conn, bucket, holder string) (f
 		Bucket: kvlease.NATSBucket(nc, bucket, reconcileLeaderTTL),
 		Key:    reconcileLeaderKey,
 		Holder: holder,
+		Attrs:  []any{"bucket", bucket},
 		TTL:    reconcileLeaderTTL,
 		Renew:  reconcileLeaderRenew,
 	})

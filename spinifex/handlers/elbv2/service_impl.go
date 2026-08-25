@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	resourcearn "github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
@@ -1139,20 +1140,6 @@ func certFilesToSDK(certFiles map[string]string) []*CertFile {
 	return out
 }
 
-// lbArnPathSegment returns the ARN path segment for the given LB type:
-// "app" for application LBs, "net" for network LBs.
-func lbArnPathSegment(lbType string) string {
-	if lbType == LoadBalancerTypeNetwork {
-		return "net"
-	}
-	return "app"
-}
-
-// buildLBArn constructs a load balancer ARN from components.
-func buildLBArn(region, accountID, name, lbID, lbType string) string {
-	return fmt.Sprintf("arn:aws:elasticloadbalancing:%s:%s:loadbalancer/%s/%s/%s", region, accountID, lbArnPathSegment(lbType), name, lbID)
-}
-
 // resolveTargetIP looks up the private IP for an instance by finding its primary ENI.
 // Returns empty string if VPC service is unavailable or no ENI found.
 func (s *ELBv2ServiceImpl) resolveTargetIP(ctx context.Context, instanceID, accountID string) string {
@@ -1197,43 +1184,15 @@ func (s *ELBv2ServiceImpl) resolveRegisteredTargetIP(ctx context.Context, target
 	}
 }
 
-// buildTGArn constructs a target group ARN from components.
-func buildTGArn(region, accountID, name, tgID string) string {
-	return fmt.Sprintf("arn:aws:elasticloadbalancing:%s:%s:targetgroup/%s/%s", region, accountID, name, tgID)
-}
-
-// buildListenerArn constructs a listener ARN from components.
-func buildListenerArn(region, accountID, lbName, lbID, listenerID, lbType string) string {
-	return fmt.Sprintf("arn:aws:elasticloadbalancing:%s:%s:listener/%s/%s/%s/%s", region, accountID, lbArnPathSegment(lbType), lbName, lbID, listenerID)
-}
-
-// ELBv2 resource types as they appear in the resource segment of an ARN.
-const (
-	elbv2ResourceLoadBalancer = "loadbalancer"
-	elbv2ResourceTargetGroup  = "targetgroup"
-	elbv2ResourceListener     = "listener"
-	elbv2ResourceListenerRule = "listener-rule"
-)
-
-// elbv2ResourceTypeFromArn extracts the resource type from an ELBv2 ARN,
-// returning one of "loadbalancer", "targetgroup", "listener", "listener-rule".
-func elbv2ResourceTypeFromArn(arn string) (string, error) {
-	parts := strings.SplitN(arn, ":", 6)
-	if len(parts) < 6 || parts[0] != "arn" || parts[2] != "elasticloadbalancing" {
+// elbv2ResourceTypeFromArn extracts the resource type from an ELBv2 ARN. The
+// gateway's policy resolver parses the same ARNs with the same rules, so the
+// two cannot disagree about which object a request addresses.
+func elbv2ResourceTypeFromArn(arn string) (resourcearn.ELBv2ResourceType, error) {
+	parsed, ok := resourcearn.ParseELBv2(arn)
+	if !ok {
 		return "", errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	resourceSegment := parts[5]
-	slash := strings.Index(resourceSegment, "/")
-	if slash <= 0 {
-		return "", errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	resourceType := resourceSegment[:slash]
-	switch resourceType {
-	case elbv2ResourceLoadBalancer, elbv2ResourceTargetGroup, elbv2ResourceListener, elbv2ResourceListenerRule:
-		return resourceType, nil
-	default:
-		return "", errors.New(awserrors.ErrorInvalidParameterValue)
-	}
+	return parsed.Kind, nil
 }
 
 // isCompatibleProtocol reports whether a listener protocol is compatible with a target group protocol.
@@ -1329,8 +1288,8 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 	}
 
 	lbID := utils.GenerateResourceID("lb")
-	lbArn := buildLBArn(s.region, accountID, name, lbID, lbType)
-	arnPathSegment := lbArnPathSegment(lbType)
+	lbArn := resourcearn.FormatELBv2LoadBalancer(s.region, accountID, name, lbID, lbType)
+	arnPathSegment := resourcearn.ELBv2LBPathSegment(lbType)
 	dnsPrefix := ""
 	if scheme == SchemeInternal {
 		dnsPrefix = "internal-"
@@ -2022,7 +1981,7 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 	}
 
 	tgID := utils.GenerateResourceID("tg")
-	tgArn := buildTGArn(s.region, accountID, name, tgID)
+	tgArn := resourcearn.FormatELBv2TargetGroup(s.region, accountID, name, tgID)
 
 	tags := tagsFromSDK(input.Tags)
 
@@ -2654,7 +2613,7 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 	}
 
 	listenerID := utils.GenerateResourceID("lst")
-	listenerArn := buildListenerArn(s.region, accountID, lb.Name, lb.LoadBalancerID, listenerID, lb.Type)
+	listenerArn := resourcearn.FormatELBv2Listener(s.region, accountID, lb.Name, lb.LoadBalancerID, listenerID, lb.Type)
 
 	var actions []ListenerAction
 	for _, a := range input.DefaultActions {
@@ -3045,7 +3004,7 @@ func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.Descri
 			found         bool
 		)
 		switch resourceType {
-		case elbv2ResourceLoadBalancer:
+		case resourcearn.ELBv2LoadBalancer:
 			notFoundError = awserrors.ErrorELBv2LoadBalancerNotFound
 			lb, lbErr := s.store.GetLoadBalancerByArn(ctx, arn)
 			if lbErr != nil {
@@ -3057,7 +3016,7 @@ func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.Descri
 				tags = lb.Tags
 				ownerAccount = lb.AccountID
 			}
-		case elbv2ResourceTargetGroup:
+		case resourcearn.ELBv2TargetGroup:
 			notFoundError = awserrors.ErrorELBv2TargetGroupNotFound
 			tg, tgErr := s.store.GetTargetGroupByArn(ctx, arn)
 			if tgErr != nil {
@@ -3069,7 +3028,7 @@ func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.Descri
 				tags = tg.Tags
 				ownerAccount = tg.AccountID
 			}
-		case elbv2ResourceListener:
+		case resourcearn.ELBv2Listener:
 			notFoundError = awserrors.ErrorELBv2ListenerNotFound
 			l, lErr := s.store.GetListenerByArn(ctx, arn)
 			if lErr != nil {
@@ -3081,7 +3040,7 @@ func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.Descri
 				tags = l.Tags
 				ownerAccount = l.AccountID
 			}
-		case elbv2ResourceListenerRule:
+		case resourcearn.ELBv2ListenerRule:
 			notFoundError = awserrors.ErrorELBv2RuleNotFound
 			r, rErr := s.store.GetRuleByArn(ctx, arn)
 			if rErr != nil {

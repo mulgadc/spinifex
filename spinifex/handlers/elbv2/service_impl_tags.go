@@ -7,6 +7,7 @@ import (
 	"maps"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	resourcearn "github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -28,7 +29,7 @@ func (s *ELBv2ServiceImpl) resolveTaggable(ctx context.Context, arn string) (h t
 	}
 
 	switch resourceType {
-	case elbv2ResourceLoadBalancer:
+	case resourcearn.ELBv2LoadBalancer:
 		notFoundError = awserrors.ErrorELBv2LoadBalancerNotFound
 		lb, e := s.store.GetLoadBalancerByArn(ctx, arn)
 		if e != nil {
@@ -42,7 +43,7 @@ func (s *ELBv2ServiceImpl) resolveTaggable(ctx context.Context, arn string) (h t
 				return s.store.PutLoadBalancer(ctx, lb)
 			}}
 		}
-	case elbv2ResourceTargetGroup:
+	case resourcearn.ELBv2TargetGroup:
 		notFoundError = awserrors.ErrorELBv2TargetGroupNotFound
 		tg, e := s.store.GetTargetGroupByArn(ctx, arn)
 		if e != nil {
@@ -56,7 +57,7 @@ func (s *ELBv2ServiceImpl) resolveTaggable(ctx context.Context, arn string) (h t
 				return s.store.PutTargetGroup(ctx, tg)
 			}}
 		}
-	case elbv2ResourceListener:
+	case resourcearn.ELBv2Listener:
 		notFoundError = awserrors.ErrorELBv2ListenerNotFound
 		l, e := s.store.GetListenerByArn(ctx, arn)
 		if e != nil {
@@ -70,7 +71,7 @@ func (s *ELBv2ServiceImpl) resolveTaggable(ctx context.Context, arn string) (h t
 				return s.store.PutListener(ctx, l)
 			}}
 		}
-	case elbv2ResourceListenerRule:
+	case resourcearn.ELBv2ListenerRule:
 		notFoundError = awserrors.ErrorELBv2RuleNotFound
 		r, e := s.store.GetRuleByArn(ctx, arn)
 		if e != nil {

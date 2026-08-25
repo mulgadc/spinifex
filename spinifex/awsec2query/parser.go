@@ -283,3 +283,39 @@ func setSliceField(field reflect.Value, params map[string]string, prefix, listNa
 	field.Set(slice)
 	return nil
 }
+
+// StringValuesAt reads every string at a dotted field path in a parsed query
+// input, flattening slices along the way. Authorization resolvers use it to
+// pull a request's identifiers out of the same struct the handler receives.
+func StringValuesAt(input any, path string) []string {
+	return stringValuesAt(reflect.ValueOf(input), strings.Split(path, "."))
+}
+
+func stringValuesAt(value reflect.Value, path []string) []string {
+	for value.IsValid() && (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) {
+		if value.IsNil() {
+			return nil
+		}
+		value = value.Elem()
+	}
+	if !value.IsValid() {
+		return nil
+	}
+	if value.Kind() == reflect.Slice || value.Kind() == reflect.Array {
+		var values []string
+		for i := 0; i < value.Len(); i++ {
+			values = append(values, stringValuesAt(value.Index(i), path)...)
+		}
+		return values
+	}
+	if len(path) == 0 {
+		if value.Kind() == reflect.String {
+			return []string{value.String()}
+		}
+		return nil
+	}
+	if value.Kind() != reflect.Struct {
+		return nil
+	}
+	return stringValuesAt(value.FieldByName(path[0]), path[1:])
+}

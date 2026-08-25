@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -115,17 +114,32 @@ func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *h
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "bedrock-agent-runtime", action); err != nil {
+	// Hoisted above the policy check because the resolver builds ARNs from it.
+	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	if accountID == "" {
+		slog.ErrorContext(r.Context(), "BedrockAgentRuntime_Request: no account ID in auth context")
+		// InternalError, not ServerInternal: the policy gate used to reach this
+		// case first and that is the code the caller has always seen.
+		return errors.New(awserrors.ErrorInternalError)
+	}
+
+	// RetrieveAndGenerate names its knowledge base in the body, so the body is
+	// read ahead of the gate; Retrieve names it in the path.
+	body, err := readBoundedBody(r)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "BedrockAgentRuntime_Request: failed to read body", "err", err)
+		return err
+	}
+
+	resources, err := gateway_bedrock.ResourceARNs("bedrock-agent-runtime", action, gw.Region, accountID, params, body)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResources(r, "bedrock-agent-runtime", action, resources); err != nil {
 		return err
 	}
 
 	if gw.BedrockAgentKB == nil || gw.BedrockAgentVector == nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
-	if accountID == "" {
-		slog.ErrorContext(r.Context(), "BedrockAgentRuntime_Request: no account ID in auth context")
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -136,12 +150,6 @@ func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *h
 		if err := gw.Quota.CheckBedrockTokens(r.Context(), accountID); err != nil {
 			return err
 		}
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "BedrockAgentRuntime_Request: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	converse := func(ctx context.Context, acct, modelID string, input *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {

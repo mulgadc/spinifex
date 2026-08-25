@@ -30,14 +30,14 @@ func TestTaskDefReservedSums(t *testing.T) {
 }
 
 func TestClusterShortName(t *testing.T) {
-	assert.Equal(t, defaultCluster, clusterShortName(""))
-	assert.Equal(t, "web", clusterShortName("web"))
-	assert.Equal(t, "web", clusterShortName("arn:aws:ecs:r:a:cluster/web"))
+	assert.Equal(t, defaultCluster, ClusterShortName(""))
+	assert.Equal(t, "web", ClusterShortName("web"))
+	assert.Equal(t, "web", ClusterShortName("arn:aws:ecs:r:a:cluster/web"))
 }
 
 func TestContainerInstanceShortID(t *testing.T) {
-	assert.Equal(t, "i-1", containerInstanceShortID("i-1"))
-	assert.Equal(t, "i-1", containerInstanceShortID("arn:aws:ecs:r:a:container-instance/web/i-1"))
+	assert.Equal(t, "i-1", ContainerInstanceShortID("i-1"))
+	assert.Equal(t, "i-1", ContainerInstanceShortID("arn:aws:ecs:r:a:container-instance/web/i-1"))
 }
 
 func TestAWSStringSlice(t *testing.T) {

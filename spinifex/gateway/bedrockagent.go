@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -143,7 +142,21 @@ func (gw *GatewayConfig) BedrockAgent_Request(w http.ResponseWriter, r *http.Req
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "bedrock-agent", action); err != nil {
+	// Hoisted above the policy check because the resolver builds ARNs from it.
+	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	if accountID == "" {
+		slog.ErrorContext(r.Context(), "BedrockAgent_Request: no account ID in auth context")
+		// InternalError, not ServerInternal: the policy gate used to reach this
+		// case first and that is the code the caller has always seen.
+		return errors.New(awserrors.ErrorInternalError)
+	}
+
+	// Every bedrock-agent action names its knowledge base in the path.
+	resources, err := gateway_bedrock.ResourceARNs("bedrock-agent", action, gw.Region, accountID, params, nil)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResources(r, "bedrock-agent", action, resources); err != nil {
 		return err
 	}
 
@@ -151,16 +164,10 @@ func (gw *GatewayConfig) BedrockAgent_Request(w http.ResponseWriter, r *http.Req
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
-	if accountID == "" {
-		slog.ErrorContext(r.Context(), "BedrockAgent_Request: no account ID in auth context")
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	body, err := io.ReadAll(r.Body)
+	body, err := readBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "BedrockAgent_Request: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return err
 	}
 
 	output, err := handler(r.Context(), accountID, gw.Region, params, body, gw.BedrockAgentKB, gw.BedrockAgentDataSources, gw.BedrockAgentVector)
@@ -170,17 +177,6 @@ func (gw *GatewayConfig) BedrockAgent_Request(w http.ResponseWriter, r *http.Req
 
 	gateway_bedrock.WriteJSONResponse(w, output)
 	return nil
-}
-
-// bedrockAgentKnowledgeBaseResourceType is the ARN resource-type segment a
-// knowledge base renders under. DataSource carries no ARN field in AWS's own
-// shape (only KnowledgeBase does), so there is no data-source counterpart.
-const bedrockAgentKnowledgeBaseResourceType = "knowledge-base"
-
-// formatKnowledgeBaseARN builds the ARN a CreateKnowledgeBase call returns,
-// mirroring gateway_bedrock.FormatGuardrailARN's shape.
-func formatKnowledgeBaseARN(region, accountID, id string) string {
-	return fmt.Sprintf("arn:aws:bedrock:%s:%s:%s/%s", region, accountID, bedrockAgentKnowledgeBaseResourceType, id)
 }
 
 // nonEmptyStringPtr returns nil for an empty string, so an optional field
@@ -316,7 +312,7 @@ func kbRecordToOutput(region, accountID string, rec handlers_ochrevector.KBRecor
 	return &bedrockagent.KnowledgeBase{
 		CreatedAt:        aws.Time(rec.CreatedAt),
 		Description:      nonEmptyStringPtr(rec.Description),
-		KnowledgeBaseArn: aws.String(formatKnowledgeBaseARN(region, accountID, rec.ID)),
+		KnowledgeBaseArn: aws.String(gateway_bedrock.FormatKnowledgeBaseARN(region, accountID, rec.ID)),
 		KnowledgeBaseConfiguration: &bedrockagent.KnowledgeBaseConfiguration{
 			Type: aws.String(bedrockagent.KnowledgeBaseTypeVector),
 			VectorKnowledgeBaseConfiguration: &bedrockagent.VectorKnowledgeBaseConfiguration{

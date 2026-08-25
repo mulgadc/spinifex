@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -36,20 +35,28 @@ func (gw *GatewayConfig) ECS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "ecs", action); err != nil {
-		return err
-	}
-
+	// Hoisted above the policy check because the resolver builds ARNs from the
+	// caller's account and from the same body bytes the handler unmarshals.
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.ErrorContext(r.Context(), "ECS_Request: no account ID in auth context")
-		return errors.New(awserrors.ErrorServerInternal)
+		// InternalError, not ServerInternal: the policy gate used to reach this
+		// case first and that is the code the caller has always seen.
+		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := readBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "ECS_Request: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return err
+	}
+
+	resources, err := gateway_ecs.ResourceARNs(action, gw.Region, accountID, body)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResources(r, "ecs", action, resources); err != nil {
+		return err
 	}
 
 	// Mirrors gateway/ec2.go's RunInstances/AssociateIamInstanceProfile closures:

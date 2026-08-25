@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -196,24 +195,19 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "bedrock", action); err != nil {
-		return err
-	}
-
-	if gw.NATSConn == nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
+	// Hoisted above the policy check because the resolver builds ARNs from it.
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.ErrorContext(r.Context(), "Bedrock_Request: no account ID in auth context")
-		return errors.New(awserrors.ErrorServerInternal)
+		// InternalError, not ServerInternal: the policy gate used to reach this
+		// case first and that is the code the caller has always seen.
+		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := readBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "Bedrock_Request: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return err
 	}
 
 	// Some REST-JSON actions carry their non-path inputs as singular query
@@ -233,6 +227,20 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 				body = qb
 			}
 		}
+	}
+
+	// After the body read and the query fold: CreateProvisionedModelThroughput
+	// names the foundation model it commits there rather than in the path.
+	resources, err := gateway_bedrock.ResourceARNs("bedrock", action, gw.Region, accountID, params, body)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResources(r, "bedrock", action, resources); err != nil {
+		return err
+	}
+
+	if gw.NATSConn == nil {
+		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockLoggingConfigStore(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore())

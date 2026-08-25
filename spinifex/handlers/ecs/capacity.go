@@ -114,7 +114,7 @@ func (s *Service) ProvisionCapacity(ctx context.Context, input *ProvisionCapacit
 		return nil, err
 	}
 
-	cluster := clusterShortName(input.Cluster)
+	cluster := ClusterShortName(input.Cluster)
 	userData := buildContainerInstanceUserData(containerInstanceUserDataInput{
 		GatewayURL:    s.deps.GatewayBaseURL,
 		GatewayCACert: s.deps.GatewayCACert,

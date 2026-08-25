@@ -23,43 +23,51 @@ const (
 	ecsResourceContainerInstance
 )
 
+// ResourceARNSegment validates an ECS resource ARN with the same parser the tag
+// handler uses and returns the "<type>/<path>" segment it addresses. Exported
+// so the policy gate authorizes exactly the ARNs the handler acts on.
+func ResourceARNSegment(resourceARN string) (string, error) {
+	_, _, _, segment, err := parseResourceARN(resourceARN)
+	return segment, err
+}
+
 // parseResourceARN splits an ECS resource ARN into its kind, owning cluster
-// (empty for cluster/task-definition, which are flat), and short id/name.
-// Cluster and task-definition ARNs are flat (.../cluster/{name},
-// .../task-definition/{family}:{rev}); service/task/container-instance ARNs
-// embed the owning cluster (.../service/{cluster}/{name}).
-func parseResourceARN(resourceARN string) (kind ecsResourceKind, cluster, id string, err error) {
+// (empty for cluster/task-definition, which are flat), short id/name, and the
+// resource segment verbatim. Cluster and task-definition ARNs are flat
+// (.../cluster/{name}, .../task-definition/{family}:{rev});
+// service/task/container-instance ARNs embed the owning cluster.
+func parseResourceARN(resourceARN string) (kind ecsResourceKind, cluster, id, segment string, err error) {
 	// SplitN(..., 6) keeps the resource segment intact even though a
 	// task-definition id ("family:1") itself contains a colon.
 	parts := strings.SplitN(resourceARN, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" {
-		return 0, "", "", errors.New(awserrors.ErrorECSInvalidParameter)
+	if len(parts) != 6 || parts[0] != "arn" || parts[2] != "ecs" {
+		return 0, "", "", "", errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 	rtype, rest, ok := strings.Cut(parts[5], "/")
 	if !ok || rtype == "" || rest == "" {
-		return 0, "", "", errors.New(awserrors.ErrorECSInvalidParameter)
+		return 0, "", "", "", errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 
 	switch rtype {
 	case "cluster":
-		return ecsResourceCluster, rest, rest, nil
+		return ecsResourceCluster, rest, rest, parts[5], nil
 	case "task-definition":
-		return ecsResourceTaskDefinition, "", rest, nil
+		return ecsResourceTaskDefinition, "", rest, parts[5], nil
 	case "service", "task", "container-instance":
 		clusterName, name, ok := strings.Cut(rest, "/")
 		if !ok || clusterName == "" || name == "" {
-			return 0, "", "", errors.New(awserrors.ErrorECSInvalidParameter)
+			return 0, "", "", "", errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		switch rtype {
 		case "service":
-			return ecsResourceService, clusterName, name, nil
+			return ecsResourceService, clusterName, name, parts[5], nil
 		case "task":
-			return ecsResourceTask, clusterName, name, nil
+			return ecsResourceTask, clusterName, name, parts[5], nil
 		default:
-			return ecsResourceContainerInstance, clusterName, name, nil
+			return ecsResourceContainerInstance, clusterName, name, parts[5], nil
 		}
 	default:
-		return 0, "", "", errors.New(awserrors.ErrorECSInvalidParameter)
+		return 0, "", "", "", errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 }
 
@@ -77,7 +85,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 		}
 		return rec.Tags, nil
 	case ecsResourceTaskDefinition:
-		family, rev := parseTaskDefRef(id)
+		family, rev := ParseTaskDefRef(id)
 		if family == "" || rev == 0 {
 			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 		}
@@ -142,7 +150,7 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 		rec.Tags = mutate(rec.Tags)
 		return putJSON(ctx, kv, ClusterMetaKey(id), &rec)
 	case ecsResourceTaskDefinition:
-		family, rev := parseTaskDefRef(id)
+		family, rev := ParseTaskDefRef(id)
 		if family == "" || rev == 0 {
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
@@ -199,7 +207,7 @@ func (s *Service) ListTagsForResource(ctx context.Context, input *ecs.ListTagsFo
 	if input == nil || aws.StringValue(input.ResourceArn) == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	kind, cluster, id, err := parseResourceARN(aws.StringValue(input.ResourceArn))
+	kind, cluster, id, _, err := parseResourceARN(aws.StringValue(input.ResourceArn))
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +227,7 @@ func (s *Service) TagResource(ctx context.Context, input *ecs.TagResourceInput, 
 	if input == nil || aws.StringValue(input.ResourceArn) == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	kind, cluster, id, err := parseResourceARN(aws.StringValue(input.ResourceArn))
+	kind, cluster, id, _, err := parseResourceARN(aws.StringValue(input.ResourceArn))
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +254,7 @@ func (s *Service) UntagResource(ctx context.Context, input *ecs.UntagResourceInp
 	if input == nil || aws.StringValue(input.ResourceArn) == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	kind, cluster, id, err := parseResourceARN(aws.StringValue(input.ResourceArn))
+	kind, cluster, id, _, err := parseResourceARN(aws.StringValue(input.ResourceArn))
 	if err != nil {
 		return nil, err
 	}

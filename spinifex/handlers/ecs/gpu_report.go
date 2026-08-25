@@ -29,8 +29,8 @@ type ReportTaskGPUOutput struct {
 // task or container is a silent no-op — the state-report path already owns
 // the task's lifecycle; this only enriches it.
 func (s *Service) ReportTaskGPU(ctx context.Context, input *ReportTaskGPUInput, accountID string) (*ReportTaskGPUOutput, error) {
-	cluster := clusterShortName(input.Cluster)
-	taskID := taskShortID(input.Task)
+	cluster := ClusterShortName(input.Cluster)
+	taskID := TaskShortID(input.Task)
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err

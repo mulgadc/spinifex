@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -266,10 +265,10 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := readBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "EKS_Request: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return err
 	}
 
 	// Some REST-JSON actions carry their non-path inputs as query params with

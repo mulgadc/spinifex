@@ -26,7 +26,7 @@ func TestParseResourceARN(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			kind, cluster, id, err := parseResourceARN(tc.arn)
+			kind, cluster, id, _, err := parseResourceARN(tc.arn)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantKind, kind)
 			assert.Equal(t, tc.wantCluster, cluster)
@@ -42,10 +42,14 @@ func TestParseResourceARN_Invalid(t *testing.T) {
 		"arn:aws:ecs:r:a:cluster",         // no "/" after resource type
 		"arn:aws:ecs:r:a:service/onlyone", // service missing embedded name
 		"arn:aws:ecs:r:a:unknown/x",       // unrecognized resource type
+		// A foreign service segment would otherwise be tagged as an ECS
+		// resource in the caller's own bucket, out from under a fence on it.
+		"arn:aws:ecsx:r:a:cluster/prod",
+		"arn:aws:ec2:r:a:cluster/prod",
 	}
 	for _, arnStr := range cases {
 		t.Run(arnStr, func(t *testing.T) {
-			_, _, _, err := parseResourceARN(arnStr)
+			_, _, _, _, err := parseResourceARN(arnStr)
 			assert.EqualError(t, err, "InvalidParameterException")
 		})
 	}

@@ -37,7 +37,7 @@ func (s *Service) listInstanceRecords(ctx context.Context, kv jetstream.KeyValue
 // normally registers over the Layer-2 bus; this keeps API parity by writing the
 // same record shape from an explicit call.
 func (s *Service) RegisterContainerInstance(ctx context.Context, input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	instanceID := aws.StringValue(input.InstanceIdentityDocument)
 	if instanceID == "" {
 		instanceID = "ci-" + time.Now().UTC().Format("20060102150405")
@@ -80,14 +80,14 @@ func (s *Service) RegisterContainerInstance(ctx context.Context, input *ecs.Regi
 
 // DescribeContainerInstances returns records for the named container instances.
 func (s *Service) DescribeContainerInstances(ctx context.Context, input *ecs.DescribeContainerInstancesInput, accountID string) (*ecs.DescribeContainerInstancesOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	out := &ecs.DescribeContainerInstancesOutput{}
 	for _, ref := range awsStringSlice(input.ContainerInstances) {
-		id := containerInstanceShortID(ref)
+		id := ContainerInstanceShortID(ref)
 		var rec InstanceRecord
 		found, err := getJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 		if err != nil {
@@ -104,7 +104,7 @@ func (s *Service) DescribeContainerInstances(ctx context.Context, input *ecs.Des
 
 // ListContainerInstances returns the ARNs of all container instances in a cluster.
 func (s *Service) ListContainerInstances(ctx context.Context, input *ecs.ListContainerInstancesInput, accountID string) (*ecs.ListContainerInstancesOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -305,8 +305,8 @@ func (s *Service) recordTaskState(ctx context.Context, msg *bus.TaskState) error
 func (s *Service) SubmitTaskStateChange(ctx context.Context, input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error) {
 	msg := bus.TaskState{
 		AccountID:   accountID,
-		ClusterName: clusterShortName(aws.StringValue(input.Cluster)),
-		TaskID:      taskShortID(aws.StringValue(input.Task)),
+		ClusterName: ClusterShortName(aws.StringValue(input.Cluster)),
+		TaskID:      TaskShortID(aws.StringValue(input.Task)),
 		LastStatus:  aws.StringValue(input.Status),
 		Reason:      aws.StringValue(input.Reason),
 		ReportedAt:  time.Now().UTC(),

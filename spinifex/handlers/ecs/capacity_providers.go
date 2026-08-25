@@ -17,7 +17,7 @@ func (s *Service) PutClusterCapacityProviders(ctx context.Context, input *ecs.Pu
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -104,7 +104,7 @@ func (s *Service) DescribeCapacityProviders(ctx context.Context, input *ecs.Desc
 	}
 
 	for _, ref := range names {
-		name := capacityProviderShortName(ref)
+		name := CapacityProviderShortName(ref)
 		var rec CapacityProviderRecord
 		ok, gerr := getJSON(ctx, kv, CapacityProviderKey(name), &rec)
 		if gerr != nil {
@@ -126,7 +126,7 @@ func (s *Service) DeleteCapacityProvider(ctx context.Context, input *ecs.DeleteC
 	if input == nil || aws.StringValue(input.CapacityProvider) == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	name := capacityProviderShortName(aws.StringValue(input.CapacityProvider))
+	name := CapacityProviderShortName(aws.StringValue(input.CapacityProvider))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err

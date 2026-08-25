@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"log/slog"
@@ -56,24 +57,35 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "ecr", action); err != nil {
+	// Hoisted above the policy check because the resolver builds ARNs from the
+	// caller's account and from the same body bytes the handler unmarshals.
+	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	if accountID == "" {
+		slog.Error("ECR_Request: no account ID in auth context")
+		// InternalError, not ServerInternal: the policy gate used to reach this
+		// case first and that is the code the caller has always seen.
+		return errors.New(awserrors.ErrorInternalError)
+	}
+
+	body, err := readBoundedBody(r)
+	if err != nil {
+		slog.Error("ECR_Request: failed to read body", "err", err)
+		return err
+	}
+
+	resources, err := gateway_ecrapi.ResourceARNs(action, gw.Region, accountID, body)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResources(r, "ecr", action, resources); err != nil {
 		return err
 	}
 
 	if inline, ok := ecrInlineActions[action]; ok {
+		// The inline handlers read r.Body themselves, so it is rewound over the
+		// bytes the gate consumed, the same discipline the auth middleware uses.
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		return inline(gw, w, r)
-	}
-
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
-	if accountID == "" {
-		slog.Error("ECR_Request: no account ID in auth context")
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		slog.Error("ECR_Request: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	output, err := handler(r.Context(), gw.NATSConn, accountID, body)

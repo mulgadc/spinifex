@@ -21,8 +21,10 @@ func awsStringSlice(in []*string) []string {
 	return out
 }
 
-// clusterShortName extracts the cluster name from a name or a cluster ARN.
-func clusterShortName(ref string) string {
+// ClusterShortName extracts the cluster name from a name or a cluster ARN, and
+// resolves an omitted reference to the default cluster. Exported so the policy
+// gate names the same cluster the handler acts on.
+func ClusterShortName(ref string) string {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return defaultCluster
@@ -33,26 +35,26 @@ func clusterShortName(ref string) string {
 	return ref
 }
 
-// containerInstanceShortID extracts the container-instance UUID from an ID or ARN.
-func containerInstanceShortID(ref string) string {
+// ContainerInstanceShortID extracts the container-instance UUID from an ID or ARN.
+func ContainerInstanceShortID(ref string) string {
 	if i := strings.LastIndexByte(ref, '/'); i >= 0 {
 		return ref[i+1:]
 	}
 	return ref
 }
 
-// taskShortID extracts the task UUID from a bare id or a task ARN
+// TaskShortID extracts the task UUID from a bare id or a task ARN
 // (arn:...:task/{cluster}/{taskID}); the final path segment is the task id.
-func taskShortID(ref string) string {
+func TaskShortID(ref string) string {
 	if i := strings.LastIndexByte(ref, '/'); i >= 0 {
 		return ref[i+1:]
 	}
 	return ref
 }
 
-// capacityProviderShortName extracts the capacity-provider name from a name
+// CapacityProviderShortName extracts the capacity-provider name from a name
 // or a capacity-provider ARN.
-func capacityProviderShortName(ref string) string {
+func CapacityProviderShortName(ref string) string {
 	ref = strings.TrimSpace(ref)
 	if i := strings.LastIndex(ref, "capacity-provider/"); i >= 0 {
 		return ref[i+len("capacity-provider/"):]

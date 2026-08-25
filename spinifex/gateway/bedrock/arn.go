@@ -87,6 +87,17 @@ func looksLikeProvisionedModelARN(modelID string) bool {
 	return strings.HasPrefix(modelID, "arn:") && strings.Contains(modelID, ":"+provisionedModelResourceType+"/")
 }
 
+// knowledgeBaseResourceType is the ARN resource-type segment a knowledge base
+// renders under. DataSource carries no ARN field in AWS's own shape (only
+// KnowledgeBase does), so there is no data-source counterpart.
+const knowledgeBaseResourceType = "knowledge-base"
+
+// FormatKnowledgeBaseARN builds the ARN a CreateKnowledgeBase call returns,
+// mirroring FormatGuardrailARN's shape.
+func FormatKnowledgeBaseARN(region, accountID, id string) string {
+	return fmt.Sprintf("arn:aws:bedrock:%s:%s:%s/%s", region, accountID, knowledgeBaseResourceType, id)
+}
+
 // guardrailResourceType is the ARN resource-type segment for a guardrail.
 const guardrailResourceType = "guardrail"
 

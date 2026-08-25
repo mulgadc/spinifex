@@ -284,7 +284,7 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 	}
 	out := &ecs.DescribeClustersOutput{}
 	for _, name := range names {
-		name = clusterShortName(name)
+		name = ClusterShortName(name)
 		var rec ClusterRecord
 		found, err := getJSON(ctx, kv, ClusterMetaKey(name), &rec)
 		if err != nil {
@@ -466,7 +466,7 @@ func (s *Service) nextRevision(ctx context.Context, kv jetstream.KeyValue, famil
 // AWS requires an explicit family:revision (a bare family is rejected); the
 // revision stays describable, matching AWS. Idempotent.
 func (s *Service) DeregisterTaskDefinition(ctx context.Context, input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error) {
-	family, rev := parseTaskDefRef(aws.StringValue(input.TaskDefinition))
+	family, rev := ParseTaskDefRef(aws.StringValue(input.TaskDefinition))
 	if family == "" || rev == 0 {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
@@ -542,7 +542,7 @@ func (s *Service) ListTaskDefinitions(ctx context.Context, input *ecs.ListTaskDe
 // resolveTaskDef loads the TaskDefRecord named by ref ("family", "family:rev",
 // or a task-definition ARN). A bare family resolves to its latest revision.
 func (s *Service) resolveTaskDef(ctx context.Context, kv jetstream.KeyValue, ref string) (*TaskDefRecord, error) {
-	family, rev := parseTaskDefRef(ref)
+	family, rev := ParseTaskDefRef(ref)
 	if family == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
@@ -568,9 +568,9 @@ func (s *Service) resolveTaskDef(ctx context.Context, kv jetstream.KeyValue, ref
 	return &rec, nil
 }
 
-// parseTaskDefRef splits "family", "family:rev" or an ARN into (family, rev).
+// ParseTaskDefRef splits "family", "family:rev" or an ARN into (family, rev).
 // rev is 0 when unspecified (caller resolves to latest).
-func parseTaskDefRef(ref string) (string, int) {
+func ParseTaskDefRef(ref string) (string, int) {
 	ref = strings.TrimSpace(ref)
 	if i := strings.LastIndex(ref, "task-definition/"); i >= 0 {
 		ref = ref[i+len("task-definition/"):]

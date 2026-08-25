@@ -136,7 +136,7 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -203,8 +203,8 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 
 // UpdateService mutates desiredCount and/or the task definition, then reconciles.
 func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInput, accountID string) (*ecs.UpdateServiceOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	name := serviceShortName(aws.StringValue(input.Service))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
+	name := ServiceShortName(aws.StringValue(input.Service))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -249,8 +249,8 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 // DeleteService drains the service to zero, force-stops its tasks, and marks it
 // INACTIVE (kept describable, AWS parity).
 func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInput, accountID string) (*ecs.DeleteServiceOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
-	name := serviceShortName(aws.StringValue(input.Service))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
+	name := ServiceShortName(aws.StringValue(input.Service))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -284,14 +284,14 @@ func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInp
 
 // DescribeServices returns the named services; unknown names surface as failures.
 func (s *Service) DescribeServices(ctx context.Context, input *ecs.DescribeServicesInput, accountID string) (*ecs.DescribeServicesOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	out := &ecs.DescribeServicesOutput{}
 	for _, ref := range awsStringSlice(input.Services) {
-		name := serviceShortName(ref)
+		name := ServiceShortName(ref)
 		var rec ServiceRecord
 		found, gerr := getJSON(ctx, kv, ServiceKey(cluster, name), &rec)
 		if gerr != nil {
@@ -308,7 +308,7 @@ func (s *Service) DescribeServices(ctx context.Context, input *ecs.DescribeServi
 
 // ListServices returns the ARNs of every service in a cluster.
 func (s *Service) ListServices(ctx context.Context, input *ecs.ListServicesInput, accountID string) (*ecs.ListServicesOutput, error) {
-	cluster := clusterShortName(aws.StringValue(input.Cluster))
+	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -585,8 +585,8 @@ func (s *Service) allServiceRecords(ctx context.Context, kv jetstream.KeyValue) 
 	return out, nil
 }
 
-// serviceShortName extracts the service name from a name or a service ARN.
-func serviceShortName(ref string) string {
+// ServiceShortName extracts the service name from a name or a service ARN.
+func ServiceShortName(ref string) string {
 	ref = strings.TrimSpace(ref)
 	if i := strings.LastIndexByte(ref, '/'); i >= 0 {
 		return ref[i+1:]

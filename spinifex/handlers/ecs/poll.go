@@ -35,8 +35,8 @@ type PollAssignmentsOutput struct {
 // authoritative from accountID (SigV4 caller), so an instance cannot drain
 // another account's inbox.
 func (s *Service) PollAssignments(ctx context.Context, input *PollAssignmentsInput, accountID string) (*PollAssignmentsOutput, error) {
-	cluster := clusterShortName(input.Cluster)
-	instanceID := containerInstanceShortID(input.ContainerInstance)
+	cluster := ClusterShortName(input.Cluster)
+	instanceID := ContainerInstanceShortID(input.ContainerInstance)
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -46,13 +46,13 @@ func (s *Service) PollAssignments(ctx context.Context, input *PollAssignmentsInp
 		if taskID == "" {
 			continue
 		}
-		_ = kv.Delete(ctx, AssignmentKey(cluster, instanceID, taskShortID(taskID)))
+		_ = kv.Delete(ctx, AssignmentKey(cluster, instanceID, TaskShortID(taskID)))
 	}
 	for _, taskID := range input.AckStopIDs {
 		if taskID == "" {
 			continue
 		}
-		_ = kv.Delete(ctx, StopKey(cluster, instanceID, taskShortID(taskID)))
+		_ = kv.Delete(ctx, StopKey(cluster, instanceID, TaskShortID(taskID)))
 	}
 
 	keys, err := keysWithPrefix(ctx, kv, AssignmentsPrefix(cluster, instanceID))

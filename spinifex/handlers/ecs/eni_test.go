@@ -183,7 +183,7 @@ func TestRecordTaskState_Awsvpc_ReleasesENIOnStopOnce(t *testing.T) {
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
 	out, err := svc.RunTask(context.Background(), awsvpcRunInput(), testAccountID)
 	require.NoError(t, err)
-	taskID := containerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
+	taskID := ContainerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
 
 	stop := &bus.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: taskID,

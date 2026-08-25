@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -112,17 +111,26 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "bedrock-runtime", action); err != nil {
+	// Hoisted above the policy check because the resolver builds ARNs from it.
+	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	if accountID == "" {
+		slog.ErrorContext(r.Context(), "BedrockRuntime_Request: no account ID in auth context")
+		// InternalError, not ServerInternal: the policy gate used to reach this
+		// case first and that is the code the caller has always seen.
+		return errors.New(awserrors.ErrorInternalError)
+	}
+
+	// Every bedrock-runtime action names its model or guardrail in the path, so
+	// the gate resolves before the body is read at all.
+	resources, err := gateway_bedrock.ResourceARNs("bedrock-runtime", action, gw.Region, accountID, params, nil)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResources(r, "bedrock-runtime", action, resources); err != nil {
 		return err
 	}
 
 	if gw.NATSConn == nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
-	if accountID == "" {
-		slog.ErrorContext(r.Context(), "BedrockRuntime_Request: no account ID in auth context")
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -137,10 +145,10 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 		return err
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := readBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "BedrockRuntime_Request: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return err
 	}
 
 	// InvokeModel returns provider-native bytes, not a struct WriteJSONResponse

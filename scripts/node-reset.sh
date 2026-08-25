@@ -70,9 +70,14 @@ $KEEP_DATA || WIPE_DIRS+=("$DATA_DIR")
 # keep_args adds the regular files worth keeping: the service helper scripts
 # and the env files the units load, at the top level of $1 only. A *.sh deeper
 # in the tree is cluster state, not an installed helper.
+#
+# firewall/custom.nft is kept too, one level down: it is an operator's SSH
+# allowlist, and losing it silently returns the node to accepting ssh from
+# every source. Parenthesised so the -o groups against the whole top-level arm.
 KEEP_TOP=()
 keep_args() {
-    KEEP_TOP=(-path "$1/*" ! -path "$1/*/*" '(' -name '*.sh' -o -name '*.env' ')')
+    KEEP_TOP=('(' -path "$1/*" ! -path "$1/*/*" '(' -name '*.sh' -o -name '*.env' ')' ')' \
+              -o -path "$1/firewall/custom.nft")
 }
 
 # Report what is at stake in figures rather than adjectives. An operator who
@@ -148,6 +153,12 @@ run sudo rm -f /etc/openvswitch/system-id.conf
 FIREWALL_MODE=""
 if [ -r "$ETC_DIR/firewall/mode" ]; then
     FIREWALL_MODE=$(sudo cat "$ETC_DIR/firewall/mode" 2>/dev/null | tr -d '[:space:]')
+fi
+
+# Named in the transcript because the risk runs the other way too: an allowlist
+# naming the old cluster's management network locks an operator out of the new one.
+if [ -e "$ETC_DIR/firewall/custom.nft" ]; then
+    log "keeping the operator ssh allowlist in $ETC_DIR/firewall/custom.nft"
 fi
 
 log "removing OVN databases"

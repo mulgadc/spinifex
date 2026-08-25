@@ -51,10 +51,6 @@ const searchSchema = z.object({
 })
 /* oxlint-enable promise/prefer-await-to-then, unicorn/no-useless-undefined */
 
-function noHandoffCleanup(): void {
-  /* the page was not opened for a handoff, so no listener was attached */
-}
-
 export const Route = createFileRoute("/login")({
   validateSearch: searchSchema,
   beforeLoad: () => {
@@ -73,19 +69,20 @@ function LoginPage() {
   // nothing arrives (opened directly, or the exchange fails) we fall back to
   // the form, so this is invisible when unused.
   const [handingOff, setHandingOff] = useState(handoff === "1")
-  useEffect(() => {
-    if (handoff !== "1") {
-      return noHandoffCleanup
-    }
-    return startConsoleHandoff({
-      onFailure: () => {
-        setHandingOff(false)
-        setAuthError(
-          "We couldn't sign you in automatically. Please enter your credentials.",
-        )
-      },
-    })
-  }, [handoff])
+  useEffect(
+    () =>
+      handoff === "1"
+        ? startConsoleHandoff({
+            onFailure: () => {
+              setHandingOff(false)
+              setAuthError(
+                "We couldn't sign you in automatically. Please enter your credentials.",
+              )
+            },
+          })
+        : undefined,
+    [handoff],
+  )
   const {
     register,
     handleSubmit,

@@ -15,10 +15,6 @@ const ALLOWED_OPENER_ORIGINS = [
 const READY = "spx-handoff-ready"
 const CREDS = "spx-handoff-creds"
 
-function noCleanup(): void {
-  /* no listener or timer was attached, so there is nothing to undo */
-}
-
 // The whole inbound message is parsed here, at the I/O boundary, so nothing
 // downstream branches on the shape of an untrusted value.
 const handoffMessageSchema = awsCredentialsSchema.extend({
@@ -49,7 +45,8 @@ const handoffMessageSchema = awsCredentialsSchema.extend({
  *
  * Degrades silently: opened directly, or by an opener that doesn't implement
  * this, no message arrives and the normal form stays usable. Returns a cleanup
- * function that removes the listener.
+ * function that removes the listener, or undefined when there was no opener to
+ * listen to and so nothing was attached.
  *
  * @param onSuccess called just before navigation, so the UI can show progress
  * @param onFailure called if credentials arrived but STS rejected them
@@ -57,7 +54,7 @@ const handoffMessageSchema = awsCredentialsSchema.extend({
 export function startConsoleHandoff(opts?: {
   onSuccess?: () => void
   onFailure?: () => void
-}): () => void {
+}): (() => void) | undefined {
   // window.opener is a cross-realm WindowProxy typed `any` by lib.dom, so
   // instanceof is unreliable across realms and a duck check is the only one
   // that holds for the real sender.
@@ -68,7 +65,7 @@ export function startConsoleHandoff(opts?: {
   const opener = canPost ? (openerRaw as Window) : null
   /* oxlint-enable anti-slop/no-runtime-typeof, typescript/no-unsafe-type-assertion */
   if (!opener) {
-    return noCleanup
+    return undefined
   }
 
   let done = false

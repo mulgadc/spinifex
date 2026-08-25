@@ -170,15 +170,13 @@ describe("startConsoleHandoff", () => {
     expect(assign).not.toHaveBeenCalled()
   })
 
-  it("is a no-op with no opener", () => {
+  it("attaches nothing and returns no cleanup with no opener", () => {
     Object.defineProperty(window, "opener", {
       value: null,
       configurable: true,
       writable: true,
     })
-    const stop = startConsoleHandoff()
-    expect(stop).toBeTypeOf("function")
-    stop()
+    expect(startConsoleHandoff()).toBeUndefined()
   })
 
   it("only acts once, then the listener is removed", async () => {

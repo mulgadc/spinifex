@@ -3,7 +3,6 @@ package gateway_elbv2
 import (
 	"errors"
 	"log/slog"
-	"slices"
 	"sort"
 	"strings"
 
@@ -134,6 +133,7 @@ func ResourceARNs(action, region, accountID string, input any) ([]string, error)
 	}
 
 	resources := make([]string, 0, len(sources))
+	seen := make(map[string]struct{}, len(sources))
 	for _, source := range sources {
 		resolved, err := resolve(source, action, region, accountID, input)
 		if err != nil {
@@ -142,9 +142,16 @@ func ResourceARNs(action, region, accountID string, input any) ([]string, error)
 		for _, resource := range resolved {
 			// An unresolved member drops out rather than contributing "*", which no
 			// scoped Allow can match and which would deny a call AWS permits.
-			if resource == anyResource || slices.Contains(resources, resource) {
+			if resource == anyResource {
 				continue
 			}
+			if _, duplicate := seen[resource]; duplicate {
+				continue
+			}
+			if len(resources) >= awsec2query.MaxSliceLen {
+				return nil, errors.New(awserrors.ErrorMalformedQueryString)
+			}
+			seen[resource] = struct{}{}
 			resources = append(resources, resource)
 		}
 	}
@@ -220,6 +227,11 @@ func suppliedARNs(region, accountID string, input any, paths ...string) ([]strin
 		for _, value := range awsec2query.StringValuesAt(input, path) {
 			if value == "" {
 				continue
+			}
+			// A nested list can fan out past what any single list may hold, so the
+			// bound is asserted here rather than inherited from the parser.
+			if len(resources) >= awsec2query.MaxSliceLen {
+				return nil, errors.New(awserrors.ErrorMalformedQueryString)
 			}
 			if err := checkARN(value, region, accountID); err != nil {
 				return nil, err

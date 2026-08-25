@@ -1,6 +1,7 @@
 package gateway_elbv2
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -142,6 +143,34 @@ func TestResourceARNs_ForwardConfigTargetGroups(t *testing.T) {
 	})
 	assert.Contains(t, resources, tgARN("blue", "1"))
 	assert.Contains(t, resources, tgARN("green", "2"))
+}
+
+// A rule's actions nest a target-group list inside each action, so the fan-out
+// can exceed what any one list holds. Resolving it is quadratic in the member
+// count, and it runs before the policy check, so the bound is load-bearing.
+func TestResourceARNs_BoundsNestedFanOut(t *testing.T) {
+	actions := make([]*elbv2.Action, 0, 64)
+	for a := 0; a < 64; a++ {
+		tgs := make([]*elbv2.TargetGroupTuple, 0, 64)
+		for m := 0; m < 64; m++ {
+			tgs = append(tgs, &elbv2.TargetGroupTuple{
+				TargetGroupArn: aws.String(tgARN(fmt.Sprintf("tg%d-%d", a, m), "1")),
+			})
+		}
+		actions = append(actions, &elbv2.Action{
+			Type:          aws.String("forward"),
+			ForwardConfig: &elbv2.ForwardActionConfig{TargetGroups: tgs},
+		})
+	}
+
+	_, err := ResourceARNs("CreateRule", authzRegion, authzAccount, &elbv2.CreateRuleInput{
+		ListenerArn: aws.String(listenerARN("prod", "abc123", "l1")),
+		Actions:     actions,
+	})
+	require.Error(t, err)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorMalformedQueryString, code)
 }
 
 func TestResourceARNs_ListsEveryMember(t *testing.T) {

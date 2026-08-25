@@ -373,47 +373,16 @@ func (s *IAMServiceImpl) getInstanceProfile(ctx context.Context, accountID, prof
 // re-reading and re-running mutate when a concurrent writer wins the race.
 // mutate reports whether it changed the record; a false return commits nothing.
 func (s *IAMServiceImpl) updateInstanceProfileCAS(ctx context.Context, accountID, profileName string, mutate func(*InstanceProfile) (bool, error)) error {
-	key := accountID + "." + profileName
-	for range instanceProfileCASMaxRetries {
-		entry, err := s.instanceProfilesBucket.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				return errors.New(awserrors.ErrorIAMNoSuchEntity)
-			}
-			return fmt.Errorf("get instance profile: %w", err)
-		}
-
-		var profile InstanceProfile
-		if err := json.Unmarshal(entry.Value(), &profile); err != nil {
-			return fmt.Errorf("unmarshal instance profile: %w", err)
-		}
-
-		changed, err := mutate(&profile)
-		if err != nil {
-			return err
-		}
-		if !changed {
-			return nil
-		}
-
-		data, err := json.Marshal(&profile)
-		if err != nil {
-			return fmt.Errorf("marshal instance profile: %w", err)
-		}
-		// ErrKeyRevisionMismatch is the only conflict signal that holds on both
-		// replicated and single-replica buckets; ErrKeyExists misses R>1.
-		if _, err := s.instanceProfilesBucket.Update(ctx, key, data, entry.Revision()); err != nil {
-			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-				continue // CAS conflict — another writer won, re-read and retry.
-			}
-			return fmt.Errorf("update instance profile: %w", err)
-		}
-		return nil
-	}
-
-	slog.Warn("IAM instance profile CAS exhausted retries",
-		"accountID", accountID, "instanceProfileName", profileName, "attempts", instanceProfileCASMaxRetries)
-	return errors.New(awserrors.ErrorServerInternal)
+	_, err := kvutil.Update(ctx, s.instanceProfilesBucket, accountID+"."+profileName, kvutil.CASConfig{
+		Attempts: instanceProfileCASMaxRetries,
+		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),
+		Exhausted: func(string, int) error {
+			slog.Warn("IAM instance profile CAS exhausted retries",
+				"accountID", accountID, "instanceProfileName", profileName, "attempts", instanceProfileCASMaxRetries)
+			return errors.New(awserrors.ErrorServerInternal)
+		},
+	}, mutate)
+	return err
 }
 
 // profileToSDK converts the internal InstanceProfile to the AWS SDK shape.

@@ -2,6 +2,7 @@ package kvutil_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -151,4 +152,30 @@ func TestCASClaim_RetriesRevisionConflict(t *testing.T) {
 
 func jetstreamCodeSuffix(code jetstream.ErrorCode) string {
 	return fmt.Sprintf("%d", code)
+}
+
+func TestUpdate_AbsentKeyReturnsCallerError(t *testing.T) {
+	kv := casTestBucket(t, "cas-notfound")
+
+	sentinel := errors.New("no such entity")
+	_, err := kvutil.Update(t.Context(), kv, "missing", kvutil.CASConfig{NotFound: sentinel},
+		func(*casRecord) (bool, error) { t.Fatal("mutate ran against an absent key"); return false, nil })
+
+	assert.ErrorIs(t, err, sentinel)
+}
+
+func TestUpdate_ExhaustionUsesCallerError(t *testing.T) {
+	kv := casTestBucket(t, "cas-exhausted-hook")
+	_, err := kv.Put(t.Context(), "key", []byte(`{"counter":1}`))
+	require.NoError(t, err)
+
+	stub := &casConflictKV{KeyValue: kv, conflictCode: jetstream.JSErrCodeStreamWrongLastSequenceConstant,
+		updateFailures: casTestAttempts + 1}
+	sentinel := errors.New("contended")
+	_, err = kvutil.Update(t.Context(), stub, "key", kvutil.CASConfig{
+		Attempts:  casTestAttempts,
+		Exhausted: func(string, int) error { return sentinel },
+	}, bumpCounter)
+
+	assert.ErrorIs(t, err, sentinel)
 }

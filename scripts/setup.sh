@@ -36,6 +36,7 @@ FIREWALL_RULES="${FIREWALL_DIR}/spinifex.nft"
 FIREWALL_PEERS="${FIREWALL_DIR}/peers.nft"
 FIREWALL_LOCAL="${FIREWALL_DIR}/local.nft"
 FIREWALL_OPEN="${FIREWALL_DIR}/open-ports.nft"
+FIREWALL_CUSTOM="${FIREWALL_DIR}/custom.nft"
 FIREWALL_MODE_FILE="${FIREWALL_DIR}/mode"
 FIREWALL_APPLY="/usr/local/lib/spinifex/spinifex-firewall-apply"
 
@@ -349,6 +350,7 @@ install_firewall() {
 include "/etc/spinifex/firewall/local.nft"
 include "/etc/spinifex/firewall/open-ports.nft"
 include "/etc/spinifex/firewall/peers.nft"
+include "/etc/spinifex/firewall/custom.nft"
 
 # Create-then-delete so the replace is atomic and the delete cannot fail on a
 # first run. nft applies the whole file as one transaction or none of it.
@@ -379,12 +381,16 @@ table inet spinifex_filter {
         # conntrack entry, so the uplink and external-pool leases need this.
         udp sport 67 udp dport 68 accept
 
+        # Scoped by $trusted_ssh_peers from custom.nft, which the installer
+        # creates once and never rewrites. That default accepts every source,
+        # so a node is no less reachable than before until an operator narrows it.
+        ip saddr $trusted_ssh_peers tcp dport $spinifex_ssh_ports accept
+
         # Public plane. 9999 is also how every guest agent (lb, eks, ecs, rds)
         # reaches its control plane over br-mgmt: they speak SigV4 to the AWS
         # gateway, never NATS, so no cluster port needs to face the guests.
         # 443 has no listener yet and is held for the nginx TLS edge, so the
         # rollout does not need a firewall change on every node.
-        tcp dport $spinifex_ssh_ports accept
         tcp dport { 443, 3000, 8443, 9999 } accept
 
         # Transiently open to any source, for cluster formation. A node dialling
@@ -445,6 +451,31 @@ define spinifex_open_ports = { 0 }
 OPENPORTS
     $SUDO chmod 0644 "$FIREWALL_OPEN"
     info "  $FIREWALL_OPEN (closed)"
+
+    # Operator-owned, so it is created once and never rewritten: an upgrade, a
+    # re-install and a node reset all leave an edited file alone. Never write it
+    # empty — an undefined variable fails the whole ruleset, not just its rule.
+    if [ ! -e "$FIREWALL_CUSTOM" ]; then
+        $SUDO tee "$FIREWALL_CUSTOM" > /dev/null << 'CUSTOM'
+# Operator-owned host firewall settings. setup.sh creates this file once and
+# never overwrites it, so edits here survive upgrades, re-installs and resets.
+#
+# Check a change without applying it, then apply it:
+#   sudo nft -c -f /etc/spinifex/firewall/spinifex.nft
+#   sudo nft -f  /etc/spinifex/firewall/spinifex.nft
+#
+# Check spinifex.nft, not this file: on its own this parses as a bare define
+# and proves nothing, because the rule that uses the variable lives there.
+#
+# Sources allowed to reach SSH. 0.0.0.0/0 accepts from anywhere; narrow it to
+# your management networks. IPv4 only — sshd reached over IPv6 is not matched.
+define trusted_ssh_peers = { 0.0.0.0/0 }
+CUSTOM
+        $SUDO chmod 0644 "$FIREWALL_CUSTOM"
+        info "  $FIREWALL_CUSTOM (created — ssh open to every source)"
+    else
+        info "  $FIREWALL_CUSTOM (already present, left unchanged)"
+    fi
 
     # Armed or merely installed. The daemon reads this when the config carries no
     # explicit firewall_enabled, which is the normal case on both install paths.
@@ -582,6 +613,14 @@ APPLY
     $SUDO chown root:root "$FIREWALL_APPLY"
     $SUDO chmod 0755 "$FIREWALL_APPLY"
     info "  $FIREWALL_APPLY"
+
+    # Say which state ssh is in either way. A node whose allowlist was never
+    # narrowed reads as configured otherwise, and that is the whole risk here.
+    _ssh_srcs="$(grep -o '{[^}]*}' "$FIREWALL_CUSTOM" 2>/dev/null | tr -d '{}' | tr -s ' ')"
+    case "$_ssh_srcs" in
+        *0.0.0.0/0*) info "  ssh (${_ssh_ports}) accepted from ANY source — narrow \$trusted_ssh_peers in $FIREWALL_CUSTOM" ;;
+        ?*) info "  ssh (${_ssh_ports}) accepted from:${_ssh_srcs}" ;;
+    esac
 
     if [ "$INSTALL_SPINIFEX_FIREWALL" = "on" ]; then
         info "Host firewall installed and armed (applied by spinifex-daemon once peers resolve)"

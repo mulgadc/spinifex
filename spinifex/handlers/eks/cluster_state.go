@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -209,41 +210,20 @@ func GetClusterMeta(ctx context.Context, kv jetstream.KeyValue, name string) (*C
 }
 
 // casUpdateMeta does a revision-checked read-modify-write of the cluster meta.
-// mutate returns true when a field changed. Retries on CAS conflict up to
-// maxClusterStateCASRetries. Returns ErrClusterNotFound if deleted concurrently.
+// mutate returns true when a field changed. Returns ErrClusterNotFound if the
+// cluster is deleted concurrently.
 func casUpdateMeta(ctx context.Context, kv jetstream.KeyValue, name string, mutate func(*ClusterMeta) bool) error {
 	if name == "" {
 		return errors.New("eks: casUpdateMeta empty name")
 	}
-	for range maxClusterStateCASRetries {
-		entry, err := kv.Get(ctx, ClusterMetaKey(name))
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				return ErrClusterNotFound
-			}
-			return fmt.Errorf("kv get %s: %w", ClusterMetaKey(name), err)
-		}
-		var meta ClusterMeta
-		if err := json.Unmarshal(entry.Value(), &meta); err != nil {
-			return fmt.Errorf("unmarshal cluster meta %s: %w", name, err)
-		}
-		if !mutate(&meta) {
-			return nil
-		}
-		data, err := json.Marshal(&meta)
-		if err != nil {
-			return fmt.Errorf("marshal cluster meta %s: %w", name, err)
-		}
-		_, err = kv.Update(ctx, ClusterMetaKey(name), data, entry.Revision())
-		if err == nil {
-			return nil
-		}
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-			continue
-		}
-		return fmt.Errorf("kv update %s: %w", ClusterMetaKey(name), err)
-	}
-	return fmt.Errorf("eks: casUpdateMeta %s exhausted CAS retries", name)
+	_, err := kvutil.Update(ctx, kv, ClusterMetaKey(name), kvutil.CASConfig{
+		Attempts: maxClusterStateCASRetries,
+		NotFound: ErrClusterNotFound,
+		Exhausted: func(string, int) error {
+			return fmt.Errorf("eks: casUpdateMeta %s exhausted CAS retries", name)
+		},
+	}, func(m *ClusterMeta) (bool, error) { return mutate(m), nil })
+	return err
 }
 
 // SetClusterStatus does a CAS update of meta.Status. Returns ErrClusterNotFound if deleted concurrently.

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"slices"
 	"strings"
 	"time"
@@ -430,11 +429,6 @@ func (s *Store) listCerts(ctx context.Context, keep func(*CertRecord) bool, decr
 // load balancer created with several HTTPS listeners in short succession).
 const maxInUseByCASAttempts = 50
 
-// inUseByCASBackoffBase is the base delay between CAS retries. A small
-// jittered backoff spreads out contending writers instead of having every
-// retry immediately re-collide on the same revision.
-const inUseByCASBackoffBase = 2 * time.Millisecond
-
 // AddInUseBy adds resourceArn (a load balancer ARN) to certArn's InUseBy set.
 // No-op if the certificate does not exist or already lists resourceArn.
 //
@@ -470,59 +464,37 @@ func (s *Store) RemoveInUseBy(ctx context.Context, certArn, resourceArn string) 
 	})
 }
 
+// errCertAbsent lets updateInUseByCAS tell an absent certificate apart from a
+// real failure. Both callers treat a missing certificate as a no-op, so it
+// never escapes this file.
+var errCertAbsent = errors.New("acm store: certificate not found")
+
 // updateInUseByCAS applies mutate to certArn's current InUseBy set and writes
-// the result back with a revision-checked kv.Update, retrying against the
-// latest revision whenever a concurrent writer wins the race. mutate returns
-// nil to mean "no change needed", in which case nothing is written. Returns
-// nil (no-op, no retry) if the certificate does not exist.
+// the result back under CAS. mutate returns nil to mean "no change needed".
+// A certificate that does not exist is a no-op, not an error.
 func (s *Store) updateInUseByCAS(ctx context.Context, certArn string, mutate func(cur []string) []string) error {
 	key := certKey(certArn)
 	if key == "" {
 		return nil
 	}
-	for attempt := range maxInUseByCASAttempts {
-		entry, err := s.kv.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				return nil
-			}
-			return err
-		}
-		var rec CertRecord
-		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			return fmt.Errorf("unmarshal cert: %w", err)
-		}
-
+	_, err := kvutil.Update(ctx, s.kv, key, kvutil.CASConfig{
+		Attempts: maxInUseByCASAttempts,
+		NotFound: errCertAbsent,
+		Exhausted: func(string, int) error {
+			return fmt.Errorf("acm store: exceeded %d CAS attempts updating InUseBy for %s", maxInUseByCASAttempts, certArn)
+		},
+	}, func(rec *CertRecord) (bool, error) {
 		next := mutate(rec.InUseBy)
 		if next == nil {
-			return nil
+			return false, nil
 		}
 		rec.InUseBy = next
-
-		data, err := json.Marshal(&rec)
-		if err != nil {
-			return fmt.Errorf("marshal cert: %w", err)
-		}
-		if _, err := s.kv.Update(ctx, key, data, entry.Revision()); err != nil {
-			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-				// Another writer updated the record between our Get and
-				// Update; back off briefly (jittered, so contending writers
-				// don't all re-collide on the same revision) and retry
-				// against whatever is there now.
-				backoff := inUseByCASBackoffBase * time.Duration(attempt+1)
-				jitter := time.Duration(rand.Int64N(int64(backoff))) //nolint:gosec // jitter, not cryptographic
-				select {
-				case <-time.After(backoff/2 + jitter):
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-				continue
-			}
-			return err
-		}
+		return true, nil
+	})
+	if errors.Is(err, errCertAbsent) {
 		return nil
 	}
-	return fmt.Errorf("acm store: exceeded %d CAS attempts updating InUseBy for %s", maxInUseByCASAttempts, certArn)
+	return err
 }
 
 // AcquireLease attempts to take the per-certificate issuance/renewal lease on

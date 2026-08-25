@@ -46,6 +46,11 @@ func TestResourceARNsFidelity(t *testing.T) {
 
 		// Creates resolve the type, which is what AWS evaluates them against.
 		{"RequestCertificate", `{"DomainName":"example.com"}`, []string{certARN("*")}},
+
+		// RequestCertificateInput carries no CertificateArn, so one in the body
+		// is discarded by the handler and must not steer the resource the
+		// request is checked against.
+		{"RequestCertificate", `{"DomainName":"example.com","CertificateArn":"` + certARN("prod-1111") + `"}`, []string{certARN("*")}},
 		{"ImportCertificate", `{"Certificate":"pem"}`, []string{certARN("*")}},
 
 		// A re-import names the certificate it replaces.

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go"
@@ -188,11 +189,15 @@ func NewStore(ctx context.Context, nc *nats.Conn, masterKey []byte) (*Store, err
 	return &Store{kv: kv, masterKey: masterKey}, nil
 }
 
-// certKey derives the KV key from a certificate ARN using the UUID after "certificate/".
+// certKey derives the KV key from a certificate ARN, reading the id exactly as
+// the policy gate reads it. Anything else yields "", which every caller treats
+// as absent: the gate authorizes an ARN it cannot read account-wide, so a
+// lookup accepting a shape the gate rejects would reach a certificate that no
+// statement named.
 func certKey(certArn string) string {
-	id := certArn
-	if i := strings.LastIndex(certArn, "/"); i >= 0 {
-		id = certArn[i+1:]
+	id, ok := arn.ParseACMCertificateID(certArn)
+	if !ok {
+		return ""
 	}
 	return KeyPrefixCert + id
 }
@@ -215,7 +220,11 @@ func (s *Store) PutCert(ctx context.Context, rec *CertRecord) error {
 	if err != nil {
 		return fmt.Errorf("marshal cert: %w", err)
 	}
-	_, err = s.kv.Put(ctx, certKey(rec.CertificateArn), data)
+	key := certKey(rec.CertificateArn)
+	if key == "" {
+		return fmt.Errorf("acm store: not a certificate ARN: %q", rec.CertificateArn)
+	}
+	_, err = s.kv.Put(ctx, key, data)
 	return err
 }
 
@@ -248,7 +257,11 @@ func (s *Store) GetCertMetadata(ctx context.Context, certArn string) (*CertRecor
 // caller cannot mistake ciphertext for usable key material in a field typed as
 // plaintext PEM everywhere else in this package.
 func (s *Store) getCert(ctx context.Context, certArn string, decrypt bool) (*CertRecord, error) {
-	entry, err := s.kv.Get(ctx, certKey(certArn))
+	key := certKey(certArn)
+	if key == "" {
+		return nil, nil
+	}
+	entry, err := s.kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil
@@ -317,13 +330,17 @@ func (s *Store) decryptPrivateKey(rec *CertRecord) error {
 
 // DeleteCert removes a certificate by ARN. Returns (false, nil) when absent.
 func (s *Store) DeleteCert(ctx context.Context, certArn string) (bool, error) {
-	if _, err := s.kv.Get(ctx, certKey(certArn)); err != nil {
+	key := certKey(certArn)
+	if key == "" {
+		return false, nil
+	}
+	if _, err := s.kv.Get(ctx, key); err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return false, nil
 		}
 		return false, err
 	}
-	if err := s.kv.Delete(ctx, certKey(certArn)); err != nil {
+	if err := s.kv.Delete(ctx, key); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -460,6 +477,9 @@ func (s *Store) RemoveInUseBy(ctx context.Context, certArn, resourceArn string) 
 // nil (no-op, no retry) if the certificate does not exist.
 func (s *Store) updateInUseByCAS(ctx context.Context, certArn string, mutate func(cur []string) []string) error {
 	key := certKey(certArn)
+	if key == "" {
+		return nil
+	}
 	for attempt := range maxInUseByCASAttempts {
 		entry, err := s.kv.Get(ctx, key)
 		if err != nil {
@@ -520,6 +540,9 @@ func (s *Store) updateInUseByCAS(ctx context.Context, certArn string, mutate fun
 // holder finish or the lease expire.
 func (s *Store) AcquireLease(ctx context.Context, certArn, holderID string, ttl time.Duration, now time.Time) (bool, error) {
 	key := certKey(certArn)
+	if key == "" {
+		return false, nil
+	}
 	entry, err := s.kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -557,6 +580,9 @@ func (s *Store) AcquireLease(ctx context.Context, certArn, holderID string, ttl 
 // the lease for LeaseExpiresAt to reap.
 func (s *Store) ReleaseLease(ctx context.Context, certArn, holderID string) error {
 	key := certKey(certArn)
+	if key == "" {
+		return nil
+	}
 	entry, err := s.kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {

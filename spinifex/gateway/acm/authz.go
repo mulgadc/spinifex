@@ -25,6 +25,7 @@ type resourceSource uint8
 const (
 	sourceAny resourceSource = iota
 	sourceCertificate
+	sourceCreateCertificate
 	sourceNewCertificate
 )
 
@@ -47,8 +48,10 @@ var acmScopes = map[string]resourceSource{
 	// certificate, absent means create a new one.
 	"ImportCertificate": sourceNewCertificate,
 
-	// Issues a certificate; no id exists at gate time.
-	"RequestCertificate": sourceNewCertificate,
+	// Issues a certificate; no id exists at gate time. RequestCertificateInput
+	// carries no CertificateArn, so the body must not be read for one: a field
+	// the handler discards cannot choose what the request is checked against.
+	"RequestCertificate": sourceCreateCertificate,
 
 	// Account-level. AWS documents no resource type for the certificate list.
 	"ListCertificates": sourceAny,
@@ -92,6 +95,9 @@ func ResourceARNs(action, region, accountID string, body []byte) ([]string, erro
 	switch source {
 	case sourceAny:
 		return []string{anyResource}, nil
+
+	case sourceCreateCertificate:
+		return []string{newCertificateARN(region, accountID)}, nil
 
 	case sourceCertificate:
 		return []string{certificateARN(region, accountID, scope.String("certificateArn"))}, nil

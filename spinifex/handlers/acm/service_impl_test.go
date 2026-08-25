@@ -19,6 +19,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/acm"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -646,4 +647,72 @@ func TestSensitiveDataNotLogged_ACMPrivateKey(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotContains(t, buf.String(), string(keyPEM), "raw private key PEM must not appear in log output")
+}
+
+// The gate resolves an ARN it cannot read to "*", so the handler must not act
+// on one either: every spelling below names a real certificate under certKey's
+// old last-slash rule while resolving account-wide at the gate.
+func TestCertificateArnSpellingsTheGateCannotRead(t *testing.T) {
+	svc := setupACMService(t)
+	certPEM, keyPEM := genCert(t, "fenced.example.com")
+
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate: certPEM,
+		PrivateKey:  keyPEM,
+	}, testAccountID)
+	require.NoError(t, err)
+	realArn := aws.StringValue(out.CertificateArn)
+	id := realArn[strings.LastIndex(realArn, "/")+1:]
+
+	spellings := []struct {
+		certArn string
+		want    string
+	}{
+		// Not a certificate ARN at all: the gate reads none of these.
+		{id, awserrors.ErrorACMInvalidArn},
+		{"arn:aws:acm:ap-southeast-2:" + testAccountID + ":cert/" + id, awserrors.ErrorACMInvalidArn},
+		{"arn:aws:iam::" + testAccountID + ":certificate/" + id, awserrors.ErrorACMInvalidArn},
+
+		// A well-formed ARN whose id is "other/<id>". The gate resolves that
+		// literal, so the handler must miss rather than truncate back to <id>.
+		{"arn:aws:acm:ap-southeast-2:" + testAccountID + ":certificate/other/" + id, awserrors.ErrorResourceNotFound},
+	}
+
+	for _, tt := range spellings {
+		t.Run(tt.certArn, func(t *testing.T) {
+			_, err := svc.DescribeCertificate(context.Background(),
+				&acm.DescribeCertificateInput{CertificateArn: aws.String(tt.certArn)}, testAccountID)
+			require.Error(t, err)
+			assert.Equal(t, tt.want, err.Error())
+
+			_, err = svc.DeleteCertificate(context.Background(),
+				&acm.DeleteCertificateInput{CertificateArn: aws.String(tt.certArn)}, testAccountID)
+			require.Error(t, err)
+			assert.Equal(t, tt.want, err.Error())
+
+			_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+				CertificateArn: aws.String(tt.certArn),
+				Certificate:    certPEM,
+				PrivateKey:     keyPEM,
+			}, testAccountID)
+			require.Error(t, err)
+			assert.Equal(t, tt.want, err.Error())
+		})
+	}
+
+	// The certificate the fence names is still there.
+	_, err = svc.DescribeCertificate(context.Background(),
+		&acm.DescribeCertificateInput{CertificateArn: aws.String(realArn)}, testAccountID)
+	require.NoError(t, err)
+}
+
+// The handler mints the ARN the gate builds, or every resource-scoped statement
+// names an object that does not exist.
+func TestMintedArnRoundTripsThroughTheGatesFormatter(t *testing.T) {
+	svc := setupACMService(t)
+	minted := svc.mintCertificateArn(testAccountID)
+
+	id, ok := arn.ParseACMCertificateID(minted)
+	require.True(t, ok)
+	assert.Equal(t, minted, arn.FormatACMCertificate(svc.region, testAccountID, id))
 }

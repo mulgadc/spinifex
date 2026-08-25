@@ -17,6 +17,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/acm"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/nats-io/nats.go"
@@ -186,7 +187,7 @@ func (s *ACMServiceImpl) northstarHostsAll(domains []string) bool {
 
 // mintCertificateArn generates an ACM-style certificate ARN for accountID.
 func (s *ACMServiceImpl) mintCertificateArn(accountID string) string {
-	return fmt.Sprintf("arn:aws:acm:%s:%s:certificate/%s", s.region, accountID, uuid.NewV4().String())
+	return arn.FormatACMCertificate(s.region, accountID, uuid.NewV4().String())
 }
 
 // ImportCertificate validates the PEM material, parses the leaf for metadata,
@@ -213,7 +214,11 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 	if certArn == "" {
 		certArn = s.mintCertificateArn(accountID)
 	} else {
-		// Re-import: the ARN must already exist and belong to the caller.
+		// Re-import: the ARN must be one the gate can read, and must already
+		// exist and belong to the caller.
+		if _, ok := arn.ParseACMCertificateID(certArn); !ok {
+			return nil, errors.New(awserrors.ErrorACMInvalidArn)
+		}
 		existing, gErr := s.store.GetCert(ctx, certArn)
 		if gErr != nil {
 			return nil, errors.New(awserrors.ErrorInternalError)
@@ -546,6 +551,12 @@ func (s *ACMServiceImpl) DeleteCertificate(ctx context.Context, input *acm.Delet
 // ownership check must not decrypt one. A caller that does need the key
 // fetches it explicitly via store.GetCert once ownership is established.
 func (s *ACMServiceImpl) lookupOwned(ctx context.Context, certArn, accountID string) (*CertRecord, error) {
+	// Anything the policy gate cannot read as a certificate ARN it authorizes
+	// account-wide, so accepting one here would act on a certificate no
+	// statement named.
+	if _, ok := arn.ParseACMCertificateID(certArn); !ok {
+		return nil, errors.New(awserrors.ErrorACMInvalidArn)
+	}
 	rec, err := s.store.GetCertMetadata(ctx, certArn)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)

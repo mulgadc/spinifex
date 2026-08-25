@@ -97,6 +97,17 @@ func TestACMRequest_RequestCertificateResolvesTheType(t *testing.T) {
 	assertDenied(t, dispatchACM(t, scoped, "RequestCertificate", `{"DomainName":"example.com"}`))
 }
 
+// A grant scoped to one certificate does not become a licence to mint new ones
+// by naming that certificate in a field RequestCertificate discards.
+func TestACMRequest_RequestCertificateIgnoresACertificateArnInTheBody(t *testing.T) {
+	gw := scopedPolicyGateway(
+		statement("Allow", "acm:*", acmCertARN("team-a-1")),
+	)
+
+	assertDenied(t, dispatchACM(t, gw, "RequestCertificate",
+		`{"DomainName":"evil.example","CertificateArn":"`+acmCertARN("team-a-1")+`"}`))
+}
+
 // ListCertificates is account-level, so a grant scoped to one certificate does
 // not reach it.
 func TestACMRequest_ListIsAccountLevel(t *testing.T) {

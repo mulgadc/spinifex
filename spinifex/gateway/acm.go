@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -88,24 +87,32 @@ func (gw *GatewayConfig) ACM_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "acm", action); err != nil {
+	// Hoisted above the policy check because the resolver builds ARNs from the
+	// caller's account and from the same body bytes the handler unmarshals.
+	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	if accountID == "" {
+		slog.ErrorContext(r.Context(), "ACM_Request: no account ID in auth context")
+		// InternalError, not ServerInternal: the policy gate used to reach this
+		// case first and that is the code the caller has always seen.
+		return errors.New(awserrors.ErrorInternalError)
+	}
+
+	body, err := readBoundedBody(r)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "ACM_Request: failed to read body", "err", err)
+		return err
+	}
+
+	resources, err := gateway_acm.ResourceARNs(action, gw.Region, accountID, body)
+	if err != nil {
+		return err
+	}
+	if err := gw.checkPolicyResources(r, "acm", action, resources); err != nil {
 		return err
 	}
 
 	if gw.NATSConn == nil {
 		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
-	if accountID == "" {
-		slog.ErrorContext(r.Context(), "ACM_Request: no account ID in auth context")
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "ACM_Request: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	output, err := handler(r.Context(), gw, accountID, body)

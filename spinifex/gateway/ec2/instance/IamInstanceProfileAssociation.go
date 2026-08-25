@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
@@ -40,7 +41,7 @@ func resolveAndAuthorizeProfile(spec *ec2.IamInstanceProfileSpecification, iamSv
 		return nil, err
 	}
 	if profile.RoleName != "" && passRoleCheck != nil {
-		roleARN := fmt.Sprintf("arn:aws:iam::%s:role/%s", profile.AccountID, profile.RoleName)
+		roleARN := arn.FormatIAMPath(arn.IAMRole, profile.AccountID, "/", profile.RoleName)
 		if err := passRoleCheck(roleARN); err != nil {
 			return nil, err
 		}

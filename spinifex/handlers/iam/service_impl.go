@@ -746,7 +746,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 		UserName:         "root",
 		UserID:           "AIDAAAAAAAAAAAAAAAAA",
 		AccountID:        utils.GlobalAccountID,
-		ARN:              fmt.Sprintf("arn:aws:iam::%s:root", utils.GlobalAccountID),
+		ARN:              arn.FormatIAMRoot(utils.GlobalAccountID),
 		Path:             "/",
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
 		AccessKeys:       []string{data.AccessKeyID},

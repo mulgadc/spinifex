@@ -2,11 +2,11 @@ package gateway
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/service/sts"
+	spxarn "github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
@@ -164,16 +164,16 @@ func buildCallerARN(accountID, identity, principalType, assumedRoleARN string) (
 		}
 		return assumedRoleARN, nil
 	case principalTypeRoot:
-		return fmt.Sprintf("arn:aws:iam::%s:root", accountID), nil
+		return spxarn.FormatIAMRoot(accountID), nil
 	case principalTypeUser:
 		if identity == "root" && accountID == utils.GlobalAccountID {
-			return fmt.Sprintf("arn:aws:iam::%s:root", accountID), nil
+			return spxarn.FormatIAMRoot(accountID), nil
 		}
 		if identity == "" {
 			slog.Error("STS_Request: user principal without identity")
 			return "", errors.New(awserrors.ErrorInternalError)
 		}
-		return fmt.Sprintf("arn:aws:iam::%s:user/%s", accountID, identity), nil
+		return spxarn.FormatIAMPath(spxarn.IAMUser, accountID, "/", identity), nil
 	default:
 		slog.Error("STS_Request: unknown principal type", "principalType", principalType)
 		return "", errors.New(awserrors.ErrorInternalError)

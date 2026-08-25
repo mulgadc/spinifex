@@ -23,6 +23,12 @@ func FormatIAMPath(kind IAMResourceType, accountID, resourcePath, name string) s
 	return fmt.Sprintf("arn:aws:iam::%s:%s%s%s", accountID, kind, resourcePath, name)
 }
 
+// FormatIAMRoot builds the account root ARN, the principal AWS uses for the
+// account itself rather than a named IAM resource.
+func FormatIAMRoot(accountID string) string {
+	return fmt.Sprintf("arn:aws:iam::%s:root", accountID)
+}
+
 // FormatIAMResource builds an IAM ARN from an already-formed resource
 // component, such as an OIDC provider issuer host/path.
 func FormatIAMResource(kind IAMResourceType, accountID, resource string) string {

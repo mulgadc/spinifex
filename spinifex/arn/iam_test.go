@@ -29,6 +29,14 @@ func TestFormatIAMPath(t *testing.T) {
 	}
 }
 
+func TestFormatIAMRoot(t *testing.T) {
+	got := arn.FormatIAMRoot("123456789012")
+	want := "arn:aws:iam::123456789012:root"
+	if got != want {
+		t.Fatalf("FormatIAMRoot() = %q, want %q", got, want)
+	}
+}
+
 func TestFormatIAMResource(t *testing.T) {
 	got := arn.FormatIAMResource(arn.IAMOIDCProvider, "123456789012", "issuer.example/id/cluster")
 	want := "arn:aws:iam::123456789012:oidc-provider/issuer.example/id/cluster"

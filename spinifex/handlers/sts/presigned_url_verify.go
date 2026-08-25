@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
@@ -153,7 +154,7 @@ func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*Presign
 		userARN := aws.StringValue(userOut.User.Arn)
 		userID := aws.StringValue(userOut.User.UserId)
 		if userARN == "" {
-			userARN = fmt.Sprintf("arn:aws:iam::%s:user/%s", ak.AccountID, ak.UserName)
+			userARN = arn.FormatIAMPath(arn.IAMUser, ak.AccountID, "/", ak.UserName)
 		}
 		return &PresignedCallerIdentity{
 			AccountID:     ak.AccountID,

@@ -13,6 +13,7 @@
   <a href="#the-platform">Platform</a> ·
   <a href="#three-ways-to-deploy">Deploy</a> ·
   <a href="#aws-compatibility">AWS Compatibility</a> ·
+  <a href="#live-demo">Live Demo</a> ·
   <a href="#core-components">Components</a> ·
   <a href="#architecture-at-a-glance">Architecture</a> ·
   <a href="#self-hosted-installation">Installation</a> ·
@@ -82,6 +83,18 @@ Spinifex speaks the AWS API surface. The AWS SDKs, AWS CLI, and Terraform all wo
 
 Roadmap items ship under the same AWS API surface. Code written for AWS today keeps working the moment they land. [Track what's shipped in the release notes](https://github.com/mulgadc/spinifex/releases).
 
+## Live Demo
+
+Create a live sandbox in under a minute. The fastest way to experience the stack. Try Spinifex against one of your own workloads on infrastructure we run for you.
+
+* Live in under a minute. No card, no install.
+* Yours for 72 hours to test and experiment.
+* Real AWS-compatible endpoint, access keys and console.
+* EC2, EBS, S3, VPC, IAM, EKS and RDS, ready to call.
+* Point your existing AWS CLI or Terraform straight at it.
+
+Sign up at [https://mulgadc.com/signup](https://mulgadc.com/signup)
+
 ## Core Components
 
 ### Spinifex (Compute and Platform Services – EC2, EKS, ECS, RDS)
@@ -132,27 +145,6 @@ The managed services build on that same instance layer. An EKS node group, an EC
 
 Every AWS API call is authenticated at the gateway, published to a NATS subject, and answered by whichever daemon claims it. Daemons are stateless: scale horizontally by starting more. No etcd, no Kubernetes, no external control plane. Just systemd units, a NATS cluster, and your hardware. Deep dive: **[`docs/DESIGN.md`](docs/DESIGN.md)**.
 
-## Key Features
-
-- **AWS-compatible APIs.** Use the AWS CLI, SDKs, and Terraform you already know. Repoint your endpoint and ship; nothing to rewrite.
-- **Zero cloud dependency.** Runs entirely on your hardware. No phone-home, no control plane, no external authority. Works fully offline.
-- **Bare-metal compute.** QEMU-based with direct hardware access. No hypervisor tax, no abstraction overhead.
-- **Built-in storage.** Block and object storage included: NVMe caching, Reed-Solomon erasure coding, and replication out of the box.
-- **Edge-first architecture.** Designed for disconnected, contested, and resource-constrained environments from day one.
-- **Open core, no lock-in.** AGPL-3.0 with a commercial option. Inspect it, modify it, deploy it. The platform is yours to keep.
-
-## Live Demo
-
-Create a live sandbox in under a minute. The fastest way to experience the stack. Try Spinifex against one of your own workloads on infrastructure we run for you.
-
-* Live in under a minute. No card, no install.
-* Yours for 72 hours to test and experiment.
-* Real AWS-compatible endpoint, access keys and console.
-* EC2, EBS, S3, VPC, IAM, EKS and RDS, ready to call.
-* Point your existing AWS CLI or Terraform straight at it.
-
-Sign up at [https://mulgadc.com/signup](https://mulgadc.com/signup)
-
 ## Self-hosted Installation
 
 Installation requires an Ubuntu 26.04 or Debian 13 system. See the detailed documentation at [docs.mulgadc.com](https://docs.mulgadc.com) for installing Spinifex.
@@ -189,16 +181,6 @@ aws ec2 describe-instance-types
 
 For a complete development environment see the [Source Install](https://docs.mulgadc.com/docs/install-source) documentation.
 
-### Component Repositories
-
-Spinifex coordinates these independent components:
-
-- **[Predastore](https://github.com/mulgadc/predastore)** - S3-compatible object storage
-- **[Viperblock](https://github.com/mulgadc/viperblock)** - EBS-compatible block storage
-- **[Northstar](https://github.com/mulgadc/northstar)** - Authoritative DNS server
-
-Each component can be developed independently. See component-specific documentation for focused development guides.
-
 ## Spinifex UI
 
 Spinifex ships with a built-in web console, an optional alternative to the AWS CLI, SDKs, and Terraform. If you know the AWS Management Console, the Spinifex UI fills the same role: a browser-based view of your instances, volumes, buckets, VPCs, and IAM resources, without leaving your own network.
@@ -221,16 +203,9 @@ For the full walkthrough, covering first-time TLS certificate trust, login, and 
 
 Spinifex is developed by experienced infrastructure engineers with deep AWS expertise, including former AWS team members who understand the intricacies of building production-grade cloud services. Our team brings decades of combined experience from AWS, enterprise infrastructure, and edge computing environments.
 
-**Real-World Experience:**
-
-- Production AWS service development and operations
-- Large-scale infrastructure deployment and management
-- Edge computing and resource-constrained environments
-- Enterprise security and compliance requirements
-
 ### AI-Assisted Development
 
-While Spinifex is architected and implemented by experienced engineers, we leverage **Claude Code** (Anthropic's AI coding assistant) to accelerate certain development tasks. This approach combines human expertise with AI efficiency:
+Spinifex is architected and implemented by experienced engineers, with **Claude Code** accelerating certain development tasks. The split keeps the quality and reliability standards that production infrastructure demands:
 
 **How We Use Claude Code:**
 
@@ -246,12 +221,10 @@ While Spinifex is architected and implemented by experienced engineers, we lever
 - **Performance Optimization**: Real-world performance tuning and benchmarking
 - **Production Operations**: Deployment strategies and operational procedures
 
-This hybrid approach ensures Spinifex benefits from both proven engineering expertise and modern development acceleration, while maintaining the quality and reliability standards required for production infrastructure.
-
 ## Trademarks
 
 "AWS", "Amazon Web Services", and all related service names (EC2, EBS, S3, VPC, IAM, and others) are trademarks of Amazon.com, Inc. or its affiliates. Mulga Defense Corporation and Spinifex are independent and not affiliated with, endorsed by, or sponsored by Amazon.com, Inc. or Amazon Web Services, Inc. References to AWS services describe interoperability and compatibility only.
 
 ## License
 
-Spinifex is open source under the [GNU Affero General Public License v3.0](LICENSE). You're free to use, modify, and deploy it anywhere you need reliable infrastructure without depending on centralized cloud platforms.
+Spinifex is open source under the [GNU Affero General Public License v3.0](LICENSE), with a commercial license available. You're free to use, modify, and deploy it anywhere you need reliable infrastructure without depending on centralized cloud platforms.

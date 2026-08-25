@@ -150,9 +150,9 @@ func TestResourceARNs_ForwardConfigTargetGroups(t *testing.T) {
 // count, and it runs before the policy check, so the bound is load-bearing.
 func TestResourceARNs_BoundsNestedFanOut(t *testing.T) {
 	actions := make([]*elbv2.Action, 0, 64)
-	for a := 0; a < 64; a++ {
+	for a := range 64 {
 		tgs := make([]*elbv2.TargetGroupTuple, 0, 64)
-		for m := 0; m < 64; m++ {
+		for m := range 64 {
 			tgs = append(tgs, &elbv2.TargetGroupTuple{
 				TargetGroupArn: aws.String(tgARN(fmt.Sprintf("tg%d-%d", a, m), "1")),
 			})

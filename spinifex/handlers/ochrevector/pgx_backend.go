@@ -223,6 +223,25 @@ func (b *pgxBackend) CreateIndex(ctx context.Context, accountID string, spec Ind
 	})
 }
 
+// IndexExists reports whether indexID's backing table exists under
+// accountID's schema. to_regclass resolves to NULL for a schema or table
+// that is not there rather than erroring, so no account role or search_path
+// setup is needed for this read-only lookup.
+func (b *pgxBackend) IndexExists(ctx context.Context, accountID, indexID string) (bool, error) {
+	if err := validateAccountID(accountID); err != nil {
+		return false, err
+	}
+	if err := validateIndexID(indexID); err != nil {
+		return false, err
+	}
+	qualified := schemaName(accountID) + "." + tableName(indexID)
+	var regclass *string
+	if err := b.pool.QueryRow(ctx, `SELECT to_regclass($1)::text`, qualified).Scan(&regclass); err != nil {
+		return false, fmt.Errorf("ochrevector: check index %s exists for account %s: %w", indexID, accountID, err)
+	}
+	return regclass != nil, nil
+}
+
 // DropIndex drops indexID's backing table under accountID's schema. Idempotent:
 // dropping an already-absent index is a no-op success.
 func (b *pgxBackend) DropIndex(ctx context.Context, accountID, indexID string) error {

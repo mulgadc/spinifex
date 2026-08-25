@@ -65,6 +65,13 @@ func (f *fakeBackend) CreateIndex(_ context.Context, accountID string, spec Inde
 	return nil
 }
 
+// IndexExists mirrors pgxBackend.IndexExists against the same indexes map
+// CreateIndex/DropIndex mutate, so it reflects exactly what a real backend
+// would report without a database.
+func (f *fakeBackend) IndexExists(_ context.Context, accountID, indexID string) (bool, error) {
+	return f.hasIndex(accountID, indexID), nil
+}
+
 func (f *fakeBackend) DropIndex(_ context.Context, accountID, indexID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

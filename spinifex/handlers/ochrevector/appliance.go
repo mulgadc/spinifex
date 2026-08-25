@@ -92,9 +92,14 @@ type ApplianceRecord struct {
 	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
-// TeardownApplianceRequest has no fields: the appliance is a fixed,
-// deployment-wide singleton (D2), never identified by a caller-supplied ID.
-type TeardownApplianceRequest struct{}
+// TeardownApplianceRequest identifies no resource -- the appliance is a
+// fixed, deployment-wide singleton (D2). PurgeMetadata opts into the old
+// full wipe (index registry, KB and DataSource records alongside the RDS
+// instance); the default leaves that metadata intact so a later Ensure can
+// reconcile and re-ingest from it without operator input.
+type TeardownApplianceRequest struct {
+	PurgeMetadata bool `json:"purgeMetadata,omitempty"`
+}
 
 type TeardownApplianceResponse struct{}
 
@@ -215,14 +220,17 @@ func (a *Appliance) TeardownHostPort() error {
 }
 
 // Teardown removes the singleton platform appliance -- RDS instance, host
-// port, then (if WithStores/WithKBStores were called) index/job and
-// KB/DataSource metadata, then the KV record -- so a rebuilt appliance starts
-// coherent. Every step runs
-// regardless of an earlier one's failure, and every failure is joined into
-// the returned error. Idempotent overall: tearing down an already-absent
-// appliance is a no-op success. Does not re-provision -- the daemon's own
-// Ensure does that on next startup, not this call.
-func (a *Appliance) Teardown(ctx context.Context) error {
+// port, then the appliance KV record -- so a rebuilt appliance starts
+// coherent. Index/job registry and KB/DataSource metadata (if
+// WithStores/WithKBStores were called) survive by default exactly as they
+// survive a restart, so a later Ensure can reconcile and re-ingest from them
+// without operator input; purgeMetadata=true restores the old full wipe of
+// all of it for an intentional destroy. Every step runs regardless of an
+// earlier one's failure, and every failure is joined into the returned
+// error. Idempotent overall: tearing down an already-absent appliance is a
+// no-op success. Does not re-provision -- the daemon's own Ensure does that
+// on next startup, not this call.
+func (a *Appliance) Teardown(ctx context.Context, purgeMetadata bool) error {
 	var errs []error
 
 	if err := a.launcher.Delete(ctx, ApplianceIdentifier); err != nil {
@@ -237,30 +245,34 @@ func (a *Appliance) Teardown(ctx context.Context) error {
 	a.mu.Lock()
 	registry, jobs, kb, ds := a.registry, a.jobs, a.kb, a.ds
 	a.mu.Unlock()
-	// Purged after the data-bearing RDS instance is gone but before the
-	// appliance record: a crash here still leaves a record an operator can
-	// retry teardown against, re-attempting the (idempotent) purge too.
-	if registry != nil {
-		if err := registry.PurgeAll(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("ochrevector: purge index registry: %w", err))
-		}
-	}
+	// Job history is scoped to the now-destroyed RDS instance, so it is
+	// always cleared. Registry/kb/ds instead carry the identity and
+	// SourceSpecs a fresh Ensure needs to reconcile and re-ingest without
+	// operator input, so they purge only when purgeMetadata asks for the old
+	// full wipe.
 	if jobs != nil {
 		if err := jobs.PurgeAll(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("ochrevector: purge ingestion jobs: %w", err))
 		}
 	}
-	// kb/ds are gateway-owned metadata, not daemon-owned like registry/jobs
-	// above, but they still point at this appliance's index/backend, so a
-	// torn-down appliance must not leave them dangling either.
-	if kb != nil {
-		if err := kb.PurgeAll(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("ochrevector: purge knowledge bases: %w", err))
+	if purgeMetadata {
+		if registry != nil {
+			if err := registry.PurgeAll(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("ochrevector: purge index registry: %w", err))
+			}
 		}
-	}
-	if ds != nil {
-		if err := ds.PurgeAll(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("ochrevector: purge data sources: %w", err))
+		// kb/ds are gateway-owned metadata, not daemon-owned like
+		// registry/jobs above, but they still point at this appliance's
+		// index/backend, so a full wipe must not leave them dangling either.
+		if kb != nil {
+			if err := kb.PurgeAll(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("ochrevector: purge knowledge bases: %w", err))
+			}
+		}
+		if ds != nil {
+			if err := ds.PurgeAll(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("ochrevector: purge data sources: %w", err))
+			}
 		}
 	}
 

@@ -519,7 +519,7 @@ func TestTeardown_DeletesRecordLauncherAndHostPort(t *testing.T) {
 	appliance.eniID = "eni-installed"
 	appliance.mu.Unlock()
 
-	require.NoError(t, appliance.Teardown(context.Background()))
+	require.NoError(t, appliance.Teardown(context.Background(), false))
 
 	assert.Equal(t, []string{ApplianceIdentifier}, launcher.deleteCalls)
 	assert.Equal(t, []string{"eni-installed"}, h.hostPort.removals())
@@ -540,11 +540,11 @@ func TestTeardown_NoExistingApplianceIsANoOp(t *testing.T) {
 	appliance, err := NewAppliance(js, testMasterKey(t), launcher)
 	require.NoError(t, err)
 
-	assert.NoError(t, appliance.Teardown(context.Background()))
+	assert.NoError(t, appliance.Teardown(context.Background(), false))
 	assert.Equal(t, 1, launcher.deleteCallCount())
 
 	// Tearing down again must still be a no-op success.
-	assert.NoError(t, appliance.Teardown(context.Background()))
+	assert.NoError(t, appliance.Teardown(context.Background(), false))
 }
 
 // TestTeardown_StillDeletesRecordWhenHostPortRemovalFails proves a host-port
@@ -565,7 +565,7 @@ func TestTeardown_StillDeletesRecordWhenHostPortRemovalFails(t *testing.T) {
 	appliance.eniID = "eni-installed"
 	appliance.mu.Unlock()
 
-	err = appliance.Teardown(context.Background())
+	err = appliance.Teardown(context.Background(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ovs-vsctl exploded")
 
@@ -587,7 +587,7 @@ func TestTeardown_JoinsLauncherAndRecordErrors(t *testing.T) {
 	require.NoError(t, err)
 	seedAvailableAppliance(t, appliance, masterKey, "10.0.0.32", 5432)
 
-	err = appliance.Teardown(context.Background())
+	err = appliance.Teardown(context.Background(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "rds unreachable")
 
@@ -598,11 +598,11 @@ func TestTeardown_JoinsLauncherAndRecordErrors(t *testing.T) {
 	assert.Nil(t, rec, "the KV record must still be deleted despite the launcher failure")
 }
 
-// TestTeardown_WithStoresPurgesRegistryAndJobs proves an Appliance wired via
-// WithStores purges every index and job record on Teardown, so a
-// reprovisioned appliance never advertises metadata pointing at data that no
-// longer exists.
-func TestTeardown_WithStoresPurgesRegistryAndJobs(t *testing.T) {
+// TestTeardown_DefaultPreservesRegistryButPurgesJobs proves a default
+// Teardown (purgeMetadata=false) leaves the index registry intact -- so a
+// later Ensure can reconcile from it -- while still clearing job history,
+// which is scoped to the now-destroyed RDS instance.
+func TestTeardown_DefaultPreservesRegistryButPurgesJobs(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.33", port: 5432}
@@ -618,22 +618,51 @@ func TestTeardown_WithStoresPurgesRegistryAndJobs(t *testing.T) {
 	require.NoError(t, jobs.Reserve(ctx, "111111111111", JobRecord{ID: "job-one", CreatedAt: now, UpdatedAt: now}))
 
 	appliance.WithStores(registry, jobs)
-	require.NoError(t, appliance.Teardown(ctx))
+	require.NoError(t, appliance.Teardown(ctx, false))
 
 	remainingIndexes, err := registry.ListAll(ctx)
 	require.NoError(t, err)
-	assert.Empty(t, remainingIndexes, "Teardown must purge every index record")
+	assert.Len(t, remainingIndexes, 1, "default Teardown must leave the index registry intact")
 
 	remainingJobs, err := jobs.ListAll(ctx)
 	require.NoError(t, err)
-	assert.Empty(t, remainingJobs, "Teardown must purge every job record")
+	assert.Empty(t, remainingJobs, "Teardown must still purge job history")
 }
 
-// TestTeardown_WithKBStoresPurgesKnowledgeBasesAndDataSources proves an
-// Appliance wired via WithKBStores purges every gateway-owned knowledge-base
-// and data-source record on Teardown, so a reprovisioned appliance never
-// leaves KB/DataSource metadata pointing at an index that no longer exists.
-func TestTeardown_WithKBStoresPurgesKnowledgeBasesAndDataSources(t *testing.T) {
+// TestTeardown_PurgeMetadataPurgesRegistryAndJobs proves purgeMetadata=true
+// restores the old full wipe of the index registry (and job history)
+// alongside the RDS instance, for an intentional full destroy.
+func TestTeardown_PurgeMetadataPurgesRegistryAndJobs(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	masterKey := testMasterKey(t)
+	launcher := &fakeLauncher{endpoint: "10.0.0.36", port: 5432}
+	appliance, err := NewAppliance(js, masterKey, launcher)
+	require.NoError(t, err)
+	seedAvailableAppliance(t, appliance, masterKey, "10.0.0.36", 5432)
+
+	registry := NewRegistry(js)
+	jobs := NewJobStore(js)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	require.NoError(t, registry.Reserve(ctx, "111111111111", Record{ID: "idx-one", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, jobs.Reserve(ctx, "111111111111", JobRecord{ID: "job-one", CreatedAt: now, UpdatedAt: now}))
+
+	appliance.WithStores(registry, jobs)
+	require.NoError(t, appliance.Teardown(ctx, true))
+
+	remainingIndexes, err := registry.ListAll(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, remainingIndexes, "purgeMetadata=true must purge every index record")
+
+	remainingJobs, err := jobs.ListAll(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, remainingJobs, "purgeMetadata=true must still purge every job record")
+}
+
+// TestTeardown_DefaultPreservesKnowledgeBasesAndDataSources proves a default
+// Teardown leaves gateway-owned KB/DataSource records intact, mirroring the
+// registry: their SourceSpec is what a later reconcile re-ingests from.
+func TestTeardown_DefaultPreservesKnowledgeBasesAndDataSources(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	masterKey := testMasterKey(t)
 	launcher := &fakeLauncher{endpoint: "10.0.0.35", port: 5432}
@@ -649,15 +678,80 @@ func TestTeardown_WithKBStoresPurgesKnowledgeBasesAndDataSources(t *testing.T) {
 	require.NoError(t, ds.Create(ctx, "111111111111", DataSourceRecord{ID: "ds-one", KnowledgeBaseID: "kb-one", CreatedAt: now, UpdatedAt: now}))
 
 	appliance.WithKBStores(kb, ds)
-	require.NoError(t, appliance.Teardown(ctx))
+	require.NoError(t, appliance.Teardown(ctx, false))
 
 	remainingKBs, err := kb.List(ctx, "111111111111")
 	require.NoError(t, err)
-	assert.Empty(t, remainingKBs, "Teardown must purge every knowledge base record")
+	assert.Len(t, remainingKBs, 1, "default Teardown must leave knowledge base records intact")
 
 	remainingDS, err := ds.List(ctx, "111111111111")
 	require.NoError(t, err)
-	assert.Empty(t, remainingDS, "Teardown must purge every data source record")
+	assert.Len(t, remainingDS, 1, "default Teardown must leave data source records intact")
+}
+
+// TestTeardown_PurgeMetadataPurgesKnowledgeBasesAndDataSources proves
+// purgeMetadata=true restores the old full wipe of the gateway-owned
+// knowledge-base and data-source records.
+func TestTeardown_PurgeMetadataPurgesKnowledgeBasesAndDataSources(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	masterKey := testMasterKey(t)
+	launcher := &fakeLauncher{endpoint: "10.0.0.37", port: 5432}
+	appliance, err := NewAppliance(js, masterKey, launcher)
+	require.NoError(t, err)
+	seedAvailableAppliance(t, appliance, masterKey, "10.0.0.37", 5432)
+
+	kb := NewKBStore(js)
+	ds := NewDataSourceStore(js)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	require.NoError(t, kb.Create(ctx, "111111111111", KBRecord{ID: "kb-one", IndexID: "idx-one", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, ds.Create(ctx, "111111111111", DataSourceRecord{ID: "ds-one", KnowledgeBaseID: "kb-one", CreatedAt: now, UpdatedAt: now}))
+
+	appliance.WithKBStores(kb, ds)
+	require.NoError(t, appliance.Teardown(ctx, true))
+
+	remainingKBs, err := kb.List(ctx, "111111111111")
+	require.NoError(t, err)
+	assert.Empty(t, remainingKBs, "purgeMetadata=true must purge every knowledge base record")
+
+	remainingDS, err := ds.List(ctx, "111111111111")
+	require.NoError(t, err)
+	assert.Empty(t, remainingDS, "purgeMetadata=true must purge every data source record")
+}
+
+// TestTeardown_PurgeMetadataSurfacesStorePurgeErrors proves a purgeMetadata=
+// true Teardown reports (rather than swallows) a failure from any of
+// registry/kb/ds PurgeAll, joined alongside every other step's own errors.
+func TestTeardown_PurgeMetadataSurfacesStorePurgeErrors(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	masterKey := testMasterKey(t)
+	launcher := &fakeLauncher{endpoint: "10.0.0.39", port: 5432}
+	appliance, err := NewAppliance(js, masterKey, launcher)
+	require.NoError(t, err)
+	seedAvailableAppliance(t, appliance, masterKey, "10.0.0.39", 5432)
+
+	registry := NewRegistry(js)
+	jobs := NewJobStore(js)
+	kb := NewKBStore(js)
+	ds := NewDataSourceStore(js)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	require.NoError(t, registry.Reserve(ctx, "111111111111", Record{ID: "idx-one", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, kb.Create(ctx, "111111111111", KBRecord{ID: "kb-one", IndexID: "idx-one", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, ds.Create(ctx, "111111111111", DataSourceRecord{ID: "ds-one", KnowledgeBaseID: "kb-one", CreatedAt: now, UpdatedAt: now}))
+
+	appliance.WithStores(registry, jobs)
+	appliance.WithKBStores(kb, ds)
+
+	// Sever the shared NATS connection so every store's PurgeAll call fails,
+	// without any production code change.
+	nc.Close()
+
+	err = appliance.Teardown(ctx, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "purge index registry")
+	assert.Contains(t, err.Error(), "purge knowledge bases")
+	assert.Contains(t, err.Error(), "purge data sources")
 }
 
 // TestTeardown_WithoutStoresStillWorks proves an Appliance that never calls
@@ -671,7 +765,7 @@ func TestTeardown_WithoutStoresStillWorks(t *testing.T) {
 	require.NoError(t, err)
 	seedAvailableAppliance(t, appliance, masterKey, "10.0.0.34", 5432)
 
-	require.NoError(t, appliance.Teardown(context.Background()))
+	require.NoError(t, appliance.Teardown(context.Background(), false))
 }
 
 // TestBucket_RequiresJetStream proves bucket fails fast on a zero-value

@@ -539,27 +539,10 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 		return "", engineAMINotFound(engine, version)
 	}
 
-	// Several builds of one engine version can be registered; skip malformed
-	// catalog entries and select the most recently imported usable image.
-	var newestID, newestCreated string
-	matches := 0
-	for _, image := range out.Images {
-		if image == nil || aws.StringValue(image.ImageId) == "" {
-			continue
-		}
-		// A GPU engine build carries the same engine tags, and DescribeImages
-		// filters have no negation, so drop it here or a newer GPU image would
-		// hijack an ordinary instance.
-		if hasTagKey(image, tags.GPUVendorKey) {
-			continue
-		}
-		matches++
-		created := aws.StringValue(image.CreationDate)
-		if newestID == "" || created > newestCreated {
-			newestID = aws.StringValue(image.ImageId)
-			newestCreated = created
-		}
-	}
+	// Several builds of one engine version can be registered; select the most
+	// recently imported usable image. A GPU engine build carries the same engine
+	// tags, so it is excluded or a newer GPU image would hijack an ordinary instance.
+	newestID, _, matches := utils.SelectNewestImage(out.Images, tags.GPUVendorKey)
 	if newestID == "" {
 		return "", engineAMINotFound(engine, version)
 	}
@@ -568,16 +551,6 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 			"engine", engine, "engineVersion", version, "imageId", newestID, "matches", matches)
 	}
 	return newestID, nil
-}
-
-// hasTagKey reports whether img carries a tag with the given key.
-func hasTagKey(img *ec2.Image, key string) bool {
-	for _, t := range img.Tags {
-		if aws.StringValue(t.Key) == key {
-			return true
-		}
-	}
-	return false
 }
 
 // Only the node running the VM subscribes the per-instance ec2.cmd subject, so

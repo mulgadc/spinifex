@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 const (
@@ -187,16 +188,6 @@ func lookupECSGPUNodeAMI(ctx context.Context, amiSvc ecsImageResolver, accountID
 		"ecs: multiple GPU AMIs match managed-by=ecs+gpu-vendor; using newest")
 }
 
-// hasTagKey reports whether img carries a tag with the given key.
-func hasTagKey(img *ec2.Image, key string) bool {
-	for _, t := range img.Tags {
-		if aws.StringValue(t.Key) == key {
-			return true
-		}
-	}
-	return false
-}
-
 // resolveNewestAMI runs DescribeImages with filters and returns the newest
 // (by CreationDate) matching image ID. describeErrCtx prefixes a DescribeImages
 // failure; notFoundDesc/warnMsg describe the filter for the not-found error and
@@ -207,28 +198,13 @@ func resolveNewestAMI(ctx context.Context, amiSvc ecsImageResolver, accountID st
 		return "", fmt.Errorf("%s: %w", describeErrCtx, err)
 	}
 
-	var (
-		newestID      string
-		newestCreated string
-		matches       int
-	)
-	for _, img := range out.Images {
-		if img == nil || img.ImageId == nil || *img.ImageId == "" {
-			continue
-		}
-		// The GPU node AMI also carries managed-by=ecs; DescribeImages filters
-		// have no negation, so exclude gpu-vendor-tagged images client-side from
-		// the non-GPU lookup or a newer GPU AMI would hijack ordinary instances.
-		if excludeGPUTagged && hasTagKey(img, tags.GPUVendorKey) {
-			continue
-		}
-		matches++
-		// CreationDate is a fixed-width RFC3339 timestamp, so lexicographic
-		// comparison orders it correctly without parsing.
-		if created := aws.StringValue(img.CreationDate); newestID == "" || created > newestCreated {
-			newestID, newestCreated = *img.ImageId, created
-		}
+	// The GPU node AMI also carries managed-by=ecs, so the non-GPU lookup has to
+	// exclude gpu-vendor-tagged images or a newer GPU AMI would hijack ordinary instances.
+	excludeKey := ""
+	if excludeGPUTagged {
+		excludeKey = tags.GPUVendorKey
 	}
+	newestID, newestCreated, matches := utils.SelectNewestImage(out.Images, excludeKey)
 	if newestID == "" {
 		return "", fmt.Errorf("%w (%s, account %s)", notFound, notFoundDesc, accountID)
 	}

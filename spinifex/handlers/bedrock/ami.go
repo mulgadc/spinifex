@@ -43,19 +43,8 @@ func resolveServingAMI(ctx context.Context, imgSvc amiResolver) (string, error) 
 		return "", ErrServingAMINotFound
 	}
 
-	var newestID, newestCreated string
-	matches := 0
-	for _, image := range out.Images {
-		if image == nil || aws.StringValue(image.ImageId) == "" {
-			continue
-		}
-		matches++
-		created := aws.StringValue(image.CreationDate)
-		if newestID == "" || created > newestCreated {
-			newestID = aws.StringValue(image.ImageId)
-			newestCreated = created
-		}
-	}
+	// Serving images are GPU-tagged by design, so nothing is excluded here.
+	newestID, _, matches := utils.SelectNewestImage(out.Images, "")
 	if newestID == "" {
 		return "", ErrServingAMINotFound
 	}

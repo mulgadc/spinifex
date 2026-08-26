@@ -4,6 +4,7 @@ import {
   Activity,
   BookOpen,
   Boxes,
+  Brain,
   Camera,
   Container,
   Crosshair,
@@ -568,6 +569,25 @@ export function SidebarLayout() {
                 </Link>
               </SidebarMenuItem>
             )}
+          </SidebarMenu>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>Ochre</SidebarGroupLabel>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <Link to="/bedrock/list-knowledge-bases">
+                <SidebarMenuButton
+                  isActive={pathname.startsWith(
+                    "/bedrock/list-knowledge-bases",
+                  )}
+                  tooltip="Knowledge Bases"
+                >
+                  <Brain className="size-4" />
+                  <span>Knowledge Bases</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>
         {isAdmin && (

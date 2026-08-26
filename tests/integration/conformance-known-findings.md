@@ -34,12 +34,13 @@ Twelve responses are reported separately as `errors_unmodelled`: four IAM and ei
 
 EC2's model declares no operation errors, so EC2 uses a separate checked-in catalog curated from AWS's official EC2 error-code reference. It contains every documented common and server error plus the documented action-specific codes Spinifex currently emits. The validator checks the EC2 XML envelope, catalog membership, and AWS's documented 4xx client / 5xx server classification.
 
-The same baseline examined 42 EC2 error responses and exposed 16 violations:
+The same baseline examined 42 EC2 error responses and exposed 16 violations. The
+`InsufficientInstanceCapacity` status-class defect has since been fixed — that
+code now returns 503, matching the other capacity errors — leaving 15 open:
 
 | Finding | Count | Classification | Implementation cause |
 |---|---:|---|---|
 | EC2 authorization failures return `AccessDenied`, which is absent from the EC2 catalog; EC2 documents `UnauthorizedOperation` | 15 | Defect | The shared policy evaluator returns the Query/IAM-oriented `AccessDenied` code for EC2 requests. |
-| `RequestSpotInstances` returns `InsufficientInstanceCapacity` with HTTP 400 instead of the documented server-error 5xx class | 1 | Defect | The global error lookup currently assigns HTTP 400 to `InsufficientInstanceCapacity`. |
 
 Six additional production-referenced values are deliberately not accepted by the catalog because the chosen EC2 reference does not list them: `ExpiredToken`, `IamInstanceProfileAlreadyAssociated`, `InvalidIamInstanceProfile.NotFound`, `NoSuchAssociation`, `NoSuchEntity`, and `RequestEntityTooLarge`. A runtime occurrence remains a visible violation until it is either backed by an authoritative EC2 source or replaced with a documented EC2 code.
 

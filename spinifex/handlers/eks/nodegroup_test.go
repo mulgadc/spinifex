@@ -821,7 +821,7 @@ func TestUpdateNodegroupConfig_ConcurrentScaleUpConverges(t *testing.T) {
 }
 
 // TestUpdateNodegroupConfig_CapacityErrorSurfacesCode proves an out-of-capacity
-// scale returns the bare InsufficientInstanceCapacity code (gateway maps to 400),
+// scale returns the bare InsufficientInstanceCapacity code (gateway maps to 503),
 // not a wrapped string the gateway sanitizes to 500. A generic launcher failure
 // still wraps, staying an opaque 500.
 func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {

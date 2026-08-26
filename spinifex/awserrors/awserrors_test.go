@@ -34,7 +34,7 @@ func TestErrorLookup_Structure(t *testing.T) {
 		ErrorInvalidGroupNotFound:         404,
 		ErrorInvalidSubnetIDNotFound:      404,
 		ErrorServerInternal:               500,
-		ErrorInsufficientInstanceCapacity: 400,
+		ErrorInsufficientInstanceCapacity: 503,
 		ErrorUnauthorizedOperation:        403,
 	}
 	for code, wantHTTP := range critical {

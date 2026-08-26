@@ -34,6 +34,16 @@ func requireAWSErrorCode(t *testing.T, err error, code string) {
 	assert.Equal(t, code, awsErr.Code())
 }
 
+// requireAWSErrorCodeStatus additionally pins the HTTP status, so a code that
+// AWS documents as a client or server error keeps its documented status class.
+func requireAWSErrorCodeStatus(t *testing.T, err error, code string, status int) {
+	t.Helper()
+	requireAWSErrorCode(t, err, code)
+	var reqErr awserr.RequestFailure
+	require.ErrorAs(t, err, &reqErr, "expected awserr.RequestFailure, got %T: %v", err, err)
+	assert.Equal(t, status, reqErr.StatusCode())
+}
+
 // TestAssumedRoleControlPlaneEnforcement proves the gateway evaluates
 // assumed-role sessions against managed policies: a zero-policy role is
 // denied a guarded action, and the same live session is allowed once a

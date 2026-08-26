@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -228,7 +229,9 @@ func TestRequestSpotInstances_Lifecycle(t *testing.T) {
 				InstanceType: aws.String(instanceType),
 			},
 		})
-		requireAWSErrorCode(t, err, "InsufficientInstanceCapacity")
+		// AWS documents InsufficientInstanceCapacity as a server error, so the
+		// status must be 5xx — the EC2 conformance catalog rejects a 4xx here.
+		requireAWSErrorCodeStatus(t, err, "InsufficientInstanceCapacity", http.StatusServiceUnavailable)
 		if out != nil {
 			assert.Empty(t, out.SpotInstanceRequests, "capacity failure must persist/return no SIRs")
 		}

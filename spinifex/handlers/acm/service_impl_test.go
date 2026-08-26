@@ -278,7 +278,7 @@ func TestImportCertificate_PrivateKeyEncryptedAtRest(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	entry, err := svc.store.kv.Get(context.Background(), certKey(aws.StringValue(out.CertificateArn)))
+	entry, err := rawKV(t, svc.store).Get(context.Background(), certKey(aws.StringValue(out.CertificateArn)))
 	require.NoError(t, err)
 
 	var raw CertRecord

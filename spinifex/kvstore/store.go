@@ -16,6 +16,7 @@ import (
 var (
 	ErrNotFound = errors.New("kvstore: key not found")
 	ErrExists   = errors.New("kvstore: key already exists")
+	ErrConflict = errors.New("kvstore: revision conflict")
 )
 
 // Store is a Bucket plus a JSON codec for T.
@@ -66,7 +67,9 @@ func (s *Store[T]) Mutate(ctx context.Context, key string, fn func(*T) (bool, er
 		return err
 	}
 	_, err = kvutil.Update(ctx, kv, key, kvutil.CASConfig{
-		NotFound: fmt.Errorf("%w: %s", ErrNotFound, key),
+		Attempts:  s.cfg.Attempts,
+		NotFound:  fmt.Errorf("%w: %s", ErrNotFound, key),
+		Exhausted: s.cfg.Exhausted,
 	}, fn)
 	return err
 }
@@ -122,6 +125,65 @@ func (s *Store[T]) DeletePrefix(ctx context.Context, prefix string) error {
 		if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 			return fmt.Errorf("kvstore: delete %s: %w", key, err)
 		}
+	}
+	return nil
+}
+
+// Over returns a Store for records of type T over an already-open bucket.
+func Over[T any](kv jetstream.KeyValue, cfg Config) *Store[T] {
+	return &Store[T]{Bucket: NewOpenBucket(kv, cfg)}
+}
+
+// Set writes a record whether or not the key exists, for callers whose write
+// is a replacement rather than a claim or a read-modify-write.
+func (s *Store[T]) Set(ctx context.Context, key string, v *T) error {
+	kv, err := s.KV(ctx)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("kvstore: encode %s: %w", key, err)
+	}
+	if _, err := kv.Put(ctx, key, data); err != nil {
+		return fmt.Errorf("kvstore: put %s: %w", key, err)
+	}
+	return nil
+}
+
+// Exists reports whether a key is present without decoding its value, so a
+// record that cannot be unmarshalled is still reported as present.
+func (s *Store[T]) Exists(ctx context.Context, key string) (bool, error) {
+	kv, err := s.KV(ctx)
+	if err != nil {
+		return false, err
+	}
+	if _, err := kv.Get(ctx, key); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("kvstore: get %s: %w", key, err)
+	}
+	return true, nil
+}
+
+// CompareAndSet writes v only if key is still at rev, returning ErrConflict
+// when it is not. For callers whose lost race is a decision rather than a
+// failure; callers that should retry want Mutate.
+func (s *Store[T]) CompareAndSet(ctx context.Context, key string, v *T, rev uint64) error {
+	kv, err := s.KV(ctx)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("kvstore: encode %s: %w", key, err)
+	}
+	if _, err := kv.Update(ctx, key, data, rev); err != nil {
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) || errors.Is(err, jetstream.ErrKeyExists) {
+			return fmt.Errorf("%w: %s", ErrConflict, key)
+		}
+		return fmt.Errorf("kvstore: update %s: %w", key, err)
 	}
 	return nil
 }

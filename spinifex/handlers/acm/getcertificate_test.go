@@ -125,7 +125,7 @@ func putUndecryptableCert(t *testing.T, store *Store, arn, domain string) {
 		Status:         acm.CertificateStatusIssued,
 	})
 	require.NoError(t, err)
-	_, err = store.kv.Put(t.Context(), certKey(arn), data)
+	_, err = rawKV(t, store).Put(t.Context(), certKey(arn), data)
 	require.NoError(t, err)
 }
 

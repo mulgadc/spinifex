@@ -114,3 +114,14 @@ func TestEncryptDecryptSecret_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, plaintext, decrypted)
 }
+
+// TestCredentialStore_PutCredential_RequiresJetStream is the counterpart to
+// Resolve's tolerated nil: a write has no platform-default fallback to fall
+// back to, so it must report the misconfiguration.
+func TestCredentialStore_PutCredential_RequiresJetStream(t *testing.T) {
+	store := NewCredentialStore(nil, fixedMasterKey(), 1, map[string]string{"anthropic": "sk-default"})
+
+	err := store.PutCredential(context.Background(), "000000000001", "anthropic", "sk-account")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no JetStream client configured")
+}

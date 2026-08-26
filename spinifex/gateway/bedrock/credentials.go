@@ -4,10 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -26,14 +25,12 @@ func credentialKey(accountID, vendor string) string {
 // CredentialStore resolves per-account provider API keys from the
 // bedrock-credentials JetStream KV bucket, falling back to a platform-wide
 // default when an account has none. Keys are encrypted at rest.
+// Values are IAM-encrypted ciphertext rather than JSON, so this is a Bucket:
+// a Store[string] would wrap the ciphertext in a second encoding.
 type CredentialStore struct {
-	js               jetstream.JetStream
+	bucket           *kvstore.Bucket
 	masterKey        []byte
-	replicas         int
 	platformDefaults map[string]string
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
 }
 
 var _ CredentialResolver = (*CredentialStore)(nil)
@@ -43,27 +40,15 @@ var _ CredentialResolver = (*CredentialStore)(nil)
 // own; pass an empty map to disable platform defaults entirely.
 func NewCredentialStore(js jetstream.JetStream, masterKey []byte, replicas int, platformDefaults map[string]string) *CredentialStore {
 	return &CredentialStore{
-		js:               js,
+		bucket: kvstore.NewBucket(js, kvstore.Config{
+			Name:     bedrockCredentialsBucket,
+			History:  bedrockCredentialsHistory,
+			Replicas: replicas,
+			Missing:  "bedrock: credential store has no JetStream client configured",
+		}),
 		masterKey:        masterKey,
-		replicas:         replicas,
 		platformDefaults: platformDefaults,
 	}
-}
-
-// bucket lazily opens (or creates) the cluster-replicated bedrock-credentials
-// KV bucket, caching the handle for subsequent calls.
-func (s *CredentialStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kv != nil {
-		return s.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, s.js, bedrockCredentialsBucket, bedrockCredentialsHistory, s.replicas)
-	if err != nil {
-		return nil, err
-	}
-	s.kv = kv
-	return kv, nil
 }
 
 // Resolve returns accountID's vendor API key: a per-account key if one is
@@ -71,8 +56,8 @@ func (s *CredentialStore) bucket(ctx context.Context) (jetstream.KeyValue, error
 // tolerated so a store built with only platformDefaults (e.g. in tests) can
 // still serve the default-only path without touching JetStream.
 func (s *CredentialStore) Resolve(ctx context.Context, accountID, vendor string) (string, bool, error) {
-	if s.js != nil {
-		kv, err := s.bucket(ctx)
+	if s.bucket.Configured() {
+		kv, err := s.bucket.KV(ctx)
 		if err != nil {
 			return "", false, err
 		}
@@ -96,7 +81,7 @@ func (s *CredentialStore) Resolve(ctx context.Context, accountID, vendor string)
 
 // PutCredential encrypts and stores key as accountID's vendor credential.
 func (s *CredentialStore) PutCredential(ctx context.Context, accountID, vendor, key string) error {
-	kv, err := s.bucket(ctx)
+	kv, err := s.bucket.KV(ctx)
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
@@ -374,4 +375,88 @@ func TestStore_ConfigAttemptsBoundsMutate(t *testing.T) {
 	got, _, err := store.Get(t.Context(), "acct-a/one")
 	require.NoError(t, err)
 	assert.Equal(t, 2, got.Count, "an exhausted Mutate commits nothing of its own")
+}
+
+// TestStore_UpsertCreatesAnAbsentKey covers Upsert's difference from Mutate:
+// the first write starts from the zero value rather than reporting ErrNotFound.
+func TestStore_UpsertCreatesAnAbsentKey(t *testing.T) {
+	store := newStore(t)
+
+	err := store.Upsert(t.Context(), "counter", func(r *record) (bool, error) {
+		r.Name = "first"
+		r.Count += 5
+		return true, nil
+	})
+	require.NoError(t, err)
+
+	got, _, err := store.Get(t.Context(), "counter")
+	require.NoError(t, err)
+	assert.Equal(t, record{Name: "first", Count: 5}, *got)
+}
+
+// TestStore_UpsertAccumulatesOntoAnExistingRecord proves the second call reads
+// the first one's value rather than starting from zero again.
+func TestStore_UpsertAccumulatesOntoAnExistingRecord(t *testing.T) {
+	store := newStore(t)
+
+	for range 3 {
+		require.NoError(t, store.Upsert(t.Context(), "counter", func(r *record) (bool, error) {
+			r.Count += 2
+			return true, nil
+		}))
+	}
+
+	got, _, err := store.Get(t.Context(), "counter")
+	require.NoError(t, err)
+	assert.Equal(t, 6, got.Count)
+}
+
+// TestStore_UpsertRetriesARevisionConflict asserts a write that lands under an
+// in-flight Upsert is re-read rather than clobbered, so no increment is lost.
+func TestStore_UpsertRetriesARevisionConflict(t *testing.T) {
+	store := newStore(t)
+	mustCreate(t, store, "counter", record{Count: 1})
+
+	var attempts int
+	err := store.Upsert(t.Context(), "counter", func(r *record) (bool, error) {
+		attempts++
+		if attempts == 1 {
+			seedRaw(t, store, "counter", record{Count: 10})
+		}
+		r.Count++
+		return true, nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, attempts, "the first attempt must lose its revision and retry")
+
+	got, _, err := store.Get(t.Context(), "counter")
+	require.NoError(t, err)
+	assert.Equal(t, 11, got.Count, "the retry must build on the interloper's value, not the stale one")
+}
+
+// TestBucket_ConfiguredReportsWhetherThereIsAnythingToOpen covers the flag the
+// callers whose absent-KV path is a legitimate fallback branch on.
+func TestBucket_ConfiguredReportsWhetherThereIsAnythingToOpen(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	assert.False(t, kvstore.NewBucket(nil, kvstore.Config{Name: "b"}).Configured())
+	assert.True(t, kvstore.NewBucket(testutil.NewJetStream(t, nc), kvstore.Config{Name: "b"}).Configured())
+	assert.True(t, kvstore.NewOpenBucket(newOpenBucket(t), kvstore.Config{Name: "b"}).Configured())
+}
+
+// TestBucket_TTLOpensABucketWithThatMaxAge covers Config.TTL, the branch of
+// Bucket.open no caller reached until the usage dedupe markers.
+func TestBucket_TTLOpensABucketWithThatMaxAge(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	bucket := kvstore.NewBucket(testutil.NewJetStream(t, nc), kvstore.Config{
+		Name:    "kvstore-ttl-test",
+		History: 1,
+		TTL:     90 * time.Minute,
+	})
+
+	kv, err := bucket.KV(t.Context())
+	require.NoError(t, err)
+	status, err := kv.Status(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 90*time.Minute, status.TTL(), "Config.TTL must reach the created bucket")
 }

@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -89,14 +89,10 @@ type UsageReader interface {
 // bedrock-usage JetStream KV bucket, and dedupes applied RequestIDs in a
 // second bucket so at-least-once stream delivery never double-counts.
 type UsageStore struct {
-	js       jetstream.JetStream
-	replicas int
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
-
-	dedupeMu sync.Mutex
-	dedupe   jetstream.KeyValue
+	store *kvstore.Store[UsageCounters]
+	// dedupe holds valueless markers under a bucket-wide TTL, so it is a
+	// Bucket rather than a Store[T].
+	dedupe *kvstore.Bucket
 }
 
 var _ UsageReader = (*UsageStore)(nil)
@@ -104,39 +100,28 @@ var _ UsageReader = (*UsageStore)(nil)
 // NewUsageStore constructs a UsageStore over the cluster's JetStream client,
 // replicated across replicas nodes.
 func NewUsageStore(js jetstream.JetStream, replicas int) *UsageStore {
-	return &UsageStore{js: js, replicas: replicas}
+	return &UsageStore{
+		store: kvstore.New[UsageCounters](js, kvstore.Config{
+			Name:      bedrockUsageBucket,
+			History:   bedrockUsageHistory,
+			Replicas:  replicas,
+			Missing:   "bedrock: usage store has no JetStream client configured",
+			Attempts:  usageCASRetries,
+			Exhausted: usageCASExhausted,
+		}),
+		dedupe: kvstore.NewBucket(js, kvstore.Config{
+			Name:    bedrockUsageDedupeBucket,
+			History: bedrockUsageDedupeHistory,
+			TTL:     invocationStreamMaxAge,
+			Missing: "bedrock: usage store has no JetStream client configured",
+		}),
+	}
 }
 
-// bucket lazily opens (or creates) the cluster-replicated bedrock-usage KV
-// bucket, caching the handle for subsequent calls.
-func (s *UsageStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kv != nil {
-		return s.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, s.js, bedrockUsageBucket, bedrockUsageHistory, s.replicas)
-	if err != nil {
-		return nil, err
-	}
-	s.kv = kv
-	return kv, nil
-}
-
-// dedupeBucket lazily opens (or creates) the cluster-replicated
-// bedrock-usage-dedupe KV bucket.
-func (s *UsageStore) dedupeBucket(ctx context.Context) (jetstream.KeyValue, error) {
-	s.dedupeMu.Lock()
-	defer s.dedupeMu.Unlock()
-	if s.dedupe != nil {
-		return s.dedupe, nil
-	}
-	kv, err := kvutil.GetOrCreateBucketWithTTL(ctx, s.js, bedrockUsageDedupeBucket, bedrockUsageDedupeHistory, invocationStreamMaxAge)
-	if err != nil {
-		return nil, err
-	}
-	s.dedupe = kv
-	return kv, nil
+// usageCASExhausted names the counter whose contention outlasted the retry
+// budget, so a spent budget is distinguishable from any other write failure.
+func usageCASExhausted(key string, attempts int) error {
+	return fmt.Errorf("usage counter CAS exhausted for %s after %d attempts", key, attempts)
 }
 
 // MarkProcessed atomically claims requestID for the usage consumer. first is
@@ -144,7 +129,7 @@ func (s *UsageStore) dedupeBucket(ctx context.Context) (jetstream.KeyValue, erro
 // (redelivery) returns false with no error, so the caller can skip
 // re-applying counters without treating the duplicate as a failure.
 func (s *UsageStore) MarkProcessed(ctx context.Context, requestID string) (first bool, err error) {
-	kv, err := s.dedupeBucket(ctx)
+	kv, err := s.dedupe.KV(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -160,23 +145,14 @@ func (s *UsageStore) MarkProcessed(ctx context.Context, requestID string) (first
 // Get returns accountID's usage counters for modelID in period, or
 // (zero, false, nil) if the account has accrued nothing yet.
 func (s *UsageStore) Get(ctx context.Context, accountID, modelID, period string) (UsageCounters, bool, error) {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return UsageCounters{}, false, err
-	}
-	entry, err := kv.Get(ctx, usageKey(accountID, modelID, period))
-	switch {
-	case err == nil:
-		var counters UsageCounters
-		if uerr := json.Unmarshal(entry.Value(), &counters); uerr != nil {
-			return UsageCounters{}, false, fmt.Errorf("decode usage counters for %s/%s/%s: %w", accountID, modelID, period, uerr)
-		}
-		return counters, true, nil
-	case errors.Is(err, jetstream.ErrKeyNotFound):
+	counters, _, err := s.store.Get(ctx, usageKey(accountID, modelID, period))
+	if errors.Is(err, kvstore.ErrNotFound) {
 		return UsageCounters{}, false, nil
-	default:
-		return UsageCounters{}, false, fmt.Errorf("kv get usage counters for %s/%s/%s: %w", accountID, modelID, period, err)
 	}
+	if err != nil {
+		return UsageCounters{}, false, fmt.Errorf("usage counters for %s/%s/%s: %w", accountID, modelID, period, err)
+	}
+	return *counters, true, nil
 }
 
 // microUSDCost returns tokens priced at pricePerMillion integer micro-USD
@@ -194,67 +170,28 @@ func microUSDCost(tokens, pricePerMillion int64) int64 {
 // RequestID has not been applied before — Apply itself has no idempotency of
 // its own and will double-count a record applied twice.
 func (s *UsageStore) Apply(ctx context.Context, rec InvocationRecord, price Price) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
 	key := usageKey(rec.AccountID, rec.ModelID, billingPeriod(rec.Timestamp))
-
-	for range usageCASRetries {
-		var current UsageCounters
-		var revision uint64
-		entry, err := kv.Get(ctx, key)
-		switch {
-		case err == nil:
-			if uerr := json.Unmarshal(entry.Value(), &current); uerr != nil {
-				return fmt.Errorf("decode usage counters for %s: %w", key, uerr)
-			}
-			revision = entry.Revision()
-		case errors.Is(err, jetstream.ErrKeyNotFound):
-			// Zero value at revision 0: the CAS write below creates it.
-		default:
-			return fmt.Errorf("kv get usage counters for %s: %w", key, err)
-		}
-
-		next := current
-		next.InputTokens += rec.InputTokens
-		next.OutputTokens += rec.OutputTokens
-		next.RequestCount++
+	return s.store.Upsert(ctx, key, func(c *UsageCounters) (bool, error) {
+		c.InputTokens += rec.InputTokens
+		c.OutputTokens += rec.OutputTokens
+		c.RequestCount++
 		if price.Known {
-			next.CostMicroUSD += microUSDCost(rec.InputTokens, price.InputMicroUSDPerMillion) + microUSDCost(rec.OutputTokens, price.OutputMicroUSDPerMillion)
+			c.CostMicroUSD += microUSDCost(rec.InputTokens, price.InputMicroUSDPerMillion) + microUSDCost(rec.OutputTokens, price.OutputMicroUSDPerMillion)
 		} else {
-			next.CostUnknown = true
+			c.CostUnknown = true
 		}
-
-		data, merr := json.Marshal(next)
-		if merr != nil {
-			return fmt.Errorf("encode usage counters for %s: %w", key, merr)
-		}
-
-		if revision == 0 {
-			_, err = kv.Create(ctx, key, data)
-		} else {
-			_, err = kv.Update(ctx, key, data, revision)
-		}
-		if err == nil {
-			return nil
-		}
-		// Create reports a lost race as ErrKeyExists, Update as
-		// ErrKeyRevisionMismatch — and only the latter holds on a replicated
-		// bucket, where the conflict carries a different API error code.
-		if !errors.Is(err, jetstream.ErrKeyExists) && !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-			return fmt.Errorf("kv write usage counters for %s: %w", key, err)
-		}
-	}
-	return fmt.Errorf("usage counter CAS exhausted for %s after %d attempts", key, usageCASRetries)
+		return true, nil
+	})
 }
 
 // TokensThisPeriod sums accountID's input+output tokens across every model
 // for the current billing period, for the tokens-per-month quota dimension.
 // A few seconds of staleness against the usage consumer is acceptable for a
 // monthly cap (see handlers_quota.CheckBedrockTokens).
+// It stays on the raw handle rather than Store.List because the period is
+// matched on the key's suffix, which List does not surface.
 func (s *UsageStore) TokensThisPeriod(ctx context.Context, accountID string) (int64, error) {
-	kv, err := s.bucket(ctx)
+	kv, err := s.store.KV(ctx)
 	if err != nil {
 		return 0, err
 	}

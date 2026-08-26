@@ -242,3 +242,24 @@ func TestSeedAccountGrants_MarkerIsNotAGrant(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, models, "the seed marker must not be listed as a grant")
 }
+
+// TestModelAccessStore_RequiresJetStream covers a store constructed with no
+// JetStream client: every accessor must report the misconfiguration rather
+// than panic on a nil handle.
+func TestModelAccessStore_RequiresJetStream(t *testing.T) {
+	store := NewModelAccessStore(nil, 1)
+	ctx := context.Background()
+
+	_, err := store.Granted(ctx, "000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no JetStream client configured")
+
+	require.Error(t, store.Grant(ctx, "000000000001", "m"))
+	require.Error(t, store.Revoke(ctx, "000000000001", "m"))
+
+	_, err = store.List(ctx, "000000000001")
+	require.Error(t, err)
+
+	_, err = store.SeedAccountGrants(ctx, "000000000001", []string{"m"})
+	require.Error(t, err)
+}

@@ -6,9 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -57,13 +56,10 @@ type AccessResolver interface {
 }
 
 // ModelAccessStore resolves per-account model grants from the
-// bedrock-model-access JetStream KV bucket.
+// bedrock-model-access JetStream KV bucket. A grant carries no value, so this
+// is a Bucket rather than a Store[T]: presence of the key is the whole record.
 type ModelAccessStore struct {
-	js       jetstream.JetStream
-	replicas int
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
+	bucket *kvstore.Bucket
 }
 
 var _ AccessResolver = (*ModelAccessStore)(nil)
@@ -71,23 +67,12 @@ var _ AccessResolver = (*ModelAccessStore)(nil)
 // NewModelAccessStore constructs a ModelAccessStore over the cluster's
 // JetStream client, replicated across replicas nodes.
 func NewModelAccessStore(js jetstream.JetStream, replicas int) *ModelAccessStore {
-	return &ModelAccessStore{js: js, replicas: replicas}
-}
-
-// bucket lazily opens (or creates) the bedrock-model-access KV bucket,
-// caching the handle, mirroring WeightsStore.bucket.
-func (s *ModelAccessStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kv != nil {
-		return s.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, s.js, modelAccessBucket, modelAccessHistory, s.replicas)
-	if err != nil {
-		return nil, err
-	}
-	s.kv = kv
-	return kv, nil
+	return &ModelAccessStore{bucket: kvstore.NewBucket(js, kvstore.Config{
+		Name:     modelAccessBucket,
+		History:  modelAccessHistory,
+		Replicas: replicas,
+		Missing:  "bedrock: model access store has no JetStream client configured",
+	})}
 }
 
 // Granted reports whether accountID holds a grant on modelID. The system
@@ -97,7 +82,7 @@ func (s *ModelAccessStore) Granted(ctx context.Context, accountID, modelID strin
 	if accountID == utils.GlobalAccountID {
 		return true, nil
 	}
-	kv, err := s.bucket(ctx)
+	kv, err := s.bucket.KV(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -114,7 +99,7 @@ func (s *ModelAccessStore) Granted(ctx context.Context, accountID, modelID strin
 // Grant gives accountID access to modelID. It is idempotent: re-granting an
 // existing grant is a no-op rather than an error.
 func (s *ModelAccessStore) Grant(ctx context.Context, accountID, modelID string) error {
-	kv, err := s.bucket(ctx)
+	kv, err := s.bucket.KV(ctx)
 	if err != nil {
 		return err
 	}
@@ -127,7 +112,7 @@ func (s *ModelAccessStore) Grant(ctx context.Context, accountID, modelID string)
 // Revoke removes accountID's access to modelID. Revoking a grant that does
 // not exist succeeds, so callers need not check first.
 func (s *ModelAccessStore) Revoke(ctx context.Context, accountID, modelID string) error {
-	kv, err := s.bucket(ctx)
+	kv, err := s.bucket.KV(ctx)
 	if err != nil {
 		return err
 	}
@@ -148,7 +133,7 @@ func (s *ModelAccessStore) Revoke(ctx context.Context, accountID, modelID string
 // leaving a half-seeded account. The marker itself is a conditional create:
 // every node runs this at startup and only the first need win.
 func (s *ModelAccessStore) SeedAccountGrants(ctx context.Context, accountID string, modelIDs []string) (bool, error) {
-	kv, err := s.bucket(ctx)
+	kv, err := s.bucket.KV(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -178,7 +163,7 @@ func (s *ModelAccessStore) SeedAccountGrants(ctx context.Context, accountID stri
 // order. Keys that do not decode are skipped rather than failing the call, so
 // one malformed key cannot hide an account's whole grant set.
 func (s *ModelAccessStore) List(ctx context.Context, accountID string) ([]string, error) {
-	kv, err := s.bucket(ctx)
+	kv, err := s.bucket.KV(ctx)
 	if err != nil {
 		return nil, err
 	}

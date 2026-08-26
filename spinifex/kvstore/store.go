@@ -76,6 +76,21 @@ func (s *Store[T]) Mutate(ctx context.Context, key string, fn func(*T) (bool, er
 	return err
 }
 
+// Upsert is Mutate for a counter-style record whose first write creates it: an
+// absent key starts fn from the zero value rather than reporting ErrNotFound.
+func (s *Store[T]) Upsert(ctx context.Context, key string, fn func(*T) (bool, error)) error {
+	kv, err := s.KV(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = kvutil.Update(ctx, kv, key, kvutil.CASConfig{
+		Attempts:       s.cfg.Attempts,
+		CreateIfAbsent: true,
+		Exhausted:      s.cfg.Exhausted,
+	}, fn)
+	return err
+}
+
 // Delete removes a key. Idempotent: an already-absent key is success.
 func (s *Store[T]) Delete(ctx context.Context, key string) error {
 	kv, err := s.KV(ctx)

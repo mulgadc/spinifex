@@ -46,6 +46,14 @@ func NewOpenBucket(kv jetstream.KeyValue, cfg Config) *Bucket {
 	return &Bucket{kv: kv, cfg: cfg}
 }
 
+// Configured reports whether the bucket has anything to open against, for the
+// callers whose absent-KV path is a legitimate fallback rather than an error.
+func (b *Bucket) Configured() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.js != nil || b.kv != nil
+}
+
 // KV opens the bucket on first use and returns the cached handle thereafter.
 func (b *Bucket) KV(ctx context.Context) (jetstream.KeyValue, error) {
 	b.mu.Lock()

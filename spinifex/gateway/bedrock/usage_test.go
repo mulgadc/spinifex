@@ -288,3 +288,23 @@ func TestBillingPeriod_MonthlyFormat(t *testing.T) {
 	ts := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
 	assert.Equal(t, "2026-08", billingPeriod(ts))
 }
+
+// TestUsageStore_RequiresJetStream covers a store constructed with no
+// JetStream client: both the counter bucket and the dedupe bucket must report
+// the misconfiguration rather than panic on a nil handle.
+func TestUsageStore_RequiresJetStream(t *testing.T) {
+	store := NewUsageStore(nil, 1)
+	ctx := context.Background()
+
+	_, _, err := store.Get(ctx, "000000000001", "m", "2026-08")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no JetStream client configured")
+
+	_, err = store.MarkProcessed(ctx, "req-1")
+	require.Error(t, err)
+
+	require.Error(t, store.Apply(ctx, InvocationRecord{AccountID: "000000000001", ModelID: "m"}, Price{}))
+
+	_, err = store.TokensThisPeriod(ctx, "000000000001")
+	require.Error(t, err)
+}

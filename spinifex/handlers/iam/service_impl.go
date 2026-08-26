@@ -1836,6 +1836,10 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 func (s *IAMServiceImpl) getPolicyByARN(ctx context.Context, accountID, policyARN string) (*Policy, error) {
 	_, policyName, err := iamarn.ParsePolicyARN(policyARN)
 	if err != nil {
+		// NoSuchEntity is the response contract, so log the parse reason —
+		// otherwise a malformed ARN is indistinguishable from a missing policy.
+		slog.Debug("getPolicyByARN: unparseable policy ARN",
+			"accountID", accountID, "policyArn", policyARN, "err", err)
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 

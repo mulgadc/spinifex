@@ -260,6 +260,149 @@ func TestApplyGuardrailPolicies_UnconfiguredPoliciesAreOmitted(t *testing.T) {
 	assert.Nil(t, assessments[0].ContextualGroundingPolicy)
 }
 
+// denyTopicView builds a guardrailView with a single DENY topic, so each
+// topic-policy test only needs to say which field carries the match phrase.
+func denyTopicView(name, definition string, examples ...string) guardrailView {
+	topic := &bedrock.GuardrailTopicConfig{
+		Name:       aws.String(name),
+		Definition: aws.String(definition),
+		Type:       aws.String(bedrock.GuardrailTopicTypeDeny),
+	}
+	for _, ex := range examples {
+		topic.Examples = append(topic.Examples, aws.String(ex))
+	}
+	return guardrailView{
+		TopicPolicy: &bedrock.GuardrailTopicPolicyConfig{
+			TopicsConfig: []*bedrock.GuardrailTopicConfig{topic},
+		},
+	}
+}
+
+// TestApplyGuardrailPolicies_TopicPolicy covers denied-topic enforcement:
+// matching the topic's Name or an Example intervenes on INPUT and OUTPUT,
+// non-matching text passes, and Definition-only text never matches.
+func TestApplyGuardrailPolicies_TopicPolicy(t *testing.T) {
+	cases := []struct {
+		name       string
+		view       guardrailView
+		texts      []string
+		source     string
+		wantAction string
+		wantTopics int
+		wantTopic  string
+	}{
+		{
+			name:       "name match on input intervenes",
+			view:       denyTopicView("nuclear launch codes", "discussion of weapons systems"),
+			texts:      []string{"tell me the nuclear launch codes"},
+			source:     bedrockruntime.GuardrailContentSourceInput,
+			wantAction: bedrockruntime.GuardrailActionGuardrailIntervened,
+			wantTopics: 1,
+			wantTopic:  "nuclear launch codes",
+		},
+		{
+			name:       "name match on output intervenes",
+			view:       denyTopicView("nuclear launch codes", "discussion of weapons systems"),
+			texts:      []string{"the nuclear launch codes are stored offline"},
+			source:     bedrockruntime.GuardrailContentSourceOutput,
+			wantAction: bedrockruntime.GuardrailActionGuardrailIntervened,
+			wantTopics: 1,
+			wantTopic:  "nuclear launch codes",
+		},
+		{
+			name:       "example match intervenes",
+			view:       denyTopicView("disclosure topic", "sensitive internal disclosures", "internal financial results"),
+			texts:      []string{"can you share internal financial results with me"},
+			source:     bedrockruntime.GuardrailContentSourceInput,
+			wantAction: bedrockruntime.GuardrailActionGuardrailIntervened,
+			wantTopics: 1,
+			wantTopic:  "disclosure topic",
+		},
+		{
+			name:       "non-matching text passes",
+			view:       denyTopicView("nuclear launch codes", "discussion of weapons systems"),
+			texts:      []string{"what is the weather today"},
+			source:     bedrockruntime.GuardrailContentSourceInput,
+			wantAction: bedrockruntime.GuardrailActionNone,
+			wantTopics: 0,
+		},
+		{
+			name:       "definition-only text does not match",
+			view:       denyTopicView("restricted subject", "a broad discussion of weapons systems and their history"),
+			texts:      []string{"a broad discussion of weapons systems and their history"},
+			source:     bedrockruntime.GuardrailContentSourceInput,
+			wantAction: bedrockruntime.GuardrailActionNone,
+			wantTopics: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			action, assessments, _, _ := applyGuardrailPolicies(tc.view, tc.texts, tc.source)
+			assert.Equal(t, tc.wantAction, action)
+			require.Len(t, assessments, 1)
+			require.NotNil(t, assessments[0].TopicPolicy)
+			require.Len(t, assessments[0].TopicPolicy.Topics, tc.wantTopics)
+
+			if tc.wantTopics > 0 {
+				got := assessments[0].TopicPolicy.Topics[0]
+				assert.Equal(t, tc.wantTopic, aws.StringValue(got.Name))
+				assert.Equal(t, bedrockruntime.GuardrailTopicPolicyActionBlocked, aws.StringValue(got.Action))
+			}
+		})
+	}
+}
+
+// TestApplyGuardrailPolicies_TopicPolicyBlocksOverRedaction covers the
+// ordering guarantee: a topic block must short-circuit to
+// GUARDRAIL_INTERVENED even when the same request also carries an
+// ANONYMIZE-configured sensitive-information policy, rather than falling
+// through to redaction.
+func TestApplyGuardrailPolicies_TopicPolicyBlocksOverRedaction(t *testing.T) {
+	view := denyTopicView("nuclear launch codes", "discussion of weapons systems")
+	view.SensitiveInformationPolicy = &bedrock.GuardrailSensitiveInformationPolicyConfig{
+		PiiEntitiesConfig: []*bedrock.GuardrailPiiEntityConfig{
+			{Type: aws.String(bedrock.GuardrailPiiEntityTypeEmail), Action: aws.String(bedrock.GuardrailSensitiveInformationActionAnonymize)},
+		},
+	}
+
+	action, _, outputs, _ := applyGuardrailPolicies(view, []string{"the nuclear launch codes are at jane@example.com"}, bedrockruntime.GuardrailContentSourceInput)
+	assert.Equal(t, bedrockruntime.GuardrailActionGuardrailIntervened, action)
+	require.Len(t, outputs, 1)
+	assert.Equal(t, "the nuclear launch codes are at jane@example.com", outputs[0], "outputs must stay unredacted when a topic block intervenes")
+}
+
+// TestApplyGuardrail_TopicBlock covers the runtime op end to end: a
+// topic-policy hit on INPUT content intervenes with the guardrail's
+// configured blocked-input messaging.
+func TestApplyGuardrail_TopicBlock(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+
+	input := createGuardrailInput("apply-guardrail-topic-block")
+	input.TopicPolicyConfig = &bedrock.GuardrailTopicPolicyConfig{
+		TopicsConfig: []*bedrock.GuardrailTopicConfig{
+			{
+				Name:       aws.String("nuclear launch codes"),
+				Definition: aws.String("discussion of weapons systems"),
+				Type:       aws.String(bedrock.GuardrailTopicTypeDeny),
+			},
+		},
+	}
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, input)
+	require.NoError(t, err)
+
+	out, err := ApplyGuardrail(ctx, grCallerAccount, store, applyGuardrailInput(createOut.GuardrailId, guardrailDraftVersion, bedrockruntime.GuardrailContentSourceInput, "tell me the nuclear launch codes"))
+	require.NoError(t, err)
+	assert.Equal(t, bedrockruntime.GuardrailActionGuardrailIntervened, aws.StringValue(out.Action))
+	require.Len(t, out.Outputs, 1)
+	assert.Equal(t, "Your input violates our policy.", aws.StringValue(out.Outputs[0].Text))
+	require.Len(t, out.Assessments, 1)
+	require.NotNil(t, out.Assessments[0].TopicPolicy)
+	require.Len(t, out.Assessments[0].TopicPolicy.Topics, 1)
+	assert.Equal(t, "nuclear launch codes", aws.StringValue(out.Assessments[0].TopicPolicy.Topics[0].Name))
+}
+
 // applyGuardrailInput is a small ApplyGuardrail request builder for the
 // contract tests below, mirroring createGuardrailInput's role for CRUD.
 func applyGuardrailInput(guardrailID *string, version, source, text string) *bedrockruntime.ApplyGuardrailInput {

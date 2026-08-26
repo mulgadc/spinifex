@@ -232,14 +232,47 @@ func scaffoldContentPolicyAssessment(cfg *bedrock.GuardrailContentPolicyConfig) 
 	return &bedrockruntime.GuardrailContentPolicyAssessment{Filters: []*bedrockruntime.GuardrailContentFilter{}}
 }
 
-// scaffoldTopicPolicyAssessment is scaffoldContentPolicyAssessment's sibling
-// for denied topics: no classifier means every configured topic evaluates to
-// NONE rather than being matched against the text.
-func scaffoldTopicPolicyAssessment(cfg *bedrock.GuardrailTopicPolicyConfig) *bedrockruntime.GuardrailTopicPolicyAssessment {
+// assessTopicPolicy checks texts against cfg's denied topics. Matching is
+// deterministic (no classifier): a topic's Name and each of its Examples are
+// matched via matchesWord's word-boundary semantics. The long-form
+// Definition is never matched directly — it reads as prose, not a phrase,
+// and substring-matching it produces erratic hits. Each topic is appended at
+// most once even if several of its phrases hit.
+func assessTopicPolicy(cfg *bedrock.GuardrailTopicPolicyConfig, texts []string) (*bedrockruntime.GuardrailTopicPolicyAssessment, bool) {
 	if cfg == nil {
-		return nil
+		return nil, false
 	}
-	return &bedrockruntime.GuardrailTopicPolicyAssessment{Topics: []*bedrockruntime.GuardrailTopic{}}
+
+	blocked := false
+	topics := []*bedrockruntime.GuardrailTopic{}
+	for _, topic := range cfg.TopicsConfig {
+		if topic == nil {
+			continue
+		}
+
+		phrases := []string{}
+		if name := aws.StringValue(topic.Name); name != "" {
+			phrases = append(phrases, name)
+		}
+		for _, ex := range topic.Examples {
+			if example := aws.StringValue(ex); example != "" {
+				phrases = append(phrases, example)
+			}
+		}
+
+		if !slices.ContainsFunc(phrases, func(phrase string) bool { return matchesWord(texts, phrase) }) {
+			continue
+		}
+
+		topics = append(topics, &bedrockruntime.GuardrailTopic{
+			Name:   topic.Name,
+			Type:   topic.Type,
+			Action: aws.String(bedrockruntime.GuardrailTopicPolicyActionBlocked),
+		})
+		blocked = true
+	}
+
+	return &bedrockruntime.GuardrailTopicPolicyAssessment{Topics: topics}, blocked
 }
 
 // scaffoldContextualGroundingPolicyAssessment is
@@ -287,25 +320,27 @@ func guardrailUsage(view guardrailView, texts []string) *bedrockruntime.Guardrai
 
 // applyGuardrailPolicies is the pure filter engine: it evaluates view's
 // policies over texts for source (INPUT or OUTPUT) and returns the
-// aws-sdk-go bedrockruntime shape's pieces. wordPolicy and
-// sensitiveInformationPolicy are enforced; content/topic/contextualGrounding
-// evaluate to NONE (see the scaffold* helpers). A BLOCK anywhere makes the
-// overall action GUARDRAIL_INTERVENED and short-circuits redaction, since the
-// caller substitutes the guardrail's blocked messaging instead of the text.
-// source is accepted (not yet branched on) for parity with AWS's
-// per-source assessment shape; the deterministic policies apply identically
-// to INPUT and OUTPUT text until a content-policy classifier needs to tell
-// them apart via InputStrength/OutputStrength.
+// aws-sdk-go bedrockruntime shape's pieces. wordPolicy,
+// sensitiveInformationPolicy and topicPolicy are enforced deterministically;
+// content/contextualGrounding evaluate to NONE (see the scaffold* helpers,
+// which need a classifier). A BLOCK anywhere makes the overall action
+// GUARDRAIL_INTERVENED and short-circuits redaction, since the caller
+// substitutes the guardrail's blocked messaging instead of the text. source
+// is accepted (not yet branched on) for parity with AWS's per-source
+// assessment shape; the deterministic policies apply identically to INPUT
+// and OUTPUT text until a content-policy classifier needs to tell them apart
+// via InputStrength/OutputStrength.
 func applyGuardrailPolicies(view guardrailView, texts []string, source string) (string, []*bedrockruntime.GuardrailAssessment, []string, *bedrockruntime.GuardrailUsage) {
 	_ = source
 
 	wordAssessment, wordBlocked := assessWordPolicy(view.WordPolicy, texts)
 	piiAssessment, piiBlocked := assessSensitiveInformationPolicy(view.SensitiveInformationPolicy, texts)
+	topicAssessment, topicBlocked := assessTopicPolicy(view.TopicPolicy, texts)
 
 	action := bedrockruntime.GuardrailActionNone
 	outputs := texts
 	switch {
-	case wordBlocked || piiBlocked:
+	case wordBlocked || piiBlocked || topicBlocked:
 		action = bedrockruntime.GuardrailActionGuardrailIntervened
 	case view.SensitiveInformationPolicy != nil:
 		outputs = redactSensitiveInformation(view.SensitiveInformationPolicy, texts)
@@ -315,7 +350,7 @@ func applyGuardrailPolicies(view guardrailView, texts []string, source string) (
 		WordPolicy:                 wordAssessment,
 		SensitiveInformationPolicy: piiAssessment,
 		ContentPolicy:              scaffoldContentPolicyAssessment(view.ContentPolicy),
-		TopicPolicy:                scaffoldTopicPolicyAssessment(view.TopicPolicy),
+		TopicPolicy:                topicAssessment,
 		ContextualGroundingPolicy:  scaffoldContextualGroundingPolicyAssessment(view.ContextualGroundingPolicy),
 	}
 

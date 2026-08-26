@@ -867,3 +867,22 @@ func TestSpreadLifecycle_ReserveFinalizeDelete(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 }
+
+func TestRemoveInstance_ReadFailureIsNotSuccess(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc, err := NewPlacementGroupServiceImplWithNATS(t.Context(), nil, nc)
+	require.NoError(t, err)
+
+	createTestGroup(t, svc, "pg-readfail", "spread")
+
+	// A closed connection fails the read for a reason other than a missing key.
+	nc.Close()
+
+	_, err = svc.RemoveInstance(context.Background(), &RemoveInstanceInput{
+		GroupName:  "pg-readfail",
+		InstanceID: "i-readfail01",
+		NodeName:   "node-1",
+	}, testAccountID)
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorServerInternal), "got %v", err)
+}

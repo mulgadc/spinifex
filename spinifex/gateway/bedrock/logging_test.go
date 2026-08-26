@@ -289,3 +289,18 @@ func TestDeliveryConsumer_Run_DeliversMetadataOnlyRecordToS3(t *testing.T) {
 	assert.Empty(t, stored.InputText)
 	assert.Empty(t, stored.OutputText)
 }
+
+// TestLoggingConfigStore_RequiresJetStream covers a store constructed with no
+// JetStream client: every accessor must report the misconfiguration rather
+// than panic on a nil handle.
+func TestLoggingConfigStore_RequiresJetStream(t *testing.T) {
+	store := NewLoggingConfigStore(nil, 1)
+	ctx := context.Background()
+
+	_, _, err := store.Get(ctx, "000000000001")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no JetStream client configured")
+
+	require.Error(t, store.Put(ctx, "000000000001", LoggingConfig{}))
+	require.Error(t, store.Delete(ctx, "000000000001"))
+}

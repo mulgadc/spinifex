@@ -9,7 +9,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -51,11 +51,7 @@ type WeightsResolver interface {
 // WeightsStore resolves per-model weights records from the bedrock-weights
 // JetStream KV bucket.
 type WeightsStore struct {
-	js       jetstream.JetStream
-	replicas int
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
+	store *kvstore.Store[weightsRecord]
 }
 
 var _ WeightsResolver = (*WeightsStore)(nil)
@@ -63,47 +59,27 @@ var _ WeightsResolver = (*WeightsStore)(nil)
 // NewWeightsStore constructs a WeightsStore over the cluster's JetStream
 // client, replicated across replicas nodes.
 func NewWeightsStore(js jetstream.JetStream, replicas int) *WeightsStore {
-	return &WeightsStore{js: js, replicas: replicas}
-}
-
-// bucket lazily opens (or creates) the cluster-replicated bedrock-weights KV
-// bucket, caching the handle for subsequent calls, mirroring
-// CredentialStore.bucket.
-func (s *WeightsStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kv != nil {
-		return s.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, s.js, bedrockWeightsBucket, bedrockWeightsHistory, s.replicas)
-	if err != nil {
-		return nil, err
-	}
-	s.kv = kv
-	return kv, nil
+	return &WeightsStore{store: kvstore.New[weightsRecord](js, kvstore.Config{
+		Name:     bedrockWeightsBucket,
+		History:  bedrockWeightsHistory,
+		Replicas: replicas,
+		Missing:  "bedrock: weights store has no JetStream client configured",
+	})}
 }
 
 // getRecord reads and decodes modelID's weightsRecord. ok is false on a KV
 // miss (not staged); a malformed record is reported as an error rather than
 // silently treated as unstaged, since that would mask real corruption.
+// Errors name the model ID, since the key itself is base64url.
 func (s *WeightsStore) getRecord(ctx context.Context, modelID string) (weightsRecord, bool, error) {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return weightsRecord{}, false, err
-	}
-	entry, err := kv.Get(ctx, weightsKey(modelID))
-	switch {
-	case err == nil:
-		var rec weightsRecord
-		if jsonErr := json.Unmarshal(entry.Value(), &rec); jsonErr != nil {
-			return weightsRecord{}, false, fmt.Errorf("decode weights record for %s: %w", modelID, jsonErr)
-		}
-		return rec, true, nil
-	case errors.Is(err, jetstream.ErrKeyNotFound):
+	rec, _, err := s.store.Get(ctx, weightsKey(modelID))
+	if errors.Is(err, kvstore.ErrNotFound) {
 		return weightsRecord{}, false, nil
-	default:
-		return weightsRecord{}, false, fmt.Errorf("kv get weights record for %s: %w", modelID, err)
 	}
+	if err != nil {
+		return weightsRecord{}, false, fmt.Errorf("weights record for %s: %w", modelID, err)
+	}
+	return *rec, true, nil
 }
 
 // Resolve returns modelID's staged weights snapshot ID, if one has been set.
@@ -138,16 +114,9 @@ func (s *WeightsStore) PutWeights(ctx context.Context, modelID, sourceURI, snaps
 // the upstream hub commit SHA it was pulled at, if known (empty when 'stage'
 // found no 'ochre-pull.json' manifest at the source prefix).
 func (s *WeightsStore) PutWeightsWithRevision(ctx context.Context, modelID, sourceURI, snapshotID, sourceRevision string) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	value, err := json.Marshal(weightsRecord{SnapshotID: snapshotID, SourceURI: sourceURI, SourceRevision: sourceRevision})
-	if err != nil {
-		return fmt.Errorf("encode weights record for %s: %w", modelID, err)
-	}
-	if _, err := kv.Put(ctx, weightsKey(modelID), value); err != nil {
-		return fmt.Errorf("kv put weights record for %s: %w", modelID, err)
+	rec := weightsRecord{SnapshotID: snapshotID, SourceURI: sourceURI, SourceRevision: sourceRevision}
+	if err := s.store.Set(ctx, weightsKey(modelID), &rec); err != nil {
+		return fmt.Errorf("weights record for %s: %w", modelID, err)
 	}
 	return nil
 }
@@ -165,8 +134,11 @@ type WeightsEntry struct {
 // ID, so 'ochre weights list' can show an operator what's staged, where it
 // came from, and why a model is (or isn't) advertised via
 // ListFoundationModels.
+// It stays on the raw handle rather than Store.List for two reasons: the model
+// ID is recoverable only from the key, which Store.List does not surface, and
+// one unreadable record must not deny an operator the listing of every other.
 func (s *WeightsStore) ListWeights(ctx context.Context) ([]WeightsEntry, error) {
-	kv, err := s.bucket(ctx)
+	kv, err := s.store.KV(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -203,12 +175,8 @@ func (s *WeightsStore) ListWeights(ctx context.Context) ([]WeightsEntry, error) 
 // volume, snapshot and source S3 objects are left intact — reclaiming that
 // storage is a separate, explicit act.
 func (s *WeightsStore) DeleteWeights(ctx context.Context, modelID string) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	if err := kv.Delete(ctx, weightsKey(modelID)); err != nil {
-		return fmt.Errorf("kv delete weights record for %s: %w", modelID, err)
+	if err := s.store.Delete(ctx, weightsKey(modelID)); err != nil {
+		return fmt.Errorf("weights record for %s: %w", modelID, err)
 	}
 	return nil
 }

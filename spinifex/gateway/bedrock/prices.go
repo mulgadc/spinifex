@@ -2,12 +2,10 @@ package gateway_bedrock
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -72,11 +70,7 @@ const bedrockPricesHistory = 1
 // — both are per-model deployment data with an in-tree default plus a KV
 // override (D4, D12).
 type PriceStore struct {
-	js       jetstream.JetStream
-	replicas int
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
+	store *kvstore.Store[Price]
 }
 
 var _ PriceResolver = (*PriceStore)(nil)
@@ -84,62 +78,34 @@ var _ PriceResolver = (*PriceStore)(nil)
 // NewPriceStore constructs a PriceStore over the cluster's JetStream client,
 // replicated across replicas nodes.
 func NewPriceStore(js jetstream.JetStream, replicas int) *PriceStore {
-	return &PriceStore{js: js, replicas: replicas}
+	return &PriceStore{store: kvstore.New[Price](js, kvstore.Config{
+		Name:     bedrockPricesBucket,
+		History:  bedrockPricesHistory,
+		Replicas: replicas,
+		Missing:  "bedrock: price store has no JetStream client configured",
+	})}
 }
 
-// bucket lazily opens (or creates) the cluster-replicated bedrock-prices KV
-// bucket, caching the handle for subsequent calls, mirroring
-// WeightsStore.bucket.
-func (s *PriceStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kv != nil {
-		return s.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, s.js, bedrockPricesBucket, bedrockPricesHistory, s.replicas)
-	if err != nil {
-		return nil, err
-	}
-	s.kv = kv
-	return kv, nil
-}
-
-// Resolve returns modelID's KV-overridden price, if one has been set.
+// Resolve returns modelID's KV-overridden price, if one has been set. Errors
+// name the model ID, since the key itself is base64url.
 func (s *PriceStore) Resolve(ctx context.Context, modelID string) (Price, bool, error) {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return Price{}, false, err
-	}
-	entry, err := kv.Get(ctx, weightsKey(modelID))
-	switch {
-	case err == nil:
-		var price Price
-		if err := json.Unmarshal(entry.Value(), &price); err != nil {
-			return Price{}, false, fmt.Errorf("decode price override for %s: %w", modelID, err)
-		}
-		return price, true, nil
-	case errors.Is(err, jetstream.ErrKeyNotFound):
+	price, _, err := s.store.Get(ctx, weightsKey(modelID))
+	if errors.Is(err, kvstore.ErrNotFound) {
 		return Price{}, false, nil
-	default:
-		return Price{}, false, fmt.Errorf("kv get price override for %s: %w", modelID, err)
 	}
+	if err != nil {
+		return Price{}, false, fmt.Errorf("price override for %s: %w", modelID, err)
+	}
+	return *price, true, nil
 }
 
 // PutPrice records price as modelID's overridden price, always Known
 // (storing a KV override to mark a model unknown makes no sense — remove the
 // override with DeletePrice instead to fall back to the in-tree default).
 func (s *PriceStore) PutPrice(ctx context.Context, modelID string, price Price) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
 	price.Known = true
-	data, err := json.Marshal(price)
-	if err != nil {
-		return fmt.Errorf("encode price override for %s: %w", modelID, err)
-	}
-	if _, err := kv.Put(ctx, weightsKey(modelID), data); err != nil {
-		return fmt.Errorf("kv put price override for %s: %w", modelID, err)
+	if err := s.store.Set(ctx, weightsKey(modelID), &price); err != nil {
+		return fmt.Errorf("price override for %s: %w", modelID, err)
 	}
 	return nil
 }
@@ -148,12 +114,8 @@ func (s *PriceStore) PutPrice(ctx context.Context, modelID string, price Price) 
 // the catalog entry's in-tree default. Deleting an already-absent override is
 // idempotent, not an error.
 func (s *PriceStore) DeletePrice(ctx context.Context, modelID string) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	if err := kv.Delete(ctx, weightsKey(modelID)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return fmt.Errorf("kv delete price override for %s: %w", modelID, err)
+	if err := s.store.Delete(ctx, weightsKey(modelID)); err != nil {
+		return fmt.Errorf("price override for %s: %w", modelID, err)
 	}
 	return nil
 }

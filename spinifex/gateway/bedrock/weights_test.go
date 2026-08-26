@@ -203,3 +203,21 @@ func TestSetWeightsResolver_NilRestoresNoop(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 }
+
+// TestWeightsStore_RequiresJetStream covers a store constructed with no
+// JetStream client: every accessor must report the misconfiguration rather
+// than panic on a nil handle.
+func TestWeightsStore_RequiresJetStream(t *testing.T) {
+	store := NewWeightsStore(nil, 1)
+	ctx := context.Background()
+
+	_, _, err := store.Resolve(ctx, "meta.llama3-2-1b-instruct-v1:0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no JetStream client configured")
+
+	require.Error(t, store.PutWeights(ctx, "meta.llama3-2-1b-instruct-v1:0", "s3://models/x/", "snap-0001"))
+	require.Error(t, store.DeleteWeights(ctx, "meta.llama3-2-1b-instruct-v1:0"))
+
+	_, err = store.ListWeights(ctx)
+	require.Error(t, err)
+}

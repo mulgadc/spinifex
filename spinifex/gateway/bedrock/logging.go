@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -305,72 +304,38 @@ const bedrockLoggingConfigHistory = 1
 // bedrock-logging-config JetStream KV bucket, and serves as the
 // LoggingConfigReader StreamRecorder consults before including body text.
 type LoggingConfigStore struct {
-	js       jetstream.JetStream
-	replicas int
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
+	store *kvstore.Store[LoggingConfig]
 }
 
 var _ LoggingConfigReader = (*LoggingConfigStore)(nil)
 
 // NewLoggingConfigStore constructs a LoggingConfigStore.
 func NewLoggingConfigStore(js jetstream.JetStream, replicas int) *LoggingConfigStore {
-	return &LoggingConfigStore{js: js, replicas: replicas}
-}
-
-// bucket lazily opens (or creates) the cluster-replicated
-// bedrock-logging-config KV bucket, caching the handle for subsequent calls.
-func (s *LoggingConfigStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	if s.js == nil {
-		return nil, errors.New("bedrock: logging config store has no JetStream client configured")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kv != nil {
-		return s.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, s.js, bedrockLoggingConfigBucket, bedrockLoggingConfigHistory, s.replicas)
-	if err != nil {
-		return nil, err
-	}
-	s.kv = kv
-	return kv, nil
+	return &LoggingConfigStore{store: kvstore.New[LoggingConfig](js, kvstore.Config{
+		Name:     bedrockLoggingConfigBucket,
+		History:  bedrockLoggingConfigHistory,
+		Replicas: replicas,
+		Missing:  "bedrock: logging config store has no JetStream client configured",
+	})}
 }
 
 // Get returns accountID's stored logging config, or (zero, false, nil) if
 // the account has never configured one.
 func (s *LoggingConfigStore) Get(ctx context.Context, accountID string) (LoggingConfig, bool, error) {
-	kv, err := s.bucket(ctx)
+	cfg, _, err := s.store.Get(ctx, accountID)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return LoggingConfig{}, false, nil
+	}
 	if err != nil {
-		return LoggingConfig{}, false, err
+		return LoggingConfig{}, false, fmt.Errorf("logging config for %s: %w", accountID, err)
 	}
-	entry, err := kv.Get(ctx, accountID)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return LoggingConfig{}, false, nil
-		}
-		return LoggingConfig{}, false, fmt.Errorf("kv get logging config for %s: %w", accountID, err)
-	}
-	var cfg LoggingConfig
-	if err := json.Unmarshal(entry.Value(), &cfg); err != nil {
-		return LoggingConfig{}, false, fmt.Errorf("decode logging config for %s: %w", accountID, err)
-	}
-	return cfg, true, nil
+	return *cfg, true, nil
 }
 
 // Put stores accountID's logging config, overwriting any existing one.
 func (s *LoggingConfigStore) Put(ctx context.Context, accountID string, cfg LoggingConfig) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("encode logging config for %s: %w", accountID, err)
-	}
-	if _, err := kv.Put(ctx, accountID, data); err != nil {
-		return fmt.Errorf("kv put logging config for %s: %w", accountID, err)
+	if err := s.store.Set(ctx, accountID, &cfg); err != nil {
+		return fmt.Errorf("logging config for %s: %w", accountID, err)
 	}
 	return nil
 }
@@ -378,12 +343,8 @@ func (s *LoggingConfigStore) Put(ctx context.Context, accountID string, cfg Logg
 // Delete removes accountID's logging config, treating an already-absent
 // config as success.
 func (s *LoggingConfigStore) Delete(ctx context.Context, accountID string) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	if err := kv.Delete(ctx, accountID); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return fmt.Errorf("kv delete logging config for %s: %w", accountID, err)
+	if err := s.store.Delete(ctx, accountID); err != nil {
+		return fmt.Errorf("logging config for %s: %w", accountID, err)
 	}
 	return nil
 }

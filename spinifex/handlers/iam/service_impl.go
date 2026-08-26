@@ -20,6 +20,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	iamarn "github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
@@ -1833,13 +1834,8 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 // ---------------------------------------------------------------------------
 
 func (s *IAMServiceImpl) getPolicyByARN(ctx context.Context, accountID, policyARN string) (*Policy, error) {
-	parts := strings.SplitN(policyARN, ":policy", 2)
-	if len(parts) != 2 || parts[1] == "" {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-	segments := strings.Split(parts[1], "/")
-	policyName := segments[len(segments)-1]
-	if policyName == "" {
+	_, policyName, err := iamarn.ParsePolicyARN(policyARN)
+	if err != nil {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 

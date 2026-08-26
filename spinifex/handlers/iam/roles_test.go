@@ -554,6 +554,24 @@ func TestAttachRolePolicy_AWSManagedPolicyNotSeeded(t *testing.T) {
 	assert.Empty(t, out.AttachedPolicies)
 }
 
+func TestAttachRolePolicy_MalformedAWSManagedPolicyRejected(t *testing.T) {
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "malformed-managed-policy")
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: aws.String("arn:aws:iam::aws:policy/"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+
+	out, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{
+		RoleName: role.RoleName,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.AttachedPolicies)
+}
+
 func TestDetachRolePolicy(t *testing.T) {
 	svc := setupTestIAMService(t)
 	role := createTestRole(t, svc, "detach-role")

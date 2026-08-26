@@ -1072,6 +1072,9 @@ func TestGetPolicy_ARNParsingEdgeCases(t *testing.T) {
 		{"trailing slash only", "arn:aws:iam::" + testAccountID + ":policy/"},
 		{"empty after policy", "arn:aws:iam::" + testAccountID + ":policy"},
 		{"no policy segment", "arn:aws:iam::" + testAccountID + ":user/TestARN"},
+		{"policy-backup near miss", "arn:aws:iam::" + testAccountID + ":policy-backup/TestARN"},
+		{"policyset near miss", "arn:aws:iam::" + testAccountID + ":policyset/TestARN"},
+		{"empty account", "arn:aws:iam:::policy/TestARN"},
 	}
 
 	for _, tc := range testCases {
@@ -1079,7 +1082,8 @@ func TestGetPolicy_ARNParsingEdgeCases(t *testing.T) {
 			_, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{
 				PolicyArn: aws.String(tc.arn),
 			})
-			assert.Error(t, err, "ARN %q should fail", tc.arn)
+			require.Error(t, err, "ARN %q should fail", tc.arn)
+			assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity, "ARN %q", tc.arn)
 		})
 	}
 }

@@ -141,7 +141,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 					"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP,
 					"service", sig.Credential.Service,
 					"action", mismatchAction(r, sig.Credential.Service),
-					"canonicalRequest", redactedCanonicalRequest(sig),
+					"canonicalRequest", sig.RedactedCanonicalRequest(),
 					"err", err)
 				// Fingerprinted by the signature as well as the key id: each guess at a
 				// secret produces a different one, while a client retrying an identical
@@ -211,20 +211,6 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-}
-
-// redactedCanonicalRequest renders the server's canonical request for a mismatch log with
-// the session token masked. The rest is safe: it holds signed header values and a payload
-// hash, never the secret key.
-func redactedCanonicalRequest(sig *sigv4.SignedRequest) string {
-	lines := strings.Split(sig.CanonicalRequest(), "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, "x-amz-security-token:") {
-			lines[i] = "x-amz-security-token:<redacted>"
-		}
-	}
-
-	return strings.Join(lines, "\n")
 }
 
 // signingTime returns the timestamp the client signed with, read straight off the

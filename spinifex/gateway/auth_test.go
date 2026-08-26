@@ -2214,7 +2214,7 @@ func TestRedactedCanonicalRequest_MasksSessionToken(t *testing.T) {
 	sig, err := sigv4.Parse(req)
 	require.NoError(t, err)
 
-	out := redactedCanonicalRequest(sig)
+	out := sig.RedactedCanonicalRequest()
 	assert.NotContains(t, out, token, "session token must not reach the log")
 	assert.Contains(t, out, "x-amz-security-token:<redacted>")
 	// The rest must stay intact, or the log is useless for diffing.

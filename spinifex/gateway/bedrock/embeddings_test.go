@@ -7,6 +7,7 @@ package gateway_bedrock
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -84,6 +85,68 @@ func TestEmbeddingsProvider_Embed_HappyPathReordersToInputOrder(t *testing.T) {
 	assert.Equal(t, []float32{2.0, 2.1, 2.2}, vectors[2])
 	for _, v := range vectors {
 		assert.Len(t, v, 3)
+	}
+}
+
+func TestEmbeddingsProvider_Embed_SplitsOversizedInputIntoBoundedSubBatches(t *testing.T) {
+	const totalInputs = 2*maxEmbedClientBatch + 6 // 70 -> ceil(70/32) == 3 requests: 32, 32, 6.
+
+	var requestInputCounts []int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req embeddingsRequest
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&req)) {
+			http.Error(w, "decode request body", http.StatusBadRequest)
+			return
+		}
+		requestInputCounts = append(requestInputCounts, len(req.Input))
+		if !assert.LessOrEqual(t, len(req.Input), maxEmbedClientBatch, "every sub-batch request must respect maxEmbedClientBatch") {
+			http.Error(w, "oversized sub-batch", http.StatusBadRequest)
+			return
+		}
+
+		// Encode each input's absolute position (parsed from its own text) into
+		// the returned embedding, so the caller-side reassembly can be checked
+		// independently of this request's local index ordering.
+		data := make([]embeddingsDatum, len(req.Input))
+		for localIdx, input := range req.Input {
+			var absIdx int
+			if _, err := fmt.Sscanf(input, "chunk-%d", &absIdx); !assert.NoError(t, err) {
+				http.Error(w, "parse input position", http.StatusBadRequest)
+				return
+			}
+			data[localIdx] = embeddingsDatum{Index: localIdx, Embedding: []float32{float32(absIdx)}}
+		}
+
+		resp := embeddingsResponse{Data: data, Model: DefaultEmbeddingModel}
+		respBody, err := json.Marshal(resp)
+		if !assert.NoError(t, err) {
+			http.Error(w, "marshal response", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(respBody)
+	}))
+	defer ts.Close()
+
+	modelID := DefaultEmbeddingModel
+	p := newEmbeddingsProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	p.httpClient = ts.Client()
+
+	inputs := make([]string, totalInputs)
+	for i := range inputs {
+		inputs[i] = fmt.Sprintf("chunk-%d", i)
+	}
+
+	vectors, err := p.Embed(context.Background(), modelID, inputs)
+	require.NoError(t, err)
+
+	require.Equal(t, []int{maxEmbedClientBatch, maxEmbedClientBatch, 6}, requestInputCounts,
+		"Embed must issue one request per sub-batch, each bounded by maxEmbedClientBatch")
+
+	require.Len(t, vectors, totalInputs)
+	for i, v := range vectors {
+		require.Equal(t, []float32{float32(i)}, v, "vector at position %d must be reassembled in original input order", i)
 	}
 }
 

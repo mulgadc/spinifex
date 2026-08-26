@@ -6,6 +6,8 @@ package handlers_ochrevector
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -186,6 +188,75 @@ func TestRegistry_AppendSourceSpecNotFound(t *testing.T) {
 	err := reg.AppendSourceSpec(ctx, regAccountA, "does-not-exist", SourceSpec{Bucket: "docs"})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrIndexNotFound)
+}
+
+// TestRegistry_AppendSourceSpecConcurrentAppendsAllLand is the case that can
+// lose data: the read-check-append is not atomic, so two ingests racing on one
+// index must not drop a spec. Every distinct spec has to survive.
+func TestRegistry_AppendSourceSpecConcurrentAppendsAllLand(t *testing.T) {
+	reg := newRegistryTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	require.NoError(t, reg.Reserve(ctx, regAccountA, Record{ID: "idx-one", CreatedAt: now, UpdatedAt: now}))
+
+	const writers = 4
+	var wg sync.WaitGroup
+	errs := make([]error, writers)
+	for i := range writers {
+		wg.Go(func() {
+			spec := SourceSpec{Bucket: "docs", Prefix: fmt.Sprintf("kb%d/", i), ChunkSize: 512, Dimension: 768}
+			errs[i] = reg.AppendSourceSpec(ctx, regAccountA, "idx-one", spec)
+		})
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "appender %d", i)
+	}
+
+	got, err := reg.Get(ctx, regAccountA, "idx-one")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Len(t, got.SourceSpecs, writers, "a spec was dropped by a lost CAS race")
+
+	prefixes := make(map[string]bool, writers)
+	for _, spec := range got.SourceSpecs {
+		prefixes[spec.Prefix] = true
+	}
+	for i := range writers {
+		assert.Truef(t, prefixes[fmt.Sprintf("kb%d/", i)], "appender %d's spec is missing", i)
+	}
+}
+
+// TestRegistry_SetStateConcurrentWritersAllSucceed pins the retry: before the
+// conversion this was a single-shot update at the read revision, so a caller
+// that lost the race got a raw revision mismatch back.
+func TestRegistry_SetStateConcurrentWritersAllSucceed(t *testing.T) {
+	reg := newRegistryTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	require.NoError(t, reg.Reserve(ctx, regAccountA, Record{ID: "idx-one", State: StateCreating, CreatedAt: now, UpdatedAt: now}))
+
+	states := []string{StateReady, StateStale, StateReady, StateDeleting}
+	var wg sync.WaitGroup
+	errs := make([]error, len(states))
+	for i, state := range states {
+		wg.Go(func() {
+			errs[i] = reg.SetState(ctx, regAccountA, "idx-one", state)
+		})
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "writer %d lost its race instead of retrying", i)
+	}
+
+	got, err := reg.Get(ctx, regAccountA, "idx-one")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Contains(t, states, got.State, "the surviving state must be one a writer actually set")
 }
 
 func TestRegistry_ListAll(t *testing.T) {

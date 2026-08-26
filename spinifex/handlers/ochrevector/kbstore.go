@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -94,36 +92,18 @@ type DataSourceRecord struct {
 }
 
 // KBStore persists KBRecords in the ochre-kb JetStream KV bucket, mirroring
-// Registry's lazy get-or-create bucket, key "accountID/id", per-account
-// prefix-scan list.
+// Registry: key "accountID/id", per-account prefix-scan list.
 type KBStore struct {
-	js jetstream.JetStream
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
+	store *kvstore.Store[KBRecord]
 }
 
 // NewKBStore constructs a KBStore over js.
 func NewKBStore(js jetstream.JetStream) *KBStore {
-	return &KBStore{js: js}
-}
-
-// bucket lazily opens (or creates) the KB KV bucket, caching the handle.
-func (s *KBStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	if s.js == nil {
-		return nil, errors.New("ochrevector: knowledge base store has no JetStream client configured")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kv != nil {
-		return s.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucket(ctx, s.js, kbBucket, kbBucketHistory)
-	if err != nil {
-		return nil, err
-	}
-	s.kv = kv
-	return kv, nil
+	return &KBStore{store: kvstore.New[KBRecord](js, kvstore.Config{
+		Name:    kbBucket,
+		History: kbBucketHistory,
+		Missing: "ochrevector: knowledge base store has no JetStream client configured",
+	})}
 }
 
 // kbKey scopes every record to its owning account, so a foreign account's raw
@@ -137,17 +117,9 @@ func kbKey(accountID, id string) string {
 // creates of the same id race safely and exactly one wins. rec.AccountID is
 // stamped from accountID, overriding whatever the caller set.
 func (s *KBStore) Create(ctx context.Context, accountID string, rec KBRecord) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
 	rec.AccountID = accountID
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("ochrevector: encode knowledge base %s: %w", rec.ID, err)
-	}
-	if _, err := kv.Create(ctx, kbKey(accountID, rec.ID), data); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+	if err := s.store.Create(ctx, kbKey(accountID, rec.ID), &rec); err != nil {
+		if errors.Is(err, kvstore.ErrExists) {
 			return ErrKBExists
 		}
 		return fmt.Errorf("ochrevector: reserve knowledge base %s: %w", rec.ID, err)
@@ -155,71 +127,29 @@ func (s *KBStore) Create(ctx context.Context, accountID string, rec KBRecord) er
 	return nil
 }
 
-// Get reads accountID's record for id, returning (nil, nil) when absent.
+// Get reads accountID's record for id, returning (nil, nil) when absent, which
+// is how every caller distinguishes a missing knowledge base from a failure.
 func (s *KBStore) Get(ctx context.Context, accountID, id string) (*KBRecord, error) {
-	kv, err := s.bucket(ctx)
+	rec, _, err := s.store.Get(ctx, kbKey(accountID, id))
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	entry, err := kv.Get(ctx, kbKey(accountID, id))
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("ochrevector: kv get %s: %w", kbKey(accountID, id), err)
-	}
-	var rec KBRecord
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return nil, fmt.Errorf("ochrevector: decode %s: %w", kbKey(accountID, id), err)
-	}
-	return &rec, nil
+	return rec, nil
 }
 
 // List returns every knowledge base owned by accountID, so one tenant's
 // listing never surfaces another's.
 func (s *KBStore) List(ctx context.Context, accountID string) ([]KBRecord, error) {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("ochrevector: list keys: %w", err)
-	}
-	prefix := accountID + "/"
-	var out []KBRecord
-	for _, key := range keys {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		entry, err := kv.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
-			return nil, fmt.Errorf("ochrevector: kv get %s: %w", key, err)
-		}
-		var rec KBRecord
-		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			return nil, fmt.Errorf("ochrevector: decode %s: %w", key, err)
-		}
-		out = append(out, rec)
-	}
-	return out, nil
+	return s.store.List(ctx, accountID+"/")
 }
 
 // Delete removes accountID's id record. Idempotent: deleting an
 // already-absent record is a no-op success.
 func (s *KBStore) Delete(ctx context.Context, accountID, id string) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	key := kbKey(accountID, id)
-	if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := s.store.Delete(ctx, kbKey(accountID, id)); err != nil {
 		return fmt.Errorf("ochrevector: delete knowledge base %s: %w", id, err)
 	}
 	return nil
@@ -228,56 +158,22 @@ func (s *KBStore) Delete(ctx context.Context, accountID, id string) error {
 // PurgeAll deletes every knowledge base record across every account.
 // Idempotent: an empty bucket is a no-op success.
 func (s *KBStore) PurgeAll(ctx context.Context) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil
-		}
-		return fmt.Errorf("ochrevector: list keys: %w", err)
-	}
-	for _, key := range keys {
-		if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-			return fmt.Errorf("ochrevector: purge knowledge base %s: %w", key, err)
-		}
-	}
-	return nil
+	return s.store.DeletePrefix(ctx, "")
 }
 
 // DataSourceStore persists DataSourceRecords in the ochre-kb-datasource
 // JetStream KV bucket, mirroring KBStore.
 type DataSourceStore struct {
-	js jetstream.JetStream
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
+	store *kvstore.Store[DataSourceRecord]
 }
 
 // NewDataSourceStore constructs a DataSourceStore over js.
 func NewDataSourceStore(js jetstream.JetStream) *DataSourceStore {
-	return &DataSourceStore{js: js}
-}
-
-// bucket lazily opens (or creates) the data-source KV bucket, caching the
-// handle.
-func (s *DataSourceStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	if s.js == nil {
-		return nil, errors.New("ochrevector: data source store has no JetStream client configured")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kv != nil {
-		return s.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucket(ctx, s.js, dataSourceBucket, dataSourceBucketHistory)
-	if err != nil {
-		return nil, err
-	}
-	s.kv = kv
-	return kv, nil
+	return &DataSourceStore{store: kvstore.New[DataSourceRecord](js, kvstore.Config{
+		Name:    dataSourceBucket,
+		History: dataSourceBucketHistory,
+		Missing: "ochrevector: data source store has no JetStream client configured",
+	})}
 }
 
 // dataSourceKey scopes every record to its owning account, so a foreign
@@ -288,17 +184,9 @@ func dataSourceKey(accountID, id string) string {
 
 // Create atomically claims rec.ID for accountID, mirroring KBStore.Create.
 func (s *DataSourceStore) Create(ctx context.Context, accountID string, rec DataSourceRecord) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
 	rec.AccountID = accountID
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("ochrevector: encode data source %s: %w", rec.ID, err)
-	}
-	if _, err := kv.Create(ctx, dataSourceKey(accountID, rec.ID), data); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+	if err := s.store.Create(ctx, dataSourceKey(accountID, rec.ID), &rec); err != nil {
+		if errors.Is(err, kvstore.ErrExists) {
 			return ErrDataSourceExists
 		}
 		return fmt.Errorf("ochrevector: reserve data source %s: %w", rec.ID, err)
@@ -306,60 +194,23 @@ func (s *DataSourceStore) Create(ctx context.Context, accountID string, rec Data
 	return nil
 }
 
-// Get reads accountID's record for id, returning (nil, nil) when absent.
+// Get reads accountID's record for id, returning (nil, nil) when absent, which
+// is how every caller distinguishes a missing data source from a failure.
 func (s *DataSourceStore) Get(ctx context.Context, accountID, id string) (*DataSourceRecord, error) {
-	kv, err := s.bucket(ctx)
+	rec, _, err := s.store.Get(ctx, dataSourceKey(accountID, id))
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	entry, err := kv.Get(ctx, dataSourceKey(accountID, id))
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("ochrevector: kv get %s: %w", dataSourceKey(accountID, id), err)
-	}
-	var rec DataSourceRecord
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return nil, fmt.Errorf("ochrevector: decode %s: %w", dataSourceKey(accountID, id), err)
-	}
-	return &rec, nil
+	return rec, nil
 }
 
 // List returns every data source owned by accountID, across every knowledge
 // base, so one tenant's listing never surfaces another's.
 func (s *DataSourceStore) List(ctx context.Context, accountID string) ([]DataSourceRecord, error) {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("ochrevector: list keys: %w", err)
-	}
-	prefix := accountID + "/"
-	var out []DataSourceRecord
-	for _, key := range keys {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		entry, err := kv.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
-			return nil, fmt.Errorf("ochrevector: kv get %s: %w", key, err)
-		}
-		var rec DataSourceRecord
-		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			return nil, fmt.Errorf("ochrevector: decode %s: %w", key, err)
-		}
-		out = append(out, rec)
-	}
-	return out, nil
+	return s.store.List(ctx, accountID+"/")
 }
 
 // ListByKnowledgeBase returns accountID's data sources scoped to
@@ -381,12 +232,7 @@ func (s *DataSourceStore) ListByKnowledgeBase(ctx context.Context, accountID, kn
 // Delete removes accountID's id record. Idempotent: deleting an
 // already-absent record is a no-op success.
 func (s *DataSourceStore) Delete(ctx context.Context, accountID, id string) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	key := dataSourceKey(accountID, id)
-	if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := s.store.Delete(ctx, dataSourceKey(accountID, id)); err != nil {
 		return fmt.Errorf("ochrevector: delete data source %s: %w", id, err)
 	}
 	return nil
@@ -395,21 +241,5 @@ func (s *DataSourceStore) Delete(ctx context.Context, accountID, id string) erro
 // PurgeAll deletes every data source record across every account. Idempotent:
 // an empty bucket is a no-op success.
 func (s *DataSourceStore) PurgeAll(ctx context.Context) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil
-		}
-		return fmt.Errorf("ochrevector: list keys: %w", err)
-	}
-	for _, key := range keys {
-		if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-			return fmt.Errorf("ochrevector: purge data source %s: %w", key, err)
-		}
-	}
-	return nil
+	return s.store.DeletePrefix(ctx, "")
 }

@@ -2,14 +2,11 @@ package handlers_ochrevector
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -66,36 +63,18 @@ type JobRecord struct {
 }
 
 // JobStore persists JobRecords in the ochre-vector-jobs JetStream KV bucket,
-// mirroring Registry's lazy get-or-create bucket, key "accountID/id",
-// per-account prefix-scan list.
+// key "accountID/id", per-account prefix-scan list.
 type JobStore struct {
-	js jetstream.JetStream
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
+	store *kvstore.Store[JobRecord]
 }
 
 // NewJobStore constructs a JobStore over js.
 func NewJobStore(js jetstream.JetStream) *JobStore {
-	return &JobStore{js: js}
-}
-
-// bucket lazily opens (or creates) the jobs KV bucket, caching the handle.
-func (s *JobStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	if s.js == nil {
-		return nil, errors.New("ochrevector: job store has no JetStream client configured")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kv != nil {
-		return s.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucket(ctx, s.js, jobsBucket, jobsBucketHistory)
-	if err != nil {
-		return nil, err
-	}
-	s.kv = kv
-	return kv, nil
+	return &JobStore{store: kvstore.New[JobRecord](js, kvstore.Config{
+		Name:    jobsBucket,
+		History: jobsBucketHistory,
+		Missing: "ochrevector: job store has no JetStream client configured",
+	})}
 }
 
 // jobKey scopes every record to its owning account, so a foreign account's
@@ -109,17 +88,9 @@ func jobKey(accountID, jobID string) string {
 // starts of the same job id race safely and exactly one wins. rec.AccountID
 // is stamped from accountID, overriding whatever the caller set.
 func (s *JobStore) Reserve(ctx context.Context, accountID string, rec JobRecord) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
 	rec.AccountID = accountID
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("ochrevector: encode job record %s: %w", rec.ID, err)
-	}
-	if _, err := kv.Create(ctx, jobKey(accountID, rec.ID), data); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+	if err := s.store.Create(ctx, jobKey(accountID, rec.ID), &rec); err != nil {
+		if errors.Is(err, kvstore.ErrExists) {
 			return ErrJobExists
 		}
 		return fmt.Errorf("ochrevector: reserve job %s: %w", rec.ID, err)
@@ -129,74 +100,23 @@ func (s *JobStore) Reserve(ctx context.Context, accountID string, rec JobRecord)
 
 // Get reads accountID's record for jobID, returning (nil, nil) when absent.
 func (s *JobStore) Get(ctx context.Context, accountID, jobID string) (*JobRecord, error) {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return nil, err
+	rec, _, err := s.store.Get(ctx, jobKey(accountID, jobID))
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil, nil
 	}
-	return getJobRecord(ctx, kv, jobKey(accountID, jobID))
-}
-
-// getJobRecord reads and decodes one record, returning (nil, nil) when absent.
-func getJobRecord(ctx context.Context, kv jetstream.KeyValue, key string) (*JobRecord, error) {
-	entry, err := kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("ochrevector: kv get %s: %w", key, err)
-	}
-	var rec JobRecord
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return nil, fmt.Errorf("ochrevector: decode %s: %w", key, err)
-	}
-	return &rec, nil
+	return rec, err
 }
 
 // List returns every job record owned by accountID, so one tenant's listing
 // never surfaces another's.
 func (s *JobStore) List(ctx context.Context, accountID string) ([]JobRecord, error) {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return listJobRecords(ctx, kv, accountID+"/")
+	return s.store.List(ctx, accountID+"/")
 }
 
 // ListAll returns every job record across every account, for the ingestion
 // reconciler's crash-recovery sweep.
 func (s *JobStore) ListAll(ctx context.Context) ([]JobRecord, error) {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return listJobRecords(ctx, kv, "")
-}
-
-// listJobRecords walks every key with the given prefix ("" matches
-// everything) and decodes each into a JobRecord, skipping any key that
-// disappears between the key listing and the read.
-func listJobRecords(ctx context.Context, kv jetstream.KeyValue, prefix string) ([]JobRecord, error) {
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("ochrevector: list keys: %w", err)
-	}
-	var out []JobRecord
-	for _, key := range keys {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		rec, err := getJobRecord(ctx, kv, key)
-		if err != nil {
-			return nil, err
-		}
-		if rec != nil {
-			out = append(out, *rec)
-		}
-	}
-	return out, nil
+	return s.store.List(ctx, "")
 }
 
 // Update reads accountID's jobID record, applies fn to mutate it in place,
@@ -204,29 +124,15 @@ func listJobRecords(ctx context.Context, kv jetstream.KeyValue, prefix string) (
 // update, mirroring Registry.SetState's pattern for the general case of an
 // arbitrary field mutation (progress counters, failed-document list, error).
 func (s *JobStore) Update(ctx context.Context, accountID, jobID string, fn func(rec *JobRecord)) error {
-	kv, err := s.bucket(ctx)
+	err := s.store.Mutate(ctx, jobKey(accountID, jobID), func(rec *JobRecord) (bool, error) {
+		fn(rec)
+		rec.UpdatedAt = time.Now().UTC()
+		return true, nil
+	})
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return ErrJobNotFound
+	}
 	if err != nil {
-		return err
-	}
-	key := jobKey(accountID, jobID)
-	entry, err := kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return ErrJobNotFound
-		}
-		return fmt.Errorf("ochrevector: kv get %s: %w", key, err)
-	}
-	var rec JobRecord
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return fmt.Errorf("ochrevector: decode %s: %w", key, err)
-	}
-	fn(&rec)
-	rec.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("ochrevector: encode job record %s: %w", rec.ID, err)
-	}
-	if _, err := kv.Update(ctx, key, data, entry.Revision()); err != nil {
 		return fmt.Errorf("ochrevector: update job %s: %w", jobID, err)
 	}
 	return nil
@@ -244,35 +150,11 @@ func (s *JobStore) SetState(ctx context.Context, accountID, jobID, state string)
 // appliance's job history never references data that no longer exists.
 // Idempotent: an empty bucket is a no-op success.
 func (s *JobStore) PurgeAll(ctx context.Context) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil
-		}
-		return fmt.Errorf("ochrevector: list keys: %w", err)
-	}
-	for _, key := range keys {
-		if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-			return fmt.Errorf("ochrevector: purge job %s: %w", key, err)
-		}
-	}
-	return nil
+	return s.store.DeletePrefix(ctx, "")
 }
 
 // Delete removes accountID's jobID record. Idempotent: deleting an
 // already-absent record is a no-op success.
 func (s *JobStore) Delete(ctx context.Context, accountID, jobID string) error {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	key := jobKey(accountID, jobID)
-	if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return fmt.Errorf("ochrevector: delete job %s: %w", jobID, err)
-	}
-	return nil
+	return s.store.Delete(ctx, jobKey(accountID, jobID))
 }

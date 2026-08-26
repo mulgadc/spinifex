@@ -196,7 +196,7 @@ func TestJobStore_ListAll(t *testing.T) {
 }
 
 func TestJobStore_BucketRequiresJetStream(t *testing.T) {
-	store := &JobStore{}
-	_, err := store.bucket(context.Background())
-	assert.Error(t, err)
+	store := NewJobStore(nil)
+	_, err := store.Get(context.Background(), "acct-a", "job-1")
+	require.ErrorContains(t, err, "job store has no JetStream client configured")
 }

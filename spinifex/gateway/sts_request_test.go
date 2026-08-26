@@ -83,8 +83,11 @@ type stsRequestParams struct {
 	accessKey      string
 	assumedRoleARN string
 	assumedRoleID  string
-	stsSvc         handlers_sts.STSService
-	iamSvc         handlers_iam.IAMService
+	// underlyingRoleARN is what the policy gate resolves an assumed-role
+	// caller's policies by; SessionName never participates.
+	underlyingRoleARN string
+	stsSvc            handlers_sts.STSService
+	iamSvc            handlers_iam.IAMService
 }
 
 func setupSTSRequestHandler(p stsRequestParams) http.Handler {
@@ -108,6 +111,9 @@ func setupSTSRequestHandler(p stsRequestParams) http.Handler {
 		}
 		if p.assumedRoleID != "" {
 			ctx = context.WithValue(ctx, ctxAssumedRoleID, p.assumedRoleID)
+		}
+		if p.underlyingRoleARN != "" {
+			ctx = context.WithValue(ctx, ctxUnderlyingRoleARN, p.underlyingRoleARN)
 		}
 		r = r.WithContext(ctx)
 		if err := gw.STS_Request(w, r); err != nil {
@@ -140,6 +146,7 @@ func TestSTSRequest_AssumeRole_Success(t *testing.T) {
 		principalType: principalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
 		stsSvc:        svc,
+		iamSvc:        stsIdentityPolicy(stsStatement("Allow", "sts:AssumeRole", "*")),
 	})
 
 	body := "Action=AssumeRole&RoleArn=arn:aws:iam::000000000000:role/app&RoleSessionName=s1"
@@ -310,6 +317,7 @@ func TestSTSRequest_AssumeRole_MissingRoleArn(t *testing.T) {
 		principalType: principalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
 		stsSvc:        svc,
+		iamSvc:        stsIdentityPolicy(stsStatement("Allow", "sts:AssumeRole", "*")),
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=AssumeRole&RoleSessionName=s1"))
@@ -358,6 +366,7 @@ func TestSTSRequest_AssumeRole_ServiceError_PropagatesAccessDenied(t *testing.T)
 		principalType: principalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
 		stsSvc:        svc,
+		iamSvc:        stsIdentityPolicy(stsStatement("Allow", "sts:AssumeRole", "*")),
 	})
 
 	body := "Action=AssumeRole&RoleArn=arn:aws:iam::000000000000:role/app&RoleSessionName=s1"

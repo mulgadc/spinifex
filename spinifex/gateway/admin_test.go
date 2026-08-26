@@ -145,7 +145,8 @@ func TestAuthorizeAdminGates(t *testing.T) {
 				return
 			}
 			require.Error(t, err)
-			assert.Equal(t, tc.wantErr, err.Error())
+			code, _ := awserrors.ResolveErrorCode(err)
+			assert.Equal(t, tc.wantErr, code)
 		})
 	}
 }
@@ -158,7 +159,7 @@ func TestAuthorizeAdminDeniesUnauthenticated(t *testing.T) {
 
 	err := gw.authorizeAdmin(req, "CreateAccount")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertDenied(t, err)
 }
 
 // adminRequest drives Admin_Request with the chi route param the router sets.

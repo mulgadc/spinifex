@@ -105,6 +105,7 @@ func (sc *Scheduler) Run(ctx context.Context) {
 			sc.runIfLeader("instance reap", func() error { return sc.reap(ctx) })
 		case <-reconcileTicker.C:
 			sc.runIfLeader("service reconcile", func() error { return sc.svc.reconcileAllServices(ctx) })
+			sc.runIfLeader("instance role converge", func() error { return sc.convergeInstanceRoles(ctx) })
 		case <-sweepTicker.C:
 			sc.runIfLeader("stopped-task sweep", func() error { return sc.sweepStoppedTasks(ctx) })
 		}
@@ -266,6 +267,29 @@ func (sc *Scheduler) stopInstanceTasks(ctx context.Context, kv jetstream.KeyValu
 		}
 		sc.svc.forceStopTask(ctx, kv, accountID, &task, stoppedReasonReaped)
 	}
+}
+
+// convergeInstanceRoles re-asserts the ecsInstanceRole policy on every account
+// holding ECS state. Provisioning runs only when capacity changes, so a cluster
+// that is merely running would otherwise never pick up a changed document and
+// its agent would fail its next credential refresh. Returns an error when the
+// account enumeration could not complete; a single account that fails is logged
+// and retried on the next tick.
+func (sc *Scheduler) convergeInstanceRoles(ctx context.Context) error {
+	if sc.svc.deps.IAM == nil {
+		return nil
+	}
+	buckets, err := accountBuckets(ctx, sc.nc)
+	if err != nil {
+		return err
+	}
+	for _, bucket := range buckets {
+		if _, err := sc.svc.ensureECSInstanceProfile(bucket.accountID); err != nil {
+			slog.Error("ECS scheduler: converge instance role failed",
+				"accountId", bucket.accountID, "err", err)
+		}
+	}
+	return nil
 }
 
 // accountIDFromBucket extracts the account ID from an ECS per-account bucket name.

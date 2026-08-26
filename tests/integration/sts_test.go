@@ -282,6 +282,18 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	require.NoError(t, err, "create-role (chain)")
 	chainedRoleARN := aws.StringValue(chainCreateOut.Role.Arn)
 
+	// The chained assume needs both gates: the trust policy above, and an
+	// identity-side grant on the session's own role. An inline policy keeps
+	// the teardown below free of managed-policy detaches.
+	_, err = iamCli.PutRolePolicy(&iam.PutRolePolicyInput{
+		RoleName:   aws.String(stsRoleName),
+		PolicyName: aws.String("sts-role-chain-assume"),
+		PolicyDocument: aws.String(fmt.Sprintf(
+			`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole","Resource":%q}]}`,
+			chainedRoleARN)),
+	})
+	require.NoError(t, err, "put-role-policy (chain)")
+
 	chainOut, err := sessionCli.STS.AssumeRole(&sts.AssumeRoleInput{
 		RoleArn:         aws.String(chainedRoleARN),
 		RoleSessionName: aws.String(stsSessionNameChain),
@@ -365,6 +377,12 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	// is unaffected by trust-policy references in either direction.
 	_, err = iamCli.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(stsRoleNameChain)})
 	require.NoError(t, err, "delete-role (chain)")
+	// An inline policy is a subordinate entity: DeleteRole rejects until it goes.
+	_, err = iamCli.DeleteRolePolicy(&iam.DeleteRolePolicyInput{
+		RoleName:   aws.String(stsRoleName),
+		PolicyName: aws.String("sts-role-chain-assume"),
+	})
+	require.NoError(t, err, "delete-role-policy (chain)")
 	_, err = iamCli.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(stsRoleName)})
 	require.NoError(t, err, "delete-role")
 }

@@ -69,7 +69,7 @@ func TestEvaluate_IAMInstanceProfileActionStrings(t *testing.T) {
 }
 
 // TestEvaluate_STSActionStrings pins the action strings emitted by the STS
-// gateway dispatcher (gateway/sts.go stsActions + checkPolicy(r, "sts", action)
+// gateway dispatcher (gateway/sts.go stsActions + the stsPolicyGatedActions
 // call site). Locks in that every STS verb the dispatcher accepts is matchable
 // by the evaluator under both wildcard and service-scoped policies, so a future
 // rename of any stsActions key surfaces here.

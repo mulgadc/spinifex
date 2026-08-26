@@ -101,7 +101,7 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := gw.authorizeAdmin(r, method); err != nil {
-		gw.writeAdminError(w, requestID, err.Error(), "")
+		gw.writeAdminErrorFor(w, requestID, err)
 		return
 	}
 
@@ -141,7 +141,7 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 		err = errors.New(awserrors.ErrorInvalidAction)
 	}
 	if err != nil {
-		gw.writeAdminError(w, requestID, err.Error(), "")
+		gw.writeAdminErrorFor(w, requestID, err)
 		return
 	}
 
@@ -202,6 +202,17 @@ func (gw *GatewayConfig) authorizeAdmin(r *http.Request, method string) error {
 // writeAdminError writes the JSON error envelope. message overrides the
 // registry text when a specific cause is safe to disclose; it must never carry
 // a parameter value, only a parameter name.
+// writeAdminErrorFor resolves an error to its code and any message its call
+// site attached, so a wrapped error renders as its own code instead of falling
+// through to InternalError.
+func (gw *GatewayConfig) writeAdminErrorFor(w http.ResponseWriter, requestID string, err error) {
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	if !ok {
+		code = awserrors.ErrorInternalError
+	}
+	gw.writeAdminError(w, requestID, code, message)
+}
+
 func (gw *GatewayConfig) writeAdminError(w http.ResponseWriter, requestID, code, message string) {
 	detail, ok := awserrors.ErrorLookup[code]
 	if !ok {

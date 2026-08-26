@@ -21,7 +21,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -152,20 +151,15 @@ func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID st
 // resolves the role, clamps the duration, evaluates the trust policy, and mints credentials.
 // principalSource is "" for HTTPS (derived from callerARN), ec2.amazonaws.com for IMDS.
 func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
-	roleAccountID, roleName, err := auth.ParseRoleARN(roleARN)
+	roleAccountID, role, err := ResolveRoleByARN(s.iamSvc, roleARN)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorValidationError)
-	}
-
-	roleOut, err := s.iamSvc.GetRole(roleAccountID, &iam.GetRoleInput{RoleName: aws.String(roleName)})
-	if err != nil {
-		// All misses are masked to AccessDenied, matching AWS and preventing role enumeration.
-		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+		// A miss and a non-canonical ARN are both masked to AccessDenied,
+		// matching AWS and preventing role enumeration.
+		if errors.Is(err, ErrRoleUnresolved) {
 			return nil, errors.New(awserrors.ErrorAccessDenied)
 		}
 		return nil, err
 	}
-	role := roleOut.Role
 
 	duration := requestedDuration
 	if duration == 0 {

@@ -380,7 +380,16 @@ func ensureInstanceProfile(t *testing.T, c *harness.AWSClient) {
 	})
 	tolerateExists(t, err, "create-role ecsInstanceRole")
 
-	const policy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ecs:*","Resource":"*"}]}`
+	// Mirrors what the control plane provisions: ecs:*, ECR read, and the
+	// sts:AssumeRole the agent needs to mint task-role credentials. Seeding less
+	// than production would leave the harness failing alongside it rather than
+	// ahead of it.
+	policy := `{"Version":"2012-10-17","Statement":[` +
+		`{"Effect":"Allow","Action":"ecs:*","Resource":"*"},` +
+		`{"Effect":"Allow","Action":["ecr:GetAuthorizationToken","ecr:BatchCheckLayerAvailability",` +
+		`"ecr:GetDownloadUrlForLayer","ecr:BatchGetImage"],"Resource":"*"},` +
+		`{"Effect":"Allow","Action":"sts:AssumeRole","Resource":"arn:aws:iam::` +
+		harness.IAMAccountID(t, c) + `:role/*"}]}`
 	_, err = c.IAM.PutRolePolicy(&iam.PutRolePolicyInput{
 		RoleName:       aws.String(name),
 		PolicyName:     aws.String("ecsInstanceRolePolicy"),

@@ -1125,7 +1125,7 @@ func TestCheckPolicy_PassRoleFailsClosed(t *testing.T) {
 	err := gw.checkPolicyResources(req, "iam", "PassRole",
 		[]string{"arn:aws:iam::123456789012:role/app"})
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertDenied(t, err)
 }
 
 func TestCheckPolicy_RootUserGlobalAccount(t *testing.T) {
@@ -1154,7 +1154,7 @@ func TestCheckPolicy_AssumedRoleSessionNamedRoot(t *testing.T) {
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertDenied(t, err)
 }
 
 func TestCheckPolicy_NonRootAllowPolicy(t *testing.T) {
@@ -1203,7 +1203,7 @@ func TestCheckPolicy_NonRootDenyPolicy(t *testing.T) {
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertDenied(t, err)
 }
 
 func TestCheckPolicy_NonRootNoPolicies(t *testing.T) {
@@ -1221,7 +1221,7 @@ func TestCheckPolicy_NonRootNoPolicies(t *testing.T) {
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertDenied(t, err)
 }
 
 func TestCheckPolicy_GetUserPoliciesError(t *testing.T) {

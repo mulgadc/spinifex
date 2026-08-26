@@ -15,8 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -87,17 +87,9 @@ type ecsImageResolver interface {
 }
 
 // ecsIAM is the narrow IAM surface ProvisionCapacity needs to find-or-create the
-// ecsInstanceRole, its ecs:* policy, and the instance profile workers expose
-// over IMDS. Method signatures match the daemon IAM service implementation.
-type ecsIAM interface {
-	GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
-	CreateRole(accountID string, input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error)
-	CreatePolicy(accountID string, input *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error)
-	AttachRolePolicy(accountID string, input *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error)
-	GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
-	CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error)
-	AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error)
-}
+// ecsInstanceRole, its inline policy, and the instance profile workers expose
+// over IMDS. It is the same shape the ELBv2 and EKS system roles use.
+type ecsIAM = handlers_iam.SystemInstanceRoleEnsurer
 
 // Deps are the collaborators ProvisionCapacity needs: the gateway endpoint/CA to
 // seed the agent's config, the IAM service to back the instance profile, the

@@ -36,6 +36,17 @@ type flexMockIAMService struct {
 	lookupAccessKeyFn      func(string) (*handlers_iam.AccessKey, error)
 
 	getAccountSummaryFn func(string, *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error)
+	getRoleFn           func(string, *iam.GetRoleInput) (*iam.GetRoleOutput, error)
+}
+
+// GetRole answers NoSuchEntity by default: the STS identity gate resolves the
+// target role, and a mock that invented one would let a test pass against a
+// role the account does not hold.
+func (m *flexMockIAMService) GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+	if m.getRoleFn != nil {
+		return m.getRoleFn(accountID, input)
+	}
+	return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 }
 
 func (m *flexMockIAMService) CreateUser(accountID string, input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {

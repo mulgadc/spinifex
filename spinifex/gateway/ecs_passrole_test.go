@@ -9,7 +9,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -69,7 +68,7 @@ func TestECSRegisterTaskDefinition_DeniedWithoutPassRole(t *testing.T) {
 
 	err := gw.ECS_Request(httptest.NewRecorder(), req)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertDenied(t, err)
 }
 
 func TestECSRegisterTaskDefinition_AllowedWithPassRole(t *testing.T) {
@@ -87,7 +86,7 @@ func TestECSRegisterTaskDefinition_AllowedWithPassRole(t *testing.T) {
 	// disconnected) NATS dispatch; whatever fails downstream, it must not be
 	// the PassRole denial.
 	require.Error(t, err)
-	assert.NotEqual(t, awserrors.ErrorAccessDenied, err.Error())
+	assertNotDenied(t, err)
 }
 
 func TestECSRegisterTaskDefinition_NoRoleSkipsPassRole(t *testing.T) {
@@ -104,7 +103,7 @@ func TestECSRegisterTaskDefinition_NoRoleSkipsPassRole(t *testing.T) {
 
 	err := gw.ECS_Request(httptest.NewRecorder(), req)
 	require.Error(t, err) // still fails downstream (nil NATS conn), just not on PassRole
-	assert.NotEqual(t, awserrors.ErrorAccessDenied, err.Error())
+	assertNotDenied(t, err)
 }
 
 // TestECSRegisterTaskDefinition_DenialRendersAccessDenied403 proves the denial
@@ -133,5 +132,7 @@ func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Equal(t, "AccessDeniedException", body.Type)
-	assert.Equal(t, "User is not authorized to perform this action.", body.Message)
+	assert.Equal(t,
+		"User: arn:aws:iam::123456789012:user/alice is not authorized to perform: "+
+			"iam:PassRole on resource: "+testECSPassRoleTargetARN, body.Message)
 }

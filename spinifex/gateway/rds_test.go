@@ -144,7 +144,7 @@ func TestRDSRequest_InternalActionsDeniedToCustomerAdmin(t *testing.T) {
 			err := gw.RDS_Request(httptest.NewRecorder(),
 				setupRDSUserRequest("Action="+action, rdsTestAccountID))
 			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+			assertDenied(t, err)
 		})
 	}
 }
@@ -169,7 +169,7 @@ func TestRDSRequest_AgentRoleCannotCallCustomerActions(t *testing.T) {
 	err := gw.RDS_Request(httptest.NewRecorder(),
 		setupRDSAgentRequest("Action=DescribeDBInstances", "i-0abc123"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertDenied(t, err)
 }
 
 // A policy scoped to db:prod-* has to actually restrict: checked against "*" it
@@ -189,7 +189,7 @@ func TestRDSRequest_ResourceScopedPolicyRestrictsByIdentifier(t *testing.T) {
 	err = gw.RDS_Request(httptest.NewRecorder(),
 		setupRDSUserRequest("Action=DeleteDBInstance&DBInstanceIdentifier=dev-orders", rdsTestAccountID))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertDenied(t, err)
 }
 
 func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
@@ -254,7 +254,7 @@ func TestRDSRequest_SnapshotActionsUseOnePolicySnapshot(t *testing.T) {
 		rdsTestAccountID,
 	))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertDenied(t, err)
 	assert.Equal(t, 1, probe.consulted)
 }
 
@@ -291,7 +291,7 @@ func TestRDSRequest_SnapshotActionsHonorTargetDeny(t *testing.T) {
 			err := gw.RDS_Request(httptest.NewRecorder(), setupRDSUserRequest(tt.query, rdsTestAccountID))
 			require.Error(t, err)
 			assert.Equal(t, 1, probe.consulted)
-			assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+			assertDenied(t, err)
 		})
 	}
 }
@@ -303,7 +303,7 @@ func TestRDSRequest_UnscopedActionsEvaluateAgainstAnyResource(t *testing.T) {
 	err := gw.RDS_Request(httptest.NewRecorder(),
 		setupRDSUserRequest("Action=CreateDBInstance&DBInstanceIdentifier=prod-orders", rdsTestAccountID))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertDenied(t, err)
 }
 
 // Cross-account references are refused at the ARN, not merely unauthorized:
@@ -331,7 +331,7 @@ func TestRDSRequest_NoIdentityDenied(t *testing.T) {
 
 	err := gw.RDS_Request(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertDenied(t, err)
 	assert.Zero(t, probe.consulted, "a request with no identity must not be evaluated at all")
 }
 

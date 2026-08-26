@@ -692,10 +692,25 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 		if iampolicy.EvaluateWithKeys(iamAction, resource, policies, keys) == iampolicy.Deny {
 			slog.Info("evaluatePrincipalPolicy: access denied",
 				"identity", logIdentity, "action", iamAction, "resource", resource)
-			return errors.New(awserrors.ErrorAccessDenied)
+			return deniedByIdentityPolicy(principal, logIdentity, iamAction, resource)
 		}
 	}
 	return nil
+}
+
+// deniedByIdentityPolicy renders the denial in AWS's wording, naming the
+// principal, the action and the resource. The caller is already authenticated
+// and the message repeats only what it supplied, so it discloses nothing it
+// could not already derive.
+func deniedByIdentityPolicy(principal principalContext, logIdentity, iamAction, resource string) error {
+	callerARN, err := buildCallerARN(principal.accountID, principal.identity,
+		principal.principalType, principal.assumedRoleARN)
+	if err != nil {
+		callerARN = logIdentity
+	}
+	return awserrors.Errorf(awserrors.ErrorAccessDenied,
+		"User: %s is not authorized to perform: %s on resource: %s",
+		callerARN, iamAction, resource)
 }
 
 func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {

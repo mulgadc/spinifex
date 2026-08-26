@@ -7,7 +7,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 	"github.com/mulgadc/spinifex/spinifex/tags"
@@ -66,9 +65,8 @@ func imageMatchesFilters(img *ec2.Image, filters []*ec2.Filter) bool {
 	return true
 }
 
-// stubIAM embeds the shared SystemInstanceRoleEnsurer mock for the Get*/Create*
-// find-or-create behaviour, and adds CreatePolicy/AttachRolePolicy locally
-// since ecsIAM needs both beyond what the ensurer interface covers.
+// stubIAM is the shared SystemInstanceRoleEnsurer mock, which covers the whole
+// ecsIAM surface.
 type stubIAM struct {
 	*iammock.SystemInstanceRoleEnsurer
 }
@@ -82,15 +80,6 @@ var (
 	_ ecsImageResolver = (*stubImages)(nil)
 	_ ecsImageResolver = (*filteringStubImages)(nil)
 )
-
-func (stubIAM) CreatePolicy(accountID string, _ *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
-	arn := "arn:aws:iam::" + accountID + ":policy/" + ecsInstanceRolePolicyName
-	return &iam.CreatePolicyOutput{Policy: &iam.Policy{Arn: aws.String(arn)}}, nil
-}
-
-func (stubIAM) AttachRolePolicy(_ string, _ *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
-	return &iam.AttachRolePolicyOutput{}, nil
-}
 
 func ecsNodeImage() []*ec2.Image {
 	return []*ec2.Image{{

@@ -78,7 +78,7 @@ func TestIAMRequest_ScopedDenyFires(t *testing.T) {
 	)
 
 	err := dispatchIAM(t, gw, "Action=DeleteRole&RoleName=prod")
-	require.EqualError(t, err, awserrors.ErrorAccessDenied)
+	assertDenied(t, err)
 	require.NoError(t, dispatchIAM(t, gw, "Action=DeleteRole&RoleName=dev"))
 	assert.Equal(t, []string{"dev"}, svc.deleted)
 }
@@ -91,7 +91,7 @@ func TestIAMRequest_ScopedAllowGrants(t *testing.T) {
 
 	require.NoError(t, dispatchIAM(t, gw, "Action=DeleteRole&RoleName=dev"))
 	err := dispatchIAM(t, gw, "Action=DeleteRole&RoleName=prod")
-	require.EqualError(t, err, awserrors.ErrorAccessDenied)
+	assertDenied(t, err)
 	assert.Equal(t, []string{"dev"}, svc.deleted)
 }
 
@@ -107,7 +107,7 @@ func TestIAMRequest_MissingTargetAndLookupFailure(t *testing.T) {
 		gw, _ := iamScopedGateway(nil,
 			statement("Allow", "iam:DeleteRole", "arn:aws:iam::*:role/missing"))
 		err := dispatchIAM(t, gw, "Action=DeleteRole&RoleName=missing")
-		require.EqualError(t, err, awserrors.ErrorAccessDenied)
+		assertDenied(t, err)
 	})
 
 	t.Run("storage failure fails closed", func(t *testing.T) {

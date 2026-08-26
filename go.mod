@@ -23,7 +23,7 @@ require (
 	github.com/miekg/dns v1.1.73
 	github.com/mulgadc/bluebottle v1.18.1-0.20260826044308-1a1e1242c217
 	github.com/mulgadc/northstar v1.18.0
-	github.com/mulgadc/predastore v1.18.0
+	github.com/mulgadc/predastore v1.18.1-0.20260826045109-26ce1b091112
 	github.com/mulgadc/viperblock v1.18.0
 	github.com/nats-io/nats-server/v2 v2.14.5
 	github.com/nats-io/nats.go v1.53.1

@@ -313,43 +313,51 @@ func pgMatchesAnyTag(tags map[string]string, values []string, field func(k, v st
 	return false
 }
 
-// GetPlacementGroupRecord reads a placement group record from KV with its revision for CAS operations.
-// Returns the record and the KV entry (for revision).
-func (s *PlacementGroupServiceImpl) GetPlacementGroupRecord(ctx context.Context, accountID, groupName string) (*PlacementGroupRecord, jetstream.KeyValueEntry, error) {
-	key := utils.AccountKey(accountID, groupName)
-	entry, err := s.kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
-		}
+const maxCASRetries = 5
+
+// errPGAbsent and errPGContended mark the two kvutil outcomes that map to
+// specific AWS errors rather than a generic internal failure. Neither
+// escapes this file.
+var (
+	errPGAbsent    = errors.New("placementgroup: record absent")
+	errPGContended = errors.New("placementgroup: CAS retries exhausted")
+)
+
+// mapCASError turns a kvutil failure into the AWS error the caller returns.
+// A non-kvutil error came from mutate and is already an AWS code.
+func mapCASError(ctx context.Context, op, groupName, accountID string, err error) error {
+	switch {
+	case errors.Is(err, errPGAbsent):
+		return errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
+	case errors.Is(err, errPGContended):
+		slog.ErrorContext(ctx, "Placement group CAS retries exhausted under contention",
+			"op", op, "groupName", groupName, "accountID", accountID)
+	case errors.Is(err, kvutil.ErrRead):
 		slog.ErrorContext(ctx, "Failed to read placement group from KV",
-			"groupName", groupName, "accountID", accountID, "err", err)
-		return nil, nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	var record PlacementGroupRecord
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return nil, nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	return &record, entry, nil
-}
-
-// UpdatePlacementGroupRecord writes a placement group record using CAS (optimistic concurrency).
-// Returns nil on success or the error on CAS conflict.
-func (s *PlacementGroupServiceImpl) UpdatePlacementGroupRecord(ctx context.Context, accountID, groupName string, record *PlacementGroupRecord, revision uint64) error {
-	key := utils.AccountKey(accountID, groupName)
-	data, err := json.Marshal(record)
-	if err != nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	if _, err := s.kv.Update(ctx, key, data, revision); err != nil {
+			"op", op, "groupName", groupName, "accountID", accountID, "err", err)
+	case errors.Is(err, kvutil.ErrDecode):
+		slog.ErrorContext(ctx, "Corrupt placement group record in KV",
+			"op", op, "groupName", groupName, "accountID", accountID, "err", err)
+	case errors.Is(err, kvutil.ErrEncode):
+		slog.ErrorContext(ctx, "Failed to marshal placement group record",
+			"op", op, "groupName", groupName, "accountID", accountID, "err", err)
+	case errors.Is(err, kvutil.ErrWrite):
+		slog.ErrorContext(ctx, "Failed to write placement group to KV",
+			"op", op, "groupName", groupName, "accountID", accountID, "err", err)
+	default:
 		return err
 	}
-	return nil
+	return errors.New(awserrors.ErrorServerInternal)
 }
 
-const maxCASRetries = 5
+// casConfig is the shared CAS policy for every placement group mutation.
+func casConfig() kvutil.CASConfig {
+	return kvutil.CASConfig{
+		Attempts:  maxCASRetries,
+		NotFound:  errPGAbsent,
+		Exhausted: func(string, int) error { return errPGContended },
+	}
+}
 
 // ReserveSpreadNodes atomically reserves node slots for a spread placement group launch.
 // Filters occupied nodes, selects up to MaxCount, writes placeholders via CAS with retries.
@@ -358,58 +366,41 @@ func (s *PlacementGroupServiceImpl) ReserveSpreadNodes(ctx context.Context, inpu
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	for attempt := range maxCASRetries {
-		record, entry, err := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
-		if err != nil {
-			return nil, err
-		}
-
-		if record.State != ec2.PlacementGroupStateAvailable {
-			return nil, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
-		}
-		if record.Strategy != ec2.PlacementStrategySpread {
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-		}
-
-		// Build set of nodes already hosting instances in this group
-		occupiedNodes := make(map[string]bool)
-		for node := range record.NodeInstances {
-			occupiedNodes[node] = true
-		}
-
-		// Filter eligible nodes: must have capacity AND not already occupied
-		var available []string
-		for _, node := range input.EligibleNodes {
-			if !occupiedNodes[node] {
-				available = append(available, node)
+	var selected []string
+	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+		func(record *PlacementGroupRecord) (bool, error) {
+			if record.State != ec2.PlacementGroupStateAvailable {
+				return false, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
 			}
-		}
+			if record.Strategy != ec2.PlacementStrategySpread {
+				return false, errors.New(awserrors.ErrorInvalidParameterValue)
+			}
 
-		if len(available) < input.MinCount {
-			return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
-		}
+			// Eligible means it has capacity and hosts nothing from this group yet.
+			var available []string
+			for _, node := range input.EligibleNodes {
+				if _, occupied := record.NodeInstances[node]; !occupied {
+					available = append(available, node)
+				}
+			}
+			if len(available) < input.MinCount {
+				return false, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+			}
 
-		// Select nodes: up to MaxCount, at least MinCount
-		launchCount := min(input.MaxCount, len(available))
-		selected := available[:launchCount]
+			// An empty instance list reserves the node without claiming a launch.
+			selected = available[:min(input.MaxCount, len(available))]
+			for _, node := range selected {
+				record.NodeInstances[node] = []string{}
+			}
+			return true, nil
+		})
 
-		// Add placeholder entries (empty instance list = reserved but not yet launched)
-		for _, node := range selected {
-			record.NodeInstances[node] = []string{}
-		}
-
-		// CAS write — retry on conflict
-		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.DebugContext(ctx, "ReserveSpreadNodes: CAS conflict, retrying", "attempt", attempt, "err", err)
-			continue
-		}
-
-		slog.InfoContext(ctx, "ReserveSpreadNodes completed", "groupName", input.GroupName, "nodes", selected, "accountID", accountID)
-		return &ReserveSpreadNodesOutput{ReservedNodes: selected}, nil
+	if err != nil {
+		return nil, mapCASError(ctx, "ReserveSpreadNodes", input.GroupName, accountID, err)
 	}
 
-	slog.ErrorContext(ctx, "ReserveSpreadNodes: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
-	return nil, errors.New(awserrors.ErrorServerInternal)
+	slog.InfoContext(ctx, "ReserveSpreadNodes completed", "groupName", input.GroupName, "nodes", selected, "accountID", accountID)
+	return &ReserveSpreadNodesOutput{ReservedNodes: selected}, nil
 }
 
 // FinalizeSpreadInstances replaces placeholder entries with actual instance IDs.
@@ -419,26 +410,17 @@ func (s *PlacementGroupServiceImpl) FinalizeSpreadInstances(ctx context.Context,
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	for attempt := range maxCASRetries {
-		record, entry, err := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
-		if err != nil {
-			return nil, err
-		}
-
-		// Replace placeholder entries with actual instance IDs per node
-		maps.Copy(record.NodeInstances, input.NodeInstances)
-
-		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.DebugContext(ctx, "FinalizeSpreadInstances: CAS conflict, retrying", "attempt", attempt, "err", err)
-			continue
-		}
-
-		slog.InfoContext(ctx, "FinalizeSpreadInstances completed", "groupName", input.GroupName, "accountID", accountID)
-		return &FinalizeSpreadInstancesOutput{}, nil
+	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+		func(record *PlacementGroupRecord) (bool, error) {
+			maps.Copy(record.NodeInstances, input.NodeInstances)
+			return true, nil
+		})
+	if err != nil {
+		return nil, mapCASError(ctx, "FinalizeSpreadInstances", input.GroupName, accountID, err)
 	}
 
-	slog.ErrorContext(ctx, "FinalizeSpreadInstances: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
-	return nil, errors.New(awserrors.ErrorServerInternal)
+	slog.InfoContext(ctx, "FinalizeSpreadInstances completed", "groupName", input.GroupName, "accountID", accountID)
+	return &FinalizeSpreadInstancesOutput{}, nil
 }
 
 // ReleaseSpreadNodes removes placeholder entries for nodes that failed to launch.
@@ -453,31 +435,24 @@ func (s *PlacementGroupServiceImpl) ReleaseSpreadNodes(ctx context.Context, inpu
 		releaseSet[n] = true
 	}
 
-	for attempt := range maxCASRetries {
-		record, entry, err := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
-		if err != nil {
-			return nil, err
-		}
-
-		for node := range releaseSet {
-			// Only release placeholder entries (empty instance list).
-			// Entries with real instance IDs must not be deleted.
-			if ids, ok := record.NodeInstances[node]; ok && len(ids) == 0 {
-				delete(record.NodeInstances, node)
+	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+		func(record *PlacementGroupRecord) (bool, error) {
+			changed := false
+			for node := range releaseSet {
+				// Only placeholders are releasable. A node holding instance IDs is in use and must not be droppped.
+				if ids, ok := record.NodeInstances[node]; ok && len(ids) == 0 {
+					delete(record.NodeInstances, node)
+					changed = true
+				}
 			}
-		}
-
-		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.DebugContext(ctx, "ReleaseSpreadNodes: CAS conflict, retrying", "attempt", attempt, "err", err)
-			continue
-		}
-
-		slog.InfoContext(ctx, "ReleaseSpreadNodes completed", "groupName", input.GroupName, "nodes", input.Nodes, "accountID", accountID)
-		return &ReleaseSpreadNodesOutput{}, nil
+			return changed, nil
+		})
+	if err != nil {
+		return nil, mapCASError(ctx, "ReleaseSpreadNodes", input.GroupName, accountID, err)
 	}
 
-	slog.ErrorContext(ctx, "ReleaseSpreadNodes: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
-	return nil, errors.New(awserrors.ErrorServerInternal)
+	slog.InfoContext(ctx, "ReleaseSpreadNodes completed", "groupName", input.GroupName, "nodes", input.Nodes, "accountID", accountID)
+	return &ReleaseSpreadNodesOutput{}, nil
 }
 
 // RemoveInstance removes a specific instance from a placement group's NodeInstances.
@@ -488,48 +463,38 @@ func (s *PlacementGroupServiceImpl) RemoveInstance(ctx context.Context, input *R
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	for attempt := range maxCASRetries {
-		record, entry, lookupErr := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
-		if lookupErr != nil {
-			if !awserrors.IsErrorCode(lookupErr, awserrors.ErrorInvalidPlacementGroupUnknown) {
-				return nil, lookupErr
+	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+		func(record *PlacementGroupRecord) (bool, error) {
+			instances, exists := record.NodeInstances[input.NodeName]
+			if !exists {
+				return false, nil // node not tracked, nothing to remove
 			}
-			// Group may have been deleted already — treat as success
-			slog.DebugContext(ctx, "RemoveInstance: group not found, treating as success", "groupName", input.GroupName)
-			return &RemoveInstanceOutput{}, nil
-		}
 
-		instances, exists := record.NodeInstances[input.NodeName]
-		if !exists {
-			// Node not tracked — nothing to remove
-			return &RemoveInstanceOutput{}, nil
-		}
-
-		// Remove the specific instance ID
-		filtered := make([]string, 0, len(instances))
-		for _, id := range instances {
-			if id != input.InstanceID {
-				filtered = append(filtered, id)
+			filtered := make([]string, 0, len(instances))
+			for _, id := range instances {
+				if id != input.InstanceID {
+					filtered = append(filtered, id)
+				}
 			}
-		}
-
-		if len(filtered) == 0 {
-			delete(record.NodeInstances, input.NodeName)
-		} else {
-			record.NodeInstances[input.NodeName] = filtered
-		}
-
-		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.DebugContext(ctx, "RemoveInstance: CAS conflict, retrying", "attempt", attempt, "err", err)
-			continue
-		}
-
-		slog.InfoContext(ctx, "RemoveInstance completed", "groupName", input.GroupName, "instanceId", input.InstanceID, "node", input.NodeName, "accountID", accountID)
+			// A node with no instances left stops occupying a spread slot.
+			if len(filtered) == 0 {
+				delete(record.NodeInstances, input.NodeName)
+			} else {
+				record.NodeInstances[input.NodeName] = filtered
+			}
+			return true, nil
+		})
+	if errors.Is(err, errPGAbsent) {
+		// Group already deleted, so there is nothing left to remove.
+		slog.DebugContext(ctx, "RemoveInstance: group not found, treating as success", "groupName", input.GroupName)
 		return &RemoveInstanceOutput{}, nil
 	}
+	if err != nil {
+		return nil, mapCASError(ctx, "RemoveInstance", input.GroupName, accountID, err)
+	}
 
-	slog.ErrorContext(ctx, "RemoveInstance: CAS retries exhausted", "groupName", input.GroupName, "instanceId", input.InstanceID, "accountID", accountID)
-	return nil, errors.New(awserrors.ErrorServerInternal)
+	slog.InfoContext(ctx, "RemoveInstance completed", "groupName", input.GroupName, "instanceId", input.InstanceID, "node", input.NodeName, "accountID", accountID)
+	return &RemoveInstanceOutput{}, nil
 }
 
 // ReserveClusterNode determines the target node for a cluster placement group launch.
@@ -540,42 +505,35 @@ func (s *PlacementGroupServiceImpl) ReserveClusterNode(ctx context.Context, inpu
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	for attempt := range maxCASRetries {
-		record, entry, err := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
-		if err != nil {
-			return nil, err
-		}
-		if record.State != ec2.PlacementGroupStateAvailable {
-			return nil, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
-		}
-		if record.Strategy != ec2.PlacementStrategyCluster {
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-		}
+	var targetNode string
+	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+		func(record *PlacementGroupRecord) (bool, error) {
+			if record.State != ec2.PlacementGroupStateAvailable {
+				return false, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
+			}
+			if record.Strategy != ec2.PlacementStrategyCluster {
+				return false, errors.New(awserrors.ErrorInvalidParameterValue)
+			}
 
-		// If existing node, return it immediately (no CAS write needed)
-		for node := range record.NodeInstances {
-			return &ReserveClusterNodeOutput{TargetNode: node}, nil
-		}
+			// A cluster group keeps every instance on one node, so an existing node is the answer and nothing needs writing.
+			for node := range record.NodeInstances {
+				targetNode = node
+				return false, nil
+			}
 
-		// Empty group: need to pick and claim a node via CAS
-		if len(input.EligibleNodes) == 0 {
-			return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
-		}
-
-		targetNode := input.EligibleNodes[0] // first = highest capacity (sorted desc by caller)
-		record.NodeInstances[targetNode] = []string{}
-
-		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.DebugContext(ctx, "ReserveClusterNode: CAS conflict, retrying", "attempt", attempt, "err", err)
-			continue
-		}
-
-		slog.InfoContext(ctx, "ReserveClusterNode completed", "groupName", input.GroupName, "targetNode", targetNode, "accountID", accountID)
-		return &ReserveClusterNodeOutput{TargetNode: targetNode}, nil
+			if len(input.EligibleNodes) == 0 {
+				return false, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+			}
+			targetNode = input.EligibleNodes[0] // sorted desc by capacity by the caller
+			record.NodeInstances[targetNode] = []string{}
+			return true, nil
+		})
+	if err != nil {
+		return nil, mapCASError(ctx, "ReserveClusterNode", input.GroupName, accountID, err)
 	}
 
-	slog.ErrorContext(ctx, "ReserveClusterNode: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
-	return nil, errors.New(awserrors.ErrorServerInternal)
+	slog.InfoContext(ctx, "ReserveClusterNode completed", "groupName", input.GroupName, "targetNode", targetNode, "accountID", accountID)
+	return &ReserveClusterNodeOutput{TargetNode: targetNode}, nil
 }
 
 // FinalizeClusterInstances appends launched instance IDs to the cluster placement group record.
@@ -585,28 +543,20 @@ func (s *PlacementGroupServiceImpl) FinalizeClusterInstances(ctx context.Context
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	for attempt := range maxCASRetries {
-		record, entry, err := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
-		if err != nil {
-			return nil, err
-		}
-
-		// Append new instance IDs to existing entries (cluster may have concurrent launches)
-		for node, ids := range input.NodeInstances {
-			record.NodeInstances[node] = append(record.NodeInstances[node], ids...)
-		}
-
-		if err := s.UpdatePlacementGroupRecord(ctx, accountID, input.GroupName, record, entry.Revision()); err != nil {
-			slog.DebugContext(ctx, "FinalizeClusterInstances: CAS conflict, retrying", "attempt", attempt, "err", err)
-			continue
-		}
-
-		slog.InfoContext(ctx, "FinalizeClusterInstances completed", "groupName", input.GroupName, "accountID", accountID)
-		return &FinalizeClusterInstancesOutput{}, nil
+	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+		func(record *PlacementGroupRecord) (bool, error) {
+			// Append rather than replace: a cluster group can have several launches in flight at once.
+			for node, ids := range input.NodeInstances {
+				record.NodeInstances[node] = append(record.NodeInstances[node], ids...)
+			}
+			return true, nil
+		})
+	if err != nil {
+		return nil, mapCASError(ctx, "FinalizeClusterInstances", input.GroupName, accountID, err)
 	}
 
-	slog.ErrorContext(ctx, "FinalizeClusterInstances: CAS retries exhausted", "groupName", input.GroupName, "accountID", accountID)
-	return nil, errors.New(awserrors.ErrorServerInternal)
+	slog.InfoContext(ctx, "FinalizeClusterInstances completed", "groupName", input.GroupName, "accountID", accountID)
+	return &FinalizeClusterInstancesOutput{}, nil
 }
 
 // recordToEC2 converts an internal record to the AWS SDK PlacementGroup type.

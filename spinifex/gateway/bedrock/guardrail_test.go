@@ -451,3 +451,50 @@ func TestGuardrailID_ResolvesBareOrARN(t *testing.T) {
 	_, err = GetGuardrail(ctx, grCallerAccount, store, &bedrock.GetGuardrailInput{GuardrailIdentifier: aws.String(foreignARN)})
 	require.Error(t, err)
 }
+
+// TestListGuardrails_RejectsAnUndecodableRecord asserts a corrupt record fails
+// the listing rather than silently omitting one of the account's guardrails. A
+// short list is a wrong answer to a question about active security controls.
+func TestListGuardrails_RejectsAnUndecodableRecord(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+
+	_, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("readable"))
+	require.NoError(t, err)
+
+	kv, err := store.store.KV(ctx)
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, guardrailKey(grCallerAccount, "corrupt"), []byte("{not json"))
+	require.NoError(t, err)
+
+	_, err = ListGuardrails(ctx, grCallerAccount, store, nil)
+	require.Error(t, err)
+}
+
+// TestGuardrailStore_UpdateRejectsAStaleRevision covers the CAS guard: the
+// second writer at the same revision loses, and reports a retryable
+// ConflictException rather than clobbering the winner.
+func TestGuardrailStore_UpdateRejectsAStaleRevision(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+
+	out, err := CreateGuardrail(ctx, grCallerAccount, store, createGuardrailInput("cas"))
+	require.NoError(t, err)
+	key := guardrailKey(grCallerAccount, aws.StringValue(out.GuardrailId))
+
+	rec, stale, found, err := store.getRevision(ctx, key)
+	require.NoError(t, err)
+	require.True(t, found)
+
+	rec.Description = "first writer"
+	require.NoError(t, store.update(ctx, key, rec, stale))
+
+	rec.Description = "second writer"
+	err = store.update(ctx, key, rec, stale)
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorConflictException))
+
+	got, _, _, err := store.getRevision(ctx, key)
+	require.NoError(t, err)
+	assert.Equal(t, "first writer", got.Description, "the loser must not have clobbered the winner")
+}

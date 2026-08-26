@@ -191,11 +191,7 @@ func resolveInferenceTarget(ctx context.Context, accountID, modelID string, stor
 		return "", modelID, errors.New(awserrors.ErrorResourceNotFoundException)
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
-		return "", modelID, err
-	}
-	rec, found, err := getProvisionedRecord(ctx, kv, parsed.AccountID, parsed.ID)
+	rec, found, err := store.get(ctx, parsed.AccountID, parsed.ID)
 	if err != nil {
 		return "", modelID, err
 	}

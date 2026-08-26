@@ -2,13 +2,10 @@ package gateway_bedrock
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"uuid"
 
@@ -16,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -85,40 +82,25 @@ type GuardrailRecord struct {
 // JetStream KV bucket, mirroring the ProvisionedStore/LoggingConfigStore
 // gateway-direct-KV pattern.
 type GuardrailStore struct {
-	js       jetstream.JetStream
-	replicas int
+	store *kvstore.Store[GuardrailRecord]
 	// region is baked in at construction, like ProvisionedStore.region, so
 	// ARN building/parsing needs no extra parameter threaded through the
 	// fixed-arity route table.
 	region string
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
 }
 
 // NewGuardrailStore constructs a GuardrailStore over js, replicated across
 // replicas nodes, minting ARNs for region.
 func NewGuardrailStore(js jetstream.JetStream, replicas int, region string) *GuardrailStore {
-	return &GuardrailStore{js: js, replicas: replicas, region: region}
-}
-
-// bucket lazily opens (or creates) the bedrock-guardrails KV bucket, caching
-// the handle, mirroring ProvisionedStore.bucket.
-func (s *GuardrailStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	if s.js == nil {
-		return nil, errors.New("bedrock: guardrail store has no JetStream client configured")
+	return &GuardrailStore{
+		store: kvstore.New[GuardrailRecord](js, kvstore.Config{
+			Name:     bedrockGuardrailBucket,
+			History:  bedrockGuardrailHistory,
+			Replicas: replicas,
+			Missing:  "bedrock: guardrail store has no JetStream client configured",
+		}),
+		region: region,
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kv != nil {
-		return s.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, s.js, bedrockGuardrailBucket, bedrockGuardrailHistory, s.replicas)
-	if err != nil {
-		return nil, err
-	}
-	s.kv = kv
-	return kv, nil
 }
 
 // guardrailKey scopes every stored record to its owning account, so List's
@@ -128,10 +110,10 @@ func guardrailKey(accountID, id string) string {
 	return accountID + "/" + id
 }
 
-// getGuardrailRecord reads accountID's record for id, or (zero, false, nil)
-// if it does not exist.
-func getGuardrailRecord(ctx context.Context, kv jetstream.KeyValue, accountID, id string) (GuardrailRecord, bool, error) {
-	rec, _, found, err := getGuardrailRecordRevision(ctx, kv, guardrailKey(accountID, id))
+// get reads accountID's record for id, or (zero, false, nil) if it does not
+// exist.
+func (s *GuardrailStore) get(ctx context.Context, accountID, id string) (GuardrailRecord, bool, error) {
+	rec, _, found, err := s.getRevision(ctx, guardrailKey(accountID, id))
 	return rec, found, err
 }
 
@@ -145,47 +127,33 @@ func errGuardrailNotFound(id, version string) error {
 	return awserrors.Errorf(awserrors.ErrorResourceNotFoundException, "guardrail %q version %q not found", id, version)
 }
 
-// getGuardrailRecordRevision is getGuardrailRecord with the KV revision
-// surfaced too, for a CAS write.
-func getGuardrailRecordRevision(ctx context.Context, kv jetstream.KeyValue, key string) (GuardrailRecord, uint64, bool, error) {
-	entry, err := kv.Get(ctx, key)
+// getRevision is get with the KV revision surfaced too, for a CAS write.
+func (s *GuardrailStore) getRevision(ctx context.Context, key string) (GuardrailRecord, uint64, bool, error) {
+	rec, rev, err := s.store.Get(ctx, key)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return GuardrailRecord{}, 0, false, nil
+	}
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return GuardrailRecord{}, 0, false, nil
-		}
-		return GuardrailRecord{}, 0, false, fmt.Errorf("kv get %s: %w", key, err)
+		return GuardrailRecord{}, 0, false, err
 	}
-	var rec GuardrailRecord
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return GuardrailRecord{}, 0, false, fmt.Errorf("decode %s: %w", key, err)
-	}
-	return rec, entry.Revision(), true, nil
+	return *rec, rev, true, nil
 }
 
-// putGuardrailRecord writes rec as a brand-new key (Create only).
-func putGuardrailRecord(ctx context.Context, kv jetstream.KeyValue, rec GuardrailRecord) error {
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("encode guardrail %s: %w", rec.GuardrailID, err)
-	}
-	if _, err := kv.Put(ctx, guardrailKey(rec.AccountID, rec.GuardrailID), data); err != nil {
-		return fmt.Errorf("kv put guardrail %s: %w", rec.GuardrailID, err)
-	}
-	return nil
+// put writes rec under its own account-scoped key.
+func (s *GuardrailStore) put(ctx context.Context, rec GuardrailRecord) error {
+	return s.store.Set(ctx, guardrailKey(rec.AccountID, rec.GuardrailID), &rec)
 }
 
-// updateGuardrailRecord CAS-writes rec back over rev, the revision it was
-// read at, so two concurrent mutations of the same guardrail never silently
-// clobber one another.
-func updateGuardrailRecord(ctx context.Context, kv jetstream.KeyValue, key string, rec GuardrailRecord, rev uint64) error {
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("encode guardrail %s: %w", rec.GuardrailID, err)
+// update CAS-writes rec back over rev, the revision it was read at, so two
+// concurrent mutations of the same guardrail never silently clobber one
+// another. A lost race is reported as a retryable ConflictException.
+func (s *GuardrailStore) update(ctx context.Context, key string, rec GuardrailRecord, rev uint64) error {
+	err := s.store.CompareAndSet(ctx, key, &rec, rev)
+	if errors.Is(err, kvstore.ErrConflict) {
+		return awserrors.Errorf(awserrors.ErrorConflictException,
+			"bedrock: guardrail %s was modified concurrently; retry the request", rec.GuardrailID)
 	}
-	if _, err := kv.Update(ctx, key, data, rev); err != nil {
-		return fmt.Errorf("kv update guardrail %s: %w", rec.GuardrailID, err)
-	}
-	return nil
+	return err
 }
 
 // contentPolicyToSDK translates the stored *Config shape back to the
@@ -336,11 +304,6 @@ func CreateGuardrail(ctx context.Context, accountID string, store *GuardrailStor
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	id := uuid.NewV4().String()
 	arn := FormatGuardrailARN(store.region, accountID, id)
 	now := time.Now().UTC()
@@ -365,7 +328,7 @@ func CreateGuardrail(ctx context.Context, accountID string, store *GuardrailStor
 		},
 	}
 
-	if err := putGuardrailRecord(ctx, kv, rec); err != nil {
+	if err := store.put(ctx, rec); err != nil {
 		return nil, err
 	}
 
@@ -390,11 +353,7 @@ func GetGuardrail(ctx context.Context, accountID string, store *GuardrailStore, 
 		return nil, err
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rec, found, err := getGuardrailRecord(ctx, kv, accountID, id)
+	rec, found, err := store.get(ctx, accountID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -418,36 +377,9 @@ func GetGuardrail(ctx context.Context, accountID string, store *GuardrailStore, 
 // creation time (id as a deterministic tie-breaker), so one tenant never sees
 // another's and repeated calls return a stable order.
 func ListGuardrails(ctx context.Context, accountID string, store *GuardrailStore, _ *bedrock.ListGuardrailsInput) (*bedrock.ListGuardrailsOutput, error) {
-	kv, err := store.bucket(ctx)
+	recs, err := store.store.List(ctx, accountID+"/")
 	if err != nil {
 		return nil, err
-	}
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return &bedrock.ListGuardrailsOutput{}, nil
-		}
-		return nil, fmt.Errorf("kv keys for guardrails: %w", err)
-	}
-
-	prefix := accountID + "/"
-	var recs []GuardrailRecord
-	for _, key := range keys {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		entry, err := kv.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
-			return nil, fmt.Errorf("kv get %s: %w", key, err)
-		}
-		var rec GuardrailRecord
-		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			continue
-		}
-		recs = append(recs, rec)
 	}
 
 	slices.SortFunc(recs, func(a, b GuardrailRecord) int {
@@ -487,12 +419,8 @@ func UpdateGuardrail(ctx context.Context, accountID string, store *GuardrailStor
 		return nil, err
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
 	key := guardrailKey(accountID, id)
-	rec, rev, found, err := getGuardrailRecordRevision(ctx, kv, key)
+	rec, rev, found, err := store.getRevision(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -511,7 +439,7 @@ func UpdateGuardrail(ctx context.Context, accountID string, store *GuardrailStor
 	rec.ContextualGroundingPolicy = input.ContextualGroundingPolicyConfig
 	rec.UpdatedAt = time.Now().UTC()
 
-	if err := updateGuardrailRecord(ctx, kv, key, rec, rev); err != nil {
+	if err := store.update(ctx, key, rec, rev); err != nil {
 		return nil, err
 	}
 
@@ -536,21 +464,17 @@ func DeleteGuardrail(ctx context.Context, accountID string, store *GuardrailStor
 		return nil, err
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
 	key := guardrailKey(accountID, id)
 	version := aws.StringValue(input.GuardrailVersion)
 
 	if version == "" {
-		if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, fmt.Errorf("kv delete guardrail %s: %w", id, err)
+		if err := store.store.Delete(ctx, key); err != nil {
+			return nil, err
 		}
 		return &bedrock.DeleteGuardrailOutput{}, nil
 	}
 
-	rec, rev, found, err := getGuardrailRecordRevision(ctx, kv, key)
+	rec, rev, found, err := store.getRevision(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -563,7 +487,7 @@ func DeleteGuardrail(ctx context.Context, accountID string, store *GuardrailStor
 	}
 
 	delete(rec.Versions, version)
-	if err := updateGuardrailRecord(ctx, kv, key, rec, rev); err != nil {
+	if err := store.update(ctx, key, rec, rev); err != nil {
 		return nil, err
 	}
 	return &bedrock.DeleteGuardrailOutput{}, nil
@@ -582,12 +506,8 @@ func CreateGuardrailVersion(ctx context.Context, accountID string, store *Guardr
 		return nil, err
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
 	key := guardrailKey(accountID, id)
-	rec, rev, found, err := getGuardrailRecordRevision(ctx, kv, key)
+	rec, rev, found, err := store.getRevision(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -602,7 +522,7 @@ func CreateGuardrailVersion(ctx context.Context, accountID string, store *Guardr
 	}
 	rec.Versions[version] = GuardrailVersionSnapshot{Version: version, guardrailView: rec.guardrailView}
 
-	if err := updateGuardrailRecord(ctx, kv, key, rec, rev); err != nil {
+	if err := store.update(ctx, key, rec, rev); err != nil {
 		return nil, err
 	}
 
@@ -624,11 +544,7 @@ func ApplyGuardrail(ctx context.Context, accountID string, store *GuardrailStore
 		return nil, err
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rec, found, err := getGuardrailRecord(ctx, kv, accountID, id)
+	rec, found, err := store.get(ctx, accountID, id)
 	if err != nil {
 		return nil, err
 	}

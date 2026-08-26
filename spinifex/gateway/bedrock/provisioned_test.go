@@ -341,3 +341,52 @@ func TestDeleteProvisionedModelThroughput_AbsentIsNoop(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, stub.deleteCalls(), "an absent record must never reach the endpoint lifecycle")
 }
+
+// TestCommittedModelUnits_RejectsAnUndecodableRecord asserts a corrupt record
+// fails the sum rather than being skipped. Skipping undercounts committed
+// capacity, which admits traffic the commitments do not cover.
+func TestCommittedModelUnits_RejectsAnUndecodableRecord(t *testing.T) {
+	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
+	ctx := context.Background()
+
+	_, err := CreateProvisionedModelThroughput(ctx, ptCallerAccount, store, createInput(selfHostTestModel, "readable", 2))
+	require.NoError(t, err)
+
+	kv, err := store.store.KV(ctx)
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, provisionedKey(ptCallerAccount, "corrupt"), []byte("{not json"))
+	require.NoError(t, err)
+
+	_, err = committedModelUnits(ctx, store, ptCallerAccount, selfHostTestModel)
+	require.Error(t, err)
+}
+
+// TestProvisionedStore_UpdateRejectsAStaleRevision covers the CAS guard: the
+// second writer at the same revision loses, and reports a retryable
+// ConflictException rather than clobbering the winner.
+func TestProvisionedStore_UpdateRejectsAStaleRevision(t *testing.T) {
+	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
+	ctx := context.Background()
+
+	out, err := CreateProvisionedModelThroughput(ctx, ptCallerAccount, store, createInput(selfHostTestModel, "cas", 1))
+	require.NoError(t, err)
+	parsed, err := ParseProvisionedModelARN(aws.StringValue(out.ProvisionedModelArn), ptTestRegion, ptCallerAccount)
+	require.NoError(t, err)
+	key := provisionedKey(ptCallerAccount, parsed.ID)
+
+	rec, stale, found, err := store.getRevision(ctx, key)
+	require.NoError(t, err)
+	require.True(t, found)
+
+	rec.ProvisionedModelName = "first-writer"
+	require.NoError(t, store.update(ctx, key, rec, stale))
+
+	rec.ProvisionedModelName = "second-writer"
+	err = store.update(ctx, key, rec, stale)
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorConflictException))
+
+	got, _, _, err := store.getRevision(ctx, key)
+	require.NoError(t, err)
+	assert.Equal(t, "first-writer", got.ProvisionedModelName, "the loser must not have clobbered the winner")
+}

@@ -1,1 +1,1 @@
-import{Mt as e,pt as t}from"./cluster-config.js";import{or as n}from"./awsClient.js";var r=e(n,`AWSWesleyFrontend`,`EKSClient`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};
+import{yt as e,zt as t}from"./cluster-config.js";import{sr as n}from"./awsClient.js";var r=t(n,`AWSWesleyFrontend`,`EKSClient`,e),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

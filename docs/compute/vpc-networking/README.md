@@ -9,6 +9,7 @@ tags:
   - ovn
   - public-subnet
   - security-groups
+  - ipsec
 ---
 
 # VPC Networking
@@ -41,6 +42,107 @@ Spinifex maps AWS VPC concepts directly to OVN constructs:
 </p>
 
 Cross-host traffic uses **Geneve tunnels** (UDP 6081) over the management/overlay NIC. Each host runs `ovn-controller` which programs OpenFlow rules on `br-int` (the integration bridge where all VM TAP devices connect).
+
+## Overlay Encryption (IPsec)
+
+**IPsec is on by default.** Spinifex encrypts the Geneve overlay with OVN native IPsec — ESP transport mode, `rfc4106(gcm(aes))` 128, authenticated with each node's certificate under the cluster CA. Every packet between two instances on different hosts is encrypted on the wire.
+
+This is the right default and matches the AWS trust model: east-west guest traffic crosses a physical fabric that the VPC abstraction otherwise asks you to trust implicitly. It is also, on a fabric you already control, the single largest performance cost in the stack.
+
+### When disabling is appropriate
+
+Only where the underlay between nodes is **physically trusted end to end**:
+
+| Topology | Reasonable to disable? |
+| --- | --- |
+| Single rack, dedicated top-of-rack switch, no other tenants | Yes |
+| One datacenter, private VLAN, switch ports under your control | Yes |
+| Nodes sharing a switch with equipment you do not administer | No |
+| Any leg of the overlay crossing a shared or provider network | No |
+| Nodes in different datacenters, or over a WAN or VPN of any kind | No |
+
+The trade is explicit and it is not partial: with IPsec off, **all east-west guest traffic is in plaintext on the wire**, including traffic between instances belonging to different tenants. Anything with access to a span port, a mirrored uplink or the switch itself reads it. Tenant isolation still holds in the datapath — security groups and per-VPC routing are unchanged — but confidentiality against a fabric-level observer is gone.
+
+Note that this setting governs the overlay only. It has no effect on TLS terminated inside a guest, on the API endpoint, or on north-south traffic through the Internet Gateway.
+
+### What it costs
+
+Measured on the reference cluster: 4 nodes, AMD EPYC 7513 (128 threads), Mellanox **ConnectX-5** (MT27800, firmware 16.35.8002) on a 100 GbE fabric, `t3.xlarge` guests (4 vCPU), Ubuntu 26.04, kernel 6.12. Three client guests running `iperf` at 4 streams for 60s into one server guest, over their private addresses.
+
+| | IPsec on (default) | IPsec off | |
+| --- | --- | --- | --- |
+| aggregate into one guest | 3.17 Gbit/s | **21.82 Gbit/s** | **6.9x** |
+| per client, mean | 1.06 Gbit/s | **7.27 Gbit/s** | |
+| guest MTU | 1408 | 1442 | applied automatically |
+| NIC queue pairs | 1 | 4 | applied automatically |
+| busiest receive core | 97.4% busy, 71.8% softirq | under 15%, spread over 16 cores | |
+
+Disk throughput is unaffected in either direction — Predastore and Viperblock traffic does not ride the VPC overlay.
+
+The cost is not raw crypto throughput, it is **CPU scaling**. ESP wraps each Geneve packet in an outer IP header with protocol 50, which has no L4 ports, so a NIC's receive-side scaling can only hash on source and destination IP. All traffic between a given pair of nodes therefore lands in one RSS bucket and is processed by one core, regardless of how many flows or streams it carries. Without ESP the outer header is UDP 6081 and OVN varies the source port per inner flow, which spreads the work across every core.
+
+**ConnectX-5 cannot offload this.** ASAP² handles OVS flow offload, but IPsec inline crypto requires ConnectX-6 Dx or BlueField. Adding cores or streams does not help either; throughput with IPsec on is flat in stream count because everything funnels through the same core.
+
+The MTU and multiqueue rows above are not separate knobs. Both follow `ipsec_enabled` on their own, because the ESP header consumes 34 bytes of the path budget and because the sign of the multiqueue result flips with encryption. Turning IPsec off is the whole change.
+
+Full analysis, including what does *not* fix it and the measurements behind each row: [Performance Tuning → IPsec on the overlay](/docs/performance-tuning#2-ipsec-on-the-overlay).
+
+### Disabling it
+
+Four steps, and all four are required. The daemon owns step 2 but not step 3.
+
+**1. Set the config on every node.** In `/etc/spinifex/spinifex.toml`:
+
+```toml
+[network]
+ipsec_enabled = false
+```
+
+A cluster where the nodes disagree is a cluster where some tunnels are encrypted and some are not, so change it everywhere before restarting anything.
+
+**2. Restart the daemon on every node.**
+
+```bash
+systemctl restart spinifex-daemon
+```
+
+This stops `openvswitch-ipsec` and tears down the SAs. Confirm on every node — both must be `0`:
+
+```bash
+ip xfrm state  | grep -c '^src'
+ip xfrm policy | grep -c '^src'
+```
+
+**3. Clear the OVN and OVS flags by hand.** The reconciler returns early when IPsec is disabled, so it stops requesting encryption but never *clears* what it previously set. `NB_Global.ipsec` and `other_config:ipsec_encapsulation` are left reading `true` — inert, because nothing is left to act on them, but they make the control plane disagree with the config and mislead the next person to inspect it.
+
+```bash
+# Use the NB raft endpoints. The local unix socket fails with
+# "database connection failed" on a clustered deployment.
+NBDB='tcp:10.2.0.2:6641,tcp:10.2.0.3:6641,tcp:10.2.0.4:6641'
+ovn-nbctl --db="$NBDB" set NB_Global . ipsec=false
+
+# On every node:
+ovs-vsctl remove Open_vSwitch . other_config ipsec_encapsulation
+```
+
+Leave `ca_cert`, `certificate` and `private_key` in `other_config` alone. They are inert without an IPsec daemon, and keeping them means re-enabling is a config change rather than a re-enrolment.
+
+This step is manual today. It should move into the reconciler so that disabling converges the same way enabling does.
+
+**4. Verify.**
+
+```bash
+ovn-nbctl --db="$NBDB" get NB_Global . ipsec     # false
+ovs-vsctl get Open_vSwitch . other_config        # no ipsec_encapsulation key
+systemctl is-active openvswitch-ipsec            # inactive
+ip xfrm policy | grep -c '^src'                  # 0
+```
+
+### Restart guests after changing this in either direction
+
+The guest MTU moves with the setting, but a running guest holds its DHCP lease for up to an hour and its device-level `host_mtu` until it is stopped and started. Going from off to on narrows the path from 1442 to 1408 while the guest still believes 1442, which blackholes large segments until it restarts.
+
+**Expect launches to fail for a minute or two after re-enabling.** `RunInstances` returns `ServerInternal` with `vpc.add-nat` timing out, because the OVN flows-ready barrier cannot confirm while `ovn-controller` reprograms every tunnel for the new SAs. It clears once `ip xfrm state` settles. The error is reported as a capacity problem, which it is not.
 
 ## Private vs Public Subnets
 

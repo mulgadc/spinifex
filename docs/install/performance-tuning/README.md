@@ -7,7 +7,10 @@ tags:
   - tuning
   - networking
   - sysctl
+  - ipsec
 resources:
+  - title: "VPC Networking"
+    url: "/docs/vpc-networking"
   - title: "Spinifex Repository"
     url: "https://github.com/mulgadc/spinifex"
 ---
@@ -152,8 +155,7 @@ east-west guest traffic goes on the wire unencrypted.
 
 ### Disabling it for trusted links
 
-Only for topologies where the underlay is physically trusted — a single rack, a
-private VLAN, no untrusted tenant on the fabric.
+Only for topologies where the underlay is physically trusted — a single rack, a private VLAN, no untrusted tenant on the fabric. The trade-off, the topologies it does and does not apply to, and the same procedure in more detail are in the VPC networking guide: [Overlay Encryption (IPsec)](/docs/vpc-networking#overlay-encryption-ipsec).
 
 In `/etc/spinifex/spinifex.toml` on **every** node:
 
@@ -162,12 +164,21 @@ In `/etc/spinifex/spinifex.toml` on **every** node:
 ipsec_enabled = false
 ```
 
-Then restart the daemon: `systemctl restart spinifex-daemon`. Confirm with
-`ip xfrm state | grep -c '^src'`, which must reach 0 on every node.
+Then restart the daemon: `systemctl restart spinifex-daemon`. Confirm with `ip xfrm state | grep -c '^src'`, which must reach 0 on every node.
 
-Note that `ovn-nbctl set NB_Global . ipsec=false` is **not** sufficient on its own —
-the daemon reconciles that value, so a manual override is transient. Change the
-config file.
+**Then clear the OVN and OVS flags by hand.** The reconciler returns early when IPsec is disabled: it stops requesting encryption, but never clears what it previously set, so `NB_Global.ipsec` and `other_config:ipsec_encapsulation` are left reading `true`. They are inert — nothing remains to act on them once charon and the SAs are gone — but the control plane then disagrees with the config, and the next person to inspect it will read the cluster as encrypted when it is not.
+
+```bash
+# Use the NB raft endpoints. The local unix socket fails with
+# "database connection failed" on a clustered deployment.
+NBDB='tcp:10.2.0.2:6641,tcp:10.2.0.3:6641,tcp:10.2.0.4:6641'
+ovn-nbctl --db="$NBDB" set NB_Global . ipsec=false
+
+# On every node:
+ovs-vsctl remove Open_vSwitch . other_config ipsec_encapsulation
+```
+
+This is manual today and should move into the reconciler. Note that these commands are a *complement* to the config change, not a substitute for it — setting `NB_Global.ipsec=false` without `ipsec_enabled = false` leaves the daemon reconciling encryption back on, and leaves the guest MTU and queue-pair count on their encrypted values.
 
 **Restart guests after changing this in either direction.** The guest MTU moves
 with the setting, but a running guest holds its DHCP lease for up to an hour and

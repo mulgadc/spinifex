@@ -293,6 +293,74 @@ func TestMatchWildcard_OverlappingSuffixNotDoubled(t *testing.T) {
 	}
 }
 
+// TestMatchWildcard_SingleCharacterAndEscapes covers the EC2 filter grammar
+// beyond "*": "?" for exactly one character, and "\" escaping the next byte.
+func TestMatchWildcard_SingleCharacterAndEscapes(t *testing.T) {
+	tests := []struct {
+		pattern string
+		value   string
+		want    bool
+	}{
+		// "?" alone.
+		{"a?c", "abc", true},
+		{"a?c", "ac", false},
+		{"a?c", "abbc", false},
+
+		// "?" never matches the empty string.
+		{"abc?", "abc", false},
+		{"?", "", false},
+		{"?", "a", true},
+
+		// "?" at pattern start and end.
+		{"?bc", "abc", true},
+		{"?bc", "bc", false},
+		{"ab?", "abc", true},
+
+		// "?" combined with "*".
+		{"a?*c", "abxc", true},
+		{"a?*c", "ac", false},
+		{"web?-*", "web1-prod", true},
+		{"web?-*", "web-prod", false},
+
+		// Escaped metacharacters match themselves and nothing else.
+		{`a\*c`, "a*c", true},
+		{`a\*c`, "abc", false},
+		{`a\?c`, "a?c", true},
+		{`a\?c`, "abc", false},
+		{`a\\c`, `a\c`, true},
+		{`a\\c`, "abc", false},
+		{`ab\`, `ab\`, true},
+
+		// An unescaped "*" in the pattern stays a wildcard even when the value
+		// contains a literal "*" at the same offset.
+		{"a*", "a*c", true},
+		{"a*c", "a*c", true},
+
+		// Backtracking.
+		{"a*b?c", "axxbyc", true},
+		{"*?", "a", true},
+		{"a*a*a*b", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false},
+	}
+
+	for _, tt := range tests {
+		if got := MatchWildcard(tt.pattern, tt.value); got != tt.want {
+			t.Errorf("MatchWildcard(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
+		}
+	}
+}
+
+// TestMatchesTags_SingleCharacterWildcard confirms the fix reaches the tag
+// filter path callers actually use.
+func TestMatchesTags_SingleCharacterWildcard(t *testing.T) {
+	filters := map[string][]string{"tag:Name": {"web?"}}
+	if !MatchesTags(filters, map[string]string{"Name": "web1"}) {
+		t.Fatal("expected tag:Name=web? to match web1")
+	}
+	if MatchesTags(filters, map[string]string{"Name": "web"}) {
+		t.Fatal("expected tag:Name=web? to NOT match web")
+	}
+}
+
 func TestMatchWildcard_TwoPartPattern(t *testing.T) {
 	// Simple two-part: prefix + suffix, no middle parts.
 	if !MatchesAny([]string{"a*a"}, "aa") {

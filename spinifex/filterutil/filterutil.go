@@ -37,7 +37,8 @@ func ParseFilters(filters []*ec2.Filter, validNames map[string]bool) (map[string
 }
 
 // MatchesAny returns true if value matches any of the filter values.
-// Supports the AWS wildcard convention where * matches any substring.
+// Supports the AWS wildcard convention: * matches any substring, ? matches one
+// character, and \ escapes either.
 // Returns true if filterValues is empty.
 func MatchesAny(filterValues []string, value string) bool {
 	if len(filterValues) == 0 {
@@ -84,40 +85,60 @@ func EC2TagsToMap(tags []*ec2.Tag) map[string]string {
 	return m
 }
 
-// MatchWildcard matches value against a pattern where * matches zero or more characters.
+// MatchWildcard matches value against a pattern where * matches zero or more
+// characters, ? matches exactly one, and \ escapes the next byte so a literal
+// *, ? or \ can still be filtered for. A trailing \ matches itself.
 // Case-sensitive; callers needing case-insensitive matching should lower-case both inputs.
+//
+// Metacharacters are matched over bytes, not runes: EC2 filter values are
+// compared bytewise and ? on a multi-byte character has no behaviour to match.
 func MatchWildcard(pattern, value string) bool {
 	if pattern == "*" {
 		return true
 	}
-	if !strings.Contains(pattern, "*") {
+	if !strings.ContainsAny(pattern, `*?\`) {
 		return pattern == value
 	}
 
-	parts := strings.Split(pattern, "*")
-	last := len(parts) - 1
-
-	if !strings.HasPrefix(value, parts[0]) {
-		return false
-	}
-	if !strings.HasSuffix(value, parts[last]) {
-		return false
-	}
-
-	// Trim anchored ends before scanning middle parts.
-	remaining := value[len(parts[0]):]
-	if len(remaining) < len(parts[last]) {
-		return false
-	}
-	remaining = remaining[:len(remaining)-len(parts[last])]
-
-	// Walk through middle parts in order.
-	for i := 1; i < last; i++ {
-		idx := strings.Index(remaining, parts[i])
-		if idx < 0 {
+	// Greedy scan with a single backtrack point at the most recent "*", which
+	// keeps patterns like a*a*a*b linear rather than exponential.
+	var p, v int
+	star, starV := -1, 0
+	for v < len(value) {
+		switch {
+		case p < len(pattern) && pattern[p] == '*':
+			star, starV = p, v
+			p++
+		case p < len(pattern) && matchesByte(pattern, p, value[v]):
+			p += patternWidth(pattern, p)
+			v++
+		case star >= 0:
+			starV++
+			p, v = star+1, starV
+		default:
 			return false
 		}
-		remaining = remaining[idx+len(parts[i]):]
 	}
-	return true
+
+	for p < len(pattern) && pattern[p] == '*' {
+		p++
+	}
+	return p == len(pattern)
+}
+
+// patternWidth returns the byte length of the pattern token at p: 2 for an
+// escape pair, 1 otherwise.
+func patternWidth(pattern string, p int) int {
+	if pattern[p] == '\\' && p+1 < len(pattern) {
+		return 2
+	}
+	return 1
+}
+
+// matchesByte reports whether the single-character pattern token at p matches b.
+func matchesByte(pattern string, p int, b byte) bool {
+	if pattern[p] == '\\' && p+1 < len(pattern) {
+		return pattern[p+1] == b
+	}
+	return pattern[p] == '?' || pattern[p] == b
 }

@@ -103,6 +103,7 @@ var bedrockScopes = map[string]map[string][]resourceSource{
 		"StartIngestionJob":   {sourceKnowledgeBasePath},
 		"ListIngestionJobs":   {sourceKnowledgeBasePath},
 		"GetIngestionJob":     {sourceKnowledgeBasePath},
+		"StopIngestionJob":    {sourceKnowledgeBasePath},
 	},
 
 	"bedrock-agent-runtime": {

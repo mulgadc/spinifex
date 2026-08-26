@@ -30,6 +30,8 @@ type fakeVectorService struct {
 	queryErr       error
 	listJobs       []handlers_ochrevector.JobRecord
 	listJobsErr    error
+	stopJob        handlers_ochrevector.JobRecord
+	stopJobErr     error
 
 	createIndexInputs []*handlers_ochrevector.CreateIndexRequest
 	deleteIndexInputs []*handlers_ochrevector.DeleteIndexRequest
@@ -92,6 +94,17 @@ func (f *fakeVectorService) ListJobs(_ context.Context, _ *handlers_ochrevector.
 		return nil, f.listJobsErr
 	}
 	return &handlers_ochrevector.ListJobsResponse{Jobs: f.listJobs}, nil
+}
+
+func (f *fakeVectorService) StopJob(_ context.Context, req *handlers_ochrevector.StopJobRequest, _ string) (*handlers_ochrevector.StopJobResponse, error) {
+	if f.stopJobErr != nil {
+		return nil, f.stopJobErr
+	}
+	job := f.stopJob
+	if job.ID == "" {
+		job.ID = req.JobID
+	}
+	return &handlers_ochrevector.StopJobResponse{Job: job}, nil
 }
 
 var _ handlers_ochrevector.VectorService = (*fakeVectorService)(nil)

@@ -9,6 +9,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,6 +50,10 @@ type fakeBedrockAgentVectorService struct {
 	queryReq  *handlers_ochrevector.QueryRequest
 	queryResp handlers_ochrevector.QueryResponse
 	queryErr  error
+
+	stopJobReq  *handlers_ochrevector.StopJobRequest
+	stopJobResp handlers_ochrevector.StopJobResponse
+	stopJobErr  error
 }
 
 func (f *fakeBedrockAgentVectorService) CreateIndex(_ context.Context, req *handlers_ochrevector.CreateIndexRequest, _ string) (*handlers_ochrevector.CreateIndexResponse, error) {
@@ -107,6 +113,15 @@ func (f *fakeBedrockAgentVectorService) Query(_ context.Context, req *handlers_o
 	return &resp, nil
 }
 
+func (f *fakeBedrockAgentVectorService) StopJob(_ context.Context, req *handlers_ochrevector.StopJobRequest, _ string) (*handlers_ochrevector.StopJobResponse, error) {
+	f.stopJobReq = req
+	if f.stopJobErr != nil {
+		return nil, f.stopJobErr
+	}
+	resp := f.stopJobResp
+	return &resp, nil
+}
+
 var _ handlers_ochrevector.VectorService = (*fakeBedrockAgentVectorService)(nil)
 
 func newBedrockAgentTestStores(t *testing.T) (*handlers_ochrevector.KBStore, *handlers_ochrevector.DataSourceStore) {
@@ -157,6 +172,7 @@ func TestJobStateToAWS(t *testing.T) {
 		{handlers_ochrevector.JobStateRunning, bedrockagent.IngestionJobStatusInProgress},
 		{handlers_ochrevector.JobStateReady, bedrockagent.IngestionJobStatusComplete},
 		{handlers_ochrevector.JobStateFailed, bedrockagent.IngestionJobStatusFailed},
+		{handlers_ochrevector.JobStateStopped, ingestionJobStatusStopped},
 	}
 	for _, tc := range cases {
 		assert.Equal(t, tc.want, jobStateToAWS(tc.state))
@@ -168,6 +184,37 @@ func TestTranslateVectorErr(t *testing.T) {
 	assert.True(t, awserrors.IsErrorCode(translateVectorErr(handlers_ochrevector.ErrIndexNotFound), awserrors.ErrorResourceNotFoundException))
 	assert.True(t, awserrors.IsErrorCode(translateVectorErr(handlers_ochrevector.ErrJobNotFound), awserrors.ErrorResourceNotFoundException))
 	assert.True(t, awserrors.IsErrorCode(translateVectorErr(handlers_ochrevector.ErrIndexExists), awserrors.ErrorConflictException))
+}
+
+// TestTranslateVectorErr_BackendDownMapsToServiceUnavailable proves a
+// backend-down error (NATS no-responder/timeout, or a bare context deadline)
+// maps to ServiceUnavailableException (503) rather than passing through to
+// ErrorHandler's opaque ServerInternal (500) fallback.
+func TestTranslateVectorErr_BackendDownMapsToServiceUnavailable(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"no responders", fmt.Errorf("NATS request to ochre.vector.query: %w", nats.ErrNoResponders)},
+		{"timeout", fmt.Errorf("NATS request to ochre.vector.query: %w", nats.ErrTimeout)},
+		{"deadline exceeded", fmt.Errorf("query: %w", context.DeadlineExceeded)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := translateVectorErr(tc.err)
+			require.Error(t, got)
+			assert.True(t, awserrors.IsErrorCode(got, awserrors.ErrorServiceUnavailableException))
+		})
+	}
+}
+
+// TestTranslateVectorErr_UnmappedErrorPassesThrough proves an error not
+// otherwise classified above passes through unchanged, unaffected by the
+// new nats/timeout cases -- ErrorHandler's own fallback still sanitizes it
+// to ServerInternal.
+func TestTranslateVectorErr_UnmappedErrorPassesThrough(t *testing.T) {
+	original := errors.New("some other internal failure")
+	assert.Equal(t, original, translateVectorErr(original))
 }
 
 func validCreateKBInput() *bedrockagent.CreateKnowledgeBaseInput {
@@ -527,4 +574,62 @@ func TestListIngestionJobs_FiltersToBoundIndexAndExactDataSourceID(t *testing.T)
 	require.Len(t, out.IngestionJobSummaries, 1)
 	assert.Equal(t, "job-match", aws.StringValue(out.IngestionJobSummaries[0].IngestionJobId))
 	assert.Equal(t, bedrockagent.IngestionJobStatusComplete, aws.StringValue(out.IngestionJobSummaries[0].Status))
+}
+
+// TestStopIngestionJob_CancelsBoundJobAndReturnsStoppedStatus proves a
+// StopIngestionJob call resolved against the right knowledge base/data
+// source reaches VectorService.StopJob and renders its STOPPED result.
+func TestStopIngestionJob_CancelsBoundJobAndReturnsStoppedStatus(t *testing.T) {
+	kb, ds := newBedrockAgentTestStores(t)
+	ctx := context.Background()
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
+
+	vector := &fakeBedrockAgentVectorService{
+		describeJobResp: handlers_ochrevector.DescribeJobResponse{
+			Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-1", State: handlers_ochrevector.JobStateRunning},
+		},
+		stopJobResp: handlers_ochrevector.StopJobResponse{
+			Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-1", State: handlers_ochrevector.JobStateStopped},
+		},
+	}
+	out, err := StopIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &StopIngestionJobInput{
+		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-1"), IngestionJobId: aws.String("job-1"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, vector.stopJobReq)
+	assert.Equal(t, "job-1", vector.stopJobReq.JobID)
+	assert.Equal(t, ingestionJobStatusStopped, aws.StringValue(out.IngestionJob.Status))
+}
+
+// TestStopIngestionJob_RejectsJobFromForeignIndex mirrors
+// TestGetIngestionJob_RejectsJobFromForeignIndex: a job whose IndexID does
+// not match the addressed knowledge base's bound index must not be
+// cancellable through it.
+func TestStopIngestionJob_RejectsJobFromForeignIndex(t *testing.T) {
+	kb, ds := newBedrockAgentTestStores(t)
+	ctx := context.Background()
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
+
+	vector := &fakeBedrockAgentVectorService{describeJobResp: handlers_ochrevector.DescribeJobResponse{
+		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-other", DataSourceID: "ds-1"},
+	}}
+	_, err := StopIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &StopIngestionJobInput{
+		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-1"), IngestionJobId: aws.String("job-1"),
+	})
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorResourceNotFoundException))
+	assert.Nil(t, vector.stopJobReq, "StopJob must never be reached for a job that fails the ownership check")
+}
+
+// TestStopIngestionJob_MissingIngestionJobIDIsValidationException proves the
+// same input guard GetIngestionJob has applies to StopIngestionJob.
+func TestStopIngestionJob_MissingIngestionJobIDIsValidationException(t *testing.T) {
+	kb, ds := newBedrockAgentTestStores(t)
+	_, err := StopIngestionJob(context.Background(), bedrockAgentTestAccount, kb, ds, &fakeBedrockAgentVectorService{}, &StopIngestionJobInput{
+		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-1"),
+	})
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationException))
 }

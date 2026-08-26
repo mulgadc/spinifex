@@ -1,8 +1,9 @@
-package gateway_eks
+package gateway_eks_test
 
 import (
 	"testing"
 
+	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +16,7 @@ const (
 
 func resolveARNs(t *testing.T, action string, params []string, body string) []string {
 	t.Helper()
-	resources, err := ResourceARNs(action, authzRegion, authzAccountID, params, []byte(body))
+	resources, err := gateway_eks.ResourceARNs(action, authzRegion, authzAccountID, params, []byte(body))
 	require.NoError(t, err)
 	return resources
 }
@@ -197,6 +198,6 @@ func TestResourceARNsIdentifierIsAValue(t *testing.T) {
 }
 
 func TestResourceARNsUnknownActionFailsClosed(t *testing.T) {
-	_, err := ResourceARNs("NotAnAction", authzRegion, authzAccountID, nil, nil)
+	_, err := gateway_eks.ResourceARNs("NotAnAction", authzRegion, authzAccountID, nil, nil)
 	require.Error(t, err)
 }

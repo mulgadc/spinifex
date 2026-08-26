@@ -1,4 +1,4 @@
-package gateway_elbv2
+package gateway_elbv2_test
 
 import (
 	"fmt"
@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,13 +32,13 @@ func listenerARN(lbName, lbID, id string) string {
 
 func resolveARNs(t *testing.T, action string, input any) []string {
 	t.Helper()
-	resources, err := ResourceARNs(action, authzRegion, authzAccount, input)
+	resources, err := gateway_elbv2.ResourceARNs(action, authzRegion, authzAccount, input)
 	require.NoError(t, err)
 	return resources
 }
 
 func TestResourceARNs_UnknownAction(t *testing.T) {
-	_, err := ResourceARNs("NotAnAction", authzRegion, authzAccount, &elbv2.DeleteLoadBalancerInput{})
+	_, err := gateway_elbv2.ResourceARNs("NotAnAction", authzRegion, authzAccount, &elbv2.DeleteLoadBalancerInput{})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
@@ -163,7 +164,7 @@ func TestResourceARNs_BoundsNestedFanOut(t *testing.T) {
 		})
 	}
 
-	_, err := ResourceARNs("CreateRule", authzRegion, authzAccount, &elbv2.CreateRuleInput{
+	_, err := gateway_elbv2.ResourceARNs("CreateRule", authzRegion, authzAccount, &elbv2.CreateRuleInput{
 		ListenerArn: aws.String(listenerARN("prod", "abc123", "l1")),
 		Actions:     actions,
 	})
@@ -211,7 +212,7 @@ func TestResourceARNs_AccountWideActions(t *testing.T) {
 		"DescribeLoadBalancers", "DescribeTargetGroups", "DescribeListeners",
 		"DescribeRules", "DescribeSSLPolicies", "LBAgentHeartbeat", "GetLBConfig",
 	} {
-		assert.True(t, HasScope(action), action)
+		assert.True(t, gateway_elbv2.HasScope(action), action)
 		assert.Equal(t, []string{"*"}, resolveARNs(t, action, &elbv2.DescribeLoadBalancersInput{}), action)
 	}
 }
@@ -229,7 +230,7 @@ func TestResourceARNs_RejectsForeignARNs(t *testing.T) {
 		"no resource at all": "arn:aws:elasticloadbalancing:ap-southeast-2:123456789012:loadbalancer/",
 	}
 	for name, value := range rejected {
-		_, err := ResourceARNs("DeleteLoadBalancer", authzRegion, authzAccount, &elbv2.DeleteLoadBalancerInput{
+		_, err := gateway_elbv2.ResourceARNs("DeleteLoadBalancer", authzRegion, authzAccount, &elbv2.DeleteLoadBalancerInput{
 			LoadBalancerArn: aws.String(value),
 		})
 		require.Error(t, err, name)
@@ -242,7 +243,7 @@ func TestResourceARNs_RejectsForeignARNs(t *testing.T) {
 // A parent of the wrong type cannot derive a child, and must not silently
 // produce an ARN naming a resource nobody asked for.
 func TestResourceARNs_DerivedChildRejectsWrongParent(t *testing.T) {
-	_, err := ResourceARNs("CreateListener", authzRegion, authzAccount, &elbv2.CreateListenerInput{
+	_, err := gateway_elbv2.ResourceARNs("CreateListener", authzRegion, authzAccount, &elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(tgARN("web", "def456")),
 	})
 	require.Error(t, err)

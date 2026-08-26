@@ -9,6 +9,8 @@ import (
 	"time"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/reconciler"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -425,4 +427,37 @@ func TestReconcilerBackendErrorStillAborts(t *testing.T) {
 	r := &Reconciler{enabled: true, baseDomain: testBase, s3cfg: &nsconfig.S3Config{}}
 	_, _, err := r.readZone(testBase)
 	require.Error(t, err, "a backend failure must propagate, not look like a rebuildable zone")
+}
+
+// TestReconciler_RunReturnsWhenDisabled pins the guard that keeps the daemon
+// able to start the loop unconditionally. Without it the disabled reconciler
+// would enter the watch loop and block until shutdown instead of returning.
+func TestReconciler_RunReturnsWhenDisabled(t *testing.T) {
+	r := NewReconciler(nil, nil, nil)
+	require.False(t, r.Enabled())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(t.Context())
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return for a disabled reconciler")
+	}
+}
+
+// TestNewReconciler_RetainsItsWatchSources covers the wiring the daemon relies
+// on: sources supplied at construction have to reach the loop, and supplying
+// none is legal because that is the interval-only behaviour.
+func TestNewReconciler_RetainsItsWatchSources(t *testing.T) {
+	bucket := kvstore.NewBucket(nil, kvstore.Config{Name: "b"})
+
+	assert.Empty(t, NewReconciler(nil, nil, nil).sources)
+	assert.Len(t, NewReconciler(nil, nil, nil,
+		reconciler.Fixed(bucket, "node.*"),
+		reconciler.Fixed(bucket, "lb.*"),
+	).sources, 2)
 }

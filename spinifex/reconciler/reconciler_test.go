@@ -229,22 +229,20 @@ func TestRun_AFilterExcludesOtherKeys(t *testing.T) {
 	p.waitFor(t, 2, "the pass triggered by a write inside the filter")
 }
 
-// dynamicSource is the per-account bucket case: the set of buckets is not known
-// at startup and is re-read on every resync.
-type dynamicSource struct {
+// bucketSet backs a Dynamic source in the per-account bucket case: the set is
+// not known at startup and is re-read on every resync.
+type bucketSet struct {
 	mu      sync.Mutex
 	buckets []*kvstore.Bucket
 }
 
-func (s *dynamicSource) Buckets(context.Context) ([]*kvstore.Bucket, error) {
+func (s *bucketSet) list(context.Context) ([]*kvstore.Bucket, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]*kvstore.Bucket(nil), s.buckets...), nil
 }
 
-func (s *dynamicSource) Filter() string { return ">" }
-
-func (s *dynamicSource) add(b *kvstore.Bucket) {
+func (s *bucketSet) add(b *kvstore.Bucket) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.buckets = append(s.buckets, b)
@@ -259,13 +257,13 @@ func TestRun_ABucketAppearingAfterStartupIsPickedUp(t *testing.T) {
 	first := kvstore.New[record](js, kvstore.Config{Name: "reconciler-acct-a", History: 1})
 	second := kvstore.New[record](js, kvstore.Config{Name: "reconciler-acct-b", History: 1})
 
-	src := &dynamicSource{}
-	src.add(first.Bucket)
+	set := &bucketSet{}
+	set.add(first.Bucket)
 	p := newPasses()
 
 	run(t, reconciler.Config{
 		Name:      "dynamic",
-		Sources:   []reconciler.Source{src},
+		Sources:   []reconciler.Source{reconciler.Dynamic(set.list, ">")},
 		Reconcile: func(context.Context) error { p.record(); return nil },
 		Resync:    200 * time.Millisecond,
 	})
@@ -273,7 +271,7 @@ func TestRun_ABucketAppearingAfterStartupIsPickedUp(t *testing.T) {
 
 	// Force the second bucket into existence, then publish it to the source.
 	require.NoError(t, second.Set(t.Context(), "seed", &record{Name: "seed"}))
-	src.add(second.Bucket)
+	set.add(second.Bucket)
 
 	// One resync to discover it, then a write it must now notice.
 	before := p.now()

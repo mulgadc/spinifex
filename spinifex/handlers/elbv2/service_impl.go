@@ -26,6 +26,7 @@ import (
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -1580,6 +1581,16 @@ func (s *ELBv2ServiceImpl) publishLBDNS(record *LoadBalancerRecord, action handl
 //
 // The daemon's reconcile loop calls this without a context, so the read runs on
 // the service lifetime context: the sweep should stop once the service closes.
+// DNSWatchBucket is the bucket behind DesiredDNSChanges, so the DNS reconcile
+// can be woken by a load-balancer change rather than poll for one. Nil when
+// there is no store to watch.
+func (s *ELBv2ServiceImpl) DNSWatchBucket() *kvstore.Bucket {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	return s.store.WatchBucket()
+}
+
 func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
 	if s == nil || s.store == nil || s.dnsBaseDomain == "" {
 		return nil, false

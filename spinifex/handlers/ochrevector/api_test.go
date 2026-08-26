@@ -346,6 +346,7 @@ func subscribeVectorService(t *testing.T, nc *nats.Conn, svc VectorService) {
 		{SubjectDescribeJob, stubVectorNATSHandler(svc.DescribeJob)},
 		{SubjectQuery, stubVectorNATSHandler(svc.Query)},
 		{SubjectListJobs, stubVectorNATSHandler(svc.ListJobs)},
+		{SubjectStopJob, stubVectorNATSHandler(svc.StopJob)},
 	}
 	for _, s := range subs {
 		sub, err := nc.QueueSubscribe(s.subject, "spinifex-workers", s.handler)
@@ -389,6 +390,12 @@ func TestNATSVectorService_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listJobsOut.Jobs, 1)
 	assert.Equal(t, ingestOut.Job.ID, listJobsOut.Jobs[0].ID)
+
+	// The job is PENDING (Sweep has not run in this test), so StopJob finds
+	// no registered cancel func and reports it back unchanged.
+	stopOut, err := client.StopJob(ctx, &StopJobRequest{JobID: ingestOut.Job.ID}, apiAccountA)
+	require.NoError(t, err)
+	assert.Equal(t, ingestOut.Job.ID, stopOut.Job.ID)
 
 	backend.queryResults = []QueryResult{{Chunk: "hi", SourceKey: "docs/a.txt", Score: 0.9}}
 	queryOut, err := client.Query(ctx, &QueryRequest{IndexID: "idx-one", Text: "hello"}, apiAccountA)

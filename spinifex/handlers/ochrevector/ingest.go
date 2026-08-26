@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -60,6 +61,13 @@ const (
 // const, so tests can shrink it rather than paying the real delay.
 var ingestRetryBackoff = 200 * time.Millisecond
 
+// ingestPerDocTimeout bounds one document's ingestObject call (embed calls
+// plus both ReplaceDocument calls) against a dead backend, so a document
+// fails fast rather than hanging on the caller's root ctx indefinitely -- a
+// var, not a const, so tests can shrink it rather than paying the real delay,
+// mirroring ingestRetryBackoff.
+var ingestPerDocTimeout = 30 * time.Second
+
 // IngestService orchestrates the ingestion job lifecycle: claiming a job,
 // listing a source bucket/prefix, chunking and embedding each object, and
 // replacing its rows in the vector backend.
@@ -69,11 +77,38 @@ type IngestService struct {
 	Backend  VectorBackend
 	Store    objectstore.ObjectStore
 	Embedder Embedder
+
+	// cancelMu guards cancelFuncs, the live-run cancel registry StopJob
+	// consults.
+	cancelMu    sync.Mutex
+	cancelFuncs map[string]context.CancelFunc
 }
 
 // NewIngestService constructs an IngestService over its dependencies.
 func NewIngestService(jobs *JobStore, registry *Registry, backend VectorBackend, store objectstore.ObjectStore, embedder Embedder) *IngestService {
-	return &IngestService{Jobs: jobs, Registry: registry, Backend: backend, Store: store, Embedder: embedder}
+	return &IngestService{
+		Jobs: jobs, Registry: registry, Backend: backend, Store: store, Embedder: embedder,
+		cancelFuncs: map[string]context.CancelFunc{},
+	}
+}
+
+// registerRunCancel records cancel as the way to stop job's in-flight run,
+// so a concurrent StopJob call can find it. Overwrites any previous entry
+// for the same key -- a job never has two runs in flight at once (Sweep is
+// the only caller, and it runs jobs one at a time).
+func (s *IngestService) registerRunCancel(accountID, jobID string, cancel context.CancelFunc) {
+	s.cancelMu.Lock()
+	defer s.cancelMu.Unlock()
+	s.cancelFuncs[jobKey(accountID, jobID)] = cancel
+}
+
+// deregisterRunCancel removes job's cancel entry once its run has returned,
+// so a later StopJob call for the same (now-finished) job id finds nothing
+// to cancel rather than a stale func for a run that already ended.
+func (s *IngestService) deregisterRunCancel(accountID, jobID string) {
+	s.cancelMu.Lock()
+	defer s.cancelMu.Unlock()
+	delete(s.cancelFuncs, jobKey(accountID, jobID))
 }
 
 // StartIngest validates indexID exists for accountID, then reserves a new
@@ -118,18 +153,39 @@ func (s *IngestService) ReconcileFromSource(ctx context.Context, accountID, inde
 
 // RunJob is the synchronous ingestion worker: lists job.Source, and for each
 // object, reads/chunks/embeds/replaces its rows. A per-document failure
-// (unreadable object, oversize, exhausted embed retries) is skipped and
-// recorded rather than failing the whole job; a fully-unavailable embedder
-// (every attempted document's embed calls exhaust retries) fails the job
-// instead of reaching READY with everything skipped (D7). On success, the
-// job's source spec is recorded on the index registry record (D4).
+// (unreadable object, oversize, exhausted embed retries, a per-document
+// timeout against a dead backend) is skipped and recorded rather than
+// failing the whole job; a fully-unavailable embedder (every attempted
+// document's embed calls exhaust retries) fails the job instead of reaching
+// READY with everything skipped (D7). Progress (DocumentsDone/
+// FailedDocuments) is persisted after every document, so a job on a dead
+// backend is visibly making (or not making) progress rather than sitting
+// silently IN_PROGRESS. On success, the job's source spec is recorded on the
+// index registry record (D4).
+//
+// runCtx, derived from ctx, is registered so a concurrent StopJob call can
+// cancel exactly this run: cancelling it stops the job at JobStateStopped,
+// distinct from a per-document timeout (a child of runCtx, scoped to one
+// document) reaching JobStateFailed the ordinary per-document way. Every
+// JobStore write in this method uses ctx, not runCtx, so the terminal write
+// recording a stop is never itself blocked by the cancellation it records.
 func (s *IngestService) RunJob(ctx context.Context, job JobRecord) error {
 	if err := s.Jobs.SetState(ctx, job.AccountID, job.ID, JobStateRunning); err != nil {
 		return err
 	}
 
-	keys, err := s.listObjectKeys(ctx, job.Source)
+	runCtx, cancel := context.WithCancel(ctx)
+	s.registerRunCancel(job.AccountID, job.ID, cancel)
+	defer func() {
+		s.deregisterRunCancel(job.AccountID, job.ID)
+		cancel()
+	}()
+
+	keys, err := s.listObjectKeys(runCtx, job.Source)
 	if err != nil {
+		if runCtx.Err() != nil {
+			return s.stopJobRecord(ctx, job, 0, 0, nil)
+		}
 		return s.failJob(ctx, job, fmt.Errorf("list source objects: %w", err))
 	}
 
@@ -138,16 +194,37 @@ func (s *IngestService) RunJob(ctx context.Context, job JobRecord) error {
 	embedFailures := 0
 
 	for _, key := range keys {
-		docErr := s.ingestObject(ctx, job.AccountID, job.IndexID, key, job.Source)
+		if runCtx.Err() != nil {
+			return s.stopJobRecord(ctx, job, done, len(keys), failedDocs)
+		}
+
+		docCtx, docCancel := context.WithTimeout(runCtx, ingestPerDocTimeout)
+		docErr := s.ingestObject(docCtx, job.AccountID, job.IndexID, key, job.Source)
+		docCancel()
+
+		if docErr != nil && runCtx.Err() != nil {
+			// A Stop was requested mid-document: the failure is cancellation
+			// noise, not a real per-document failure to record.
+			return s.stopJobRecord(ctx, job, done, len(keys), failedDocs)
+		}
+
 		if docErr != nil {
 			slog.WarnContext(ctx, "ochrevector: ingest document failed", "job", job.ID, "key", key, "err", docErr.err)
 			failedDocs = append(failedDocs, FailedDoc{SourceKey: key, Reason: docErr.Error()})
 			if docErr.fromEmbedder {
 				embedFailures++
 			}
-			continue
+		} else {
+			done++
 		}
-		done++
+
+		if updErr := s.Jobs.Update(ctx, job.AccountID, job.ID, func(rec *JobRecord) {
+			rec.DocumentsTotal = len(keys)
+			rec.DocumentsDone = done
+			rec.FailedDocuments = failedDocs
+		}); updErr != nil {
+			slog.WarnContext(ctx, "ochrevector: persist mid-run ingest progress failed", "job", job.ID, "key", key, "err", updErr)
+		}
 	}
 
 	// A job that ingests nothing must not report READY, regardless of why:
@@ -172,6 +249,44 @@ func (s *IngestService) RunJob(ctx context.Context, job JobRecord) error {
 		rec.FailedDocuments = failedDocs
 		rec.Error = ""
 	})
+}
+
+// stopJobRecord transitions job to JobStateStopped with whatever progress it
+// made before its run was cancelled.
+func (s *IngestService) stopJobRecord(ctx context.Context, job JobRecord, done, total int, failedDocs []FailedDoc) error {
+	return s.Jobs.Update(ctx, job.AccountID, job.ID, func(rec *JobRecord) {
+		rec.State = JobStateStopped
+		rec.DocumentsTotal = total
+		rec.DocumentsDone = done
+		rec.FailedDocuments = failedDocs
+	})
+}
+
+// StopJob cancels jobID's in-flight run, if one is currently registered
+// (RunJob registers its cancel func for exactly as long as it is running),
+// and returns the job's record as of the call -- the run itself finishes the
+// transition to JobStateStopped asynchronously, from wherever it currently
+// is in RunJob's loop. A job with no registered cancel func -- never
+// started, or already finished by the time Stop was requested -- is
+// reported back unchanged rather than as an error, so a caller racing the
+// job's own natural completion still gets a sane answer.
+func (s *IngestService) StopJob(ctx context.Context, accountID, jobID string) (*JobRecord, error) {
+	job, err := s.Jobs.Get(ctx, accountID, jobID)
+	if err != nil {
+		return nil, err
+	}
+	if job == nil {
+		return nil, ErrJobNotFound
+	}
+
+	s.cancelMu.Lock()
+	cancel, ok := s.cancelFuncs[jobKey(accountID, jobID)]
+	s.cancelMu.Unlock()
+	if ok {
+		cancel()
+	}
+
+	return job, nil
 }
 
 // failJob transitions job to FAILED with cause recorded, and returns cause

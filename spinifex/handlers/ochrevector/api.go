@@ -20,6 +20,7 @@ const (
 	SubjectDescribeJob = "ochre.vector.describeJob"
 	SubjectQuery       = "ochre.vector.query"
 	SubjectListJobs    = "ochre.vector.listJobs"
+	SubjectStopJob     = "ochre.vector.stopJob"
 )
 
 // CreateIndexRequest names a new index and its fixed, per-index properties
@@ -103,11 +104,21 @@ type ListJobsResponse struct {
 	Jobs []JobRecord `json:"jobs"`
 }
 
+// StopJobRequest asks to cancel one in-flight ingestion job.
+type StopJobRequest struct {
+	JobID string `json:"jobId"`
+}
+
+type StopJobResponse struct {
+	Job JobRecord `json:"job"`
+}
+
 // VectorService is the tenant vector-store surface: index CRUD, ingestion,
-// job status/listing, and similarity query. Every method's accountID argument
-// is supplied by the transport alone (a NATS message header for the daemon
-// subscription, D10) -- no request type above carries an account field, so a
-// spoofed payload account can never widen a caller's own scope.
+// job status/listing/cancellation, and similarity query. Every method's
+// accountID argument is supplied by the transport alone (a NATS message
+// header for the daemon subscription, D10) -- no request type above carries
+// an account field, so a spoofed payload account can never widen a caller's
+// own scope.
 type VectorService interface {
 	CreateIndex(ctx context.Context, req *CreateIndexRequest, accountID string) (*CreateIndexResponse, error)
 	DeleteIndex(ctx context.Context, req *DeleteIndexRequest, accountID string) (*DeleteIndexResponse, error)
@@ -116,6 +127,7 @@ type VectorService interface {
 	DescribeJob(ctx context.Context, req *DescribeJobRequest, accountID string) (*DescribeJobResponse, error)
 	ListJobs(ctx context.Context, req *ListJobsRequest, accountID string) (*ListJobsResponse, error)
 	Query(ctx context.Context, req *QueryRequest, accountID string) (*QueryResponse, error)
+	StopJob(ctx context.Context, req *StopJobRequest, accountID string) (*StopJobResponse, error)
 }
 
 // indexService is the CreateIndex/DeleteIndex/ListIndexes surface vectorService
@@ -128,10 +140,11 @@ type indexService interface {
 
 var _ indexService = (*Service)(nil)
 
-// ingestStarter is the StartIngest surface vectorService delegates to;
-// *IngestService satisfies it structurally.
+// ingestStarter is the StartIngest/StopJob surface vectorService delegates
+// to; *IngestService satisfies it structurally.
 type ingestStarter interface {
 	StartIngest(ctx context.Context, accountID, indexID string, source SourceSpec, dataSourceID string) (*JobRecord, error)
+	StopJob(ctx context.Context, accountID, jobID string) (*JobRecord, error)
 }
 
 var _ ingestStarter = (*IngestService)(nil)
@@ -284,6 +297,18 @@ func (s *vectorService) ListJobs(ctx context.Context, _ *ListJobsRequest, accoun
 	return &ListJobsResponse{Jobs: jobs}, nil
 }
 
+// StopJob cancels req.JobID's in-flight run via ingest.StopJob.
+func (s *vectorService) StopJob(ctx context.Context, req *StopJobRequest, accountID string) (*StopJobResponse, error) {
+	if req == nil || req.JobID == "" {
+		return nil, fmt.Errorf("ochrevector: stop job requires a jobId")
+	}
+	job, err := s.ingest.StopJob(ctx, accountID, req.JobID)
+	if err != nil {
+		return nil, fmt.Errorf("ochrevector: stop job %s: %w", req.JobID, err)
+	}
+	return &StopJobResponse{Job: *job}, nil
+}
+
 // Query resolves IndexID's pinned embedding model from the registry (D8),
 // embeds Text against it, then runs the similarity search directly against
 // backend, optionally over-fetching and reranking (rerankTopK). A non-READY
@@ -375,4 +400,8 @@ func (c *NATSVectorService) ListJobs(ctx context.Context, req *ListJobsRequest, 
 
 func (c *NATSVectorService) Query(ctx context.Context, req *QueryRequest, accountID string) (*QueryResponse, error) {
 	return utils.NATSRequest[QueryResponse](ctx, c.nc, SubjectQuery, req, c.timeout, accountID)
+}
+
+func (c *NATSVectorService) StopJob(ctx context.Context, req *StopJobRequest, accountID string) (*StopJobResponse, error) {
+	return utils.NATSRequest[StopJobResponse](ctx, c.nc, SubjectStopJob, req, c.timeout, accountID)
 }

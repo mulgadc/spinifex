@@ -304,6 +304,45 @@ func TestBedrockAgentRequest_StartAndListAndGetIngestionJob(t *testing.T) {
 	assert.Equal(t, "job-1", *getOut.IngestionJob.IngestionJobId)
 }
 
+// TestBedrockAgentRequest_StopIngestionJob proves the StopIngestionJob route
+// resolves (lookupBedrockAgentAction no longer falls through to
+// ErrInvalidAction for it) and round-trips a STOPPED job through the full
+// HTTP dispatch path.
+func TestBedrockAgentRequest_StopIngestionJob(t *testing.T) {
+	vector := &fakeBedrockAgentVectorService{ingestResp: handlers_ochrevector.IngestResponse{
+		Job: handlers_ochrevector.JobRecord{ID: "job-1", State: handlers_ochrevector.JobStatePending},
+	}}
+	gw := newBedrockAgentRequestGateway(t, vector)
+	kbID := createTestKnowledgeBase(t, gw)
+	dsID := createTestDataSource(t, gw, kbID)
+
+	kbRec, err := gw.BedrockAgentKB.Get(context.Background(), bedrockAgentTestAccount, kbID)
+	require.NoError(t, err)
+	dsRec, err := gw.BedrockAgentDataSources.Get(context.Background(), bedrockAgentTestAccount, dsID)
+	require.NoError(t, err)
+	vector.ingestResp.Job.IndexID = kbRec.IndexID
+	vector.ingestResp.Job.DataSourceID = dsRec.ID
+	vector.describeJobResp = handlers_ochrevector.DescribeJobResponse{Job: vector.ingestResp.Job}
+	stopped := vector.ingestResp.Job
+	stopped.State = handlers_ochrevector.JobStateStopped
+	vector.stopJobResp = handlers_ochrevector.StopJobResponse{Job: stopped}
+
+	startReq := bedrockAgentRequestWithAccount(http.MethodPut, "/knowledgebases/"+kbID+"/datasources/"+dsID+"/ingestionjobs/", "")
+	w := httptest.NewRecorder()
+	require.NoError(t, gw.BedrockAgent_Request(w, startReq))
+	require.Equal(t, http.StatusOK, w.Code)
+
+	stopReq := bedrockAgentRequestWithAccount(http.MethodPut, "/knowledgebases/"+kbID+"/datasources/"+dsID+"/ingestionjobs/job-1/stop", "")
+	w2 := httptest.NewRecorder()
+	require.NoError(t, gw.BedrockAgent_Request(w2, stopReq))
+	require.Equal(t, http.StatusOK, w2.Code)
+
+	var out StopIngestionJobOutput
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &out))
+	assert.Equal(t, "job-1", *out.IngestionJob.IngestionJobId)
+	assert.Equal(t, ingestionJobStatusStopped, *out.IngestionJob.Status)
+}
+
 func TestBedrockAgentRequest_UnknownRouteReturnsInvalidAction(t *testing.T) {
 	gw := newBedrockAgentRequestGateway(t, &fakeBedrockAgentVectorService{})
 

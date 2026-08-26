@@ -24,6 +24,10 @@ const (
 	JobStateRunning = "RUNNING"
 	JobStateReady   = "READY"
 	JobStateFailed  = "FAILED"
+	// JobStateStopped is a terminal state reached only via an explicit
+	// StopJob call cancelling a RUNNING job -- distinct from JobStateFailed,
+	// which a per-document timeout or embedder outage reaches on its own.
+	JobStateStopped = "STOPPED"
 )
 
 // ErrJobExists reports that Reserve lost the single-writer claim on a job id

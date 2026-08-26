@@ -37,6 +37,11 @@ type stubEmbedder struct {
 	calls          int
 	failAll        bool
 	failIfContains string
+	// beforeEmbed, if set, is called with the 1-based call number at the
+	// start of every Embed call, before failAll/failIfContains are
+	// evaluated -- lets a test snapshot job progress exactly between two
+	// documents' embed calls, to prove mid-run persistence.
+	beforeEmbed func(callNum int)
 }
 
 var _ Embedder = (*stubEmbedder)(nil)
@@ -44,7 +49,12 @@ var _ Embedder = (*stubEmbedder)(nil)
 func (e *stubEmbedder) Embed(_ context.Context, _ string, inputs []string) ([][]float32, error) {
 	e.mu.Lock()
 	e.calls++
+	n := e.calls
 	e.mu.Unlock()
+
+	if e.beforeEmbed != nil {
+		e.beforeEmbed(n)
+	}
 
 	if e.failAll {
 		return nil, errors.New("stub embedder: unavailable")
@@ -131,6 +141,35 @@ func (e *tokenCounterStubEmbedder) callCountTokens() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.countCalls
+}
+
+// blockingEmbedder is a controllable Embedder test double for a fully dead
+// backend: every Embed call blocks until its ctx is done (cancelled or
+// timed out) and then returns ctx.Err(), the way a real HTTP client would
+// hang against an unreachable endpoint absent a bounded context. beforeEmbed,
+// if set, is called with the 1-based call number as each call is entered
+// (before blocking), so a test can synchronize on "the Nth document's embed
+// call is now in flight".
+type blockingEmbedder struct {
+	mu          sync.Mutex
+	calls       int
+	beforeEmbed func(callNum int)
+}
+
+var _ Embedder = (*blockingEmbedder)(nil)
+
+func (e *blockingEmbedder) Embed(ctx context.Context, _ string, _ []string) ([][]float32, error) {
+	e.mu.Lock()
+	e.calls++
+	n := e.calls
+	e.mu.Unlock()
+
+	if e.beforeEmbed != nil {
+		e.beforeEmbed(n)
+	}
+
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 // newIngestTestSetupWithEmbedder mirrors newIngestTestSetup but takes a
@@ -722,4 +761,157 @@ func TestRunJob_ConsultsTokenCounterWhenEmbedderProvidesOne(t *testing.T) {
 	require.NoError(t, svc.RunJob(ctx, *job))
 
 	assert.Positive(t, embedder.callCountTokens(), "ingestObject must consult the embedder's TokenCounter when it implements one")
+}
+
+// TestRunJob_PersistsIncrementalProgressAcrossSuccessfulDocuments proves
+// DocumentsDone is written to the job store after every document, not only
+// once at the end: the 2nd document's embed call must observe the 1st
+// document's completion already persisted.
+func TestRunJob_PersistsIncrementalProgressAcrossSuccessfulDocuments(t *testing.T) {
+	svc, _, _, store, embedder := newIngestTestSetup(t)
+	ctx := context.Background()
+
+	putObject(t, store, ingestPrefix+"doc1.txt", "first document")
+	putObject(t, store, ingestPrefix+"doc2.txt", "second document")
+
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
+	require.NoError(t, err)
+
+	docsDoneAtSecondCall := -1
+	embedder.beforeEmbed = func(n int) {
+		if n == 2 {
+			got, gErr := svc.Jobs.Get(ctx, ingestAccountA, job.ID)
+			require.NoError(t, gErr)
+			docsDoneAtSecondCall = got.DocumentsDone
+		}
+	}
+
+	require.NoError(t, svc.RunJob(ctx, *job))
+
+	assert.Equal(t, 1, docsDoneAtSecondCall, "the 2nd document's embed call must observe the 1st document's progress already persisted, not a single terminal write")
+}
+
+// TestRunJob_DeadBackendFailsPromptlyWithVisibleMidRunProgress proves a job
+// against a fully unreachable backend (every embed call hangs past
+// ingestPerDocTimeout) reaches FAILED promptly rather than hanging on the
+// caller's root ctx, and that FailedDocuments/DocumentsTotal were persisted
+// incrementally as each document was attempted, not only in a single
+// terminal write -- the 2nd document's embed call must already observe the
+// 1st document's failure.
+func TestRunJob_DeadBackendFailsPromptlyWithVisibleMidRunProgress(t *testing.T) {
+	embedder := &blockingEmbedder{}
+	svc, _, backend, store := newIngestTestSetupWithEmbedder(t, embedder)
+	ctx := context.Background()
+
+	origTimeout := ingestPerDocTimeout
+	ingestPerDocTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { ingestPerDocTimeout = origTimeout })
+
+	putObject(t, store, ingestPrefix+"doc1.txt", "first document, dead backend")
+	putObject(t, store, ingestPrefix+"doc2.txt", "second document, dead backend")
+
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
+	require.NoError(t, err)
+
+	var failedDocsAtSecondCall int
+	var totalAtSecondCall int
+	embedder.beforeEmbed = func(n int) {
+		if n == 2 {
+			got, gErr := svc.Jobs.Get(ctx, ingestAccountA, job.ID)
+			require.NoError(t, gErr)
+			failedDocsAtSecondCall = len(got.FailedDocuments)
+			totalAtSecondCall = got.DocumentsTotal
+		}
+	}
+
+	start := time.Now()
+	err = svc.RunJob(ctx, *job)
+	elapsed := time.Since(start)
+	require.Error(t, err, "a fully dead backend must fail the job, not reach READY with everything skipped")
+	assert.Less(t, elapsed, 5*time.Second, "a per-document timeout must fail fast rather than hang on the root ctx")
+
+	assert.Equal(t, 1, failedDocsAtSecondCall, "the 2nd document's embed call must observe the 1st document's failure already persisted")
+	assert.Equal(t, 2, totalAtSecondCall)
+
+	got, err := svc.Jobs.Get(ctx, ingestAccountA, job.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, JobStateFailed, got.State)
+	assert.NotEmpty(t, got.Error)
+	assert.Equal(t, 0, got.DocumentsDone)
+	require.Len(t, got.FailedDocuments, 2)
+
+	assert.Equal(t, 0, backend.replaceDocumentCallCount(ingestAccountA, "idx-one", ingestPrefix+"doc1.txt"))
+}
+
+// TestIngestService_StopJob_CancelsRunningJobToStopped proves StopJob
+// cancels a job blocked mid-run (on a dead-backend embed call) and the run
+// itself transitions to JobStateStopped, not JobStateFailed -- distinct from
+// a per-document timeout, which reaches FAILED on its own.
+func TestIngestService_StopJob_CancelsRunningJobToStopped(t *testing.T) {
+	embedder := &blockingEmbedder{}
+	svc, _, backend, store := newIngestTestSetupWithEmbedder(t, embedder)
+	ctx := context.Background()
+
+	putObject(t, store, ingestPrefix+"doc1.txt", "a document that will be stopped mid-flight")
+
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
+	require.NoError(t, err)
+
+	started := make(chan struct{})
+	embedder.beforeEmbed = func(int) { close(started) }
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- svc.RunJob(ctx, *job) }()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunJob never reached the embedder call")
+	}
+
+	stopped, err := svc.StopJob(ctx, ingestAccountA, job.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stopped)
+
+	select {
+	case err := <-runErr:
+		require.NoError(t, err, "a stopped run must not itself return an error")
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunJob never returned after StopJob cancelled it")
+	}
+
+	got, err := svc.Jobs.Get(ctx, ingestAccountA, job.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, JobStateStopped, got.State)
+	assert.Equal(t, 0, backend.replaceDocumentCallCount(ingestAccountA, "idx-one", ingestPrefix+"doc1.txt"))
+}
+
+// TestIngestService_StopJob_UnregisteredJobReturnsRecordUnchanged proves a
+// job with no registered cancel func (never started running, or already
+// finished) is reported back as-is rather than as an error, so a caller
+// racing the job's own natural completion still gets a sane answer.
+func TestIngestService_StopJob_UnregisteredJobReturnsRecordUnchanged(t *testing.T) {
+	svc, _, _, _, _ := newIngestTestSetup(t)
+	ctx := context.Background()
+
+	job, err := svc.StartIngest(ctx, ingestAccountA, "idx-one", testSource(), "")
+	require.NoError(t, err)
+
+	got, err := svc.StopJob(ctx, ingestAccountA, job.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, JobStatePending, got.State)
+}
+
+// TestIngestService_StopJob_UnknownJobErrors proves StopJob reports
+// ErrJobNotFound for a job id that does not exist, mirroring DescribeJob.
+func TestIngestService_StopJob_UnknownJobErrors(t *testing.T) {
+	svc, _, _, _, _ := newIngestTestSetup(t)
+	ctx := context.Background()
+
+	_, err := svc.StopJob(ctx, ingestAccountA, "job-does-not-exist")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrJobNotFound)
 }

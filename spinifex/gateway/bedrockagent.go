@@ -20,6 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
+	"github.com/nats-io/nats.go"
 )
 
 // bedrockAgentRoute maps one HTTP method + path regex to an AWS action and handler.
@@ -99,6 +100,10 @@ var bedrockAgentRoutes = []bedrockAgentRoute{
 	{"GET", regexp.MustCompile(`^/knowledgebases/([^/]+)/datasources/([^/]+)/ingestionjobs/([^/]+)$`), "GetIngestionJob",
 		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService) (any, error) {
 			return GetIngestionJob(ctx, acct, kb, ds, vector, &bedrockagent.GetIngestionJobInput{KnowledgeBaseId: aws.String(p[0]), DataSourceId: aws.String(p[1]), IngestionJobId: aws.String(p[2])})
+		}},
+	{"PUT", regexp.MustCompile(`^/knowledgebases/([^/]+)/datasources/([^/]+)/ingestionjobs/([^/]+)/stop$`), "StopIngestionJob",
+		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService) (any, error) {
+			return StopIngestionJob(ctx, acct, kb, ds, vector, &StopIngestionJobInput{KnowledgeBaseId: aws.String(p[0]), DataSourceId: aws.String(p[1]), IngestionJobId: aws.String(p[2])})
 		}},
 }
 
@@ -247,6 +252,13 @@ func dataSourceStatusToAWS(status string) string {
 	}
 }
 
+// ingestionJobStatusStopped is StopIngestionJob's terminal wire status. The
+// vendored aws-sdk-go v1.55.8 predates AWS's StopIngestionJob operation and
+// declares no IngestionJobStatus constant for it; IngestionJob.Status is a
+// plain *string, so emitting this value is safe even though the SDK itself
+// does not name it.
+const ingestionJobStatusStopped = "STOPPED"
+
 // jobStateToAWS translates .9's JobRecord.State to AWS's IngestionJobStatus
 // wire values.
 func jobStateToAWS(state string) string {
@@ -257,6 +269,8 @@ func jobStateToAWS(state string) string {
 		return bedrockagent.IngestionJobStatusInProgress
 	case handlers_ochrevector.JobStateReady:
 		return bedrockagent.IngestionJobStatusComplete
+	case handlers_ochrevector.JobStateStopped:
+		return ingestionJobStatusStopped
 	default:
 		return bedrockagent.IngestionJobStatusFailed
 	}
@@ -289,6 +303,8 @@ func translateVectorErr(err error) error {
 		return errors.New(awserrors.ErrorResourceNotFoundException)
 	case errors.Is(err, handlers_ochrevector.ErrIndexExists):
 		return errors.New(awserrors.ErrorConflictException)
+	case errors.Is(err, nats.ErrNoResponders), errors.Is(err, nats.ErrTimeout), errors.Is(err, context.DeadlineExceeded):
+		return errors.New(awserrors.ErrorServiceUnavailableException)
 	default:
 		return err
 	}
@@ -807,6 +823,70 @@ func GetIngestionJob(ctx context.Context, accountID string, kb *handlers_ochreve
 	}
 
 	return &bedrockagent.GetIngestionJobOutput{IngestionJob: jobRecordToOutput(kbID, dsID, resp.Job)}, nil
+}
+
+// StopIngestionJobInput/StopIngestionJobOutput mirror the shape of
+// GetIngestionJobInput/GetIngestionJobOutput (KnowledgeBaseId/DataSourceId/
+// IngestionJobId in, an IngestionJob summary out). Defined locally, not in
+// aws-sdk-go, because the vendored aws-sdk-go v1.55.8 predates AWS's
+// StopIngestionJob operation and carries no types for it.
+type StopIngestionJobInput struct {
+	DataSourceId    *string `json:"dataSourceId"`
+	IngestionJobId  *string `json:"ingestionJobId"`
+	KnowledgeBaseId *string `json:"knowledgeBaseId"`
+}
+
+type StopIngestionJobOutput struct {
+	IngestionJob *bedrockagent.IngestionJob `json:"ingestionJob"`
+}
+
+// StopIngestionJob resolves jobId the same ownership-scoped way
+// GetIngestionJob does (both the addressed knowledge base and data source
+// must match) before cancelling it via VectorService.StopJob, so a
+// foreign/mismatched knowledgeBaseId or dataSourceId in the path cannot be
+// used to stop another KB/data source's job by guessing its id.
+func StopIngestionJob(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService, input *StopIngestionJobInput) (*StopIngestionJobOutput, error) {
+	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" || aws.StringValue(input.IngestionJobId) == "" {
+		return nil, errors.New(awserrors.ErrorValidationException)
+	}
+	kbID := aws.StringValue(input.KnowledgeBaseId)
+	dsID := aws.StringValue(input.DataSourceId)
+	jobID := aws.StringValue(input.IngestionJobId)
+
+	kbRec, err := kb.Get(ctx, accountID, kbID)
+	if err != nil {
+		return nil, err
+	}
+	if kbRec == nil {
+		return nil, errKBNotFound(kbID)
+	}
+
+	dsRec, err := ds.Get(ctx, accountID, dsID)
+	if err != nil {
+		return nil, err
+	}
+	if dsRec == nil || dsRec.KnowledgeBaseID != kbID {
+		return nil, errDataSourceNotFound(dsID)
+	}
+
+	// DescribeJob first, purely for the same ownership check GetIngestionJob
+	// enforces: StopJob alone has no knowledge base/data source to compare
+	// against, so a foreign job id must be rejected before anything is
+	// cancelled.
+	describeResp, err := vector.DescribeJob(ctx, &handlers_ochrevector.DescribeJobRequest{JobID: jobID}, accountID)
+	if err != nil {
+		return nil, translateVectorErr(err)
+	}
+	if describeResp.Job.IndexID != kbRec.IndexID || describeResp.Job.DataSourceID != dsID {
+		return nil, errIngestionJobNotFound(jobID)
+	}
+
+	resp, err := vector.StopJob(ctx, &handlers_ochrevector.StopJobRequest{JobID: jobID}, accountID)
+	if err != nil {
+		return nil, translateVectorErr(err)
+	}
+
+	return &StopIngestionJobOutput{IngestionJob: jobRecordToOutput(kbID, dsID, resp.Job)}, nil
 }
 
 // ListIngestionJobs lists knowledgeBaseId's jobs via the new

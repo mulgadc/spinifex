@@ -161,6 +161,7 @@ func (d *Daemon) startOchreVector() {
 		{handlers_ochrevector.SubjectDescribeJob, handleNATSRequest(vectorService.DescribeJob), "spinifex-workers"},
 		{handlers_ochrevector.SubjectQuery, handleNATSRequest(vectorService.Query), "spinifex-workers"},
 		{handlers_ochrevector.SubjectListJobs, handleNATSRequest(vectorService.ListJobs), "spinifex-workers"},
+		{handlers_ochrevector.SubjectStopJob, handleNATSRequest(vectorService.StopJob), "spinifex-workers"},
 	}
 
 	// backup/restore need RegrantAccount alongside EnsureAccount, which is

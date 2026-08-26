@@ -137,6 +137,7 @@ services:
       - "ochre.vector.describeJob"
       - "ochre.vector.query"
       - "ochre.vector.listJobs"
+      - "ochre.vector.stopJob"
     publishes:
       # → vpcd
       - "vpc.create"

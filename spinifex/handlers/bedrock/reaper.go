@@ -9,9 +9,9 @@ import (
 
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/kvlease"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Sweep and lease timing. The holder refreshes well inside the bucket's TTL,
@@ -49,7 +49,7 @@ func NewReaper(svc *Service, holder string, deps ReaperDeps) *Reaper {
 	r := &Reaper{svc: svc, holder: holder, deps: deps}
 	r.lease, r.leaseErr = kvlease.New(kvlease.Config{
 		Name:   "bedrock/reaper",
-		Bucket: r.leaderBucket,
+		Bucket: svc.leader.KV,
 		Key:    leaderKey,
 		Holder: holder,
 		TTL:    KVBucketLeaderTTL,
@@ -124,22 +124,10 @@ func (r *Reaper) IsLeader() bool {
 	return r.lease.Held()
 }
 
-func (r *Reaper) leaderBucket(ctx context.Context) (jetstream.KeyValue, error) {
-	js, err := r.svc.js()
-	if err != nil {
-		return nil, err
-	}
-	return GetOrCreateLeaderBucket(ctx, js)
-}
-
 // sweepOnce scrapes every READY endpoint once and acts on what it saw. One
 // endpoint's failure does not stop the pass: the others still need deciding.
 func (r *Reaper) sweepOnce(ctx context.Context) error {
-	kv, err := r.svc.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	recs, err := ListEndpoints(ctx, kv, utils.GlobalAccountID)
+	recs, err := r.svc.store.list(ctx, utils.GlobalAccountID)
 	if err != nil {
 		return err
 	}
@@ -150,7 +138,7 @@ func (r *Reaper) sweepOnce(ctx context.Context) error {
 		if rec.State != StateReady {
 			continue
 		}
-		if err := r.sweepEndpoint(ctx, kv, rec); err != nil {
+		if err := r.sweepEndpoint(ctx, rec); err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", rec.ModelID, err))
 		}
 	}
@@ -175,19 +163,19 @@ func reaperScrapesMetrics(rec EndpointRecord) bool {
 }
 
 // sweepEndpoint decides one endpoint's fate from a single probe.
-func (r *Reaper) sweepEndpoint(ctx context.Context, kv jetstream.KeyValue, rec EndpointRecord) error {
+func (r *Reaper) sweepEndpoint(ctx context.Context, rec EndpointRecord) error {
 	scrapeCtx, cancel := context.WithTimeout(ctx, r.scrapeTimeout())
 	defer cancel()
 
 	// A bundle with no vLLM member exposes no load metrics to reclaim on, so
 	// it is kept warm and only liveness-probed rather than idle-scraped.
 	if !reaperScrapesMetrics(rec) {
-		return r.sweepLiveness(scrapeCtx, kv, rec)
+		return r.sweepLiveness(scrapeCtx, rec)
 	}
 
 	sample, err := scrapeMetrics(scrapeCtx, r.svc.httpClient(), rec.BaseURL)
 	if err != nil {
-		return r.recordScrapeFailure(ctx, kv, rec, err)
+		return r.recordScrapeFailure(ctx, rec, err)
 	}
 
 	now := time.Now().UTC()
@@ -208,7 +196,7 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, kv jetstream.KeyValue, rec E
 		}
 		return nil
 	}
-	return r.persistObservation(ctx, kv, rec, updated)
+	return r.persistObservation(ctx, rec, updated)
 }
 
 // sweepLiveness keeps a service-only bundle (embed/rerank, no generative
@@ -216,14 +204,14 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, kv jetstream.KeyValue, rec E
 // persistently unreachable, unpinned endpoint. A healthy probe refreshes the
 // warm clock; there is deliberately no scale-to-zero for a bundle whose whole
 // purpose is to stay warm on the retrieval hot path.
-func (r *Reaper) sweepLiveness(ctx context.Context, kv jetstream.KeyValue, rec EndpointRecord) error {
+func (r *Reaper) sweepLiveness(ctx context.Context, rec EndpointRecord) error {
 	if !probeOnce(ctx, r.svc.httpClient(), rec.BaseURL+"/health") {
-		return r.recordScrapeFailure(ctx, kv, rec, fmt.Errorf("liveness probe of %s/health failed", rec.BaseURL))
+		return r.recordScrapeFailure(ctx, rec, fmt.Errorf("liveness probe of %s/health failed", rec.BaseURL))
 	}
 	updated := rec
 	updated.ScrapeFailures = 0
 	updated.LastActiveAt = time.Now().UTC()
-	return r.persistObservation(ctx, kv, rec, updated)
+	return r.persistObservation(ctx, rec, updated)
 }
 
 // shouldReap applies the two rules an idle endpoint must clear before its GPU
@@ -242,7 +230,7 @@ func (r *Reaper) shouldReap(rec EndpointRecord, now time.Time) bool {
 // recordScrapeFailure counts an unknown sample and escalates a persistently
 // unreachable endpoint to terminate-and-relaunch. Never treats the failure as
 // idleness: a wedged VM must not be mistaken for a quiet one.
-func (r *Reaper) recordScrapeFailure(ctx context.Context, kv jetstream.KeyValue, rec EndpointRecord, cause error) error {
+func (r *Reaper) recordScrapeFailure(ctx context.Context, rec EndpointRecord, cause error) error {
 	updated := rec
 	updated.ScrapeFailures = rec.ScrapeFailures + 1
 
@@ -253,14 +241,14 @@ func (r *Reaper) recordScrapeFailure(ctx context.Context, kv jetstream.KeyValue,
 		slog.WarnContext(ctx, "bedrock reaper: scrape failed for a pinned endpoint; not reaping",
 			"model", rec.ModelID, "instanceId", rec.InstanceID,
 			"consecutiveFailures", updated.ScrapeFailures, "err", cause)
-		return r.persistObservation(ctx, kv, rec, updated)
+		return r.persistObservation(ctx, rec, updated)
 	}
 
 	if updated.ScrapeFailures < maxScrapeFailures {
 		slog.WarnContext(ctx, "bedrock reaper: metrics scrape failed",
 			"model", rec.ModelID, "instanceId", rec.InstanceID,
 			"consecutiveFailures", updated.ScrapeFailures, "err", cause)
-		return r.persistObservation(ctx, kv, rec, updated)
+		return r.persistObservation(ctx, rec, updated)
 	}
 
 	slog.ErrorContext(ctx, "bedrock reaper: endpoint unreachable; terminating and relaunching",
@@ -282,13 +270,13 @@ func (r *Reaper) recordScrapeFailure(ctx context.Context, kv jetstream.KeyValue,
 // persistObservation CAS-writes the sweep's findings, and only when they
 // changed: a steady-state idle endpoint would otherwise cost a KV write per
 // tick per endpoint forever.
-func (r *Reaper) persistObservation(ctx context.Context, kv jetstream.KeyValue, prev, next EndpointRecord) error {
+func (r *Reaper) persistObservation(ctx context.Context, prev, next EndpointRecord) error {
 	if prev.LastActiveAt.Equal(next.LastActiveAt) && prev.InFlight == next.InFlight &&
 		prev.SuccessTotal == next.SuccessTotal && prev.ScrapeFailures == next.ScrapeFailures {
 		return nil
 	}
 	key := resolveKey(utils.GlobalAccountID, next.ModelID)
-	current, rev, found, err := getFullJSON(ctx, kv, key)
+	current, rev, found, err := r.svc.store.getRevision(ctx, key)
 	if err != nil {
 		return err
 	}
@@ -298,8 +286,8 @@ func (r *Reaper) persistObservation(ctx context.Context, kv jetstream.KeyValue, 
 		return nil
 	}
 	next.Generation = current.Generation + 1
-	if err := updateJSON(ctx, kv, key, rev, next); err != nil {
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+	if err := r.svc.store.CompareAndSet(ctx, key, &next, rev); err != nil {
+		if errors.Is(err, kvstore.ErrConflict) {
 			return nil
 		}
 		return err

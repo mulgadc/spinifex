@@ -14,6 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -60,8 +61,12 @@ type ServiceDeps struct {
 // any replica may read/write any key — hence the KV CAS layer beneath the
 // local per-key mutex (see ensureMu).
 type Service struct {
-	nc   *nats.Conn
-	deps ServiceDeps
+	nc    *nats.Conn
+	deps  ServiceDeps
+	store *endpointStore
+	// leader is the reaper's TTL-backed lease bucket, built alongside the
+	// endpoints store so both share this Service's one JetStream client.
+	leader *kvstore.Bucket
 
 	// ensureMu collapses concurrent Ensure calls FOR THE SAME KEY on THIS
 	// replica into one KV round trip: without it, N concurrent local callers
@@ -78,28 +83,35 @@ type Service struct {
 var _ EndpointService = (*Service)(nil)
 
 // NewService constructs a Service bound to nc, using deps for launch/capacity.
+// Both buckets are resolved lazily but memoised, so the get-or-create round
+// trip is paid once for the daemon rather than once per KV call.
 func NewService(nc *nats.Conn, deps ServiceDeps) *Service {
-	return &Service{nc: nc, deps: deps}
+	js := serviceJetStream(nc)
+	return &Service{
+		nc:     nc,
+		deps:   deps,
+		store:  newEndpointStore(js, deps.Replicas),
+		leader: newLeaderBucket(js),
+	}
+}
+
+// serviceJetStream derives a JetStream client from nc, or nil when there is no
+// connection to derive one from. kvstore reports a nil client as
+// missingJetStream, which is the error the accessors used to raise themselves.
+func serviceJetStream(nc *nats.Conn) jetstream.JetStream {
+	if nc == nil {
+		return nil
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil
+	}
+	return js
 }
 
 // WaitLaunches blocks until every async launch this Service has started so
 // far has finished. Test-only.
 func (s *Service) WaitLaunches() { s.launchWG.Wait() }
-
-func (s *Service) js() (jetstream.JetStream, error) {
-	if s.nc == nil {
-		return nil, errors.New("bedrock service: nil nats connection")
-	}
-	return jetstream.New(s.nc)
-}
-
-func (s *Service) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	js, err := s.js()
-	if err != nil {
-		return nil, err
-	}
-	return GetOrCreateEndpointsBucket(ctx, js, s.deps.Replicas)
-}
 
 func (s *Service) startupTimeout() time.Duration {
 	if s.deps.StartupTimeout > 0 {
@@ -168,13 +180,7 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 	unlock := s.ensureMu.lock(key)
 	defer unlock()
 
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var existing EndpointRecord
-	found, err := getJSON(ctx, kv, key, &existing)
+	existing, found, err := s.store.get(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: read endpoint %s: %w", in.ModelID, err)
 	}
@@ -193,7 +199,7 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 		// No free device. A GPU held by a model nobody is calling is not a
 		// reason to refuse this one, so make room and re-check — but return the
 		// original refusal, unchanged, when nothing can be given up.
-		if !s.evictForCapacity(ctx, kv, in.ModelID, spec.TotalMinVRAMMiB) {
+		if !s.evictForCapacity(ctx, in.ModelID, spec.TotalMinVRAMMiB) {
 			return nil, err
 		}
 		if retryErr := admitBundleCapacity(s.deps.GPU, in.ModelID); retryErr != nil {
@@ -213,13 +219,12 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 		Generation: 1,
 		Pinned:     in.Pinned,
 	}
-	if _, err := createJSONRevision(ctx, kv, key, rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+	if _, err := s.store.Create(ctx, key, &rec); err != nil {
+		if errors.Is(err, kvstore.ErrExists) {
 			// Lost the cross-replica race after the read above: some other
 			// replica's Ensure claimed the key in between. Its record is the
 			// answer, not an error.
-			var winner EndpointRecord
-			if ok, gerr := getJSON(ctx, kv, key, &winner); gerr == nil && ok {
+			if winner, ok, gerr := s.store.get(ctx, key); gerr == nil && ok {
 				winner.ModelID = in.ModelID
 				return &EnsureEndpointOutput{Endpoint: winner}, nil
 			}
@@ -256,8 +261,8 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 //
 // Delete takes the per-key mutex for the victim while Ensure holds it for
 // wantModelID. The two can never be the same key, so the locks are disjoint.
-func (s *Service) evictForCapacity(ctx context.Context, kv jetstream.KeyValue, wantModelID string, minVRAMMiB int) bool {
-	recs, err := ListEndpoints(ctx, kv, utils.GlobalAccountID)
+func (s *Service) evictForCapacity(ctx context.Context, wantModelID string, minVRAMMiB int) bool {
+	recs, err := s.store.list(ctx, utils.GlobalAccountID)
 	if err != nil {
 		slog.ErrorContext(ctx, "bedrock: list endpoints for eviction failed", "model", wantModelID, "err", err)
 		return false
@@ -341,17 +346,12 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 	rec.ReadyAt = time.Now().UTC()
 	rec.Generation++
 
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		slog.ErrorContext(ctx, "bedrock: bucket unavailable to record READY", "group", spec.GroupID, "err", err)
-		return
-	}
-	_, rev, gerr := readCurrent(ctx, kv, key)
+	_, rev, gerr := s.readCurrent(ctx, key)
 	if gerr != nil {
 		slog.ErrorContext(ctx, "bedrock: re-read endpoint before READY write failed", "group", spec.GroupID, "err", gerr)
 		return
 	}
-	if err := updateJSON(ctx, kv, key, rev, rec); err != nil {
+	if err := s.store.CompareAndSet(ctx, key, &rec, rev); err != nil {
 		slog.ErrorContext(ctx, "bedrock: CAS write of READY state failed", "group", spec.GroupID, "err", err)
 	}
 }
@@ -379,21 +379,15 @@ func (s *Service) abortLaunch(ctx context.Context, key, modelID string) {
 		slog.ErrorContext(ctx, "bedrock: illegal abort transition", "model", modelID, "err", err)
 		return
 	}
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		slog.ErrorContext(ctx, "bedrock: bucket unavailable to abort launch", "model", modelID, "err", err)
-		return
-	}
-	if err := deleteJSON(ctx, kv, key); err != nil {
+	if err := s.store.Purge(ctx, key); err != nil {
 		slog.ErrorContext(ctx, "bedrock: revert of failed launch failed; record may be stuck STARTING",
 			"model", modelID, "err", err)
 	}
 }
 
 // readCurrent re-reads key's current record and revision.
-func readCurrent(ctx context.Context, kv jetstream.KeyValue, key string) (EndpointRecord, uint64, error) {
-	var rec EndpointRecord
-	rev, found, err := getJSONRevision(ctx, kv, key, &rec)
+func (s *Service) readCurrent(ctx context.Context, key string) (EndpointRecord, uint64, error) {
+	rec, rev, found, err := s.store.getRevision(ctx, key)
 	if err != nil {
 		return EndpointRecord{}, 0, err
 	}
@@ -411,12 +405,7 @@ func (s *Service) Describe(ctx context.Context, in *DescribeEndpointInput, _ str
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	storeAccountID := resolveAccountID(in.AccountID)
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var rec EndpointRecord
-	found, err := getJSON(ctx, kv, resolveKey(storeAccountID, in.ModelID), &rec)
+	rec, found, err := s.store.get(ctx, resolveKey(storeAccountID, in.ModelID))
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: describe endpoint %s: %w", in.ModelID, err)
 	}
@@ -432,11 +421,7 @@ func (s *Service) Describe(ctx context.Context, in *DescribeEndpointInput, _ str
 // every account: an operator listing must see a pinned, account-scoped
 // endpoint alongside the shared platform ones, not just the latter.
 func (s *Service) List(ctx context.Context, _ *ListEndpointsInput, _ string) (*ListEndpointsOutput, error) {
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	recs, err := ListAllEndpoints(ctx, kv)
+	recs, err := s.store.listAll(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -459,11 +444,7 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 	unlock := s.ensureMu.lock(key)
 	defer unlock()
 
-	kv, err := s.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rec, rev, found, err := getFullJSON(ctx, kv, key)
+	rec, rev, found, err := s.store.getRevision(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: read endpoint %s: %w", in.ModelID, err)
 	}
@@ -480,7 +461,7 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 		}
 		rec.State = StateDraining
 		rec.Generation++
-		if err := updateJSON(ctx, kv, key, rev, rec); err != nil {
+		if err := s.store.CompareAndSet(ctx, key, &rec, rev); err != nil {
 			return nil, fmt.Errorf("bedrock: mark endpoint %s draining: %w", in.ModelID, err)
 		}
 	}
@@ -491,18 +472,10 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 	if err := validateTransition(StateDraining, StateAbsent); err != nil {
 		return nil, err
 	}
-	if err := deleteJSON(ctx, kv, key); err != nil {
+	if err := s.store.Purge(ctx, key); err != nil {
 		return nil, fmt.Errorf("bedrock: remove endpoint %s record: %w", in.ModelID, err)
 	}
 	return &DeleteEndpointOutput{Removed: true}, nil
-}
-
-// getFullJSON is getJSONRevision with the found flag surfaced alongside the
-// value and revision, for callers (Delete) that branch on all three.
-func getFullJSON(ctx context.Context, kv jetstream.KeyValue, key string) (EndpointRecord, uint64, bool, error) {
-	var rec EndpointRecord
-	rev, found, err := getJSONRevision(ctx, kv, key, &rec)
-	return rec, rev, found, err
 }
 
 // keyMutex hands out a per-key *sync.Mutex, creating it on first use. Entries

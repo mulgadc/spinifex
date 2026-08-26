@@ -460,3 +460,46 @@ func TestBucket_TTLOpensABucketWithThatMaxAge(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 90*time.Minute, status.TTL(), "Config.TTL must reach the created bucket")
 }
+
+func TestStore_PurgeIsIdempotent(t *testing.T) {
+	store := newStore(t)
+	mustCreate(t, store, "acct-a/one", record{Name: "one"})
+
+	require.NoError(t, store.Purge(t.Context(), "acct-a/one"))
+	require.NoError(t, store.Purge(t.Context(), "acct-a/one"), "purging an absent key is success")
+	require.NoError(t, store.Purge(t.Context(), "never-existed"))
+
+	_, _, err := store.Get(t.Context(), "acct-a/one")
+	require.ErrorIs(t, err, kvstore.ErrNotFound)
+}
+
+// TestStore_PurgeDropsTheHistoryDeleteKeeps is the whole reason Purge exists
+// alongside Delete: a deleted key keeps its prior values in history, a purged
+// one collapses to the marker alone.
+func TestStore_PurgeDropsTheHistoryDeleteKeeps(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	store := kvstore.New[record](testutil.NewJetStream(t, nc), kvstore.Config{
+		Name:    "kvstore-purge-test",
+		History: 5,
+	})
+	kv, err := store.KV(t.Context())
+	require.NoError(t, err)
+
+	seed := func(key string) {
+		mustCreate(t, store, key, record{Name: key, Count: 1})
+		seedRaw(t, store, key, record{Name: key, Count: 2})
+	}
+
+	seed("deleted")
+	require.NoError(t, store.Delete(t.Context(), "deleted"))
+	deleted, err := kv.History(t.Context(), "deleted")
+	require.NoError(t, err)
+	assert.Len(t, deleted, 3, "a delete leaves the two prior values behind its marker")
+
+	seed("purged")
+	require.NoError(t, store.Purge(t.Context(), "purged"))
+	purged, err := kv.History(t.Context(), "purged")
+	require.NoError(t, err)
+	require.Len(t, purged, 1, "a purge takes the prior values with it")
+	assert.Equal(t, jetstream.KeyValuePurge, purged[0].Operation())
+}

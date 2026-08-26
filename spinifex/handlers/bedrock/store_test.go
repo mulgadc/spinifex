@@ -3,8 +3,8 @@ package handlers_bedrock
 import (
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,36 +14,32 @@ func TestEndpointKey_Base64EncodesColonBearingModelID(t *testing.T) {
 	assert.Equal(t, "000000000000/"+"bWV0YS5sbGFtYTMtMi0xYi1pbnN0cnVjdC12MTow", key)
 }
 
-func newTestBucket(t *testing.T) jetstream.KeyValue {
+func newTestBucket(t *testing.T) *endpointStore {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
-	require.NoError(t, err)
-	return kv
+	return newEndpointStore(js, 1)
 }
 
 func TestStore_CreateGetUpdateDelete(t *testing.T) {
-	kv := newTestBucket(t)
+	store := newTestBucket(t)
 	key := EndpointKey("000000000000", "test-model")
 
 	// Absent key reads as not-found, not an error.
-	var rec EndpointRecord
-	found, err := getJSON(t.Context(), kv, key, &rec)
+	_, found, err := store.get(t.Context(), key)
 	require.NoError(t, err)
 	assert.False(t, found)
 
-	rec = EndpointRecord{AccountID: "000000000000", ModelID: "test-model", State: StateStarting, Generation: 1}
-	rev, err := createJSONRevision(t.Context(), kv, key, rec)
+	rec := EndpointRecord{AccountID: "000000000000", ModelID: "test-model", State: StateStarting, Generation: 1}
+	rev, err := store.Create(t.Context(), key, &rec)
 	require.NoError(t, err)
 	assert.Positive(t, rev)
 
 	// A second create at the same key is rejected: this is the claim
 	// primitive Ensure relies on for cross-replica single-flight.
-	_, err = createJSONRevision(t.Context(), kv, key, rec)
-	assert.ErrorIs(t, err, jetstream.ErrKeyExists)
+	_, err = store.Create(t.Context(), key, &rec)
+	assert.ErrorIs(t, err, kvstore.ErrExists)
 
-	var got EndpointRecord
-	gotRev, found, err := getJSONRevision(t.Context(), kv, key, &got)
+	got, gotRev, found, err := store.getRevision(t.Context(), key)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, rev, gotRev)
@@ -51,46 +47,46 @@ func TestStore_CreateGetUpdateDelete(t *testing.T) {
 
 	got.State = StateReady
 	got.Generation = 2
-	require.NoError(t, updateJSON(t.Context(), kv, key, gotRev, got))
+	require.NoError(t, store.CompareAndSet(t.Context(), key, &got, gotRev))
 
 	// The CAS update must fail against the now-stale revision — this is what
 	// stops a launch goroutine and a concurrent writer stomping each other.
-	err = updateJSON(t.Context(), kv, key, gotRev, got)
-	assert.Error(t, err)
+	err = store.CompareAndSet(t.Context(), key, &got, gotRev)
+	assert.ErrorIs(t, err, kvstore.ErrConflict)
 
-	require.NoError(t, deleteJSON(t.Context(), kv, key))
-	found, err = getJSON(t.Context(), kv, key, &rec)
+	require.NoError(t, store.Purge(t.Context(), key))
+	_, found, err = store.get(t.Context(), key)
 	require.NoError(t, err)
 	assert.False(t, found)
 
-	// Deleting an already-absent key is idempotent.
-	require.NoError(t, deleteJSON(t.Context(), kv, key))
+	// Purging an already-absent key is idempotent.
+	require.NoError(t, store.Purge(t.Context(), key))
 }
 
 func TestListEndpoints_FiltersByAccountPrefix(t *testing.T) {
-	kv := newTestBucket(t)
+	store := newTestBucket(t)
 
 	seed := func(accountID, modelID string, state EndpointState) {
 		rec := EndpointRecord{AccountID: accountID, ModelID: modelID, State: state, Generation: 1}
-		_, err := createJSONRevision(t.Context(), kv, EndpointKey(accountID, modelID), rec)
+		_, err := store.Create(t.Context(), EndpointKey(accountID, modelID), &rec)
 		require.NoError(t, err)
 	}
 	seed("000000000000", "model-a", StateReady)
 	seed("000000000000", "model-b", StateStarting)
 	seed("111111111111", "model-c", StateReady)
 
-	recs, err := ListEndpoints(t.Context(), kv, "000000000000")
+	recs, err := store.list(t.Context(), "000000000000")
 	require.NoError(t, err)
 	require.Len(t, recs, 2)
 	modelIDs := []string{recs[0].ModelID, recs[1].ModelID}
 	assert.ElementsMatch(t, []string{"model-a", "model-b"}, modelIDs)
 
-	recs, err = ListEndpoints(t.Context(), kv, "111111111111")
+	recs, err = store.list(t.Context(), "111111111111")
 	require.NoError(t, err)
 	require.Len(t, recs, 1)
 	assert.Equal(t, "model-c", recs[0].ModelID)
 
-	recs, err = ListEndpoints(t.Context(), kv, "222222222222")
+	recs, err = store.list(t.Context(), "222222222222")
 	require.NoError(t, err)
 	assert.Empty(t, recs)
 }
@@ -98,9 +94,9 @@ func TestListEndpoints_FiltersByAccountPrefix(t *testing.T) {
 // A bucket that has never held an endpoint is the normal pre-launch state.
 // JetStream reports it as ErrNoKeysFound, which must read as empty, not fail.
 func TestListEndpoints_EmptyBucketIsNotAnError(t *testing.T) {
-	kv := newTestBucket(t)
+	store := newTestBucket(t)
 
-	recs, err := ListEndpoints(t.Context(), kv, "000000000000")
+	recs, err := store.list(t.Context(), "000000000000")
 	require.NoError(t, err)
 	assert.Empty(t, recs)
 }
@@ -110,17 +106,17 @@ func TestListEndpoints_EmptyBucketIsNotAnError(t *testing.T) {
 // records in one pass, which is what an operator listing needs to see a
 // pinned endpoint alongside the shared platform ones.
 func TestListAllEndpoints_ReturnsAcrossAccounts(t *testing.T) {
-	kv := newTestBucket(t)
+	store := newTestBucket(t)
 
 	seed := func(accountID, modelID string, state EndpointState, pinned bool) {
 		rec := EndpointRecord{AccountID: accountID, ModelID: modelID, State: state, Pinned: pinned, Generation: 1}
-		_, err := createJSONRevision(t.Context(), kv, EndpointKey(accountID, modelID), rec)
+		_, err := store.Create(t.Context(), EndpointKey(accountID, modelID), &rec)
 		require.NoError(t, err)
 	}
 	seed("000000000000", "model-a", StateReady, false)
 	seed("111111111111", "model-c", StateReady, true)
 
-	recs, err := ListAllEndpoints(t.Context(), kv)
+	recs, err := store.listAll(t.Context())
 	require.NoError(t, err)
 	require.Len(t, recs, 2)
 
@@ -137,9 +133,9 @@ func TestListAllEndpoints_ReturnsAcrossAccounts(t *testing.T) {
 // TestListAllEndpoints_EmptyBucketIsNotAnError mirrors ListEndpoints' own
 // empty-bucket guard.
 func TestListAllEndpoints_EmptyBucketIsNotAnError(t *testing.T) {
-	kv := newTestBucket(t)
+	store := newTestBucket(t)
 
-	recs, err := ListAllEndpoints(t.Context(), kv)
+	recs, err := store.listAll(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, recs)
 }

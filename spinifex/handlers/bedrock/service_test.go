@@ -207,15 +207,13 @@ func TestDelete_IdempotentOnAbsent(t *testing.T) {
 
 func TestDelete_RefusesNonReadyState(t *testing.T) {
 	h := newLaunchHarness()
-	s, nc := newTestService(t, h, http.StatusOK, sufficientGPU())
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
-	js := testutil.NewJetStream(t, nc)
-	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
-	require.NoError(t, err)
 	key := resolveKey(utils.GlobalAccountID, testModelID)
-	_, err = createJSONRevision(t.Context(), kv, key, EndpointRecord{
+	rec := EndpointRecord{
 		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateStarting, Generation: 1,
-	})
+	}
+	_, err := s.store.Create(t.Context(), key, &rec)
 	require.NoError(t, err)
 
 	_, err = s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
@@ -229,16 +227,14 @@ func TestDelete_RefusesNonReadyState(t *testing.T) {
 // DRAINING as neither servable nor relaunchable.
 func TestDelete_ResumesFromDraining(t *testing.T) {
 	h := newLaunchHarness()
-	s, nc := newTestService(t, h, http.StatusOK, sufficientGPU())
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
-	js := testutil.NewJetStream(t, nc)
-	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
-	require.NoError(t, err)
 	key := resolveKey(utils.GlobalAccountID, testModelID)
-	_, err = createJSONRevision(t.Context(), kv, key, EndpointRecord{
+	rec := EndpointRecord{
 		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateDraining,
 		InstanceID: "i-stranded", Generation: 2,
-	})
+	}
+	_, err := s.store.Create(t.Context(), key, &rec)
 	require.NoError(t, err)
 
 	_, err = s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID}, "")
@@ -260,7 +256,7 @@ const testAccountID = "111111111111"
 // unpinned, exactly as every pre-existing caller relies on.
 func TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned(t *testing.T) {
 	h := newLaunchHarness()
-	s, nc := newTestService(t, h, http.StatusOK, sufficientGPU())
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
 	out, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
 	require.NoError(t, err)
@@ -268,11 +264,7 @@ func TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned(t *testing.T) {
 	assert.False(t, out.Endpoint.Pinned)
 	s.WaitLaunches()
 
-	js := testutil.NewJetStream(t, nc)
-	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
-	require.NoError(t, err)
-	var rec EndpointRecord
-	found, err := getJSON(t.Context(), kv, resolveKey(utils.GlobalAccountID, testModelID), &rec)
+	rec, found, err := s.store.get(t.Context(), resolveKey(utils.GlobalAccountID, testModelID))
 	require.NoError(t, err)
 	require.True(t, found, "an empty AccountID must key the record under GlobalAccountID")
 	assert.False(t, rec.Pinned)
@@ -283,7 +275,7 @@ func TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned(t *testing.T) {
 // GlobalAccountID endpoint and persist Pinned on it.
 func TestEnsure_RealAccountIDKeysUnderAccountAndPersistsPinned(t *testing.T) {
 	h := newLaunchHarness()
-	s, nc := newTestService(t, h, http.StatusOK, sufficientGPU())
+	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
 	out, err := s.Ensure(t.Context(), &EnsureEndpointInput{
 		ModelID: testModelID, AccountID: testAccountID, Pinned: true,
@@ -293,18 +285,13 @@ func TestEnsure_RealAccountIDKeysUnderAccountAndPersistsPinned(t *testing.T) {
 	assert.True(t, out.Endpoint.Pinned)
 	s.WaitLaunches()
 
-	js := testutil.NewJetStream(t, nc)
-	kv, err := GetOrCreateEndpointsBucket(t.Context(), js, 1)
-	require.NoError(t, err)
-	var rec EndpointRecord
-	found, err := getJSON(t.Context(), kv, resolveKey(testAccountID, testModelID), &rec)
+	rec, found, err := s.store.get(t.Context(), resolveKey(testAccountID, testModelID))
 	require.NoError(t, err)
 	require.True(t, found, "a real AccountID must key the record under that account, not Global")
 	assert.True(t, rec.Pinned)
 
 	// Nothing must have landed under the shared Global key.
-	var globalRec EndpointRecord
-	foundGlobal, err := getJSON(t.Context(), kv, resolveKey(utils.GlobalAccountID, testModelID), &globalRec)
+	_, foundGlobal, err := s.store.get(t.Context(), resolveKey(utils.GlobalAccountID, testModelID))
 	require.NoError(t, err)
 	assert.False(t, foundGlobal)
 }

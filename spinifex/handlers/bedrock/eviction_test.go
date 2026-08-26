@@ -168,9 +168,7 @@ func TestEvictForCapacity_NeverEvictsTheRequester(t *testing.T) {
 	s, _ := newTestService(t, h, 200, exhaustedGPU())
 	seedReadyEndpoint(t, s, testModelID, time.Now().UTC().Add(-time.Hour))
 
-	kv, err := s.bucket(t.Context())
-	require.NoError(t, err)
-	assert.False(t, s.evictForCapacity(t.Context(), kv, testModelID, 5120))
+	assert.False(t, s.evictForCapacity(t.Context(), testModelID, 5120))
 	assert.Empty(t, h.launcher.terminations())
 }
 
@@ -214,8 +212,6 @@ func TestSelectEvictable_SkipsRecordCreatedPinnedViaEnsure(t *testing.T) {
 // today, so a launched one cannot be joined by a second through Ensure.
 func seedReadyEndpoint(t *testing.T, s *Service, modelID string, readyAt time.Time) EndpointRecord {
 	t.Helper()
-	kv, err := s.bucket(t.Context())
-	require.NoError(t, err)
 	rec := EndpointRecord{
 		AccountID:  utils.GlobalAccountID,
 		ModelID:    modelID,
@@ -226,19 +222,17 @@ func seedReadyEndpoint(t *testing.T, s *Service, modelID string, readyAt time.Ti
 		ReadyAt:    readyAt,
 		Generation: 2,
 	}
-	_, err = createJSONRevision(t.Context(), kv, EndpointKey(utils.GlobalAccountID, modelID), rec)
+	_, err := s.store.Create(t.Context(), EndpointKey(utils.GlobalAccountID, modelID), &rec)
 	require.NoError(t, err)
 	return rec
 }
 
 func pinEndpoint(t *testing.T, s *Service, modelID string) {
 	t.Helper()
-	kv, err := s.bucket(t.Context())
-	require.NoError(t, err)
 	key := EndpointKey(utils.GlobalAccountID, modelID)
-	rec, rev, found, err := getFullJSON(t.Context(), kv, key)
+	rec, rev, found, err := s.store.getRevision(t.Context(), key)
 	require.NoError(t, err)
 	require.True(t, found)
 	rec.Pinned = true
-	require.NoError(t, updateJSON(t.Context(), kv, key, rev, rec))
+	require.NoError(t, s.store.CompareAndSet(t.Context(), key, &rec, rev))
 }

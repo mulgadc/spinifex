@@ -103,6 +103,19 @@ func (s *Store[T]) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// Purge is Delete for a key whose history must go with it, so a later Create
+// sees a key that never existed rather than one with a delete marker on top.
+func (s *Store[T]) Purge(ctx context.Context, key string) error {
+	kv, err := s.KV(ctx)
+	if err != nil {
+		return err
+	}
+	if err := kv.Purge(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+		return fmt.Errorf("kvstore: purge %s: %w", key, err)
+	}
+	return nil
+}
+
 // List decodes every record whose key carries the given prefix. An empty
 // prefix matches everything and an empty bucket is not an error. A key that
 // disappears between the listing and the read is skipped.

@@ -15,7 +15,6 @@ import (
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -75,7 +74,7 @@ type reaperFixture struct {
 	reaper    *Reaper
 	harness   *launchHarness
 	transport *vllmTransport
-	kv        jetstream.KeyValue
+	store     *endpointStore
 }
 
 func newReaperFixture(t *testing.T, deps ReaperDeps) *reaperFixture {
@@ -95,15 +94,12 @@ func newReaperFixture(t *testing.T, deps ReaperDeps) *reaperFixture {
 		PollInterval:   5 * time.Millisecond,
 		Replicas:       1,
 	})
-	kv, err := svc.bucket(t.Context())
-	require.NoError(t, err)
-
 	return &reaperFixture{
 		svc:       svc,
 		reaper:    NewReaper(svc, "node-a", deps),
 		harness:   h,
 		transport: transport,
-		kv:        kv,
+		store:     svc.store,
 	}
 }
 
@@ -125,7 +121,7 @@ func (f *reaperFixture) ready(t *testing.T) EndpointRecord {
 func (f *reaperFixture) age(t *testing.T, readyAgo, activeAgo time.Duration) EndpointRecord {
 	t.Helper()
 	key := resolveKey(utils.GlobalAccountID, testModelID)
-	rec, rev, found, err := getFullJSON(t.Context(), f.kv, key)
+	rec, rev, found, err := f.store.getRevision(t.Context(), key)
 	require.NoError(t, err)
 	require.True(t, found)
 
@@ -134,13 +130,13 @@ func (f *reaperFixture) age(t *testing.T, readyAgo, activeAgo time.Duration) End
 	if activeAgo > 0 {
 		rec.LastActiveAt = now.Add(-activeAgo)
 	}
-	require.NoError(t, updateJSON(t.Context(), f.kv, key, rev, rec))
+	require.NoError(t, f.store.CompareAndSet(t.Context(), key, &rec, rev))
 	return rec
 }
 
 func (f *reaperFixture) current(t *testing.T) (EndpointRecord, bool) {
 	t.Helper()
-	rec, _, found, err := getFullJSON(t.Context(), f.kv, resolveKey(utils.GlobalAccountID, testModelID))
+	rec, _, found, err := f.store.getRevision(t.Context(), resolveKey(utils.GlobalAccountID, testModelID))
 	require.NoError(t, err)
 	return rec, found
 }
@@ -179,10 +175,10 @@ func TestReaper_NeverReapsPinnedEndpoint(t *testing.T) {
 	f.age(t, time.Hour, time.Hour)
 
 	key := resolveKey(utils.GlobalAccountID, testModelID)
-	rec, rev, _, err := getFullJSON(t.Context(), f.kv, key)
+	rec, rev, _, err := f.store.getRevision(t.Context(), key)
 	require.NoError(t, err)
 	rec.Pinned = true
-	require.NoError(t, updateJSON(t.Context(), f.kv, key, rev, rec))
+	require.NoError(t, f.store.CompareAndSet(t.Context(), key, &rec, rev))
 
 	require.NoError(t, f.reaper.sweepOnce(t.Context()))
 
@@ -292,11 +288,11 @@ func TestReaper_PinnedEndpointNotReapedOnScrapeFailure(t *testing.T) {
 	f.ready(t)
 
 	key := resolveKey(utils.GlobalAccountID, testModelID)
-	rec, rev, found, err := getFullJSON(t.Context(), f.kv, key)
+	rec, rev, found, err := f.store.getRevision(t.Context(), key)
 	require.NoError(t, err)
 	require.True(t, found)
 	rec.Pinned = true
-	require.NoError(t, updateJSON(t.Context(), f.kv, key, rev, rec))
+	require.NoError(t, f.store.CompareAndSet(t.Context(), key, &rec, rev))
 
 	f.transport.breakScrapes()
 	for range maxScrapeFailures + 2 {
@@ -318,7 +314,7 @@ func TestReaper_ServiceOnlyBundleLivenessProbedNotReaped(t *testing.T) {
 
 	const embedModelID = "embed-only-bundle"
 	key := resolveKey(utils.GlobalAccountID, embedModelID)
-	_, err := createJSONRevision(t.Context(), f.kv, key, EndpointRecord{
+	rec := EndpointRecord{
 		AccountID:    utils.GlobalAccountID,
 		ModelID:      embedModelID,
 		State:        StateReady,
@@ -328,12 +324,13 @@ func TestReaper_ServiceOnlyBundleLivenessProbedNotReaped(t *testing.T) {
 		ReadyAt:      time.Now().Add(-time.Hour),
 		LastActiveAt: time.Now().Add(-time.Hour),
 		Generation:   1,
-	})
+	}
+	_, err := f.store.Create(t.Context(), key, &rec)
 	require.NoError(t, err)
 
 	require.NoError(t, f.reaper.sweepOnce(t.Context()))
 
-	rec, rev, found, err := getFullJSON(t.Context(), f.kv, key)
+	rec, rev, found, err := f.store.getRevision(t.Context(), key)
 	require.NoError(t, err)
 	require.True(t, found, "a warm service bundle is never idle-reaped")
 	assert.Empty(t, f.harness.launcher.terminated)
@@ -379,9 +376,10 @@ func TestReaper_UnchangedObservationWritesNothing(t *testing.T) {
 func TestReaper_SkipsNonReadyRecords(t *testing.T) {
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Nanosecond})
 	key := resolveKey(utils.GlobalAccountID, testModelID)
-	_, err := createJSONRevision(t.Context(), f.kv, key, EndpointRecord{
+	rec := EndpointRecord{
 		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateStarting, Generation: 1,
-	})
+	}
+	_, err := f.store.Create(t.Context(), key, &rec)
 	require.NoError(t, err)
 
 	require.NoError(t, f.reaper.sweepOnce(t.Context()))

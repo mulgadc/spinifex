@@ -118,7 +118,7 @@ func kbKey(accountID, id string) string {
 // stamped from accountID, overriding whatever the caller set.
 func (s *KBStore) Create(ctx context.Context, accountID string, rec KBRecord) error {
 	rec.AccountID = accountID
-	if err := s.store.Create(ctx, kbKey(accountID, rec.ID), &rec); err != nil {
+	if _, err := s.store.Create(ctx, kbKey(accountID, rec.ID), &rec); err != nil {
 		if errors.Is(err, kvstore.ErrExists) {
 			return ErrKBExists
 		}
@@ -185,7 +185,7 @@ func dataSourceKey(accountID, id string) string {
 // Create atomically claims rec.ID for accountID, mirroring KBStore.Create.
 func (s *DataSourceStore) Create(ctx context.Context, accountID string, rec DataSourceRecord) error {
 	rec.AccountID = accountID
-	if err := s.store.Create(ctx, dataSourceKey(accountID, rec.ID), &rec); err != nil {
+	if _, err := s.store.Create(ctx, dataSourceKey(accountID, rec.ID), &rec); err != nil {
 		if errors.Is(err, kvstore.ErrExists) {
 			return ErrDataSourceExists
 		}

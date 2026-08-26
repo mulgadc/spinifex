@@ -123,56 +123,44 @@ func (s *RouteTableServiceImpl) putRouteTable(ctx context.Context, accountID str
 // parallel AssociateRouteTable calls Terraform fans out per route table.
 const rtbCASMaxRetries = 16
 
+// errRTBAbsent and errRTBContended mark the two kvutil outcomes that map to
+// specific AWS errors rather than a generic internal failure. Neither
+// escapes this file.
+var (
+	errRTBAbsent    = errors.New("routetable: record absent")
+	errRTBContended = errors.New("routetable: CAS retries exhausted")
+)
+
 // mutateRouteTableCAS applies mutate to a route table under optimistic
-// concurrency: read with revision, mutate, then Update guarded by that
-// revision, retrying when a concurrent writer wins. A blind read-modify-Put
-// loses updates when callers associate several subnets with one route table at
-// once. mutate reports whether it changed the record; a false return commits
-// nothing.
+// concurrency. A blind read-modify-Put loses updates when callers associate
+// several subnets with one route table at once. mutate reports whether
+// it changed the record; a false return commits nothing.
 func (s *RouteTableServiceImpl) mutateRouteTableCAS(ctx context.Context, accountID, rtbID string, mutate func(*RouteTableRecord) (bool, error)) error {
-	key := utils.AccountKey(accountID, rtbID)
-	for range rtbCASMaxRetries {
-		entry, err := s.rtbKV.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				return errors.New(awserrors.ErrorInvalidRouteTableIDNotFound)
-			}
-			slog.ErrorContext(ctx, "Failed to read route table from KV", "routeTableId", rtbID, "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-
-		var record RouteTableRecord
-		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			slog.ErrorContext(ctx, "Corrupt route table record in KV", "routeTableId", rtbID, "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-
-		changed, err := mutate(&record)
-		if err != nil {
-			return err
-		}
-		if !changed {
-			return nil
-		}
-
-		data, err := json.Marshal(&record)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to marshal route table record", "routeTableId", rtbID, "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-		if _, err := s.rtbKV.Update(ctx, key, data, entry.Revision()); err != nil {
-			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-				continue // CAS conflict — another writer won, re-read and retry.
-			}
-			slog.ErrorContext(ctx, "Failed to write route table to KV", "routeTableId", rtbID, "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
+	_, err := kvutil.Update(ctx, s.rtbKV, utils.AccountKey(accountID, rtbID), kvutil.CASConfig{
+		Attempts:  rtbCASMaxRetries,
+		NotFound:  errRTBAbsent,
+		Exhausted: func(string, int) error { return errRTBContended },
+	}, mutate)
+	switch {
+	case err == nil:
 		return nil
+	case errors.Is(err, errRTBAbsent):
+		return errors.New(awserrors.ErrorInvalidRouteTableIDNotFound)
+	case errors.Is(err, errRTBContended):
+		// Contended rather than broken.
+		slog.ErrorContext(ctx, "Route table CAS retries exhausted under contention",
+			"routeTableId", rtbID, "attempts", rtbCASMaxRetries)
+	case errors.Is(err, kvutil.ErrRead):
+		slog.ErrorContext(ctx, "Failed to read route table from KV", "routeTableId", rtbID, "err", err)
+	case errors.Is(err, kvutil.ErrDecode):
+		slog.ErrorContext(ctx, "Corrupt route table record in KV", "routeTableId", rtbID, "err", err)
+	case errors.Is(err, kvutil.ErrEncode):
+		slog.ErrorContext(ctx, "Failed to marshal route table record", "routeTableId", rtbID, "err", err)
+	case errors.Is(err, kvutil.ErrWrite):
+		slog.ErrorContext(ctx, "Failed to write route table to KV", "routeTableId", rtbID, "err", err)
+	default:
+		return err
 	}
-	// Only a CAS conflict reaches here, so the record is contended rather than
-	// broken; say so, or the caller's InternalError has no cause anywhere.
-	slog.ErrorContext(ctx, "Route table CAS retries exhausted under contention",
-		"routeTableId", rtbID, "attempts", rtbCASMaxRetries)
 	return errors.New(awserrors.ErrorServerInternal)
 }
 

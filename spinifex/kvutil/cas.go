@@ -17,12 +17,20 @@ const casAttempts = 5
 // casBackoffBase scales the pause between attempts.
 const casBackoffBase = 2 * time.Millisecond
 
-// CASConfig tunes an optimistic-concurrency loop. The zero value retreis casAttempts times and fails when the key is absent.
+// Stage labels for a failed CAS cycle, so a caller can log which step broke.
+var (
+	ErrRead   = errors.New("kvutil: read")
+	ErrDecode = errors.New("kvutil: decode")
+	ErrEncode = errors.New("kvutil: encode")
+	ErrWrite  = errors.New("kvutil: write")
+)
+
+// CASConfig tunes an optimistic-concurrency loop. The zero value retries casAttempts times and fails when the key is absent.
 type CASConfig struct {
 	Attempts       int  // 0 selects casAttempts
 	CreateIfAbsent bool // start from a zero value when the key is missing
 
-	// NotFounc replaces the raw jetstream error when the key is absent and
+	// NotFound replaces the raw jetstream error when the key is absent and
 	// CreateIfAbsent is unset, so a caller can map it to its own API error.
 	NotFound error
 
@@ -37,7 +45,7 @@ func isConflict(err error) bool {
 	return errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch)
 }
 
-// retryCAS runs attempt until is succeeds, returns a non-conflict error, or spends its buudget. It pauses between attempts,
+// retryCAS runs attempt until it succeeds, returns a non-conflict error, or spends its budget. It pauses between attempts,
 // jittered so contending writers do not re-collide on the same revision.
 func retryCAS(ctx context.Context, cfg CASConfig, op, key string, attempt func() error) error {
 	attempts := cfg.Attempts
@@ -80,7 +88,7 @@ func Update[T any](ctx context.Context, kv jetstream.KeyValue, key string, cfg C
 		switch {
 		case err == nil:
 			if uerr := json.Unmarshal(entry.Value(), &value); uerr != nil {
-				return uerr
+				return fmt.Errorf("%w: %w", ErrDecode, uerr)
 			}
 			revision = entry.Revision()
 		case errors.Is(err, jetstream.ErrKeyNotFound) && cfg.CreateIfAbsent:
@@ -88,7 +96,7 @@ func Update[T any](ctx context.Context, kv jetstream.KeyValue, key string, cfg C
 		case errors.Is(err, jetstream.ErrKeyNotFound) && cfg.NotFound != nil:
 			return cfg.NotFound
 		default:
-			return err
+			return fmt.Errorf("%w: %w", ErrRead, err)
 		}
 
 		changed, merr := mutate(&value)
@@ -102,7 +110,7 @@ func Update[T any](ctx context.Context, kv jetstream.KeyValue, key string, cfg C
 
 		data, merr := json.Marshal(&value)
 		if merr != nil {
-			return merr
+			return fmt.Errorf("%w: %w", ErrEncode, merr)
 		}
 		if revision == 0 {
 			_, err = kv.Create(ctx, key, data)
@@ -110,7 +118,7 @@ func Update[T any](ctx context.Context, kv jetstream.KeyValue, key string, cfg C
 			_, err = kv.Update(ctx, key, data, revision)
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: %w", ErrWrite, err)
 		}
 		result = &value
 		return nil
@@ -134,14 +142,17 @@ func Put(ctx context.Context, kv jetstream.KeyValue, key string, cfg CASConfig, 
 		case errors.Is(err, jetstream.ErrKeyNotFound) && cfg.NotFound != nil:
 			return cfg.NotFound
 		default:
-			return err
+			return fmt.Errorf("%w: %w", ErrRead, err)
 		}
 		if revision == 0 {
 			_, err = kv.Create(ctx, key, data)
 		} else {
 			_, err = kv.Update(ctx, key, data, revision)
 		}
-		return err
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrWrite, err)
+		}
+		return nil
 	})
 }
 
@@ -157,14 +168,14 @@ func Claim[T any](ctx context.Context, kv jetstream.KeyValue, key string, cfg CA
 				absent = true
 				return nil
 			}
-			return gerr
+			return fmt.Errorf("%w: %w", ErrRead, gerr)
 		}
 		var v T
 		if uerr := json.Unmarshal(entry.Value(), &v); uerr != nil {
-			return uerr
+			return fmt.Errorf("%w: %w", ErrDecode, uerr)
 		}
 		if derr := kv.Delete(ctx, key, jetstream.LastRevision(entry.Revision())); derr != nil {
-			return derr
+			return fmt.Errorf("%w: %w", ErrWrite, derr)
 		}
 		result = &v
 		return nil

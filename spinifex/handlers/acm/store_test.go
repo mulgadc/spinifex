@@ -9,6 +9,7 @@ import (
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +25,16 @@ func setupACMStore(t *testing.T) *Store {
 	store, err := NewStore(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 	return store
+}
+
+// rawKV returns the underlying bucket so a test can assert on the bytes as
+// stored. Reading through Store would decode them, which is the one thing
+// these tests must not do.
+func rawKV(t *testing.T, s *Store) jetstream.KeyValue {
+	t.Helper()
+	kv, err := s.store.KV(t.Context())
+	require.NoError(t, err)
+	return kv
 }
 
 func TestAddInUseBy_AddsAndDedupes(t *testing.T) {
@@ -142,7 +153,7 @@ func TestStore_PutCert_EncryptsPrivateKeyAtRest(t *testing.T) {
 	require.NoError(t, store.PutCert(t.Context(), rec))
 
 	// The raw bytes landed in KV must not contain the plaintext key.
-	entry, err := store.kv.Get(t.Context(), certKey(arn))
+	entry, err := rawKV(t, store).Get(t.Context(), certKey(arn))
 	require.NoError(t, err)
 	assert.NotContains(t, string(entry.Value()), "BEGIN EC PRIVATE KEY")
 
@@ -166,7 +177,7 @@ func TestStore_GetCert_LegacyPlaintextPassthroughAndReencrypt(t *testing.T) {
 	legacy := &CertRecord{CertificateArn: arn, AccountID: "000000000001", PrivateKey: plaintext}
 	data, err := json.Marshal(legacy)
 	require.NoError(t, err)
-	_, err = store.kv.Put(t.Context(), certKey(arn), data)
+	_, err = rawKV(t, store).Put(t.Context(), certKey(arn), data)
 	require.NoError(t, err)
 
 	got, err := store.GetCert(t.Context(), arn)
@@ -175,7 +186,7 @@ func TestStore_GetCert_LegacyPlaintextPassthroughAndReencrypt(t *testing.T) {
 
 	// The next write re-encrypts it — no operator action required.
 	require.NoError(t, store.PutCert(t.Context(), got))
-	entry, err := store.kv.Get(t.Context(), certKey(arn))
+	entry, err := rawKV(t, store).Get(t.Context(), certKey(arn))
 	require.NoError(t, err)
 	assert.NotContains(t, string(entry.Value()), "BEGIN RSA PRIVATE KEY", "record must be re-encrypted after the next PutCert")
 }
@@ -191,7 +202,7 @@ func TestStore_GetCert_RejectsGarbageAsLegacyPlaintext(t *testing.T) {
 	garbage := &CertRecord{CertificateArn: arn, AccountID: "000000000001", PrivateKey: "not-pem-and-not-ciphertext"}
 	data, err := json.Marshal(garbage)
 	require.NoError(t, err)
-	_, err = store.kv.Put(t.Context(), certKey(arn), data)
+	_, err = rawKV(t, store).Put(t.Context(), certKey(arn), data)
 	require.NoError(t, err)
 
 	_, err = store.GetCert(t.Context(), arn)
@@ -309,7 +320,7 @@ func TestAcquireLease_LeavesPrivateKeyEncrypted(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, acquired)
 
-	entry, err := store.kv.Get(t.Context(), certKey(arn))
+	entry, err := rawKV(t, store).Get(t.Context(), certKey(arn))
 	require.NoError(t, err)
 	assert.NotContains(t, string(entry.Value()), "BEGIN EC PRIVATE KEY",
 		"AcquireLease must not write the private key back in plaintext")
@@ -335,7 +346,7 @@ func TestReleaseLease_LeavesPrivateKeyEncrypted(t *testing.T) {
 
 	require.NoError(t, store.ReleaseLease(t.Context(), arn, "node-a"))
 
-	entry, err := store.kv.Get(t.Context(), certKey(arn))
+	entry, err := rawKV(t, store).Get(t.Context(), certKey(arn))
 	require.NoError(t, err)
 	assert.NotContains(t, string(entry.Value()), "BEGIN EC PRIVATE KEY",
 		"ReleaseLease must not write the private key back in plaintext")

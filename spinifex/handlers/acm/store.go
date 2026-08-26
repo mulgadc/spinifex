@@ -13,6 +13,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -154,7 +155,7 @@ type CertRecord struct {
 
 // Store provides CRUD for ACM certificate records backed by JetStream KV.
 type Store struct {
-	kv jetstream.KeyValue
+	store *kvstore.Store[CertRecord]
 	// masterKey encrypts/decrypts CertRecord.PrivateKey at rest (AES-256-GCM via
 	// handlers_iam.EncryptSecret/DecryptSecret). Every Store over the ACM bucket
 	// — the ACM service and ELBv2's independent read-only Store alike — must be
@@ -184,8 +185,16 @@ func NewStore(ctx context.Context, nc *nats.Conn, masterKey []byte) (*Store, err
 		return nil, err
 	}
 
-	slog.Info("ACM store initialized", "bucket", KVBucketACM)
-	return &Store{kv: kv, masterKey: masterKey}, nil
+	slog.Info("ACM store initialised", "bucket", KVBucketACM)
+	return &Store{
+		store: kvstore.Over[CertRecord](kv, kvstore.Config{
+			Attempts: maxInUseByCASAttempts,
+			Exhausted: func(key string, attempts int) error {
+				return fmt.Errorf("acm store: exceeded %d CAS attempts updating %s", attempts, key)
+			},
+		}),
+		masterKey: masterKey,
+	}, nil
 }
 
 // certKey derives the KV key from a certificate ARN, reading the id exactly as
@@ -215,16 +224,11 @@ func (s *Store) PutCert(ctx context.Context, rec *CertRecord) error {
 	// this call.
 	clone := *rec
 	clone.PrivateKey = ciphertext
-	data, err := json.Marshal(&clone)
-	if err != nil {
-		return fmt.Errorf("marshal cert: %w", err)
-	}
 	key := certKey(rec.CertificateArn)
 	if key == "" {
 		return fmt.Errorf("acm store: not a certificate ARN: %q", rec.CertificateArn)
 	}
-	_, err = s.kv.Put(ctx, key, data)
-	return err
+	return s.store.Set(ctx, key, &clone)
 }
 
 // GetCert retrieves a certificate by ARN with PrivateKey decrypted to
@@ -260,25 +264,21 @@ func (s *Store) getCert(ctx context.Context, certArn string, decrypt bool) (*Cer
 	if key == "" {
 		return nil, nil
 	}
-	entry, err := s.kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil
-		}
-		return nil, err
+	rec, _, err := s.store.Get(ctx, key)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil, nil
 	}
-	var rec CertRecord
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return nil, fmt.Errorf("unmarshal cert: %w", err)
+	if err != nil {
+		return nil, err
 	}
 	if !decrypt {
 		rec.PrivateKey = ""
-		return &rec, nil
+		return rec, nil
 	}
-	if err := s.decryptPrivateKey(&rec); err != nil {
+	if err := s.decryptPrivateKey(rec); err != nil {
 		return nil, err
 	}
-	return &rec, nil
+	return rec, nil
 }
 
 // legacyPrivateKeyPEMTypes are the PEM block types ImportCertificate accepts
@@ -333,13 +333,11 @@ func (s *Store) DeleteCert(ctx context.Context, certArn string) (bool, error) {
 	if key == "" {
 		return false, nil
 	}
-	if _, err := s.kv.Get(ctx, key); err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return false, nil
-		}
+	present, err := s.store.Exists(ctx, key)
+	if err != nil || !present {
 		return false, err
 	}
-	if err := s.kv.Delete(ctx, key); err != nil {
+	if err := s.store.Delete(ctx, key); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -386,7 +384,11 @@ func (s *Store) ListAllCertMetadata(ctx context.Context) ([]*CertRecord, error) 
 // ListAllCertMetadata — and an undecryptable key is not a reason to skip the
 // record, since nothing here reads it.
 func (s *Store) listCerts(ctx context.Context, keep func(*CertRecord) bool, decrypt bool) ([]*CertRecord, error) {
-	keys, err := s.kv.Keys(ctx)
+	kv, err := s.store.KV(ctx)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := kv.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
@@ -398,7 +400,7 @@ func (s *Store) listCerts(ctx context.Context, keep func(*CertRecord) bool, decr
 		if !strings.HasPrefix(key, KeyPrefixCert) {
 			continue
 		}
-		entry, err := s.kv.Get(ctx, key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
 			continue
 		}
@@ -464,11 +466,6 @@ func (s *Store) RemoveInUseBy(ctx context.Context, certArn, resourceArn string) 
 	})
 }
 
-// errCertAbsent lets updateInUseByCAS tell an absent certificate apart from a
-// real failure. Both callers treat a missing certificate as a no-op, so it
-// never escapes this file.
-var errCertAbsent = errors.New("acm store: certificate not found")
-
 // updateInUseByCAS applies mutate to certArn's current InUseBy set and writes
 // the result back under CAS. mutate returns nil to mean "no change needed".
 // A certificate that does not exist is a no-op, not an error.
@@ -477,13 +474,7 @@ func (s *Store) updateInUseByCAS(ctx context.Context, certArn string, mutate fun
 	if key == "" {
 		return nil
 	}
-	_, err := kvutil.Update(ctx, s.kv, key, kvutil.CASConfig{
-		Attempts: maxInUseByCASAttempts,
-		NotFound: errCertAbsent,
-		Exhausted: func(string, int) error {
-			return fmt.Errorf("acm store: exceeded %d CAS attempts updating InUseBy for %s", maxInUseByCASAttempts, certArn)
-		},
-	}, func(rec *CertRecord) (bool, error) {
+	err := s.store.Mutate(ctx, key, func(rec *CertRecord) (bool, error) {
 		next := mutate(rec.InUseBy)
 		if next == nil {
 			return false, nil
@@ -491,7 +482,7 @@ func (s *Store) updateInUseByCAS(ctx context.Context, certArn string, mutate fun
 		rec.InUseBy = next
 		return true, nil
 	})
-	if errors.Is(err, errCertAbsent) {
+	if errors.Is(err, kvstore.ErrNotFound) {
 		return nil
 	}
 	return err
@@ -515,28 +506,20 @@ func (s *Store) AcquireLease(ctx context.Context, certArn, holderID string, ttl 
 	if key == "" {
 		return false, nil
 	}
-	entry, err := s.kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return false, nil
-		}
-		return false, err
+	rec, rev, err := s.store.Get(ctx, key)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return false, nil
 	}
-	var rec CertRecord
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return false, fmt.Errorf("unmarshal cert: %w", err)
+	if err != nil {
+		return false, err
 	}
 	if rec.LeaseHolder != "" && rec.LeaseHolder != holderID && rec.LeaseExpiresAt.After(now) {
 		return false, nil
 	}
 	rec.LeaseHolder = holderID
 	rec.LeaseExpiresAt = now.Add(ttl)
-	data, err := json.Marshal(&rec)
-	if err != nil {
-		return false, fmt.Errorf("marshal cert: %w", err)
-	}
-	if _, err := s.kv.Update(ctx, key, data, entry.Revision()); err != nil {
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+	if err := s.store.CompareAndSet(ctx, key, rec, rev); err != nil {
+		if errors.Is(err, kvstore.ErrConflict) {
 			// Lost the race to a concurrent acquirer between Get and Update;
 			// the caller skips this tick rather than retrying immediately.
 			return false, nil
@@ -555,28 +538,20 @@ func (s *Store) ReleaseLease(ctx context.Context, certArn, holderID string) erro
 	if key == "" {
 		return nil
 	}
-	entry, err := s.kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil
-		}
-		return err
+	rec, rev, err := s.store.Get(ctx, key)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil
 	}
-	var rec CertRecord
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return fmt.Errorf("unmarshal cert: %w", err)
+	if err != nil {
+		return err
 	}
 	if rec.LeaseHolder != holderID {
 		return nil // already released, expired, or taken over by another holder
 	}
 	rec.LeaseHolder = ""
 	rec.LeaseExpiresAt = time.Time{}
-	data, err := json.Marshal(&rec)
-	if err != nil {
-		return fmt.Errorf("marshal cert: %w", err)
-	}
-	if _, err := s.kv.Update(ctx, key, data, entry.Revision()); err != nil {
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+	if err := s.store.CompareAndSet(ctx, key, rec, rev); err != nil {
+		if errors.Is(err, kvstore.ErrConflict) {
 			return nil // record changed concurrently; nothing to clean up
 		}
 		return err

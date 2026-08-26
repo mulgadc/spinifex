@@ -15,11 +15,13 @@ import (
 
 // Config describes the bucket that a Store or Bucket sits over.
 type Config struct {
-	Name     string
-	History  int
-	Replicas int
-	TTL      time.Duration
-	Missing  string
+	Name      string
+	History   int
+	Replicas  int
+	TTL       time.Duration
+	Missing   string
+	Attempts  int
+	Exhausted func(key string, attempts int) error
 }
 
 // Bucket memoises a lazily created KV bucket. Construct it with NewBucket.
@@ -37,15 +39,25 @@ func NewBucket(js jetstream.JetStream, cfg Config) *Bucket {
 	return &Bucket{js: js, cfg: cfg}
 }
 
+// NewOpenBucket returns a Bucket over an already-open handle, for callers that
+// resolve their bucket at construction so a bad connection fails at startup
+// rather than on first use.
+func NewOpenBucket(kv jetstream.KeyValue, cfg Config) *Bucket {
+	return &Bucket{kv: kv, cfg: cfg}
+}
+
 // KV opens the bucket on first use and returns the cached handle thereafter.
 func (b *Bucket) KV(ctx context.Context) (jetstream.KeyValue, error) {
-	if b.js == nil {
-		return nil, errors.New(b.cfg.Missing)
-	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.kv != nil {
 		return b.kv, nil
+	}
+	if b.js == nil {
+		if b.cfg.Missing == "" {
+			return nil, errors.New("kvstore: no JetStream client configured")
+		}
+		return nil, errors.New(b.cfg.Missing)
 	}
 	kv, err := b.open(ctx)
 	if err != nil {

@@ -314,12 +314,17 @@ func pgMatchesAnyTag(tags map[string]string, values []string, field func(k, v st
 }
 
 // GetPlacementGroupRecord reads a placement group record from KV with its revision for CAS operations.
-// Returns the record and the KV entry (for revision). Exported for use by gateway spread routing.
+// Returns the record and the KV entry (for revision).
 func (s *PlacementGroupServiceImpl) GetPlacementGroupRecord(ctx context.Context, accountID, groupName string) (*PlacementGroupRecord, jetstream.KeyValueEntry, error) {
 	key := utils.AccountKey(accountID, groupName)
 	entry, err := s.kv.Get(ctx, key)
 	if err != nil {
-		return nil, nil, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, nil, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
+		}
+		slog.ErrorContext(ctx, "Failed to read placement group from KV",
+			"groupName", groupName, "accountID", accountID, "err", err)
+		return nil, nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	var record PlacementGroupRecord
@@ -486,9 +491,12 @@ func (s *PlacementGroupServiceImpl) RemoveInstance(ctx context.Context, input *R
 	for attempt := range maxCASRetries {
 		record, entry, lookupErr := s.GetPlacementGroupRecord(ctx, accountID, input.GroupName)
 		if lookupErr != nil {
+			if !awserrors.IsErrorCode(lookupErr, awserrors.ErrorInvalidPlacementGroupUnknown) {
+				return nil, lookupErr
+			}
 			// Group may have been deleted already — treat as success
 			slog.DebugContext(ctx, "RemoveInstance: group not found, treating as success", "groupName", input.GroupName)
-			return &RemoveInstanceOutput{}, nil //nolint:nilerr // intentional: deleted group = success
+			return &RemoveInstanceOutput{}, nil
 		}
 
 		instances, exists := record.NodeInstances[input.NodeName]

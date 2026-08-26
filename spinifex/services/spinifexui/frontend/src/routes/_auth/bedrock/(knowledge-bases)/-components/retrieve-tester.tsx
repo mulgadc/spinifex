@@ -93,9 +93,9 @@ export function RetrieveTester({ knowledgeBaseId }: RetrieveTesterProps) {
                       </span>
                     )}
                   </div>
-                  <p className="whitespace-pre-wrap">
+                  <pre className="max-h-80 overflow-auto rounded bg-muted p-2 font-mono text-xs break-words whitespace-pre-wrap">
                     {result.content?.text ?? "(no content)"}
-                  </p>
+                  </pre>
                 </div>
               )
             })

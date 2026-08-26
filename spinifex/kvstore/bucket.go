@@ -6,6 +6,7 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -46,6 +47,10 @@ func NewOpenBucket(kv jetstream.KeyValue, cfg Config) *Bucket {
 	return &Bucket{kv: kv, cfg: cfg}
 }
 
+// Name returns the configured bucket name, for callers holding several buckets
+// that need to tell them apart in a map or a log line.
+func (b *Bucket) Name() string { return b.cfg.Name }
+
 // Configured reports whether the bucket has anything to open against, for the
 // callers whose absent-KV path is a legitimate fallback rather than an error.
 func (b *Bucket) Configured() bool {
@@ -73,6 +78,25 @@ func (b *Bucket) KV(ctx context.Context) (jetstream.KeyValue, error) {
 	}
 	b.kv = kv
 	return kv, nil
+}
+
+// Watch returns a watcher over the keys matching filter, which takes NATS
+// subject wildcards ("node.*", "lb.*", ">" for everything).
+//
+// Updates only: the caller reconciles once at startup, so replaying every
+// existing key would fire a redundant pass, and replaying them again on every
+// re-establish would defeat the debounce. The cost is that a disconnect gap is
+// invisible, which is what the caller's periodic resync exists to cover.
+func (b *Bucket) Watch(ctx context.Context, filter string) (jetstream.KeyWatcher, error) {
+	kv, err := b.KV(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w, err := kv.Watch(ctx, filter, jetstream.UpdatesOnly())
+	if err != nil {
+		return nil, fmt.Errorf("kvstore: watch %s %s: %w", b.cfg.Name, filter, err)
+	}
+	return w, nil
 }
 
 // open picks the kvutil helper matching the configured TTL and replica count.

@@ -6,7 +6,6 @@ package handlers_ochrevector
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -401,23 +400,15 @@ func TestRunJob_EmptyDocumentClearsExistingRows(t *testing.T) {
 	assert.Empty(t, backend.documentRows(ingestAccountA, "idx-one", key))
 }
 
-// forceJobUpdatedAt seeds jobID's UpdatedAt directly via the underlying KV
-// bucket, bypassing JobStore.Update (which always refreshes UpdatedAt to
-// now), so a test can simulate a record a crashed worker left stale --
-// mirroring appliance_test.go's raw-KV seeding for the same reason.
+// forceJobUpdatedAt seeds jobID's UpdatedAt directly, bypassing
+// JobStore.Update (which always refreshes UpdatedAt to now), so a test can
+// simulate a record a crashed worker left stale.
 func forceJobUpdatedAt(t *testing.T, store *JobStore, accountID, jobID string, when time.Time) {
 	t.Helper()
-	ctx := context.Background()
-	kv, err := store.bucket(ctx)
-	require.NoError(t, err)
-	entry, err := kv.Get(ctx, jobKey(accountID, jobID))
-	require.NoError(t, err)
-	var rec JobRecord
-	require.NoError(t, json.Unmarshal(entry.Value(), &rec))
-	rec.UpdatedAt = when
-	data, err := json.Marshal(rec)
-	require.NoError(t, err)
-	_, err = kv.Update(ctx, jobKey(accountID, jobID), data, entry.Revision())
+	err := store.store.Mutate(context.Background(), jobKey(accountID, jobID), func(rec *JobRecord) (bool, error) {
+		rec.UpdatedAt = when
+		return true, nil
+	})
 	require.NoError(t, err)
 }
 

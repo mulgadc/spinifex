@@ -361,7 +361,7 @@ func TestAdminDeleteAccountRefusesProtectedAccounts(t *testing.T) {
 				deleteAccountBody(t, accountID, "super-admin@example.com", deleteClientToken))
 
 			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+			assertDenied(t, err)
 		})
 	}
 }

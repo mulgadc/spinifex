@@ -42,7 +42,7 @@ STS (Security Token Service) issues **temporary credentials**: an `ASIA`-prefixe
 
 Spinifex supports the three main ways to obtain them:
 
-- **`assume-role`** — exchange your IAM user credentials for a [role's](/docs/iam-roles-and-instance-profiles) permissions, gated by the role's trust policy.
+- **`assume-role`** — exchange your IAM user credentials for a [role's](/docs/iam-roles-and-instance-profiles) permissions, gated by both the role's trust policy and your own `sts:AssumeRole` grant.
 - **`get-session-token`** — get a time-boxed copy of your own [IAM user's](/docs/iam-users-and-policies) permissions.
 - **`assume-role-with-web-identity`** — exchange an OIDC ID token (a Kubernetes ServiceAccount token) for role credentials, with no IAM credentials at all.
 
@@ -79,7 +79,14 @@ Run with temporary role credentials, the ARN switches to the assumed-role form �
 
 ## Assuming a Role
 
-`assume-role` works when the target role's trust policy allows your principal. Create a role that trusts an IAM user (see [IAM Roles and Instance Profiles](/docs/iam-roles-and-instance-profiles) for the full role lifecycle):
+`assume-role` needs two independent grants, and a missing one denies the call:
+
+1. The target role's **trust policy** must admit your principal.
+2. Your own **identity policy** must grant `sts:AssumeRole` on the role's ARN.
+
+The second is why `"Principal": {"AWS": "arn:aws:iam::000000000001:root"}` in a trust policy is safe: it delegates the decision to identity policies in that account rather than opening the role to everyone in it.
+
+Create a role that trusts an IAM user (see [IAM Roles and Instance Profiles](/docs/iam-roles-and-instance-profiles) for the full role lifecycle):
 
 ```bash
 cat > /tmp/deploy-trust.json << 'EOF'
@@ -101,6 +108,15 @@ aws iam create-role --role-name deploy \
 aws iam put-role-policy --role-name deploy --policy-name ec2-read \
   --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ec2:Describe*"],"Resource":"*"}]}'
 ```
+
+That policy is what the *session* may do. The caller still needs its own grant to make the call at all:
+
+```bash
+aws iam put-user-policy --user-name admin --policy-name assume-deploy \
+  --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole","Resource":"arn:aws:iam::000000000001:role/deploy"}]}'
+```
+
+Scope `Resource` to the role ARN exactly as `create-role` returned it, path included — a wildcard such as `arn:aws:iam::000000000001:role/*` grants assumption of every role the account's trust policies admit you to.
 
 Then assume it:
 
@@ -128,7 +144,7 @@ aws sts assume-role \
 
 The session name tags every session so audit logs can tell *who* used the role; it appears in the assumed-role ARN and the `UserId`.
 
-If the trust policy does not allow your principal, `assume-role` fails with `AccessDenied` — no matter what IAM permissions you hold.
+If the trust policy does not allow your principal, `assume-role` fails with `AccessDenied` — no matter what IAM permissions you hold. It fails the same way when your own identity policy carries no `sts:AssumeRole` grant on the role, no matter what the trust policy says.
 
 ### Session Duration
 
@@ -303,7 +319,13 @@ Everything the validator accepts is evaluated at assume time; explicit `Deny` st
 
 ### AccessDenied When Assuming a Role
 
-The role's trust policy does not allow your principal, or the role does not exist — a missing role is deliberately indistinguishable from a denied one, matching AWS. Check who you are, that the role exists, and what it trusts:
+Either gate can produce this. A denial from your own identity policy names the principal, action and resource:
+
+```
+User: arn:aws:iam::000000000001:user/admin is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::000000000001:role/deploy
+```
+
+A bare `AccessDenied` means the role's trust policy does not allow your principal, or the role does not exist — a missing role is deliberately indistinguishable from a denied one, matching AWS. Check who you are, that the role exists, what it trusts, and what you are granted:
 
 ```bash
 aws sts get-caller-identity

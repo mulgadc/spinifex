@@ -82,15 +82,7 @@ func TestECRRequest_OmittedRepositoryListEnumeratesTheRegistry(t *testing.T) {
 	wide := scopedPolicyGateway(
 		statement("Allow", "ecr:DescribeRepositories", "arn:aws:ecr:*:*:repository/*"),
 	)
-	assert.NotEqual(t, awserrors.ErrorAccessDenied,
-		errString(dispatchECR(t, wide, "DescribeRepositories", `{}`)))
-}
-
-func errString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
+	assertNotDenied(t, dispatchECR(t, wide, "DescribeRepositories", `{}`))
 }
 
 // A caller-supplied registryId would let a request slide out from under a Deny

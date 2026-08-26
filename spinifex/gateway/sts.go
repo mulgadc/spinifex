@@ -5,11 +5,13 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
 	spxarn "github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
+	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -76,6 +78,47 @@ var anonymousSTSActions = map[string]bool{
 	"AssumeRoleWithWebIdentity": true,
 }
 
+// stsPolicyGatedActions lists the actions requiring a pass on the caller's
+// identity policy. GetCallerIdentity and GetSessionToken are authentication
+// operations AWS requires no permission for, and AssumeRoleWithWebIdentity
+// arrives with no identity to evaluate.
+var stsPolicyGatedActions = map[string]bool{
+	"AssumeRole": true,
+}
+
+// stsPolicyResource returns the ARN a gated action is evaluated against.
+// AssumeRole resolves the target role so the resource is the ARN IAM stored,
+// which a policy naming a pathed role matches and an invented path does not.
+func (gw *GatewayConfig) stsPolicyResource(queryArgs map[string]string) (string, error) {
+	// An absent RoleArn is a malformed request, not an unauthorized one: saying
+	// so beats sending the caller to widen a policy that was never the cause.
+	roleARN := queryArgs["RoleArn"]
+	if roleARN == "" {
+		return "", errors.New(awserrors.ErrorMissingParameter)
+	}
+	if gw.IAMService == nil {
+		slog.Error("STS: IAM service not available", "action", "AssumeRole")
+		return "", errors.New(awserrors.ErrorInternalError)
+	}
+
+	_, role, err := handlers_sts.ResolveRoleByARN(gw.IAMService, roleARN)
+	switch {
+	case err == nil:
+		return aws.StringValue(role.Arn), nil
+	case errors.Is(err, handlers_sts.ErrRoleUnresolved):
+		// Echoing the supplied ARN keeps the denial identical whether or not the
+		// role exists. The handler refuses an ARN that is not the stored one, so
+		// a grant matched here on an invented path still ends in a denial there.
+		return roleARN, nil
+	}
+	if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorValidationError {
+		slog.Debug("STS: unparseable RoleArn", "roleArn", roleARN)
+		return "", err
+	}
+	slog.Error("STS: role lookup failed ahead of the identity gate", "roleArn", roleARN, "err", err)
+	return "", errors.New(awserrors.ErrorInternalError)
+}
+
 func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) error {
 	queryArgs, err := readQueryArgs(r)
 	if err != nil {
@@ -98,15 +141,27 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	// STS actions are not gated by caller IAM policy: each action enforces its
-	// own rule in the handler (role trust policy, web-identity JWT, or the
-	// always-allowed GetCallerIdentity), so no checkPolicy pass runs here.
-
 	// Anonymous actions carry no SigV4 envelope; handler ignores the zero caller.
 	var caller stsCaller
 	if !anonymousSTSActions[action] {
 		caller, err = gw.resolveSTSCaller(r)
 		if err != nil {
+			return err
+		}
+	}
+
+	// The identity policy is the first of two gates; the handler still applies
+	// the role's trust policy. Scoping to the target role lets a policy grant
+	// assumption of one role without granting all of them.
+	if stsPolicyGatedActions[action] {
+		resource, rerr := gw.stsPolicyResource(queryArgs)
+		if rerr != nil {
+			return rerr
+		}
+		if err := gw.checkPolicyResources(r, "sts", action, []string{resource}); err != nil {
+			if denial, ok := errors.AsType[*identityPolicyDenialError](err); ok {
+				return denial.detailedError()
+			}
 			return err
 		}
 	}

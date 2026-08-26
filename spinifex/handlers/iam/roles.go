@@ -362,9 +362,16 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
 	}
 
+	// An unchanged document writes nothing: converge loops re-assert the same
+	// policy on every pass, and each write would burn a KV revision.
+	changed := false
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
 		if role.InlinePolicies == nil {
 			role.InlinePolicies = map[string]string{}
+		}
+		changed = role.InlinePolicies[policyName] != policyDoc
+		if !changed {
+			return false, nil
 		}
 		role.InlinePolicies[policyName] = policyDoc
 		return true, nil
@@ -373,7 +380,9 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 		return nil, err
 	}
 
-	slog.Info("IAM inline policy put on role", "accountID", accountID, "roleName", roleName, "policyName", policyName)
+	if changed {
+		slog.Info("IAM inline policy put on role", "accountID", accountID, "roleName", roleName, "policyName", policyName)
+	}
 	return &iam.PutRolePolicyOutput{}, nil
 }
 

@@ -32,7 +32,7 @@ func dispatchECS(t *testing.T, gw *GatewayConfig, action, body string) error {
 func assertReachedHandler(t *testing.T, err error) {
 	t.Helper()
 	require.Error(t, err)
-	assert.NotEqual(t, awserrors.ErrorAccessDenied, err.Error())
+	assertNotDenied(t, err)
 }
 
 func ecsResourceARN(resource string) string {

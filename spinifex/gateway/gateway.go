@@ -692,10 +692,37 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 		if iampolicy.EvaluateWithKeys(iamAction, resource, policies, keys) == iampolicy.Deny {
 			slog.Info("evaluatePrincipalPolicy: access denied",
 				"identity", logIdentity, "action", iamAction, "resource", resource)
-			return errors.New(awserrors.ErrorAccessDenied)
+			return &identityPolicyDenialError{
+				principal: principal, logIdentity: logIdentity,
+				action: iamAction, resource: resource,
+			}
 		}
 	}
 	return nil
+}
+
+// identityPolicyDenialError keeps shared authorization failures opaque. A
+// caller that proves its resource is non-sensitive may opt into details.
+type identityPolicyDenialError struct {
+	principal   principalContext
+	logIdentity string
+	action      string
+	resource    string
+}
+
+func (d *identityPolicyDenialError) Error() string {
+	return awserrors.ErrorAccessDenied
+}
+
+func (d *identityPolicyDenialError) detailedError() error {
+	callerARN, err := buildCallerARN(d.principal.accountID, d.principal.identity,
+		d.principal.principalType, d.principal.assumedRoleARN)
+	if err != nil {
+		callerARN = d.logIdentity
+	}
+	return awserrors.Errorf(awserrors.ErrorAccessDenied,
+		"User: %s is not authorized to perform: %s on resource: %s",
+		callerARN, d.action, d.resource)
 }
 
 func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {

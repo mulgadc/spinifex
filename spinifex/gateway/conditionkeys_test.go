@@ -153,7 +153,8 @@ func TestCheckPolicyResources_ConditionalAllowHonoursSourceIP(t *testing.T) {
 				return
 			}
 			require.Error(t, err)
-			assert.Equal(t, tt.wantErr, err.Error())
+			code, _ := awserrors.ResolveErrorCode(err)
+			assert.Equal(t, tt.wantErr, code)
 		})
 	}
 }
@@ -189,7 +190,8 @@ func TestCheckPolicyResources_ConditionalDenyHonoursSourceIP(t *testing.T) {
 				return
 			}
 			require.Error(t, err)
-			assert.Equal(t, tt.wantErr, err.Error())
+			code, _ := awserrors.ResolveErrorCode(err)
+			assert.Equal(t, tt.wantErr, code)
 		})
 	}
 }

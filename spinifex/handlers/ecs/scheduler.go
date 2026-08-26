@@ -3,6 +3,8 @@ package handlers_ecs
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -30,6 +32,11 @@ const (
 	// UI exit reason) before it is dropped, matching AWS's ~1h STOPPED window.
 	sweepInterval        = 60 * time.Second
 	stoppedTaskRetention = 1 * time.Hour
+
+	// convergeInterval is how often the leader re-asserts the instance-role
+	// policy. The document changes only across releases, so this trades a slower
+	// pickup after an upgrade for a fleet-wide write every reconcile tick.
+	convergeInterval = 5 * time.Minute
 )
 
 // Scheduler is the per-daemon ECS control loop. A single leader (elected via the
@@ -59,9 +66,10 @@ func NewScheduler(nc *nats.Conn, svc *Service, holder string) *Scheduler {
 		TTL:    KVBucketECSLeaderTTL,
 		Renew:  leaseRefresh,
 		Retry:  leaseRefresh,
-		// The leader owns the Layer-2 bus subscriptions. A node that cannot wire them stands
-		// down rather than hold the lease and process nothing.
-		OnGained: sc.subscribeBus,
+		// The leader owns the Layer-2 bus subscriptions and the instance-role
+		// converge pass. A node that can do neither stands down rather than hold
+		// the lease and process nothing.
+		OnGained: sc.onGained,
 		OnLost:   sc.unsubscribeBus,
 	})
 	return sc
@@ -85,9 +93,11 @@ func (sc *Scheduler) Run(ctx context.Context) {
 	reaperTicker := time.NewTicker(reaperInterval)
 	reconcileTicker := time.NewTicker(reconcileInterval)
 	sweepTicker := time.NewTicker(sweepInterval)
+	convergeTicker := time.NewTicker(convergeInterval)
 	defer reaperTicker.Stop()
 	defer reconcileTicker.Stop()
 	defer sweepTicker.Stop()
+	defer convergeTicker.Stop()
 
 	leaseDone := make(chan struct{})
 	go func() {
@@ -107,6 +117,8 @@ func (sc *Scheduler) Run(ctx context.Context) {
 			sc.runIfLeader("service reconcile", func() error { return sc.svc.reconcileAllServices(ctx) })
 		case <-sweepTicker.C:
 			sc.runIfLeader("stopped-task sweep", func() error { return sc.sweepStoppedTasks(ctx) })
+		case <-convergeTicker.C:
+			sc.runIfLeader("instance role converge", func() error { return sc.convergeInstanceRoles(ctx) })
 		}
 	}
 }
@@ -121,6 +133,16 @@ func (sc *Scheduler) runIfLeader(pass string, run func() error) {
 	if err := run(); err != nil {
 		slog.Error("ECS scheduler: pass failed", "pass", pass, "err", err)
 	}
+}
+
+// onGained refuses the lease when this node cannot converge instance roles.
+// A leader without IAM holds the lease and never writes the grant, so every
+// agent's credentials lapse an hour later with nothing but a per-tick log.
+func (sc *Scheduler) onGained(ctx context.Context) error {
+	if sc.svc.deps.IAM == nil {
+		return errors.New("IAM dependency not wired: cannot converge instance roles")
+	}
+	return sc.subscribeBus(ctx)
 }
 
 // subscribeBus wires the wildcard Layer-2 subscriptions onto the service KV
@@ -266,6 +288,34 @@ func (sc *Scheduler) stopInstanceTasks(ctx context.Context, kv jetstream.KeyValu
 		}
 		sc.svc.forceStopTask(ctx, kv, accountID, &task, stoppedReasonReaped)
 	}
+}
+
+// convergeInstanceRoles re-asserts the ecsInstanceRole policy on every account
+// that already holds the role. Provisioning runs only when capacity changes, so
+// a cluster that is merely running would otherwise never pick up a changed
+// document and its agent would fail its next credential refresh.
+func (sc *Scheduler) convergeInstanceRoles(ctx context.Context) error {
+	// A pass that cannot converge anything is a misconfiguration that silently
+	// breaks agent credentials an hour later, so it is not a benign no-op.
+	if sc.svc.deps.IAM == nil {
+		return errors.New("instance-role converge disabled: IAM dependency not wired")
+	}
+	buckets, err := accountBuckets(ctx, sc.nc)
+	if err != nil {
+		return err
+	}
+	failed := 0
+	for _, bucket := range buckets {
+		if err := sc.svc.convergeECSInstanceRole(bucket.accountID); err != nil {
+			failed++
+			slog.Error("ECS scheduler: converge instance role failed",
+				"accountId", bucket.accountID, "err", err)
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("converge instance roles: %d of %d accounts failed", failed, len(buckets))
+	}
+	return nil
 }
 
 // accountIDFromBucket extracts the account ID from an ECS per-account bucket name.

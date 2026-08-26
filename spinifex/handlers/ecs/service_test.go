@@ -449,7 +449,7 @@ func TestScheduler_ReapBucket_StopsStaleInstanceTasks(t *testing.T) {
 // Leader election: first holder wins Create; a second holder is rejected.
 func TestScheduler_AcquireLease_SingleLeader(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc := NewService(nc, testRegion, "")
+	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
 	a := NewScheduler(nc, svc, "holder-a")
 	b := NewScheduler(nc, svc, "holder-b")
 	require.True(t, a.lease.TryAcquire(t.Context()))
@@ -462,7 +462,7 @@ func TestScheduler_AcquireLease_SingleLeader(t *testing.T) {
 // conversion could introduce and the one thing kvlease cannot check itself.
 func TestScheduler_LeadershipWiresBusSubscriptions(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc := NewService(nc, testRegion, "")
+	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
 	sc := NewScheduler(nc, svc, "holder-a")
 	require.NoError(t, sc.leaseErr)
 
@@ -479,7 +479,7 @@ func TestScheduler_LeadershipWiresBusSubscriptions(t *testing.T) {
 // and loser writing the same KV records is the split-brain this lease prevents.
 func TestScheduler_LoserHoldsNoSubscriptions(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc := NewService(nc, testRegion, "")
+	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
 	a := NewScheduler(nc, svc, "holder-a")
 	b := NewScheduler(nc, svc, "holder-b")
 
@@ -491,7 +491,7 @@ func TestScheduler_LoserHoldsNoSubscriptions(t *testing.T) {
 
 func TestScheduler_RunReleasesLeaseOnShutdown(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
-	svc := NewService(nc, testRegion, "")
+	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
 	sc := NewScheduler(nc, svc, "holder-a")
 	require.NoError(t, sc.leaseErr)
 

@@ -50,10 +50,24 @@ func dispatchEC2(t *testing.T, gw *GatewayConfig, body string) error {
 	return gw.EC2_Request(httptest.NewRecorder(), setupEC2Request(body, authzAccountID))
 }
 
+// assertDenied matches on the resolved code, not the message: a policy denial
+// names the principal, action and resource ahead of the code.
 func assertDenied(t *testing.T, err error) {
 	t.Helper()
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok, "unresolvable error code: %v", err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, code)
+}
+
+// assertNotDenied asserts the policy gate passed where the handler failure that
+// follows is not fixed. It resolves the code for the same reason assertDenied
+// does: the denial message is no longer the bare code.
+func assertNotDenied(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.NotEqual(t, awserrors.ErrorAccessDenied, code)
 }
 
 // assertPermitted asserts the policy gate passed. The request then fails on the

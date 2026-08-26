@@ -281,7 +281,7 @@ aws ec2 disassociate-iam-instance-profile \
 
 ## Assuming a Role
 
-Users and services can assume a role directly with STS, provided the trust policy allows their principal:
+Users and services can assume a role directly with STS, provided **both** gates pass: the role's trust policy admits their principal, and their own identity policy grants `sts:AssumeRole` on the role's ARN. See [STS](/docs/sts) for the identity-side grant.
 
 ```bash
 aws sts assume-role \

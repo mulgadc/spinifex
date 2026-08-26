@@ -66,9 +66,10 @@ func NewScheduler(nc *nats.Conn, svc *Service, holder string) *Scheduler {
 		TTL:    KVBucketECSLeaderTTL,
 		Renew:  leaseRefresh,
 		Retry:  leaseRefresh,
-		// The leader owns the Layer-2 bus subscriptions. A node that cannot wire them stands
-		// down rather than hold the lease and process nothing.
-		OnGained: sc.subscribeBus,
+		// The leader owns the Layer-2 bus subscriptions and the instance-role
+		// converge pass. A node that can do neither stands down rather than hold
+		// the lease and process nothing.
+		OnGained: sc.onGained,
 		OnLost:   sc.unsubscribeBus,
 	})
 	return sc
@@ -132,6 +133,16 @@ func (sc *Scheduler) runIfLeader(pass string, run func() error) {
 	if err := run(); err != nil {
 		slog.Error("ECS scheduler: pass failed", "pass", pass, "err", err)
 	}
+}
+
+// onGained refuses the lease when this node cannot converge instance roles.
+// A leader without IAM holds the lease and never writes the grant, so every
+// agent's credentials lapse an hour later with nothing but a per-tick log.
+func (sc *Scheduler) onGained(ctx context.Context) error {
+	if sc.svc.deps.IAM == nil {
+		return errors.New("IAM dependency not wired: cannot converge instance roles")
+	}
+	return sc.subscribeBus(ctx)
 }
 
 // subscribeBus wires the wildcard Layer-2 subscriptions onto the service KV
@@ -280,9 +291,9 @@ func (sc *Scheduler) stopInstanceTasks(ctx context.Context, kv jetstream.KeyValu
 }
 
 // convergeInstanceRoles re-asserts the ecsInstanceRole policy on every account
-// holding ECS state. Provisioning runs only when capacity changes, so a cluster
-// that is merely running would otherwise never pick up a changed document and
-// its agent would fail its next credential refresh.
+// that already holds the role. Provisioning runs only when capacity changes, so
+// a cluster that is merely running would otherwise never pick up a changed
+// document and its agent would fail its next credential refresh.
 func (sc *Scheduler) convergeInstanceRoles(ctx context.Context) error {
 	// A pass that cannot converge anything is a misconfiguration that silently
 	// breaks agent credentials an hour later, so it is not a benign no-op.
@@ -295,7 +306,7 @@ func (sc *Scheduler) convergeInstanceRoles(ctx context.Context) error {
 	}
 	failed := 0
 	for _, bucket := range buckets {
-		if _, err := sc.svc.ensureECSInstanceProfile(bucket.accountID); err != nil {
+		if err := sc.svc.convergeECSInstanceRole(bucket.accountID); err != nil {
 			failed++
 			slog.Error("ECS scheduler: converge instance role failed",
 				"accountId", bucket.accountID, "err", err)

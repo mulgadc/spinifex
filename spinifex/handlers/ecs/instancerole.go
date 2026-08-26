@@ -38,3 +38,11 @@ func (s *Service) ensureECSInstanceProfile(accountID string) (string, error) {
 	return handlers_iam.EnsureSystemInstanceProfile(s.deps.IAM, accountID,
 		ecsInstanceRoleName, ecsInstanceRolePolicyName, ecsInstanceRolePolicyDoc(accountID))
 }
+
+// convergeECSInstanceRole re-asserts the inline policy on an account that
+// already has the role, so a running cluster picks up a changed document
+// without creating IAM entities in accounts that never launched capacity.
+func (s *Service) convergeECSInstanceRole(accountID string) error {
+	return handlers_iam.ConvergeSystemRolePolicy(s.deps.IAM, accountID,
+		ecsInstanceRoleName, ecsInstanceRolePolicyName, ecsInstanceRolePolicyDoc(accountID))
+}

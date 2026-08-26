@@ -43,6 +43,26 @@ func EnsureSystemInstanceProfile(e SystemInstanceRoleEnsurer, accountID, roleNam
 	return ensureSystemInstanceProfile(e, accountID, roleName)
 }
 
+// ConvergeSystemRolePolicy re-asserts a system role's inline policy on an
+// account that already carries the role. An absent role is a no-op: nothing
+// there draws credentials from it, so provisioning one would be unasked-for.
+func ConvergeSystemRolePolicy(e SystemInstanceRoleEnsurer, accountID, roleName, policyName, policyDoc string) error {
+	if _, err := e.GetRole(accountID, &iam.GetRoleInput{RoleName: aws.String(roleName)}); err != nil {
+		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+			return nil
+		}
+		return fmt.Errorf("get role %q: %w", roleName, err)
+	}
+	if _, err := e.PutRolePolicy(accountID, &iam.PutRolePolicyInput{
+		RoleName:       aws.String(roleName),
+		PolicyName:     aws.String(policyName),
+		PolicyDocument: aws.String(policyDoc),
+	}); err != nil {
+		return fmt.Errorf("put role policy %q on %q: %w", policyName, roleName, err)
+	}
+	return nil
+}
+
 // ensureSystemRole creates the role with the EC2 trust policy when absent. A
 // racing create that lost (EntityAlreadyExists) is tolerated as success.
 func ensureSystemRole(e SystemInstanceRoleEnsurer, accountID, roleName string) error {

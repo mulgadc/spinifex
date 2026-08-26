@@ -3,6 +3,7 @@ package handlers_ecs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"slices"
 	"time"
@@ -359,8 +360,11 @@ func (s *Service) recordDeploymentFailure(ctx context.Context, kv jetstream.KeyV
 func (s *Service) releaseReservation(ctx context.Context, kv jetstream.KeyValue, cluster, instanceID, taskID string, cpu, mem, gpu int) error {
 	for range reservePlacementRetries {
 		entry, err := kv.Get(ctx, InstanceKey(cluster, instanceID))
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil
+		}
 		if err != nil {
-			return nil //nolint:nilerr // instance gone; nothing to release
+			return err
 		}
 		var rec InstanceRecord
 		if uerr := json.Unmarshal(entry.Value(), &rec); uerr != nil {

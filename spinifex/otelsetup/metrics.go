@@ -10,6 +10,10 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// meterName is the instrumentation scope every spinifex request metric shares,
+// so the HTTP and NATS paths land on one set of instruments.
+const meterName = "github.com/mulgadc/spinifex/spinifex/otelsetup"
+
 // actionAttrKey names the logical operation on request metrics. Values must
 // stay low-cardinality: resolved action names only, never resource IDs.
 const actionAttrKey = "rpc.method"
@@ -32,7 +36,7 @@ var (
 // global meter delegates to the real provider once Init installs it.
 func requestInstruments() (metric.Int64Counter, metric.Float64Histogram) {
 	instrumentsOnce.Do(func() {
-		m := otel.Meter(httpTracerName)
+		m := otel.Meter(meterName)
 		var err error
 		requestCounter, err = m.Int64Counter("mulga.requests",
 			metric.WithDescription("Count of service requests handled."),
@@ -74,7 +78,7 @@ func RecordRequest(ctx context.Context, action, outcome string, elapsed time.Dur
 func RecordResourceLeak(ctx context.Context, kind string) {
 	leakOnce.Do(func() {
 		var err error
-		leakCounter, err = otel.Meter(httpTracerName).Int64Counter("mulga.resource.leaked",
+		leakCounter, err = otel.Meter(meterName).Int64Counter("mulga.resource.leaked",
 			metric.WithDescription("Count of resources teardown abandoned without reclaiming."),
 			metric.WithUnit("{resource}"))
 		if err != nil {
@@ -84,20 +88,5 @@ func RecordResourceLeak(ctx context.Context, kind string) {
 	if leakCounter != nil {
 		leakCounter.Add(ctx, 1, metric.WithAttributeSet(
 			attribute.NewSet(attribute.String(leakKindAttrKey, kind))))
-	}
-}
-
-// requestActionKey carries a mutable per-request holder so downstream
-// middleware can name the request after routing/auth resolves the action.
-type requestActionKey struct{}
-
-type requestAction struct{ name string }
-
-// SetRequestAction sets the logical action recorded on request metrics for
-// the in-flight request. No-op when the request did not pass through
-// HTTPMiddleware.
-func SetRequestAction(ctx context.Context, action string) {
-	if h, ok := ctx.Value(requestActionKey{}).(*requestAction); ok && action != "" {
-		h.name = action
 	}
 }

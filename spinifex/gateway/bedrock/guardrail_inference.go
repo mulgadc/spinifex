@@ -23,11 +23,7 @@ func loadGuardrailView(ctx context.Context, store *GuardrailStore, accountID, id
 		return guardrailView{}, err
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
-		return guardrailView{}, err
-	}
-	rec, found, err := getGuardrailRecord(ctx, kv, accountID, id)
+	rec, found, err := store.get(ctx, accountID, id)
 	if err != nil {
 		return guardrailView{}, err
 	}

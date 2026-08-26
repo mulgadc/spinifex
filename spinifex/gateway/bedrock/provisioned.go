@@ -2,19 +2,15 @@ package gateway_bedrock
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
-	"strings"
-	"sync"
 	"time"
 	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -77,42 +73,28 @@ type ProvisionedModelRecord struct {
 // each commitment, mirroring the LoggingConfigStore/ModelAccessStore
 // gateway-direct-KV pattern.
 type ProvisionedStore struct {
-	js       jetstream.JetStream
-	replicas int
+	store *kvstore.Store[ProvisionedModelRecord]
 	// region is baked in at construction (the gateway's own region never
 	// changes at runtime) so ARN building/parsing needs no extra parameter
 	// threaded through the fixed-arity route table.
 	region   string
 	endpoint EndpointProvisioner
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
 }
 
 // NewProvisionedStore constructs a ProvisionedStore over js, replicated
 // across replicas nodes, driving endpoint launches/teardowns through
 // endpoint.
 func NewProvisionedStore(js jetstream.JetStream, replicas int, region string, endpoint EndpointProvisioner) *ProvisionedStore {
-	return &ProvisionedStore{js: js, replicas: replicas, region: region, endpoint: endpoint}
-}
-
-// bucket lazily opens (or creates) the bedrock-provisioned KV bucket, caching
-// the handle, mirroring LoggingConfigStore.bucket.
-func (s *ProvisionedStore) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	if s.js == nil {
-		return nil, errors.New("bedrock: provisioned store has no JetStream client configured")
+	return &ProvisionedStore{
+		store: kvstore.New[ProvisionedModelRecord](js, kvstore.Config{
+			Name:     bedrockProvisionedBucket,
+			History:  bedrockProvisionedHistory,
+			Replicas: replicas,
+			Missing:  "bedrock: provisioned store has no JetStream client configured",
+		}),
+		region:   region,
+		endpoint: endpoint,
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kv != nil {
-		return s.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, s.js, bedrockProvisionedBucket, bedrockProvisionedHistory, s.replicas)
-	if err != nil {
-		return nil, err
-	}
-	s.kv = kv
-	return kv, nil
 }
 
 // provisionedKey scopes every stored record to its owning account, so List's
@@ -122,28 +104,36 @@ func provisionedKey(accountID, id string) string {
 	return accountID + "/" + id
 }
 
-// getProvisionedRecord reads accountID's record for id, or (zero, false, nil)
-// if it does not exist.
-func getProvisionedRecord(ctx context.Context, kv jetstream.KeyValue, accountID, id string) (ProvisionedModelRecord, bool, error) {
-	rec, _, found, err := getProvisionedRecordRevision(ctx, kv, provisionedKey(accountID, id))
+// get reads accountID's record for id, or (zero, false, nil) if it does not
+// exist.
+func (s *ProvisionedStore) get(ctx context.Context, accountID, id string) (ProvisionedModelRecord, bool, error) {
+	rec, _, found, err := s.getRevision(ctx, provisionedKey(accountID, id))
 	return rec, found, err
 }
 
-// getProvisionedRecordRevision is getProvisionedRecord with the KV revision
-// surfaced too, for Update's CAS write.
-func getProvisionedRecordRevision(ctx context.Context, kv jetstream.KeyValue, key string) (ProvisionedModelRecord, uint64, bool, error) {
-	entry, err := kv.Get(ctx, key)
+// getRevision is get with the KV revision surfaced too, for Update's CAS
+// write.
+func (s *ProvisionedStore) getRevision(ctx context.Context, key string) (ProvisionedModelRecord, uint64, bool, error) {
+	rec, rev, err := s.store.Get(ctx, key)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return ProvisionedModelRecord{}, 0, false, nil
+	}
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return ProvisionedModelRecord{}, 0, false, nil
-		}
-		return ProvisionedModelRecord{}, 0, false, fmt.Errorf("kv get %s: %w", key, err)
+		return ProvisionedModelRecord{}, 0, false, err
 	}
-	var rec ProvisionedModelRecord
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return ProvisionedModelRecord{}, 0, false, fmt.Errorf("decode %s: %w", key, err)
+	return *rec, rev, true, nil
+}
+
+// update CAS-writes rec back over rev, the revision it was read at. A lost
+// race is reported as a retryable ConflictException rather than silently
+// clobbering the winner's write.
+func (s *ProvisionedStore) update(ctx context.Context, key string, rec ProvisionedModelRecord, rev uint64) error {
+	err := s.store.CompareAndSet(ctx, key, &rec, rev)
+	if errors.Is(err, kvstore.ErrConflict) {
+		return awserrors.Errorf(awserrors.ErrorConflictException,
+			"bedrock: provisioned throughput %s was modified concurrently; retry the request", rec.ARN)
 	}
-	return rec, entry.Revision(), true, nil
+	return err
 }
 
 // committedModelUnits sums ModelUnits across every commitment servingAccountID
@@ -156,35 +146,13 @@ func committedModelUnits(ctx context.Context, store *ProvisionedStore, servingAc
 	if servingAccountID == "" {
 		return 0, nil
 	}
-	kv, err := store.bucket(ctx)
+	recs, err := store.store.List(ctx, servingAccountID+"/")
 	if err != nil {
 		return 0, err
 	}
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("kv keys for provisioned models: %w", err)
-	}
 
-	prefix := servingAccountID + "/"
 	var total int64
-	for _, key := range keys {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		entry, err := kv.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
-			return 0, fmt.Errorf("kv get %s: %w", key, err)
-		}
-		var rec ProvisionedModelRecord
-		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			continue
-		}
+	for _, rec := range recs {
 		if rec.ModelID == modelID {
 			total += rec.ModelUnits
 		}
@@ -241,8 +209,10 @@ func CreateProvisionedModelThroughput(ctx context.Context, accountID string, sto
 		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
+	// Resolve the bucket before pinning an endpoint, so an unreachable KV
+	// fails without launching a VM whose commitment record can never be
+	// written.
+	if _, err := store.store.KV(ctx); err != nil {
 		return nil, err
 	}
 
@@ -265,12 +235,8 @@ func CreateProvisionedModelThroughput(ctx context.Context, accountID string, sto
 		CreationTime:         now,
 		LastModifiedTime:     now,
 	}
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return nil, fmt.Errorf("encode provisioned model %s: %w", id, err)
-	}
-	if _, err := kv.Put(ctx, provisionedKey(accountID, id), data); err != nil {
-		return nil, fmt.Errorf("kv put provisioned model %s: %w", id, err)
+	if err := store.store.Set(ctx, provisionedKey(accountID, id), &rec); err != nil {
+		return nil, err
 	}
 
 	return &bedrock.CreateProvisionedModelThroughputOutput{ProvisionedModelArn: aws.String(arn)}, nil
@@ -288,11 +254,7 @@ func GetProvisionedModelThroughput(ctx context.Context, accountID string, store 
 		return nil, err
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rec, found, err := getProvisionedRecord(ctx, kv, accountID, id)
+	rec, found, err := store.get(ctx, accountID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -327,36 +289,9 @@ func GetProvisionedModelThroughput(ctx context.Context, accountID string, store 
 // Update), not live-derived — unlike Get, a list scan does not pay for one
 // endpoint describe per commitment.
 func ListProvisionedModelThroughputs(ctx context.Context, accountID string, store *ProvisionedStore, _ *bedrock.ListProvisionedModelThroughputsInput) (*bedrock.ListProvisionedModelThroughputsOutput, error) {
-	kv, err := store.bucket(ctx)
+	recs, err := store.store.List(ctx, accountID+"/")
 	if err != nil {
 		return nil, err
-	}
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return &bedrock.ListProvisionedModelThroughputsOutput{}, nil
-		}
-		return nil, fmt.Errorf("kv keys for provisioned models: %w", err)
-	}
-
-	prefix := accountID + "/"
-	var recs []ProvisionedModelRecord
-	for _, key := range keys {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		entry, err := kv.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
-			return nil, fmt.Errorf("kv get %s: %w", key, err)
-		}
-		var rec ProvisionedModelRecord
-		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			continue
-		}
-		recs = append(recs, rec)
 	}
 
 	slices.SortFunc(recs, func(a, b ProvisionedModelRecord) int {
@@ -396,12 +331,8 @@ func UpdateProvisionedModelThroughput(ctx context.Context, accountID string, sto
 		return nil, err
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
 	key := provisionedKey(accountID, id)
-	rec, rev, found, err := getProvisionedRecordRevision(ctx, kv, key)
+	rec, rev, found, err := store.getRevision(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -418,12 +349,8 @@ func UpdateProvisionedModelThroughput(ctx context.Context, accountID string, sto
 	}
 	rec.LastModifiedTime = time.Now().UTC()
 
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return nil, fmt.Errorf("encode provisioned model %s: %w", id, err)
-	}
-	if _, err := kv.Update(ctx, key, data, rev); err != nil {
-		return nil, fmt.Errorf("kv update provisioned model %s: %w", id, err)
+	if err := store.update(ctx, key, rec, rev); err != nil {
+		return nil, err
 	}
 	return &bedrock.UpdateProvisionedModelThroughputOutput{}, nil
 }
@@ -441,11 +368,7 @@ func DeleteProvisionedModelThroughput(ctx context.Context, accountID string, sto
 		return nil, err
 	}
 
-	kv, err := store.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rec, found, err := getProvisionedRecord(ctx, kv, accountID, id)
+	rec, found, err := store.get(ctx, accountID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -456,8 +379,8 @@ func DeleteProvisionedModelThroughput(ctx context.Context, accountID string, sto
 	if err := store.endpoint.DeletePinned(ctx, accountID, rec.ModelID); err != nil {
 		return nil, err
 	}
-	if err := kv.Delete(ctx, provisionedKey(accountID, id)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return nil, fmt.Errorf("kv delete provisioned model %s: %w", id, err)
+	if err := store.store.Delete(ctx, provisionedKey(accountID, id)); err != nil {
+		return nil, err
 	}
 	return &bedrock.DeleteProvisionedModelThroughputOutput{}, nil
 }

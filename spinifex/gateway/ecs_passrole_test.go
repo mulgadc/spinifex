@@ -106,9 +106,8 @@ func TestECSRegisterTaskDefinition_NoRoleSkipsPassRole(t *testing.T) {
 	assertNotDenied(t, err)
 }
 
-// TestECSRegisterTaskDefinition_DenialRendersAccessDenied403 proves the denial
-// reaches the wire as AWS's real PassRole-denial shape: HTTP 403, AWS JSON 1.1
-// envelope, the same AccessDenied code/message the EC2 iam:PassRole path uses.
+// TestECSRegisterTaskDefinition_DenialRendersAccessDenied403 proves shared
+// policy denials stay opaque while retaining the service's 403 envelope.
 func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
 	mock := &policyMockIAMService{
 		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
@@ -132,7 +131,5 @@ func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Equal(t, "AccessDeniedException", body.Type)
-	assert.Equal(t,
-		"User: arn:aws:iam::123456789012:user/alice is not authorized to perform: "+
-			"iam:PassRole on resource: "+testECSPassRoleTargetARN, body.Message)
+	assert.Equal(t, "User is not authorized to perform this action.", body.Message)
 }

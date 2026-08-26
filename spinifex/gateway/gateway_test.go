@@ -1115,9 +1115,36 @@ func TestCheckPolicy_FailsClosed(t *testing.T) {
 	}
 }
 
+// Shared authorization errors must not expose a canonical resource that was
+// resolved from storage. STS opts into detailed wording at its dispatcher.
+func TestCheckPolicyResources_DenialIsOpaque(t *testing.T) {
+	mock := &policyMockIAMService{
+		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+			return nil, nil
+		},
+	}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
+	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	req = req.WithContext(ctx)
+
+	resource := "arn:aws:iam::123456789012:role/private/target"
+	err := gw.checkPolicyResources(req, "iam", "GetRole", []string{resource})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorAccessDenied, code)
+	assert.Empty(t, message)
+	assert.NotContains(t, err.Error(), resource)
+}
+
 // TestCheckPolicy_PassRoleFailsClosed proves the change reaches a real gated
-// call site, not just the helper: an unauthenticated RunInstances carrying an
-// instance profile is denied rather than passing the iam:PassRole check.
+// call site: an unauthenticated RunInstances carrying an instance profile is
+// denied rather than passing the iam:PassRole check.
 func TestCheckPolicy_PassRoleFailsClosed(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)

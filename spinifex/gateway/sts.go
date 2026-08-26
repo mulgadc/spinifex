@@ -159,6 +159,9 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 			return rerr
 		}
 		if err := gw.checkPolicyResources(r, "sts", action, []string{resource}); err != nil {
+			if denial, ok := errors.AsType[*identityPolicyDenialError](err); ok {
+				return denial.detailedError()
+			}
 			return err
 		}
 	}

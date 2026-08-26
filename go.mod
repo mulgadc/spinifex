@@ -21,10 +21,10 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.73
-	github.com/mulgadc/bluebottle v1.17.1-0.20260824040243-7b109e8b0ca1
-	github.com/mulgadc/northstar v1.17.0
-	github.com/mulgadc/predastore v1.17.1-0.20260824040406-dc8760b726c2
-	github.com/mulgadc/viperblock v1.17.1-0.20260819232234-77b4fbe47481
+	github.com/mulgadc/bluebottle v1.18.0
+	github.com/mulgadc/northstar v1.18.0
+	github.com/mulgadc/predastore v1.18.0
+	github.com/mulgadc/viperblock v1.18.0
 	github.com/nats-io/nats-server/v2 v2.14.5
 	github.com/nats-io/nats.go v1.53.1
 	github.com/opencontainers/runtime-spec v1.3.0

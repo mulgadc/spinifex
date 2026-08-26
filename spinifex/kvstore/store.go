@@ -40,23 +40,25 @@ func (s *Store[T]) Get(ctx context.Context, key string) (*T, uint64, error) {
 }
 
 // Create writes a record only if the key is absent, returning ErrExists when
-// it is not. The create-only write is the single-writer claim.
-func (s *Store[T]) Create(ctx context.Context, key string, v *T) error {
+// it is not. The create-only write is the single-writer claim, and the
+// returned revision is the CAS precondition for the claim's own first update.
+func (s *Store[T]) Create(ctx context.Context, key string, v *T) (uint64, error) {
 	kv, err := s.KV(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("kvstore: encode %s: %w", key, err)
+		return 0, fmt.Errorf("kvstore: encode %s: %w", key, err)
 	}
-	if _, err := kv.Create(ctx, key, data); err != nil {
+	rev, err := kv.Create(ctx, key, data)
+	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			return fmt.Errorf("%w: %s", ErrExists, key)
+			return 0, fmt.Errorf("%w: %s", ErrExists, key)
 		}
-		return fmt.Errorf("kvstore: create %s: %w", key, err)
+		return 0, fmt.Errorf("kvstore: create %s: %w", key, err)
 	}
-	return nil
+	return rev, nil
 }
 
 // Mutate applies fn under a revision-guarded retry loop. fn reports whether it

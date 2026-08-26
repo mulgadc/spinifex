@@ -89,7 +89,7 @@ func jobKey(accountID, jobID string) string {
 // is stamped from accountID, overriding whatever the caller set.
 func (s *JobStore) Reserve(ctx context.Context, accountID string, rec JobRecord) error {
 	rec.AccountID = accountID
-	if err := s.store.Create(ctx, jobKey(accountID, rec.ID), &rec); err != nil {
+	if _, err := s.store.Create(ctx, jobKey(accountID, rec.ID), &rec); err != nil {
 		if errors.Is(err, kvstore.ErrExists) {
 			return ErrJobExists
 		}

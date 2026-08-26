@@ -16,6 +16,7 @@ import (
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -211,8 +212,7 @@ func TestEnsure_StaleProvisioningIsResumed(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	kv, err := appliance.bucket(ctx)
-	require.NoError(t, err)
+	kv := applianceRawKV(t, appliance)
 	_, err = kv.Create(ctx, appliancePostgresKey, data)
 	require.NoError(t, err)
 
@@ -252,8 +252,7 @@ func TestEnsure_FreshProvisioningIsWaitedNotResumed(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	kv, err := appliance.bucket(ctx)
-	require.NoError(t, err)
+	kv := applianceRawKV(t, appliance)
 	_, err = kv.Create(ctx, appliancePostgresKey, data)
 	require.NoError(t, err)
 
@@ -281,8 +280,7 @@ func TestEnsure_PlaintextPasswordNeverPersisted(t *testing.T) {
 	password := launcher.lastPassword()
 	require.NotEmpty(t, password)
 
-	kv, err := appliance.bucket(ctx)
-	require.NoError(t, err)
+	kv := applianceRawKV(t, appliance)
 	entry, err := kv.Get(ctx, appliancePostgresKey)
 	require.NoError(t, err)
 	assert.NotContains(t, string(entry.Value()), password)
@@ -305,9 +303,7 @@ func TestEnsure_LaunchFailureLeavesRecordProvisioning(t *testing.T) {
 	require.Equal(t, 1, launcher.callCount())
 	firstPassword := launcher.lastPassword()
 
-	kv, err := appliance.bucket(ctx)
-	require.NoError(t, err)
-	rec, _, err := appliance.getRecord(ctx, kv)
+	rec, _, err := appliance.getRecord(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, rec)
 	assert.Equal(t, ApplianceStateProvisioning, rec.State)
@@ -348,8 +344,7 @@ func TestResume_LaunchFailureLeavesRecordProvisioning(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	kv, err := appliance.bucket(ctx)
-	require.NoError(t, err)
+	kv := applianceRawKV(t, appliance)
 	_, err = kv.Create(ctx, appliancePostgresKey, data)
 	require.NoError(t, err)
 
@@ -358,7 +353,7 @@ func TestResume_LaunchFailureLeavesRecordProvisioning(t *testing.T) {
 	assert.Equal(t, 1, launcher.callCount())
 	assert.Equal(t, seedPassword, launcher.lastPassword())
 
-	rec, _, err := appliance.getRecord(ctx, kv)
+	rec, _, err := appliance.getRecord(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, rec)
 	assert.Equal(t, ApplianceStateProvisioning, rec.State)
@@ -400,13 +395,21 @@ func TestConnect_NotAvailable(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	kv, err := appliance.bucket(ctx)
-	require.NoError(t, err)
+	kv := applianceRawKV(t, appliance)
 	_, err = kv.Create(ctx, appliancePostgresKey, data)
 	require.NoError(t, err)
 
 	_, err = appliance.Connect(ctx)
 	assert.Error(t, err)
+}
+
+// applianceRawKV returns the appliance's underlying bucket, for the tests that
+// seed or inspect the stored bytes directly rather than through the record API.
+func applianceRawKV(t *testing.T, appliance *Appliance) jetstream.KeyValue {
+	t.Helper()
+	kv, err := appliance.store.KV(t.Context())
+	require.NoError(t, err)
+	return kv
 }
 
 // seedAvailableAppliance seeds an AVAILABLE record so Connect gets past its
@@ -433,8 +436,7 @@ func seedAvailableAppliance(t *testing.T, appliance *Appliance, masterKey []byte
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	kv, err := appliance.bucket(ctx)
-	require.NoError(t, err)
+	kv := applianceRawKV(t, appliance)
 	_, err = kv.Create(ctx, appliancePostgresKey, data)
 	require.NoError(t, err)
 }
@@ -524,9 +526,7 @@ func TestTeardown_DeletesRecordLauncherAndHostPort(t *testing.T) {
 	assert.Equal(t, []string{ApplianceIdentifier}, launcher.deleteCalls)
 	assert.Equal(t, []string{"eni-installed"}, h.hostPort.removals())
 
-	kv, err := appliance.bucket(context.Background())
-	require.NoError(t, err)
-	rec, _, err := appliance.getRecord(context.Background(), kv)
+	rec, _, err := appliance.getRecord(context.Background())
 	require.NoError(t, err)
 	assert.Nil(t, rec, "the KV record must be gone after teardown")
 }
@@ -569,9 +569,7 @@ func TestTeardown_StillDeletesRecordWhenHostPortRemovalFails(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ovs-vsctl exploded")
 
-	kv, err := appliance.bucket(context.Background())
-	require.NoError(t, err)
-	rec, _, err := appliance.getRecord(context.Background(), kv)
+	rec, _, err := appliance.getRecord(context.Background())
 	require.NoError(t, err)
 	assert.Nil(t, rec, "the KV record must still be deleted despite the host-port failure")
 }
@@ -591,9 +589,7 @@ func TestTeardown_JoinsLauncherAndRecordErrors(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "rds unreachable")
 
-	kv, err := appliance.bucket(context.Background())
-	require.NoError(t, err)
-	rec, _, err := appliance.getRecord(context.Background(), kv)
+	rec, _, err := appliance.getRecord(context.Background())
 	require.NoError(t, err)
 	assert.Nil(t, rec, "the KV record must still be deleted despite the launcher failure")
 }
@@ -768,12 +764,16 @@ func TestTeardown_WithoutStoresStillWorks(t *testing.T) {
 	require.NoError(t, appliance.Teardown(context.Background(), false))
 }
 
-// TestBucket_RequiresJetStream proves bucket fails fast on a zero-value
-// Appliance rather than panicking on a nil JetStream client.
+// TestBucket_RequiresJetStream proves an Appliance built with no JetStream
+// client fails fast, and says which client is missing, rather than panicking
+// on first use.
 func TestBucket_RequiresJetStream(t *testing.T) {
-	appliance := &Appliance{}
-	_, err := appliance.bucket(context.Background())
-	assert.Error(t, err)
+	appliance, err := NewAppliance(nil, testMasterKey(t), &fakeLauncher{})
+	require.NoError(t, err)
+
+	_, err = appliance.store.KV(t.Context())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "appliance has no JetStream client configured")
 }
 
 // TestBuildDSN proves the DSN round-trips endpoint/port/username/password,
@@ -824,12 +824,11 @@ func TestGetRecord_MalformedJSON(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	kv, err := appliance.bucket(ctx)
-	require.NoError(t, err)
+	kv := applianceRawKV(t, appliance)
 	_, err = kv.Put(ctx, appliancePostgresKey, []byte("not json"))
 	require.NoError(t, err)
 
-	_, _, err = appliance.getRecord(ctx, kv)
+	_, _, err = appliance.getRecord(ctx)
 	assert.Error(t, err)
 }
 
@@ -854,12 +853,11 @@ func TestWaitOrResume_UnexpectedStateErrors(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	kv, err := appliance.bucket(ctx)
-	require.NoError(t, err)
+	kv := applianceRawKV(t, appliance)
 	_, err = kv.Create(ctx, appliancePostgresKey, data)
 	require.NoError(t, err)
 
-	_, err = appliance.waitOrResume(ctx, kv)
+	_, err = appliance.waitOrResume(ctx)
 	assert.Error(t, err)
 }
 
@@ -873,10 +871,8 @@ func TestWaitOrResume_VanishedRecordRetriesClaim(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	kv, err := appliance.bucket(ctx)
-	require.NoError(t, err)
 
-	info, err := appliance.waitOrResume(ctx, kv)
+	info, err := appliance.waitOrResume(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "10.0.0.10", info.Endpoint)
 	assert.Equal(t, 1, launcher.callCount())
@@ -896,8 +892,7 @@ func TestPromote_ConflictFallsBackToCurrentAvailable(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	kv, err := appliance.bucket(ctx)
-	require.NoError(t, err)
+	kv := applianceRawKV(t, appliance)
 	rev, err := kv.Create(ctx, appliancePostgresKey, data)
 	require.NoError(t, err)
 
@@ -910,7 +905,7 @@ func TestPromote_ConflictFallsBackToCurrentAvailable(t *testing.T) {
 	_, err = kv.Update(ctx, appliancePostgresKey, alreadyData, rev)
 	require.NoError(t, err)
 
-	info, err := appliance.promote(ctx, kv, rec, rev, "10.0.0.21", 5432)
+	info, err := appliance.promote(ctx, rec, rev, "10.0.0.21", 5432)
 	require.NoError(t, err)
 	assert.Equal(t, "10.0.0.20", info.Endpoint)
 }

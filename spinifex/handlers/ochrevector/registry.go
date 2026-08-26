@@ -108,7 +108,7 @@ func registryKey(accountID, indexID string) string {
 // rec.AccountID is stamped from accountID, overriding whatever the caller set.
 func (reg *Registry) Reserve(ctx context.Context, accountID string, rec Record) error {
 	rec.AccountID = accountID
-	if err := reg.store.Create(ctx, registryKey(accountID, rec.ID), &rec); err != nil {
+	if _, err := reg.store.Create(ctx, registryKey(accountID, rec.ID), &rec); err != nil {
 		if errors.Is(err, kvstore.ErrExists) {
 			return ErrIndexExists
 		}

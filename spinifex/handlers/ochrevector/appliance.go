@@ -3,7 +3,6 @@ package handlers_ochrevector
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,7 +12,7 @@ import (
 	"time"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -130,12 +129,13 @@ type ApplianceLauncher interface {
 // Appliance owns the singleton platform Postgres appliance: its encrypted
 // credential store and the re-entrant Ensure state machine over it (D2).
 type Appliance struct {
-	js        jetstream.JetStream
+	store     *kvstore.Store[ApplianceRecord]
 	masterKey []byte
 	launcher  ApplianceLauncher
 
+	// mu guards the optional collaborators below, which WithHostPort,
+	// WithStores and WithKBStores attach after construction.
 	mu sync.Mutex
-	kv jetstream.KeyValue
 
 	// hostPortDeps and eniID back this daemon's routed presence in the
 	// appliance's VPC. A nil hostPortDeps.HostPort (WithHostPort never called)
@@ -167,7 +167,15 @@ func NewAppliance(js jetstream.JetStream, masterKey []byte, launcher ApplianceLa
 	if launcher == nil {
 		return nil, errors.New("ochrevector: appliance requires an ApplianceLauncher")
 	}
-	return &Appliance{js: js, masterKey: masterKey, launcher: launcher}, nil
+	return &Appliance{
+		store: kvstore.New[ApplianceRecord](js, kvstore.Config{
+			Name:    applianceBucket,
+			History: applianceBucketHistory,
+			Missing: "ochrevector: appliance has no JetStream client configured",
+		}),
+		masterKey: masterKey,
+		launcher:  launcher,
+	}, nil
 }
 
 // WithHostPort attaches this daemon's VPC host-port collaborators, so every
@@ -276,12 +284,7 @@ func (a *Appliance) Teardown(ctx context.Context, purgeMetadata bool) error {
 		}
 	}
 
-	kv, err := a.bucket(ctx)
-	if err != nil {
-		errs = append(errs, err)
-		return errors.Join(errs...)
-	}
-	if err := kv.Delete(ctx, appliancePostgresKey); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := a.store.Delete(ctx, appliancePostgresKey); err != nil {
 		errs = append(errs, fmt.Errorf("ochrevector: delete appliance record: %w", err))
 	}
 
@@ -311,33 +314,15 @@ func (a *Appliance) ensureHostPort(ctx context.Context, rec *ApplianceRecord) (s
 	return dialIP, nil
 }
 
-// bucket lazily opens (or creates) the appliance KV bucket, caching the
-// handle, mirroring Registry.bucket.
-func (a *Appliance) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	if a.js == nil {
-		return nil, errors.New("ochrevector: appliance has no JetStream client configured")
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.kv != nil {
-		return a.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucket(ctx, a.js, applianceBucket, applianceBucketHistory)
-	if err != nil {
-		return nil, err
-	}
-	a.kv = kv
-	return kv, nil
-}
-
 // Ensure is the re-entrant singleton-appliance orchestrator (D2): exactly one
 // caller across a multi-node control plane wins the atomic KV claim and
 // drives the launch; every other caller, concurrent or later, either waits
 // for that launch or resumes a crashed one, and no caller ever generates a
 // second password or identifier for the appliance.
 func (a *Appliance) Ensure(ctx context.Context) (ApplianceConnInfo, error) {
-	kv, err := a.bucket(ctx)
-	if err != nil {
+	// Resolve the bucket before minting a password, so an unreachable KV
+	// fails without generating credential material it would then discard.
+	if _, err := a.store.KV(ctx); err != nil {
 		return ApplianceConnInfo{}, err
 	}
 
@@ -345,19 +330,15 @@ func (a *Appliance) Ensure(ctx context.Context) (ApplianceConnInfo, error) {
 	if err != nil {
 		return ApplianceConnInfo{}, err
 	}
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return ApplianceConnInfo{}, fmt.Errorf("ochrevector: encode appliance record: %w", err)
-	}
 
-	rev, err := kv.Create(ctx, appliancePostgresKey, data)
+	rev, err := a.store.Create(ctx, appliancePostgresKey, &rec)
 	switch {
 	case err == nil:
 		// Winner: the single-writer claim succeeded, so this caller alone
 		// drives the launch and the promotion to AVAILABLE.
-		return a.launchAndPromote(ctx, kv, rec, rev, plaintext)
-	case errors.Is(err, jetstream.ErrKeyExists):
-		return a.waitOrResume(ctx, kv)
+		return a.launchAndPromote(ctx, rec, rev, plaintext)
+	case errors.Is(err, kvstore.ErrExists):
+		return a.waitOrResume(ctx)
 	default:
 		return ApplianceConnInfo{}, fmt.Errorf("ochrevector: claim appliance: %w", err)
 	}
@@ -369,29 +350,25 @@ func (a *Appliance) Ensure(ctx context.Context) (ApplianceConnInfo, error) {
 // fresh claim would mint a second password for the same singleton appliance,
 // which Ensure must never do; the staleness-triggered resume path is the
 // only recovery.
-func (a *Appliance) launchAndPromote(ctx context.Context, kv jetstream.KeyValue, rec ApplianceRecord, rev uint64, plaintext string) (ApplianceConnInfo, error) {
+func (a *Appliance) launchAndPromote(ctx context.Context, rec ApplianceRecord, rev uint64, plaintext string) (ApplianceConnInfo, error) {
 	endpoint, port, err := a.launcher.Launch(ctx, rec.Identifier, rec.MasterUsername, plaintext)
 	if err != nil {
 		return ApplianceConnInfo{}, fmt.Errorf("ochrevector: launch appliance: %w", err)
 	}
-	return a.promote(ctx, kv, rec, rev, endpoint, port)
+	return a.promote(ctx, rec, rev, endpoint, port)
 }
 
 // promote flips rec to AVAILABLE via a revision-guarded (CAS) update. If the
 // update loses a race to a concurrent resume of the same stale record, a
 // record that has already reached AVAILABLE is this caller's success too,
 // not a conflict to surface.
-func (a *Appliance) promote(ctx context.Context, kv jetstream.KeyValue, rec ApplianceRecord, rev uint64, endpoint string, port int) (ApplianceConnInfo, error) {
+func (a *Appliance) promote(ctx context.Context, rec ApplianceRecord, rev uint64, endpoint string, port int) (ApplianceConnInfo, error) {
 	rec.State = ApplianceStateAvailable
 	rec.Endpoint = endpoint
 	rec.Port = port
 	rec.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return ApplianceConnInfo{}, fmt.Errorf("ochrevector: encode appliance record: %w", err)
-	}
-	if _, err := kv.Update(ctx, appliancePostgresKey, data, rev); err != nil {
-		if current, _, getErr := a.getRecord(ctx, kv); getErr == nil && current != nil && current.State == ApplianceStateAvailable {
+	if err := a.store.CompareAndSet(ctx, appliancePostgresKey, &rec, rev); err != nil {
+		if current, _, getErr := a.getRecord(ctx); getErr == nil && current != nil && current.State == ApplianceStateAvailable {
 			return connInfo(*current), nil
 		}
 		return ApplianceConnInfo{}, fmt.Errorf("ochrevector: promote appliance to available: %w", err)
@@ -402,9 +379,9 @@ func (a *Appliance) promote(ctx context.Context, kv jetstream.KeyValue, rec Appl
 // waitOrResume is the losing caller's path: read the winner's record and
 // either return its endpoint once AVAILABLE, resume a stale crashed
 // provision, or wait and re-check, bounded by ctx.
-func (a *Appliance) waitOrResume(ctx context.Context, kv jetstream.KeyValue) (ApplianceConnInfo, error) {
+func (a *Appliance) waitOrResume(ctx context.Context) (ApplianceConnInfo, error) {
 	for {
-		rec, entry, err := a.getRecord(ctx, kv)
+		rec, rev, err := a.getRecord(ctx)
 		if err != nil {
 			return ApplianceConnInfo{}, err
 		}
@@ -418,7 +395,7 @@ func (a *Appliance) waitOrResume(ctx context.Context, kv jetstream.KeyValue) (Ap
 			return connInfo(*rec), nil
 		case ApplianceStateProvisioning:
 			if time.Since(rec.UpdatedAt) > applianceStaleAfter {
-				return a.resume(ctx, kv, *rec, entry.Revision())
+				return a.resume(ctx, *rec, rev)
 			}
 		default:
 			return ApplianceConnInfo{}, fmt.Errorf("ochrevector: appliance record in unexpected state %q", rec.State)
@@ -434,7 +411,7 @@ func (a *Appliance) waitOrResume(ctx context.Context, kv jetstream.KeyValue) (Ap
 // resume re-drives the launch for a stale PROVISIONING record left by a
 // crashed winner, reusing rec's existing identifier and stored password
 // rather than generating either anew (D2), then promotes it.
-func (a *Appliance) resume(ctx context.Context, kv jetstream.KeyValue, rec ApplianceRecord, rev uint64) (ApplianceConnInfo, error) {
+func (a *Appliance) resume(ctx context.Context, rec ApplianceRecord, rev uint64) (ApplianceConnInfo, error) {
 	password, err := a.decryptPassword(&rec)
 	if err != nil {
 		return ApplianceConnInfo{}, err
@@ -443,7 +420,7 @@ func (a *Appliance) resume(ctx context.Context, kv jetstream.KeyValue, rec Appli
 	if err != nil {
 		return ApplianceConnInfo{}, fmt.Errorf("ochrevector: resume stale appliance provisioning: %w", err)
 	}
-	return a.promote(ctx, kv, rec, rev, endpoint, port)
+	return a.promote(ctx, rec, rev, endpoint, port)
 }
 
 // Connect builds a ready *pgxBackend for the current AVAILABLE appliance
@@ -472,11 +449,7 @@ func (a *Appliance) Connect(ctx context.Context) (*pgxBackend, error) {
 // pgx pool. Backup/Restore shell out to pg_dump/psql instead of dialing
 // through pgx, but still need this exact dial host/port and password.
 func (a *Appliance) dsn(ctx context.Context) (string, error) {
-	kv, err := a.bucket(ctx)
-	if err != nil {
-		return "", err
-	}
-	rec, _, err := a.getRecord(ctx, kv)
+	rec, _, err := a.getRecord(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -506,21 +479,17 @@ func (a *Appliance) dsn(ctx context.Context) (string, error) {
 	return buildDSN(dialHost, rec.Port, rec.MasterUsername, password), nil
 }
 
-// getRecord reads and decodes the appliance record, returning (nil, nil, nil)
-// when absent.
-func (a *Appliance) getRecord(ctx context.Context, kv jetstream.KeyValue) (*ApplianceRecord, jetstream.KeyValueEntry, error) {
-	entry, err := kv.Get(ctx, appliancePostgresKey)
+// getRecord reads and decodes the appliance record, returning (nil, 0, nil)
+// when absent. The revision is the CAS precondition promote and resume need.
+func (a *Appliance) getRecord(ctx context.Context) (*ApplianceRecord, uint64, error) {
+	rec, rev, err := a.store.Get(ctx, appliancePostgresKey)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil, 0, nil
+	}
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil, nil
-		}
-		return nil, nil, fmt.Errorf("ochrevector: get appliance record: %w", err)
+		return nil, 0, err
 	}
-	var rec ApplianceRecord
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return nil, nil, fmt.Errorf("ochrevector: decode appliance record: %w", err)
-	}
-	return &rec, entry, nil
+	return rec, rev, nil
 }
 
 // decryptPassword resolves rec's encrypted master password to plaintext. The

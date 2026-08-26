@@ -31,6 +31,15 @@ func newStore(t *testing.T) *kvstore.Store[record] {
 	})
 }
 
+// mustCreate claims key for rec and returns the claim's revision, for the tests
+// that need a record in place rather than a create to assert on.
+func mustCreate(t *testing.T, store *kvstore.Store[record], key string, rec record) uint64 {
+	t.Helper()
+	rev, err := store.Create(t.Context(), key, &rec)
+	require.NoError(t, err)
+	return rev
+}
+
 // seedRaw writes a record straight to the bucket, bypassing Store, so a test
 // can move the revision underneath an in-flight Mutate.
 func seedRaw(t *testing.T, store *kvstore.Store[record], key string, rec record) {
@@ -54,14 +63,14 @@ func TestStore_GetAbsentKeyIsNotFound(t *testing.T) {
 func TestStore_CreateRoundTripsAndRejectsDuplicate(t *testing.T) {
 	store := newStore(t)
 
-	require.NoError(t, store.Create(t.Context(), "acct-a/one", &record{Name: "one", Count: 3}))
+	mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 3})
 
 	got, rev, err := store.Get(t.Context(), "acct-a/one")
 	require.NoError(t, err)
 	assert.Equal(t, record{Name: "one", Count: 3}, *got)
 	assert.NotZero(t, rev, "a committed record has a revision")
 
-	err = store.Create(t.Context(), "acct-a/one", &record{Name: "impostor"})
+	_, err = store.Create(t.Context(), "acct-a/one", &record{Name: "impostor"})
 	require.ErrorIs(t, err, kvstore.ErrExists)
 
 	// The loser of the create must not have overwritten the winner.
@@ -72,7 +81,7 @@ func TestStore_CreateRoundTripsAndRejectsDuplicate(t *testing.T) {
 
 func TestStore_DeleteIsIdempotent(t *testing.T) {
 	store := newStore(t)
-	require.NoError(t, store.Create(t.Context(), "acct-a/one", &record{Name: "one"}))
+	mustCreate(t, store, "acct-a/one", record{Name: "one"})
 
 	require.NoError(t, store.Delete(t.Context(), "acct-a/one"))
 	require.NoError(t, store.Delete(t.Context(), "acct-a/one"), "deleting an absent key is success")
@@ -92,9 +101,9 @@ func TestStore_ListOnEmptyBucketIsNotAnError(t *testing.T) {
 
 func TestStore_ListFiltersByPrefix(t *testing.T) {
 	store := newStore(t)
-	require.NoError(t, store.Create(t.Context(), "acct-a/one", &record{Name: "one"}))
-	require.NoError(t, store.Create(t.Context(), "acct-a/two", &record{Name: "two"}))
-	require.NoError(t, store.Create(t.Context(), "acct-b/three", &record{Name: "three"}))
+	mustCreate(t, store, "acct-a/one", record{Name: "one"})
+	mustCreate(t, store, "acct-a/two", record{Name: "two"})
+	mustCreate(t, store, "acct-b/three", record{Name: "three"})
 
 	mine, err := store.List(t.Context(), "acct-a/")
 	require.NoError(t, err)
@@ -110,7 +119,7 @@ func TestStore_ListFiltersByPrefix(t *testing.T) {
 // value out of band, so the commit that follows it must lose and re-read.
 func TestStore_MutateRetriesARevisionConflict(t *testing.T) {
 	store := newStore(t)
-	require.NoError(t, store.Create(t.Context(), "acct-a/one", &record{Name: "one", Count: 1}))
+	mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 1})
 
 	attempts := 0
 	err := store.Mutate(t.Context(), "acct-a/one", func(rec *record) (bool, error) {
@@ -131,7 +140,7 @@ func TestStore_MutateRetriesARevisionConflict(t *testing.T) {
 
 func TestStore_MutateReportingNoChangeCommitsNoWrite(t *testing.T) {
 	store := newStore(t)
-	require.NoError(t, store.Create(t.Context(), "acct-a/one", &record{Name: "one", Count: 1}))
+	mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 1})
 	_, before, err := store.Get(t.Context(), "acct-a/one")
 	require.NoError(t, err)
 
@@ -159,8 +168,8 @@ func TestStore_MutateOnAbsentKeyIsNotFound(t *testing.T) {
 
 func TestStore_DeletePrefixLeavesOtherPrefixes(t *testing.T) {
 	store := newStore(t)
-	require.NoError(t, store.Create(t.Context(), "acct-a/one", &record{Name: "one"}))
-	require.NoError(t, store.Create(t.Context(), "acct-b/two", &record{Name: "two"}))
+	mustCreate(t, store, "acct-a/one", record{Name: "one"})
+	mustCreate(t, store, "acct-b/two", record{Name: "two"})
 
 	require.NoError(t, store.DeletePrefix(t.Context(), "acct-a/"))
 
@@ -181,7 +190,7 @@ func TestStore_NilJetStreamReportsTheConfiguredMessage(t *testing.T) {
 	_, _, err := store.Get(t.Context(), "acct-a/one")
 	require.ErrorContains(t, err, "no JetStream client configured")
 
-	err = store.Create(t.Context(), "acct-a/one", &record{Name: "one"})
+	_, err = store.Create(t.Context(), "acct-a/one", &record{Name: "one"})
 	require.ErrorContains(t, err, "no JetStream client configured")
 
 	_, err = store.List(t.Context(), "")
@@ -237,8 +246,9 @@ func TestOver_ServesAPreOpenedBucket(t *testing.T) {
 
 func TestStore_SetOverwritesWhereCreateWouldConflict(t *testing.T) {
 	store := newStore(t)
-	require.NoError(t, store.Create(t.Context(), "acct-a/one", &record{Name: "first"}))
-	require.ErrorIs(t, store.Create(t.Context(), "acct-a/one", &record{Name: "second"}), kvstore.ErrExists)
+	mustCreate(t, store, "acct-a/one", record{Name: "first"})
+	_, err := store.Create(t.Context(), "acct-a/one", &record{Name: "second"})
+	require.ErrorIs(t, err, kvstore.ErrExists)
 
 	require.NoError(t, store.Set(t.Context(), "acct-a/one", &record{Name: "second", Count: 9}))
 	got, _, err := store.Get(t.Context(), "acct-a/one")
@@ -284,14 +294,12 @@ func TestStore_ExistsIsFalseForAnAbsentKey(t *testing.T) {
 
 func TestStore_CompareAndSetRejectsAStaleRevision(t *testing.T) {
 	store := newStore(t)
-	require.NoError(t, store.Create(t.Context(), "acct-a/one", &record{Name: "one", Count: 1}))
-	_, stale, err := store.Get(t.Context(), "acct-a/one")
-	require.NoError(t, err)
+	stale := mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 1})
 
 	// Another writer commits first, moving the revision on.
 	seedRaw(t, store, "acct-a/one", record{Name: "one", Count: 2})
 
-	err = store.CompareAndSet(t.Context(), "acct-a/one", &record{Name: "one", Count: 99}, stale)
+	err := store.CompareAndSet(t.Context(), "acct-a/one", &record{Name: "one", Count: 99}, stale)
 	require.ErrorIs(t, err, kvstore.ErrConflict)
 
 	got, fresh, err := store.Get(t.Context(), "acct-a/one")
@@ -302,6 +310,32 @@ func TestStore_CompareAndSetRejectsAStaleRevision(t *testing.T) {
 	got, _, err = store.Get(t.Context(), "acct-a/one")
 	require.NoError(t, err)
 	assert.Equal(t, 3, got.Count, "the same call commits at the current revision")
+}
+
+// TestStore_CreateReturnsTheClaimRevision pins the claim-then-CAS sequence a
+// single-writer state machine runs: the winner of the create holds a revision
+// good enough to commit its own first update, with no read in between.
+func TestStore_CreateReturnsTheClaimRevision(t *testing.T) {
+	store := newStore(t)
+
+	claimed, err := store.Create(t.Context(), "singleton", &record{Name: "provisioning"})
+	require.NoError(t, err)
+	require.NotZero(t, claimed, "a committed claim has a revision")
+
+	_, read, err := store.Get(t.Context(), "singleton")
+	require.NoError(t, err)
+	assert.Equal(t, read, claimed, "the claim revision is the record's current revision")
+
+	require.NoError(t, store.CompareAndSet(t.Context(), "singleton", &record{Name: "available"}, claimed),
+		"the winner promotes its own claim without re-reading")
+
+	// The spent revision must not commit a second time.
+	err = store.CompareAndSet(t.Context(), "singleton", &record{Name: "impostor"}, claimed)
+	require.ErrorIs(t, err, kvstore.ErrConflict)
+
+	got, _, err := store.Get(t.Context(), "singleton")
+	require.NoError(t, err)
+	assert.Equal(t, "available", got.Name)
 }
 
 // TestStore_ConfigAttemptsBoundsMutate pins both halves of the per-store budget:
@@ -322,7 +356,7 @@ func TestStore_ConfigAttemptsBoundsMutate(t *testing.T) {
 			return errBudgetSpent
 		},
 	})
-	require.NoError(t, store.Create(t.Context(), "acct-a/one", &record{Name: "one"}))
+	mustCreate(t, store, "acct-a/one", record{Name: "one"})
 
 	calls := 0
 	err := store.Mutate(t.Context(), "acct-a/one", func(rec *record) (bool, error) {

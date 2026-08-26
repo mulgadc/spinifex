@@ -1,3 +1,7 @@
+// (stsRequestParams, principalTypeUser, the context keys) and shares the
+// policy mocks with the other in-package authz suites.
+//
+//test:in-package — the gate is exercised through unexported request wiring
 package gateway
 
 import (
@@ -215,22 +219,11 @@ func TestSTSRequest_AssumeRole_PolicyScopedToRole(t *testing.T) {
 	})
 }
 
-// TestSTSRequest_AssumeRole_PathIsResolvedNotTrusted pins the gate to the role
-// the handler resolves. Roles are keyed by account and name, so a path the
-// caller invented must not make a scoped grant match a role it does not name,
-// while a role genuinely stored under a path is matched by its full ARN.
+// TestSTSRequest_AssumeRole_PathIsResolvedNotTrusted pins the gate to the ARN
+// IAM stored, so a role genuinely stored under a path is matched by its full
+// ARN. An ARN that is not the stored one is refused by role resolution itself
+// — see TestResolveRoleByARN in handlers/sts.
 func TestSTSRequest_AssumeRole_PathIsResolvedNotTrusted(t *testing.T) {
-	t.Run("invented path does not reach another role", func(t *testing.T) {
-		// `app-x/admin` resolves `admin`, whose stored ARN carries no path and
-		// so falls outside the grant.
-		svc := stsIdentityPolicy(
-			stsStatement("Allow", "sts:AssumeRole", "arn:aws:iam::000000000000:role/app-*"),
-		).withRoles(map[string]string{"admin": "arn:aws:iam::000000000000:role/admin"})
-		resp := stsPolicyRequest(t, svc, nil,
-			"Action=AssumeRole&RoleArn=arn:aws:iam::000000000000:role/app-x/admin&RoleSessionName=s1")
-		assertSTSAccessDenied(t, resp)
-	})
-
 	t.Run("stored ARN matching exactly is admitted", func(t *testing.T) {
 		svc := stsIdentityPolicy(
 			stsStatement("Allow", "sts:AssumeRole", "arn:aws:iam::000000000000:role/app-*"),
@@ -270,6 +263,20 @@ func TestSTSRequest_AssumeRole_DenialDoesNotDiscloseRoleExistence(t *testing.T) 
 
 	assert.Equal(t, stripRequestID(existing), stripRequestID(missing))
 	assert.Contains(t, existing, "is not authorized to perform: sts:AssumeRole on resource: "+stsTestRoleARN)
+
+	// A pathed role is where the two can diverge: a resolved role names its
+	// stored ARN, so an unresolved one must name what the caller supplied
+	// rather than any form derived from it.
+	const pathed = "arn:aws:iam::000000000000:role/team/svc"
+	pathedBody := "Action=AssumeRole&RoleArn=" + pathed + "&RoleSessionName=s1"
+
+	pathedExisting := assertSTSAccessDenied(t, stsPolicyRequest(t,
+		stsIdentityPolicy().withRoles(map[string]string{"svc": pathed}), nil, pathedBody))
+	pathedMissing := assertSTSAccessDenied(t,
+		stsPolicyRequest(t, stsIdentityPolicy().withRoles(nil), nil, pathedBody))
+
+	assert.Equal(t, stripRequestID(pathedExisting), stripRequestID(pathedMissing))
+	assert.Contains(t, pathedExisting, "on resource: "+pathed)
 }
 
 // stripRequestID removes the per-request UUID so two error bodies can be

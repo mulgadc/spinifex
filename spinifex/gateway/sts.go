@@ -89,28 +89,34 @@ var stsPolicyGatedActions = map[string]bool{
 // stsPolicyResource returns the ARN a gated action is evaluated against.
 // AssumeRole resolves the target role so the resource is the ARN IAM stored,
 // which a policy naming a pathed role matches and an invented path does not.
-// An unresolvable role falls back to the canonical form of the parsed pair, so
-// the denial is identical whether or not the role exists.
-func (gw *GatewayConfig) stsPolicyResource(action string, queryArgs map[string]string) (string, error) {
+func (gw *GatewayConfig) stsPolicyResource(queryArgs map[string]string) (string, error) {
+	// An absent RoleArn is a malformed request, not an unauthorized one: saying
+	// so beats sending the caller to widen a policy that was never the cause.
 	roleARN := queryArgs["RoleArn"]
-	if action != "AssumeRole" || roleARN == "" {
-		return "*", nil
+	if roleARN == "" {
+		return "", errors.New(awserrors.ErrorMissingParameter)
 	}
-	canonical, err := handlers_sts.CanonicalRoleARN(roleARN)
-	if err != nil {
-		slog.Debug("STS: unparseable RoleArn", "err", err)
-		return "", err
+	if gw.IAMService == nil {
+		slog.Error("STS: IAM service not available", "action", "AssumeRole")
+		return "", errors.New(awserrors.ErrorInternalError)
 	}
+
 	_, role, err := handlers_sts.ResolveRoleByARN(gw.IAMService, roleARN)
 	switch {
 	case err == nil:
 		return aws.StringValue(role.Arn), nil
 	case errors.Is(err, handlers_sts.ErrRoleUnresolved):
-		return canonical, nil
-	default:
-		slog.Error("STS: role lookup failed ahead of the identity gate", "err", err)
-		return "", errors.New(awserrors.ErrorInternalError)
+		// Echoing the supplied ARN keeps the denial identical whether or not the
+		// role exists. The handler refuses an ARN that is not the stored one, so
+		// a grant matched here on an invented path still ends in a denial there.
+		return roleARN, nil
 	}
+	if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorValidationError {
+		slog.Debug("STS: unparseable RoleArn", "roleArn", roleARN)
+		return "", err
+	}
+	slog.Error("STS: role lookup failed ahead of the identity gate", "roleArn", roleARN, "err", err)
+	return "", errors.New(awserrors.ErrorInternalError)
 }
 
 func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) error {
@@ -148,7 +154,7 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 	// the role's trust policy. Scoping to the target role lets a policy grant
 	// assumption of one role without granting all of them.
 	if stsPolicyGatedActions[action] {
-		resource, rerr := gw.stsPolicyResource(action, queryArgs)
+		resource, rerr := gw.stsPolicyResource(queryArgs)
 		if rerr != nil {
 			return rerr
 		}

@@ -3,6 +3,8 @@ package handlers_ecs
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -30,6 +32,11 @@ const (
 	// UI exit reason) before it is dropped, matching AWS's ~1h STOPPED window.
 	sweepInterval        = 60 * time.Second
 	stoppedTaskRetention = 1 * time.Hour
+
+	// convergeInterval is how often the leader re-asserts the instance-role
+	// policy. The document changes only across releases, so this trades a slower
+	// pickup after an upgrade for a fleet-wide write every reconcile tick.
+	convergeInterval = 5 * time.Minute
 )
 
 // Scheduler is the per-daemon ECS control loop. A single leader (elected via the
@@ -85,9 +92,11 @@ func (sc *Scheduler) Run(ctx context.Context) {
 	reaperTicker := time.NewTicker(reaperInterval)
 	reconcileTicker := time.NewTicker(reconcileInterval)
 	sweepTicker := time.NewTicker(sweepInterval)
+	convergeTicker := time.NewTicker(convergeInterval)
 	defer reaperTicker.Stop()
 	defer reconcileTicker.Stop()
 	defer sweepTicker.Stop()
+	defer convergeTicker.Stop()
 
 	leaseDone := make(chan struct{})
 	go func() {
@@ -105,9 +114,10 @@ func (sc *Scheduler) Run(ctx context.Context) {
 			sc.runIfLeader("instance reap", func() error { return sc.reap(ctx) })
 		case <-reconcileTicker.C:
 			sc.runIfLeader("service reconcile", func() error { return sc.svc.reconcileAllServices(ctx) })
-			sc.runIfLeader("instance role converge", func() error { return sc.convergeInstanceRoles(ctx) })
 		case <-sweepTicker.C:
 			sc.runIfLeader("stopped-task sweep", func() error { return sc.sweepStoppedTasks(ctx) })
+		case <-convergeTicker.C:
+			sc.runIfLeader("instance role converge", func() error { return sc.convergeInstanceRoles(ctx) })
 		}
 	}
 }
@@ -272,22 +282,27 @@ func (sc *Scheduler) stopInstanceTasks(ctx context.Context, kv jetstream.KeyValu
 // convergeInstanceRoles re-asserts the ecsInstanceRole policy on every account
 // holding ECS state. Provisioning runs only when capacity changes, so a cluster
 // that is merely running would otherwise never pick up a changed document and
-// its agent would fail its next credential refresh. Returns an error when the
-// account enumeration could not complete; a single account that fails is logged
-// and retried on the next tick.
+// its agent would fail its next credential refresh.
 func (sc *Scheduler) convergeInstanceRoles(ctx context.Context) error {
+	// A pass that cannot converge anything is a misconfiguration that silently
+	// breaks agent credentials an hour later, so it is not a benign no-op.
 	if sc.svc.deps.IAM == nil {
-		return nil
+		return errors.New("instance-role converge disabled: IAM dependency not wired")
 	}
 	buckets, err := accountBuckets(ctx, sc.nc)
 	if err != nil {
 		return err
 	}
+	failed := 0
 	for _, bucket := range buckets {
 		if _, err := sc.svc.ensureECSInstanceProfile(bucket.accountID); err != nil {
+			failed++
 			slog.Error("ECS scheduler: converge instance role failed",
 				"accountId", bucket.accountID, "err", err)
 		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("converge instance roles: %d of %d accounts failed", failed, len(buckets))
 	}
 	return nil
 }

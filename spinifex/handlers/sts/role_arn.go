@@ -7,7 +7,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 
 	"github.com/mulgadc/bluebottle/pkg/auth"
-	spxarn "github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -19,17 +18,6 @@ var ErrRoleUnresolved = errors.New("role ARN does not resolve to a stored role")
 // RoleGetter is the IAM surface role resolution needs.
 type RoleGetter interface {
 	GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
-}
-
-// CanonicalRoleARN returns the pathless ARN a supplied role ARN reduces to.
-// Roles are keyed by account and name, so a path the caller wrote is not part
-// of the role's identity and cannot be carried into an authorization decision.
-func CanonicalRoleARN(roleARN string) (string, error) {
-	accountID, roleName, err := auth.ParseRoleARN(roleARN)
-	if err != nil {
-		return "", errors.New(awserrors.ErrorValidationError)
-	}
-	return spxarn.FormatIAMPath(spxarn.IAMRole, accountID, "/", roleName), nil
 }
 
 // ResolveRoleByARN resolves the role a caller-supplied ARN names and verifies

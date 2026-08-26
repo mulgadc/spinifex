@@ -199,20 +199,23 @@ func (gw *GatewayConfig) authorizeAdmin(r *http.Request, method string) error {
 	return gw.checkPolicy(r, "spinifex", method)
 }
 
-// writeAdminError writes the JSON error envelope. message overrides the
-// registry text when a specific cause is safe to disclose; it must never carry
-// a parameter value, only a parameter name.
 // writeAdminErrorFor resolves an error to its code and any message its call
 // site attached, so a wrapped error renders as its own code instead of falling
 // through to InternalError.
 func (gw *GatewayConfig) writeAdminErrorFor(w http.ResponseWriter, requestID string, err error) {
 	code, message, ok := awserrors.ResolveErrorDetail(err)
 	if !ok {
+		// The cause reaches neither the wire nor the envelope's own unmapped-code
+		// log, so this is the only place it is recorded.
+		slog.Error("Admin: unresolvable error", "requestId", requestID, "err", err)
 		code = awserrors.ErrorInternalError
 	}
 	gw.writeAdminError(w, requestID, code, message)
 }
 
+// writeAdminError writes the JSON error envelope. message overrides the
+// registry text when a specific cause is safe to disclose; a policy denial
+// names principal, action and resource, all of them caller-derivable.
 func (gw *GatewayConfig) writeAdminError(w http.ResponseWriter, requestID, code, message string) {
 	detail, ok := awserrors.ErrorLookup[code]
 	if !ok {

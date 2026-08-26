@@ -317,7 +317,9 @@ func TestSTSRequest_AssumeRole_MissingRoleArn(t *testing.T) {
 		principalType: principalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
 		stsSvc:        svc,
-		iamSvc:        stsIdentityPolicy(stsStatement("Allow", "sts:AssumeRole", "*")),
+		// An empty policy: a request missing RoleArn is malformed whatever the
+		// caller holds, so the gate must not answer it with a denial.
+		iamSvc: stsIdentityPolicy(),
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=AssumeRole&RoleSessionName=s1"))
@@ -345,6 +347,39 @@ func TestSTSRequest_NilService_InternalError(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=GetCallerIdentity"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp := doRequest(handler, req)
+	assert.Equal(t, 500, resp.StatusCode)
+	b, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(b), "InternalError")
+}
+
+// TestSTSRequest_AssumeRole_NilIAMService_InternalError pins the gate to the
+// same fail-closed answer checkPolicyResources gives: the target-role lookup
+// runs ahead of it, so an absent IAM service must not reach a nil interface.
+func TestSTSRequest_AssumeRole_NilIAMService_InternalError(t *testing.T) {
+	svc := &flexMockSTSService{
+		assumeRoleFn: func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
+			t.Fatal("handler reached: an unavailable IAM service must fail closed")
+			return nil, nil
+		},
+	}
+	gw := &GatewayConfig{DisableLogging: true, STSService: svc, IAMService: nil}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), ctxService, "sts")
+		ctx = context.WithValue(ctx, ctxAccountID, utils.GlobalAccountID)
+		ctx = context.WithValue(ctx, ctxIdentity, "alice")
+		ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+		ctx = context.WithValue(ctx, ctxAccessKey, "AKIAEXAMPLE")
+		r = r.WithContext(ctx)
+		if err := gw.STS_Request(w, r); err != nil {
+			gw.ErrorHandler(w, r, err)
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/",
+		strings.NewReader("Action=AssumeRole&RoleArn="+stsTestRoleARN+"&RoleSessionName=s1"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp := doRequest(handler, req)

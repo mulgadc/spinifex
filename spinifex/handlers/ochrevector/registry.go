@@ -2,16 +2,13 @@ package handlers_ochrevector
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -85,37 +82,18 @@ type Record struct {
 }
 
 // Registry persists index Records in the ochre-vector-indexes JetStream KV
-// bucket, mirroring GuardrailStore's gateway-direct-KV pattern (lazy
-// get-or-create bucket, key "accountID/id", per-account prefix-scan list).
+// bucket, keyed "accountID/id" with a per-account prefix-scan list.
 type Registry struct {
-	js jetstream.JetStream
-
-	mu sync.Mutex
-	kv jetstream.KeyValue
+	store *kvstore.Store[Record]
 }
 
 // NewRegistry constructs a Registry over js.
 func NewRegistry(js jetstream.JetStream) *Registry {
-	return &Registry{js: js}
-}
-
-// bucket lazily opens (or creates) the registry KV bucket, caching the
-// handle.
-func (reg *Registry) bucket(ctx context.Context) (jetstream.KeyValue, error) {
-	if reg.js == nil {
-		return nil, errors.New("ochrevector: registry has no JetStream client configured")
-	}
-	reg.mu.Lock()
-	defer reg.mu.Unlock()
-	if reg.kv != nil {
-		return reg.kv, nil
-	}
-	kv, err := kvutil.GetOrCreateBucket(ctx, reg.js, registryBucket, registryBucketHistory)
-	if err != nil {
-		return nil, err
-	}
-	reg.kv = kv
-	return kv, nil
+	return &Registry{store: kvstore.New[Record](js, kvstore.Config{
+		Name:    registryBucket,
+		History: registryBucketHistory,
+		Missing: "ochrevector: registry has no JetStream client configured",
+	})}
 }
 
 // registryKey scopes every record to its owning account, so a foreign
@@ -125,22 +103,13 @@ func registryKey(accountID, indexID string) string {
 }
 
 // Reserve atomically claims rec.ID for accountID: the create-only KV write is
-// the single-writer mutex (mirrors handlers/rds's identifier claim via
-// jetstream.ErrKeyExists), so two concurrent creates of the same id race
-// safely and exactly one wins. rec.AccountID is stamped from accountID,
-// overriding whatever the caller set.
+// the single-writer mutex (mirrors handlers/rds's identifier claim), so two
+// concurrent creates of the same id race safely and exactly one wins.
+// rec.AccountID is stamped from accountID, overriding whatever the caller set.
 func (reg *Registry) Reserve(ctx context.Context, accountID string, rec Record) error {
-	kv, err := reg.bucket(ctx)
-	if err != nil {
-		return err
-	}
 	rec.AccountID = accountID
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("ochrevector: encode index record %s: %w", rec.ID, err)
-	}
-	if _, err := kv.Create(ctx, registryKey(accountID, rec.ID), data); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+	if err := reg.store.Create(ctx, registryKey(accountID, rec.ID), &rec); err != nil {
+		if errors.Is(err, kvstore.ErrExists) {
 			return ErrIndexExists
 		}
 		return fmt.Errorf("ochrevector: reserve index %s: %w", rec.ID, err)
@@ -148,104 +117,43 @@ func (reg *Registry) Reserve(ctx context.Context, accountID string, rec Record) 
 	return nil
 }
 
-// Get reads accountID's record for indexID, returning (nil, nil) when absent.
+// Get reads accountID's record for indexID, returning (nil, nil) when absent,
+// which is how every caller distinguishes a missing index from a failure.
 func (reg *Registry) Get(ctx context.Context, accountID, indexID string) (*Record, error) {
-	kv, err := reg.bucket(ctx)
+	rec, _, err := reg.store.Get(ctx, registryKey(accountID, indexID))
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	return getRecord(ctx, kv, registryKey(accountID, indexID))
-}
-
-// getRecord reads and decodes one record, returning (nil, nil) when absent.
-func getRecord(ctx context.Context, kv jetstream.KeyValue, key string) (*Record, error) {
-	entry, err := kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("ochrevector: kv get %s: %w", key, err)
-	}
-	var rec Record
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return nil, fmt.Errorf("ochrevector: decode %s: %w", key, err)
-	}
-	return &rec, nil
+	return rec, nil
 }
 
 // List returns every index record owned by accountID, so one tenant's
 // listing never surfaces another's.
 func (reg *Registry) List(ctx context.Context, accountID string) ([]Record, error) {
-	kv, err := reg.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return listRecords(ctx, kv, accountID+"/")
+	return reg.store.List(ctx, accountID+"/")
 }
 
 // ListAll returns every index record across every account, for the
 // reconciler's crash-recovery sweep.
 func (reg *Registry) ListAll(ctx context.Context) ([]Record, error) {
-	kv, err := reg.bucket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return listRecords(ctx, kv, "")
-}
-
-// listRecords walks every key with the given prefix ("" matches everything)
-// and decodes each into a Record, skipping any key that disappears between
-// the key listing and the read.
-func listRecords(ctx context.Context, kv jetstream.KeyValue, prefix string) ([]Record, error) {
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("ochrevector: list keys: %w", err)
-	}
-	var out []Record
-	for _, key := range keys {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		rec, err := getRecord(ctx, kv, key)
-		if err != nil {
-			return nil, err
-		}
-		if rec != nil {
-			out = append(out, *rec)
-		}
-	}
-	return out, nil
+	return reg.store.List(ctx, "")
 }
 
 // SetState updates accountID's indexID record's State in place, returning
 // ErrIndexNotFound if no such record exists.
 func (reg *Registry) SetState(ctx context.Context, accountID, indexID, state string) error {
-	kv, err := reg.bucket(ctx)
+	err := reg.store.Mutate(ctx, registryKey(accountID, indexID), func(rec *Record) (bool, error) {
+		rec.State = state
+		rec.UpdatedAt = time.Now().UTC()
+		return true, nil
+	})
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return ErrIndexNotFound
+	}
 	if err != nil {
-		return err
-	}
-	key := registryKey(accountID, indexID)
-	entry, err := kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return ErrIndexNotFound
-		}
-		return fmt.Errorf("ochrevector: kv get %s: %w", key, err)
-	}
-	var rec Record
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return fmt.Errorf("ochrevector: decode %s: %w", key, err)
-	}
-	rec.State = state
-	rec.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("ochrevector: encode index record %s: %w", rec.ID, err)
-	}
-	if _, err := kv.Update(ctx, key, data, entry.Revision()); err != nil {
 		return fmt.Errorf("ochrevector: update state for index %s: %w", indexID, err)
 	}
 	return nil
@@ -256,32 +164,18 @@ func (reg *Registry) SetState(ctx context.Context, accountID, indexID, state str
 // an unchanged source never accumulates duplicate entries (D4: the stored
 // source-spec set drives auto-repopulation after a Postgres rebuild).
 func (reg *Registry) AppendSourceSpec(ctx context.Context, accountID, indexID string, spec SourceSpec) error {
-	kv, err := reg.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	key := registryKey(accountID, indexID)
-	entry, err := kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return ErrIndexNotFound
+	err := reg.store.Mutate(ctx, registryKey(accountID, indexID), func(rec *Record) (bool, error) {
+		if slices.ContainsFunc(rec.SourceSpecs, func(s SourceSpec) bool { return sourceSpecEqual(s, spec) }) {
+			return false, nil
 		}
-		return fmt.Errorf("ochrevector: kv get %s: %w", key, err)
+		rec.SourceSpecs = append(rec.SourceSpecs, spec)
+		rec.UpdatedAt = time.Now().UTC()
+		return true, nil
+	})
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return ErrIndexNotFound
 	}
-	var rec Record
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		return fmt.Errorf("ochrevector: decode %s: %w", key, err)
-	}
-	if slices.ContainsFunc(rec.SourceSpecs, func(s SourceSpec) bool { return sourceSpecEqual(s, spec) }) {
-		return nil
-	}
-	rec.SourceSpecs = append(rec.SourceSpecs, spec)
-	rec.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(rec)
 	if err != nil {
-		return fmt.Errorf("ochrevector: encode index record %s: %w", rec.ID, err)
-	}
-	if _, err := kv.Update(ctx, key, data, entry.Revision()); err != nil {
 		return fmt.Errorf("ochrevector: append source spec for index %s: %w", indexID, err)
 	}
 	return nil
@@ -291,34 +185,13 @@ func (reg *Registry) AppendSourceSpec(ctx context.Context, accountID, indexID st
 // appliance's registry never advertises a table that no longer exists.
 // Idempotent: an empty bucket is a no-op success.
 func (reg *Registry) PurgeAll(ctx context.Context) error {
-	kv, err := reg.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil
-		}
-		return fmt.Errorf("ochrevector: list keys: %w", err)
-	}
-	for _, key := range keys {
-		if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-			return fmt.Errorf("ochrevector: purge index %s: %w", key, err)
-		}
-	}
-	return nil
+	return reg.store.DeletePrefix(ctx, "")
 }
 
 // Delete removes accountID's indexID record. Idempotent: deleting an
 // already-absent record is a no-op success.
 func (reg *Registry) Delete(ctx context.Context, accountID, indexID string) error {
-	kv, err := reg.bucket(ctx)
-	if err != nil {
-		return err
-	}
-	key := registryKey(accountID, indexID)
-	if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := reg.store.Delete(ctx, registryKey(accountID, indexID)); err != nil {
 		return fmt.Errorf("ochrevector: delete index %s: %w", indexID, err)
 	}
 	return nil

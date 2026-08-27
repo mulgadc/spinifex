@@ -1795,3 +1795,105 @@ func TestJetStreamManager_UpdateStoppedInstance_AbsentKeyIsNotFound(t *testing.T
 	})
 	require.ErrorIs(t, err, kvstore.ErrNotFound)
 }
+
+// seedNodeRecord writes raw bytes at a node's key, bypassing the typed view, so
+// a test can present a record shape this binary would never write itself.
+func seedNodeRecord(t *testing.T, jsm *JetStreamManager, nodeID string, raw []byte) {
+	t.Helper()
+	kv, err := jsm.stateB.KV(t.Context())
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), InstanceStatePrefix+nodeID, raw)
+	require.NoError(t, err)
+}
+
+// A node record predates schema versioning, so it carries no version at all.
+// Reading it as current is what makes an in-place upgrade need no migration.
+func TestJetStreamManager_LoadState_UnversionedRecordStillReads(t *testing.T) {
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitKVBucket())
+
+	seedNodeRecord(t, jsm, "legacy-node",
+		[]byte(`{"vms":{"i-legacy-001":{"id":"i-legacy-001","status":"running"}}}`))
+
+	loaded, found, err := jsm.LoadState("legacy-node")
+	require.NoError(t, err, "A record written before versioning must still read")
+	require.True(t, found)
+	require.Len(t, loaded, 1)
+	assert.Equal(t, vm.StateRunning, loaded["i-legacy-001"].Status)
+}
+
+// A record from a newer binary is refused rather than parsed on a guess: this
+// is the per-record guard the bucket-level version key cannot provide, since
+// that is checked once at open by whichever node opened it.
+func TestJetStreamManager_LoadState_FutureRecordIsRefused(t *testing.T) {
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitKVBucket())
+
+	seedNodeRecord(t, jsm, "future-node",
+		[]byte(`{"schema_version":99,"vms":{"i-future-001":{"id":"i-future-001"}}}`))
+
+	_, _, err = jsm.LoadState("future-node")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schema_version 99")
+	assert.Contains(t, err.Error(), "newer than this node understands")
+}
+
+// Both writers stamp the version: the typed WriteState and the best-effort
+// pre-marshalled path, which is the one that would silently skip it.
+func TestJetStreamManager_WriteState_StampsSchemaVersion(t *testing.T) {
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitKVBucket())
+
+	vms := map[string]*vm.VM{"i-stamp-001": {ID: "i-stamp-001", Status: vm.StateRunning}}
+	require.NoError(t, jsm.WriteState("stamp-node", vms))
+
+	kv, err := jsm.stateB.KV(t.Context())
+	require.NoError(t, err)
+
+	read := func(nodeID string) LocalState {
+		t.Helper()
+		entry, err := kv.Get(t.Context(), InstanceStatePrefix+nodeID)
+		require.NoError(t, err)
+		var got LocalState
+		require.NoError(t, json.Unmarshal(entry.Value(), &got))
+		return got
+	}
+
+	assert.Equal(t, LocalStateSchemaVersion, read("stamp-node").SchemaVersion)
+
+	data, err := marshalInstanceState(vms)
+	require.NoError(t, err)
+	jsm.WriteStateBytesBestEffort("bytes-node", data, 5*time.Second)
+	assert.Equal(t, LocalStateSchemaVersion, read("bytes-node").SchemaVersion,
+		"the best-effort path marshals its own bytes and must stamp the same version")
+}
+
+// The KV node record and the local state file are one envelope. Asserted on the
+// bytes rather than the type, because a second marshaller is how they drift.
+func TestMarshalInstanceState_MatchesLocalStateFileBytes(t *testing.T) {
+	vms := map[string]*vm.VM{
+		"i-envelope-001": {ID: "i-envelope-001", Status: vm.StateRunning, InstanceType: "t3.micro"},
+	}
+
+	kvBytes, err := marshalInstanceState(vms)
+	require.NoError(t, err)
+	fileBytes, err := MarshalLocalState(vms)
+	require.NoError(t, err)
+
+	assert.JSONEq(t, string(fileBytes), string(kvBytes))
+}

@@ -51,21 +51,28 @@ type KVSyncObserver interface {
 //
 // The instance-state bucket carries two record types, so it is one kvstore
 // bucket with two typed views over it: they share its handle, and a recovery
-// driven through either repairs both.
+// driven through either repairs both. A node's running set is stored as
+// LocalState, the same envelope the local state file uses.
 type JetStreamManager struct {
 	js        jetstream.JetStream
-	stateB    *kvstore.Bucket           // spinifex-instance-state
-	nodeState *kvstore.Store[nodeState] // node.<id> records
-	stopped   *kvstore.Store[vm.VM]     // instance.<id> records
-	term      *kvstore.Store[vm.VM]     // spinifex-terminated-instances
-	clusterKV jetstream.KeyValue        // spinifex-cluster-state
+	stateB    *kvstore.Bucket            // spinifex-instance-state
+	nodeState *kvstore.Store[LocalState] // node.<id> records
+	stopped   *kvstore.Store[vm.VM]      // instance.<id> records
+	term      *kvstore.Store[vm.VM]      // spinifex-terminated-instances
+	clusterKV jetstream.KeyValue         // spinifex-cluster-state
 	replicas  int
 	obs       KVSyncObserver
 }
 
-// nodeState is the envelope a node's running set is stored in.
-type nodeState struct {
-	VMS map[string]*vm.VM `json:"vms"`
+// checkNodeStateVersion reports whether a node record read from KV is one this
+// binary can parse. Version 0 predates record versioning and reads as current;
+// a version above current was written by a newer node and is not guessed at.
+func checkNodeStateVersion(key string, version int) error {
+	if version > LocalStateSchemaVersion {
+		return fmt.Errorf("instance state %s: record schema_version %d is newer than this node understands (%d)",
+			key, version, LocalStateSchemaVersion)
+	}
+	return nil
 }
 
 // SetSyncObserver registers obs to receive best-effort KV sync outcomes. Pass
@@ -138,7 +145,7 @@ func terminatedInstanceConfig(replicas int) kvstore.Config {
 // handle, so a recovery driven through either repairs both.
 func (m *JetStreamManager) setInstanceStateBucket(b *kvstore.Bucket) {
 	m.stateB = b
-	m.nodeState = kvstore.On[nodeState](b)
+	m.nodeState = kvstore.On[LocalState](b)
 	m.stopped = kvstore.On[vm.VM](b)
 }
 
@@ -394,7 +401,8 @@ func (m *JetStreamManager) WriteState(nodeID string, vms map[string]*vm.VM) erro
 	}
 
 	key := InstanceStatePrefix + nodeID
-	if err := m.nodeState.Set(context.Background(), key, &nodeState{VMS: vms}); err != nil {
+	record := LocalState{SchemaVersion: LocalStateSchemaVersion, VMS: vms}
+	if err := m.nodeState.Set(context.Background(), key, &record); err != nil {
 		return err
 	}
 
@@ -442,9 +450,11 @@ func (m *JetStreamManager) WriteStateBytesBestEffort(nodeID string, jsonData []b
 }
 
 // marshalInstanceState produces the JSON wire form of vms, for the best-effort
-// path that marshals under the caller's lock and commits lock-free.
+// path that marshals under the caller's lock and commits lock-free. The KV
+// record and the local state file are the same envelope, so this is the same
+// marshaller: the two cannot drift.
 func marshalInstanceState(vms map[string]*vm.VM) ([]byte, error) {
-	return json.Marshal(nodeState{VMS: vms})
+	return MarshalLocalState(vms)
 }
 
 // LoadState loads the instance state from the KV store for the given node.
@@ -464,6 +474,9 @@ func (m *JetStreamManager) LoadState(nodeID string) (map[string]*vm.VM, bool, er
 			slog.Debug("No existing state in JetStream KV", "key", key)
 			return make(map[string]*vm.VM), false, nil
 		}
+		return nil, false, err
+	}
+	if err := checkNodeStateVersion(key, state.SchemaVersion); err != nil {
 		return nil, false, err
 	}
 	if state.VMS == nil {

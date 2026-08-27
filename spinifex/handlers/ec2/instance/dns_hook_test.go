@@ -57,6 +57,29 @@ func TestNeedsDNSWithdrawal(t *testing.T) {
 	}
 }
 
+// The race the check exists for: terminate lands while the deferred launch is
+// still publishing the UPSERT, so Status has not caught up and only the
+// deletion mark says the record is going away.
+func TestTerminateRacedLaunch(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name string
+		v    *vm.VM
+		want bool
+	}{
+		{name: "running, not marked", v: &vm.VM{ID: "i-1", Status: vm.StateRunning}, want: false},
+		{name: "running, marked for deletion", v: &vm.VM{ID: "i-1", Status: vm.StateRunning, DeletionTimestamp: &now}, want: true},
+		{name: "settled terminated", v: &vm.VM{ID: "i-1", Status: vm.StateTerminated}, want: true},
+		{name: "operator stopped", v: &vm.VM{ID: "i-1", Status: vm.StateStopped, DesiredState: vm.DesiredStopped}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{tt.v.ID: tt.v})}
+			require.Equal(t, tt.want, svc.terminateRacedLaunch(tt.v))
+		})
+	}
+}
+
 func TestPrepareRunInstancesDoesNotPublishDNS(t *testing.T) {
 	eni := &fakeENICreator{
 		defaultSubnet: &SubnetInfo{SubnetID: "subnet-default", VpcID: "vpc-1"},

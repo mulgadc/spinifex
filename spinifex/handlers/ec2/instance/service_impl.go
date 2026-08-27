@@ -1041,7 +1041,7 @@ func needsDNSWithdrawal(status vm.InstanceState) bool {
 func (s *InstanceServiceImpl) terminateRacedLaunch(instance *vm.VM) bool {
 	withdraw := false
 	s.vmMgr.Inspect(instance, func(v *vm.VM) {
-		withdraw = v.Attributes.TerminateInstance || needsDNSWithdrawal(v.Status)
+		withdraw = v.DeletionTimestamp != nil || needsDNSWithdrawal(v.Status)
 	})
 	return withdraw
 }
@@ -1101,9 +1101,9 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 		}
 	}
 
-	// Clear stop attribute before launch; a stale StopInstance=true would
-	// cause the daemon to skip QEMU reconnect on restart.
-	s.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Attributes = command.Attributes })
+	// Clear the stop intent before launch; a stale DesiredStopped would cause
+	// the daemon to skip QEMU reconnect on restart.
+	s.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.DesiredState = vm.DesiredRunning })
 
 	if err := s.vmMgr.Start(ctx, instance.ID); err != nil {
 		if ok {
@@ -1159,7 +1159,12 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, insta
 			stateMismatch = true
 			return
 		}
-		v.Attributes = command.Attributes
+		if isTerminate {
+			now := time.Now().UTC()
+			v.DeletionTimestamp = &now
+		} else {
+			v.DesiredState = vm.DesiredStopped
+		}
 		// Auto-disassociate IAM profile on terminate (AWS parity; stop/start preserves it).
 		// Done under the same lock so DescribeInstances never sees a terminated
 		// instance advertising a profile.
@@ -2345,8 +2350,8 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 
-	// Add to local map + clear stop attribute before launch.
-	instance.Attributes = spxtypes.EC2CommandAttributes{StartInstance: true}
+	// Add to local map + clear the stop intent before launch.
+	instance.DesiredState = vm.DesiredRunning
 	s.vmMgr.Insert(instance)
 
 	// Claim GPU for GPU instance types.

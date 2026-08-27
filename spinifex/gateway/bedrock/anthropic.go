@@ -276,7 +276,7 @@ func (p *anthropicProvider) ConverseStream(ctx context.Context, modelID string, 
 	// than merely stopping our own reads — a disconnected client must free
 	// the Anthropic-side generation, not just this goroutine.
 	reqCtx, cancel := context.WithCancel(ctx)
-	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, p.baseURL+anthropicMessagesPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: p.baseURL is the hardcoded Anthropic API endpoint (or an httptest stub in tests), never user input
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, p.baseURL+anthropicMessagesPath, bytes.NewReader(reqBody))
 	if err != nil {
 		cancel()
 		slog.Error("anthropic stream: failed to build request", "model", modelID, "err", err)
@@ -287,7 +287,7 @@ func (p *anthropicProvider) ConverseStream(ctx context.Context, modelID string, 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := p.httpClient.Do(httpReq) //nolint:gosec // G704: httpReq targets p.baseURL, not user input
+	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		cancel()
 		slog.Error("anthropic stream: request failed", "model", modelID, "err", err)

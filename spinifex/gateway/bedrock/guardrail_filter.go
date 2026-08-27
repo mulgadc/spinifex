@@ -1,6 +1,7 @@
 package gateway_bedrock
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"slices"
@@ -232,15 +233,42 @@ func scaffoldContentPolicyAssessment(cfg *bedrock.GuardrailContentPolicyConfig) 
 	return &bedrockruntime.GuardrailContentPolicyAssessment{Filters: []*bedrockruntime.GuardrailContentFilter{}}
 }
 
-// assessTopicPolicy checks texts against cfg's denied topics. Matching is
-// deterministic (no classifier): a topic's Name and each of its Examples are
-// matched via matchesWord's word-boundary semantics. The long-form
-// Definition is never matched directly — it reads as prose, not a phrase,
-// and substring-matching it produces erratic hits. Each topic is appended at
-// most once even if several of its phrases hit.
-func assessTopicPolicy(cfg *bedrock.GuardrailTopicPolicyConfig, texts []string) (*bedrockruntime.GuardrailTopicPolicyAssessment, bool) {
+// literalTopicHit is the deterministic exact-match check: topic's Name and
+// each of its Examples are matched via matchesWord's word-boundary
+// semantics. The long-form Definition is never matched literally — it reads
+// as prose, not a phrase, and substring-matching it produces erratic hits.
+// This always runs regardless of semantic availability, so an exact phrase
+// hit is never lost to an embedder outage.
+func literalTopicHit(topic *bedrock.GuardrailTopicConfig, texts []string) bool {
+	phrases := []string{}
+	if name := aws.StringValue(topic.Name); name != "" {
+		phrases = append(phrases, name)
+	}
+	for _, ex := range topic.Examples {
+		if example := aws.StringValue(ex); example != "" {
+			phrases = append(phrases, example)
+		}
+	}
+	return slices.ContainsFunc(phrases, func(phrase string) bool { return matchesWord(texts, phrase) })
+}
+
+// assessTopicPolicy checks texts against cfg's denied topics. A topic
+// blocks on literalTopicHit's exact-match, or when any input text's
+// embedding reaches topicSimilarityThreshold cosine similarity against any
+// of the topic's Name/Definition/Examples phrase vectors (Definition is
+// finally used here, unlike the literal path). Semantic scoring is skipped
+// whenever embedder is nil or an embed call fails, falling back to the
+// literal check alone (embedGuardrailTexts/topicVectors log at warn in that
+// case). Each topic is appended at most once even if several signals hit.
+func assessTopicPolicy(ctx context.Context, embedder Embedder, cfg *bedrock.GuardrailTopicPolicyConfig, texts []string) (*bedrockruntime.GuardrailTopicPolicyAssessment, bool) {
 	if cfg == nil {
 		return nil, false
+	}
+
+	var textVectors [][]float32
+	semanticOK := false
+	if len(cfg.TopicsConfig) > 0 {
+		textVectors, semanticOK = embedGuardrailTexts(ctx, embedder, DefaultEmbeddingModel, texts)
 	}
 
 	blocked := false
@@ -250,17 +278,13 @@ func assessTopicPolicy(cfg *bedrock.GuardrailTopicPolicyConfig, texts []string) 
 			continue
 		}
 
-		phrases := []string{}
-		if name := aws.StringValue(topic.Name); name != "" {
-			phrases = append(phrases, name)
-		}
-		for _, ex := range topic.Examples {
-			if example := aws.StringValue(ex); example != "" {
-				phrases = append(phrases, example)
+		hit := literalTopicHit(topic, texts)
+		if !hit && semanticOK {
+			if vectors, ok := topicVectors(ctx, embedder, DefaultEmbeddingModel, topic); ok {
+				hit = topicSemanticHit(textVectors, vectors, topicSimilarityThreshold(topic))
 			}
 		}
-
-		if !slices.ContainsFunc(phrases, func(phrase string) bool { return matchesWord(texts, phrase) }) {
+		if !hit {
 			continue
 		}
 
@@ -318,10 +342,11 @@ func guardrailUsage(view guardrailView, texts []string) *bedrockruntime.Guardrai
 	return usage
 }
 
-// applyGuardrailPolicies is the pure filter engine: it evaluates view's
-// policies over texts for source (INPUT or OUTPUT) and returns the
-// aws-sdk-go bedrockruntime shape's pieces. wordPolicy,
-// sensitiveInformationPolicy and topicPolicy are enforced deterministically;
+// applyGuardrailPolicies is the filter engine: it evaluates view's policies
+// over texts for source (INPUT or OUTPUT) and returns the aws-sdk-go
+// bedrockruntime shape's pieces. wordPolicy and sensitiveInformationPolicy
+// are enforced deterministically; topicPolicy adds embedding-similarity
+// scoring over the literal match (assessTopicPolicy, using embedder);
 // content/contextualGrounding evaluate to NONE (see the scaffold* helpers,
 // which need a classifier). A BLOCK anywhere makes the overall action
 // GUARDRAIL_INTERVENED and short-circuits redaction, since the caller
@@ -330,12 +355,12 @@ func guardrailUsage(view guardrailView, texts []string) *bedrockruntime.Guardrai
 // assessment shape; the deterministic policies apply identically to INPUT
 // and OUTPUT text until a content-policy classifier needs to tell them apart
 // via InputStrength/OutputStrength.
-func applyGuardrailPolicies(view guardrailView, texts []string, source string) (string, []*bedrockruntime.GuardrailAssessment, []string, *bedrockruntime.GuardrailUsage) {
+func applyGuardrailPolicies(ctx context.Context, embedder Embedder, view guardrailView, texts []string, source string) (string, []*bedrockruntime.GuardrailAssessment, []string, *bedrockruntime.GuardrailUsage) {
 	_ = source
 
 	wordAssessment, wordBlocked := assessWordPolicy(view.WordPolicy, texts)
 	piiAssessment, piiBlocked := assessSensitiveInformationPolicy(view.SensitiveInformationPolicy, texts)
-	topicAssessment, topicBlocked := assessTopicPolicy(view.TopicPolicy, texts)
+	topicAssessment, topicBlocked := assessTopicPolicy(ctx, embedder, view.TopicPolicy, texts)
 
 	action := bedrockruntime.GuardrailActionNone
 	outputs := texts

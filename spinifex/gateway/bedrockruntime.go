@@ -37,28 +37,29 @@ type bedrockRuntimeRoute struct {
 // endpoints; recorder is gw.bedrockRecorder() (invocation recorder or no-op);
 // access is gw.bedrockAccessResolver() (grant store or deny-all); provisioned
 // is gw.bedrockProvisionedStore(), consulted when modelId is a PT ARN;
-// guardrails is gw.bedrockGuardrailStore().
-type bedrockRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, recorder gateway_bedrock.Recorder, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error)
+// guardrails is gw.bedrockGuardrailStore(); embedder is gw.bedrockEmbedder(),
+// driving guardrail topicPolicy's semantic match.
+type bedrockRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, recorder gateway_bedrock.Recorder, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore, embedder gateway_bedrock.Embedder) (any, error)
 
 // bedrockRuntimeRoutes is the dispatch table. InvokeModel has no handler
 // function here: BedrockRuntime_Request special-cases its action to bypass
 // the JSON-marshaling dispatch below, since its response is raw bytes.
 var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/converse$`), "Converse",
-		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, recorder gateway_bedrock.Recorder, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, recorder gateway_bedrock.Recorder, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore, embedder gateway_bedrock.Embedder) (any, error) {
 			input := new(bedrockruntime.ConverseInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
 					return nil, errors.New(awserrors.ErrorValidationException)
 				}
 			}
-			return gateway_bedrock.Converse(ctx, acct, p[0], input, resolver, endpoints, recorder, access, provisioned, guardrails)
+			return gateway_bedrock.Converse(ctx, acct, p[0], input, resolver, endpoints, recorder, access, provisioned, guardrails, embedder)
 		}},
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/invoke$`), "InvokeModel", nil},
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/converse-stream$`), "ConverseStream", nil},
 	{"POST", regexp.MustCompile(`^/model/([^/]+)/invoke-with-response-stream$`), "InvokeModelWithResponseStream", nil},
 	{"POST", regexp.MustCompile(`^/guardrail/([^/]+)/version/([^/]+)/apply$`), "ApplyGuardrail",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ gateway_bedrock.EndpointResolver, _ gateway_bedrock.Recorder, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ gateway_bedrock.EndpointResolver, _ gateway_bedrock.Recorder, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore, embedder gateway_bedrock.Embedder) (any, error) {
 			input := new(bedrockruntime.ApplyGuardrailInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -67,7 +68,7 @@ var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
 			}
 			input.GuardrailIdentifier = aws.String(p[0])
 			input.GuardrailVersion = aws.String(p[1])
-			return gateway_bedrock.ApplyGuardrail(ctx, acct, guardrails, input)
+			return gateway_bedrock.ApplyGuardrail(ctx, acct, guardrails, embedder, input)
 		}},
 }
 
@@ -156,7 +157,7 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 	if action == "InvokeModel" {
 		guardrailIdent := r.Header.Get(bedrockGuardrailIdentifierHeader)
 		guardrailVersion := r.Header.Get(bedrockGuardrailVersionHeader)
-		respBody, contentType, err := gateway_bedrock.InvokeModel(r.Context(), accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), guardrailIdent, guardrailVersion, gw.bedrockGuardrailStore())
+		respBody, contentType, err := gateway_bedrock.InvokeModel(r.Context(), accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), guardrailIdent, guardrailVersion, gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
 		if err != nil {
 			return err
 		}
@@ -171,15 +172,15 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 	// (-> ErrorHandler); once streaming starts they always return nil,
 	// surfacing any further failure as an in-band exception event.
 	if action == "ConverseStream" {
-		return gateway_bedrock.ConverseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore())
+		return gateway_bedrock.ConverseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
 	}
 	if action == "InvokeModelWithResponseStream" {
 		guardrailIdent := r.Header.Get(bedrockGuardrailIdentifierHeader)
 		guardrailVersion := r.Header.Get(bedrockGuardrailVersionHeader)
-		return gateway_bedrock.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), r.Header.Get("Content-Type"), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), guardrailIdent, guardrailVersion, gw.bedrockGuardrailStore())
+		return gateway_bedrock.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), r.Header.Get("Content-Type"), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), guardrailIdent, guardrailVersion, gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
 	}
 
-	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore())
+	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
 	if err != nil {
 		return err
 	}

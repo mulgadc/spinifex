@@ -107,6 +107,7 @@ linters:
         - G116 # bidi chars — bidichk is more thorough
         - G117 # use of net/http serve functions (we handle TLS separately)
         - G703 # path traversal taint analysis — false positives on config file loading
+        - G704 # SSRF taint analysis — false positives on resolver-derived endpoint URLs
         - G705 # XSS taint analysis — false positives on internal error responses
 
     govet:

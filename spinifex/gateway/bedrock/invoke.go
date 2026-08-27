@@ -59,13 +59,17 @@ type InvokeRouter struct {
 	// fails closed on any guardrail identifier (ResourceNotFoundException)
 	// rather than proceeding unguarded; a request with none is unaffected.
 	guardrails *GuardrailStore
+	// embedder drives topicPolicy's semantic match. Nil falls back to the
+	// guardrail engine's literal matcher (see assessTopicPolicy).
+	embedder Embedder
 }
 
 // NewInvokeRouter constructs an InvokeRouter. A nil resolver, endpointResolver,
 // or recorder falls back to a no-op implementation, and a nil access falls back
 // to denying every model, so an InvokeRouter is always safe to use even before
 // the real stores are wired in. A nil provisioned disables PT ARN acceptance.
-func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore) *InvokeRouter {
+// A nil embedder leaves topicPolicy on the literal matcher alone.
+func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore, embedder Embedder) *InvokeRouter {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
@@ -78,7 +82,7 @@ func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResol
 	if access == nil {
 		access = DenyAllAccessResolver
 	}
-	return &InvokeRouter{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access, provisioned: provisioned, guardrails: guardrails}
+	return &InvokeRouter{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access, provisioned: provisioned, guardrails: guardrails, embedder: embedder}
 }
 
 // InvokeModel routes modelID to its family adapter via the catalog. Unknown
@@ -182,7 +186,7 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 		}
 		var blocked bool
 		var message string
-		blocked, message, _, _, err = enforceGuardrail(ctx, rt.guardrails, accountID, guardrailIdent, guardrailVersion,
+		blocked, message, _, _, err = enforceGuardrail(ctx, rt.guardrails, rt.embedder, accountID, guardrailIdent, guardrailVersion,
 			bedrockruntime.GuardrailContentSourceInput, texts)
 		if err != nil {
 			return nil, "", err
@@ -218,7 +222,7 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 	var messageOut string
 	var redacted []string
 	var gerr error
-	blockedOut, messageOut, redacted, _, gerr = enforceGuardrail(ctx, rt.guardrails, accountID, guardrailIdent, guardrailVersion,
+	blockedOut, messageOut, redacted, _, gerr = enforceGuardrail(ctx, rt.guardrails, rt.embedder, accountID, guardrailIdent, guardrailVersion,
 		bedrockruntime.GuardrailContentSourceOutput, texts)
 	if gerr != nil {
 		err = gerr
@@ -240,8 +244,10 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 // provisioned may be nil; NewInvokeRouter supplies no-op (and, for access,
 // deny-all; for provisioned, PT-ARN-rejecting) fallbacks. guardrailIdent/
 // guardrailVersion come from the request's X-Amzn-Bedrock-Guardrail* headers.
-func InvokeModel(ctx context.Context, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrailIdent, guardrailVersion string, guardrails *GuardrailStore) ([]byte, string, error) {
-	return NewInvokeRouter(resolver, endpointResolver, recorder, access, provisioned, guardrails).InvokeModel(ctx, accountID, modelID, body, guardrailIdent, guardrailVersion)
+// embedder drives topicPolicy's semantic match; nil falls back to the
+// literal matcher.
+func InvokeModel(ctx context.Context, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrailIdent, guardrailVersion string, guardrails *GuardrailStore, embedder Embedder) ([]byte, string, error) {
+	return NewInvokeRouter(resolver, endpointResolver, recorder, access, provisioned, guardrails, embedder).InvokeModel(ctx, accountID, modelID, body, guardrailIdent, guardrailVersion)
 }
 
 // InvokeStreamAdapter is the optional streaming capability an InvokeAdapter
@@ -266,14 +272,18 @@ type InvokeStreamRouter struct {
 	// guardrails resolves an InvokeModelWithResponseStream request's
 	// guardrail header, mirroring InvokeRouter.guardrails.
 	guardrails *GuardrailStore
+	// embedder drives topicPolicy's semantic match. Nil falls back to the
+	// guardrail engine's literal matcher (see assessTopicPolicy).
+	embedder Embedder
 }
 
 // NewInvokeStreamRouter constructs an InvokeStreamRouter. A nil resolver or
 // endpointResolver falls back to a resolver/resolver that finds nothing, and a
 // nil access falls back to denying every model, so an InvokeStreamRouter is
 // always safe to use even before the real stores are wired in. A nil
-// provisioned disables PT ARN acceptance.
-func NewInvokeStreamRouter(resolver CredentialResolver, endpointResolver EndpointResolver, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore) *InvokeStreamRouter {
+// provisioned disables PT ARN acceptance. A nil embedder leaves topicPolicy
+// on the literal matcher alone.
+func NewInvokeStreamRouter(resolver CredentialResolver, endpointResolver EndpointResolver, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore, embedder Embedder) *InvokeStreamRouter {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
@@ -283,7 +293,7 @@ func NewInvokeStreamRouter(resolver CredentialResolver, endpointResolver Endpoin
 	if access == nil {
 		access = DenyAllAccessResolver
 	}
-	return &InvokeStreamRouter{resolver: resolver, endpointResolver: endpointResolver, access: access, provisioned: provisioned, guardrails: guardrails}
+	return &InvokeStreamRouter{resolver: resolver, endpointResolver: endpointResolver, access: access, provisioned: provisioned, guardrails: guardrails, embedder: embedder}
 }
 
 // InvokeModelWithResponseStream routes modelID to its family adapter via the
@@ -360,7 +370,7 @@ func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context,
 			}
 			return nil, errors.New(awserrors.ErrorValidationException)
 		}
-		blocked, message, _, _, gerr := enforceGuardrail(ctx, rt.guardrails, accountID, guardrailIdent, guardrailVersion,
+		blocked, message, _, _, gerr := enforceGuardrail(ctx, rt.guardrails, rt.embedder, accountID, guardrailIdent, guardrailVersion,
 			bedrockruntime.GuardrailContentSourceInput, texts)
 		if gerr != nil {
 			if selfHostRelease != nil {
@@ -396,7 +406,7 @@ func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context,
 		src = newSlotReleasingInvokeSource(src, selfHostRelease)
 	}
 	if guardrailIdent != "" {
-		src = newGuardrailInvokeStreamSource(src, rt.guardrails, accountID, guardrailIdent, guardrailVersion, entry.Provider)
+		src = newGuardrailInvokeStreamSource(src, rt.guardrails, rt.embedder, accountID, guardrailIdent, guardrailVersion, entry.Provider)
 	}
 	return src, nil
 }

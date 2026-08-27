@@ -32,8 +32,9 @@ type invokeStreamSource interface {
 // NewInvokeStreamRouter and the internal NoopRecorder fallback keep this call
 // safe either way. provisioned may be nil, disabling PT ARN acceptance (any
 // PT ARN then reads as an unknown modelId). guardrailIdent/guardrailVersion
-// come from the request's X-Amzn-Bedrock-Guardrail* headers.
-func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, requestContentType string, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrailIdent, guardrailVersion string, guardrails *GuardrailStore) error {
+// come from the request's X-Amzn-Bedrock-Guardrail* headers. embedder drives
+// topicPolicy's semantic match; nil falls back to the literal matcher.
+func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, requestContentType string, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrailIdent, guardrailVersion string, guardrails *GuardrailStore, embedder Embedder) error {
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
@@ -46,7 +47,7 @@ func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, a
 	_, recordModelID, _ := resolveInferenceTarget(ctx, accountID, modelID, provisioned)
 	entry, _ := lookupCatalogEntry(recordModelID) // InvokeStreamRouter below re-validates; only its Provider tag is needed here.
 
-	src, err := NewInvokeStreamRouter(resolver, endpointResolver, access, provisioned, guardrails).InvokeModelWithResponseStream(ctx, accountID, modelID, body, guardrailIdent, guardrailVersion)
+	src, err := NewInvokeStreamRouter(resolver, endpointResolver, access, provisioned, guardrails, embedder).InvokeModelWithResponseStream(ctx, accountID, modelID, body, guardrailIdent, guardrailVersion)
 	if err != nil {
 		return err
 	}

@@ -533,8 +533,10 @@ func CreateGuardrailVersion(ctx context.Context, accountID string, store *Guardr
 // input.Source, honouring input.GuardrailVersion (DRAFT or a numbered
 // snapshot), and returns the aws-sdk-go bedrockruntime shape the runtime op
 // hands back to the caller. Unknown/foreign guardrail or version both report
-// ResourceNotFoundException, the same as the control-plane ops.
-func ApplyGuardrail(ctx context.Context, accountID string, store *GuardrailStore, input *bedrockruntime.ApplyGuardrailInput) (*bedrockruntime.ApplyGuardrailOutput, error) {
+// ResourceNotFoundException, the same as the control-plane ops. embedder
+// drives topicPolicy's semantic match; a nil embedder falls back to the
+// literal matcher (see assessTopicPolicy).
+func ApplyGuardrail(ctx context.Context, accountID string, store *GuardrailStore, embedder Embedder, input *bedrockruntime.ApplyGuardrailInput) (*bedrockruntime.ApplyGuardrailOutput, error) {
 	if input == nil || aws.StringValue(input.GuardrailIdentifier) == "" ||
 		aws.StringValue(input.GuardrailVersion) == "" || aws.StringValue(input.Source) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
@@ -570,7 +572,7 @@ func ApplyGuardrail(ctx context.Context, accountID string, store *GuardrailStore
 		texts = append(texts, aws.StringValue(c.Text.Text))
 	}
 
-	action, assessments, outputTexts, usage := applyGuardrailPolicies(view, texts, aws.StringValue(input.Source))
+	action, assessments, outputTexts, usage := applyGuardrailPolicies(ctx, embedder, view, texts, aws.StringValue(input.Source))
 
 	outputs := make([]*bedrockruntime.GuardrailOutputContent, 0, len(outputTexts))
 	if action == bedrockruntime.GuardrailActionGuardrailIntervened {

@@ -100,8 +100,10 @@ type converseStreamSource interface {
 // an awserrors code for the normal ErrorHandler envelope; once the first
 // frame is written it always returns nil, surfacing later failures as an
 // in-band exception event instead. provisioned and guardrails may be nil,
-// which fails closed on a PT ARN or GuardrailConfig respectively.
-func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore) error {
+// which fails closed on a PT ARN or GuardrailConfig respectively. embedder
+// drives topicPolicy's semantic match; nil falls back to the literal
+// matcher.
+func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore, embedder Embedder) error {
 	if recorder == nil {
 		recorder = NoopRecorder
 	}
@@ -143,7 +145,7 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 	traceEnabled := gc != nil && aws.StringValue(gc.Trace) == bedrockruntime.GuardrailTraceEnabled
 	if gc != nil {
 		ident, version := aws.StringValue(gc.GuardrailIdentifier), aws.StringValue(gc.GuardrailVersion)
-		blocked, message, _, assessments, err := enforceGuardrail(ctx, guardrails, accountID, ident, version,
+		blocked, message, _, assessments, err := enforceGuardrail(ctx, guardrails, embedder, accountID, ident, version,
 			bedrockruntime.GuardrailContentSourceInput, streamGuardrailTexts(input))
 		if err != nil {
 			return err
@@ -154,7 +156,7 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 		}
 	}
 
-	src, err := NewRouter(resolver, endpointResolver, recorder, access, provisioned, guardrails).ConverseStream(ctx, accountID, modelID, input)
+	src, err := NewRouter(resolver, endpointResolver, recorder, access, provisioned, guardrails, embedder).ConverseStream(ctx, accountID, modelID, input)
 	if err != nil {
 		return err
 	}
@@ -169,7 +171,7 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 	// forward unassessed model text.
 	if gc != nil {
 		ident, version := aws.StringValue(gc.GuardrailIdentifier), aws.StringValue(gc.GuardrailVersion)
-		src = newGuardrailStreamSource(src, guardrails, accountID, ident, version, traceEnabled, inputAssessments)
+		src = newGuardrailStreamSource(src, guardrails, embedder, accountID, ident, version, traceEnabled, inputAssessments)
 	}
 
 	fw, err := newFrameWriter(w)

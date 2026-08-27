@@ -402,6 +402,11 @@ func launchService(config *config.ClusterConfig) error {
 		bedrockEndpointSvc, bedrockEndpoints, 0,
 		handlers_bedrock.WithColdStartWait(parseColdStartWait(os.Getenv("OCHRE_COLD_START_WAIT"))))
 
+	// Guardrail topicPolicy's semantic match reuses this same endpoint
+	// resolver (the one every self-hosted model, including the embedding
+	// model, already resolves through) rather than standing up a second one.
+	bedrockEmbedder := gateway_bedrock.NewEmbedder(bedrockEndpointResolver)
+
 	// Bedrock provisioned throughput: commitment metadata lives in the
 	// bedrock-provisioned KV bucket (gateway control plane), while the pinned
 	// endpoint it commits to is requested through the same NATS endpoint
@@ -484,6 +489,7 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockAccessAdmin:      bedrockAccess,
 		BedrockProvisioned:      bedrockProvisioned,
 		BedrockGuardrails:       bedrockGuardrails,
+		BedrockEmbedder:         bedrockEmbedder,
 		SignupMaxAccounts:       signupMaxAccounts,
 		BedrockAgentKB:          bedrockAgentKB,
 		BedrockAgentDataSources: bedrockAgentDataSources,

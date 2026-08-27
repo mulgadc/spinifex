@@ -402,6 +402,7 @@ type guardrailInvokeStreamSource struct {
 	backend string
 
 	store     *GuardrailStore
+	embedder  Embedder
 	accountID string
 	ident     string
 	version   string
@@ -413,8 +414,9 @@ type guardrailInvokeStreamSource struct {
 }
 
 // newGuardrailInvokeStreamSource constructs a guardrailInvokeStreamSource.
-func newGuardrailInvokeStreamSource(inner invokeStreamSource, store *GuardrailStore, accountID, ident, version, backend string) *guardrailInvokeStreamSource {
-	return &guardrailInvokeStreamSource{inner: inner, store: store, accountID: accountID, ident: ident, version: version, backend: backend}
+// embedder drives topicPolicy's semantic match on the OUTPUT check below.
+func newGuardrailInvokeStreamSource(inner invokeStreamSource, store *GuardrailStore, embedder Embedder, accountID, ident, version, backend string) *guardrailInvokeStreamSource {
+	return &guardrailInvokeStreamSource{inner: inner, store: store, embedder: embedder, accountID: accountID, ident: ident, version: version, backend: backend}
 }
 
 var _ invokeStreamSource = (*guardrailInvokeStreamSource)(nil)
@@ -482,7 +484,7 @@ func (g *guardrailInvokeStreamSource) Next(ctx context.Context) ([]byte, bool, e
 	}
 
 	original := g.text.String()
-	blocked, message, redacted, _, err := enforceGuardrail(ctx, g.store, g.accountID, g.ident, g.version,
+	blocked, message, redacted, _, err := enforceGuardrail(ctx, g.store, g.embedder, g.accountID, g.ident, g.version,
 		bedrockruntime.GuardrailContentSourceOutput, []string{original})
 	if err != nil {
 		return nil, false, err

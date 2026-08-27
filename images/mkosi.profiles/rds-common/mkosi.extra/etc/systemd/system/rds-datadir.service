@@ -11,6 +11,10 @@ RemainAfterExit=yes
 # The mount point and its owning user are the one engine-specific pair the
 # mount script refuses to guess; they arrive from the engine profile's drop-in.
 ExecStart=/usr/local/sbin/rds-datadir
+# Above the script's own 120s attach wait plus the mkfs that may follow it, so
+# the script is always what decides. At the 90s default a volume attaching
+# inside its designed tolerance is killed mid-format, on a customer's disk.
+TimeoutStartSec=300
 # No operator login: the serial log is the only view of a boot that failed
 # before the engine came up.
 StandardOutput=journal+console

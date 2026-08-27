@@ -12,6 +12,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/rds-init
+TimeoutStartSec=600
 StandardOutput=journal+console
 StandardError=journal+console
 

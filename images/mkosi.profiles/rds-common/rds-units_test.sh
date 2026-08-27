@@ -8,12 +8,26 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 PROFILES=$(CDPATH='' cd -- "${SCRIPT_DIR}/.." && pwd)
+REPO_ROOT=$(CDPATH='' cd -- "${SCRIPT_DIR}/../../.." && pwd)
 COMMON="${SCRIPT_DIR}"
 UNITS="${COMMON}/mkosi.extra/etc/systemd/system"
+CATALOG="${REPO_ROOT}/spinifex/utils/images.go"
+AGENT_LAYOUTS="${REPO_ROOT}/cmd/rds-agent/engine.go"
 
 FAILS=0
 fail() { echo "FAIL: $*" >&2; FAILS=$((FAILS + 1)); }
 pass() { echo "ok: $*"; }
+
+# One entry of the catalog map, brace to brace. grep -A with a fixed window
+# silently drops the tags once a field is added to the Images struct.
+catalog_entry() {
+    awk -v key="\"$1\": {" 'index($0, key) { inside = 1 } inside { print } inside && /^\t},$/ { exit }' "${CATALOG}"
+}
+
+# One entry of rds-agent's engineLayouts, same reason.
+agent_layout() {
+    awk -v key="$1: {" 'index($0, key) { inside = 1 } inside { print } inside && /^\t},$/ { exit }' "${AGENT_LAYOUTS}"
+}
 
 # The engine-agnostic units, and the preset that decides they start at all.
 COMMON_UNITS="rds-agent rds-bootstrap-wait rds-datadir rds-init"
@@ -41,6 +55,23 @@ grep -q '^After=.*rds-bootstrap-wait\.service' "${UNITS}/rds-datadir.service" ||
 grep -q '^After=.*rds-datadir\.service' "${UNITS}/rds-init.service" ||
     fail "rds-init.service does not run after the data volume is mounted"
 
+# Every unit that can outrun systemd's 90s default has to state its own bound,
+# so the script is what decides the timeout. Unset, a volume attaching inside
+# rds-datadir's designed tolerance is killed mid-mkfs on a customer's disk.
+for u in rds-bootstrap-wait rds-datadir rds-init; do
+    _bound=$(sed -n 's/^TimeoutStartSec=//p' "${UNITS}/${u}.service")
+    case "${_bound}" in
+        '' | *[!0-9]*) fail "${u}.service states no numeric TimeoutStartSec, so it inherits the 90s default" ;;
+        *)
+            if [ "${_bound}" -gt 120 ]; then
+                pass "${u}.service bounds itself at ${_bound}s, above its script's own wait"
+            else
+                fail "${u}.service TimeoutStartSec=${_bound} is not above the 120s its script waits"
+            fi
+            ;;
+    esac
+done
+
 # A Requires= on the agent would skip these oneshots on a failed fetch instead
 # of failing them visibly, which is what the control plane reads.
 for u in rds-datadir rds-init; do
@@ -57,6 +88,8 @@ check_engine() {
     _unit="$3"
     _mount="$4"
     _user="$5"
+    _image="$6"
+    _layout_key="$7"
     _dir="${PROFILES}/${_profile}"
     _extra="${_dir}/mkosi.extra/etc/systemd/system"
 
@@ -125,10 +158,63 @@ check_engine() {
         fail "${_profile}: postinst does not stamp the engine as ${_engine}"
     grep -q '^chmod 0444 /etc/spinifex-rds/engine$' "${_postinst}" ||
         fail "${_profile}: the engine stamp is not made read-only"
+
+    # The engine name has to agree in four places or a launch resolves the wrong
+    # image, refuses the right one, or stamps a volume with an engine that did
+    # not write it.
+    catalog_entry "${_image}" | grep -q "\"engine\": \"${_engine}\"" ||
+        fail "${_profile}: the ${_image} catalog entry does not carry engine=${_engine}"
+    [ -n "$(agent_layout "${_layout_key}")" ] ||
+        fail "${_profile}: rds-agent has no engineLayouts entry keyed ${_layout_key}"
+    grep -q "^ENGINE=\"${_engine}\"\$" "${_dir}/rds-init" ||
+        fail "${_profile}: rds-init does not stamp the data volume '${_engine}'"
+
+    # The series is what an EngineVersion request resolves an AMI by, so the
+    # build assertion, the published tag and the control plane's own catalog
+    # have to be the same number.
+    _series=$(sed -n 's/^\(WANT_SERIES\|PG_VERSION\)=\(.*\)$/\2/p' "${_postinst}" | head -n 1)
+    if [ -z "${_series}" ]; then
+        fail "${_profile}: postinst asserts no engine series"
+    else
+        catalog_entry "${_image}" | grep -q "\"engine-version\": \"${_series}\"" ||
+            fail "${_profile}: the ${_image} catalog entry does not publish engine-version=${_series}"
+        _engine_go="${REPO_ROOT}/spinifex/handlers/rds/engine_${_engine}.go"
+        grep -q "MajorVersion: *\"${_series}\"" "${_engine_go}" ||
+            fail "${_profile}: ${_engine_go} does not carry MajorVersion ${_series}, so a valid EngineVersion resolves no AMI"
+    fi
+
+    # mkosi builds UEFI-only. A catalog entry saying bios launches the instance
+    # with the wrong firmware and it never boots, with nothing failing earlier.
+    catalog_entry "${_image}" | grep -q 'BootMode: *"uefi"' ||
+        fail "${_profile}: the ${_image} catalog entry is not BootMode uefi"
+
+    # rds-agent's layout table is the fifth place this image's paths are stated,
+    # and the only one no build assertion reaches: a mismatch boots and serves
+    # while every password rotate and parameter apply fails.
+    agent_layout "${_layout_key}" | grep -q "service: *\"${_unit}\"" ||
+        fail "${_profile}: rds-agent's ${_layout_key} layout does not drive ${_unit}"
+    agent_layout "${_layout_key}" | grep -q "dataMount: *\"${_mount}\"" ||
+        fail "${_profile}: rds-agent's ${_layout_key} layout does not agree on the ${_mount} mount point"
+    agent_layout "${_layout_key}" | grep -q "osUser: *\"${_user}\"" ||
+        fail "${_profile}: rds-agent's ${_layout_key} layout does not run as ${_user}"
 }
 
-check_engine rds-postgres postgres spinifex-postgresql.service /var/lib/postgresql postgres
-check_engine rds-mariadb mariadb mariadb.service /var/lib/mysql mysql
+check_engine rds-postgres postgres spinifex-postgresql.service /var/lib/postgresql postgres \
+    spinifex-rds-postgres enginePostgres
+check_engine rds-mariadb mariadb mariadb.service /var/lib/mysql mysql \
+    spinifex-rds-mariadb engineMariaDB
+
+# The two paths rds-agent shells out to that no postinst can assert, because
+# each is stated once in the image and once in Go with nothing between them.
+agent_layout enginePostgres | grep -q "binDir: *\"/usr/lib/postgresql/18/bin\"" ||
+    fail "rds-agent's postgres binDir does not match RDS_PG_BIN in the rds-postgres drop-in"
+grep -q 'RDS_PG_BIN=/usr/lib/postgresql/18/bin' \
+    "${PROFILES}/rds-postgres/mkosi.extra/etc/systemd/system/rds-init.service.d/10-engine.conf" ||
+    fail "the rds-postgres rds-init drop-in does not set RDS_PG_BIN to the path rds-agent uses"
+
+_want_pid=$(sed -n 's/^WANT_PIDFILE=//p' "${PROFILES}/rds-mariadb/mkosi.postinst.chroot")
+agent_layout engineMariaDB | grep -q "pidFile: *\"${_want_pid}\"" ||
+    fail "rds-agent reads a pidfile the rds-mariadb postinst does not assert (${_want_pid}), so the health probe reports every healthy instance down"
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "rds-units: all tests passed"

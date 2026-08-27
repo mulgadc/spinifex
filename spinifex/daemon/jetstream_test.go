@@ -1144,16 +1144,6 @@ func TestJetStreamManager_ListStoppedInstances_RecoveryFailure(t *testing.T) {
 	assert.Nil(t, instances)
 }
 
-func TestIsStreamUnavailable(t *testing.T) {
-	assert.False(t, isStreamUnavailable(nil))
-	assert.True(t, isStreamUnavailable(jetstream.ErrStreamNotFound))
-	assert.True(t, isStreamUnavailable(jetstream.ErrNoStreamResponse))
-	assert.True(t, isStreamUnavailable(nats.ErrNoResponders))
-	assert.True(t, isStreamUnavailable(errors.New("nats: stream not found")))
-	assert.False(t, isStreamUnavailable(errors.New("some other error")))
-	assert.False(t, isStreamUnavailable(jetstream.ErrKeyNotFound))
-}
-
 // --- Terminated instance KV tests ---
 
 func TestJetStreamManager_WriteAndLoadTerminatedInstance(t *testing.T) {

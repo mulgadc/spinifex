@@ -185,25 +185,6 @@ func (m *JetStreamManager) InitTerminatedInstanceBucket() error {
 	return nil
 }
 
-// isStreamUnavailable checks if an error indicates the underlying JetStream stream
-// was lost or is unreachable. This can happen during NATS cluster formation when
-// streams created with low replication are disrupted by node join/catchup operations.
-// Different KV operations surface different errors when the stream is gone:
-//   - Get/Keys → ErrNoResponders ("no responders available for request")
-//   - Put/Delete → ErrNoStreamResponse ("no response from stream")
-//   - Direct stream queries → ErrStreamNotFound ("stream not found")
-func isStreamUnavailable(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, jetstream.ErrStreamNotFound) ||
-		errors.Is(err, jetstream.ErrNoStreamResponse) ||
-		errors.Is(err, nats.ErrNoResponders) {
-		return true
-	}
-	return strings.Contains(err.Error(), "stream not found")
-}
-
 // recoverBucket attempts to reconnect to or re-create a KV bucket after the
 // underlying JetStream stream was lost during cluster formation.
 // Returns the recovered KV handle directly so callers avoid a racy re-read.
@@ -220,7 +201,7 @@ func (m *JetStreamManager) recoverBucket(ctx context.Context, cfg jetstream.KeyV
 		return kv, nil
 	}
 
-	if !errors.Is(err, jetstream.ErrBucketNotFound) && !isStreamUnavailable(err) {
+	if !errors.Is(err, jetstream.ErrBucketNotFound) && !kvutil.IsStreamUnavailable(err) {
 		return nil, err
 	}
 
@@ -469,7 +450,7 @@ func (m *JetStreamManager) WriteState(nodeID string, vms map[string]*vm.VM) erro
 	key := InstanceStatePrefix + nodeID
 	_, err = m.kv.Put(context.Background(), key, jsonData)
 	if err != nil {
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "WriteState", "key", key, "err", err)
 			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
@@ -548,7 +529,7 @@ func (m *JetStreamManager) LoadState(nodeID string) (map[string]*vm.VM, bool, er
 			slog.Debug("No existing state in JetStream KV", "key", key)
 			return make(map[string]*vm.VM), false, nil
 		}
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "LoadState", "key", key, "err", err)
 			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
@@ -592,7 +573,7 @@ func (m *JetStreamManager) DeleteState(nodeID string) error {
 	key := InstanceStatePrefix + nodeID
 	err := m.kv.Delete(context.Background(), key)
 	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "DeleteState", "key", key, "err", err)
 			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
@@ -687,7 +668,7 @@ func (m *JetStreamManager) WriteStoppedInstance(instanceID string, instance *vm.
 	key := StoppedInstancePrefix + instanceID
 	err = kvutil.Put(context.Background(), m.kv, key, kvutil.CASConfig{CreateIfAbsent: true}, jsonData)
 	if err != nil {
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "WriteStoppedInstance", "key", key, "err", err)
 			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
@@ -719,7 +700,7 @@ func (m *JetStreamManager) LoadStoppedInstance(instanceID string) (*vm.VM, error
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil
 		}
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "LoadStoppedInstance", "key", key, "err", err)
 			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
@@ -757,7 +738,7 @@ func (m *JetStreamManager) DeleteStoppedInstance(instanceID string) error {
 	key := StoppedInstancePrefix + instanceID
 	err := m.kv.Delete(context.Background(), key)
 	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "DeleteStoppedInstance", "key", key, "err", err)
 			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
@@ -793,7 +774,7 @@ func (m *JetStreamManager) ClaimStoppedInstance(instanceID string) (*vm.VM, erro
 	key := StoppedInstancePrefix + instanceID
 	instance, notFound, err := kvutil.Claim[vm.VM](context.Background(), m.kv, key, kvutil.CASConfig{})
 	if err != nil {
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "ClaimStoppedInstance", "key", key, "err", err)
 			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
@@ -832,7 +813,7 @@ func (m *JetStreamManager) UpdateStoppedInstance(instanceID string, mutate func(
 	apply := func(v *vm.VM) (bool, error) { mutate(v); return true, nil }
 	updated, err := kvutil.Update(context.Background(), m.kv, key, kvutil.CASConfig{}, apply)
 	if err != nil {
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "UpdateStoppedInstance", "key", key, "err", err)
 			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
@@ -856,7 +837,7 @@ func (m *JetStreamManager) ListStoppedInstances() ([]*vm.VM, error) {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "ListStoppedInstances", "err", err)
 			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
@@ -926,7 +907,7 @@ func (m *JetStreamManager) WriteTerminatedInstance(instanceID string, instance *
 	key := TerminatedInstancePrefix + instanceID
 	err = kvutil.Put(context.Background(), m.terminatedKV, key, kvutil.CASConfig{CreateIfAbsent: true}, jsonData)
 	if err != nil {
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "WriteTerminatedInstance", "key", key, "err", err)
 			kv, recoverErr := m.recoverTerminatedKVBucket(context.Background())
 			if recoverErr != nil {
@@ -960,7 +941,7 @@ func (m *JetStreamManager) UpdateTerminatedInstance(instanceID string, mutate fu
 	apply := func(v *vm.VM) (bool, error) { mutate(v); return true, nil }
 	updated, err := kvutil.Update(context.Background(), m.terminatedKV, key, kvutil.CASConfig{}, apply)
 	if err != nil {
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "UpdateTerminatedInstance", "key", key, "err", err)
 			kv, recoverErr := m.recoverTerminatedKVBucket(context.Background())
 			if recoverErr != nil {
@@ -984,7 +965,7 @@ func (m *JetStreamManager) ListTerminatedInstances() ([]*vm.VM, error) {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "ListTerminatedInstances", "err", err)
 			kv, recoverErr := m.recoverTerminatedKVBucket(context.Background())
 			if recoverErr != nil {
@@ -1040,7 +1021,7 @@ func (m *JetStreamManager) DeleteTerminatedInstance(instanceID string) error {
 	key := TerminatedInstancePrefix + instanceID
 	err := m.terminatedKV.Delete(context.Background(), key)
 	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "DeleteTerminatedInstance", "key", key, "err", err)
 			kv, recoverErr := m.recoverTerminatedKVBucket(context.Background())
 			if recoverErr != nil {
@@ -1071,7 +1052,7 @@ func (m *JetStreamManager) LoadTerminatedInstance(instanceID string) (*vm.VM, er
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil
 		}
-		if isStreamUnavailable(err) {
+		if kvutil.IsStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "LoadTerminatedInstance", "key", key, "err", err)
 			kv, recoverErr := m.recoverTerminatedKVBucket(context.Background())
 			if recoverErr != nil {

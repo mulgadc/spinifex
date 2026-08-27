@@ -31,7 +31,7 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/eksgw"
 
-	_ "github.com/mulgadc/spinifex/internal/fipsboot"
+	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )
 
 const (

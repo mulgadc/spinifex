@@ -21,7 +21,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
 
-	_ "github.com/mulgadc/spinifex/internal/fipsboot"
+	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )
 
 func main() {

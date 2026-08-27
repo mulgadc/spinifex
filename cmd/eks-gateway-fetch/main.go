@@ -40,7 +40,7 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/eksgw"
 
-	_ "github.com/mulgadc/spinifex/internal/fipsboot"
+	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )
 
 // stagedAddon mirrors the gateway's StagedAddonManifest wire shape; duplicated

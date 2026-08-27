@@ -24,7 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/guestenv"
 	"github.com/mulgadc/spinifex/internal/imdscreds"
 
-	_ "github.com/mulgadc/spinifex/internal/fipsboot"
+	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )
 
 const (

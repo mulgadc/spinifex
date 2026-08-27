@@ -224,7 +224,7 @@ func TestEngineContract_StopGoesThroughTheServiceManager(t *testing.T) {
 			t.Fatalf("ran %d commands, want the service stop", len(h.runner.calls))
 		}
 		call := h.runner.calls[0]
-		if !slices.Equal(call.Args, []string{h.service, "stop"}) {
+		if !slices.Equal(call.Args, []string{"stop", h.service}) {
 			t.Errorf("stop ran %s %v, want the service manager", call.Name, call.Args)
 		}
 	})

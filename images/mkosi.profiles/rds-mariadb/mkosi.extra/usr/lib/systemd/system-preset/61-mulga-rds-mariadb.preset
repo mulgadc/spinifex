@@ -1,0 +1,5 @@
+# This image's engine unit; rds-common's 60- file enables the four
+# engine-agnostic ones. mariadb-server already ships this enabled, so the line
+# restates the fallthrough — which is the point: a packaging change that
+# flipped it would ship an image whose database never starts.
+enable mariadb.service

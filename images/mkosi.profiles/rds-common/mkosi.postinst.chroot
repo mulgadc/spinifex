@@ -1,0 +1,26 @@
+#!/bin/bash
+set -euo pipefail
+
+# rds-common postinst — the engine-agnostic half of an RDS image.
+
+# Built on the host and delivered via staging/. Without this check an empty
+# staging tree ships an image whose agent simply never starts.
+if [[ ! -x /usr/local/bin/rds-agent ]]; then
+    echo "ERROR: rds-agent missing or not executable — staging tree was not populated" >&2
+    exit 1
+fi
+
+# 0644 in git, and ExtraTrees= preserves source mode.
+chmod 0755 /usr/local/sbin/rds-datadir /usr/local/sbin/rds-bootstrap-wait
+
+# rds-datadir refuses to select a volume without blkid, so an image missing it
+# fails every launch instead of the build.
+if [[ ! -x /usr/sbin/blkid && ! -x /sbin/blkid ]]; then
+    echo "ERROR: no blkid in the image — rds-datadir refuses to select a volume without it" >&2
+    exit 1
+fi
+
+# Where cloud-init drops the agent's env file and the gateway CA.
+install -d -m 0700 /etc/spinifex-rds
+
+echo "[rds-common] postinst complete: agent staged, helpers executable, /etc/spinifex-rds ready"

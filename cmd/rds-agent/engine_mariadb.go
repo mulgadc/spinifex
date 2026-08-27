@@ -82,13 +82,13 @@ type mariadbEngine struct {
 	quiesceState
 	parameterManager
 
-	rules     controlPlaneRules
-	run       commandRunner
-	startSess sessionRunner
-	client    string
-	socket    string
-	rcService string
-	service   string
+	rules      controlPlaneRules
+	run        commandRunner
+	startSess  sessionRunner
+	client     string
+	socket     string
+	serviceMgr string
+	service    string
 }
 
 var _ engine = (*mariadbEngine)(nil)
@@ -141,13 +141,13 @@ func newMariaDBEngineFromCatalog(cfg config, run commandRunner, startSess sessio
 
 func newMariaDBEngine(cfg config, rules controlPlaneRules, run commandRunner, startSess sessionRunner, probe *engineProbe) *mariadbEngine {
 	return &mariadbEngine{
-		rules:     rules,
-		run:       run,
-		startSess: startSess,
-		client:    filepath.Join(cfg.EngineBinDir, mariadbClientBinary),
-		socket:    mariadbSocketPath(cfg),
-		rcService: cfg.RCService,
-		service:   cfg.EngineService,
+		rules:      rules,
+		run:        run,
+		startSess:  startSess,
+		client:     filepath.Join(cfg.EngineBinDir, mariadbClientBinary),
+		socket:     mariadbSocketPath(cfg),
+		serviceMgr: cfg.ServiceMgr,
+		service:    cfg.EngineService,
 		parameterManager: parameterManager{
 			probe: probe,
 			params: parameterStore{
@@ -340,7 +340,7 @@ func readPidFile(path string) (int, error) {
 }
 
 func (e *mariadbEngine) Stop(ctx context.Context) error {
-	return serviceAction(ctx, e.run, e.rcService, e.service, "stop")
+	return serviceAction(ctx, e.run, e.serviceMgr, e.service, "stop")
 }
 
 // Only the parameter rollback and a failed apply call this: a restart the
@@ -350,7 +350,7 @@ func (e *mariadbEngine) Restart(ctx context.Context) error {
 	if err := e.recordServingCopy(); err != nil {
 		return err
 	}
-	return serviceAction(ctx, e.run, e.rcService, e.service, "restart")
+	return serviceAction(ctx, e.run, e.serviceMgr, e.service, "restart")
 }
 
 // The installed set copied to the name the pending-restart comparison reads. A

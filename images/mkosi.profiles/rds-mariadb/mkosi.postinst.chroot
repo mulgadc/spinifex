@@ -1,0 +1,124 @@
+#!/bin/bash
+set -euo pipefail
+
+# rds-mariadb postinst — undoes Ubuntu's install-time datadir, proves the
+# include chain and the catalog's parameter set against this image's own
+# server, and stamps the engine. Runs after rds-common's, which created
+# /etc/spinifex-rds.
+
+MARIADBD=/usr/sbin/mariadbd
+INCLUDE_DIR=/etc/mysql/mariadb.conf.d
+INCLUDE=zz-rds-include.cnf
+DEFAULT_PARAMS=/usr/local/share/spinifex-rds/default-parameters.cnf
+# What rds-agent's health probe reads to tell a server replaying its redo log
+# from one that is not running at all.
+WANT_PIDFILE=/run/mysqld/mysqld.pid
+# The series this image is published as, which EngineVersion resolves against.
+WANT_SERIES=11.8
+
+# 0644 in git, and ExtraTrees= preserves source mode.
+chmod 0755 /usr/local/sbin/rds-init
+
+for bin in "${MARIADBD}" /usr/bin/mariadb-install-db /usr/bin/mariadb-admin /usr/bin/mariadb; do
+    if [[ ! -x "${bin}" ]]; then
+        echo "ERROR: ${bin} is missing — rds-init's drop-in no longer matches this image's layout" >&2
+        exit 1
+    fi
+done
+
+# An archive that moved the series has to fail the build rather than ship an
+# image tagged 11.8 running something else.
+installed_series="$("${MARIADBD}" --version | sed -n 's/.*Ver \([0-9]\+\.[0-9]\+\)\..*/\1/p')"
+if [[ "${installed_series}" != "${WANT_SERIES}" ]]; then
+    echo "ERROR: this image carries MariaDB ${installed_series:-unknown}, but it is published as engine-version=${WANT_SERIES}" >&2
+    "${MARIADBD}" --version >&2
+    exit 1
+fi
+
+# mariadb-server's postinst runs mysql_install_db into the mount point
+# rds-datadir mounts the customer's volume OVER. rds-init then reads a
+# populated datadir as "already initialised" and skips bootstrapping — a
+# database nobody asked for, shadowed by a mount. The assertion is the part
+# that survives a future packaging change.
+rm -rf /var/lib/mysql/*
+install -d -m 0750 -o mysql -g mysql /var/lib/mysql
+if [[ -n "$(ls -A /var/lib/mysql)" ]]; then
+    echo "ERROR: /var/lib/mysql is not empty — rds-datadir would mount over live content" >&2
+    ls -lA /var/lib/mysql >&2
+    exit 1
+fi
+
+# Baked AFTER the emptiness assertion. MariaDB treats an !includedir it cannot
+# open as a fatal defaults-parsing error, which would take down the client
+# alongside the server on exactly the boot needed to diagnose a missing volume.
+install -d -m 0750 -o mysql -g mysql /var/lib/mysql/conf.d
+# rds-init points log_error here; without it the server's own errors go to
+# syslog, which nothing collects off a guest with no SSH.
+install -d -m 0750 -o mysql -g mysql /var/log/mysql
+
+# Two properties, each of which fails silently rather than loudly: the RDS
+# include must sit in the directory my.cnf reads LAST, and sort last within it.
+# The first is derived from my.cnf rather than assumed — a check against a
+# directory the server never reads is worse than no check.
+last_includedir="$(sed -n 's/^!includedir[[:space:]]*//p' /etc/mysql/my.cnf | tail -n 1 | sed 's:/*$::')"
+if [[ "${last_includedir}" != "${INCLUDE_DIR}" ]]; then
+    echo "ERROR: /etc/mysql/my.cnf reads ${last_includedir:-<none>} last, not ${INCLUDE_DIR} where the RDS include was placed" >&2
+    grep -n '^!include' /etc/mysql/my.cnf >&2
+    exit 1
+fi
+
+# Byte order, the way MariaDB itself walks an include directory, so a future
+# package adding a later-sorting file fails the build rather than silently
+# overriding the platform.
+last_dropin="$(ls "${INCLUDE_DIR}" | LC_ALL=C sort | tail -n 1)"
+if [[ "${last_dropin}" != "${INCLUDE}" ]]; then
+    echo "ERROR: ${INCLUDE_DIR}/${last_dropin} is read after the RDS include" >&2
+    exit 1
+fi
+
+# skip-networking is not something a later file can undo, so it has to be
+# absent: the endpoint would resolve, the health probe would pass, and nothing
+# on the customer ENI could ever connect.
+if grep -rEq '^[[:space:]]*skip[-_]networking' /etc/mysql/my.cnf /etc/mysql/conf.d "${INCLUDE_DIR}"; then
+    echo "ERROR: a packaged configuration file disables TCP networking" >&2
+    grep -rEn '^[[:space:]]*skip[-_]networking' /etc/mysql/my.cnf /etc/mysql/conf.d "${INCLUDE_DIR}" >&2
+    exit 1
+fi
+
+# A name the server refuses at startup is not a rejected setting: it aborts the
+# boot with the generated file already on the data volume. --verbose --help
+# parses the option files and exits without touching a datadir, so it is the
+# whole check; defaults-extra-file must be the first option mariadbd sees.
+if [[ ! -f "${DEFAULT_PARAMS}" ]]; then
+    echo "ERROR: the catalog's default parameter set was not delivered to ${DEFAULT_PARAMS}" >&2
+    exit 1
+fi
+if ! "${MARIADBD}" --defaults-extra-file="${DEFAULT_PARAMS}" --user=mysql --verbose --help \
+    > /tmp/rds-defaults.out 2>/tmp/rds-defaults.err; then
+    echo "ERROR: mariadbd refuses the catalog's default parameter set" >&2
+    cat /tmp/rds-defaults.err >&2
+    exit 1
+fi
+
+# Alpine's service passed --pid-file on the command line and nothing generated
+# could move it; Ubuntu's unit passes none, so the option files decide and
+# asking the server is the only honest way to learn the answer. A package that
+# renamed it would leave every instance reporting an engine that is not there.
+resolved_pidfile="$(sed -n 's/^pid-file[[:space:]]\+//p' /tmp/rds-defaults.out | tail -n 1)"
+if [[ "${resolved_pidfile}" != "${WANT_PIDFILE}" ]]; then
+    echo "ERROR: this image's server resolves pid-file to '${resolved_pidfile:-<unset>}', but rds-agent's health probe reads ${WANT_PIDFILE}" >&2
+    exit 1
+fi
+
+# Build-time only: an include the server could find twice is a way for a stale
+# copy to shadow the customer's own set.
+rm -f /tmp/rds-defaults.out /tmp/rds-defaults.err "${DEFAULT_PARAMS}"
+rmdir /usr/local/share/spinifex-rds 2>/dev/null || true
+
+# The engine this image bakes. rds-agent builds its implementation from this
+# file, so a VM launched as another engine is refused before anything touches
+# the datadir.
+printf 'mariadb\n' > /etc/spinifex-rds/engine
+chmod 0444 /etc/spinifex-rds/engine
+
+echo "[rds-mariadb] postinst complete: MariaDB ${installed_series}, empty datadir, include chain and default parameters verified"

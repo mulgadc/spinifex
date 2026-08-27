@@ -1,0 +1,23 @@
+[Unit]
+Description=Spinifex RDS instance agent
+# mulga-mgmt-net gives mgmt0 its static address, so without it ordered first
+# the agent's first dial has no route to the gateway.
+After=network-online.target mulga-mgmt-net.service
+Wants=network-online.target
+Before=rds-datadir.service rds-init.service
+
+[Service]
+Type=exec
+# Static per-instance config from cloud-init; carries no secrets. Absent is
+# tolerated so the agent still starts and logs why it cannot reach the gateway.
+EnvironmentFile=-/etc/spinifex-rds/agent.env
+ExecStart=/usr/local/bin/rds-agent
+Restart=always
+RestartSec=5
+# No SSH on this VM, and an unreachable gateway is exactly the case an operator
+# cannot log in to diagnose. Quiet in steady state: heartbeats log at debug.
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

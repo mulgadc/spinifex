@@ -1,0 +1,72 @@
+#!/bin/bash
+set -euo pipefail
+
+# rds-postgres postinst — undoes Ubuntu's install-time cluster, stamps the
+# engine, and asserts what this image cannot ship without. Runs after
+# rds-common's, which created /etc/spinifex-rds.
+
+PG_VERSION=18
+PG_BIN="/usr/lib/postgresql/${PG_VERSION}/bin"
+
+# 0644 in git, and ExtraTrees= preserves source mode.
+chmod 0755 /usr/local/sbin/rds-init
+
+# A packaging move would otherwise surface as a bootstrap that cannot find
+# initdb, on a customer's first launch rather than here.
+for bin in initdb pg_ctl postgres; do
+    if [[ ! -x "${PG_BIN}/${bin}" ]]; then
+        echo "ERROR: ${PG_BIN}/${bin} is missing — rds-init's RDS_PG_BIN no longer matches this image" >&2
+        exit 1
+    fi
+done
+
+# postgresql-18's postinst runs pg_createcluster and leaves a populated `main`
+# cluster at the mount point rds-datadir mounts the customer's volume OVER.
+# rds-init then reads a non-empty datadir as "already initialised" and skips
+# bootstrapping — a cluster nobody asked for, shadowed by a mount, with the
+# real bootstrap never run. The config change stops a later apt operation
+# inside a guest recreating one.
+install -d -m 0755 /etc/postgresql-common
+if [[ -f /etc/postgresql-common/createcluster.conf ]]; then
+    sed -i 's/^#\?create_main_cluster *=.*/create_main_cluster = false/' \
+        /etc/postgresql-common/createcluster.conf
+fi
+if ! grep -q '^create_main_cluster = false' /etc/postgresql-common/createcluster.conf 2>/dev/null; then
+    echo 'create_main_cluster = false' >> /etc/postgresql-common/createcluster.conf
+fi
+
+if /usr/bin/pg_lsclusters --no-header 2>/dev/null | grep -q "^${PG_VERSION} *main "; then
+    echo "[rds-postgres] dropping the cluster postgresql-${PG_VERSION} created at install time"
+    /usr/bin/pg_dropcluster --stop "${PG_VERSION}" main
+fi
+
+# The assertion is the part that survives a future packaging change: whatever
+# created the cluster may move, but the mount point must be empty either way.
+rm -rf /var/lib/postgresql/*
+install -d -m 0750 -o postgres -g postgres /var/lib/postgresql
+if [[ -n "$(ls -A /var/lib/postgresql)" ]]; then
+    echo "ERROR: /var/lib/postgresql is not empty — rds-datadir would mount over live content" >&2
+    ls -lA /var/lib/postgresql >&2
+    exit 1
+fi
+# Kept on the boot volume: per-boot diagnostics, so a snapshot stays data-only.
+install -d -m 0755 -o postgres -g postgres /var/log/postgresql
+
+# rds-init initdb's with the ICU locale provider and must keep doing so. The
+# original reason (musl has no locales) is gone with Alpine, but the
+# requirement is not: volumes in the field were initdb'd with ICU, and a
+# rebuilt image that fell back to glibc would produce a collation mismatch on
+# attach that shows up only as wrong ORDER BY results and corrupt indexes.
+if ! ldd "${PG_BIN}/postgres" | grep -q 'libicui18n'; then
+    echo "ERROR: this image's postgres is not linked against ICU — rds-init's --locale-provider=icu would fail" >&2
+    ldd "${PG_BIN}/postgres" >&2
+    exit 1
+fi
+
+# The engine this image bakes. rds-agent builds its implementation from this
+# file, so a VM launched as another engine is refused before anything touches
+# the datadir.
+printf 'postgres\n' > /etc/spinifex-rds/engine
+chmod 0444 /etc/spinifex-rds/engine
+
+echo "[rds-postgres] postinst complete: PostgreSQL ${PG_VERSION}, no install-time cluster, ICU verified"

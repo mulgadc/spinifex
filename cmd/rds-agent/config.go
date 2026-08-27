@@ -13,10 +13,13 @@ const (
 	defaultEnvFile    = "/etc/spinifex-rds/agent.env"
 	defaultGatewayCA  = "/etc/spinifex-rds/gateway-ca.pem"
 	defaultHandoffDir = "/run/spinifex-rds"
-	// Where setup.sh stamps the engine the image bakes. The agent builds its
-	// engine implementation from this file rather than from anything delivered.
-	defaultEngineFile         = "/etc/spinifex-rds/engine"
-	defaultRCService          = "rc-service"
+	// Where the image's postinst stamps the engine the image bakes. The agent
+	// builds its engine implementation from this file rather than from anything
+	// delivered.
+	defaultEngineFile = "/etc/spinifex-rds/engine"
+	// Every RDS image is systemd-based, so this is systemctl rather than
+	// OpenRC's rc-service. serviceAction's argument order follows it.
+	defaultServiceMgr         = "systemctl"
 	defaultEngineProbeTimeout = 5 * time.Second
 	// The long-poll window the agent asks the gateway to hold a request open
 	// for. The gateway caps it at 20s.
@@ -54,7 +57,7 @@ type config struct {
 	EngineDataDir string
 	SocketDir     string
 	EngineUser    string
-	RCService     string
+	ServiceMgr    string
 	EngineService string
 	// Where the engine records the pid its probe checks for liveness, for an
 	// engine whose own client cannot tell a server still recovering from one that
@@ -91,7 +94,7 @@ func loadConfig(envFile string) config {
 		EngineDataDir:        get("RDS_ENGINE_DATA"),
 		SocketDir:            get("RDS_SOCKET_DIR"),
 		EngineUser:           get("RDS_ENGINE_USER"),
-		RCService:            get("RDS_RC_SERVICE"),
+		ServiceMgr:           get("RDS_SERVICE_MANAGER"),
 		EngineService:        get("RDS_ENGINE_SERVICE"),
 		EnginePidFile:        get("RDS_ENGINE_PIDFILE"),
 		EngineErrorLog:       get("RDS_ENGINE_LOG"),
@@ -108,8 +111,8 @@ func loadConfig(envFile string) config {
 	if cfg.EngineFile == "" {
 		cfg.EngineFile = defaultEngineFile
 	}
-	if cfg.RCService == "" {
-		cfg.RCService = defaultRCService
+	if cfg.ServiceMgr == "" {
+		cfg.ServiceMgr = defaultServiceMgr
 	}
 	// The image's own stamp rather than the delivered engine: an agent that took
 	// its layout from the payload could run one engine's implementation against

@@ -556,16 +556,16 @@ var AvailableImages = map[string]Images{
 	// Engine/EngineVersion request maps onto, not by parsing the image name.
 	"spinifex-rds-postgres": {
 		Name:         "spinifex-rds-postgres",
-		Description:  "Mulga RDS PostgreSQL image — Alpine 3.24.1 + PostgreSQL 18 + rds-init (initdb, master password, parameters and TLS applied at first boot)",
-		Distro:       "alpine",
-		Version:      "3.24.1",
+		Description:  "Mulga RDS PostgreSQL image — Ubuntu 26.04 + PostgreSQL 18 + rds-init (initdb, master password, parameters and TLS applied at first boot)",
+		Distro:       "ubuntu",
+		Version:      "26.04",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC),
+		CreatedAt:    time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC),
 		URL:          "https://iso.mulgadc.com/system-ami/spinifex-rds-postgres-x86_64.qcow2",
 		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-rds-postgres-x86_64.qcow2.sha256",
 		ChecksumType: "sha256",
-		BootMode:     "bios",
+		BootMode:     "uefi",
 		Tags: map[string]string{
 			"spinifex:managed-by": "rds", "engine": "postgres", "engine-version": "18",
 			"rds-data-volume-contract": "format-auth-v1",
@@ -576,16 +576,16 @@ var AvailableImages = map[string]Images{
 	// is what keeps a MariaDB request off the PostgreSQL image and vice versa.
 	"spinifex-rds-mariadb": {
 		Name:         "spinifex-rds-mariadb",
-		Description:  "Mulga RDS MariaDB image — Alpine 3.24.1 + MariaDB 11.8 + rds-init (install-db, master password, parameters and TLS applied at first boot)",
-		Distro:       "alpine",
-		Version:      "3.24.1",
+		Description:  "Mulga RDS MariaDB image — Ubuntu 26.04 + MariaDB 11.8 + rds-init (install-db, master password, parameters and TLS applied at first boot)",
+		Distro:       "ubuntu",
+		Version:      "26.04",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC),
+		CreatedAt:    time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC),
 		URL:          "https://iso.mulgadc.com/system-ami/spinifex-rds-mariadb-x86_64.qcow2",
 		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-rds-mariadb-x86_64.qcow2.sha256",
 		ChecksumType: "sha256",
-		BootMode:     "bios",
+		BootMode:     "uefi",
 		Tags: map[string]string{
 			"spinifex:managed-by": "rds", "engine": "mariadb", "engine-version": "11.8",
 			"rds-data-volume-contract": "format-auth-v1",

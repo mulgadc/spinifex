@@ -1,0 +1,46 @@
+#!/bin/sh
+# rds-bootstrap-wait — block the boot until rds-agent has written the
+# authenticated bootstrap handoff, or until the wait bound expires.
+#
+# Ordering rds-datadir after rds-agent only orders the two starts; rds-datadir
+# and rds-init need the fetched config itself. The agent writes bootstrap.env
+# last and renames it into place, so its appearance means the whole handoff is
+# there. Shared by every RDS image: it names no engine.
+set -eu
+
+HANDOFF_ENV="${RDS_HANDOFF_DIR:-/run/spinifex-rds}/bootstrap.env"
+
+# The agent retries indefinitely, so this only bounds how long the boot waits
+# before letting rds-init fail visibly rather than hanging forever.
+TIMEOUT="${RDS_HANDOFF_TIMEOUT:-120}"
+TAIL="${RDS_HANDOFF_TAIL:-20}"
+# Overridable so the test suite can feed it a fixture instead of the journal.
+JOURNALCTL="${RDS_JOURNALCTL:-journalctl}"
+
+log() { echo "[rds-bootstrap-wait] $*"; }
+
+waited=0
+while [ ! -f "${HANDOFF_ENV}" ]; do
+    if [ "${waited}" -ge "${TIMEOUT}" ]; then
+        log "no bootstrap handoff at ${HANDOFF_ENV} after ${TIMEOUT}s"
+        # An unreachable gateway is the usual cause, and then the guest is
+        # unreachable too — the host-side console capture is the only place the
+        # dial error survives. Without this the failure reads as silence.
+        agent_tail=$("${JOURNALCTL}" --no-pager -u rds-agent.service -n "${TAIL}" 2>/dev/null || true)
+        if [ -n "${agent_tail}" ]; then
+            log "last ${TAIL} lines from rds-agent.service:"
+            echo "${agent_tail}" | while IFS= read -r line; do
+                log "  [rds-agent] ${line}"
+            done
+        else
+            log "rds-agent.service has logged nothing at all"
+        fi
+        # Exit 0 deliberately: the agent keeps retrying, and rds-init failing on
+        # the missing handoff is the specific failure the control plane reads.
+        exit 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+done
+
+log "bootstrap handoff present at ${HANDOFF_ENV} after ${waited}s"

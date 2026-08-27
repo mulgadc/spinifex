@@ -74,6 +74,10 @@ image_profiles() {
         # for. eks-common comes first because it installs the k3s binary the
         # other two build on.
         spinifex-eks-node)     echo "eks-common eks-server eks-agent" ;;
+        # rds-common first: each engine profile's postinst asserts against the
+        # /etc/spinifex-rds it creates and the agent it stages.
+        spinifex-rds-postgres) echo "rds-common rds-postgres" ;;
+        spinifex-rds-mariadb)  echo "rds-common rds-mariadb" ;;
         *)                     return 1 ;;
     esac
 }
@@ -102,6 +106,7 @@ profile_binaries() {
 ./cmd/eks-konnectivity-cert:usr/local/bin/eks-konnectivity-cert"
             ;;
         ecs) echo "./cmd/ecs-agent:usr/local/bin/ecs-agent" ;;
+        rds-common) echo "./cmd/rds-agent:usr/local/bin/rds-agent" ;;
         *)   echo "" ;;
     esac
 }
@@ -273,6 +278,10 @@ WANT_SHELL=0
 MKOSI_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        # Query only: exits 0 if the name is a known composition, without
+        # touching Docker. The Makefile uses it to decide whether an IMAGE=
+        # with no manifest is an mkosi image or a typo.
+        --known-image) image_profiles "$2" >/dev/null; exit $? ;;
         --image)   IMAGE="$2"; shift 2 ;;
         --profile) PROFILES+=("$2"); shift 2 ;;
         --shell)   WANT_SHELL=1; shift ;;
@@ -288,7 +297,7 @@ if [[ -n "${IMAGE}" ]]; then
     fi
     if ! expanded="$(image_profiles "${IMAGE}")"; then
         echo "mkosi-build: unknown image: ${IMAGE}" >&2
-        echo "mkosi-build: known images: ubuntu-gpu-nvidia ubuntu-gpu-amd ubuntu-vllm-serving spinifex-eks-node-gpu spinifex-ecs-node-gpu spinifex-ecs-node spinifex-eks-node" >&2
+        echo "mkosi-build: known images: ubuntu-gpu-nvidia ubuntu-gpu-amd ubuntu-vllm-serving spinifex-eks-node-gpu spinifex-ecs-node-gpu spinifex-ecs-node spinifex-eks-node spinifex-rds-postgres spinifex-rds-mariadb" >&2
         exit 2
     fi
     read -r -a PROFILES <<< "${expanded}"

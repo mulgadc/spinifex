@@ -16,7 +16,7 @@ import (
 // The include the image build validates against a real mariadbd. It is checked
 // in rather than generated during the build because the build runs inside the
 // libguestfs appliance, where there is no Go toolchain to resolve the catalog.
-const mariadbDefaultParametersFixture = "../../scripts/images/rds-mariadb/default-parameters.cnf"
+const mariadbDefaultParametersFixture = "../../images/mkosi.profiles/rds-mariadb/default-parameters.cnf"
 
 // Byte-for-byte what rds-init installs on a smallest-class instance that
 // overrides nothing. Regenerate with RDS_UPDATE_FIXTURES=1 go test ./cmd/rds-agent/.

@@ -442,7 +442,7 @@ func TestPostgresEngine_ApplyParametersRestartsOnARepairSetWhileEngineIsDown(t *
 	if !slices.Contains(runner.calls[0].Args, "-C") {
 		t.Errorf("first call = %+v, want the offline config check", runner.calls[0])
 	}
-	if !slices.Equal(runner.calls[1].Args, []string{"postgresql", "restart"}) {
+	if !slices.Equal(runner.calls[1].Args, []string{"restart", "spinifex-postgresql.service"}) {
 		t.Errorf("second call args = %v, want the service restart", runner.calls[1].Args)
 	}
 	if !strings.Contains(runner.calls[2].Stdin, "pending_restart") {

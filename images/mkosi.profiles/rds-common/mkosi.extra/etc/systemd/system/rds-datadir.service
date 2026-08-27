@@ -1,0 +1,20 @@
+[Unit]
+Description=Spinifex RDS data volume mount
+# Discovers the assigned data volume, formats it if the control plane
+# authorized that, and mounts it before anything can use the engine's datadir.
+After=local-fs.target rds-agent.service rds-bootstrap-wait.service
+Before=rds-init.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The mount point and its owning user are the one engine-specific pair the
+# mount script refuses to guess; they arrive from the engine profile's drop-in.
+ExecStart=/usr/local/sbin/rds-datadir
+# No operator login: the serial log is the only view of a boot that failed
+# before the engine came up.
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

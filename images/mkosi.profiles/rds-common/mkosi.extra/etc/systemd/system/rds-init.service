@@ -1,0 +1,19 @@
+[Unit]
+Description=Spinifex RDS instance bootstrap
+# Bootstraps or attaches the engine's datadir before the engine starts. The
+# engine's drop-in makes it Requires= this unit, so a failed fetch or a volume
+# that did not attach leaves the engine down rather than serving an empty
+# database. After=, not Requires=, on the agent: a failed handoff must fail
+# this oneshot visibly rather than skip it.
+After=network-online.target rds-agent.service rds-bootstrap-wait.service rds-datadir.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/rds-init
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

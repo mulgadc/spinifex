@@ -1,0 +1,39 @@
+[Unit]
+Description=Spinifex RDS PostgreSQL server
+# Deliberately not postgresql@18-main.service: postgresql-common's wrapper is
+# built around a cluster registry and pg_ctlcluster, while this image keeps the
+# datadir AND its configuration on the data volume, created only by rds-init.
+# Running the server directly removes the registry as a second source of truth
+# and is the closer match to the Alpine preset's auto_setup="no" — nothing here
+# can ever initdb.
+#
+# Requires=, not just After=: a failed rds-init means an unreachable gateway, a
+# volume that did not attach, or a datadir stamped for another engine. Refusing
+# to start is the correct, visible outcome.
+Requires=rds-init.service
+After=rds-init.service network.target
+
+[Service]
+Type=notify
+User=postgres
+Group=postgres
+# The datadir is literal, not an Environment= reference: mkosi-build.sh rejects
+# a bare $VAR in an Exec* line. postgresql.conf, pg_hba.conf and the parameter
+# include all live inside it, so -D is the whole configuration handoff.
+ExecStart=/usr/lib/postgresql/18/bin/postgres -D /var/lib/postgresql/18/data
+KillMode=mixed
+KillSignal=SIGINT
+# Recovery on a large datadir can take a while and systemd must not shoot it.
+TimeoutStartSec=300
+TimeoutStopSec=300
+# No automatic restart, matching the image this replaces: the agent's health
+# probe reports the exit and the control plane decides. A restart loop here
+# would hide it.
+Restart=no
+# The journal, not the console: this runs for the life of the instance, and
+# every client-visible error would otherwise land in the serial capture.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

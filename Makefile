@@ -89,8 +89,14 @@ endif
 		./scripts/build-system-image.sh scripts/images/$(IMAGE).conf $(if $(IMPORT),--import); \
 	elif [ -f scripts/images/$(IMAGE)/manifest.conf ]; then \
 		./scripts/build-system-image.sh scripts/images/$(IMAGE)/manifest.conf $(if $(IMPORT),--import); \
+	elif ./scripts/mkosi-build.sh --known-image $(IMAGE) >/dev/null 2>&1; then \
+		if [ -n "$(IMPORT)" ]; then \
+			echo "ERROR: IMPORT=1 has no mkosi equivalent — import with 'spx admin images import' on the node"; \
+			exit 1; \
+		fi; \
+		./scripts/mkosi-build.sh --image $(IMAGE); \
 	else \
-		echo "ERROR: no manifest at scripts/images/$(IMAGE).conf or scripts/images/$(IMAGE)/manifest.conf"; \
+		echo "ERROR: $(IMAGE) is neither a manifest under scripts/images/ nor a known mkosi image"; \
 		exit 1; \
 	fi
 
@@ -109,17 +115,15 @@ build-ecs-node-image: ## Build the spinifex-ecs-node AMI (Alpine + containerd + 
 import-ecs-node-image: ## Build + register the ecs-node AMI (requires a running cluster)
 	$(MAKE) build-system-image IMAGE=ecs-agent IMPORT=1
 
-build-rds-postgres-image: ## Build the spinifex-rds-postgres AMI (Alpine + PostgreSQL 18 + rds-init; IMPORT=1 to register)
-	$(MAKE) build-system-image IMAGE=rds-postgres
+# Same entry point as every other image; build-system-image dispatches to mkosi
+# because these two have no manifest under scripts/images/ any more. The
+# artefact is images/output/<image>.raw, imported with `spx admin images
+# import` on the node rather than via IMPORT=1.
+build-rds-postgres-image: ## Build the spinifex-rds-postgres image (Ubuntu 26.04 + PostgreSQL 18 + rds-init)
+	$(MAKE) build-system-image IMAGE=spinifex-rds-postgres
 
-import-rds-postgres-image: ## Build + register the rds-postgres AMI (requires a running cluster)
-	$(MAKE) build-system-image IMAGE=rds-postgres IMPORT=1
-
-build-rds-mariadb-image: ## Build the spinifex-rds-mariadb AMI (Alpine + MariaDB 11.8 + rds-init; IMPORT=1 to register)
-	$(MAKE) build-system-image IMAGE=rds-mariadb
-
-import-rds-mariadb-image: ## Build + register the rds-mariadb AMI (requires a running cluster)
-	$(MAKE) build-system-image IMAGE=rds-mariadb IMPORT=1
+build-rds-mariadb-image: ## Build the spinifex-rds-mariadb image (Ubuntu 26.04 + MariaDB 11.8 + rds-init)
+	$(MAKE) build-system-image IMAGE=spinifex-rds-mariadb
 
 MICROVM_OUT_DIR := build/microvm
 MICROVM_ARTIFACTS := $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz
@@ -424,7 +428,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image build-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

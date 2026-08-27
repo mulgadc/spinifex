@@ -23,15 +23,15 @@ type postgresEngine struct {
 	// The control plane's own metadata for this engine, resolved once at
 	// startup: the live password apply runs as the cluster superuser, so it
 	// re-checks the role name against the same reserved set the API validates.
-	meta      handlers_rds.Engine
-	run       commandRunner
-	startSess sessionRunner
-	psql      string
-	rcService string
-	service   string
-	pgData    string
-	socketDir string
-	osUser    string
+	meta       handlers_rds.Engine
+	run        commandRunner
+	startSess  sessionRunner
+	psql       string
+	serviceMgr string
+	service    string
+	pgData     string
+	socketDir  string
+	osUser     string
 }
 
 var _ engine = (*postgresEngine)(nil)
@@ -112,15 +112,15 @@ func newPostgresEngineFromCatalog(cfg config, run commandRunner, startSess sessi
 
 func newPostgresEngine(cfg config, meta handlers_rds.Engine, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
 	return &postgresEngine{
-		meta:      meta,
-		run:       run,
-		startSess: startSess,
-		psql:      filepath.Join(cfg.EngineBinDir, "psql"),
-		rcService: cfg.RCService,
-		service:   cfg.EngineService,
-		pgData:    cfg.EngineDataDir,
-		socketDir: cfg.SocketDir,
-		osUser:    cfg.EngineUser,
+		meta:       meta,
+		run:        run,
+		startSess:  startSess,
+		psql:       filepath.Join(cfg.EngineBinDir, "psql"),
+		serviceMgr: cfg.ServiceMgr,
+		service:    cfg.EngineService,
+		pgData:     cfg.EngineDataDir,
+		socketDir:  cfg.SocketDir,
+		osUser:     cfg.EngineUser,
 		parameterManager: parameterManager{
 			probe: probe,
 			params: parameterStore{
@@ -463,13 +463,13 @@ func (e *postgresEngine) checkConfig(ctx context.Context) error {
 }
 
 func (e *postgresEngine) Stop(ctx context.Context) error {
-	return serviceAction(ctx, e.run, e.rcService, e.service, "stop")
+	return serviceAction(ctx, e.run, e.serviceMgr, e.service, "stop")
 }
 
 // Only the parameter rollback calls this: a restart the control plane wants goes
 // through RebootDBInstance, which cycles the VM.
 func (e *postgresEngine) Restart(ctx context.Context) error {
-	return serviceAction(ctx, e.run, e.rcService, e.service, "restart")
+	return serviceAction(ctx, e.run, e.serviceMgr, e.service, "restart")
 }
 
 // Feeds sql on stdin rather than as an argument, so a statement is never

@@ -92,7 +92,7 @@ type engineLayout struct {
 }
 
 // The names the control plane knows these implementations by, which are also
-// what setup.sh stamps into each image.
+// what each image profile's postinst stamps into /etc/spinifex-rds/engine.
 const (
 	enginePostgres = "postgres"
 	engineMariaDB  = "mariadb"
@@ -100,11 +100,11 @@ const (
 
 var engineLayouts = map[string]engineLayout{
 	enginePostgres: {
-		binDir:    "/usr/libexec/postgresql18",
+		binDir:    "/usr/lib/postgresql/18/bin",
 		dataDir:   "/var/lib/postgresql/18/data",
 		socketDir: "/run/postgresql",
 		osUser:    "postgres",
-		service:   "postgresql",
+		service:   "spinifex-postgresql.service",
 		dataMount: "/var/lib/postgresql",
 		port:      5432,
 		newProbe:  newPostgresProbe,
@@ -115,16 +115,10 @@ var engineLayouts = map[string]engineLayout{
 		dataDir:   "/var/lib/mysql/data",
 		socketDir: "/run/mysqld",
 		osUser:    "mysql",
-		service:   "mariadb",
+		service:   "mariadb.service",
 		dataMount: "/var/lib/mysql",
 		port:      3306,
-		// Alpine's service passes --pid-file=/run/mysqld/$RC_SVCNAME.pid, and the
-		// command line beats the option file, so this is the path rather than
-		// anything the drop-in names. setup.sh asserts it at build time.
-		pidFile: "/run/mysqld/mariadb.pid",
-		// log_error in the platform drop-in rds-init writes. Without it
-		// mysqld_safe would send the server's errors to syslog, which nothing
-		// collects off a guest that has no SSH.
+		pidFile:   "/run/mysqld/mysqld.pid",
 		errorLog:  "/var/log/mysql/error.log",
 		newProbe:  newMariaDBProbe,
 		newEngine: newMariaDBEngineFromCatalog,
@@ -226,10 +220,14 @@ func lookupCredential(username string) (*syscall.Credential, error) {
 // Through the service manager rather than the engine's own control tool, so the
 // supervisor records the state and does not restart the engine underneath a VM
 // that is going down.
-func serviceAction(ctx context.Context, run commandRunner, rcService, service, action string) error {
+//
+// The action precedes the unit: that is systemctl's argument order, and it is
+// the reverse of the rc-service order these images used while they were built
+// on Alpine.
+func serviceAction(ctx context.Context, run commandRunner, serviceMgr, service, action string) error {
 	if _, err := run(ctx, command{
-		Name: rcService,
-		Args: []string{service, action},
+		Name: serviceMgr,
+		Args: []string{action, service},
 		Env:  []string{"PATH=" + defaultGuestPath},
 	}); err != nil {
 		return fmt.Errorf("%s the %s service: %w", action, service, err)

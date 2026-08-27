@@ -1,0 +1,20 @@
+# Spinifex RDS generated-configuration include.
+#
+# The generated files live on the data volume rather than under /etc. A class
+# change is a VM replacement: a fresh boot volume with the same data volume
+# reattached. Parameters under /etc would be discarded by that replacement and
+# the instance would silently revert to catalog defaults while the API still
+# reported the customer's values.
+#
+# This directory, not Alpine's /etc/my.cnf.d: Debian and Ubuntu route
+# /etc/mysql/my.cnf to mariadb.cnf, which reads conf.d/ first and
+# mariadb.conf.d/ second. zz- so this also sorts last within it — MariaDB walks
+# an include directory in byte order and takes the last occurrence of a
+# setting, and a digit prefix would sort ahead of the packaged 50-server.cnf.
+# The postinst asserts both halves against the real image at build time.
+#
+# The target directory is baked empty into the image: MariaDB treats an
+# !includedir it cannot open as a fatal defaults-parsing error, so a boot with
+# no data volume would otherwise take the client down with the server.
+
+!includedir /var/lib/mysql/conf.d

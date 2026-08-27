@@ -1,0 +1,10 @@
+# The four engine-agnostic units every RDS image boots through. The engine's
+# own unit is enabled by the engine profile's 61- file, since its name differs.
+#
+# This has to be a preset file rather than the postinst's `systemctl enable`:
+# mkosi runs preset-all after every profile's postinst, resetting every unit to
+# policy and discarding whatever the postinst asked for.
+enable rds-agent.service
+enable rds-bootstrap-wait.service
+enable rds-datadir.service
+enable rds-init.service

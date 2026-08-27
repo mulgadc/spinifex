@@ -1,0 +1,1060 @@
+#!/bin/sh
+# rds-init — MariaDB bootstrap for the spinifex-rds-mariadb AMI.
+#
+# A boot oneshot ordered before the mariadb service. This is the MariaDB half of
+# the engine seam: mariadb-install-db, the master grant, the datadir and the 3306
+# default live here and nowhere else in the platform.
+#
+# Handoff contract, written by rds-agent into a root-owned tmpfs directory:
+#
+#   /run/spinifex-rds/bootstrap.env    0600  KEY=value shell fragment:
+#       RDS_MODE=initialize|attach
+#       RDS_DB_INSTANCE_IDENTIFIER=<the DB instance this VM backs>
+#       RDS_MASTER_USERNAME=<master user name>
+#       RDS_MASTER_PASSWORD=<present only when RDS_MODE=initialize>
+#       RDS_DB_NAME=<initial database; optional, as on AWS>
+#       RDS_PORT=<listen port; defaults to 3306>
+#       RDS_LISTEN_ADDRESS=<the customer ENI address the engine binds>
+#       RDS_DATA_VOLUME_ID / RDS_DATA_VOLUME_SERIAL=<expected volume identity>
+#       RDS_VM_GENERATION / RDS_FORMAT_AUTHORIZED=<create-only format grant>
+#       RDS_BOOTSTRAP_PENDING / RDS_PAYLOAD_ID=<the control plane is still
+#                                            waiting for this payload to be applied>
+#   /run/spinifex-rds/parameters.conf  0600  resolved parameter-group values, one
+#                                            name = 'value' per line
+#   /run/spinifex-rds/server.crt       0600  serving cert, cluster-CA-signed
+#   /run/spinifex-rds/server.key       0600  its private key
+#
+# Nothing there survives a reboot: the next boot re-fetches and the cert is
+# re-minted rather than persisted.
+#
+# The data volume also carries an engine stamp, written before the datadir is
+# inspected and compared on every boot, so another engine's volume is refused
+# rather than initialised over.
+#
+# rds-init keys off the datadir, never off RDS_MODE. A datadir holding the mysql
+# system database means skip mariadb-install-db and only refresh config, so a
+# replaced VM comes back on its existing data volume without re-bootstrapping.
+# RDS_BOOTSTRAP_PENDING is not an exception: it is a control-plane-resolved
+# precondition compared against on-disk evidence, the same shape as
+# RDS_FORMAT_AUTHORIZED.
+set -eu
+
+# The engine this image bakes, stamped onto the data volume and compared against
+# it on every boot. Held here rather than read from /etc/spinifex-rds/engine:
+# this script is the MariaDB half of the seam, so it is the same constant.
+ENGINE="mariadb"
+
+MARIADB_BIN="${RDS_MARIADB_BIN:-/usr/bin}"
+
+# The server binary is the one MariaDB tool that is not beside the clients on
+# every distribution: Debian and Ubuntu ship it in /usr/sbin. Defaulted to the
+# client directory so nothing changes where the two agree.
+MARIADBD="${RDS_MARIADBD:-${MARIADB_BIN}/mariadbd}"
+
+ENGINE_USER="${RDS_ENGINE_USER:-mysql}"
+
+# Mount point of the data volume, and the datadir one level inside it. The
+# datadir is deliberately not the mount point itself: a failed bootstrap clears
+# it, and the include directory, the engine stamp and the completion receipt all
+# have to outlive that. It also keeps lost+found and the include directory out of
+# a directory whose every subdirectory MariaDB lists as a database.
+DATA_MOUNT="${RDS_DATA_MOUNT:-/var/lib/mysql}"
+DATADIR="${RDS_DATADIR:-${DATA_MOUNT}/data}"
+
+# Read through the image's baked /etc/my.cnf.d/zz-rds-include.cnf. Generated
+# configuration lives here rather than under /etc because a class change is a VM
+# replacement — fresh boot volume, same data volume — and parameters under /etc
+# would be discarded by it while the API still reported the customer's values.
+CONF_DIR="${RDS_CONF_DIR:-${DATA_MOUNT}/conf.d}"
+PARAM_FILE="${CONF_DIR}/10-rds-parameters.cnf"
+# What the server actually started on. The agent computes pending-restart by
+# comparing the installed file against this one, so writing it here — before the
+# engine starts — is what makes the two equal by construction on every boot.
+# Deliberately not a .cnf name: !includedir reads *.cnf and this is comparison
+# material, not a second set of settings.
+SERVING_FILE="${CONF_DIR}/10-rds-parameters.serving"
+PLATFORM_FILE="${CONF_DIR}/90-rds-init.cnf"
+# The enforcement the platform requires of a resolved set that does not name it.
+# It sorts before the parameters file on purpose: mariadbd takes the last
+# occurrence, so a set that does name the setting overrides this one.
+TLS_DEFAULT_FILE="${CONF_DIR}/05-rds-tls-default.cnf"
+
+# The one setting in the resolved group this script reads rather than only
+# installs. Unlike PostgreSQL's, the value is the enforcement — mariadbd applies
+# it out of the file — so reading it answers only whether the engine may start.
+TLS_PARAM="require_secure_transport"
+
+# Written between mariadb-install-db and a working master user. It lives on the
+# data volume because no trap survives a crash or a hard kill, and it is what
+# stops the next boot attaching to a datadir whose master user was never created.
+BOOTSTRAP_SENTINEL="${DATADIR}/rds-bootstrap-incomplete"
+
+# Proof that the master user was durably applied, written once the datadir and
+# the user are both done. Deliberately outside DATADIR, which
+# clear_unfinished_datadir rm -rf's.
+RECEIPT_DIR="${RDS_RECEIPT_DIR:-${DATA_MOUNT}/.spinifex-rds/bootstrap}"
+RECEIPT_FILE="${RECEIPT_DIR}/receipt.env"
+
+# Which engine's data this volume holds. Outside DATADIR for the same reason the
+# receipt is, and beside it rather than inside the bootstrap directory: it
+# outlives any one bootstrap and is read before the datadir is ever inspected.
+ENGINE_STAMP="${RDS_ENGINE_STAMP:-${DATA_MOUNT}/.spinifex-rds/engine}"
+
+HANDOFF_DIR="${RDS_HANDOFF_DIR:-/run/spinifex-rds}"
+ENV_FILE="${HANDOFF_DIR}/bootstrap.env"
+
+SOCKET_DIR="${RDS_SOCKET_DIR:-/run/mysqld}"
+SOCKET="${SOCKET_DIR}/mysqld.sock"
+TLS_DIR="${RDS_TLS_DIR:-${SOCKET_DIR}/tls}"
+LOG_DIR="${RDS_LOG_DIR:-/var/log/mysql}"
+
+# Where the serving engine records why it would not start. The agent reads it to
+# turn "not answering on its socket" into the server's own refusal, so this path
+# is also compiled into the agent's layout and the two must agree.
+ENGINE_LOG="${RDS_ENGINE_LOG:-${LOG_DIR}/error.log}"
+
+# The bootstrap server listens on a unix socket in this directory and nowhere
+# else. It is 0700 and mysql-owned, so only mysql and root can reach the short
+# window before the master user exists.
+BOOTSTRAP_DIR="${RDS_BOOTSTRAP_DIR:-/run/rds-init}"
+BOOTSTRAP_SOCKET="${BOOTSTRAP_DIR}/mysqld.sock"
+BOOTSTRAP_PID="${BOOTSTRAP_DIR}/mysqld.pid"
+
+# secure_file_priv names the one directory FILE-privileged statements may read
+# and write. It must be a real directory: the empty string means no restriction
+# at all. Root-owned and empty, on the boot volume, so it stays empty.
+SECURE_FILE_DIR="${RDS_SECURE_FILE_DIR:-/var/lib/mysql-files}"
+
+MOUNTS_FILE="${RDS_MOUNTS_FILE:-/proc/mounts}"
+
+# How long the bind address may take to appear on a local interface. The lease
+# is taken in the boot runlevel on a 600s budget and this script runs in the
+# default one, so the wait is a guard rather than an expected delay.
+LISTEN_ADDRESS_TIMEOUT="${RDS_LISTEN_ADDRESS_TIMEOUT:-120}"
+
+# How long the private bootstrap server gets to open its socket, as probes one
+# BOOTSTRAP_POLL apart. InnoDB creates its redo log and system tablespace on this
+# first start, so it is not instant.
+BOOTSTRAP_PROBES="${RDS_BOOTSTRAP_PROBES:-60}"
+BOOTSTRAP_POLL="${RDS_BOOTSTRAP_POLL:-1}"
+# Failure cleanup gives the private server this long to honor TERM before KILL.
+BOOTSTRAP_STOP_GRACE="${RDS_BOOTSTRAP_STOP_GRACE:-10}"
+
+# The server truncates a longer name, so the database created would not be the
+# one the customer asked for, and MariaDB maps the name onto a directory name.
+MAX_DB_NAME_LEN=64
+MAX_USERNAME_LEN=80
+MANAGEMENT_DB="_spinifex_rds"
+CREATE_DATABASE_PROCEDURE="create_database"
+
+log() { echo "[rds-init] $*"; }
+fail() { echo "[rds-init] ERROR: $*" >&2; exit 1; }
+
+# A dotted-quad IPv4 literal. bind_address would also take a hostname, but the
+# control plane sends an address, and accepting a name would reintroduce the
+# resolution step the bind exists to remove.
+is_ipv4() {
+    case "$1" in
+        '' | *[!0-9.]*) return 1 ;;
+    esac
+    _rest="$1"
+    _octets=0
+    while [ -n "${_rest}" ]; do
+        _octet="${_rest%%.*}"
+        case "${_rest}" in
+            *.*) _rest="${_rest#*.}" ;;
+            *) _rest="" ;;
+        esac
+        # A leading zero reads as octal to some parsers and decimal to others,
+        # so the two would disagree about which address was bound.
+        case "${_octet}" in
+            0 | [1-9] | [1-9][0-9] | [1-9][0-9][0-9]) ;;
+            *) return 1 ;;
+        esac
+        [ "${_octet}" -le 255 ] || return 1
+        _octets=$((_octets + 1))
+    done
+    [ "${_octets}" = 4 ]
+}
+
+# The engine binds one address and refuses to start if it is not there yet, and
+# an engine that will not start for an unexplained reason is the worst way to
+# learn that DHCP lost its race. Bounded, then fatal with the address named.
+wait_for_listen_address() {
+    _deadline=$(($(date +%s) + LISTEN_ADDRESS_TIMEOUT))
+    while :; do
+        if ip -4 -o addr show 2>/dev/null |
+            awk -v want="${RDS_LISTEN_ADDRESS}" \
+                '{ split($4, addr, "/"); if (addr[1] == want) found = 1 } END { exit !found }'; then
+            return 0
+        fi
+        [ "$(date +%s)" -lt "${_deadline}" ] || break
+        sleep 1
+    done
+    fail "the endpoint address ${RDS_LISTEN_ADDRESS} did not appear on any interface within ${LISTEN_ADDRESS_TIMEOUT}s; the engine binds it and nothing else, so refusing to start"
+}
+
+# Between these two, the datadir carries a mysql system database but no usable
+# master user. _server_pid is the private bootstrap server, if one is running.
+_created_datadir=0
+_bootstrapped=0
+_server_pid=""
+
+# Runs from a trap rather than a statement, so neither `set -e` on an unguarded
+# step between mariadb-install-db and a working master user nor a signal can skip
+# it — either would leave a healthy-looking engine with no usable master user,
+# unrepairable.
+clear_unfinished_datadir() {
+    [ "${_created_datadir}" = "1" ] || return 0
+    [ "${_bootstrapped}" = "1" ] && return 0
+    # A server left holding a datadir that is about to be deleted keeps its
+    # socket and pidfile and blocks the mariadb service for the life of the boot.
+    kill_bootstrap_server
+    # The receipt is installed before the traps retire, so a sweep in between
+    # would leave one vouching for a datadir that is about to be deleted. The
+    # agent would acknowledge it and the control plane would destroy the only
+    # copy of the password this instance can ever be initialised with.
+    rm -f -- "${RECEIPT_FILE}"
+    if rm -rf -- "${DATADIR}" && [ ! -e "${DATADIR}" ]; then
+        echo "[rds-init] ERROR: bootstrap did not complete; datadir ${DATADIR} cleared" >&2
+        return 0
+    fi
+    echo "[rds-init] ERROR: bootstrap did not complete and datadir ${DATADIR} could not be cleared; recover it out of band before retrying" >&2
+}
+
+kill_bootstrap_server() {
+    [ -n "${_server_pid}" ] || return 0
+    _pid="${_server_pid}"
+
+    # wait has no timeout in POSIX sh. A watchdog bounds it and escalates, while
+    # this shell remains the one that waits and reaps its own child.
+    kill -TERM "${_pid}" 2>/dev/null || true
+    (
+        sleep "${BOOTSTRAP_STOP_GRACE}"
+        kill -KILL "${_pid}" 2>/dev/null || true
+    ) &
+    _watchdog_pid=$!
+
+    # A signal exit is expected here: cleanup cares that the process is reaped
+    # and cannot touch the datadir, not whether its incomplete startup was clean.
+    wait "${_pid}" 2>/dev/null || true
+    _server_pid=""
+    kill -TERM "${_watchdog_pid}" 2>/dev/null || true
+    wait "${_watchdog_pid}" 2>/dev/null || true
+}
+
+load_handoff() {
+    [ -f "${ENV_FILE}" ] || fail "no bootstrap handoff at ${ENV_FILE} — rds-agent has not delivered the bootstrap config"
+
+    # shellcheck disable=SC1090
+    . "${ENV_FILE}"
+
+    RDS_MODE="${RDS_MODE:-}"
+    RDS_DB_INSTANCE_IDENTIFIER="${RDS_DB_INSTANCE_IDENTIFIER:-}"
+    RDS_MASTER_USERNAME="${RDS_MASTER_USERNAME:-}"
+    RDS_MASTER_PASSWORD="${RDS_MASTER_PASSWORD:-}"
+    RDS_DB_NAME="${RDS_DB_NAME:-}"
+    RDS_PORT="${RDS_PORT:-3306}"
+    RDS_LISTEN_ADDRESS="${RDS_LISTEN_ADDRESS:-}"
+    RDS_VM_GENERATION="${RDS_VM_GENERATION:-}"
+    # Absent from an agent that predates the receipt protocol, which reads as
+    # "nothing is pending" and leaves every path below unchanged.
+    RDS_BOOTSTRAP_PENDING="${RDS_BOOTSTRAP_PENDING:-0}"
+    RDS_PAYLOAD_ID="${RDS_PAYLOAD_ID:-}"
+
+    [ -n "${RDS_MASTER_USERNAME}" ] || fail "bootstrap config has no RDS_MASTER_USERNAME"
+
+    # The name is interpolated into CREATE USER by the shell — the mariadb client
+    # has no identifier quoting of its own — so the rule the control plane
+    # applies is enforced here rather than trusted.
+    case "${RDS_MASTER_USERNAME}" in
+        [!A-Za-z]* | *[!A-Za-z0-9_]*)
+            fail "RDS_MASTER_USERNAME ${RDS_MASTER_USERNAME} must begin with a letter and hold only letters, digits and underscores; the control plane should have rejected it"
+            ;;
+    esac
+    if [ "${#RDS_MASTER_USERNAME}" -gt "${MAX_USERNAME_LEN}" ]; then
+        fail "RDS_MASTER_USERNAME is longer than the ${MAX_USERNAME_LEN} characters MariaDB allows; the control plane should have rejected it"
+    fi
+
+    # root is the superuser mariadb-install-db creates and rds-init keeps for
+    # itself, mysql is the unix_socket account beside it, mariadb.sys owns the sys
+    # schema, rdsadmin is reserved as on AWS, and PUBLIC is a role name the server
+    # refuses to create a user under. Matched the same way the control plane
+    # matches them: anything it refuses must be refused here too, or the name
+    # reaches mariadb-install-db, fails at CREATE USER and spends the one-shot
+    # password on the way.
+    _master_lower=$(printf '%s' "${RDS_MASTER_USERNAME}" | tr '[:upper:]' '[:lower:]')
+    case "${_master_lower}" in
+        root | mysql | mariadb.sys | rdsadmin | public | mysql.* | mariadb.*)
+            fail "RDS_MASTER_USERNAME ${RDS_MASTER_USERNAME} is reserved by the platform; the control plane should have rejected it"
+            ;;
+    esac
+
+    # The same rule the control plane applies. Here it is the barrier rather than
+    # defence in depth: the mariadb client has no identifier interpolation, so the
+    # name is built into CREATE DATABASE by the shell, and MariaDB maps a database
+    # name onto a directory name — which makes /, \, . and a trailing space
+    # structurally dangerous rather than merely awkward.
+    case "${RDS_DB_NAME}" in
+        '') ;;
+        [!A-Za-z]* | *[!A-Za-z0-9_]*)
+            fail "RDS_DB_NAME ${RDS_DB_NAME} must begin with a letter and hold only letters, digits and underscores; the control plane should have rejected it"
+            ;;
+    esac
+    if [ "${#RDS_DB_NAME}" -gt "${MAX_DB_NAME_LEN}" ]; then
+        fail "RDS_DB_NAME is longer than the ${MAX_DB_NAME_LEN} characters MariaDB allows; the control plane should have rejected it"
+    fi
+
+    case "${RDS_PORT}" in
+        '' | *[!0-9]*) fail "bootstrap config has a non-numeric RDS_PORT: ${RDS_PORT}" ;;
+    esac
+
+    # No fallback to a wildcard. The engine is reachable over the customer ENI
+    # and nowhere else, and a handoff that cannot say which address that is has
+    # no safe reading — the DB VM's other two NICs carry no security group the
+    # customer can see, let alone set.
+    [ -n "${RDS_LISTEN_ADDRESS}" ] || fail "bootstrap config has no RDS_LISTEN_ADDRESS; refusing to start an engine that would answer on every interface"
+    is_ipv4 "${RDS_LISTEN_ADDRESS}" ||
+        fail "bootstrap config has a non-IPv4 RDS_LISTEN_ADDRESS: ${RDS_LISTEN_ADDRESS}"
+
+    # redact_stream is line-oriented, so a password spanning a line boundary
+    # would match neither half and reach /dev/console in the clear. The control
+    # plane rejects one; refusing here too keeps that an asserted property of
+    # the handoff rather than a silent dependency on another service.
+    case "${RDS_MASTER_PASSWORD}" in
+        *'
+'*) fail "the master password in the bootstrap config spans more than one line; the control plane should have rejected it" ;;
+    esac
+
+    # The form the password takes inside the SQL, computed once beside it. A
+    # statement echoed on failure carries that form and not the raw secret, so
+    # redacting only the raw one would put a trivially unescaped password on the
+    # console for exactly the passwords that needed escaping.
+    RDS_MASTER_PASSWORD_SQL=""
+    if [ -n "${RDS_MASTER_PASSWORD}" ]; then
+        RDS_MASTER_PASSWORD_SQL=$(sql_literal "${RDS_MASTER_PASSWORD}")
+    fi
+
+    log "bootstrap config loaded (mode=${RDS_MODE:-unset}, port=${RDS_PORT})"
+}
+
+# Every replace boots a fresh clone of this AMI, so a datadir off the data volume
+# disappears at the next class change or recovery — silently, as the engine looks
+# fine.
+require_data_volume() {
+    if awk -v mnt="${DATA_MOUNT}" '$2 == mnt { found = 1 } END { exit !found }' "${MOUNTS_FILE}"; then
+        return 0
+    fi
+    [ "${RDS_ALLOW_LOCAL_DATADIR:-0}" = "1" ] ||
+        fail "${DATA_MOUNT} is not a mount point — the data volume is not attached; refusing to initialise on the boot volume"
+    log "warning: ${DATA_MOUNT} is not a mount point; data will not survive a VM replace (RDS_ALLOW_LOCAL_DATADIR=1)"
+}
+
+# True when the data volume holds anything that is not ours. The mount is what
+# is inspected rather than ${DATADIR}: another engine lays its data out under its
+# own name, so a PostgreSQL volume has content here while ${DATADIR} does not
+# exist at all.
+data_volume_has_content() {
+    [ -d "${DATA_MOUNT}" ] || return 1
+
+    # A mount that cannot be read is neither empty nor not: it is a refusal,
+    # because the caller decides from the answer whether to initialise.
+    ls -A -- "${DATA_MOUNT}" >/dev/null 2>&1 ||
+        fail "could not inspect ${DATA_MOUNT}; refusing to decide whether the data volume is ours"
+
+    # Globbed rather than split out of `ls`, so an entry carrying whitespace
+    # counts once. lost+found is the filesystem's, and the metadata and include
+    # directories are ours — none of the three says whose data the volume holds.
+    for _entry in "${DATA_MOUNT}"/* "${DATA_MOUNT}"/.[!.]* "${DATA_MOUNT}"/..?*; do
+        [ -e "${_entry}" ] || [ -L "${_entry}" ] || continue
+        case "${_entry##*/}" in
+            lost+found | .spinifex-rds | "${CONF_DIR##*/}") continue ;;
+        esac
+        return 0
+    done
+    return 1
+}
+
+# Written before the datadir is inspected, so a volume this image goes on to
+# initialise carries the stamp from the first boot onwards. Fatal on failure:
+# an unstamped volume is one the next boot cannot tell from another engine's.
+write_engine_stamp() {
+    _stamp_dir=$(dirname "${ENGINE_STAMP}")
+    install -d -m 0700 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${_stamp_dir}" ||
+        fail "the datadir engine stamp directory ${_stamp_dir} could not be created; refusing to use a data volume whose engine cannot be recorded"
+
+    _tmp="${ENGINE_STAMP}.new"
+    printf '%s\n' "${ENGINE}" > "${_tmp}" ||
+        fail "the datadir engine stamp ${ENGINE_STAMP} could not be written; refusing to use a data volume whose engine cannot be recorded"
+    chown "${ENGINE_USER}:${ENGINE_USER}" "${_tmp}"
+    chmod 0600 "${_tmp}"
+
+    # Renamed rather than written in place, so a crash leaves either the old
+    # stamp or none — and none is decided on the datadir, where a torn one would
+    # be fatal.
+    sync "${_tmp}" 2>/dev/null || sync
+    mv -f "${_tmp}" "${ENGINE_STAMP}" ||
+        fail "the datadir engine stamp ${ENGINE_STAMP} could not be installed; refusing to use a data volume whose engine cannot be recorded"
+    sync "${_stamp_dir}" 2>/dev/null || sync
+}
+
+# The volume mounts cleanly whichever engine wrote it, and another engine's
+# datadir reads as uninitialised here: rds-init would run mariadb-install-db
+# beside the customer's data and serve an empty database that passes every health
+# probe.
+require_engine_stamp() {
+    if [ -e "${ENGINE_STAMP}" ]; then
+        _stamped=""
+        _stamp_read=0
+        _stamped=$(head -n 1 -- "${ENGINE_STAMP}") && _stamp_read=1
+        [ "${_stamp_read}" = "1" ] ||
+            fail "the datadir engine stamp ${ENGINE_STAMP} exists but could not be read; refusing to attach to a data volume whose engine cannot be established"
+        if [ "${_stamped}" != "${ENGINE}" ]; then
+            fail "the data volume holds a '${_stamped}' datadir but this image runs ${ENGINE}; refusing to touch it. Attach it to a '${_stamped}' instance, or recover the volume out of band."
+        fi
+        log "data volume is stamped ${ENGINE}"
+        return 0
+    fi
+
+    # No MariaDB volume in the field predates the stamp, so unlike PostgreSQL
+    # there is nothing to backfill onto: an unstamped volume with content on it
+    # is by definition not ours, and stamping it would turn the check into a
+    # rubber stamp on exactly the volume it exists to refuse.
+    if data_volume_has_content; then
+        fail "${DATA_MOUNT} holds data but the volume carries no ${ENGINE} engine stamp; refusing to touch it. Recover the volume out of band."
+    fi
+
+    log "data volume carries no engine stamp — recording ${ENGINE}"
+    write_engine_stamp
+}
+
+# Creates the system tables in an empty datadir. Root authenticates through the
+# unix_socket plugin — the direct analogue of PostgreSQL's peer auth, and the
+# reason no bootstrap password is needed.
+initialise_datadir() {
+    # An empty datadir in `attach` mode means the data volume did not come back.
+    # Initialising there would report success and hand the customer an empty
+    # database in place of theirs.
+    if [ "${RDS_MODE}" = "attach" ]; then
+        fail "datadir ${DATADIR} holds no MariaDB system database but the bootstrap config is Mode=attach — the existing data volume is missing; refusing to create an empty database"
+    fi
+    [ -n "${RDS_MASTER_PASSWORD}" ] || fail "Mode=${RDS_MODE:-unset} carries no master password; cannot initialise the datadir"
+
+    install -d -m 0700 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${DATADIR}"
+
+    # Whether the datadir was empty beforehand gates the failure cleanup below.
+    # A torn write can leave the mysql system database missing over intact user
+    # data, and deleting then would destroy it in response to the one signal that
+    # it is still there.
+    _was_empty=0
+    if _contents=$(ls -A -- "${DATADIR}" 2>/dev/null); then
+        [ -z "${_contents}" ] && _was_empty=1
+    else
+        fail "could not inspect datadir ${DATADIR}; refusing to decide whether failure cleanup is safe"
+    fi
+
+    log "initialising the MariaDB datadir at ${DATADIR}"
+    # --no-defaults: the installed configuration includes the customer's own
+    # parameter file, and a static value this server will not start under would
+    # spend the one-shot master password on a datadir that never gets one. The
+    # real server starts on those parameters, where a rollback exists for them.
+    if ! "${MARIADB_BIN}/mariadb-install-db" --no-defaults \
+        --user="${ENGINE_USER}" --datadir="${DATADIR}" \
+        --auth-root-authentication-method=socket --skip-test-db; then
+        # A half-written datadir carries a mysql directory and would look
+        # initialised forever after, but only what this invocation created may be
+        # cleared.
+        if [ "${_was_empty}" = "1" ]; then
+            if rm -rf -- "${DATADIR}" && [ ! -e "${DATADIR}" ]; then
+                fail "mariadb-install-db failed; datadir cleared"
+            fi
+            fail "mariadb-install-db failed and datadir ${DATADIR} could not be cleared; recover it out of band before retrying"
+        fi
+        fail "mariadb-install-db failed and ${DATADIR} was not empty beforehand — refusing to clear it, since the contents may be a datadir whose system tables were lost; recover the data volume out of band"
+    fi
+
+    # Only a datadir built over an empty directory may be swept later.
+    _created_datadir="${_was_empty}"
+    trap clear_unfinished_datadir EXIT
+    # An EXIT trap does not run on a signal in a POSIX shell, so the same sweep
+    # is armed for the signals a shutdown, an ACPI powerdown or a host-side
+    # force-stop delivers. EXIT is disarmed first so the sweep runs once.
+    trap 'trap - EXIT; clear_unfinished_datadir; exit 1' INT TERM HUP
+
+    # No trap survives a crash or a SIGKILL, so the incomplete state is also
+    # recorded on the volume itself. Cleared once the master user exists.
+    printf '%s\n' \
+        'rds-init created this datadir and did not finish bootstrapping the master user.' \
+        'While this file exists rds-init refuses to start the engine: the datadir carries no' \
+        'usable master user, so it must not be attached to. Recover out of band.' \
+        > "${BOOTSTRAP_SENTINEL}"
+    chown "${ENGINE_USER}:${ENGINE_USER}" "${BOOTSTRAP_SENTINEL}"
+    chmod 0600 "${BOOTSTRAP_SENTINEL}"
+}
+
+# The resolved parameter group, prefixed with the group header. MariaDB parses
+# each file in an include directory on its own and treats a setting before any
+# group as a fatal error, so the header belongs to whoever writes the file rather
+# than to the engine-neutral renderer that produced its body.
+install_parameters() {
+    if [ -f "${HANDOFF_DIR}/parameters.conf" ]; then
+        _tmp="${CONF_DIR}/.10-rds-parameters.cnf.new"
+        { printf '[mysqld]\n'; cat "${HANDOFF_DIR}/parameters.conf"; } > "${_tmp}" ||
+            fail "the resolved parameter group could not be written to ${PARAM_FILE}"
+        chown "${ENGINE_USER}:${ENGINE_USER}" "${_tmp}"
+        chmod 0600 "${_tmp}"
+        mv -f "${_tmp}" "${PARAM_FILE}"
+        record_serving_parameters
+        return 0
+    fi
+    # A handoff without parameters keeps the previous include: dropping it would
+    # silently reset the instance to engine defaults.
+    if [ -f "${PARAM_FILE}" ]; then
+        log "warning: no parameters in the handoff — keeping the parameters already installed"
+        record_serving_parameters
+    fi
+}
+
+# The engine is about to start on whatever is installed, so the two are equal by
+# construction here. The agent refreshes this copy only after a restart it
+# performs itself: a live SET GLOBAL apply deliberately leaves it alone, since
+# that value was adopted without a restart, which is what "not pending" means.
+record_serving_parameters() {
+    install -m 0600 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${PARAM_FILE}" "${SERVING_FILE}" ||
+        fail "the serving copy of the parameters could not be written to ${SERVING_FILE}"
+}
+
+# The key stays on tmpfs: it is re-minted every fetch, so persisting it would
+# spread a private key into every snapshot.
+install_tls() {
+    if [ -f "${HANDOFF_DIR}/server.crt" ] && [ -f "${HANDOFF_DIR}/server.key" ]; then
+        install -d -m 0700 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${TLS_DIR}"
+        install -m 0600 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${HANDOFF_DIR}/server.crt" "${TLS_DIR}/server.crt"
+        install -m 0600 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${HANDOFF_DIR}/server.key" "${TLS_DIR}/server.key"
+        rm -f "${HANDOFF_DIR}/server.crt" "${HANDOFF_DIR}/server.key"
+        SSL_MODE="on"
+        return 0
+    fi
+    # A re-run after the cert was consumed must not turn TLS off underneath
+    # clients connecting with --ssl-verify-server-cert.
+    if [ -f "${TLS_DIR}/server.crt" ] && [ -f "${TLS_DIR}/server.key" ]; then
+        SSL_MODE="on"
+        return 0
+    fi
+    log "warning: no serving cert in the handoff — the engine will start without TLS"
+    SSL_MODE="off"
+}
+
+# Sets TLS_ENFORCE from the installed parameter file rather than the handoff's:
+# install_parameters keeps the previous file when a handoff carries none, so the
+# installed one is what mariadbd reads and what this has to agree with.
+#
+# An absent key is enforce. That is the ordinary state of an instance whose
+# resolved set predates the parameter, and reading it the other way would let a
+# file the platform did not write decide a security setting.
+derive_tls_enforcement() {
+    TLS_ENFORCE=1
+    _value=$(resolved_parameter "${TLS_PARAM}")
+    [ -n "${_value}" ] || return 0
+
+    case "${_value}" in
+        1) TLS_ENFORCE=1 ;;
+        0) TLS_ENFORCE=0 ;;
+        # The control plane canonicalises every boolean to 1 or 0, so anything else
+        # means the file was written by something other than the platform. Reading
+        # an unparsable security setting as off is the one choice not open here.
+        *) fail "the installed parameters set ${TLS_PARAM} to '${_value}', which is neither 1 nor 0; refusing to start the engine on a TLS setting that cannot be read" ;;
+    esac
+}
+
+# A configuration that asks for TLS is never quietly served in the clear. Not a
+# transient-failure risk: load_handoff already required a successful bootstrap
+# fetch to get this far, and that fetch carries a certificate whenever a CA
+# exists.
+require_tls_for_enforcement() {
+    [ "${TLS_ENFORCE}" = "1" ] || return 0
+    if [ "${SSL_MODE}" != "on" ]; then
+        fail "${TLS_PARAM} requires TLS of client connections but no serving certificate was delivered and none is installed; refusing to start an engine that would reject every client"
+    fi
+}
+
+# Unlike PostgreSQL's, this setting is a real global variable whose own default
+# is off, so an absent key read as enforce has to reach a file mariadbd parses or
+# the server serves plaintext while the API reports enforcement.
+#
+# Written unconditionally rather than only when the key is absent: this file
+# sorts first, so a resolved set naming the setting still wins, and a set that
+# stops naming it cannot leave a stale platform value behind.
+write_tls_enforcement_default() {
+    _tmp="${CONF_DIR}/.05-rds-tls-default.cnf.new"
+    cat > "${_tmp}" <<EOF
+# Managed by rds-init — regenerated on every boot. Edits here are lost.
+# The enforcement an instance gets when its parameter group does not set one.
+# Read before the resolved parameters, which override it.
+[mysqld]
+${TLS_PARAM} = 1
+EOF
+    chown "${ENGINE_USER}:${ENGINE_USER}" "${_tmp}"
+    chmod 0600 "${_tmp}"
+    mv -f "${_tmp}" "${TLS_DEFAULT_FILE}" ||
+        fail "the default ${TLS_PARAM} could not be installed at ${TLS_DEFAULT_FILE}"
+}
+
+# The 90- prefix sorts last within the include directory and MariaDB takes the
+# last occurrence of a setting, so a resolved parameter can never move the
+# endpoint's port, widen the bind, redirect the datadir, turn off TLS or lower
+# the protocol floor.
+#
+# innodb_buffer_pool_chunk_size and innodb_buffer_pool_instances are deliberately
+# absent although they are platform-owned: 11.8 removed the second outright, so
+# naming it is a startup failure rather than an override, and the first is
+# deprecated with no effect. The granularity they used to pin is fixed by the
+# server itself in this series.
+write_platform_config() {
+    _ssl="$1"
+    _tmp="${CONF_DIR}/.90-rds-init.cnf.new"
+    cat > "${_tmp}" <<EOF
+# Managed by rds-init — regenerated on every boot from the bootstrap config.
+# Edits here are lost; instance parameters belong in the parameter group.
+[mysqld]
+port = ${RDS_PORT}
+datadir = ${DATADIR}
+socket = ${SOCKET}
+
+# The customer ENI and nothing else. The DB VM's other two NICs sit on the
+# shared RDS system VPC and the host's management bridge, neither of which any
+# customer security group governs, so a socket bound there is reachable across
+# accounts. MariaDB's analogue of a scoped pg_hba is the host pattern on a
+# grant, which lives in mysql.user on the data volume and would survive a
+# restore into another VPC — so for this engine the bind is the boundary.
+bind_address = ${RDS_LISTEN_ADDRESS}
+
+# InnoDB is the only storage engine the snapshot guarantee holds for: it keeps a
+# redo log and recovers from a crash-consistent snapshot, and Aria and MyISAM do
+# not. An explicit ENGINE= clause still works, which keeps the exception
+# deliberate and per-table rather than account-wide and invisible.
+default_storage_engine = InnoDB
+
+# Point-in-time recovery is not offered, so the binary log is off: it would cost
+# write throughput and disk for a capability nothing reads.
+skip-log-bin
+
+# Defence in depth behind the master grant, which withholds FILE: an empty
+# secure_file_priv would mean no restriction at all, so it names a root-owned
+# directory that stays empty.
+secure_file_priv = ${SECURE_FILE_DIR}
+skip-symbolic-links
+
+# Without this mysqld_safe sends the server's own errors to syslog, so a server
+# that refuses to start says why somewhere nothing collects. The bootstrap server
+# already logs to this directory, which keeps both halves of a boot in one place.
+log_error = ${ENGINE_LOG}
+
+# The protocol floor, pinned here rather than left to the parameter group. It is
+# unconditional because it costs nothing when no certificate was delivered, and
+# tls_version is read only at startup.
+tls_version = TLSv1.3
+EOF
+    if [ "${_ssl}" = "on" ]; then
+        # Whether clients must use it is require_secure_transport's to say, and it
+        # belongs to the parameter group rather than here: this file only makes
+        # the offer. No ssl_ca, because client certificates are not required and
+        # it would only gate those.
+        cat >> "${_tmp}" <<EOF
+ssl_cert = ${TLS_DIR}/server.crt
+ssl_key = ${TLS_DIR}/server.key
+EOF
+    fi
+    chown "${ENGINE_USER}:${ENGINE_USER}" "${_tmp}"
+    chmod 0600 "${_tmp}"
+    mv -f "${_tmp}" "${PLATFORM_FILE}"
+}
+
+# Everything refreshed on every boot: the resolved parameters and their serving
+# copy, the serving cert, the TLS those parameters require of clients and the
+# platform's own settings.
+install_runtime_config() {
+    install -d -m 0750 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${CONF_DIR}"
+    install -d -m 0755 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${SOCKET_DIR}"
+    install -d -m 0750 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${LOG_DIR}"
+    install -d -m 0700 "${SECURE_FILE_DIR}"
+
+    install_parameters
+    install_tls
+    derive_tls_enforcement
+    require_tls_for_enforcement
+    write_tls_enforcement_default
+    write_platform_config "${SSL_MODE}"
+}
+
+# Brings the server up on a private socket with no TCP listener at all, so the
+# master password can be set before the engine is reachable. --no-defaults for
+# the same reason mariadb-install-db has it, and because the password below is
+# escaped for a known sql_mode rather than the customer's.
+start_bootstrap_server() {
+    install -d -m 0700 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${BOOTSTRAP_DIR}"
+
+    "${MARIADBD}" --no-defaults \
+        --user="${ENGINE_USER}" --datadir="${DATADIR}" \
+        --skip-networking --socket="${BOOTSTRAP_SOCKET}" \
+        --pid-file="${BOOTSTRAP_PID}" --log-error="${LOG_DIR}/rds-init.log" &
+    _server_pid=$!
+
+    _probes=0
+    while ! bootstrap_admin ping > /dev/null 2>&1; do
+        # The server writes why it gave up to its error log, which is on the boot
+        # volume and readable after the fact; the console only gets the refusal.
+        if ! kill -0 "${_server_pid}" 2>/dev/null; then
+            _server_pid=""
+            fail "the bootstrap server exited before it opened ${BOOTSTRAP_SOCKET}; see ${LOG_DIR}/rds-init.log"
+        fi
+        if [ "${_probes}" -ge "${BOOTSTRAP_PROBES}" ]; then
+            fail "the bootstrap server did not open ${BOOTSTRAP_SOCKET} after ${BOOTSTRAP_PROBES} probes ${BOOTSTRAP_POLL}s apart; see ${LOG_DIR}/rds-init.log"
+        fi
+        sleep "${BOOTSTRAP_POLL}"
+        _probes=$((_probes + 1))
+    done
+}
+
+bootstrap_admin() {
+    "${MARIADB_BIN}/mariadb-admin" --no-defaults \
+        --socket="${BOOTSTRAP_SOCKET}" --user=root "$@"
+}
+
+# Returns the shutdown's status, then the server's own: a caller reading this
+# must be able to tell "it refused to stop" from "it stopped badly", and both
+# from a server still holding the datadir.
+stop_bootstrap_server() {
+    [ -n "${_server_pid}" ] || return 0
+    bootstrap_admin shutdown || return 1
+
+    # `wait` rather than a kill -0 poll: the server is this shell's own child, so
+    # until it is reaped it stays a zombie that kill -0 reports as alive.
+    _wait_rc=0
+    wait "${_server_pid}" || _wait_rc=$?
+    _server_pid=""
+    return "${_wait_rc}"
+}
+
+# Prepended to every bootstrap script. The two logs that would copy the password
+# out of the statement are turned off — global rather than session variables, and
+# safe to set globally because nothing but rds-init can reach this server. The
+# mode is pinned because the password is escaped below for a mode that has
+# NO_BACKSLASH_ESCAPES off.
+BOOTSTRAP_SQL_GUARD="SET GLOBAL general_log = 0;
+SET GLOBAL slow_query_log = 0;
+SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';"
+
+# Replaces every occurrence of the secret with a placeholder. Parameter
+# expansion rather than sed, whose script would carry the secret in an argv any
+# process on the guest can read.
+redact_stream() {
+    _secret="$1"
+    while IFS= read -r _line || [ -n "${_line}" ]; do
+        _out=""
+        while [ -n "${_secret}" ]; do
+            case "${_line}" in
+                *"${_secret}"*)
+                    _out="${_out}${_line%%"${_secret}"*}[REDACTED]"
+                    _line="${_line#*"${_secret}"}"
+                    ;;
+                *) break ;;
+            esac
+        done
+        printf '%s\n' "${_out}${_line}"
+    done
+}
+
+# A value safe to interpolate into a single-quoted SQL literal. The quote is
+# doubled, which holds in every sql_mode, and the backslash is doubled, which is
+# why the guard above pins one where backslash escapes are on. The secret reaches
+# sed on stdin: an argv would be readable by every process in the guest.
+sql_literal() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e "s/'/''/g"
+}
+
+# The script rides stdin and never an argv, and both streams are redacted before
+# they reach the caller: the client echoes the statement it failed on, and the
+# initd sends everything here to /dev/console, which the host captures off ttyS0.
+mariadb_bootstrap() {
+    # A pipeline's status is its last command's and POSIX sh has no pipefail, so
+    # the client's own status leaves the subshell through the filesystem. The
+    # guard shifts the client's reported line numbers by the lines it adds.
+    _status_file="${BOOTSTRAP_DIR}/client.status"
+    rm -f "${_status_file}"
+    {
+        _client_rc=0
+        # --batch stops at the first error and exits non-zero, so a failed
+        # statement cannot leave the rest of the script running.
+        { printf '%s\n' "${BOOTSTRAP_SQL_GUARD}"; cat; } |
+            "${MARIADB_BIN}/mariadb" --no-defaults --batch --skip-column-names \
+                --socket="${BOOTSTRAP_SOCKET}" --user=root ||
+            _client_rc=$?
+        printf '%s\n' "${_client_rc}" > "${_status_file}"
+    } 2>&1 | redact_stream "${RDS_MASTER_PASSWORD}" | redact_stream "${RDS_MASTER_PASSWORD_SQL}"
+
+    # Every way of not recovering the client's status is a failed bootstrap
+    # rather than a silent success, and each says so in its own words: blaming
+    # the client for a status file that could not be written would send an
+    # operator looking at a MariaDB that did exactly what it was asked.
+    #
+    # A torn write leaves the file created but empty, so the value is checked
+    # before it is returned: `return ""` is fatal in the guest's ash, and would
+    # kill rds-init here — past the sweep, before the diagnostics.
+    _client_status=1
+    if [ -f "${_status_file}" ]; then
+        _client_status=$(cat "${_status_file}" 2>/dev/null) || _client_status=""
+        case "${_client_status}" in
+            '' | *[!0-9]*)
+                echo "[rds-init] ERROR: the mariadb client ran but its exit status could not be read back from ${_status_file} (got '${_client_status}'); treating the bootstrap as failed" >&2
+                _client_status=1
+                ;;
+        esac
+        rm -f "${_status_file}"
+    else
+        echo "[rds-init] ERROR: the mariadb client ran but its exit status was never recorded at ${_status_file}; treating the bootstrap as failed" >&2
+    fi
+    return "${_client_status}"
+}
+
+# 11.8 creates no anonymous account and --skip-test-db leaves no test database,
+# so on a current image both of these are no-ops. They run anyway: the properties
+# are asserted by the image tests, and an engine or packaging change that
+# reintroduced either would otherwise reach a customer's instance.
+remove_insecure_defaults() {
+    mariadb_bootstrap <<'SQL'
+DELETE FROM mysql.global_priv WHERE User = '';
+DROP DATABASE IF EXISTS test;
+FLUSH PRIVILEGES;
+SQL
+}
+
+# MariaDB has no DENY or partial revocation: an object privilege ON *.* also
+# reaches mysql.global_priv. Application privileges are therefore database-scoped,
+# while this protected definer procedure creates and grants future databases.
+apply_master_user() {
+    log "creating the master user ${RDS_MASTER_USERNAME}"
+    mariadb_bootstrap <<MARIADB_SQL
+CREATE USER IF NOT EXISTS '${RDS_MASTER_USERNAME}'@'%' IDENTIFIED BY '${RDS_MASTER_PASSWORD_SQL}';
+ALTER USER '${RDS_MASTER_USERNAME}'@'%' IDENTIFIED BY '${RDS_MASTER_PASSWORD_SQL}';
+GRANT RELOAD, PROCESS, SHOW DATABASES, REPLICATION SLAVE, REPLICATION CLIENT
+  ON *.* TO '${RDS_MASTER_USERNAME}'@'%';
+CREATE DATABASE IF NOT EXISTS \`${MANAGEMENT_DB}\`;
+DROP PROCEDURE IF EXISTS \`${MANAGEMENT_DB}\`.\`${CREATE_DATABASE_PROCEDURE}\`;
+DELIMITER //
+CREATE DEFINER='root'@'localhost' PROCEDURE \`${MANAGEMENT_DB}\`.\`${CREATE_DATABASE_PROCEDURE}\`(
+    IN database_name VARCHAR(64) CHARACTER SET ascii
+)
+SQL SECURITY DEFINER
+BEGIN
+    IF database_name IS NULL
+       OR BINARY database_name NOT REGEXP '^[A-Za-z][A-Za-z0-9_]{0,63}$'
+       OR LOWER(database_name) IN ('mysql', 'information_schema', 'performance_schema', 'sys', '${MANAGEMENT_DB}') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'database name must be a non-system identifier of at most 64 characters';
+    END IF;
+
+    SET @rds_database = REPLACE(database_name, '\`', '\`\`');
+    SET @rds_statement = CONCAT('CREATE DATABASE IF NOT EXISTS \`', @rds_database, '\`');
+    PREPARE rds_create_database FROM @rds_statement;
+    EXECUTE rds_create_database;
+    DEALLOCATE PREPARE rds_create_database;
+
+    SET @rds_statement = CONCAT(
+        'GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, REFERENCES, INDEX, ALTER, ',
+        'CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, CREATE VIEW, SHOW VIEW, ',
+        'CREATE ROUTINE, ALTER ROUTINE, EVENT, TRIGGER ON \`', @rds_database,
+        '\`.* TO ''${RDS_MASTER_USERNAME}''@''%'' WITH GRANT OPTION'
+    );
+    PREPARE rds_grant_database FROM @rds_statement;
+    EXECUTE rds_grant_database;
+    DEALLOCATE PREPARE rds_grant_database;
+END//
+DELIMITER ;
+GRANT EXECUTE ON PROCEDURE \`${MANAGEMENT_DB}\`.\`${CREATE_DATABASE_PROCEDURE}\`
+  TO '${RDS_MASTER_USERNAME}'@'%';
+MARIADB_SQL
+}
+
+# The resolved value of one setting in the installed parameter file, or nothing
+# when the group does not carry it.
+resolved_parameter() {
+    [ -f "${PARAM_FILE}" ] || return 0
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "${PARAM_FILE}" |
+        tail -n 1 | tr -d "\"'[:space:]"
+}
+
+# The bootstrap server runs on --no-defaults, so it is not carrying the character
+# set the real server will start with — and a database keeps the character set it
+# was created under for good. Both values therefore come from the parameter file
+# rather than from the server's compiled default.
+database_charset_clause() {
+    _charset=$(resolved_parameter character_set_server)
+    _collation=$(resolved_parameter collation_server)
+    if [ -z "${_charset}" ]; then
+        _charset="utf8mb4"
+        _collation=""
+    fi
+    # Interpolated into CREATE DATABASE below, and read out of a file rather than
+    # validated as an identifier on the way in.
+    case "${_charset}${_collation}" in
+        *[!A-Za-z0-9_]*)
+            fail "the parameter group's character_set_server or collation_server is not a bare identifier; refusing to interpolate it into CREATE DATABASE"
+            ;;
+    esac
+    if [ -n "${_collation}" ]; then
+        printf 'CHARACTER SET %s COLLATE %s' "${_charset}" "${_collation}"
+        return 0
+    fi
+    printf 'CHARACTER SET %s' "${_charset}"
+}
+
+# As on AWS, an instance created without a DBName gets no initial database. A
+# supplied database is created under its resolved charset before the protected
+# routine applies the same scope future databases receive.
+create_database() {
+    log "creating database ${RDS_DB_NAME}"
+    _charset_clause=$(database_charset_clause)
+    mariadb_bootstrap <<SQL
+CREATE DATABASE IF NOT EXISTS \`${RDS_DB_NAME}\` ${_charset_clause};
+CALL \`${MANAGEMENT_DB}\`.\`${CREATE_DATABASE_PROCEDURE}\`('${RDS_DB_NAME}');
+SQL
+}
+
+# Runs on a freshly initialised datadir only.
+bootstrap_master() {
+    log "starting bootstrap server on ${BOOTSTRAP_DIR}"
+    start_bootstrap_server
+
+    _rc=0
+    remove_insecure_defaults || _rc=$?
+    if [ "${_rc}" -eq 0 ]; then
+        apply_master_user || _rc=$?
+    fi
+    if [ "${_rc}" -eq 0 ] && [ -n "${RDS_DB_NAME}" ]; then
+        create_database || _rc=$?
+    fi
+
+    # `set -e` is suspended for a function called from an AND-OR list, so the
+    # stop status is captured rather than propagated. A failed stop must also not
+    # abort before the bootstrap check below, which names the real cause.
+    _stop_rc=0
+    stop_bootstrap_server || _stop_rc=$?
+
+    # The datadir is swept by the traps, which also cover the steps here that
+    # abort under `set -e` before this check is ever reached.
+    if [ "${_rc}" -ne 0 ]; then
+        fail "bootstrapping the master user/database failed (rc=${_rc})"
+    fi
+
+    # Proof written while the traps are still armed, so a receipt that cannot be
+    # made durable clears the datadir instead of leaving one it cannot vouch for.
+    write_completion_receipt
+
+    # The master user exists from here, so the datadir is complete and nothing
+    # may clear it — including on the stop failure reported below.
+    mark_bootstrap_complete
+
+    # A server still holding the datadir blocks the mariadb service for the life
+    # of the boot, so this is a failure and not a warning.
+    if [ "${_stop_rc}" -ne 0 ]; then
+        fail "the bootstrap server did not stop (rc=${_stop_rc}) and still holds ${DATADIR}; the mariadb service cannot start until it is gone"
+    fi
+}
+
+# The value of one receipt key. Never sourced: the receipt is on the data volume,
+# so a restored volume can carry one written by another instance, and executing
+# it would run whatever that instance's control plane put there.
+receipt_value() {
+    [ -f "${RECEIPT_FILE}" ] || return 0
+    sed -n "s/^$1=//p" "${RECEIPT_FILE}" 2>/dev/null | head -n 1
+}
+
+# Written between the master user and the retirement of the traps, so a receipt
+# that cannot be made durable still clears the datadir rather than leaving a
+# bootstrapped one nobody can prove.
+#
+# Fatal on failure, the mirror image of the sentinel removal below: a healthy
+# engine whose receipt never landed would come up available while the agent
+# blocked forever on a receipt that will never appear, leaving a working database
+# that can never accept a password change or a parameter reload.
+write_completion_receipt() {
+    install -d -m 0700 -o "${ENGINE_USER}" -g "${ENGINE_USER}" "${RECEIPT_DIR}" ||
+        fail "the master user exists but the bootstrap receipt directory ${RECEIPT_DIR} could not be created"
+
+    _tmp="${RECEIPT_FILE}.new"
+    {
+        echo "# Written by rds-init once the master user was applied. Holds no secrets."
+        echo "RDS_RECEIPT_PAYLOAD_ID=${RDS_PAYLOAD_ID}"
+        echo "RDS_RECEIPT_DB_INSTANCE_IDENTIFIER=${RDS_DB_INSTANCE_IDENTIFIER}"
+        echo "RDS_RECEIPT_VM_GENERATION=${RDS_VM_GENERATION}"
+        echo "RDS_RECEIPT_COMPLETED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "${_tmp}" ||
+        fail "the master user exists but the bootstrap receipt ${RECEIPT_FILE} could not be written"
+    chown "${ENGINE_USER}:${ENGINE_USER}" "${_tmp}"
+    chmod 0600 "${_tmp}"
+
+    # A receipt still in the page cache is lost by exactly the crash it exists to
+    # survive, so it is on disk before it is renamed into place.
+    sync "${_tmp}" 2>/dev/null || sync
+    mv -f "${_tmp}" "${RECEIPT_FILE}" ||
+        fail "the master user exists but the bootstrap receipt ${RECEIPT_FILE} could not be installed"
+    sync "${RECEIPT_DIR}" 2>/dev/null || sync
+}
+
+# A system database with no sentinel and no receipt is ambiguous from the datadir
+# alone: either an instance that bootstrapped before receipts existed, which must
+# attach, or one that applied the master user and crashed before the receipt was
+# durable, which must not. Only the control plane's view of whether the payload
+# is still staged separates the two, and that is what RDS_BOOTSTRAP_PENDING says.
+require_bootstrap_receipt() {
+    [ "${RDS_BOOTSTRAP_PENDING}" = "1" ] || return 0
+    if [ -n "${RDS_PAYLOAD_ID}" ] &&
+        [ "$(receipt_value RDS_RECEIPT_PAYLOAD_ID)" = "${RDS_PAYLOAD_ID}" ] &&
+        [ "$(receipt_value RDS_RECEIPT_DB_INSTANCE_IDENTIFIER)" = "${RDS_DB_INSTANCE_IDENTIFIER}" ]; then
+        return 0
+    fi
+    fail "the control plane has no record of a completed bootstrap for this datadir; refusing to attach to a datadir whose master user cannot be proven. Recover the volume out of band, or delete and recreate the instance."
+}
+
+# Retires the guards armed at initialisation, in an order where no signal in
+# between can clear a datadir that now carries a usable master user.
+mark_bootstrap_complete() {
+    _bootstrapped=1
+    rm -f "${BOOTSTRAP_SENTINEL}" ||
+        fail "the master user exists but ${BOOTSTRAP_SENTINEL} could not be removed; the next boot will refuse to start until it is deleted"
+    trap - EXIT INT TERM HUP
+}
+
+# Drops the master password from the handoff once applied, so it is not left
+# readable for the life of the boot. The rest is tmpfs and goes at reboot.
+consume_secrets() {
+    [ -f "${ENV_FILE}" ] || return 0
+    _tmp="${ENV_FILE}.new"
+    install -m 0600 /dev/null "${_tmp}"
+    grep -v '^RDS_MASTER_PASSWORD=' "${ENV_FILE}" >> "${_tmp}" || true
+    mv -f "${_tmp}" "${ENV_FILE}"
+}
+
+load_handoff
+wait_for_listen_address
+require_data_volume
+require_engine_stamp
+
+if [ -d "${DATADIR}/mysql" ]; then
+    # The engine would start cleanly on such a datadir and pass every health
+    # probe with no master user to log in as. The sentinel says the bootstrap did
+    # not finish, not that the volume is empty, so nothing here clears it.
+    if [ -e "${BOOTSTRAP_SENTINEL}" ]; then
+        fail "datadir ${DATADIR} carries ${BOOTSTRAP_SENTINEL}: an earlier bootstrap was interrupted before the master user existed; recover the data volume out of band rather than starting the engine"
+    fi
+    require_bootstrap_receipt
+    log "datadir ${DATADIR} is already initialised — attaching"
+    install_runtime_config
+else
+    initialise_datadir
+    install_runtime_config
+    bootstrap_master
+fi
+
+consume_secrets
+log "bootstrap complete; handing off to the mariadb service"

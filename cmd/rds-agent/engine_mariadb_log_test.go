@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-const mariadbRDSInitScript = "../../scripts/images/rds-mariadb/rds-init"
+const mariadbRDSInitScript = "../../images/mkosi.profiles/rds-mariadb/rds-init"
 
 func writeEngineLog(t *testing.T, body string) string {
 	t.Helper()

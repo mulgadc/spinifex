@@ -1,0 +1,10 @@
+# This image's engine unit; rds-common's 60- file enables the four
+# engine-agnostic ones.
+#
+# postgresql.service and postgresql@.service are postgresql-common's cluster
+# wrapper, which this image does not use. Left to fallthrough they would come
+# up enabled and pg_ctlcluster would race the real server for the datadir.
+enable spinifex-postgresql.service
+
+disable postgresql.service
+disable postgresql@.service

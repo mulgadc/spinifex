@@ -1,0 +1,26 @@
+[Unit]
+Description=Spinifex RDS bootstrap handoff wait
+# The one piece of real logic in the OpenRC rds-agent runscript that was not
+# ordering or env plumbing. Type=notify on rds-agent cannot express it: the
+# agent does not sd_notify, and teaching it to would couple the binary to the
+# image. Wants=, not Requires=, so an agent that failed to start still gets its
+# log mirrored to the console below.
+After=rds-agent.service
+Wants=rds-agent.service
+Before=rds-datadir.service rds-init.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A delivered RDS_HANDOFF_DIR has to reach this wait too, or it polls a
+# different path than the agent writes.
+EnvironmentFile=-/etc/spinifex-rds/agent.env
+ExecStart=/usr/local/sbin/rds-bootstrap-wait
+# Above the helper's own poll bound, so the helper is always what decides the
+# timeout — it exits 0 and lets rds-init fail visibly.
+TimeoutStartSec=180
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

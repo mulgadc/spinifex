@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
@@ -10,14 +11,14 @@ import (
 )
 
 // InstanceRecordPrefix is the key prefix for the per-resource instance record
-// space. Nothing writes it yet; it exists so the accessors can be settled and
-// tested before the keys move onto it.
+// space. The stopped and terminated key spaces are mirrored onto it; the
+// node.<id> blob is not, and still holds a node's whole running set.
 //
-// It cannot collide with the three prefixes it will replace. Those separate
-// their prefix from the ID with ".", and a key beginning "i/" is neither
-// "instance." nor "node." nor "terminated." — List and DeletePrefix match on a
-// plain string prefix, not on NATS subject tokens, so the two spaces are
-// disjoint while they share a bucket.
+// It cannot collide with the three prefixes it replaces. Those separate their
+// prefix from the ID with ".", and a key beginning "i/" is neither "instance."
+// nor "node." nor "terminated." — List and DeletePrefix match on a plain
+// string prefix, not on NATS subject tokens, so the two spaces are disjoint
+// while they share a bucket.
 const InstanceRecordPrefix = "i/"
 
 // instanceRecordKey is the only place the prefix and the ID are joined, so a
@@ -150,6 +151,103 @@ func (m *JetStreamManager) ListTerminatedInstanceRecords() ([]*vm.InstanceRecord
 		return nil, errors.New("terminated instance KV bucket not initialized")
 	}
 	return listRecords(m.termRecords, InstanceRecordPrefix)
+}
+
+// mirrorRecord writes instance to the per-resource key space, after the write
+// it mirrors has already committed at the key it replaces.
+//
+// Reads prefer the per-resource key, so what they depend on is that a record
+// present there is never older than the one at the key it mirrors. A mirror
+// write that fails takes the new key with it, which restores that by making
+// the reader fall back — a degraded write, not a failed one, so it is logged
+// rather than returned. Only a failure to remove the stale mirror is returned:
+// that is the one outcome leaving a read able to serve a record older than the
+// one just committed.
+func mirrorRecord(store *kvstore.Store[vm.InstanceRecord], instanceID string, instance *vm.VM) error {
+	key := instanceRecordKey(instanceID)
+	err := store.Replace(context.Background(), key, instance.Record())
+	if err == nil {
+		return nil
+	}
+
+	if delErr := store.Delete(context.Background(), key); delErr != nil {
+		return fmt.Errorf("mirror %s failed and its stale record could not be removed: %w",
+			key, errors.Join(err, delErr))
+	}
+	slog.Error("Instance record mirror failed; reads fall back to the record it mirrors",
+		"key", key, "instanceId", instanceID, "err", err)
+	return nil
+}
+
+// loadPreferringRecord reads the per-resource key and falls back to the key it
+// replaces. Both are maintained during the transition, so an instance last
+// written by a node that predates the per-resource space is still found. A
+// decode failure at the new key is returned rather than fallen back on: it
+// means the conversion is wrong, and hiding it behind the old key is how that
+// reaches a cutover unnoticed.
+func loadPreferringRecord(records *kvstore.Store[vm.InstanceRecord], legacy *kvstore.Store[vm.VM], legacyKey, instanceID string) (*vm.VM, error) {
+	record, err := loadRecord(records, instanceRecordKey(instanceID))
+	if err != nil {
+		return nil, err
+	}
+	if record != nil {
+		return vm.VMFromRecord(record), nil
+	}
+
+	instance, _, err := legacy.Get(context.Background(), legacyKey)
+	if err != nil {
+		if errors.Is(err, kvstore.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return instance, nil
+}
+
+// listPreferringRecords merges the two key spaces, the per-resource key
+// winning. Neither is a superset of the other: the migration copies what
+// existed when it ran, and a node that predates the per-resource space still
+// writes only the old key, so a listing that read either alone would drop
+// instances.
+func listPreferringRecords(records *kvstore.Store[vm.InstanceRecord], legacy *kvstore.Store[vm.VM], legacyPrefix string) ([]*vm.VM, error) {
+	newer, err := listRecords(records, InstanceRecordPrefix)
+	if err != nil {
+		return nil, err
+	}
+	older, err := listRecords(legacy, legacyPrefix)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]*vm.VM, 0, len(newer)+len(older))
+	seen := make(map[string]struct{}, len(newer))
+	for _, record := range newer {
+		instance := vm.VMFromRecord(record)
+		seen[instance.ID] = struct{}{}
+		out = append(out, instance)
+	}
+	for _, instance := range older {
+		if _, mirrored := seen[instance.ID]; mirrored {
+			continue
+		}
+		out = append(out, instance)
+	}
+
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// deleteBothRecords removes an instance from both key spaces. Both deletes are
+// idempotent, so a retry repairs a partial failure; until then the instance is
+// still readable through whichever key survived, which is why the error is
+// returned rather than logged.
+func deleteBothRecords(records *kvstore.Store[vm.InstanceRecord], legacy *kvstore.Store[vm.VM], legacyKey, instanceID string) error {
+	if err := records.Delete(context.Background(), instanceRecordKey(instanceID)); err != nil {
+		return err
+	}
+	return legacy.Delete(context.Background(), legacyKey)
 }
 
 // loadRecord reads one record, reporting an absent key as nil rather than as an

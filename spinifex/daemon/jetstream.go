@@ -32,10 +32,11 @@ const (
 	// TerminatedInstancePrefix is the key prefix for terminated instances.
 	TerminatedInstancePrefix = "terminated."
 
-	// Schema versions for daemon KV buckets.
-	InstanceStateBucketVersion      = 1
+	// Schema versions for daemon KV buckets. The two instance buckets are at 2
+	// for the copy-forward onto i/<id>; see instance_records_migrate.go.
+	InstanceStateBucketVersion      = 2
 	ClusterStateBucketVersion       = 1
-	TerminatedInstanceBucketVersion = 1
+	TerminatedInstanceBucketVersion = 2
 )
 
 // KVSyncObserver receives best-effort KV sync outcomes from
@@ -574,6 +575,11 @@ func (m *JetStreamManager) UpdateReplicas(newReplicas int) error {
 // rather than silently overwriting it out of order. This is the substrate
 // callers that read-modify-write a stopped instance (e.g. tag/attribute
 // mutations) build on.
+//
+// The write lands at instance.<id> first and is then mirrored onto i/<id>.
+// That order is not arbitrary: a node that predates the per-resource key space
+// serialises its own writes against instance.<id>, so it stays the CAS anchor
+// until nothing is left that reads it.
 func (m *JetStreamManager) WriteStoppedInstance(instanceID string, instance *vm.VM) error {
 	if m.stopped == nil {
 		return errors.New("KV bucket not initialized")
@@ -585,37 +591,34 @@ func (m *JetStreamManager) WriteStoppedInstance(instanceID string, instance *vm.
 	if err := m.stopped.Replace(context.Background(), key, instance); err != nil {
 		return err
 	}
+	if err := mirrorRecord(m.records, instanceID, instance); err != nil {
+		return err
+	}
 
 	slog.Debug("Wrote stopped instance to JetStream KV", "key", key, "instanceId", instanceID)
 	return nil
 }
 
-// LoadStoppedInstance loads a stopped instance from the shared KV store.
-// Returns nil, nil if the key does not exist.
+// LoadStoppedInstance loads a stopped instance from the shared KV store,
+// preferring i/<id> and falling back to the key it replaces.
+// Returns nil, nil if neither key exists.
 func (m *JetStreamManager) LoadStoppedInstance(instanceID string) (*vm.VM, error) {
 	if m.stopped == nil {
 		return nil, errors.New("KV bucket not initialized")
 	}
-
-	instance, _, err := m.stopped.Get(context.Background(), StoppedInstancePrefix+instanceID)
-	if err != nil {
-		if errors.Is(err, kvstore.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return instance, nil
+	return loadPreferringRecord(m.records, m.stopped, StoppedInstancePrefix+instanceID, instanceID)
 }
 
-// DeleteStoppedInstance removes a stopped instance from the shared KV store.
-// It is idempotent — deleting a non-existent key is not an error.
+// DeleteStoppedInstance removes a stopped instance from both key spaces in the
+// shared KV store. It is idempotent — deleting a non-existent key is not an
+// error.
 func (m *JetStreamManager) DeleteStoppedInstance(instanceID string) error {
 	if m.stopped == nil {
 		return errors.New("KV bucket not initialized")
 	}
 
 	key := StoppedInstancePrefix + instanceID
-	if err := m.stopped.Delete(context.Background(), key); err != nil {
+	if err := deleteBothRecords(m.records, m.stopped, key, instanceID); err != nil {
 		return err
 	}
 
@@ -632,9 +635,20 @@ func (m *JetStreamManager) DeleteStoppedInstance(instanceID string) error {
 // racing a forwarded call, two nodes racing the same forwarded call, or a
 // retry after the instance was already claimed) gets vm.ErrStoppedInstanceClaimed
 // instead of a VM and must not proceed to allocate resources or launch qemu.
+//
+// The claim cannot be dual-homed onto i/<id>: exclusivity here is one atomic
+// delete, and two of them are two winners. It stays on the key a node that
+// predates the per-resource space also claims, and the mirror is cleared
+// first — a win can then never leave the instance readable at i/<id> as though
+// it were still claimable, and a loss costs only a mirror the next write
+// restores.
 func (m *JetStreamManager) ClaimStoppedInstance(instanceID string) (*vm.VM, error) {
 	if m.stopped == nil {
 		return nil, errors.New("KV bucket not initialized")
+	}
+
+	if err := m.records.Delete(context.Background(), instanceRecordKey(instanceID)); err != nil {
+		return nil, err
 	}
 
 	key := StoppedInstancePrefix + instanceID
@@ -658,11 +672,23 @@ func (m *JetStreamManager) ClaimStoppedInstance(instanceID string) (*vm.VM, erro
 // resurrecting it. Used by tag/attribute mutations that read-modify-write a
 // stopped instance so they cannot race a claim into recreating a stale
 // record. Returns jetstream.ErrKeyNotFound if no record exists.
+//
+// The mutation is applied to instance.<id> and the committed result mirrored
+// onto i/<id>, rather than each key being mutated in turn: one CAS anchor and
+// a copy of what it committed cannot diverge, two CAS loops over two keys can.
 func (m *JetStreamManager) UpdateStoppedInstance(instanceID string, mutate func(*vm.VM)) (*vm.VM, error) {
 	if m.stopped == nil {
 		return nil, errors.New("KV bucket not initialized")
 	}
-	return mutateRecord(m.stopped, StoppedInstancePrefix+instanceID, mutate)
+
+	updated, err := mutateRecord(m.stopped, StoppedInstancePrefix+instanceID, mutate)
+	if err != nil {
+		return nil, err
+	}
+	if err := mirrorRecord(m.records, instanceID, updated); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 // mutateRecord applies mutate under the store's CAS loop and returns the
@@ -681,12 +707,14 @@ func mutateRecord[T any](store *kvstore.Store[T], key string, mutate func(*T)) (
 	return updated, nil
 }
 
-// ListStoppedInstances returns all stopped instances from the shared KV store.
+// ListStoppedInstances returns all stopped instances from the shared KV store,
+// merging both key spaces so an instance last written by a node that predates
+// i/<id> is still listed.
 func (m *JetStreamManager) ListStoppedInstances() ([]*vm.VM, error) {
 	if m.stopped == nil {
 		return nil, errors.New("KV bucket not initialized")
 	}
-	return listRecords(m.stopped, StoppedInstancePrefix)
+	return listPreferringRecords(m.records, m.stopped, StoppedInstancePrefix)
 }
 
 // listRecords returns every record under prefix. Unlike the raw scan it
@@ -725,6 +753,9 @@ func (m *JetStreamManager) WriteTerminatedInstance(instanceID string, instance *
 	if err := m.term.Replace(context.Background(), key, instance); err != nil {
 		return err
 	}
+	if err := mirrorRecord(m.termRecords, instanceID, instance); err != nil {
+		return err
+	}
 
 	slog.Debug("Wrote terminated instance to JetStream KV", "key", key, "instanceId", instanceID)
 	return nil
@@ -740,25 +771,35 @@ func (m *JetStreamManager) UpdateTerminatedInstance(instanceID string, mutate fu
 	if m.term == nil {
 		return nil, errors.New("terminated instance KV bucket not initialized")
 	}
-	return mutateRecord(m.term, TerminatedInstancePrefix+instanceID, mutate)
+
+	updated, err := mutateRecord(m.term, TerminatedInstancePrefix+instanceID, mutate)
+	if err != nil {
+		return nil, err
+	}
+	if err := mirrorRecord(m.termRecords, instanceID, updated); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
-// ListTerminatedInstances returns all terminated instances from the terminated KV bucket.
+// ListTerminatedInstances returns all terminated instances from the terminated
+// KV bucket, merging both key spaces.
 func (m *JetStreamManager) ListTerminatedInstances() ([]*vm.VM, error) {
 	if m.term == nil {
 		return nil, errors.New("terminated instance KV bucket not initialized")
 	}
-	return listRecords(m.term, TerminatedInstancePrefix)
+	return listPreferringRecords(m.termRecords, m.term, TerminatedInstancePrefix)
 }
 
-// DeleteTerminatedInstance removes a terminated instance from the terminated KV bucket.
+// DeleteTerminatedInstance removes a terminated instance from both key spaces
+// in the terminated KV bucket.
 func (m *JetStreamManager) DeleteTerminatedInstance(instanceID string) error {
 	if m.term == nil {
 		return errors.New("terminated instance KV bucket not initialized")
 	}
 
 	key := TerminatedInstancePrefix + instanceID
-	if err := m.term.Delete(context.Background(), key); err != nil {
+	if err := deleteBothRecords(m.termRecords, m.term, key, instanceID); err != nil {
 		return err
 	}
 
@@ -766,19 +807,12 @@ func (m *JetStreamManager) DeleteTerminatedInstance(instanceID string) error {
 	return nil
 }
 
-// LoadTerminatedInstance loads a single terminated instance from the terminated KV bucket.
-// Returns nil, nil if the key does not exist.
+// LoadTerminatedInstance loads a single terminated instance from the terminated
+// KV bucket, preferring i/<id> and falling back to the key it replaces.
+// Returns nil, nil if neither key exists.
 func (m *JetStreamManager) LoadTerminatedInstance(instanceID string) (*vm.VM, error) {
 	if m.term == nil {
 		return nil, errors.New("terminated instance KV bucket not initialized")
 	}
-
-	instance, _, err := m.term.Get(context.Background(), TerminatedInstancePrefix+instanceID)
-	if err != nil {
-		if errors.Is(err, kvstore.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return instance, nil
+	return loadPreferringRecord(m.termRecords, m.term, TerminatedInstancePrefix+instanceID, instanceID)
 }

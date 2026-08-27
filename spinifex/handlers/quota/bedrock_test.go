@@ -133,26 +133,27 @@ func TestCheckBedrockRPM_ThrottlesAfterCapacityExhausted(t *testing.T) {
 // refill behaviour is deterministic rather than sleep-based.
 func TestTokenBucket_RefillsOverTime(t *testing.T) {
 	now := time.Now()
-	clock := func() time.Time { return now }
-	b := newTokenBucket(60, clock) // 60/min == 1/sec
+	l := newRPMLimiter()
+	l.now = func() time.Time { return now }
+	const capacity = 60 // 60/min == 1/sec
 
 	// Drain the bucket.
-	for range 60 {
-		require.True(t, b.Allow())
+	for range capacity {
+		require.True(t, l.allow(testAccount, capacity))
 	}
-	assert.False(t, b.Allow(), "bucket must be empty immediately after draining")
+	assert.False(t, l.allow(testAccount, capacity), "bucket must be empty immediately after draining")
 
 	// Advance 5 seconds: 5 tokens should have refilled.
 	now = now.Add(5 * time.Second)
 	for i := range 5 {
-		assert.Truef(t, b.Allow(), "refilled token %d", i)
+		assert.Truef(t, l.allow(testAccount, capacity), "refilled token %d", i)
 	}
-	assert.False(t, b.Allow(), "no more than the refilled amount is available")
+	assert.False(t, l.allow(testAccount, capacity), "no more than the refilled amount is available")
 
 	// Advance well past capacity: refill caps at capacity, it never
 	// overflows from an idle account banking unlimited tokens.
 	now = now.Add(10 * time.Minute)
-	assert.Equal(t, 60, b.remaining())
+	assert.Equal(t, capacity, l.snapshot()[testAccount])
 }
 
 // TestRPMLimiter_PerAccountIsolation covers that one account's bucket never

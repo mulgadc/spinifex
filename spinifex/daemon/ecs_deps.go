@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
@@ -35,9 +36,9 @@ func (d *Daemon) buildECSServiceDeps() handlers_ecs.Deps {
 	// find-or-create the ecsInstanceRole instance profile container instances
 	// expose over IMDS. Only wired when the master key is present; without it
 	// capacity provisioning is disabled.
-	masterKey, err := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+	masterKey, err := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 	if err != nil || masterKey == nil {
-		slog.Warn("ECS: LoadMasterKey failed; capacity provisioning disabled until the master key is provisioned",
+		slog.Warn("ECS: master key read failed; capacity provisioning disabled until the master key is provisioned",
 			"err", err)
 		return deps
 	}

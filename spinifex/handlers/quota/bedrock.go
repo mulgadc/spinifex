@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
+	"golang.org/x/time/rate"
 )
 
 // BedrockUsageReader resolves accountID's current-period Bedrock token usage
@@ -74,104 +75,54 @@ func (s *Service) CheckBedrockRPM(accountID string) error {
 	return nil
 }
 
-// tokenBucket is a classic token-bucket rate limiter: capacity tokens
-// refilled continuously at capacity/60 per second, consumed one at a time.
-// Refill is lazy — computed from elapsed wall-clock time on each Allow call —
-// so no background goroutine is required per account.
-type tokenBucket struct {
-	mu         sync.Mutex
-	tokens     float64
-	capacity   float64
-	refillRate float64 // tokens per second
-	last       time.Time
-	now        func() time.Time
-}
-
 // newTokenBucket constructs a full bucket (a fresh account starts able to
 // burst its whole per-minute allowance, not throttled from zero) at
-// capacityPerMinute, using now for its clock — overridable in tests, nil
-// defaults to time.Now.
-func newTokenBucket(capacityPerMinute int, now func() time.Time) *tokenBucket {
-	if now == nil {
-		now = time.Now
-	}
-	capacity := float64(max(capacityPerMinute, 0))
-	return &tokenBucket{
-		tokens:     capacity,
-		capacity:   capacity,
-		refillRate: capacity / 60,
-		last:       now(),
-		now:        now,
-	}
+// capacityPerMinute, refilling continuously at capacity/60 per second.
+func newTokenBucket(capacityPerMinute int) *rate.Limiter {
+	capacity := max(capacityPerMinute, 0)
+	return rate.NewLimiter(rate.Limit(float64(capacity)/60), capacity)
 }
 
-// Allow refills for elapsed time since the last call, then attempts to
-// consume one token. Returns false (throttle) when the bucket is empty.
-func (b *tokenBucket) Allow() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.refillLocked()
-	if b.tokens < 1 {
-		return false
-	}
-	b.tokens--
-	return true
-}
-
-// remaining reports the bucket's current occupancy (refilled up to now)
-// without consuming a token, for the periodic KV sync's observability
-// snapshot.
-func (b *tokenBucket) remaining() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.refillLocked()
-	return int(b.tokens)
-}
-
-// refillLocked adds tokens for the time elapsed since last, capped at
-// capacity. Caller must hold mu.
-func (b *tokenBucket) refillLocked() {
-	current := b.now()
-	elapsed := current.Sub(b.last).Seconds()
-	if elapsed <= 0 {
-		return
-	}
-	b.tokens = min(b.capacity, b.tokens+elapsed*b.refillRate)
-	b.last = current
-}
-
-// rpmLimiter holds one tokenBucket per account, created lazily on first use
-// at the configured per-minute capacity. Buckets are never evicted: an idle
-// account costs one small map entry, never unbounded growth, and a restart
-// resets every bucket to full — acceptable since RPM enforcement is already
+// rpmLimiter holds one bucket per account, created lazily on first use at the
+// configured per-minute capacity. Buckets are never evicted: an idle account
+// costs one small map entry, never unbounded growth, and a restart resets
+// every bucket to full — acceptable since RPM enforcement is already
 // documented as generous, not exact.
 type rpmLimiter struct {
 	mu      sync.Mutex
-	buckets map[string]*tokenBucket
-	// now overrides tokenBucket's clock for every bucket this limiter
-	// creates; nil (the production default) leaves each bucket on time.Now.
+	buckets map[string]*rate.Limiter
+	// now overrides the clock every bucket is measured against; nil (the
+	// production default) means time.Now.
 	now func() time.Time
 }
 
 func newRPMLimiter() *rpmLimiter {
-	return &rpmLimiter{buckets: make(map[string]*tokenBucket)}
+	return &rpmLimiter{buckets: make(map[string]*rate.Limiter)}
+}
+
+// clock returns the limiter's current time, honouring a test override.
+func (l *rpmLimiter) clock() time.Time {
+	if l.now == nil {
+		return time.Now()
+	}
+	return l.now()
 }
 
 // allow returns whether accountID may proceed under capacityPerMinute,
 // creating its bucket on first use.
 func (l *rpmLimiter) allow(accountID string, capacityPerMinute int) bool {
-	return l.bucketFor(accountID, capacityPerMinute).Allow()
+	return l.bucketFor(accountID, capacityPerMinute).AllowN(l.clock(), 1)
 }
 
 // bucketFor returns accountID's bucket, creating it at capacityPerMinute on
 // first use. Capacity is fixed at creation: RPM limits are process-lifetime
 // config (loaded once at gateway startup), not hot-reloaded.
-func (l *rpmLimiter) bucketFor(accountID string, capacityPerMinute int) *tokenBucket {
+func (l *rpmLimiter) bucketFor(accountID string, capacityPerMinute int) *rate.Limiter {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	b, ok := l.buckets[accountID]
 	if !ok {
-		b = newTokenBucket(capacityPerMinute, l.now)
+		b = newTokenBucket(capacityPerMinute)
 		l.buckets[accountID] = b
 	}
 	return b
@@ -180,11 +131,12 @@ func (l *rpmLimiter) bucketFor(accountID string, capacityPerMinute int) *tokenBu
 // snapshot returns every known account's current bucket occupancy, for the
 // periodic KV sync below.
 func (l *rpmLimiter) snapshot() map[string]int {
+	now := l.clock()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	out := make(map[string]int, len(l.buckets))
 	for accountID, b := range l.buckets {
-		out[accountID] = b.remaining()
+		out[accountID] = int(b.TokensAt(now))
 	}
 	return out
 }

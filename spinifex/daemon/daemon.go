@@ -28,6 +28,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/go-chi/chi/v5"
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -1737,7 +1738,7 @@ func (d *Daemon) startCluster() error {
 	// safe degraded mode for certificate private keys, so a missing key must
 	// fail daemon startup rather than leave HTTPS listeners uncreatable.
 	d.elbv2Service, err = initServiceWithRetry("ELBv2 service", func() (*handlers_elbv2.ELBv2ServiceImpl, error) {
-		masterKey, mkErr := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+		masterKey, mkErr := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 		if mkErr != nil {
 			return nil, fmt.Errorf("load ELBv2 master key: %w", mkErr)
 		}
@@ -1872,7 +1873,7 @@ func (d *Daemon) startCluster() error {
 	// concurrent boot — but a master key that never arrives fails startCluster
 	// after the retry window instead of leaving acmService permanently nil.
 	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {
-		masterKey, mkErr := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+		masterKey, mkErr := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 		if mkErr != nil {
 			return nil, fmt.Errorf("load ACM master key: %w", mkErr)
 		}

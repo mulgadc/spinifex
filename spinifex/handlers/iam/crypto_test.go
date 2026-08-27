@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 )
 
 func TestGenerateMasterKey(t *testing.T) {
@@ -26,7 +28,7 @@ func TestGenerateMasterKey(t *testing.T) {
 	}
 }
 
-func TestSaveLoadMasterKey(t *testing.T) {
+func TestSaveAndReadMasterKey(t *testing.T) {
 	key, err := GenerateMasterKey()
 	if err != nil {
 		t.Fatalf("GenerateMasterKey() error: %v", err)
@@ -48,16 +50,16 @@ func TestSaveLoadMasterKey(t *testing.T) {
 		t.Fatalf("expected permissions 0600, got %04o", perm)
 	}
 
-	loaded, err := LoadMasterKey(path)
+	loaded, err := masterkey.ReadShared(path)
 	if err != nil {
-		t.Fatalf("LoadMasterKey() error: %v", err)
+		t.Fatalf("masterkey.ReadShared() error: %v", err)
 	}
 	if string(loaded) != string(key) {
 		t.Fatal("loaded key does not match saved key")
 	}
 }
 
-func TestLoadMasterKeyWrongSize(t *testing.T) {
+func TestReadMasterKeyWrongSize(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.key")
 
@@ -65,16 +67,16 @@ func TestLoadMasterKeyWrongSize(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadMasterKey(path)
+	_, err := masterkey.ReadShared(path)
 	if err == nil {
-		t.Fatal("LoadMasterKey() should fail for wrong-size key")
+		t.Fatal("masterkey.ReadShared() should fail for wrong-size key")
 	}
 }
 
-func TestLoadMasterKeyNotFound(t *testing.T) {
-	_, err := LoadMasterKey("/nonexistent/master.key")
+func TestReadMasterKeyNotFound(t *testing.T) {
+	_, err := masterkey.ReadShared("/nonexistent/master.key")
 	if err == nil {
-		t.Fatal("LoadMasterKey() should fail for missing file")
+		t.Fatal("masterkey.ReadShared() should fail for missing file")
 	}
 }
 

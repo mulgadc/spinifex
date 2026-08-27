@@ -222,7 +222,12 @@ func (s *ImageServiceImpl) describeImages(ctx context.Context, input *ec2.Descri
 			State:              aws.String(amiImageState(amiMeta.State)),
 			ImageType:          aws.String("machine"),
 			Hypervisor:         aws.String("xen"),
-			BootMode:           aws.String(amiMeta.BootMode),
+		}
+
+		// RegisterImage takes BootMode as an optional input, so an AMI can
+		// record none. The enum has no empty member: omit it, don't emit "".
+		if amiMeta.BootMode != "" {
+			image.BootMode = aws.String(amiMeta.BootMode)
 		}
 
 		if bdms := synthesizeRootBlockDeviceMapping(amiMeta, encryptedAtRest); bdms != nil {

@@ -7,7 +7,7 @@ Implemented means a modelled operation is registered to a real handler. Stub and
 | Service | API version | Modelled | Registered | Implemented | Stubbed | Unsupported | Missing | Extra |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | acm | 2015-12-08 | 15 | 9 | 9 | 0 | 0 | 6 | 0 |
-| ec2 | 2016-11-15 | 625 | 119 | 119 | 0 | 0 | 506 | 0 |
+| ec2 | 2016-11-15 | 625 | 121 | 121 | 0 | 0 | 504 | 0 |
 | ecr | 2015-09-21 | 47 | 39 | 19 | 13 | 7 | 11 | 3 |
 | ecs | 2014-11-13 | 56 | 39 | 31 | 5 | 0 | 20 | 3 |
 | elasticloadbalancingv2 | 2015-12-01 | 46 | 37 | 33 | 0 | 0 | 13 | 4 |
@@ -56,9 +56,9 @@ None.
 
 ## ec2
 
-Implements **119 of 625** modelled operations (19.0%).
+Implements **121 of 625** modelled operations (19.4%).
 
-<details><summary>Implemented (119)</summary>
+<details><summary>Implemented (121)</summary>
 
 `AllocateAddress`, `AssociateAddress`, `AssociateIamInstanceProfile`, `AssociateRouteTable`, `AttachInternetGateway`, `AttachNetworkInterface`, `AttachVolume`, `AuthorizeSecurityGroupEgress`
 
@@ -86,14 +86,16 @@ Implements **119 of 625** modelled operations (19.0%).
 
 `ImportKeyPair`, `ModifyImageAttribute`, `ModifyInstanceAttribute`, `ModifyInstanceMetadataOptions`, `ModifyLaunchTemplate`, `ModifyNetworkInterfaceAttribute`, `ModifySubnetAttribute`, `ModifyVolume`
 
-`ModifyVpcAttribute`, `RebootInstances`, `RegisterImage`, `ReleaseAddress`, `ReplaceIamInstanceProfileAssociation`, `ReplaceRoute`, `ReplaceRouteTableAssociation`, `RequestSpotInstances`
+`ModifyVpcAttribute`, `MonitorInstances`, `RebootInstances`, `RegisterImage`, `ReleaseAddress`, `ReplaceIamInstanceProfileAssociation`, `ReplaceRoute`, `ReplaceRouteTableAssociation`
 
-`ResetImageAttribute`, `RevokeSecurityGroupEgress`, `RevokeSecurityGroupIngress`, `RunInstances`, `StartInstances`, `StopInstances`, `TerminateInstances`
+`RequestSpotInstances`, `ResetImageAttribute`, `RevokeSecurityGroupEgress`, `RevokeSecurityGroupIngress`, `RunInstances`, `StartInstances`, `StopInstances`, `TerminateInstances`
+
+`UnmonitorInstances`
 
 
 </details>
 
-<details><summary>Missing from dispatch (506)</summary>
+<details><summary>Missing from dispatch (504)</summary>
 
 `AcceptAddressTransfer`, `AcceptReservedInstancesExchangeQuote`, `AcceptTransitGatewayMulticastDomainAssociations`, `AcceptTransitGatewayPeeringAttachment`, `AcceptTransitGatewayVpcAttachment`, `AcceptVpcEndpointConnections`, `AcceptVpcPeeringConnection`, `AdvertiseByoipCidr`
 
@@ -207,21 +209,19 @@ Implements **119 of 625** modelled operations (19.0%).
 
 `ModifyVpcEndpointConnectionNotification`, `ModifyVpcEndpointServiceConfiguration`, `ModifyVpcEndpointServicePayerResponsibility`, `ModifyVpcEndpointServicePermissions`, `ModifyVpcPeeringConnectionOptions`, `ModifyVpcTenancy`, `ModifyVpnConnection`, `ModifyVpnConnectionOptions`
 
-`ModifyVpnTunnelCertificate`, `ModifyVpnTunnelOptions`, `MonitorInstances`, `MoveAddressToVpc`, `MoveByoipCidrToIpam`, `ProvisionByoipCidr`, `ProvisionIpamByoasn`, `ProvisionIpamPoolCidr`
+`ModifyVpnTunnelCertificate`, `ModifyVpnTunnelOptions`, `MoveAddressToVpc`, `MoveByoipCidrToIpam`, `ProvisionByoipCidr`, `ProvisionIpamByoasn`, `ProvisionIpamPoolCidr`, `ProvisionPublicIpv4PoolCidr`
 
-`ProvisionPublicIpv4PoolCidr`, `PurchaseCapacityBlock`, `PurchaseHostReservation`, `PurchaseReservedInstancesOffering`, `PurchaseScheduledInstances`, `RegisterInstanceEventNotificationAttributes`, `RegisterTransitGatewayMulticastGroupMembers`, `RegisterTransitGatewayMulticastGroupSources`
+`PurchaseCapacityBlock`, `PurchaseHostReservation`, `PurchaseReservedInstancesOffering`, `PurchaseScheduledInstances`, `RegisterInstanceEventNotificationAttributes`, `RegisterTransitGatewayMulticastGroupMembers`, `RegisterTransitGatewayMulticastGroupSources`, `RejectTransitGatewayMulticastDomainAssociations`
 
-`RejectTransitGatewayMulticastDomainAssociations`, `RejectTransitGatewayPeeringAttachment`, `RejectTransitGatewayVpcAttachment`, `RejectVpcEndpointConnections`, `RejectVpcPeeringConnection`, `ReleaseHosts`, `ReleaseIpamPoolAllocation`, `ReplaceNetworkAclAssociation`
+`RejectTransitGatewayPeeringAttachment`, `RejectTransitGatewayVpcAttachment`, `RejectVpcEndpointConnections`, `RejectVpcPeeringConnection`, `ReleaseHosts`, `ReleaseIpamPoolAllocation`, `ReplaceNetworkAclAssociation`, `ReplaceNetworkAclEntry`
 
-`ReplaceNetworkAclEntry`, `ReplaceTransitGatewayRoute`, `ReplaceVpnTunnel`, `ReportInstanceStatus`, `RequestSpotFleet`, `ResetAddressAttribute`, `ResetEbsDefaultKmsKeyId`, `ResetFpgaImageAttribute`
+`ReplaceTransitGatewayRoute`, `ReplaceVpnTunnel`, `ReportInstanceStatus`, `RequestSpotFleet`, `ResetAddressAttribute`, `ResetEbsDefaultKmsKeyId`, `ResetFpgaImageAttribute`, `ResetInstanceAttribute`
 
-`ResetInstanceAttribute`, `ResetNetworkInterfaceAttribute`, `ResetSnapshotAttribute`, `RestoreAddressToClassic`, `RestoreImageFromRecycleBin`, `RestoreManagedPrefixListVersion`, `RestoreSnapshotFromRecycleBin`, `RestoreSnapshotTier`
+`ResetNetworkInterfaceAttribute`, `ResetSnapshotAttribute`, `RestoreAddressToClassic`, `RestoreImageFromRecycleBin`, `RestoreManagedPrefixListVersion`, `RestoreSnapshotFromRecycleBin`, `RestoreSnapshotTier`, `RevokeClientVpnIngress`
 
-`RevokeClientVpnIngress`, `RunScheduledInstances`, `SearchLocalGatewayRoutes`, `SearchTransitGatewayMulticastGroups`, `SearchTransitGatewayRoutes`, `SendDiagnosticInterrupt`, `StartNetworkInsightsAccessScopeAnalysis`, `StartNetworkInsightsAnalysis`
+`RunScheduledInstances`, `SearchLocalGatewayRoutes`, `SearchTransitGatewayMulticastGroups`, `SearchTransitGatewayRoutes`, `SendDiagnosticInterrupt`, `StartNetworkInsightsAccessScopeAnalysis`, `StartNetworkInsightsAnalysis`, `StartVpcEndpointServicePrivateDnsVerification`
 
-`StartVpcEndpointServicePrivateDnsVerification`, `TerminateClientVpnConnections`, `UnassignIpv6Addresses`, `UnassignPrivateIpAddresses`, `UnassignPrivateNatGatewayAddress`, `UnlockSnapshot`, `UnmonitorInstances`, `UpdateSecurityGroupRuleDescriptionsEgress`
-
-`UpdateSecurityGroupRuleDescriptionsIngress`, `WithdrawByoipCidr`
+`TerminateClientVpnConnections`, `UnassignIpv6Addresses`, `UnassignPrivateIpAddresses`, `UnassignPrivateNatGatewayAddress`, `UnlockSnapshot`, `UpdateSecurityGroupRuleDescriptionsEgress`, `UpdateSecurityGroupRuleDescriptionsIngress`, `WithdrawByoipCidr`
 
 
 </details>

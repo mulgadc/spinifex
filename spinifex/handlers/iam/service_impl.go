@@ -579,7 +579,9 @@ func (s *IAMServiceImpl) ListAccessKeys(accountID string, input *iam.ListAccessK
 		return nil, err
 	}
 
-	var metadata []*iam.AccessKeyMetadata
+	// Non-nil: AccessKeyMetadata is a required member, and a nil slice marshals
+	// to no element at all rather than an empty one.
+	metadata := []*iam.AccessKeyMetadata{}
 	for _, keyID := range user.AccessKeys {
 		entry, err := s.accessKeysBucket.Get(ctx, keyID)
 		if err != nil {

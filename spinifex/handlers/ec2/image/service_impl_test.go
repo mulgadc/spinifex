@@ -185,7 +185,8 @@ func TestDescribeImages_AfterCreate(t *testing.T) {
 }
 
 // TestDescribeImages_BootModeProjection asserts that AMIMetadata.BootMode round-trips
-// through DescribeImages; empty BootMode on legacy AMIs must pass through unchanged.
+// through DescribeImages. RegisterImage takes BootMode as an optional input, so an
+// AMI recording none must omit the member: "" is not one of the enum's values.
 func TestDescribeImages_BootModeProjection(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
@@ -224,8 +225,8 @@ func TestDescribeImages_BootModeProjection(t *testing.T) {
 	require.Contains(t, byID, "ami-uefi001")
 	require.Contains(t, byID, "ami-legacy001")
 	assert.Equal(t, "uefi", aws.StringValue(byID["ami-uefi001"].BootMode))
-	assert.Empty(t, aws.StringValue(byID["ami-legacy001"].BootMode),
-		"legacy AMIs (empty BootMode) must pass through as empty, not be backfilled")
+	assert.Nil(t, byID["ami-legacy001"].BootMode,
+		`an AMI with no BootMode must omit the member, not be backfilled and not emit "": BootMode is an enum of [legacy-bios, uefi, uefi-preferred]`)
 }
 
 // TestDescribeImages_StateProjection asserts that AMIMetadata.State drives the

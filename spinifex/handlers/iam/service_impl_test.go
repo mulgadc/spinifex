@@ -458,6 +458,7 @@ func TestDeleteAccessKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, listOut.AccessKeyMetadata)
+	assert.NotNil(t, listOut.AccessKeyMetadata, emptyRequiredListMsg("ListAccessKeys", "AccessKeyMetadata"))
 
 	// User should now be deletable (no access keys)
 	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{

@@ -1,8 +1,9 @@
-package ebsprovider
+package ebsprovider_test
 
 import (
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -15,19 +16,19 @@ func TestPageSizeClamp(t *testing.T) {
 		maxResults int32
 		want       int32
 	}{
-		{"above the cap is clamped", MaxListResults * 10, MaxListResults},
-		{"one above the cap is clamped", MaxListResults + 1, MaxListResults},
-		{"at the cap is honoured", MaxListResults, MaxListResults},
-		{"below the cap is honoured", MaxListResults - 1, MaxListResults - 1},
+		{"above the cap is clamped", ebsprovider.MaxListResults * 10, ebsprovider.MaxListResults},
+		{"one above the cap is clamped", ebsprovider.MaxListResults + 1, ebsprovider.MaxListResults},
+		{"at the cap is honoured", ebsprovider.MaxListResults, ebsprovider.MaxListResults},
+		{"below the cap is honoured", ebsprovider.MaxListResults - 1, ebsprovider.MaxListResults - 1},
 		{"one is honoured", 1, 1},
-		{"zero means no preference", 0, MaxListResults},
-		{"negative means no preference", -1, MaxListResults},
+		{"zero means no preference", 0, ebsprovider.MaxListResults},
+		{"negative means no preference", -1, ebsprovider.MaxListResults},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equalf(t, tt.want, ListVolumesRequest{MaxResults: tt.maxResults}.PageSize(),
+			assert.Equalf(t, tt.want, ebsprovider.ListVolumesRequest{MaxResults: tt.maxResults}.PageSize(),
 				"ListVolumes MaxResults=%d must page at %d; an unclamped page overflows one NATS message", tt.maxResults, tt.want)
-			assert.Equalf(t, tt.want, ListSnapshotsRequest{MaxResults: tt.maxResults}.PageSize(),
+			assert.Equalf(t, tt.want, ebsprovider.ListSnapshotsRequest{MaxResults: tt.maxResults}.PageSize(),
 				"ListSnapshots MaxResults=%d must page at %d; an unclamped page overflows one NATS message", tt.maxResults, tt.want)
 		})
 	}

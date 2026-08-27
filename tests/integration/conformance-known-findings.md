@@ -9,23 +9,6 @@ make test-integration
 ```
 
 Use `AWS_MODEL_CONFORMANCE_MODE=warn` only for investigation. The report is written to `.cache/aws-model-conformance-report.txt` by default.
-
-## Promoted services
-
-- `sts` — promoted on 2026-08-05 after the integration baseline completed with no STS violations or decoder errors.
-
-## Triaged warnings
-
-Baseline from 2026-08-05: 370 successful responses checked, three violations, zero decoder errors.
-
-| Service / operation | Finding | Classification | Implementation cause |
-|---|---|---|---|
-| EC2 `DescribeImages` | `BootMode` is emitted as `""`, outside the model enum | Defect | Legacy AMI metadata is intentionally projected through `aws.String(amiMeta.BootMode)`, which emits an empty element instead of omitting the optional member. |
-| IAM `ListAccessKeys` | Required `AccessKeyMetadata` missing | Defect | The empty result starts as a nil slice, so Query XML serialization omits the required list container. |
-| IAM `ListGroups` | Required `Groups` missing | Defect | When the KV bucket has keys but none match the account, the result slice remains nil and Query XML serialization omits the required list container. |
-
-These warnings are not suppressed by a finding allowlist. They remain visible on every run. Handler changes belong in focused follow-up work; once a service's warnings are resolved, add that service to the promoted-services file in the same change that proves its full integration baseline is clean.
-
 ## Error-code coverage
 
 Phase 4 validates IAM, STS, ECS, and ELBv2 error envelopes against their service models. The 2026-08-05 full integration baseline checked 46 operation-declared errors (45 IAM, one STS) with no error-code violations. ECS and ELBv2 decoding/model comparison have focused tests but their error paths are not exercised by the current integration suite, so neither service is ready for promotion on that evidence.

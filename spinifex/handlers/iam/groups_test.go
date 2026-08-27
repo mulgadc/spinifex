@@ -12,6 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// emptyRequiredListMsg explains why a required list member must be empty and
+// non-nil: xmlutil drops a nil slice entirely, so the wire response loses a
+// member the AWS model marks required and clients decode as absent.
+func emptyRequiredListMsg(operation, member string) string {
+	return operation + " must return an empty non-nil " + member +
+		"; a nil slice marshals to no element at all, and " + member + " is a required member"
+}
+
 func createTestGroup(t *testing.T, svc *IAMServiceImpl, name string) *iam.Group {
 	t.Helper()
 	out, err := svc.CreateGroup(testAccountID, &iam.CreateGroupInput{
@@ -152,6 +160,21 @@ func TestListGroups_Empty(t *testing.T) {
 	out, err := svc.ListGroups(testAccountID, &iam.ListGroupsInput{})
 	require.NoError(t, err)
 	assert.Empty(t, out.Groups)
+	assert.NotNil(t, out.Groups, emptyRequiredListMsg("ListGroups", "Groups"))
+}
+
+// TestListGroups_EmptyAfterOtherAccountsExist walks the filtering path rather
+// than the no-keys-at-all shortcut: the bucket has keys, none of them ours.
+func TestListGroups_EmptyAfterOtherAccountsExist(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreateGroup("999988887777", &iam.CreateGroupInput{GroupName: aws.String("othergroup")})
+	require.NoError(t, err)
+
+	out, err := svc.ListGroups(testAccountID, &iam.ListGroupsInput{})
+	require.NoError(t, err)
+	assert.Empty(t, out.Groups)
+	assert.NotNil(t, out.Groups, emptyRequiredListMsg("ListGroups", "Groups"))
 }
 
 func TestListGroups_PathPrefix(t *testing.T) {

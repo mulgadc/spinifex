@@ -72,12 +72,9 @@ func TestInitLeaderBucket_Idempotent(t *testing.T) {
 func TestInitLeaderBucket_AttachesWithoutCreating(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 
-	_, err := InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
-
-	// Subscribe only after the bucket exists, so the first, legitimate create is
-	// not counted. The server drops advisories when nothing is listening, so the
-	// subscription has to be flushed before the call under test.
+	// Watch from before the first call. The server queues the API advisory after
+	// the reply the caller waits on, so subscribing once the bucket exists can
+	// still catch the create that first call legitimately made.
 	creates := make(chan string, 8)
 	sub, err := nc.Subscribe("$JS.EVENT.ADVISORY.API", func(m *nats.Msg) {
 		var adv struct {
@@ -91,6 +88,17 @@ func TestInitLeaderBucket_AttachesWithoutCreating(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 	require.NoError(t, nc.Flush())
+
+	_, err = InitLeaderBucket(t.Context(), js)
+	require.NoError(t, err)
+
+	// Take the first, legitimate create off the channel before the call under
+	// test, so anything left there afterwards can only have come from it.
+	select {
+	case <-creates:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first InitLeaderBucket must create the bucket")
+	}
 
 	_, err = InitLeaderBucket(t.Context(), js)
 	require.NoError(t, err)

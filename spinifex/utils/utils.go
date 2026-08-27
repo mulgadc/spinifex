@@ -22,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/private/protocol/xml/xmlutil"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/pterm/pterm"
 )
@@ -287,7 +288,7 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 	cl := resp.ContentLength
 
 	if cl > 0 {
-		total := SafeInt64ToUint64(cl)
+		total := safecast.Int64ToUint64(cl)
 		bar, update := NewByteProgressBar(fmt.Sprintf("Downloading %s", name), total)
 
 		// io.Copy writes ~32 KiB per TeeReader call, so gate rendering on
@@ -296,8 +297,8 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 		var current uint64
 		lastPct := -1
 		reader := io.TeeReader(resp.Body, progressWriter(func(n int) {
-			current += SafeIntToUint64(n)
-			pct := SafeUint64ToInt(current * 100 / total)
+			current += safecast.IntToUint64(n)
+			pct := safecast.Uint64ToInt(current * 100 / total)
 			if pct > lastPct {
 				lastPct = pct
 				update(current)
@@ -317,7 +318,7 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 		var written int64
 		reader := io.TeeReader(resp.Body, progressWriter(func(n int) {
 			written += int64(n)
-			spin.UpdateText(fmt.Sprintf("Downloading %s (%s) ...", name, HumanBytes(SafeInt64ToUint64(written))))
+			spin.UpdateText(fmt.Sprintf("Downloading %s (%s) ...", name, HumanBytes(safecast.Int64ToUint64(written))))
 		}))
 		_, err = io.Copy(f, reader)
 		_ = spin.Stop()
@@ -353,14 +354,14 @@ func NewByteProgressBar(title string, total uint64) (*pterm.ProgressbarPrinter, 
 	totalHuman := HumanBytes(total)
 	bar, _ := pterm.DefaultProgressbar.
 		WithTitle(title).
-		WithTotal(SafeUint64ToInt(total)).
+		WithTotal(safecast.Uint64ToInt(total)).
 		WithShowCount(false).       // hide raw ints; the size goes in the title
 		WithShowElapsedTime(false). // suppress the async re-render (see above)
 		Start()
 	bar.ShowElapsedTime = true // keep pterm's elapsed, rendered only by us
 
 	update := func(current uint64) {
-		bar.Current = SafeUint64ToInt(current) // drives fill + percentage
+		bar.Current = safecast.Uint64ToInt(current) // drives fill + percentage
 		// UpdateTitle performs the single render for this step.
 		bar.UpdateTitle(fmt.Sprintf("%s — %s / %s", title, HumanBytes(current), totalHuman))
 	}

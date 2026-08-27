@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
@@ -629,7 +630,7 @@ func registerWeightsSnapshot(store objectstore.ObjectStore, bucket, snapshotID, 
 		VolumeID:   volumeID,
 		// GiB, not bytes: CreateVolume compares this against a requested Size
 		// already in GiB, and would reject every clone if handed raw bytes.
-		VolumeSize:       utils.SafeUint64ToInt64(volumeSize / bytesPerGiB),
+		VolumeSize:       safecast.Uint64ToInt64(volumeSize / bytesPerGiB),
 		State:            "completed",
 		Progress:         "100%",
 		StartTime:        time.Now(),
@@ -779,7 +780,7 @@ func materializeWeightsVolume(ctx context.Context, provider ebsprovider.EBSProvi
 	if err := admin.ImportImage(ctx, provider, admin.ImportOpts{
 		VolumeID:         volumeId,
 		NodeID:           nodeID,
-		SizeBytes:        utils.SafeUint64ToInt64(volumeBytes),
+		SizeBytes:        safecast.Uint64ToInt64(volumeBytes),
 		AvailabilityZone: node.AZ,
 		SourcePath:       imagePath,
 		Snapshot:         true,

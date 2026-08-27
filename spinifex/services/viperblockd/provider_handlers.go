@@ -15,6 +15,7 @@ import (
 
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/nbd"
@@ -489,7 +490,7 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		return
 	}
 
-	vbconfig := buildProviderVBConfig(cfg, req.VolumeID, utils.SafeInt64ToUint64(req.CapacityRange.RequiredBytes), req.SourceSnapshotID, req.SourceSnapshotVolumeID)
+	vbconfig := buildProviderVBConfig(cfg, req.VolumeID, safecast.Int64ToUint64(req.CapacityRange.RequiredBytes), req.SourceSnapshotID, req.SourceSnapshotVolumeID)
 	s3cfg := cfg.volumeS3Config(req.VolumeID)
 	vb, err := viperblock.New(vbconfig, "s3", s3cfg)
 	if err != nil {
@@ -607,7 +608,7 @@ func describeVolumeEngine(ctx context.Context, cfg *Config, volumeID string) (*e
 	if mv, ok := findMountedVolume(cfg, volumeID); ok && mv.VB != nil {
 		return &ebsprovider.Volume{
 			ID:            volumeID,
-			CapacityBytes: utils.SafeUint64ToInt64(mv.VB.GetVolumeSize()),
+			CapacityBytes: safecast.Uint64ToInt64(mv.VB.GetVolumeSize()),
 			State:         ebsprovider.VolumeStateInUse,
 			Handle:        volumeHandle(volumeID),
 		}, nil
@@ -619,7 +620,7 @@ func describeVolumeEngine(ctx context.Context, cfg *Config, volumeID string) (*e
 	}
 	return &ebsprovider.Volume{
 		ID:            volumeID,
-		CapacityBytes: utils.SafeUint64ToInt64(state.VolumeSize),
+		CapacityBytes: safecast.Uint64ToInt64(state.VolumeSize),
 		State:         ebsprovider.VolumeStateAvailable,
 		Handle:        volumeHandle(volumeID),
 	}, nil
@@ -700,14 +701,14 @@ func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		cfg.releaseVolumeLease(ctx, lease)
 	}()
 
-	currentBytes := utils.SafeUint64ToInt64(vb.GetVolumeSize())
+	currentBytes := safecast.Uint64ToInt64(vb.GetVolumeSize())
 	if req.CapacityRange.RequiredBytes < currentBytes {
 		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("volume expansion is grow-only")})
 		return
 	}
 
 	vc := vb.VolumeConfig
-	vc.VolumeMetadata.SizeGiB = utils.SafeInt64ToUint64(req.CapacityRange.RequiredBytes) / bytesPerGiB
+	vc.VolumeMetadata.SizeGiB = safecast.Int64ToUint64(req.CapacityRange.RequiredBytes) / bytesPerGiB
 	rawConfig, err := json.Marshal(vc)
 	if err != nil {
 		slog.Error("ebs.provider.volume.expand: marshal volume config failed", "volume", req.VolumeID, "err", err)
@@ -725,7 +726,7 @@ func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		Versioned: ebsprovider.NewVersioned(),
 		Volume: &ebsprovider.Volume{
 			ID:            req.VolumeID,
-			CapacityBytes: utils.SafeUint64ToInt64(vb.GetVolumeSize()),
+			CapacityBytes: safecast.Uint64ToInt64(vb.GetVolumeSize()),
 			State:         ebsprovider.VolumeStateAvailable,
 			Handle:        volumeHandle(req.VolumeID),
 		},
@@ -1000,7 +1001,7 @@ func copySnapshotMetaWithVB(vb *viperblock.VB, volumeID, srcSnapshotID, dstSnaps
 	return &ebsprovider.Snapshot{
 		ID:             dstSnapshotID,
 		SourceVolumeID: volumeID,
-		SizeBytes:      utils.SafeUint64ToInt64(vb.GetVolumeSize()),
+		SizeBytes:      safecast.Uint64ToInt64(vb.GetVolumeSize()),
 		CreatedAt:      dst.CreatedAt.UTC(),
 		State:          ebsprovider.SnapshotStateCompleted,
 		Handle:         snapshotHandle(dstSnapshotID),
@@ -1136,7 +1137,7 @@ func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID
 		return &ebsprovider.Snapshot{
 			ID:             snapshotID,
 			SourceVolumeID: volumeID,
-			SizeBytes:      utils.SafeUint64ToInt64(mv.VB.GetVolumeSize()),
+			SizeBytes:      safecast.Uint64ToInt64(mv.VB.GetVolumeSize()),
 			CreatedAt:      time.Now().UTC(),
 			State:          ebsprovider.SnapshotStateCompleted,
 			Handle:         snapshotHandle(snapshotID),
@@ -1176,7 +1177,7 @@ func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID
 	return &ebsprovider.Snapshot{
 		ID:             snapshotID,
 		SourceVolumeID: volumeID,
-		SizeBytes:      utils.SafeUint64ToInt64(vb.GetVolumeSize()),
+		SizeBytes:      safecast.Uint64ToInt64(vb.GetVolumeSize()),
 		CreatedAt:      time.Now().UTC(),
 		State:          ebsprovider.SnapshotStateCompleted,
 		Handle:         snapshotHandle(snapshotID),
@@ -1381,7 +1382,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		}
 	}()
 
-	mountSpan.SetAttributes(attribute.Int64("volume.size_bytes", utils.SafeUint64ToInt64(vb.GetVolumeSize())))
+	mountSpan.SetAttributes(attribute.Int64("volume.size_bytes", safecast.Uint64ToInt64(vb.GetVolumeSize())))
 
 	useTCP := cfg.NBDTransport == types.NBDTransportTCP
 
@@ -1437,7 +1438,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		BaseDir:           cfg.BaseDir,
 		Host:              admin.DialTarget(cfg.S3Host),
 		Verbose:           false,
-		Size:              utils.SafeUint64ToInt64(vb.GetVolumeSize()),
+		Size:              safecast.Uint64ToInt64(vb.GetVolumeSize()),
 		Volume:            volumeName,
 		Bucket:            cfg.Bucket,
 		Region:            cfg.Region,

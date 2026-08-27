@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -33,7 +34,7 @@ func GetOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, bucket
 func GetOrCreateBucketWithTTL(ctx context.Context, js jetstream.KeyValueManager, bucket string, history int, ttl time.Duration) (jetstream.KeyValue, error) {
 	return getOrCreateBucket(ctx, js, jetstream.KeyValueConfig{
 		Bucket:   bucket,
-		History:  utils.SafeIntToUint8(history),
+		History:  safecast.IntToUint8(history),
 		Replicas: max(utils.DefaultKVReplicas(), 1),
 		TTL:      ttl,
 	})
@@ -46,7 +47,7 @@ func GetOrCreateBucketWithTTL(ctx context.Context, js jetstream.KeyValueManager,
 func GetOrCreateBucketWithReplicas(ctx context.Context, js jetstream.KeyValueManager, bucket string, history, replicas int) (jetstream.KeyValue, error) {
 	return getOrCreateBucket(ctx, js, jetstream.KeyValueConfig{
 		Bucket:   bucket,
-		History:  utils.SafeIntToUint8(history),
+		History:  safecast.IntToUint8(history),
 		Replicas: max(replicas, 1),
 	})
 }

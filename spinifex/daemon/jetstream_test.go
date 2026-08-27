@@ -610,7 +610,7 @@ func TestJetStreamManager_UpdateStoppedInstance_ConflictRetry(t *testing.T) {
 }
 
 // TestJetStreamManager_UpdateStoppedInstance_NotFound verifies
-// UpdateStoppedInstance surfaces jetstream.ErrKeyNotFound rather than silently
+// UpdateStoppedInstance surfaces kvstore.ErrNotFound rather than silently
 // creating a record when nothing exists to update.
 func TestJetStreamManager_UpdateStoppedInstance_NotFound(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
@@ -622,14 +622,14 @@ func TestJetStreamManager_UpdateStoppedInstance_NotFound(t *testing.T) {
 	require.NoError(t, jsm.InitKVBucket())
 
 	_, err = jsm.UpdateStoppedInstance("i-does-not-exist", func(v *vm.VM) {})
-	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+	assert.ErrorIs(t, err, kvstore.ErrNotFound)
 }
 
 // TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim is the
 // core TOCTOU regression test: a claim (delete) that lands between an
 // UpdateStoppedInstance caller's own Load and its CAS write must not be
 // undone. createIfAbsent=false means the CAS write observes the key gone and
-// fails with ErrKeyNotFound instead of recreating the stopped record after
+// fails with kvstore.ErrNotFound instead of recreating the stopped record after
 // ClaimStoppedInstance already handed it off to a winning start.
 func TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
@@ -658,7 +658,7 @@ func TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim(t *testing
 	_, err = jsm.UpdateStoppedInstance(testVM.ID, func(v *vm.VM) {
 		v.InstanceType = "should-not-land"
 	})
-	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "a claim that deleted the record must not be resurrected by a losing racer's update")
+	assert.ErrorIs(t, err, kvstore.ErrNotFound, "a claim that deleted the record must not be resurrected by a losing racer's update")
 
 	stillGone, err := jsm.LoadStoppedInstance(testVM.ID)
 	require.NoError(t, err)
@@ -1394,7 +1394,7 @@ func TestJetStreamManager_UpdateTerminatedInstance_NotFound(t *testing.T) {
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
 	_, err = jsm.UpdateTerminatedInstance("i-does-not-exist", func(v *vm.VM) {})
-	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+	assert.ErrorIs(t, err, kvstore.ErrNotFound)
 }
 
 // TestJetStreamManager_WriteStoppedInstance_OverwritesConcurrentValue verifies
@@ -1771,11 +1771,11 @@ func TestJetStreamManager_ListStoppedInstances_FailsOnAnUndecodableRecord(t *tes
 	assert.ErrorContains(t, err, "i-corrupt")
 }
 
-// TestJetStreamManager_UpdateStoppedInstance_AbsentKeyKeepsItsSentinel guards
-// the boundary mapping. Store.Mutate reports kvstore.ErrNotFound, but three
-// call sites and both StateStore interfaces are written against
-// jetstream.ErrKeyNotFound, so the manager converts rather than leaking it.
-func TestJetStreamManager_UpdateStoppedInstance_AbsentKeyKeepsItsSentinel(t *testing.T) {
+// TestJetStreamManager_UpdateStoppedInstance_AbsentKeyIsNotFound pins the
+// sentinel both StateStore interfaces are written against, for the stopped and
+// terminated stores alike. Mutating an absent key must report it, not create
+// the record.
+func TestJetStreamManager_UpdateStoppedInstance_AbsentKeyIsNotFound(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1788,10 +1788,10 @@ func TestJetStreamManager_UpdateStoppedInstance_AbsentKeyKeepsItsSentinel(t *tes
 	_, err = jsm.UpdateStoppedInstance("i-absent", func(*vm.VM) {
 		t.Error("mutate must not run against an absent key")
 	})
-	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+	require.ErrorIs(t, err, kvstore.ErrNotFound)
 
 	_, err = jsm.UpdateTerminatedInstance("i-absent", func(*vm.VM) {
 		t.Error("mutate must not run against an absent key")
 	})
-	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+	require.ErrorIs(t, err, kvstore.ErrNotFound)
 }

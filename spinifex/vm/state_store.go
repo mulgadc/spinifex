@@ -32,6 +32,7 @@ type StateStore interface {
 	// record for id and writes it back using optimistic concurrency (CAS),
 	// so a concurrent writer to the same record (e.g. two teardown-reaper
 	// sweeps advancing different dependents) cannot clobber the other's
-	// progress. Returns an error if no record exists for id.
+	// progress. Reports kvstore.ErrNotFound if no record exists for id, rather
+	// than creating one: a record the reaper already retired must stay retired.
 	UpdateTerminatedInstance(id string, mutate func(*VM)) (*VM, error)
 }

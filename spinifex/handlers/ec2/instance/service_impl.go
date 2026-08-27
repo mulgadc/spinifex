@@ -26,13 +26,13 @@ import (
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // bytesPerGiB converts the byte sizes the launch path works in to the GiB
@@ -403,14 +403,14 @@ func (s *InstanceServiceImpl) TagStoppedInstance(ctx context.Context, instanceID
 	// CAS the tag mutation into the shared KV record instead of a wholesale
 	// WriteStoppedInstance: createIfAbsent=false means a claim that deletes
 	// the record between the Load above and this write fails cleanly with
-	// jetstream.ErrKeyNotFound rather than resurrecting a stale stopped entry.
+	// kvstore.ErrNotFound rather than resurrecting a stale stopped entry.
 	newTags := instance.Instance.Tags
 	if _, err := s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
 		if v.Instance != nil {
 			v.Instance.Tags = newTags
 		}
 	}); err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, kvstore.ErrNotFound) {
 			slog.WarnContext(ctx, "TagStoppedInstance: instance claimed concurrently, not resurrecting", "instanceId", instanceID)
 			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		}
@@ -455,7 +455,7 @@ func (s *InstanceServiceImpl) SetStoppedInstanceMonitoring(ctx context.Context, 
 		}
 		v.RunInstancesInput.Monitoring.Enabled = aws.Bool(enabled)
 	}); err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, kvstore.ErrNotFound) {
 			slog.WarnContext(ctx, "SetStoppedInstanceMonitoring: instance claimed concurrently, not resurrecting", "instanceId", instanceID)
 			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		}
@@ -2117,7 +2117,7 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input
 	// CAS the mutations into the shared KV record instead of a wholesale
 	// WriteStoppedInstance: createIfAbsent=false means a claim that deletes
 	// the record between the Load above and this write fails cleanly with
-	// jetstream.ErrKeyNotFound rather than resurrecting a stale stopped entry.
+	// kvstore.ErrNotFound rather than resurrecting a stale stopped entry.
 	_, err = s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
 		if input.InstanceType != nil && input.InstanceType.Value != nil && v.Instance != nil {
 			newType := *input.InstanceType.Value
@@ -2146,7 +2146,7 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input
 		}
 	})
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, kvstore.ErrNotFound) {
 			// The record existed moments ago (Load above) but a concurrent
 			// claim removed it: the instance is mid-transition, not gone.
 			slog.WarnContext(ctx, "ModifyInstanceAttribute: instance claimed concurrently, not resurrecting", "instanceId", instanceID)

@@ -1695,7 +1695,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 	jsManager, err := NewJetStreamManager(daemon.natsConn, 1)
 	require.NoError(t, err)
 	require.NoError(t, jsManager.InitTerminatedInstanceBucket())
-	daemon.stateStore = newStateStoreAdapter(jsManager)
+	daemon.stateStore = newStateStoreAdapter(jsManager, daemon.persistState)
 
 	// DeleteVolume's snapshot-reference guard requires a non-nil snapshotKV.
 	js, err := jetstream.New(daemon.natsConn)

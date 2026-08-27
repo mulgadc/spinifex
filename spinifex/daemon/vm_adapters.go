@@ -28,19 +28,22 @@ import (
 )
 
 // stateStoreAdapter satisfies vm.StateStore by delegating to JetStreamManager.
-// Tolerates nil JetStreamManager during early boot.
+// Tolerates nil JetStreamManager during early boot. The running set is the one
+// exception: it goes through the daemon's persist path so that the local file,
+// not just KV, sees every change the vm package makes.
 type stateStoreAdapter struct {
-	js *JetStreamManager
+	js      *JetStreamManager
+	persist func(nodeID string, vms map[string]*vm.VM) error
 }
 
 var _ vm.StateStore = (*stateStoreAdapter)(nil)
 
-func newStateStoreAdapter(js *JetStreamManager) *stateStoreAdapter {
-	return &stateStoreAdapter{js: js}
+func newStateStoreAdapter(js *JetStreamManager, persist func(string, map[string]*vm.VM) error) *stateStoreAdapter {
+	return &stateStoreAdapter{js: js, persist: persist}
 }
 
 func (a *stateStoreAdapter) SaveRunningState(nodeID string, snapshot map[string]*vm.VM) error {
-	return a.js.WriteState(nodeID, snapshot)
+	return a.persist(nodeID, snapshot)
 }
 
 func (a *stateStoreAdapter) LoadRunningState(nodeID string) (map[string]*vm.VM, bool, error) {

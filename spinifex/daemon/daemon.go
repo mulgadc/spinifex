@@ -2261,7 +2261,7 @@ func (d *Daemon) initJetStream() error {
 		retryDelay = min(retryDelay*2, 10*time.Second)
 	}
 
-	d.stateStore = newStateStoreAdapter(d.jsManager)
+	d.stateStore = newStateStoreAdapter(d.jsManager, d.persistState)
 
 	return nil
 }
@@ -2584,22 +2584,28 @@ func (d *Daemon) localStatePath() string {
 // WriteState persists instance state. Local file is the source of truth; KV is
 // best-effort. Both forms are marshalled inside vmMgr.View to avoid data races.
 func (d *Daemon) WriteState() error {
+	var err error
+	d.vmMgr.View(func(vms map[string]*vm.VM) {
+		err = d.persistState(d.node, vms)
+	})
+	return err
+}
+
+// persistState is the single path both stores move through: every caller that
+// changes the running set reaches it, so the file cannot fall behind the map.
+// Callers hold the manager lock, so vms cannot change mid-encode; the two locks
+// are always taken manager-first to keep one order across every writer.
+func (d *Daemon) persistState(nodeID string, vms map[string]*vm.VM) error {
 	d.stateWriteMu.Lock()
 	defer d.stateWriteMu.Unlock()
 
-	var (
-		localData, kvData []byte
-		marshalErr        error
-	)
-	d.vmMgr.View(func(vms map[string]*vm.VM) {
-		localData, marshalErr = MarshalLocalState(vms)
-		if marshalErr != nil {
-			return
-		}
-		kvData, marshalErr = marshalInstanceState(vms)
-	})
-	if marshalErr != nil {
-		return fmt.Errorf("marshal state: %w", marshalErr)
+	localData, err := MarshalLocalState(vms)
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
+	}
+	kvData, err := marshalInstanceState(vms)
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
 	}
 
 	// The KV write is independent of local disk health (JetStream, not this
@@ -2615,7 +2621,7 @@ func (d *Daemon) WriteState() error {
 	}
 
 	if d.jsManager != nil {
-		d.jsManager.WriteStateBytesBestEffort(d.node, kvData, kvSyncTimeout)
+		d.jsManager.WriteStateBytesBestEffort(nodeID, kvData, kvSyncTimeout)
 	}
 
 	if localErr != nil {

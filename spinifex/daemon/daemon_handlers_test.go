@@ -118,7 +118,7 @@ func createFullTestDaemonWithJetStream(t *testing.T, natsURL string) *Daemon {
 	require.NoError(t, err)
 	err = daemon.jsManager.InitTerminatedInstanceBucket()
 	require.NoError(t, err)
-	daemon.stateStore = newStateStoreAdapter(daemon.jsManager)
+	daemon.stateStore = newStateStoreAdapter(daemon.jsManager, daemon.persistState)
 
 	// Re-bind the instance service so describe-stopped/terminated handlers see
 	// the KV that was just initialised.

@@ -41,13 +41,13 @@ func (f *fakeStateStore) SaveRunningState(nodeID string, snap map[string]*VM) er
 	return nil
 }
 
-func (f *fakeStateStore) LoadRunningState(nodeID string) (map[string]*VM, error) {
+func (f *fakeStateStore) LoadRunningState(nodeID string) (map[string]*VM, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if v, ok := f.saved[nodeID]; ok {
-		return v, nil
+		return v, true, nil
 	}
-	return map[string]*VM{}, nil
+	return map[string]*VM{}, false, nil
 }
 
 func (f *fakeStateStore) WriteStoppedInstance(id string, v *VM) error {

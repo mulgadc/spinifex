@@ -370,11 +370,11 @@ type markerStateStore struct {
 	snapshot  map[string]*VM
 }
 
-func (s *markerStateStore) LoadRunningState(string) (map[string]*VM, error) {
+func (s *markerStateStore) LoadRunningState(string) (map[string]*VM, bool, error) {
 	s.loadCalls.Add(1)
 	out := make(map[string]*VM, len(s.snapshot))
 	maps.Copy(out, s.snapshot)
-	return out, nil
+	return out, true, nil
 }
 
 // TestRestore_HappyPath exercises Restore's clean-shutdown branch end-

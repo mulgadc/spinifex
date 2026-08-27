@@ -271,11 +271,20 @@ func (m *Manager) View(fn func(map[string]*VM)) {
 	fn(m.vms)
 }
 
-// Replace bulk-resets the manager to the given VMs (copied). Used by Restore.
+// Replace bulk-resets the manager to the given VMs (copied).
 func (m *Manager) Replace(vms map[string]*VM) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.vms = make(map[string]*VM, len(vms))
+	maps.Copy(m.vms, vms)
+}
+
+// AdoptClusterState folds the cluster's published snapshot over the running
+// set, keeping records the cluster has no copy of. Used by Restore: an entry
+// only this node holds is a record to republish, not one to delete.
+func (m *Manager) AdoptClusterState(vms map[string]*VM) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	maps.Copy(m.vms, vms)
 }
 

@@ -43,7 +43,7 @@ func (a *stateStoreAdapter) SaveRunningState(nodeID string, snapshot map[string]
 	return a.js.WriteState(nodeID, snapshot)
 }
 
-func (a *stateStoreAdapter) LoadRunningState(nodeID string) (map[string]*vm.VM, error) {
+func (a *stateStoreAdapter) LoadRunningState(nodeID string) (map[string]*vm.VM, bool, error) {
 	return a.js.LoadState(nodeID)
 }
 

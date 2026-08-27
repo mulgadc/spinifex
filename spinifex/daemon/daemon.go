@@ -2180,12 +2180,14 @@ func (d *Daemon) leakedVolumeInstances() (map[string]bool, error) {
 }
 
 // nodeRunningVMs returns this node's running VMs for the EKS billable reaper to
-// scan. A nil stateStore (early init / test) yields an empty set.
+// scan. A nil stateStore (early init / test) yields an empty set. The reaper
+// only ever acts on VMs in this list, so a missing record fails closed and the
+// absence flag adds nothing.
 func (d *Daemon) nodeRunningVMs() ([]*vm.VM, error) {
 	if d.stateStore == nil {
 		return nil, nil
 	}
-	running, err := d.stateStore.LoadRunningState(d.node)
+	running, _, err := d.stateStore.LoadRunningState(d.node)
 	if err != nil {
 		return nil, err
 	}

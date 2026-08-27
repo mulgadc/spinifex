@@ -532,37 +532,40 @@ func marshalInstanceState(vms map[string]*vm.VM) ([]byte, error) {
 }
 
 // LoadState loads the instance state from the KV store for the given node.
-// Returns an empty (non-nil) map when no state exists for the node.
-func (m *JetStreamManager) LoadState(nodeID string) (map[string]*vm.VM, error) {
+// The bool reports whether a record exists at all. A node that has never
+// written state and a node whose record was lost both read as empty, and a
+// caller that would drop instances on the strength of that must tell them
+// apart.
+func (m *JetStreamManager) LoadState(nodeID string) (map[string]*vm.VM, bool, error) {
 	if m.kv == nil {
-		return nil, errors.New("KV bucket not initialized")
+		return nil, false, errors.New("KV bucket not initialized")
 	}
 
 	key := InstanceStatePrefix + nodeID
 	entry, err := m.kv.Get(context.Background(), key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			slog.Debug("No existing state in JetStream KV, returning empty state", "key", key)
-			return make(map[string]*vm.VM), nil
+			slog.Debug("No existing state in JetStream KV", "key", key)
+			return make(map[string]*vm.VM), false, nil
 		}
 		if isStreamUnavailable(err) {
 			slog.Warn("KV stream unavailable, attempting recovery", "operation", "LoadState", "key", key, "err", err)
 			kv, recoverErr := m.recoverKVBucket(context.Background())
 			if recoverErr != nil {
-				return nil, err
+				return nil, false, err
 			}
 			// Retry the read — if we reconnected, data may still exist
 			entry, err = kv.Get(context.Background(), key)
 			if err != nil {
 				if errors.Is(err, jetstream.ErrKeyNotFound) {
 					slog.Warn("No state found after KV recovery", "key", key)
-					return make(map[string]*vm.VM), nil
+					return make(map[string]*vm.VM), false, nil
 				}
-				return nil, err
+				return nil, false, err
 			}
 			// Fall through to unmarshal below
 		} else {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
@@ -570,14 +573,14 @@ func (m *JetStreamManager) LoadState(nodeID string) (map[string]*vm.VM, error) {
 		VMS map[string]*vm.VM `json:"vms"`
 	}
 	if err := json.Unmarshal(entry.Value(), &state); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if state.VMS == nil {
 		state.VMS = make(map[string]*vm.VM)
 	}
 
 	slog.Debug("Loaded state from JetStream KV", "key", key, "instances", len(state.VMS))
-	return state.VMS, nil
+	return state.VMS, true, nil
 }
 
 // DeleteState removes the instance state from the KV store for the given node.

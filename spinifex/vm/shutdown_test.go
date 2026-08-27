@@ -1325,8 +1325,8 @@ func (s *signalingStore) SaveRunningState(string, map[string]*VM) error {
 	}
 	return nil
 }
-func (s *signalingStore) LoadRunningState(string) (map[string]*VM, error) {
-	return map[string]*VM{}, nil
+func (s *signalingStore) LoadRunningState(string) (map[string]*VM, bool, error) {
+	return map[string]*VM{}, true, nil
 }
 func (s *signalingStore) WriteStoppedInstance(string, *VM) error  { return nil }
 func (s *signalingStore) LoadStoppedInstance(string) (*VM, error) { return nil, nil }

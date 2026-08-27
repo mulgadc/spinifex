@@ -1,8 +1,10 @@
-package handlers_eks
+package handlers_eks_test
 
 import (
+	"context"
 	"testing"
 
+	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
@@ -16,14 +18,14 @@ func TestAccountWatchBuckets_ReturnsOnePerAccountBucket(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	_, err := GetOrCreateAccountBucket(t.Context(), js, "111111111111", 1)
+	_, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "111111111111", 1)
 	require.NoError(t, err)
-	_, err = GetOrCreateAccountBucket(t.Context(), js, "222222222222", 1)
+	_, err = handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "222222222222", 1)
 	require.NoError(t, err)
 	_, err = kvutil.GetOrCreateBucket(t.Context(), js, "something-else", 1)
 	require.NoError(t, err)
 
-	buckets, err := AccountWatchBuckets(t.Context(), nc)
+	buckets, err := handlers_eks.AccountWatchBuckets(t.Context(), nc)
 	require.NoError(t, err)
 
 	names := make([]string, 0, len(buckets))
@@ -31,15 +33,15 @@ func TestAccountWatchBuckets_ReturnsOnePerAccountBucket(t *testing.T) {
 		names = append(names, bucket.Name())
 	}
 	assert.ElementsMatch(t, []string{
-		AccountBucketName("111111111111"),
-		AccountBucketName("222222222222"),
+		handlers_eks.AccountBucketName("111111111111"),
+		handlers_eks.AccountBucketName("222222222222"),
 	}, names)
 }
 
 func TestAccountWatchBuckets_NoAccountsIsNotAnError(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	buckets, err := AccountWatchBuckets(t.Context(), nc)
+	buckets, err := handlers_eks.AccountWatchBuckets(t.Context(), nc)
 	require.NoError(t, err, "a cluster with no EKS usage is not a failure")
 	assert.Empty(t, buckets)
 }
@@ -49,14 +51,27 @@ func TestAccountWatchBuckets_NoAccountsIsNotAnError(t *testing.T) {
 func TestAccountWatchBuckets_BucketsAreWatchable(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	_, err := GetOrCreateAccountBucket(t.Context(), js, "111111111111", 1)
+	_, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "111111111111", 1)
 	require.NoError(t, err)
 
-	buckets, err := AccountWatchBuckets(t.Context(), nc)
+	buckets, err := handlers_eks.AccountWatchBuckets(t.Context(), nc)
 	require.NoError(t, err)
 	require.Len(t, buckets, 1)
 
 	watcher, err := buckets[0].Watch(t.Context(), ">")
 	require.NoError(t, err)
 	require.NoError(t, watcher.Stop())
+}
+
+// TestAccountWatchBuckets_EnumerationErrorPropagates guards against a bucket
+// listing failure being mistaken for "no accounts": a cancelled context makes
+// the underlying stream-names listing fail, and that failure must surface
+// rather than come back as an empty, and therefore prunable, set.
+func TestAccountWatchBuckets_EnumerationErrorPropagates(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := handlers_eks.AccountWatchBuckets(ctx, nc)
+	require.Error(t, err)
 }

@@ -1,16 +1,19 @@
 package dns
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/reconciler"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -446,6 +449,47 @@ func TestReconciler_RunReturnsWhenDisabled(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return for a disabled reconciler")
+	}
+}
+
+// TestReconciler_RunPerformsStartupPassThenStopsOnCancel covers the enabled
+// path of Run: the startup pass must fire before any watch or resync activity,
+// and cancelling ctx must still let the loop return.
+func TestReconciler_RunPerformsStartupPassThenStopsOnCancel(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	endpoint, _ := fakeS3(t, "northstar")
+
+	var passes atomic.Int64
+	r := &Reconciler{
+		enabled:    true,
+		baseDomain: testBase,
+		s3cfg: &nsconfig.S3Config{
+			Endpoint: endpoint, Bucket: "northstar", Region: "us-east-1",
+			AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET",
+		},
+		nc:     nc,
+		holder: "test-node",
+		desired: func() DesiredSet {
+			passes.Add(1)
+			return DesiredSet{}
+		},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(ctx)
+	}()
+
+	require.Eventually(t, func() bool { return passes.Load() >= 1 }, 5*time.Second, 10*time.Millisecond,
+		"the startup pass must run immediately, before any watch or resync activity")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after ctx was cancelled")
 	}
 }
 

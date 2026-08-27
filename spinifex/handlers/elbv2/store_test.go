@@ -68,6 +68,21 @@ func newTestListener(id, lbArn string) *ListenerRecord {
 	}
 }
 
+// TestStore_WatchBucketOpensAWatchableHandle closes the loop: the returned
+// bucket is not merely named, it opens against the live server so the DNS
+// reconcile can actually be woken by a load-balancer change.
+func TestStore_WatchBucketOpensAWatchableHandle(t *testing.T) {
+	store := setupTestStore(t)
+
+	bucket := store.WatchBucket()
+	require.NotNil(t, bucket)
+	assert.Equal(t, KVBucketELBv2, bucket.Name())
+
+	watcher, err := bucket.Watch(t.Context(), KeyPrefixLB+"*")
+	require.NoError(t, err)
+	require.NoError(t, watcher.Stop())
+}
+
 func TestLoadBalancerStoreLifecycle(t *testing.T) {
 	t.Run("put and get", func(t *testing.T) {
 		store := setupTestStore(t)

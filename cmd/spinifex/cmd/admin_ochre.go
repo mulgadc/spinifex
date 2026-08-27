@@ -16,13 +16,13 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/gateway/bedrock/hfhub"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -999,7 +999,7 @@ func resolveHFToken(ctx context.Context, cmd *cobra.Command, cfg *config.Cluster
 	}
 
 	masterKeyPath := filepath.Join(cfg.NodeBaseDir(), "config", "master.key")
-	masterKey, err := handlers_iam.LoadMasterKey(masterKeyPath)
+	masterKey, err := masterkey.ReadShared(masterKeyPath)
 	if err != nil {
 		return ""
 	}
@@ -1071,7 +1071,7 @@ func ochreCredentialsStore() (*gateway_bedrock.CredentialStore, func(), error) {
 		return nil, nil, fmt.Errorf("connect to cluster: %w", err)
 	}
 	masterKeyPath := filepath.Join(cfg.NodeBaseDir(), "config", "master.key")
-	masterKey, err := handlers_iam.LoadMasterKey(masterKeyPath)
+	masterKey, err := masterkey.ReadShared(masterKeyPath)
 	if err != nil {
 		nc.Close()
 		return nil, nil, fmt.Errorf("load master key: %w", err)

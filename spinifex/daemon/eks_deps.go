@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 
+	"log/slog"
+
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"log/slog"
 )
 
 // systemRoleEnsurer lazily builds — and memoizes — the KV-backed IAM service
@@ -27,7 +29,7 @@ func (d *Daemon) systemRoleEnsurer() handlers_iam.SystemInstanceRoleEnsurer {
 	if d.iamEnsurerCached != nil {
 		return d.iamEnsurerCached
 	}
-	masterKey, err := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+	masterKey, err := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 	if err != nil || masterKey == nil {
 		slog.Warn("System role ensurer: master key unavailable; system VMs fall back to baked static creds",
 			"err", err)
@@ -50,9 +52,9 @@ func (d *Daemon) systemRoleEnsurer() handlers_iam.SystemInstanceRoleEnsurer {
 // buildEKSServiceDeps assembles the EKSServiceDeps. All collaborators must
 // already be initialised. MasterKey is loaded best-effort from the config dir.
 func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
-	masterKey, err := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+	masterKey, err := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 	if err != nil {
-		slog.Warn("EKS: LoadMasterKey failed; CreateCluster + DeleteCluster will reject until key is provisioned",
+		slog.Warn("EKS: master key read failed; CreateCluster + DeleteCluster will reject until key is provisioned",
 			"err", err)
 		masterKey = nil
 	}

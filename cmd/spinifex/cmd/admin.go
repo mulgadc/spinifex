@@ -27,6 +27,7 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
@@ -2578,7 +2579,7 @@ func initIAMServiceFromConfig() (*handlers_iam.IAMServiceImpl, *config.ClusterCo
 	}
 
 	masterKeyPath := filepath.Join(cfg.NodeBaseDir(), "config", "master.key")
-	masterKey, err := handlers_iam.LoadMasterKey(masterKeyPath)
+	masterKey, err := masterkey.ReadShared(masterKeyPath)
 	if err != nil {
 		nc.Close()
 		return nil, nil, nil, nil, fmt.Errorf("load master key: %w", err)
@@ -2984,7 +2985,7 @@ type writeBootstrapResult struct {
 func ensureMasterKey(configDir string) (key []byte, existed bool, err error) {
 	keyPath := filepath.Join(configDir, "master.key")
 	if admin.FileExists(keyPath) {
-		key, err = handlers_iam.LoadMasterKey(keyPath)
+		key, err = masterkey.ReadShared(keyPath)
 		if err != nil {
 			return nil, false, fmt.Errorf("load master key: %w", err)
 		}
@@ -3077,7 +3078,7 @@ func ensureViperblockEncryptionKey(configDir string) ([]byte, string, error) {
 	}
 	keyPath := filepath.Join(viperblockDir, "encryption.key")
 	if admin.FileExists(keyPath) {
-		key, err := handlers_iam.LoadMasterKey(keyPath)
+		key, err := masterkey.ReadShared(keyPath)
 		if err != nil {
 			return nil, "", fmt.Errorf("load viperblock encryption key: %w", err)
 		}

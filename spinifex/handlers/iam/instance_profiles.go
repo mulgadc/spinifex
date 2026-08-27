@@ -13,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/mulgadc/bluebottle/pkg/auth"
+
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
@@ -268,28 +270,15 @@ func (s *IAMServiceImpl) ResolveInstanceProfile(accountID, nameOrARN string) (*I
 	return s.getInstanceProfile(ctx, accountID, profileName)
 }
 
-// parseInstanceProfileARN extracts accountID and profile name from an IAM instance-profile ARN.
-func parseInstanceProfileARN(arn string) (accountID, name string, err error) {
-	parts := strings.SplitN(arn, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" || parts[1] != "aws" || parts[2] != "iam" || parts[3] != "" {
+// parseInstanceProfileARN extracts accountID and profile name from an IAM
+// instance-profile ARN, reporting every malformed shape as the one AWS error
+// code this API returns.
+func parseInstanceProfileARN(arnStr string) (accountID, name string, err error) {
+	accountID, name, err = auth.ParseInstanceProfileARN(arnStr)
+	if err != nil {
 		return "", "", errors.New(awserrors.ErrorInvalidIamInstanceProfileArnMalformed)
 	}
-	resource := parts[5]
-	const prefix = "instance-profile/"
-	if !strings.HasPrefix(resource, prefix) {
-		return "", "", errors.New(awserrors.ErrorInvalidIamInstanceProfileArnMalformed)
-	}
-	pathAndName := resource[len(prefix):]
-	slash := strings.LastIndex(pathAndName, "/")
-	if slash == -1 {
-		name = pathAndName
-	} else {
-		name = pathAndName[slash+1:]
-	}
-	if name == "" {
-		return "", "", errors.New(awserrors.ErrorInvalidIamInstanceProfileArnMalformed)
-	}
-	return parts[4], name, nil
+	return accountID, name, nil
 }
 
 // TagInstanceProfile upserts tags on an instance profile under CAS, like the

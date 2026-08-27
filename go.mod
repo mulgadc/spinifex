@@ -21,7 +21,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.73
-	github.com/mulgadc/bluebottle v1.18.1-0.20260826232854-f91084812667
+	github.com/mulgadc/bluebottle v1.18.1-0.20260827002656-8dfaf43f84e6
 	github.com/mulgadc/northstar v1.18.0
 	github.com/mulgadc/predastore v1.18.1-0.20260826045109-26ce1b091112
 	github.com/mulgadc/viperblock v1.18.0
@@ -45,6 +45,7 @@ require (
 	golang.org/x/crypto v0.55.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
+	golang.org/x/time v0.15.0
 	golang.org/x/tools v0.49.0
 	gopkg.in/ini.v1 v1.67.3
 )
@@ -200,7 +201,6 @@ require (
 	golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/vuln v1.6.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect

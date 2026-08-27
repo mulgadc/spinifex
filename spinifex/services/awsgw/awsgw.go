@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/admin"
@@ -218,7 +219,7 @@ func launchService(config *config.ClusterConfig) error {
 
 	// Load IAM master key from disk (required for all authenticated requests)
 	masterKeyPath := filepath.Join(nodeConfig.BaseDir, "config", "master.key")
-	masterKey, err := handlers_iam.LoadMasterKey(masterKeyPath)
+	masterKey, err := masterkey.ReadShared(masterKeyPath)
 	if err != nil {
 		return fmt.Errorf("load IAM master key from %s: %w", masterKeyPath, err)
 	}

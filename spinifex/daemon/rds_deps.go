@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
@@ -53,7 +53,7 @@ func (d *Daemon) buildRDSDeps() (handlers_rds.Deps, error) {
 
 	// No degraded mode: a create cannot stage a master password without it, and
 	// the fetch that replays one is answered by any node in the queue group.
-	masterKey, err := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+	masterKey, err := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 	if err != nil {
 		return handlers_rds.Deps{}, fmt.Errorf("load RDS master key: %w", err)
 	}

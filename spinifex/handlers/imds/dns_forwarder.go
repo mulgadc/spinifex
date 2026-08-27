@@ -8,6 +8,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // maxDNSUDPSize is the largest UDP DNS message the shim relays; EDNS0 clients
@@ -283,43 +285,24 @@ func (f *dnsForwarder) proxyTCP(client net.Conn) {
 // — each serveUDP/serveTCP invocation owns one — so the limit is inherently
 // per-tap. now is injected so tests drive refill deterministically.
 type tokenBucket struct {
-	mu     sync.Mutex
-	tokens float64
-	burst  float64
-	rate   float64
-	last   time.Time
-	now    func() time.Time
+	limiter *rate.Limiter
+	now     func() time.Time
 }
 
-func newTokenBucket(rate, burst int, now func() time.Time) *tokenBucket {
-	return &tokenBucket{
-		tokens: float64(burst),
-		burst:  float64(burst),
-		rate:   float64(rate),
-		last:   now(),
-		now:    now,
+// newTokenBucket returns a full bucket at burst capacity refilling at rate per
+// second. A non-positive rate disables limiting: rate.Inf admits everything
+// regardless of burst.
+func newTokenBucket(perSecond, burst int, now func() time.Time) *tokenBucket {
+	limit := rate.Limit(perSecond)
+	if perSecond <= 0 {
+		limit = rate.Inf
 	}
+	return &tokenBucket{limiter: rate.NewLimiter(limit, burst), now: now}
 }
 
-// allow refills by elapsed time and consumes one token, reporting whether the
-// query may proceed. A non-positive rate disables limiting (always allow).
+// allow consumes one token, reporting whether the query may proceed.
 func (tb *tokenBucket) allow() bool {
-	if tb.rate <= 0 {
-		return true
-	}
-	tb.mu.Lock()
-	defer tb.mu.Unlock()
-	now := tb.now()
-	tb.tokens += now.Sub(tb.last).Seconds() * tb.rate
-	if tb.tokens > tb.burst {
-		tb.tokens = tb.burst
-	}
-	tb.last = now
-	if tb.tokens >= 1 {
-		tb.tokens--
-		return true
-	}
-	return false
+	return tb.limiter.AllowN(tb.now(), 1)
 }
 
 // bindTapDNS opens the DNS shim sockets — UDP and TCP 169.254.169.253:53 on the

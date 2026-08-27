@@ -9,7 +9,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 )
 
-const masterKeySize = 32 // AES-256
+const masterKeySize = masterkey.MasterKeySize
 
 // BootstrapVersion is the current bootstrap.json config version.
 const BootstrapVersion = "1.0"
@@ -20,18 +20,6 @@ func GenerateMasterKey() ([]byte, error) {
 	key := make([]byte, masterKeySize)
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("generate master key: %w", err)
-	}
-	return key, nil
-}
-
-// LoadMasterKey reads a master key from disk and validates it is exactly 32 bytes.
-func LoadMasterKey(path string) ([]byte, error) {
-	key, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read master key: %w", err)
-	}
-	if len(key) != masterKeySize {
-		return nil, fmt.Errorf("master key must be %d bytes, got %d", masterKeySize, len(key))
 	}
 	return key, nil
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
@@ -206,6 +207,26 @@ func accountBucketNames(ctx context.Context, nc *nats.Conn) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// AccountWatchBuckets returns every per-account bucket as a watchable handle,
+// for a reconciler that must be woken by a cluster change rather than poll for
+// it. The set is re-read on each call because a new account's bucket appears
+// without notice: JetStream publishes no bucket-created event.
+func AccountWatchBuckets(ctx context.Context, nc *nats.Conn) ([]*kvstore.Bucket, error) {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
+	}
+	names, err := accountBucketNames(ctx, nc)
+	if err != nil {
+		return nil, err
+	}
+	buckets := make([]*kvstore.Bucket, 0, len(names))
+	for _, name := range names {
+		buckets = append(buckets, kvstore.NewBucket(js, kvstore.Config{Name: name, History: 1}))
+	}
+	return buckets, nil
 }
 
 // GetOrCreateAccountBucket returns the per-account KV bucket for accountID,

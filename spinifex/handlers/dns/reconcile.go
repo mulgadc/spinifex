@@ -12,14 +12,17 @@ import (
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	reconcilelock "github.com/mulgadc/spinifex/spinifex/network/reconcile"
+	"github.com/mulgadc/spinifex/spinifex/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
 // DefaultReconcileInterval is how often the drift backstop rebuilds managed
-// records from the live resource inventory. It is deliberately close to
-// the northstar S3 poll so a missed lifecycle event self-heals within one cycle.
-const DefaultReconcileInterval = 60 * time.Second
+// records from the live resource inventory when nothing has changed. With the
+// watch carrying every change the loop sees, this is the backstop for drift
+// introduced outside KV — directly in the zone object, say — rather than the
+// path by which a normal lifecycle event reaches DNS.
+const DefaultReconcileInterval = reconciler.DefaultResync
 
 const (
 	// maxReconcileNATSPayloadBytes stays below nats.conf's 1 MB max_payload.
@@ -56,15 +59,16 @@ type PruneScope struct {
 	RDS bool
 }
 
-// Reconciler is the drift backstop. On a ticker it rebuilds the desired
-// managed record set from the live inventory and converges the zone toward it:
-// every desired record is re-UPSERTed (idempotent — the writer skips unchanged
-// zones) and stale *prunable* records are DELETEd.
+// Reconciler converges the zone toward the live inventory. On each pass it
+// rebuilds the desired managed record set: every desired record is re-UPSERTed
+// (idempotent — the writer skips unchanged zones) and stale *prunable* records
+// are DELETEd. A pass runs on a change to any watched resource store, and on
+// the interval as the backstop for drift those stores cannot report.
 //
-// Each cycle is gated on a CAS-elected leader so one node per interval publishes
-// the converging batch. Without it every node published its own batch on the same
-// interval, and since the queue group load-balances rather than serialises, an
-// idle cluster raced its own zone object once per tick.
+// Each pass is gated on a CAS-elected leader so one node publishes the
+// converging batch. Without it every node published its own batch, and since
+// the queue group load-balances rather than serialises, an idle cluster raced
+// its own zone object once per cycle.
 //
 // Only cluster-wide-enumerable records (load balancers, EKS clusters) are
 // pruned: any node sees the full ELB/EKS set from KV. EC2 records are never
@@ -80,16 +84,21 @@ type Reconciler struct {
 	interval   time.Duration
 	accountID  string
 	holder     string
+	sources    []reconciler.Source
 }
 
 // NewReconciler builds the drift backstop. It is disabled (a no-op) when
 // northstar S3 is not configured or no desired-set provider is supplied.
-func NewReconciler(cfg *config.Config, nc *nats.Conn, desired DesiredFunc) *Reconciler {
+// sources name the buckets whose changes should wake the loop. They are
+// optional: with none supplied the loop falls back to the interval alone,
+// which is the behaviour that predates the watch.
+func NewReconciler(cfg *config.Config, nc *nats.Conn, desired DesiredFunc, sources ...reconciler.Source) *Reconciler {
 	r := &Reconciler{
 		nc:        nc,
 		desired:   desired,
 		interval:  DefaultReconcileInterval,
 		accountID: utils.GlobalAccountID,
+		sources:   sources,
 	}
 	if cfg != nil {
 		r.holder = cfg.Node
@@ -107,23 +116,25 @@ func NewReconciler(cfg *config.Config, nc *nats.Conn, desired DesiredFunc) *Reco
 // Enabled reports whether the reconcile loop will run.
 func (r *Reconciler) Enabled() bool { return r.enabled }
 
-// Run reconciles once immediately, then on the interval until ctx is done. It is
-// a no-op when disabled, so the daemon can start it unconditionally.
+// Run converges once, then on every change to the resource stores the desired
+// set is built from, with the interval as the drift backstop. It is a no-op
+// when disabled, so the daemon can start it unconditionally.
+//
+// Only the trigger is event-driven: each pass still rebuilds the whole desired
+// set, so the watch needs to report only that something changed, not what.
 func (r *Reconciler) Run(ctx context.Context) {
 	if !r.enabled {
 		return
 	}
-	r.reconcileOnce(ctx)
-	ticker := time.NewTicker(r.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+	reconciler.Run(ctx, reconciler.Config{
+		Name:    "dns",
+		Sources: r.sources,
+		Reconcile: func(ctx context.Context) error {
 			r.reconcileOnce(ctx)
-		}
-	}
+			return nil
+		},
+		Resync: r.interval,
+	})
 }
 
 // reconcileOnce computes the converging batch and publishes it best-effort, on

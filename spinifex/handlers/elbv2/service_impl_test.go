@@ -3415,3 +3415,23 @@ func TestDescribeTags_UntaggedLoadBalancer(t *testing.T) {
 	assert.Equal(t, *lbOut.LoadBalancers[0].LoadBalancerArn, *out.TagDescriptions[0].ResourceArn)
 	assert.Empty(t, out.TagDescriptions[0].Tags)
 }
+
+// --- DNSWatchBucket ---
+
+func TestDNSWatchBucket_NilReceiver(t *testing.T) {
+	var svc *ELBv2ServiceImpl
+	assert.Nil(t, svc.DNSWatchBucket())
+}
+
+func TestDNSWatchBucket_NoStore(t *testing.T) {
+	svc := &ELBv2ServiceImpl{}
+	assert.Nil(t, svc.DNSWatchBucket())
+}
+
+func TestDNSWatchBucket_WithStore(t *testing.T) {
+	svc := setupTestService(t)
+
+	bucket := svc.DNSWatchBucket()
+	require.NotNil(t, bucket)
+	assert.Equal(t, KVBucketELBv2, bucket.Name())
+}

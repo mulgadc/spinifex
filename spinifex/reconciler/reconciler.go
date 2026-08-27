@@ -84,6 +84,29 @@ func Fixed(bucket *kvstore.Bucket, filter string) Source {
 
 var _ Source = staticSource{}
 
+// dynamicSource enumerates its buckets afresh on every resync, for the resource
+// families that keep one bucket per account.
+type dynamicSource struct {
+	list   func(ctx context.Context) ([]*kvstore.Bucket, error)
+	filter string
+}
+
+func (s dynamicSource) Buckets(ctx context.Context) ([]*kvstore.Bucket, error) {
+	return s.list(ctx)
+}
+
+func (s dynamicSource) Filter() string { return s.filter }
+
+// Dynamic returns a Source whose bucket set is discovered rather than fixed.
+// JetStream has no bucket-created event, so discovery rides on the resync: a
+// bucket that appears is watched from the following cycle, and the pass that
+// cycle runs covers whatever it already held.
+func Dynamic(list func(ctx context.Context) ([]*kvstore.Bucket, error), filter string) Source {
+	return dynamicSource{list: list, filter: filter}
+}
+
+var _ Source = dynamicSource{}
+
 // Run reconciles once, then on every change and every resync until ctx is done.
 // It returns only when ctx is cancelled.
 func Run(ctx context.Context, cfg Config) {

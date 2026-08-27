@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/nats-io/nats.go"
@@ -252,6 +253,22 @@ func AccountBucketNames(ctx context.Context, js jetstream.JetStream) ([]string, 
 		}
 	}
 	return names, nil
+}
+
+// AccountWatchBuckets returns every per-account bucket as a watchable handle,
+// for a reconciler that must be woken by a cluster change rather than poll for
+// it. The set is re-read on each call because a new account's bucket appears
+// without notice: JetStream publishes no bucket-created event.
+func AccountWatchBuckets(ctx context.Context, js jetstream.JetStream) ([]*kvstore.Bucket, error) {
+	names, err := AccountBucketNames(ctx, js)
+	if err != nil {
+		return nil, err
+	}
+	buckets := make([]*kvstore.Bucket, 0, len(names))
+	for _, name := range names {
+		buckets = append(buckets, kvstore.NewBucket(js, kvstore.Config{Name: name, History: 1}))
+	}
+	return buckets, nil
 }
 
 // The account a per-account bucket belongs to, for callers that enumerated

@@ -1,14 +1,19 @@
 package dns
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/reconciler"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -425,4 +430,78 @@ func TestReconcilerBackendErrorStillAborts(t *testing.T) {
 	r := &Reconciler{enabled: true, baseDomain: testBase, s3cfg: &nsconfig.S3Config{}}
 	_, _, err := r.readZone(testBase)
 	require.Error(t, err, "a backend failure must propagate, not look like a rebuildable zone")
+}
+
+// TestReconciler_RunReturnsWhenDisabled pins the guard that keeps the daemon
+// able to start the loop unconditionally. Without it the disabled reconciler
+// would enter the watch loop and block until shutdown instead of returning.
+func TestReconciler_RunReturnsWhenDisabled(t *testing.T) {
+	r := NewReconciler(nil, nil, nil)
+	require.False(t, r.Enabled())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(t.Context())
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return for a disabled reconciler")
+	}
+}
+
+// TestReconciler_RunPerformsStartupPassThenStopsOnCancel covers the enabled
+// path of Run: the startup pass must fire before any watch or resync activity,
+// and cancelling ctx must still let the loop return.
+func TestReconciler_RunPerformsStartupPassThenStopsOnCancel(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	endpoint, _ := fakeS3(t, "northstar")
+
+	var passes atomic.Int64
+	r := &Reconciler{
+		enabled:    true,
+		baseDomain: testBase,
+		s3cfg: &nsconfig.S3Config{
+			Endpoint: endpoint, Bucket: "northstar", Region: "us-east-1",
+			AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET",
+		},
+		nc:     nc,
+		holder: "test-node",
+		desired: func() DesiredSet {
+			passes.Add(1)
+			return DesiredSet{}
+		},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(ctx)
+	}()
+
+	require.Eventually(t, func() bool { return passes.Load() >= 1 }, 5*time.Second, 10*time.Millisecond,
+		"the startup pass must run immediately, before any watch or resync activity")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after ctx was cancelled")
+	}
+}
+
+// TestNewReconciler_RetainsItsWatchSources covers the wiring the daemon relies
+// on: sources supplied at construction have to reach the loop, and supplying
+// none is legal because that is the interval-only behaviour.
+func TestNewReconciler_RetainsItsWatchSources(t *testing.T) {
+	bucket := kvstore.NewBucket(nil, kvstore.Config{Name: "b"})
+
+	assert.Empty(t, NewReconciler(nil, nil, nil).sources)
+	assert.Len(t, NewReconciler(nil, nil, nil,
+		reconciler.Fixed(bucket, "node.*"),
+		reconciler.Fixed(bucket, "lb.*"),
+	).sources, 2)
 }

@@ -1558,7 +1558,7 @@ func (d *Daemon) startCluster() error {
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.dnsWriter = handlers_dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
-	d.dnsReconciler = handlers_dns.NewReconciler(d.config, d.natsConn, d.dnsDesiredSet)
+	d.dnsReconciler = handlers_dns.NewReconciler(d.config, d.natsConn, d.dnsDesiredSet, d.dnsWatchSources()...)
 	d.dnsBaseDomain = handlers_dns.ResolveBaseDomain(d.config)
 	d.dnsInternalDomain = handlers_dns.ResolveInternalDomain(d.config)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)

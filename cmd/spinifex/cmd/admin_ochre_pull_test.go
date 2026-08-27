@@ -235,10 +235,12 @@ func TestRunPullWeights_UnknownModelRefused(t *testing.T) {
 	assert.Contains(t, err.Error(), "not present in the Ochre catalog")
 }
 
-// TestRunPullWeights_ProviderModelRefused covers the self-host gate: a
-// provider-served model must refuse before any network work, same as stage.
-func TestRunPullWeights_ProviderModelRefused(t *testing.T) {
-	_, err := runPullWeights(context.Background(), deadHFClient(), explodingObjectStore{t: t}, providerModelID, testHFRepo, "main", true, "")
+// TestWeightsStagingRefusal_PullOperationWording covers the self-host gate's
+// message for the 'pull' operation. v1 ships no provider-tier catalog entry,
+// so this drives weightsStagingRefusal directly rather than through a real
+// LookupServingSpec lookup.
+func TestWeightsStagingRefusal_PullOperationWording(t *testing.T) {
+	err := weightsStagingRefusal(providerModelID, "pull", true, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not self-host")
 }

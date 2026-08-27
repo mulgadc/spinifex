@@ -22,6 +22,7 @@ var spinifexAdminActions = map[string]bool{
 	"GrantModelAccess":  true,
 	"RevokeModelAccess": true,
 	"ListModelAccess":   true,
+	"ListOchreCatalog":  true,
 }
 
 func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request) error {
@@ -110,6 +111,11 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		var models []string
 		if models, err = gw.BedrockAccessAdmin.List(ctx, targetAccount); err == nil {
 			output = gateway_bedrock.ModelAccessList{AccountID: targetAccount, ModelIDs: models}
+		}
+	case "ListOchreCatalog":
+		var entries []gateway_bedrock.AdminCatalogEntry
+		if entries, err = gateway_bedrock.AdminCatalog(ctx, accountID, gw.bedrockResolver(), gw.bedrockAccessResolver()); err == nil {
+			output = gateway_bedrock.AdminCatalogList{Entries: entries}
 		}
 	default:
 		return errors.New(awserrors.ErrorInvalidAction)

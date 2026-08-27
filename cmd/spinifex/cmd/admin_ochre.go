@@ -351,6 +351,17 @@ func pullFilesToPrefix(ctx context.Context, hf *hfhub.Client, store objectstore.
 	return uploaded, nil
 }
 
+// weightsStagingRefusal builds the model-ID refusal error weights staging and
+// pulling share. Unknown IDs and provider-served IDs get distinct wording so
+// a caller can tell which one it hit; taking found/selfHost as plain bools
+// keeps this testable without a real catalog entry for the provider case.
+func weightsStagingRefusal(modelID, operation string, found, _ bool) error {
+	if !found {
+		return fmt.Errorf("unknown model ID %q: not present in the Ochre catalog", modelID)
+	}
+	return fmt.Errorf("%q is a provider-served model, not self-host; weights %s does not apply", modelID, operation)
+}
+
 // runPullWeights holds 'ochre weights pull' decision and side-effect logic:
 // catalog validation, ref resolution to an immutable commit SHA (D3), tree
 // listing and safetensors-only filtering (D4), streaming each selected file
@@ -360,10 +371,7 @@ func pullFilesToPrefix(ctx context.Context, hf *hfhub.Client, store objectstore.
 func runPullWeights(ctx context.Context, hf *hfhub.Client, store objectstore.ObjectStore, modelID, hfRepo, revision string, revisionExplicit bool, s3URIFlag string) (string, error) {
 	spec, found, selfHost := gateway_bedrock.LookupServingSpec(modelID)
 	if !found || !selfHost {
-		if !found {
-			return "", fmt.Errorf("unknown model ID %q: not present in the Ochre catalog", modelID)
-		}
-		return "", fmt.Errorf("%q is a provider-served model, not self-host; weights pull does not apply", modelID)
+		return "", weightsStagingRefusal(modelID, "pull", found, selfHost)
 	}
 
 	// The catalog carries the canonical repo and a pinned revision so a bare
@@ -667,10 +675,7 @@ type weightsSnapshotChecker func(ctx context.Context, snapshotID string) (bool, 
 // fake materializer.
 func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weightsStore *gateway_bedrock.WeightsStore, tmpDirFlag, modelID, s3URI string, materialize weightsMaterializer, checkSnapshotLive weightsSnapshotChecker) (string, error) {
 	if _, found, selfHost := gateway_bedrock.LookupServingSpec(modelID); !found || !selfHost {
-		if !found {
-			return "", fmt.Errorf("unknown model ID %q: not present in the Ochre catalog", modelID)
-		}
-		return "", fmt.Errorf("%q is a provider-served model, not self-host; weights staging does not apply", modelID)
+		return "", weightsStagingRefusal(modelID, "staging", found, selfHost)
 	}
 
 	bucket, prefix, err := parseWeightsS3URI(s3URI)

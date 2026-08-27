@@ -432,6 +432,7 @@ func TestInvokeRouter_GuardrailInputBlock_Anthropic_SkipsBackend(t *testing.T) {
 	require.NoError(t, err)
 
 	modelID := "anthropic.claude-3-5-sonnet-20240620-v1:0"
+	withProviderCatalogEntry(t, modelID)
 	rt := NewInvokeRouter(stubCredentialResolver{key: "sk-test", ok: true}, nil, nil, grantAll{}, nil, store, nil)
 
 	body := []byte(`{"anthropic_version":"bedrock-2023-05-31","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"this has a badword in it"}]}]}`)

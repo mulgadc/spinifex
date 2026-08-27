@@ -118,6 +118,7 @@ func createInput(modelID, name string, units int64) *bedrock.CreateProvisionedMo
 // bead's core constraint: provisioning capacity only makes sense for a model
 // this platform actually launches VMs for.
 func TestCreateProvisionedModelThroughput_RejectsProviderHostedModel(t *testing.T) {
+	withProviderCatalogEntry(t, anthropicTestModel)
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 

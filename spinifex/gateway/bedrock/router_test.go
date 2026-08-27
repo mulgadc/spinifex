@@ -63,6 +63,7 @@ func TestRouter_Converse_UnknownModelReturnsResourceNotFound(t *testing.T) {
 }
 
 func TestRouter_Converse_AnthropicNoCredentialReturnsAccessDenied(t *testing.T) {
+	withProviderCatalogEntry(t, "anthropic.claude-3-5-sonnet-20240620-v1:0")
 	rt := NewRouter(stubCredentialResolver{ok: false}, nil, nil, grantAll{}, nil, nil, nil)
 	_, err := rt.Converse(context.Background(), "000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0", converseInput())
 	require.Error(t, err)
@@ -128,6 +129,7 @@ func TestRouter_ConverseStream_UnknownModelReturnsResourceNotFound(t *testing.T)
 }
 
 func TestRouter_ConverseStream_AnthropicNoCredentialReturnsAccessDenied(t *testing.T) {
+	withProviderCatalogEntry(t, "anthropic.claude-3-5-sonnet-20240620-v1:0")
 	rt := NewRouter(stubCredentialResolver{ok: false}, nil, nil, grantAll{}, nil, nil, nil)
 	_, err := rt.ConverseStream(context.Background(), "000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0", converseStreamInput())
 	require.Error(t, err)
@@ -237,6 +239,7 @@ func TestRouter_ConverseStream_SelfHostGatedAtCapacity(t *testing.T) {
 // never ThrottlingException — the managed-provider branch must never reach
 // admitSelfHost.
 func TestRouter_Converse_AnthropicPathIsNeverGated(t *testing.T) {
+	withProviderCatalogEntry(t, "anthropic.claude-3-5-sonnet-20240620-v1:0")
 	rt := NewRouter(stubCredentialResolver{ok: false}, nil, nil, grantAll{}, nil, nil, nil)
 
 	const n = 20

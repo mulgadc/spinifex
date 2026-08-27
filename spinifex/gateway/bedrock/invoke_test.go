@@ -39,6 +39,30 @@ func withCatalogEntry(t *testing.T, entry catalogEntry) {
 	t.Cleanup(func() { catalog = original })
 }
 
+// withProviderCatalogEntry installs a synthetic provider-tier entry for
+// modelID under the Anthropic vendor, the only one Router/InvokeRouter
+// dispatch to. v1 ships no provider-tier catalog entry of its own, so
+// provider-path tests (credential gating, dispatch, in-tree pricing)
+// synthesize one instead of depending on a real catalog member.
+func withProviderCatalogEntry(t *testing.T, modelID string) catalogEntry {
+	t.Helper()
+	entry := catalogEntry{
+		ModelID:                       modelID,
+		ModelName:                     "Test Anthropic Model",
+		ProviderName:                  "Anthropic",
+		Provider:                      providerPrefix + vendorAnthropic,
+		InputModalities:               []string{"TEXT", "IMAGE"},
+		OutputModalities:              []string{"TEXT"},
+		ResponseStreamingSupported:    true,
+		InferenceTypesSupported:       []string{"ON_DEMAND"},
+		InputPriceMicroUSDPerMillion:  3_000_000,
+		OutputPriceMicroUSDPerMillion: 15_000_000,
+		PriceKnown:                    true,
+	}
+	withCatalogEntry(t, entry)
+	return entry
+}
+
 func TestInvokeRouter_SelfHostSuccess(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -70,6 +94,7 @@ func TestInvokeRouter_UnknownModelReturnsResourceNotFound(t *testing.T) {
 }
 
 func TestInvokeRouter_AnthropicNoCredentialReturnsAccessDenied(t *testing.T) {
+	withProviderCatalogEntry(t, "anthropic.claude-3-5-sonnet-20240620-v1:0")
 	rt := NewInvokeRouter(stubCredentialResolver{ok: false}, nil, nil, grantAll{}, nil, nil, nil)
 	_, _, err := rt.InvokeModel(context.Background(), "000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0", []byte(`{}`), "", "")
 	require.Error(t, err)
@@ -137,6 +162,7 @@ func TestInvokeStreamRouter_UnknownModelReturnsResourceNotFound(t *testing.T) {
 }
 
 func TestInvokeStreamRouter_AnthropicNoCredentialReturnsAccessDenied(t *testing.T) {
+	withProviderCatalogEntry(t, "anthropic.claude-3-5-sonnet-20240620-v1:0")
 	rt := NewInvokeStreamRouter(stubCredentialResolver{ok: false}, nil, grantAll{}, nil, nil, nil)
 	_, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0", []byte(`{}`), "", "")
 	require.Error(t, err)

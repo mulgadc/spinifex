@@ -47,8 +47,7 @@ func TestResolvePrice_SelfHost_AlwaysKnownZero(t *testing.T) {
 // TestResolvePrice_ProviderUsesInTreeDefault covers a provider entry with no
 // KV override: it falls back to the catalog's in-tree default price.
 func TestResolvePrice_ProviderUsesInTreeDefault(t *testing.T) {
-	entry, ok := lookupCatalogEntry(priceTestProviderModelID)
-	require.True(t, ok)
+	entry := withProviderCatalogEntry(t, priceTestProviderModelID)
 
 	price, err := resolvePrice(context.Background(), nil, entry)
 	require.NoError(t, err)
@@ -61,8 +60,7 @@ func TestResolvePrice_ProviderUsesInTreeDefault(t *testing.T) {
 // with a KV override present: the override wins outright, not just fills a
 // gap in the in-tree default.
 func TestResolvePrice_KVOverrideWinsOverInTreeDefault(t *testing.T) {
-	entry, ok := lookupCatalogEntry(priceTestProviderModelID)
-	require.True(t, ok)
+	entry := withProviderCatalogEntry(t, priceTestProviderModelID)
 
 	override := Price{InputMicroUSDPerMillion: 1_000_000, OutputMicroUSDPerMillion: 2_000_000, Known: true}
 	price, err := resolvePrice(context.Background(), stubPriceResolver{price: override, ok: true}, entry)
@@ -86,8 +84,7 @@ func TestResolvePrice_NoDefaultNoOverride_Unknown(t *testing.T) {
 // surfaces rather than silently falling through to the in-tree default or an
 // unknown price — an internal fault is not a pricing verdict.
 func TestResolvePrice_ResolverErrorPropagates(t *testing.T) {
-	entry, ok := lookupCatalogEntry(priceTestProviderModelID)
-	require.True(t, ok)
+	entry := withProviderCatalogEntry(t, priceTestProviderModelID)
 
 	_, err := resolvePrice(context.Background(), stubPriceResolver{err: assert.AnError}, entry)
 	require.Error(t, err)

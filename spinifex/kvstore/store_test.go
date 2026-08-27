@@ -233,7 +233,7 @@ func TestOver_ServesAPreOpenedBucket(t *testing.T) {
 	_, err = kv.Put(t.Context(), "acct-a/one", data)
 	require.NoError(t, err)
 
-	store := kvstore.Over[record](kv, kvstore.Config{})
+	store := kvstore.Over[record](nil, kv, kvstore.Config{})
 
 	got, _, err := store.Get(t.Context(), "acct-a/one")
 	require.NoError(t, err)
@@ -441,7 +441,7 @@ func TestBucket_ConfiguredReportsWhetherThereIsAnythingToOpen(t *testing.T) {
 
 	assert.False(t, kvstore.NewBucket(nil, kvstore.Config{Name: "b"}).Configured())
 	assert.True(t, kvstore.NewBucket(testutil.NewJetStream(t, nc), kvstore.Config{Name: "b"}).Configured())
-	assert.True(t, kvstore.NewOpenBucket(newOpenBucket(t), kvstore.Config{Name: "b"}).Configured())
+	assert.True(t, kvstore.NewOpenBucket(nil, newOpenBucket(t), kvstore.Config{Name: "b"}).Configured())
 }
 
 // TestBucket_TTLOpensABucketWithThatMaxAge covers Config.TTL, the branch of

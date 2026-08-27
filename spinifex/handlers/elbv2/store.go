@@ -48,6 +48,9 @@ const (
 type Store struct {
 	kv jetstream.KeyValue
 
+	// js is what a watcher's bucket reopens against after the stream is lost.
+	js jetstream.JetStream
+
 	// now and claimTTL back ClaimLBName's pending-vs-orphan check. Both are
 	// overridden in tests (same package) so the crash-orphan reclaim path never
 	// needs a real sleep past the TTL.
@@ -93,7 +96,7 @@ func NewStore(ctx context.Context, nc *nats.Conn) (*Store, error) {
 	}
 
 	slog.Info("ELBv2 store initialized", "bucket", KVBucketELBv2)
-	return &Store{kv: kv, now: time.Now, claimTTL: lbNameClaimTTL}, nil
+	return &Store{kv: kv, js: js, now: time.Now, claimTTL: lbNameClaimTTL}, nil
 }
 
 // --- Load Balancer CRUD ---
@@ -216,7 +219,7 @@ func (s *Store) ListLoadBalancersStrict(ctx context.Context) ([]*LoadBalancerRec
 // groups, listeners and rules, so a caller wanting only one of those filters on
 // the corresponding key prefix.
 func (s *Store) WatchBucket() *kvstore.Bucket {
-	return kvstore.NewOpenBucket(s.kv, kvstore.Config{Name: KVBucketELBv2})
+	return kvstore.NewOpenBucket(s.js, s.kv, kvstore.Config{Name: KVBucketELBv2})
 }
 
 // GetLoadBalancerByArn finds a load balancer by the short ID in the ARN's final

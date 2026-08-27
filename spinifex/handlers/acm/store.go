@@ -187,7 +187,9 @@ func NewStore(ctx context.Context, nc *nats.Conn, masterKey []byte) (*Store, err
 
 	slog.Info("ACM store initialised", "bucket", KVBucketACM)
 	return &Store{
-		store: kvstore.Over[CertRecord](kv, kvstore.Config{
+		store: kvstore.Over[CertRecord](js, kv, kvstore.Config{
+			Name:     KVBucketACM,
+			History:  KVBucketACMVersion,
 			Attempts: maxInUseByCASAttempts,
 			Exhausted: func(key string, attempts int) error {
 				return fmt.Errorf("acm store: exceeded %d CAS attempts updating %s", attempts, key)

@@ -331,6 +331,18 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 // eksJSONContentType is the AWS REST-JSON 1.1 content type EKS clients expect.
 const eksJSONContentType = "application/x-amz-json-1.1"
 
+// jsonErrorService reports whether svc returns AWS JSON 1.1 errors rather than
+// XML. One source of truth so every error emitter agrees with ErrorHandler; an
+// XML body to these clients is an unparseable "<?xml…" deserialization error.
+func jsonErrorService(svc string) bool {
+	switch svc {
+	case "eks", "ecr", "acm", "ecs", "tagging",
+		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime":
+		return true
+	}
+	return false
+}
+
 // clusterUnavailableMsg is the 503 body when NATS is disconnected. Points
 // operators at /local/status rather than leaving the AWS CLI hanging on timeouts.
 const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check daemon /local/status"
@@ -341,13 +353,13 @@ const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check 
 func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.Request, svc string) {
 	requestID := uuid.NewV4().String()
 
-	// EKS and ECS use AWS JSON 1.1.
-	if svc == "eks" || svc == "ecs" {
+	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
+	if jsonErrorService(svc) {
 		body := GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		if _, err := w.Write(body); err != nil {
-			slog.Error("Failed to write EKS cluster-unavailable response", "err", err)
+			slog.Error("Failed to write JSON cluster-unavailable response", "err", err)
 		}
 		return
 	}
@@ -393,13 +405,13 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	}
 	errorMsg := awserrors.ErrorLookup[errorCode]
 
-	// EKS and ECS use AWS JSON 1.1.
-	if svc == "eks" || svc == "ecs" {
+	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
+	if jsonErrorService(svc) {
 		body := GenerateEKSErrorResponse(errorCode, errorMsg.Message, requestID)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.WriteHeader(errorMsg.HTTPCode)
 		if _, err := w.Write(body); err != nil {
-			slog.Error("Failed to write EKS throttle error response", "err", err)
+			slog.Error("Failed to write JSON throttle error response", "err", err)
 		}
 		return
 	}
@@ -752,10 +764,9 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
-	// EKS, ECR, ACM, ECS, tagging, and the bedrock/bedrock-runtime/bedrock-agent/
-	// bedrock-agent-runtime family use AWS JSON 1.1; query/XML services fall
-	// through.
-	if svc == "eks" || svc == "ecr" || svc == "acm" || svc == "ecs" || svc == "tagging" || svc == "bedrock" || svc == "bedrock-runtime" || svc == "bedrock-agent" || svc == "bedrock-agent-runtime" {
+	// EKS, ECR, ACM, ECS, tagging, and the bedrock family use AWS JSON 1.1;
+	// query/XML services fall through.
+	if jsonErrorService(svc) {
 		body := GenerateEKSErrorResponse(code, errorMsg.Message, requestId)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)

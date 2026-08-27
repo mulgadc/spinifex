@@ -1462,6 +1462,39 @@ func TestWriteThrottleError_IAM(t *testing.T) {
 	assert.Contains(t, string(body), "<ErrorResponse>")
 }
 
+func TestWriteThrottleError_Bedrock(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+
+	req := httptest.NewRequest(http.MethodPost, "/model/meta.llama3-2-1b-instruct-v1%3A0/converse", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxService, "bedrock"))
+	w := httptest.NewRecorder()
+
+	gw.writeThrottleError(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"), "bedrock must get JSON, not XML")
+	assert.Contains(t, string(body), `"__type"`)
+	assert.NotContains(t, string(body), "<?xml")
+}
+
+func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+
+	req := httptest.NewRequest(http.MethodPost, "/model/meta.llama3-2-1b-instruct-v1%3A0/converse", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxService, "bedrock"))
+	w := httptest.NewRecorder()
+
+	gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, 403, resp.StatusCode)
+	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"), "a bedrock auth failure must be SDK-parseable JSON")
+	assert.Contains(t, string(body), "SignatureDoesNotMatch")
+	assert.NotContains(t, string(body), "<?xml")
+}
+
 func TestThrottleMiddleware_Integration(t *testing.T) {
 	cfg := ratelimit.Config{
 		Enabled: true,

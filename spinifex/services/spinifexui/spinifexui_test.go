@@ -347,6 +347,29 @@ func TestNewReverseProxy_StripsPrefixAndSetsHost(t *testing.T) {
 	}
 }
 
+// TestNewReverseProxy_PreservesEscapedPath guards the SigV4 contract: a
+// percent-encoded path segment (a ':' in a bedrock modelId) must reach the
+// backend byte-identical, or the gateway recanonicalises it and the signature
+// the client computed over the escaped form no longer verifies.
+func TestNewReverseProxy_PreservesEscapedPath(t *testing.T) {
+	var gotEscaped string
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotEscaped = r.URL.EscapedPath()
+	}))
+	defer backend.Close()
+
+	transport, ok := backend.Client().Transport.(*http.Transport)
+	require.True(t, ok, "expected *http.Transport")
+
+	proxy := newReverseProxy(backend.Listener.Addr().String(), "/proxy/awsgw", transport)
+
+	const escaped = "/proxy/awsgw/model/meta.llama3-2-1b-instruct-v1%3A0/converse"
+	proxy.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, escaped, nil))
+
+	assert.Equal(t, "/model/meta.llama3-2-1b-instruct-v1%3A0/converse", gotEscaped,
+		"escaped path must survive the proxy byte-identical")
+}
+
 func TestNewReverseProxy_ErrorHandler(t *testing.T) {
 	// Use a transport that will fail to connect (no backend listening).
 	transport := &http.Transport{

@@ -282,13 +282,15 @@ func (gw *GatewayConfig) bedrockRecorder() gateway_bedrock.Recorder {
 	return gateway_bedrock.NoopRecorder
 }
 
-// bedrockAccessResolver returns gw.BedrockAccess as an AccessResolver, or the
+// bedrockAccessResolver returns gw.BedrockAccess wrapped so a staged
+// self-host model is granted to every account (import is the grant), or the
 // deny-all fallback when no grant store is configured. Model access is
 // deny-by-default, so an unconfigured gateway advertises and serves no models
-// rather than all of them.
+// rather than all of them; staged-open behaviour requires the access
+// subsystem to be present, so the fallback stays unwrapped.
 func (gw *GatewayConfig) bedrockAccessResolver() gateway_bedrock.AccessResolver {
 	if gw.BedrockAccess != nil {
-		return gw.BedrockAccess
+		return gateway_bedrock.NewStagedOpenAccessResolver(gw.BedrockAccess)
 	}
 	return gateway_bedrock.DenyAllAccessResolver
 }

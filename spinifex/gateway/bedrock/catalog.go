@@ -79,8 +79,9 @@ type catalogEntry struct {
 	PriceKnown                    bool  // provider entries only; self-host is always known-zero
 }
 
-// catalog is the static model set: two self-hosted open models and one
-// Anthropic-direct model. Later phases extend this list.
+// catalog is the static model set: self-hosted open models only. v1 does not
+// ship a provider-direct tier; Provider's "provider:<vendor>" plumbing stays
+// in place, unused, for a later phase to re-enable.
 var catalog = []catalogEntry{
 	{
 		ModelID:                    "meta.llama3-2-1b-instruct-v1:0",
@@ -177,20 +178,6 @@ var catalog = []catalogEntry{
 		InferenceTypesSupported:    []string{"ON_DEMAND"},
 		MinVRAMMiB:                 1200,
 		InstanceType:               "g5.xlarge",
-	},
-	{
-		ModelID:                    "anthropic.claude-3-5-sonnet-20240620-v1:0",
-		ModelName:                  "Claude 3.5 Sonnet",
-		ProviderName:               "Anthropic",
-		Provider:                   providerPrefix + vendorAnthropic,
-		InputModalities:            []string{"TEXT", "IMAGE"},
-		OutputModalities:           []string{"TEXT"},
-		ResponseStreamingSupported: false,
-		InferenceTypesSupported:    []string{"ON_DEMAND"},
-		// List pricing at launch: $3/MTok input, $15/MTok output.
-		InputPriceMicroUSDPerMillion:  3_000_000,
-		OutputPriceMicroUSDPerMillion: 15_000_000,
-		PriceKnown:                    true,
 	},
 }
 

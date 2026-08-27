@@ -101,6 +101,7 @@ func TestListFoundationModels_SelfHostExcludedWhenUngranted(t *testing.T) {
 }
 
 func TestListFoundationModels_ProviderIncludedWhenGrantedAndResolvable(t *testing.T) {
+	withProviderCatalogEntry(t, anthropicTestModel)
 	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{"anthropic": true}},
 		grantSet{anthropicTestModel: true}, &bedrock.ListFoundationModelsInput{})
 	require.NoError(t, err)
@@ -108,6 +109,7 @@ func TestListFoundationModels_ProviderIncludedWhenGrantedAndResolvable(t *testin
 }
 
 func TestListFoundationModels_ProviderExcludedWhenUnresolvable(t *testing.T) {
+	withProviderCatalogEntry(t, anthropicTestModel)
 	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{}})
 	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}},
 		grantSet{anthropicTestModel: true}, &bedrock.ListFoundationModelsInput{})
@@ -134,6 +136,7 @@ func TestGetFoundationModel_SelfHostWithUnresolvableWeightsReturnsNotFound(t *te
 // filters independent: a grant says the account may use the model, not that
 // the platform can reach it.
 func TestListFoundationModels_ProviderExcludedWhenUngrantedButResolvable(t *testing.T) {
+	withProviderCatalogEntry(t, anthropicTestModel)
 	out, err := ListFoundationModels(context.Background(), "000000000001", stubResolver{ok: map[string]bool{"anthropic": true}},
 		grantSet{}, &bedrock.ListFoundationModelsInput{})
 	require.NoError(t, err)
@@ -145,6 +148,7 @@ func TestListFoundationModels_ProviderExcludedWhenUngrantedButResolvable(t *test
 // with the catalog: a model missing here would be ungrantable via --all-models
 // and so invisible to every account.
 func TestCatalogModelIDs_CoversWholeCatalog(t *testing.T) {
+	withProviderCatalogEntry(t, anthropicTestModel)
 	ids := CatalogModelIDs()
 	require.Len(t, ids, len(catalog))
 	assert.Contains(t, ids, selfHostTestModel)
@@ -226,6 +230,7 @@ func TestLookupServingSpec_EmbedderCarriesPinnedRevision(t *testing.T) {
 // hit for a valid-but-wrong-tier model ID: found=true (it IS a catalog
 // entry), selfHost=false, so staging must be refused rather than proceed.
 func TestLookupServingSpec_ProviderEntry(t *testing.T) {
+	withProviderCatalogEntry(t, "anthropic.claude-3-5-sonnet-20240620-v1:0")
 	spec, found, selfHost := LookupServingSpec("anthropic.claude-3-5-sonnet-20240620-v1:0")
 	require.True(t, found)
 	assert.False(t, selfHost)
@@ -359,6 +364,7 @@ func TestLookupCoServeGroup_Bundle(t *testing.T) {
 // TestLookupCoServeGroup_ProviderEntry covers the refusal case a launcher
 // must hit for a valid-but-wrong-tier model ID.
 func TestLookupCoServeGroup_ProviderEntry(t *testing.T) {
+	withProviderCatalogEntry(t, anthropicTestModel)
 	spec, found, selfHost := LookupCoServeGroup(anthropicTestModel)
 	require.True(t, found)
 	assert.False(t, selfHost)

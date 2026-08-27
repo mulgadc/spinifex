@@ -12,9 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Shipped catalog entries, one per tier, referenced by the access tests.
-// Naming them here keeps a catalog change to one edit per tier rather than one
-// per assertion.
+// selfHostTestModel and selfHostTestModel3B are shipped catalog entries.
+// anthropicTestModel is not: v1 ships no provider-tier entry, so
+// provider-path tests pair it with withProviderCatalogEntry. Naming them here
+// keeps a catalog change to one edit per tier rather than one per assertion.
 const (
 	selfHostTestModel   = "meta.llama3-2-1b-instruct-v1:0"
 	selfHostTestModel3B = "meta.llama3-2-3b-instruct-v1:0"

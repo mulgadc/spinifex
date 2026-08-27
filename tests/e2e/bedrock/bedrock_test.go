@@ -22,26 +22,28 @@ const (
 	modelBogus         = "does.not-exist-v1:0"
 )
 
-// TestGetFoundationModel round-trips a known model and asserts
-// ResourceNotFoundException for an unknown one. Uses the Anthropic entry: it
-// resolves unconditionally, unlike the self-host entry, which is gated on a
-// weights snapshot being staged — see TestGetFoundationModelSelfHost.
+// TestGetFoundationModel asserts ResourceNotFoundException for an unknown
+// model ID. v1 ships no provider-tier entry that resolves unconditionally
+// (modelAnthropic is not in the catalog at all — it returns the same
+// ResourceNotFoundException as a genuinely unknown ID), so the positive,
+// known-model path is covered separately by TestGetFoundationModelSelfHost,
+// which is gated on a real weights snapshot being staged.
 func TestGetFoundationModel(t *testing.T) {
 	f := requireBedrockFixture(t)
-
-	t.Run("known model", func(t *testing.T) {
-		out, err := f.AWS.Bedrock.GetFoundationModel(&bedrock.GetFoundationModelInput{
-			ModelIdentifier: aws.String(modelAnthropic),
-		})
-		require.NoError(t, err, "get-foundation-model %s", modelAnthropic)
-		require.NotNil(t, out.ModelDetails, "empty ModelDetails")
-		assert.Equal(t, modelAnthropic, aws.StringValue(out.ModelDetails.ModelId))
-	})
 
 	t.Run("unknown model", func(t *testing.T) {
 		harness.ExpectError(t, "ResourceNotFoundException", func() error {
 			_, e := f.AWS.Bedrock.GetFoundationModel(&bedrock.GetFoundationModelInput{
 				ModelIdentifier: aws.String(modelBogus),
+			})
+			return e
+		})
+	})
+
+	t.Run("provider-tier model ID is absent from v1", func(t *testing.T) {
+		harness.ExpectError(t, "ResourceNotFoundException", func() error {
+			_, e := f.AWS.Bedrock.GetFoundationModel(&bedrock.GetFoundationModelInput{
+				ModelIdentifier: aws.String(modelAnthropic),
 			})
 			return e
 		})
@@ -91,9 +93,11 @@ func TestConverseSelfHost(t *testing.T) {
 }
 
 // TestConverseAnthropic exercises the real Anthropic-direct Converse path.
-// Gated behind OCHRE_E2E_ANTHROPIC=1 — it needs a live Anthropic API key
-// configured on the cluster (OCHRE_ANTHROPIC_API_KEY or a per-account KV entry).
+// v1 ships no provider-tier catalog entry, so modelAnthropic cannot resolve
+// on any cluster; this always skips regardless of OCHRE_E2E_ANTHROPIC until a
+// later phase re-enables the provider-direct tier.
 func TestConverseAnthropic(t *testing.T) {
+	t.Skip("provider-direct tier not shipped in v1; anthropic entry is absent from the catalog")
 	if os.Getenv("OCHRE_E2E_ANTHROPIC") != "1" {
 		t.Skip("OCHRE_E2E_ANTHROPIC!=1; skipping real Anthropic Converse")
 	}
@@ -150,10 +154,12 @@ func TestInvokeModelSelfHost(t *testing.T) {
 }
 
 // TestInvokeModelAnthropic exercises the real Anthropic-direct InvokeModel
-// path with the Bedrock-native Claude Messages request/response shape. Gated
-// behind OCHRE_E2E_ANTHROPIC=1 — it needs a live Anthropic API key configured
-// on the cluster (OCHRE_ANTHROPIC_API_KEY or a per-account KV entry).
+// path with the Bedrock-native Claude Messages request/response shape. v1
+// ships no provider-tier catalog entry, so modelAnthropic cannot resolve on
+// any cluster; this always skips regardless of OCHRE_E2E_ANTHROPIC until a
+// later phase re-enables the provider-direct tier.
 func TestInvokeModelAnthropic(t *testing.T) {
+	t.Skip("provider-direct tier not shipped in v1; anthropic entry is absent from the catalog")
 	if os.Getenv("OCHRE_E2E_ANTHROPIC") != "1" {
 		t.Skip("OCHRE_E2E_ANTHROPIC!=1; skipping real Anthropic InvokeModel")
 	}

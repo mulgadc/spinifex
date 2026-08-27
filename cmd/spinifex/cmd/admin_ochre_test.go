@@ -25,10 +25,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// selfHostModelID and providerModelID are real catalog entries: the former
-// is self-host (weights staging applies), the latter is provider-served
-// (weights staging must refuse it), so tests exercise LookupServingSpec's
-// found/selfHost distinction against the real catalog rather than a stub.
+// selfHostModelID is a real catalog entry (weights staging applies).
+// providerModelID is an arbitrary ID not present in the catalog at all: v1
+// ships no provider-tier entry, so the found-but-not-selfHost case is
+// exercised directly against weightsStagingRefusal instead, not through a
+// real LookupServingSpec lookup.
 const (
 	selfHostModelID = "meta.llama3-2-1b-instruct-v1:0"
 	providerModelID = "anthropic.claude-3-5-sonnet-20240620-v1:0"
@@ -404,24 +405,17 @@ func TestRunStageWeights_UnknownModelIDRefused(t *testing.T) {
 	assert.Empty(t, entries, "refusal must not write a KV entry")
 }
 
-// TestRunStageWeights_ProviderModelIDRefused covers refusal on a model ID
-// that exists in the catalog but is provider-served, not self-host. The
-// error must be distinguishable from the unknown-model-ID case, since
-// LookupServingSpec returns found and selfHost separately for exactly this
-// reason.
-func TestRunStageWeights_ProviderModelIDRefused(t *testing.T) {
-	weightsStore := newWeightsStoreForTest(t)
-
-	_, err := runStageWeights(context.Background(), explodingObjectStore{t: t}, weightsStore, t.TempDir(),
-		providerModelID, "s3://models/claude/", explodingMaterializer(t), explodingSnapshotChecker(t))
+// TestWeightsStagingRefusal_ProviderServedDistinguishesFromUnknown covers
+// refusal for a model ID that is found in the catalog but is provider-served,
+// not self-host. The error must be distinguishable from the unknown-model-ID
+// case; v1 ships no provider-tier entry, so this drives weightsStagingRefusal
+// directly with explicit found/selfHost values rather than a real lookup.
+func TestWeightsStagingRefusal_ProviderServedDistinguishesFromUnknown(t *testing.T) {
+	err := weightsStagingRefusal(providerModelID, "staging", true, false)
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "provider-served")
 	assert.NotContains(t, err.Error(), "unknown model ID", "must be distinguishable from the unknown-model-ID refusal")
-
-	entries, listErr := weightsStore.ListWeights(context.Background())
-	require.NoError(t, listErr)
-	assert.Empty(t, entries, "refusal must not write a KV entry")
 }
 
 // TestRunStageWeights_MissingRequiredFilesRefusedBeforeMaterializing covers

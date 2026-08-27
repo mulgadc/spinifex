@@ -1327,8 +1327,8 @@ github.com/muesli/cancelreader v0.2.2 h1:3I4Kt4BQjOR54NavqnDogx/MIoWBFa0StPA8ELU
 github.com/muesli/cancelreader v0.2.2/go.mod h1:3XuTXfFS2VjM+HTLZY9Ak0l6eUKfijIfMUZ4EgX0QYo=
 github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc=
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
-github.com/mulgadc/bluebottle v1.18.1-0.20260827043632-fca81ec29266 h1:F8lFWRvjjvXGWTNGdiQOZX7VJ9FCy6uJXFMuYn6KnAg=
-github.com/mulgadc/bluebottle v1.18.1-0.20260827043632-fca81ec29266/go.mod h1:mvvV4d2w+kGLXxO1ymptNlxqUlNJKB2oAhk6PkpVLj8=
+github.com/mulgadc/bluebottle v1.18.1-0.20260827045410-e7d5cf022748 h1:kvoYwPtGXrX7GTN1aRL9KteP0bteaYNzrSMFQ+A7AmU=
+github.com/mulgadc/bluebottle v1.18.1-0.20260827045410-e7d5cf022748/go.mod h1:mvvV4d2w+kGLXxO1ymptNlxqUlNJKB2oAhk6PkpVLj8=
 github.com/mulgadc/northstar v1.18.0 h1:ksRjIKE6qtrw/ZoYaJh8JRBh+xdnuDw8FsmFLFCiXbg=
 github.com/mulgadc/northstar v1.18.0/go.mod h1:z6iol77R1vsIQyIBc1JQboUPhSJ6eG4bipzfbZZbLEM=
 github.com/mulgadc/predastore v1.18.1-0.20260826045109-26ce1b091112 h1:eCzKJDL1lmw6DNwjbDCQBoT3ZHIsYE1lMj5qitjySrY=

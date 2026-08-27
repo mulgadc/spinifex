@@ -15,7 +15,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 )
 
 // serverTLSConfig is the webhook's loopback serving TLS config.

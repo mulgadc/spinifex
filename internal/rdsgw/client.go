@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/internal/gwsign"
-	"github.com/mulgadc/spinifex/internal/tlsconfig"
 )
 
 const (

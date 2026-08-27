@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/internal/gwsign"
-	"github.com/mulgadc/spinifex/internal/tlsconfig"
 )
 
 // Client posts SigV4-signed requests to the AWS gateway for the "eks" service.

@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 )
 
 // NodeInfo describes a node participating in cluster formation.

@@ -20,7 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
 
-	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 )
 
 // targetPrefix is the X-Amz-Target service prefix the gateway's ECS dispatch

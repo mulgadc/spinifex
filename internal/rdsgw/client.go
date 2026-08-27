@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
-	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 )
 
 const (

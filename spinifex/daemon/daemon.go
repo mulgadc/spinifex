@@ -29,7 +29,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
-	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"

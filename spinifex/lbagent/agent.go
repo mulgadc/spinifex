@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
-	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 )

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 

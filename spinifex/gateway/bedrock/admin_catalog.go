@@ -64,19 +64,16 @@ func (e catalogEntry) toAdminEntry(availability string) AdminCatalogEntry {
 	}
 }
 
-// availabilityReason runs the same three checks tieredCatalog uses to decide
-// whether to include entry for accountID, but returns which one failed
-// instead of a bool: an operator-only view is allowed to say why, where the
-// tenant-facing catalog is not.
+// availabilityReason runs the same checks tieredCatalog's access.Granted
+// (via stagedOpenAccessResolver) uses to decide whether to include entry for
+// accountID, but returns which one failed instead of a bool: an operator-only
+// view is allowed to say why, where the tenant-facing catalog is not.
+//
+// Self-host is judged weights-first, ahead of the grant check: import is the
+// grant in v1, so a self-host model's only gate is whether it is staged, and
+// it must never report AvailabilityUngranted. The grant/credential checks
+// below are reserved for the provider tier, which still requires one.
 func availabilityReason(ctx context.Context, accountID string, entry catalogEntry, resolver CredentialResolver, access AccessResolver) (string, error) {
-	granted, err := access.Granted(ctx, accountID, entry.ModelID)
-	if err != nil {
-		return "", err
-	}
-	if !granted {
-		return AvailabilityUngranted, nil
-	}
-
 	if entry.Provider == tierSelfHost {
 		_, resolvable, err := currentWeightsResolver().Resolve(ctx, entry.ModelID)
 		if err != nil {
@@ -87,6 +84,14 @@ func availabilityReason(ctx context.Context, accountID string, entry catalogEntr
 			return AvailabilityNoWeights, nil
 		}
 		return AvailabilityAvailable, nil
+	}
+
+	granted, err := access.Granted(ctx, accountID, entry.ModelID)
+	if err != nil {
+		return "", err
+	}
+	if !granted {
+		return AvailabilityUngranted, nil
 	}
 
 	vendor, ok := strings.CutPrefix(entry.Provider, providerPrefix)

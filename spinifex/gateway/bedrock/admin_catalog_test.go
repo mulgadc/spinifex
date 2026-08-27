@@ -1,5 +1,10 @@
 package gateway_bedrock
 
+//test:in-package — shares unexported test doubles (grantSet, grantAll,
+// stubResolver, withWeightsResolver, withProviderCatalogEntry) with the rest
+// of this package's *_test.go files rather than duplicating them behind an
+// exported surface.
+
 import (
 	"context"
 	"encoding/json"
@@ -34,14 +39,42 @@ func TestAdminCatalog_ClaudeEntryAbsent(t *testing.T) {
 	}
 }
 
-// TestAdminCatalog_ReasonUngranted covers the ungranted case: the grant check
-// runs before any weights/credential resolution, so an ungranted account
-// never learns whether the model would otherwise be servable.
+// TestAdminCatalog_ReasonUngranted covers the ungranted case for the
+// provider tier, the only one still gated by an explicit grant: self-host is
+// judged weights-first and never reports ungranted (see
+// TestAdminCatalog_SelfHostNeverUngranted).
 func TestAdminCatalog_ReasonUngranted(t *testing.T) {
+	withProviderCatalogEntry(t, anthropicTestModel)
+	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{selfHostTestModel: true}})
+	entries, err := AdminCatalog(context.Background(), "000000000001", stubResolver{ok: map[string]bool{"anthropic": true}}, grantSet{})
+	require.NoError(t, err)
+	assert.Equal(t, AvailabilityUngranted, adminEntry(t, entries, anthropicTestModel).Availability)
+}
+
+// TestAdminCatalog_SelfHostAvailableWithoutGrant is import-is-the-grant at
+// the admin layer: a staged self-host model reports available even for an
+// account holding no explicit grant on it.
+func TestAdminCatalog_SelfHostAvailableWithoutGrant(t *testing.T) {
 	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{selfHostTestModel: true}})
 	entries, err := AdminCatalog(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}}, grantSet{})
 	require.NoError(t, err)
-	assert.Equal(t, AvailabilityUngranted, adminEntry(t, entries, selfHostTestModel).Availability)
+	assert.Equal(t, AvailabilityAvailable, adminEntry(t, entries, selfHostTestModel).Availability)
+}
+
+// TestAdminCatalog_SelfHostNeverUngranted proves no self-host catalog entry
+// can report AvailabilityUngranted, staged or not: the reason reserved for
+// the provider tier must never leak onto a self-host entry.
+func TestAdminCatalog_SelfHostNeverUngranted(t *testing.T) {
+	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{}})
+	entries, err := AdminCatalog(context.Background(), "000000000001", stubResolver{ok: map[string]bool{}}, grantSet{})
+	require.NoError(t, err)
+	for _, e := range entries {
+		entry, ok := lookupCatalogEntry(e.ModelID)
+		if !ok || entry.Provider != tierSelfHost {
+			continue
+		}
+		assert.NotEqual(t, AvailabilityUngranted, e.Availability, "self-host model %q must never report ungranted", e.ModelID)
+	}
 }
 
 // TestAdminCatalog_ReasonNoWeightsStaged covers a granted self-host model

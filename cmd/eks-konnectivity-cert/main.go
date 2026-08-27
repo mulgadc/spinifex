@@ -38,6 +38,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )
 
 func main() {

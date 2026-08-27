@@ -6,6 +6,8 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/awsmodel"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
+
+	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )
 
 func main() {

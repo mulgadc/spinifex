@@ -24,6 +24,8 @@ import (
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+
+	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )
 
 func main() {

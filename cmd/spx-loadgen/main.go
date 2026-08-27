@@ -38,6 +38,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/loadgen"
+
+	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )
 
 func main() {

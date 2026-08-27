@@ -27,6 +27,8 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/eksgw"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+
+	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )
 
 // config is the webhook's runtime configuration, sourced from the first-boot

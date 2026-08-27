@@ -35,16 +35,17 @@ if [[ "${installed_series}" != "${WANT_SERIES}" ]]; then
     exit 1
 fi
 
-# 10-rds.conf resets ExecStartPost= wholesale, so a second entry the package
-# adds later would be dropped silently along with debian-start. Asserted here
-# because the drop-in cannot express "reset only this one".
+# 10-rds.conf resets ExecStartPost= wholesale and restores only the wsrep
+# cleanup, so a third entry the package adds later would be dropped silently.
+# Asserted here because the drop-in cannot express "reset only this one".
 PACKAGED_UNIT=/usr/lib/systemd/system/mariadb.service
 if [[ ! -f "${PACKAGED_UNIT}" ]]; then
     echo "ERROR: ${PACKAGED_UNIT} is missing — 10-rds.conf drops in over a unit this image does not ship" >&2
     exit 1
 fi
 packaged_post="$(sed -n 's/^ExecStartPost=//p' "${PACKAGED_UNIT}")"
-if [[ "${packaged_post}" != "+/etc/mysql/debian-start" ]]; then
+expected_post=$'/bin/rm -f /run/mysqld/wsrep-start-position /run/mysqld/wsrep-new-cluster\n!/etc/mysql/debian-start'
+if [[ "${packaged_post}" != "${expected_post}" ]]; then
     echo "ERROR: the packaged mariadb.service ExecStartPost set has changed; 10-rds.conf resets it and would discard the new entry" >&2
     printf '%s\n' "${packaged_post:-<none>}" >&2
     exit 1

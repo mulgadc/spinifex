@@ -105,12 +105,12 @@ detect_os() {
             ;;
         ubuntu)
             major="${VERSION_ID%%.*}"
-            if [ "$major" -lt 22 ] 2>/dev/null; then
-                fatal "Ubuntu $VERSION_ID is not supported. Minimum: Ubuntu 22.04"
+            if [ "$major" -lt 24 ] 2>/dev/null; then
+                fatal "Ubuntu $VERSION_ID is not supported. Minimum: Ubuntu 24.04"
             fi
             ;;
         *)
-            fatal "Unsupported OS: $ID $VERSION_ID. Spinifex requires Debian 13+ or Ubuntu 22.04+"
+            fatal "Unsupported OS: $ID $VERSION_ID. Spinifex requires Debian 13+ or Ubuntu 24.04+"
             ;;
     esac
 

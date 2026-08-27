@@ -588,6 +588,17 @@ export function SidebarLayout() {
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>
+            <SidebarMenuItem>
+              <Link to="/bedrock/list-guardrails">
+                <SidebarMenuButton
+                  isActive={pathname.startsWith("/bedrock/list-guardrails")}
+                  tooltip="Guardrails"
+                >
+                  <Shield className="size-4" />
+                  <span>Guardrails</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>
         {isAdmin && (

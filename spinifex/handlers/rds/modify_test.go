@@ -76,6 +76,14 @@ func newModifyHarnessWithAgent(t *testing.T, agentFails bool) *modifyHarness {
 	return h
 }
 
+// Models a guest whose agent is gone: apply-params is recorded but never
+// answered, and the budget is shrunk so the caller's wait is bounded in
+// milliseconds. Call before the command under test is issued.
+func (h *modifyHarness) silenceApplyParams() {
+	h.agent.silenceType(CommandApplyParams)
+	h.svc.deps.ApplyParamsTimeout = testUnreachableApplyParamsTimeout
+}
+
 func (h *modifyHarness) record(t *testing.T) DBInstanceRecord {
 	t.Helper()
 	kv, err := h.svc.bucket(t.Context(), testAccountID)

@@ -26,9 +26,14 @@ import (
 // milliseconds rather than in the minute a real one is given.
 const testVMStopTimeout = 40 * time.Millisecond
 
-// The wait for an apply-params reply, shrunk so an unreachable agent is
-// bounded in milliseconds rather than in the real command budget.
-const testApplyParamsTimeout = 40 * time.Millisecond
+// The wait for an apply-params reply. Well under the real budget, but with
+// enough headroom that a stub agent answering over NATS lands inside it on a
+// machine running the whole suite in parallel.
+const testApplyParamsTimeout = 10 * time.Second
+
+// The same wait for the cases that expect no reply at all, shrunk so an
+// unreachable agent is bounded in milliseconds.
+const testUnreachableApplyParamsTimeout = 40 * time.Millisecond
 
 // fakeInstanceCommander records the power commands the lifecycle ops issue, and
 // can refuse them the way a node that no longer holds the VM does.

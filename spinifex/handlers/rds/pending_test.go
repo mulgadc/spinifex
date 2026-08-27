@@ -448,7 +448,7 @@ func TestApplyPendingModifications_AFailedParameterApplyIsRecordedOnTheInstance(
 // record directly for the replacement's fresh agent to adopt on boot.
 func TestApplyPendingModifications_ClassChangeSurvivesAnUnreachableAgent(t *testing.T) {
 	h := newModifyHarness(t)
-	h.agent.silenceType(CommandApplyParams)
+	h.silenceApplyParams()
 	rec := modifyingRecord(&PendingModifiedValues{
 		DBInstanceClass: "db.m5.xlarge",
 		RequestedAt:     time.Now().UTC(),
@@ -478,7 +478,7 @@ func TestApplyPendingModifications_ClassChangeSurvivesAnUnreachableAgent(t *test
 // tolerance must not leak into the path a live-agent rollback owns.
 func TestApplyPendingModifications_ParameterGroupOnlyStillFailsOnAnUnreachableAgent(t *testing.T) {
 	h := newModifyHarness(t)
-	h.agent.silenceType(CommandApplyParams)
+	h.silenceApplyParams()
 	rec := modifyingRecord(&PendingModifiedValues{
 		DBParameterGroupName: testDefaultGroup,
 		RequestedAt:          time.Now().UTC(),

@@ -1357,7 +1357,9 @@ func TestModifyInstanceAttribute_ChangeUserData(t *testing.T) {
 	assert.Equal(t, "IyEvYmluL2Jhc2g=", *updated.RunInstancesInput.UserData)
 }
 
-func TestModifyInstanceAttribute_ClearsStateReason(t *testing.T) {
+// StateReason is observed state, so the API must not touch it. The node clears
+// it when it starts the instance; until then the reason for the stop stands.
+func TestModifyInstanceAttribute_LeavesStateReasonToTheNode(t *testing.T) {
 	id := "i-recovery"
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {
@@ -1386,7 +1388,9 @@ func TestModifyInstanceAttribute_ClearsStateReason(t *testing.T) {
 
 	updated := store.Stopped[id]
 	require.NotNil(t, updated)
-	assert.Nil(t, updated.Instance.StateReason)
+	assert.Equal(t, "t3.micro", updated.InstanceType, "the type change itself must still apply")
+	require.NotNil(t, updated.Instance.StateReason, "the API must not clear observed state")
+	assert.Equal(t, "Server.InsufficientInstanceCapacity", *updated.Instance.StateReason.Code)
 }
 
 func TestModifyInstanceAttribute_DisableApiTermination_Running(t *testing.T) {

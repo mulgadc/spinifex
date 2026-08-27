@@ -2129,8 +2129,6 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input
 			v.InstanceType = newType
 			v.Config.InstanceType = newType
 			v.Instance.InstanceType = aws.String(newType)
-			// Clear StateReason — resolves capacity-unavailable state from instance-type-missing bug.
-			v.Instance.StateReason = nil
 		}
 
 		if input.UserData != nil && input.UserData.Value != nil {

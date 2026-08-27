@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -147,10 +148,20 @@ type VM struct {
 	PlacementGroupName string `json:"placement_group_name,omitempty"`
 	PlacementGroupNode string `json:"placement_group_node,omitempty"`
 
-	// ExtraHostfwdPorts lists additional guest ports to forward from the host
-	// via the QEMU user-mode dev NIC. Used by ALB VMs to expose HTTP ports.
-	// Maps guest port → host port (host port filled in by StartInstance).
-	ExtraHostfwd map[int]int `json:"extra_hostfwd,omitempty"`
+	// HostfwdPorts lists the guest ports to forward from the host via the QEMU
+	// user-mode dev NIC. Requested at launch; used by ALB VMs to expose HTTP
+	// ports.
+	HostfwdPorts []int `json:"hostfwd_ports,omitempty"`
+
+	// HostfwdPortMap records which host port the launch actually bound for each
+	// guest port in HostfwdPorts. Observed rather than requested, so it is
+	// rebuilt on every launch and a port that could not be bound is absent.
+	HostfwdPortMap map[int]int `json:"hostfwd_port_map,omitempty"`
+
+	// LegacyExtraHostfwd is the single guest→host map records used before the
+	// request and the observation were separated. Read on decode to recover
+	// both halves, then dropped; never written.
+	LegacyExtraHostfwd map[int]int `json:"extra_hostfwd,omitempty"`
 
 	// ManagedBy identifies the Spinifex platform component that owns this
 	// VM (e.g. "elbv2"). Empty for customer-launched instances. The UI
@@ -208,9 +219,10 @@ type VM struct {
 	SpotInstanceRequestId string `json:"spot_instance_request_id,omitempty"`
 }
 
-// UnmarshalJSON folds a legacy record's operator-stop signal into DesiredState.
-// Done on decode so every read path inherits it and none has to remember, and
-// so the legacy field is dropped rather than written back out.
+// UnmarshalJSON folds the fields of legacy records that mixed a request with an
+// observation into the pair that separates them. Done on decode so every read
+// path inherits it and none has to remember, and so the legacy fields are
+// dropped rather than written back out.
 func (v *VM) UnmarshalJSON(data []byte) error {
 	type alias VM
 	if err := json.Unmarshal(data, (*alias)(v)); err != nil {
@@ -220,6 +232,21 @@ func (v *VM) UnmarshalJSON(data []byte) error {
 		v.DesiredState = DesiredStopped
 	}
 	v.LegacyAttributes = nil
+
+	if len(v.HostfwdPorts) == 0 && len(v.LegacyExtraHostfwd) > 0 {
+		v.HostfwdPorts = make([]int, 0, len(v.LegacyExtraHostfwd))
+		for guest, host := range v.LegacyExtraHostfwd {
+			v.HostfwdPorts = append(v.HostfwdPorts, guest)
+			if host != 0 {
+				if v.HostfwdPortMap == nil {
+					v.HostfwdPortMap = make(map[int]int, len(v.LegacyExtraHostfwd))
+				}
+				v.HostfwdPortMap[guest] = host
+			}
+		}
+		slices.Sort(v.HostfwdPorts)
+	}
+	v.LegacyExtraHostfwd = nil
 	return nil
 }
 

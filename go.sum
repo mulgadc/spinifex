@@ -1327,16 +1327,10 @@ github.com/muesli/cancelreader v0.2.2 h1:3I4Kt4BQjOR54NavqnDogx/MIoWBFa0StPA8ELU
 github.com/muesli/cancelreader v0.2.2/go.mod h1:3XuTXfFS2VjM+HTLZY9Ak0l6eUKfijIfMUZ4EgX0QYo=
 github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc=
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
-github.com/mulgadc/bluebottle v1.18.0 h1:aNrogJBz59gJAxCwpERGBC5bGXkSoUCCCBbNvnamuRU=
-github.com/mulgadc/bluebottle v1.18.0/go.mod h1:KkUyzqfKxyI8PvKR27EVqJnVm4BSbajl1Q/u+PQxAYw=
-github.com/mulgadc/bluebottle v1.18.1-0.20260826044308-1a1e1242c217 h1:zRKEFadLkUQxNCK2L3MYSQxRmu4VEEHWTxMwh04Qmeo=
-github.com/mulgadc/bluebottle v1.18.1-0.20260826044308-1a1e1242c217/go.mod h1:KkUyzqfKxyI8PvKR27EVqJnVm4BSbajl1Q/u+PQxAYw=
 github.com/mulgadc/bluebottle v1.18.1-0.20260826232854-f91084812667 h1:3q1aWTrGgQBSicNQ68uM/wYFkmaNld76wCr/VsnLC4s=
 github.com/mulgadc/bluebottle v1.18.1-0.20260826232854-f91084812667/go.mod h1:KkUyzqfKxyI8PvKR27EVqJnVm4BSbajl1Q/u+PQxAYw=
 github.com/mulgadc/northstar v1.18.0 h1:ksRjIKE6qtrw/ZoYaJh8JRBh+xdnuDw8FsmFLFCiXbg=
 github.com/mulgadc/northstar v1.18.0/go.mod h1:z6iol77R1vsIQyIBc1JQboUPhSJ6eG4bipzfbZZbLEM=
-github.com/mulgadc/predastore v1.18.0 h1:RW1Qw1SM2iYxqi6HaHLv5Qb1h1vhZSO3x6pOhPAb9mw=
-github.com/mulgadc/predastore v1.18.0/go.mod h1:+VBT3ofH/YmdTg0ug9EQwHDb8bQbHaMvWUyh5cIpBeo=
 github.com/mulgadc/predastore v1.18.1-0.20260826045109-26ce1b091112 h1:eCzKJDL1lmw6DNwjbDCQBoT3ZHIsYE1lMj5qitjySrY=
 github.com/mulgadc/predastore v1.18.1-0.20260826045109-26ce1b091112/go.mod h1:xDJMcTuHTG4aKfO2PrSlkpID/UJrvYj1yfLZ0Pi8CSU=
 github.com/mulgadc/viperblock v1.18.0 h1:u6yu5lPfZ+RSmfzlg1OXI3whlRBnGp8t685xUzzxlns=

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -177,7 +178,11 @@ func TestEC2CommandRecordsUnderTheCommandNotTheInstance(t *testing.T) {
 	_, err = daemon.natsConn.Request(subject, data, 5*time.Second)
 	require.NoError(t, err)
 
-	assert.Contains(t, requestOutcomesFor(t, ec2CmdAction("StopInstance")), outcomeClientError,
+	// The handler records after it replies, so poll rather than assume the point
+	// has landed by the time the reply arrives.
+	require.Eventually(t, func() bool {
+		return slices.Contains(requestOutcomesFor(t, ec2CmdAction("StopInstance")), outcomeClientError)
+	}, 5*time.Second, 20*time.Millisecond,
 		"a stop naming an instance this node does not hold is the caller's error, and must be counted")
 	assert.Empty(t, requestOutcomesFor(t, subject),
 		"the instance id must not reach the metric dimension")

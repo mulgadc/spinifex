@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
@@ -104,8 +105,11 @@ func TestJetStreamManager_BucketCreation(t *testing.T) {
 	err = jsm.InitKVBucket()
 	require.NoError(t, err, "Should create bucket without error")
 
-	// Verify the bucket exists by checking jsm.kv is set
-	assert.NotNil(t, jsm.kv, "KV bucket should be initialized")
+	// Verify the bucket exists by checking the store is wired to an open handle
+	require.NotNil(t, jsm.stateB, "KV bucket should be initialized")
+	kv, err := jsm.stateB.KV(t.Context())
+	require.NoError(t, err)
+	assert.NotNil(t, kv, "KV bucket should be initialized")
 }
 
 // TestJetStreamManager_BucketReconnection tests that InitKVBucket connects to existing bucket.
@@ -1010,6 +1014,10 @@ func TestJetStreamManager_ListStoppedInstances_RecoverAfterStreamLost(t *testing
 // non-JetStream NATS server. The original kv handle still targets the JS server
 // (where the stream was deleted), so operations fail with stream-unavailable errors.
 // Recovery then also fails because the non-JS server has no JetStream support.
+// swapToNonJSContext repoints the manager at a NATS server with no JetStream,
+// keeping the buckets' current handles. An operation then fails on the stale
+// handle and the recovery that follows it cannot succeed, which is the shape
+// these tests exist to pin.
 func swapToNonJSContext(t *testing.T, jsm *JetStreamManager) {
 	t.Helper()
 	nc, err := nats.Connect(sharedNATSURL)
@@ -1018,6 +1026,17 @@ func swapToNonJSContext(t *testing.T, jsm *JetStreamManager) {
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 	jsm.js = js
+
+	if jsm.stateB != nil {
+		kv, err := jsm.stateB.KV(t.Context())
+		require.NoError(t, err)
+		jsm.setInstanceStateBucket(kvstore.NewOpenBucket(js, kv, instanceStateConfig(jsm.replicas)))
+	}
+	if jsm.term != nil {
+		kv, err := jsm.term.KV(t.Context())
+		require.NoError(t, err)
+		jsm.term = kvstore.Over[vm.VM](js, kv, terminatedInstanceConfig(jsm.replicas))
+	}
 }
 
 func TestJetStreamManager_WriteState_RecoveryFailure(t *testing.T) {
@@ -1503,7 +1522,12 @@ func TestJetStreamManager_InitBuckets_WritesVersion(t *testing.T) {
 	require.NoError(t, jsm.InitClusterStateBucket())
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
-	v, err := kvutil.ReadVersion(t.Context(), jsm.kv)
+	stateKV, err := jsm.stateB.KV(t.Context())
+	require.NoError(t, err)
+	termKV, err := jsm.term.KV(t.Context())
+	require.NoError(t, err)
+
+	v, err := kvutil.ReadVersion(t.Context(), stateKV)
 	require.NoError(t, err)
 	assert.Equal(t, InstanceStateBucketVersion, v)
 
@@ -1511,7 +1535,7 @@ func TestJetStreamManager_InitBuckets_WritesVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStateBucketVersion, v)
 
-	v, err = kvutil.ReadVersion(t.Context(), jsm.terminatedKV)
+	v, err = kvutil.ReadVersion(t.Context(), termKV)
 	require.NoError(t, err)
 	assert.Equal(t, TerminatedInstanceBucketVersion, v)
 }
@@ -1719,4 +1743,55 @@ func TestJetStreamManager_UpdateMgmtIPAM_ClusterKVNotInitialized(t *testing.T) {
 	_, err = jsm.UpdateMgmtIPAM("10.97.8.0/24", func(r *MgmtIPRecord) {}, true)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cluster state KV not initialized")
+}
+
+// TestJetStreamManager_ListStoppedInstances_FailsOnAnUndecodableRecord pins the
+// behaviour change the kvstore conversion brings. The raw scan this replaced
+// logged an undecodable record and carried on, so the instance simply vanished
+// from DescribeInstances and the caller concluded it was gone. A tenant-facing
+// listing is complete or it fails.
+func TestJetStreamManager_ListStoppedInstances_FailsOnAnUndecodableRecord(t *testing.T) {
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitKVBucket())
+
+	require.NoError(t, jsm.WriteStoppedInstance("i-readable", &vm.VM{ID: "i-readable"}))
+
+	kv, err := jsm.stateB.KV(t.Context())
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), StoppedInstancePrefix+"i-corrupt", []byte("{not json"))
+	require.NoError(t, err)
+
+	_, err = jsm.ListStoppedInstances()
+	require.Error(t, err, "a record that will not decode must surface, not disappear")
+	assert.ErrorContains(t, err, "i-corrupt")
+}
+
+// TestJetStreamManager_UpdateStoppedInstance_AbsentKeyKeepsItsSentinel guards
+// the boundary mapping. Store.Mutate reports kvstore.ErrNotFound, but three
+// call sites and both StateStore interfaces are written against
+// jetstream.ErrKeyNotFound, so the manager converts rather than leaking it.
+func TestJetStreamManager_UpdateStoppedInstance_AbsentKeyKeepsItsSentinel(t *testing.T) {
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitKVBucket())
+	require.NoError(t, jsm.InitTerminatedInstanceBucket())
+
+	_, err = jsm.UpdateStoppedInstance("i-absent", func(*vm.VM) {
+		t.Error("mutate must not run against an absent key")
+	})
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+
+	_, err = jsm.UpdateTerminatedInstance("i-absent", func(*vm.VM) {
+		t.Error("mutate must not run against an absent key")
+	})
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }

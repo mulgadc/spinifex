@@ -243,3 +243,141 @@ func TestBucket_ReopenWithoutAJetStreamClientReportsTheConfiguredMessage(t *test
 	_, err := bucket.Reopen(t.Context())
 	require.ErrorContains(t, err, "no JetStream client configured")
 }
+
+// TestOn_TwoTypedViewsShareOneBucket covers the shape a bucket holding more
+// than one record type needs: each view decodes its own records, and they open
+// the bucket once between them rather than once each.
+func TestOn_TwoTypedViewsShareOneBucket(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	var opens atomic.Int32
+	bucket := kvstore.NewBucket(testutil.NewJetStream(t, nc), kvstore.Config{
+		Name:    "kvstore-views-test",
+		History: 1,
+		OnOpen: func(context.Context, jetstream.KeyValue) error {
+			opens.Add(1)
+			return nil
+		},
+	})
+	records := kvstore.On[record](bucket)
+	counters := kvstore.On[counter](bucket)
+
+	require.NoError(t, records.Set(t.Context(), "rec.one", &record{Name: "one"}))
+	require.NoError(t, counters.Set(t.Context(), "cnt.one", &counter{Total: 5}))
+	assert.Equal(t, int32(1), opens.Load(), "both views must share the one open")
+
+	got, _, err := records.Get(t.Context(), "rec.one")
+	require.NoError(t, err)
+	assert.Equal(t, "one", got.Name)
+
+	tally, _, err := counters.Get(t.Context(), "cnt.one")
+	require.NoError(t, err)
+	assert.Equal(t, 5, tally.Total)
+
+	// Each view lists only its own prefix, so neither decodes the other's.
+	mine, err := records.List(t.Context(), "rec.")
+	require.NoError(t, err)
+	assert.Len(t, mine, 1)
+}
+
+// counter is a second record type over the same bucket as record.
+type counter struct {
+	Total int `json:"total"`
+}
+
+// TestOn_RecoveryThroughOneViewRepairsTheOther is the reason the views share a
+// Bucket rather than holding a handle each: a stale handle repaired by one
+// view must not leave the other still pointing at the lost stream.
+func TestOn_RecoveryThroughOneViewRepairsTheOther(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	bucket := kvstore.NewBucket(js, kvstore.Config{
+		Name:              "kvstore-views-recovery-test",
+		History:           1,
+		RecreateIfMissing: true,
+	})
+	records := kvstore.On[record](bucket)
+	counters := kvstore.On[counter](bucket)
+	require.NoError(t, records.Set(t.Context(), "rec.one", &record{Name: "one"}))
+
+	require.NoError(t, js.DeleteKeyValue(t.Context(), "kvstore-views-recovery-test"))
+
+	// Recover through one view.
+	require.NoError(t, records.Set(t.Context(), "rec.two", &record{Name: "two"}))
+	// The other must already be on the repaired handle.
+	require.NoError(t, counters.Set(t.Context(), "cnt.one", &counter{Total: 1}))
+
+	tally, _, err := counters.Get(t.Context(), "cnt.one")
+	require.NoError(t, err)
+	assert.Equal(t, 1, tally.Total)
+}
+
+// TestStore_ReplaceRetriesARevisionConflict is Replace's difference from Set:
+// a write that loses a race is retried against the winner's revision instead of
+// landing out of order.
+func TestStore_ReplaceRetriesARevisionConflict(t *testing.T) {
+	store := newStore(t)
+	mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 1})
+
+	require.NoError(t, store.Replace(t.Context(), "acct-a/one", &record{Name: "replaced", Count: 9}))
+	got, _, err := store.Get(t.Context(), "acct-a/one")
+	require.NoError(t, err)
+	assert.Equal(t, record{Name: "replaced", Count: 9}, *got, "Replace overwrites wholesale")
+
+	require.NoError(t, store.Replace(t.Context(), "acct-a/new", &record{Name: "new"}))
+	got, _, err = store.Get(t.Context(), "acct-a/new")
+	require.NoError(t, err)
+	assert.Equal(t, "new", got.Name, "Replace on an absent key creates it")
+}
+
+// TestStore_ClaimIsWonOnce pins the delete-as-claim: the first caller gets the
+// record, and every later one is told there was nothing to take rather than
+// handed a second copy.
+func TestStore_ClaimIsWonOnce(t *testing.T) {
+	store := newStore(t)
+	mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 3})
+
+	got, notFound, err := store.Claim(t.Context(), "acct-a/one")
+	require.NoError(t, err)
+	require.False(t, notFound)
+	assert.Equal(t, record{Name: "one", Count: 3}, *got)
+
+	_, notFound, err = store.Claim(t.Context(), "acct-a/one")
+	require.NoError(t, err, "a lost claim is an answer, not an error")
+	assert.True(t, notFound)
+
+	present, err := store.Exists(t.Context(), "acct-a/one")
+	require.NoError(t, err)
+	assert.False(t, present, "the claim takes the record with it")
+}
+
+// TestStore_ClaimRecoversAfterStreamLost keeps Claim on the recovery path. The
+// recreated bucket holds nothing, so notFound is the correct answer — what must
+// not happen is the stream error reaching the caller.
+func TestStore_ClaimRecoversAfterStreamLost(t *testing.T) {
+	_, js, store := newRecoverableStore(t, kvstore.Config{RecreateIfMissing: true})
+	require.NoError(t, store.Set(t.Context(), "acct-a/one", &record{Name: "one"}))
+	loseStream(t, js)
+
+	_, notFound, err := store.Claim(t.Context(), "acct-a/one")
+	require.NoError(t, err)
+	assert.True(t, notFound)
+}
+
+// TestBucket_DescriptionReachesTheCreatedBucket covers Config.Description,
+// which exists so a bucket recreated by recovery is not left anonymous.
+func TestBucket_DescriptionReachesTheCreatedBucket(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	bucket := kvstore.NewBucket(js, kvstore.Config{
+		Name:              "kvstore-description-test",
+		Description:       "a bucket that says what it is",
+		History:           1,
+		RecreateIfMissing: true,
+	})
+	kv, err := bucket.KV(t.Context())
+	require.NoError(t, err)
+
+	status, err := kv.Status(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "a bucket that says what it is", status.(*jetstream.KeyValueBucketStatus).StreamInfo().Config.Description)
+}

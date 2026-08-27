@@ -17,13 +17,16 @@ import (
 
 // Config describes the bucket that a Store or Bucket sits over.
 type Config struct {
-	Name      string
-	History   int
-	Replicas  int
-	TTL       time.Duration
-	Missing   string
-	Attempts  int
-	Exhausted func(key string, attempts int) error
+	Name    string
+	History int
+	// Description is set on the bucket at creation, including a recovery
+	// recreate, so a recreated bucket is not left anonymous next to its peers.
+	Description string
+	Replicas    int
+	TTL         time.Duration
+	Missing     string
+	Attempts    int
+	Exhausted   func(key string, attempts int) error
 
 	// RecreateIfMissing allows recovery to create the bucket again when the
 	// stream is not merely unreachable but gone. It governs recovery only —
@@ -208,9 +211,20 @@ func (b *Bucket) Watch(ctx context.Context, filter string) (jetstream.KeyWatcher
 func (b *Bucket) open(ctx context.Context) (jetstream.KeyValue, error) {
 	switch {
 	case b.cfg.TTL > 0:
-		return kvutil.GetOrCreateBucketWithTTL(ctx, b.js, b.cfg.Name, b.cfg.History, b.cfg.TTL)
-	case b.cfg.Replicas > 0:
-		return kvutil.GetOrCreateBucketWithReplicas(ctx, b.js, b.cfg.Name, b.cfg.History, b.cfg.Replicas)
+		return kvutil.GetOrCreateBucketWithOptions(ctx, b.js, kvutil.BucketOptions{
+			Name:        b.cfg.Name,
+			Description: b.cfg.Description,
+			History:     b.cfg.History,
+			Replicas:    b.cfg.Replicas,
+			TTL:         b.cfg.TTL,
+		})
+	case b.cfg.Replicas > 0 || b.cfg.Description != "":
+		return kvutil.GetOrCreateBucketWithOptions(ctx, b.js, kvutil.BucketOptions{
+			Name:        b.cfg.Name,
+			Description: b.cfg.Description,
+			History:     b.cfg.History,
+			Replicas:    b.cfg.Replicas,
+		})
 	default:
 		return kvutil.GetOrCreateBucket(ctx, b.js, b.cfg.Name, b.cfg.History)
 	}

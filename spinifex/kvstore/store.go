@@ -191,6 +191,56 @@ func Over[T any](js jetstream.JetStream, kv jetstream.KeyValue, cfg Config) *Sto
 	return &Store[T]{Bucket: NewOpenBucket(js, kv, cfg)}
 }
 
+// On returns a Store for records of type T over an existing bucket, for a
+// bucket holding more than one record type. Every view shares the bucket's
+// handle, so they open once between them and one view's recovery repairs all.
+func On[T any](b *Bucket) *Store[T] {
+	return &Store[T]{Bucket: b}
+}
+
+// Claim atomically reads a record and deletes it, so at most one caller across
+// the cluster can win it. notFound reports that there was nothing to claim,
+// which is the losing racer's answer rather than an error.
+func (s *Store[T]) Claim(ctx context.Context, key string) (v *T, notFound bool, err error) {
+	// Safe to re-run: the read and the revision-guarded delete both happen
+	// inside kvutil.Claim, so a second attempt starts from the reopened bucket.
+	err = s.withKV(ctx, func(kv jetstream.KeyValue) error {
+		var claimErr error
+		v, notFound, claimErr = kvutil.Claim[T](ctx, kv, key, kvutil.CASConfig{
+			Attempts:  s.cfg.Attempts,
+			Exhausted: s.cfg.Exhausted,
+		})
+		return claimErr
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return v, notFound, nil
+}
+
+// Replace writes v over whatever key holds, under the store's CAS loop. Unlike
+// Set, which is a plain last-write-wins put, a write that loses a race here is
+// retried against the winner's revision rather than landing out of order. The
+// record is replaced wholesale, so unlike Mutate the caller needs no read and v
+// need not be copyable.
+func (s *Store[T]) Replace(ctx context.Context, key string, v *T) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("kvstore: encode %s: %w", key, err)
+	}
+	// Safe to re-run: kvutil.Put re-reads the revision inside its own loop.
+	return s.withKV(ctx, func(kv jetstream.KeyValue) error {
+		if err := kvutil.Put(ctx, kv, key, kvutil.CASConfig{
+			CreateIfAbsent: true,
+			Attempts:       s.cfg.Attempts,
+			Exhausted:      s.cfg.Exhausted,
+		}, data); err != nil {
+			return fmt.Errorf("kvstore: replace %s: %w", key, err)
+		}
+		return nil
+	})
+}
+
 // Set writes a record whether or not the key exists, for callers whose write
 // is a replacement rather than a claim or a read-modify-write.
 func (s *Store[T]) Set(ctx context.Context, key string, v *T) error {

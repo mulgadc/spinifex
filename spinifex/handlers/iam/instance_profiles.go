@@ -111,7 +111,9 @@ func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListI
 	}
 
 	keyPrefix := accountID + "."
-	var profiles []*iam.InstanceProfile
+	// Non-nil: InstanceProfiles is a required member, and a nil slice marshals
+	// to no element at all rather than an empty one.
+	profiles := []*iam.InstanceProfile{}
 	for _, key := range keys {
 		if key == utils.VersionKey {
 			continue

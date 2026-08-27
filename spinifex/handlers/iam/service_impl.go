@@ -416,7 +416,9 @@ func (s *IAMServiceImpl) ListUsers(accountID string, input *iam.ListUsersInput) 
 	}
 
 	keyPrefix := accountID + "."
-	var users []*iam.User
+	// Non-nil: Users is a required member, and a nil slice marshals to no
+	// element at all rather than an empty one.
+	users := []*iam.User{}
 	for _, key := range keys {
 		if key == utils.VersionKey {
 			continue

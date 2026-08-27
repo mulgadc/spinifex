@@ -131,7 +131,9 @@ func (s *IAMServiceImpl) ListRoles(accountID string, input *iam.ListRolesInput) 
 	}
 
 	keyPrefix := accountID + "."
-	var roles []*iam.Role
+	// Non-nil: Roles is a required member, and a nil slice marshals to no
+	// element at all rather than an empty one.
+	roles := []*iam.Role{}
 	for _, key := range keys {
 		if key == utils.VersionKey {
 			continue

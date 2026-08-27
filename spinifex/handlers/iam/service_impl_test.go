@@ -140,6 +140,96 @@ func TestListUsers_Empty(t *testing.T) {
 	assert.Empty(t, out.Users)
 }
 
+// TestListRequiredMembersAreEmptyNotNil covers every IAM list operation whose
+// output shape marks the list member required. Each seeds a record that cannot
+// match, so the filtering loop runs rather than the no-keys shortcut, and the
+// result must come back empty but non-nil.
+func TestListRequiredMembersAreEmptyNotNil(t *testing.T) {
+	const otherAccountID = "999988887777"
+
+	tests := []struct {
+		operation string
+		member    string
+		// seed writes a record the listing must filter out, so an empty result
+		// is reached through the loop rather than the empty-bucket shortcut.
+		seed func(t *testing.T, svc *IAMServiceImpl)
+		list func(t *testing.T, svc *IAMServiceImpl) any
+	}{
+		{
+			operation: "ListUsers",
+			member:    "Users",
+			seed: func(t *testing.T, svc *IAMServiceImpl) {
+				_, err := svc.CreateUser(otherAccountID, &iam.CreateUserInput{UserName: aws.String("otheruser")})
+				require.NoError(t, err)
+			},
+			list: func(t *testing.T, svc *IAMServiceImpl) any {
+				out, err := svc.ListUsers(testAccountID, &iam.ListUsersInput{})
+				require.NoError(t, err)
+				return out.Users
+			},
+		},
+		{
+			operation: "ListRoles",
+			member:    "Roles",
+			seed: func(t *testing.T, svc *IAMServiceImpl) {
+				_, err := svc.CreateRole(otherAccountID, &iam.CreateRoleInput{
+					RoleName:                 aws.String("otherrole"),
+					AssumeRolePolicyDocument: aws.String(validTrustPolicy()),
+				})
+				require.NoError(t, err)
+			},
+			list: func(t *testing.T, svc *IAMServiceImpl) any {
+				out, err := svc.ListRoles(testAccountID, &iam.ListRolesInput{})
+				require.NoError(t, err)
+				return out.Roles
+			},
+		},
+		{
+			operation: "ListInstanceProfiles",
+			member:    "InstanceProfiles",
+			seed: func(t *testing.T, svc *IAMServiceImpl) {
+				_, err := svc.CreateInstanceProfile(otherAccountID, &iam.CreateInstanceProfileInput{
+					InstanceProfileName: aws.String("otherprofile"),
+				})
+				require.NoError(t, err)
+			},
+			list: func(t *testing.T, svc *IAMServiceImpl) any {
+				out, err := svc.ListInstanceProfiles(testAccountID, &iam.ListInstanceProfilesInput{})
+				require.NoError(t, err)
+				return out.InstanceProfiles
+			},
+		},
+		{
+			operation: "ListGroupsForUser",
+			member:    "Groups",
+			// Membership is read off the user, so a user belonging to no group
+			// is the empty case; a foreign record would not reach the loop.
+			seed: func(t *testing.T, svc *IAMServiceImpl) {
+				createTestUser(t, svc, "grouplessuser")
+				createTestGroup(t, svc, "unrelatedgroup")
+			},
+			list: func(t *testing.T, svc *IAMServiceImpl) any {
+				out, err := svc.ListGroupsForUser(testAccountID, &iam.ListGroupsForUserInput{
+					UserName: aws.String("grouplessuser"),
+				})
+				require.NoError(t, err)
+				return out.Groups
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.operation, func(t *testing.T) {
+			svc := setupTestIAMService(t)
+			tt.seed(t, svc)
+
+			got := tt.list(t, svc)
+			assert.Empty(t, got)
+			assert.NotNil(t, got, emptyRequiredListMsg(tt.operation, tt.member))
+		})
+	}
+}
+
 func TestListUsers_PathFilter(t *testing.T) {
 	svc := setupTestIAMService(t)
 

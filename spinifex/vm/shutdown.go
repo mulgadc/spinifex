@@ -64,7 +64,7 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 		slog.Error("Failed to transition to stopped", "instanceId", instance.ID, "err", err)
 	}
 
-	if !instance.Attributes.StopInstance {
+	if instance.DesiredState != DesiredStopped {
 		// Host DRAIN stop (not operator): keep the VM in the local running
 		// map at StateStopped so Restore relaunches it on the next boot. Do
 		// not migrate to the operator-stopped shared bucket or fire

@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -48,6 +49,22 @@ type ExtraENI struct {
 	Gateway       string `json:"gateway,omitempty"`
 }
 
+// DesiredState is the state an operator has asked an instance to be in. It is
+// deliberately narrower than InstanceState: only a settled state can be desired,
+// so "desired: stopping" cannot be expressed and the two enums cannot drift into
+// meaning the same thing.
+type DesiredState string
+
+const (
+	// DesiredRunning is the zero value, so an instance nobody has asked to stop
+	// is one that should be running.
+	DesiredRunning DesiredState = ""
+
+	// DesiredStopped means the instance must stay stopped across a restart,
+	// rather than being relaunched the way a drain-stopped one is.
+	DesiredStopped DesiredState = "stopped"
+)
+
 type VM struct {
 	ID           string        `json:"id"`
 	Status       InstanceState `json:"status"`
@@ -66,8 +83,19 @@ type VM struct {
 	// Manager hands out a stable *VM, so the lock is shared across calls.
 	attachMu sync.Mutex `json:"-"`
 
-	// User attributes (user initiated stop/delete)
-	Attributes types.EC2CommandAttributes `json:"attributes"`
+	// DesiredState is the state this instance has been asked to be in, as
+	// opposed to Status, which is the state it is observed to be in.
+	DesiredState DesiredState `json:"desired_state,omitempty"`
+
+	// DeletionTimestamp is stamped when a terminate is accepted, before the
+	// status transition lands. It is the marked-for-deletion signal a caller
+	// needs during the window where Status has not caught up yet.
+	DeletionTimestamp *time.Time `json:"deletion_timestamp,omitempty"`
+
+	// LegacyAttributes is the command last stamped onto records written before
+	// DesiredState existed. Read on decode to recover the operator-stop signal,
+	// then dropped; never written.
+	LegacyAttributes *types.EC2CommandAttributes `json:"attributes,omitempty"`
 
 	// EC2 API metadata stored for AWS API compatibility.
 	RunInstancesInput *ec2.RunInstancesInput `json:"run_instances_input,omitempty"`
@@ -178,6 +206,21 @@ type VM struct {
 	// tolerated by migrate.
 	InstanceLifecycle     string `json:"instance_lifecycle,omitempty"`
 	SpotInstanceRequestId string `json:"spot_instance_request_id,omitempty"`
+}
+
+// UnmarshalJSON folds a legacy record's operator-stop signal into DesiredState.
+// Done on decode so every read path inherits it and none has to remember, and
+// so the legacy field is dropped rather than written back out.
+func (v *VM) UnmarshalJSON(data []byte) error {
+	type alias VM
+	if err := json.Unmarshal(data, (*alias)(v)); err != nil {
+		return err
+	}
+	if v.DesiredState == DesiredRunning && v.LegacyAttributes != nil && v.LegacyAttributes.StopInstance {
+		v.DesiredState = DesiredStopped
+	}
+	v.LegacyAttributes = nil
+	return nil
 }
 
 // ResetNodeLocalState zeroes node-specific fields after deserializing a VM

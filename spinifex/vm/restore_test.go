@@ -134,7 +134,7 @@ func TestClassifyRestoredInstances_TerminatedMigrates(t *testing.T) {
 }
 
 // TestClassifyRestoredInstances_StoppedMigrates covers the operator-stopped
-// case: Attributes.StopInstance=true is the signal stamped only by the
+// case: DesiredStopped is the signal stamped only by the
 // operator StopInstances path, so classify must honour it and never relaunch.
 func TestClassifyRestoredInstances_StoppedMigrates(t *testing.T) {
 	m, store, _ := classifyTestManager(t)
@@ -142,7 +142,7 @@ func TestClassifyRestoredInstances_StoppedMigrates(t *testing.T) {
 		ID:           "i-stopped",
 		Status:       StateStopped,
 		InstanceType: "t3.micro",
-		Attributes:   types.EC2CommandAttributes{StopInstance: true},
+		DesiredState: DesiredStopped,
 	}
 	m.Replace(map[string]*VM{v.ID: v})
 
@@ -156,7 +156,7 @@ func TestClassifyRestoredInstances_StoppedMigrates(t *testing.T) {
 
 // TestClassifyRestoredInstances_DrainStoppedRelaunches covers the
 // coordinated-shutdown DRAIN case: a VM left StateStopped with no operator
-// StopInstance intent (Attributes zero value) must be queued for relaunch,
+// stop intent (DesiredState zero value) must be queued for relaunch,
 // not migrated to the stopped bucket, exactly like a running instance whose
 // QEMU exited.
 func TestClassifyRestoredInstances_DrainStoppedRelaunches(t *testing.T) {
@@ -165,7 +165,7 @@ func TestClassifyRestoredInstances_DrainStoppedRelaunches(t *testing.T) {
 		ID:           "i-drain-stopped",
 		Status:       StateStopped,
 		InstanceType: "t3.micro",
-		Attributes:   types.EC2CommandAttributes{},
+		DesiredState: DesiredRunning,
 		Instance:     &ec2.Instance{},
 	}
 	m.Replace(map[string]*VM{v.ID: v})
@@ -195,8 +195,8 @@ func TestClassifyRestoredInstances_UnschedulableInstanceNotRelaunched(t *testing
 		Instance:     &ec2.Instance{},
 	}
 	markUnschedulable(v, "insufficient resources")
-	require.True(t, v.Attributes.StopInstance,
-		"markUnschedulable must stamp StopInstance so a later restore does not resume it")
+	require.Equal(t, DesiredStopped, v.DesiredState,
+		"markUnschedulable must stamp DesiredStopped so a later restore does not resume it")
 	m.Replace(map[string]*VM{v.ID: v})
 
 	toLaunch := m.classifyRestoredInstances()
@@ -391,7 +391,7 @@ func TestRestore_HappyPath(t *testing.T) {
 			"i-term": {ID: "i-term", Status: StateTerminated, InstanceType: "t3.micro"},
 			"i-stopped": {
 				ID: "i-stopped", Status: StateStopped, InstanceType: "t3.micro",
-				Attributes: types.EC2CommandAttributes{StopInstance: true},
+				DesiredState: DesiredStopped,
 			},
 		},
 	}

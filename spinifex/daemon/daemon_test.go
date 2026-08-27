@@ -708,20 +708,20 @@ func TestDaemon_BootAllocation(t *testing.T) {
 			InstanceType: getTestInstanceType(t),
 			Status:       vm.StateRunning,
 			AccountID:    testAccountID,
-			Attributes:   types.EC2CommandAttributes{StopInstance: false},
+			DesiredState: vm.DesiredRunning,
 		},
 		"i-stopped": {
 			ID:           "i-stopped",
 			InstanceType: getTestInstanceType(t),
 			Status:       vm.StateStopped,
 			AccountID:    testAccountID,
-			Attributes:   types.EC2CommandAttributes{StopInstance: true},
+			DesiredState: vm.DesiredStopped,
 		},
 		"i-terminated": {
 			ID:           "i-terminated",
 			InstanceType: getTestInstanceType(t),
 			Status:       vm.StateTerminated,
-			Attributes:   types.EC2CommandAttributes{StopInstance: false},
+			DesiredState: vm.DesiredRunning,
 		},
 	}
 
@@ -756,7 +756,7 @@ func TestDaemon_BootAllocation(t *testing.T) {
 
 	// Simulate the allocation loop in Start()
 	for _, instance := range daemon.vmMgr.Snapshot() {
-		if instance.Status != vm.StateTerminated && !instance.Attributes.StopInstance {
+		if instance.Status != vm.StateTerminated && instance.DesiredState != vm.DesiredStopped {
 			instanceType, ok := daemon.resourceMgr.instanceTypes[instance.InstanceType]
 			if ok {
 				err := daemon.resourceMgr.allocate(instanceType)

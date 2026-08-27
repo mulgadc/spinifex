@@ -878,11 +878,9 @@ func TestRestoreInstances_UserStoppedMigratedToSharedKV(t *testing.T) {
 	daemon := createDaemonWithJetStream(t)
 
 	daemon.vmMgr.Insert(&vm.VM{
-		ID:     "i-restore-userstop",
-		Status: vm.StateStopped,
-		Attributes: types.EC2CommandAttributes{
-			StopInstance: true,
-		},
+		ID:           "i-restore-userstop",
+		Status:       vm.StateStopped,
+		DesiredState: vm.DesiredStopped,
 	})
 	require.NoError(t, daemon.WriteState())
 
@@ -974,7 +972,7 @@ func TestRestoreInstances_MixedStates(t *testing.T) {
 	})
 	daemon.vmMgr.Insert(&vm.VM{
 		ID: "i-mix-stopped", Status: vm.StateStopped,
-		Attributes: types.EC2CommandAttributes{StopInstance: true},
+		DesiredState: vm.DesiredStopped,
 	})
 	require.NoError(t, daemon.WriteState())
 
@@ -1112,10 +1110,7 @@ func TestStatePersistence_RoundTrip(t *testing.T) {
 		ID:           "i-roundtrip",
 		Status:       vm.StateRunning,
 		InstanceType: "t3.micro",
-		Attributes: types.EC2CommandAttributes{
-			StopInstance:      false,
-			TerminateInstance: false,
-		},
+		DesiredState: vm.DesiredRunning,
 	}
 	daemon.vmMgr.Insert(original)
 	require.NoError(t, daemon.WriteState())
@@ -1131,7 +1126,7 @@ func TestStatePersistence_RoundTrip(t *testing.T) {
 	assert.Equal(t, original.ID, loaded.ID)
 	assert.Equal(t, original.Status, loaded.Status)
 	assert.Equal(t, original.InstanceType, loaded.InstanceType)
-	assert.Equal(t, original.Attributes.StopInstance, loaded.Attributes.StopInstance)
+	assert.Equal(t, original.DesiredState, loaded.DesiredState)
 }
 
 // TestWriteState_LocalFailureStillWritesKV guards against a launch-window data
@@ -1174,7 +1169,7 @@ func TestRestoreInstances_StoppedInstanceMigratedToSharedKV(t *testing.T) {
 		ID:           instanceID,
 		InstanceType: "t3.micro",
 		Status:       vm.StateStopped,
-		Attributes:   types.EC2CommandAttributes{StopInstance: true},
+		DesiredState: vm.DesiredStopped,
 	})
 	require.NoError(t, daemon.WriteState())
 

@@ -12,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -278,7 +277,7 @@ func TestStopAll_FiresOnInstanceDownAndMigratesPerVM(t *testing.T) {
 			Status:       StateRunning,
 			InstanceType: "t3.micro",
 			Instance:     &ec2.Instance{},
-			Attributes:   types.EC2CommandAttributes{StopInstance: true},
+			DesiredState: DesiredStopped,
 		})
 	}
 
@@ -328,7 +327,7 @@ func TestStopAll_DrainStopKeepsLocalNoMigrate(t *testing.T) {
 			Status:       StateRunning,
 			InstanceType: "t3.micro",
 			Instance:     &ec2.Instance{},
-			Attributes:   types.EC2CommandAttributes{},
+			DesiredState: DesiredRunning,
 		})
 	}
 
@@ -432,7 +431,7 @@ func TestStopAll_WriteRunningStateFailure(t *testing.T) {
 			Status:       StateRunning,
 			InstanceType: "t3.micro",
 			Instance:     &ec2.Instance{},
-			Attributes:   types.EC2CommandAttributes{StopInstance: true},
+			DesiredState: DesiredStopped,
 		})
 	}
 
@@ -557,7 +556,7 @@ func TestStop_FiresOnInstanceDownExactlyOnce(t *testing.T) {
 		Status:       StateRunning,
 		InstanceType: "t3.micro",
 		Instance:     &ec2.Instance{},
-		Attributes:   types.EC2CommandAttributes{StopInstance: true},
+		DesiredState: DesiredStopped,
 	}
 	m.Insert(v)
 
@@ -597,7 +596,7 @@ func TestStop_DoesNotFireOnInstanceDown_OnSlotReclaim(t *testing.T) {
 		Status:       StateRunning,
 		InstanceType: "t3.micro",
 		Instance:     &ec2.Instance{},
-		Attributes:   types.EC2CommandAttributes{StopInstance: true},
+		DesiredState: DesiredStopped,
 	}
 	m.Insert(v)
 

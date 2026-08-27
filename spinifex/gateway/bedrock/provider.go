@@ -43,12 +43,16 @@ type Router struct {
 	// closed on any GuardrailConfig (ResourceNotFoundException) rather than
 	// proceeding unguarded; a request with none is unaffected either way.
 	guardrails *GuardrailStore
+	// embedder drives topicPolicy's semantic match. Nil falls back to the
+	// guardrail engine's literal matcher (see assessTopicPolicy).
+	embedder Embedder
 }
 
 // NewRouter constructs a Router. A nil resolver, endpointResolver, or
 // recorder falls back to a no-op, and a nil access denies every model, so a
-// Router is always safe to use even before the real stores are wired in.
-func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore) *Router {
+// Router is always safe to use even before the real stores are wired in. A
+// nil embedder leaves topicPolicy on the literal matcher alone.
+func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore, embedder Embedder) *Router {
 	if resolver == nil {
 		resolver = NoopCredentialResolver
 	}
@@ -61,7 +65,7 @@ func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, r
 	if access == nil {
 		access = DenyAllAccessResolver
 	}
-	return &Router{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access, provisioned: provisioned, guardrails: guardrails}
+	return &Router{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access, provisioned: provisioned, guardrails: guardrails, embedder: embedder}
 }
 
 // Converse routes modelID to its provider via the catalog. Unknown modelIds
@@ -174,7 +178,7 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 		ident, version := aws.StringValue(gc.GuardrailIdentifier), aws.StringValue(gc.GuardrailVersion)
 		var blockedIn bool
 		var messageIn string
-		blockedIn, messageIn, _, inputAssessments, err = enforceGuardrail(ctx, rt.guardrails, accountID, ident, version,
+		blockedIn, messageIn, _, inputAssessments, err = enforceGuardrail(ctx, rt.guardrails, rt.embedder, accountID, ident, version,
 			bedrockruntime.GuardrailContentSourceInput, converseGuardrailTexts(input))
 		if err != nil {
 			return nil, err
@@ -194,7 +198,7 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 	}
 
 	ident, version := aws.StringValue(gc.GuardrailIdentifier), aws.StringValue(gc.GuardrailVersion)
-	blockedOut, messageOut, redacted, outputAssessments, gerr := enforceGuardrail(ctx, rt.guardrails, accountID, ident, version,
+	blockedOut, messageOut, redacted, outputAssessments, gerr := enforceGuardrail(ctx, rt.guardrails, rt.embedder, accountID, ident, version,
 		bedrockruntime.GuardrailContentSourceOutput, converseOutputTexts(out))
 	if gerr != nil {
 		err = gerr
@@ -215,8 +219,8 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 // Converse is the bedrock-runtime Converse entry point used by the gateway
 // route table. All dependency params may be nil; NewRouter supplies safe
 // fallbacks (deny-all access, PT-ARN- and GuardrailConfig-rejecting).
-func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore) (*bedrockruntime.ConverseOutput, error) {
-	return NewRouter(resolver, endpointResolver, recorder, access, provisioned, guardrails).Converse(ctx, accountID, modelID, input)
+func Converse(ctx context.Context, accountID, modelID string, input *bedrockruntime.ConverseInput, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore, embedder Embedder) (*bedrockruntime.ConverseOutput, error) {
+	return NewRouter(resolver, endpointResolver, recorder, access, provisioned, guardrails, embedder).Converse(ctx, accountID, modelID, input)
 }
 
 // ConverseStreamProvider is the optional streaming capability a Provider may

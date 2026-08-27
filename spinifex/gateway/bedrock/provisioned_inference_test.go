@@ -88,7 +88,7 @@ func TestRouter_Converse_ProvisionedThroughputARN_ResolvesPinnedEndpointForRecor
 	arn := createPTCommitment(t, store, ptCallerAccount)
 
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewRouter(nil, spy, nil, grantAll{}, store, nil)
+	rt := NewRouter(nil, spy, nil, grantAll{}, store, nil, nil)
 
 	out, err := rt.Converse(context.Background(), ptCallerAccount, arn, converseInput())
 	require.NoError(t, err)
@@ -110,7 +110,7 @@ func TestRouter_Converse_BareModelID_StillUsesGlobalShorthand(t *testing.T) {
 	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
 
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewRouter(nil, spy, nil, grantAll{}, store, nil)
+	rt := NewRouter(nil, spy, nil, grantAll{}, store, nil, nil)
 
 	_, err := rt.Converse(context.Background(), ptCallerAccount, selfHostTestModel, converseInput())
 	require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestRouter_Converse_ProvisionedThroughputARN_UnknownCommitment(t *testing.T
 	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
 	arn := FormatProvisionedModelARN(ptTestRegion, ptCallerAccount, "does-not-exist")
 
-	rt := NewRouter(nil, &spyEndpointResolver{}, nil, grantAll{}, store, nil)
+	rt := NewRouter(nil, &spyEndpointResolver{}, nil, grantAll{}, store, nil, nil)
 	_, err := rt.Converse(context.Background(), ptCallerAccount, arn, converseInput())
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
@@ -142,7 +142,7 @@ func TestRouter_Converse_ProvisionedThroughputARN_ForeignAccount(t *testing.T) {
 	arn := createPTCommitment(t, store, ptCallerAccount)
 
 	spy := &spyEndpointResolver{baseURL: "http://unused:8000"}
-	rt := NewRouter(nil, spy, nil, grantAll{}, store, nil)
+	rt := NewRouter(nil, spy, nil, grantAll{}, store, nil, nil)
 
 	_, err := rt.Converse(context.Background(), ptOtherCaller, arn, converseInput())
 	require.Error(t, err)
@@ -169,7 +169,7 @@ func TestInvokeRouter_InvokeModel_ProvisionedThroughputARN_ResolvesPinnedEndpoin
 	arn := createPTCommitment(t, store, ptCallerAccount)
 
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewInvokeRouter(nil, spy, nil, grantAll{}, store, nil)
+	rt := NewInvokeRouter(nil, spy, nil, grantAll{}, store, nil, nil)
 
 	respBody, contentType, err := rt.InvokeModel(context.Background(), ptCallerAccount, arn, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)
@@ -197,7 +197,7 @@ func TestInvokeRouter_InvokeModel_BareModelID_StillUsesGlobalShorthand(t *testin
 
 	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewInvokeRouter(nil, spy, nil, grantAll{}, store, nil)
+	rt := NewInvokeRouter(nil, spy, nil, grantAll{}, store, nil, nil)
 
 	_, _, err := rt.InvokeModel(context.Background(), ptCallerAccount, selfHostTestModel, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)

@@ -308,7 +308,7 @@ func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input
 	// than merely stopping our own reads — a disconnected client must free
 	// the vLLM-side generation, not just this goroutine.
 	reqCtx, cancel := context.WithCancel(ctx)
-	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+vllmChatCompletionsPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: baseURL is a resolved pinned self-host endpoint, not user input
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+vllmChatCompletionsPath, bytes.NewReader(reqBody))
 	if err != nil {
 		cancel()
 		slog.Error("vllm stream: failed to build request", "model", modelID, "err", err)
@@ -317,7 +317,7 @@ func (p *vllmProvider) ConverseStream(ctx context.Context, modelID string, input
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := p.httpClient.Do(httpReq) //nolint:gosec // G704: httpReq targets the resolved pinned self-host endpoint, not user input
+	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		cancel()
 		slog.Error("vllm stream: request failed", "model", modelID, "endpoint", baseURL, "err", err)

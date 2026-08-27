@@ -273,7 +273,7 @@ func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, 
 	// than merely stopping our own reads — a disconnected client must free
 	// the vLLM-side generation, not just this goroutine.
 	reqCtx, cancel := context.WithCancel(ctx)
-	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+llamaCompletionsPath, bytes.NewReader(reqBody)) //nolint:gosec // G704: baseURL is a resolved pinned self-host endpoint, not user input
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+llamaCompletionsPath, bytes.NewReader(reqBody))
 	if err != nil {
 		cancel()
 		slog.Error("llama invoke-stream: failed to build request", "model", modelID, "err", err)
@@ -282,7 +282,7 @@ func (a *llamaInvokeAdapter) InvokeModelWithResponseStream(ctx context.Context, 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := a.httpClient.Do(httpReq) //nolint:gosec // G704: httpReq targets the resolved pinned self-host endpoint, not user input
+	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
 		cancel()
 		slog.Error("llama invoke-stream: request failed", "model", modelID, "endpoint", baseURL, "err", err)

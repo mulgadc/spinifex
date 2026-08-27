@@ -45,13 +45,18 @@ func loadGuardrailView(ctx context.Context, store *GuardrailStore, accountID, id
 // enforceGuardrail is the single resolve->load->filter path Converse and
 // ConverseStream both call, mirroring ApplyGuardrail's own sequence. An
 // unresolvable or foreign guardrail fails closed: ResourceNotFoundException.
-func enforceGuardrail(ctx context.Context, store *GuardrailStore, accountID, ident, version, source string, texts []string) (blocked bool, blockedMessage string, redactedTexts []string, assessments []*bedrockruntime.GuardrailAssessment, err error) {
+// embedder drives topicPolicy's semantic match; a nil embedder falls back to
+// the literal matcher (see assessTopicPolicy).
+func enforceGuardrail(ctx context.Context, store *GuardrailStore, embedder Embedder, accountID, ident, version, source string, texts []string) (blocked bool, blockedMessage string, redactedTexts []string, assessments []*bedrockruntime.GuardrailAssessment, err error) {
 	view, err := loadGuardrailView(ctx, store, accountID, ident, version)
 	if err != nil {
 		return false, "", texts, nil, err
 	}
 
-	action, gassessments, outputs, _ := applyGuardrailPolicies(view, texts, source)
+	action, gassessments, outputs, _, err := applyGuardrailPolicies(ctx, embedder, view, texts, source)
+	if err != nil {
+		return false, "", texts, nil, err
+	}
 	if action == bedrockruntime.GuardrailActionGuardrailIntervened {
 		message := view.BlockedInputMessaging
 		if source == bedrockruntime.GuardrailContentSourceOutput {
@@ -242,6 +247,7 @@ type guardrailStreamSource struct {
 	inner converseStreamSource
 
 	store     *GuardrailStore
+	embedder  Embedder
 	accountID string
 	ident     string
 	version   string
@@ -261,8 +267,9 @@ type guardrailStreamSource struct {
 // newGuardrailStreamSource constructs a guardrailStreamSource. inputAssessments
 // is the already-computed result of the pre-stream INPUT check, carried
 // through so the trailing metadata event's trace can report both halves.
-func newGuardrailStreamSource(inner converseStreamSource, store *GuardrailStore, accountID, ident, version string, trace bool, inputAssessments []*bedrockruntime.GuardrailAssessment) *guardrailStreamSource {
-	return &guardrailStreamSource{inner: inner, store: store, accountID: accountID, ident: ident, version: version, trace: trace, inputAssessments: inputAssessments}
+// embedder drives topicPolicy's semantic match on the OUTPUT check below.
+func newGuardrailStreamSource(inner converseStreamSource, store *GuardrailStore, embedder Embedder, accountID, ident, version string, trace bool, inputAssessments []*bedrockruntime.GuardrailAssessment) *guardrailStreamSource {
+	return &guardrailStreamSource{inner: inner, store: store, embedder: embedder, accountID: accountID, ident: ident, version: version, trace: trace, inputAssessments: inputAssessments}
 }
 
 var _ converseStreamSource = (*guardrailStreamSource)(nil)
@@ -290,7 +297,7 @@ func (g *guardrailStreamSource) assess(ctx context.Context) {
 		return
 	}
 	g.assessed = true
-	blocked, message, redacted, assessments, err := enforceGuardrail(ctx, g.store, g.accountID, g.ident, g.version,
+	blocked, message, redacted, assessments, err := enforceGuardrail(ctx, g.store, g.embedder, g.accountID, g.ident, g.version,
 		bedrockruntime.GuardrailContentSourceOutput, []string{g.text.String()})
 	if err != nil {
 		g.assessErr = err

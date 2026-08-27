@@ -180,6 +180,10 @@ type GatewayConfig struct {
 	// and friends). Nil falls back to an unconfigured store, under which
 	// reads/writes error rather than panic.
 	BedrockGuardrails *gateway_bedrock.GuardrailStore
+	// BedrockEmbedder drives guardrail topicPolicy's semantic match, reusing
+	// the same embedding endpoint the Ochre KB path resolves models through.
+	// Nil leaves topicPolicy on its literal (word-boundary) matcher alone.
+	BedrockEmbedder gateway_bedrock.Embedder
 
 	// SignupMaxAccounts caps how many accounts /admin/CreateAccount will allow
 	// to exist. Zero means uncapped, which is the behaviour of every cluster

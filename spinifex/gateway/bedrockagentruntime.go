@@ -153,7 +153,7 @@ func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *h
 	}
 
 	converse := func(ctx context.Context, acct, modelID string, input *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {
-		return gateway_bedrock.Converse(ctx, acct, modelID, input, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore())
+		return gateway_bedrock.Converse(ctx, acct, modelID, input, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
 	}
 
 	output, err := handler(r.Context(), accountID, params, body, gw.BedrockAgentKB, gw.BedrockAgentVector, converse)

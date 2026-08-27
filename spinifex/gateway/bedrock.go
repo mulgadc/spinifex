@@ -327,3 +327,10 @@ func (gw *GatewayConfig) bedrockEndpointResolver() gateway_bedrock.EndpointResol
 	}
 	return gateway_bedrock.NewStaticEndpointResolver(gw.BedrockEndpoints)
 }
+
+// bedrockEmbedder returns gw.BedrockEmbedder, or nil when unconfigured. A nil
+// Embedder is a valid value throughout gateway_bedrock's guardrail engine:
+// it simply falls back to topicPolicy's literal matcher.
+func (gw *GatewayConfig) bedrockEmbedder() gateway_bedrock.Embedder {
+	return gw.BedrockEmbedder
+}

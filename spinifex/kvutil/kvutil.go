@@ -13,10 +13,12 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -69,6 +71,28 @@ func getOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, cfg je
 		return nil, fmt.Errorf("open KV bucket %s: %w", bucket, err)
 	}
 	return kv, nil
+}
+
+// IsStreamUnavailable reports whether err means the KV bucket's underlying
+// JetStream stream was lost or is unreachable, which happens during NATS
+// cluster formation when a low-replication stream is disrupted by a node
+// joining or catching up. Each operation surfaces it differently:
+//
+//   - Get/Keys → ErrNoResponders ("no responders available for request")
+//   - Put/Delete → ErrNoStreamResponse ("no response from stream")
+//   - Direct stream queries → ErrStreamNotFound ("stream not found")
+func IsStreamUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, jetstream.ErrStreamNotFound) ||
+		errors.Is(err, jetstream.ErrNoStreamResponse) ||
+		errors.Is(err, nats.ErrNoResponders) {
+		return true
+	}
+	// Some paths wrap the condition as an untyped error, so the string is the
+	// only signal left. Narrow, but dropping it would lose real detections.
+	return strings.Contains(err.Error(), "stream not found")
 }
 
 // DeleteBucketIfExists deletes a KV bucket, treating an already-absent bucket

@@ -116,6 +116,35 @@ interface StorageStatusOutput {
   buckets: StorageBucket[]
 }
 
+// CatalogAvailability mirrors the reasons AdminCatalog computes server-side:
+// "available" means the model is servable to this account today, the other
+// three are the specific reason it currently is not.
+type CatalogAvailability =
+  | "available"
+  | "ungranted"
+  | "no-weights-staged"
+  | "no-credential"
+
+interface AdminCatalogEntry {
+  modelId: string
+  modelName: string
+  family: string
+  inputModalities: string[]
+  outputModalities: string[]
+  responseStreamingSupported: boolean
+  inputPriceMicroUsdPerMillion: number
+  outputPriceMicroUsdPerMillion: number
+  priceKnown: boolean
+  minVramMib: number
+  instanceType: string
+  coServeGroup: string
+  availability: CatalogAvailability
+}
+
+interface ListOchreCatalogOutput {
+  entries: AdminCatalogEntry[]
+}
+
 export type {
   InstanceTypeCap,
   GPUSliceInfo,
@@ -129,6 +158,9 @@ export type {
   BlobNode,
   StorageBucket,
   StorageStatusOutput,
+  CatalogAvailability,
+  AdminCatalogEntry,
+  ListOchreCatalogOutput,
 }
 
 export const adminNodesQueryOptions = queryOptions({
@@ -170,6 +202,21 @@ export const adminStorageStatusQueryOptions = queryOptions({
     }
     return await signedFetch<StorageStatusOutput>({
       action: "GetStorageStatus",
+      credentials,
+    })
+  },
+  staleTime: 10_000,
+})
+
+export const adminOchreCatalogQueryOptions = queryOptions({
+  queryKey: ["admin", "ochreCatalog"],
+  queryFn: async () => {
+    const credentials = getCredentials()
+    if (!credentials) {
+      throw new Error("Not authenticated")
+    }
+    return await signedFetch<ListOchreCatalogOutput>({
+      action: "ListOchreCatalog",
       credentials,
     })
   },

@@ -54,6 +54,38 @@ func GetOrCreateBucketWithReplicas(ctx context.Context, js jetstream.KeyValueMan
 	})
 }
 
+// BucketOptions is GetOrCreateBucket's full argument set, for callers needing a
+// combination the three named helpers do not cover. A zero Replicas means the
+// cluster default, matching those helpers.
+type BucketOptions struct {
+	Name        string
+	Description string
+	History     int
+	Replicas    int
+	TTL         time.Duration
+}
+
+// GetOrCreateBucketWithOptions creates or opens a KV bucket from opts. Like the
+// named helpers, every field but Name applies at creation only: an existing
+// bucket is opened with the config it already has.
+func GetOrCreateBucketWithOptions(ctx context.Context, js jetstream.KeyValueManager, opts BucketOptions) (jetstream.KeyValue, error) {
+	replicas := opts.Replicas
+	if replicas == 0 {
+		replicas = DefaultReplicas()
+	}
+	return getOrCreateBucket(ctx, js, jetstream.KeyValueConfig{
+		Bucket:      opts.Name,
+		Description: opts.Description,
+		History:     safecast.IntToUint8(opts.History),
+		Replicas:    max(replicas, 1),
+		TTL:         opts.TTL,
+	})
+}
+
+// DefaultReplicas is the cluster's default KV replica count, exposed so callers
+// building a BucketOptions can tell "unset" from a deliberate 1.
+func DefaultReplicas() int { return utils.DefaultKVReplicas() }
+
 func getOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
 	bucket := cfg.Bucket
 	kv, err := js.CreateKeyValue(ctx, cfg)

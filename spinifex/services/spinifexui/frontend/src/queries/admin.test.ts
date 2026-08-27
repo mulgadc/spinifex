@@ -14,6 +14,7 @@ import { callQueryFn } from "@/test/query"
 
 import {
   adminNodesQueryOptions,
+  adminOchreCatalogQueryOptions,
   adminStorageStatusQueryOptions,
   adminVMsQueryOptions,
 } from "./admin"
@@ -112,6 +113,40 @@ describe("adminStorageStatusQueryOptions", () => {
 
     expect(mockSignedFetch).toHaveBeenCalledWith({
       action: "GetStorageStatus",
+      credentials: creds,
+    })
+  })
+})
+
+describe("adminOchreCatalogQueryOptions", () => {
+  it("has the correct query key", () => {
+    expect(adminOchreCatalogQueryOptions.queryKey).toStrictEqual([
+      "admin",
+      "ochreCatalog",
+    ])
+  })
+
+  it("throws when not authenticated", async () => {
+    mockGetCredentials.mockReturnValue(null)
+    await expect(callQueryFn(adminOchreCatalogQueryOptions)).rejects.toThrow(
+      "Not authenticated",
+    )
+  })
+
+  it("calls signedFetch with ListOchreCatalog action", async () => {
+    const creds = {
+      accessKeyId: "ASIAak",
+      secretAccessKey: "sk",
+      sessionToken: "token",
+      expiration: new Date(Date.now() + 60_000).toISOString(),
+    }
+    mockGetCredentials.mockReturnValue(creds)
+    mockSignedFetch.mockResolvedValue({ entries: [] })
+
+    await callQueryFn(adminOchreCatalogQueryOptions)
+
+    expect(mockSignedFetch).toHaveBeenCalledWith({
+      action: "ListOchreCatalog",
       credentials: creds,
     })
   })

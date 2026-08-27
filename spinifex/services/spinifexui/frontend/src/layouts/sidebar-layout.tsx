@@ -18,6 +18,7 @@ import {
   Key,
   Layers,
   LayoutGrid,
+  LayoutList,
   LogOut,
   MapPin,
   Network,
@@ -599,6 +600,21 @@ export function SidebarLayout() {
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>
+            {isAdmin && (
+              <SidebarMenuItem>
+                <Link to="/bedrock/list-model-catalog">
+                  <SidebarMenuButton
+                    isActive={pathname.startsWith(
+                      "/bedrock/list-model-catalog",
+                    )}
+                    tooltip="Model Catalog"
+                  >
+                    <LayoutList className="size-4" />
+                    <span>Model Catalog</span>
+                  </SidebarMenuButton>
+                </Link>
+              </SidebarMenuItem>
+            )}
           </SidebarMenu>
         </SidebarGroup>
         {isAdmin && (

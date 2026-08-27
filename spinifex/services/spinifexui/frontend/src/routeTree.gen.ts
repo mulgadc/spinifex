@@ -46,6 +46,7 @@ import { Route as AuthRdssubnetGroupsCreateDbSubnetGroupRouteImport } from './ro
 import { Route as AuthS3bucketsCreateBucketRouteImport } from './routes/_auth/s3/(buckets)/create-bucket'
 import { Route as AuthS3LsIndexRouteImport } from './routes/_auth/s3/ls/index'
 import { Route as AuthS3LsBucketRouteRouteImport } from './routes/_auth/s3/ls/$bucket/route'
+import { Route as AuthBedrockcatalogListModelCatalogIndexRouteImport } from './routes/_auth/bedrock/(catalog)/list-model-catalog/index'
 import { Route as AuthBedrockguardrailsListGuardrailsIndexRouteImport } from './routes/_auth/bedrock/(guardrails)/list-guardrails/index'
 import { Route as AuthBedrockguardrailsListGuardrailsGuardrailIdRouteImport } from './routes/_auth/bedrock/(guardrails)/list-guardrails/$guardrailId'
 import { Route as AuthBedrockknowledgeBasesListKnowledgeBasesIndexRouteImport } from './routes/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/index'
@@ -321,6 +322,12 @@ const AuthS3LsBucketRouteRoute = AuthS3LsBucketRouteRouteImport.update({
   path: '/s3/ls/$bucket',
   getParentRoute: () => AuthRouteRoute,
 } as any)
+const AuthBedrockcatalogListModelCatalogIndexRoute =
+  AuthBedrockcatalogListModelCatalogIndexRouteImport.update({
+    id: '/bedrock/(catalog)/list-model-catalog/',
+    path: '/bedrock/list-model-catalog/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthBedrockguardrailsListGuardrailsIndexRoute =
   AuthBedrockguardrailsListGuardrailsIndexRouteImport.update({
     id: '/bedrock/(guardrails)/list-guardrails/',
@@ -788,6 +795,7 @@ export interface FileRoutesByFullPath {
   '/rds/restore-db-instance-from-db-snapshot/$id': typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   '/rds/describe-db-subnet-groups/$name': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
   '/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
+  '/bedrock/list-model-catalog/': typeof AuthBedrockcatalogListModelCatalogIndexRoute
   '/bedrock/list-guardrails/': typeof AuthBedrockguardrailsListGuardrailsIndexRoute
   '/bedrock/list-knowledge-bases/': typeof AuthBedrockknowledgeBasesListKnowledgeBasesIndexRoute
   '/ec2/describe-addresses/': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
@@ -891,6 +899,7 @@ export interface FileRoutesByTo {
   '/rds/restore-db-instance-from-db-snapshot/$id': typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   '/rds/describe-db-subnet-groups/$name': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
   '/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
+  '/bedrock/list-model-catalog': typeof AuthBedrockcatalogListModelCatalogIndexRoute
   '/bedrock/list-guardrails': typeof AuthBedrockguardrailsListGuardrailsIndexRoute
   '/bedrock/list-knowledge-bases': typeof AuthBedrockknowledgeBasesListKnowledgeBasesIndexRoute
   '/ec2/describe-addresses': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
@@ -997,6 +1006,7 @@ export interface FileRoutesById {
   '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id': typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
   '/_auth/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
+  '/_auth/bedrock/(catalog)/list-model-catalog/': typeof AuthBedrockcatalogListModelCatalogIndexRoute
   '/_auth/bedrock/(guardrails)/list-guardrails/': typeof AuthBedrockguardrailsListGuardrailsIndexRoute
   '/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/': typeof AuthBedrockknowledgeBasesListKnowledgeBasesIndexRoute
   '/_auth/ec2/(elastic-ips)/describe-addresses/': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
@@ -1103,6 +1113,7 @@ export interface FileRouteTypes {
     | '/rds/restore-db-instance-from-db-snapshot/$id'
     | '/rds/describe-db-subnet-groups/$name'
     | '/s3/ls/$bucket/$'
+    | '/bedrock/list-model-catalog/'
     | '/bedrock/list-guardrails/'
     | '/bedrock/list-knowledge-bases/'
     | '/ec2/describe-addresses/'
@@ -1206,6 +1217,7 @@ export interface FileRouteTypes {
     | '/rds/restore-db-instance-from-db-snapshot/$id'
     | '/rds/describe-db-subnet-groups/$name'
     | '/s3/ls/$bucket/$'
+    | '/bedrock/list-model-catalog'
     | '/bedrock/list-guardrails'
     | '/bedrock/list-knowledge-bases'
     | '/ec2/describe-addresses'
@@ -1311,6 +1323,7 @@ export interface FileRouteTypes {
     | '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id'
     | '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name'
     | '/_auth/s3/ls/$bucket/$'
+    | '/_auth/bedrock/(catalog)/list-model-catalog/'
     | '/_auth/bedrock/(guardrails)/list-guardrails/'
     | '/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/'
     | '/_auth/ec2/(elastic-ips)/describe-addresses/'
@@ -1610,6 +1623,13 @@ declare module '@tanstack/react-router' {
       path: '/s3/ls/$bucket'
       fullPath: '/s3/ls/$bucket'
       preLoaderRoute: typeof AuthS3LsBucketRouteRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/bedrock/(catalog)/list-model-catalog/': {
+      id: '/_auth/bedrock/(catalog)/list-model-catalog/'
+      path: '/bedrock/list-model-catalog'
+      fullPath: '/bedrock/list-model-catalog/'
+      preLoaderRoute: typeof AuthBedrockcatalogListModelCatalogIndexRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/bedrock/(guardrails)/list-guardrails/': {
@@ -2158,6 +2178,7 @@ interface AuthRouteRouteChildren {
   AuthRdssnapshotsDescribeDbSnapshotsIdRoute: typeof AuthRdssnapshotsDescribeDbSnapshotsIdRoute
   AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute: typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute: typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
+  AuthBedrockcatalogListModelCatalogIndexRoute: typeof AuthBedrockcatalogListModelCatalogIndexRoute
   AuthBedrockguardrailsListGuardrailsIndexRoute: typeof AuthBedrockguardrailsListGuardrailsIndexRoute
   AuthBedrockknowledgeBasesListKnowledgeBasesIndexRoute: typeof AuthBedrockknowledgeBasesListKnowledgeBasesIndexRoute
   AuthEc2elasticIpsDescribeAddressesIndexRoute: typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
@@ -2296,6 +2317,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute,
   AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute:
     AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute,
+  AuthBedrockcatalogListModelCatalogIndexRoute:
+    AuthBedrockcatalogListModelCatalogIndexRoute,
   AuthBedrockguardrailsListGuardrailsIndexRoute:
     AuthBedrockguardrailsListGuardrailsIndexRoute,
   AuthBedrockknowledgeBasesListKnowledgeBasesIndexRoute:

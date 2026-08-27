@@ -2839,7 +2839,7 @@ func (s *InstanceServiceImpl) hostUnderMemoryPressure() bool {
 
 func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM, systemImpaired bool) *ec2.InstanceStatus {
 	state := &ec2.InstanceState{}
-	if info, ok := vm.EC2StateCodes[v.Status]; ok {
+	if info, ok := vm.EC2APIState(v.Status); ok {
 		state.SetCode(info.Code)
 		state.SetName(info.Name)
 	} else {

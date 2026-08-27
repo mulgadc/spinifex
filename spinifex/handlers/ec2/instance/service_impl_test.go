@@ -3721,6 +3721,43 @@ func TestDescribeInstanceStatus_IncludeAllSurfacesPending(t *testing.T) {
 	assert.Equal(t, "not-applicable", *out.InstanceStatuses[0].SystemStatus.Status)
 }
 
+// StateError has no AWS enum, so the status path must project it through
+// vm.EC2APIState onto stopped rather than surfacing the internal "error" name.
+func TestBuildInstanceStatus_ErrorStateProjectsToStopped(t *testing.T) {
+	owner := "111122223333"
+	errored := runningVM("i-err", owner)
+	errored.Status = vm.StateError
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{errored.ID: errored})
+
+	is := svc.buildInstanceStatus(errored, false)
+	require.NotNil(t, is.InstanceState)
+	assert.Equal(t, "stopped", *is.InstanceState.Name)
+	assert.Equal(t, int64(80), *is.InstanceState.Code)
+}
+
+// Every internal state must map onto a valid AWS InstanceStateName here, the
+// same guarantee vm.EC2APIState gives the DescribeInstances projection.
+func TestBuildInstanceStatus_NeverSurfacesNonAWSName(t *testing.T) {
+	owner := "111122223333"
+	valid := map[string]bool{
+		"pending": true, "running": true, "shutting-down": true,
+		"terminated": true, "stopping": true, "stopped": true,
+	}
+	for _, state := range []vm.InstanceState{
+		vm.StateProvisioning, vm.StatePending, vm.StateRunning, vm.StateStopping,
+		vm.StateStopped, vm.StateShuttingDown, vm.StateTerminated, vm.StateError,
+	} {
+		v := runningVM("i-"+string(state), owner)
+		v.Status = state
+		svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+		is := svc.buildInstanceStatus(v, false)
+		require.NotNil(t, is.InstanceState)
+		assert.True(t, valid[*is.InstanceState.Name],
+			"buildInstanceStatus(%s) surfaced non-AWS name %q", state, *is.InstanceState.Name)
+	}
+}
+
 func TestDescribeInstanceStatus_IncludeAllSurfacesStopped(t *testing.T) {
 	owner := "111122223333"
 	stopped := runningVM("i-stop", owner)

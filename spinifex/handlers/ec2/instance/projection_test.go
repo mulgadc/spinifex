@@ -102,6 +102,46 @@ func TestProjectInstance_StoppedRetainsPlacementAndSpot(t *testing.T) {
 	assert.Nil(t, got.CapacityReservationSpecification)
 }
 
+// TestProjectInstance_ProjectsAZWithoutPlacementGroup is the direct bug fix: an
+// ordinary instance is in no placement group, and it used to get no Placement at
+// all — so describe-instances reported a null AZ for every normal instance.
+func TestProjectInstance_ProjectsAZWithoutPlacementGroup(t *testing.T) {
+	cfgs := map[string]InstanceProjection{
+		"running": runningCfg(),
+		"stopped": stoppedCfg(80, "stopped"),
+	}
+
+	for name, cfg := range cfgs {
+		t.Run(name, func(t *testing.T) {
+			v := fullVM(vm.StateRunning)
+			v.PlacementGroupName = ""
+
+			got, _ := ProjectInstance(v, cfg)
+
+			require.NotNil(t, got.Placement)
+			assert.Equal(t, "us-east-1a", aws.StringValue(got.Placement.AvailabilityZone))
+			assert.Nil(t, got.Placement.GroupName)
+		})
+	}
+}
+
+// TestProjectInstance_PlacementRetainsLaunchFields covers a Placement already on
+// the stored instance: the projection stamps the AZ onto a copy, leaving the
+// launch-time fields intact and the stored instance untouched.
+func TestProjectInstance_PlacementRetainsLaunchFields(t *testing.T) {
+	v := fullVM(vm.StateRunning)
+	v.PlacementGroupName = ""
+	v.Instance.Placement = &ec2.Placement{Tenancy: aws.String("default")}
+
+	got, _ := ProjectInstance(v, runningCfg())
+
+	require.NotNil(t, got.Placement)
+	assert.Equal(t, "default", aws.StringValue(got.Placement.Tenancy))
+	assert.Equal(t, "us-east-1a", aws.StringValue(got.Placement.AvailabilityZone))
+	assert.Nil(t, v.Instance.Placement.AvailabilityZone,
+		"the stored Placement is shared with the VM record, so it must be copied before it is stamped")
+}
+
 // TestProjectInstance_EmptyIamArnClearsStaleProfile guards the auto-clear: an
 // empty ARN on the VM record must wipe any profile left on the stored instance.
 func TestProjectInstance_EmptyIamArnClearsStaleProfile(t *testing.T) {

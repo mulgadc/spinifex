@@ -90,14 +90,21 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 		instanceCopy.IamInstanceProfile = nil
 	}
 
-	// Placement survives a stop in AWS, so project it regardless of runtime state
-	// whenever the instance belongs to a placement group.
-	if v.PlacementGroupName != "" {
-		instanceCopy.Placement = &ec2.Placement{
-			GroupName:        aws.String(v.PlacementGroupName),
-			AvailabilityZone: aws.String(cfg.AZ),
-		}
+	// Every instance has a placement AZ in AWS, group or not, and it survives a
+	// stop — so project it regardless of runtime state. Copied rather than mutated
+	// because instanceCopy shares the pointer with the stored instance.
+	placement := &ec2.Placement{}
+	if instanceCopy.Placement != nil {
+		placementCopy := *instanceCopy.Placement
+		placement = &placementCopy
 	}
+	if cfg.AZ != "" {
+		placement.AvailabilityZone = aws.String(cfg.AZ)
+	}
+	if v.PlacementGroupName != "" {
+		placement.GroupName = aws.String(v.PlacementGroupName)
+	}
+	instanceCopy.Placement = placement
 
 	// Echo the consumed capacity reservation so targeted-launch Terraform
 	// converges — without it the instance reports no reservation and the plan

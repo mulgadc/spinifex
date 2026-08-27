@@ -592,6 +592,121 @@ func simulateCleanRestore(t *testing.T, daemon *Daemon) {
 	daemon.vmMgr.Restore()
 }
 
+// TestRestoreInstances_LocalRecordSurvivesMissingKVKey pins the boot-path
+// precedence. startLocal loads the local file, then startCluster's restore
+// pulls from KV. An absent KV key means "this node has no record here", which
+// is not the same as "this node has no instances".
+func TestRestoreInstances_LocalRecordSurvivesMissingKVKey(t *testing.T) {
+	daemon := createDaemonWithJetStream(t)
+
+	// StateError is the one status classifyRestoredInstances leaves untouched,
+	// keeping this test on the load path rather than the relaunch machinery.
+	daemon.vmMgr.Insert(&vm.VM{
+		ID:     "i-survivor",
+		Status: vm.StateError,
+	})
+	require.NoError(t, daemon.WriteState())
+
+	// The node's KV record disappears: bucket recreated by recoverKVBucket,
+	// purged, or lost with its raft group. The local file still has it.
+	require.NoError(t, daemon.jsManager.DeleteState(daemon.node))
+
+	// Fresh process, then the real boot order.
+	daemon.vmMgr.Replace(map[string]*vm.VM{})
+	require.NoError(t, daemon.LoadState())
+	require.Equal(t, 1, daemon.vmMgr.Count(), "local file should carry the instance into boot")
+
+	require.NoError(t, daemon.jsManager.WriteShutdownMarker(daemon.node))
+	require.NoError(t, daemon.restoreInstances())
+
+	_, ok := daemon.vmMgr.Get("i-survivor")
+	assert.True(t, ok, "an instance held locally and absent from KV must survive restore")
+
+	state, err := ReadLocalState(daemon.localStatePath())
+	require.NoError(t, err)
+	require.NotNil(t, state, "local state file must still exist after restore")
+	assert.Contains(t, state.VMS, "i-survivor",
+		"restore must not write a KV-derived empty map over the local file")
+}
+
+// TestRestoreInstances_MissingKVKeyRepublishesLocalRecord is the other half of
+// the partition-recovery case: surviving the read is not enough, the node has
+// to put its record back so the rest of the cluster can see it again.
+func TestRestoreInstances_MissingKVKeyRepublishesLocalRecord(t *testing.T) {
+	daemon := createDaemonWithJetStream(t)
+
+	daemon.vmMgr.Insert(&vm.VM{
+		ID:     "i-republish",
+		Status: vm.StateError,
+	})
+	require.NoError(t, daemon.WriteState())
+	require.NoError(t, daemon.jsManager.DeleteState(daemon.node))
+
+	daemon.vmMgr.Replace(map[string]*vm.VM{})
+	require.NoError(t, daemon.LoadState())
+
+	require.NoError(t, daemon.jsManager.WriteShutdownMarker(daemon.node))
+	require.NoError(t, daemon.restoreInstances())
+
+	republished, found, err := daemon.jsManager.LoadState(daemon.node)
+	require.NoError(t, err)
+	require.True(t, found, "the node must write a record back, not leave the key absent")
+	assert.Contains(t, republished, "i-republish",
+		"the node must republish its own record after finding KV missing it")
+}
+
+// TestRestoreInstances_ClusterRecordWinsForSharedInstance keeps the merge from
+// becoming a licence to ignore the cluster: where both stores hold the same
+// instance, the published record is still the one that applies.
+func TestRestoreInstances_ClusterRecordWinsForSharedInstance(t *testing.T) {
+	daemon := createDaemonWithJetStream(t)
+
+	daemon.vmMgr.Insert(&vm.VM{ID: "i-shared", Status: vm.StateError, InstanceType: "t3.micro"})
+	daemon.vmMgr.Insert(&vm.VM{ID: "i-local-only", Status: vm.StateError})
+	require.NoError(t, daemon.WriteState())
+
+	// The cluster record covers only i-shared, and disagrees about it.
+	require.NoError(t, daemon.jsManager.WriteState(daemon.node, map[string]*vm.VM{
+		"i-shared": {ID: "i-shared", Status: vm.StateError, InstanceType: "t3.small"},
+	}))
+
+	daemon.vmMgr.Replace(map[string]*vm.VM{})
+	require.NoError(t, daemon.LoadState())
+	require.NoError(t, daemon.jsManager.WriteShutdownMarker(daemon.node))
+	require.NoError(t, daemon.restoreInstances())
+
+	shared, ok := daemon.vmMgr.Get("i-shared")
+	require.True(t, ok)
+	assert.Equal(t, "t3.small", shared.InstanceType,
+		"the cluster record wins where both stores hold the instance")
+
+	_, ok = daemon.vmMgr.Get("i-local-only")
+	assert.True(t, ok, "an instance the cluster record omits is still this node's to keep")
+}
+
+// TestRestoreInstances_StaleLocalTerminatedRecordIsMigrated pins the
+// self-healing half. Keeping a record the cluster dropped can revive a stale
+// terminal entry, so classification must still retire it.
+func TestRestoreInstances_StaleLocalTerminatedRecordIsMigrated(t *testing.T) {
+	daemon := createDaemonWithJetStream(t)
+
+	daemon.vmMgr.Insert(&vm.VM{ID: "i-stale-terminated", Status: vm.StateTerminated})
+	require.NoError(t, daemon.WriteState())
+	require.NoError(t, daemon.jsManager.DeleteState(daemon.node))
+
+	daemon.vmMgr.Replace(map[string]*vm.VM{})
+	require.NoError(t, daemon.LoadState())
+	require.NoError(t, daemon.jsManager.WriteShutdownMarker(daemon.node))
+	require.NoError(t, daemon.restoreInstances())
+
+	_, ok := daemon.vmMgr.Get("i-stale-terminated")
+	assert.False(t, ok, "a terminated record survives the merge only to be migrated out of it")
+
+	terminated, err := daemon.jsManager.LoadTerminatedInstance("i-stale-terminated")
+	require.NoError(t, err)
+	require.NotNil(t, terminated, "the revived record must land in the terminated bucket")
+}
+
 // TestRestoreInstances_StoppingFinalizedToStopped verifies that an instance
 // stuck in StateStopping when the daemon died gets finalized to StateStopped
 // and migrated to shared KV.
@@ -915,7 +1030,7 @@ func TestStatePersistence_RoundTrip(t *testing.T) {
 
 	// Simulate restart: clear and reload.
 	daemon.vmMgr.Replace(map[string]*vm.VM{})
-	snapshot, err := daemon.jsManager.LoadState(daemon.node)
+	snapshot, _, err := daemon.jsManager.LoadState(daemon.node)
 	require.NoError(t, err)
 	daemon.vmMgr.Replace(snapshot)
 

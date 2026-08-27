@@ -76,17 +76,23 @@ func (m *Manager) Restore() {
 	m.reportRecordlessQEMUOrphans()
 }
 
-// loadRunningState replaces the manager's running set from the persisted snapshot.
-// A missing key returns an empty map and no error.
+// loadRunningState folds the cluster's snapshot into the running set, which by
+// this point already holds whatever the node's own state file carried in. With
+// no cluster record at all there is nothing to fold and the local set stands.
 func (m *Manager) loadRunningState() error {
 	if m.deps.StateStore == nil {
 		return fmt.Errorf("StateStore not wired")
 	}
-	loaded, err := m.deps.StateStore.LoadRunningState(m.deps.NodeID)
+	loaded, found, err := m.deps.StateStore.LoadRunningState(m.deps.NodeID)
 	if err != nil {
 		return err
 	}
-	m.Replace(loaded)
+	if !found {
+		slog.Warn("No cluster record for this node, keeping local instance state",
+			"node", m.deps.NodeID, "instances", m.Count())
+		return nil
+	}
+	m.AdoptClusterState(loaded)
 	return nil
 }
 

@@ -650,8 +650,8 @@ func stubFindFreePort(t *testing.T, results ...struct {
 	return &idx
 }
 
-func newDevNICInstance(id string, extra map[int]int) *VM {
-	return &VM{ID: id, ExtraHostfwd: extra}
+func newDevNICInstance(id string, guestPorts ...int) *VM {
+	return &VM{ID: id, HostfwdPorts: guestPorts}
 }
 
 func TestAppendDevHostfwdNIC_SSHPortFails_NICSkipped(t *testing.T) {
@@ -662,7 +662,7 @@ func TestAppendDevHostfwdNIC_SSHPortFails_NICSkipped(t *testing.T) {
 
 	m := NewManager()
 	m.SetDeps(Deps{BindHost: "10.0.0.1"})
-	instance := newDevNICInstance("i-ssh-fail", nil)
+	instance := newDevNICInstance("i-ssh-fail")
 
 	m.appendDevHostfwdNIC(instance)
 
@@ -678,7 +678,7 @@ func TestAppendDevHostfwdNIC_SSHAddrUnparsable_NICSkipped(t *testing.T) {
 	}{addr: "nocolon", err: nil})
 
 	m := NewManager()
-	instance := newDevNICInstance("i-ssh-bad-addr", nil)
+	instance := newDevNICInstance("i-ssh-bad-addr")
 
 	m.appendDevHostfwdNIC(instance)
 
@@ -687,7 +687,7 @@ func TestAppendDevHostfwdNIC_SSHAddrUnparsable_NICSkipped(t *testing.T) {
 	assert.Empty(t, instance.Config.Devices)
 }
 
-func TestAppendDevHostfwdNIC_ExtraHostfwdNil_ShortCircuit(t *testing.T) {
+func TestAppendDevHostfwdNIC_NoExtraPorts_ShortCircuit(t *testing.T) {
 	calls := stubFindFreePort(t, struct {
 		addr string
 		err  error
@@ -695,7 +695,7 @@ func TestAppendDevHostfwdNIC_ExtraHostfwdNil_ShortCircuit(t *testing.T) {
 
 	m := NewManager()
 	m.SetDeps(Deps{BindHost: "0.0.0.0"})
-	instance := newDevNICInstance("i-no-extra", nil)
+	instance := newDevNICInstance("i-no-extra")
 
 	m.appendDevHostfwdNIC(instance)
 
@@ -719,14 +719,14 @@ func TestAppendDevHostfwdNIC_ExtraPortFails_WarningContinues(t *testing.T) {
 	)
 
 	m := NewManager()
-	instance := newDevNICInstance("i-extra-fail", map[int]int{8080: 0})
+	instance := newDevNICInstance("i-extra-fail", 8080)
 
 	m.appendDevHostfwdNIC(instance)
 
 	assert.Equal(t, 2, *calls)
 	require.Len(t, instance.Config.NetDevs, 1)
 	assert.Equal(t, "user,id=dev0,hostfwd=tcp:127.0.0.1:2222-:22", instance.Config.NetDevs[0].Value, "failed extra entry must not appear in netdev value")
-	assert.Equal(t, 0, instance.ExtraHostfwd[8080], "failed entry must leave the map value at its zero")
+	assert.NotContains(t, instance.HostfwdPortMap, 8080, "a port that never bound must be absent, not mapped to zero")
 	require.Len(t, instance.Config.Devices, 1)
 }
 
@@ -747,24 +747,18 @@ func TestAppendDevHostfwdNIC_ExtraAddrUnparsable_EntrySkipped(t *testing.T) {
 	)
 
 	m := NewManager()
-	instance := newDevNICInstance("i-extra-split", map[int]int{8080: 0, 8443: 0})
+	instance := newDevNICInstance("i-extra-split", 8080, 8443)
 
 	m.appendDevHostfwdNIC(instance)
 
 	assert.Equal(t, 3, *calls)
 	require.Len(t, instance.Config.NetDevs, 1)
 
-	var goodGuest, badGuest int
-	for g := range instance.ExtraHostfwd {
-		if instance.ExtraHostfwd[g] == 9090 {
-			goodGuest = g
-		} else {
-			badGuest = g
-		}
-	}
-	require.NotZero(t, goodGuest, "exactly one entry must have been populated")
-	assert.Equal(t, 0, instance.ExtraHostfwd[badGuest], "skipped entry must remain at zero")
-	assert.Contains(t, instance.Config.NetDevs[0].Value, fmt.Sprintf("hostfwd=tcp:127.0.0.1:9090-:%d", goodGuest))
+	// Ports are visited in the order requested, so the unparsable address is
+	// consumed by 8080 and 8443 gets the good one.
+	assert.NotContains(t, instance.HostfwdPortMap, 8080, "skipped entry must be absent")
+	assert.Equal(t, map[int]int{8443: 9090}, instance.HostfwdPortMap)
+	assert.Contains(t, instance.Config.NetDevs[0].Value, "hostfwd=tcp:127.0.0.1:9090-:8443")
 	assert.NotContains(t, instance.Config.NetDevs[0].Value, "garbage")
 }
 
@@ -781,17 +775,17 @@ func TestAppendDevHostfwdNIC_ExtraPortAtoiFails_EntrySkipped(t *testing.T) {
 	)
 
 	m := NewManager()
-	instance := newDevNICInstance("i-extra-atoi", map[int]int{8080: 0})
+	instance := newDevNICInstance("i-extra-atoi", 8080)
 
 	m.appendDevHostfwdNIC(instance)
 
 	assert.Equal(t, 2, *calls)
 	require.Len(t, instance.Config.NetDevs, 1)
 	assert.Equal(t, "user,id=dev0,hostfwd=tcp:127.0.0.1:2222-:22", instance.Config.NetDevs[0].Value, "non-numeric extra port must not be appended to netdev value")
-	assert.Equal(t, 0, instance.ExtraHostfwd[8080], "skipped entry must remain at zero")
+	assert.NotContains(t, instance.HostfwdPortMap, 8080, "skipped entry must be absent")
 }
 
-func TestAppendDevHostfwdNIC_ExtraHostfwd_HappyPath(t *testing.T) {
+func TestAppendDevHostfwdNIC_ExtraPorts_HappyPath(t *testing.T) {
 	stubFindFreePort(t,
 		struct {
 			addr string
@@ -804,11 +798,11 @@ func TestAppendDevHostfwdNIC_ExtraHostfwd_HappyPath(t *testing.T) {
 	)
 
 	m := NewManager()
-	instance := newDevNICInstance("i-extra-ok", map[int]int{8080: 0})
+	instance := newDevNICInstance("i-extra-ok", 8080)
 
 	m.appendDevHostfwdNIC(instance)
 
-	assert.Equal(t, 18080, instance.ExtraHostfwd[8080])
+	assert.Equal(t, map[int]int{8080: 18080}, instance.HostfwdPortMap)
 	require.Len(t, instance.Config.NetDevs, 1)
 	assert.Equal(t, "user,id=dev0,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=tcp:127.0.0.1:18080-:8080", instance.Config.NetDevs[0].Value)
 	require.Len(t, instance.Config.Devices, 1)

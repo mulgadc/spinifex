@@ -206,6 +206,15 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 		return nil
 	}
 
+	// A reason left by the stop, or by a restore that found this node could not
+	// schedule the instance, describes a state the instance is now leaving.
+	// Clearing it here keeps the node the only writer of the field.
+	m.Inspect(instance, func(v *VM) {
+		if v.Instance != nil {
+			v.Instance.StateReason = nil
+		}
+	})
+
 	pid, _ := utils.ReadPidFile(instance.ID)
 	if pid > 0 {
 		process, err := os.FindProcess(pid)
@@ -712,27 +721,32 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 	var nb strings.Builder
 	fmt.Fprintf(&nb, "user,id=dev0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort)
 
-	if instance.ExtraHostfwd != nil {
-		for guestPort := range instance.ExtraHostfwd {
-			fwdAddr, fwdErr := findFreePort()
-			if fwdErr != nil {
-				slog.Warn("DEV_NETWORKING: failed to find free port for extra hostfwd", "guestPort", guestPort, "err", fwdErr)
-				continue
-			}
-			_, hostPort, splitErr := net.SplitHostPort(fwdAddr)
-			if splitErr != nil {
-				slog.Warn("DEV_NETWORKING: failed to parse extra hostfwd address", "fwdAddr", fwdAddr, "err", splitErr)
-				continue
-			}
-			hostPortInt, convErr := strconv.Atoi(hostPort)
-			if convErr != nil {
-				slog.Warn("DEV_NETWORKING: failed to convert extra hostfwd port", "hostPort", hostPort, "err", convErr)
-				continue
-			}
-			fmt.Fprintf(&nb, ",hostfwd=tcp:%s:%s-:%d", bindIP, hostPort, guestPort)
-			instance.ExtraHostfwd[guestPort] = hostPortInt
-			slog.Info("DEV_NETWORKING: extra hostfwd", "guestPort", guestPort, "hostPort", hostPort, "instanceId", instance.ID)
+	// The map is what this launch observed, so it is rebuilt rather than
+	// updated: a port that bound on a previous launch but not on this one must
+	// not still be advertised.
+	instance.HostfwdPortMap = nil
+	for _, guestPort := range instance.HostfwdPorts {
+		fwdAddr, fwdErr := findFreePort()
+		if fwdErr != nil {
+			slog.Warn("DEV_NETWORKING: failed to find free port for extra hostfwd", "guestPort", guestPort, "err", fwdErr)
+			continue
 		}
+		_, hostPort, splitErr := net.SplitHostPort(fwdAddr)
+		if splitErr != nil {
+			slog.Warn("DEV_NETWORKING: failed to parse extra hostfwd address", "fwdAddr", fwdAddr, "err", splitErr)
+			continue
+		}
+		hostPortInt, convErr := strconv.Atoi(hostPort)
+		if convErr != nil {
+			slog.Warn("DEV_NETWORKING: failed to convert extra hostfwd port", "hostPort", hostPort, "err", convErr)
+			continue
+		}
+		fmt.Fprintf(&nb, ",hostfwd=tcp:%s:%s-:%d", bindIP, hostPort, guestPort)
+		if instance.HostfwdPortMap == nil {
+			instance.HostfwdPortMap = make(map[int]int, len(instance.HostfwdPorts))
+		}
+		instance.HostfwdPortMap[guestPort] = hostPortInt
+		slog.Info("DEV_NETWORKING: extra hostfwd", "guestPort", guestPort, "hostPort", hostPort, "instanceId", instance.ID)
 	}
 
 	instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{Value: nb.String()})

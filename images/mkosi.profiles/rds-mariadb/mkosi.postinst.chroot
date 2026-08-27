@@ -41,7 +41,10 @@ fi
 # database nobody asked for, shadowed by a mount. The assertion is the part
 # that survives a future packaging change.
 rm -rf /var/lib/mysql/*
-install -d -m 0750 -o mysql -g mysql /var/lib/mysql
+# Ownership is deliberately not set here: mkosi runs this in a namespace that
+# maps root only, so chown fails. rds-datadir owns the mount point after it
+# mounts, and the log directory is a tmpfiles entry.
+install -d -m 0750 /var/lib/mysql
 if [[ -n "$(ls -A /var/lib/mysql)" ]]; then
     echo "ERROR: /var/lib/mysql is not empty — rds-datadir would mount over live content" >&2
     ls -lA /var/lib/mysql >&2
@@ -51,10 +54,10 @@ fi
 # Baked AFTER the emptiness assertion. MariaDB treats an !includedir it cannot
 # open as a fatal defaults-parsing error, which would take down the client
 # alongside the server on exactly the boot needed to diagnose a missing volume.
-install -d -m 0750 -o mysql -g mysql /var/lib/mysql/conf.d
-# rds-init points log_error here; without it the server's own errors go to
-# syslog, which nothing collects off a guest with no SSH.
-install -d -m 0750 -o mysql -g mysql /var/log/mysql
+# 0755 root-owned rather than 0750: the build cannot chown it to mysql, and a
+# directory the server cannot read is the same fatal parse error as one that is
+# missing. It is empty, and every boot with a volume mounts over it.
+install -d -m 0755 /var/lib/mysql/conf.d
 
 # Two properties, each of which fails silently rather than loudly: the RDS
 # include must sit in the directory my.cnf reads LAST, and sort last within it.
@@ -93,7 +96,9 @@ if [[ ! -f "${DEFAULT_PARAMS}" ]]; then
     echo "ERROR: the catalog's default parameter set was not delivered to ${DEFAULT_PARAMS}" >&2
     exit 1
 fi
-if ! "${MARIADBD}" --defaults-extra-file="${DEFAULT_PARAMS}" --user=mysql --verbose --help \
+# --user=root because the build namespace maps root only and mariadbd exits on
+# a failed setuid. It parses option files and exits, so it never serves here.
+if ! "${MARIADBD}" --defaults-extra-file="${DEFAULT_PARAMS}" --user=root --verbose --help \
     > /tmp/rds-defaults.out 2>/tmp/rds-defaults.err; then
     echo "ERROR: mariadbd refuses the catalog's default parameter set" >&2
     cat /tmp/rds-defaults.err >&2

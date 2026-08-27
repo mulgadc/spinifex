@@ -43,14 +43,15 @@ fi
 # The assertion is the part that survives a future packaging change: whatever
 # created the cluster may move, but the mount point must be empty either way.
 rm -rf /var/lib/postgresql/*
-install -d -m 0750 -o postgres -g postgres /var/lib/postgresql
+# Ownership is deliberately not set here: mkosi runs this in a namespace that
+# maps root only, so chown fails. rds-datadir owns the mount point after it
+# mounts, and the log directory is a tmpfiles entry.
+install -d -m 0750 /var/lib/postgresql
 if [[ -n "$(ls -A /var/lib/postgresql)" ]]; then
     echo "ERROR: /var/lib/postgresql is not empty — rds-datadir would mount over live content" >&2
     ls -lA /var/lib/postgresql >&2
     exit 1
 fi
-# Kept on the boot volume: per-boot diagnostics, so a snapshot stays data-only.
-install -d -m 0755 -o postgres -g postgres /var/log/postgresql
 
 # rds-init initdb's with the ICU locale provider and must keep doing so. The
 # original reason (musl has no locales) is gone with Alpine, but the

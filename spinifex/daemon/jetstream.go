@@ -49,19 +49,24 @@ type KVSyncObserver interface {
 
 // JetStreamManager manages JetStream KV store operations for instance state.
 //
-// The instance-state bucket carries two record types, so it is one kvstore
-// bucket with two typed views over it: they share its handle, and a recovery
-// driven through either repairs both. A node's running set is stored as
-// LocalState, the same envelope the local state file uses.
+// The instance-state bucket carries several record types, so it is one kvstore
+// bucket with a typed view per type: they share its handle, and a recovery
+// driven through any of them repairs all of them. A node's running set is
+// stored as LocalState, the same envelope the local state file uses.
 type JetStreamManager struct {
 	js        jetstream.JetStream
 	stateB    *kvstore.Bucket            // spinifex-instance-state
 	nodeState *kvstore.Store[LocalState] // node.<id> records
 	stopped   *kvstore.Store[vm.VM]      // instance.<id> records
 	term      *kvstore.Store[vm.VM]      // spinifex-terminated-instances
-	clusterKV jetstream.KeyValue         // spinifex-cluster-state
-	replicas  int
-	obs       KVSyncObserver
+	// The per-resource key space the three views above are moving onto. Each
+	// is a third view over a bucket one of them already holds, so the two
+	// spaces share a handle and a recovery driven through either repairs both.
+	records     *kvstore.Store[vm.InstanceRecord] // i/<id>, instance-state bucket
+	termRecords *kvstore.Store[vm.InstanceRecord] // i/<id>, terminated bucket
+	clusterKV   jetstream.KeyValue                // spinifex-cluster-state
+	replicas    int
+	obs         KVSyncObserver
 }
 
 // checkNodeStateVersion reports whether a node record read from KV is one this
@@ -141,12 +146,13 @@ func terminatedInstanceConfig(replicas int) kvstore.Config {
 	}
 }
 
-// setInstanceStateBucket points the two typed views at b. They share its
-// handle, so a recovery driven through either repairs both.
+// setInstanceStateBucket points the typed views at b. They share its handle,
+// so a recovery driven through any of them repairs all of them.
 func (m *JetStreamManager) setInstanceStateBucket(b *kvstore.Bucket) {
 	m.stateB = b
 	m.nodeState = kvstore.On[LocalState](b)
 	m.stopped = kvstore.On[vm.VM](b)
+	m.records = kvstore.On[vm.InstanceRecord](b)
 }
 
 // InitKVBucket initializes the KV bucket, creating it if it doesn't exist.
@@ -194,6 +200,9 @@ func (m *JetStreamManager) InitClusterStateBucket() error {
 // JetStream automatically purges keys after 1 hour, matching AWS behavior for terminated instances.
 func (m *JetStreamManager) InitTerminatedInstanceBucket() error {
 	m.term = kvstore.New[vm.VM](m.js, terminatedInstanceConfig(m.replicas))
+	// A second view over the same handle, for the same reason the instance-state
+	// bucket carries several.
+	m.termRecords = kvstore.On[vm.InstanceRecord](m.term.Bucket)
 	_, err := m.term.KV(context.Background())
 	return err
 }
@@ -653,15 +662,15 @@ func (m *JetStreamManager) UpdateStoppedInstance(instanceID string, mutate func(
 	if m.stopped == nil {
 		return nil, errors.New("KV bucket not initialized")
 	}
-	return mutateVM(m.stopped, StoppedInstancePrefix+instanceID, mutate)
+	return mutateRecord(m.stopped, StoppedInstancePrefix+instanceID, mutate)
 }
 
-// mutateVM applies mutate under the store's CAS loop and returns the committed
-// record. An absent key surfaces as kvstore.ErrNotFound, which is what both
-// StateStore interfaces are written against.
-func mutateVM(store *kvstore.Store[vm.VM], key string, mutate func(*vm.VM)) (*vm.VM, error) {
-	var updated *vm.VM
-	err := store.Mutate(context.Background(), key, func(v *vm.VM) (bool, error) {
+// mutateRecord applies mutate under the store's CAS loop and returns the
+// committed record. An absent key surfaces as kvstore.ErrNotFound, which is what
+// both StateStore interfaces are written against.
+func mutateRecord[T any](store *kvstore.Store[T], key string, mutate func(*T)) (*T, error) {
+	var updated *T
+	err := store.Mutate(context.Background(), key, func(v *T) (bool, error) {
 		mutate(v)
 		updated = v
 		return true, nil
@@ -677,25 +686,26 @@ func (m *JetStreamManager) ListStoppedInstances() ([]*vm.VM, error) {
 	if m.stopped == nil {
 		return nil, errors.New("KV bucket not initialized")
 	}
-	return listVMs(m.stopped, StoppedInstancePrefix)
+	return listRecords(m.stopped, StoppedInstancePrefix)
 }
 
-// listVMs returns every record under prefix. Unlike the raw scan it replaces it
-// fails on an undecodable record rather than skipping it: both callers feed
-// DescribeInstances, where a silently dropped instance reads as terminated.
-func listVMs(store *kvstore.Store[vm.VM], prefix string) ([]*vm.VM, error) {
+// listRecords returns every record under prefix. Unlike the raw scan it
+// replaces it fails on an undecodable record rather than skipping it: these
+// listings feed DescribeInstances, where a silently dropped instance reads as
+// terminated.
+func listRecords[T any](store *kvstore.Store[T], prefix string) ([]*T, error) {
 	records, err := store.List(context.Background(), prefix)
 	if err != nil {
 		return nil, err
 	}
-	instances := make([]*vm.VM, 0, len(records))
+	out := make([]*T, 0, len(records))
 	for i := range records {
-		instances = append(instances, &records[i])
+		out = append(out, &records[i])
 	}
-	if len(instances) == 0 {
+	if len(out) == 0 {
 		return nil, nil
 	}
-	return instances, nil
+	return out, nil
 }
 
 // WriteTerminatedInstance writes a terminated instance to the terminated KV
@@ -730,7 +740,7 @@ func (m *JetStreamManager) UpdateTerminatedInstance(instanceID string, mutate fu
 	if m.term == nil {
 		return nil, errors.New("terminated instance KV bucket not initialized")
 	}
-	return mutateVM(m.term, TerminatedInstancePrefix+instanceID, mutate)
+	return mutateRecord(m.term, TerminatedInstancePrefix+instanceID, mutate)
 }
 
 // ListTerminatedInstances returns all terminated instances from the terminated KV bucket.
@@ -738,7 +748,7 @@ func (m *JetStreamManager) ListTerminatedInstances() ([]*vm.VM, error) {
 	if m.term == nil {
 		return nil, errors.New("terminated instance KV bucket not initialized")
 	}
-	return listVMs(m.term, TerminatedInstancePrefix)
+	return listRecords(m.term, TerminatedInstancePrefix)
 }
 
 // DeleteTerminatedInstance removes a terminated instance from the terminated KV bucket.

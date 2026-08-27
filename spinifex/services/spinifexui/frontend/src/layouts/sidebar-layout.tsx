@@ -21,6 +21,7 @@ import {
   LayoutList,
   LogOut,
   MapPin,
+  MessageSquare,
   Network,
   Package,
   Route,
@@ -597,6 +598,17 @@ export function SidebarLayout() {
                 >
                   <Shield className="size-4" />
                   <span>Guardrails</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <Link to="/bedrock/playground">
+                <SidebarMenuButton
+                  isActive={pathname.startsWith("/bedrock/playground")}
+                  tooltip="Playground"
+                >
+                  <MessageSquare className="size-4" />
+                  <span>Playground</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

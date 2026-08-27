@@ -1,5 +1,6 @@
 import {
   GetGuardrailCommand,
+  ListFoundationModelsCommand,
   ListGuardrailsCommand,
 } from "@aws-sdk/client-bedrock"
 import { queryOptions } from "@tanstack/react-query"
@@ -7,6 +8,7 @@ import { queryOptions } from "@tanstack/react-query"
 import { getBedrockClient } from "@/lib/awsClient"
 
 const GUARDRAIL_STALE_TIME = 30_000
+const FOUNDATION_MODELS_STALE_TIME = 30_000
 
 export const guardrailsQueryOptions = queryOptions({
   queryKey: ["bedrock", "guardrails"],
@@ -38,3 +40,15 @@ export const guardrailVersionsQueryOptions = (guardrailIdentifier: string) =>
     },
     staleTime: GUARDRAIL_STALE_TIME,
   })
+
+// The tenant view of ListFoundationModels — only models this account can see,
+// as opposed to the admin ListOchreCatalog which also reports why an entry is
+// unavailable. Self-host only in v1.
+export const foundationModelsQueryOptions = queryOptions({
+  queryKey: ["bedrock", "foundationModels"],
+  queryFn: async () => {
+    const command = new ListFoundationModelsCommand({})
+    return await getBedrockClient().send(command)
+  },
+  staleTime: FOUNDATION_MODELS_STALE_TIME,
+})

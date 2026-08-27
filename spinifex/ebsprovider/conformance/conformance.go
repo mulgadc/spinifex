@@ -46,6 +46,24 @@ func capabilitiesOf(t *testing.T, provider ebsprovider.EBSProvider) ebsprovider.
 // fails the test instead of hanging it.
 const maxListPages = 100
 
+// volumeIDs projects one page of refs down to its IDs.
+func volumeIDs(refs []ebsprovider.VolumeRef) []string {
+	ids := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ids = append(ids, ref.ID)
+	}
+	return ids
+}
+
+// snapshotIDs projects one page of refs down to its IDs.
+func snapshotIDs(refs []ebsprovider.SnapshotRef) []string {
+	ids := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ids = append(ids, ref.ID)
+	}
+	return ids
+}
+
 // drainVolumeIDs walks every page of ListVolumes and returns the IDs in the
 // order they arrived, duplicates included: detecting a token that replays or
 // overshoots a boundary is the point, so this must not deduplicate.
@@ -419,14 +437,23 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 
 		t.Run("max results above the cap is clamped, not refused", func(t *testing.T) {
 			provider := newProvider(t)
-			resp, err := provider.ListVolumes(context.Background(), ebsprovider.ListVolumesRequest{
+			ctx := context.Background()
+			want := []string{cfg.id("vol-list-cap-a"), cfg.id("vol-list-cap-b")}
+			for _, volumeID := range want {
+				_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+				require.NoError(t, err)
+			}
+
+			resp, err := provider.ListVolumes(ctx, ebsprovider.ListVolumesRequest{
 				Versioned:  ebsprovider.NewVersioned(),
 				MaxResults: ebsprovider.MaxListResults * 10,
 			})
 			require.NoError(t, err)
 			require.NotNil(t, resp)
-			assert.LessOrEqual(t, len(resp.Volumes), int(ebsprovider.MaxListResults),
-				"a page must never exceed MaxListResults; the reply has to fit one NATS message")
+			for _, volumeID := range want {
+				assert.Containsf(t, volumeIDs(resp.Volumes), volumeID,
+					"volume %s went missing from an over-cap request; asking for more than fits must still return a page, not an empty one", volumeID)
+			}
 		})
 
 		t.Run("unsupported_version", func(t *testing.T) {
@@ -725,14 +752,26 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 
 		t.Run("max results above the cap is clamped, not refused", func(t *testing.T) {
 			provider := newProvider(t)
-			resp, err := provider.ListSnapshots(context.Background(), ebsprovider.ListSnapshotsRequest{
+			ctx := context.Background()
+			volumeID := cfg.id("vol-snaplist-cap-src")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			want := []string{cfg.id("snap-list-cap-a"), cfg.id("snap-list-cap-b")}
+			for _, snapshotID := range want {
+				_, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
+				require.NoError(t, err)
+			}
+
+			resp, err := provider.ListSnapshots(ctx, ebsprovider.ListSnapshotsRequest{
 				Versioned:  ebsprovider.NewVersioned(),
 				MaxResults: ebsprovider.MaxListResults * 10,
 			})
 			require.NoError(t, err)
 			require.NotNil(t, resp)
-			assert.LessOrEqual(t, len(resp.Snapshots), int(ebsprovider.MaxListResults),
-				"a page must never exceed MaxListResults; the reply has to fit one NATS message")
+			for _, snapshotID := range want {
+				assert.Containsf(t, snapshotIDs(resp.Snapshots), snapshotID,
+					"snapshot %s went missing from an over-cap request; asking for more than fits must still return a page, not an empty one", snapshotID)
+			}
 		})
 
 		t.Run("unsupported_version", func(t *testing.T) {

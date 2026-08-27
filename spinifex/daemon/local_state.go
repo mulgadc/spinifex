@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	// LocalStateSchemaVersion guards on-disk compatibility; bump on breaking changes.
+	// LocalStateSchemaVersion guards compatibility of a node's instance state
+	// record, on disk and in KV; bump on breaking changes.
 	LocalStateSchemaVersion = 1
 
 	// DefaultLocalStateDir is the default directory under DataDir for local state files.
@@ -25,8 +26,9 @@ const (
 	DefaultDataDir = "/var/lib/spinifex"
 )
 
-// LocalState is the on-disk representation of a node's instance state.
-// SchemaVersion gates compatibility; unknown versions are rejected.
+// LocalState is a node's instance state, both on disk and as the node.<id>
+// record in the instance-state KV bucket. SchemaVersion gates compatibility;
+// unknown versions are rejected.
 type LocalState struct {
 	SchemaVersion int               `json:"schema_version"`
 	VMS           map[string]*vm.VM `json:"vms"`
@@ -110,6 +112,9 @@ func ReadLocalState(path string) (*LocalState, error) {
 		return nil, fmt.Errorf("parse local state %s: %w", path, err)
 	}
 
+	// Stricter than the KV read, deliberately: the file has carried a version
+	// since it was introduced, so a 0 here is corruption rather than an old
+	// record, and reading it as current would be a guess.
 	if state.SchemaVersion != LocalStateSchemaVersion {
 		return nil, fmt.Errorf("local state %s: unknown schema_version %d (expected %d)",
 			path, state.SchemaVersion, LocalStateSchemaVersion)

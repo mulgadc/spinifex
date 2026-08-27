@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
@@ -19,7 +20,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/testutil/ebsfake"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -988,7 +988,7 @@ func createVolumeInStoreWithMeta(t *testing.T, svc *VolumeServiceImpl, store *ob
 		meta.VolumeID = volumeID
 	}
 	seedVolumeDocument(t, store, meta)
-	seedTestProviderVolume(t, svc, meta.VolumeID, utils.SafeUint64ToInt64(meta.CapacityGiB))
+	seedTestProviderVolume(t, svc, meta.VolumeID, safecast.Uint64ToInt64(meta.CapacityGiB))
 }
 
 // putRawVolumeDocument writes document bytes verbatim, for cases a typed seed

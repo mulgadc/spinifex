@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
@@ -106,7 +106,7 @@ func TestAttachDetachErrorCode(t *testing.T) {
 // holds the blocks, the ebsmetadata document is what the control plane reads.
 func seedVolumeConfig(t *testing.T, daemon *Daemon, store *objectstore.MemoryObjectStore, volume ebsmetadata.Volume) {
 	t.Helper()
-	seedProviderVolume(t, daemon, volume.VolumeID, utils.SafeUint64ToInt64(volume.CapacityGiB))
+	seedProviderVolume(t, daemon, volume.VolumeID, safecast.Uint64ToInt64(volume.CapacityGiB))
 	seedVolumeDocument(t, store, volume)
 }
 

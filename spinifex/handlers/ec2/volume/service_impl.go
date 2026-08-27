@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
@@ -841,7 +842,7 @@ func metadataVolumeToEC2(meta ebsmetadata.Volume) *ec2.Volume {
 		volumeType = "gp3"
 	}
 	volume := &ec2.Volume{
-		VolumeId: aws.String(meta.VolumeID), Size: aws.Int64(utils.SafeUint64ToInt64(meta.CapacityGiB)),
+		VolumeId: aws.String(meta.VolumeID), Size: aws.Int64(safecast.Uint64ToInt64(meta.CapacityGiB)),
 		State: aws.String(state), AvailabilityZone: aws.String(meta.AvailabilityZone), CreateTime: aws.Time(meta.CreatedAt),
 		VolumeType: aws.String(volumeType), Encrypted: aws.Bool(meta.Encrypted), Tags: utils.MapToEC2Tags(meta.Tags),
 	}
@@ -935,7 +936,7 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 	if err != nil || meta.TenantID != accountID {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}
-	originalSize := utils.SafeUint64ToInt64(meta.CapacityGiB)
+	originalSize := safecast.Uint64ToInt64(meta.CapacityGiB)
 	if input.Size == nil || *input.Size <= originalSize {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -955,7 +956,7 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 	if err != nil || expanded == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	meta.CapacityGiB = utils.SafeInt64ToUint64(*input.Size)
+	meta.CapacityGiB = safecast.Int64ToUint64(*input.Size)
 	if input.VolumeType != nil {
 		meta.VolumeType = *input.VolumeType
 	}
@@ -977,7 +978,7 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 		OriginalSize:       originalSize,
 		OriginalIOPS:       originalIOPS,
 		OriginalVolumeType: originalType,
-		TargetSize:         utils.SafeUint64ToInt64(meta.CapacityGiB),
+		TargetSize:         safecast.Uint64ToInt64(meta.CapacityGiB),
 		TargetIOPS:         int64(meta.IOPS),
 		TargetVolumeType:   targetType,
 		StartTime:          now,

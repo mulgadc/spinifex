@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
@@ -73,7 +74,7 @@ func floorVolumeSizeToAMI(ctx context.Context, loader AMIMetaLoader, imageID str
 	if amiMeta.VolumeSizeGiB == 0 {
 		return requested
 	}
-	amiSize := utils.SafeUint64ToInt64(amiMeta.VolumeSizeGiB) * 1024 * 1024 * 1024
+	amiSize := safecast.Uint64ToInt64(amiMeta.VolumeSizeGiB) * 1024 * 1024 * 1024
 	if amiSize <= int64(requested) {
 		return requested
 	}
@@ -1597,7 +1598,7 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 	// without one is invisible and its attach-time state write fails.
 	if err := s.metadata.PutVolume(ctx, ebsmetadata.Volume{
 		VolumeID: spec.volumeID, TenantID: spec.accountID,
-		CapacityGiB: utils.SafeIntToUint64(spec.sizeBytes / bytesPerGiB),
+		CapacityGiB: safecast.IntToUint64(spec.sizeBytes / bytesPerGiB),
 		State:       string(ebsprovider.VolumeStateAvailable),
 		CreatedAt:   time.Now(), AvailabilityZone: s.config.AZ,
 		VolumeType: spxtypes.VolumeTypeGP3, IOPS: rootVolumeIOPS(spec.iops),

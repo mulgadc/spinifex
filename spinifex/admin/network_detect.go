@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 )
 
 // DetectedInterface represents a network interface discovered on the host.
@@ -169,10 +169,10 @@ func SuggestPoolRange(wan *DetectedInterface) (start, end string) {
 	for i := 3; i >= 0 && carry > 0; i-- {
 		val := int(startIP[i]) - carry
 		if val < 0 {
-			startIP[i] = utils.SafeIntToUint8(256 + val)
+			startIP[i] = safecast.IntToUint8(256 + val)
 			carry = 1
 		} else {
-			startIP[i] = utils.SafeIntToUint8(val)
+			startIP[i] = safecast.IntToUint8(val)
 			carry = 0
 		}
 	}

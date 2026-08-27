@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
@@ -262,7 +263,7 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 	now := time.Now()
 	snapshotCfg := &SnapshotConfig{
 		SnapshotID: snapshotID, VolumeID: volumeID,
-		VolumeSize: utils.SafeUint64ToInt64(volume.CapacityGiB),
+		VolumeSize: safecast.Uint64ToInt64(volume.CapacityGiB),
 		State:      string(created.State), Progress: "100%", StartTime: now,
 		Encrypted: volume.Encrypted,
 		OwnerID:   accountID, AvailabilityZone: volume.AvailabilityZone,

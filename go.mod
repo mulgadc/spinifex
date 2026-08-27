@@ -21,7 +21,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.73
-	github.com/mulgadc/bluebottle v1.18.1-0.20260827043632-fca81ec29266
+	github.com/mulgadc/bluebottle v1.18.1-0.20260827045410-e7d5cf022748
 	github.com/mulgadc/northstar v1.18.0
 	github.com/mulgadc/predastore v1.18.1-0.20260826045109-26ce1b091112
 	github.com/mulgadc/viperblock v1.18.0

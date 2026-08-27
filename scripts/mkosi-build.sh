@@ -32,6 +32,8 @@
 #   MKOSI_OUTPUT_DIR  where artefacts land (default: <image dir>/output)
 #   MKOSI_VERB        mkosi verb to run (default: build)
 #   BUILDER_TAG       builder image tag (default: spinifex-mkosi-builder)
+#   MKOSI_INCREMENTAL set to "no" to rebuild the distro root from packages
+#                     instead of reusing the cached tree (default: yes)
 set -euo pipefail
 
 # shellcheck source=scripts/mkosi-common.sh
@@ -410,10 +412,15 @@ done
 # explicit choice.
 CALLER_SET_IMAGE_ID=0
 CALLER_SET_FORCE=0
+CALLER_SET_INCREMENTAL=0
 for arg in "${MKOSI_ARGS[@]+"${MKOSI_ARGS[@]}"}"; do
     case "${arg}" in
         --image-id|--image-id=*) CALLER_SET_IMAGE_ID=1 ;;
         --force|-f)              CALLER_SET_FORCE=1 ;;
+        --incremental|--incremental=*|-i)
+                                 CALLER_SET_INCREMENTAL=1 ;;
+        --cache-directory|--cache-directory=*)
+                                 CALLER_SET_INCREMENTAL=1 ;;
     esac
 done
 
@@ -434,6 +441,22 @@ fi
 # package download volume, which --force does not touch.
 if [[ "${CALLER_SET_FORCE}" -eq 0 ]]; then
     CMD+=(--force)
+fi
+
+# Reuse the unpacked distro root across builds. This is a different cache to
+# the one --force distrusts above: --force only removes the output, and mkosi
+# re-keys this tree whenever the resolved package set changes.
+#
+# It lives in the same persisted volume as the package downloads, and it saves
+# the whole "Installing Ubuntu" phase — measured at 2m40 -> 35s for
+# spinifex-rds-postgres on a warm cache. Extra trees and every postinst still
+# run on top, so nothing image-specific is served from it.
+#
+# MKOSI_INCREMENTAL=no is the escape hatch. A build that dies partway can leave
+# a tree that fails the same way on every retry, and the cache carries no
+# self-check that would notice.
+if [[ "${CALLER_SET_INCREMENTAL}" -eq 0 && "${MKOSI_INCREMENTAL:-yes}" != "no" ]]; then
+    CMD+=(--incremental=yes --cache-directory /home/builder/.cache/mkosi-incremental)
 fi
 
 CMD+=("${MKOSI_ARGS[@]+"${MKOSI_ARGS[@]}"}" "${VERB}")

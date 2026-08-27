@@ -2,6 +2,7 @@ package gateway_bedrock
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
 // piiPattern binds one AWS PII entity type to the regex that detects it.
@@ -256,19 +258,29 @@ func literalTopicHit(topic *bedrock.GuardrailTopicConfig, texts []string) bool {
 // blocks on literalTopicHit's exact-match, or when any input text's
 // embedding reaches topicSimilarityThreshold cosine similarity against any
 // of the topic's Name/Definition/Examples phrase vectors (Definition is
-// finally used here, unlike the literal path). Semantic scoring is skipped
-// whenever embedder is nil or an embed call fails, falling back to the
-// literal check alone (embedGuardrailTexts/topicVectors log at warn in that
-// case). Each topic is appended at most once even if several signals hit.
-func assessTopicPolicy(ctx context.Context, embedder Embedder, cfg *bedrock.GuardrailTopicPolicyConfig, texts []string) (*bedrockruntime.GuardrailTopicPolicyAssessment, bool) {
+// finally used here, unlike the literal path). embedder == nil is a
+// deliberately literal-only deployment (tests, or no embedder wired) and is
+// not an error. embedder != nil whose Embed call fails means the policy
+// could not be semantically evaluated: if literal matching already blocked
+// the request that block wins outright, otherwise this returns an error so
+// the caller fails closed instead of passing unverified content through.
+func assessTopicPolicy(ctx context.Context, embedder Embedder, cfg *bedrock.GuardrailTopicPolicyConfig, texts []string) (*bedrockruntime.GuardrailTopicPolicyAssessment, bool, error) {
 	if cfg == nil {
-		return nil, false
+		return nil, false, nil
 	}
 
 	var textVectors [][]float32
 	semanticOK := false
+	unverified := false
 	if len(cfg.TopicsConfig) > 0 {
-		textVectors, semanticOK = embedGuardrailTexts(ctx, embedder, DefaultEmbeddingModel, texts)
+		vectors, err := embedGuardrailTexts(ctx, embedder, DefaultEmbeddingModel, texts)
+		switch {
+		case err != nil:
+			unverified = true
+		case vectors != nil:
+			textVectors = vectors
+			semanticOK = true
+		}
 	}
 
 	blocked := false
@@ -280,7 +292,11 @@ func assessTopicPolicy(ctx context.Context, embedder Embedder, cfg *bedrock.Guar
 
 		hit := literalTopicHit(topic, texts)
 		if !hit && semanticOK {
-			if vectors, ok := topicVectors(ctx, embedder, DefaultEmbeddingModel, topic); ok {
+			vectors, err := topicVectors(ctx, embedder, DefaultEmbeddingModel, topic)
+			switch {
+			case err != nil:
+				unverified = true
+			case vectors != nil:
 				hit = topicSemanticHit(textVectors, vectors, topicSimilarityThreshold(topic))
 			}
 		}
@@ -296,7 +312,15 @@ func assessTopicPolicy(ctx context.Context, embedder Embedder, cfg *bedrock.Guar
 		blocked = true
 	}
 
-	return &bedrockruntime.GuardrailTopicPolicyAssessment{Topics: topics}, blocked
+	assessment := &bedrockruntime.GuardrailTopicPolicyAssessment{Topics: topics}
+	switch {
+	case blocked:
+		return assessment, true, nil
+	case unverified:
+		return assessment, false, errors.New(awserrors.ErrorServiceUnavailableException)
+	default:
+		return assessment, false, nil
+	}
 }
 
 // scaffoldContextualGroundingPolicyAssessment is
@@ -350,17 +374,23 @@ func guardrailUsage(view guardrailView, texts []string) *bedrockruntime.Guardrai
 // content/contextualGrounding evaluate to NONE (see the scaffold* helpers,
 // which need a classifier). A BLOCK anywhere makes the overall action
 // GUARDRAIL_INTERVENED and short-circuits redaction, since the caller
-// substitutes the guardrail's blocked messaging instead of the text. source
-// is accepted (not yet branched on) for parity with AWS's per-source
+// substitutes the guardrail's blocked messaging instead of the text. A
+// non-nil error means assessTopicPolicy could not semantically verify texts
+// and nothing else blocked outright: the caller must fail the request
+// rather than use the zero-value action/assessments returned alongside it.
+// source is accepted (not yet branched on) for parity with AWS's per-source
 // assessment shape; the deterministic policies apply identically to INPUT
 // and OUTPUT text until a content-policy classifier needs to tell them apart
 // via InputStrength/OutputStrength.
-func applyGuardrailPolicies(ctx context.Context, embedder Embedder, view guardrailView, texts []string, source string) (string, []*bedrockruntime.GuardrailAssessment, []string, *bedrockruntime.GuardrailUsage) {
+func applyGuardrailPolicies(ctx context.Context, embedder Embedder, view guardrailView, texts []string, source string) (string, []*bedrockruntime.GuardrailAssessment, []string, *bedrockruntime.GuardrailUsage, error) {
 	_ = source
 
 	wordAssessment, wordBlocked := assessWordPolicy(view.WordPolicy, texts)
 	piiAssessment, piiBlocked := assessSensitiveInformationPolicy(view.SensitiveInformationPolicy, texts)
-	topicAssessment, topicBlocked := assessTopicPolicy(ctx, embedder, view.TopicPolicy, texts)
+	topicAssessment, topicBlocked, topicErr := assessTopicPolicy(ctx, embedder, view.TopicPolicy, texts)
+	if topicErr != nil {
+		return "", nil, nil, nil, topicErr
+	}
 
 	action := bedrockruntime.GuardrailActionNone
 	outputs := texts
@@ -379,5 +409,5 @@ func applyGuardrailPolicies(ctx context.Context, embedder Embedder, view guardra
 		ContextualGroundingPolicy:  scaffoldContextualGroundingPolicyAssessment(view.ContextualGroundingPolicy),
 	}
 
-	return action, []*bedrockruntime.GuardrailAssessment{assessment}, outputs, guardrailUsage(view, texts)
+	return action, []*bedrockruntime.GuardrailAssessment{assessment}, outputs, guardrailUsage(view, texts), nil
 }

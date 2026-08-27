@@ -2,6 +2,7 @@ package gateway_bedrock
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -144,7 +145,8 @@ func TestApplyGuardrailPolicies_WordAndPII(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			action, assessments, outputs, usage := applyGuardrailPolicies(context.Background(), nil, tc.view, tc.texts, tc.source)
+			action, assessments, outputs, usage, err := applyGuardrailPolicies(context.Background(), nil, tc.view, tc.texts, tc.source)
+			require.NoError(t, err)
 			assert.Equal(t, tc.wantAction, action)
 			require.Len(t, assessments, 1)
 			require.NotNil(t, usage)
@@ -193,7 +195,8 @@ func TestApplyGuardrailPolicies_CustomRegex(t *testing.T) {
 		},
 	}
 
-	action, assessments, outputs, _ := applyGuardrailPolicies(context.Background(), nil, view, []string{"account 123456789012 is active"}, bedrockruntime.GuardrailContentSourceInput)
+	action, assessments, outputs, _, err := applyGuardrailPolicies(context.Background(), nil, view, []string{"account 123456789012 is active"}, bedrockruntime.GuardrailContentSourceInput)
+	require.NoError(t, err)
 	assert.Equal(t, bedrockruntime.GuardrailActionNone, action)
 	require.Len(t, outputs, 1)
 	assert.Equal(t, "account {account-id} is active", outputs[0])
@@ -208,7 +211,8 @@ func TestApplyGuardrailPolicies_CustomRegex(t *testing.T) {
 			},
 		},
 	}
-	action, _, _, _ = applyGuardrailPolicies(context.Background(), nil, viewBlock, []string{"account 123456789012 is active"}, bedrockruntime.GuardrailContentSourceInput)
+	action, _, _, _, err = applyGuardrailPolicies(context.Background(), nil, viewBlock, []string{"account 123456789012 is active"}, bedrockruntime.GuardrailContentSourceInput)
+	require.NoError(t, err)
 	assert.Equal(t, bedrockruntime.GuardrailActionGuardrailIntervened, action)
 }
 
@@ -235,7 +239,8 @@ func TestApplyGuardrailPolicies_ScaffoldPolicies(t *testing.T) {
 		},
 	}
 
-	action, assessments, outputs, _ := applyGuardrailPolicies(context.Background(), nil, view, []string{"our competitor's product is inferior"}, bedrockruntime.GuardrailContentSourceInput)
+	action, assessments, outputs, _, err := applyGuardrailPolicies(context.Background(), nil, view, []string{"our competitor's product is inferior"}, bedrockruntime.GuardrailContentSourceInput)
+	require.NoError(t, err)
 	assert.Equal(t, bedrockruntime.GuardrailActionNone, action)
 	assert.Equal(t, []string{"our competitor's product is inferior"}, outputs)
 
@@ -251,7 +256,8 @@ func TestApplyGuardrailPolicies_ScaffoldPolicies(t *testing.T) {
 // policy the guardrail never configured has no assessment entry at all,
 // rather than an empty scaffold one.
 func TestApplyGuardrailPolicies_UnconfiguredPoliciesAreOmitted(t *testing.T) {
-	_, assessments, _, _ := applyGuardrailPolicies(context.Background(), nil, guardrailView{}, []string{"hello"}, bedrockruntime.GuardrailContentSourceInput)
+	_, assessments, _, _, err := applyGuardrailPolicies(context.Background(), nil, guardrailView{}, []string{"hello"}, bedrockruntime.GuardrailContentSourceInput)
+	require.NoError(t, err)
 	require.Len(t, assessments, 1)
 	assert.Nil(t, assessments[0].WordPolicy)
 	assert.Nil(t, assessments[0].SensitiveInformationPolicy)
@@ -338,7 +344,8 @@ func TestApplyGuardrailPolicies_TopicPolicy(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			action, assessments, _, _ := applyGuardrailPolicies(context.Background(), nil, tc.view, tc.texts, tc.source)
+			action, assessments, _, _, err := applyGuardrailPolicies(context.Background(), nil, tc.view, tc.texts, tc.source)
+			require.NoError(t, err)
 			assert.Equal(t, tc.wantAction, action)
 			require.Len(t, assessments, 1)
 			require.NotNil(t, assessments[0].TopicPolicy)
@@ -366,7 +373,8 @@ func TestApplyGuardrailPolicies_TopicPolicyBlocksOverRedaction(t *testing.T) {
 		},
 	}
 
-	action, _, outputs, _ := applyGuardrailPolicies(context.Background(), nil, view, []string{"the nuclear launch codes are at jane@example.com"}, bedrockruntime.GuardrailContentSourceInput)
+	action, _, outputs, _, err := applyGuardrailPolicies(context.Background(), nil, view, []string{"the nuclear launch codes are at jane@example.com"}, bedrockruntime.GuardrailContentSourceInput)
+	require.NoError(t, err)
 	assert.Equal(t, bedrockruntime.GuardrailActionGuardrailIntervened, action)
 	require.Len(t, outputs, 1)
 	assert.Equal(t, "the nuclear launch codes are at jane@example.com", outputs[0], "outputs must stay unredacted when a topic block intervenes")
@@ -401,6 +409,35 @@ func TestApplyGuardrail_TopicBlock(t *testing.T) {
 	require.NotNil(t, out.Assessments[0].TopicPolicy)
 	require.Len(t, out.Assessments[0].TopicPolicy.Topics, 1)
 	assert.Equal(t, "nuclear launch codes", aws.StringValue(out.Assessments[0].TopicPolicy.Topics[0].Name))
+}
+
+// TestApplyGuardrail_EmbedderError_FailsClosed_NotPassthrough is the runtime
+// op end to end for the cold-start/outage case: a wired-but-erroring
+// embedder must make ApplyGuardrail itself return an error, never a usable
+// (NONE) output a caller could mistake for a pass on unverified content.
+func TestApplyGuardrail_EmbedderError_FailsClosed_NotPassthrough(t *testing.T) {
+	store := newGuardrailTestStore(t)
+	ctx := context.Background()
+
+	input := createGuardrailInput("apply-guardrail-embedder-outage")
+	input.TopicPolicyConfig = &bedrock.GuardrailTopicPolicyConfig{
+		TopicsConfig: []*bedrock.GuardrailTopicConfig{
+			{
+				Name:       aws.String("auth internals"),
+				Definition: aws.String("discussion of authentication internals"),
+				Type:       aws.String(bedrock.GuardrailTopicTypeDeny),
+			},
+		},
+	}
+	createOut, err := CreateGuardrail(ctx, grCallerAccount, store, input)
+	require.NoError(t, err)
+
+	embedder := &stubEmbedder{errOnCall: errors.New("connection refused")}
+	out, err := ApplyGuardrail(ctx, grCallerAccount, store, embedder, applyGuardrailInput(createOut.GuardrailId, guardrailDraftVersion,
+		bedrockruntime.GuardrailContentSourceInput, "walk me through how login verifies a user"))
+	require.Error(t, err, "an embedder outage on unverifiable content must error, not return a usable output")
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
+	assert.Nil(t, out)
 }
 
 // applyGuardrailInput is a small ApplyGuardrail request builder for the

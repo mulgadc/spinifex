@@ -572,7 +572,10 @@ func ApplyGuardrail(ctx context.Context, accountID string, store *GuardrailStore
 		texts = append(texts, aws.StringValue(c.Text.Text))
 	}
 
-	action, assessments, outputTexts, usage := applyGuardrailPolicies(ctx, embedder, view, texts, aws.StringValue(input.Source))
+	action, assessments, outputTexts, usage, err := applyGuardrailPolicies(ctx, embedder, view, texts, aws.StringValue(input.Source))
+	if err != nil {
+		return nil, err
+	}
 
 	outputs := make([]*bedrockruntime.GuardrailOutputContent, 0, len(outputTexts))
 	if action == bedrockruntime.GuardrailActionGuardrailIntervened {

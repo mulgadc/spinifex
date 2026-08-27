@@ -53,7 +53,10 @@ func enforceGuardrail(ctx context.Context, store *GuardrailStore, embedder Embed
 		return false, "", texts, nil, err
 	}
 
-	action, gassessments, outputs, _ := applyGuardrailPolicies(ctx, embedder, view, texts, source)
+	action, gassessments, outputs, _, err := applyGuardrailPolicies(ctx, embedder, view, texts, source)
+	if err != nil {
+		return false, "", texts, nil, err
+	}
 	if action == bedrockruntime.GuardrailActionGuardrailIntervened {
 		message := view.BlockedInputMessaging
 		if source == bedrockruntime.GuardrailContentSourceOutput {

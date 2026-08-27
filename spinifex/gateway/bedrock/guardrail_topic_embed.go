@@ -70,32 +70,33 @@ func topicCacheKey(modelID string, phrases []string) string {
 }
 
 // topicVectors returns topic's cached per-phrase embedding vectors,
-// embedding and caching them on first use. ok is false when embedder is
-// nil, topic has no phrases, or the embed call errors -- every case where
-// the caller must rely on the literal matcher instead.
-func topicVectors(ctx context.Context, embedder Embedder, modelID string, topic *bedrock.GuardrailTopicConfig) ([][]float32, bool) {
+// embedding and caching them on first use. A nil, nil return means embedder
+// is nil or topic has no phrases -- the caller relies on the literal matcher
+// alone, not an error. A non-nil error means embedder was available but the
+// embed call itself failed: the caller must fail closed, not fall back.
+func topicVectors(ctx context.Context, embedder Embedder, modelID string, topic *bedrock.GuardrailTopicConfig) ([][]float32, error) {
 	if embedder == nil || topic == nil {
-		return nil, false
+		return nil, nil
 	}
 	phrases := topicPhrases(topic)
 	if len(phrases) == 0 {
-		return nil, false
+		return nil, nil
 	}
 
 	key := topicCacheKey(modelID, phrases)
 	if cached, ok := topicVectorCache.Load(key); ok {
-		vectors, ok := cached.([][]float32)
-		return vectors, ok
+		vectors, _ := cached.([][]float32)
+		return vectors, nil
 	}
 
 	vectors, err := embedder.Embed(ctx, modelID, phrases)
 	if err != nil {
-		slog.Warn("guardrail: topic embedding failed, falling back to literal match",
+		slog.Warn("guardrail: topic embedding unavailable, failing closed on unverified content",
 			"topic", aws.StringValue(topic.Name), "model", modelID, "err", err)
-		return nil, false
+		return nil, err
 	}
 	topicVectorCache.Store(key, vectors)
-	return vectors, true
+	return vectors, nil
 }
 
 // cosineSimilarity returns the cosine similarity of a and b. A length
@@ -130,21 +131,22 @@ func maxCosineSimilarity(vector []float32, candidates [][]float32) float64 {
 }
 
 // embedGuardrailTexts embeds texts once against modelID so every topic in a
-// policy reuses the same input vectors instead of re-embedding per topic.
-// ok is false when embedder is nil or the embed call errors, telling the
-// caller to rely on the literal fallback alone for every topic; both cases
-// log at warn since correctness must never silently fail open.
-func embedGuardrailTexts(ctx context.Context, embedder Embedder, modelID string, texts []string) ([][]float32, bool) {
+// policy reuses the same input vectors instead of re-embedding per topic. A
+// nil, nil return means embedder is nil -- the caller relies on the literal
+// matcher alone, which is not an error, just an unconfigured deployment. A
+// non-nil error means embedder was available but the call failed: the
+// caller must fail closed rather than silently pass unverified content.
+func embedGuardrailTexts(ctx context.Context, embedder Embedder, modelID string, texts []string) ([][]float32, error) {
 	if embedder == nil {
 		slog.Warn("guardrail: no embedder configured, falling back to literal topic matching")
-		return nil, false
+		return nil, nil
 	}
 	vectors, err := embedder.Embed(ctx, modelID, texts)
 	if err != nil {
-		slog.Warn("guardrail: input embedding failed, falling back to literal topic matching", "model", modelID, "err", err)
-		return nil, false
+		slog.Warn("guardrail: input embedding unavailable, failing closed on unverified content", "model", modelID, "err", err)
+		return nil, err
 	}
-	return vectors, true
+	return vectors, nil
 }
 
 // topicSemanticHit reports whether any textVector reaches threshold cosine

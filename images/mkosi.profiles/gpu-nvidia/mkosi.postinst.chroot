@@ -24,7 +24,7 @@ set -euo pipefail
 
 # Exactly one kernel is expected: this is a from-scratch image, not a
 # system that has accumulated old kernels across upgrades. Under mkosi the
-# kernel is chosen explicitly via Packages= (linux-image-generic, in the
+# kernel is chosen explicitly via Packages= (linux-image-virtual, in the
 # base config), so there is one version to find rather than one to detect
 # via a /boot-vs-/lib/modules hunt.
 mapfile -t kernels < <(ls -1 /usr/lib/modules)

@@ -7,7 +7,7 @@ set -euo pipefail
 # need.
 #
 # Unlike gpu-nvidia there is no DKMS build here: amdgpu is upstreamed in the
-# mainline kernel and ships inside linux-image-generic (base), so nothing
+# mainline kernel and ships inside linux-modules-*-generic (base), so nothing
 # needs compiling against this image's kernel — only the ROCm userland
 # tools are third-party.
 #

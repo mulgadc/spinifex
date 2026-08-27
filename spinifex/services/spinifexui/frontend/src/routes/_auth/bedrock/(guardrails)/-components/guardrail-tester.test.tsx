@@ -102,6 +102,31 @@ describe("GuardrailTester", () => {
     })
   })
 
+  it("treats action BLOCKED without a detected flag as blocked", async () => {
+    mockSend.mockResolvedValue({
+      action: "GUARDRAIL_INTERVENED",
+      outputs: [{ text: "Blocked by guardrail." }],
+      assessments: [
+        {
+          topicPolicy: {
+            topics: [
+              { name: "auth-internals", type: "DENY", action: "BLOCKED" },
+            ],
+          },
+        },
+      ],
+      usage: USAGE,
+    } satisfies ApplyGuardrailResponse)
+
+    renderTester()
+    submitContent("explain the authentication mechanisms")
+
+    await expect(
+      screen.findByText("GUARDRAIL_INTERVENED"),
+    ).resolves.toBeInTheDocument()
+    expect(screen.getByText(/auth-internals/)).toBeInTheDocument()
+  })
+
   it("renders a pass-through result with no intervention", async () => {
     mockSend.mockResolvedValue({
       action: "NONE",

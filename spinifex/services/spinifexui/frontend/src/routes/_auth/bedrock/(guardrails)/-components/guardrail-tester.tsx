@@ -18,7 +18,7 @@ const SOURCES: GuardrailContentSource[] = ["INPUT", "OUTPUT"]
 
 function blockedTopics(assessment: GuardrailAssessment): string[] {
   return (assessment.topicPolicy?.topics ?? [])
-    .filter((topic) => topic.detected)
+    .filter((topic) => topic.detected === true || topic.action === "BLOCKED")
     .map((topic) => topic.name ?? "unknown topic")
 }
 
@@ -26,7 +26,7 @@ function blockedWords(assessment: GuardrailAssessment): string[] {
   const custom = assessment.wordPolicy?.customWords ?? []
   const managed = assessment.wordPolicy?.managedWordLists ?? []
   return [...custom, ...managed]
-    .filter((word) => word.detected)
+    .filter((word) => word.detected === true || word.action === "BLOCKED")
     .map((word) => word.match ?? "unknown word")
 }
 

@@ -644,8 +644,8 @@ func (m *JetStreamManager) UpdateStoppedInstance(instanceID string, mutate func(
 }
 
 // mutateVM applies mutate under the store's CAS loop and returns the committed
-// record. An absent key comes back as jetstream.ErrKeyNotFound, which is the
-// sentinel the callers and both StateStore interfaces are written against.
+// record. An absent key surfaces as kvstore.ErrNotFound, which is what both
+// StateStore interfaces are written against.
 func mutateVM(store *kvstore.Store[vm.VM], key string, mutate func(*vm.VM)) (*vm.VM, error) {
 	var updated *vm.VM
 	err := store.Mutate(context.Background(), key, func(v *vm.VM) (bool, error) {
@@ -654,9 +654,6 @@ func mutateVM(store *kvstore.Store[vm.VM], key string, mutate func(*vm.VM)) (*vm
 		return true, nil
 	})
 	if err != nil {
-		if errors.Is(err, kvstore.ErrNotFound) {
-			return nil, jetstream.ErrKeyNotFound
-		}
 		return nil, err
 	}
 	return updated, nil

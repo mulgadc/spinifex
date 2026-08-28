@@ -162,7 +162,7 @@ describe("PlaygroundPage", () => {
     // A bare Enter sends without clicking the button.
     await user.type(input, "{Enter}")
     await expect(screen.findByText("hi")).resolves.toBeInTheDocument()
-    expect(mockSend).toHaveBeenCalledTimes(1)
+    expect(mockSend).toHaveBeenCalledOnce()
   })
 
   it("renders assistant markdown as formatted HTML", async () => {

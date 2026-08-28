@@ -13,10 +13,13 @@ import { signedFetch } from "@/lib/signed-fetch"
 import { callQueryFn } from "@/test/query"
 
 import {
+  adminModelAccessQueryOptions,
   adminNodesQueryOptions,
   adminOchreCatalogQueryOptions,
   adminStorageStatusQueryOptions,
   adminVMsQueryOptions,
+  grantModelAccess,
+  revokeModelAccess,
 } from "./admin"
 
 const mockGetCredentials = vi.mocked(getCredentials)
@@ -148,6 +151,113 @@ describe("adminOchreCatalogQueryOptions", () => {
     expect(mockSignedFetch).toHaveBeenCalledWith({
       action: "ListOchreCatalog",
       credentials: creds,
+    })
+  })
+})
+
+describe("adminModelAccessQueryOptions", () => {
+  it("has the correct query key", () => {
+    expect(adminModelAccessQueryOptions("000000000002").queryKey).toStrictEqual(
+      ["admin", "modelAccess", "000000000002"],
+    )
+  })
+
+  it("is disabled when the account id is empty", () => {
+    expect(adminModelAccessQueryOptions("").enabled).toBeFalsy()
+  })
+
+  it("is enabled when the account id is non-empty", () => {
+    expect(adminModelAccessQueryOptions("000000000002").enabled).toBeTruthy()
+  })
+
+  it("throws when not authenticated", async () => {
+    mockGetCredentials.mockReturnValue(null)
+    await expect(
+      callQueryFn(adminModelAccessQueryOptions("000000000002")),
+    ).rejects.toThrow("Not authenticated")
+  })
+
+  it("calls signedFetch with ListModelAccess action and the account id", async () => {
+    const creds = {
+      accessKeyId: "ASIAak",
+      secretAccessKey: "sk",
+      sessionToken: "token",
+      expiration: new Date(Date.now() + 60_000).toISOString(),
+    }
+    mockGetCredentials.mockReturnValue(creds)
+    mockSignedFetch.mockResolvedValue({
+      AccountId: "000000000002",
+      ModelIds: [],
+    })
+
+    await callQueryFn(adminModelAccessQueryOptions("000000000002"))
+
+    expect(mockSignedFetch).toHaveBeenCalledWith({
+      action: "ListModelAccess",
+      credentials: creds,
+      params: { AccountId: "000000000002" },
+    })
+  })
+})
+
+describe("grantModelAccess", () => {
+  it("throws when not authenticated", async () => {
+    mockGetCredentials.mockReturnValue(null)
+    await expect(
+      grantModelAccess({ accountId: "000000000002", modelId: "model-a" }),
+    ).rejects.toThrow("Not authenticated")
+  })
+
+  it("calls signedFetch with GrantModelAccess action and params", async () => {
+    const creds = {
+      accessKeyId: "ASIAak",
+      secretAccessKey: "sk",
+      sessionToken: "token",
+      expiration: new Date(Date.now() + 60_000).toISOString(),
+    }
+    mockGetCredentials.mockReturnValue(creds)
+    mockSignedFetch.mockResolvedValue({
+      AccountId: "000000000002",
+      ModelId: "model-a",
+    })
+
+    await grantModelAccess({ accountId: "000000000002", modelId: "model-a" })
+
+    expect(mockSignedFetch).toHaveBeenCalledWith({
+      action: "GrantModelAccess",
+      credentials: creds,
+      params: { AccountId: "000000000002", ModelId: "model-a" },
+    })
+  })
+})
+
+describe("revokeModelAccess", () => {
+  it("throws when not authenticated", async () => {
+    mockGetCredentials.mockReturnValue(null)
+    await expect(
+      revokeModelAccess({ accountId: "000000000002", modelId: "model-a" }),
+    ).rejects.toThrow("Not authenticated")
+  })
+
+  it("calls signedFetch with RevokeModelAccess action and params", async () => {
+    const creds = {
+      accessKeyId: "ASIAak",
+      secretAccessKey: "sk",
+      sessionToken: "token",
+      expiration: new Date(Date.now() + 60_000).toISOString(),
+    }
+    mockGetCredentials.mockReturnValue(creds)
+    mockSignedFetch.mockResolvedValue({
+      AccountId: "000000000002",
+      ModelId: "model-a",
+    })
+
+    await revokeModelAccess({ accountId: "000000000002", modelId: "model-a" })
+
+    expect(mockSignedFetch).toHaveBeenCalledWith({
+      action: "RevokeModelAccess",
+      credentials: creds,
+      params: { AccountId: "000000000002", ModelId: "model-a" },
     })
   })
 })

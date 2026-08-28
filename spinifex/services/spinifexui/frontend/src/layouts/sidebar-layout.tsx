@@ -16,6 +16,7 @@ import {
   IdCard,
   Image,
   Key,
+  KeyRound,
   Layers,
   LayoutGrid,
   LayoutList,
@@ -623,6 +624,19 @@ export function SidebarLayout() {
                   >
                     <LayoutList className="size-4" />
                     <span>Model Catalog</span>
+                  </SidebarMenuButton>
+                </Link>
+              </SidebarMenuItem>
+            )}
+            {isAdmin && (
+              <SidebarMenuItem>
+                <Link to="/bedrock/list-model-access">
+                  <SidebarMenuButton
+                    isActive={pathname.startsWith("/bedrock/list-model-access")}
+                    tooltip="Model Access"
+                  >
+                    <KeyRound className="size-4" />
+                    <span>Model Access</span>
                   </SidebarMenuButton>
                 </Link>
               </SidebarMenuItem>

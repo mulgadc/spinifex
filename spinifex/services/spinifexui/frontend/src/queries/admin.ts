@@ -145,6 +145,18 @@ interface ListOchreCatalogOutput {
   entries: AdminCatalogEntry[]
 }
 
+// ModelAccessList and ModelAccessChange mirror the gateway's wire shape,
+// which is PascalCase here unlike the catalog's camelCase.
+interface ModelAccessList {
+  AccountId: string
+  ModelIds: string[]
+}
+
+interface ModelAccessChange {
+  AccountId: string
+  ModelId: string
+}
+
 export type {
   InstanceTypeCap,
   GPUSliceInfo,
@@ -161,6 +173,8 @@ export type {
   CatalogAvailability,
   AdminCatalogEntry,
   ListOchreCatalogOutput,
+  ModelAccessList,
+  ModelAccessChange,
 }
 
 export const adminNodesQueryOptions = queryOptions({
@@ -222,3 +236,56 @@ export const adminOchreCatalogQueryOptions = queryOptions({
   },
   staleTime: 10_000,
 })
+
+export const adminModelAccessQueryOptions = (accountId: string) =>
+  queryOptions({
+    queryKey: ["admin", "modelAccess", accountId],
+    queryFn: async () => {
+      const credentials = getCredentials()
+      if (!credentials) {
+        throw new Error("Not authenticated")
+      }
+      return await signedFetch<ModelAccessList>({
+        action: "ListModelAccess",
+        credentials,
+        params: { AccountId: accountId },
+      })
+    },
+    enabled: accountId !== "",
+    staleTime: 10_000,
+  })
+
+interface ModelAccessMutationInput {
+  accountId: string
+  modelId: string
+}
+
+export async function grantModelAccess({
+  accountId,
+  modelId,
+}: ModelAccessMutationInput): Promise<ModelAccessChange> {
+  const credentials = getCredentials()
+  if (!credentials) {
+    throw new Error("Not authenticated")
+  }
+  return await signedFetch<ModelAccessChange>({
+    action: "GrantModelAccess",
+    credentials,
+    params: { AccountId: accountId, ModelId: modelId },
+  })
+}
+
+export async function revokeModelAccess({
+  accountId,
+  modelId,
+}: ModelAccessMutationInput): Promise<ModelAccessChange> {
+  const credentials = getCredentials()
+  if (!credentials) {
+    throw new Error("Not authenticated")
+  }
+  return await signedFetch<ModelAccessChange>({
+    action: "RevokeModelAccess",
+    credentials,
+    params: { AccountId: accountId, ModelId: modelId },
+  })
+}

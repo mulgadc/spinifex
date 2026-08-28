@@ -1,7 +1,7 @@
 import { queryOptions } from "@tanstack/react-query"
 
 import { getCredentials } from "@/lib/auth"
-import { signedFetch } from "@/lib/signed-fetch"
+import { signedAdminFetch, signedFetch } from "@/lib/signed-fetch"
 
 interface InstanceTypeCap {
   name: string
@@ -145,6 +145,32 @@ interface ListOchreCatalogOutput {
   entries: AdminCatalogEntry[]
 }
 
+// ModelAccessList and ModelAccessChange mirror the gateway's wire shape,
+// which is PascalCase here unlike the catalog's camelCase.
+interface ModelAccessList {
+  AccountId: string
+  ModelIds: string[]
+}
+
+interface ModelAccessChange {
+  AccountId: string
+  ModelId: string
+}
+
+// AccountSummary and ListAccountsResponse mirror the /admin/ListAccounts
+// response, which — unlike the Action= surface — uses camelCase.
+interface AccountSummary {
+  accountId: string
+  accountName: string
+  status: string
+  createdAt: string
+}
+
+interface ListAccountsResponse {
+  accounts: AccountSummary[]
+  count: number
+}
+
 export type {
   InstanceTypeCap,
   GPUSliceInfo,
@@ -161,6 +187,10 @@ export type {
   CatalogAvailability,
   AdminCatalogEntry,
   ListOchreCatalogOutput,
+  ModelAccessList,
+  ModelAccessChange,
+  AccountSummary,
+  ListAccountsResponse,
 }
 
 export const adminNodesQueryOptions = queryOptions({
@@ -222,3 +252,76 @@ export const adminOchreCatalogQueryOptions = queryOptions({
   },
   staleTime: 10_000,
 })
+
+// adminListAccountsQueryOptions may 403 for a session that is not a
+// long-lived IAM user in the super-admin account; retry: false so the page
+// gives up fast and falls back to the validated free-text account id.
+export const adminListAccountsQueryOptions = queryOptions({
+  queryKey: ["admin", "accounts"],
+  queryFn: async () => {
+    const credentials = getCredentials()
+    if (!credentials) {
+      throw new Error("Not authenticated")
+    }
+    return await signedAdminFetch<ListAccountsResponse>({
+      method: "ListAccounts",
+      credentials,
+      body: {},
+    })
+  },
+  retry: false,
+  staleTime: 30_000,
+})
+
+export const adminModelAccessQueryOptions = (accountId: string) =>
+  queryOptions({
+    queryKey: ["admin", "modelAccess", accountId],
+    queryFn: async () => {
+      const credentials = getCredentials()
+      if (!credentials) {
+        throw new Error("Not authenticated")
+      }
+      return await signedFetch<ModelAccessList>({
+        action: "ListModelAccess",
+        credentials,
+        params: { AccountId: accountId },
+      })
+    },
+    enabled: accountId !== "",
+    staleTime: 10_000,
+  })
+
+interface ModelAccessMutationInput {
+  accountId: string
+  modelId: string
+}
+
+export async function grantModelAccess({
+  accountId,
+  modelId,
+}: ModelAccessMutationInput): Promise<ModelAccessChange> {
+  const credentials = getCredentials()
+  if (!credentials) {
+    throw new Error("Not authenticated")
+  }
+  return await signedFetch<ModelAccessChange>({
+    action: "GrantModelAccess",
+    credentials,
+    params: { AccountId: accountId, ModelId: modelId },
+  })
+}
+
+export async function revokeModelAccess({
+  accountId,
+  modelId,
+}: ModelAccessMutationInput): Promise<ModelAccessChange> {
+  const credentials = getCredentials()
+  if (!credentials) {
+    throw new Error("Not authenticated")
+  }
+  return await signedFetch<ModelAccessChange>({
+    action: "RevokeModelAccess",
+    credentials,
+    params: { AccountId: accountId, ModelId: modelId },
+  })
+}

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { SessionCredentials } from "./auth"
 import { isStaleCredentialsError } from "./auth-error"
-import { SignedFetchError, signedFetch } from "./signed-fetch"
+import { signedAdminFetch, SignedFetchError, signedFetch } from "./signed-fetch"
 
 const credentials: SessionCredentials = {
   accessKeyId: "ASIAIOSFODNN7EXAMPLE",
@@ -90,5 +90,67 @@ describe("signedFetch", () => {
     expect(err).toBeInstanceOf(SignedFetchError)
     expect(err).toMatchObject({ name: "SignedFetchError", status: 500 })
     expect(isStaleCredentialsError(err)).toBeFalsy()
+  })
+})
+
+describe("signedAdminFetch", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("POSTs a JSON body to /proxy/awsgw/admin/<Method>", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response('{"accounts":[],"count":0}', { status: 200 }),
+      )
+    vi.stubGlobal("fetch", fetchMock)
+
+    await signedAdminFetch({ method: "ListAccounts", credentials, body: {} })
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain("/proxy/awsgw/admin/ListAccounts")
+    expect(init.method).toBe("POST")
+    expect(init.body).toBe("{}")
+    const headers = init.headers as Record<string, string>
+    expect(findHeader(headers, "content-type")).toBe("application/json")
+  })
+
+  it("defaults a missing body to an empty JSON object", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response("{}", { status: 200 }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await signedAdminFetch({ method: "ListAccounts", credentials })
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit
+    expect(init.body).toBe("{}")
+  })
+
+  it("decodes the /admin JSON error envelope", async () => {
+    stubFetch(
+      '{"error":{"code":"AccessDenied","message":"not the super-admin account"},"requestId":"req-1"}',
+      403,
+    )
+
+    const err = await rejection(
+      signedAdminFetch({ method: "ListAccounts", credentials }),
+    )
+
+    expect(err).toBeInstanceOf(SignedFetchError)
+    expect(err).toMatchObject({ name: "AccessDenied", status: 403 })
+    expect(err.message).toContain("not the super-admin account")
+  })
+
+  it("falls back to a generic name when the body is not the envelope", async () => {
+    stubFetch("gateway unavailable", 503)
+
+    const err = await rejection(
+      signedAdminFetch({ method: "ListAccounts", credentials }),
+    )
+
+    expect(err).toBeInstanceOf(SignedFetchError)
+    expect(err).toMatchObject({ name: "SignedFetchError", status: 503 })
   })
 })

@@ -178,3 +178,103 @@ export async function signedFetch<T>({
     body: `Action=${action}${extraParams}`,
   })
 }
+
+// ADMIN_JSON_CONTENT_TYPE is what the /admin surface expects, distinct from
+// JSON_CONTENT_TYPE (JSON-1.1, used by the Action= target callers).
+export const ADMIN_JSON_CONTENT_TYPE = "application/json"
+
+export interface SignedAdminFetchOptions<TBody = Record<string, never>> {
+  method: string
+  credentials: SessionCredentials
+  body?: TBody
+}
+
+const adminErrorSchema = z.object({
+  error: z
+    .object({ code: z.string().optional(), message: z.string().optional() })
+    .optional(),
+  requestId: z.string().optional(),
+})
+
+// adminErrorFromBody reads the /admin surface's JSON error envelope
+// (`{error:{code,message},requestId}`), which is shaped differently from the
+// Action= and JSON-1.1 error bodies errorFromBody handles.
+function adminErrorFromBody(
+  label: string,
+  status: number,
+  detail: string,
+): SignedFetchError {
+  let code: string | undefined
+  let message: string | undefined
+  try {
+    const parsed = adminErrorSchema.safeParse(JSON.parse(detail))
+    if (parsed.success) {
+      code = parsed.data.error?.code
+      message = parsed.data.error?.message
+    }
+  } catch {
+    // Non-JSON body.
+  }
+  return new SignedFetchError(
+    `${label} failed: ${status}${message ? ` - ${message}` : ""}`,
+    code ?? "SignedFetchError",
+    status,
+  )
+}
+
+// signedAdminFetch SigV4-signs and POSTs to the private JSON /admin/<Method>
+// surface (mirrors the Go CLI's callAdmin), distinct from the Action= query
+// surface signedFetch drives against path "/".
+export async function signedAdminFetch<T, TBody = Record<string, never>>({
+  method,
+  credentials,
+  body,
+}: SignedAdminFetchOptions<TBody>): Promise<T> {
+  const protocol = window.location.protocol.replace(":", "")
+  const path = `/admin/${method}`
+  const payload = JSON.stringify(body ?? {})
+
+  const headers = {
+    host: `localhost:${GATEWAY_PORT}`,
+    "content-type": ADMIN_JSON_CONTENT_TYPE,
+  }
+
+  const request = new HttpRequest({
+    method: "POST",
+    protocol,
+    hostname: "localhost",
+    port: GATEWAY_PORT,
+    path,
+    headers,
+    body: payload,
+  })
+
+  const signer = new SignatureV4({
+    credentials: {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+      sessionToken: credentials.sessionToken,
+    },
+    region: getRegion(),
+    service: "spinifex",
+    sha256: Sha256,
+  })
+
+  const signed = await signer.sign(request)
+  const signedHeaders = { ...signed.headers }
+
+  const proxyUrl = `${window.location.protocol}//${window.location.host}/proxy/awsgw${path}`
+  const response = await fetch(proxyUrl, {
+    method: "POST",
+    headers: signedHeaders,
+    body: payload,
+  })
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "")
+    throw adminErrorFromBody(method, response.status, detail)
+  }
+
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- response.json() returns Promise<any>
+  return await (response.json() as Promise<T>)
+}

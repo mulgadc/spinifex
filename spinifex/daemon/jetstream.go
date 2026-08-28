@@ -32,11 +32,13 @@ const (
 	// TerminatedInstancePrefix is the key prefix for terminated instances.
 	TerminatedInstancePrefix = "terminated."
 
-	// Schema versions for daemon KV buckets. The two instance buckets are at 2
-	// for the copy-forward onto i/<id>; see instance_records_migrate.go.
-	InstanceStateBucketVersion      = 2
+	// Schema versions for daemon KV buckets. Both instance buckets copied their
+	// per-instance keys onto the record space at 2; instance-state took the node
+	// blobs at 3; both re-keyed that space from "i/" to "i." last. See
+	// instance_records_migrate.go.
+	InstanceStateBucketVersion      = 4
 	ClusterStateBucketVersion       = 1
-	TerminatedInstanceBucketVersion = 2
+	TerminatedInstanceBucketVersion = 3
 )
 
 // KVSyncObserver receives best-effort KV sync outcomes from
@@ -68,6 +70,7 @@ type JetStreamManager struct {
 	clusterKV   jetstream.KeyValue                // spinifex-cluster-state
 	replicas    int
 	obs         KVSyncObserver
+	mirror      mirrorState
 }
 
 // checkNodeStateVersion reports whether a node record read from KV is one this
@@ -403,8 +406,13 @@ func (m *JetStreamManager) WriteServiceManifest(nodeID string, services []string
 	return err
 }
 
-// WriteState writes the instance state to the KV store for the given node.
+// WriteState writes the instance state to the KV store for the given node and
+// mirrors it onto the per-resource key space.
 // vms must be a snapshot owned by the caller — JetStreamManager does not lock.
+//
+// It mirrors even though persistState is the path production takes, because a
+// blob writer that skips the mirror leaves a record staler than the blob it
+// belongs to, and reads answer from the record.
 func (m *JetStreamManager) WriteState(nodeID string, vms map[string]*vm.VM) error {
 	if m.nodeState == nil {
 		return errors.New("KV bucket not initialized")
@@ -415,6 +423,7 @@ func (m *JetStreamManager) WriteState(nodeID string, vms map[string]*vm.VM) erro
 	if err := m.nodeState.Set(context.Background(), key, &record); err != nil {
 		return err
 	}
+	m.MirrorRunningSet(nodeID, vms)
 
 	slog.Debug("Wrote state to JetStream KV", "key", key, "instances", len(vms))
 	return nil
@@ -467,11 +476,13 @@ func marshalInstanceState(vms map[string]*vm.VM) ([]byte, error) {
 	return MarshalLocalState(vms)
 }
 
-// LoadState loads the instance state from the KV store for the given node.
+// LoadState loads the instance state from the KV store for the given node,
+// answering each member from its i/<id> mirror where there is one.
+//
 // The bool reports whether a record exists at all. A node that has never
 // written state and a node whose record was lost both read as empty, and a
 // caller that would drop instances on the strength of that must tell them
-// apart.
+// apart — so it stays the blob's answer, not the mirrors'.
 func (m *JetStreamManager) LoadState(nodeID string) (map[string]*vm.VM, bool, error) {
 	if m.nodeState == nil {
 		return nil, false, errors.New("KV bucket not initialized")
@@ -491,6 +502,9 @@ func (m *JetStreamManager) LoadState(nodeID string) (map[string]*vm.VM, bool, er
 	}
 	if state.VMS == nil {
 		state.VMS = make(map[string]*vm.VM)
+	}
+	if err := m.answerFromMirrors(state.VMS); err != nil {
+		return nil, false, err
 	}
 
 	slog.Debug("Loaded state from JetStream KV", "key", key, "instances", len(state.VMS))

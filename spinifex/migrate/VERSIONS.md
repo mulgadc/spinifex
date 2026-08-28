@@ -19,15 +19,27 @@ Single source of truth for the current schema version of every config file Spini
 
 | Bucket | Current version | Constant |
 |---|---|---|
-| `spinifex-instance-state` | `2` | `daemon.InstanceStateBucketVersion` |
+| `spinifex-instance-state` | `4` | `daemon.InstanceStateBucketVersion` |
 | `spinifex-cluster-state` | `1` | `daemon.ClusterStateBucketVersion` |
-| `spinifex-terminated-instances` | `2` | `daemon.TerminatedInstanceBucketVersion` |
+| `spinifex-terminated-instances` | `3` | `daemon.TerminatedInstanceBucketVersion` |
 
 ## Registered migrations
 
 **Config:** none. The migrations that used to live here predated a breaking change that required `spx admin init --force`, so no install can reach the current versions by migrating and the steps were dropped rather than left as dead code. `spinifex.toml` is still registered as a config target in `migrate.go` so `spx admin upgrade` reports its on-disk version.
 
-**KV:** `spinifex-instance-state` and `spinifex-terminated-instances` each carry a `1`→`2` step registered from `daemon/instance_records_migrate.go`, copying instance records onto the `i/<id>` per-resource key space. Every other bucket has none, so `RunKV` stamps its target version directly on first init.
+**KV:** `spinifex-instance-state` and `spinifex-terminated-instances` are both migrated from `daemon/instance_records_migrate.go`, onto the per-resource instance record key space.
+
+| Bucket | Step | What it does |
+|---|---|---|
+| `spinifex-instance-state` | `1`→`2` | copy the `instance.<id>` keys onto the record space |
+| `spinifex-instance-state` | `2`→`3` | split each `node.<id>` blob, one record per instance in it |
+| `spinifex-instance-state` | `3`→`4` | re-key the record space from `i/<id>` to `i.<id>` |
+| `spinifex-terminated-instances` | `1`→`2` | copy the `terminated.<id>` keys onto the record space |
+| `spinifex-terminated-instances` | `2`→`3` | re-key the record space from `i/<id>` to `i.<id>` |
+
+The re-key steps exist because a watch filter is a NATS subject filter: `*` matches one dot-delimited token, so `i/<id>` is a single token and `i/*` matches nothing. Only a build that shipped the slash has anything for them to move.
+
+Every other bucket has no registered migration, so `RunKV` stamps its target version directly on first init.
 
 **Object store:** none, so `RunObject` stamps directly too.
 

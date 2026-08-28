@@ -11,15 +11,19 @@ import (
 )
 
 // InstanceRecordPrefix is the key prefix for the per-resource instance record
-// space. The stopped and terminated key spaces are mirrored onto it; the
-// node.<id> blob is not, and still holds a node's whole running set.
+// space. All three key spaces it replaces are mirrored onto it.
 //
-// It cannot collide with the three prefixes it replaces. Those separate their
-// prefix from the ID with ".", and a key beginning "i/" is neither "instance."
-// nor "node." nor "terminated." — List and DeletePrefix match on a plain
-// string prefix, not on NATS subject tokens, so the two spaces are disjoint
-// while they share a bucket.
-const InstanceRecordPrefix = "i/"
+// It cannot collide with those three. List and DeletePrefix match on a plain
+// string prefix rather than on NATS subject tokens, and "instance.", "node."
+// and "terminated." do not begin "i." — so the spaces stay disjoint while they
+// share a bucket.
+//
+// The separator is a dot rather than a slash because a watch filter is a NATS
+// subject filter, where "*" matches one dot-delimited token. "i/<id>" is a
+// single token, so "i/*" matches nothing and a watch over this space would
+// have to take the whole bucket. "i.<id>" is two, so "i.*" is the filter the
+// DNS reconcile narrows to at the cutover.
+const InstanceRecordPrefix = "i."
 
 // instanceRecordKey is the only place the prefix and the ID are joined, so a
 // reader and a writer cannot disagree about the key shape.

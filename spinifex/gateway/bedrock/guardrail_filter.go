@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"slices"
 
@@ -317,6 +318,11 @@ func assessTopicPolicy(ctx context.Context, embedder Embedder, cfg *bedrock.Guar
 	case blocked:
 		return assessment, true, nil
 	case unverified:
+		// Logged here rather than only at the embedder call sites, so every
+		// "topic policy failed closed" outcome carries the same operator
+		// signal regardless of which policy check ends up surfacing it.
+		slog.Warn("guardrail: topic policy unverified, failing closed",
+			"service", guardrailServiceLabel, "action", "topic_policy")
 		return assessment, false, errors.New(awserrors.ErrorServiceUnavailableException)
 	default:
 		return assessment, false, nil

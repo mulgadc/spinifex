@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
@@ -26,6 +28,22 @@ const (
 	// maxIntrospectionResponseBytes bounds the /info and /tokenize response
 	// bodies read into memory, mirroring the ingest path's bounded reads.
 	maxIntrospectionResponseBytes = 1 << 20
+
+	// embedServiceLabel tags every slog call in this file, so bedrock traffic
+	// filtered by labels.service in the log sink surfaces the embedder's own
+	// failure cause instead of only the generic gateway request wrapper.
+	embedServiceLabel = "bedrock-embeddings"
+
+	// embedTransportRetries bounds embedBatch's connection-refused/reset
+	// retry to this many extra attempts after the first, spread over
+	// ~1.5s by embedTransportRetryBackoff -- enough to catch a request that
+	// lands just before TEI's listener binds, without turning one cold
+	// request into a multi-second stall.
+	embedTransportRetries = 3
+
+	// embedTransportRetryBackoff is the fixed pause between embedBatch's
+	// transport-error retries.
+	embedTransportRetryBackoff = 500 * time.Millisecond
 )
 
 // DefaultEmbeddingModel is Ochre's GPU-served embedding model, co-resident in
@@ -101,6 +119,20 @@ type embeddingsProvider struct {
 	// changes for a running server, so this is cached for the process
 	// lifetime rather than re-fetched per call.
 	infoCache sync.Map
+
+	// warmups holds baseURL -> *warmupProbe for the subset of resolved
+	// endpoints NewEmbedder was told to warm-up-gate (the static
+	// OCHRE_VLLM_ENDPOINTS bypass -- see NewEmbedder). A baseURL absent from
+	// this map is never gated: the daemon's dynamic endpoint registry
+	// already confirms readiness itself before handing back a base URL, so
+	// gating there would just add a redundant, possibly stale, delay.
+	warmupMu sync.Mutex
+	warmups  map[string]*warmupProbe
+	// warmupPollInterval overrides embedderWarmupPollInterval for a probe
+	// created by warmupFor. Zero (the default) keeps the production
+	// interval; tests set this before the first warmupFor call to drive the
+	// background loop on a short cadence.
+	warmupPollInterval time.Duration
 }
 
 var _ Embedder = (*embeddingsProvider)(nil)
@@ -120,8 +152,53 @@ func newEmbeddingsProvider(endpointResolver EndpointResolver) *embeddingsProvide
 // NewEmbedder is newEmbeddingsProvider's exported constructor, for callers
 // outside this package (e.g. the daemon's Ochre vector store wiring) that
 // need an Embedder without reaching into gateway_bedrock's unexported types.
-func NewEmbedder(endpointResolver EndpointResolver) Embedder {
-	return newEmbeddingsProvider(endpointResolver)
+// warmupBaseURLs lists resolved base URLs that bypass the daemon's own
+// readiness lifecycle -- in practice the OCHRE_VLLM_ENDPOINTS static pin for
+// the embedding model -- and so need their own background /health warm-up
+// probe before Embed dials them. Omit it (the zero-arg call) to keep today's
+// behaviour: no gating at all.
+func NewEmbedder(endpointResolver EndpointResolver, warmupBaseURLs ...string) Embedder {
+	p := newEmbeddingsProvider(endpointResolver)
+	for _, baseURL := range warmupBaseURLs {
+		if baseURL == "" {
+			continue
+		}
+		p.warmupFor(baseURL)
+	}
+	return p
+}
+
+// warmupFor returns (creating and starting if needed) the background
+// readiness prober for baseURL, so a cold endpoint's health is tracked once
+// regardless of how many callers register it.
+func (p *embeddingsProvider) warmupFor(baseURL string) *warmupProbe {
+	p.warmupMu.Lock()
+	defer p.warmupMu.Unlock()
+	if p.warmups == nil {
+		p.warmups = make(map[string]*warmupProbe)
+	}
+	if wp, ok := p.warmups[baseURL]; ok {
+		return wp
+	}
+	interval := p.warmupPollInterval
+	if interval <= 0 {
+		interval = embedderWarmupPollInterval
+	}
+	wp := newWarmupProbeWithInterval(p.httpClient, baseURL, interval)
+	p.warmups[baseURL] = wp
+	return wp
+}
+
+// trackedWarmup returns baseURL's registered warm-up prober, if any. false
+// means baseURL is not gated -- either it never came through
+// NewEmbedder's warmupBaseURLs, or this embeddingsProvider was built via
+// newEmbeddingsProvider directly (tests, and any caller that wants today's
+// ungated behaviour).
+func (p *embeddingsProvider) trackedWarmup(baseURL string) (*warmupProbe, bool) {
+	p.warmupMu.Lock()
+	defer p.warmupMu.Unlock()
+	wp, ok := p.warmups[baseURL]
+	return wp, ok
 }
 
 // maxEmbedClientBatch bounds inputs per embeddings request to TEI's default
@@ -140,11 +217,23 @@ func (p *embeddingsProvider) Embed(ctx context.Context, modelID string, inputs [
 
 	baseURL, ok, err := p.endpointResolver.Endpoint(ctx, modelID)
 	if err != nil {
-		slog.Error("embeddings: endpoint resolution failed", "model", modelID, "err", err)
-		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+		slog.Error("embeddings: endpoint resolution failed", "service", embedServiceLabel, "action", "resolve_endpoint", "model", modelID, "err", err)
+		return nil, awserrors.RetryAfter(awserrors.ErrorServiceUnavailableException, embedderWarmupPollInterval)
 	}
 	if !ok {
-		return nil, errors.New(awserrors.ErrorModelNotReadyException)
+		// Includes the resolver's own liveness gate on a stale READY record:
+		// same retryable signal as a model that has not launched at all.
+		return nil, awserrors.RetryAfter(awserrors.ErrorModelNotReadyException, embedderWarmupPollInterval)
+	}
+
+	// A resolved baseURL under warm-up gating (the static endpoint bypass --
+	// see NewEmbedder) that hasn't yet answered its health probe fails fast
+	// here instead of dialing a port TEI hasn't bound yet. embedBatch's own
+	// transport retry (below) still covers the narrow race right as the
+	// background probe catches up.
+	if wp, tracked := p.trackedWarmup(baseURL); tracked && !wp.Ready() {
+		slog.Warn("embeddings: endpoint not ready, failing closed during warm-up", "service", embedServiceLabel, "action", "embed", "model", modelID, "endpoint", baseURL)
+		return nil, awserrors.RetryAfter(awserrors.ErrorServiceUnavailableException, embedderWarmupPollInterval)
 	}
 
 	out := make([][]float32, 0, len(inputs))
@@ -165,47 +254,87 @@ func (p *embeddingsProvider) Embed(ctx context.Context, modelID string, inputs [
 func (p *embeddingsProvider) embedBatch(ctx context.Context, modelID, baseURL string, inputs []string) ([][]float32, error) {
 	reqBody, err := json.Marshal(embeddingsRequest{Model: modelID, Input: inputs})
 	if err != nil {
-		slog.Error("embeddings: failed to marshal request", "model", modelID, "err", err)
+		slog.Error("embeddings: failed to marshal request", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+embeddingsPath, bytes.NewReader(reqBody))
+	resp, err := p.postEmbedRequest(ctx, modelID, baseURL, reqBody)
 	if err != nil {
-		slog.Error("embeddings: failed to build request", "model", modelID, "err", err)
-		return nil, errors.New(awserrors.ErrorInternalError)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		slog.Error("embeddings: request failed", "model", modelID, "endpoint", baseURL, "err", err)
-		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		slog.Error("embeddings: failed to read response body", "model", modelID, "err", err)
+		slog.Error("embeddings: failed to read response body", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Error("embeddings: upstream error", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
+		slog.Error("embeddings: upstream error", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "status", resp.StatusCode, "body", string(respBody))
 		return nil, errors.New(mapUpstreamStatus(resp.StatusCode))
 	}
 
 	var er embeddingsResponse
 	if err := json.Unmarshal(respBody, &er); err != nil {
-		slog.Error("embeddings: failed to parse response", "model", modelID, "err", err)
+		slog.Error("embeddings: failed to parse response", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorModelErrorException)
 	}
 
 	vectors, err := orderEmbeddings(len(inputs), er.Data)
 	if err != nil {
-		slog.Error("embeddings: malformed response shape", "model", modelID, "err", err)
+		slog.Error("embeddings: malformed response shape", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "err", err)
 		return nil, errors.New(awserrors.ErrorModelErrorException)
 	}
 	return vectors, nil
+}
+
+// postEmbedRequest POSTs reqBody to baseURL+embeddingsPath, retrying a
+// connection-refused or connection-reset transport error up to
+// embedTransportRetries times with a fixed backoff -- the shape of a
+// request landing in the window between an awsgw restart and TEI's listener
+// binding. Any other failure (a reached but erroring endpoint, a timeout,
+// ctx cancellation) is not retried: retrying those would only add latency
+// to a call that was never going to succeed.
+func (p *embeddingsProvider) postEmbedRequest(ctx context.Context, modelID, baseURL string, reqBody []byte) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt <= embedTransportRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, errors.New(awserrors.ErrorServiceUnavailableException)
+			case <-time.After(embedTransportRetryBackoff):
+			}
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+embeddingsPath, bytes.NewReader(reqBody))
+		if err != nil {
+			slog.Error("embeddings: failed to build request", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "err", err)
+			return nil, errors.New(awserrors.ErrorInternalError)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, doErr := p.httpClient.Do(httpReq)
+		if doErr == nil {
+			return resp, nil
+		}
+		lastErr = doErr
+		if !isRetryableTransportError(doErr) || attempt == embedTransportRetries {
+			break
+		}
+		slog.Warn("embeddings: transport error, retrying", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "endpoint", baseURL, "attempt", attempt+1, "err", doErr)
+	}
+
+	slog.Error("embeddings: request failed", "service", embedServiceLabel, "action", "embed_batch", "model", modelID, "endpoint", baseURL, "err", lastErr)
+	return nil, awserrors.RetryAfter(awserrors.ErrorServiceUnavailableException, embedderWarmupPollInterval)
+}
+
+// isRetryableTransportError reports whether err is a connection-refused or
+// connection-reset failure -- dialing a TEI port that hasn't bound yet, or
+// one torn down mid-request -- as opposed to a reached-but-erroring
+// endpoint, a timeout, or a malformed request, none of which retrying helps.
+func isRetryableTransportError(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET)
 }
 
 // MaxInputLength implements TokenLimiter: it resolves modelID's endpoint and

@@ -3,11 +3,13 @@ import type {
   KnowledgeBase,
 } from "@aws-sdk/client-bedrock-agent"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.fn().mockResolvedValue({ ingestionJobSummaries: [] })
+const mockNavigate = vi.fn()
 
 vi.mock("@/lib/awsClient", () => ({
   getBedrockAgentClient: () => ({ send: mockSend }),
@@ -18,6 +20,7 @@ vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, to }: { children: ReactNode; to?: string }) => (
     <a href={to}>{children}</a>
   ),
+  useNavigate: () => mockNavigate,
 }))
 
 import {
@@ -110,5 +113,52 @@ describe("KnowledgeBaseDetailPage", () => {
   it("renders the retrieve tester", () => {
     renderSeeded([], KNOWLEDGE_BASE)
     expect(screen.getByText("Retrieve tester")).toBeInTheDocument()
+  })
+
+  it("deletes the knowledge base and navigates back on confirm", async () => {
+    mockSend.mockResolvedValueOnce({})
+    renderSeeded([], KNOWLEDGE_BASE)
+
+    screen.getByRole("button", { name: "Delete" }).click()
+    await screen.findByText("Delete Knowledge Base")
+    const deleteButtons = screen.getAllByRole("button", { name: "Delete" })
+    deleteButtons.at(-1)?.click()
+
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
+    const input = mockSend.mock.calls[0]?.[0].input as {
+      knowledgeBaseId: string
+    }
+    expect(input.knowledgeBaseId).toBe(KB_ID)
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: "/bedrock/list-knowledge-bases",
+      })
+    })
+  })
+
+  it("adds a data source via the inline form", async () => {
+    mockSend.mockResolvedValueOnce({ dataSource: { dataSourceId: "ds-new" } })
+    const user = userEvent.setup()
+    renderSeeded([], KNOWLEDGE_BASE)
+
+    await user.click(screen.getByRole("button", { name: "Add data source" }))
+    await user.type(screen.getByLabelText("Name"), "s3-docs")
+    await user.type(
+      screen.getByLabelText("S3 bucket ARN"),
+      "arn:aws:s3:::docs-bucket",
+    )
+    await user.click(screen.getByRole("button", { name: "Add data source" }))
+
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
+    const input = mockSend.mock.calls[0]?.[0].input as {
+      knowledgeBaseId: string
+      name: string
+    }
+    expect(input.knowledgeBaseId).toBe(KB_ID)
+    expect(input.name).toBe("s3-docs")
   })
 })

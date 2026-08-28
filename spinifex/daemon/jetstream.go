@@ -599,9 +599,10 @@ func (m *JetStreamManager) WriteStoppedInstance(instanceID string, instance *vm.
 	return nil
 }
 
-// LoadStoppedInstance loads a stopped instance from the shared KV store,
-// preferring i/<id> and falling back to the key it replaces.
-// Returns nil, nil if neither key exists.
+// LoadStoppedInstance loads a stopped instance from the shared KV store.
+// instance.<id> decides whether the instance exists and i/<id> supplies its
+// value, for the reason loadPreferringRecord gives.
+// Returns nil, nil if the instance does not exist.
 func (m *JetStreamManager) LoadStoppedInstance(instanceID string) (*vm.VM, error) {
 	if m.stopped == nil {
 		return nil, errors.New("KV bucket not initialized")
@@ -708,8 +709,7 @@ func mutateRecord[T any](store *kvstore.Store[T], key string, mutate func(*T)) (
 }
 
 // ListStoppedInstances returns all stopped instances from the shared KV store,
-// merging both key spaces so an instance last written by a node that predates
-// i/<id> is still listed.
+// answering each from its i/<id> mirror where there is one.
 func (m *JetStreamManager) ListStoppedInstances() ([]*vm.VM, error) {
 	if m.stopped == nil {
 		return nil, errors.New("KV bucket not initialized")
@@ -783,7 +783,7 @@ func (m *JetStreamManager) UpdateTerminatedInstance(instanceID string, mutate fu
 }
 
 // ListTerminatedInstances returns all terminated instances from the terminated
-// KV bucket, merging both key spaces.
+// KV bucket, answering each from its i/<id> mirror where there is one.
 func (m *JetStreamManager) ListTerminatedInstances() ([]*vm.VM, error) {
 	if m.term == nil {
 		return nil, errors.New("terminated instance KV bucket not initialized")
@@ -808,8 +808,8 @@ func (m *JetStreamManager) DeleteTerminatedInstance(instanceID string) error {
 }
 
 // LoadTerminatedInstance loads a single terminated instance from the terminated
-// KV bucket, preferring i/<id> and falling back to the key it replaces.
-// Returns nil, nil if neither key exists.
+// KV bucket. terminated.<id> decides existence, i/<id> supplies the value.
+// Returns nil, nil if the instance does not exist.
 func (m *JetStreamManager) LoadTerminatedInstance(instanceID string) (*vm.VM, error) {
 	if m.term == nil {
 		return nil, errors.New("terminated instance KV bucket not initialized")

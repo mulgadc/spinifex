@@ -156,13 +156,13 @@ func (m *JetStreamManager) ListTerminatedInstanceRecords() ([]*vm.InstanceRecord
 // mirrorRecord writes instance to the per-resource key space, after the write
 // it mirrors has already committed at the key it replaces.
 //
-// Reads prefer the per-resource key, so what they depend on is that a record
-// present there is never older than the one at the key it mirrors. A mirror
-// write that fails takes the new key with it, which restores that by making
-// the reader fall back — a degraded write, not a failed one, so it is logged
-// rather than returned. Only a failure to remove the stale mirror is returned:
-// that is the one outcome leaving a read able to serve a record older than the
-// one just committed.
+// Reads answer from the mirror wherever one exists, so what they depend on is
+// that a record present there is never older than the one at the key it
+// mirrors. A mirror write that fails takes the new key with it, which restores
+// that by leaving the reader the value it mirrors — a degraded write, not a
+// failed one, so it is logged rather than returned. Only a failure to remove
+// the stale mirror is returned: that is the one outcome leaving a read able to
+// serve a record older than the one just committed.
 func mirrorRecord(store *kvstore.Store[vm.InstanceRecord], instanceID string, instance *vm.VM) error {
 	key := instanceRecordKey(instanceID)
 	err := store.Replace(context.Background(), key, instance.Record())
@@ -179,21 +179,21 @@ func mirrorRecord(store *kvstore.Store[vm.InstanceRecord], instanceID string, in
 	return nil
 }
 
-// loadPreferringRecord reads the per-resource key and falls back to the key it
-// replaces. Both are maintained during the transition, so an instance last
-// written by a node that predates the per-resource space is still found. A
-// decode failure at the new key is returned rather than fallen back on: it
-// means the conversion is wrong, and hiding it behind the old key is how that
-// reaches a cutover unnoticed.
+// Until the cutover the per-resource key space is a shadow: the key it
+// replaces decides whether an instance exists, and the record supplies its
+// value.
+//
+// The read cannot be the other way round while any node predates the new
+// space. Such a node removes an instance by deleting only the key it knows —
+// a claim is exactly that, one atomic delete — so the mirror outlives it, and
+// a reader taking the mirror as proof of existence reports a started instance
+// as stopped for as long as that record survives. A three-node rolling deploy
+// on env19 produced exactly that: one instance listed running and stopped at
+// once, indefinitely.
+//
+// Answering from the record still runs the conversion on every read, which is
+// the point of a transition release. Only the existence question moves.
 func loadPreferringRecord(records *kvstore.Store[vm.InstanceRecord], legacy *kvstore.Store[vm.VM], legacyKey, instanceID string) (*vm.VM, error) {
-	record, err := loadRecord(records, instanceRecordKey(instanceID))
-	if err != nil {
-		return nil, err
-	}
-	if record != nil {
-		return vm.VMFromRecord(record), nil
-	}
-
 	instance, _, err := legacy.Get(context.Background(), legacyKey)
 	if err != nil {
 		if errors.Is(err, kvstore.ErrNotFound) {
@@ -201,40 +201,48 @@ func loadPreferringRecord(records *kvstore.Store[vm.InstanceRecord], legacy *kvs
 		}
 		return nil, err
 	}
-	return instance, nil
-}
 
-// listPreferringRecords merges the two key spaces, the per-resource key
-// winning. Neither is a superset of the other: the migration copies what
-// existed when it ran, and a node that predates the per-resource space still
-// writes only the old key, so a listing that read either alone would drop
-// instances.
-func listPreferringRecords(records *kvstore.Store[vm.InstanceRecord], legacy *kvstore.Store[vm.VM], legacyPrefix string) ([]*vm.VM, error) {
-	newer, err := listRecords(records, InstanceRecordPrefix)
+	// A decode failure at the record key is returned rather than fallen back
+	// on: it means the conversion is wrong, and hiding it behind the key the
+	// record mirrors is how that reaches a cutover unnoticed.
+	record, err := loadRecord(records, instanceRecordKey(instanceID))
 	if err != nil {
 		return nil, err
 	}
+	if record != nil {
+		return vm.VMFromRecord(record), nil
+	}
+	return instance, nil
+}
+
+// listPreferringRecords lists the key space being replaced and answers each
+// entry from its mirror where one exists. A mirror with nothing behind it is
+// not listed; see loadPreferringRecord for why one can be there at all.
+func listPreferringRecords(records *kvstore.Store[vm.InstanceRecord], legacy *kvstore.Store[vm.VM], legacyPrefix string) ([]*vm.VM, error) {
 	older, err := listRecords(legacy, legacyPrefix)
 	if err != nil {
 		return nil, err
 	}
-
-	out := make([]*vm.VM, 0, len(newer)+len(older))
-	seen := make(map[string]struct{}, len(newer))
-	for _, record := range newer {
-		instance := vm.VMFromRecord(record)
-		seen[instance.ID] = struct{}{}
-		out = append(out, instance)
+	if len(older) == 0 {
+		return nil, nil
 	}
+
+	newer, err := listRecords(records, InstanceRecordPrefix)
+	if err != nil {
+		return nil, err
+	}
+	mirrored := make(map[string]*vm.InstanceRecord, len(newer))
+	for _, record := range newer {
+		mirrored[record.Metadata.Name] = record
+	}
+
+	out := make([]*vm.VM, 0, len(older))
 	for _, instance := range older {
-		if _, mirrored := seen[instance.ID]; mirrored {
+		if record, ok := mirrored[instance.ID]; ok {
+			out = append(out, vm.VMFromRecord(record))
 			continue
 		}
 		out = append(out, instance)
-	}
-
-	if len(out) == 0 {
-		return nil, nil
 	}
 	return out, nil
 }

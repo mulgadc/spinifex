@@ -9,6 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/resource"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,13 +19,21 @@ import (
 // see each other's keys.
 func newRecordManager(t *testing.T) *daemon.JetStreamManager {
 	t.Helper()
+	m, _ := newRecordManagerConn(t)
+	return m
+}
+
+// newRecordManagerConn also hands back the connection, for tests that have to
+// reach the bucket underneath the manager to stage what another node did.
+func newRecordManagerConn(t *testing.T) (*daemon.JetStreamManager, *nats.Conn) {
+	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	m, err := daemon.NewJetStreamManager(nc, 1)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 	require.NoError(t, m.InitTerminatedInstanceBucket())
-	return m
+	return m, nc
 }
 
 func testRecord(id string) *vm.InstanceRecord {

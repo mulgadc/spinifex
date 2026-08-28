@@ -84,7 +84,7 @@ func (m *JetStreamManager) MirrorRunningSet(nodeID string, vms map[string]*vm.VM
 // running set, reporting whether the question is settled.
 //
 // It is not settled by deleting unconditionally. The stopped key space shares
-// i/<id>, and an instance that stops leaves the running set at the moment
+// the record key, and an instance that stops leaves the running set as
 // WriteStoppedInstance mirrors it there, so an unconditional delete would race
 // a live write — and would keep deleting, on every state change, the records of
 // instances stopped on this node. Where the stopped key holds the instance the

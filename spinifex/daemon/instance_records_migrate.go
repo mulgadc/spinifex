@@ -12,18 +12,22 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// The copy-forward onto i/<id>. Running it as a migration rather than lazily on
-// read is what lets a listing merge the two key spaces cheaply instead of
-// falling back per key: after this, the only records missing from i/<id> are
-// the ones a node that predates it wrote afterwards.
+// The copy-forward onto the per-resource key space. Running it as a migration
+// rather than lazily on read is what lets a listing merge the two key spaces
+// cheaply instead of falling back per key: after this, the only records missing
+// from it are the ones a node that predates it wrote afterwards.
 //
 // The node.<id> blobs are a separate step, because each holds a whole node's
 // running set in one record and moving one is a split rather than a copy.
+//
+// The last step of each bucket re-keys "i/<id>" to "i.<id>". The earlier steps
+// write whatever the prefix currently is, so it only has to run where a build
+// that wrote the slash already has.
 func init() {
 	migrate.DefaultRegistry.RegisterKV(InstanceStateBucket, migrate.KVMigration{
 		FromVersion: 1,
 		ToVersion:   2,
-		Description: "copy stopped instances forward to the i/<id> key space",
+		Description: "copy stopped instances forward to the per-resource key space",
 		Run: func(ctx context.Context, kvc migrate.KVContext) error {
 			return copyInstancesForward(ctx, kvc, StoppedInstancePrefix)
 		},
@@ -31,20 +35,83 @@ func init() {
 	migrate.DefaultRegistry.RegisterKV(InstanceStateBucket, migrate.KVMigration{
 		FromVersion: 2,
 		ToVersion:   3,
-		Description: "copy each node's running instances forward to the i/<id> key space",
+		Description: "copy each node's running instances forward to the per-resource key space",
 		Run:         copyRunningSetsForward,
+	})
+	migrate.DefaultRegistry.RegisterKV(InstanceStateBucket, migrate.KVMigration{
+		FromVersion: 3,
+		ToVersion:   4,
+		Description: "re-key instance records from i/<id> to i.<id>",
+		Run:         rekeyRecordSeparator,
 	})
 	migrate.DefaultRegistry.RegisterKV(TerminatedInstanceBucket, migrate.KVMigration{
 		FromVersion: 1,
 		ToVersion:   2,
-		Description: "copy terminated instances forward to the i/<id> key space",
+		Description: "copy terminated instances forward to the per-resource key space",
 		Run: func(ctx context.Context, kvc migrate.KVContext) error {
 			return copyInstancesForward(ctx, kvc, TerminatedInstancePrefix)
 		},
 	})
+	migrate.DefaultRegistry.RegisterKV(TerminatedInstanceBucket, migrate.KVMigration{
+		FromVersion: 2,
+		ToVersion:   3,
+		Description: "re-key instance records from i/<id> to i.<id>",
+		Run:         rekeyRecordSeparator,
+	})
 }
 
-// copyInstancesForward writes an i/<id> record for every key under prefix.
+// slashRecordPrefix is the separator the per-resource key space first shipped
+// with. It is here only so the re-key can find what that build wrote; nothing
+// else may use it.
+const slashRecordPrefix = "i/"
+
+// rekeyRecordSeparator moves every record from the slash-separated key space to
+// the dot-separated one, so a watch can filter it by subject token.
+//
+// The old key is deleted rather than left as an orphan. A node still writing
+// slashes reads them too, so what a delete costs it is a fallback to the key
+// the record mirrors — the same degradation as a mirror that was never written,
+// which the shadow rule already makes safe.
+func rekeyRecordSeparator(ctx context.Context, kvc migrate.KVContext) error {
+	keys, err := kvc.KV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list keys: %w", err)
+	}
+
+	moved := 0
+	for _, key := range keys {
+		if !strings.HasPrefix(key, slashRecordPrefix) {
+			continue
+		}
+
+		entry, err := kvc.KV.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			return fmt.Errorf("read %s: %w", key, err)
+		}
+
+		dest := instanceRecordKey(strings.TrimPrefix(key, slashRecordPrefix))
+		if _, err := kvc.KV.Create(ctx, dest, entry.Value()); err != nil {
+			if !errors.Is(err, jetstream.ErrKeyExists) {
+				return fmt.Errorf("write %s: %w", dest, err)
+			}
+		}
+		if err := kvc.KV.Delete(ctx, key); err != nil {
+			return fmt.Errorf("delete %s: %w", key, err)
+		}
+		moved++
+	}
+
+	kvc.Logger.Info("Re-keyed instance records onto the dot separator", "moved", moved)
+	return nil
+}
+
+// copyInstancesForward writes a record for every key under prefix.
 //
 // Two nodes can reach this at once — the version stamp is a read-then-write,
 // not a CAS — and a node that has already upgraded can be writing the
@@ -101,7 +168,7 @@ func copyInstancesForward(ctx context.Context, kvc migrate.KVContext, prefix str
 	return nil
 }
 
-// copyRunningSetsForward writes an i/<id> record for every instance inside
+// copyRunningSetsForward writes a record for every instance inside
 // every node's blob, splitting each of those records into as many as it holds.
 //
 // It copies every node's set, not just the one running it. The key space is

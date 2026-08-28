@@ -33,11 +33,12 @@ const (
 	TerminatedInstancePrefix = "terminated."
 
 	// Schema versions for daemon KV buckets. Both instance buckets copied their
-	// per-instance keys forward onto i/<id> at 2; instance-state is at 3 for the
-	// running sets inside the node blobs. See instance_records_migrate.go.
-	InstanceStateBucketVersion      = 3
+	// per-instance keys onto the record space at 2; instance-state took the node
+	// blobs at 3; both re-keyed that space from "i/" to "i." last. See
+	// instance_records_migrate.go.
+	InstanceStateBucketVersion      = 4
 	ClusterStateBucketVersion       = 1
-	TerminatedInstanceBucketVersion = 2
+	TerminatedInstanceBucketVersion = 3
 )
 
 // KVSyncObserver receives best-effort KV sync outcomes from

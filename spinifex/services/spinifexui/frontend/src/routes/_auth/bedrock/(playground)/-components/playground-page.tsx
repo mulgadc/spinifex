@@ -3,7 +3,7 @@ import type {
   Message,
 } from "@aws-sdk/client-bedrock-runtime"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { useState } from "react"
+import { useRef, useState } from "react"
 
 import {
   type CliCommand,
@@ -96,11 +96,21 @@ export function PlaygroundPage() {
   const [lastOutcome, setLastOutcome] = useState<ConverseOutcome | null>(null)
 
   const converse = useConverse()
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  // Keep the newest turn in view as the thread grows or a pending turn fills
+  // in. Runs after the commit paints, so the sentinel is already in the DOM.
+  function scrollToBottom() {
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ block: "end" })
+    })
+  }
 
   function patchTurn(turnId: string, patch: Partial<Turn>) {
     setTurns((prev) =>
       prev.map((turn) => (turn.id === turnId ? { ...turn, ...patch } : turn)),
     )
+    scrollToBottom()
   }
 
   async function runConverse(history: Turn[], assistantTurnId: string) {
@@ -155,6 +165,7 @@ export function PlaygroundPage() {
     const history = [...turns, userTurn]
     setTurns([...history, assistantTurn])
     setInputText("")
+    scrollToBottom()
 
     const ok = await runConverse(history, assistantTurn.id)
     if (!ok) {
@@ -191,35 +202,53 @@ export function PlaygroundPage() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="space-y-4">
-          <ConversationPane onRetry={handleRetry} turns={turns} />
-
-          <form
-            className="flex gap-2"
-            onSubmit={(event) => {
-              event.preventDefault()
-              void handleSend()
-            }}
-          >
-            <Textarea
-              onChange={(event) => {
-                setInputText(event.target.value)
-              }}
-              placeholder="Send a message"
-              rows={2}
-              value={inputText}
+          <div className="flex h-[calc(100dvh-15rem)] min-h-[24rem] flex-col gap-3">
+            <ConversationPane
+              bottomRef={bottomRef}
+              onRetry={handleRetry}
+              turns={turns}
             />
-            <Button
-              className="self-end"
-              disabled={
-                inputText.trim().length === 0 ||
-                converse.isPending ||
-                modelId === ""
-              }
-              type="submit"
+
+            <form
+              className="flex shrink-0 gap-2"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void handleSend()
+              }}
             >
-              {converse.isPending ? "Sending…" : "Send"}
-            </Button>
-          </form>
+              <Textarea
+                onChange={(event) => {
+                  setInputText(event.target.value)
+                }}
+                onKeyDown={(event) => {
+                  // Enter sends; Shift+Enter inserts a newline. isComposing
+                  // guards IME input so a mid-composition Enter never sends.
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing
+                  ) {
+                    event.preventDefault()
+                    void handleSend()
+                  }
+                }}
+                placeholder="Send a message  (Enter to send, Shift+Enter for newline)"
+                rows={2}
+                value={inputText}
+              />
+              <Button
+                className="self-end"
+                disabled={
+                  inputText.trim().length === 0 ||
+                  converse.isPending ||
+                  modelId === ""
+                }
+                type="submit"
+              >
+                {converse.isPending ? "Sending…" : "Send"}
+              </Button>
+            </form>
+          </div>
 
           <RawJsonPanel
             request={lastOutcome?.request}

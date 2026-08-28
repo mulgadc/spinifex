@@ -50,7 +50,7 @@ function seed() {
 }
 
 async function sendMessage(user: ReturnType<typeof userEvent.setup>) {
-  const input = screen.getByPlaceholderText("Send a message")
+  const input = screen.getByPlaceholderText(/^Send a message/)
   await user.type(input, "hello there")
   fireEvent.click(screen.getByRole("button", { name: "Send" }))
 }
@@ -91,7 +91,7 @@ describe("PlaygroundPage", () => {
     await sendMessage(user)
     await expect(screen.findByText("first reply")).resolves.toBeInTheDocument()
 
-    const input = screen.getByPlaceholderText("Send a message")
+    const input = screen.getByPlaceholderText(/^Send a message/)
     await user.type(input, "second message")
     fireEvent.click(screen.getByRole("button", { name: "Send" }))
 
@@ -115,7 +115,7 @@ describe("PlaygroundPage", () => {
       screen.findByText("Model is warming up — retry in a moment."),
     ).resolves.toBeInTheDocument()
     // The compose box keeps the text so nothing typed is lost.
-    expect(screen.getByPlaceholderText("Send a message")).toHaveValue(
+    expect(screen.getByPlaceholderText(/^Send a message/)).toHaveValue(
       "hello there",
     )
   })
@@ -144,6 +144,45 @@ describe("PlaygroundPage", () => {
     expect(
       screen.getByText("aws bedrock-runtime converse", { exact: false }),
     ).toBeInTheDocument()
+  })
+
+  it("sends on Enter and inserts a newline on Shift+Enter", async () => {
+    mockSend.mockResolvedValue({
+      output: { message: { role: "assistant", content: [{ text: "hi" }] } },
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    })
+    const user = userEvent.setup()
+    renderWithClient(<PlaygroundPage />, seed())
+
+    const input = screen.getByPlaceholderText(/^Send a message/)
+    // Shift+Enter must not send: the text stays in the box.
+    await user.type(input, "line one{Shift>}{Enter}{/Shift}line two")
+    expect(mockSend).not.toHaveBeenCalled()
+
+    // A bare Enter sends without clicking the button.
+    await user.type(input, "{Enter}")
+    await expect(screen.findByText("hi")).resolves.toBeInTheDocument()
+    expect(mockSend).toHaveBeenCalledTimes(1)
+  })
+
+  it("renders assistant markdown as formatted HTML", async () => {
+    mockSend.mockResolvedValue({
+      output: {
+        message: {
+          role: "assistant",
+          content: [{ text: "a **bold** word and `inline code`" }],
+        },
+      },
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    })
+    const user = userEvent.setup()
+    renderWithClient(<PlaygroundPage />, seed())
+
+    await sendMessage(user)
+
+    const bold = await screen.findByText("bold")
+    expect(bold.tagName).toBe("STRONG")
+    expect(screen.getByText("inline code").tagName).toBe("CODE")
   })
 
   it("wires the guardrail selector into the request", async () => {

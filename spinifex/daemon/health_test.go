@@ -8,7 +8,9 @@ package daemon
 import (
 	"context"
 	"crypto/x509"
+	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -97,6 +99,81 @@ role = "meta"
 port = 7660
 `
 
+// singleHostWithAdminTOML is singleHostTOML plus an admin_port, so the probe
+// can reach /readyz instead of falling back to the bare gate dial.
+const singleHostWithAdminTOML = `
+version = 1
+region = "ap-southeast-2"
+
+[rs]
+data = 1
+parity = 0
+
+[[host]]
+id = 1
+bind_addr = "127.0.0.1"
+addr = "127.0.0.1"
+data_dir = "/var/lib/spinifex/predastore/cluster"
+admin_port = 8660
+
+[[host.node]]
+id = 1
+role = "gate"
+port = 8443
+bind_addr = "0.0.0.0"
+
+[[host.node]]
+id = 2
+role = "blob"
+port = 6660
+
+[[host.node]]
+id = 3
+role = "meta"
+port = 7660
+`
+
+// gateOnlyWithAdminTOML pins nothing but a gate to host 1 — the other weak
+// path, a host with no meta node at all — and names an admin_port so the
+// probe has somewhere to ask instead of reporting ok unconditionally.
+const gateOnlyWithAdminTOML = `
+version = 1
+region = "ap-southeast-2"
+
+[rs]
+data = 1
+parity = 0
+
+[[host]]
+id = 1
+bind_addr = "0.0.0.0"
+addr = "10.0.0.1"
+data_dir = "/var/lib/spinifex/predastore/cluster"
+admin_port = 8660
+
+[[host.node]]
+id = 1
+role = "gate"
+port = 8443
+bind_addr = "0.0.0.0"
+
+[[host]]
+id = 2
+bind_addr = "0.0.0.0"
+addr = "10.0.0.2"
+data_dir = "/var/lib/spinifex/predastore/cluster"
+
+[[host.node]]
+id = 2
+role = "blob"
+port = 6660
+
+[[host.node]]
+id = 3
+role = "meta"
+port = 7660
+`
+
 // newHealthTestDaemon writes healthTestTOML and a CA cert under a temp
 // config dir and returns a Daemon whose predastore host id is hostID.
 func newHealthTestDaemon(t *testing.T, hostID int) *Daemon {
@@ -136,6 +213,20 @@ func setGateDialFn(t *testing.T, fn func(context.Context, string, string) (net.C
 		return fn(ctx, network, addr)
 	}
 	t.Cleanup(func() { gateDialFn = orig })
+	return &calls
+}
+
+// setReadyzFn stubs readyzFn for the test's lifetime and returns a pointer to
+// a call counter, mirroring setGateDialFn.
+func setReadyzFn(t *testing.T, fn func(context.Context, string) (int, error)) *int {
+	t.Helper()
+	calls := 0
+	orig := readyzFn
+	readyzFn = func(ctx context.Context, addr string) (int, error) {
+		calls++
+		return fn(ctx, addr)
+	}
+	t.Cleanup(func() { readyzFn = orig })
 	return &calls
 }
 
@@ -267,6 +358,121 @@ func TestComputePredastoreHealth_SingleHostGateUnreachable(t *testing.T) {
 
 	got := computePredastoreHealth(t.Context(), d)
 	assert.Equal(t, predastoreHealthUnreachable, got)
+}
+
+func TestComputePredastoreHealth_ReadyzReadyMapsToOK(t *testing.T) {
+	d := newHealthTestDaemonTOML(t, 1, singleHostWithAdminTOML)
+
+	readyzCalls := setReadyzFn(t, func(context.Context, string) (int, error) {
+		return http.StatusOK, nil
+	})
+	gateCalls := setGateDialFn(t, func(context.Context, string, string) (net.Conn, error) {
+		return nil, assert.AnError
+	})
+
+	got := computePredastoreHealth(t.Context(), d)
+	assert.Equal(t, predastoreHealthOK, got)
+	assert.Equal(t, 1, *readyzCalls)
+	assert.Equal(t, 0, *gateCalls, "a ready /readyz must short-circuit the gate dial")
+}
+
+func TestComputePredastoreHealth_ReadyzUnavailableMapsToUnreachable(t *testing.T) {
+	d := newHealthTestDaemonTOML(t, 1, singleHostWithAdminTOML)
+
+	setReadyzFn(t, func(context.Context, string) (int, error) {
+		return http.StatusServiceUnavailable, nil
+	})
+
+	got := computePredastoreHealth(t.Context(), d)
+	assert.Equal(t, predastoreHealthUnreachable, got)
+}
+
+func TestComputePredastoreHealth_NoAdminPortFallsBackToGateDial(t *testing.T) {
+	// singleHostTOML names no admin_port, so the probe must never reach for
+	// /readyz and must fall back to the pre-existing gate dial exactly as
+	// before this feature existed.
+	d := newHealthTestDaemonTOML(t, 1, singleHostTOML)
+
+	readyzCalls := setReadyzFn(t, func(context.Context, string) (int, error) {
+		return http.StatusOK, nil
+	})
+	gateCalls := setGateDialFn(t, func(context.Context, string, string) (net.Conn, error) {
+		server, client := net.Pipe()
+		t.Cleanup(func() { _ = server.Close() })
+		return client, nil
+	})
+
+	got := computePredastoreHealth(t.Context(), d)
+	assert.Equal(t, predastoreHealthOK, got)
+	assert.Equal(t, 0, *readyzCalls, "no admin_port configured must never dial /readyz")
+	assert.Equal(t, 1, *gateCalls)
+}
+
+func TestComputePredastoreHealth_ReadyzConnectionRefusedFallsBackToGateDial(t *testing.T) {
+	// A refused admin port must read as "not running this build's listener",
+	// not as unhealthy — a mixed fleet with an older predastore must still
+	// deploy off the gate dial's verdict.
+	d := newHealthTestDaemonTOML(t, 1, singleHostWithAdminTOML)
+
+	setReadyzFn(t, func(context.Context, string) (int, error) {
+		return 0, &net.OpError{Op: "dial", Err: fmt.Errorf("connection refused")}
+	})
+	gateCalls := setGateDialFn(t, func(context.Context, string, string) (net.Conn, error) {
+		server, client := net.Pipe()
+		t.Cleanup(func() { _ = server.Close() })
+		return client, nil
+	})
+
+	got := computePredastoreHealth(t.Context(), d)
+	assert.Equal(t, predastoreHealthOK, got)
+	assert.Equal(t, 1, *gateCalls, "a refused admin port must fall back to the gate dial")
+}
+
+func TestComputePredastoreHealth_NoMetaNodeOnHostAsksAdminListener(t *testing.T) {
+	// The other weak path: a host running predastore but no meta node at all.
+	// With an admin_port named, it must ask /readyz rather than reporting ok
+	// unconditionally.
+	d := newHealthTestDaemonTOML(t, 1, gateOnlyWithAdminTOML)
+
+	readyzCalls := setReadyzFn(t, func(context.Context, string) (int, error) {
+		return http.StatusServiceUnavailable, nil
+	})
+
+	got := computePredastoreHealth(t.Context(), d)
+	assert.Equal(t, predastoreHealthUnreachable, got)
+	assert.Equal(t, 1, *readyzCalls)
+}
+
+func TestProbePredastore_CachesReadyzWithinTTL(t *testing.T) {
+	d := newHealthTestDaemonTOML(t, 1, singleHostWithAdminTOML)
+
+	origTTL := predastoreHealthCacheTTL
+	predastoreHealthCacheTTL = time.Minute
+	t.Cleanup(func() { predastoreHealthCacheTTL = origTTL })
+
+	readyzCalls := setReadyzFn(t, func(context.Context, string) (int, error) {
+		return http.StatusOK, nil
+	})
+
+	first := probePredastore(t.Context(), d)
+	second := probePredastore(t.Context(), d)
+
+	assert.Equal(t, predastoreHealthOK, first)
+	assert.Equal(t, predastoreHealthOK, second)
+	assert.Equal(t, 1, *readyzCalls, "a second poll within the TTL must not re-probe /readyz")
+}
+
+func TestLocalAdminAddr(t *testing.T) {
+	// A wildcard host bind is dialled on the loopback the daemon shares.
+	cfg := &pds.Config{Hosts: []pds.HostConfig{{ID: 1, BindAddr: "0.0.0.0", AdminPort: 8660}}}
+	addr, ok := localAdminAddr(cfg, 1)
+	require.True(t, ok)
+	assert.Equal(t, "127.0.0.1:8660", addr)
+
+	// A host naming no admin_port has nothing to dial.
+	noAdmin := &pds.Config{Hosts: []pds.HostConfig{{ID: 1, BindAddr: "0.0.0.0"}}}
+	_, ok = localAdminAddr(noAdmin, 1)
+	assert.False(t, ok)
 }
 
 func TestLocalGateAddr(t *testing.T) {

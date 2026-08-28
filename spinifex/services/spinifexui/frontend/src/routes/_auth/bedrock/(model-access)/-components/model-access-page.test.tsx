@@ -19,8 +19,10 @@ vi.mock("@/queries/admin", async () => {
 })
 
 import {
+  adminListAccountsQueryOptions,
   adminModelAccessQueryOptions,
   adminOchreCatalogQueryOptions,
+  type AccountSummary,
   type AdminCatalogEntry,
 } from "@/queries/admin"
 import {
@@ -53,90 +55,217 @@ const OTHER_ENTRY = {
 } satisfies AdminCatalogEntry
 
 const ACCOUNT_ID = "000000000002"
+const ACCOUNT_NAME = "Tenant One"
 
-function seed(entries: AdminCatalogEntry[], grantedModelIds: string[]) {
+const ACCOUNT = {
+  accountId: ACCOUNT_ID,
+  accountName: ACCOUNT_NAME,
+  status: "ACTIVE",
+  createdAt: "2026-01-01T00:00:00Z",
+} satisfies AccountSummary
+
+function seed({
+  entries = [],
+  grantedModelIds = [],
+  accounts,
+}: {
+  entries?: AdminCatalogEntry[]
+  grantedModelIds?: string[]
+  accounts?: AccountSummary[]
+}) {
   const qc = createTestQueryClient()
   qc.setQueryData(adminOchreCatalogQueryOptions.queryKey, { entries })
   qc.setQueryData(adminModelAccessQueryOptions(ACCOUNT_ID).queryKey, {
     AccountId: ACCOUNT_ID,
     ModelIds: grantedModelIds,
   })
+  if (accounts !== undefined) {
+    qc.setQueryData(adminListAccountsQueryOptions.queryKey, {
+      accounts,
+      count: accounts.length,
+    })
+  }
   return qc
 }
 
+async function selectAccount(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByLabelText("Account"))
+  await user.click(
+    screen.getByRole("option", { name: new RegExp(ACCOUNT_NAME) }),
+  )
+}
+
 describe("ModelAccessPage", () => {
-  it("prompts for an account id when none is entered", () => {
-    renderWithClient(<ModelAccessPage />, seed([CATALOG_ENTRY], []))
-    expect(
-      screen.getByText(
-        "Enter an account ID to view and manage its model access.",
-      ),
-    ).toBeInTheDocument()
-  })
+  describe("account picker", () => {
+    it("lists accounts sorted by name, excluding the global account", async () => {
+      const user = userEvent.setup()
+      renderWithClient(
+        <ModelAccessPage />,
+        seed({
+          accounts: [
+            { ...ACCOUNT, accountId: "000000000003", accountName: "Zeta Co" },
+            ACCOUNT,
+            {
+              accountId: "000000000000",
+              accountName: "Global",
+              status: "ACTIVE",
+              createdAt: "",
+            },
+          ],
+        }),
+      )
 
-  it("shows the empty state when the account has no models in the catalog", async () => {
-    const user = userEvent.setup()
-    renderWithClient(<ModelAccessPage />, seed([], []))
+      await user.click(screen.getByLabelText("Account"))
 
-    await user.type(screen.getByPlaceholderText("Account ID"), ACCOUNT_ID)
-
-    expect(screen.getByText("No models found.")).toBeInTheDocument()
-  })
-
-  it("renders the catalog cross-referenced with grants", async () => {
-    const user = userEvent.setup()
-    renderWithClient(
-      <ModelAccessPage />,
-      seed([CATALOG_ENTRY, OTHER_ENTRY], [CATALOG_ENTRY.modelId]),
-    )
-
-    await user.type(screen.getByPlaceholderText("Account ID"), ACCOUNT_ID)
-
-    expect(screen.getByText("Llama 3.2 1B Instruct")).toBeInTheDocument()
-    expect(screen.getByText("Claude 3 Haiku")).toBeInTheDocument()
-    expect(screen.getByText("Granted")).toBeInTheDocument()
-    expect(screen.getByText("Ungranted")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Revoke" })).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Grant" })).toBeInTheDocument()
-  })
-
-  it("grants access with the entered account id and the row's model id", async () => {
-    mockGrantModelAccess.mockResolvedValue({
-      AccountId: ACCOUNT_ID,
-      ModelId: OTHER_ENTRY.modelId,
+      const options = screen.getAllByRole("option").map((el) => el.textContent)
+      expect(options).toStrictEqual([
+        "Tenant One (000000000002) — ACTIVE",
+        "Zeta Co (000000000003) — ACTIVE",
+      ])
     })
-    const user = userEvent.setup()
-    renderWithClient(<ModelAccessPage />, seed([OTHER_ENTRY], []))
 
-    await user.type(screen.getByPlaceholderText("Account ID"), ACCOUNT_ID)
-    await user.click(screen.getByRole("button", { name: "Grant" }))
+    it("selecting an account drives the catalog cross-referenced with grants", async () => {
+      const user = userEvent.setup()
+      renderWithClient(
+        <ModelAccessPage />,
+        seed({
+          entries: [CATALOG_ENTRY, OTHER_ENTRY],
+          grantedModelIds: [CATALOG_ENTRY.modelId],
+          accounts: [ACCOUNT],
+        }),
+      )
 
-    await waitFor(() => {
-      expect(mockGrantModelAccess.mock.calls[0]?.[0]).toStrictEqual({
-        accountId: ACCOUNT_ID,
-        modelId: OTHER_ENTRY.modelId,
+      await selectAccount(user)
+
+      expect(screen.getByText("Llama 3.2 1B Instruct")).toBeInTheDocument()
+      expect(screen.getByText("Claude 3 Haiku")).toBeInTheDocument()
+      expect(screen.getByText("Granted")).toBeInTheDocument()
+      expect(screen.getByText("Ungranted")).toBeInTheDocument()
+    })
+
+    it("grants access with the selected account id", async () => {
+      mockGrantModelAccess.mockResolvedValue({
+        AccountId: ACCOUNT_ID,
+        ModelId: OTHER_ENTRY.modelId,
+      })
+      const user = userEvent.setup()
+      renderWithClient(
+        <ModelAccessPage />,
+        seed({ entries: [OTHER_ENTRY], accounts: [ACCOUNT] }),
+      )
+
+      await selectAccount(user)
+      await user.click(screen.getByRole("button", { name: "Grant" }))
+
+      await waitFor(() => {
+        expect(mockGrantModelAccess.mock.calls[0]?.[0]).toStrictEqual({
+          accountId: ACCOUNT_ID,
+          modelId: OTHER_ENTRY.modelId,
+        })
+      })
+    })
+
+    it("revokes access with the selected account id", async () => {
+      mockRevokeModelAccess.mockResolvedValue({
+        AccountId: ACCOUNT_ID,
+        ModelId: CATALOG_ENTRY.modelId,
+      })
+      const user = userEvent.setup()
+      renderWithClient(
+        <ModelAccessPage />,
+        seed({
+          entries: [CATALOG_ENTRY],
+          grantedModelIds: [CATALOG_ENTRY.modelId],
+          accounts: [ACCOUNT],
+        }),
+      )
+
+      await selectAccount(user)
+      await user.click(screen.getByRole("button", { name: "Revoke" }))
+
+      await waitFor(() => {
+        expect(mockRevokeModelAccess.mock.calls[0]?.[0]).toStrictEqual({
+          accountId: ACCOUNT_ID,
+          modelId: CATALOG_ENTRY.modelId,
+        })
       })
     })
   })
 
-  it("revokes access with the entered account id and the row's model id", async () => {
-    mockRevokeModelAccess.mockResolvedValue({
-      AccountId: ACCOUNT_ID,
-      ModelId: CATALOG_ENTRY.modelId,
+  describe("free-text fallback", () => {
+    it("falls back to a validated text input when the account list is empty", () => {
+      renderWithClient(<ModelAccessPage />, seed({ accounts: [] }))
+      expect(
+        screen.getByText(
+          "Enter a 12-digit account ID — account list unavailable.",
+        ),
+      ).toBeInTheDocument()
     })
-    const user = userEvent.setup()
-    renderWithClient(
-      <ModelAccessPage />,
-      seed([CATALOG_ENTRY], [CATALOG_ENTRY.modelId]),
-    )
 
-    await user.type(screen.getByPlaceholderText("Account ID"), ACCOUNT_ID)
-    await user.click(screen.getByRole("button", { name: "Revoke" }))
+    it("falls back to a validated text input when the account list errors", async () => {
+      // adminListAccountsQueryOptions is left unseeded, so its real queryFn
+      // runs and throws "Not authenticated" (no stored session in this env).
+      renderWithClient(<ModelAccessPage />, seed({}))
+      await expect(
+        screen.findByText(
+          "Enter a 12-digit account ID — account list unavailable.",
+        ),
+      ).resolves.toBeInTheDocument()
+    })
 
-    await waitFor(() => {
-      expect(mockRevokeModelAccess.mock.calls[0]?.[0]).toStrictEqual({
-        accountId: ACCOUNT_ID,
-        modelId: CATALOG_ENTRY.modelId,
+    it("rejects a non-12-digit account id and does not show the catalog", async () => {
+      const user = userEvent.setup()
+      renderWithClient(
+        <ModelAccessPage />,
+        seed({ entries: [CATALOG_ENTRY], accounts: [] }),
+      )
+
+      await user.type(screen.getByPlaceholderText("123456789012"), "12345")
+
+      expect(
+        screen.getByText("Enter a 12-digit numeric account ID."),
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByText("Llama 3.2 1B Instruct"),
+      ).not.toBeInTheDocument()
+    })
+
+    it("shows the catalog once a valid 12-digit account id is entered", async () => {
+      const user = userEvent.setup()
+      renderWithClient(
+        <ModelAccessPage />,
+        seed({
+          entries: [CATALOG_ENTRY],
+          grantedModelIds: [CATALOG_ENTRY.modelId],
+          accounts: [],
+        }),
+      )
+
+      await user.type(screen.getByPlaceholderText("123456789012"), ACCOUNT_ID)
+
+      expect(screen.getByText("Llama 3.2 1B Instruct")).toBeInTheDocument()
+      expect(screen.getByText("Granted")).toBeInTheDocument()
+    })
+
+    it("grants access with the validated free-text account id", async () => {
+      mockGrantModelAccess.mockResolvedValue({
+        AccountId: ACCOUNT_ID,
+        ModelId: CATALOG_ENTRY.modelId,
+      })
+      const user = userEvent.setup()
+      renderWithClient(
+        <ModelAccessPage />,
+        seed({ entries: [CATALOG_ENTRY], accounts: [] }),
+      )
+
+      await user.type(screen.getByPlaceholderText("123456789012"), ACCOUNT_ID)
+      await user.click(screen.getByRole("button", { name: "Grant" }))
+
+      await waitFor(() => {
+        expect(mockGrantModelAccess.mock.calls[0]?.[0]).toStrictEqual({
+          accountId: ACCOUNT_ID,
+          modelId: CATALOG_ENTRY.modelId,
+        })
       })
     })
   })

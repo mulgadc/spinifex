@@ -6,13 +6,15 @@ vi.mock("@/lib/auth", () => ({
 
 vi.mock("@/lib/signed-fetch", () => ({
   signedFetch: vi.fn(),
+  signedAdminFetch: vi.fn(),
 }))
 
 import { getCredentials } from "@/lib/auth"
-import { signedFetch } from "@/lib/signed-fetch"
+import { signedAdminFetch, signedFetch } from "@/lib/signed-fetch"
 import { callQueryFn } from "@/test/query"
 
 import {
+  adminListAccountsQueryOptions,
   adminModelAccessQueryOptions,
   adminNodesQueryOptions,
   adminOchreCatalogQueryOptions,
@@ -24,6 +26,7 @@ import {
 
 const mockGetCredentials = vi.mocked(getCredentials)
 const mockSignedFetch = vi.mocked(signedFetch)
+const mockSignedAdminFetch = vi.mocked(signedAdminFetch)
 
 describe("adminNodesQueryOptions", () => {
   it("has the correct query key", () => {
@@ -151,6 +154,45 @@ describe("adminOchreCatalogQueryOptions", () => {
     expect(mockSignedFetch).toHaveBeenCalledWith({
       action: "ListOchreCatalog",
       credentials: creds,
+    })
+  })
+})
+
+describe("adminListAccountsQueryOptions", () => {
+  it("has the correct query key", () => {
+    expect(adminListAccountsQueryOptions.queryKey).toStrictEqual([
+      "admin",
+      "accounts",
+    ])
+  })
+
+  it("does not retry, so a 403 settles fast", () => {
+    expect(adminListAccountsQueryOptions.retry).toBeFalsy()
+  })
+
+  it("throws when not authenticated", async () => {
+    mockGetCredentials.mockReturnValue(null)
+    await expect(callQueryFn(adminListAccountsQueryOptions)).rejects.toThrow(
+      "Not authenticated",
+    )
+  })
+
+  it("calls signedAdminFetch with the ListAccounts method and an empty body", async () => {
+    const creds = {
+      accessKeyId: "ASIAak",
+      secretAccessKey: "sk",
+      sessionToken: "token",
+      expiration: new Date(Date.now() + 60_000).toISOString(),
+    }
+    mockGetCredentials.mockReturnValue(creds)
+    mockSignedAdminFetch.mockResolvedValue({ accounts: [], count: 0 })
+
+    await callQueryFn(adminListAccountsQueryOptions)
+
+    expect(mockSignedAdminFetch).toHaveBeenCalledWith({
+      method: "ListAccounts",
+      credentials: creds,
+      body: {},
     })
   })
 })

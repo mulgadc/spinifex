@@ -2,6 +2,7 @@ package handlers_bedrock
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"time"
 
@@ -20,6 +21,18 @@ const defaultEndpointCacheTTL = 5 * time.Second
 // Fine-grained next to any plausible wait, since the point of waiting at all
 // is to return the moment the endpoint answers.
 const coldStartPollInterval = 500 * time.Millisecond
+
+// defaultLivenessCacheTTL bounds how long a liveness re-probe of a persisted
+// READY member is reused. Short, so a member that goes dark between probes
+// (e.g. a co-resident engine still rebinding its port right after an awsgw
+// restart) is caught within a couple of requests, but long enough above zero
+// that resolving a warm, steady-state model costs one HTTP round trip per
+// TTL rather than one per request.
+const defaultLivenessCacheTTL = 2 * time.Second
+
+// livenessProbeTimeout bounds a single liveness re-probe, so a member that
+// accepts the connection but never answers cannot stall resolution.
+const livenessProbeTimeout = 500 * time.Millisecond
 
 // DynamicEndpointResolver resolves a self-host model's base URL through the
 // daemon's endpoint registry, and asks for a launch when there is nothing to
@@ -46,12 +59,29 @@ type DynamicEndpointResolver struct {
 
 	mu     sync.Mutex
 	cached map[string]cachedEndpoint
+
+	// client issues liveness re-probes against a persisted READY member's own
+	// health route (see isLive). Not used for anything else here.
+	client *http.Client
+	// livenessTTL bounds how long a liveness probe result is reused; see
+	// defaultLivenessCacheTTL.
+	livenessTTL time.Duration
+
+	livenessMu    sync.Mutex
+	livenessCache map[string]livenessResult
 }
 
 // cachedEndpoint is one resolved READY base URL and the moment it expires.
 type cachedEndpoint struct {
 	baseURL   string
 	expiresAt time.Time
+}
+
+// livenessResult is the outcome of the last liveness re-probe of one base
+// URL and when it was taken.
+type livenessResult struct {
+	live      bool
+	checkedAt time.Time
 }
 
 var _ gateway_bedrock.EndpointResolver = (*DynamicEndpointResolver)(nil)
@@ -67,6 +97,19 @@ func WithColdStartWait(d time.Duration) ResolverOption {
 	return func(r *DynamicEndpointResolver) { r.coldStartWait = d }
 }
 
+// WithHTTPClient overrides the client isLive re-probes a READY member on.
+// Production takes the default; tests point it at an httptest server.
+func WithHTTPClient(c *http.Client) ResolverOption {
+	return func(r *DynamicEndpointResolver) { r.client = c }
+}
+
+// WithLivenessCacheTTL overrides how long a liveness probe result is reused,
+// so a test can exercise re-verification without waiting out the production
+// interval.
+func WithLivenessCacheTTL(d time.Duration) ResolverOption {
+	return func(r *DynamicEndpointResolver) { r.livenessTTL = d }
+}
+
 // NewDynamicEndpointResolver builds a resolver over svc. Entries in static
 // (OCHRE_VLLM_ENDPOINTS) are resolved first and never reach svc, so a pinned
 // endpoint bypasses the lifecycle entirely. A zero ttl takes the default.
@@ -76,10 +119,13 @@ func NewDynamicEndpointResolver(svc EndpointService, static map[string]string, t
 		ttl = defaultEndpointCacheTTL
 	}
 	r := &DynamicEndpointResolver{
-		svc:    svc,
-		static: static,
-		ttl:    ttl,
-		cached: make(map[string]cachedEndpoint),
+		svc:           svc,
+		static:        static,
+		ttl:           ttl,
+		cached:        make(map[string]cachedEndpoint),
+		client:        &http.Client{},
+		livenessTTL:   defaultLivenessCacheTTL,
+		livenessCache: make(map[string]livenessResult),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -152,7 +198,15 @@ func (r *DynamicEndpointResolver) describeAndEnsure(ctx context.Context, account
 	switch out.Endpoint.State {
 	case StateReady:
 		if url := out.Endpoint.MemberBaseURL(modelID); url != "" {
-			return url, nil
+			if r.isLive(ctx, out.Endpoint, modelID, url) {
+				return url, nil
+			}
+			// The persisted record is READY but the member itself is not
+			// answering (e.g. a co-resident engine still rebinding its port
+			// right after an awsgw restart) -- nothing new to ensure, so
+			// this is the same "wait or report not-ready" shape as a launch
+			// already in flight, not a fresh launch request.
+			return r.awaitReady(ctx, accountID, modelID)
 		}
 		return "", nil
 	case StateStarting:
@@ -199,7 +253,7 @@ func (r *DynamicEndpointResolver) awaitReady(ctx context.Context, accountID, mod
 			return "", err
 		}
 		if out.Endpoint.State == StateReady {
-			if url := out.Endpoint.MemberBaseURL(modelID); url != "" {
+			if url := out.Endpoint.MemberBaseURL(modelID); url != "" && r.isLive(ctx, out.Endpoint, modelID, url) {
 				return url, nil
 			}
 		}
@@ -207,6 +261,40 @@ func (r *DynamicEndpointResolver) awaitReady(ctx context.Context, accountID, mod
 			return "", nil
 		}
 	}
+}
+
+// isLive re-probes a persisted READY member's own readiness route before the
+// resolver trusts it, short-TTL cached per base URL so a warm, steady-state
+// model costs one HTTP round trip per livenessTTL rather than per resolve.
+// A record with no per-member entry predates the Members field (or is a test
+// fixture) and has no route to probe on, so it is trusted as before.
+//
+// This exists because a persisted READY state only means the endpoint was
+// observed serving at some point in the past: after an awsgw restart the KV
+// record survives untouched while a co-resident engine on the same VM is
+// still rebinding its port, and describeAndEnsure has no other signal that
+// the address it is about to hand out currently dials to nothing.
+func (r *DynamicEndpointResolver) isLive(ctx context.Context, rec EndpointRecord, modelID, baseURL string) bool {
+	member, ok := rec.Members[modelID]
+	if !ok {
+		return true
+	}
+
+	r.livenessMu.Lock()
+	if cached, ok := r.livenessCache[baseURL]; ok && time.Since(cached.checkedAt) < r.livenessTTL {
+		r.livenessMu.Unlock()
+		return cached.live
+	}
+	r.livenessMu.Unlock()
+
+	probeCtx, cancel := context.WithTimeout(ctx, livenessProbeTimeout)
+	defer cancel()
+	live := probeOnce(probeCtx, r.client, baseURL+readinessPath(member.Family))
+
+	r.livenessMu.Lock()
+	r.livenessCache[baseURL] = livenessResult{live: live, checkedAt: time.Now()}
+	r.livenessMu.Unlock()
+	return live
 }
 
 func (r *DynamicEndpointResolver) lookupCache(modelID string) (string, bool) {

@@ -221,7 +221,9 @@ func (p *embeddingsProvider) Embed(ctx context.Context, modelID string, inputs [
 		return nil, awserrors.RetryAfter(awserrors.ErrorServiceUnavailableException, embedderWarmupPollInterval)
 	}
 	if !ok {
-		return nil, errors.New(awserrors.ErrorModelNotReadyException)
+		// Includes the resolver's own liveness gate on a stale READY record:
+		// same retryable signal as a model that has not launched at all.
+		return nil, awserrors.RetryAfter(awserrors.ErrorModelNotReadyException, embedderWarmupPollInterval)
 	}
 
 	// A resolved baseURL under warm-up gating (the static endpoint bypass --

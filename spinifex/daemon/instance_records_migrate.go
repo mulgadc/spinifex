@@ -17,8 +17,8 @@ import (
 // falling back per key: after this, the only records missing from i/<id> are
 // the ones a node that predates it wrote afterwards.
 //
-// The node.<id> blob is deliberately not copied. It holds a whole node's
-// running set in one record, so moving it is a split rather than a copy.
+// The node.<id> blobs are a separate step, because each holds a whole node's
+// running set in one record and moving one is a split rather than a copy.
 func init() {
 	migrate.DefaultRegistry.RegisterKV(InstanceStateBucket, migrate.KVMigration{
 		FromVersion: 1,
@@ -27,6 +27,12 @@ func init() {
 		Run: func(ctx context.Context, kvc migrate.KVContext) error {
 			return copyInstancesForward(ctx, kvc, StoppedInstancePrefix)
 		},
+	})
+	migrate.DefaultRegistry.RegisterKV(InstanceStateBucket, migrate.KVMigration{
+		FromVersion: 2,
+		ToVersion:   3,
+		Description: "copy each node's running instances forward to the i/<id> key space",
+		Run:         copyRunningSetsForward,
 	})
 	migrate.DefaultRegistry.RegisterKV(TerminatedInstanceBucket, migrate.KVMigration{
 		FromVersion: 1,
@@ -92,5 +98,68 @@ func copyInstancesForward(ctx context.Context, kvc migrate.KVContext, prefix str
 
 	kvc.Logger.Info("Copied instances onto the per-resource key space",
 		"prefix", prefix, "copied", copied)
+	return nil
+}
+
+// copyRunningSetsForward writes an i/<id> record for every instance inside
+// every node's blob, splitting each of those records into as many as it holds.
+//
+// It copies every node's set, not just the one running it. The key space is
+// shared, the migration runs once per bucket rather than once per node, and a
+// node that is down would otherwise have no record of its instances until it
+// came back — which is exactly when a reader most needs one.
+func copyRunningSetsForward(ctx context.Context, kvc migrate.KVContext) error {
+	keys, err := kvc.KV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list keys: %w", err)
+	}
+
+	copied := 0
+	for _, key := range keys {
+		if !strings.HasPrefix(key, InstanceStatePrefix) {
+			continue
+		}
+
+		entry, err := kvc.KV.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			return fmt.Errorf("read %s: %w", key, err)
+		}
+
+		var state LocalState
+		if err := json.Unmarshal(entry.Value(), &state); err != nil {
+			return fmt.Errorf("decode %s: %w", key, err)
+		}
+		if err := checkNodeStateVersion(key, state.SchemaVersion); err != nil {
+			return err
+		}
+
+		for id, instance := range state.VMS {
+			if instance == nil {
+				continue
+			}
+			record, err := json.Marshal(instance.Record())
+			if err != nil {
+				return fmt.Errorf("encode record for %s in %s: %w", id, key, err)
+			}
+
+			dest := instanceRecordKey(id)
+			if _, err := kvc.KV.Create(ctx, dest, record); err != nil {
+				if errors.Is(err, jetstream.ErrKeyExists) {
+					continue
+				}
+				return fmt.Errorf("write %s: %w", dest, err)
+			}
+			copied++
+		}
+	}
+
+	kvc.Logger.Info("Copied running instances onto the per-resource key space",
+		"prefix", InstanceStatePrefix, "copied", copied)
 	return nil
 }

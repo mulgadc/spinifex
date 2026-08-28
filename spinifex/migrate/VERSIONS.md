@@ -19,7 +19,7 @@ Single source of truth for the current schema version of every config file Spini
 
 | Bucket | Current version | Constant |
 |---|---|---|
-| `spinifex-instance-state` | `2` | `daemon.InstanceStateBucketVersion` |
+| `spinifex-instance-state` | `3` | `daemon.InstanceStateBucketVersion` |
 | `spinifex-cluster-state` | `1` | `daemon.ClusterStateBucketVersion` |
 | `spinifex-terminated-instances` | `2` | `daemon.TerminatedInstanceBucketVersion` |
 
@@ -27,7 +27,7 @@ Single source of truth for the current schema version of every config file Spini
 
 **Config:** none. The migrations that used to live here predated a breaking change that required `spx admin init --force`, so no install can reach the current versions by migrating and the steps were dropped rather than left as dead code. `spinifex.toml` is still registered as a config target in `migrate.go` so `spx admin upgrade` reports its on-disk version.
 
-**KV:** `spinifex-instance-state` and `spinifex-terminated-instances` each carry a `1`→`2` step registered from `daemon/instance_records_migrate.go`, copying instance records onto the `i/<id>` per-resource key space. Every other bucket has none, so `RunKV` stamps its target version directly on first init.
+**KV:** `spinifex-instance-state` and `spinifex-terminated-instances` each carry a `1`→`2` step registered from `daemon/instance_records_migrate.go`, copying their per-instance keys onto the `i/<id>` per-resource key space. `spinifex-instance-state` carries a `2`→`3` step from the same file for the node blobs, which hold a whole node's running set in one record and so split rather than copy. Every other bucket has none, so `RunKV` stamps its target version directly on first init.
 
 **Object store:** none, so `RunObject` stamps directly too.
 

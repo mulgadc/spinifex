@@ -2620,8 +2620,12 @@ func (d *Daemon) persistState(nodeID string, vms map[string]*vm.VM) error {
 		d.stateRevision.Add(1)
 	}
 
+	// The mirror follows the blob it mirrors, so a record on the new key space
+	// is never newer than the running set it belongs to. vms is the caller's
+	// snapshot and cannot change underneath either write.
 	if d.jsManager != nil {
 		d.jsManager.WriteStateBytesBestEffort(nodeID, kvData, kvSyncTimeout)
+		d.jsManager.MirrorRunningSet(nodeID, vms)
 	}
 
 	if localErr != nil {

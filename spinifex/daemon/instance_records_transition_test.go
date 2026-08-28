@@ -290,14 +290,16 @@ func TestInstanceStateMigration_CopiesStoppedInstancesForward(t *testing.T) {
 	assert.Equal(t, "t3.nano", record.Spec.InstanceType)
 }
 
-// The node blob holds a whole node's running set in one record, so it is a
-// split rather than a copy and is not this migration's to make.
-func TestInstanceStateMigration_LeavesTheNodeBlobAlone(t *testing.T) {
+// A bucket old enough to need both steps gets both, and the node blob is split
+// by the second rather than swept up by the first. The blob's own members are
+// covered by TestInstanceStateMigration_SplitsTheNodeBlob; what this pins is
+// that an empty one does not make the stopped copy-forward skip or duplicate.
+func TestInstanceStateMigration_RunsEveryStepFromTheOldestVersion(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedLegacyBucket(t, nc, daemon.InstanceStateBucket, daemon.StoppedInstancePrefix,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano"})
 
-	blob, err := json.Marshal(map[string]any{"instances": map[string]any{}})
+	blob, err := json.Marshal(daemon.LocalState{SchemaVersion: daemon.LocalStateSchemaVersion})
 	require.NoError(t, err)
 	_, err = kv.Put(context.Background(), daemon.InstanceStatePrefix+"node-1", blob)
 	require.NoError(t, err)

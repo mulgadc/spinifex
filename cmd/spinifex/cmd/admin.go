@@ -1601,6 +1601,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		ClusterName:   clusterName,
 
 		PredastoreHostID:          predastoreHostID,
+		PredastoreAdminPort:       admin.PredastoreAdminPort,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
 
@@ -1902,6 +1903,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		ClusterName:   clusterName,
 
 		PredastoreHostID:          predastoreHostID,
+		PredastoreAdminPort:       admin.PredastoreAdminPort,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
 		RemoteNodes:               buildRemoteNodes(allNodes, node, northstarConfigPath),
@@ -2461,6 +2463,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		ClusterName:   creds.ClusterName,
 
 		PredastoreHostID:          predastoreHostID,
+		PredastoreAdminPort:       admin.PredastoreAdminPort,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
 		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node, northstarConfigPath),

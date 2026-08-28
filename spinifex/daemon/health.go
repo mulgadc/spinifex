@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -48,6 +49,22 @@ var nodeStatusFn = pds.NodeStatus
 var gateDialFn = func(ctx context.Context, network, addr string) (net.Conn, error) {
 	var d net.Dialer
 	return d.DialContext(ctx, network, addr)
+}
+
+// readyzFn performs the /readyz HTTP GET against a predastore admin listener
+// and reports its status code, indirected so tests can stub the transport and
+// exercise every verdict without a live listener.
+var readyzFn = func(ctx context.Context, addr string) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/readyz", nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode, nil
 }
 
 // probeFunc reports one service's real health, in place of the "ok" every
@@ -128,6 +145,14 @@ func computePredastoreHealth(ctx context.Context, d *Daemon) string {
 		return predastoreHealthUnreachable
 	}
 	if len(nodes) == 0 {
+		// This host runs predastore but no meta node — nothing raft-local to
+		// probe. Its admin listener, if named, still answers for the roles it
+		// does run, so ask that rather than reporting ok unconditionally.
+		if cfg != nil {
+			if verdict, ok := probeReadyz(ctx, cfg, hostID); ok {
+				return verdict
+			}
+		}
 		return predastoreHealthOK
 	}
 
@@ -176,11 +201,17 @@ func predastoreIsSingleHost(cfg *pds.Config, hostID pds.HostID) bool {
 	return true
 }
 
-// probeLocalGate reports predastore's health on a single-host install by
-// connecting to the local S3 gate — its one cross-process listener. A host
+// probeLocalGate reports predastore's health on a single-host install. Its
+// admin listener, when named, is asked first since it observes the meta and
+// blob roles the pipe-only meta node cannot expose; otherwise this falls back
+// to connecting to the local S3 gate, its one cross-process listener. A host
 // running no gate exposes no socket to probe and reports ok rather than
 // failing a service it cannot answer for on a channel that cannot exist.
 func probeLocalGate(ctx context.Context, d *Daemon, cfg *pds.Config, hostID pds.HostID) string {
+	if verdict, ok := probeReadyz(ctx, cfg, hostID); ok {
+		return verdict
+	}
+
 	addr, ok := localGateAddr(cfg, hostID)
 	if !ok {
 		return predastoreHealthOK
@@ -196,6 +227,58 @@ func probeLocalGate(ctx context.Context, d *Daemon, cfg *pds.Config, hostID pds.
 	}
 	_ = conn.Close()
 	return predastoreHealthOK
+}
+
+// probeReadyz consults predastore's /readyz on this host's admin listener,
+// when the host names one. 200 maps to ok; 503 maps to unreachable, the
+// closest existing verdict for "the process is running but cannot serve".
+// ok is false whenever no admin port is configured, the listener could not be
+// reached at all, or it answered with neither status: in every case the
+// caller must fall back to its own probe, so that an older predastore build
+// with no admin listener is never read as unhealthy.
+func probeReadyz(ctx context.Context, cfg *pds.Config, hostID pds.HostID) (string, bool) {
+	addr, ok := localAdminAddr(cfg, hostID)
+	if !ok {
+		return "", false
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, predastoreProbeTimeout)
+	defer cancel()
+
+	status, err := readyzFn(probeCtx, addr)
+	if err != nil {
+		slog.Debug("predastore health probe: admin listener unreachable, falling back", "addr", addr, "err", err)
+		return "", false
+	}
+	switch status {
+	case http.StatusOK:
+		return predastoreHealthOK, true
+	case http.StatusServiceUnavailable:
+		return predastoreHealthUnreachable, true
+	default:
+		slog.Warn("predastore health probe: unexpected /readyz status, falling back", "addr", addr, "status", status)
+		return "", false
+	}
+}
+
+// localAdminAddr is the dial address of this host's predastore admin
+// listener, and whether the host names one. A wildcard or empty bind_addr is
+// dialled on the loopback, since the daemon and predastore share the host.
+func localAdminAddr(cfg *pds.Config, hostID pds.HostID) (string, bool) {
+	for _, h := range cfg.Hosts {
+		if h.ID != hostID {
+			continue
+		}
+		if h.AdminPort == 0 {
+			return "", false
+		}
+		host := pds.HostBindAddr(h)
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "127.0.0.1"
+		}
+		return net.JoinHostPort(host, strconv.Itoa(h.AdminPort)), true
+	}
+	return "", false
 }
 
 // localGateAddr is the dial address of the S3 gate on this host, and whether

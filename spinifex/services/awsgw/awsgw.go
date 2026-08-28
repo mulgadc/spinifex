@@ -405,7 +405,19 @@ func launchService(config *config.ClusterConfig) error {
 	// Guardrail topicPolicy's semantic match reuses this same endpoint
 	// resolver (the one every self-hosted model, including the embedding
 	// model, already resolves through) rather than standing up a second one.
-	bedrockEmbedder := gateway_bedrock.NewEmbedder(bedrockEndpointResolver)
+	//
+	// A pinned OCHRE_VLLM_ENDPOINTS entry for the embedding model bypasses
+	// the daemon's own readiness lifecycle entirely (DynamicEndpointResolver
+	// resolves it from the static map before ever asking svc), so on
+	// restart awsgw has no signal that the co-resident TEI hasn't bound its
+	// port yet. Pass that one base URL through as a warm-up target so
+	// NewEmbedder background-probes it and fails closed cleanly instead of
+	// dialing a connection-refused port.
+	var bedrockEmbedderWarmupEndpoints []string
+	if baseURL, ok := bedrockEndpoints[gateway_bedrock.DefaultEmbeddingModel]; ok {
+		bedrockEmbedderWarmupEndpoints = append(bedrockEmbedderWarmupEndpoints, baseURL)
+	}
+	bedrockEmbedder := gateway_bedrock.NewEmbedder(bedrockEndpointResolver, bedrockEmbedderWarmupEndpoints...)
 
 	// Bedrock provisioned throughput: commitment metadata lives in the
 	// bedrock-provisioned KV bucket (gateway control plane), while the pinned

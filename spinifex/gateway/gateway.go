@@ -764,6 +764,14 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
+	// A 503 the producing call site knows is a bounded, self-clearing
+	// condition (e.g. the embedder warm-up window) carries a suggested
+	// Retry-After so SDK clients back off on their own cadence instead of
+	// hammering the endpoint every request.
+	if d, ok := awserrors.ResolveRetryAfter(err); ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())))
+	}
+
 	// EKS, ECR, ACM, ECS, tagging, and the bedrock family use AWS JSON 1.1;
 	// query/XML services fall through.
 	if jsonErrorService(svc) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type ErrorMessage struct {
@@ -633,6 +634,46 @@ func Errorf(code, format string, args ...any) error {
 	// fmt.Errorf's %w support instead of failing under Sprintf, which has none.
 	cause.message = strings.TrimSuffix(outer.Error(), ": "+code)
 	return outer
+}
+
+// retryableError wraps a registered code with a suggested Retry-After
+// duration, for a 503 that a client can expect to clear on its own within a
+// bounded window (e.g. a warm-up race) rather than an open-ended outage.
+// Error() returns only the code, so code resolution is unaffected.
+type retryableError struct {
+	code       string
+	retryAfter time.Duration
+}
+
+func (e *retryableError) Error() string { return e.code }
+
+// RetryAfter wraps code (a registered ErrorLookup key) with a suggested
+// Retry-After duration for ErrorHandler to surface as a response header.
+func RetryAfter(code string, d time.Duration) error {
+	return &retryableError{code: code, retryAfter: d}
+}
+
+// ResolveRetryAfter returns the Retry-After duration attached to err via
+// RetryAfter, if any, walking the same unwrap tree resolveErrorDetail does.
+func ResolveRetryAfter(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	if re, ok := errors.AsType[*retryableError](err); ok {
+		return re.retryAfter, true
+	}
+	if joined, isJoined := err.(interface{ Unwrap() []error }); isJoined {
+		for _, inner := range joined.Unwrap() {
+			if d, found := ResolveRetryAfter(inner); found {
+				return d, true
+			}
+		}
+		return 0, false
+	}
+	if wrapped, isWrapped := err.(interface{ Unwrap() error }); isWrapped {
+		return ResolveRetryAfter(wrapped.Unwrap())
+	}
+	return 0, false
 }
 
 // errorLookupByService overrides ErrorLookup's message and HTTP status for a

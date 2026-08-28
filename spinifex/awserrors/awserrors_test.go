@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestErrorLookup_Structure asserts ErrorLookup invariants: minimum size, valid HTTP codes, non-empty messages.
@@ -135,6 +136,33 @@ func TestResolveErrorDetail_BareCodeCarriesNoMessage(t *testing.T) {
 	code, message, ok := ResolveErrorDetail(errors.New(ErrorInvalidParameterValue))
 	if !ok || code != ErrorInvalidParameterValue || message != "" {
 		t.Errorf("ResolveErrorDetail() = (%q, %q, %v), want (%q, \"\", true)", code, message, ok, ErrorInvalidParameterValue)
+	}
+}
+
+// TestResolveRetryAfter_WrappedAndResolvable covers the embedder warm-up
+// case: RetryAfter's duration survives both a %w wrapper and code
+// resolution, so ErrorHandler can set the header and still map the code.
+func TestResolveRetryAfter_WrappedAndResolvable(t *testing.T) {
+	err := fmt.Errorf("embed: %w", RetryAfter(ErrorServiceUnavailableException, 2*time.Second))
+
+	d, ok := ResolveRetryAfter(err)
+	if !ok || d != 2*time.Second {
+		t.Fatalf("ResolveRetryAfter() = (%v, %v), want (2s, true)", d, ok)
+	}
+
+	code, _, ok := ResolveErrorDetail(err)
+	if !ok || code != ErrorServiceUnavailableException {
+		t.Fatalf("ResolveErrorDetail() code = (%q, %v), want (%q, true)", code, ok, ErrorServiceUnavailableException)
+	}
+}
+
+// TestResolveRetryAfter_PlainErrorNotFound is the compatibility case: an
+// ordinary errors.New(code) -- the overwhelming majority of call sites --
+// carries no Retry-After hint.
+func TestResolveRetryAfter_PlainErrorNotFound(t *testing.T) {
+	_, ok := ResolveRetryAfter(errors.New(ErrorServiceUnavailableException))
+	if ok {
+		t.Errorf("ResolveRetryAfter() ok = true for a plain error, want false")
 	}
 }
 

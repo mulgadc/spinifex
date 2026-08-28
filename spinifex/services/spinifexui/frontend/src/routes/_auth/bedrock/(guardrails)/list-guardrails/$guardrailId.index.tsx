@@ -8,7 +8,7 @@ import {
 import { GuardrailDetailPage } from "../-components/guardrail-detail-page"
 
 export const Route = createFileRoute(
-  "/_auth/bedrock/(guardrails)/list-guardrails/$guardrailId",
+  "/_auth/bedrock/(guardrails)/list-guardrails/$guardrailId/",
 )({
   loader: async ({ context, params }) => {
     await Promise.all([

@@ -34,13 +34,13 @@ Single source of truth for the current schema version of every config file Spini
 | `spinifex-instance-state` | `1`→`2` | copy the `instance.<id>` keys onto the record space |
 | `spinifex-instance-state` | `2`→`3` | split each `node.<id>` blob, one record per instance in it |
 | `spinifex-instance-state` | `3`→`4` | re-key the record space from `i/<id>` to `i.<id>` |
-| `spinifex-instance-state` | `4`→`5` | seed a `nodepresence.<id>` marker for every node that has a `node.<id>` blob |
+| `spinifex-instance-state` | `4`→`5` | carry each `node.<id>` blob's presence and ownership onto the record space: a `nodepresence.<id>` marker, and that node named as `last_node` on every record in the blob that has no owner |
 | `spinifex-terminated-instances` | `1`→`2` | copy the `terminated.<id>` keys onto the record space |
 | `spinifex-terminated-instances` | `2`→`3` | re-key the record space from `i/<id>` to `i.<id>` |
 
 The re-key steps exist because a watch filter is a NATS subject filter: `*` matches one dot-delimited token, so `i/<id>` is a single token and `i/*` matches nothing. Only a build that shipped the slash has anything for them to move.
 
-Version `5` of `spinifex-instance-state` is the cutover: the record space became the only copy, and `instance.<id>` and `node.<id>` are frozen — read by nothing, written by nothing, and left in place so the crossing can be rolled back. The bump is also what a build predating the cutover trips over: `RunKV` refuses a bucket stamped past what it understands, with `ErrSchemaAhead`, rather than opening it and reading half a key space.
+Version `5` of `spinifex-instance-state` is the cutover: the record space became the only copy, and `instance.<id>` and `node.<id>` are frozen — read by nothing, written by nothing, and left in place so the crossing can be rolled back. The bump is also what a build predating the cutover trips over: `RunKV` refuses a bucket stamped past what it understands, with `SchemaAheadError`, rather than opening it and reading half a key space.
 
 Every other bucket has no registered migration, so `RunKV` stamps its target version directly on first init.
 

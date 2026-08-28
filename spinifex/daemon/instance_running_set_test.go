@@ -367,6 +367,83 @@ func TestInstanceStateMigration_SplitsEveryNodesBlob(t *testing.T) {
 	assert.Equal(t, "node-2", record.Status.LastNode)
 }
 
+// unownedVM is what a running-set blob actually holds. The key it sat under
+// named the node, so nothing wrote the node onto the instance inside it, and a
+// record copied forward from one carries no owner at all.
+func unownedVM(id, instanceType string) *vm.VM {
+	return &vm.VM{ID: id, InstanceType: instanceType, Status: vm.StateRunning}
+}
+
+// Ownership is the other half of what the node.<id> key carried in its name,
+// and the half a reader cannot do without: after the cutover an unowned record
+// is one no node lists.
+func TestInstanceStateMigration_CarriesOwnershipOffTheBlobKey(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	seedNodeBlobBucket(t, nc, localNode, runningSet(unownedVM("i-1", "t3.nano")))
+
+	m, err := daemon.NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, m.InitKVBucket())
+
+	record, err := m.LoadInstanceRecord("i-1")
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	assert.Equal(t, localNode, record.Status.LastNode, "the blob key is the only thing that knew this")
+}
+
+// The case that makes the stamp necessary rather than tidy. The marker says the
+// cluster knows the node, so restore adopts what comes back with it — and an
+// unowned running set comes back empty, which it would then adopt over the
+// instances the node is actually running.
+func TestInstanceStateMigration_ANodeRecoversAnUnownedRunningSet(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	seedNodeBlobBucket(t, nc, localNode, runningSet(unownedVM("i-1", "t3.nano"), unownedVM("i-2", "t3.micro")))
+
+	m, err := daemon.NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, m.InitKVBucket())
+
+	loaded, found, err := m.LoadState(localNode)
+
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Len(t, loaded, 2, "an adopted empty set here is every instance on the node dropped")
+}
+
+// An owner already on the record is the newer fact. The blob it would be
+// overwritten from stopped being written when the cutover landed.
+func TestInstanceStateMigration_LeavesAnOwnedRecordAlone(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	moved := &vm.VM{ID: "i-1", InstanceType: "t3.nano", Status: vm.StateRunning, LastNode: "node-2"}
+	seedNodeBlobBucket(t, nc, localNode, runningSet(moved))
+
+	m, err := daemon.NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, m.InitKVBucket())
+
+	record, err := m.LoadInstanceRecord("i-1")
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	assert.Equal(t, "node-2", record.Status.LastNode)
+}
+
+func TestInstanceStateMigration_OwnershipStampIsSafeToRunTwice(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	kv := seedNodeBlobBucket(t, nc, localNode, runningSet(unownedVM("i-1", "t3.nano")))
+
+	first, err := daemon.NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, first.InitKVBucket())
+	before := recordRevision(t, nc, "i-1")
+
+	require.NoError(t, kvutil.WriteVersion(context.Background(), kv, 4))
+	second, err := daemon.NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, second.InitKVBucket())
+
+	assert.Equal(t, before, recordRevision(t, nc, "i-1"), "a record that already names its owner must not be rewritten")
+}
+
 func TestInstanceStateMigration_BlobSplitIsSafeToRunTwice(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedNodeBlobBucket(t, nc, localNode, runningSet(runningVM("i-1", "t3.nano")))

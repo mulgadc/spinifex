@@ -242,6 +242,33 @@ func TestRunKV_Idempotent(t *testing.T) {
 	assert.Equal(t, 1, runCount) // Not incremented.
 }
 
+// A bucket stamped past what this build understands was migrated by a node on
+// a newer release. Opening it anyway is the mixed-cluster failure: this build
+// reads the keys it knows, misses the ones it does not, and writes back a view
+// of the bucket assembled from half of it.
+func TestRunKV_SchemaAheadOfThisBuildIsRefused(t *testing.T) {
+	r := NewRegistry()
+	r.RegisterKV("test-bucket", KVMigration{
+		FromVersion: 1, ToVersion: 2, Description: "add field",
+		Run: func(ctx context.Context, kvc KVContext) error { return nil },
+	})
+
+	_, nc := startTestNATS(t)
+	kv := createTestBucket(t, nc, "test-bucket")
+	_, err := kv.PutString(t.Context(), "_version", "5")
+	require.NoError(t, err)
+
+	err = r.RunKV(t.Context(), "test-bucket", kv, 2)
+
+	var ahead SchemaAheadError
+	require.ErrorAs(t, err, &ahead)
+	assert.Equal(t, 5, ahead.Found)
+	assert.Equal(t, 2, ahead.Understood)
+	assert.Contains(t, err.Error(), "test-bucket")
+	assert.Contains(t, err.Error(), "upgrade this node",
+		"the error has to say what to do about it, not just that it happened")
+}
+
 // --- Config version reader tests ---
 
 func TestTOMLVersionReader_ReadStringVersion(t *testing.T) {

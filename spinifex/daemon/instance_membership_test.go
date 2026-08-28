@@ -1,8 +1,9 @@
-package daemon
+package daemon_test
 
 import (
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 )
@@ -22,7 +23,7 @@ var allInstanceStates = []vm.InstanceState{
 	vm.StateError,
 }
 
-func record(status vm.InstanceState, desired vm.DesiredState, node string) *vm.InstanceRecord {
+func membershipRecord(status vm.InstanceState, desired vm.DesiredState, node string) *vm.InstanceRecord {
 	return (&vm.VM{ID: "i-1", Status: status, DesiredState: desired, LastNode: node}).Record()
 }
 
@@ -30,7 +31,7 @@ func TestOperatorStopped_OnlyStoppedAndAskedFor(t *testing.T) {
 	for _, status := range allInstanceStates {
 		for _, desired := range []vm.DesiredState{vm.DesiredRunning, vm.DesiredStopped} {
 			want := status == vm.StateStopped && desired == vm.DesiredStopped
-			assert.Equal(t, want, operatorStopped(record(status, desired, "node-1")),
+			assert.Equal(t, want, daemon.OperatorStopped(membershipRecord(status, desired, "node-1")),
 				"status=%s desired=%q", status, desired)
 		}
 	}
@@ -40,17 +41,17 @@ func TestOperatorStopped_OnlyStoppedAndAskedFor(t *testing.T) {
 // stop leaves StateStopped with DesiredRunning, and restore relaunches it. Read
 // as operator-stopped it would be listed as stopped and never come back.
 func TestOperatorStopped_DrainStoppedIsNotOperatorStopped(t *testing.T) {
-	drained := record(vm.StateStopped, vm.DesiredRunning, "node-1")
-	assert.False(t, operatorStopped(drained))
-	assert.True(t, runsOn(drained, "node-1"), "a drain-stopped instance is still the node's to relaunch")
+	drained := membershipRecord(vm.StateStopped, vm.DesiredRunning, "node-1")
+	assert.False(t, daemon.OperatorStopped(drained))
+	assert.True(t, daemon.RunsOn(drained, "node-1"), "a drain-stopped instance is still the node's to relaunch")
 }
 
 func TestRunsOn_EverythingTheNodeOwnsExceptOperatorStopped(t *testing.T) {
 	for _, status := range allInstanceStates {
 		stopped := status == vm.StateStopped
-		assert.Equal(t, !stopped, runsOn(record(status, vm.DesiredStopped, "node-1"), "node-1"),
+		assert.Equal(t, !stopped, daemon.RunsOn(membershipRecord(status, vm.DesiredStopped, "node-1"), "node-1"),
 			"desired-stopped, status=%s", status)
-		assert.True(t, runsOn(record(status, vm.DesiredRunning, "node-1"), "node-1"),
+		assert.True(t, daemon.RunsOn(membershipRecord(status, vm.DesiredRunning, "node-1"), "node-1"),
 			"desired-running, status=%s", status)
 	}
 }
@@ -59,13 +60,13 @@ func TestRunsOn_EverythingTheNodeOwnsExceptOperatorStopped(t *testing.T) {
 // the terminated bucket. Excluding them here is what its own comment calls a
 // void: gone from the running set and not yet anywhere else.
 func TestRunsOn_TerminatedIsStillTheNodesToMigrate(t *testing.T) {
-	assert.True(t, runsOn(record(vm.StateTerminated, vm.DesiredRunning, "node-1"), "node-1"))
+	assert.True(t, daemon.RunsOn(membershipRecord(vm.StateTerminated, vm.DesiredRunning, "node-1"), "node-1"))
 }
 
 func TestRunsOn_AnotherNodesRecordIsNotOurs(t *testing.T) {
-	assert.False(t, runsOn(record(vm.StateRunning, vm.DesiredRunning, "node-2"), "node-1"))
-	assert.False(t, runsOn(record(vm.StateRunning, vm.DesiredRunning, ""), "node-1"))
-	assert.False(t, runsOn(record(vm.StateRunning, vm.DesiredRunning, "node-1"), ""))
-	assert.False(t, runsOn(nil, "node-1"))
-	assert.False(t, operatorStopped(nil))
+	assert.False(t, daemon.RunsOn(membershipRecord(vm.StateRunning, vm.DesiredRunning, "node-2"), "node-1"))
+	assert.False(t, daemon.RunsOn(membershipRecord(vm.StateRunning, vm.DesiredRunning, ""), "node-1"))
+	assert.False(t, daemon.RunsOn(membershipRecord(vm.StateRunning, vm.DesiredRunning, "node-1"), ""))
+	assert.False(t, daemon.RunsOn(nil, "node-1"))
+	assert.False(t, daemon.OperatorStopped(nil))
 }

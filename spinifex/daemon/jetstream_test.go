@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// writeNodeState does what persistState does: the presence marker, then one
+// record per running instance. Two calls rather than one because the marker
+// answers whether the cluster knows this node and the records answer what it
+// is running, and only the first of those may be inferred from the second.
+func writeNodeState(t *testing.T, m *JetStreamManager, nodeID string, vms map[string]*vm.VM) error {
+	t.Helper()
+	if err := m.WriteNodeMarker(nodeID); err != nil {
+		return err
+	}
+	m.WriteRunningSet(nodeID, vms)
+	return nil
+}
 
 // TestJetStreamManager_WriteAndLoadState tests round-trip write and load of instance state.
 func TestJetStreamManager_WriteAndLoadState(t *testing.T) {
@@ -49,7 +63,7 @@ func TestJetStreamManager_WriteAndLoadState(t *testing.T) {
 	}
 
 	// Write state
-	err = jsm.WriteState(testNodeID, testInstances)
+	err = writeNodeState(t, jsm, testNodeID, testInstances)
 	require.NoError(t, err, "Failed to write state")
 
 	// Load state
@@ -133,7 +147,7 @@ func TestJetStreamManager_BucketReconnection(t *testing.T) {
 			Status: vm.StateRunning,
 		},
 	}
-	err = jsm1.WriteState("persist-node", testInstances)
+	err = writeNodeState(t, jsm1, "persist-node", testInstances)
 	require.NoError(t, err)
 
 	nc1.Close()
@@ -180,7 +194,7 @@ func TestJetStreamManager_DeleteState(t *testing.T) {
 			Status: vm.StateRunning,
 		},
 	}
-	err = jsm.WriteState(testNodeID, testInstances)
+	err = writeNodeState(t, jsm, testNodeID, testInstances)
 	require.NoError(t, err)
 
 	// Verify state exists
@@ -242,7 +256,7 @@ func TestJetStreamManager_WriteState_UpdateExisting(t *testing.T) {
 			Status: vm.StateRunning,
 		},
 	}
-	err = jsm.WriteState(testNodeID, initialInstances)
+	err = writeNodeState(t, jsm, testNodeID, initialInstances)
 	require.NoError(t, err)
 
 	// Update state with different instances
@@ -256,7 +270,7 @@ func TestJetStreamManager_WriteState_UpdateExisting(t *testing.T) {
 			Status: vm.StateRunning,
 		},
 	}
-	err = jsm.WriteState(testNodeID, updatedInstances)
+	err = writeNodeState(t, jsm, testNodeID, updatedInstances)
 	require.NoError(t, err)
 
 	// Load and verify updated state
@@ -285,7 +299,7 @@ func TestJetStreamManager_MultipleNodes(t *testing.T) {
 	node1Instances := map[string]*vm.VM{
 		"i-node1-001": {ID: "i-node1-001", Status: vm.StateRunning},
 	}
-	err = jsm.WriteState("node-1", node1Instances)
+	err = writeNodeState(t, jsm, "node-1", node1Instances)
 	require.NoError(t, err)
 
 	// Write state for node-2
@@ -293,7 +307,7 @@ func TestJetStreamManager_MultipleNodes(t *testing.T) {
 		"i-node2-001": {ID: "i-node2-001", Status: vm.StateStopped},
 		"i-node2-002": {ID: "i-node2-002", Status: vm.StateRunning},
 	}
-	err = jsm.WriteState("node-2", node2Instances)
+	err = writeNodeState(t, jsm, "node-2", node2Instances)
 	require.NoError(t, err)
 
 	// Load and verify node-1 state
@@ -327,7 +341,7 @@ func TestJetStreamManager_KVNotInitialized(t *testing.T) {
 	require.NoError(t, err)
 
 	testInstances := make(map[string]*vm.VM)
-	err = jsm.WriteState("test-node", testInstances)
+	err = writeNodeState(t, jsm, "test-node", testInstances)
 	assert.Error(t, err, "WriteState should error when KV not initialized")
 
 	_, _, err = jsm.LoadState("test-node")
@@ -625,12 +639,14 @@ func TestJetStreamManager_UpdateStoppedInstance_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, kvstore.ErrNotFound)
 }
 
-// TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim is the
-// core TOCTOU regression test: a claim (delete) that lands between an
-// UpdateStoppedInstance caller's own Load and its CAS write must not be
-// undone. createIfAbsent=false means the CAS write observes the key gone and
-// fails with kvstore.ErrNotFound instead of recreating the stopped record after
-// ClaimStoppedInstance already handed it off to a winning start.
+// TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim is the core
+// TOCTOU regression test: a claim landing between an UpdateStoppedInstance
+// caller's own Load and its CAS write must not be undone.
+//
+// The claim no longer deletes anything, so the key is still there and the CAS
+// write would succeed on revision alone. What refuses it is the membership
+// test — the record it reads is no longer stopped, and to this API an instance
+// that is not stopped is one that is not there.
 func TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
@@ -644,7 +660,7 @@ func TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim(t *testing
 	require.NoError(t, jsm.WriteStoppedInstance(testVM.ID, testVM))
 
 	// A caller loads the record (as TagStoppedInstance / ModifyInstanceAttribute
-	// do) before a winning claim removes it.
+	// do) before a winning claim takes it.
 	loaded, err := jsm.LoadStoppedInstance(testVM.ID)
 	require.NoError(t, err)
 	require.NotNil(t, loaded)
@@ -654,15 +670,24 @@ func TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim(t *testing
 	require.NotNil(t, claimed)
 
 	// The tag/attribute caller's CAS write now races the already-completed
-	// claim: it must fail cleanly, not resurrect the record.
+	// claim: it must fail cleanly, not land on the claimed instance.
 	_, err = jsm.UpdateStoppedInstance(testVM.ID, func(v *vm.VM) {
 		v.InstanceType = "should-not-land"
 	})
-	assert.ErrorIs(t, err, kvstore.ErrNotFound, "a claim that deleted the record must not be resurrected by a losing racer's update")
+	assert.ErrorIs(t, err, kvstore.ErrNotFound,
+		"an update that lost the race to a claim must not land on the instance it started")
 
 	stillGone, err := jsm.LoadStoppedInstance(testVM.ID)
 	require.NoError(t, err)
-	assert.Nil(t, stillGone, "the stopped record must stay deleted after the losing update")
+	assert.Nil(t, stillGone, "and the instance must stay claimed, not fall back into the stopped set")
+
+	// The record itself survives the claim — that is the point of claiming by
+	// compare-and-set — so the mutation must be absent from it rather than the
+	// record absent from the bucket.
+	record, err := jsm.LoadInstanceRecord(testVM.ID)
+	require.NoError(t, err)
+	require.NotNil(t, record, "the claim moves the record between sets, it does not delete it")
+	assert.Equal(t, "t3.micro", record.Spec.InstanceType, "the losing update must not have committed")
 }
 
 // TestJetStreamManager_ListStoppedInstances tests listing multiple stopped instances.
@@ -722,7 +747,7 @@ func TestJetStreamManager_StoppedInstances_NoInterference(t *testing.T) {
 	nodeInstances := map[string]*vm.VM{
 		"i-running-001": {ID: "i-running-001", Status: vm.StateRunning},
 	}
-	err = jsm.WriteState("interference-test-node", nodeInstances)
+	err = writeNodeState(t, jsm, "interference-test-node", nodeInstances)
 	require.NoError(t, err)
 
 	// Write stopped instance
@@ -882,7 +907,7 @@ func TestJetStreamManager_WriteState_RecoverAfterStreamLost(t *testing.T) {
 	testInstances := map[string]*vm.VM{
 		"i-recover-001": {ID: "i-recover-001", Status: vm.StateRunning},
 	}
-	err = jsm.WriteState("recovery-node", testInstances)
+	err = writeNodeState(t, jsm, "recovery-node", testInstances)
 	require.NoError(t, err, "WriteState should recover after stream loss")
 
 	// Verify data was written
@@ -1053,7 +1078,7 @@ func TestJetStreamManager_WriteState_RecoveryFailure(t *testing.T) {
 	swapToNonJSContext(t, jsm)
 
 	testInstances := map[string]*vm.VM{"i-fail": {ID: "i-fail"}}
-	err = jsm.WriteState("fail-node", testInstances)
+	err = writeNodeState(t, jsm, "fail-node", testInstances)
 	assert.Error(t, err, "WriteState should return error when recovery fails")
 }
 
@@ -1614,7 +1639,7 @@ func TestJetStreamManager_BestEffort_Success_NotifiesObserver(t *testing.T) {
 	obs := &fakeKVObserver{}
 	jsm.SetSyncObserver(obs)
 
-	jsm.WriteStateBytesBestEffort("obs-success", []byte(`{"vms":{}}`), 5*time.Second)
+	jsm.WriteNodeMarkerBestEffort("obs-success", 5*time.Second)
 
 	successes, failures := obs.snapshot()
 	require.Len(t, successes, 1)
@@ -1636,7 +1661,7 @@ func TestJetStreamManager_BestEffort_PutError_NotifiesObserver(t *testing.T) {
 	// Closing the connection forces the inflight Put to fail without timing out.
 	nc.Close()
 
-	jsm.WriteStateBytesBestEffort("obs-fail", []byte(`{"vms":{}}`), 5*time.Second)
+	jsm.WriteNodeMarkerBestEffort("obs-fail", 5*time.Second)
 
 	successes, failures := obs.snapshot()
 	assert.Empty(t, successes)
@@ -1655,7 +1680,7 @@ func TestJetStreamManager_BestEffort_NilObserver_NoPanic(t *testing.T) {
 	require.NoError(t, jsm.InitKVBucket())
 
 	// No observer set — must not panic on success or failure paths.
-	jsm.WriteStateBytesBestEffort("obs-nil", []byte(`{"vms":{}}`), 5*time.Second)
+	jsm.WriteNodeMarkerBestEffort("obs-nil", 5*time.Second)
 }
 
 // --- UpdateMgmtIPAM CAS tests ---
@@ -1750,10 +1775,11 @@ func TestJetStreamManager_UpdateMgmtIPAM_ClusterKVNotInitialized(t *testing.T) {
 // logged an undecodable record and carried on, so the instance simply vanished
 // from DescribeInstances and the caller concluded it was gone. A tenant-facing
 // listing is complete or it fails.
+// Its own JetStream rather than the package's: one key space holds every
+// instance now, so an undecodable record fails every listing that reads it and
+// not just the one under test.
 func TestJetStreamManager_ListStoppedInstances_FailsOnAnUndecodableRecord(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	jsm, err := NewJetStreamManager(nc, 1)
 	require.NoError(t, err)
@@ -1763,7 +1789,7 @@ func TestJetStreamManager_ListStoppedInstances_FailsOnAnUndecodableRecord(t *tes
 
 	kv, err := jsm.stateB.KV(t.Context())
 	require.NoError(t, err)
-	_, err = kv.Put(t.Context(), StoppedInstancePrefix+"i-corrupt", []byte("{not json"))
+	_, err = kv.Put(t.Context(), InstanceRecordPrefix+"i-corrupt", []byte("{not json"))
 	require.NoError(t, err)
 
 	_, err = jsm.ListStoppedInstances()
@@ -1802,12 +1828,15 @@ func seedNodeRecord(t *testing.T, jsm *JetStreamManager, nodeID string, raw []by
 	t.Helper()
 	kv, err := jsm.stateB.KV(t.Context())
 	require.NoError(t, err)
-	_, err = kv.Put(t.Context(), InstanceStatePrefix+nodeID, raw)
+	_, err = kv.Put(t.Context(), NodePresencePrefix+nodeID, raw)
 	require.NoError(t, err)
 }
 
 // A node record predates schema versioning, so it carries no version at all.
 // Reading it as current is what makes an in-place upgrade need no migration.
+//
+// The instances come from the records, not from the marker, so a marker that
+// still carries a vms member is read for its presence and nothing else.
 func TestJetStreamManager_LoadState_UnversionedRecordStillReads(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
@@ -1819,12 +1848,15 @@ func TestJetStreamManager_LoadState_UnversionedRecordStillReads(t *testing.T) {
 
 	seedNodeRecord(t, jsm, "legacy-node",
 		[]byte(`{"vms":{"i-legacy-001":{"id":"i-legacy-001","status":"running"}}}`))
+	require.NoError(t, jsm.WriteInstanceRecord("i-legacy-002",
+		(&vm.VM{ID: "i-legacy-002", Status: vm.StateRunning, LastNode: "legacy-node"}).Record()))
 
 	loaded, found, err := jsm.LoadState("legacy-node")
 	require.NoError(t, err, "A record written before versioning must still read")
 	require.True(t, found)
 	require.Len(t, loaded, 1)
-	assert.Equal(t, vm.StateRunning, loaded["i-legacy-001"].Status)
+	assert.Equal(t, vm.StateRunning, loaded["i-legacy-002"].Status)
+	assert.NotContains(t, loaded, "i-legacy-001", "the marker is not a running set")
 }
 
 // A record from a newer binary is refused rather than parsed on a guess: this
@@ -1849,7 +1881,7 @@ func TestJetStreamManager_LoadState_FutureRecordIsRefused(t *testing.T) {
 }
 
 // Both writers stamp the version: the typed WriteState and the best-effort
-// pre-marshalled path, which is the one that would silently skip it.
+// marker path, which is the one that would silently skip it.
 func TestJetStreamManager_WriteState_StampsSchemaVersion(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
@@ -1860,14 +1892,14 @@ func TestJetStreamManager_WriteState_StampsSchemaVersion(t *testing.T) {
 	require.NoError(t, jsm.InitKVBucket())
 
 	vms := map[string]*vm.VM{"i-stamp-001": {ID: "i-stamp-001", Status: vm.StateRunning}}
-	require.NoError(t, jsm.WriteState("stamp-node", vms))
+	require.NoError(t, writeNodeState(t, jsm, "stamp-node", vms))
 
 	kv, err := jsm.stateB.KV(t.Context())
 	require.NoError(t, err)
 
 	read := func(nodeID string) LocalState {
 		t.Helper()
-		entry, err := kv.Get(t.Context(), InstanceStatePrefix+nodeID)
+		entry, err := kv.Get(t.Context(), NodePresencePrefix+nodeID)
 		require.NoError(t, err)
 		var got LocalState
 		require.NoError(t, json.Unmarshal(entry.Value(), &got))
@@ -1876,24 +1908,10 @@ func TestJetStreamManager_WriteState_StampsSchemaVersion(t *testing.T) {
 
 	assert.Equal(t, LocalStateSchemaVersion, read("stamp-node").SchemaVersion)
 
-	data, err := marshalInstanceState(vms)
-	require.NoError(t, err)
-	jsm.WriteStateBytesBestEffort("bytes-node", data, 5*time.Second)
+	jsm.WriteNodeMarkerBestEffort("bytes-node", 5*time.Second)
 	assert.Equal(t, LocalStateSchemaVersion, read("bytes-node").SchemaVersion,
-		"the best-effort path marshals its own bytes and must stamp the same version")
-}
+		"the best-effort path must stamp the same version")
 
-// The KV node record and the local state file are one envelope. Asserted on the
-// bytes rather than the type, because a second marshaller is how they drift.
-func TestMarshalInstanceState_MatchesLocalStateFileBytes(t *testing.T) {
-	vms := map[string]*vm.VM{
-		"i-envelope-001": {ID: "i-envelope-001", Status: vm.StateRunning, InstanceType: "t3.micro"},
-	}
-
-	kvBytes, err := marshalInstanceState(vms)
-	require.NoError(t, err)
-	fileBytes, err := MarshalLocalState(vms)
-	require.NoError(t, err)
-
-	assert.JSONEq(t, string(fileBytes), string(kvBytes))
+	assert.Empty(t, read("stamp-node").VMS,
+		"the node key is a presence marker: carrying the running set is the cost the split removes")
 }

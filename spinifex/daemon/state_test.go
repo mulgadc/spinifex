@@ -758,7 +758,7 @@ func TestRestoreInstances_ClusterRecordWinsForSharedInstance(t *testing.T) {
 	require.NoError(t, daemon.WriteState())
 
 	// The cluster record covers only i-shared, and disagrees about it.
-	require.NoError(t, daemon.jsManager.WriteState(daemon.node, map[string]*vm.VM{
+	require.NoError(t, writeNodeState(t, daemon.jsManager, daemon.node, map[string]*vm.VM{
 		"i-shared": {ID: "i-shared", Status: vm.StateError, InstanceType: "t3.small"},
 	}))
 

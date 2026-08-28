@@ -44,6 +44,12 @@ func init() {
 		Description: "re-key instance records from i/<id> to i.<id>",
 		Run:         rekeyRecordSeparator,
 	})
+	migrate.DefaultRegistry.RegisterKV(InstanceStateBucket, migrate.KVMigration{
+		FromVersion: 4,
+		ToVersion:   5,
+		Description: "seed a presence marker for every node that has a running-set blob",
+		Run:         seedNodePresence,
+	})
 	migrate.DefaultRegistry.RegisterKV(TerminatedInstanceBucket, migrate.KVMigration{
 		FromVersion: 1,
 		ToVersion:   2,
@@ -108,6 +114,53 @@ func rekeyRecordSeparator(ctx context.Context, kvc migrate.KVContext) error {
 	}
 
 	kvc.Logger.Info("Re-keyed instance records onto the dot separator", "moved", moved)
+	return nil
+}
+
+// seedNodePresence gives every node that had a running-set blob the presence
+// marker that replaces it.
+//
+// Without this a node reads no marker until its own first state write, and a
+// node that boots before it writes would be told the cluster has no record of
+// it. That is the safe direction — restore declines to adopt rather than
+// adopting an empty set — but it also means a node cannot recover its instances
+// from KV across the crossing, which is the one time it most needs to.
+//
+// The blob is read, not consumed. It is what a node rolled back to the previous
+// release reads, and this is the step that stops being reversible if it moves.
+func seedNodePresence(ctx context.Context, kvc migrate.KVContext) error {
+	keys, err := kvc.KV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list keys: %w", err)
+	}
+
+	marker, err := json.Marshal(LocalState{SchemaVersion: LocalStateSchemaVersion})
+	if err != nil {
+		return fmt.Errorf("encode presence marker: %w", err)
+	}
+
+	seeded := 0
+	for _, key := range keys {
+		if !strings.HasPrefix(key, InstanceStatePrefix) {
+			continue
+		}
+
+		dest := NodePresencePrefix + strings.TrimPrefix(key, InstanceStatePrefix)
+		if _, err := kvc.KV.Create(ctx, dest, marker); err != nil {
+			// A node that has already upgraded wrote its own marker; it is the
+			// same value, and the newer write is not overwritten with this one.
+			if errors.Is(err, jetstream.ErrKeyExists) {
+				continue
+			}
+			return fmt.Errorf("write %s: %w", dest, err)
+		}
+		seeded++
+	}
+
+	kvc.Logger.Info("Seeded node presence markers", "seeded", seeded)
 	return nil
 }
 

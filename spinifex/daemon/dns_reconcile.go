@@ -26,10 +26,13 @@ func (d *Daemon) dnsWatchSources() []reconciler.Source {
 	}
 }
 
-// instanceStateWatchFilter matches the per-node instance blobs. EC2 records are
-// the one DNS input that is node-local, so a change to any node's blob is the
-// only signal that this node's own VMs may need re-asserting.
-const instanceStateWatchFilter = InstanceStatePrefix + "*"
+// instanceStateWatchFilter matches the instance records. EC2 records are the
+// one DNS input that is node-local, so a change to any instance is the only
+// signal that this node's own VMs may need re-asserting.
+//
+// This is a NATS subject filter, so "*" spans one dot-delimited token and the
+// prefix has to end in a dot for it to match anything at all.
+const instanceStateWatchFilter = InstanceRecordPrefix + "*"
 
 // instanceStateWatchBuckets returns the shared instance-state bucket. It is a
 // fresh kvstore.Bucket rather than the JetStreamManager's handle so a recovery

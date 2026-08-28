@@ -70,36 +70,31 @@ func TestLoadInstanceRecord_AbsentIsNil(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-// The two key spaces are distinct keys sharing one bucket: a write lands at
-// both, a listing merges them so the instance appears once rather than twice,
-// and removing one copy leaves the other readable. Nothing but the prefix
-// keeps them apart, so this fails if it is ever changed to something colliding.
-func TestStoppedInstances_SpanBothKeySpaces(t *testing.T) {
+// A stopped instance is written once, to the record key, and read back from
+// there through both the instance accessors and the record accessors.
+func TestStoppedInstances_LiveAtTheRecordKey(t *testing.T) {
 	m := newRecordManager(t)
 
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
 
 	stopped, err := m.ListStoppedInstances()
 	require.NoError(t, err)
-	require.Len(t, stopped, 1, "an instance held at both keys must be listed once")
+	require.Len(t, stopped, 1, "an instance must be listed once")
 	assert.Equal(t, "t3.nano", stopped[0].InstanceType)
 
 	records, err := m.ListInstanceRecords()
 	require.NoError(t, err)
-	require.Len(t, records, 1, "the write must have been mirrored onto the record key")
+	require.Len(t, records, 1)
 	assert.Equal(t, "t3.nano", records[0].Spec.InstanceType)
 
-	// Dropping the mirror leaves the key it mirrors untouched, which is what
-	// makes the fallback a real fallback rather than a second name for one key.
 	require.NoError(t, m.DeleteInstanceRecord("i-1"))
 
 	got, err := m.LoadStoppedInstance("i-1")
 	require.NoError(t, err)
-	require.NotNil(t, got, "deleting the mirror must not touch the key it mirrors")
-	assert.Equal(t, "t3.nano", got.InstanceType)
+	assert.Nil(t, got, "there is one key, so removing it removes the instance")
 }
 
-func TestTerminatedInstances_SpanBothKeySpaces(t *testing.T) {
+func TestTerminatedInstances_LiveAtTheRecordKey(t *testing.T) {
 	m := newRecordManager(t)
 
 	require.NoError(t, m.WriteTerminatedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
@@ -118,8 +113,26 @@ func TestTerminatedInstances_SpanBothKeySpaces(t *testing.T) {
 
 	got, err := m.LoadTerminatedInstance("i-1")
 	require.NoError(t, err)
-	require.NotNil(t, got)
-	assert.Equal(t, "t3.nano", got.InstanceType)
+	assert.Nil(t, got)
+}
+
+// Four key spaces share the instance-state bucket and a listing selects between
+// them by string prefix, not by subject token. "i." is a prefix of nothing else
+// here and nothing else is a prefix of it, which is the whole of what keeps a
+// record listing from picking up a frozen key or a node's marker.
+func TestInstanceRecords_ThePrefixesInOneBucketAreDisjoint(t *testing.T) {
+	m, nc := newRecordManagerConn(t)
+
+	require.NoError(t, m.WriteInstanceRecord("i-1", testRecord("i-1")))
+	require.NoError(t, m.WriteNodeMarker("i-1"))
+	seedFrozenKey(t, nc, daemon.InstanceStateBucket, daemon.StoppedInstancePrefix+"i-1")
+	seedFrozenKey(t, nc, daemon.InstanceStateBucket, daemon.InstanceStatePrefix+"i-1")
+
+	records, err := m.ListInstanceRecords()
+
+	require.NoError(t, err)
+	require.Len(t, records, 1, "only the record key may answer a record listing")
+	assert.Equal(t, "i-1", records[0].Metadata.Name)
 }
 
 // The two buckets are separate stores over the same prefix, so a record in one

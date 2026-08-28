@@ -15,108 +15,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// legacyOnly leaves an instance at the key i/<id> replaces and nowhere else,
-// which is the state a node that predates the per-resource key space leaves
-// behind on every write it makes.
-func legacyOnly(t *testing.T, m *daemon.JetStreamManager, instance *vm.VM) {
-	t.Helper()
-	require.NoError(t, m.WriteStoppedInstance(instance.ID, instance))
-	require.NoError(t, m.DeleteInstanceRecord(instance.ID))
-}
-
-func TestLoadStoppedInstance_PrefersTheRecordKey(t *testing.T) {
-	m := newRecordManager(t)
-	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
-
-	// Only reachable by writing the record key directly; the accessors keep the
-	// two in step. It stands in for a mirror written after the key it mirrors.
-	fresher := testRecord("i-1")
-	require.NoError(t, m.WriteInstanceRecord("i-1", fresher))
-
-	got, err := m.LoadStoppedInstance("i-1")
-	require.NoError(t, err)
-	require.NotNil(t, got)
-	assert.Equal(t, "m7i.large", got.InstanceType, "the record key must win over the key it replaces")
-}
-
-func TestLoadStoppedInstance_FallsBackToTheKeyItReplaces(t *testing.T) {
-	m := newRecordManager(t)
-	legacyOnly(t, m, &vm.VM{ID: "i-1", InstanceType: "t3.nano"})
-
-	got, err := m.LoadStoppedInstance("i-1")
-
-	require.NoError(t, err)
-	require.NotNil(t, got, "an instance only the old key holds must still be found")
-	assert.Equal(t, "t3.nano", got.InstanceType)
-}
-
-// An instance held only at the key being replaced is listed from there, and
-// one held at both is answered from its mirror. A mirror with nothing behind
-// it is not an instance — see TestOlderNodeClaim_* below.
-func TestListStoppedInstances_AnswersFromTheMirrorWhereThereIsOne(t *testing.T) {
-	m := newRecordManager(t)
-
-	legacyOnly(t, m, &vm.VM{ID: "i-old", InstanceType: "t3.nano"})
-	require.NoError(t, m.WriteStoppedInstance("i-both", &vm.VM{ID: "i-both", InstanceType: "t3.micro"}))
-
-	stopped, err := m.ListStoppedInstances()
-
-	require.NoError(t, err)
-	byID := make(map[string]string, len(stopped))
-	for _, instance := range stopped {
-		byID[instance.ID] = instance.InstanceType
-	}
-	assert.Equal(t, map[string]string{"i-old": "t3.nano", "i-both": "t3.micro"}, byID)
-}
-
-// olderNodeClaim reproduces what a node predating the per-resource space does
-// when it claims: one atomic delete of the only key it knows, leaving the
-// mirror behind. Staged underneath the manager because no accessor can do it.
-func olderNodeClaim(t *testing.T, nc *nats.Conn, instanceID string) {
+// seedFrozenKey writes raw bytes at one of the key spaces the record replaced.
+// Nothing does this any more, which is the point: it stages what a cluster that
+// crossed the cutover still has lying around.
+func seedFrozenKey(t *testing.T, nc *nats.Conn, bucket, key string) {
 	t.Helper()
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
-	kv, err := js.KeyValue(context.Background(), daemon.InstanceStateBucket)
+	kv, err := js.KeyValue(context.Background(), bucket)
 	require.NoError(t, err)
-	require.NoError(t, kv.Delete(context.Background(), daemon.StoppedInstancePrefix+instanceID))
+	_, err = kv.Put(context.Background(), key, []byte(`{"id":"i-1"}`))
+	require.NoError(t, err)
 }
 
-// A rolling deploy on env19 listed one instance as running and stopped at
-// once, permanently, because its mirror outlived the claim that started it.
-// The key being replaced decides existence for exactly this reason.
-func TestOlderNodeClaim_LeavesNoStoppedInstanceBehind(t *testing.T) {
-	m, nc := newRecordManagerConn(t)
-	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
-
-	olderNodeClaim(t, nc, "i-1")
-
-	// The mirror is still there — nothing removed it, which is the point.
-	record, err := m.LoadInstanceRecord("i-1")
+// frozenKeyExists reports whether a key in one of the replaced key spaces is
+// still there.
+func frozenKeyExists(t *testing.T, nc *nats.Conn, bucket, key string) bool {
+	t.Helper()
+	js, err := jetstream.New(nc)
 	require.NoError(t, err)
-	require.NotNil(t, record, "the older node cannot have removed a key it does not know")
-
-	stopped, err := m.ListStoppedInstances()
+	kv, err := js.KeyValue(context.Background(), bucket)
 	require.NoError(t, err)
-	assert.Empty(t, stopped, "a started instance must not keep reading back as stopped")
-
-	got, err := m.LoadStoppedInstance("i-1")
-	require.NoError(t, err)
-	assert.Nil(t, got, "the mirror is not evidence the instance is still claimable")
+	_, err = kv.Get(context.Background(), key)
+	return err == nil
 }
 
-func TestOlderNodeClaim_DoesNotBlockASecondClaim(t *testing.T) {
-	m, nc := newRecordManagerConn(t)
-	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
-
-	olderNodeClaim(t, nc, "i-1")
-
-	// Exclusivity never moved off the key the older node claimed, so this node
-	// must lose rather than launch a second copy of a running instance.
-	_, err := m.ClaimStoppedInstance("i-1")
-	assert.ErrorIs(t, err, vm.ErrStoppedInstanceClaimed)
-}
-
-func TestUpdateStoppedInstance_MirrorsTheCommittedValue(t *testing.T) {
+func TestUpdateStoppedInstance_CommitsToTheRecord(t *testing.T) {
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
 
@@ -126,12 +50,12 @@ func TestUpdateStoppedInstance_MirrorsTheCommittedValue(t *testing.T) {
 	record, err := m.LoadInstanceRecord("i-1")
 	require.NoError(t, err)
 	require.NotNil(t, record)
-	assert.Equal(t, "node-2", record.Status.LastNode, "the mirror must carry what the mutation committed")
+	assert.Equal(t, "node-2", record.Status.LastNode, "the record must carry what the mutation committed")
 }
 
-// A mutation that finds nothing to mutate must not conjure a mirror: the
-// record key would then hold an instance the key it mirrors does not.
-func TestUpdateStoppedInstance_AbsentLeavesNoMirror(t *testing.T) {
+// A mutation that finds nothing to mutate must not create it. The record would
+// then hold an instance nothing ever stopped.
+func TestUpdateStoppedInstance_AbsentCreatesNothing(t *testing.T) {
 	m := newRecordManager(t)
 
 	_, err := m.UpdateStoppedInstance("i-gone", func(v *vm.VM) { v.LastNode = "node-2" })
@@ -142,25 +66,33 @@ func TestUpdateStoppedInstance_AbsentLeavesNoMirror(t *testing.T) {
 	assert.Nil(t, record)
 }
 
-func TestDeleteStoppedInstance_ClearsBothKeySpaces(t *testing.T) {
-	m := newRecordManager(t)
+// The delete drains the key the record replaced as well as the record. The
+// frozen space is kept so the cutover can be rolled back, but an instance that
+// is gone should not be recoverable from it, and draining on this path is what
+// stops it growing without bound.
+func TestDeleteStoppedInstance_DrainsTheFrozenKey(t *testing.T) {
+	m, nc := newRecordManagerConn(t)
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
+	seedFrozenKey(t, nc, daemon.InstanceStateBucket, daemon.StoppedInstancePrefix+"i-1")
 
 	require.NoError(t, m.DeleteStoppedInstance("i-1"))
 
 	record, err := m.LoadInstanceRecord("i-1")
 	require.NoError(t, err)
-	assert.Nil(t, record, "a delete that leaves the mirror behind resurrects the instance on the next read")
+	assert.Nil(t, record)
 
 	stopped, err := m.ListStoppedInstances()
 	require.NoError(t, err)
 	assert.Empty(t, stopped)
+
+	assert.False(t, frozenKeyExists(t, nc, daemon.InstanceStateBucket, daemon.StoppedInstancePrefix+"i-1"),
+		"the key the record replaced must not outlive the instance")
 }
 
-// The claim stays on the key it always used — two atomic deletes would be two
-// winners — and clears the mirror so the winner cannot leave the instance
-// readable as though it were still claimable.
-func TestClaimStoppedInstance_ClearsTheMirror(t *testing.T) {
+// Exclusivity is a compare-and-set on the record now rather than a delete of
+// it. One key holds an instance for its whole life, so a claim that deleted
+// would be deleting the instance it is about to start.
+func TestClaimStoppedInstance_OnlyOneCallerWins(t *testing.T) {
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
 
@@ -169,19 +101,58 @@ func TestClaimStoppedInstance_ClearsTheMirror(t *testing.T) {
 	require.NotNil(t, claimed)
 	assert.Equal(t, "t3.nano", claimed.InstanceType)
 
-	record, err := m.LoadInstanceRecord("i-1")
-	require.NoError(t, err)
-	assert.Nil(t, record, "a claimed instance must not survive at the record key")
-
-	stopped, err := m.ListStoppedInstances()
-	require.NoError(t, err)
-	assert.Empty(t, stopped)
-
 	_, err = m.ClaimStoppedInstance("i-1")
 	assert.ErrorIs(t, err, vm.ErrStoppedInstanceClaimed, "only one caller may win a claim")
 }
 
-func TestWriteTerminatedInstance_MirrorsOntoTheRecordKey(t *testing.T) {
+// What the winner changes is the intent, not the key. Clearing DesiredStopped
+// is what makes the record no longer claimable and no longer stopped, and it is
+// the same edit that stops it reading back as an instance nobody started.
+func TestClaimStoppedInstance_KeepsTheRecordAndClearsTheStopIntent(t *testing.T) {
+	m := newRecordManager(t)
+	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
+
+	_, err := m.ClaimStoppedInstance("i-1")
+	require.NoError(t, err)
+
+	record, err := m.LoadInstanceRecord("i-1")
+	require.NoError(t, err)
+	require.NotNil(t, record, "the claim moves the record between sets, it does not delete it")
+	assert.Equal(t, vm.DesiredRunning, record.Spec.DesiredState)
+
+	stopped, err := m.ListStoppedInstances()
+	require.NoError(t, err)
+	assert.Empty(t, stopped, "a claimed instance must not keep reading back as stopped")
+
+	got, err := m.LoadStoppedInstance("i-1")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+// LastNode is left alone deliberately. The claimant has not run the instance
+// yet, and the node that last did is the one that should recover it if the
+// launch that follows this claim never happens.
+func TestClaimStoppedInstance_LeavesOwnershipWithTheLastNodeToRunIt(t *testing.T) {
+	m := newRecordManager(t)
+	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano", LastNode: "node-2"}))
+
+	_, err := m.ClaimStoppedInstance("i-1")
+	require.NoError(t, err)
+
+	record, err := m.LoadInstanceRecord("i-1")
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	assert.Equal(t, "node-2", record.Status.LastNode)
+}
+
+func TestClaimStoppedInstance_AbsentIsNotClaimable(t *testing.T) {
+	m := newRecordManager(t)
+
+	_, err := m.ClaimStoppedInstance("i-never-existed")
+	assert.ErrorIs(t, err, vm.ErrStoppedInstanceClaimed)
+}
+
+func TestWriteTerminatedInstance_WritesTheRecord(t *testing.T) {
 	m := newRecordManager(t)
 
 	require.NoError(t, m.WriteTerminatedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
@@ -192,7 +163,7 @@ func TestWriteTerminatedInstance_MirrorsOntoTheRecordKey(t *testing.T) {
 	assert.Equal(t, "t3.nano", record.Spec.InstanceType)
 }
 
-func TestUpdateTerminatedInstance_MirrorsTheCommittedValue(t *testing.T) {
+func TestUpdateTerminatedInstance_CommitsToTheRecord(t *testing.T) {
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteTerminatedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
 
@@ -207,29 +178,11 @@ func TestUpdateTerminatedInstance_MirrorsTheCommittedValue(t *testing.T) {
 	assert.Equal(t, map[string]string{"eni": "done"}, record.Status.Teardown)
 }
 
-func TestListTerminatedInstances_AnswersFromTheMirrorWhereThereIsOne(t *testing.T) {
-	m := newRecordManager(t)
-
-	require.NoError(t, m.WriteTerminatedInstance("i-old", &vm.VM{ID: "i-old", InstanceType: "t3.nano"}))
-	require.NoError(t, m.DeleteTerminatedInstanceRecord("i-old"))
-	require.NoError(t, m.WriteTerminatedInstance("i-both", &vm.VM{ID: "i-both", InstanceType: "t3.micro"}))
-
-	// A mirror with nothing behind it is not a terminated instance either.
-	require.NoError(t, m.WriteTerminatedInstanceRecord("i-orphan", testRecord("i-orphan")))
-
-	terminated, err := m.ListTerminatedInstances()
-
-	require.NoError(t, err)
-	ids := make([]string, 0, len(terminated))
-	for _, instance := range terminated {
-		ids = append(ids, instance.ID)
-	}
-	assert.ElementsMatch(t, []string{"i-old", "i-both"}, ids)
-}
-
-func TestDeleteTerminatedInstance_ClearsBothKeySpaces(t *testing.T) {
-	m := newRecordManager(t)
+func TestDeleteTerminatedInstance_DrainsTheFrozenKey(t *testing.T) {
+	m, nc := newRecordManagerConn(t)
+	require.NoError(t, m.InitTerminatedInstanceBucket())
 	require.NoError(t, m.WriteTerminatedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
+	seedFrozenKey(t, nc, daemon.TerminatedInstanceBucket, daemon.TerminatedInstancePrefix+"i-1")
 
 	require.NoError(t, m.DeleteTerminatedInstance("i-1"))
 
@@ -240,18 +193,8 @@ func TestDeleteTerminatedInstance_ClearsBothKeySpaces(t *testing.T) {
 	terminated, err := m.ListTerminatedInstances()
 	require.NoError(t, err)
 	assert.Empty(t, terminated)
-}
 
-func TestLoadTerminatedInstance_FallsBackToTheKeyItReplaces(t *testing.T) {
-	m := newRecordManager(t)
-	require.NoError(t, m.WriteTerminatedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
-	require.NoError(t, m.DeleteTerminatedInstanceRecord("i-1"))
-
-	got, err := m.LoadTerminatedInstance("i-1")
-
-	require.NoError(t, err)
-	require.NotNil(t, got)
-	assert.Equal(t, "t3.nano", got.InstanceType)
+	assert.False(t, frozenKeyExists(t, nc, daemon.TerminatedInstanceBucket, daemon.TerminatedInstancePrefix+"i-1"))
 }
 
 // seedLegacyBucket creates bucket at schema version 1 holding instance at the

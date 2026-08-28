@@ -9,6 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/resource"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,13 +19,21 @@ import (
 // see each other's keys.
 func newRecordManager(t *testing.T) *daemon.JetStreamManager {
 	t.Helper()
+	m, _ := newRecordManagerConn(t)
+	return m
+}
+
+// newRecordManagerConn also hands back the connection, for tests that have to
+// reach the bucket underneath the manager to stage what another node did.
+func newRecordManagerConn(t *testing.T) (*daemon.JetStreamManager, *nats.Conn) {
+	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	m, err := daemon.NewJetStreamManager(nc, 1)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 	require.NoError(t, m.InitTerminatedInstanceBucket())
-	return m
+	return m, nc
 }
 
 func testRecord(id string) *vm.InstanceRecord {
@@ -61,39 +70,39 @@ func TestLoadInstanceRecord_AbsentIsNil(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-// The whole point of a fresh prefix: an old binary reading the keys this
-// replaces must not see these records, and this one must not see those. They
-// share a bucket, so nothing but the prefix keeps them apart.
-func TestInstanceRecords_AreDisjointFromTheKeysTheyReplace(t *testing.T) {
+// The two key spaces are distinct keys sharing one bucket: a write lands at
+// both, a listing merges them so the instance appears once rather than twice,
+// and removing one copy leaves the other readable. Nothing but the prefix
+// keeps them apart, so this fails if it is ever changed to something colliding.
+func TestStoppedInstances_SpanBothKeySpaces(t *testing.T) {
 	m := newRecordManager(t)
 
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
-	require.NoError(t, m.WriteInstanceRecord("i-1", testRecord("i-1")))
 
 	stopped, err := m.ListStoppedInstances()
 	require.NoError(t, err)
-	require.Len(t, stopped, 1, "the record must not appear in the stopped listing")
+	require.Len(t, stopped, 1, "an instance held at both keys must be listed once")
 	assert.Equal(t, "t3.nano", stopped[0].InstanceType)
 
 	records, err := m.ListInstanceRecords()
 	require.NoError(t, err)
-	require.Len(t, records, 1, "the stopped instance must not appear in the record listing")
-	assert.Equal(t, "m7i.large", records[0].Spec.InstanceType)
+	require.Len(t, records, 1, "the write must have been mirrored onto the record key")
+	assert.Equal(t, "t3.nano", records[0].Spec.InstanceType)
 
-	// And deleting one leaves the other, which is what makes the dual-write
-	// release safe to roll back.
+	// Dropping the mirror leaves the key it mirrors untouched, which is what
+	// makes the fallback a real fallback rather than a second name for one key.
 	require.NoError(t, m.DeleteInstanceRecord("i-1"))
 
-	stopped, err = m.ListStoppedInstances()
+	got, err := m.LoadStoppedInstance("i-1")
 	require.NoError(t, err)
-	assert.Len(t, stopped, 1, "deleting the record must not touch the key it will replace")
+	require.NotNil(t, got, "deleting the mirror must not touch the key it mirrors")
+	assert.Equal(t, "t3.nano", got.InstanceType)
 }
 
-func TestTerminatedInstanceRecords_AreDisjointFromTheKeysTheyReplace(t *testing.T) {
+func TestTerminatedInstances_SpanBothKeySpaces(t *testing.T) {
 	m := newRecordManager(t)
 
 	require.NoError(t, m.WriteTerminatedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
-	require.NoError(t, m.WriteTerminatedInstanceRecord("i-1", testRecord("i-1")))
 
 	terminated, err := m.ListTerminatedInstances()
 	require.NoError(t, err)
@@ -103,7 +112,14 @@ func TestTerminatedInstanceRecords_AreDisjointFromTheKeysTheyReplace(t *testing.
 	records, err := m.ListTerminatedInstanceRecords()
 	require.NoError(t, err)
 	require.Len(t, records, 1)
-	assert.Equal(t, "m7i.large", records[0].Spec.InstanceType)
+	assert.Equal(t, "t3.nano", records[0].Spec.InstanceType)
+
+	require.NoError(t, m.DeleteTerminatedInstanceRecord("i-1"))
+
+	got, err := m.LoadTerminatedInstance("i-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "t3.nano", got.InstanceType)
 }
 
 // The two buckets are separate stores over the same prefix, so a record in one

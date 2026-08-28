@@ -1,12 +1,23 @@
 import type { GuardrailSummary, GuardrailTopic } from "@aws-sdk/client-bedrock"
 import { useSuspenseQuery } from "@tanstack/react-query"
+import { Link, useNavigate } from "@tanstack/react-router"
+import { Pencil, Trash2 } from "lucide-react"
+import { useState } from "react"
 
 import { BackLink } from "@/components/back-link"
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
+import { Button, buttonVariants } from "@/components/ui/button"
+import { Field, FieldTitle } from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
 import { formatDateTime } from "@/lib/utils"
+import {
+  useCreateGuardrailVersion,
+  useDeleteGuardrail,
+} from "@/mutations/bedrock"
 import {
   guardrailQueryOptions,
   guardrailVersionsQueryOptions,
@@ -48,16 +59,90 @@ function VersionRow({ version }: { version: GuardrailSummary }) {
   )
 }
 
+// Cuts an immutable snapshot of the current DRAFT. The description is
+// optional, so the field is plain local state rather than a validated form.
+function CreateVersionForm({ guardrailId }: { guardrailId: string }) {
+  const [description, setDescription] = useState("")
+  const createVersion = useCreateGuardrailVersion()
+
+  async function handleCreate() {
+    try {
+      await createVersion.mutateAsync({
+        description: description.length > 0 ? description : undefined,
+        guardrailIdentifier: guardrailId,
+      })
+      setDescription("")
+    } catch {
+      // Surfaced below via createVersion.error
+    }
+  }
+
+  return (
+    <div className="rounded-lg border bg-card p-4">
+      <h2 className="mb-2 font-semibold">Create version</h2>
+      <p className="mb-4 text-sm text-muted-foreground">
+        Snapshots the current DRAFT as a new immutable version.
+      </p>
+      <Field>
+        <FieldTitle>
+          <label htmlFor="version-description">Description</label>
+        </FieldTitle>
+        <Input
+          id="version-description"
+          onChange={(e) => {
+            setDescription(e.target.value)
+          }}
+          placeholder="Optional"
+          value={description}
+        />
+      </Field>
+      <Button
+        className="mt-3"
+        disabled={createVersion.isPending}
+        onClick={() => {
+          void handleCreate()
+        }}
+        size="sm"
+      >
+        {createVersion.isPending ? "Creating…" : "Create version"}
+      </Button>
+      {createVersion.error && (
+        <p className="mt-2 text-sm text-destructive">
+          {createVersion.error.message}
+        </p>
+      )}
+      {createVersion.isSuccess && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          Version {createVersion.data.version} created.
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function GuardrailDetailPage({ guardrailId }: GuardrailDetailPageProps) {
+  const navigate = useNavigate()
+  const [showDelete, setShowDelete] = useState(false)
   const { data: guardrail } = useSuspenseQuery(
     guardrailQueryOptions(guardrailId),
   )
   const { data: versionsData } = useSuspenseQuery(
     guardrailVersionsQueryOptions(guardrailId),
   )
+  const deleteGuardrail = useDeleteGuardrail()
 
   const versions = versionsData.guardrails ?? []
   const deniedTopics = guardrail.topicPolicy?.topics ?? []
+
+  async function handleDelete() {
+    try {
+      await deleteGuardrail.mutateAsync(guardrailId)
+      setShowDelete(false)
+      await navigate({ to: "/bedrock/list-guardrails" })
+    } catch {
+      // Left open so the refusal in the dialog description stays readable.
+    }
+  }
 
   return (
     <>
@@ -65,7 +150,29 @@ export function GuardrailDetailPage({ guardrailId }: GuardrailDetailPageProps) {
 
       <div className="space-y-6">
         <PageHeading
-          actions={<StateBadge state={guardrail.status} />}
+          actions={
+            <div className="flex items-center gap-2">
+              <StateBadge state={guardrail.status} />
+              <Link
+                className={buttonVariants({ size: "sm", variant: "outline" })}
+                params={{ guardrailId }}
+                to="/bedrock/list-guardrails/$guardrailId/edit"
+              >
+                <Pencil className="size-4" />
+                Edit
+              </Link>
+              <Button
+                onClick={() => {
+                  setShowDelete(true)
+                }}
+                size="sm"
+                variant="destructive"
+              >
+                <Trash2 className="size-4" />
+                Delete
+              </Button>
+            </div>
+          }
           subtitle="Guardrail Details"
           title={guardrail.name ?? guardrailId}
         />
@@ -148,11 +255,33 @@ export function GuardrailDetailPage({ guardrailId }: GuardrailDetailPageProps) {
           )}
         </div>
 
+        <CreateVersionForm guardrailId={guardrailId} />
+
         <GuardrailTester
           guardrailId={guardrailId}
           guardrailVersion={guardrail.version ?? "DRAFT"}
         />
       </div>
+
+      <DeleteConfirmationDialog
+        description={
+          <>
+            {`This tears down "${guardrail.name ?? guardrailId}" and all of its versions. It cannot be undone.`}
+            {deleteGuardrail.error && (
+              <span className="mt-2 block text-destructive">
+                {deleteGuardrail.error.message}
+              </span>
+            )}
+          </>
+        }
+        isPending={deleteGuardrail.isPending}
+        onConfirm={() => {
+          void handleDelete()
+        }}
+        onOpenChange={setShowDelete}
+        open={showDelete}
+        title="Delete Guardrail"
+      />
     </>
   )
 }

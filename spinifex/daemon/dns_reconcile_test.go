@@ -33,7 +33,7 @@ func TestDNSWatchSources_OneSourcePerDesiredSetInput(t *testing.T) {
 		filters = append(filters, s.Filter())
 	}
 	assert.ElementsMatch(t, []string{
-		InstanceStatePrefix + "*",
+		InstanceRecordPrefix + "*",
 		handlers_elbv2.KeyPrefixLB + "*",
 		">",
 		">",

@@ -1193,20 +1193,26 @@ func TestHandleEC2StartStoppedInstance_MissingInstanceID(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorMissingParameter, errResp["Code"])
 }
 
+// Starting an instance that is not stopped is IncorrectInstanceState rather
+// than NotFound, which is the distinction a caller retries on.
+//
+// The instance is put in the vmMgr and nowhere else on purpose. Writing a
+// running instance through WriteStoppedInstance no longer constructs this: one
+// key holds an instance for its whole life, so that write stamps the state it
+// means instead of storing a record the listing would then decline to find.
+// What is left is the race the taxonomy was written for — the stopped record is
+// gone because a claim already started the instance here.
 func TestHandleEC2StartStoppedInstance_NotStoppedState(t *testing.T) {
 	natsURL := sharedJSNATSURL
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	// Write an instance in running state to shared KV
-	runningVM := &vm.VM{
+	daemon.vmMgr.Insert(&vm.VM{
 		ID:           "i-running-shared",
 		Status:       vm.StateRunning,
 		InstanceType: getTestInstanceType(t),
 		AccountID:    testAccountID,
-	}
-	err := daemon.jsManager.WriteStoppedInstance(runningVM.ID, runningVM)
-	require.NoError(t, err)
+	})
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.start", "spinifex-workers", asMsgHandler(daemon.handleEC2StartStoppedInstance))
 	require.NoError(t, err)
@@ -1220,9 +1226,6 @@ func TestHandleEC2StartStoppedInstance_NotStoppedState(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, errResp["Code"])
-
-	// Cleanup
-	_ = daemon.jsManager.DeleteStoppedInstance(runningVM.ID)
 }
 
 // --- handleEC2DescribeStoppedInstances tests ---

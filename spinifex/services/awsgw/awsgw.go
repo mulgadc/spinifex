@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
@@ -29,9 +30,12 @@ import (
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	toml "github.com/pelletier/go-toml/v2"
@@ -548,11 +552,7 @@ func launchService(config *config.ClusterConfig) error {
 	// terminations free quota. Started only when quotas are enabled so default-off
 	// gateways spin no ticker.
 	if quotaCfg.Enabled {
-		// Sweep against the configured node total, not the live-active count: a
-		// node that is down must make the sweep incomplete so reconcile leaves
-		// the counter alone rather than lowering it from a partial view.
-		expectedNodes := func() int { return len(config.Nodes) }
-		go runQuotaReconcile(janitorCtx, gw.Quota, natsConn, activeAccountIDs(iamService), expectedNodes)
+		go runQuotaReconcile(janitorCtx, gw.Quota, natsConn, js, activeAccountIDs(iamService), len(config.Nodes))
 	}
 
 	// Bedrock RPM enforcement is local and immediate (never gated on
@@ -593,37 +593,60 @@ func launchService(config *config.ClusterConfig) error {
 	return nil
 }
 
-// runQuotaReconcile drives the per-account vCPU reconcile: a startup pass plus a
-// ReconcileInterval ticker, each guarded by the dedicated quota reconcile leader
-// lock so exactly one gateway sweeps at a time across a multi-gateway deployment.
-// The lock is distinct from vpcd's network-reconcile lock so the two loops never
-// block each other. It runs until ctx is cancelled.
-func runQuotaReconcile(ctx context.Context, quota *handlers_quota.Service, natsConn *nats.Conn, accounts handlers_quota.AccountLister, expectedNodes func() int) {
+// runQuotaReconcile drives the per-account vCPU reconcile off changes to the
+// instance record space rather than a ticker: a change to one instance costs
+// that one account's recompute, and the resync sweeps every account as the
+// backstop. Each pass is guarded by the dedicated quota reconcile leader lock
+// so exactly one gateway sweeps at a time across a multi-gateway deployment.
+// The lock is distinct from vpcd's network-reconcile lock so the two loops
+// never block each other. It runs until ctx is cancelled.
+func runQuotaReconcile(ctx context.Context, quota *handlers_quota.Service, natsConn *nats.Conn,
+	js jetstream.JetStream, accounts handlers_quota.AccountLister, replicas int) {
 	holder, _ := os.Hostname()
-	list := handlers_quota.NATSInstanceLister(natsConn, expectedNodes)
+	cfg := kvstore.Config{Name: daemon.InstanceStateBucket, History: 1, Replicas: replicas}
+	list := handlers_quota.RecordVCPULister(
+		kvstore.New[vm.InstanceRecord](js, cfg), daemon.InstanceRecordPrefix)
 
-	runPass := func() {
+	// Leadership is taken per pass rather than held, matching the other
+	// reconcile loops: the lock keeps two gateways off the same counters, it is
+	// not what keeps this loop alive.
+	underLeader := func(run func() error) error {
 		release, elected := reconcile.AcquireLeader(ctx, natsConn, handlers_quota.KVBucketQuotaReconcile, holder)
 		if !elected {
-			return
+			return nil
 		}
 		defer release()
-		if err := quota.Reconcile(ctx, accounts, list); err != nil {
-			slog.Warn("quota reconcile pass failed", "err", err)
-		}
+		return run()
 	}
 
-	runPass()
-	ticker := time.NewTicker(handlers_quota.ReconcileInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			runPass()
-		}
+	reconciler.Run(ctx, reconciler.Config{
+		Name:    "quota",
+		Sources: []reconciler.Source{reconciler.Fixed(kvstore.NewBucket(js, cfg), daemon.InstanceRecordPrefix+"*")},
+		Reconcile: func(ctx context.Context) error {
+			return underLeader(func() error { return quota.Reconcile(ctx, accounts, list) })
+		},
+		ReconcileKey: func(ctx context.Context, accountID string) error {
+			return underLeader(func() error { return quota.ReconcileAccount(ctx, accountID, list) })
+		},
+		KeyFor: quotaKeyFor,
+		Resync: handlers_quota.ReconcileInterval,
+	})
+}
+
+// quotaKeyFor maps an instance record update onto the account whose counter it
+// dirties, which is quota's unit of work: fifty instances changing in one
+// account are one recompute. A delete carries no value to read the account
+// from, so it reports ok=false and the loop falls back to a whole-set pass —
+// which is also the pass that lowers the counter for the instance that went.
+func quotaKeyFor(entry jetstream.KeyValueEntry) ([]string, bool) {
+	if entry.Operation() != jetstream.KeyValuePut {
+		return nil, false
 	}
+	accountID, ok := handlers_quota.AccountForRecord(entry.Value())
+	if !ok {
+		return nil, false
+	}
+	return []string{accountID}, true
 }
 
 // accountLister is the slice of IAMService the lifecycle sweeper needs.

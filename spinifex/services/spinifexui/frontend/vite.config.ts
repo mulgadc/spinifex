@@ -25,13 +25,6 @@ export default defineConfig(({ mode }) => ({
   build: {
     target: "es2023",
     chunkSizeWarningLimit: 1500,
-    rolldownOptions: {
-      output: {
-        entryFileNames: "assets/[name].js",
-        chunkFileNames: "assets/[name].js",
-        assetFileNames: "assets/[name].[ext]",
-      },
-    },
   },
   plugins: [
     basicSsl(),

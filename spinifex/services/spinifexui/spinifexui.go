@@ -167,6 +167,54 @@ func (svc *Service) Reload() error {
 }
 
 // launchService starts the HTTP server.
+// newSPAHandler serves the embedded build, falling back to index.html so the
+// router can resolve client-side paths.
+func newSPAHandler(contentFS fs.FS) http.HandlerFunc {
+	fileServer := http.FileServer(http.FS(contentFS))
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			path = "index.html"
+		}
+
+		file, err := contentFS.Open(path)
+		if err == nil {
+			_ = file.Close()
+			// Asset filenames are content-hashed, so the action names the branch
+			// rather than the path — one series per build otherwise.
+			otelsetup.SetRequestAction(r.Context(), "ui.static")
+			w.Header().Set("Cache-Control", assetCacheControl(path))
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		otelsetup.SetRequestAction(r.Context(), "ui.spa")
+		w.Header().Set("Cache-Control", "no-cache")
+		indexContent, err := fs.ReadFile(contentFS, "index.html")
+		if err != nil {
+			http.Error(w, "index.html not found", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if _, err := w.Write(indexContent); err != nil {
+			slog.Error("Failed to write index.html response", "error", err)
+		}
+	}
+}
+
+// embed.FS reports a zero ModTime and FileServer sets no ETag, so a revalidated
+// response has no validator to answer 304 with. The content hash under assets/
+// is that validator: the name addresses one build, so it can be cached forever.
+// Everything else is revalidated, index.html above all — it is what points at
+// the current build's hashed names.
+func assetCacheControl(path string) string {
+	if strings.HasPrefix(path, "assets/") {
+		return "public, max-age=31536000, immutable"
+	}
+	return "no-cache"
+}
+
 func (svc *Service) launchService() error {
 	// Strip the "frontend/dist" prefix from embedded filesystem
 	contentFS, err := fs.Sub(distFS, "frontend/dist")
@@ -194,44 +242,7 @@ func (svc *Service) launchService() error {
 		return fmt.Errorf("proxy transport: %w", err)
 	}
 
-	// Serve static files from embedded filesystem
-	fileServer := http.FileServer(http.FS(contentFS))
-
-	// SPA handler: try to serve the file, fallback to index.html
-	spaHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Clean the path
-		path := strings.TrimPrefix(r.URL.Path, "/")
-		if path == "" {
-			path = "index.html"
-		}
-
-		// Check if the requested path is a file that exists in embedded FS
-		file, err := contentFS.Open(path)
-		if err == nil {
-			_ = file.Close()
-			// Asset filenames are content-hashed, so the action names the branch
-			// rather than the path — one series per build otherwise.
-			otelsetup.SetRequestAction(r.Context(), "ui.static")
-			// Use no-cache to force revalidation; http.FileServer sets ETags
-			// so browsers will get 304 Not Modified when files haven't changed
-			w.Header().Set("Cache-Control", "no-cache")
-			fileServer.ServeHTTP(w, r)
-			return
-		}
-
-		// File doesn't exist, serve index.html for SPA routing
-		otelsetup.SetRequestAction(r.Context(), "ui.spa")
-		w.Header().Set("Cache-Control", "no-cache")
-		indexContent, err := fs.ReadFile(contentFS, "index.html")
-		if err != nil {
-			http.Error(w, "index.html not found", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if _, err := w.Write(indexContent); err != nil {
-			slog.Error("Failed to write index.html response", "error", err)
-		}
-	})
+	spaHandler := newSPAHandler(contentFS)
 
 	mux := http.NewServeMux()
 

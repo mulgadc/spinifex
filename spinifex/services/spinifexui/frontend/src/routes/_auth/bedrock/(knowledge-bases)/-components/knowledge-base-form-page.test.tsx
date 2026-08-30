@@ -68,6 +68,13 @@ describe("KnowledgeBaseFormPage", () => {
     ).toBeInTheDocument()
   })
 
+  it("notes that data sources are added after the knowledge base is created", () => {
+    renderCreate()
+    expect(
+      screen.getByText(/add one or more S3 data sources to it/),
+    ).toBeInTheDocument()
+  })
+
   it("only offers models with an EMBEDDING output modality", async () => {
     const user = userEvent.setup()
     renderCreate()

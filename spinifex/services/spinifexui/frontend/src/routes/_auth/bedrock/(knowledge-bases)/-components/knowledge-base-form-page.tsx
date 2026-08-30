@@ -71,6 +71,10 @@ export function KnowledgeBaseFormPage() {
         Back to knowledge bases
       </BackLink>
       <PageHeading title="Create Knowledge Base" />
+      <FieldDescription className="mb-6 max-w-4xl">
+        After the knowledge base is created, add one or more S3 data sources to
+        it from its detail page, then run an ingestion job to load them.
+      </FieldDescription>
 
       {createKnowledgeBase.error && (
         <ErrorBanner

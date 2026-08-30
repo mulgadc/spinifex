@@ -44,6 +44,10 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
 	}
 
+	if err := validatePermissionsBoundary(input.PermissionsBoundary); err != nil {
+		return nil, err
+	}
+
 	path := "/"
 	if input.Path != nil {
 		path = *input.Path

@@ -91,6 +91,46 @@ func TestCreateUser_Duplicate(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMEntityAlreadyExists)
 }
 
+func TestCreateUser_PermissionsBoundarySet(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName:            aws.String("boundeduser"),
+		PermissionsBoundary: aws.String("arn:aws:iam::" + testAccountID + ":policy/deny-all"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
+	assert.Contains(t, err.Error(), "PermissionsBoundary")
+
+	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{UserName: aws.String("boundeduser")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestCreateUser_PermissionsBoundaryAbsent(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	tests := []struct {
+		name     string
+		userName string
+		boundary *string
+	}{
+		{name: "nil", userName: "nilboundary", boundary: nil},
+		{name: "empty string", userName: "emptyboundary", boundary: aws.String("")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+				UserName:            aws.String(tt.userName),
+				PermissionsBoundary: tt.boundary,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.userName, *out.User.UserName)
+		})
+	}
+}
+
 func TestGetUser(t *testing.T) {
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "getuser")

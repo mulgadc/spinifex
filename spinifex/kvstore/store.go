@@ -163,6 +163,66 @@ func (s *Store[T]) List(ctx context.Context, prefix string) ([]T, error) {
 	return out, nil
 }
 
+// Item is one record from a Snapshot, carrying the revision it was read at so
+// the caller can CAS against it.
+type Item[T any] struct {
+	Key      string
+	Value    T
+	Revision uint64
+}
+
+// Snapshot reads every record matching filter in one ordered pass and reports
+// the highest stream sequence it saw. Filter takes NATS subject wildcards.
+//
+// One consumer answers the whole read, so the keys and the values are
+// mutually consistent. List is not: it enumerates keys through a consumer and
+// then fetches each value through a direct get, and each of those gets is
+// routed independently, so no two of them need come from the same replica.
+//
+// A deleted key is not returned, but its revision still counts towards
+// highWater. That is deliberate: the mark says how far this reader got
+// through the stream, not what survives in it, and a delete is how far a
+// reader gets when the newest thing that happened was a delete.
+func (s *Store[T]) Snapshot(ctx context.Context, filter string) (items []Item[T], highWater uint64, err error) {
+	// Pure read, so it is safe for withKV to run it twice; the results are
+	// reset on entry rather than appended to across a retry.
+	err = s.withKV(ctx, func(kv jetstream.KeyValue) error {
+		items, highWater = nil, 0
+
+		watcher, err := kv.Watch(ctx, filter)
+		if err != nil {
+			return fmt.Errorf("kvstore: snapshot %s %s: %w", s.cfg.Name, filter, err)
+		}
+		defer func() { _ = watcher.Stop() }()
+
+		for entry := range watcher.Updates() {
+			// nil marks the end of the existing values, which is the whole
+			// snapshot: anything after it is a live update, not state.
+			if entry == nil {
+				return nil
+			}
+			if entry.Revision() > highWater {
+				highWater = entry.Revision()
+			}
+			if entry.Operation() != jetstream.KeyValuePut {
+				continue
+			}
+			var v T
+			if err := json.Unmarshal(entry.Value(), &v); err != nil {
+				return fmt.Errorf("kvstore: decode %s: %w", entry.Key(), err)
+			}
+			items = append(items, Item[T]{Key: entry.Key(), Value: v, Revision: entry.Revision()})
+		}
+		// The channel closed without the marker, so the watcher died mid-pass
+		// and what was collected is a partial view rather than a snapshot.
+		return fmt.Errorf("kvstore: snapshot %s %s: watcher closed early", s.cfg.Name, filter)
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return items, highWater, nil
+}
+
 // DeletePrefix removes every key carrying the given prefix. An empty prefix
 // purges the bucket. Idempotent, like Delete.
 func (s *Store[T]) DeletePrefix(ctx context.Context, prefix string) error {

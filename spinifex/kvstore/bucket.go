@@ -5,6 +5,7 @@ package kvstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -102,6 +103,69 @@ func (b *Bucket) KV(ctx context.Context) (jetstream.KeyValue, error) {
 	}
 	b.kv = kv
 	return kv, nil
+}
+
+// jsAPIStreamMsgGet is the non-direct stream read, spelled out rather than
+// reached through nats.go. Every convenience wrapper switches to
+// $JS.API.DIRECT.GET on a stream with AllowDirect, and KV buckets always
+// have it. The default API prefix holds because every caller builds its
+// client with plain jetstream.New, so no domain is in play.
+const jsAPIStreamMsgGet = "$JS.API.STREAM.MSG.GET.KV_%s"
+
+// jsErrCodeMessageNotFound is returned for a filter matching nothing, which is
+// an empty prefix rather than a failure.
+const jsErrCodeMessageNotFound = 10037
+
+// LastSequence reports the stream sequence of the newest message matching
+// filter, or zero when nothing matches. A tombstone is a message, so the
+// sequence follows the stream rather than the surviving key set.
+//
+// The stream leader answers, which is the entire point of the hand-rolled
+// request: nats.go's GetLastMsgForSubject would serve this from any replica,
+// so a reader asking "am I behind?" could be answered by a replica that is
+// equally behind.
+func (b *Bucket) LastSequence(ctx context.Context, filter string) (uint64, error) {
+	b.mu.Lock()
+	js := b.js
+	b.mu.Unlock()
+	if js == nil {
+		if b.cfg.Missing == "" {
+			return 0, errors.New("kvstore: no JetStream client configured")
+		}
+		return 0, errors.New(b.cfg.Missing)
+	}
+
+	req, err := json.Marshal(map[string]string{"last_by_subj": "$KV." + b.cfg.Name + "." + filter})
+	if err != nil {
+		return 0, fmt.Errorf("kvstore: encode last-sequence request for %s: %w", b.cfg.Name, err)
+	}
+	msg, err := js.Conn().RequestWithContext(ctx, fmt.Sprintf(jsAPIStreamMsgGet, b.cfg.Name), req)
+	if err != nil {
+		return 0, fmt.Errorf("kvstore: last sequence %s %s: %w", b.cfg.Name, filter, err)
+	}
+
+	var resp struct {
+		Message *struct {
+			Sequence uint64 `json:"seq"`
+		} `json:"message"`
+		Error *struct {
+			ErrCode     int    `json:"err_code"`
+			Description string `json:"description"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(msg.Data, &resp); err != nil {
+		return 0, fmt.Errorf("kvstore: decode last sequence %s: %w", b.cfg.Name, err)
+	}
+	if resp.Error != nil {
+		if resp.Error.ErrCode == jsErrCodeMessageNotFound {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("kvstore: last sequence %s %s: %s", b.cfg.Name, filter, resp.Error.Description)
+	}
+	if resp.Message == nil {
+		return 0, fmt.Errorf("kvstore: last sequence %s %s: empty response", b.cfg.Name, filter)
+	}
+	return resp.Message.Sequence, nil
 }
 
 // Reopen discards the memoised handle and resolves the bucket again, for a

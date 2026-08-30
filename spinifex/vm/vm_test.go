@@ -57,6 +57,7 @@ func TestExecute(t *testing.T) {
 	assert.NotNil(t, cmd)
 
 	expectedArgs := []string{
+		"-name", "guest=test-vm,debug-threads=on",
 		"-smp", "2",
 		"-m", "1024",
 		"-drive", "file=disk.img,format=qcow2",
@@ -643,4 +644,33 @@ func TestExecute_FullConfig(t *testing.T) {
 	assert.Equal(t, "chardev:console0", argValue(args, "-serial"))
 	assert.Equal(t, "iothread,id=io0", argValue(args, "-object"))
 	assert.Equal(t, "user,id=net0", argValue(args, "-netdev"))
+}
+
+// debug-threads=on is what makes host-side per-thread profiling readable: QEMU
+// names each thread after its role instead of leaving them all qemu-system-x86.
+func TestExecute_NameCarriesDebugThreads(t *testing.T) {
+	cfg := Config{
+		Name:         "i-0123456789abcdef0",
+		CPUCount:     2,
+		Memory:       512,
+		Architecture: "x86_64",
+		Drives:       []Drive{{File: "disk.img", Format: "raw"}},
+	}
+
+	cmd, err := cfg.Execute()
+	assert.NoError(t, err)
+	assert.Equal(t, "guest=i-0123456789abcdef0,debug-threads=on", argValue(cmd.Args[1:], "-name"))
+}
+
+func TestExecute_NoNameEmitsNoNameArg(t *testing.T) {
+	cfg := Config{
+		CPUCount:     2,
+		Memory:       512,
+		Architecture: "x86_64",
+		Drives:       []Drive{{File: "disk.img", Format: "raw"}},
+	}
+
+	cmd, err := cfg.Execute()
+	assert.NoError(t, err)
+	assert.False(t, argExists(cmd.Args[1:], "-name"))
 }

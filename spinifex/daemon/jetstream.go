@@ -23,8 +23,17 @@ const (
 	InstanceStateBucket = "spinifex-instance-state"
 	// ClusterStateBucket is the name of the KV bucket for cluster state (heartbeats, shutdown markers, service maps).
 	ClusterStateBucket = "spinifex-cluster-state"
-	// InstanceStatePrefix is the key prefix for per-node instance state entries.
+	// InstanceStatePrefix is the key prefix for the per-node running-set blobs
+	// the record space replaces. Nothing writes it after the cutover; the
+	// migration reads it and a rolled-back node still finds what it left.
 	InstanceStatePrefix = "node."
+	// NodePresencePrefix is the key prefix for a node's presence marker.
+	//
+	// Deliberately not InstanceStatePrefix. The marker holds no instances, so
+	// writing it there would empty the blob it shares a key with, and a node
+	// rolled back to the release before the cutover reads that blob to find out
+	// what it was running. Frozen means not written, not written empty.
+	NodePresencePrefix = "nodepresence."
 	// StoppedInstancePrefix is the key prefix for stopped instances in shared KV.
 	StoppedInstancePrefix = "instance."
 	// TerminatedInstanceBucket is the name of the KV bucket for terminated instances (auto-expiry via TTL).
@@ -32,10 +41,17 @@ const (
 	// TerminatedInstancePrefix is the key prefix for terminated instances.
 	TerminatedInstancePrefix = "terminated."
 
-	// Schema versions for daemon KV buckets.
-	InstanceStateBucketVersion      = 1
+	// Schema versions for daemon KV buckets. Both instance buckets copied their
+	// per-instance keys onto the record space at 2; instance-state took the node
+	// blobs at 3; both re-keyed that space from "i/" to "i." next. See
+	// instance_records_migrate.go.
+	//
+	// instance-state 5 is the cutover: the record space became the only copy.
+	// The bump is also the compatibility stamp — a build that predates it stops
+	// on a bucket stamped 5 rather than reading the keys it no longer owns.
+	InstanceStateBucketVersion      = 5
 	ClusterStateBucketVersion       = 1
-	TerminatedInstanceBucketVersion = 1
+	TerminatedInstanceBucketVersion = 3
 )
 
 // KVSyncObserver receives best-effort KV sync outcomes from
@@ -49,19 +65,25 @@ type KVSyncObserver interface {
 
 // JetStreamManager manages JetStream KV store operations for instance state.
 //
-// The instance-state bucket carries two record types, so it is one kvstore
-// bucket with two typed views over it: they share its handle, and a recovery
-// driven through either repairs both. A node's running set is stored as
-// LocalState, the same envelope the local state file uses.
+// The instance-state bucket carries several record types, so it is one kvstore
+// bucket with a typed view per type: they share its handle, and a recovery
+// driven through any of them repairs all of them. A node's running set is
+// stored as LocalState, the same envelope the local state file uses.
 type JetStreamManager struct {
 	js        jetstream.JetStream
 	stateB    *kvstore.Bucket            // spinifex-instance-state
-	nodeState *kvstore.Store[LocalState] // node.<id> records
-	stopped   *kvstore.Store[vm.VM]      // instance.<id> records
+	nodeState *kvstore.Store[LocalState] // nodepresence.<id> markers
+	stopped   *kvstore.Store[vm.VM]      // instance.<id>, frozen: drained, never written
 	term      *kvstore.Store[vm.VM]      // spinifex-terminated-instances
-	clusterKV jetstream.KeyValue         // spinifex-cluster-state
-	replicas  int
-	obs       KVSyncObserver
+	// The per-resource key space the three views above are moving onto. Each
+	// is a third view over a bucket one of them already holds, so the two
+	// spaces share a handle and a recovery driven through either repairs both.
+	records     *kvstore.Store[vm.InstanceRecord] // i.<id>, instance-state bucket
+	termRecords *kvstore.Store[vm.InstanceRecord] // i.<id>, terminated bucket
+	clusterKV   jetstream.KeyValue                // spinifex-cluster-state
+	replicas    int
+	obs         KVSyncObserver
+	running     runningSetState
 }
 
 // checkNodeStateVersion reports whether a node record read from KV is one this
@@ -141,12 +163,13 @@ func terminatedInstanceConfig(replicas int) kvstore.Config {
 	}
 }
 
-// setInstanceStateBucket points the two typed views at b. They share its
-// handle, so a recovery driven through either repairs both.
+// setInstanceStateBucket points the typed views at b. They share its handle,
+// so a recovery driven through any of them repairs all of them.
 func (m *JetStreamManager) setInstanceStateBucket(b *kvstore.Bucket) {
 	m.stateB = b
 	m.nodeState = kvstore.On[LocalState](b)
 	m.stopped = kvstore.On[vm.VM](b)
+	m.records = kvstore.On[vm.InstanceRecord](b)
 }
 
 // InitKVBucket initializes the KV bucket, creating it if it doesn't exist.
@@ -194,6 +217,9 @@ func (m *JetStreamManager) InitClusterStateBucket() error {
 // JetStream automatically purges keys after 1 hour, matching AWS behavior for terminated instances.
 func (m *JetStreamManager) InitTerminatedInstanceBucket() error {
 	m.term = kvstore.New[vm.VM](m.js, terminatedInstanceConfig(m.replicas))
+	// A second view over the same handle, for the same reason the instance-state
+	// bucket carries several.
+	m.termRecords = kvstore.On[vm.InstanceRecord](m.term.Bucket)
 	_, err := m.term.KV(context.Background())
 	return err
 }
@@ -393,30 +419,35 @@ func (m *JetStreamManager) WriteServiceManifest(nodeID string, services []string
 	return err
 }
 
-// WriteState writes the instance state to the KV store for the given node.
-// vms must be a snapshot owned by the caller — JetStreamManager does not lock.
-func (m *JetStreamManager) WriteState(nodeID string, vms map[string]*vm.VM) error {
+// WriteNodeMarker records that this node has cluster state at all, without
+// recording what it is.
+//
+// Reads need it because "this node has no instances" and "there is no cluster
+// record of this node" are different answers and only one of them may replace a
+// node's local state. Scanning the records cannot tell them apart — both scan
+// empty — and restore adopts the cluster's set wholesale when it believes there
+// is one, so conflating them drops every instance on a node whose records are
+// briefly unreadable.
+//
+// The marker carries no instances, so a state change no longer rewrites the
+// node's whole set. That is the cost the split exists to remove; keeping an
+// empty envelope keeps the answer and not the cost.
+func (m *JetStreamManager) WriteNodeMarker(nodeID string) error {
 	if m.nodeState == nil {
 		return errors.New("KV bucket not initialized")
 	}
 
-	key := InstanceStatePrefix + nodeID
-	record := LocalState{SchemaVersion: LocalStateSchemaVersion, VMS: vms}
-	if err := m.nodeState.Set(context.Background(), key, &record); err != nil {
-		return err
-	}
-
-	slog.Debug("Wrote state to JetStream KV", "key", key, "instances", len(vms))
-	return nil
+	key := NodePresencePrefix + nodeID
+	marker := LocalState{SchemaVersion: LocalStateSchemaVersion}
+	return m.nodeState.Set(context.Background(), key, &marker)
 }
 
-// WriteStateBytesBestEffort attempts to push pre-marshalled instance state to KV
-// with a deadline. On timeout or error, it logs a warning and returns — never
-// blocks the caller past `timeout` and never returns an error. Used when the
-// local state file is the source of truth and KV is a best-effort cache; hot
-// paths marshal under a short-lived lock and commit lock-free.
-func (m *JetStreamManager) WriteStateBytesBestEffort(nodeID string, jsonData []byte, timeout time.Duration) {
-	if m.stateB == nil {
+// WriteNodeMarkerBestEffort writes this node's presence marker with a deadline.
+// On timeout or error it logs and returns — never blocks the caller past
+// timeout and never returns an error. The local state file is the source of
+// truth; KV is the cluster's view of it, and the next state change retries.
+func (m *JetStreamManager) WriteNodeMarkerBestEffort(nodeID string, timeout time.Duration) {
+	if m.nodeState == nil {
 		slog.Debug("KV bucket not initialized, skipping cluster sync", "node", nodeID)
 		return
 	}
@@ -424,15 +455,9 @@ func (m *JetStreamManager) WriteStateBytesBestEffort(nodeID string, jsonData []b
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	key := InstanceStatePrefix + nodeID
-	// Pre-marshalled bytes, so this goes to the raw handle rather than through
-	// a typed view. Best-effort by contract: a failure is logged, not recovered
-	// from here, and the next typed write repairs the bucket for both.
-	kv, err := m.stateB.KV(ctx)
-	if err == nil {
-		_, err = kv.Put(ctx, key, jsonData)
-	}
-	if err != nil {
+	key := NodePresencePrefix + nodeID
+	marker := LocalState{SchemaVersion: LocalStateSchemaVersion}
+	if err := m.nodeState.Set(ctx, key, &marker); err != nil {
 		if m.obs != nil {
 			m.obs.RecordKVSyncFailure(InstanceStateBucket, err)
 		}
@@ -446,29 +471,22 @@ func (m *JetStreamManager) WriteStateBytesBestEffort(nodeID string, jsonData []b
 	if m.obs != nil {
 		m.obs.RecordKVSyncSuccess(InstanceStateBucket)
 	}
-	slog.Debug("Wrote state to KV (best-effort)", "key", key, "bytes", len(jsonData))
+	slog.Debug("Wrote node marker to KV (best-effort)", "key", key)
 }
 
-// marshalInstanceState produces the JSON wire form of vms, for the best-effort
-// path that marshals under the caller's lock and commits lock-free. The KV
-// record and the local state file are the same envelope, so this is the same
-// marshaller: the two cannot drift.
-func marshalInstanceState(vms map[string]*vm.VM) ([]byte, error) {
-	return MarshalLocalState(vms)
-}
-
-// LoadState loads the instance state from the KV store for the given node.
-// The bool reports whether a record exists at all. A node that has never
-// written state and a node whose record was lost both read as empty, and a
-// caller that would drop instances on the strength of that must tell them
-// apart.
+// LoadState loads the instances the given node owns, from one record each.
+//
+// The bool reports whether the cluster has a record of this node at all, and it
+// is the marker's answer rather than the records'. A node with no instances and
+// a node whose records could not be read both scan empty, and only the first of
+// them may replace what the node has locally.
 func (m *JetStreamManager) LoadState(nodeID string) (map[string]*vm.VM, bool, error) {
 	if m.nodeState == nil {
 		return nil, false, errors.New("KV bucket not initialized")
 	}
 
-	key := InstanceStatePrefix + nodeID
-	state, _, err := m.nodeState.Get(context.Background(), key)
+	key := NodePresencePrefix + nodeID
+	marker, _, err := m.nodeState.Get(context.Background(), key)
 	if err != nil {
 		if errors.Is(err, kvstore.ErrNotFound) {
 			slog.Debug("No existing state in JetStream KV", "key", key)
@@ -476,15 +494,17 @@ func (m *JetStreamManager) LoadState(nodeID string) (map[string]*vm.VM, bool, er
 		}
 		return nil, false, err
 	}
-	if err := checkNodeStateVersion(key, state.SchemaVersion); err != nil {
+	if err := checkNodeStateVersion(key, marker.SchemaVersion); err != nil {
 		return nil, false, err
 	}
-	if state.VMS == nil {
-		state.VMS = make(map[string]*vm.VM)
+
+	vms, err := m.nodeRunningRecords(nodeID)
+	if err != nil {
+		return nil, false, err
 	}
 
-	slog.Debug("Loaded state from JetStream KV", "key", key, "instances", len(state.VMS))
-	return state.VMS, true, nil
+	slog.Debug("Loaded state from JetStream KV", "node", nodeID, "instances", len(vms))
+	return vms, true, nil
 }
 
 // DeleteState removes the instance state from the KV store for the given node.
@@ -493,7 +513,7 @@ func (m *JetStreamManager) DeleteState(nodeID string) error {
 		return errors.New("KV bucket not initialized")
 	}
 
-	key := InstanceStatePrefix + nodeID
+	key := NodePresencePrefix + nodeID
 	if err := m.nodeState.Delete(context.Background(), key); err != nil {
 		return err
 	}
@@ -565,52 +585,54 @@ func (m *JetStreamManager) UpdateReplicas(newReplicas int) error {
 // rather than silently overwriting it out of order. This is the substrate
 // callers that read-modify-write a stopped instance (e.g. tag/attribute
 // mutations) build on.
+//
+// The instance keeps the one key it has held since it was launched. Stopping
+// it rewrites that key rather than moving it, so nothing can observe the
+// instance at neither key or at both.
 func (m *JetStreamManager) WriteStoppedInstance(instanceID string, instance *vm.VM) error {
-	if m.stopped == nil {
+	if m.records == nil {
 		return errors.New("KV bucket not initialized")
 	}
 
-	key := StoppedInstancePrefix + instanceID
-	// Replace rather than Set: this overwrites the record wholesale, and doing
-	// it under CAS is what stops a racing update landing out of order.
-	if err := m.stopped.Replace(context.Background(), key, instance); err != nil {
+	// The write stamps what it means rather than trusting the caller to have.
+	// Membership is a predicate over the record now, so an instance written
+	// here without both fields set would be stored and then not found — and the
+	// caller that forgot is not the one that discovers it.
+	record := instance.Record()
+	record.Status.Status = vm.StateStopped
+	record.Spec.DesiredState = vm.DesiredStopped
+	if err := m.records.Replace(context.Background(), instanceRecordKey(instanceID), record); err != nil {
 		return err
 	}
 
-	slog.Debug("Wrote stopped instance to JetStream KV", "key", key, "instanceId", instanceID)
+	slog.Debug("Wrote stopped instance to JetStream KV", "instanceId", instanceID)
 	return nil
 }
 
 // LoadStoppedInstance loads a stopped instance from the shared KV store.
-// Returns nil, nil if the key does not exist.
+// Returns nil, nil when no record exists, and also when one does but holds an
+// instance that is not stopped: the key is shared with this node's running set,
+// so the record has to be asked what it is.
 func (m *JetStreamManager) LoadStoppedInstance(instanceID string) (*vm.VM, error) {
-	if m.stopped == nil {
+	if m.records == nil {
 		return nil, errors.New("KV bucket not initialized")
 	}
-
-	instance, _, err := m.stopped.Get(context.Background(), StoppedInstancePrefix+instanceID)
-	if err != nil {
-		if errors.Is(err, kvstore.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return instance, nil
+	return loadInstance(m.records, instanceID, operatorStopped)
 }
 
-// DeleteStoppedInstance removes a stopped instance from the shared KV store.
-// It is idempotent — deleting a non-existent key is not an error.
+// DeleteStoppedInstance removes a stopped instance from the shared KV store. It
+// is idempotent — deleting a non-existent key is not an error.
 func (m *JetStreamManager) DeleteStoppedInstance(instanceID string) error {
-	if m.stopped == nil {
+	if m.records == nil {
 		return errors.New("KV bucket not initialized")
 	}
 
-	key := StoppedInstancePrefix + instanceID
-	if err := m.stopped.Delete(context.Background(), key); err != nil {
+	if err := m.records.Delete(context.Background(), instanceRecordKey(instanceID)); err != nil {
 		return err
 	}
+	m.drainFrozenKey(m.stopped, StoppedInstancePrefix+instanceID)
 
-	slog.Debug("Deleted stopped instance from JetStream KV", "key", key)
+	slog.Debug("Deleted stopped instance from JetStream KV", "instanceId", instanceID)
 	return nil
 }
 
@@ -623,22 +645,50 @@ func (m *JetStreamManager) DeleteStoppedInstance(instanceID string) error {
 // racing a forwarded call, two nodes racing the same forwarded call, or a
 // retry after the instance was already claimed) gets vm.ErrStoppedInstanceClaimed
 // instead of a VM and must not proceed to allocate resources or launch qemu.
+//
+// Exclusivity is a compare-and-set on the record rather than a delete of it.
+// A delete was safe while the key held nothing but a stopped instance; the key
+// holds the instance for its whole life now, so deleting to claim it is
+// deleting the instance, and a claimant that fails after winning takes the
+// instance with it.
+//
+// The winner clears DesiredStopped, which is what makes the record no longer
+// claimable. A loser's CAS fails on the revision, re-reads, finds an instance
+// nobody asked to be stopped, and reports the claim lost — so exactly one
+// caller can win, which is the property the delete had.
+//
+// LastNode is left alone. The claimant has not run the instance yet, and the
+// node that last did is the one that should recover it if this launch never
+// happens.
 func (m *JetStreamManager) ClaimStoppedInstance(instanceID string) (*vm.VM, error) {
-	if m.stopped == nil {
+	if m.records == nil {
 		return nil, errors.New("KV bucket not initialized")
 	}
 
-	key := StoppedInstancePrefix + instanceID
-	instance, notFound, err := m.stopped.Claim(context.Background(), key)
+	key := instanceRecordKey(instanceID)
+	record, rev, err := m.records.Get(context.Background(), key)
 	if err != nil {
+		if errors.Is(err, kvstore.ErrNotFound) {
+			return nil, vm.ErrStoppedInstanceClaimed
+		}
 		return nil, err
 	}
-	if notFound {
+	if !operatorStopped(record) {
 		return nil, vm.ErrStoppedInstanceClaimed
 	}
 
-	slog.Debug("Claimed stopped instance from JetStream KV", "key", key, "instanceId", instanceID)
-	return instance, nil
+	claimed := *record
+	claimed.Spec.DesiredState = vm.DesiredRunning
+	if err := m.records.CompareAndSet(context.Background(), key, &claimed, rev); err != nil {
+		if errors.Is(err, kvstore.ErrConflict) {
+			return nil, vm.ErrStoppedInstanceClaimed
+		}
+		return nil, err
+	}
+	m.drainFrozenKey(m.stopped, StoppedInstancePrefix+instanceID)
+
+	slog.Debug("Claimed stopped instance from JetStream KV", "instanceId", instanceID)
+	return vm.VMFromRecord(&claimed), nil
 }
 
 // UpdateStoppedInstance atomically applies mutate to the current KV-stored
@@ -649,19 +699,65 @@ func (m *JetStreamManager) ClaimStoppedInstance(instanceID string) (*vm.VM, erro
 // resurrecting it. Used by tag/attribute mutations that read-modify-write a
 // stopped instance so they cannot race a claim into recreating a stale
 // record. Returns jetstream.ErrKeyNotFound if no record exists.
+//
+// The mutation runs against the record, on the one key the instance has, so
+// there is a single CAS anchor rather than two that can diverge.
 func (m *JetStreamManager) UpdateStoppedInstance(instanceID string, mutate func(*vm.VM)) (*vm.VM, error) {
-	if m.stopped == nil {
+	if m.records == nil {
 		return nil, errors.New("KV bucket not initialized")
 	}
-	return mutateVM(m.stopped, StoppedInstancePrefix+instanceID, mutate)
+	return mutateInstance(m.records, instanceID, operatorStopped, mutate)
 }
 
-// mutateVM applies mutate under the store's CAS loop and returns the committed
-// record. An absent key surfaces as kvstore.ErrNotFound, which is what both
-// StateStore interfaces are written against.
-func mutateVM(store *kvstore.Store[vm.VM], key string, mutate func(*vm.VM)) (*vm.VM, error) {
+// mutateInstance applies mutate to the instance a record holds, under the
+// store's CAS loop, and returns what committed. The callers speak vm.VM and the
+// store speaks records, so the conversion happens inside the loop rather than
+// around it — a retry has to re-read and re-convert, not replay a stale copy.
+//
+// want is checked inside the loop, and a record it rejects is reported absent.
+// The key outlives the set it is in now, so "still stopped" has to be re-tested
+// on the value each attempt reads: a claim that landed between a caller's own
+// load and this write leaves the key there, and without the test the caller's
+// mutation would land on an instance somebody else has already started.
+func mutateInstance(store *kvstore.Store[vm.InstanceRecord], instanceID string,
+	want func(*vm.InstanceRecord) bool, mutate func(*vm.VM)) (*vm.VM, error) {
 	var updated *vm.VM
-	err := store.Mutate(context.Background(), key, func(v *vm.VM) (bool, error) {
+	err := store.Mutate(context.Background(), instanceRecordKey(instanceID),
+		func(record *vm.InstanceRecord) (bool, error) {
+			if want != nil && !want(record) {
+				return false, kvstore.ErrNotFound
+			}
+			instance := vm.VMFromRecord(record)
+			mutate(instance)
+			*record = *instance.Record()
+			updated = instance
+			return true, nil
+		})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+// drainFrozenKey removes the key the record replaced. The old key spaces are
+// frozen rather than deleted at the cutover, so the crossing can be rolled
+// back — but an instance that is gone should not be recoverable, and draining
+// them on the delete path is what stops the frozen space growing forever.
+func (m *JetStreamManager) drainFrozenKey(store *kvstore.Store[vm.VM], key string) {
+	if store == nil {
+		return
+	}
+	if err := store.Delete(context.Background(), key); err != nil {
+		slog.Debug("Could not drain a frozen key", "key", key, "err", err)
+	}
+}
+
+// mutateRecord applies mutate under the store's CAS loop and returns the
+// committed record. An absent key surfaces as kvstore.ErrNotFound, which is what
+// both StateStore interfaces are written against.
+func mutateRecord[T any](store *kvstore.Store[T], key string, mutate func(*T)) (*T, error) {
+	var updated *T
+	err := store.Mutate(context.Background(), key, func(v *T) (bool, error) {
 		mutate(v)
 		updated = v
 		return true, nil
@@ -672,30 +768,33 @@ func mutateVM(store *kvstore.Store[vm.VM], key string, mutate func(*vm.VM)) (*vm
 	return updated, nil
 }
 
-// ListStoppedInstances returns all stopped instances from the shared KV store.
+// ListStoppedInstances returns the stopped instances in the shared KV store.
+// The key space also holds every running instance, so membership is the
+// record's answer rather than the prefix's.
 func (m *JetStreamManager) ListStoppedInstances() ([]*vm.VM, error) {
-	if m.stopped == nil {
+	if m.records == nil {
 		return nil, errors.New("KV bucket not initialized")
 	}
-	return listVMs(m.stopped, StoppedInstancePrefix)
+	return listInstances(m.records, operatorStopped)
 }
 
-// listVMs returns every record under prefix. Unlike the raw scan it replaces it
-// fails on an undecodable record rather than skipping it: both callers feed
-// DescribeInstances, where a silently dropped instance reads as terminated.
-func listVMs(store *kvstore.Store[vm.VM], prefix string) ([]*vm.VM, error) {
+// listRecords returns every record under prefix. Unlike the raw scan it
+// replaces it fails on an undecodable record rather than skipping it: these
+// listings feed DescribeInstances, where a silently dropped instance reads as
+// terminated.
+func listRecords[T any](store *kvstore.Store[T], prefix string) ([]*T, error) {
 	records, err := store.List(context.Background(), prefix)
 	if err != nil {
 		return nil, err
 	}
-	instances := make([]*vm.VM, 0, len(records))
+	out := make([]*T, 0, len(records))
 	for i := range records {
-		instances = append(instances, &records[i])
+		out = append(out, &records[i])
 	}
-	if len(instances) == 0 {
+	if len(out) == 0 {
 		return nil, nil
 	}
-	return instances, nil
+	return out, nil
 }
 
 // WriteTerminatedInstance writes a terminated instance to the terminated KV
@@ -707,16 +806,15 @@ func listVMs(store *kvstore.Store[vm.VM], prefix string) ([]*vm.VM, error) {
 // record instead of replacing it wholesale should use
 // UpdateTerminatedInstance.
 func (m *JetStreamManager) WriteTerminatedInstance(instanceID string, instance *vm.VM) error {
-	if m.term == nil {
+	if m.termRecords == nil {
 		return errors.New("terminated instance KV bucket not initialized")
 	}
 
-	key := TerminatedInstancePrefix + instanceID
-	if err := m.term.Replace(context.Background(), key, instance); err != nil {
+	if err := writeRecord(m.termRecords, instanceID, instance); err != nil {
 		return err
 	}
 
-	slog.Debug("Wrote terminated instance to JetStream KV", "key", key, "instanceId", instanceID)
+	slog.Debug("Wrote terminated instance to JetStream KV", "instanceId", instanceID)
 	return nil
 }
 
@@ -727,48 +825,44 @@ func (m *JetStreamManager) WriteTerminatedInstance(instanceID string, instance *
 // progress without clobbering marks written by a concurrent update to the
 // same record. Returns jetstream.ErrKeyNotFound if no record exists yet.
 func (m *JetStreamManager) UpdateTerminatedInstance(instanceID string, mutate func(*vm.VM)) (*vm.VM, error) {
-	if m.term == nil {
+	if m.termRecords == nil {
 		return nil, errors.New("terminated instance KV bucket not initialized")
 	}
-	return mutateVM(m.term, TerminatedInstancePrefix+instanceID, mutate)
+	// No predicate: the terminated bucket is its own key space, so being in it
+	// is the whole of the membership test.
+	return mutateInstance(m.termRecords, instanceID, nil, mutate)
 }
 
-// ListTerminatedInstances returns all terminated instances from the terminated KV bucket.
+// ListTerminatedInstances returns all terminated instances from the terminated
+// KV bucket. Its key space holds nothing else, so every record is one.
 func (m *JetStreamManager) ListTerminatedInstances() ([]*vm.VM, error) {
-	if m.term == nil {
+	if m.termRecords == nil {
 		return nil, errors.New("terminated instance KV bucket not initialized")
 	}
-	return listVMs(m.term, TerminatedInstancePrefix)
+	return listInstances(m.termRecords, nil)
 }
 
-// DeleteTerminatedInstance removes a terminated instance from the terminated KV bucket.
+// DeleteTerminatedInstance removes a terminated instance from the terminated KV
+// bucket.
 func (m *JetStreamManager) DeleteTerminatedInstance(instanceID string) error {
-	if m.term == nil {
+	if m.termRecords == nil {
 		return errors.New("terminated instance KV bucket not initialized")
 	}
 
-	key := TerminatedInstancePrefix + instanceID
-	if err := m.term.Delete(context.Background(), key); err != nil {
+	if err := m.termRecords.Delete(context.Background(), instanceRecordKey(instanceID)); err != nil {
 		return err
 	}
+	m.drainFrozenKey(m.term, TerminatedInstancePrefix+instanceID)
 
-	slog.Debug("Deleted terminated instance from JetStream KV", "key", key)
+	slog.Debug("Deleted terminated instance from JetStream KV", "instanceId", instanceID)
 	return nil
 }
 
-// LoadTerminatedInstance loads a single terminated instance from the terminated KV bucket.
-// Returns nil, nil if the key does not exist.
+// LoadTerminatedInstance loads a single terminated instance from the terminated
+// KV bucket. Returns nil, nil if the instance does not exist.
 func (m *JetStreamManager) LoadTerminatedInstance(instanceID string) (*vm.VM, error) {
-	if m.term == nil {
+	if m.termRecords == nil {
 		return nil, errors.New("terminated instance KV bucket not initialized")
 	}
-
-	instance, _, err := m.term.Get(context.Background(), TerminatedInstancePrefix+instanceID)
-	if err != nil {
-		if errors.Is(err, kvstore.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return instance, nil
+	return loadInstance(m.termRecords, instanceID, nil)
 }

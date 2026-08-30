@@ -7,9 +7,12 @@ package gateway_bedrock
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"syscall"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -353,4 +356,82 @@ func TestEmbeddingsProvider_CountTokens_ResolverMissReturnsNotOK(t *testing.T) {
 	count, ok := p.CountTokens(context.Background(), DefaultEmbeddingModel, "hello world")
 	assert.False(t, ok)
 	assert.Zero(t, count)
+}
+
+// countingErrTransport fails the first failures RoundTrip calls with err,
+// then delegates to next -- lets a test control exactly how many transport
+// failures embedBatch's retry must absorb before (or whether) it succeeds.
+type countingErrTransport struct {
+	failures int
+	err      error
+	next     http.RoundTripper
+	calls    int
+}
+
+func (t *countingErrTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.calls++
+	if t.calls <= t.failures {
+		return nil, t.err
+	}
+	return t.next.RoundTrip(req)
+}
+
+func TestEmbeddingsProvider_EmbedBatch_RetriesTransportErrorThenSucceeds(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[0.1]}],"model":"nomic-embed-text-v1.5","usage":{"prompt_tokens":1,"total_tokens":1}}`))
+	}))
+	defer ts.Close()
+
+	transport := &countingErrTransport{
+		failures: embedTransportRetries, // fail every attempt but the last
+		err:      &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+		next:     ts.Client().Transport,
+	}
+
+	modelID := DefaultEmbeddingModel
+	p := newEmbeddingsProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
+	p.httpClient = &http.Client{Transport: transport}
+
+	vectors, err := p.Embed(context.Background(), modelID, []string{"hello"})
+	require.NoError(t, err)
+	require.Len(t, vectors, 1)
+	assert.Equal(t, embedTransportRetries+1, transport.calls,
+		"must retry the connection-refused transport error up to the cap before succeeding")
+}
+
+func TestEmbeddingsProvider_EmbedBatch_GivesUpAfterTransportRetryCap(t *testing.T) {
+	transport := &countingErrTransport{
+		failures: embedTransportRetries + 10, // always fail
+		err:      &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+		next:     http.DefaultTransport,
+	}
+
+	modelID := DefaultEmbeddingModel
+	p := newEmbeddingsProvider(NewStaticEndpointResolver(map[string]string{modelID: "http://127.0.0.1:1"}))
+	p.httpClient = &http.Client{Transport: transport}
+
+	_, err := p.Embed(context.Background(), modelID, []string{"hello"})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
+	assert.Equal(t, embedTransportRetries+1, transport.calls,
+		"must give up after embedTransportRetries+1 attempts, not retry forever")
+}
+
+func TestEmbeddingsProvider_EmbedBatch_NonTransportErrorNotRetried(t *testing.T) {
+	transport := &countingErrTransport{
+		failures: embedTransportRetries + 10, // always fail
+		err:      errors.New("boom: not a transport error"),
+		next:     http.DefaultTransport,
+	}
+
+	modelID := DefaultEmbeddingModel
+	p := newEmbeddingsProvider(NewStaticEndpointResolver(map[string]string{modelID: "http://127.0.0.1:1"}))
+	p.httpClient = &http.Client{Transport: transport}
+
+	_, err := p.Embed(context.Background(), modelID, []string{"hello"})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
+	assert.Equal(t, 1, transport.calls, "a non-transport error must not be retried")
 }

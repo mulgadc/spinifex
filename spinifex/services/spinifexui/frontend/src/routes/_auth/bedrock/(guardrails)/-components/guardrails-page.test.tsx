@@ -50,12 +50,23 @@ const GUARDRAIL = {
 } satisfies GuardrailSummary
 
 describe("GuardrailsPage", () => {
+  it("renders a create guardrail link", () => {
+    renderSeeded([])
+    expect(
+      screen.getByRole("link", { name: "Create guardrail" }),
+    ).toHaveAttribute("href", "/bedrock/list-guardrails/create")
+  })
+
   it("renders guardrail cards sorted by name", () => {
     renderSeeded([
       { ...GUARDRAIL, id: "gr-2", name: "zebra" },
       { ...GUARDRAIL, id: "gr-1", name: "alpha" },
     ])
-    const links = screen.getAllByRole("link")
+    const links = screen
+      .getAllByRole("link")
+      .filter(
+        (l) => l.getAttribute("href") !== "/bedrock/list-guardrails/create",
+      )
     expect(links.map((l) => l.getAttribute("href"))).toStrictEqual([
       "/bedrock/list-guardrails/$guardrailId/gr-1",
       "/bedrock/list-guardrails/$guardrailId/gr-2",

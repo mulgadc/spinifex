@@ -108,6 +108,48 @@ func TestCreateRole_InvalidPath(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
 }
 
+func TestCreateRole_PermissionsBoundarySet(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("bounded-role"),
+		AssumeRolePolicyDocument: aws.String(validTrustPolicy()),
+		PermissionsBoundary:      aws.String("arn:aws:iam::" + testAccountID + ":policy/deny-all"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
+	assert.Contains(t, err.Error(), "PermissionsBoundary")
+
+	_, err = svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: aws.String("bounded-role")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestCreateRole_PermissionsBoundaryAbsent(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	tests := []struct {
+		name     string
+		roleName string
+		boundary *string
+	}{
+		{name: "nil", roleName: "nil-boundary", boundary: nil},
+		{name: "empty string", roleName: "empty-boundary", boundary: aws.String("")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+				RoleName:                 aws.String(tt.roleName),
+				AssumeRolePolicyDocument: aws.String(validTrustPolicy()),
+				PermissionsBoundary:      tt.boundary,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.roleName, *out.Role.RoleName)
+		})
+	}
+}
+
 func TestCreateRole_MalformedTrustPolicy_InvalidJSON(t *testing.T) {
 	svc := setupTestIAMService(t)
 

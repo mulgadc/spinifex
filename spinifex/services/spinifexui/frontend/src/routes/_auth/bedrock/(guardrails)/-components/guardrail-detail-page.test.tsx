@@ -3,25 +3,39 @@ import type {
   GuardrailSummary,
 } from "@aws-sdk/client-bedrock"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({
+const mockRuntimeSend = vi.fn().mockResolvedValue({
   action: "NONE",
   assessments: [],
   outputs: [],
   usage: {},
 })
+const mockBedrockSend = vi.fn().mockResolvedValue({})
+const mockNavigate = vi.fn()
 
 vi.mock("@/lib/awsClient", () => ({
-  getBedrockRuntimeClient: () => ({ send: mockSend }),
+  getBedrockClient: () => ({ send: mockBedrockSend }),
+  getBedrockRuntimeClient: () => ({ send: mockRuntimeSend }),
 }))
 
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, to }: { children: ReactNode; to?: string }) => (
-    <a href={to}>{children}</a>
+  Link: ({
+    children,
+    to,
+    params,
+  }: {
+    children: ReactNode
+    to?: string
+    params?: Record<string, string>
+  }) => (
+    <a href={`${to}${params?.guardrailId ? `/${params.guardrailId}` : ""}`}>
+      {children}
+    </a>
   ),
+  useNavigate: () => mockNavigate,
 }))
 
 import {
@@ -148,5 +162,54 @@ describe("GuardrailDetailPage", () => {
   it("renders the guardrail tester", () => {
     renderSeeded(GUARDRAIL)
     expect(screen.getByText("Guardrail tester")).toBeInTheDocument()
+  })
+
+  it("renders an edit link to the edit route", () => {
+    renderSeeded(GUARDRAIL)
+    expect(screen.getByRole("link", { name: /Edit/ })).toHaveAttribute(
+      "href",
+      "/bedrock/list-guardrails/$guardrailId/edit/gr-1",
+    )
+  })
+
+  it("deletes the guardrail and navigates back on confirm", async () => {
+    mockBedrockSend.mockResolvedValueOnce({})
+    renderSeeded(GUARDRAIL)
+
+    screen.getByRole("button", { name: "Delete" }).click()
+    await screen.findByText("Delete Guardrail")
+    const deleteButtons = screen.getAllByRole("button", { name: "Delete" })
+    deleteButtons.at(-1)?.click()
+
+    await waitFor(() => {
+      expect(mockBedrockSend).toHaveBeenCalled()
+    })
+    const input = mockBedrockSend.mock.calls[0]?.[0].input as {
+      guardrailIdentifier: string
+    }
+    expect(input.guardrailIdentifier).toBe(GUARDRAIL_ID)
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: "/bedrock/list-guardrails",
+      })
+    })
+  })
+
+  it("creates a new version for the guardrail", async () => {
+    mockBedrockSend.mockResolvedValueOnce({ version: "2" })
+    renderSeeded(GUARDRAIL)
+
+    screen.getByRole("button", { name: "Create version" }).click()
+
+    await waitFor(() => {
+      expect(mockBedrockSend).toHaveBeenCalled()
+    })
+    const input = mockBedrockSend.mock.calls[0]?.[0].input as {
+      guardrailIdentifier: string
+    }
+    expect(input.guardrailIdentifier).toBe(GUARDRAIL_ID)
+    await expect(
+      screen.findByText("Version 2 created."),
+    ).resolves.toBeInTheDocument()
   })
 })

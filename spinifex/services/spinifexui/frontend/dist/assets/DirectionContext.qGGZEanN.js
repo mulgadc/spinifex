@@ -1,1 +1,0 @@
-import{a as e,r as t}from"./compiler-runtime.BGCKGvrs.js";var n=e(t(),1),r=n.createContext(void 0);function i(){return n.useContext(r)?.direction??`ltr`}export{i as t};

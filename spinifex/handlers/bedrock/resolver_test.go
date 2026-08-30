@@ -3,6 +3,10 @@ package handlers_bedrock
 import (
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -430,4 +434,124 @@ func TestDynamicEndpointResolver_EndpointForAccount_DoesNotShareTheGlobalCache(t
 	assert.Equal(t, "http://10.0.0.9:9000", baseURL)
 	assert.Equal(t, int64(2), svc.describeCalls.Load(),
 		"the account-scoped resolve must not have pre-populated Endpoint's cache")
+}
+
+// memberReadyRecord builds a StateReady record with a real Members entry,
+// pointing at srv's own host:port, so isLive has a route to actually probe --
+// unlike readyRecord's bare BaseURL, which isLive trusts without a probe.
+func memberReadyRecord(t *testing.T, srv *httptest.Server) EndpointRecord {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	host, portStr, err := net.SplitHostPort(u.Host)
+	require.NoError(t, err)
+	port, err := net.LookupPort("tcp", portStr)
+	require.NoError(t, err)
+	return EndpointRecord{
+		ModelID:   resolverTestModel,
+		State:     StateReady,
+		PrivateIP: host,
+		Members:   map[string]MemberEndpoint{resolverTestModel: {Port: port}},
+	}
+}
+
+// TestDynamicEndpointResolver_ReadyRecordNotLiveResolvesAsNotReady is the
+// heart of the fix: a persisted READY record whose member does not actually
+// answer its readiness route must not be handed out as a live address --
+// the caller gets the same retryable not-ready answer as a cold model.
+func TestDynamicEndpointResolver_ReadyRecordNotLiveResolvesAsNotReady(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	svc := &fakeEndpointService{record: memberReadyRecord(t, srv)}
+	r := NewDynamicEndpointResolver(svc, nil, 0)
+
+	baseURL, ok, err := r.Endpoint(context.Background(), resolverTestModel)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Empty(t, baseURL)
+}
+
+// TestDynamicEndpointResolver_ReadyRecordRecoversOnceLive covers the
+// recovery half: once the member starts answering, a fresh resolve (past the
+// liveness cache TTL) succeeds without the daemon ever touching the record.
+func TestDynamicEndpointResolver_ReadyRecordRecoversOnceLive(t *testing.T) {
+	var live atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if live.Load() {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	svc := &fakeEndpointService{record: memberReadyRecord(t, srv)}
+	r := NewDynamicEndpointResolver(svc, nil, 0, WithLivenessCacheTTL(10*time.Millisecond))
+
+	_, ok, err := r.Endpoint(context.Background(), resolverTestModel)
+	require.NoError(t, err)
+	assert.False(t, ok, "not yet live")
+
+	live.Store(true)
+	require.Eventually(t, func() bool {
+		baseURL, ok, err := r.Endpoint(context.Background(), resolverTestModel)
+		return err == nil && ok && baseURL == srv.URL
+	}, time.Second, 5*time.Millisecond, "must resolve once the member answers and the liveness cache expires")
+}
+
+// TestDynamicEndpointResolver_ReadyRecordLiveResolvesImmediately guards the
+// happy path the liveness gate must not regress: a member that is actually
+// answering resolves on the first call, no waiting.
+func TestDynamicEndpointResolver_ReadyRecordLiveResolvesImmediately(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	svc := &fakeEndpointService{record: memberReadyRecord(t, srv)}
+	r := NewDynamicEndpointResolver(svc, nil, 0)
+
+	baseURL, ok, err := r.Endpoint(context.Background(), resolverTestModel)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, srv.URL, baseURL)
+}
+
+// TestDynamicEndpointResolver_IsLiveCachesWithinTTLThenRechecks pins down the
+// cache half directly: a probe result is reused within livenessTTL (the hot
+// path for a warm, steady-state model costs no HTTP round trip per resolve),
+// and a fresh probe runs once that TTL has elapsed.
+func TestDynamicEndpointResolver_IsLiveCachesWithinTTLThenRechecks(t *testing.T) {
+	var probes atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		probes.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	r := NewDynamicEndpointResolver(&fakeEndpointService{}, nil, 0, WithLivenessCacheTTL(50*time.Millisecond))
+	rec := memberReadyRecord(t, srv)
+
+	for range 3 {
+		assert.True(t, r.isLive(context.Background(), rec, resolverTestModel, srv.URL))
+	}
+	assert.Equal(t, int64(1), probes.Load(), "a cached liveness result must not re-probe")
+
+	time.Sleep(60 * time.Millisecond)
+	assert.True(t, r.isLive(context.Background(), rec, resolverTestModel, srv.URL))
+	assert.Equal(t, int64(2), probes.Load(), "an expired cache entry must re-probe")
+}
+
+// TestDynamicEndpointResolver_IsLiveTrustsRecordsWithoutMembers keeps every
+// pre-existing record shape (readyRecord, and any record predating the
+// Members field) working exactly as before: with nothing to probe on, isLive
+// trusts the state rather than manufacturing a route to check.
+func TestDynamicEndpointResolver_IsLiveTrustsRecordsWithoutMembers(t *testing.T) {
+	r := NewDynamicEndpointResolver(&fakeEndpointService{}, nil, 0)
+	rec := readyRecord("http://10.0.0.9:8000")
+
+	assert.True(t, r.isLive(context.Background(), rec, resolverTestModel, rec.BaseURL))
 }

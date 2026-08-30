@@ -25,16 +25,6 @@ export default defineConfig(({ mode }) => ({
   build: {
     target: "es2023",
     chunkSizeWarningLimit: 1500,
-    rolldownOptions: {
-      output: {
-        // Minified export letters are positional, so a chunk only ever agrees
-        // with the build it was emitted with. The hash keeps a cached chunk
-        // from a previous deploy from resolving against a newer entry.
-        entryFileNames: "assets/[name].[hash].js",
-        chunkFileNames: "assets/[name].[hash].js",
-        assetFileNames: "assets/[name].[hash].[ext]",
-      },
-    },
   },
   plugins: [
     basicSsl(),

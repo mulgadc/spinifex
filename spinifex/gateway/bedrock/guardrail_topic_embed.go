@@ -19,6 +19,12 @@ import (
 // here if live traffic shows the false positive/negative rate drifting.
 const defaultTopicSimilarityThreshold = 0.42
 
+// guardrailServiceLabel tags every slog call in this file, so guardrail
+// traffic filtered by labels.service in the log sink surfaces the semantic
+// (embedder-backed) topic check's own failure cause instead of only the
+// generic gateway request wrapper.
+const guardrailServiceLabel = "bedrock-guardrail"
+
 // topicSimilarityThreshold returns topic's similarity threshold. AWS's
 // GuardrailTopicConfig wire shape has no field to override this per topic,
 // so every topic currently gets the same default; this indirection is the
@@ -92,7 +98,7 @@ func topicVectors(ctx context.Context, embedder Embedder, modelID string, topic 
 	vectors, err := embedder.Embed(ctx, modelID, phrases)
 	if err != nil {
 		slog.Warn("guardrail: topic embedding unavailable, failing closed on unverified content",
-			"topic", aws.StringValue(topic.Name), "model", modelID, "err", err)
+			"service", guardrailServiceLabel, "action", "topic_vectors", "topic", aws.StringValue(topic.Name), "model", modelID, "err", err)
 		return nil, err
 	}
 	topicVectorCache.Store(key, vectors)
@@ -138,12 +144,14 @@ func maxCosineSimilarity(vector []float32, candidates [][]float32) float64 {
 // caller must fail closed rather than silently pass unverified content.
 func embedGuardrailTexts(ctx context.Context, embedder Embedder, modelID string, texts []string) ([][]float32, error) {
 	if embedder == nil {
-		slog.Warn("guardrail: no embedder configured, falling back to literal topic matching")
+		slog.Warn("guardrail: no embedder configured, falling back to literal topic matching",
+			"service", guardrailServiceLabel, "action", "embed_texts")
 		return nil, nil
 	}
 	vectors, err := embedder.Embed(ctx, modelID, texts)
 	if err != nil {
-		slog.Warn("guardrail: input embedding unavailable, failing closed on unverified content", "model", modelID, "err", err)
+		slog.Warn("guardrail: input embedding unavailable, failing closed on unverified content",
+			"service", guardrailServiceLabel, "action", "embed_texts", "model", modelID, "err", err)
 		return nil, err
 	}
 	return vectors, nil

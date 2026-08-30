@@ -16,11 +16,13 @@ import {
   IdCard,
   Image,
   Key,
+  KeyRound,
   Layers,
   LayoutGrid,
   LayoutList,
   LogOut,
   MapPin,
+  MessageSquare,
   Network,
   Package,
   Route,
@@ -600,6 +602,17 @@ export function SidebarLayout() {
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>
+            <SidebarMenuItem>
+              <Link to="/bedrock/playground">
+                <SidebarMenuButton
+                  isActive={pathname.startsWith("/bedrock/playground")}
+                  tooltip="Playground"
+                >
+                  <MessageSquare className="size-4" />
+                  <span>Playground</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
             {isAdmin && (
               <SidebarMenuItem>
                 <Link to="/bedrock/list-model-catalog">
@@ -611,6 +624,19 @@ export function SidebarLayout() {
                   >
                     <LayoutList className="size-4" />
                     <span>Model Catalog</span>
+                  </SidebarMenuButton>
+                </Link>
+              </SidebarMenuItem>
+            )}
+            {isAdmin && (
+              <SidebarMenuItem>
+                <Link to="/bedrock/list-model-access">
+                  <SidebarMenuButton
+                    isActive={pathname.startsWith("/bedrock/list-model-access")}
+                    tooltip="Model Access"
+                  >
+                    <KeyRound className="size-4" />
+                    <span>Model Access</span>
                   </SidebarMenuButton>
                 </Link>
               </SidebarMenuItem>

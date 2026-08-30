@@ -2,6 +2,11 @@
 // timer: it watches the KV buckets the function reads, coalesces a burst of
 // updates into one pass, and falls back to a periodic resync so a gap in the
 // watch cannot leave the world unconverged.
+//
+// A caller that can act on one resource at a time also sets ReconcileKey, and
+// the key that changed is carried through to it. The whole-set Reconcile stays
+// required either way: it is the startup pass and the resync backstop, so a key
+// the queue never learns about still converges.
 package reconciler
 
 import (
@@ -44,8 +49,30 @@ type Config struct {
 	// Sources are watched for changes. An empty Sources is allowed: the loop
 	// then runs on the resync alone, which is the pre-watch behaviour.
 	Sources []Source
-	// Reconcile performs one pass. It is never called concurrently with itself.
+	// Reconcile performs one whole-set pass. It is never called concurrently
+	// with itself or with ReconcileKey.
+	//
+	// Required even when ReconcileKey is set, because it is the startup pass
+	// and the resync backstop. A per-key queue only converges if something
+	// behind it covers what the queue never learned: a key deleted while the
+	// watch was down is enqueued by nothing, since nobody observes an absence.
 	Reconcile func(ctx context.Context) error
+	// ReconcileKey handles one changed key, for a caller whose work is per
+	// resource rather than a recompute of the whole set. Unset means every
+	// change runs Reconcile, which is the whole-set behaviour.
+	//
+	// It is called once per distinct key in a burst, so a caller whose unit of
+	// work is coarser than a key — an account rather than an instance — maps
+	// updates onto that unit with KeyFor rather than deduplicating here.
+	ReconcileKey func(ctx context.Context, key string) error
+	// KeyFor maps a watch update onto the keys it dirties. Nil means the key
+	// that changed is the key to reconcile.
+	//
+	// Reporting ok=false means the update could not be attributed, and the
+	// change runs Reconcile instead. That is the honest answer for a delete: a
+	// tombstone carries no value, so a caller whose work key lives in the value
+	// cannot name it, and a whole-set pass needs no attribution.
+	KeyFor func(entry jetstream.KeyValueEntry) (keys []string, ok bool)
 	// Resync bounds how stale the world can get when no update arrives, and is
 	// also when Sources are re-enumerated. Zero means DefaultResync.
 	Resync time.Duration
@@ -112,13 +139,18 @@ var _ Source = dynamicSource{}
 func Run(ctx context.Context, cfg Config) {
 	cfg.fixDefaults()
 	if cfg.Reconcile == nil {
+		// Setting only ReconcileKey looks like a working loop and is not one:
+		// nothing would run the startup pass or the resync backstop.
+		slog.ErrorContext(ctx, "reconcile loop not started: Reconcile is required", "loop", cfg.Name)
 		return
 	}
 
 	// Buffered by one: a change arriving mid-pass sets the pending flag rather
-	// than blocking the watcher goroutine, and is served by the next pass.
+	// than blocking the watcher goroutine, and is served by the next pass. The
+	// keys themselves ride in the queue; this only says "something is waiting".
 	changes := make(chan struct{}, 1)
-	w := &watchSet{cfg: cfg, changes: changes}
+	queue := &workQueue{}
+	w := &watchSet{cfg: cfg, changes: changes, queue: queue}
 	defer w.stop()
 
 	// Watches go up before the first pass, not after: a change landing between
@@ -139,12 +171,37 @@ func Run(ctx context.Context, cfg Config) {
 			// the last resync is watched from here on, and the pass that
 			// follows covers whatever it already held.
 			w.resync(ctx)
+			// Whatever is queued is covered by the whole-set pass about to run,
+			// so it is dropped rather than reconciled again after it.
+			queue.take()
 			pass(ctx, cfg, "resync")
 		case <-changes:
 			if settle(ctx, changes, cfg.Debounce) {
-				pass(ctx, cfg, "change")
+				serve(ctx, cfg, queue)
 			}
 		}
+	}
+}
+
+// serve runs the work a settled burst produced: one whole-set pass, or one pass
+// per distinct key that changed.
+func serve(ctx context.Context, cfg Config, queue *workQueue) {
+	if cfg.ReconcileKey == nil {
+		pass(ctx, cfg, "change")
+		return
+	}
+	whole, keys := queue.take()
+	if whole {
+		// A whole-set pass covers every key that was waiting alongside it, so
+		// the keys it returned are deliberately not reconciled again.
+		pass(ctx, cfg, "change")
+		return
+	}
+	for _, key := range keys {
+		if ctx.Err() != nil {
+			return
+		}
+		keyPass(ctx, cfg, key)
 	}
 }
 
@@ -187,11 +244,26 @@ func pass(ctx context.Context, cfg Config, trigger string) {
 		"loop", cfg.Name, "trigger", trigger, "duration_ms", otelsetup.Millis(time.Since(start)))
 }
 
+// keyPass runs one per-key reconcile. Its failure is logged rather than
+// retried here: the resync re-reconciles the whole set, so a key that failed is
+// covered by the same backstop as a key the queue never saw.
+func keyPass(ctx context.Context, cfg Config, key string) {
+	start := time.Now()
+	if err := cfg.ReconcileKey(ctx, key); err != nil {
+		slog.WarnContext(ctx, "reconcile key failed, retrying on the next resync",
+			"loop", cfg.Name, "key", key, "duration_ms", otelsetup.Millis(time.Since(start)), "err", err)
+		return
+	}
+	slog.DebugContext(ctx, "reconcile key complete",
+		"loop", cfg.Name, "key", key, "duration_ms", otelsetup.Millis(time.Since(start)))
+}
+
 // watchSet holds one watcher per bucket currently being watched, keyed by
 // bucket name so a resync can tell an already-watched bucket from a new one.
 type watchSet struct {
 	cfg     Config
 	changes chan struct{}
+	queue   *workQueue
 	active  map[string]*watcher
 }
 
@@ -266,7 +338,7 @@ func (w *watchSet) drain(ctx context.Context, bucket *kvstore.Bucket, filter str
 			if update == nil {
 				continue
 			}
-			w.signal()
+			w.observe(update)
 		}
 		if ctx.Err() != nil {
 			return
@@ -285,13 +357,34 @@ func (w *watchSet) drain(ctx context.Context, bucket *kvstore.Bucket, filter str
 			continue
 		}
 		watch.kw = kw
+		// The whole set, not a key: UpdatesOnly hides what happened during the
+		// gap, so what changed is exactly what cannot be named.
+		w.queue.addWhole()
 		w.signal()
 	}
 }
 
-// signal reports a change without blocking: the channel's single slot already
-// means "at least one change is pending", which is all a full-recompute
-// reconcile needs to know.
+// observe queues the work an update implies and wakes the loop.
+func (w *watchSet) observe(entry jetstream.KeyValueEntry) {
+	switch {
+	case w.cfg.ReconcileKey == nil:
+		// Whole-set callers never read the key, so nothing is queued for them.
+	case w.cfg.KeyFor == nil:
+		w.queue.add(entry.Key())
+	default:
+		keys, ok := w.cfg.KeyFor(entry)
+		if !ok {
+			w.queue.addWhole()
+			break
+		}
+		w.queue.add(keys...)
+	}
+	w.signal()
+}
+
+// signal reports that work is waiting without blocking: the channel's single
+// slot already means "at least one change is pending", and for a per-key loop
+// what is pending is in the queue rather than in the channel.
 func (w *watchSet) signal() {
 	select {
 	case w.changes <- struct{}{}:

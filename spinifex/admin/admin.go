@@ -63,6 +63,11 @@ type ConfigSettings struct {
 	// Empty → callers fall back to BindIP.
 	AdvertiseIP string
 
+	// PredastoreAdminPort is rendered as predastore.toml's host-level
+	// admin_port, serving /healthz and /readyz on the host's cluster
+	// bind_addr. Zero runs no admin listener.
+	PredastoreAdminPort int
+
 	// Cluster settings
 	ClusterBindIP string
 	ClusterRoutes []string
@@ -978,6 +983,12 @@ const (
 	predastoreMetaBasePort = 7660
 )
 
+// PredastoreAdminPort is the port predastore's admin listener serves
+// /healthz and /readyz on. It continues the base ports above's progression by
+// 1000, so it can never collide with a gate, blob or meta node on the same
+// host; exported so single-node config generation can render it too.
+const PredastoreAdminPort = 8660
+
 // PredastoreTopology derives the cluster nodes for a set of machines: each
 // machine hosts a gate, one blob node and one meta node. Node IDs are unique
 // across the whole file, so gates take 1..n, blobs n+1..2n and metas 2n+1..3n.
@@ -1027,6 +1038,7 @@ func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNod
 		NorthstarAccessKey        string
 		NorthstarSecretKey        string
 		NorthstarBucket           string
+		AdminPort                 int
 	}{
 		Nodes: nodes, ClusterNodes: PredastoreTopology(nodes),
 		AccessKey: accessKey, SecretKey: secretKey, Region: region,
@@ -1037,6 +1049,7 @@ func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNod
 		NorthstarAccessKey:        northstar.AccessKey,
 		NorthstarSecretKey:        northstar.SecretKey,
 		NorthstarBucket:           northstar.Bucket,
+		AdminPort:                 PredastoreAdminPort,
 	}
 
 	tmpl, err := template.New("predastore-multinode").Parse(templateStr)

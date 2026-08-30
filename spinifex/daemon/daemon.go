@@ -2603,11 +2603,6 @@ func (d *Daemon) persistState(nodeID string, vms map[string]*vm.VM) error {
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
-	kvData, err := marshalInstanceState(vms)
-	if err != nil {
-		return fmt.Errorf("marshal state: %w", err)
-	}
-
 	// The KV write is independent of local disk health (JetStream, not this
 	// disk), so a local failure must not skip it — attempt both, then report
 	// the local failure. Revision only advances when the local write (the
@@ -2620,8 +2615,13 @@ func (d *Daemon) persistState(nodeID string, vms map[string]*vm.VM) error {
 		d.stateRevision.Add(1)
 	}
 
+	// The marker is written before the records so a reader that sees the node
+	// at all can only under-report it, never conclude it has no instances from
+	// a set that has not been written yet. vms is the caller's snapshot and
+	// cannot change underneath either write.
 	if d.jsManager != nil {
-		d.jsManager.WriteStateBytesBestEffort(nodeID, kvData, kvSyncTimeout)
+		d.jsManager.WriteNodeMarkerBestEffort(nodeID, kvSyncTimeout)
+		d.jsManager.WriteRunningSet(nodeID, vms)
 	}
 
 	if localErr != nil {

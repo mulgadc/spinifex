@@ -32,6 +32,7 @@ data_dir = "{{.PredastoreDataDir}}"
 tls_cert = "{{.ConfigDir}}/server.pem"
 tls_key = "{{.ConfigDir}}/server.key"
 encryption_key = "{{.ConfigDir}}/predastore/encryption.key"
+admin_port = {{.PredastoreAdminPort}}
 
 # The gate serves the S3 API. Without one the host answers no S3 request.
 # S3 is the public plane, so it binds every interface while the host's

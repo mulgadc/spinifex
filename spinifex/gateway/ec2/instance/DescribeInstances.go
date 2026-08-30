@@ -77,12 +77,13 @@ func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesI
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
 }
 
-// DescribeInstancesForReconcile is the strict variant the quota reconcile uses.
-// complete is true only when the sweep observed every expected node and both
-// instance buckets, so reconcile may lower a counter only from a provably
-// complete view. A partial sweep — a node down, a timed-out fan-out, or a failed
-// bucket query — returns complete=false, and reconcile leaves the counter for the
-// next clean pass rather than under-counting usage and lifting the cap.
+// DescribeInstancesForReconcile is the strict variant, for a caller that may act
+// only on a provably whole view. complete is true only when the sweep observed
+// every expected node and both instance buckets; a partial sweep — a node down,
+// a timed-out fan-out, or a failed bucket query — returns complete=false so the
+// caller can decline to act rather than act on a short count. The quota vCPU
+// sweep reads the instance record space instead of this; the retype gate and the
+// volume delete guard are what still call it.
 func DescribeInstancesForReconcile(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (reservations []*ec2.Reservation, complete bool, err error) {
 	reservations, complete, _, err = gatherInstances(ctx, input, natsConn, expectedNodes, accountID)
 	return reservations, complete, err

@@ -122,7 +122,25 @@ func TestBuildDrives(t *testing.T) {
 		wantErr          string
 	}{
 		{
-			name: "boot volume",
+			// 2 vCPUs resolves to a pool of one, which must keep the scalar
+			// iothread= form: this is the shape every small guest boots with.
+			name: "boot volume, pool of one keeps the scalar iothread",
+			requests: []types.EBSRequest{
+				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
+			},
+			cpuCount: 2,
+			wantDrives: []Drive{
+				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
+			},
+			wantIOThreads: []IOThread{{ID: "ioth-os"}},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1"},
+			},
+		},
+		{
+			// 4 vCPUs resolves to a pool of two, so the four virtqueues are
+			// split across two host threads rather than served by one.
+			name: "boot volume, four vCPUs map their queues across a pool of two",
 			requests: []types.EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 			},
@@ -130,9 +148,9 @@ func TestBuildDrives(t *testing.T) {
 			wantDrives: []Drive{
 				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
 			},
-			wantIOThreads: []IOThread{{ID: "ioth-os"}},
+			wantIOThreads: []IOThread{{ID: "ioth-os-0"}, {ID: "ioth-os-1"}},
 			wantDevices: []Device{
-				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=4,bootindex=1"},
+				{Value: `{"driver":"virtio-blk-pci","drive":"os","num-queues":4,"bootindex":1,"iothread-vq-mapping":[{"iothread":"ioth-os-0","vqs":[0,2]},{"iothread":"ioth-os-1","vqs":[1,3]}]}`},
 			},
 		},
 		{
@@ -234,7 +252,10 @@ func TestBuildDrives(t *testing.T) {
 				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
 				{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock", HotplugPort: 3},
 			},
-			cpuCount: 4,
+			// 2 vCPUs, so the boot disk keeps the legacy scalar shape and this
+			// case still asserts what its name says it does. Data volumes are
+			// unaffected by the pool either way — they keep one IOThread each.
+			cpuCount: 2,
 			wantDrives: []Drive{
 				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
 				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
@@ -247,7 +268,7 @@ func TestBuildDrives(t *testing.T) {
 				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
 			},
 			wantDevices: []Device{
-				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=4,bootindex=1"},
+				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1"},
 				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{0, 0, 3},

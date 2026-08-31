@@ -129,6 +129,47 @@ const listFetchConcurrency = 16
 // read of a metadata document.
 var listFetchTimeout = 10 * time.Second
 
+// maxListPages bounds a single listing. It exists only to turn a server that
+// keeps claiming truncation into an error rather than a hang; at the default
+// page size it is ten million documents, far past any real prefix.
+const maxListPages = 10000
+
+// listKeys returns every key under prefix, following continuation tokens to
+// exhaustion. Reading only the first page returns a prefix of the truth with no
+// error, which for a strict caller is worse than a failure: absence from a
+// truncated listing is not absence.
+func listKeys(ctx context.Context, objects objectstore.ObjectStore, bucket, prefix string) ([]string, error) {
+	var keys []string
+	var token *string
+
+	for range maxListPages {
+		result, err := objects.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(bucket),
+			Prefix:            aws.String(prefix),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, object := range result.Contents {
+			if object == nil || object.Key == nil {
+				continue
+			}
+			keys = append(keys, *object.Key)
+		}
+		if !aws.BoolValue(result.IsTruncated) {
+			return keys, nil
+		}
+		// Truncated with nothing to resume from. Returning what arrived is the
+		// silent short answer this whole loop exists to prevent.
+		if aws.StringValue(result.NextContinuationToken) == "" {
+			return nil, fmt.Errorf("listing %s reported truncation with no continuation token", prefix)
+		}
+		token = result.NextContinuationToken
+	}
+	return nil, fmt.Errorf("listing %s did not finish within %d pages", prefix, maxListPages)
+}
+
 // listDocuments reads and decodes every document under prefix.
 //
 // skipCorrupt tolerates a document that cannot be fetched as well as one that
@@ -145,9 +186,7 @@ func listDocuments[T any](
 	unmarshal func([]byte) (T, error),
 	skipCorrupt bool,
 ) ([]T, error) {
-	result, err := s.objects.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucket), Prefix: aws.String(prefix),
-	})
+	keys, err := listKeys(ctx, s.objects, s.bucket, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -160,18 +199,13 @@ func listDocuments[T any](
 		document  T
 		fetchErr  error
 		decodeErr error
-		empty     bool
 	}
 
-	results := make([]fetched, len(result.Contents))
+	results := make([]fetched, len(keys))
 	slots := make(chan struct{}, listFetchConcurrency)
 	var wg sync.WaitGroup
 
-	for i, object := range result.Contents {
-		if object.Key == nil {
-			results[i].empty = true
-			continue
-		}
+	for i, key := range keys {
 		wg.Add(1)
 		slots <- struct{}{}
 		go func(idx int, key string) {
@@ -187,15 +221,13 @@ func listDocuments[T any](
 				return
 			}
 			results[idx].document, results[idx].decodeErr = unmarshal(data)
-		}(i, *object.Key)
+		}(i, key)
 	}
 	wg.Wait()
 
 	documents := make([]T, 0, len(results))
 	for _, r := range results {
 		switch {
-		case r.empty:
-			continue
 		case r.fetchErr != nil:
 			if !skipCorrupt {
 				return nil, r.fetchErr

@@ -5,6 +5,7 @@ package single
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -342,6 +343,42 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 		harness.Detail(t, "step5", "denied_traffic_ok")
 	})
 
+	// --- DeniedTrafficIPv6: the default-deny is not IPv4-only ---
+	//
+	// Every tenant allow is ip4-scoped and IPv6 rules are rejected at the API,
+	// so nothing here can permit IPv6. The denies used to be ip4-scoped too and
+	// OVN allows on no-match, which let link-local IPv6 through untouched.
+	t.Run("DeniedTrafficIPv6", func(t *testing.T) {
+		harness.Step(t, "8e-5b denied traffic client -> target IPv6 link-local")
+
+		targetLL := linkLocalFromENIMAC(t, fix, targetENI)
+
+		// Positive control: without a working IPv6 stack on the client the
+		// assertion below would pass for the wrong reason.
+		iface, err := runSSHCombined(clientTgt, "ip -o -4 route show default | awk '{print $5; exit}'")
+		require.NoError(t, err, "client could not report its default-route interface")
+		iface = strings.TrimSpace(iface)
+		require.NotEmpty(t, iface, "client has no default-route interface")
+
+		clientLL, err := runSSHCombined(clientTgt,
+			fmt.Sprintf("ip -6 -o addr show dev %s scope link | awk '{print $4; exit}' | cut -d/ -f1", iface))
+		require.NoError(t, err, "client could not report its own link-local address")
+		clientLL = strings.TrimSpace(clientLL)
+		require.NotEmptyf(t, clientLL,
+			"client has no IPv6 link-local on %s, so a failed ping to the target would prove nothing about the ACL", iface)
+
+		if _, err := runSSHCombined(clientTgt,
+			fmt.Sprintf("ping -6 -c 2 -W 3 %s%%%s", clientLL, iface)); err != nil {
+			t.Fatalf("client cannot ping its own link-local %s%%%s (%v) — IPv6 is unusable in the guest, so this stage cannot test the deny", clientLL, iface, err)
+		}
+
+		if _, err := runSSHCombined(clientTgt,
+			fmt.Sprintf("ping -6 -c 3 -W 3 %s%%%s", targetLL, iface)); err == nil {
+			t.Fatalf("FAIL: client reached target over IPv6 at %s — default-deny is IPv4-only", targetLL)
+		}
+		harness.Detail(t, "step5b", "denied_ipv6_ok", "target_link_local", targetLL)
+	})
+
 	// --- Revoke / re-authorize round-trip ---
 	//
 	// Only meaningful against a proven-working baseline: if AllowedTraffic
@@ -511,6 +548,26 @@ func runSGEInstance(t *testing.T, fix *Fixture, subnetID, sgID, userData string)
 	id := aws.StringValue(out.Instances[0].InstanceId)
 	require.NotEmpty(t, id, "run-instances sg=%s returned empty InstanceId", sgID)
 	return id
+}
+
+// linkLocalFromENIMAC derives an ENI's IPv6 link-local address from its MAC by
+// EUI-64. The target SG has no SSH ingress, so the address cannot be read off
+// the guest; deriving it needs no channel into the instance at all.
+func linkLocalFromENIMAC(t *testing.T, fix *Fixture, eniID string) string {
+	t.Helper()
+	out, err := fix.AWS.EC2.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: aws.StringSlice([]string{eniID}),
+	})
+	require.NoError(t, err, "describe-network-interfaces %s", eniID)
+	require.Len(t, out.NetworkInterfaces, 1, "describe-network-interfaces %s returned %d interfaces", eniID, len(out.NetworkInterfaces))
+
+	mac, err := net.ParseMAC(aws.StringValue(out.NetworkInterfaces[0].MacAddress))
+	require.NoErrorf(t, err, "ENI %s has an unparseable MacAddress %q", eniID, aws.StringValue(out.NetworkInterfaces[0].MacAddress))
+	require.Lenf(t, mac, 6, "ENI %s MacAddress is not EUI-48: %s", eniID, mac)
+
+	// EUI-64: invert the universal/local bit, then insert ff:fe mid-MAC.
+	return fmt.Sprintf("fe80::%02x%02x:%02xff:fe%02x:%02x%02x",
+		mac[0]^0x02, mac[1], mac[2], mac[3], mac[4], mac[5])
 }
 
 // primaryENI returns the NetworkInterfaceId of an instance's first ENI.

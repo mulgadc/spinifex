@@ -27,6 +27,10 @@ const (
 	heartbeatTimeout    = 90 * time.Second
 	stoppedReasonReaped = "ContainerInstance disconnected"
 
+	// reconcileInterval is how soon a service with something in flight is
+	// revisited. A settled service asks for nothing and is woken by the bus.
+	reconcileInterval = 10 * time.Second
+
 	// sweepInterval is what a failed sweep retries at, having learnt no deadline;
 	// stoppedTaskRetention keeps a just-stopped task describable (DescribeTasks /
 	// UI exit reason) before it is dropped, matching AWS's ~1h STOPPED window.
@@ -148,9 +152,9 @@ func (sc *Scheduler) Run(ctx context.Context) {
 	<-leaseDone
 }
 
-// reconcileServicesPass converges every service, and says when to come back with
-// nothing having arrived. A service settles into a shape the bus then keeps it
-// in, so a leader with nothing in flight asks for no deadline at all.
+// reconcileServicesPass converges every service and says when to come back. A
+// settled fleet asks for no deadline at all: what would change it is a task
+// state report, and that arrives as a wake.
 func (sc *Scheduler) reconcileServicesPass(ctx context.Context) (time.Duration, error) {
 	if !sc.lease.Held() {
 		// Leadership turns over without anything being published, so a follower
@@ -159,10 +163,12 @@ func (sc *Scheduler) reconcileServicesPass(ctx context.Context) (time.Duration, 
 	}
 	sc.passMu.Lock()
 	defer sc.passMu.Unlock()
-	if err := sc.svc.reconcileAllServices(ctx); err != nil {
+	revisit, err := sc.svc.reconcileAllServices(ctx)
+	if err != nil {
 		slog.Error("ECS scheduler: pass failed", "pass", "service reconcile", "err", err)
+		return reconcileInterval, nil
 	}
-	return 0, nil
+	return revisit, nil
 }
 
 // timerPass runs the three jobs that only elapsed time can trigger, and returns
@@ -231,11 +237,24 @@ func (sc *Scheduler) subscribeBus(_ context.Context) error {
 		_ = heartbeat.Unsubscribe()
 		return err
 	}
+	// The agent reports task state through the gateway, so the change lands on
+	// whichever worker served the call. This is how it reaches the leader.
+	wake, err := sc.nc.Subscribe("ecs.bus.*.*.service-reconcile", sc.onReconcileWake)
+	if err != nil {
+		_ = register.Unsubscribe()
+		_ = heartbeat.Unsubscribe()
+		_ = taskState.Unsubscribe()
+		return err
+	}
 	sc.mu.Lock()
-	sc.subs = []*nats.Subscription{register, heartbeat, taskState}
+	sc.subs = []*nats.Subscription{register, heartbeat, taskState, wake}
 	sc.mu.Unlock()
 	return nil
 }
+
+// onReconcileWake carries no payload and writes nothing: the change it announces
+// is already in KV by the time it is published.
+func (sc *Scheduler) onReconcileWake(*nats.Msg) { sc.signal() }
 
 func (sc *Scheduler) unsubscribeBus() {
 	sc.mu.Lock()

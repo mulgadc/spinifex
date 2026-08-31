@@ -108,13 +108,15 @@ func TestScheduler_AnIdleServiceIsNotRewritten(t *testing.T) {
 
 	// The first pass is allowed to settle the record; every pass after it has
 	// nothing to say, and an unconditional write would churn KV forever.
-	require.NoError(t, svc.reconcileAllServices(t.Context()))
+	_, err = svc.reconcileAllServices(t.Context())
+	require.NoError(t, err)
 	entry, err := kv.Get(t.Context(), ServiceKey("web", "web"))
 	require.NoError(t, err)
 	settled := entry.Revision()
 
 	for range 3 {
-		require.NoError(t, svc.reconcileAllServices(t.Context()))
+		_, rerr := svc.reconcileAllServices(t.Context())
+		require.NoError(t, rerr)
 	}
 	entry, err = kv.Get(t.Context(), ServiceKey("web", "web"))
 	require.NoError(t, err)
@@ -213,4 +215,52 @@ func TestScheduler_TheTimerPassReturnsTheSoonestOfItsJobs(t *testing.T) {
 	assert.Equal(t, reapDue, reconciler.Earliest(reapDue, sweepDue),
 		"the pass returns the soonest deadline, not the last one computed")
 	assert.InDelta(t, 10.0, reapDue.Seconds(), 2)
+}
+
+func TestScheduler_AnInFlightServiceAsksToBeRevisited(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"),
+		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// The task is PENDING: it reaches RUNNING by reporting through the gateway,
+	// which is not a write this loop can watch, so the pass must come back.
+	due, err := svc.reconcileAllServices(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, reconcileInterval, due)
+
+	keys, err := keysWithPrefix(t.Context(), kv, TasksPrefix("web"))
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	var task TaskRecord
+	found, err := getJSON(t.Context(), kv, keys[0], &task)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.NoError(t, svc.recordTaskState(t.Context(), &bus.TaskState{
+		AccountID: testAccountID, ClusterName: "web", TaskID: task.TaskID, LastStatus: TaskStatusRunning,
+	}))
+
+	due, err = svc.reconcileAllServices(t.Context())
+	require.NoError(t, err)
+	assert.Zero(t, due, "a service at its desired count waits on a wake, not on a deadline")
+}
+
+func TestScheduler_AGatewayTaskStateReportWakesTheLeader(t *testing.T) {
+	sc, svc, kv := schedulerRig(t)
+	taskID := runOneTask(t, svc, kv)
+	require.NoError(t, sc.subscribeBus(t.Context()))
+	t.Cleanup(sc.unsubscribeBus)
+
+	// The agent reports through the gateway, so the record is written by whichever
+	// worker served the call — not by this node's scheduler.
+	_, err := svc.SubmitTaskStateChange(t.Context(), &ecs.SubmitTaskStateChangeInput{
+		Cluster: aws.String("web"), Task: aws.String(taskID), Status: aws.String(TaskStatusRunning),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NoError(t, sc.nc.Flush())
+
+	assert.Eventually(t, func() bool { return woke(sc) }, 2*time.Second, 10*time.Millisecond,
+		"a task-state report over the gateway must reach the leader's reconcile")
 }

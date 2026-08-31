@@ -34,7 +34,7 @@ func TestSchedulerPasses_EnumerationFailureIsReported(t *testing.T) {
 	passes := map[string]func(context.Context) error{
 		"reap":                 dropRevisit(sc.reap),
 		"sweepStoppedTasks":    dropRevisit(sc.sweepStoppedTasks),
-		"reconcileAllServices": svc.reconcileAllServices,
+		"reconcileAllServices": dropRevisit(svc.reconcileAllServices),
 	}
 	for name, pass := range passes {
 		t.Run(name+"/reachable", func(t *testing.T) {

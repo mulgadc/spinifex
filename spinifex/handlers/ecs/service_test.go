@@ -469,7 +469,7 @@ func TestScheduler_LeadershipWiresBusSubscriptions(t *testing.T) {
 	require.Zero(t, sc.subCount(), "subscriptions must not exist before election")
 
 	require.True(t, sc.lease.TryAcquire(t.Context()))
-	assert.Equal(t, 3, sc.subCount(), "leader must own the register, heartbeat and task-state subscriptions")
+	assert.Equal(t, 4, sc.subCount(), "leader must own the register, heartbeat, task-state and reconcile-wake subscriptions")
 
 	sc.lease.Release(t.Context())
 	assert.Zero(t, sc.subCount(), "a released leader must drop its subscriptions")
@@ -486,7 +486,7 @@ func TestScheduler_LoserHoldsNoSubscriptions(t *testing.T) {
 	require.True(t, a.lease.TryAcquire(t.Context()))
 	require.False(t, b.lease.TryAcquire(t.Context()))
 	assert.Zero(t, b.subCount())
-	assert.Equal(t, 3, a.subCount())
+	assert.Equal(t, 4, a.subCount())
 }
 
 func TestScheduler_RunReleasesLeaseOnShutdown(t *testing.T) {

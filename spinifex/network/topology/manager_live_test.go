@@ -16,6 +16,17 @@ func newLiveManagerForTest(t *testing.T) (Manager, *mock.Client) {
 	return NewLiveManager(m), m
 }
 
+// seedSG creates the SG's port group and returns the ID as a PortSpec.SGIDs
+// value. Every ENI carries at least one SG, and EnsurePort now refuses a port
+// that would land in no port group.
+func seedSG(ctx context.Context, t *testing.T, mgr Manager, sgID string) []string {
+	t.Helper()
+	if err := mgr.EnsureSGPortGroup(ctx, sgID); err != nil {
+		t.Fatalf("EnsureSGPortGroup(%s): %v", sgID, err)
+	}
+	return []string{sgID}
+}
+
 func TestLiveManager_EnsureVPC(t *testing.T) {
 	mgr, mockClient := newLiveManagerForTest(t)
 	ctx := context.Background()
@@ -94,6 +105,7 @@ func TestLiveManager_EnsurePort(t *testing.T) {
 		VPCID:     vpc.VPCID,
 		PrivateIP: netip.MustParseAddr("10.2.1.10"),
 		MAC:       mac,
+		SGIDs:     seedSG(ctx, t, mgr, "sg-port"),
 	}
 	if err := mgr.EnsurePort(ctx, port); err != nil {
 		t.Fatalf("EnsurePort: %v", err)
@@ -130,10 +142,12 @@ func TestLiveManager_EnsurePort_SuppressDHCP(t *testing.T) {
 		t.Fatalf("EnsureSubnet: %v", err)
 	}
 
+	sgIDs := seedSG(ctx, t, mgr, "sg-nodhcp")
 	dhcpMAC, _ := net.ParseMAC("02:00:00:00:02:01")
 	dhcpPort := PortSpec{
 		PortID: "eni-dhcp", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
 		PrivateIP: netip.MustParseAddr("10.7.1.10"), MAC: dhcpMAC,
+		SGIDs: sgIDs,
 	}
 	if err := mgr.EnsurePort(ctx, dhcpPort); err != nil {
 		t.Fatalf("EnsurePort(dhcp): %v", err)
@@ -150,7 +164,7 @@ func TestLiveManager_EnsurePort_SuppressDHCP(t *testing.T) {
 	staticPort := PortSpec{
 		PortID: "eni-static", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
 		PrivateIP: netip.MustParseAddr("10.7.1.11"), MAC: staticMAC,
-		SuppressDHCP: true,
+		SGIDs: sgIDs, SuppressDHCP: true,
 	}
 	if err := mgr.EnsurePort(ctx, staticPort); err != nil {
 		t.Fatalf("EnsurePort(static): %v", err)
@@ -175,6 +189,7 @@ func TestLiveManager_DeletePort(t *testing.T) {
 	port := PortSpec{
 		PortID: "eni-DP", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
 		PrivateIP: netip.MustParseAddr("10.3.1.5"), MAC: mac,
+		SGIDs: seedSG(ctx, t, mgr, "sg-dp"),
 	}
 	if err := mgr.EnsurePort(ctx, port); err != nil {
 		t.Fatalf("EnsurePort: %v", err)
@@ -209,6 +224,7 @@ func TestLiveManager_DeletePort_AlreadyAbsentIsNoop(t *testing.T) {
 	port2 := PortSpec{
 		PortID: "eni-DP2", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
 		PrivateIP: netip.MustParseAddr("10.5.1.5"), MAC: mac,
+		SGIDs: seedSG(ctx, t, mgr, "sg-dp2"),
 	}
 	if err := mgr.EnsurePort(ctx, port2); err != nil {
 		t.Fatalf("EnsurePort: %v", err)
@@ -233,10 +249,12 @@ func TestLiveManager_DeletePort_ThenRecreateSameIP_NoDuplicateLSP(t *testing.T) 
 	_ = mgr.EnsureVPC(ctx, vpc)
 	_ = mgr.EnsureSubnet(ctx, sub)
 
+	sgIDs := seedSG(ctx, t, mgr, "sg-reuse")
 	oldMAC, _ := net.ParseMAC("02:00:00:00:01:01")
 	oldPort := PortSpec{
 		PortID: "eni-old", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
 		PrivateIP: netip.MustParseAddr("172.31.0.4"), MAC: oldMAC,
+		SGIDs: sgIDs,
 	}
 	if err := mgr.EnsurePort(ctx, oldPort); err != nil {
 		t.Fatalf("EnsurePort(old): %v", err)
@@ -249,6 +267,7 @@ func TestLiveManager_DeletePort_ThenRecreateSameIP_NoDuplicateLSP(t *testing.T) 
 	newPort := PortSpec{
 		PortID: "eni-new", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
 		PrivateIP: netip.MustParseAddr("172.31.0.4"), MAC: newMAC,
+		SGIDs: sgIDs,
 	}
 	if err := mgr.EnsurePort(ctx, newPort); err != nil {
 		t.Fatalf("EnsurePort(new): %v", err)
@@ -401,6 +420,49 @@ func TestLiveManager_SetPortSecurityGroups(t *testing.T) {
 	}
 	if len(names) != 1 || names[0] != SecurityGroupPortGroup("sg-B") {
 		t.Errorf("expected only sg-B membership, got %v", names)
+	}
+}
+
+// Every SG ACL, including the priority 900/800 default-denies, is attached to a
+// port group, so a port in none of them is unrestricted. EnsurePort must refuse
+// to create one and SetPortSecurityGroups must refuse to strip a live one bare.
+func TestLiveManager_NoSecurityGroupsIsRefused(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
+	ctx := context.Background()
+	vpc := VPCSpec{VPCID: "vpc-nosg", CIDR: netip.MustParsePrefix("10.9.0.0/16")}
+	sub := SubnetSpec{SubnetID: "subnet-nosg", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("10.9.1.0/24")}
+	_ = mgr.EnsureVPC(ctx, vpc)
+	_ = mgr.EnsureSubnet(ctx, sub)
+
+	mac, _ := net.ParseMAC("02:00:00:00:09:01")
+	bare := PortSpec{
+		PortID: "eni-bare", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
+		PrivateIP: netip.MustParseAddr("10.9.1.5"), MAC: mac,
+	}
+	if err := mgr.EnsurePort(ctx, bare); err == nil {
+		t.Error("EnsurePort with no SGs must fail: the LSP would match no SG ACL")
+	}
+	if _, err := mockClient.GetLogicalSwitchPort(ctx, Port(bare.PortID)); err == nil {
+		t.Error("refused EnsurePort must leave no LSP behind")
+	}
+
+	live := PortSpec{
+		PortID: "eni-live", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
+		PrivateIP: netip.MustParseAddr("10.9.1.6"), MAC: mac,
+		SGIDs: seedSG(ctx, t, mgr, "sg-nosg"),
+	}
+	if err := mgr.EnsurePort(ctx, live); err != nil {
+		t.Fatalf("EnsurePort: %v", err)
+	}
+	if err := mgr.SetPortSecurityGroups(ctx, live.PortID, nil); err == nil {
+		t.Error("SetPortSecurityGroups with no SGs must fail: it would strip the port bare")
+	}
+	names, err := mockClient.ListPortGroupsForPort(ctx, Port(live.PortID))
+	if err != nil {
+		t.Fatalf("ListPortGroupsForPort: %v", err)
+	}
+	if len(names) != 1 || names[0] != SecurityGroupPortGroup("sg-nosg") {
+		t.Errorf("live port must keep its membership, got %v", names)
 	}
 }
 

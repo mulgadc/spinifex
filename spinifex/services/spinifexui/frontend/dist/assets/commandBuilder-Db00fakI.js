@@ -1,0 +1,1 @@
+import{It as e,_t as t}from"./cluster-config-Cng_iYLz.js";import{Rn as n}from"./awsClient-BYSqOjkz.js";var r=e(n,`ElasticLoadBalancing_v10`,`ElasticLoadBalancingV2Client`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

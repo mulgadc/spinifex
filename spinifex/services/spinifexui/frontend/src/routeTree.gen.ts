@@ -52,6 +52,7 @@ import { Route as AuthBedrockguardrailsListGuardrailsIndexRouteImport } from './
 import { Route as AuthBedrockguardrailsListGuardrailsCreateRouteImport } from './routes/_auth/bedrock/(guardrails)/list-guardrails/create'
 import { Route as AuthBedrockknowledgeBasesListKnowledgeBasesIndexRouteImport } from './routes/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/index'
 import { Route as AuthBedrockknowledgeBasesListKnowledgeBasesKnowledgeBaseIdRouteImport } from './routes/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/$knowledgeBaseId'
+import { Route as AuthBedrockknowledgeBasesListKnowledgeBasesCreateRouteImport } from './routes/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/create'
 import { Route as AuthBedrockmodelAccessListModelAccessIndexRouteImport } from './routes/_auth/bedrock/(model-access)/list-model-access/index'
 import { Route as AuthBedrockplaygroundPlaygroundIndexRouteImport } from './routes/_auth/bedrock/(playground)/playground/index'
 import { Route as AuthEc2elasticIpsDescribeAddressesIndexRouteImport } from './routes/_auth/ec2/(elastic-ips)/describe-addresses/index'
@@ -360,6 +361,12 @@ const AuthBedrockknowledgeBasesListKnowledgeBasesKnowledgeBaseIdRoute =
   AuthBedrockknowledgeBasesListKnowledgeBasesKnowledgeBaseIdRouteImport.update({
     id: '/(knowledge-bases)/list-knowledge-bases/$knowledgeBaseId',
     path: '/list-knowledge-bases/$knowledgeBaseId',
+    getParentRoute: () => AuthBedrockRouteRoute,
+  } as any)
+const AuthBedrockknowledgeBasesListKnowledgeBasesCreateRoute =
+  AuthBedrockknowledgeBasesListKnowledgeBasesCreateRouteImport.update({
+    id: '/(knowledge-bases)/list-knowledge-bases/create',
+    path: '/list-knowledge-bases/create',
     getParentRoute: () => AuthBedrockRouteRoute,
   } as any)
 const AuthBedrockmodelAccessListModelAccessIndexRoute =
@@ -799,6 +806,7 @@ export interface FileRoutesByFullPath {
   '/s3/ls/': typeof AuthS3LsIndexRoute
   '/bedrock/list-guardrails/create': typeof AuthBedrockguardrailsListGuardrailsCreateRoute
   '/bedrock/list-knowledge-bases/$knowledgeBaseId': typeof AuthBedrockknowledgeBasesListKnowledgeBasesKnowledgeBaseIdRoute
+  '/bedrock/list-knowledge-bases/create': typeof AuthBedrockknowledgeBasesListKnowledgeBasesCreateRoute
   '/ec2/describe-addresses/$id': typeof AuthEc2elasticIpsDescribeAddressesIdRoute
   '/ec2/describe-images/$id': typeof AuthEc2imagesDescribeImagesIdRoute
   '/ec2/describe-instances/$id': typeof AuthEc2instancesDescribeInstancesIdRoute
@@ -908,6 +916,7 @@ export interface FileRoutesByTo {
   '/s3/ls': typeof AuthS3LsIndexRoute
   '/bedrock/list-guardrails/create': typeof AuthBedrockguardrailsListGuardrailsCreateRoute
   '/bedrock/list-knowledge-bases/$knowledgeBaseId': typeof AuthBedrockknowledgeBasesListKnowledgeBasesKnowledgeBaseIdRoute
+  '/bedrock/list-knowledge-bases/create': typeof AuthBedrockknowledgeBasesListKnowledgeBasesCreateRoute
   '/ec2/describe-addresses/$id': typeof AuthEc2elasticIpsDescribeAddressesIdRoute
   '/ec2/describe-images/$id': typeof AuthEc2imagesDescribeImagesIdRoute
   '/ec2/describe-instances/$id': typeof AuthEc2instancesDescribeInstancesIdRoute
@@ -1020,6 +1029,7 @@ export interface FileRoutesById {
   '/_auth/s3/ls/': typeof AuthS3LsIndexRoute
   '/_auth/bedrock/(guardrails)/list-guardrails/create': typeof AuthBedrockguardrailsListGuardrailsCreateRoute
   '/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/$knowledgeBaseId': typeof AuthBedrockknowledgeBasesListKnowledgeBasesKnowledgeBaseIdRoute
+  '/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/create': typeof AuthBedrockknowledgeBasesListKnowledgeBasesCreateRoute
   '/_auth/ec2/(elastic-ips)/describe-addresses/$id': typeof AuthEc2elasticIpsDescribeAddressesIdRoute
   '/_auth/ec2/(images)/describe-images/$id': typeof AuthEc2imagesDescribeImagesIdRoute
   '/_auth/ec2/(instances)/describe-instances/$id': typeof AuthEc2instancesDescribeInstancesIdRoute
@@ -1132,6 +1142,7 @@ export interface FileRouteTypes {
     | '/s3/ls/'
     | '/bedrock/list-guardrails/create'
     | '/bedrock/list-knowledge-bases/$knowledgeBaseId'
+    | '/bedrock/list-knowledge-bases/create'
     | '/ec2/describe-addresses/$id'
     | '/ec2/describe-images/$id'
     | '/ec2/describe-instances/$id'
@@ -1241,6 +1252,7 @@ export interface FileRouteTypes {
     | '/s3/ls'
     | '/bedrock/list-guardrails/create'
     | '/bedrock/list-knowledge-bases/$knowledgeBaseId'
+    | '/bedrock/list-knowledge-bases/create'
     | '/ec2/describe-addresses/$id'
     | '/ec2/describe-images/$id'
     | '/ec2/describe-instances/$id'
@@ -1352,6 +1364,7 @@ export interface FileRouteTypes {
     | '/_auth/s3/ls/'
     | '/_auth/bedrock/(guardrails)/list-guardrails/create'
     | '/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/$knowledgeBaseId'
+    | '/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/create'
     | '/_auth/ec2/(elastic-ips)/describe-addresses/$id'
     | '/_auth/ec2/(images)/describe-images/$id'
     | '/_auth/ec2/(instances)/describe-instances/$id'
@@ -1729,6 +1742,13 @@ declare module '@tanstack/react-router' {
       path: '/list-knowledge-bases/$knowledgeBaseId'
       fullPath: '/bedrock/list-knowledge-bases/$knowledgeBaseId'
       preLoaderRoute: typeof AuthBedrockknowledgeBasesListKnowledgeBasesKnowledgeBaseIdRouteImport
+      parentRoute: typeof AuthBedrockRouteRoute
+    }
+    '/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/create': {
+      id: '/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/create'
+      path: '/list-knowledge-bases/create'
+      fullPath: '/bedrock/list-knowledge-bases/create'
+      preLoaderRoute: typeof AuthBedrockknowledgeBasesListKnowledgeBasesCreateRouteImport
       parentRoute: typeof AuthBedrockRouteRoute
     }
     '/_auth/bedrock/(model-access)/list-model-access/': {
@@ -2199,6 +2219,7 @@ declare module '@tanstack/react-router' {
 interface AuthBedrockRouteRouteChildren {
   AuthBedrockguardrailsListGuardrailsCreateRoute: typeof AuthBedrockguardrailsListGuardrailsCreateRoute
   AuthBedrockknowledgeBasesListKnowledgeBasesKnowledgeBaseIdRoute: typeof AuthBedrockknowledgeBasesListKnowledgeBasesKnowledgeBaseIdRoute
+  AuthBedrockknowledgeBasesListKnowledgeBasesCreateRoute: typeof AuthBedrockknowledgeBasesListKnowledgeBasesCreateRoute
   AuthBedrockcatalogListModelCatalogIndexRoute: typeof AuthBedrockcatalogListModelCatalogIndexRoute
   AuthBedrockguardrailsListGuardrailsIndexRoute: typeof AuthBedrockguardrailsListGuardrailsIndexRoute
   AuthBedrockknowledgeBasesListKnowledgeBasesIndexRoute: typeof AuthBedrockknowledgeBasesListKnowledgeBasesIndexRoute
@@ -2213,6 +2234,8 @@ const AuthBedrockRouteRouteChildren: AuthBedrockRouteRouteChildren = {
     AuthBedrockguardrailsListGuardrailsCreateRoute,
   AuthBedrockknowledgeBasesListKnowledgeBasesKnowledgeBaseIdRoute:
     AuthBedrockknowledgeBasesListKnowledgeBasesKnowledgeBaseIdRoute,
+  AuthBedrockknowledgeBasesListKnowledgeBasesCreateRoute:
+    AuthBedrockknowledgeBasesListKnowledgeBasesCreateRoute,
   AuthBedrockcatalogListModelCatalogIndexRoute:
     AuthBedrockcatalogListModelCatalogIndexRoute,
   AuthBedrockguardrailsListGuardrailsIndexRoute:

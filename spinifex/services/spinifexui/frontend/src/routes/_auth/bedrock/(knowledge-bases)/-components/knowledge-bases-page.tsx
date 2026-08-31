@@ -1,9 +1,11 @@
 import type { KnowledgeBaseSummary } from "@aws-sdk/client-bedrock-agent"
 import { useSuspenseQuery } from "@tanstack/react-query"
+import { Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
+import { buttonVariants } from "@/components/ui/button"
 import { knowledgeBasesQueryOptions } from "@/queries/bedrockAgent"
 
 export function KnowledgeBasesPage() {
@@ -19,7 +21,17 @@ export function KnowledgeBasesPage() {
 
   return (
     <>
-      <PageHeading title="Knowledge Bases" />
+      <PageHeading
+        actions={
+          <Link
+            className={buttonVariants({ size: "sm" })}
+            to="/bedrock/list-knowledge-bases/create"
+          >
+            Create knowledge base
+          </Link>
+        }
+        title="Knowledge Bases"
+      />
 
       {knowledgeBases.length > 0 ? (
         <div className="space-y-4">

@@ -1,1 +1,0 @@
-import{n as e}from"./dist-dTjnbiNm.js";function t(t){return e(t.defaultTagName??`div`,t,t)}export{t};

@@ -39,8 +39,8 @@ func TestSGManager_EnsureSG_AppliesInfraPlusTenantACLs(t *testing.T) {
 
 	storedPG, ok := m.PortGroups[pg]
 	require.True(t, ok)
-	// 4 infra + 2 ingress + 1 egress = 7 ACLs.
-	assert.Len(t, storedPG.ACLs, 7)
+	// 6 infra + 2 ingress + 1 egress = 9 ACLs.
+	assert.Len(t, storedPG.ACLs, 9)
 }
 
 func TestSGManager_UpdateSG_ReplacesACLSet(t *testing.T) {
@@ -53,7 +53,7 @@ func TestSGManager_UpdateSG_ReplacesACLSet(t *testing.T) {
 		IngressRules: []Rule{{IPProtocol: "tcp", FromPort: 22, ToPort: 22, CIDR: "10.0.0.0/8"}},
 	}))
 	firstCount := len(m.PortGroups[pg].ACLs)
-	assert.Equal(t, 5, firstCount) // 4 infra + 1 tenant
+	assert.Equal(t, 7, firstCount) // 6 infra + 1 tenant
 
 	// Replace with a different set — wider ingress, no egress.
 	require.NoError(t, sg.UpdateSG(ctx, SGSpec{
@@ -64,7 +64,7 @@ func TestSGManager_UpdateSG_ReplacesACLSet(t *testing.T) {
 			{IPProtocol: "icmp", CIDR: "0.0.0.0/0"},
 		},
 	}))
-	assert.Len(t, m.PortGroups[pg].ACLs, 7) // 4 infra + 3 tenant
+	assert.Len(t, m.PortGroups[pg].ACLs, 9) // 6 infra + 3 tenant
 }
 
 func TestSGManager_DeleteSG_ClearsACLsKeepsPortGroup(t *testing.T) {

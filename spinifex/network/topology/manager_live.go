@@ -301,6 +301,11 @@ func (m *liveManager) EnsurePort(ctx context.Context, spec PortSpec) error {
 	if spec.PortID == "" || spec.SubnetID == "" {
 		return fmt.Errorf("EnsurePort: PortID/SubnetID required")
 	}
+	// A port in no port group matches no SG ACL, including the per-group
+	// default-denies, so it would come up unrestricted.
+	if len(spec.SGIDs) == 0 {
+		return fmt.Errorf("EnsurePort: %q has no security groups", spec.PortID)
+	}
 	portName := Port(spec.PortID)
 	switchName := SubnetSwitch(spec.SubnetID)
 
@@ -436,6 +441,11 @@ func (m *liveManager) DeleteSGPortGroupByName(ctx context.Context, pgName string
 func (m *liveManager) SetPortSecurityGroups(ctx context.Context, portID string, sgIDs []string) error {
 	if m.ovn == nil {
 		return fmt.Errorf("OVN client not connected")
+	}
+	// Stripping the last group would leave a live port unrestricted; teardown
+	// goes through DeletePort, which clears memberships and removes the LSP.
+	if len(sgIDs) == 0 {
+		return fmt.Errorf("SetPortSecurityGroups: %q would be left in no port group", portID)
 	}
 	portName := Port(portID)
 	if _, err := m.reconcilePortSGs(ctx, portName, sgIDs); err != nil {

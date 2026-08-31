@@ -152,7 +152,10 @@ func (r *Registry) RunObject(ctx context.Context, target string, objects objects
 		return fmt.Errorf("read version for %s: %w", target, err)
 	}
 
-	if current >= targetVersion {
+	if current > targetVersion {
+		return SchemaAheadError{Bucket: target, Found: current, Understood: targetVersion}
+	}
+	if current == targetVersion {
 		return nil
 	}
 
@@ -207,6 +210,25 @@ func (r *Registry) RunObject(ctx context.Context, target string, objects objects
 	return nil
 }
 
+// SchemaAheadError reports a bucket migrated past what this build understands,
+// which means another node in the cluster is running a newer release.
+//
+// Stopping is the point. A migration only ever adds steps, so a newer schema is
+// one this build has no code for: it would read the keys it knows, miss the
+// ones it does not, and write back a view of the bucket assembled from half of
+// it. Refusing to open is recoverable; that is not.
+type SchemaAheadError struct {
+	Bucket     string
+	Found      int
+	Understood int
+}
+
+func (e SchemaAheadError) Error() string {
+	return fmt.Sprintf(
+		"%s is at schema version %d but this build understands %d: another node is running a newer release of Spinifex; upgrade this node to match",
+		e.Bucket, e.Found, e.Understood)
+}
+
 // RunKVWithJetStream is RunKV with a JetStream handle attached to each
 // migration's KVContext, enabling cross-bucket reads (e.g. owner-attribution
 // during a backfill). Prefer plain RunKV when the migration is self-contained.
@@ -226,7 +248,10 @@ func (r *Registry) runKV(ctx context.Context, bucket string, kv jetstream.KeyVal
 		return fmt.Errorf("read version for %s: %w", bucket, err)
 	}
 
-	if current >= targetVersion {
+	if current > targetVersion {
+		return SchemaAheadError{Bucket: bucket, Found: current, Understood: targetVersion}
+	}
+	if current == targetVersion {
 		return nil
 	}
 

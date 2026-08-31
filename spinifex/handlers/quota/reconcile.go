@@ -6,49 +6,28 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
 )
 
 // AccountLister enumerates the account IDs whose vCPU counters reconcile should
-// recompute. It is satisfied by the gateway's active-account enumerator, so a
-// global describe (which does not exist) is never needed: each account is swept
-// through its own account-filtered Describe* call.
+// recompute. It is satisfied by the gateway's active-account enumerator, and is
+// what tells a whole-set pass about an account holding nothing: an account with
+// no instances is absent from the scan, so only this list can zero it.
 type AccountLister func() ([]string, error)
-
-// InstanceLister returns the reservations one account currently holds and whether
-// the sweep was complete. The production implementation is the account-filtered
-// DescribeInstances fan-out, which bundles running plus stopped plus terminated;
-// reconcile drops the terminal set so only the "existing" (running plus stopped)
-// vCPUs are summed. complete is false when a node or instance bucket did not
-// answer, so reconcile must not lower a counter from that partial view.
-type InstanceLister func(accountID string) (reservations []*ec2.Reservation, complete bool, err error)
-
-// NATSInstanceLister builds the production InstanceLister from a NATS connection
-// and the configured cluster node count. The count is the expected node total,
-// not the live-active count, so a node that is down makes the sweep incomplete
-// rather than silently dropping its instances; reconcile then leaves the counter
-// untouched instead of lowering it. expectedNodes is re-evaluated per call so a
-// config change between passes is reflected without a gateway restart.
-func NATSInstanceLister(natsConn *nats.Conn, expectedNodes func() int) InstanceLister {
-	return func(accountID string) ([]*ec2.Reservation, bool, error) {
-		return gateway_ec2_instance.DescribeInstancesForReconcile(
-			context.Background(), &ec2.DescribeInstancesInput{}, natsConn, expectedNodes(), accountID)
-	}
-}
 
 // Reconcile recomputes every account's vCPU counter from the live running-plus-
 // stopped instance set and CAS-overwrites it. It is the only path that lowers a
 // counter: it corrects the drift an out-of-band termination or a retype leaves
 // behind and zeroes accounts that now hold nothing. The system account is exempt
-// and never charged. A per-account describe or write failure is logged and the
-// pass continues; the first such error is returned so the caller can surface it.
-// A counter is only lowered when the sweep was complete (every node and instance
-// bucket answered); a partial sweep may raise but never lower, so a transient
-// node outage cannot silently under-count usage and lift the cap.
-func (s *Service) Reconcile(ctx context.Context, accounts AccountLister, list InstanceLister) error {
+// and never charged. A per-account write failure is logged and the pass
+// continues; the first such error is returned so the caller can surface it.
+//
+// A counter is only lowered from a view good enough to lower it: the scan
+// succeeded, and the counter has not moved since the revision read before the
+// scan started. Otherwise the pass may raise but never lower, so an under-count
+// cannot silently lift the cap.
+func (s *Service) Reconcile(ctx context.Context, accounts AccountLister, list InstanceVCPULister) error {
 	if s == nil || !s.limits.Enabled {
 		return nil
 	}
@@ -56,23 +35,31 @@ func (s *Service) Reconcile(ctx context.Context, accounts AccountLister, list In
 	if err != nil {
 		return fmt.Errorf("quota reconcile: list accounts: %w", err)
 	}
-	var firstErr error
+	charged := make([]string, 0, len(ids))
 	for _, accountID := range ids {
+		if accountID != utils.GlobalAccountID {
+			charged = append(charged, accountID)
+		}
+	}
+
+	// Revisions come before the scan, not after: a charge landing while the
+	// scan runs moves the revision, and the write then loses to the charge
+	// rather than overwriting a launch the scan never saw.
+	before := s.counterRevisions(ctx, charged)
+	totals, complete, err := list(ctx)
+	if err != nil {
+		slog.Warn("quota reconcile: instance scan failed, counters left unchanged", "err", err)
+		return err
+	}
+
+	var firstErr error
+	for _, accountID := range charged {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if accountID == utils.GlobalAccountID {
-			continue
-		}
-		reservations, complete, err := list(accountID)
-		if err != nil {
-			slog.Warn("quota reconcile: describe failed, counter left unchanged", "account", accountID, "err", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		if err := s.reconcileVCPU(ctx, accountID, sumReservationVCPUs(reservations), complete); err != nil {
+		// An account absent from the scan holds nothing and is zeroed, which
+		// is the drift an out-of-band termination leaves behind.
+		if err := s.reconcileVCPU(ctx, accountID, totals[accountID], complete, before[accountID]); err != nil {
 			slog.Warn("quota reconcile: counter overwrite failed", "account", accountID, "err", err)
 			if firstErr == nil {
 				firstErr = err
@@ -80,6 +67,42 @@ func (s *Service) Reconcile(ctx context.Context, accounts AccountLister, list In
 		}
 	}
 	return firstErr
+}
+
+// ReconcileAccount recomputes one account's counter. It is the per-key entry
+// point: a change to one instance costs that account's recompute rather than a
+// sweep of every account. The scan still reads the whole record space, because
+// nothing indexes it by account, but it runs once per settled burst instead of
+// once per account per tick.
+func (s *Service) ReconcileAccount(ctx context.Context, accountID string, list InstanceVCPULister) error {
+	if s == nil || !s.limits.Enabled || accountID == utils.GlobalAccountID {
+		return nil
+	}
+	before := s.counterRevisions(ctx, []string{accountID})
+	totals, complete, err := list(ctx)
+	if err != nil {
+		return fmt.Errorf("quota reconcile %s: instance scan: %w", accountID, err)
+	}
+	if err := s.reconcileVCPU(ctx, accountID, totals[accountID], complete, before[accountID]); err != nil {
+		return fmt.Errorf("quota reconcile %s: counter overwrite: %w", accountID, err)
+	}
+	return nil
+}
+
+// counterRevisions reads the current revision of each account's counter. A
+// read that fails reports revision zero, which reads as "no counter yet" and
+// makes the later write a create that a concurrent charge wins.
+func (s *Service) counterRevisions(ctx context.Context, accountIDs []string) map[string]uint64 {
+	out := make(map[string]uint64, len(accountIDs))
+	for _, accountID := range accountIDs {
+		_, revision, err := s.readVCPU(ctx, accountID)
+		if err != nil {
+			slog.Warn("quota reconcile: counter revision read failed", "account", accountID, "err", err)
+			continue
+		}
+		out[accountID] = revision
+	}
+	return out
 }
 
 // sumReservationVCPUs totals the catalog vCPUs of every non-terminal instance

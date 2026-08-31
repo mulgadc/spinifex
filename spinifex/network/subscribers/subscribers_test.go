@@ -655,10 +655,12 @@ func TestHandlePort_FlushesStaleMACBinding(t *testing.T) {
 
 	require.NoError(t, topo.EnsureVPC(ctx, topology.VPCSpec{VPCID: "vpc-a", CIDR: netip.MustParsePrefix("172.31.0.0/16")}))
 	require.NoError(t, topo.EnsureSubnet(ctx, topology.SubnetSpec{SubnetID: "subnet-a", VPCID: "vpc-a", CIDR: netip.MustParsePrefix("172.31.0.0/24")}))
+	require.NoError(t, topo.EnsureSGPortGroup(ctx, "sg-a"))
 
 	evt := PortEvent{
 		NetworkInterfaceId: "eni-new", SubnetId: "subnet-a", VpcId: "vpc-a",
 		PrivateIpAddress: "172.31.0.4", MacAddress: "02:00:00:00:00:aa",
+		SecurityGroupIds: []string{"sg-a"},
 	}
 
 	sub.handleCreatePort(&nats.Msg{Data: mustJSON(t, evt)})

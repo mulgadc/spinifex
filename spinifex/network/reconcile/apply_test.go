@@ -90,7 +90,7 @@ func TestReconcile_PortSuppressDHCP(t *testing.T) {
 	intent.Ports["eni-static"] = topology.PortSpec{
 		PortID: "eni-static", SubnetID: "subnet-a", VPCID: "vpc-a",
 		PrivateIP: netip.MustParseAddr("10.0.1.11"), MAC: mac,
-		SuppressDHCP: true,
+		SGIDs: []string{"sg-a"}, SuppressDHCP: true,
 	}
 
 	if err := rec.Reconcile(ctx, intent); err != nil {
@@ -483,6 +483,125 @@ func TestReconcile_PortMembershipDriftCorrected(t *testing.T) {
 	storedPort := m.Ports["port-"+port.PortID]
 	if !slices.Contains(pgB.Ports, storedPort.UUID) {
 		t.Errorf("ENI port not joined to new SG port group on drift")
+	}
+}
+
+// Every SG ACL, including the priority 900/800 default-denies, hangs off a port
+// group, so a port in none of them is unrestricted. When a port's policy cannot
+// be programmed in full, applyPorts must refuse the port rather than create it.
+func TestReconcile_UnprogrammablePolicyDoesNotCreatePort(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name   string
+		mutate func(*IntentState)
+	}{
+		{
+			// The OVN-recreate / cold-chassis window: applySGs has not yet
+			// built the port group this pass.
+			name: "every port group missing",
+			mutate: func(in *IntentState) {
+				delete(in.SGs, "sg-a")
+			},
+		},
+		{
+			// A partial miss must not land the port in the subset that exists:
+			// the absent SG's rules would silently not apply.
+			name: "one port group missing",
+			mutate: func(in *IntentState) {
+				port := in.Ports["eni-a"]
+				port.SGIDs = append(port.SGIDs, "sg-b")
+				in.Ports["eni-a"] = port
+			},
+		},
+		{
+			// A legacy ENI record written before SG defaulting: the field is
+			// omitempty and unmarshals to nil with no migration to backfill it.
+			name: "no security groups at all",
+			mutate: func(in *IntentState) {
+				port := in.Ports["eni-a"]
+				port.SGIDs = nil
+				in.Ports["eni-a"] = port
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, m := newTestReconciler(t)
+			intent := freshIntent(t)
+			tc.mutate(&intent)
+
+			err := rec.Reconcile(ctx, intent)
+			if !errors.Is(err, ErrPassIncomplete) {
+				t.Errorf("Reconcile err = %v, want ErrPassIncomplete: the port must be reported unconverged", err)
+			}
+			if _, ok := m.Ports["port-eni-a"]; ok {
+				t.Error("port created with an unprogrammable policy — it would be unrestricted")
+			}
+		})
+	}
+}
+
+// The same rule on the update path: an existing port whose desired groups have
+// gone missing keeps the memberships it has. Applying the diff would strip a
+// live guest bare, which is worse than leaving it on a stale policy.
+func TestReconcile_UnprogrammablePolicyKeepsExistingMemberships(t *testing.T) {
+	ctx := context.Background()
+	rec, m := newTestReconciler(t)
+
+	intent := freshIntent(t)
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile #1: %v", err)
+	}
+	if m.Ports["port-eni-a"] == nil {
+		t.Fatal("ENI port not created")
+	}
+
+	// A pass whose EnsureSGPortGroup failed sees the port group as absent while
+	// the LSP is still joined to it in OVN.
+	actual := newActualState()
+	var res passResult
+	rec.applyPorts(ctx, intent, actual, false, &res)
+	if len(res.failures) == 0 {
+		t.Error("applyPorts reported no failure for an unprogrammable policy")
+	}
+
+	names, err := m.ListPortGroupsForPort(ctx, "port-eni-a")
+	if err != nil {
+		t.Fatalf("ListPortGroupsForPort: %v", err)
+	}
+	if len(names) == 0 {
+		t.Error("live port stripped of every port group — it is now unrestricted")
+	}
+}
+
+// Once applySGs catches up, the next pass creates the port and joins it: the
+// refusal is a window that heals, not a permanent block.
+func TestReconcile_RefusedPortHealsOncePortGroupExists(t *testing.T) {
+	ctx := context.Background()
+	rec, m := newTestReconciler(t)
+
+	intent := freshIntent(t)
+	withoutSG := intent
+	withoutSG.SGs = map[string]policy.SGSpec{}
+	if err := rec.Reconcile(ctx, withoutSG); !errors.Is(err, ErrPassIncomplete) {
+		t.Fatalf("Reconcile #1 err = %v, want ErrPassIncomplete", err)
+	}
+	if _, ok := m.Ports["port-eni-a"]; ok {
+		t.Fatal("port created before its port group existed")
+	}
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile #2: %v", err)
+	}
+	storedPort := m.Ports["port-eni-a"]
+	if storedPort == nil {
+		t.Fatal("port not created once its port group existed")
+	}
+	pg := m.PortGroups[topology.SecurityGroupPortGroup("sg-a")]
+	if pg == nil || !slices.Contains(pg.Ports, storedPort.UUID) {
+		t.Error("healed port not joined to its SG port group")
 	}
 }
 

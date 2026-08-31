@@ -825,6 +825,11 @@ func TestValidateSGRule(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			// Fixtures exercise CidrIp/SourceSG; supply a valid protocol so the
+			// protocol check is never what fails.
+			if c.rule.IpProtocol == "" {
+				c.rule.IpProtocol = "-1"
+			}
 			err := validateSGRule(c.rule)
 			if c.wantErr {
 				assert.Error(t, err)
@@ -832,6 +837,42 @@ func TestValidateSGRule(t *testing.T) {
 				assert.NoError(t, err)
 			}
 		})
+	}
+}
+
+// validateSGRule is the last gate before the OVN ACL builder, which emits no L4
+// predicate for a protocol it does not recognise. Only canonical names pass.
+func TestValidateSGRule_Protocol(t *testing.T) {
+	for _, proto := range []string{"tcp", "udp", "icmp", "-1"} {
+		assert.NoError(t, validateSGRule(SGRule{IpProtocol: proto, CidrIp: "10.0.0.0/8"}), "protocol %q", proto)
+	}
+	for _, proto := range []string{"", "6", "17", "1", "58", "47", "icmpv6", "banana"} {
+		assert.Error(t, validateSGRule(SGRule{IpProtocol: proto, CidrIp: "10.0.0.0/8"}), "protocol %q", proto)
+	}
+}
+
+func TestNormalizeIPProtocol(t *testing.T) {
+	cases := map[string]string{
+		"":     "-1",
+		"-1":   "-1",
+		"tcp":  "tcp",
+		"TCP":  "tcp",
+		"6":    "tcp",
+		"udp":  "udp",
+		"17":   "udp",
+		"icmp": "icmp",
+		"1":    "icmp",
+	}
+	for in, want := range cases {
+		got, err := normalizeIPProtocol(in)
+		assert.NoError(t, err, "protocol %q", in)
+		assert.Equal(t, want, got, "protocol %q", in)
+	}
+
+	// 58/icmpv6 is rejected with the rest: the ACL builder is IPv4-only.
+	for _, in := range []string{"58", "icmpv6", "47", "50", "0", "256", "banana", "tcp; drop"} {
+		_, err := normalizeIPProtocol(in)
+		assert.Error(t, err, "protocol %q", in)
 	}
 }
 
@@ -908,6 +949,70 @@ func TestAuthorizeSecurityGroupIngress_AcceptsValidSourceSG(t *testing.T) {
 		}},
 	}, testAccountID)
 	require.NoError(t, err)
+}
+
+// --protocol 6 must be stored as tcp, so it builds the same ACL as
+// --protocol tcp instead of an L4-less match that allows every IP protocol.
+func TestAuthorizeSecurityGroupIngress_NormalizesNumericProtocol(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "numeric-proto-sg")
+
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("6"),
+			FromPort:   aws.Int64(22),
+			ToPort:     aws.Int64(22),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroups, 1)
+	require.Len(t, out.SecurityGroups[0].IpPermissions, 1)
+	assert.Equal(t, "tcp", aws.StringValue(out.SecurityGroups[0].IpPermissions[0].IpProtocol))
+
+	// The rule was authorized as "6"; revoking it as "tcp" must match.
+	_, err = svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(22),
+			ToPort:     aws.Int64(22),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err = svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroups, 1)
+	assert.Empty(t, out.SecurityGroups[0].IpPermissions)
+}
+
+func TestAuthorizeSecurityGroupIngress_RejectsUnsupportedProtocol(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "bad-proto-sg")
+
+	for _, proto := range []string{"58", "icmpv6", "47", "banana"} {
+		_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId: aws.String(sgID),
+			IpPermissions: []*ec2.IpPermission{{
+				IpProtocol: aws.String(proto),
+				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+			}},
+		}, testAccountID)
+		require.Error(t, err, "protocol %q", proto)
+		assert.Contains(t, err.Error(), "InvalidParameterValue")
+	}
 }
 
 // --- DescribeSecurityGroups filter tests ---

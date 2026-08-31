@@ -323,6 +323,10 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
 	}
 
+	if err := validatePermissionsBoundary(input.PermissionsBoundary); err != nil {
+		return nil, err
+	}
+
 	path := "/"
 	if input.Path != nil {
 		path = *input.Path
@@ -1982,6 +1986,17 @@ func validatePolicyName(name string) error {
 		}
 	}
 	return nil
+}
+
+// validatePermissionsBoundary rejects a boundary the evaluator cannot enforce.
+// Storing an identity with an unenforced boundary would widen access silently,
+// so the create fails visibly instead.
+func validatePermissionsBoundary(boundary *string) error {
+	if aws.StringValue(boundary) == "" {
+		return nil
+	}
+	return awserrors.Errorf(awserrors.ErrorValidationError,
+		"PermissionsBoundary is not supported in this release; omit it and scope the identity with its attached policies instead")
 }
 
 func validatePath(path string) error {

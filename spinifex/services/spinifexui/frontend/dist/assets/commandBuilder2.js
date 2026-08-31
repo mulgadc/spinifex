@@ -1,1 +1,0 @@
-import{Lt as e,_t as t}from"./cluster-config.js";import{Aa as n}from"./awsClient.js";var r=e(n,`AmazonBedrockAgentBuildTimeLambda`,`BedrockAgentClient`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

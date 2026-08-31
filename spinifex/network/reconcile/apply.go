@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -271,6 +272,30 @@ func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual Ac
 	}
 }
 
+// desiredPortGroups maps an ENI's SGs to OVN port group names, erroring unless
+// every one of them exists. An empty result is never valid: a port in no port
+// group matches no SG ACL, including the per-group default-denies, so it would
+// come up unrestricted.
+func desiredPortGroups(spec topology.PortSpec, actual ActualState) ([]string, error) {
+	if len(spec.SGIDs) == 0 {
+		return nil, errors.New("ENI has no security groups")
+	}
+	pgNames := make([]string, 0, len(spec.SGIDs))
+	var missing []string
+	for _, sgID := range spec.SGIDs {
+		pgName := topology.SecurityGroupPortGroup(sgID)
+		if _, ok := actual.PortGroups[pgName]; !ok {
+			missing = append(missing, pgName)
+			continue
+		}
+		pgNames = append(pgNames, pgName)
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("security group port groups missing in OVN: %s", strings.Join(missing, ", "))
+	}
+	return pgNames, nil
+}
+
 // applyPorts ensures each intent ENI has an LSP with PG memberships matching its
 // SGIDs. Existing ports use diff-based UpdatePortGroupMemberships to avoid gaps.
 // When pruneOrphans is true, ENI LSPs with no matching intent ENI are torn down;
@@ -279,15 +304,13 @@ func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual 
 	for portID, spec := range intent.Ports {
 		portName := topology.Port(portID)
 		switchName := topology.SubnetSwitch(spec.SubnetID)
-		desiredPGs := make([]string, 0, len(spec.SGIDs))
-		for _, sgID := range spec.SGIDs {
-			pgName := topology.SecurityGroupPortGroup(sgID)
-			if _, ok := actual.PortGroups[pgName]; !ok {
-				slog.Warn("reconcile/apply: skipping port SG membership — port group missing in OVN",
-					"port", portName, "sg", sgID, "pg", pgName)
-				continue
-			}
-			desiredPGs = append(desiredPGs, pgName)
+		desiredPGs, err := desiredPortGroups(spec, actual)
+		if err != nil {
+			// Fail closed. Every SG ACL, including the default-denies, hangs off
+			// a port group, so a port in none of them is unrestricted.
+			slog.Error("reconcile/apply: refusing port with unprogrammable policy", "port", portName, "err", err)
+			res.fail(classPort, portName, err)
+			continue
 		}
 
 		if _, err := r.ovn.GetLogicalSwitchPort(ctx, portName); err != nil {

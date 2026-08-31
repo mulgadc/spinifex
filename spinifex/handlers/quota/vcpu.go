@@ -96,15 +96,48 @@ func (s *Service) setVCPU(ctx context.Context, accountID string, value int) erro
 	})
 }
 
+// setVCPUAt lowers or raises accountID's counter to value, but only while the
+// counter still stands at sinceRevision.
+//
+// The guard is what stops a scan clobbering a launch it never saw: ChargeLaunch
+// landing between the revision read and this write moves the revision, so the
+// charge wins and the scan is dropped for the next pass to settle. Without it
+// the absolute overwrite would silently undo the charge and lift the cap.
+func (s *Service) setVCPUAt(ctx context.Context, accountID string, value int, sinceRevision uint64) error {
+	current, revision, err := s.readVCPU(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	if revision != sinceRevision || current == value {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if revision == 0 {
+		_, err = s.usage.Create(ctx, accountID, data)
+	} else {
+		_, err = s.usage.Update(ctx, accountID, data, revision)
+	}
+	// Losing the race is the guard working, not a failure: a charge got there
+	// first and the next pass recomputes against it.
+	if errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		return nil
+	}
+	return err
+}
+
 // reconcileVCPU writes accountID's counter from a reconcile sweep. A complete
-// sweep overwrites unconditionally (the only path that may lower a counter). An
-// incomplete sweep — a node down or a failed bucket query — may only raise the
-// counter: lowering from a partial view would under-count usage and lift the
-// cap, so a short count is dropped and left for the next clean pass. Raising is
-// always safe, since the instances actually observed do exist.
-func (s *Service) reconcileVCPU(ctx context.Context, accountID string, value int, complete bool) error {
+// sweep overwrites (the only path that may lower a counter), guarded on the
+// counter not having moved since sinceRevision. An incomplete sweep — a failed
+// scan — may only raise the counter: lowering from a partial view would
+// under-count usage and lift the cap, so a short count is dropped and left for
+// the next clean pass. Raising is always safe, since the instances actually
+// observed do exist.
+func (s *Service) reconcileVCPU(ctx context.Context, accountID string, value int, complete bool, sinceRevision uint64) error {
 	if complete {
-		return s.setVCPU(ctx, accountID, value)
+		return s.setVCPUAt(ctx, accountID, value, sinceRevision)
 	}
 	current, _, err := s.readVCPU(ctx, accountID)
 	if err != nil {

@@ -21,6 +21,11 @@ const (
 	// ACLPriorityTenantAllow: tenant ingress/egress allows. Not logged.
 	ACLPriorityTenantAllow = 1000
 
+	// ACLPriorityAllowARP sits above the default-denies, which match every
+	// ethertype. ACL tables run before the L2 lookup, so without this the
+	// denies black-hole ARP and take IPv4 with it.
+	ACLPriorityAllowARP = 950
+
 	// ACLPriorityDefaultDenyIngress: logged drop. CMMC SC.L1-3.13.1.
 	ACLPriorityDefaultDenyIngress = 900
 
@@ -43,62 +48,79 @@ type Rule struct {
 }
 
 // InfrastructureACLs returns the platform ACLs every PG carries: logged
-// 900/800 default-denies (CMMC SC.L1-3.13.1) and 1050 DHCPv4 allows.
+// 900/800 default-denies (CMMC SC.L1-3.13.1), 1050 DHCPv4 allows and the 950
+// ARP allows the denies would otherwise swallow.
 func InfrastructureACLs(portGroupName string) []ovn.ACLSpec {
 	return []ovn.ACLSpec{
 		denyIngressACL(portGroupName),
 		denyEgressACL(portGroupName),
 		dhcpEgressACL(portGroupName),
 		dhcpIngressACL(portGroupName),
+		arpEgressACL(portGroupName),
+		arpIngressACL(portGroupName),
 	}
 }
 
 // RuleACLSpecs builds priority-1000 allow ACLs with "allow-related" action.
-func RuleACLSpecs(portGroupName string, ingress, egress []Rule) []ovn.ACLSpec {
+func RuleACLSpecs(portGroupName string, ingress, egress []Rule) ([]ovn.ACLSpec, error) {
 	specs := make([]ovn.ACLSpec, 0, len(ingress)+len(egress))
 	for _, rule := range ingress {
+		match, err := BuildIngressACLMatch(portGroupName, rule)
+		if err != nil {
+			return nil, err
+		}
 		specs = append(specs, ovn.ACLSpec{
 			Direction: "to-lport",
 			Priority:  ACLPriorityTenantAllow,
-			Match:     BuildIngressACLMatch(portGroupName, rule),
+			Match:     match,
 			Action:    "allow-related",
 		})
 	}
 	for _, rule := range egress {
+		match, err := BuildEgressACLMatch(portGroupName, rule)
+		if err != nil {
+			return nil, err
+		}
 		specs = append(specs, ovn.ACLSpec{
 			Direction: "from-lport",
 			Priority:  ACLPriorityTenantAllow,
-			Match:     BuildEgressACLMatch(portGroupName, rule),
+			Match:     match,
 			Action:    "allow-related",
 		})
 	}
-	return specs
+	return specs, nil
 }
 
 // BuildIngressACLMatch builds an OVN to-lport match expression.
-func BuildIngressACLMatch(portGroupName string, rule Rule) string {
+func BuildIngressACLMatch(portGroupName string, rule Rule) (string, error) {
 	parts := []string{fmt.Sprintf("outport == @%s", portGroupName), "ip4"}
-	parts = appendProtocolMatch(parts, rule)
+	parts, err := appendProtocolMatch(parts, rule)
+	if err != nil {
+		return "", err
+	}
 	if rule.CIDR != "" && rule.CIDR != "0.0.0.0/0" {
 		parts = append(parts, fmt.Sprintf("ip4.src == %s", rule.CIDR))
 	}
 	if rule.SourceSG != "" {
 		parts = append(parts, fmt.Sprintf("ip4.src == $%s", addressSetName(topology.SecurityGroupPortGroup(rule.SourceSG))))
 	}
-	return strings.Join(parts, " && ")
+	return strings.Join(parts, " && "), nil
 }
 
 // BuildEgressACLMatch builds an OVN from-lport match.
-func BuildEgressACLMatch(portGroupName string, rule Rule) string {
+func BuildEgressACLMatch(portGroupName string, rule Rule) (string, error) {
 	parts := []string{fmt.Sprintf("inport == @%s", portGroupName), "ip4"}
-	parts = appendProtocolMatch(parts, rule)
+	parts, err := appendProtocolMatch(parts, rule)
+	if err != nil {
+		return "", err
+	}
 	if rule.CIDR != "" && rule.CIDR != "0.0.0.0/0" {
 		parts = append(parts, fmt.Sprintf("ip4.dst == %s", rule.CIDR))
 	}
 	if rule.SourceSG != "" {
 		parts = append(parts, fmt.Sprintf("ip4.dst == $%s", addressSetName(topology.SecurityGroupPortGroup(rule.SourceSG))))
 	}
-	return strings.Join(parts, " && ")
+	return strings.Join(parts, " && "), nil
 }
 
 // addressSetName returns the ovn-northd-derived SB Address_Set name for a PG's
@@ -107,18 +129,22 @@ func addressSetName(portGroupName string) string {
 	return portGroupName + "_ip4"
 }
 
-func appendProtocolMatch(parts []string, rule Rule) []string {
+// appendProtocolMatch errors on an unrecognised protocol rather than emitting
+// no L4 predicate: a silent no-op here widens the rule to every IP protocol.
+// Callers must normalise numeric IANA values (6, 17, 1) to names first.
+func appendProtocolMatch(parts []string, rule Rule) ([]string, error) {
 	switch rule.IPProtocol {
 	case "tcp":
-		parts = appendPortMatch(parts, "tcp", rule.FromPort, rule.ToPort)
+		return appendPortMatch(parts, "tcp", rule.FromPort, rule.ToPort), nil
 	case "udp":
-		parts = appendPortMatch(parts, "udp", rule.FromPort, rule.ToPort)
+		return appendPortMatch(parts, "udp", rule.FromPort, rule.ToPort), nil
 	case "icmp":
-		parts = append(parts, "icmp4")
+		return append(parts, "icmp4"), nil
 	case "-1", "":
+		return parts, nil
 	default:
+		return nil, fmt.Errorf("unsupported IP protocol %q", rule.IPProtocol)
 	}
-	return parts
 }
 
 func appendPortMatch(parts []string, proto string, fromPort, toPort int64) []string {
@@ -133,11 +159,13 @@ func appendPortMatch(parts []string, proto string, fromPort, toPort int64) []str
 	return parts
 }
 
+// denyIngressACL carries no ethertype qualifier: OVN allows on no-match, so an
+// ip4-scoped deny lets every other ethertype through. ARP is exempted at 950.
 func denyIngressACL(portGroupName string) ovn.ACLSpec {
 	return ovn.ACLSpec{
 		Direction: "to-lport",
 		Priority:  ACLPriorityDefaultDenyIngress,
-		Match:     fmt.Sprintf("outport == @%s && ip4", portGroupName),
+		Match:     fmt.Sprintf("outport == @%s", portGroupName),
 		Action:    "drop",
 		Name:      portGroupName + "-deny-ingress",
 		Log:       true,
@@ -145,15 +173,41 @@ func denyIngressACL(portGroupName string) ovn.ACLSpec {
 	}
 }
 
+// denyEgressACL is unqualified for the same reason as denyIngressACL.
 func denyEgressACL(portGroupName string) ovn.ACLSpec {
 	return ovn.ACLSpec{
 		Direction: "from-lport",
 		Priority:  ACLPriorityDefaultDenyEgress,
-		Match:     fmt.Sprintf("inport == @%s && ip4", portGroupName),
+		Match:     fmt.Sprintf("inport == @%s", portGroupName),
 		Action:    "drop",
 		Name:      portGroupName + "-deny-egress",
 		Log:       true,
 		Severity:  denyACLSeverity,
+	}
+}
+
+// arpEgressACL: ARP out. No IPv6 counterpart — nothing in the stack assigns a
+// guest a routable IPv6 address, so ND and DHCPv6 stay denied rather than
+// becoming an unpoliced side channel.
+func arpEgressACL(portGroupName string) ovn.ACLSpec {
+	return ovn.ACLSpec{
+		Direction: "from-lport",
+		Priority:  ACLPriorityAllowARP,
+		Match:     fmt.Sprintf("inport == @%s && arp", portGroupName),
+		Action:    "allow",
+		Name:      portGroupName + "-allow-arp-egress",
+	}
+}
+
+// arpIngressACL: ARP in. "allow" not "allow-related" — ARP is not an IP
+// protocol and has no conntrack state to relate to.
+func arpIngressACL(portGroupName string) ovn.ACLSpec {
+	return ovn.ACLSpec{
+		Direction: "to-lport",
+		Priority:  ACLPriorityAllowARP,
+		Match:     fmt.Sprintf("outport == @%s && arp", portGroupName),
+		Action:    "allow",
+		Name:      portGroupName + "-allow-arp-ingress",
 	}
 }
 

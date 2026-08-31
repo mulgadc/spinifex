@@ -10,6 +10,23 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
+// reservation builds a single reservation whose instances carry the given type
+// and state. The retype gate still reads the AWS-shaped projection, so these
+// live here now the vCPU sweep sums from the record space instead.
+func reservation(instances ...*ec2.Instance) *ec2.Reservation {
+	return &ec2.Reservation{Instances: instances}
+}
+
+// instance builds one ec2.Instance with a type and state name; an empty state
+// leaves State nil (treated as live).
+func instance(instanceType, stateName string) *ec2.Instance {
+	inst := &ec2.Instance{InstanceType: aws.String(instanceType)}
+	if stateName != "" {
+		inst.State = &ec2.InstanceState{Name: aws.String(stateName)}
+	}
+	return inst
+}
+
 // staticResolver returns an InstanceTypeResolver serving one fixed answer, so a
 // test drives EnforceRetype without a DescribeInstances round trip.
 func staticResolver(instanceType string, ok bool, err error) InstanceTypeResolver {

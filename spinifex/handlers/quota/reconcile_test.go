@@ -5,36 +5,18 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// reservation builds a single reservation whose instances carry the given type
-// and state, so a test can describe an account's running-plus-stopped shape.
-func reservation(instances ...*ec2.Instance) *ec2.Reservation {
-	return &ec2.Reservation{Instances: instances}
-}
-
-// instance builds one ec2.Instance with a type and state name; an empty state
-// leaves State nil (treated as live).
-func instance(instanceType, stateName string) *ec2.Instance {
-	inst := &ec2.Instance{InstanceType: aws.String(instanceType)}
-	if stateName != "" {
-		inst.State = &ec2.InstanceState{Name: aws.String(stateName)}
-	}
-	return inst
-}
-
-// staticLister returns an InstanceLister serving a fixed per-account map as a
-// complete sweep, and records which accounts were described so a test can assert
-// the system account is never swept.
-func staticLister(byAccount map[string][]*ec2.Reservation, seen *[]string) InstanceLister {
-	return func(accountID string) ([]*ec2.Reservation, bool, error) {
-		if seen != nil {
-			*seen = append(*seen, accountID)
+// staticTotals serves a fixed per-account total as one scan, and records how
+// many times it was called so a test can assert the sweep reads the record
+// space once rather than once per account.
+func staticTotals(byAccount map[string]int, complete bool, calls *int) InstanceVCPULister {
+	return func(context.Context) (map[string]int, bool, error) {
+		if calls != nil {
+			*calls++
 		}
-		return byAccount[accountID], true, nil
+		return byAccount, complete, nil
 	}
 }
 
@@ -50,58 +32,51 @@ func TestReconcileCorrectsOverCount(t *testing.T) {
 	if err := s.AddVCPU(t.Context(), testAccount, 16); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
 	}
-	lister := staticLister(map[string][]*ec2.Reservation{
-		testAccount: {reservation(
-			instance("m5.xlarge", ec2.InstanceStateNameRunning),
-			instance("t3.micro", ec2.InstanceStateNameStopped),
-		)},
-	}, nil)
 
-	if err := s.Reconcile(context.Background(), accountList(testAccount), lister); err != nil {
+	if err := s.Reconcile(context.Background(), accountList(testAccount),
+		staticTotals(map[string]int{testAccount: 6}, true, nil)); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	assertCounter(t, s, testAccount, 6)
 }
 
-// A terminated instance still lingering in the terminated KV must not be charged:
-// the counter drops to only the surviving running instance's vCPUs.
-func TestReconcileCorrectsStaleTermination(t *testing.T) {
-	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
-
-	if err := s.AddVCPU(t.Context(), testAccount, 6); err != nil {
-		t.Fatalf("seed AddVCPU: %v", err)
-	}
-	lister := staticLister(map[string][]*ec2.Reservation{
-		testAccount: {reservation(
-			instance("t3.micro", ec2.InstanceStateNameRunning),      // counts: 2
-			instance("m5.xlarge", ec2.InstanceStateNameTerminated),  // excluded
-			instance("c5.large", ec2.InstanceStateNameShuttingDown), // excluded
-		)},
-	}, nil)
-
-	if err := s.Reconcile(context.Background(), accountList(testAccount), lister); err != nil {
-		t.Fatalf("Reconcile: %v", err)
-	}
-	assertCounter(t, s, testAccount, 2)
-}
-
-// An account that has terminated everything is zeroed.
-func TestReconcileZeroesEmptyAccount(t *testing.T) {
+// An account that has terminated everything is absent from the scan entirely,
+// which is the only signal that it now holds nothing, so it must be zeroed
+// rather than skipped.
+func TestReconcileZeroesAccountAbsentFromScan(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	if err := s.AddVCPU(t.Context(), testAccount, 8); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
 	}
-	lister := staticLister(map[string][]*ec2.Reservation{}, nil) // describes empty
 
-	if err := s.Reconcile(context.Background(), accountList(testAccount), lister); err != nil {
+	if err := s.Reconcile(context.Background(), accountList(testAccount),
+		staticTotals(map[string]int{}, true, nil)); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	assertCounter(t, s, testAccount, 0)
 }
 
-// The system account is exempt: it is skipped entirely (never described) and any
-// counter parked under its key is left untouched.
+// One scan covers every account, where the fan-out cost one describe each.
+func TestReconcileScansOnceForEveryAccount(t *testing.T) {
+	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
+
+	const a, b, c = "111111111111", "222222222222", "333333333333"
+	calls := 0
+	if err := s.Reconcile(context.Background(), accountList(a, b, c),
+		staticTotals(map[string]int{a: 2, b: 4, c: 8}, true, &calls)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("scans = %d, want 1 for three accounts", calls)
+	}
+	assertCounter(t, s, a, 2)
+	assertCounter(t, s, b, 4)
+	assertCounter(t, s, c, 8)
+}
+
+// The system account is exempt: any counter parked under its key is left
+// untouched even when the scan reports a total against it.
 func TestReconcileSkipsSystemAccount(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
@@ -109,92 +84,136 @@ func TestReconcileSkipsSystemAccount(t *testing.T) {
 	if _, err := s.usage.PutString(t.Context(), utils.GlobalAccountID, "42"); err != nil {
 		t.Fatalf("seed system counter: %v", err)
 	}
-	var seen []string
-	lister := staticLister(map[string][]*ec2.Reservation{
-		testAccount: {reservation(instance("t3.micro", ec2.InstanceStateNameRunning))},
-	}, &seen)
 
-	if err := s.Reconcile(context.Background(), accountList(utils.GlobalAccountID, testAccount), lister); err != nil {
+	if err := s.Reconcile(context.Background(), accountList(utils.GlobalAccountID, testAccount),
+		staticTotals(map[string]int{utils.GlobalAccountID: 99, testAccount: 2}, true, nil)); err != nil {
 		t.Fatalf("Reconcile: %v", err)
-	}
-	for _, id := range seen {
-		if id == utils.GlobalAccountID {
-			t.Fatalf("system account was described, want skipped")
-		}
 	}
 	assertCounter(t, s, utils.GlobalAccountID, 42)
 	assertCounter(t, s, testAccount, 2)
 }
 
-// A describe failure on one account is logged and the pass continues for the
-// rest; the first error is returned and the failed account's counter is left
-// untouched for the next pass to retry.
-func TestReconcileContinuesOnDescribeError(t *testing.T) {
+// The scan is one read covering every account, so a failed read is not a
+// per-account outage that the pass can continue past: no counter may move, and
+// the error is returned for the next pass to retry.
+func TestReconcileScanFailureLeavesEveryCounterUntouched(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
-	const bad, good = "111111111111", "222222222222"
-	if err := s.AddVCPU(t.Context(), bad, 8); err != nil {
-		t.Fatalf("seed bad: %v", err)
+	const a, b = "111111111111", "222222222222"
+	if err := s.AddVCPU(t.Context(), a, 8); err != nil {
+		t.Fatalf("seed a: %v", err)
 	}
-	sentinel := errors.New("describe boom")
-	lister := func(accountID string) ([]*ec2.Reservation, bool, error) {
-		if accountID == bad {
-			return nil, false, sentinel
-		}
-		return []*ec2.Reservation{reservation(instance("m5.xlarge", ec2.InstanceStateNameRunning))}, true, nil
+	if err := s.AddVCPU(t.Context(), b, 4); err != nil {
+		t.Fatalf("seed b: %v", err)
 	}
+	sentinel := errors.New("scan boom")
+	failing := func(context.Context) (map[string]int, bool, error) { return nil, false, sentinel }
 
-	err := s.Reconcile(context.Background(), accountList(bad, good), lister)
+	err := s.Reconcile(context.Background(), accountList(a, b), failing)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("Reconcile err = %v, want %v", err, sentinel)
 	}
-	assertCounter(t, s, bad, 8) // unchanged: left for the next pass
-	assertCounter(t, s, good, 4)
+	assertCounter(t, s, a, 8)
+	assertCounter(t, s, b, 4)
 }
 
-// An incomplete sweep (a node down or a failed bucket query) must never lower a
-// counter: a short count is dropped and the counter left for the next clean pass.
-// A higher observed count still raises it, since those instances do exist.
+// An incomplete sweep must never lower a counter: a short count is dropped and
+// the counter left for the next clean pass. A higher observed count still
+// raises it, since those instances do exist.
 func TestReconcileIncompleteSweepDoesNotLower(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
-	// Counter holds 8 (two m5.xlarge across two nodes); a partial sweep sees only
-	// one node's 4 vCPUs and reports complete=false.
 	if err := s.AddVCPU(t.Context(), testAccount, 8); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
 	}
-	partial := func(accountID string) ([]*ec2.Reservation, bool, error) {
-		return []*ec2.Reservation{reservation(instance("m5.xlarge", ec2.InstanceStateNameRunning))}, false, nil
-	}
-	if err := s.Reconcile(context.Background(), accountList(testAccount), partial); err != nil {
+	if err := s.Reconcile(context.Background(), accountList(testAccount),
+		staticTotals(map[string]int{testAccount: 4}, false, nil)); err != nil {
 		t.Fatalf("Reconcile partial: %v", err)
 	}
 	assertCounter(t, s, testAccount, 8) // unchanged: a partial sweep cannot lower
 
-	// A partial sweep that observes more than the counter may still raise it.
-	higher := func(accountID string) ([]*ec2.Reservation, bool, error) {
-		return []*ec2.Reservation{reservation(
-			instance("m5.xlarge", ec2.InstanceStateNameRunning),
-			instance("m5.xlarge", ec2.InstanceStateNameRunning),
-			instance("m5.xlarge", ec2.InstanceStateNameRunning),
-		)}, false, nil
-	}
-	if err := s.Reconcile(context.Background(), accountList(testAccount), higher); err != nil {
+	if err := s.Reconcile(context.Background(), accountList(testAccount),
+		staticTotals(map[string]int{testAccount: 12}, false, nil)); err != nil {
 		t.Fatalf("Reconcile raise: %v", err)
 	}
-	assertCounter(t, s, testAccount, 12) // raised to the observed 3 x 4 = 12
+	assertCounter(t, s, testAccount, 12)
 }
 
-// A disabled service never reaches the KV: Reconcile is a no-op even with a nil
-// lister and account enumerator that would otherwise panic.
+// The guard that makes an absolute overwrite safe: a charge landing between the
+// revision read and the write moves the revision, so the charge stands and the
+// scan is dropped. Without it the overwrite would silently undo the launch.
+func TestReconcileDoesNotClobberAChargeLandingMidScan(t *testing.T) {
+	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
+
+	if err := s.AddVCPU(t.Context(), testAccount, 4); err != nil {
+		t.Fatalf("seed AddVCPU: %v", err)
+	}
+	// The scan sees the account holding only the seeded 4 vCPUs; a launch is
+	// charged while it runs, so the counter it would write is already stale.
+	racing := func(context.Context) (map[string]int, bool, error) {
+		if err := s.AddVCPU(context.Background(), testAccount, 2); err != nil {
+			return nil, false, err
+		}
+		return map[string]int{testAccount: 4}, true, nil
+	}
+
+	if err := s.Reconcile(context.Background(), accountList(testAccount), racing); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	assertCounter(t, s, testAccount, 6) // the charge, not the scan's stale 4
+}
+
+// ReconcileAccount is the per-key entry point: it settles the account it was
+// given and leaves every other account alone, which is what makes a change to
+// one instance cost one account's work.
+func TestReconcileAccountTouchesOnlyThatAccount(t *testing.T) {
+	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
+
+	const mine, other = "111111111111", "222222222222"
+	if err := s.AddVCPU(t.Context(), mine, 16); err != nil {
+		t.Fatalf("seed mine: %v", err)
+	}
+	if err := s.AddVCPU(t.Context(), other, 8); err != nil {
+		t.Fatalf("seed other: %v", err)
+	}
+
+	if err := s.ReconcileAccount(context.Background(), mine,
+		staticTotals(map[string]int{mine: 6, other: 0}, true, nil)); err != nil {
+		t.Fatalf("ReconcileAccount: %v", err)
+	}
+	assertCounter(t, s, mine, 6)
+	assertCounter(t, s, other, 8) // untouched, though the scan saw it hold nothing
+}
+
+func TestReconcileAccountSkipsSystemAccount(t *testing.T) {
+	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
+
+	if _, err := s.usage.PutString(t.Context(), utils.GlobalAccountID, "42"); err != nil {
+		t.Fatalf("seed system counter: %v", err)
+	}
+	if err := s.ReconcileAccount(context.Background(), utils.GlobalAccountID,
+		staticTotals(map[string]int{utils.GlobalAccountID: 0}, true, nil)); err != nil {
+		t.Fatalf("ReconcileAccount: %v", err)
+	}
+	assertCounter(t, s, utils.GlobalAccountID, 42)
+}
+
+// A disabled service never reaches the KV: both entry points are a no-op even
+// with a nil lister and account enumerator that would otherwise panic.
 func TestReconcileDisabledNoop(t *testing.T) {
 	s := New(Limits{Enabled: false}, nil)
 	if err := s.Reconcile(context.Background(), nil, nil); err != nil {
 		t.Fatalf("disabled Reconcile = %v, want nil", err)
 	}
+	if err := s.ReconcileAccount(context.Background(), testAccount, nil); err != nil {
+		t.Fatalf("disabled ReconcileAccount = %v, want nil", err)
+	}
 	var nilService *Service
 	if err := nilService.Reconcile(context.Background(), nil, nil); err != nil {
 		t.Fatalf("nil Reconcile = %v, want nil", err)
+	}
+	if err := nilService.ReconcileAccount(context.Background(), testAccount, nil); err != nil {
+		t.Fatalf("nil ReconcileAccount = %v, want nil", err)
 	}
 }
 

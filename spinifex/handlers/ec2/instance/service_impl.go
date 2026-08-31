@@ -614,6 +614,9 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	var instances []*vm.VM
 	var allEC2Instances []*ec2.Instance
 	var lastRunErr error
+	// Whether this call created the instance's ENI, keyed by instance ID. An
+	// abandoned batch deletes the ones it made and only detaches the rest.
+	autoCreatedENI := make(map[string]bool)
 
 	for i := 0; i < launchCount; i++ {
 		instance, ec2Instance, err := s.RunInstance(input)
@@ -716,6 +719,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			eni := eniOut.NetworkInterface
 			instance.ENIId = *eni.NetworkInterfaceId
 			instance.ENIMac = *eni.MacAddress
+			autoCreatedENI[instance.ID] = true
 
 			if _, attachErr := s.eniCreator.AttachENI(ctx, accountID, instance.ENIId, instance.ID, 0); attachErr != nil {
 				// Without the attachment RegisterTargets silently drops the target;
@@ -835,7 +839,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	}
 
 	if len(instances) < minCount {
-		for range instances {
+		// The instances that succeeded are abandoned here too, so their
+		// interfaces and external addresses have to go back with the capacity —
+		// an orphaned ENI pins its subnet, VPC and account undeletable.
+		for _, instance := range instances {
+			s.rollbackPreparedInstance(ctx, accountID, instance, autoCreatedENI[instance.ID])
 			if reservationID == "" {
 				s.resourceMgr.Deallocate(instanceType)
 			} else {
@@ -2572,32 +2580,73 @@ func (s *InstanceServiceImpl) allocatePublicIP(ctx context.Context, eniID, insta
 // rollbackAutoAssignedPublicIP unwinds a failed auto-assign: clears the ENI
 // public IP record, releases the IPAM lease, then detaches and deletes the ENI.
 func (s *InstanceServiceImpl) rollbackAutoAssignedPublicIP(ctx context.Context, accountID, instanceID, eniID, publicIP, poolName string) {
+	s.releaseAutoAssignedPublicIP(ctx, accountID, eniID, publicIP, poolName)
+	s.detachAndDeleteENI(ctx, accountID, instanceID, eniID, true)
+}
+
+// releaseAutoAssignedPublicIP clears the ENI's public IP record and returns the
+// lease to its pool. Best-effort: each step logs and the next still runs.
+func (s *InstanceServiceImpl) releaseAutoAssignedPublicIP(ctx context.Context, accountID, eniID, publicIP, poolName string) {
 	if s.eniCreator != nil {
 		if err := s.eniCreator.UpdateENIPublicIP(ctx, accountID, eniID, "", ""); err != nil {
-			slog.WarnContext(ctx, "PrepareRunInstances: failed to clear ENI public IP during NAT-failure rollback",
+			slog.WarnContext(ctx, "PrepareRunInstances: failed to clear ENI public IP during launch rollback",
 				"eniId", eniID, "publicIp", publicIP, "err", err)
 		}
 	}
 	if s.ipReleaser != nil {
 		if err := s.ipReleaser.ReleaseIP(ctx, poolName, publicIP, eniID); err != nil {
-			slog.WarnContext(ctx, "PrepareRunInstances: failed to release public IP during NAT-failure rollback",
+			slog.WarnContext(ctx, "PrepareRunInstances: failed to release public IP during launch rollback",
 				"publicIp", publicIP, "pool", poolName, "err", err)
 		}
 	}
+}
+
+// detachAndDeleteENI detaches eniID and, when the launch auto-created it,
+// deletes it. A caller-supplied ENI outlives the launch it was offered to and
+// is left available, matching DeleteOnTermination=false on the terminate sweep.
+func (s *InstanceServiceImpl) detachAndDeleteENI(ctx context.Context, accountID, instanceID, eniID string, autoCreated bool) {
 	if s.eniCreator != nil {
 		if err := s.eniCreator.DetachENI(ctx, accountID, eniID); err != nil {
-			slog.WarnContext(ctx, "PrepareRunInstances: failed to detach ENI during NAT-failure rollback",
+			slog.WarnContext(ctx, "PrepareRunInstances: failed to detach ENI during launch rollback",
 				"eniId", eniID, "instanceId", instanceID, "err", err)
 		}
+	}
+	if !autoCreated {
+		return
 	}
 	if s.eniDeleter != nil {
 		if _, err := s.eniDeleter.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
 			NetworkInterfaceId: &eniID,
 		}, accountID); err != nil {
-			slog.WarnContext(ctx, "PrepareRunInstances: failed to delete ENI during NAT-failure rollback",
+			slog.WarnContext(ctx, "PrepareRunInstances: failed to delete ENI during launch rollback",
 				"eniId", eniID, "instanceId", instanceID, "err", err)
 		}
 	}
+}
+
+// rollbackPreparedInstance unwinds the network resources a prepared instance
+// holds when the batch is abandoned, in the reverse order they were taken: NAT
+// rule, external address, then the interface itself. The VM needs no teardown —
+// it is metadata the caller never received.
+func (s *InstanceServiceImpl) rollbackPreparedInstance(ctx context.Context, accountID string, instance *vm.VM, autoCreatedENI bool) {
+	if instance == nil || instance.ENIId == "" {
+		return
+	}
+	if instance.PublicIP != "" {
+		vpcID := ""
+		privateIP := ""
+		if instance.Instance != nil {
+			vpcID = aws.StringValue(instance.Instance.VpcId)
+			privateIP = aws.StringValue(instance.Instance.PrivateIpAddress)
+		}
+		utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", vpcID, instance.PublicIP, privateIP,
+			topology.Port(instance.ENIId), instance.ENIMac)
+		s.releaseAutoAssignedPublicIP(ctx, accountID, instance.ENIId, instance.PublicIP, instance.PublicIPPool)
+	}
+	s.detachAndDeleteENI(ctx, accountID, instance.ID, instance.ENIId, autoCreatedENI)
+	slog.InfoContext(ctx, "PrepareRunInstances: rolled back prepared instance",
+		"instanceId", instance.ID, "eniId", instance.ENIId,
+		"publicIp", instance.PublicIP, "eniAutoCreated", autoCreatedENI)
 }
 
 func (s *InstanceServiceImpl) releaseInstancePublicIP(ctx context.Context, instance *vm.VM, instanceID string) {

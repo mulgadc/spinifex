@@ -1185,8 +1185,56 @@ func (s *stubIGW) AttachIGW(ctx context.Context, spec external.IGWSpec) error {
 func igwIntent(t *testing.T) IntentState {
 	t.Helper()
 	intent := freshIntent(t)
-	intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a"}
+	intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a", RecordKey: "acct.igw-a"}
 	return intent
+}
+
+// The control plane reports an attachment only once a pass confirms it, so the
+// hook must fire on success and stay silent on failure — a record marked
+// attached after a failed attach is the bug this replaced.
+func TestReconcile_MarksIGWAttachedOnlyOnSuccess(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("success", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		var keys []string
+		rec.markAttached = func(_ context.Context, key string) error {
+			keys = append(keys, key)
+			return nil
+		}
+		if err := rec.Reconcile(ctx, igwIntent(t)); err != nil {
+			t.Fatalf("Reconcile = %v, want nil", err)
+		}
+		if want := []string{"acct.igw-a"}; !slices.Equal(keys, want) {
+			t.Errorf("markAttached keys = %v, want %v — a converged attach must be reported "+
+				"or DescribeInternetGateways never stops calling it pending", keys, want)
+		}
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		rec.igw = &stubIGW{IGWManager: rec.igw, attachErr: errors.New("dhcp gw-lrp acquire: context deadline exceeded")}
+		called := false
+		rec.markAttached = func(context.Context, string) error {
+			called = true
+			return nil
+		}
+		if err := rec.Reconcile(ctx, igwIntent(t)); !errors.Is(err, ErrPassIncomplete) {
+			t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
+		}
+		if called {
+			t.Error("markAttached called after a failed attach: the API would report a gateway that is not up")
+		}
+	})
+
+	// vpcd wires the hook, unit callers do not; a nil hook must not panic.
+	t.Run("nil hook", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		rec.markAttached = nil
+		if err := rec.Reconcile(ctx, igwIntent(t)); err != nil {
+			t.Fatalf("Reconcile = %v, want nil with no hook wired", err)
+		}
+	})
 }
 
 // A failed AttachIGW must surface as ErrPassIncomplete rather than a nil return:

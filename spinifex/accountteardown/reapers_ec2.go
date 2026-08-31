@@ -399,7 +399,37 @@ func (r *igwReaper) Delete(ctx context.Context, accountID string, resource Resou
 	_, err := gateway_ec2_igw.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(resource.ID),
 	}, r.nc, accountID)
+	if err != nil && resource.Detail == "" && strings.Contains(err.Error(), awserrors.ErrorDependencyViolation) {
+		return r.deletePendingAttachment(ctx, accountID, resource)
+	}
 	return ignoreAlreadyGone(err)
+}
+
+// deletePendingAttachment handles a gateway whose attach was requested but not
+// yet confirmed, so DescribeInternetGateways reported no attachment to detach
+// and the delete was refused. The VPC is unknown, so every candidate is tried;
+// a detach against the wrong one is rejected harmlessly.
+func (r *igwReaper) deletePendingAttachment(ctx context.Context, accountID string, resource Resource) error {
+	out, err := gateway_ec2_vpc.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{}, r.nc, accountID)
+	if err != nil {
+		return err
+	}
+	for _, vpc := range out.Vpcs {
+		if vpc == nil || aws.StringValue(vpc.VpcId) == "" {
+			continue
+		}
+		if _, err := gateway_ec2_igw.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
+			InternetGatewayId: aws.String(resource.ID),
+			VpcId:             vpc.VpcId,
+		}, r.nc, accountID); err != nil {
+			continue
+		}
+		_, err := gateway_ec2_igw.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{
+			InternetGatewayId: aws.String(resource.ID),
+		}, r.nc, accountID)
+		return ignoreAlreadyGone(err)
+	}
+	return fmt.Errorf("internet gateway %s could not be detached from any VPC in the account", resource.ID)
 }
 
 type routeTableReaper struct{ nc *nats.Conn }

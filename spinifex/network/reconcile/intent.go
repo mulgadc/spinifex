@@ -441,6 +441,7 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		out[rec.VpcId] = external.IGWSpec{
 			VPCID:             rec.VpcId,
 			InternetGatewayID: rec.InternetGatewayId,
+			RecordKey:         key,
 		}
 	}
 	return nil

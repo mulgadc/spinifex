@@ -2,6 +2,7 @@ package handlers_ec2_igw
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -59,6 +60,13 @@ func setupTestIGWService(t *testing.T) (*IGWServiceImpl, *nats.Conn) {
 	svc, err := NewIGWServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	return svc, nc
+}
+
+// confirmAttach stands in for the vpcd reconcile pass that observes the OVN
+// gateway come up. Without it an attach stays pending and reports no attachment.
+func confirmAttach(t *testing.T, svc *IGWServiceImpl, igwID string) {
+	t.Helper()
+	require.NoError(t, MarkAttached(context.Background(), svc.igwKV, utils.AccountKey(testAccountID, igwID)))
 }
 
 func createTestIGW(t *testing.T, svc *IGWServiceImpl) string {
@@ -206,8 +214,18 @@ func TestAttachInternetGateway(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Verify attachment via describe
+	// The attach is only requested here; vpcd brings the OVN gateway up later,
+	// so AWS-faithfully there is no attachment to report yet.
 	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Empty(t, desc.InternetGateways[0].Attachments, "a pending attach must report no attachment: EC2 omits the attachment until it exists")
+
+	confirmAttach(t, svc, igwID)
+
+	desc, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		InternetGatewayIds: []*string{aws.String(igwID)},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -215,6 +233,124 @@ func TestAttachInternetGateway(t *testing.T) {
 	require.Len(t, desc.InternetGateways[0].Attachments, 1)
 	assert.Equal(t, "vpc-test123", *desc.InternetGateways[0].Attachments[0].VpcId)
 	assert.Equal(t, "available", *desc.InternetGateways[0].Attachments[0].State)
+}
+
+// A record written before attach tracking existed has no AttachState. It must
+// still report its attachment rather than vanishing until the next drift pass.
+func TestDescribeInternetGateways_LegacyRecordReportsAttachment(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	key := utils.AccountKey(testAccountID, igwID)
+	entry, err := svc.igwKV.Get(context.Background(), key)
+	require.NoError(t, err)
+	var record IGWRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &record))
+	record.VpcId = "vpc-test123"
+	record.AttachState = ""
+	data, err := json.Marshal(record)
+	require.NoError(t, err)
+	_, err = svc.igwKV.Put(context.Background(), key, data)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	require.Len(t, desc.InternetGateways[0].Attachments, 1, "a record predating attach tracking must keep reporting its attachment")
+	assert.Equal(t, "vpc-test123", *desc.InternetGateways[0].Attachments[0].VpcId)
+}
+
+// A pending attach must not be reachable through the attachment filters either,
+// or a caller filtering on attachment.vpc-id sees a gateway that is not up.
+func TestDescribeInternetGateways_PendingAttachDoesNotMatchFilters(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	for _, f := range []*ec2.Filter{
+		{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String("vpc-test123")}},
+		{Name: aws.String("attachment.state"), Values: []*string{aws.String("available")}},
+	} {
+		desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+			Filters: []*ec2.Filter{f},
+		}, testAccountID)
+		require.NoError(t, err)
+		assert.Emptyf(t, desc.InternetGateways, "%s must not match a pending attach", *f.Name)
+	}
+
+	confirmAttach(t, svc, igwID)
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String("vpc-test123")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.InternetGateways, 1, "the filter must match once the attachment is confirmed")
+}
+
+// MarkAttached is called on every pass, so it must not rewrite a record that is
+// already attached: the drift loop watches this bucket and would re-trigger.
+func TestMarkAttached_NoRewriteWhenAlreadyAttached(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	key := utils.AccountKey(testAccountID, igwID)
+	confirmAttach(t, svc, igwID)
+	first, err := svc.igwKV.Get(context.Background(), key)
+	require.NoError(t, err)
+
+	confirmAttach(t, svc, igwID)
+	second, err := svc.igwKV.Get(context.Background(), key)
+	require.NoError(t, err)
+
+	assert.Equal(t, first.Revision(), second.Revision(), "a second MarkAttached must not write, or every pass wakes the drift loop")
+}
+
+// A detach clears the observed state, so a later re-attach starts pending again
+// rather than inheriting the previous attachment's confirmation.
+func TestDetachThenAttachStartsPending(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+	confirmAttach(t, svc, igwID)
+
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-other"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Empty(t, desc.InternetGateways[0].Attachments, "a re-attach must start pending, not inherit the previous confirmation")
 }
 
 func TestAttachInternetGateway_NotFound(t *testing.T) {
@@ -524,6 +660,7 @@ func TestDescribeInternetGateways_FilterByAttachmentVpcId(t *testing.T) {
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
+	confirmAttach(t, svc, igwID)
 
 	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
@@ -546,6 +683,7 @@ func TestDescribeInternetGateways_FilterByAttachmentState(t *testing.T) {
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
+	confirmAttach(t, svc, igwID)
 
 	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		Filters: []*ec2.Filter{
@@ -582,6 +720,7 @@ func TestDescribeInternetGateways_FilterMultipleFilters_AND(t *testing.T) {
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
+	confirmAttach(t, svc, igwID)
 
 	// Match both
 	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{

@@ -36,8 +36,24 @@ type IGWRecord struct {
 	InternetGatewayId string            `json:"internet_gateway_id"`
 	VpcId             string            `json:"vpc_id,omitempty"` // empty when detached
 	State             string            `json:"state"`            // "available" — AWS attachment.state is "available" when attached
+	AttachState       string            `json:"attach_state,omitempty"`
 	Tags              map[string]string `json:"tags"`
 	CreatedAt         time.Time         `json:"created_at"`
+}
+
+// Observed attachment state, distinct from State. State stays the AWS-facing
+// attachment.state and doubles as the reconciler's intent signal; AttachState
+// records whether vpcd has actually brought the OVN gateway up.
+const (
+	attachStatePending  = "pending"
+	attachStateAttached = "attached"
+)
+
+// attachmentVisible reports whether the record has an attachment AWS would
+// return. A pending attach has been requested but not yet confirmed in OVN; an
+// empty AttachState is a record predating attach tracking.
+func (r *IGWRecord) attachmentVisible() bool {
+	return r.VpcId != "" && r.AttachState != attachStatePending
 }
 
 // GatePublisher recomputes per-subnet egress gate/ungate decisions for a VPC.
@@ -258,9 +274,12 @@ func igwMatchesFilters(record *IGWRecord, filters map[string][]string) bool {
 			field = record.InternetGatewayId
 		case "attachment.vpc-id":
 			field = record.VpcId
+			if !record.attachmentVisible() {
+				field = "" // no reportable attachment means no vpc to match
+			}
 		case "attachment.state":
 			field = record.State
-			if record.VpcId == "" {
+			if !record.attachmentVisible() {
 				field = "" // no attachment means no state to match
 			}
 		default:
@@ -315,6 +334,9 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 
 	record.VpcId = vpcID
 	record.State = "available"
+	// vpcd attaches the OVN gateway asynchronously, so the attachment is not
+	// reported until a reconcile pass confirms it.
+	record.AttachState = attachStatePending
 
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -376,6 +398,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 
 	record.VpcId = ""
 	record.State = "available"
+	record.AttachState = ""
 
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -412,12 +435,46 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 	return &ec2.DetachInternetGatewayOutput{}, nil
 }
 
+// MarkAttached records that vpcd has brought the OVN gateway up for the IGW at
+// recordKey. Writing only on the pending transition keeps a reconcile pass from
+// waking the drift loop that watches this bucket. Detached or already-attached
+// records are left alone, and a CAS conflict is left to the next pass.
+func MarkAttached(ctx context.Context, kv jetstream.KeyValue, recordKey string) error {
+	entry, err := kv.Get(ctx, recordKey)
+	if err != nil {
+		return fmt.Errorf("read IGW record %s: %w", recordKey, err)
+	}
+
+	var record IGWRecord
+	if err := json.Unmarshal(entry.Value(), &record); err != nil {
+		return fmt.Errorf("unmarshal IGW record %s: %w", recordKey, err)
+	}
+	if record.VpcId == "" || record.AttachState != attachStatePending {
+		return nil
+	}
+
+	record.AttachState = attachStateAttached
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal IGW record %s: %w", recordKey, err)
+	}
+	if _, err := kv.Update(ctx, recordKey, data, entry.Revision()); err != nil {
+		return fmt.Errorf("update IGW record %s: %w", recordKey, err)
+	}
+
+	slog.InfoContext(ctx, "IGW attachment confirmed", "internetGatewayId", record.InternetGatewayId, "vpcId", record.VpcId)
+
+	return nil
+}
+
 func (s *IGWServiceImpl) recordToEC2(record *IGWRecord) *ec2.InternetGateway {
 	igw := &ec2.InternetGateway{
 		InternetGatewayId: aws.String(record.InternetGatewayId),
 	}
 
-	if record.VpcId != "" {
+	// AWS returns no attachment at all unless one exists, so a requested but
+	// unconfirmed attach must not be reported as available.
+	if record.attachmentVisible() {
 		igw.Attachments = []*ec2.InternetGatewayAttachment{
 			{
 				VpcId: aws.String(record.VpcId),

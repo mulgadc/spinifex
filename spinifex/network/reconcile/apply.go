@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
@@ -441,7 +442,21 @@ func (r *reconciler) applyIGWs(ctx context.Context, intent IntentState, actual A
 			continue
 		}
 		actual.ExternalSwch[vpcID] = struct{}{}
+		r.reportIGWAttached(ctx, spec)
 		r.rebindGatewayChassis(ctx, vpcID, eipProbeIP(intent, vpcID), res)
+	}
+}
+
+// reportIGWAttached confirms the attachment to the control plane so describes
+// stop reporting one before it exists. Not a pass failure: the gateway is up,
+// and a failed report is retried by the next pass rather than driving backoff.
+func (r *reconciler) reportIGWAttached(ctx context.Context, spec external.IGWSpec) {
+	if r.markAttached == nil || spec.RecordKey == "" {
+		return
+	}
+	if err := r.markAttached(ctx, spec.RecordKey); err != nil {
+		slog.Warn("reconcile/apply: marking IGW attached failed",
+			"vpc_id", spec.VPCID, "igw_id", spec.InternetGatewayID, "err", err)
 	}
 }
 

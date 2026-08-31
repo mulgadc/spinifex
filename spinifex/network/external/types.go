@@ -55,4 +55,8 @@ func (p *ExternalPoolConfig) UsesIfaceMAC() bool {
 type IGWSpec struct {
 	VPCID             string
 	InternetGatewayID string
+	// RecordKey addresses the control-plane record this spec was loaded from,
+	// so a successful attach can be reported back against it. Empty when the
+	// spec did not come from the store.
+	RecordKey string
 }

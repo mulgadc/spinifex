@@ -33,9 +33,10 @@ var driftBackoffBase = 5 * time.Second
 // of a VPC having no external gateway.
 const driftBackoffFactor = 3
 
-// intentBuckets names every KV bucket LoadIntentFromKV reads. A write to one of
-// them is an intent change and nothing else: none of their writers is periodic,
-// and a pass writes OVN rather than KV, so watching them cannot self-trigger.
+// intentBuckets names every KV bucket LoadIntentFromKV reads. None of their
+// writers is periodic, so watching them cannot self-trigger a loop. The one
+// write a pass makes is confirming an IGW attachment, which fires only on the
+// pending transition and so costs one extra pass per attach, not a cycle.
 var intentBuckets = []string{
 	handlers_ec2_vpc.KVBucketVPCs,
 	handlers_ec2_vpc.KVBucketSubnets,

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
@@ -691,6 +692,13 @@ func launchService(cfg *Config) error {
 		// phase is not mistaken for an orphan and its dnat_and_snat swept.
 		FreshIntent: func(ctx context.Context) (reconcile.IntentState, error) {
 			return reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
+		},
+		MarkIGWAttached: func(ctx context.Context, recordKey string) error {
+			kv, err := js.KeyValue(ctx, handlers_ec2_igw.KVBucketIGW)
+			if err != nil {
+				return fmt.Errorf("open %s: %w", handlers_ec2_igw.KVBucketIGW, err)
+			}
+			return handlers_ec2_igw.MarkAttached(ctx, kv, recordKey)
 		},
 	})
 	if err != nil {

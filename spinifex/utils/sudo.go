@@ -51,7 +51,7 @@ func capForTool(name string, args []string) (uint, bool) {
 	switch name {
 	case "ip", "iptables", "ip6tables":
 		return capNetAdmin, true
-	case "arping":
+	case "arping", "ping":
 		return capNetRaw, true
 	case EndpointSysctlHelper:
 		// The helper only ever writes net.ipv4.conf.<iface>.<key>, so a holder of

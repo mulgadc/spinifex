@@ -65,7 +65,7 @@ func TestPrivilegedToolsStillEscalate(t *testing.T) {
 		t.Skip("running as root: nothing is escalated, so the policy is not exercised")
 	}
 	withAmbientCaps(t, 0)
-	for _, tool := range []string{"ip", "iptables", "dhcpcd", "sysctl", "arping", "ovs-ofctl"} {
+	for _, tool := range []string{"ip", "iptables", "dhcpcd", "sysctl", "arping", "ping", "ovs-ofctl"} {
 		if !NeedsPrivilege(tool, "net.ipv4.neigh.x=1") {
 			t.Errorf("%s is not escalated, but it needs root or an ambient capability", tool)
 		}
@@ -88,6 +88,9 @@ func TestAmbientCapabilitiesReplaceSudo(t *testing.T) {
 		{"ip", "addr", "replace", "10.0.0.1/24", "dev", "eth0"},
 		{"iptables", "-A", "FORWARD", "-j", "ACCEPT"},
 		{"arping", "-U", "-c", "2", "-I", "br-wan", "10.0.0.1"},
+		// The nexthop-MAC seed primes the neigh table with this. vpcd holds no
+		// sudoers rule for ping, so escalating it kills the fallback outright.
+		{"ping", "-c", "1", "-W", "1", "100.127.0.1"},
 		{"sysctl", "-w", "net.ipv4.neigh.br-wan.proxy_delay=0"},
 		{EndpointSysctlHelper, "ime-12345678", "rp_filter", "0"},
 	}

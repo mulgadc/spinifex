@@ -43,6 +43,7 @@ func runIPSec(t *testing.T, fix *Fixture) {
 
 	harness.Step(t, "OVS DB carries cert pointers + ipsec_encapsulation=true on every node")
 	required := []string{"certificate=", "private_key=", "ca_cert=", "ipsec_encapsulation=\"true\""}
+	incomplete := map[string]string{}
 	for _, n := range fix.Cluster.Nodes {
 		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		raw, err := ssh.Run(c, n.Addr, "sudo ovs-vsctl get Open_vSwitch . other_config")
@@ -53,11 +54,14 @@ func runIPSec(t *testing.T, fix *Fixture) {
 		s := strings.TrimSpace(string(raw))
 		for _, key := range required {
 			if !strings.Contains(s, key) {
-				t.Fatalf("%s OVS other_config missing %q: %s", n.Name, key, s)
+				incomplete[n.Name] = s
+				t.Errorf("%s OVS other_config missing %q: %s", n.Name, key, s)
 			}
 		}
 		harness.Detail(t, "node", n.Name, "other_config", s)
 	}
+
+	assertNBGlobalMatchesChassis(t, fix, ssh, incomplete)
 
 	harness.Step(t, "xfrm SAs with AES-GCM established on every node")
 	harness.EventuallyErr(t, func() error {
@@ -131,4 +135,36 @@ func ipsecRequested(t *testing.T, ssh *harness.PeerSSH, n harness.Node) bool {
 
 	harness.Detail(t, "node", n.Name, "ipsec_enabled", value)
 	return value != "false"
+}
+
+// assertNBGlobalMatchesChassis checks the invariant a partial IPsec enable
+// breaks: NB_Global.ipsec is cluster-wide, so asserting it while any chassis is
+// still unconfigured black-holes every guest that crosses chassis, with no
+// control-plane signal that anything is wrong.
+func assertNBGlobalMatchesChassis(t *testing.T, fix *Fixture, ssh *harness.PeerSSH, incomplete map[string]string) {
+	harness.Step(t, "NB_Global ipsec is not asserted over an unconfigured chassis")
+
+	var asserted string
+	for _, n := range fix.Cluster.Nodes {
+		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		raw, err := ssh.Run(c, n.Addr, "sudo ovn-nbctl --timeout=5 get NB_Global . ipsec 2>/dev/null || true")
+		cancel()
+		if err != nil {
+			t.Logf("WARN: %s ovn-nbctl get NB_Global ipsec: %v", n.Name, err)
+			continue
+		}
+		value := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+		harness.Detail(t, "node", n.Name, "nb_global_ipsec", value)
+		if value == "true" {
+			asserted = n.Name
+		}
+	}
+
+	if asserted == "" {
+		t.Fatal("no node reports NB_Global ipsec=true — ovn-controller adds no options:remote_name, so intra-AZ Geneve is plaintext")
+	}
+	if len(incomplete) > 0 {
+		t.Fatalf("NB_Global ipsec=true (read on %s) while %d chassis are unconfigured: %v — cross-chassis guest traffic is black-holing",
+			asserted, len(incomplete), incomplete)
+	}
 }

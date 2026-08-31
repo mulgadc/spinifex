@@ -1,10 +1,13 @@
 package host
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,10 +32,26 @@ type recordingSudo struct {
 	activeOutput  string
 	enabledOutput map[string]string
 	activePerUnit map[string]string
+	// nbUnreachable stands in for a node whose ovn-central is not answering, or
+	// which is not a management node at all. The socket file exists in both
+	// cases, which is why its presence was never the right question.
+	nbUnreachable bool
+	// nbIPSec is what NB_Global.ipsec currently reads as.
+	nbIPSec string
 }
 
 func (r *recordingSudo) stub(name string, args ...string) *exec.Cmd {
 	r.runs = append(r.runs, append([]string{name}, args...))
+	if name == "ovn-nbctl" {
+		if r.nbUnreachable {
+			return exec.Command("sh", "-c",
+				`echo "ovn-nbctl: unix:/var/run/ovn/ovnnb_db.sock: database connection failed" >&2; exit 1`)
+		}
+		if len(args) > 1 && args[1] == "get" {
+			return exec.Command("printf", "%s\n", r.nbIPSec)
+		}
+		return exec.Command("true")
+	}
 	if name != "systemctl" || len(args) < 2 {
 		return exec.Command("true")
 	}
@@ -74,30 +93,67 @@ func multiNodeIPSecConfig(enabled bool) *config.ClusterConfig {
 	return cfg
 }
 
-func TestEnableOVNIPSec(t *testing.T) {
-	recorder := &recordingSudo{}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+// fakeBarrier stands in for the cluster readiness channel.
+type fakeBarrier struct {
+	published     []bool
+	publishedNode string
+	publishErr    error
 
+	ready    bool
+	pending  []string
+	readyErr error
+}
+
+func (f *fakeBarrier) PublishLocalReady(_ context.Context, node string, ready bool) error {
+	f.publishedNode = node
+	f.published = append(f.published, ready)
+	return f.publishErr
+}
+
+func (f *fakeBarrier) NodesReady(_ context.Context, _ []string) (bool, []string, error) {
+	return f.ready, f.pending, f.readyErr
+}
+
+// allReady is the steady state: every chassis has finished its local setup.
+func allReady() *fakeBarrier { return &fakeBarrier{ready: true} }
+
+// ipsecTestConfigDir lays out the credentials EnableOVNIPSec insists on.
+func ipsecTestConfigDir(t *testing.T) string {
+	t.Helper()
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "spinifex.toml")
 	require.NoError(t, os.WriteFile(configPath, []byte("placeholder"), 0600))
-
 	for _, rel := range []string{"ca.pem", "ipsec/peer.pem", "ipsec/peer.key"} {
 		full := filepath.Join(configDir, rel)
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0750))
 		require.NoError(t, os.WriteFile(full, []byte("x"), 0600))
 	}
+	return configDir
+}
 
-	// Worker path: no local NB socket → no ovn-nbctl call.
-	origNBSock := ovnNBSocketPath
-	ovnNBSocketPath = filepath.Join(configDir, "no-such-socket")
-	t.Cleanup(func() { ovnNBSocketPath = origNBSock })
+// nbctlWrites returns the ovn-nbctl invocations that write, dropping the reads.
+func (r *recordingSudo) nbctlWrites() [][]string {
+	var out [][]string
+	for _, run := range r.runs {
+		if run[0] == "ovn-nbctl" && len(run) > 2 && run[2] == "set" {
+			out = append(out, run)
+		}
+	}
+	return out
+}
 
-	require.NoError(t, EnableOVNIPSec(configPath, multiNodeClusterConfig()))
+func TestEnableOVNIPSec(t *testing.T) {
+	recorder := &recordingSudo{nbUnreachable: true}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
 
-	require.Len(t, recorder.runs, 3)
+	configDir := ipsecTestConfigDir(t)
+	configPath := filepath.Join(configDir, "spinifex.toml")
+
+	require.NoError(t, EnableOVNIPSec(t.Context(), configPath, multiNodeClusterConfig(), allReady()))
+
+	require.Len(t, recorder.runs, 4)
 	assert.Equal(t, []string{"systemctl", "is-active", "openvswitch-ipsec.service"}, recorder.runs[0])
-	for _, run := range recorder.runs[1:] {
+	for _, run := range recorder.runs[1:3] {
 		assert.Equal(t, "ovs-vsctl", run[0])
 		assert.Equal(t, "set", run[1])
 		assert.Equal(t, "Open_vSwitch", run[2])
@@ -107,31 +163,95 @@ func TestEnableOVNIPSec(t *testing.T) {
 	assert.Contains(t, joined, "other_config:private_key="+filepath.Join(configDir, "ipsec", "peer.key"))
 	assert.Contains(t, joined, "other_config:ca_cert="+filepath.Join(configDir, "ca.pem"))
 	assert.Contains(t, strings.Join(recorder.runs[2], " "), "other_config:ipsec_encapsulation=true")
+
+	// The NB DB is unreachable, so the read is attempted and nothing is written.
+	assert.Empty(t, recorder.nbctlWrites())
 }
 
 func TestEnableOVNIPSec_Management(t *testing.T) {
 	recorder := &recordingSudo{}
 	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
 
-	configDir := t.TempDir()
-	configPath := filepath.Join(configDir, "spinifex.toml")
-	require.NoError(t, os.WriteFile(configPath, []byte("placeholder"), 0600))
-	for _, rel := range []string{"ca.pem", "ipsec/peer.pem", "ipsec/peer.key"} {
-		full := filepath.Join(configDir, rel)
-		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0750))
-		require.NoError(t, os.WriteFile(full, []byte("x"), 0600))
-	}
+	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 
-	sockPath := filepath.Join(configDir, "ovnnb_db.sock")
-	require.NoError(t, os.WriteFile(sockPath, []byte{}, 0600))
-	origNBSock := ovnNBSocketPath
-	ovnNBSocketPath = sockPath
-	t.Cleanup(func() { ovnNBSocketPath = origNBSock })
+	require.NoError(t, EnableOVNIPSec(t.Context(), configPath, multiNodeClusterConfig(), allReady()))
 
-	require.NoError(t, EnableOVNIPSec(configPath, multiNodeClusterConfig()))
+	assert.Equal(t, [][]string{{"ovn-nbctl", "--timeout=5", "set", "NB_Global", ".", "ipsec=true"}},
+		recorder.nbctlWrites())
+}
 
-	require.Len(t, recorder.runs, 4)
-	assert.Equal(t, []string{"ovn-nbctl", "set", "NB_Global", ".", "ipsec=true"}, recorder.runs[3])
+// The reported incident: one node asserts encryption cluster-wide while the
+// others have not finished, and every guest crossing chassis black-holes.
+func TestEnableOVNIPSec_HoldsFlagUntilEveryChassisIsReady(t *testing.T) {
+	recorder := &recordingSudo{}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
+	barrier := &fakeBarrier{pending: []string{"node2"}}
+
+	require.NoError(t, EnableOVNIPSec(t.Context(), configPath, multiNodeClusterConfig(), barrier))
+
+	assert.Equal(t, "node1", barrier.publishedNode)
+	assert.Equal(t, []bool{true}, barrier.published,
+		"the local half completed, so this node must report itself ready")
+	assert.Empty(t, recorder.nbctlWrites(),
+		"NB_Global must not be asserted while a chassis is unconfigured")
+}
+
+// A flag left asserted over an unconfigured chassis drops guest traffic on the
+// floor; plaintext is the state the cluster had before IPsec was asked for.
+func TestEnableOVNIPSec_RetractsFlagWhenAChassisRegresses(t *testing.T) {
+	recorder := &recordingSudo{nbIPSec: "true"}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
+
+	require.NoError(t, EnableOVNIPSec(t.Context(), configPath, multiNodeClusterConfig(),
+		&fakeBarrier{pending: []string{"node2"}}))
+
+	assert.Equal(t, [][]string{{"ovn-nbctl", "--timeout=5", "set", "NB_Global", ".", "ipsec=false"}},
+		recorder.nbctlWrites())
+}
+
+// An unreadable barrier is not evidence that a chassis is unconfigured, so it
+// must never downgrade a working encrypted mesh to plaintext.
+func TestEnableOVNIPSec_BarrierErrorLeavesTheFlagAlone(t *testing.T) {
+	recorder := &recordingSudo{nbIPSec: "true"}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
+
+	err := EnableOVNIPSec(t.Context(), configPath, multiNodeClusterConfig(),
+		&fakeBarrier{readyErr: errors.New("kv unavailable")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read IPsec readiness")
+	assert.Empty(t, recorder.nbctlWrites())
+}
+
+// Already true and everyone ready: no write, so a steady-state pass is free.
+func TestEnableOVNIPSec_AlreadyAssertedIsANoOp(t *testing.T) {
+	recorder := &recordingSudo{nbIPSec: "true"}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
+
+	require.NoError(t, EnableOVNIPSec(t.Context(), configPath, multiNodeClusterConfig(), allReady()))
+	assert.Empty(t, recorder.nbctlWrites())
+}
+
+// A node that cannot publish must fail its pass rather than proceed: silently
+// dropping the record would make it pending forever to everyone else.
+func TestEnableOVNIPSec_PublishFailureFailsThePass(t *testing.T) {
+	recorder := &recordingSudo{}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
+
+	err := EnableOVNIPSec(t.Context(), configPath, multiNodeClusterConfig(),
+		&fakeBarrier{ready: true, publishErr: errors.New("kv unavailable")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "publish IPsec readiness")
+	assert.Empty(t, recorder.nbctlWrites())
 }
 
 func TestEnableOVNIPSec_SingleNodeSkip(t *testing.T) {
@@ -148,7 +268,7 @@ func TestEnableOVNIPSec_SingleNodeSkip(t *testing.T) {
 		Node:  "node1",
 		Nodes: map[string]config.Config{"node1": {}},
 	}
-	require.NoError(t, EnableOVNIPSec(configPath, cfg))
+	require.NoError(t, EnableOVNIPSec(t.Context(), configPath, cfg, allReady()))
 }
 
 func TestEnableOVNIPSec_MonitorIPSecInactive(t *testing.T) {
@@ -168,7 +288,7 @@ func TestEnableOVNIPSec_MonitorIPSecInactive(t *testing.T) {
 		require.NoError(t, os.WriteFile(full, []byte("x"), 0600))
 	}
 
-	err := EnableOVNIPSec(configPath, multiNodeClusterConfig())
+	err := EnableOVNIPSec(t.Context(), configPath, multiNodeClusterConfig(), allReady())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ovs-monitor-ipsec")
 	assert.Contains(t, err.Error(), "not active")
@@ -190,13 +310,13 @@ func TestEnableOVNIPSec_MissingCert(t *testing.T) {
 	require.NoError(t, os.WriteFile(configPath, []byte("placeholder"), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "ca.pem"), []byte("x"), 0600))
 
-	err := EnableOVNIPSec(configPath, multiNodeClusterConfig())
+	err := EnableOVNIPSec(t.Context(), configPath, multiNodeClusterConfig(), allReady())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing IPsec credential")
 }
 
 func TestEnableOVNIPSec_NoConfigPath(t *testing.T) {
-	err := EnableOVNIPSec("", nil)
+	err := EnableOVNIPSec(t.Context(), "", nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config path unset")
 }
@@ -205,7 +325,7 @@ func TestReconcileOVNIPSec_DisabledStopsCharon(t *testing.T) {
 	recorder := &recordingSudo{}
 	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
 
-	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false)))
+	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false), allReady()))
 
 	assert.Equal(t, [][]string{{ipsecStateHelper, "off"}}, recorder.helperRuns())
 
@@ -220,7 +340,7 @@ func TestReconcileOVNIPSec_NeverCallsSystemctlDirectly(t *testing.T) {
 	recorder := &recordingSudo{}
 	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
 
-	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false)))
+	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false), allReady()))
 
 	for _, run := range recorder.runs {
 		if run[0] != "systemctl" {
@@ -240,7 +360,7 @@ func TestReconcileOVNIPSec_SingleNodeStopsCharon(t *testing.T) {
 	cfg := &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{"node1": {}}}
 	cfg.Network.IPSecEnabled = true
 
-	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", cfg))
+	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", cfg, allReady()))
 
 	assert.Equal(t, [][]string{{ipsecStateHelper, "off"}}, recorder.helperRuns())
 }
@@ -258,20 +378,10 @@ func TestReconcileOVNIPSec_EnabledTurnsTheServicesOn(t *testing.T) {
 	}
 	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
 
-	configDir := t.TempDir()
-	configPath := filepath.Join(configDir, "spinifex.toml")
-	require.NoError(t, os.WriteFile(configPath, []byte("placeholder"), 0600))
-	for _, rel := range []string{"ca.pem", "ipsec/peer.pem", "ipsec/peer.key"} {
-		full := filepath.Join(configDir, rel)
-		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0750))
-		require.NoError(t, os.WriteFile(full, []byte("x"), 0600))
-	}
+	recorder.nbUnreachable = true
+	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 
-	origNBSock := ovnNBSocketPath
-	ovnNBSocketPath = filepath.Join(configDir, "no-such-socket")
-	t.Cleanup(func() { ovnNBSocketPath = origNBSock })
-
-	require.NoError(t, ReconcileOVNIPSec(configPath, multiNodeIPSecConfig(true)))
+	require.NoError(t, ReconcileOVNIPSec(t.Context(), configPath, multiNodeIPSecConfig(true), allReady()))
 
 	assert.Equal(t, [][]string{{ipsecStateHelper, "on"}}, recorder.helperRuns())
 
@@ -292,7 +402,7 @@ func TestReconcileOVNIPSec_AlreadyInStateIsNoOp(t *testing.T) {
 	}
 	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
 
-	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false)))
+	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false), allReady()))
 	assert.Empty(t, recorder.helperRuns())
 }
 
@@ -309,7 +419,7 @@ func TestReconcileOVNIPSec_UnknownUnitIsNotAnError(t *testing.T) {
 	}
 	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
 
-	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false)))
+	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false), allReady()))
 	assert.Empty(t, recorder.helperRuns())
 }
 
@@ -321,5 +431,62 @@ func TestReconcileOVNIPSec_NilConfigLeavesUnitsAlone(t *testing.T) {
 		return exec.Command("true")
 	}))
 
-	require.NoError(t, ReconcileOVNIPSec("/etc/spinifex/spinifex.toml", nil))
+	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", nil, allReady()))
+}
+
+// A single attempt is what left two of three chassis unconfigured for minutes
+// while a peer already required encryption; the pass has to be retried.
+func TestMaintainIPSec_RetriesAFailedPass(t *testing.T) {
+	recorder := &recordingSudo{}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	origRetry, origInterval := ipsecRetryDelay, ipsecReconcileInterval
+	ipsecRetryDelay, ipsecReconcileInterval = time.Millisecond, time.Millisecond
+	t.Cleanup(func() { ipsecRetryDelay, ipsecReconcileInterval = origRetry, origInterval })
+
+	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
+	barrier := &flakyBarrier{failFor: 2}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		MaintainIPSec(ctx, configPath, multiNodeIPSecConfig(true), barrier)
+		close(done)
+	}()
+
+	require.Eventually(t, func() bool { return barrier.succeeded() }, 5*time.Second, 5*time.Millisecond,
+		"MaintainIPSec gave up after the first failure")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("MaintainIPSec did not stop on context cancellation")
+	}
+}
+
+// flakyBarrier fails its first failFor reads, then reports the cluster ready.
+type flakyBarrier struct {
+	mu      sync.Mutex
+	failFor int
+	calls   int
+}
+
+func (f *flakyBarrier) PublishLocalReady(context.Context, string, bool) error { return nil }
+
+func (f *flakyBarrier) NodesReady(context.Context, []string) (bool, []string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls <= f.failFor {
+		return false, nil, errors.New("kv unavailable")
+	}
+	return true, nil, nil
+}
+
+func (f *flakyBarrier) succeeded() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls > f.failFor
 }

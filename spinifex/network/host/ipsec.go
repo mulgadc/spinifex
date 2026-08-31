@@ -35,15 +35,26 @@ func EnableIPSecEncapsulation() error {
 	return nil
 }
 
+// GetNBGlobalIPSec reads NB_Global.ipsec from the local OVN NB DB. The error
+// doubles as the reachability answer: a present socket file says nothing about
+// whether the database behind it accepts connections yet.
+func GetNBGlobalIPSec() (bool, error) {
+	out, err := utils.SudoCommand("ovn-nbctl", "--timeout=5", "get", "NB_Global", ".", "ipsec").CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("get NB_Global ipsec: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return strings.TrimSpace(strings.Trim(strings.TrimSpace(string(out)), `"`)) == "true", nil
+}
+
 // SetNBGlobalIPSec writes NB_Global.ipsec on the local OVN NB DB, triggering
 // ovn-controller to add options:remote_name to Geneve tunnels for strongSwan.
-// Only the management node has a local NB socket; callers gate on presence.
+// Only the management node has a reachable NB DB; callers gate on that.
 func SetNBGlobalIPSec(enable bool) error {
 	val := "false"
 	if enable {
 		val = "true"
 	}
-	out, err := utils.SudoCommand("ovn-nbctl", "set", "NB_Global", ".", "ipsec="+val).CombinedOutput()
+	out, err := utils.SudoCommand("ovn-nbctl", "--timeout=5", "set", "NB_Global", ".", "ipsec="+val).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("set NB_Global ipsec=%s: %s: %w", val, strings.TrimSpace(string(out)), err)
 	}

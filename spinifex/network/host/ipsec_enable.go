@@ -1,23 +1,48 @@
 package host
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // systemctlActiveTimeout bounds the wait for openvswitch-ipsec.service to become active.
 var systemctlActiveTimeout = 5 * time.Second
 
-// ovnNBSocketPath gates the NB_Global ipsec write to the management node.
-var ovnNBSocketPath = "/run/ovn/ovnnb_db.sock"
+// ipsecRetryDelay is the first gap after a failed pass; it doubles up to
+// ipsecReconcileInterval. Short, because until every chassis has finished its
+// local setup the cluster cannot require encryption at all.
+var ipsecRetryDelay = 3 * time.Second
+
+// ipsecReconcileInterval re-runs a successful pass. It doubles as the readiness
+// heartbeat, so it must stay well inside whatever freshness window the barrier
+// applies to the records this publishes.
+var ipsecReconcileInterval = 60 * time.Second
+
+// IPSecBarrier carries each node's local IPsec completion across the cluster.
+// NB_Global.ipsec is cluster-wide, so asserting it from one node's local
+// knowledge is what lets a partially configured mesh black-hole guest traffic.
+// The interface keeps the transport (JetStream KV) out of L0.
+type IPSecBarrier interface {
+	// PublishLocalReady records whether this node's own IPsec configuration is
+	// complete. Callers re-publish on every pass, so records stay fresh.
+	PublishLocalReady(ctx context.Context, node string, ready bool) error
+
+	// NodesReady reports whether every named node has published readiness, and
+	// names those that have not.
+	NodesReady(ctx context.Context, nodes []string) (bool, []string, error)
+}
 
 const (
 	// ovsIPSecUnit owns charon: ovs-monitor-ipsec execs the strongSwan starter
@@ -34,10 +59,35 @@ const (
 // root-equivalent, so unit changes go through this instead.
 var ipsecStateHelper = "/usr/local/lib/spinifex/spinifex-set-ipsec-state"
 
+// MaintainIPSec schedules ReconcileOVNIPSec until it succeeds, then re-runs it
+// at ipsecReconcileInterval for the lifetime of ctx. A scheduler only.
+//
+// A single attempt at startup routinely loses the race with ovn-central
+// accepting connections, and dropping that attempt leaves the node's IPsec
+// unconfigured until something restarts the daemon — while another node may
+// already have made encryption mandatory cluster-wide.
+func MaintainIPSec(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig, barrier IPSecBarrier) {
+	delay := ipsecRetryDelay
+	for {
+		if err := ReconcileOVNIPSec(ctx, configPath, clusterConfig, barrier); err != nil {
+			slog.Warn("Failed to reconcile OVN native IPsec, will retry", "err", err, "retry_in_ms", otelsetup.Millis(delay))
+			delay = min(delay*2, ipsecReconcileInterval)
+		} else {
+			delay = ipsecReconcileInterval
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+	}
+}
+
 // ReconcileOVNIPSec brings the host's IPsec services in line with the cluster
 // config, then enables OVN IPsec if it is wanted. Runs on every startup so the
 // disabled case is reached too, which EnableOVNIPSec alone never is.
-func ReconcileOVNIPSec(configPath string, clusterConfig *config.ClusterConfig) error {
+func ReconcileOVNIPSec(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig, barrier IPSecBarrier) error {
 	// A nil config means the intent is unknown; leave the host's services alone
 	// rather than guessing and tearing down working tunnels.
 	if clusterConfig == nil {
@@ -53,7 +103,7 @@ func ReconcileOVNIPSec(configPath string, clusterConfig *config.ClusterConfig) e
 		slog.Info("ipsec: not in use, IKE and NAT-T listeners stopped")
 		return nil
 	}
-	return EnableOVNIPSec(configPath, clusterConfig)
+	return EnableOVNIPSec(ctx, configPath, clusterConfig, barrier)
 }
 
 // ensureIPSecServices runs the helper only when the host does not already match
@@ -99,7 +149,7 @@ func unitIsActive(unit string) bool {
 // EnableOVNIPSec wires the local IPsec peer cert and flips ipsec_encapsulation=true.
 // Idempotent. Single-node clusters short-circuit (no Geneve tunnels to encrypt).
 // Lives in L0 per ADR-0006 S8 (IPSec is OVN-native only; SA lifecycle invisible above L0).
-func EnableOVNIPSec(configPath string, clusterConfig *config.ClusterConfig) error {
+func EnableOVNIPSec(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig, barrier IPSecBarrier) error {
 	if configPath == "" {
 		return fmt.Errorf("config path unset")
 	}
@@ -129,12 +179,11 @@ func EnableOVNIPSec(configPath string, clusterConfig *config.ClusterConfig) erro
 		return err
 	}
 
-	// NB_Global.ipsec is cluster-wide; only the management node has a local NB socket.
-	// Without this flag, ovn-controller skips adding options:remote_name to Geneve
-	// tunnels and ovs-monitor-ipsec never materialises strongSwan connections.
-	if _, err := os.Stat(ovnNBSocketPath); err == nil {
-		if err := SetNBGlobalIPSec(true); err != nil {
-			return err
+	// Published before the cluster-wide flag is touched: this node is now safe to
+	// send and receive encrypted Geneve, whoever ends up asserting it.
+	if barrier != nil && clusterConfig != nil {
+		if err := barrier.PublishLocalReady(ctx, clusterConfig.Node, true); err != nil {
+			return fmt.Errorf("publish IPsec readiness: %w", err)
 		}
 	}
 
@@ -143,7 +192,59 @@ func EnableOVNIPSec(configPath string, clusterConfig *config.ClusterConfig) erro
 		"key", keyPath,
 		"ca", caCertPath,
 	)
-	return nil
+	return reconcileNBGlobalIPSec(ctx, clusterConfig, barrier)
+}
+
+// reconcileNBGlobalIPSec holds NB_Global.ipsec in step with the whole cluster's
+// readiness. Without this flag ovn-controller skips options:remote_name on
+// Geneve tunnels and ovs-monitor-ipsec materialises no strongSwan connections;
+// with it, a chassis that has not finished its own setup silently drops guest
+// traffic. So it tracks the slowest chassis, not this one.
+func reconcileNBGlobalIPSec(ctx context.Context, clusterConfig *config.ClusterConfig, barrier IPSecBarrier) error {
+	// Reachability, role and current value in one call. A stat of the socket file
+	// answers none of them: in a clustered OVN the file exists on every node long
+	// before the database behind it accepts a connection.
+	current, err := GetNBGlobalIPSec()
+	if err != nil {
+		slog.Debug("ipsec: local OVN NB DB unreachable, leaving NB_Global to a node that can read it", "err", err)
+		return nil
+	}
+
+	if barrier == nil || clusterConfig == nil {
+		if current {
+			return nil
+		}
+		return SetNBGlobalIPSec(true)
+	}
+
+	ready, pending, err := barrier.NodesReady(ctx, nodeNames(clusterConfig))
+	if err != nil {
+		// Unreadable is not evidence that a chassis is unconfigured. Retracting on
+		// it would drop a working encrypted mesh to plaintext over a KV outage.
+		return fmt.Errorf("read IPsec readiness: %w", err)
+	}
+
+	switch {
+	case ready && current:
+		return nil
+	case ready:
+		slog.Info("ipsec: every chassis reports a complete configuration, requiring encryption cluster-wide")
+		return SetNBGlobalIPSec(true)
+	case !current:
+		slog.Info("ipsec: holding encryption off until every chassis is configured", "pending", pending)
+		return nil
+	}
+
+	// Plaintext Geneve is where the cluster sat before IPsec was asked for, and it
+	// is both recoverable and visible. A black hole is neither.
+	slog.Error("ipsec: retracting cluster-wide encryption, chassis are unconfigured and cross-chassis guest traffic would black-hole", "pending", pending)
+	return SetNBGlobalIPSec(false)
+}
+
+// nodeNames returns cluster membership in a stable order so logged pending sets
+// do not churn between passes.
+func nodeNames(clusterConfig *config.ClusterConfig) []string {
+	return slices.Sorted(maps.Keys(clusterConfig.Nodes))
 }
 
 // ensureOVSMonitorIPSecActive polls openvswitch-ipsec.service for "active".

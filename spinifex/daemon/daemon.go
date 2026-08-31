@@ -1530,10 +1530,11 @@ func (d *Daemon) startCluster() error {
 	}
 
 	// Reconcile OVN native IPsec both ways (idempotent): a node that does not
-	// use it should not be left running charon on 500/4500 either.
-	if err := host.ReconcileOVNIPSec(d.configPath, d.clusterConfig); err != nil {
-		slog.Warn("Failed to reconcile OVN native IPsec", "err", err)
-	}
+	// use it should not be left running charon on 500/4500 either. Runs in the
+	// background because the first attempt routinely loses the race with
+	// ovn-central accepting connections, and a node that gives up there stays
+	// unconfigured while a peer may already require encryption cluster-wide.
+	go host.MaintainIPSec(d.ctx, d.configPath, d.clusterConfig, d.ipsecBarrier())
 
 	// Keep the host firewall's peer sets in step with cluster membership. Every
 	// formation path reaches this, which none of the installers do. Runs in the

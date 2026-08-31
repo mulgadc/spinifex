@@ -1575,8 +1575,9 @@ func (f *fakeVolumeDeleter) DetachVolumeOnTerminate(_ context.Context, volumeID,
 }
 
 type fakeENIDeleter struct {
-	calls []string
-	err   error
+	calls  []string
+	forced []bool // force flag per DetachAndDeleteENI call
+	err    error
 }
 
 func (f *fakeENIDeleter) DeleteNetworkInterface(_ context.Context, input *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
@@ -1585,6 +1586,19 @@ func (f *fakeENIDeleter) DeleteNetworkInterface(_ context.Context, input *ec2.De
 		return nil, f.err
 	}
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
+}
+
+// DetachAndDeleteENI records into the same calls slice as the plain delete:
+// callers assert which ENIs were released, not which entry point did it.
+// forced records the force flag per call so the owner-teardown contract is
+// assertable.
+func (f *fakeENIDeleter) DetachAndDeleteENI(_ context.Context, _, eniID string, force bool) (bool, error) {
+	f.calls = append(f.calls, eniID)
+	f.forced = append(f.forced, force)
+	if f.err != nil {
+		return false, f.err
+	}
+	return true, nil
 }
 
 type fakePublicIPReleaser struct {
@@ -3323,11 +3337,14 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	assert.Equal(t, 2, eni.updateCalls, "ENI public IP should be set once, then cleared on rollback")
 	assert.Equal(t, 1, eni.clearCalls, "ENI rollback should call UpdateENIPublicIP with empty publicIP")
 
-	// ENI itself must be detached + deleted; otherwise the dropped instance
-	// leaks an eniKV record (vmMgr.Insert never runs, so terminateCleanup
-	// never fires) and the subnet exhausts private IPs under vpcd brown-out.
-	assert.Equal(t, 1, eni.detachCalls, "rollback must detach the ENI before delete")
+	// ENI itself must go; otherwise the dropped instance leaks an eniKV record
+	// (vmMgr.Insert never runs, so terminateCleanup never fires) and the subnet
+	// exhausts private IPs under vpcd brown-out. Detach and delete travel
+	// together under one read — a separate detach lets a lagging replica serve
+	// the delete a pre-detach record and reject it as in-use.
 	assert.Equal(t, []string{"eni-nat-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
+	assert.Equal(t, []bool{true}, deleter.forced, "the launch owns the ENI, so its teardown must force past the in-use guard")
+	assert.Zero(t, eni.detachCalls, "the detach belongs inside the atomic delete, not as a separate read")
 
 	// Capacity deallocated so subsequent launches can use the slot.
 	require.Len(t, prov.deallocated, 1, "NAT failure must trigger Deallocate")
@@ -3418,8 +3435,10 @@ func TestPrepareRunInstances_PartialLaunchReleasesSucceededInstances(t *testing.
 	// the MinCount rollback that used to release nothing but capacity.
 	assert.ElementsMatch(t, []string{"eni-ok", "eni-fail"}, deleter.calls,
 		"the succeeded instance's ENI must be deleted alongside the failed one")
-	assert.ElementsMatch(t, []string{"eni-ok", "eni-fail"}, eni.detached,
-		"each ENI must be detached before its delete")
+	assert.Equal(t, []bool{true, true}, deleter.forced,
+		"each teardown must force past the in-use guard — the launch owns both interfaces")
+	assert.Zero(t, eni.detachCalls,
+		"detach must travel with the delete under one read, not as a separate call a replica can race")
 	assert.ElementsMatch(t, []string{"203.0.113.20", "203.0.113.21"}, releaser.released,
 		"both external addresses must return to the pool")
 	assert.Len(t, prov.deallocated, 2, "both capacity slots must be returned")

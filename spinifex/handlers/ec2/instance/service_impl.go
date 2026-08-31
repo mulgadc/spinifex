@@ -2580,48 +2580,70 @@ func (s *InstanceServiceImpl) allocatePublicIP(ctx context.Context, eniID, insta
 // rollbackAutoAssignedPublicIP unwinds a failed auto-assign: clears the ENI
 // public IP record, releases the IPAM lease, then detaches and deletes the ENI.
 func (s *InstanceServiceImpl) rollbackAutoAssignedPublicIP(ctx context.Context, accountID, instanceID, eniID, publicIP, poolName string) {
-	s.releaseAutoAssignedPublicIP(ctx, accountID, eniID, publicIP, poolName)
-	s.detachAndDeleteENI(ctx, accountID, instanceID, eniID, true)
+	_ = s.releaseAutoAssignedPublicIP(ctx, accountID, eniID, publicIP, poolName)
+	_ = s.detachAndDeleteENI(ctx, accountID, instanceID, eniID, true)
 }
 
 // releaseAutoAssignedPublicIP clears the ENI's public IP record and returns the
-// lease to its pool. Best-effort: each step logs and the next still runs.
-func (s *InstanceServiceImpl) releaseAutoAssignedPublicIP(ctx context.Context, accountID, eniID, publicIP, poolName string) {
+// lease to its pool, reporting whether both steps landed. Clearing the record
+// first is what keeps the ENI delete from releasing the same address again.
+func (s *InstanceServiceImpl) releaseAutoAssignedPublicIP(ctx context.Context, accountID, eniID, publicIP, poolName string) bool {
+	released := true
 	if s.eniCreator != nil {
 		if err := s.eniCreator.UpdateENIPublicIP(ctx, accountID, eniID, "", ""); err != nil {
 			slog.WarnContext(ctx, "PrepareRunInstances: failed to clear ENI public IP during launch rollback",
 				"eniId", eniID, "publicIp", publicIP, "err", err)
+			released = false
 		}
 	}
 	if s.ipReleaser != nil {
 		if err := s.ipReleaser.ReleaseIP(ctx, poolName, publicIP, eniID); err != nil {
 			slog.WarnContext(ctx, "PrepareRunInstances: failed to release public IP during launch rollback",
 				"publicIp", publicIP, "pool", poolName, "err", err)
+			released = false
 		}
 	}
+	return released
 }
 
-// detachAndDeleteENI detaches eniID and, when the launch auto-created it,
-// deletes it. A caller-supplied ENI outlives the launch it was offered to and
-// is left available, matching DeleteOnTermination=false on the terminate sweep.
-func (s *InstanceServiceImpl) detachAndDeleteENI(ctx context.Context, accountID, instanceID, eniID string, autoCreated bool) {
-	if s.eniCreator != nil {
-		if err := s.eniCreator.DetachENI(ctx, accountID, eniID); err != nil {
-			slog.WarnContext(ctx, "PrepareRunInstances: failed to detach ENI during launch rollback",
-				"eniId", eniID, "instanceId", instanceID, "err", err)
-		}
-	}
+// detachAndDeleteENI releases the interface a rolled-back launch is holding and
+// reports whether it is safely gone. An auto-created ENI goes through the
+// atomic detach-and-delete: the launch owns it, so force is right, and the
+// single read is what stops a lagging replica rejecting the delete as in-use
+// and stranding the very orphan this rollback exists to prevent. A
+// caller-supplied ENI outlives the launch it was offered to, so it is detached
+// only, matching DeleteOnTermination=false on the terminate sweep.
+func (s *InstanceServiceImpl) detachAndDeleteENI(ctx context.Context, accountID, instanceID, eniID string, autoCreated bool) bool {
 	if !autoCreated {
-		return
-	}
-	if s.eniDeleter != nil {
-		if _, err := s.eniDeleter.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
-			NetworkInterfaceId: &eniID,
-		}, accountID); err != nil {
-			slog.WarnContext(ctx, "PrepareRunInstances: failed to delete ENI during launch rollback",
-				"eniId", eniID, "instanceId", instanceID, "err", err)
+		if s.eniCreator == nil {
+			slog.ErrorContext(ctx, "PrepareRunInstances: no ENI service wired — caller-supplied ENI left attached to an instance that never launched",
+				"eniId", eniID, "instanceId", instanceID)
+			return false
 		}
+		if err := s.eniCreator.DetachENI(ctx, accountID, eniID); err != nil {
+			slog.ErrorContext(ctx, "PrepareRunInstances: failed to detach caller-supplied ENI during launch rollback",
+				"eniId", eniID, "instanceId", instanceID, "err", err)
+			return false
+		}
+		return true
 	}
+
+	if s.eniDeleter == nil {
+		slog.ErrorContext(ctx, "PrepareRunInstances: no ENI deleter wired — auto-created ENI orphaned by launch rollback",
+			"eniId", eniID, "instanceId", instanceID)
+		return false
+	}
+	deleted, err := s.eniDeleter.DetachAndDeleteENI(ctx, accountID, eniID, true)
+	if err != nil {
+		// Not a warning: the interface survives, and it will refuse its
+		// subnet's delete and then its VPC's until something reaps it.
+		slog.ErrorContext(ctx, "PrepareRunInstances: failed to release auto-created ENI during launch rollback — interface orphaned",
+			"eniId", eniID, "instanceId", instanceID, "err", err)
+		return false
+	}
+	slog.InfoContext(ctx, "PrepareRunInstances: released auto-created ENI during launch rollback",
+		"eniId", eniID, "instanceId", instanceID, "deleted", deleted)
+	return true
 }
 
 // rollbackPreparedInstance unwinds the network resources a prepared instance
@@ -2632,6 +2654,7 @@ func (s *InstanceServiceImpl) rollbackPreparedInstance(ctx context.Context, acco
 	if instance == nil || instance.ENIId == "" {
 		return
 	}
+	rolledBack := true
 	if instance.PublicIP != "" {
 		vpcID := ""
 		privateIP := ""
@@ -2641,9 +2664,18 @@ func (s *InstanceServiceImpl) rollbackPreparedInstance(ctx context.Context, acco
 		}
 		utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", vpcID, instance.PublicIP, privateIP,
 			topology.Port(instance.ENIId), instance.ENIMac)
-		s.releaseAutoAssignedPublicIP(ctx, accountID, instance.ENIId, instance.PublicIP, instance.PublicIPPool)
+		rolledBack = s.releaseAutoAssignedPublicIP(ctx, accountID, instance.ENIId, instance.PublicIP, instance.PublicIPPool)
 	}
-	s.detachAndDeleteENI(ctx, accountID, instance.ID, instance.ENIId, autoCreatedENI)
+	// Evaluated before the &&: the interface must be released whether or not
+	// the address came back.
+	rolledBack = s.detachAndDeleteENI(ctx, accountID, instance.ID, instance.ENIId, autoCreatedENI) && rolledBack
+
+	if !rolledBack {
+		slog.ErrorContext(ctx, "PrepareRunInstances: prepared-instance rollback incomplete — ENI or address may be orphaned",
+			"instanceId", instance.ID, "eniId", instance.ENIId,
+			"publicIp", instance.PublicIP, "eniAutoCreated", autoCreatedENI)
+		return
+	}
 	slog.InfoContext(ctx, "PrepareRunInstances: rolled back prepared instance",
 		"instanceId", instance.ID, "eniId", instance.ENIId,
 		"publicIp", instance.PublicIP, "eniAutoCreated", autoCreatedENI)

@@ -43,6 +43,16 @@ vi.mock("@/lib/auth", async (importOriginal) => {
   }
 })
 
+// This exercises the real /bedrock route tree, which 404s unless the Ochre
+// flag is on -- the flag itself is covered by dedicated tests elsewhere.
+vi.mock("@/lib/cluster-config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/cluster-config")>()
+  return {
+    ...actual,
+    isOchreEnabled: () => true,
+  }
+})
+
 import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AdminProvider } from "@/contexts/admin-context"

@@ -1,4 +1,4 @@
-# spinifex-unit-version: 1
+# spinifex-unit-version: 2
 [Unit]
 Description=Spinifex Web UI
 PartOf=spinifex.target
@@ -24,6 +24,7 @@ MemoryMax=20%
 Environment=SPINIFEX_UI_TLS_CERT=/etc/spinifex/server.pem
 Environment=SPINIFEX_UI_TLS_KEY=/etc/spinifex/server.key
 Environment=SPINIFEX_UI_BASE_DIR=/var/lib/spinifex/spinifex-ui/
+Environment=SPINIFEX_UI_OCHRE_ENABLED=false
 
 # Filesystem access
 NoNewPrivileges=yes

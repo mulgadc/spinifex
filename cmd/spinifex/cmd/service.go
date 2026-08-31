@@ -840,6 +840,7 @@ var spinifexUIStartCmd = &cobra.Command{
 		tlsCert := viper.GetString("spinifex-ui-tls-cert")
 		tlsKey := viper.GetString("spinifex-ui-tls-key")
 		baseDir := viper.GetString("spinifex-ui-base-dir")
+		ochreEnabled := viper.GetBool("spinifex-ui-ochre-enabled")
 
 		cfg, err := loadLocalConfig()
 		if err != nil {
@@ -853,12 +854,13 @@ var spinifexUIStartCmd = &cobra.Command{
 		defer initTelemetry("spinifex-ui", false)()
 
 		svc, err := service.New("spinifex-ui", &spinifexui.Config{
-			Port:    port,
-			Host:    host,
-			TLSCert: tlsCert,
-			TLSKey:  tlsKey,
-			BaseDir: baseDir,
-			Region:  region,
+			Port:         port,
+			Host:         host,
+			TLSCert:      tlsCert,
+			TLSKey:       tlsKey,
+			BaseDir:      baseDir,
+			Region:       region,
+			OchreEnabled: ochreEnabled,
 		})
 
 		if err != nil {
@@ -1534,6 +1536,10 @@ func init() {
 	spinifexUICmd.PersistentFlags().String("base-dir", "", "spinifex-ui base directory for PID files and state")
 	viper.BindEnv("spinifex-ui-base-dir", "SPINIFEX_UI_BASE_DIR")
 	viper.BindPFlag("spinifex-ui-base-dir", spinifexUICmd.PersistentFlags().Lookup("base-dir"))
+
+	spinifexUICmd.PersistentFlags().Bool("ochre-enabled", false, "enable the Ochre console")
+	viper.BindEnv("spinifex-ui-ochre-enabled", "SPINIFEX_UI_OCHRE_ENABLED")
+	viper.BindPFlag("spinifex-ui-ochre-enabled", spinifexUICmd.PersistentFlags().Lookup("ochre-enabled"))
 
 	spinifexUICmd.AddCommand(spinifexUIStartCmd)
 	spinifexUICmd.AddCommand(spinifexUIStopCmd)

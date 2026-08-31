@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { getRegion, loadClusterConfig } from "./cluster-config"
+import { getRegion, isOchreEnabled, loadClusterConfig } from "./cluster-config"
 
 function mockFetch(response: Partial<Response>) {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response))
@@ -51,5 +51,40 @@ describe("getRegion", () => {
     const fresh = await import("./cluster-config")
 
     expect(() => fresh.getRegion()).toThrow("has not been loaded")
+  })
+})
+
+describe("isOchreEnabled", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("defaults to false when the field is missing from the response", async () => {
+    mockFetch({
+      ok: true,
+      json: async () => ({ region: "us-west-1" }),
+    })
+
+    await loadClusterConfig()
+
+    expect(isOchreEnabled()).toBeFalsy()
+  })
+
+  it("reflects true when the node reports the flag on", async () => {
+    mockFetch({
+      ok: true,
+      json: async () => ({ region: "us-west-1", ochreEnabled: true }),
+    })
+
+    await loadClusterConfig()
+
+    expect(isOchreEnabled()).toBeTruthy()
+  })
+
+  it("throws before the config has been loaded", async () => {
+    vi.resetModules()
+    const fresh = await import("./cluster-config")
+
+    expect(() => fresh.isOchreEnabled()).toThrow("has not been loaded")
   })
 })

@@ -45,6 +45,15 @@ func (s *stubHTTPDoer) setResponse(status int, err error) {
 	s.err = err
 }
 
+// onePass runs one reconcile and keeps only its error, for the tests that assert
+// on what converged rather than on when the loop should next run. The tests that
+// do care about the deadline call reconcileOnce directly.
+func onePass(t *testing.T, r *ClusterReconciler) error {
+	t.Helper()
+	_, err := r.reconcileOnce(t.Context())
+	return err
+}
+
 func newReconcilerHarness(t *testing.T, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, jetstream.KeyValue, jetstream.KeyValue) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
@@ -418,14 +427,14 @@ func TestClusterReconciler_ActiveHealthRecoversClearsIssue(t *testing.T) {
 
 	// First probe fails and records the issue.
 	require.Error(t, r.probeHealthz(context.Background()))
-	require.NoError(t, r.reconcileOnce(context.Background()))
+	require.NoError(t, onePass(t, r))
 	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	require.NotEmpty(t, meta.HealthIssue)
 
 	// Probe recovers: the issue must be cleared.
 	stub.setResponse(http.StatusOK, nil)
-	require.NoError(t, r.reconcileOnce(context.Background()))
+	require.NoError(t, onePass(t, r))
 	meta, err = GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Empty(t, meta.HealthIssue, "recovered /healthz must clear the recorded issue")

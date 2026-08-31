@@ -12,6 +12,10 @@
 // waiting on something no KV write announces — a VM reaching running, an agent
 // falling silent, a timeout expiring — which a watch cannot see at all, and for
 // which the resync alone is too blunt to be a failure detector.
+//
+// A caller whose inputs are not all KV can supply a Trigger channel as well, for
+// the events that arrive by some other route and would otherwise be seen only
+// when the next pass happened to look.
 package reconciler
 
 import (
@@ -89,6 +93,11 @@ type Config struct {
 	// tombstone carries no value, so a caller whose work key lives in the value
 	// cannot name it, and a whole-set pass needs no attribution.
 	KeyFor func(entry jetstream.KeyValueEntry) (keys []string, ok bool)
+	// Trigger wakes the loop from outside the buckets, for the inputs a KV watch
+	// cannot see because they never reach KV. A receive is treated exactly like a
+	// watch update: debounced with them, then served by a whole-set pass, since an
+	// external signal names no key. Nil means the buckets are the only source.
+	Trigger <-chan struct{}
 	// Resync bounds how stale the world can get when no update arrives, and is
 	// also when Sources are re-enumerated. Zero means DefaultResync.
 	Resync time.Duration
@@ -174,6 +183,10 @@ func Run(ctx context.Context, cfg Config) {
 	// pass that would have seen it ran before the watch existed.
 	w.resync(ctx)
 
+	if cfg.Trigger != nil {
+		go forward(ctx, cfg.Trigger, w)
+	}
+
 	resync := time.NewTicker(cfg.Resync)
 	defer resync.Stop()
 
@@ -209,6 +222,24 @@ func Run(ctx context.Context, cfg Config) {
 			if settle(ctx, changes, cfg.Debounce) {
 				rearm(revisit, clampRevisit(serve(ctx, cfg, queue), cfg.Resync))
 			}
+		}
+	}
+}
+
+// forward turns an external wake into the same signal a watch update produces,
+// so a trigger is debounced and coalesced with them rather than taking a second
+// path through the loop. It queues the whole set because a trigger names no key.
+func forward(ctx context.Context, trigger <-chan struct{}, w *watchSet) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, open := <-trigger:
+			if !open {
+				return
+			}
+			w.queue.addWhole()
+			w.signal()
 		}
 	}
 }

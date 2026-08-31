@@ -189,7 +189,7 @@ func TestActiveBranchRestartsWedgedCP(t *testing.T) {
 	r.degradedSince = time.Now().Add(-10 * time.Minute)
 	r.latest.Store(&ServerStateReport{Healthz: "ok", NodeCount: 2, TS: time.Now().Add(-5 * time.Minute).Unix()})
 
-	require.NoError(t, r.reconcileOnce(context.Background()))
+	require.NoError(t, onePass(t, r))
 
 	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)

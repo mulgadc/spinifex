@@ -43,7 +43,7 @@ func TestClusterReconciler_CreatingTransitionsToActiveOnStateReport(t *testing.T
 	seedBootstrapState(t, acctKV)
 	r.latest.Store(freshReport("ok", 3))
 
-	require.NoError(t, r.reconcileOnce(context.Background()))
+	require.NoError(t, onePass(t, r))
 
 	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
@@ -58,7 +58,7 @@ func TestClusterReconciler_CreatingStaysWithoutStateReport(t *testing.T) {
 	seedBootstrapState(t, acctKV)
 	// No report stored.
 
-	require.NoError(t, r.reconcileOnce(context.Background()))
+	require.NoError(t, onePass(t, r))
 
 	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
@@ -71,7 +71,7 @@ func TestClusterReconciler_CreatingStaysOnUnhealthyReport(t *testing.T) {
 	seedBootstrapState(t, acctKV)
 	r.latest.Store(freshReport("fail", 0))
 
-	require.NoError(t, r.reconcileOnce(context.Background()))
+	require.NoError(t, onePass(t, r))
 
 	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
@@ -84,7 +84,7 @@ func TestClusterReconciler_ActiveRecordsNodeCountAndClearsIssue(t *testing.T) {
 	require.NoError(t, SetClusterHealthState(t.Context(), acctKV, "alpha", "stale", 0, nil))
 	r.latest.Store(freshReport("ok", 4))
 
-	require.NoError(t, r.reconcileOnce(context.Background()))
+	require.NoError(t, onePass(t, r))
 
 	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
@@ -98,7 +98,7 @@ func TestClusterReconciler_ActiveFlagsStaleReport(t *testing.T) {
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	r.latest.Store(&ServerStateReport{Healthz: "ok", NodeCount: 2, TS: time.Now().Add(-5 * time.Minute).Unix()})
 
-	require.NoError(t, r.reconcileOnce(context.Background()))
+	require.NoError(t, onePass(t, r))
 
 	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestClusterReconciler_ActiveUnhealthyReportSurfacesReason(t *testing.T) {
 		Reason: "readyz:[etcd]; etcd:unreachable; disk:ok",
 	})
 
-	require.NoError(t, r.reconcileOnce(context.Background()))
+	require.NoError(t, onePass(t, r))
 
 	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestClusterReconciler_ActiveUnhealthyReportWithoutReasonStaysTerse(t *testi
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	r.latest.Store(freshReport("fail", 0))
 
-	require.NoError(t, r.reconcileOnce(context.Background()))
+	require.NoError(t, onePass(t, r))
 
 	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)

@@ -6,13 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/kvlease"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/reconciler"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -21,7 +25,11 @@ import (
 const (
 	defaultReconcileLeaseRefresh = 20 * time.Second
 	defaultReconcileInterval     = 30 * time.Second
-	defaultHealthzTimeout        = 5 * time.Second
+	// reconcileResync is the drift backstop for a loop whose signals now arrive as
+	// watch updates and state reports. It also bounds every deadline below it, so
+	// the 15-minute create timeout is served by the resync rather than by a timer.
+	reconcileResync       = 5 * time.Minute
+	defaultHealthzTimeout = 5 * time.Second
 	// defaultCreateTimeout bounds how long a cluster may sit in CREATING before
 	// being marked FAILED. Measured from meta.CreatedAt so a VM that never boots
 	// reaches a terminal state even across daemon restarts.
@@ -148,6 +156,17 @@ type ClusterReconciler struct {
 	stateSubject    string
 	stateStaleAfter time.Duration
 	latest          atomic.Pointer[ServerStateReport]
+	// wake carries a report that changed the cluster's health into the reconcile
+	// loop, which watches KV and would otherwise never see it: the report arrives
+	// over core NATS and writes nothing.
+	wake chan struct{}
+
+	// terminal records why the loop is ending — a terminal cluster status or a
+	// lost lease — and stopRun cancels it. reconciler.Run has no exit condition
+	// of its own, so ending it is cancelling it, and this is what Run reports.
+	terminalMu sync.Mutex
+	terminal   error
+	stopRun    context.CancelFunc
 
 	// Add-on delivery status source. When addonStatusSub is non-nil the
 	// reconciler subscribes to the per-cluster add-on status subject and CASes
@@ -334,17 +353,20 @@ func NewClusterReconciler(leaderKV, acctKV jetstream.KeyValue, accountID, cluste
 		return nil, errors.New("eks: NewClusterReconciler empty holderID")
 	}
 	r := &ClusterReconciler{
-		leaderKV:           leaderKV,
-		acctKV:             acctKV,
-		accountID:          accountID,
-		clusterName:        clusterName,
-		holderID:           holderID,
-		healthURL:          healthURL,
-		leaseRefresh:       defaultReconcileLeaseRefresh,
-		interval:           defaultReconcileInterval,
-		healthTimeout:      defaultHealthzTimeout,
-		createTimeout:      defaultCreateTimeout,
-		stateStaleAfter:    defaultStateStaleAfter,
+		leaderKV:        leaderKV,
+		acctKV:          acctKV,
+		accountID:       accountID,
+		clusterName:     clusterName,
+		holderID:        holderID,
+		healthURL:       healthURL,
+		leaseRefresh:    defaultReconcileLeaseRefresh,
+		interval:        defaultReconcileInterval,
+		healthTimeout:   defaultHealthzTimeout,
+		createTimeout:   defaultCreateTimeout,
+		stateStaleAfter: defaultStateStaleAfter,
+		// One slot: it means "a report changed something", and a second one
+		// arriving before the pass runs says nothing the first did not.
+		wake:               make(chan struct{}, 1),
 		restartGrace:       defaultCPRestartGrace,
 		restartBackoff:     defaultCPRestartBackoff,
 		maxRestartAttempts: defaultMaxCPRestartAttempts,
@@ -402,6 +424,10 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 	if r.lease == nil {
 		return errors.New("ClusterReconciler: Run called without AcquireLease")
 	}
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	r.stopRun = stop
+
 	if r.stateSub != nil && r.stateSubject != "" {
 		sub, err := r.stateSub.Subscribe(r.stateSubject, func(m *nats.Msg) {
 			report, perr := unmarshalServerStateReport(m.Data)
@@ -410,7 +436,7 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 					"cluster", r.clusterName, "subject", m.Subject, "err", perr)
 				return
 			}
-			r.latest.Store(&report)
+			r.storeReport(&report)
 		})
 		if err != nil {
 			return fmt.Errorf("subscribe state report %s: %w", r.stateSubject, err)
@@ -434,34 +460,95 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 		defer func() { _ = sub.Unsubscribe() }()
 	}
 
-	reconcileT := time.NewTicker(r.interval)
-	defer reconcileT.Stop()
-
-	lost := r.lease.Lost()
-	if err := r.reconcileOnce(ctx); err != nil {
-		if terminalReconcileErr(err) {
-			return err
-		}
-		slog.Warn("ClusterReconciler: initial reconcile failed",
-			"cluster", r.clusterName, "err", err)
-	}
-
-	for {
+	// The lease turning over is not a KV write this loop watches, so losing it has
+	// to end the loop from outside it.
+	go func() {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-lost:
-			return ErrReconcilerLeaseLost
-		case <-reconcileT.C:
-			if err := r.reconcileOnce(ctx); err != nil {
-				if terminalReconcileErr(err) {
-					return err
-				}
-				slog.Warn("ClusterReconciler: reconcile failed",
-					"cluster", r.clusterName, "err", err)
-			}
+		case <-runCtx.Done():
+		case <-r.lease.Lost():
+			r.endRun(ErrReconcilerLeaseLost)
 		}
+	}()
+
+	// The whole account bucket, and that is forced rather than lazy: a cluster key
+	// is "clusters/<name>/meta", "/" is not the NATS subject separator, so the key
+	// is one token and no prefix wildcard selects a single cluster. The cost is
+	// waking on a sibling cluster's writes, which real activity bounds.
+	bucket := kvstore.NewOpenBucket(nil, r.acctKV, kvstore.Config{Name: r.acctKV.Bucket()})
+	reconciler.Run(runCtx, reconciler.Config{
+		Name:      "eks/" + r.clusterName,
+		Sources:   []reconciler.Source{reconciler.Fixed(bucket, ">")},
+		Reconcile: r.reconcilePass,
+		Trigger:   r.wake,
+		Resync:    reconcileResync,
+	})
+
+	if err := r.terminalErr(); err != nil {
+		return err
 	}
+	return ctx.Err()
+}
+
+// reconcilePass runs one reconcile and says when the loop should next run with
+// nothing arriving. A terminal outcome ends the loop rather than being returned:
+// the loop has no notion of finishing, so finishing it is cancelling it.
+func (r *ClusterReconciler) reconcilePass(ctx context.Context) (time.Duration, error) {
+	revisit, err := r.reconcileOnce(ctx)
+	switch {
+	case err == nil:
+		return revisit, nil
+	case terminalReconcileErr(err):
+		r.endRun(err)
+		return 0, nil
+	default:
+		// Retried at the old cadence rather than left to the resync: a pass that
+		// failed has learnt nothing, so waiting five minutes to try again would be
+		// slower than the ticker this replaced.
+		return r.interval, err
+	}
+}
+
+// endRun records the first reason the loop ended and cancels it. First wins: a
+// lost lease and a terminal status can land together, and which one is reported
+// should not depend on the race.
+func (r *ClusterReconciler) endRun(reason error) {
+	r.terminalMu.Lock()
+	if r.terminal == nil {
+		r.terminal = reason
+	}
+	r.terminalMu.Unlock()
+	if r.stopRun != nil {
+		r.stopRun()
+	}
+}
+
+func (r *ClusterReconciler) terminalErr() error {
+	r.terminalMu.Lock()
+	defer r.terminalMu.Unlock()
+	return r.terminal
+}
+
+// storeReport keeps the newest control-plane report and wakes the loop only when
+// it says something about health the last one did not. The control plane
+// publishes on its own timer whether or not anything changed, so waking on every
+// report would be the old tick again under another name.
+func (r *ClusterReconciler) storeReport(report *ServerStateReport) {
+	prev := r.latest.Swap(report)
+	if prev != nil && sameHealth(prev, report) {
+		return
+	}
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+}
+
+// sameHealth reports whether two reports would produce the same observe result.
+// Freshness is deliberately excluded: a report that only repeats itself pushes
+// the staleness deadline out, which the next pass reads for itself.
+func sameHealth(a, b *ServerStateReport) bool {
+	return a.Healthz == b.Healthz && a.Reason == b.Reason &&
+		a.NodeCount == b.NodeCount && maps.Equal(a.NodegroupReady, b.NodegroupReady)
 }
 
 func terminalReconcileErr(err error) bool {
@@ -470,40 +557,45 @@ func terminalReconcileErr(err error) bool {
 		errors.Is(err, ErrClusterNotFound)
 }
 
-func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
+// reconcileOnce runs one pass and reports how long the loop may wait with
+// nothing arriving. The signals that do arrive — a bootstrap artifact landing, a
+// status change, a control plane changing its mind about its own health — are
+// watched or triggered, so the deadline covers only what elapsed time decides.
+func (r *ClusterReconciler) reconcileOnce(ctx context.Context) (time.Duration, error) {
 	meta, err := GetClusterMeta(ctx, r.acctKV, r.clusterName)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	switch meta.Status {
 	case ClusterStatusCreating:
 		ready, reason := r.bootstrapReady(ctx, meta)
 		if !ready {
-			// Info, not Debug: this is the per-tick reason a CREATING cluster has
+			// Info, not Debug: this is the per-pass reason a CREATING cluster has
 			// not yet flipped ACTIVE. At Debug it is invisible at the default
 			// level, so a cluster that stalls to the create-timeout FAILED gives
 			// no diagnosable cause. Logged only during the CREATING window.
 			slog.Info("ClusterReconciler: bootstrap not ready",
 				"cluster", r.clusterName, "reason", reason)
-			return r.failIfCreateTimedOut(ctx, meta, "bootstrap not ready: "+reason)
+			return r.createRevisit(meta), r.failIfCreateTimedOut(ctx, meta, "bootstrap not ready: "+reason)
 		}
 		issue, nodeCount, nodegroupReady := r.observe(ctx)
 		if issue != "" {
 			slog.Info("ClusterReconciler: health not ready",
 				"cluster", r.clusterName, "issue", issue)
-			return r.failIfCreateTimedOut(ctx, meta, "healthz not ready: "+issue)
+			return r.createRevisit(meta), r.failIfCreateTimedOut(ctx, meta, "healthz not ready: "+issue)
 		}
 		if err := SetClusterStatus(ctx, r.acctKV, r.clusterName, ClusterStatusActive); err != nil {
-			return err
+			return 0, err
 		}
 		if err := SetClusterHealthState(ctx, r.acctKV, r.clusterName, "", nodeCount, nodegroupReady); err != nil {
 			if errors.Is(err, ErrClusterNotFound) {
-				return ErrClusterNotFound
+				return 0, ErrClusterNotFound
 			}
-			return fmt.Errorf("record cluster health: %w", err)
+			return 0, fmt.Errorf("record cluster health: %w", err)
 		}
 		slog.Info("ClusterReconciler: cluster transitioned to ACTIVE",
 			"cluster", r.clusterName, "nodes", nodeCount)
+		return r.activeRevisit(""), nil
 	case ClusterStatusActive:
 		issue, nodeCount, nodegroupReady := r.observe(ctx)
 		if issue != "" {
@@ -512,19 +604,68 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 		}
 		if err := SetClusterHealthState(ctx, r.acctKV, r.clusterName, issue, nodeCount, nodegroupReady); err != nil {
 			if errors.Is(err, ErrClusterNotFound) {
-				return ErrClusterNotFound
+				return 0, ErrClusterNotFound
 			}
-			return fmt.Errorf("record cluster health: %w", err)
+			return 0, fmt.Errorf("record cluster health: %w", err)
 		}
 		r.maybeRecoverControlPlane(ctx, meta, issue)
 		r.maybeReformEtcdQuorum(ctx, meta, issue)
 		r.maybeReplaceControlPlaneMember(ctx, meta, issue)
+		return r.activeRevisit(issue), nil
 	case ClusterStatusDeleting:
-		return ErrReconcilerClusterDeleting
+		return 0, ErrReconcilerClusterDeleting
 	case ClusterStatusFailed:
-		return ErrReconcilerClusterFailed
+		return 0, ErrReconcilerClusterFailed
 	}
-	return nil
+	return 0, nil
+}
+
+// createRevisit is what remains of the create timeout. Everything else a
+// CREATING cluster waits for is an event now: the bootstrap artifacts are keys
+// in the watched bucket, and the first healthy report is a trigger. Only the
+// timeout expiring announces itself to nobody.
+func (r *ClusterReconciler) createRevisit(meta *ClusterMeta) time.Duration {
+	if r.createTimeout <= 0 || meta.CreatedAt.IsZero() {
+		return 0
+	}
+	if remaining := time.Until(meta.CreatedAt.Add(r.createTimeout)); remaining > 0 {
+		return remaining
+	}
+	// Already due and still not failed, so the pass that fails it could not. Retry
+	// at the old cadence rather than immediately, which would spin.
+	return r.interval
+}
+
+// activeRevisit is the deadline for a cluster that is already up.
+func (r *ClusterReconciler) activeRevisit(issue string) time.Duration {
+	if issue != "" {
+		// A degraded cluster is on the recovery ladders' clocks — three graces,
+		// three backoffs and three attempt caps that interact — and queries its
+		// members' VM state every pass anyway. Keeping the old interval leaves
+		// that timing exactly as it is rather than restating it here.
+		return r.interval
+	}
+	return r.reportRevisit()
+}
+
+// reportRevisit is the instant the newest control-plane report goes stale, which
+// is what a healthy cluster is waiting for: silence is published by nobody, so
+// nothing else will wake the loop to notice it.
+func (r *ClusterReconciler) reportRevisit() time.Duration {
+	if r.stateSub == nil || r.stateSubject == "" {
+		// Health comes from an HTTP probe, which answers only when asked.
+		return r.interval
+	}
+	report := r.latest.Load()
+	if report == nil {
+		return r.interval
+	}
+	if fresh := time.Until(time.Unix(report.TS, 0).Add(r.stateStaleAfter)); fresh > 0 {
+		return fresh
+	}
+	// Already stale, so there is no expiry left to wait for and the next pass is
+	// what notices. Returning nothing here would leave that pass unscheduled.
+	return r.interval
 }
 
 // maybeRecoverControlPlane attempts a bounded in-place restart of a wedged

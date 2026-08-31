@@ -1,15 +1,20 @@
+//test:in-package the barrier's staleness rules are only testable from inside:
+// they need the clock seam, the freshness constants, the shared JetStream test
+// server, and jsManager.clusterKV to seed heartbeats against.
+
 package daemon
 
 import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newTestIPSecBarrier(t *testing.T) *KVIPSecBarrier {
+func newTestIPSecBarrier(t *testing.T) (*KVIPSecBarrier, *JetStreamManager) {
 	t.Helper()
 
 	nc, err := nats.Connect(sharedJSNATSURL)
@@ -22,61 +27,108 @@ func newTestIPSecBarrier(t *testing.T) *KVIPSecBarrier {
 
 	barrier := NewKVIPSecBarrier(jsm.clusterKV)
 	require.NotNil(t, barrier)
-	return barrier
+	return barrier, jsm
 }
 
-func TestKVIPSecBarrier_ReadyOnlyWhenEveryNodeHasPublished(t *testing.T) {
-	barrier := newTestIPSecBarrier(t)
+// beat marks a node live without saying anything about its IPsec state.
+func beat(t *testing.T, jsm *JetStreamManager, node string) {
+	t.Helper()
+	require.NoError(t, jsm.WriteHeartbeat(&Heartbeat{
+		Node:      node,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}))
+}
+
+func TestKVIPSecBarrier_ReportsEveryLiveNodesState(t *testing.T) {
+	barrier, jsm := newTestIPSecBarrier(t)
 	nodes := []string{"ipsec-a", "ipsec-b"}
+	for _, n := range nodes {
+		beat(t, jsm, n)
+	}
 
-	require.NoError(t, barrier.PublishLocalReady(t.Context(), "ipsec-a", true))
+	require.NoError(t, barrier.Publish(t.Context(), "ipsec-a", host.IPSecNodeStatus{Ready: true, NBReachable: true}))
 
-	ready, pending, err := barrier.NodesReady(t.Context(), nodes)
+	cluster, err := barrier.Cluster(t.Context(), nodes)
 	require.NoError(t, err)
-	assert.False(t, ready)
-	assert.Equal(t, []string{"ipsec-b"}, pending)
+	assert.Equal(t, map[string]host.IPSecNodeStatus{
+		"ipsec-a": {Ready: true, NBReachable: true},
+		"ipsec-b": {},
+	}, cluster)
 
-	require.NoError(t, barrier.PublishLocalReady(t.Context(), "ipsec-b", true))
+	require.NoError(t, barrier.Publish(t.Context(), "ipsec-b", host.IPSecNodeStatus{Ready: true}))
 
-	ready, pending, err = barrier.NodesReady(t.Context(), nodes)
+	cluster, err = barrier.Cluster(t.Context(), nodes)
 	require.NoError(t, err)
-	assert.True(t, ready)
-	assert.Empty(t, pending)
+	assert.Equal(t, map[string]host.IPSecNodeStatus{
+		"ipsec-a": {Ready: true, NBReachable: true},
+		"ipsec-b": {Ready: true},
+	}, cluster)
 }
 
-// A node that publishes false has said its own setup is incomplete, which is
-// exactly the case the flag must not be asserted over.
-func TestKVIPSecBarrier_UnreadyNodeIsPending(t *testing.T) {
-	barrier := newTestIPSecBarrier(t)
+// A node that publishes Ready=false has said its own setup is incomplete, which
+// is exactly the case the flag must not be asserted over.
+func TestKVIPSecBarrier_ExplicitlyUnreadyNodeIsReported(t *testing.T) {
+	barrier, jsm := newTestIPSecBarrier(t)
+	beat(t, jsm, "ipsec-unready")
 
-	require.NoError(t, barrier.PublishLocalReady(t.Context(), "ipsec-unready", false))
+	require.NoError(t, barrier.Publish(t.Context(), "ipsec-unready", host.IPSecNodeStatus{}))
 
-	ready, pending, err := barrier.NodesReady(t.Context(), []string{"ipsec-unready"})
+	cluster, err := barrier.Cluster(t.Context(), []string{"ipsec-unready"})
 	require.NoError(t, err)
-	assert.False(t, ready)
-	assert.Equal(t, []string{"ipsec-unready"}, pending)
+	assert.Equal(t, map[string]host.IPSecNodeStatus{"ipsec-unready": {}}, cluster)
 }
 
-// A record that has stopped being refreshed is not evidence the node is still
-// configured; treating it as such would hold encryption over a chassis that
-// came back up with nothing set.
-func TestKVIPSecBarrier_StaleRecordIsPending(t *testing.T) {
-	barrier := newTestIPSecBarrier(t)
+// A node taken out of service has no chassis registered, so there is no tunnel
+// to it to black-hole. Reporting it as unconfigured would strip encryption from
+// the peers that are still talking to each other.
+func TestKVIPSecBarrier_NodeThatStoppedHeartbeatingDropsOutOfTheSet(t *testing.T) {
+	barrier, jsm := newTestIPSecBarrier(t)
+	beat(t, jsm, "ipsec-gone")
 
-	require.NoError(t, barrier.PublishLocalReady(t.Context(), "ipsec-stale", true))
+	require.NoError(t, barrier.Publish(t.Context(), "ipsec-gone", host.IPSecNodeStatus{Ready: true}))
 
-	barrier.now = func() time.Time { return time.Now().Add(ipsecReadyFreshness + time.Minute) }
+	// Far enough ahead that both the status record and the heartbeat are stale.
+	barrier.now = func() time.Time { return time.Now().Add(ipsecStatusFreshness + time.Hour) }
 
-	ready, pending, err := barrier.NodesReady(t.Context(), []string{"ipsec-stale"})
+	cluster, err := barrier.Cluster(t.Context(), []string{"ipsec-gone"})
 	require.NoError(t, err)
-	assert.False(t, ready)
-	assert.Equal(t, []string{"ipsec-stale"}, pending)
+	assert.Empty(t, cluster)
+}
+
+// Still heartbeating but its status has gone stale: the node is up and can no
+// longer vouch for its own configuration, so it counts as not ready.
+func TestKVIPSecBarrier_LiveNodeWithAStaleStatusIsNotReady(t *testing.T) {
+	barrier, jsm := newTestIPSecBarrier(t)
+
+	require.NoError(t, barrier.Publish(t.Context(), "ipsec-stale", host.IPSecNodeStatus{Ready: true}))
+
+	// The status is stale, but a heartbeat lands at the shifted clock.
+	shifted := time.Now().Add(ipsecStatusFreshness + time.Minute)
+	barrier.now = func() time.Time { return shifted }
+	require.NoError(t, jsm.WriteHeartbeat(&Heartbeat{
+		Node:      "ipsec-stale",
+		Timestamp: shifted.UTC().Format(time.RFC3339),
+	}))
+
+	cluster, err := barrier.Cluster(t.Context(), []string{"ipsec-stale"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]host.IPSecNodeStatus{"ipsec-stale": {}}, cluster)
+}
+
+// A node that has never published anything and never heartbeated is not part of
+// the running cluster yet.
+func TestKVIPSecBarrier_UnknownNodeIsAbsent(t *testing.T) {
+	barrier, _ := newTestIPSecBarrier(t)
+
+	cluster, err := barrier.Cluster(t.Context(), []string{"ipsec-never-seen"})
+	require.NoError(t, err)
+	assert.Empty(t, cluster)
 }
 
 func TestKVIPSecBarrier_PublishRequiresANodeName(t *testing.T) {
-	barrier := newTestIPSecBarrier(t)
+	barrier, _ := newTestIPSecBarrier(t)
 
-	err := barrier.PublishLocalReady(t.Context(), "", true)
+	err := barrier.Publish(t.Context(), "", host.IPSecNodeStatus{Ready: true})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "node name unset")
 }
@@ -85,4 +137,17 @@ func TestKVIPSecBarrier_PublishRequiresANodeName(t *testing.T) {
 // nil interface rather than a typed nil to tell.
 func TestNewKVIPSecBarrier_NilKVYieldsNoBarrier(t *testing.T) {
 	assert.Nil(t, NewKVIPSecBarrier(nil))
+}
+
+// assert.Nil passes for a typed nil, so the interface conversion is checked with
+// == instead: a non-nil interface holding a nil pointer panics in host.
+func TestDaemonIPSecBarrier_NilManagerYieldsANilInterface(t *testing.T) {
+	d := &Daemon{}
+	assert.Equal(t, host.IPSecBarrier(nil), d.ipsecBarrier())
+}
+
+// The heartbeat that keeps a node in the set must be refreshed far more often
+// than it is allowed to age, or a healthy node drops out between beats.
+func TestIPSecLivenessWindowExceedsHeartbeatInterval(t *testing.T) {
+	assert.Greater(t, ipsecLivenessWindow, 3*heartbeatInterval)
 }

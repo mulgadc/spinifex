@@ -4,6 +4,7 @@ package multinode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -144,27 +145,48 @@ func ipsecRequested(t *testing.T, ssh *harness.PeerSSH, n harness.Node) bool {
 func assertNBGlobalMatchesChassis(t *testing.T, fix *Fixture, ssh *harness.PeerSSH, incomplete map[string]string) {
 	harness.Step(t, "NB_Global ipsec is not asserted over an unconfigured chassis")
 
+	// The flag is asserted only once every node has published its own readiness,
+	// so it lags the per-node config by up to a reconcile interval. Polling for it
+	// is the difference between testing the invariant and testing the clock.
 	var asserted string
-	for _, n := range fix.Cluster.Nodes {
-		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		raw, err := ssh.Run(c, n.Addr, "sudo ovn-nbctl --timeout=5 get NB_Global . ipsec 2>/dev/null || true")
-		cancel()
-		if err != nil {
-			t.Logf("WARN: %s ovn-nbctl get NB_Global ipsec: %v", n.Name, err)
-			continue
+	harness.EventuallyErr(t, func() error {
+		var unreadable []string
+		for _, n := range fix.Cluster.Nodes {
+			value, err := readNBGlobalIPSec(t, ssh, n)
+			if err != nil {
+				unreadable = append(unreadable, fmt.Sprintf("%s: %v", n.Name, err))
+				continue
+			}
+			harness.Detail(t, "node", n.Name, "nb_global_ipsec", value)
+			if value == "true" {
+				asserted = n.Name
+				return nil
+			}
 		}
-		value := strings.Trim(strings.TrimSpace(string(raw)), `"`)
-		harness.Detail(t, "node", n.Name, "nb_global_ipsec", value)
-		if value == "true" {
-			asserted = n.Name
+		if len(unreadable) == len(fix.Cluster.Nodes) {
+			return fmt.Errorf("no node could read NB_Global: %s", strings.Join(unreadable, "; "))
 		}
-	}
+		return errors.New("no node reports NB_Global ipsec=true — ovn-controller adds no options:remote_name, so intra-AZ Geneve is plaintext")
+	}, 120*time.Second, 5*time.Second)
 
-	if asserted == "" {
-		t.Fatal("no node reports NB_Global ipsec=true — ovn-controller adds no options:remote_name, so intra-AZ Geneve is plaintext")
-	}
 	if len(incomplete) > 0 {
 		t.Fatalf("NB_Global ipsec=true (read on %s) while %d chassis are unconfigured: %v — cross-chassis guest traffic is black-holing",
 			asserted, len(incomplete), incomplete)
 	}
+}
+
+// readNBGlobalIPSec returns the flag as the node reports it. A node with no
+// local NB DB returns an error rather than "false": conflating the two is the
+// defect the production change exists to remove, and the test must not reinstate
+// it by discarding the exit status.
+func readNBGlobalIPSec(t *testing.T, ssh *harness.PeerSSH, n harness.Node) (string, error) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	raw, err := ssh.Run(ctx, n.Addr, "sudo ovn-nbctl --timeout=5 get NB_Global . ipsec")
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(raw)))
+	}
+	return strings.Trim(strings.TrimSpace(string(raw)), `"`), nil
 }

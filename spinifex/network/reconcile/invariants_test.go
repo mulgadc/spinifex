@@ -31,12 +31,16 @@ func TestI1_GuestLSPMustHavePortSecurity(t *testing.T) {
 		port := topology.PortSpec{
 			PortID: "eni-a", SubnetID: "subnet-a", VPCID: "vpc-a",
 			PrivateIP: netip.MustParseAddr("10.0.1.5"), MAC: mac,
+			SGIDs: []string{"sg-a"},
 		}
 		if err := mgr.EnsureVPC(ctx, vpc); err != nil {
 			t.Fatalf("EnsureVPC: %v", err)
 		}
 		if err := mgr.EnsureSubnet(ctx, sub); err != nil {
 			t.Fatalf("EnsureSubnet: %v", err)
+		}
+		if err := mgr.EnsureSGPortGroup(ctx, "sg-a"); err != nil {
+			t.Fatalf("EnsureSGPortGroup: %v", err)
 		}
 		if err := mgr.EnsurePort(ctx, port); err != nil {
 			t.Fatalf("EnsurePort: %v", err)

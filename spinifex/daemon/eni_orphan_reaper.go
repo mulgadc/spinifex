@@ -54,6 +54,11 @@ type eniOrphanReaper struct {
 	instances instanceIndex
 	eip       eipDisassociator
 	minAge    time.Duration
+	// missing holds the ENIs whose instance was absent last sweep. An instance
+	// record is written after its ENI is attached, so a single absent reading
+	// can be a launch mid-flight rather than a zombie; only an ENI missing from
+	// two consecutive sweeps is reaped.
+	missing map[string]bool
 }
 
 var _ vm.Reaper = (*eniOrphanReaper)(nil)
@@ -134,40 +139,73 @@ func (r *eniOrphanReaper) sweepStaleAttachments(ctx context.Context) (int, error
 	if r.instances == nil {
 		return 0, nil
 	}
+
+	// Candidates before the keep set, so the set is never older than the
+	// listing it judges, and so a cluster with nothing to sweep pays for
+	// neither instance listing.
+	attached, err := r.vpc.ListAttachedInstanceENIs(ctx, r.minAge)
+	if err != nil {
+		return 0, err
+	}
+	if len(attached) == 0 {
+		r.missing = nil
+		return 0, nil
+	}
+
 	known, err := r.knownInstanceIDs()
 	if err != nil {
 		// Fail closed. A short listing reads as "the instance is gone" for every
 		// instance missing from it, which would reap live guests' interfaces.
 		slog.WarnContext(ctx, "eni-orphan: instance listing failed; skipping stale-attachment sweep", "err", err)
+		r.missing = nil
+		return 0, nil
+	}
+	if len(known) == 0 {
+		// The record space is recreated when missing and republished only on a
+		// node's next state change, so an empty listing beside live ENIs is far
+		// likelier to be an emptied bucket than a cluster with no instances.
+		slog.WarnContext(ctx, "eni-orphan: no instance records at all beside attached ENIs; declining the stale-attachment sweep",
+			"candidates", len(attached))
+		r.missing = nil
 		return 0, nil
 	}
 
-	attached, err := r.vpc.ListAttachedInstanceENIs(ctx, r.minAge)
-	if err != nil {
-		return 0, err
-	}
-
 	reaped := 0
+	stillMissing := make(map[string]bool, len(r.missing))
 	for _, candidate := range attached {
 		if ctx.Err() != nil {
+			r.missing = stillMissing
 			return reaped, ctx.Err()
 		}
 		if known[candidate.Record.InstanceId] {
 			continue
 		}
+
+		eniID := candidate.Record.NetworkInterfaceId
+		if !r.missing[eniID] {
+			stillMissing[eniID] = true
+			slog.InfoContext(ctx, "eni-orphan: ENI names an instance the control plane does not hold; deferring to the next sweep",
+				"eniId", eniID, "accountId", candidate.AccountID, "instanceId", candidate.Record.InstanceId)
+			continue
+		}
 		if r.reapStale(ctx, candidate) {
 			reaped++
+			continue
 		}
+		stillMissing[eniID] = true
 	}
+	r.missing = stillMissing
 	return reaped, nil
 }
 
-// reapStale releases one zombie ENI's EIP association and then the ENI itself,
-// reporting whether the ENI is gone. The EIP goes first: the disassociation
-// reads the record's captured MAC to withdraw the NAT rule, and leaving it for
-// afterwards would leave the address associated to an interface that no longer
-// exists if the delete failed.
+// reapStale frees one zombie ENI, reporting whether the record is settled. An
+// interface the owner asked to keep is detached rather than deleted, matching
+// what terminate does with the same flag.
 func (r *eniOrphanReaper) reapStale(ctx context.Context, candidate handlers_ec2_vpc.AccountENI) bool {
+	if keep := candidate.Record.DeleteOnTermination; keep != nil && !*keep {
+		return r.detachStale(ctx, candidate)
+	}
+
 	eniID := candidate.Record.NetworkInterfaceId
 	slog.InfoContext(ctx, "eni-orphan: deleting ENI whose instance no longer exists",
 		"eniId", eniID,
@@ -176,25 +214,50 @@ func (r *eniOrphanReaper) reapStale(ctx context.Context, candidate handlers_ec2_
 		"privateIp", candidate.Record.PrivateIpAddress,
 		"createdAt", candidate.Record.CreatedAt)
 
-	r.releaseEIP(ctx, candidate.AccountID, eniID)
-
 	if err := r.vpc.ForceDeleteInstanceENI(ctx, candidate.AccountID, eniID); err != nil {
 		slog.WarnContext(ctx, "eni-orphan: stale ENI delete failed",
+			"eniId", eniID, "accountId", candidate.AccountID, "err", err)
+		return false
+	}
+
+	// The EIP goes after the interface. The delete decides whether the ENI's
+	// public address may return to the pool by looking for an EIP that names
+	// the ENI, so clearing the association first would hand a still-allocated
+	// address back to IPAM.
+	r.releaseEIP(ctx, candidate.AccountID, eniID)
+	return true
+}
+
+// detachStale clears a dead instance off an ENI that was asked to outlive it —
+// an RDS endpoint, a customer's reserved address. Detaching takes the record
+// out of the sweep's reach and leaves the interface, and its EIP, in place.
+func (r *eniOrphanReaper) detachStale(ctx context.Context, candidate handlers_ec2_vpc.AccountENI) bool {
+	eniID := candidate.Record.NetworkInterfaceId
+	slog.InfoContext(ctx, "eni-orphan: detaching keep-on-terminate ENI whose instance no longer exists",
+		"eniId", eniID,
+		"accountId", candidate.AccountID,
+		"instanceId", candidate.Record.InstanceId,
+		"privateIp", candidate.Record.PrivateIpAddress)
+
+	if err := r.vpc.DetachENI(ctx, candidate.AccountID, eniID); err != nil {
+		slog.WarnContext(ctx, "eni-orphan: stale ENI detach failed",
 			"eniId", eniID, "accountId", candidate.AccountID, "err", err)
 		return false
 	}
 	return true
 }
 
-// releaseEIP drops any EIP association held on eniID. Best-effort: a failure
-// here must not stop the ENI delete, and the next sweep retries it.
+// releaseEIP drops any EIP association held on eniID, after the interface is
+// gone. Nothing retries a failure here: the ENI record the sweep finds these
+// through no longer exists, so the association is stranded until an operator
+// disassociates the allocation by hand.
 func (r *eniOrphanReaper) releaseEIP(ctx context.Context, accountID, eniID string) {
 	if r.eip == nil {
 		return
 	}
 	found, err := r.eip.DisassociateByENI(ctx, accountID, eniID)
 	if err != nil {
-		slog.WarnContext(ctx, "eni-orphan: EIP disassociate failed",
+		slog.ErrorContext(ctx, "eni-orphan: EIP association stranded on a deleted ENI; recover with DisassociateAddress",
 			"eniId", eniID, "accountId", accountID, "err", err)
 		return
 	}

@@ -816,7 +816,6 @@ func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
 
 	var primaryErr error
 	if instance.ENIId != "" {
-		a.disassociateENIEIP(instance.AccountID, instance.ENIId)
 		// force=true bypasses the in-use guard for the owning instance,
 		// breaking the un-terminable-ENI deadlock (ADR-0003 §2). One call
 		// carries the detach's revision into the delete, so a lagging KV
@@ -832,6 +831,9 @@ func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
 		} else {
 			slog.Info("ENI already absent on termination",
 				"eni", instance.ENIId, "instanceId", instance.ID)
+		}
+		if err == nil {
+			a.disassociateENIEIP(instance.AccountID, instance.ENIId)
 		}
 	}
 
@@ -868,7 +870,6 @@ func (a *instanceCleanerAdapter) releaseAttachedENIs(instance *vm.VM) {
 			continue
 		}
 
-		a.disassociateENIEIP(instance.AccountID, eniId)
 		// One call carries the detach's revision into the delete so a
 		// lagging KV replica can never decide the outcome (mirrors the
 		// primary ENI path above).
@@ -878,6 +879,7 @@ func (a *instanceCleanerAdapter) releaseAttachedENIs(instance *vm.VM) {
 				"eni", eniId, "instanceId", instance.ID, "err", err)
 			continue
 		}
+		a.disassociateENIEIP(instance.AccountID, eniId)
 		if deleted {
 			slog.Info("Deleted attached ENI on termination",
 				"eni", eniId, "instanceId", instance.ID)
@@ -888,15 +890,15 @@ func (a *instanceCleanerAdapter) releaseAttachedENIs(instance *vm.VM) {
 	}
 }
 
-// disassociateENIEIP releases any Elastic IP associated with an ENI that is
-// about to be deleted. Nothing else did: the ENI delete deliberately leaves an
+// disassociateENIEIP releases any Elastic IP associated with an ENI that has
+// just been deleted. Nothing else did: the ENI delete deliberately leaves an
 // EIP-owned public address alone, since the allocation outlives the interface,
 // but the association is the interface's and has to go with it. Left behind, the
 // EIP record stays "associated" and the network reconciler keeps re-asserting a
 // NAT rule for a guest that no longer exists.
 //
-// Best-effort and idempotent: a failure is logged, the ENI delete proceeds, and
-// the cluster-wide ENI orphan sweep retries it.
+// Called after the delete, never before: the delete decides whether the ENI's
+// public address may return to the pool by looking for an EIP that names it.
 func (a *instanceCleanerAdapter) disassociateENIEIP(accountID, eniID string) {
 	eip, ok := a.d.eipService.(eipDisassociator)
 	if !ok {

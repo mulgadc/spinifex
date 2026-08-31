@@ -98,9 +98,15 @@ type fakeEIPDisassociator struct {
 	associated map[string]bool
 	calls      []string
 	err        error
+	// onCall observes the world as the disassociation sees it, so a test can
+	// pin the ordering the release depends on.
+	onCall func(eniID string)
 }
 
 func (f *fakeEIPDisassociator) DisassociateByENI(_ context.Context, _, eniID string) (bool, error) {
+	if f.onCall != nil {
+		f.onCall(eniID)
+	}
 	f.calls = append(f.calls, eniID)
 	if f.err != nil {
 		return false, f.err
@@ -151,8 +157,24 @@ func TestENIOrphanReaperReapsStaleAttachment(t *testing.T) {
 	eip := &fakeEIPDisassociator{associated: map[string]bool{}}
 	r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", index, eip)
 	eip.associated[eniID] = true
+	// The delete decides whether the ENI's public address may go back to the
+	// pool by looking for an EIP that names the ENI, so the association has to
+	// still be there while it runs.
+	eip.onCall = func(id string) {
+		_, err := vpcSvc.GetENIRecord(reaperTestAccountID, id)
+		assert.Error(t, err, "the EIP must be released after the interface, never before")
+	}
 
+	// First sighting only defers: an instance record is written after its ENI
+	// is attached, so one absent reading can be a launch mid-flight.
 	reaped, err := r.Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Zero(t, reaped)
+	_, err = vpcSvc.GetENIRecord(reaperTestAccountID, eniID)
+	require.NoError(t, err, "a single absent reading is not evidence enough to delete an interface")
+	assert.Empty(t, eip.calls)
+
+	reaped, err = r.Sweep(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 1, reaped)
 
@@ -163,6 +185,57 @@ func TestENIOrphanReaperReapsStaleAttachment(t *testing.T) {
 	reaped, err = r.Sweep(t.Context())
 	require.NoError(t, err)
 	assert.Zero(t, reaped)
+}
+
+// TestENIOrphanReaperDeclinesOnEmptyInstanceListing pins the other half of the
+// fail-closed rule. The record space is recreated when missing and republished
+// only on a node's next state change, so an empty listing beside live ENIs is
+// an emptied bucket far more often than a cluster with no instances — and
+// reaping against it would cut every guest in the cluster off the network.
+func TestENIOrphanReaperDeclinesOnEmptyInstanceListing(t *testing.T) {
+	eip := &fakeEIPDisassociator{associated: map[string]bool{}}
+	r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", &fakeInstanceIndex{}, eip)
+
+	for range 2 {
+		reaped, err := r.Sweep(t.Context())
+		require.NoError(t, err)
+		assert.Zero(t, reaped)
+	}
+
+	_, err := vpcSvc.GetENIRecord(reaperTestAccountID, eniID)
+	assert.NoError(t, err)
+	assert.Empty(t, eip.calls)
+}
+
+// TestENIOrphanReaperDetachesKeepOnTerminateENI pins that the sweep honours the
+// flag terminate honours. DeleteOnTermination=false means the interface outlives
+// its instance — an RDS endpoint holds its address this way — so a teardown that
+// never finished must not become the thing that destroys it.
+func TestENIOrphanReaperDetachesKeepOnTerminateENI(t *testing.T) {
+	index := &fakeInstanceIndex{live: []string{"i-somebody-else"}}
+	eip := &fakeEIPDisassociator{associated: map[string]bool{}}
+	r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", index, eip)
+	require.NoError(t, vpcSvc.UpdateENI(reaperTestAccountID, eniID, func(rec *handlers_ec2_vpc.ENIRecord) {
+		rec.DeleteOnTermination = aws.Bool(false)
+	}))
+
+	require.NoError(t, sweepTwice(t, r))
+
+	rec, err := vpcSvc.GetENIRecord(reaperTestAccountID, eniID)
+	require.NoError(t, err, "the interface must survive; only its dead instance goes")
+	assert.Empty(t, rec.InstanceId)
+	assert.Equal(t, "available", rec.Status)
+	assert.Empty(t, eip.calls, "the EIP belongs to an interface that is still there")
+}
+
+// sweepTwice drives the two sightings a stale ENI needs before it is acted on.
+func sweepTwice(t *testing.T, r *eniOrphanReaper) error {
+	t.Helper()
+	if _, err := r.Sweep(t.Context()); err != nil {
+		return err
+	}
+	_, err := r.Sweep(t.Context())
+	return err
 }
 
 // TestENIOrphanReaperSparesKnownInstances pins the guard that matters most: an
@@ -177,11 +250,9 @@ func TestENIOrphanReaperSparesKnownInstances(t *testing.T) {
 			eip := &fakeEIPDisassociator{associated: map[string]bool{}}
 			r, vpcSvc, eniID := staleReaperFixture(t, "i-known", index, eip)
 
-			reaped, err := r.Sweep(t.Context())
-			require.NoError(t, err)
-			assert.Zero(t, reaped)
+			require.NoError(t, sweepTwice(t, r))
 
-			_, err = vpcSvc.GetENIRecord(reaperTestAccountID, eniID)
+			_, err := vpcSvc.GetENIRecord(reaperTestAccountID, eniID)
 			assert.NoError(t, err)
 			assert.Empty(t, eip.calls)
 		})
@@ -200,11 +271,9 @@ func TestENIOrphanReaperSkipsStaleSweepOnListingError(t *testing.T) {
 			eip := &fakeEIPDisassociator{associated: map[string]bool{}}
 			r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", index, eip)
 
-			reaped, err := r.Sweep(t.Context())
-			require.NoError(t, err, "a listing fault is not the sweep's failure; it just cannot decide")
-			assert.Zero(t, reaped)
+			require.NoError(t, sweepTwice(t, r), "a listing fault is not the sweep's failure; it just cannot decide")
 
-			_, err = vpcSvc.GetENIRecord(reaperTestAccountID, eniID)
+			_, err := vpcSvc.GetENIRecord(reaperTestAccountID, eniID)
 			assert.NoError(t, err)
 		})
 	}
@@ -216,26 +285,24 @@ func TestENIOrphanReaperSkipsStaleSweepOnListingError(t *testing.T) {
 func TestENIOrphanReaperWithoutInstanceIndexSkipsStaleSweep(t *testing.T) {
 	r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", nil, nil)
 
-	reaped, err := r.Sweep(t.Context())
-	require.NoError(t, err)
-	assert.Zero(t, reaped)
+	require.NoError(t, sweepTwice(t, r))
 
-	_, err = vpcSvc.GetENIRecord(reaperTestAccountID, eniID)
+	_, err := vpcSvc.GetENIRecord(reaperTestAccountID, eniID)
 	assert.NoError(t, err)
 }
 
 // TestENIOrphanReaperDeletesENIDespiteEIPFailure pins that a stuck EIP
 // disassociation cannot pin the ENI. Leaving the interface behind is the worse
-// outcome: the association is retried on the next sweep, the zombie port is not.
+// outcome: the zombie port stays unbindable, while the stranded association is
+// at least logged and recoverable by hand.
 func TestENIOrphanReaperDeletesENIDespiteEIPFailure(t *testing.T) {
-	index := &fakeInstanceIndex{}
+	index := &fakeInstanceIndex{live: []string{"i-somebody-else"}}
 	eip := &fakeEIPDisassociator{err: errors.New("kv unavailable")}
 	r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", index, eip)
 
-	reaped, err := r.Sweep(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, 1, reaped)
+	require.NoError(t, sweepTwice(t, r))
 
-	_, err = vpcSvc.GetENIRecord(reaperTestAccountID, eniID)
+	_, err := vpcSvc.GetENIRecord(reaperTestAccountID, eniID)
 	assert.Error(t, err)
+	assert.Equal(t, []string{eniID}, eip.calls)
 }

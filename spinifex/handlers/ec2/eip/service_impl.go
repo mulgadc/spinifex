@@ -379,15 +379,25 @@ func (s *EIPServiceImpl) findByENI(ctx context.Context, accountID, eniID string)
 	}
 
 	for _, k := range keys {
+		if err := ctx.Err(); err != nil {
+			return nil, "", 0, err
+		}
 		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.eipKV.Get(ctx, k)
 		if err != nil {
-			continue
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			// An unreadable record must not read as "this ENI has no EIP":
+			// the caller deletes the interface on that answer, and the
+			// association would be stranded with nothing left to find it.
+			return nil, "", 0, fmt.Errorf("eipKV.Get(%s): %w", k, err)
 		}
 		var record EIPRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			slog.WarnContext(ctx, "findByENI: malformed EIP record", "key", k, "err", err)
 			continue
 		}
 		if record.ENIId == eniID {

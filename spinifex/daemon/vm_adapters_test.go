@@ -476,6 +476,9 @@ type stubEIPDisassociator struct {
 
 	associated map[string]bool
 	calls      []string
+	// onCall observes the world as the disassociation sees it, so a test can
+	// pin the ordering the release depends on.
+	onCall func(eniID string)
 }
 
 func newStubEIPDisassociator(associatedENIs ...string) *stubEIPDisassociator {
@@ -487,6 +490,9 @@ func newStubEIPDisassociator(associatedENIs ...string) *stubEIPDisassociator {
 }
 
 func (s *stubEIPDisassociator) DisassociateByENI(_ context.Context, _, eniID string) (bool, error) {
+	if s.onCall != nil {
+		s.onCall(eniID)
+	}
 	s.calls = append(s.calls, eniID)
 	return s.associated[eniID], nil
 }
@@ -503,6 +509,13 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_ReleasesEIPAssociation(t *tes
 	f.vmInst.ENIId = f.eniID
 	eip := newStubEIPDisassociator(f.eniID)
 	f.daemon.eipService = eip
+	// The ENI delete decides whether the interface's public address may return
+	// to the IPAM pool by looking for an EIP that names it, so the association
+	// has to outlast the delete.
+	eip.onCall = func(id string) {
+		_, err := f.daemon.vpcService.GetENIRecord(testAccountID, id)
+		assert.Error(t, err, "the EIP must be released after the interface, never before")
+	}
 
 	_, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 0)
 	require.NoError(t, err)
@@ -511,7 +524,7 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_ReleasesEIPAssociation(t *tes
 	require.NoError(t, cleaner.DetachAndDeleteENI(f.vmInst))
 
 	assert.Equal(t, []string{f.eniID}, eip.calls,
-		"the association must be released before the interface it belongs to goes")
+		"the association must go with the interface it belongs to")
 	_, err = f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound))
 }

@@ -298,6 +298,25 @@ func TestEIP_DisassociateByENI_ScopedToAccount(t *testing.T) {
 	assert.False(t, found)
 }
 
+// TestEIP_DisassociateByENI_SkipsMalformedRecord pins that one undecodable
+// entry cannot hide a real association. Teardown deletes the interface on a
+// "no EIP" answer, and the association would then be stranded with nothing
+// left that could find it.
+func TestEIP_DisassociateByENI_SkipsMalformedRecord(t *testing.T) {
+	svc, _ := setupTestEIP(t)
+
+	_, err := svc.eipKV.Put(t.Context(), testAccountID+".eipalloc-corrupt", []byte("{"))
+	require.NoError(t, err)
+
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	associateToENI(t, svc, *out.AllocationId, "eni-zombie")
+
+	found, err := svc.DisassociateByENI(t.Context(), testAccountID, "eni-zombie")
+	require.NoError(t, err)
+	assert.True(t, found)
+}
+
 func TestEIP_ReleaseByInstanceID_NoMatchIsNoOp(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 

@@ -762,6 +762,14 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, spec policy.EI
 			"retry_in_ms", otelsetup.Millis(time.Until(until)))
 		return
 	}
+	// No LSP, nothing to bind: a recompute cannot conjure one, so probing would
+	// burn the whole deadline. applyPorts refuses a port whose SG policy is
+	// unprogrammable, which lands here for every public-IP guest it skipped.
+	if _, err := r.ovn.GetLogicalSwitchPort(ctx, lspName); err != nil {
+		slog.Warn("reconcile/apply: guest LSP absent; skipping datapath probe",
+			"vpc_id", vpcID, "lsp", lspName, "eni_id", eniIDFromPort(lspName), "err", err)
+		return
+	}
 	deadline := time.Now().Add(guestPortDatapathTimeout)
 	nudged := false
 	misses := 0

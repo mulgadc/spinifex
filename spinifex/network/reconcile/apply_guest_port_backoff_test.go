@@ -29,7 +29,7 @@ func TestEnsureGuestPortDatapath_BacksOffAfterFailure(t *testing.T) {
 	withFastGuestPortBackoff(t, time.Minute, time.Hour)
 
 	f := &fakeClaimVerifier{guestUpAfter: -1} // never up
-	r := &reconciler{gwClaim: f}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-1")}
 	spec := policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"}
 
 	r.ensureGuestPortDatapath(context.Background(), spec)
@@ -72,7 +72,7 @@ func TestEnsureGuestPortDatapath_BackoffClearsOnConverge(t *testing.T) {
 	withFastGuestPortBackoff(t, time.Millisecond, time.Millisecond)
 
 	f := &fakeClaimVerifier{guestUpAfter: -1}
-	r := &reconciler{gwClaim: f}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-1")}
 	spec := policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"}
 
 	r.ensureGuestPortDatapath(context.Background(), spec)

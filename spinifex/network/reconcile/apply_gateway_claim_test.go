@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/mock"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 )
@@ -128,6 +129,23 @@ func withFastGuestPortBounds(t *testing.T) {
 	guestPortDatapathTimeout = 200 * time.Millisecond
 	guestPortDatapathInterval = 1 * time.Millisecond
 	t.Cleanup(func() { guestPortDatapathTimeout, guestPortDatapathInterval = to, iv })
+}
+
+// ovnWithGuestLSP returns a mock OVN client carrying lspName, the precondition
+// ensureGuestPortDatapath now checks before it starts nudging.
+func ovnWithGuestLSP(t *testing.T, lspName string) *mock.Client {
+	t.Helper()
+	m := mock.New()
+	if err := m.Connect(context.Background()); err != nil {
+		t.Fatalf("mock Connect: %v", err)
+	}
+	if err := m.CreateLogicalSwitch(context.Background(), &nbdb.LogicalSwitch{Name: "ls-test"}); err != nil {
+		t.Fatalf("CreateLogicalSwitch: %v", err)
+	}
+	if err := m.CreateLogicalSwitchPort(context.Background(), "ls-test", &nbdb.LogicalSwitchPort{Name: lspName}); err != nil {
+		t.Fatalf("CreateLogicalSwitchPort: %v", err)
+	}
+	return m
 }
 
 func withFastDatapathBounds(t *testing.T) {
@@ -402,10 +420,32 @@ func TestEnsureGuestPortDatapath_EmptyLSPIsNoop(t *testing.T) {
 	}
 }
 
+// applyPorts refuses a port whose SG policy is unprogrammable, so applyEIPs then
+// runs for a public-IP guest with no LSP. A recompute cannot bind a port that was
+// never created, so probing it would burn the whole deadline for nothing.
+func TestEnsureGuestPortDatapath_AbsentLSPSkipsProbe(t *testing.T) {
+	withFastGuestPortBounds(t)
+	f := &fakeClaimVerifier{guestUpAfter: -1}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-other")}
+
+	start := time.Now()
+	r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
+
+	if elapsed := time.Since(start); elapsed >= guestPortDatapathTimeout {
+		t.Errorf("elapsed = %s, want well under the %s deadline", elapsed, guestPortDatapathTimeout)
+	}
+	if f.guestChecks != 0 {
+		t.Errorf("guestChecks = %d, want 0 (no LSP to probe)", f.guestChecks)
+	}
+	if f.nudges != 0 {
+		t.Errorf("nudges = %d, want 0 (a recompute cannot create an LSP)", f.nudges)
+	}
+}
+
 func TestEnsureGuestPortDatapath_UpNoNudge(t *testing.T) {
 	withFastGuestPortBounds(t)
 	f := &fakeClaimVerifier{guestUpAfter: 0}
-	r := &reconciler{gwClaim: f}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-1")}
 
 	r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
 
@@ -424,7 +464,7 @@ func TestEnsureGuestPortDatapath_NudgeThenConverge(t *testing.T) {
 	withFastGuestPortBounds(t)
 	// Down until one recompute nudge, then up.
 	f := &fakeClaimVerifier{guestUpAfter: 1}
-	r := &reconciler{gwClaim: f}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-1")}
 
 	r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
 
@@ -436,7 +476,7 @@ func TestEnsureGuestPortDatapath_NudgeThenConverge(t *testing.T) {
 func TestEnsureGuestPortDatapath_NeverConvergesRecomputesEachMiss(t *testing.T) {
 	withFastGuestPortBounds(t)
 	f := &fakeClaimVerifier{guestUpAfter: -1} // never up
-	r := &reconciler{gwClaim: f}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-1")}
 
 	done := make(chan struct{})
 	go func() {
@@ -462,7 +502,7 @@ func TestEnsureGuestPortDatapath_NeverConvergesRecomputesEachMiss(t *testing.T) 
 func TestEnsureGuestPortDatapath_ProbeErrorBailsOut(t *testing.T) {
 	withFastGuestPortBounds(t)
 	f := &fakeClaimVerifier{guestErr: errors.New("ovn-sbctl down")}
-	r := &reconciler{gwClaim: f}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-1")}
 
 	r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
 
@@ -478,7 +518,7 @@ func TestEnsureGuestPortDatapath_ContextCancelStops(t *testing.T) {
 	t.Cleanup(func() { guestPortDatapathTimeout, guestPortDatapathInterval = to, iv })
 
 	f := &fakeClaimVerifier{guestUpAfter: -1}
-	r := &reconciler{gwClaim: f}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-1")}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
@@ -550,7 +590,7 @@ func TestEnsureGuestPortDatapath_WedgedSBEscalatesResetOnce(t *testing.T) {
 	withFastGuestPortBounds(t)
 	withSmallSBResetThreshold(t)
 	f := &fakeClaimVerifier{guestUpAfter: -1, sbNotConnected: true}
-	r := &reconciler{gwClaim: f}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-1")}
 
 	runToDeadline(t, func() {
 		r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})
@@ -565,7 +605,7 @@ func TestEnsureGuestPortDatapath_ConnectedSBNeverResets(t *testing.T) {
 	withFastGuestPortBounds(t)
 	withSmallSBResetThreshold(t)
 	f := &fakeClaimVerifier{guestUpAfter: -1, sbNotConnected: false}
-	r := &reconciler{gwClaim: f}
+	r := &reconciler{gwClaim: f, ovn: ovnWithGuestLSP(t, "port-eni-1")}
 
 	runToDeadline(t, func() {
 		r.ensureGuestPortDatapath(context.Background(), policy.EIPSpec{VPCID: "vpc-a", PortName: "port-eni-1"})

@@ -3,7 +3,16 @@ package dns
 import (
 	"fmt"
 	"strings"
+
+	"github.com/mulgadc/spinifex/spinifex/vm"
 )
+
+// InstanceRetainsRecords reports whether an instance in this state still owns
+// its A records. Stop and start retain the addresses, so they retain the names;
+// anything past stopped no longer resolves and its records are withdrawn.
+func InstanceRetainsRecords(status vm.InstanceState) bool {
+	return status == vm.StateRunning || status == vm.StateStopping || status == vm.StateStopped
+}
 
 // dashIP renders an IP for AWS-style hostnames (1.2.3.4 → 1-2-3-4).
 func dashIP(ip string) string {

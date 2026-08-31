@@ -1031,17 +1031,13 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 	slog.InfoContext(ctx, "LaunchRunInstances: completed", "requested", len(instances), "launched", successCount)
 }
 
-func needsDNSWithdrawal(status vm.InstanceState) bool {
-	return status != vm.StateRunning && status != vm.StateStopping && status != vm.StateStopped
-}
-
 // terminateRacedLaunch reports whether a terminate raced the deferred launch
 // UPSERT: it reads the terminate flag stamped under the lock (plus status) since
 // the async state transition may not have landed, which a status-only check misses.
 func (s *InstanceServiceImpl) terminateRacedLaunch(instance *vm.VM) bool {
 	withdraw := false
 	s.vmMgr.Inspect(instance, func(v *vm.VM) {
-		withdraw = v.DeletionTimestamp != nil || needsDNSWithdrawal(v.Status)
+		withdraw = v.DeletionTimestamp != nil || !handlers_dns.InstanceRetainsRecords(v.Status)
 	})
 	return withdraw
 }

@@ -11,7 +11,6 @@ import (
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/reconciler"
-	"github.com/mulgadc/spinifex/spinifex/vm"
 )
 
 // dnsWatchSources names the buckets whose changes should wake the DNS
@@ -129,7 +128,12 @@ func (d *Daemon) desiredEC2DNSChanges() ([]handlers_dns.Change, bool) {
 
 	var changes []handlers_dns.Change
 	for _, record := range records {
-		if record == nil || record.Status.Status != vm.StateRunning {
+		// Stopped instances keep their addresses and their names, which is why
+		// the state test is the same one the lifecycle publish withdraws on.
+		if record == nil || !handlers_dns.InstanceRetainsRecords(record.Status.Status) {
+			continue
+		}
+		if record.Metadata.DeletionTimestamp != nil {
 			continue
 		}
 		privateIP := ""

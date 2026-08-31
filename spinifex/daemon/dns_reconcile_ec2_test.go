@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -95,19 +96,46 @@ func TestDesiredEC2DNSChanges_IgnoresTheLocalVMManager(t *testing.T) {
 	assert.Empty(t, changes, "an instance with no record is not part of the cluster-wide view")
 }
 
-// Only running instances resolve. A stopped instance keeps its record, so
-// filtering on state is what stops its address resolving after it goes down.
-func TestDesiredEC2DNSChanges_SkipsInstancesThatAreNotRunning(t *testing.T) {
+// A stopped instance keeps its addresses, so it keeps its names: the lifecycle
+// publish withdraws records on terminate and deliberately not on stop. Now that
+// absence from this set is a deletion, the two have to agree — a stopped
+// instance missing here would have its name pruned out from under it.
+func TestDesiredEC2DNSChanges_KeepsStoppedInstancesAndDropsTerminated(t *testing.T) {
 	d, seed := dnsTestDaemon(t)
 	seed("i-up", "203.0.113.10", "172.31.0.10", vm.StateRunning)
-	seed("i-down", "203.0.113.11", "172.31.0.11", vm.StateStopped)
+	seed("i-stopping", "203.0.113.11", "172.31.0.11", vm.StateStopping)
+	seed("i-stopped", "203.0.113.12", "172.31.0.12", vm.StateStopped)
+	seed("i-gone", "203.0.113.13", "172.31.0.13", vm.StateTerminated)
 
 	changes, ok := d.desiredEC2DNSChanges()
 	require.True(t, ok)
+	names := changeNames(changes)
 	assert.ElementsMatch(t, []string{
 		"ec2-203-0-113-10.ap-southeast-2.compute.spx3.net",
 		"ip-172-31-0-10.ap-southeast-2.compute.internal",
-	}, changeNames(changes))
+		"ec2-203-0-113-11.ap-southeast-2.compute.spx3.net",
+		"ip-172-31-0-11.ap-southeast-2.compute.internal",
+		"ec2-203-0-113-12.ap-southeast-2.compute.spx3.net",
+		"ip-172-31-0-12.ap-southeast-2.compute.internal",
+	}, names)
+	assert.NotContains(t, names, "ec2-203-0-113-13.ap-southeast-2.compute.spx3.net")
+}
+
+// An instance on its way out is not desired state, even while its record is
+// still readable: re-upserting it would race the withdrawal the terminate path
+// already published.
+func TestDesiredEC2DNSChanges_SkipsARecordMarkedForDeletion(t *testing.T) {
+	d, seed := dnsTestDaemon(t)
+	seed("i-doomed", "203.0.113.10", "172.31.0.10", vm.StateRunning)
+	_, err := d.jsManager.UpdateInstanceRecord("i-doomed", func(r *vm.InstanceRecord) {
+		now := time.Now()
+		r.Metadata.DeletionTimestamp = &now
+	})
+	require.NoError(t, err)
+
+	changes, ok := d.desiredEC2DNSChanges()
+	require.True(t, ok)
+	assert.Empty(t, changes)
 }
 
 // A view that could not be read is the case pruning exists to be protected

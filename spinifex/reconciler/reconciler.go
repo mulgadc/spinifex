@@ -7,6 +7,11 @@
 // the key that changed is carried through to it. The whole-set Reconcile stays
 // required either way: it is the startup pass and the resync backstop, so a key
 // the queue never learns about still converges.
+//
+// A pass may also name a deadline to be revisited by. That is for the loops
+// waiting on something no KV write announces — a VM reaching running, an agent
+// falling silent, a timeout expiring — which a watch cannot see at all, and for
+// which the resync alone is too blunt to be a failure detector.
 package reconciler
 
 import (
@@ -56,7 +61,14 @@ type Config struct {
 	// and the resync backstop. A per-key queue only converges if something
 	// behind it covers what the queue never learned: a key deleted while the
 	// watch was down is enqueued by nothing, since nobody observes an absence.
-	Reconcile func(ctx context.Context) error
+	//
+	// The duration it returns is a revisit deadline: run me again within this,
+	// even if nothing changes. Zero means no deadline, which is the right answer
+	// for a loop that is purely a function of the buckets it watches. It is for
+	// the loops that are not — the ones waiting on a VM to reach running, an
+	// endpoint to answer, or an agent to fall silent, none of which write to KV
+	// and so none of which a watch can see.
+	Reconcile func(ctx context.Context) (revisit time.Duration, err error)
 	// ReconcileKey handles one changed key, for a caller whose work is per
 	// resource rather than a recompute of the whole set. Unset means every
 	// change runs Reconcile, which is the whole-set behaviour.
@@ -64,7 +76,11 @@ type Config struct {
 	// It is called once per distinct key in a burst, so a caller whose unit of
 	// work is coarser than a key — an account rather than an instance — maps
 	// updates onto that unit with KeyFor rather than deduplicating here.
-	ReconcileKey func(ctx context.Context, key string) error
+	//
+	// Its revisit deadline means the same thing as Reconcile's, and is honoured
+	// by running a whole-set pass: one key's view cannot say what the others
+	// need, and only a whole-set pass can re-derive the deadline for all of them.
+	ReconcileKey func(ctx context.Context, key string) (revisit time.Duration, err error)
 	// KeyFor maps a watch update onto the keys it dirties. Nil means the key
 	// that changed is the key to reconcile.
 	//
@@ -157,10 +173,18 @@ func Run(ctx context.Context, cfg Config) {
 	// the two would otherwise be invisible until the next resync, because the
 	// pass that would have seen it ran before the watch existed.
 	w.resync(ctx)
-	pass(ctx, cfg, "startup")
 
 	resync := time.NewTicker(cfg.Resync)
 	defer resync.Stop()
+
+	// Fires when a pass asked to be revisited sooner than the resync. Created
+	// already expired and drained, so a loop whose passes never ask keeps the
+	// resync as its only timer.
+	revisit := time.NewTimer(0)
+	<-revisit.C
+	defer revisit.Stop()
+
+	rearm(revisit, clampRevisit(pass(ctx, cfg, "startup"), cfg.Resync))
 
 	for {
 		select {
@@ -174,35 +198,81 @@ func Run(ctx context.Context, cfg Config) {
 			// Whatever is queued is covered by the whole-set pass about to run,
 			// so it is dropped rather than reconciled again after it.
 			queue.take()
-			pass(ctx, cfg, "resync")
+			rearm(revisit, clampRevisit(pass(ctx, cfg, "resync"), cfg.Resync))
+		case <-revisit.C:
+			// A deadline is always served by a whole-set pass: the caller asked
+			// to be revisited without anything having changed, so there is no
+			// key to name, and only a whole-set pass can set the next deadline.
+			queue.take()
+			rearm(revisit, clampRevisit(pass(ctx, cfg, "deadline"), cfg.Resync))
 		case <-changes:
 			if settle(ctx, changes, cfg.Debounce) {
-				serve(ctx, cfg, queue)
+				rearm(revisit, clampRevisit(serve(ctx, cfg, queue), cfg.Resync))
 			}
 		}
 	}
 }
 
+// clampRevisit bounds a deadline to the resync. A caller may ask to be revisited
+// sooner but never later: the resync is the outer bound on staleness, and is not
+// something a pass gets to extend. Non-positive means no deadline.
+func clampRevisit(d, resync time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	return min(d, resync)
+}
+
+// rearm resets a timer that may or may not have fired, and leaves it stopped for
+// a zero duration. Draining is conditional because the loop consumes the tick
+// itself on the path that a deadline pass runs from.
+func rearm(t *time.Timer, d time.Duration) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	if d > 0 {
+		t.Reset(d)
+	}
+}
+
+// Earliest is the soonest of two revisit deadlines, treating a non-positive one
+// as "no deadline" rather than as "immediately". Exported because a whole-set
+// pass has to fold one of these per resource before it can return just one.
+func Earliest(a, b time.Duration) time.Duration {
+	switch {
+	case a <= 0:
+		return max(b, 0)
+	case b <= 0:
+		return a
+	default:
+		return min(a, b)
+	}
+}
+
 // serve runs the work a settled burst produced: one whole-set pass, or one pass
-// per distinct key that changed.
-func serve(ctx context.Context, cfg Config, queue *workQueue) {
+// per distinct key that changed. It reports the soonest deadline those passes
+// asked for.
+func serve(ctx context.Context, cfg Config, queue *workQueue) time.Duration {
 	if cfg.ReconcileKey == nil {
-		pass(ctx, cfg, "change")
-		return
+		return pass(ctx, cfg, "change")
 	}
 	whole, keys := queue.take()
 	if whole {
 		// A whole-set pass covers every key that was waiting alongside it, so
 		// the keys it returned are deliberately not reconciled again.
-		pass(ctx, cfg, "change")
-		return
+		return pass(ctx, cfg, "change")
 	}
+	var revisit time.Duration
 	for _, key := range keys {
 		if ctx.Err() != nil {
-			return
+			return revisit
 		}
-		keyPass(ctx, cfg, key)
+		revisit = Earliest(revisit, keyPass(ctx, cfg, key))
 	}
+	return revisit
 }
 
 // settle waits for a burst to stop arriving, so one multi-key write produces
@@ -232,30 +302,38 @@ func settle(ctx context.Context, changes <-chan struct{}, debounce time.Duration
 }
 
 // pass runs one reconcile, logging rather than returning a failure: the loop
-// outlives any single pass, and the next resync retries.
-func pass(ctx context.Context, cfg Config, trigger string) {
+// outlives any single pass, and the next resync retries. A failed pass keeps
+// its deadline, so a caller partway through a transition still gets revisited
+// on its own schedule rather than dropping back to the resync.
+func pass(ctx context.Context, cfg Config, trigger string) time.Duration {
 	start := time.Now()
-	if err := cfg.Reconcile(ctx); err != nil {
+	revisit, err := cfg.Reconcile(ctx)
+	if err != nil {
 		slog.WarnContext(ctx, "reconcile pass failed, retrying next cycle",
 			"loop", cfg.Name, "trigger", trigger, "duration_ms", otelsetup.Millis(time.Since(start)), "err", err)
-		return
+		return revisit
 	}
 	slog.DebugContext(ctx, "reconcile pass complete",
-		"loop", cfg.Name, "trigger", trigger, "duration_ms", otelsetup.Millis(time.Since(start)))
+		"loop", cfg.Name, "trigger", trigger, "duration_ms", otelsetup.Millis(time.Since(start)),
+		"revisit_ms", otelsetup.Millis(revisit))
+	return revisit
 }
 
 // keyPass runs one per-key reconcile. Its failure is logged rather than
 // retried here: the resync re-reconciles the whole set, so a key that failed is
 // covered by the same backstop as a key the queue never saw.
-func keyPass(ctx context.Context, cfg Config, key string) {
+func keyPass(ctx context.Context, cfg Config, key string) time.Duration {
 	start := time.Now()
-	if err := cfg.ReconcileKey(ctx, key); err != nil {
+	revisit, err := cfg.ReconcileKey(ctx, key)
+	if err != nil {
 		slog.WarnContext(ctx, "reconcile key failed, retrying on the next resync",
 			"loop", cfg.Name, "key", key, "duration_ms", otelsetup.Millis(time.Since(start)), "err", err)
-		return
+		return revisit
 	}
 	slog.DebugContext(ctx, "reconcile key complete",
-		"loop", cfg.Name, "key", key, "duration_ms", otelsetup.Millis(time.Since(start)))
+		"loop", cfg.Name, "key", key, "duration_ms", otelsetup.Millis(time.Since(start)),
+		"revisit_ms", otelsetup.Millis(revisit))
+	return revisit
 }
 
 // watchSet holds one watcher per bucket currently being watched, keyed by

@@ -34,7 +34,7 @@ func TestModifyDBInstance_HoldsTheLeaseSoAReconcilePassCannotReEnterTheChange(t 
 	var sweep sync.Once
 	var swept error
 	h.storage.onModify = func() {
-		sweep.Do(func() { swept = h.rec.reconcileOnce(t.Context()) })
+		sweep.Do(func() { swept = onePass(t, h.rec) })
 	}
 
 	in := modifyInput()
@@ -57,7 +57,7 @@ func TestReconciler_LeavesAModifyItsHolderIsStillInside(t *testing.T) {
 	rec.ModifyLease = heldLease(modifyLeaseTTL)
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	assert.Empty(t, h.storage.modified)
 	assert.Empty(t, h.cmdr.calls)
@@ -76,7 +76,7 @@ func TestReconciler_ResumesAModifyWhoseHolderIsGone(t *testing.T) {
 	rec.ModifyLease = heldLease(-time.Second)
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	assert.Equal(t, int64(50), h.storage.sizes[testDataVolume])
 	assert.Equal(t, int64(50), h.record(t).AllocatedStorage)
@@ -91,7 +91,7 @@ func TestApplyPendingModifications_ReleasesTheLeaseWhateverTheOutcome(t *testing
 		seedInstance(t, h.svc, modifyingRecord(
 			&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()}))
 
-		require.NoError(t, h.rec.reconcileOnce(t.Context()))
+		require.NoError(t, onePass(t, h.rec))
 		assert.Nil(t, h.record(t).ModifyLease)
 	})
 
@@ -101,7 +101,7 @@ func TestApplyPendingModifications_ReleasesTheLeaseWhateverTheOutcome(t *testing
 		seedInstance(t, h.svc, modifyingRecord(
 			&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()}))
 
-		require.NoError(t, h.rec.reconcileOnce(t.Context()))
+		require.NoError(t, onePass(t, h.rec))
 		assert.Nil(t, h.record(t).ModifyLease, "a failed attempt must not hold the lease against its own retry")
 	})
 }
@@ -118,7 +118,7 @@ func TestReconciler_FailsAModifyWhoseHolderOverrunsTheBudget(t *testing.T) {
 	rec.TransitionStartedAt = &started
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	stored := h.record(t)
 	assert.Equal(t, StatusFailed, stored.Status)
@@ -156,7 +156,7 @@ func TestWithModifyLease_RenewsAndCancelsTheApplyWhenTakenOver(t *testing.T) {
 		return lease != nil && lease.ExpiresAt.After(initial.ExpiresAt)
 	}, time.Second, 10*time.Millisecond, "a blocking apply must keep extending its lease")
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 	assert.Empty(t, h.storage.modified, "a reconcile pass must not claim a renewed lease")
 
 	takeoverExpiry := time.Now().UTC().Add(time.Second)

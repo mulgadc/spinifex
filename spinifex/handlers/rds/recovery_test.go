@@ -96,7 +96,7 @@ func TestReconciler_MarksADarkInstanceFailed(t *testing.T) {
 	h.state.state = "stopped"
 	seedInstance(t, h.svc, darkRecord())
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	rec := h.recordOf(t, testDBID)
 	assert.Equal(t, StatusFailed, rec.Status)
@@ -114,7 +114,7 @@ func TestReconciler_RecordsAnEventForADarkInstance(t *testing.T) {
 	h.state.state = "stopped"
 	seedInstance(t, h.svc, darkRecord())
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	out, err := h.svc.DescribeEvents(t.Context(), &rds.DescribeEventsInput{
 		SourceType:       aws.String(EventSourceTypeDBInstance),
@@ -134,7 +134,7 @@ func TestReconciler_LeavesAHealthyInstanceUntouchedWithoutAVMLookup(t *testing.T
 	h := newReconcileHarness(t)
 	seedInstance(t, h.svc, servingRecord())
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	rec := h.recordOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, rec.Status)
@@ -171,7 +171,7 @@ func TestReconciler_HoldsAvailableOnHalfTheEvidence(t *testing.T) {
 			tc.mutate(&rec)
 			seedInstance(t, h.svc, rec)
 
-			require.NoError(t, h.rec.reconcileOnce(t.Context()))
+			require.NoError(t, onePass(t, h.rec))
 
 			stored := h.recordOf(t, testDBID)
 			assert.Equal(t, StatusAvailable, stored.Status)
@@ -189,7 +189,7 @@ func TestReconciler_StartsTheClockBeforeFailingWithinTheGrace(t *testing.T) {
 	h.state.state = "stopped"
 	seedInstance(t, h.svc, darkRecord())
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	rec := h.recordOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, rec.Status)
@@ -210,7 +210,7 @@ func TestReconciler_FailsOnAClockStampedByAnEarlierLeader(t *testing.T) {
 
 	// A different node holding the lease, with no beats of its own in memory.
 	other := NewReconciler(h.svc, "node-b")
-	require.NoError(t, other.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, other))
 
 	stored := h.recordOf(t, testDBID)
 	assert.Equal(t, StatusFailed, stored.Status)
@@ -233,7 +233,7 @@ func TestReconciler_TheClockResetsOnlyOnAHealthyHeartbeat(t *testing.T) {
 	// The VM is back but the agent still is not: not a failure, and not a reason
 	// to forget that the instance has been dark for half an hour.
 	h.state.state = instanceStateRunning
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 	stored := h.recordOf(t, testDBID)
 	require.NotNil(t, stored.UnhealthySince)
 	assert.Equal(t, stamped, stored.UnhealthySince.UTC())
@@ -245,7 +245,7 @@ func TestReconciler_TheClockResetsOnlyOnAHealthyHeartbeat(t *testing.T) {
 		recovered.Agent.LastSeen = &now
 		return recovered
 	}())
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	stored = h.recordOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, stored.Status)
@@ -265,7 +265,7 @@ func TestReconciler_ClearsFailedOnARecoveredHeartbeat(t *testing.T) {
 	rec.UnhealthySince = &stamped
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	stored := h.recordOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, stored.Status)
@@ -293,7 +293,7 @@ func TestReconciler_LeavesAStillDarkFailedInstanceAlone(t *testing.T) {
 	rec.FailureReason = "the original reason"
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	stored := h.recordOf(t, testDBID)
 	assert.Equal(t, StatusFailed, stored.Status)
@@ -316,7 +316,7 @@ func TestReconciler_AllowsThePersistFloorOnAPersistedHeartbeat(t *testing.T) {
 	rec.Agent.LastSeen = &persisted
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	stored := h.recordOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, stored.Status)
@@ -338,7 +338,7 @@ func TestReconciler_UsesTheTightBoundOnABeatThisNodeHandled(t *testing.T) {
 	seedInstance(t, h.svc, rec)
 	h.svc.liveness[testAccountID+"/"+testDBID] = &agentLiveness{lastSeen: beat, health: EngineHealthHealthy}
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	stored := h.recordOf(t, testDBID)
 	assert.Equal(t, StatusFailed, stored.Status)
@@ -356,7 +356,7 @@ func TestReconciler_NeverFailsAnInstanceWhenVMStateIsUnwired(t *testing.T) {
 	})
 	seedInstance(t, h.svc, darkRecord())
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	stored := h.recordOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, stored.Status)
@@ -371,7 +371,7 @@ func TestReconciler_SurfacesAVMLookupFailureWithoutFailingTheInstance(t *testing
 	h.state.err = errors.New("no node answered the describe")
 	seedInstance(t, h.svc, darkRecord())
 
-	err := h.rec.reconcileOnce(t.Context())
+	err := onePass(t, h.rec)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no node answered the describe")
 

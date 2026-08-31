@@ -393,15 +393,18 @@ func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual 
 // mid-pass looks orphaned against it. Re-read intent and union its ports into the
 // keep set, skipping the sweep when the re-read fails.
 func (r *reconciler) pruneOrphanPorts(ctx context.Context, intent IntentState, res *passResult) {
-	fresh, err := r.reloadForPrune(ctx)
-	if err != nil {
-		slog.Warn("reconcile/apply: fresh intent re-read failed; skipping orphan ENI port prune", "err", err)
-		res.fail(classPort, "orphan-prune", err)
-		return
-	}
 	lsps, err := r.ovn.ListLogicalSwitchPorts(ctx)
 	if err != nil {
 		slog.Warn("reconcile/apply: list LSPs for orphan prune failed", "err", err)
+		res.fail(classPort, "orphan-prune", err)
+		return
+	}
+	// Re-read after the listing, never before: the create path writes KV before it
+	// creates the LSP, so intent read later than the listing covers every row in
+	// it. Reading first leaves a window where a new ENI is listed but unknown.
+	fresh, err := r.reloadForPrune(ctx)
+	if err != nil {
+		slog.Warn("reconcile/apply: fresh intent re-read failed; skipping orphan ENI port prune", "err", err)
 		res.fail(classPort, "orphan-prune", err)
 		return
 	}

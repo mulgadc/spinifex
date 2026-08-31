@@ -977,6 +977,69 @@ func TestReconcile_PruneOrphanPorts_SkipsOnReloadError(t *testing.T) {
 	}
 }
 
+// racingOVN creates an ENI's LSP part-way through the sweep's own listing, so
+// the returned rows include a port that did not exist when the sweep started.
+type racingOVN struct {
+	*mock.Client
+
+	listed bool
+}
+
+func (o *racingOVN) ListLogicalSwitchPorts(ctx context.Context) ([]nbdb.LogicalSwitchPort, error) {
+	if !o.listed {
+		lsp := &nbdb.LogicalSwitchPort{
+			Name: topology.Port("eni-raced"),
+			ExternalIDs: map[string]string{
+				"spinifex:eni_id":    "eni-raced",
+				"spinifex:subnet_id": "subnet-a",
+				"spinifex:vpc_id":    "vpc-a",
+			},
+		}
+		if err := o.CreateLogicalSwitchPort(ctx, topology.SubnetSwitch("subnet-a"), lsp); err != nil {
+			return nil, err
+		}
+		o.listed = true
+	}
+	return o.Client.ListLogicalSwitchPorts(ctx)
+}
+
+// The create path writes the ENI to KV before it creates the LSP, so intent read
+// after the listing covers every row in it. Re-reading first reopens the window:
+// the new port is listed but absent from both snapshots and gets swept.
+func TestReconcile_PruneOrphanPorts_ReloadsAfterListing(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	if err := r.reconcile(ctx, freshIntent(t), false); err != nil {
+		t.Fatalf("reconcile (seed): %v", err)
+	}
+	racing := &racingOVN{Client: m}
+	r.ovn = racing
+
+	mac, _ := net.ParseMAC("02:00:00:00:00:03")
+	r.reloadIntent = func(context.Context) (IntentState, error) {
+		fresh := freshIntent(t)
+		// The KV record exists only once the LSP does, mirroring KV-then-OVN.
+		if racing.listed {
+			fresh.Ports["eni-raced"] = topology.PortSpec{
+				PortID: "eni-raced", SubnetID: "subnet-a", VPCID: "vpc-a",
+				PrivateIP: netip.MustParseAddr("10.0.1.30"), MAC: mac, SGIDs: []string{"sg-a"},
+			}
+		}
+		return fresh, nil
+	}
+
+	res := &passResult{}
+	r.pruneOrphanPorts(ctx, freshIntent(t), res)
+
+	if _, ok := m.Ports[topology.Port("eni-raced")]; !ok {
+		t.Errorf("ENI created during the listing must survive; re-read the intent after listing, not before")
+	}
+	if len(res.failures) != 0 {
+		t.Errorf("a clean sweep must not mark the pass incomplete, got %d failure(s)", len(res.failures))
+	}
+}
+
 // scanOrFail snapshots the mock's OVN state the way a pass does.
 func scanOrFail(t *testing.T, ctx context.Context, r *reconciler) ActualState {
 	t.Helper()

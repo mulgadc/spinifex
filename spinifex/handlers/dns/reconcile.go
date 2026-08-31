@@ -129,9 +129,11 @@ func (r *Reconciler) Run(ctx context.Context) {
 	reconciler.Run(ctx, reconciler.Config{
 		Name:    "dns",
 		Sources: r.sources,
-		Reconcile: func(ctx context.Context) error {
+		// No revisit deadline: the desired set is a function of the buckets
+		// being watched, so a change is the only reason to run early.
+		Reconcile: func(ctx context.Context) (time.Duration, error) {
 			r.reconcileOnce(ctx)
-			return nil
+			return 0, nil
 		},
 		Resync: r.interval,
 	})

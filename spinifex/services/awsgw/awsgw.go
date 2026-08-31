@@ -622,11 +622,13 @@ func runQuotaReconcile(ctx context.Context, quota *handlers_quota.Service, natsC
 	reconciler.Run(ctx, reconciler.Config{
 		Name:    "quota",
 		Sources: []reconciler.Source{reconciler.Fixed(kvstore.NewBucket(js, cfg), daemon.InstanceRecordPrefix+"*")},
-		Reconcile: func(ctx context.Context) error {
-			return underLeader(func() error { return quota.Reconcile(ctx, accounts, list) })
+		// No revisit deadline either way: a counter only moves when an instance
+		// record does, and that is a KV write the watch already sees.
+		Reconcile: func(ctx context.Context) (time.Duration, error) {
+			return 0, underLeader(func() error { return quota.Reconcile(ctx, accounts, list) })
 		},
-		ReconcileKey: func(ctx context.Context, accountID string) error {
-			return underLeader(func() error { return quota.ReconcileAccount(ctx, accountID, list) })
+		ReconcileKey: func(ctx context.Context, accountID string) (time.Duration, error) {
+			return 0, underLeader(func() error { return quota.ReconcileAccount(ctx, accountID, list) })
 		},
 		KeyFor: quotaKeyFor,
 		Resync: handlers_quota.ReconcileInterval,

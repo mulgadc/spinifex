@@ -565,7 +565,7 @@ func TestReconciler_AdoptsTheEC2SnapshotOfAnUnfinishedDBSnapshot(t *testing.T) {
 		rdsSnapshotAccountTagKey: testAccountID,
 	}}
 
-	require.NoError(t, rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, rec))
 
 	stored, found := h.snapshot(t, testSnapshotID)
 	require.True(t, found)
@@ -603,7 +603,7 @@ func TestReconciler_DoesNotAdoptAnotherAccountsSnapshot(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, reconciler.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, reconciler))
 
 	stored, found := h.snapshot(t, testSnapshotID)
 	require.True(t, found)
@@ -627,7 +627,7 @@ func TestReconciler_KeepsCreatingSnapshotWhenEC2LookupIsIncomplete(t *testing.T)
 	}
 	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &stale))
 
-	err = reconciler.reconcileOnce(t.Context())
+	err = onePass(t, reconciler)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "metadata temporarily unavailable")
 
@@ -661,7 +661,7 @@ func TestReconciler_DoesNotDeleteAConcurrentlyCompletedSnapshot(t *testing.T) {
 		require.NoError(t, updateJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), rev, &current))
 	}
 
-	require.NoError(t, reconciler.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, reconciler))
 
 	stored, found := h.snapshot(t, testSnapshotID)
 	require.True(t, found)
@@ -693,7 +693,7 @@ func TestReconciler_RejectsAmbiguousEC2Snapshots(t *testing.T) {
 		"snap-duplicate-b": matchingTags,
 	}
 
-	err = reconciler.reconcileOnce(t.Context())
+	err = onePass(t, reconciler)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "multiple EC2 snapshots")
 
@@ -719,7 +719,7 @@ func TestReconciler_WithdrawsADBSnapshotWhoseDataWasNeverCut(t *testing.T) {
 	}
 	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &stale))
 
-	require.NoError(t, rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, rec))
 
 	_, found := h.snapshot(t, testSnapshotID)
 	assert.False(t, found)
@@ -744,7 +744,7 @@ func TestReconciler_LeavesAFreshCreatingSnapshotAlone(t *testing.T) {
 	}
 	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &fresh))
 
-	require.NoError(t, rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, rec))
 
 	stored, found := h.snapshot(t, testSnapshotID)
 	require.True(t, found)
@@ -770,7 +770,7 @@ func TestReconciler_ReturnsAnInstanceStuckInBackingUp(t *testing.T) {
 			}
 			seedInstance(t, h.svc, rec)
 
-			require.NoError(t, reconciler.reconcileOnce(t.Context()))
+			require.NoError(t, onePass(t, reconciler))
 
 			stored := h.instance(t, testDBID)
 			assert.Equal(t, resume, stored.Status)
@@ -797,7 +797,7 @@ func TestReconciler_LeavesAnInFlightSnapshotAlone(t *testing.T) {
 	}
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, reconciler.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, reconciler))
 
 	stored := h.instance(t, testDBID)
 	assert.Equal(t, StatusBackingUp, stored.Status)

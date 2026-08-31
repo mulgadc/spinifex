@@ -68,8 +68,8 @@ func TestRun_AnUpdateReconcilesTheKeyThatChanged(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:         "one",
 		Sources:      []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile:    func(context.Context) error { p.record(); return nil },
-		ReconcileKey: func(_ context.Context, key string) error { keys.record(key); return nil },
+		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
+		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		Resync:       time.Hour,
 	})
 	p.waitFor(t, 1, "the startup pass")
@@ -90,8 +90,8 @@ func TestRun_ABurstReconcilesEachKeyOnce(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:         "burst",
 		Sources:      []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile:    func(context.Context) error { p.record(); return nil },
-		ReconcileKey: func(_ context.Context, key string) error { keys.record(key); return nil },
+		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
+		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		Resync:       time.Hour,
 		Debounce:     200 * time.Millisecond,
 	})
@@ -117,8 +117,8 @@ func TestRun_RepeatedWritesToOneKeyReconcileItOnce(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:         "dedup",
 		Sources:      []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile:    func(context.Context) error { p.record(); return nil },
-		ReconcileKey: func(_ context.Context, key string) error { keys.record(key); return nil },
+		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
+		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		Resync:       time.Hour,
 		Debounce:     200 * time.Millisecond,
 	})
@@ -143,8 +143,8 @@ func TestRun_AChangeDuringAKeysReconcileIsNotLost(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:         "inflight",
 		Sources:      []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile:    func(context.Context) error { p.record(); return nil },
-		ReconcileKey: func(_ context.Context, key string) error { keys.record(key); return nil },
+		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
+		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		Resync:       time.Hour,
 		Debounce:     50 * time.Millisecond,
 	})
@@ -170,8 +170,8 @@ func TestRun_KeyForMapsUpdatesOntoTheCallersUnitOfWork(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:         "keyfor",
 		Sources:      []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile:    func(context.Context) error { p.record(); return nil },
-		ReconcileKey: func(_ context.Context, key string) error { keys.record(key); return nil },
+		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
+		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		KeyFor: func(entry jetstream.KeyValueEntry) ([]string, bool) {
 			return []string{"account-1"}, true
 		},
@@ -199,8 +199,8 @@ func TestRun_AnUnattributableUpdateFallsBackToTheWholeSet(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:         "fallback",
 		Sources:      []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile:    func(context.Context) error { p.record(); return nil },
-		ReconcileKey: func(_ context.Context, key string) error { keys.record(key); return nil },
+		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
+		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		KeyFor: func(entry jetstream.KeyValueEntry) ([]string, bool) {
 			if entry.Operation() == jetstream.KeyValuePut {
 				return []string{entry.Key()}, true
@@ -230,8 +230,8 @@ func TestRun_TheResyncStillRunsTheWholeSet(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:         "resync",
 		Sources:      []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile:    func(context.Context) error { p.record(); return nil },
-		ReconcileKey: func(_ context.Context, key string) error { keys.record(key); return nil },
+		Reconcile:    func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
+		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) { keys.record(key); return 0, nil },
 		Resync:       150 * time.Millisecond,
 	})
 
@@ -246,10 +246,10 @@ func TestRun_AFailedKeyDoesNotStopTheLoop(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:      "failure",
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile: func(context.Context) error { p.record(); return nil },
-		ReconcileKey: func(_ context.Context, key string) error {
+		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
+		ReconcileKey: func(_ context.Context, key string) (time.Duration, error) {
 			keys.record(key)
-			return assert.AnError
+			return 0, assert.AnError
 		},
 		Resync:   time.Hour,
 		Debounce: 50 * time.Millisecond,

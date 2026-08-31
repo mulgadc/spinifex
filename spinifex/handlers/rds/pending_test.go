@@ -251,7 +251,7 @@ func TestReconciler_ResumesAnInterruptedModify(t *testing.T) {
 	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	assert.Equal(t, int64(50), h.storage.sizes[testDataVolume])
 	stored := h.record(t)
@@ -271,7 +271,7 @@ func TestReconciler_FinishesTheFilesystemGrowOnceTheAgentIsBack(t *testing.T) {
 	rec.Agent = AgentState{InstanceID: testInstance, EngineHealth: EngineHealthHealthy, LastSeen: &beat}
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	issued := h.agent.received()
 	require.Len(t, issued, 1)
@@ -280,7 +280,7 @@ func TestReconciler_FinishesTheFilesystemGrowOnceTheAgentIsBack(t *testing.T) {
 
 	// The record moved under the revision that pass read, so the transition to
 	// available is the next pass's rather than a raced write.
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 	assert.Equal(t, StatusAvailable, h.record(t).Status)
 }
 
@@ -295,7 +295,7 @@ func TestReconciler_FailsAModifyThatOverrunsItsBudget(t *testing.T) {
 	rec.Agent = AgentState{}
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	stored := h.record(t)
 	assert.Equal(t, StatusFailed, stored.Status)
@@ -313,7 +313,7 @@ func TestReconciler_FailsAModifyItCannotApplyWithinTheBudget(t *testing.T) {
 	rec.TransitionStartedAt = &started
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	stored := h.record(t)
 	assert.Equal(t, StatusFailed, stored.Status)
@@ -331,11 +331,11 @@ func TestReconciler_RetriesAFailedModifyInsideTheBudget(t *testing.T) {
 	rec := modifyingRecord(&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()})
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 	assert.Equal(t, StatusModifying, h.record(t).Status)
 
 	h.storage.modifyErr = nil
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 	assert.Equal(t, int64(50), h.record(t).AllocatedStorage)
 }
 

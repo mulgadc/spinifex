@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvlease"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -22,6 +24,11 @@ const (
 	reconcilerLeaderKey = "reconciler"
 	leaseRefresh        = 20 * time.Second
 	reconcileInterval   = 15 * time.Second
+
+	// The drift backstop, and so also the cadence on which a backup or
+	// maintenance window is noticed. A window is a half-hour slot, so noticing
+	// one this late is well inside what it promises.
+	reconcileResync = 5 * time.Minute
 
 	// How long a creating instance may go without a healthy heartbeat before it
 	// is called failed, unless the config overrides it. It has to cover a cold
@@ -126,22 +133,39 @@ func (r *Reconciler) Run(ctx context.Context) {
 		<-leadershipDone
 	}()
 
-	reconcileTicker := time.NewTicker(reconcileInterval)
-	defer reconcileTicker.Stop()
+	reconciler.Run(ctx, reconciler.Config{
+		Name:      "rds",
+		Sources:   []reconciler.Source{reconciler.Dynamic(r.watchBuckets, ">")},
+		Reconcile: r.reconcilePass,
+		Resync:    reconcileResync,
+	})
+}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-reconcileTicker.C:
-			if !r.isLeader() {
-				continue
-			}
-			if err := r.reconcileOnce(ctx); err != nil {
-				slog.ErrorContext(ctx, "rds reconciler: pass failed", "holder", r.holder, "err", err)
-			}
-		}
+// Every per-account bucket, re-read each resync so a new tenant is watched
+// without a restart. The filter is the whole bucket because a DB instance key
+// is one subject token, which no prefix wildcard can match.
+func (r *Reconciler) watchBuckets(ctx context.Context) ([]*kvstore.Bucket, error) {
+	js, err := r.svc.js()
+	if err != nil {
+		return nil, err
 	}
+	return AccountWatchBuckets(ctx, js)
+}
+
+// One pass, and when the loop should run again with nothing having changed.
+func (r *Reconciler) reconcilePass(ctx context.Context) (time.Duration, error) {
+	if !r.isLeader() {
+		// Leadership changes without anything being written, so a follower has
+		// to keep asking. The pass itself is a lease check and nothing more.
+		return leaseRefresh, nil
+	}
+	revisit, err := r.reconcileOnce(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "rds reconciler: pass failed", "holder", r.holder, "err", err)
+	}
+	// Already logged, so it is not returned again: the loop would log it a
+	// second time under its own message.
+	return revisit, nil
 }
 
 // The shared GC backstop's cluster-wide gate. The reconciler's lease is already
@@ -166,15 +190,16 @@ func (r *Reconciler) leaderBucket(ctx context.Context) (jetstream.KeyValue, erro
 // One pass across every tenant. A bucket that cannot be read stops the pass
 // with an error rather than being skipped silently, so a partial view shows up
 // in the log instead of looking like a fleet with nothing to do.
-func (r *Reconciler) reconcileOnce(ctx context.Context) error {
+func (r *Reconciler) reconcileOnce(ctx context.Context) (time.Duration, error) {
 	js, err := r.svc.js()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	buckets, err := AccountBucketNames(ctx, js)
 	if err != nil {
-		return fmt.Errorf("rds reconciler: enumerate account buckets: %w", err)
+		return 0, fmt.Errorf("rds reconciler: enumerate account buckets: %w", err)
 	}
+	var revisit time.Duration
 	var failures []error
 	for _, bucket := range buckets {
 		kv, err := js.KeyValue(ctx, bucket)
@@ -182,67 +207,140 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) error {
 			failures = append(failures, fmt.Errorf("open %s: %w", bucket, err))
 			continue
 		}
-		if err := r.reconcileAccount(ctx, kv, AccountIDFromBucketName(bucket)); err != nil {
+		due, err := r.reconcileAccount(ctx, kv, AccountIDFromBucketName(bucket))
+		revisit = reconciler.Earliest(revisit, due)
+		if err != nil {
 			failures = append(failures, fmt.Errorf("reconcile %s: %w", bucket, err))
 		}
 	}
-	return errors.Join(failures...)
+	return revisit, errors.Join(failures...)
 }
 
-func (r *Reconciler) reconcileAccount(ctx context.Context, kv jetstream.KeyValue, accountID string) error {
+func (r *Reconciler) reconcileAccount(ctx context.Context, kv jetstream.KeyValue, accountID string) (time.Duration, error) {
 	ids, err := ListDBInstanceIDs(ctx, kv)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	var revisit time.Duration
 	var failures []error
 	for _, id := range ids {
-		if err := r.reconcileInstance(ctx, kv, accountID, id); err != nil {
+		due, err := r.reconcileInstance(ctx, kv, accountID, id)
+		revisit = reconciler.Earliest(revisit, due)
+		if err != nil {
 			failures = append(failures, awserrors.Errorf(id, "%w", err))
 		}
 		if err := r.reconcileWindows(ctx, kv, accountID, id); err != nil {
 			failures = append(failures, awserrors.Errorf(id, "%w", err))
 		}
 	}
-	if err := r.reconcileSnapshots(ctx, kv, accountID); err != nil {
+	due, err := r.reconcileSnapshots(ctx, kv, accountID)
+	revisit = reconciler.Earliest(revisit, due)
+	if err != nil {
 		failures = append(failures, err)
 	}
-	return errors.Join(failures...)
+	return revisit, errors.Join(failures...)
 }
 
 // The reconciler owns every transitional state that no single API call can
 // finish: the one it drives itself (creating), and the ones whose caller may
 // have died partway through. A settled instance is left alone.
-func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValue, accountID, id string) error {
+func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValue, accountID, id string) (time.Duration, error) {
 	var rec DBInstanceRecord
 	rev, found, err := getJSONRevision(ctx, kv, DBInstanceKey(id), &rec)
 	if err != nil || !found {
-		return err
+		return 0, err
 	}
+	// Read from the record as it stands, not as a handler below leaves it: a
+	// handler that moves the status writes to KV, and that write wakes the loop
+	// on its own.
+	revisit := r.revisitFor(accountID, &rec)
 	if err := r.reportStalePendingBootstrap(ctx, kv, accountID, &rec); err != nil {
-		return err
+		return revisit, err
 	}
 	remediated, err := r.remediateSystemENISG(ctx, kv, rev, &rec)
 	if err != nil || remediated {
-		return err
+		return revisit, err
 	}
+	var handled error
 	switch rec.Status {
 	case StatusCreating:
-		return r.reconcileCreating(ctx, kv, rev, accountID, &rec)
+		handled = r.reconcileCreating(ctx, kv, rev, accountID, &rec)
 	case StatusRebooting, StatusStarting:
-		return r.reconcileRestarting(ctx, kv, rev, accountID, &rec)
+		handled = r.reconcileRestarting(ctx, kv, rev, accountID, &rec)
 	case StatusModifying:
-		return r.reconcileModifying(ctx, kv, rev, accountID, &rec)
+		handled = r.reconcileModifying(ctx, kv, rev, accountID, &rec)
 	case StatusStopping:
-		return r.reconcileStopping(ctx, kv, rev, accountID, &rec)
+		handled = r.reconcileStopping(ctx, kv, rev, accountID, &rec)
 	case StatusDeleting:
-		return r.reconcileDeleting(ctx, kv, rev, accountID, &rec)
+		handled = r.reconcileDeleting(ctx, kv, rev, accountID, &rec)
 	case StatusBackingUp:
-		return r.reconcileBackingUp(ctx, kv, rev, accountID, &rec)
+		handled = r.reconcileBackingUp(ctx, kv, rev, accountID, &rec)
 	case StatusAvailable, StatusFailed:
-		return r.reconcileHealth(ctx, kv, rev, accountID, &rec)
-	default:
-		return nil
+		handled = r.reconcileHealth(ctx, kv, rev, accountID, &rec)
 	}
+	return revisit, handled
+}
+
+// When this instance next needs looking at with nothing having changed, which
+// is the only thing a watch cannot tell the loop.
+//
+// A transitional record is waiting on a VM lifecycle state that lives in EC2 and
+// is never written to KV, so there is no signal to wait for and it keeps the
+// interval the ticker used to provide. A settled one is waiting for its
+// heartbeat to go stale — silence, which by definition writes nothing — so it
+// asks to be looked at the instant the beat expires, which is sharper than the
+// ticker managed. Anything else is genuinely inert until someone writes.
+func (r *Reconciler) revisitFor(accountID string, rec *DBInstanceRecord) time.Duration {
+	switch rec.Status {
+	case StatusCreating, StatusRebooting, StatusStarting, StatusModifying,
+		StatusStopping, StatusDeleting, StatusBackingUp:
+		return reconcileInterval
+	case StatusFailed:
+		// Terminal for the control plane, and recovery arrives as a heartbeat,
+		// which is a write the watch already sees.
+		return 0
+	case StatusAvailable:
+		return r.settledRevisit(accountID, rec)
+	default:
+		return 0
+	}
+}
+
+// The deadline for an available instance, which is whichever of its two clocks
+// runs out first.
+//
+// Before the beat expires, that is the expiry itself. After it, the failure
+// clock is what decides: the instance is dark but stays available until the
+// grace window passes and a later pass agrees it is still dark. Returning
+// nothing here was wrong — it left the pass that does the failing with nothing
+// to schedule it, so a dead database waited for the resync.
+func (r *Reconciler) settledRevisit(accountID string, rec *DBInstanceRecord) time.Duration {
+	lastSeen, bound := r.lastHeartbeat(accountID, rec)
+	if lastSeen.IsZero() {
+		// Never reported at all, so there is no beat to expire and the failure
+		// clock is the only one running.
+		return r.failureRevisit(rec)
+	}
+	if expiry := time.Until(lastSeen.Add(bound)); expiry > 0 {
+		return expiry
+	}
+	return r.failureRevisit(rec)
+}
+
+// How long until the failure grace window closes. An unstamped clock is stamped
+// by the pass that just ran, so the window starts from here.
+func (r *Reconciler) failureRevisit(rec *DBInstanceRecord) time.Duration {
+	grace := r.svc.failureGrace()
+	if rec.UnhealthySince == nil {
+		return grace
+	}
+	if remaining := time.Until(rec.UnhealthySince.Add(grace)); remaining > 0 {
+		return remaining
+	}
+	// Already due and still not failed, which is the degraded reading: dark agent,
+	// live VM. Nothing has changed, so retry at the old interval rather than
+	// immediately, which would spin for as long as the condition holds.
+	return reconcileInterval
 }
 
 // Moves a system NIC launched before the RDS system security group existed onto
@@ -565,11 +663,12 @@ func (r *Reconciler) reconcileWindows(ctx context.Context, kv jetstream.KeyValue
 // snapshot is the authority: it was tagged with the DB snapshot identifier before
 // the record was flipped, so its presence says the data exists and its absence
 // says the create died before cutting it.
-func (r *Reconciler) reconcileSnapshots(ctx context.Context, kv jetstream.KeyValue, accountID string) error {
+func (r *Reconciler) reconcileSnapshots(ctx context.Context, kv jetstream.KeyValue, accountID string) (time.Duration, error) {
 	ids, err := ListDBSnapshotIDs(ctx, kv)
 	if err != nil {
-		return fmt.Errorf("list DB snapshots: %w", err)
+		return 0, fmt.Errorf("list DB snapshots: %w", err)
 	}
+	var revisit time.Duration
 	var failures []error
 	for _, id := range ids {
 		var rec DBSnapshotRecord
@@ -578,15 +677,20 @@ func (r *Reconciler) reconcileSnapshots(ctx context.Context, kv jetstream.KeyVal
 			failures = append(failures, fmt.Errorf("read DB snapshot %s: %w", id, err))
 			continue
 		}
-		if !found || rec.Status != SnapshotStatusCreating ||
-			time.Since(rec.CreatedAt) <= snapshotResolveTimeout {
+		if !found || rec.Status != SnapshotStatusCreating {
+			continue
+		}
+		// Not due yet, so ask to be back when it is rather than leaving a dead
+		// worker's record to the resync.
+		if due := time.Until(rec.CreatedAt.Add(snapshotResolveTimeout)); due > 0 {
+			revisit = reconciler.Earliest(revisit, due)
 			continue
 		}
 		if err := r.resolveCreatingSnapshot(ctx, kv, rev, accountID, &rec); err != nil {
 			failures = append(failures, fmt.Errorf("resolve DB snapshot %s: %w", id, err))
 		}
 	}
-	return errors.Join(failures...)
+	return revisit, errors.Join(failures...)
 }
 
 // Either adopts the EC2 snapshot the dead worker cut, or withdraws the record so

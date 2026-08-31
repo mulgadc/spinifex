@@ -15,6 +15,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// onePass runs one reconcile and keeps only its error, for the tests that assert
+// on what converged rather than on when the loop should next run. The tests that
+// do care about the deadline call reconcileOnce directly.
+func onePass(t *testing.T, r *Reconciler) error {
+	t.Helper()
+	_, err := r.reconcileOnce(t.Context())
+	return err
+}
+
 // fakeInstanceState answers the VM half of the bootstrap check.
 type fakeInstanceState struct {
 	state string
@@ -96,7 +105,7 @@ func TestReconciler_MarksAvailableOnHealthyHeartbeatFromARunningVM(t *testing.T)
 	rec.FormatAuthorized = true
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	status, reason := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, status)
@@ -126,7 +135,7 @@ func TestReconciler_HoldsCreatingWhenTheVMIsNotRunning(t *testing.T) {
 	h.state.state = "pending"
 	seedInstance(t, h.svc, healthyRecord())
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	status, _ := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusCreating, status)
@@ -158,7 +167,7 @@ func TestReconciler_HoldsCreatingUntilTheEngineIsHealthy(t *testing.T) {
 			tc.mutate(&rec)
 			seedInstance(t, h.svc, rec)
 
-			require.NoError(t, h.rec.reconcileOnce(t.Context()))
+			require.NoError(t, onePass(t, h.rec))
 
 			status, _ := h.statusOf(t, testDBID)
 			assert.Equal(t, StatusCreating, status)
@@ -181,7 +190,7 @@ func TestReconciler_CompletesACreateOnAPersistedHeartbeatInsideTheFloor(t *testi
 	rec.Agent.LastSeen = &persisted
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	status, _ := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, status)
@@ -200,7 +209,7 @@ func TestReconciler_MarksFailedWhenTheBootstrapTimesOut(t *testing.T) {
 	rec.CreatedAt = time.Now().UTC().Add(-10 * time.Minute)
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	status, reason := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusFailed, status)
@@ -218,7 +227,7 @@ func TestReconciler_LeavesASlowBootstrapAloneInsideTheWindow(t *testing.T) {
 	rec.CreatedAt = time.Now().UTC().Add(-10 * time.Minute)
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	status, _ := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusCreating, status)
@@ -235,7 +244,7 @@ func TestReconciler_LeavesSettledInstancesAlone(t *testing.T) {
 	rec.CreatedAt = time.Now().UTC().Add(-24 * time.Hour)
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	got, _ := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusStopped, got)
@@ -250,7 +259,7 @@ func TestReconciler_SurfacesAVMStateLookupFailure(t *testing.T) {
 	h.state.err = errors.New("no node answered the describe")
 	seedInstance(t, h.svc, healthyRecord())
 
-	err := h.rec.reconcileOnce(t.Context())
+	err := onePass(t, h.rec)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no node answered the describe")
 
@@ -265,7 +274,7 @@ func TestReconciler_FallsBackToTheHeartbeatWhenVMStateIsUnwired(t *testing.T) {
 	h := newReconcileHarness(t, func(d *Deps) { d.InstanceState = nil })
 	seedInstance(t, h.svc, healthyRecord())
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	status, _ := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, status)
@@ -304,7 +313,7 @@ func TestReconciler_MovesAnExistingSystemNICOntoTheRDSSystemGroup(t *testing.T) 
 	rec.SystemENIID = "eni-sys01"
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 
 	require.Len(t, enis.modified, 1)
 	assert.Equal(t, "eni-sys01", aws.StringValue(enis.modified[0].NetworkInterfaceId))
@@ -316,7 +325,7 @@ func TestReconciler_MovesAnExistingSystemNICOntoTheRDSSystemGroup(t *testing.T) 
 	status, _ := h.statusOf(t, testDBID)
 	assert.Equal(t, StatusCreating, status)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 	assert.Len(t, enis.modified, 1, "once the group is recorded the sweep is a string compare")
 	status, _ = h.statusOf(t, testDBID)
 	assert.Equal(t, StatusAvailable, status)
@@ -332,8 +341,8 @@ func TestReconciler_EnsuresTheSystemGroupOncePerProcess(t *testing.T) {
 	rec.SystemENIID = "eni-sys01"
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
+	require.NoError(t, onePass(t, h.rec))
 
 	assert.Len(t, enis.sgDescribed, 1)
 	assert.Len(t, enis.sgCreated, 1)
@@ -349,13 +358,13 @@ func TestReconciler_RetriesTheSystemNICMoveAfterAFailure(t *testing.T) {
 	rec.SystemENIID = "eni-sys01"
 	seedInstance(t, h.svc, rec)
 
-	err := h.rec.reconcileOnce(t.Context())
+	err := onePass(t, h.rec)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "vpcd is not answering")
 	assert.Empty(t, h.systemSGOf(t, testDBID))
 
 	enis.modifyErr = nil
-	require.NoError(t, h.rec.reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, h.rec))
 	assert.Len(t, enis.modified, 1)
 	assert.Equal(t, testSystemSG, h.systemSGOf(t, testDBID))
 }

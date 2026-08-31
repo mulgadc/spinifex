@@ -108,7 +108,7 @@ func TestRun_ReconcilesOnceAtStartup(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:      "startup",
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile: func(context.Context) error { p.record(); return nil },
+		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    time.Hour,
 	})
 
@@ -123,7 +123,7 @@ func TestRun_AnUpdateTriggersAPass(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:      "update",
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile: func(context.Context) error { p.record(); return nil },
+		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    time.Hour,
 	})
 	p.waitFor(t, 1, "the startup pass")
@@ -142,7 +142,7 @@ func TestRun_ABurstCollapsesIntoOnePass(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:      "burst",
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile: func(context.Context) error { p.record(); return nil },
+		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    time.Hour,
 		Debounce:  200 * time.Millisecond,
 	})
@@ -163,7 +163,7 @@ func TestRun_ResyncFiresWithNoWatchTraffic(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:      "resync",
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile: func(context.Context) error { p.record(); return nil },
+		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    150 * time.Millisecond,
 	})
 
@@ -177,7 +177,7 @@ func TestRun_NoSourcesStillReconcilesOnTheResync(t *testing.T) {
 
 	run(t, reconciler.Config{
 		Name:      "no-sources",
-		Reconcile: func(context.Context) error { p.record(); return nil },
+		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    150 * time.Millisecond,
 	})
 
@@ -194,12 +194,12 @@ func TestRun_AFailedPassDoesNotStopTheLoop(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:    "failure",
 		Sources: []reconciler.Source{reconciler.Fixed(store.Bucket, ">")},
-		Reconcile: func(context.Context) error {
+		Reconcile: func(context.Context) (time.Duration, error) {
 			p.record()
 			if calls.Add(1) == 1 {
-				return assert.AnError
+				return 0, assert.AnError
 			}
-			return nil
+			return 0, nil
 		},
 		Resync: 150 * time.Millisecond,
 	})
@@ -217,7 +217,7 @@ func TestRun_AFilterExcludesOtherKeys(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:      "filter",
 		Sources:   []reconciler.Source{reconciler.Fixed(store.Bucket, "lb.*")},
-		Reconcile: func(context.Context) error { p.record(); return nil },
+		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    time.Hour,
 	})
 	p.waitFor(t, 1, "the startup pass")
@@ -264,7 +264,7 @@ func TestRun_ABucketAppearingAfterStartupIsPickedUp(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:      "dynamic",
 		Sources:   []reconciler.Source{reconciler.Dynamic(set.list, ">")},
-		Reconcile: func(context.Context) error { p.record(); return nil },
+		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    200 * time.Millisecond,
 	})
 	p.waitFor(t, 1, "the startup pass")
@@ -295,7 +295,7 @@ func TestRun_AnUnwatchableSourceStillResyncs(t *testing.T) {
 	run(t, reconciler.Config{
 		Name:      "unwatchable",
 		Sources:   []reconciler.Source{reconciler.Fixed(unwatchable, ">")},
-		Reconcile: func(context.Context) error { p.record(); return nil },
+		Reconcile: func(context.Context) (time.Duration, error) { p.record(); return 0, nil },
 		Resync:    150 * time.Millisecond,
 	})
 

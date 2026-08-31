@@ -798,7 +798,7 @@ func TestReconciler_RunsTheBackupWindowOnItsAccountPass(t *testing.T) {
 	rec.Agent = AgentState{InstanceID: testInstance, EngineHealth: EngineHealthHealthy, LastSeen: &now}
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, NewReconciler(h.svc, "node-a").reconcileOnce(t.Context()))
+	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
 
 	assert.Len(t, h.snaps.created, 1)
 	assert.Len(t, h.automatedStamps(t, testDBID), 1)

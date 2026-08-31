@@ -3,12 +3,14 @@ package handlers_eks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/testutil/pagedstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -82,6 +84,25 @@ func TestResolveLatestSnapshot_NoSnapshotsFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	_, err := resolveLatestSnapshot(context.Background(), store, testAccountID, "alpha")
 	require.Error(t, err)
+}
+
+// TestResolveLatestSnapshot_MultiPageListingFindsNewest proves the newest
+// snapshot is still found when the listing spans more than one page. The
+// etcd timestamp format sorts lexicographically, so the newest key sorts
+// last and lands on the final page — before this fix, a listing that never
+// followed the continuation token would silently pick an older "newest".
+func TestResolveLatestSnapshot_MultiPageListingFindsNewest(t *testing.T) {
+	store := pagedstore.New(2)
+	const count = 5
+	for i := 1; i <= count; i++ {
+		seedSnapshot(t, store, testAccountID, "alpha", fmt.Sprintf("etcd-frequent-202607%02dT000000Z.snap", i))
+	}
+
+	store.Calls = 0
+	got, err := resolveLatestSnapshot(context.Background(), store, testAccountID, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, "etcd-frequent-20260705T000000Z.snap", got, "the true newest snapshot, on the final page, must win")
+	assert.Greater(t, store.Calls, 1, "the listing must span more than one page for this test to prove anything")
 }
 
 // restoreSnapshotFixtureMeta builds a single-CP ClusterMeta with everything

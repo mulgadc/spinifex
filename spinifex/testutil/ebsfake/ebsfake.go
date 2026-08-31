@@ -35,13 +35,16 @@ func (p *Provider) DeleteVolume(ctx context.Context, req ebsprovider.DeleteVolum
 		return err
 	}
 	for _, prefix := range []string{req.VolumeID + "-efi/", req.VolumeID + "/"} {
-		listed, err := p.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		objects, _, err := objectstore.ListAll(ctx, p.store, &s3.ListObjectsV2Input{
 			Bucket: aws.String(p.bucket), Prefix: aws.String(prefix),
 		})
 		if err != nil {
 			return err
 		}
-		for _, obj := range listed.Contents {
+		for _, obj := range objects {
+			if obj == nil {
+				continue
+			}
 			if _, err := p.store.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(p.bucket), Key: obj.Key}); err != nil {
 				return err
 			}

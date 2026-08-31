@@ -230,7 +230,7 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 	var tags []*ec2.TagDescription
 
 	// List all tag files from S3 scoped to this account
-	listResult, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+	objects, _, err := objectstore.ListAll(ctx, s.store, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.config.Predastore.Bucket),
 		Prefix: aws.String(getTagsPrefix(accountID)),
 	})
@@ -240,8 +240,8 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 	}
 
 	// Process each tag file
-	for _, obj := range listResult.Contents {
-		if obj.Key == nil {
+	for _, obj := range objects {
+		if obj == nil || obj.Key == nil {
 			continue
 		}
 

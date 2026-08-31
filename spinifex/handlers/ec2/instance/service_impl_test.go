@@ -3259,9 +3259,10 @@ func TestPrepareRunInstances_PublicIPWithoutAllocator(t *testing.T) {
 			require.Error(t, err, "a public-IP launch with no allocator must fail, not boot an instance with no public address")
 			assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, err.Error())
 			assert.Empty(t, instances)
-			assert.Equal(t, 1, eni.detachCalls, "ENI must be detached before delete")
 			assert.Equal(t, []string{"eni-no-ipam"}, deleter.calls,
 				"the auto-created ENI must be deleted, otherwise it strands and blocks security group deletion")
+			assert.Equal(t, []bool{true}, deleter.forced, "the launch owns the ENI, so its teardown must force past the in-use guard")
+			assert.Zero(t, eni.detachCalls, "the detach belongs inside the atomic delete, not as a separate read")
 			assert.Len(t, prov.deallocated, 1, "capacity must be returned when the launch aborts")
 		})
 	}
@@ -3587,10 +3588,13 @@ func TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch(t *testing.T) {
 				"the code must be resolved from the allocator's cause, not asserted by the caller")
 			assert.Empty(t, instances, "instance with no public IP must not be returned")
 
-			// The ENI is attached with a primary IP; rollback must detach before
-			// delete (in-use ENIs reject deletion) so no eniKV record leaks.
-			assert.Equal(t, 1, eni.detachCalls, "rollback must detach the ENI before delete")
+			// The ENI is attached with a primary IP, so the rollback must clear
+			// the attachment and the record together under one read — in-use
+			// ENIs reject deletion, and a separate detach lets a lagging
+			// replica serve the delete a pre-detach record.
 			assert.Equal(t, []string{"eni-pubip-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
+			assert.Equal(t, []bool{true}, deleter.forced, "the launch owns the ENI, so its teardown must force past the in-use guard")
+			assert.Zero(t, eni.detachCalls, "the detach belongs inside the atomic delete, not as a separate read")
 			assert.Equal(t, 0, eni.updateCalls, "no public IP was allocated, so the ENI must never be updated with one")
 
 			require.Len(t, prov.deallocated, 1, "public-IP allocation failure must trigger Deallocate")

@@ -726,12 +726,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 				// aborting prevents a leak of the auto-assigned EIP.
 				slog.ErrorContext(ctx, "PrepareRunInstances: AttachENI failed — aborting launch",
 					"eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
-				if _, delErr := s.eniDeleter.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
-					NetworkInterfaceId: &instance.ENIId,
-				}, accountID); delErr != nil {
-					slog.WarnContext(ctx, "PrepareRunInstances: failed to delete auto-created ENI after attach failure",
-						"eniId", instance.ENIId, "err", delErr)
-				}
+				s.detachAndDeleteENI(ctx, accountID, instance.ID, instance.ENIId, true)
 				lastRunErr = attachErr
 				if reservationID == "" {
 					s.resourceMgr.Deallocate(instanceType)
@@ -775,20 +770,10 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			if wantPublic {
 				publicIP, poolName, allocErr := s.allocatePublicIP(ctx, *eni.NetworkInterfaceId, instance.ID)
 				if allocErr != nil {
-					// Fail rather than boot an unreachable instance;
-					// detach before delete since in-use ENIs reject deletion.
+					// Fail rather than boot an unreachable instance.
 					slog.ErrorContext(ctx, "PrepareRunInstances: public IP allocation failed — aborting launch",
 						"instanceId", instance.ID, "eniId", *eni.NetworkInterfaceId, "err", allocErr)
-					if detErr := s.eniCreator.DetachENI(ctx, accountID, *eni.NetworkInterfaceId); detErr != nil {
-						slog.WarnContext(ctx, "PrepareRunInstances: failed to detach ENI after public-IP allocation failure",
-							"eniId", *eni.NetworkInterfaceId, "err", detErr)
-					}
-					if _, delErr := s.eniDeleter.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
-						NetworkInterfaceId: eni.NetworkInterfaceId,
-					}, accountID); delErr != nil {
-						slog.WarnContext(ctx, "PrepareRunInstances: failed to delete ENI after public-IP allocation failure",
-							"eniId", *eni.NetworkInterfaceId, "err", delErr)
-					}
+					s.detachAndDeleteENI(ctx, accountID, instance.ID, *eni.NetworkInterfaceId, true)
 					// Carry the allocator's own error rather than a flat
 					// capacity code: the gateway resolves the AWS code out
 					// of the wrap chain, so a genuinely exhausted pool still

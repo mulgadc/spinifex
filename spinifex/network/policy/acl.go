@@ -54,51 +54,65 @@ func InfrastructureACLs(portGroupName string) []ovn.ACLSpec {
 }
 
 // RuleACLSpecs builds priority-1000 allow ACLs with "allow-related" action.
-func RuleACLSpecs(portGroupName string, ingress, egress []Rule) []ovn.ACLSpec {
+func RuleACLSpecs(portGroupName string, ingress, egress []Rule) ([]ovn.ACLSpec, error) {
 	specs := make([]ovn.ACLSpec, 0, len(ingress)+len(egress))
 	for _, rule := range ingress {
+		match, err := BuildIngressACLMatch(portGroupName, rule)
+		if err != nil {
+			return nil, err
+		}
 		specs = append(specs, ovn.ACLSpec{
 			Direction: "to-lport",
 			Priority:  ACLPriorityTenantAllow,
-			Match:     BuildIngressACLMatch(portGroupName, rule),
+			Match:     match,
 			Action:    "allow-related",
 		})
 	}
 	for _, rule := range egress {
+		match, err := BuildEgressACLMatch(portGroupName, rule)
+		if err != nil {
+			return nil, err
+		}
 		specs = append(specs, ovn.ACLSpec{
 			Direction: "from-lport",
 			Priority:  ACLPriorityTenantAllow,
-			Match:     BuildEgressACLMatch(portGroupName, rule),
+			Match:     match,
 			Action:    "allow-related",
 		})
 	}
-	return specs
+	return specs, nil
 }
 
 // BuildIngressACLMatch builds an OVN to-lport match expression.
-func BuildIngressACLMatch(portGroupName string, rule Rule) string {
+func BuildIngressACLMatch(portGroupName string, rule Rule) (string, error) {
 	parts := []string{fmt.Sprintf("outport == @%s", portGroupName), "ip4"}
-	parts = appendProtocolMatch(parts, rule)
+	parts, err := appendProtocolMatch(parts, rule)
+	if err != nil {
+		return "", err
+	}
 	if rule.CIDR != "" && rule.CIDR != "0.0.0.0/0" {
 		parts = append(parts, fmt.Sprintf("ip4.src == %s", rule.CIDR))
 	}
 	if rule.SourceSG != "" {
 		parts = append(parts, fmt.Sprintf("ip4.src == $%s", addressSetName(topology.SecurityGroupPortGroup(rule.SourceSG))))
 	}
-	return strings.Join(parts, " && ")
+	return strings.Join(parts, " && "), nil
 }
 
 // BuildEgressACLMatch builds an OVN from-lport match.
-func BuildEgressACLMatch(portGroupName string, rule Rule) string {
+func BuildEgressACLMatch(portGroupName string, rule Rule) (string, error) {
 	parts := []string{fmt.Sprintf("inport == @%s", portGroupName), "ip4"}
-	parts = appendProtocolMatch(parts, rule)
+	parts, err := appendProtocolMatch(parts, rule)
+	if err != nil {
+		return "", err
+	}
 	if rule.CIDR != "" && rule.CIDR != "0.0.0.0/0" {
 		parts = append(parts, fmt.Sprintf("ip4.dst == %s", rule.CIDR))
 	}
 	if rule.SourceSG != "" {
 		parts = append(parts, fmt.Sprintf("ip4.dst == $%s", addressSetName(topology.SecurityGroupPortGroup(rule.SourceSG))))
 	}
-	return strings.Join(parts, " && ")
+	return strings.Join(parts, " && "), nil
 }
 
 // addressSetName returns the ovn-northd-derived SB Address_Set name for a PG's
@@ -107,18 +121,22 @@ func addressSetName(portGroupName string) string {
 	return portGroupName + "_ip4"
 }
 
-func appendProtocolMatch(parts []string, rule Rule) []string {
+// appendProtocolMatch errors on an unrecognised protocol rather than emitting
+// no L4 predicate: a silent no-op here widens the rule to every IP protocol.
+// Callers must normalise numeric IANA values (6, 17, 1) to names first.
+func appendProtocolMatch(parts []string, rule Rule) ([]string, error) {
 	switch rule.IPProtocol {
 	case "tcp":
-		parts = appendPortMatch(parts, "tcp", rule.FromPort, rule.ToPort)
+		return appendPortMatch(parts, "tcp", rule.FromPort, rule.ToPort), nil
 	case "udp":
-		parts = appendPortMatch(parts, "udp", rule.FromPort, rule.ToPort)
+		return appendPortMatch(parts, "udp", rule.FromPort, rule.ToPort), nil
 	case "icmp":
-		parts = append(parts, "icmp4")
+		return append(parts, "icmp4"), nil
 	case "-1", "":
+		return parts, nil
 	default:
+		return nil, fmt.Errorf("unsupported IP protocol %q", rule.IPProtocol)
 	}
-	return parts
 }
 
 func appendPortMatch(parts []string, proto string, fromPort, toPort int64) []string {

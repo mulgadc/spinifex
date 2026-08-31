@@ -28,12 +28,41 @@ var sgIDRegex = regexp.MustCompile(`^sg-[0-9a-f]{17}$`)
 // re-implementing the format check.
 var SGRuleIDRegex = regexp.MustCompile(`^sgr-[0-9a-f]{17}$`)
 
+// canonicalIPProtocols are the only values the OVN ACL builder can express.
+// Anything else must be rejected: the builder emits no L4 predicate for an
+// unknown protocol, which widens the rule to every IP protocol.
+var canonicalIPProtocols = []string{"tcp", "udp", "icmp", "-1"}
+
+// numericIPProtocols maps the IANA numbers AWS accepts onto the canonical
+// names. 58 (ICMPv6) is absent deliberately: the ACL builder is IPv4-only.
+var numericIPProtocols = map[string]string{"1": "icmp", "6": "tcp", "17": "udp"}
+
+// normalizeIPProtocol canonicalises an AWS IpProtocol value the way AWS does,
+// returning "tcp" for both "tcp" and "6". An empty value means all protocols.
+func normalizeIPProtocol(proto string) (string, error) {
+	proto = strings.ToLower(strings.TrimSpace(proto))
+	if proto == "" {
+		return "-1", nil
+	}
+	if name, ok := numericIPProtocols[proto]; ok {
+		return name, nil
+	}
+	if slices.Contains(canonicalIPProtocols, proto) {
+		return proto, nil
+	}
+	return "", fmt.Errorf("invalid IpProtocol %q: supported values are tcp, udp, icmp, -1 (or 6, 17, 1)", proto)
+}
+
 // validateSGRule rejects CidrIp values that are non-canonical or IPv6 (OVN ACL
-// builder is IPv4-only), and SourceSG values not matching the sg-ID format.
-// At least one source must be specified.
+// builder is IPv4-only), IpProtocol values the ACL builder cannot express, and
+// SourceSG values not matching the sg-ID format. At least one source must be
+// specified.
 func validateSGRule(r SGRule) error {
 	if r.CidrIp == "" && r.SourceSG == "" {
 		return errors.New("rule must specify CidrIp or SourceSG")
+	}
+	if !slices.Contains(canonicalIPProtocols, r.IpProtocol) {
+		return fmt.Errorf("invalid IpProtocol %q: must be one of %v", r.IpProtocol, canonicalIPProtocols)
 	}
 	if r.CidrIp != "" {
 		_, ipnet, err := net.ParseCIDR(r.CidrIp)
@@ -938,8 +967,9 @@ const (
 )
 
 // ipPermissionsToSGRules converts AWS IpPermission slice to SGRule slice,
-// validating every tenant-supplied CidrIp/SourceSG. IPv6-only permissions
-// error in Authorize mode and are silently skipped in Revoke mode.
+// normalising IpProtocol to its canonical name and validating every
+// tenant-supplied CidrIp/SourceSG. IPv6-only permissions error in Authorize
+// mode and are silently skipped in Revoke mode.
 func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRule, error) {
 	var rules []SGRule
 	for _, perm := range perms {
@@ -947,9 +977,13 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 			continue
 		}
 
-		proto := "-1"
+		raw := ""
 		if perm.IpProtocol != nil {
-			proto = *perm.IpProtocol
+			raw = *perm.IpProtocol
+		}
+		proto, err := normalizeIPProtocol(raw)
+		if err != nil {
+			return nil, err
 		}
 
 		var fromPort, toPort int64

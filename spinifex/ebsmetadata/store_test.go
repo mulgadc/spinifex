@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -445,4 +447,128 @@ func TestListVolumes_BoundsOneSlowDocument(t *testing.T) {
 
 	_, err = hanging.ListVolumesStrict(ctx)
 	require.Error(t, err, "the strict listing must still report the document it could not read")
+}
+
+// A listing that reads one page returns a prefix of the truth and no error.
+// For a strict caller that is worse than a failure, because its whole premise
+// is that a document it did not see is not evidence of absence.
+func TestListVolumesFollowsEveryPage(t *testing.T) {
+	objects := objectstore.NewMemoryObjectStore()
+	store := NewStore(objects, "control-plane")
+	ctx := context.Background()
+
+	const documents = 24
+	want := make([]string, 0, documents)
+	keys := make([]string, 0, documents)
+	for i := range documents {
+		id := fmt.Sprintf("vol-%02d", i)
+		require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: id, TenantID: "acct-1", CapacityGiB: 1}))
+		key, err := VolumeKey(id)
+		require.NoError(t, err)
+		want = append(want, id)
+		keys = append(keys, key)
+	}
+
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			paging := &pagingStore{ObjectStore: objects, keys: keys, pageSize: 5}
+			paged := NewStore(paging, "control-plane")
+
+			list := paged.ListVolumes
+			if strict {
+				list = paged.ListVolumesStrict
+			}
+			volumes, err := list(ctx)
+			require.NoError(t, err)
+
+			got := make([]string, 0, len(volumes))
+			for _, v := range volumes {
+				got = append(got, v.VolumeID)
+			}
+			assert.Equal(t, want, got, "every page's documents must reach the caller")
+			assert.Equal(t, 5, paging.requests(), "24 documents at 5 a page is 5 requests")
+		})
+	}
+}
+
+// A truncated page with no token cannot be followed. Returning what arrived
+// would be the silent short answer, so it has to be an error for both callers.
+func TestListVolumesRefusesTruncationItCannotFollow(t *testing.T) {
+	objects := objectstore.NewMemoryObjectStore()
+	store := NewStore(objects, "control-plane")
+	ctx := context.Background()
+
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-1", TenantID: "acct-1", CapacityGiB: 1}))
+	key, err := VolumeKey("vol-1")
+	require.NoError(t, err)
+
+	broken := NewStore(&truncatedNoTokenStore{ObjectStore: objects, keys: []string{key}}, "control-plane")
+
+	_, err = broken.ListVolumes(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "continuation token")
+
+	_, err = broken.ListVolumesStrict(ctx)
+	require.Error(t, err)
+}
+
+// pagingStore serves a prefix one page at a time the way a real S3 does, and
+// counts the requests so a test can tell a followed listing from a lucky one.
+type pagingStore struct {
+	objectstore.ObjectStore
+
+	keys     []string
+	pageSize int
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *pagingStore) ListObjectsV2(_ context.Context, in *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+
+	start := 0
+	if token := aws.StringValue(in.ContinuationToken); token != "" {
+		n, err := strconv.Atoi(token)
+		if err != nil {
+			return nil, fmt.Errorf("continuation token %q was not one this store issued", token)
+		}
+		start = n
+	}
+	end := min(start+s.pageSize, len(s.keys))
+
+	contents := make([]*s3.Object, 0, end-start)
+	for _, key := range s.keys[start:end] {
+		contents = append(contents, &s3.Object{Key: aws.String(key)})
+	}
+
+	out := &s3.ListObjectsV2Output{Contents: contents, IsTruncated: aws.Bool(end < len(s.keys))}
+	if end < len(s.keys) {
+		out.NextContinuationToken = aws.String(strconv.Itoa(end))
+	}
+	return out, nil
+}
+
+func (s *pagingStore) requests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// truncatedNoTokenStore claims there is more to read and offers no way to read
+// it, which is the one truncation a client cannot honour.
+type truncatedNoTokenStore struct {
+	objectstore.ObjectStore
+
+	keys []string
+}
+
+func (s *truncatedNoTokenStore) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+	contents := make([]*s3.Object, 0, len(s.keys))
+	for _, key := range s.keys {
+		contents = append(contents, &s3.Object{Key: aws.String(key)})
+	}
+	return &s3.ListObjectsV2Output{Contents: contents, IsTruncated: aws.Bool(true)}, nil
 }

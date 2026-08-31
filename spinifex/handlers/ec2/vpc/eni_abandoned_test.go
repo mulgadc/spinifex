@@ -65,6 +65,59 @@ func TestListAbandonedInstanceENIs(t *testing.T) {
 		"only the aged, unattached, launch-created ENI is residue; the others are live or deliberate")
 }
 
+// TestListAttachedInstanceENIs pins the complement of the abandoned listing: the
+// records that do name an instance, which is where a zombie hides. The two
+// listings must not overlap, or a sweep would act on the same record twice.
+func TestListAttachedInstanceENIs(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
+
+	attached := createAutoENI(t, svc, subnetID, "i-gone", nil, time.Hour)
+	_, err := svc.AttachENI(testAccountID, attached, "i-gone", 0)
+	require.NoError(t, err)
+
+	// Attached but still inside the age guard: a launch this young may still be
+	// wiring the instance up, so its ENI is not a candidate for anything.
+	fresh := createAutoENI(t, svc, subnetID, "i-launching", nil, time.Minute)
+	_, err = svc.AttachENI(testAccountID, fresh, "i-launching", 0)
+	require.NoError(t, err)
+
+	// Aged but never attached — the abandoned-launch listing owns this one.
+	createAutoENI(t, svc, subnetID, "i-abandoned", nil, time.Hour)
+
+	got, err := svc.ListAttachedInstanceENIs(context.Background(), 15*time.Minute)
+	require.NoError(t, err)
+
+	ids := make([]string, 0, len(got))
+	for _, o := range got {
+		assert.Equal(t, testAccountID, o.AccountID)
+		ids = append(ids, o.Record.NetworkInterfaceId)
+	}
+	assert.Equal(t, []string{attached}, ids,
+		"only the aged ENI that names an instance is a candidate for the staleness check")
+}
+
+// TestListAttachedInstanceENIsIgnoresZeroCreatedAt pins the age guard's fallback.
+// A record written before CreatedAt existed carries no age, and age is the only
+// thing standing between this listing and an ENI a launch is still using.
+func TestListAttachedInstanceENIsIgnoresZeroCreatedAt(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
+
+	eniID := createAutoENI(t, svc, subnetID, "i-undated", nil, time.Hour)
+	_, err := svc.AttachENI(testAccountID, eniID, "i-undated", 0)
+	require.NoError(t, err)
+	require.NoError(t, svc.UpdateENI(testAccountID, eniID, func(rec *ENIRecord) {
+		rec.CreatedAt = time.Time{}
+	}))
+
+	got, err := svc.ListAttachedInstanceENIs(context.Background(), 15*time.Minute)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
 // TestAbandonedENIBlocksSecurityGroupDelete pins the consequence that makes this
 // worth sweeping: the SG dependency check counts an abandoned ENI, so the group
 // stays undeletable for as long as the record survives.

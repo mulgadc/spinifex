@@ -299,14 +299,7 @@ func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.Dis
 		s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIp, record.PrivateIp, record.ENIId, macAddr)
 	}
 
-	// Clear association fields, revert to "allocated" state.
-	record.AssociationId = ""
-	record.ENIId = ""
-	record.InstanceId = ""
-	record.PrivateIp = ""
-	record.VpcId = ""
-	record.MacAddress = ""
-	record.State = "allocated"
+	clearAssociation(record)
 
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -319,6 +312,99 @@ func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.Dis
 	slog.InfoContext(ctx, "DisassociateAddress completed", "associationId", associationID, "accountID", accountID)
 
 	return &ec2.DisassociateAddressOutput{}, nil
+}
+
+// clearAssociation reverts a record to the unassociated "allocated" state. The
+// allocation itself survives: disassociating never hands the address back.
+func clearAssociation(record *EIPRecord) {
+	record.AssociationId = ""
+	record.ENIId = ""
+	record.InstanceId = ""
+	record.PrivateIp = ""
+	record.VpcId = ""
+	record.MacAddress = ""
+	record.State = "allocated"
+}
+
+// DisassociateByENI releases the association an EIP holds on eniID, reporting
+// whether one was found. Instance teardown deletes the ENI but nothing released
+// the EIP behind it, so the record stayed "associated" against a guest that no
+// longer exists and the reconciler kept re-asserting its dnat_and_snat and
+// probing a port that could never bind. No association is success, so a re-run
+// of terminate converges. The allocation is left intact, matching AWS: an EIP
+// survives the instance it was attached to.
+func (s *EIPServiceImpl) DisassociateByENI(ctx context.Context, accountID, eniID string) (bool, error) {
+	if eniID == "" {
+		return false, nil
+	}
+	record, key, revision, err := s.findByENI(ctx, accountID, eniID)
+	if err != nil {
+		return false, err
+	}
+	if record == nil {
+		return false, nil
+	}
+
+	// The MAC comes off the record rather than a fresh ENI lookup: this runs as
+	// part of tearing that ENI down, so the interface may already be gone.
+	s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIp, record.PrivateIp, eniID, record.MacAddress)
+
+	publicIP, allocationID := record.PublicIp, record.AllocationId
+	clearAssociation(record)
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		return false, fmt.Errorf("marshal EIP record: %w", err)
+	}
+	if _, err := s.eipKV.Update(ctx, key, data, revision); err != nil {
+		return false, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.InfoContext(ctx, "DisassociateByENI completed",
+		"eniId", eniID, "publicIp", publicIP, "allocationId", allocationID, "accountID", accountID)
+	return true, nil
+}
+
+// findByENI returns the associated EIP record holding eniID, or a nil record
+// when the account has none. Unlike findByAssociationID an absent match is not
+// an error: teardown asks this of every ENI, and most carry no EIP.
+func (s *EIPServiceImpl) findByENI(ctx context.Context, accountID, eniID string) (*EIPRecord, string, uint64, error) {
+	prefix := accountID + "."
+	keys, err := s.eipKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, "", 0, nil
+		}
+		return nil, "", 0, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	for _, k := range keys {
+		if err := ctx.Err(); err != nil {
+			return nil, "", 0, err
+		}
+		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.eipKV.Get(ctx, k)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			// An unreadable record must not read as "this ENI has no EIP":
+			// the caller deletes the interface on that answer, and the
+			// association would be stranded with nothing left to find it.
+			return nil, "", 0, fmt.Errorf("eipKV.Get(%s): %w", k, err)
+		}
+		var record EIPRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			slog.WarnContext(ctx, "findByENI: malformed EIP record", "key", k, "err", err)
+			continue
+		}
+		if record.ENIId == eniID {
+			return &record, k, entry.Revision(), nil
+		}
+	}
+	return nil, "", 0, nil
 }
 
 // describeAddressesValidFilters defines the set of filter names accepted by DescribeAddresses.

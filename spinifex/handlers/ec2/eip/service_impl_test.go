@@ -200,6 +200,123 @@ func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {
 	assert.Contains(t, err.Error(), "InvalidAllocationID.NotFound")
 }
 
+// associateToENI marks an allocated EIP as associated with eniID the way
+// AssociateAddress would, without needing a real VPC service behind it.
+func associateToENI(t *testing.T, svc *EIPServiceImpl, allocID, eniID string) {
+	t.Helper()
+	key := testAccountID + "." + allocID
+	entry, err := svc.eipKV.Get(t.Context(), key)
+	require.NoError(t, err)
+	var record EIPRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &record))
+	record.State = "associated"
+	record.AssociationId = "eipassoc-" + eniID
+	record.ENIId = eniID
+	record.InstanceId = "i-owner"
+	record.PrivateIp = "172.31.0.8"
+	record.VpcId = "vpc-test"
+	record.MacAddress = "02:52:f5:7f:9d:0e"
+	data, err := json.Marshal(record)
+	require.NoError(t, err)
+	_, err = svc.eipKV.Update(t.Context(), key, data, entry.Revision())
+	require.NoError(t, err)
+}
+
+// TestEIP_DisassociateByENI is the teardown path the zombie ENIs needed: the
+// association goes with the interface, and the allocation stays behind.
+func TestEIP_DisassociateByENI(t *testing.T) {
+	svc, _ := setupTestEIP(t)
+
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	allocID, publicIP := *out.AllocationId, *out.PublicIp
+	associateToENI(t, svc, allocID, "eni-zombie")
+
+	found, err := svc.DisassociateByENI(t.Context(), testAccountID, "eni-zombie")
+	require.NoError(t, err)
+	assert.True(t, found)
+
+	entry, err := svc.eipKV.Get(t.Context(), testAccountID+"."+allocID)
+	require.NoError(t, err, "the allocation survives: an EIP outlives the instance it was attached to")
+	var record EIPRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &record))
+	assert.Equal(t, "allocated", record.State)
+	assert.Equal(t, publicIP, record.PublicIp)
+	assert.Empty(t, record.ENIId)
+	assert.Empty(t, record.AssociationId)
+	assert.Empty(t, record.InstanceId)
+	assert.Empty(t, record.PrivateIp)
+	assert.Empty(t, record.VpcId)
+	assert.Empty(t, record.MacAddress)
+
+	// The record no longer names the ENI, so a re-run finds nothing and still
+	// succeeds — terminate and the orphan sweep both retry this.
+	found, err = svc.DisassociateByENI(t.Context(), testAccountID, "eni-zombie")
+	require.NoError(t, err)
+	assert.False(t, found)
+}
+
+// TestEIP_DisassociateByENI_NoMatchIsNoOp pins that an ENI carrying no EIP — the
+// overwhelmingly common case on terminate — leaves other accounts' associations
+// alone and reports no error.
+func TestEIP_DisassociateByENI_NoMatchIsNoOp(t *testing.T) {
+	svc, _ := setupTestEIP(t)
+
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	allocID := *out.AllocationId
+	associateToENI(t, svc, allocID, "eni-other")
+
+	found, err := svc.DisassociateByENI(t.Context(), testAccountID, "eni-unrelated")
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	found, err = svc.DisassociateByENI(t.Context(), testAccountID, "")
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	entry, err := svc.eipKV.Get(t.Context(), testAccountID+"."+allocID)
+	require.NoError(t, err)
+	var record EIPRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &record))
+	assert.Equal(t, "associated", record.State)
+	assert.Equal(t, "eni-other", record.ENIId)
+}
+
+// TestEIP_DisassociateByENI_ScopedToAccount pins that the scan honours the
+// account prefix: a cluster-wide sweep passes the account the key was found
+// under, and matching across accounts would disassociate a stranger's address.
+func TestEIP_DisassociateByENI_ScopedToAccount(t *testing.T) {
+	svc, _ := setupTestEIP(t)
+
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	associateToENI(t, svc, *out.AllocationId, "eni-zombie")
+
+	found, err := svc.DisassociateByENI(t.Context(), "210987654321", "eni-zombie")
+	require.NoError(t, err)
+	assert.False(t, found)
+}
+
+// TestEIP_DisassociateByENI_SkipsMalformedRecord pins that one undecodable
+// entry cannot hide a real association. Teardown deletes the interface on a
+// "no EIP" answer, and the association would then be stranded with nothing
+// left that could find it.
+func TestEIP_DisassociateByENI_SkipsMalformedRecord(t *testing.T) {
+	svc, _ := setupTestEIP(t)
+
+	_, err := svc.eipKV.Put(t.Context(), testAccountID+".eipalloc-corrupt", []byte("{"))
+	require.NoError(t, err)
+
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	associateToENI(t, svc, *out.AllocationId, "eni-zombie")
+
+	found, err := svc.DisassociateByENI(t.Context(), testAccountID, "eni-zombie")
+	require.NoError(t, err)
+	assert.True(t, found)
+}
+
 func TestEIP_ReleaseByInstanceID_NoMatchIsNoOp(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 

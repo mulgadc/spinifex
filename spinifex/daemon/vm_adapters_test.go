@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -447,6 +448,8 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_ReleasesPostLaunchAttach(t *t
 func TestInstanceCleanerAdapter_DetachAndDeleteENI_DeleteOnTerminationFalseDetachesOnly(t *testing.T) {
 	f := newENIHotPlugFixture(t)
 	f.vmInst.AccountID = testAccountID
+	eip := newStubEIPDisassociator(f.eniID)
+	f.daemon.eipService = eip
 
 	_, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 1)
 	require.NoError(t, err)
@@ -461,6 +464,89 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_DeleteOnTerminationFalseDetac
 	require.NoError(t, err, "DeleteOnTermination=false must detach, not delete")
 	assert.Equal(t, "available", rec.Status)
 	assert.Empty(t, rec.InstanceId)
+	assert.Empty(t, eip.calls,
+		"an EIP belongs to the interface, and the interface survives, so the association must too")
+}
+
+// stubEIPDisassociator embeds the EIP service interface so only the one method
+// terminate reaches for has to be real; anything else panics rather than
+// silently answering.
+type stubEIPDisassociator struct {
+	handlers_ec2_eip.EIPService
+
+	associated map[string]bool
+	calls      []string
+	// onCall observes the world as the disassociation sees it, so a test can
+	// pin the ordering the release depends on.
+	onCall func(eniID string)
+}
+
+func newStubEIPDisassociator(associatedENIs ...string) *stubEIPDisassociator {
+	s := &stubEIPDisassociator{associated: make(map[string]bool, len(associatedENIs))}
+	for _, eniID := range associatedENIs {
+		s.associated[eniID] = true
+	}
+	return s
+}
+
+func (s *stubEIPDisassociator) DisassociateByENI(_ context.Context, _, eniID string) (bool, error) {
+	if s.onCall != nil {
+		s.onCall(eniID)
+	}
+	s.calls = append(s.calls, eniID)
+	return s.associated[eniID], nil
+}
+
+// TestInstanceCleanerAdapter_DetachAndDeleteENI_ReleasesEIPAssociation pins the
+// half of the zombie the ENI delete never covered. releaseENISideEffects
+// deliberately leaves an EIP-owned public address alone, because the allocation
+// outlives the interface — but nothing released the association, so the EIP
+// record stayed "associated" against a guest that no longer exists and the
+// network reconciler kept re-asserting NAT for a port that could never bind.
+func TestInstanceCleanerAdapter_DetachAndDeleteENI_ReleasesEIPAssociation(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+	f.vmInst.AccountID = testAccountID
+	f.vmInst.ENIId = f.eniID
+	eip := newStubEIPDisassociator(f.eniID)
+	f.daemon.eipService = eip
+	// The ENI delete decides whether the interface's public address may return
+	// to the IPAM pool by looking for an EIP that names it, so the association
+	// has to outlast the delete.
+	eip.onCall = func(id string) {
+		_, err := f.daemon.vpcService.GetENIRecord(testAccountID, id)
+		assert.Error(t, err, "the EIP must be released after the interface, never before")
+	}
+
+	_, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 0)
+	require.NoError(t, err)
+
+	cleaner := newInstanceCleanerAdapter(f.daemon)
+	require.NoError(t, cleaner.DetachAndDeleteENI(f.vmInst))
+
+	assert.Equal(t, []string{f.eniID}, eip.calls,
+		"the association must go with the interface it belongs to")
+	_, err = f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound))
+}
+
+// TestInstanceCleanerAdapter_DetachAndDeleteENI_ReleasesEIPOnPostLaunchAttach
+// extends the release to the KV enumeration sweep. A hot-plug attach never sets
+// instance.ENIId, so covering only the primary path would leave every EIP on a
+// post-launch interface associated to a dead guest.
+func TestInstanceCleanerAdapter_DetachAndDeleteENI_ReleasesEIPOnPostLaunchAttach(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+	f.vmInst.AccountID = testAccountID
+	eip := newStubEIPDisassociator(f.eniID)
+	f.daemon.eipService = eip
+
+	_, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 1)
+	require.NoError(t, err)
+	require.Empty(t, f.vmInst.ENIId, "precondition: launch-time scalar must stay unset")
+
+	cleaner := newInstanceCleanerAdapter(f.daemon)
+	require.NoError(t, cleaner.DetachAndDeleteENI(f.vmInst))
+
+	assert.Equal(t, []string{f.eniID}, eip.calls)
 }
 
 // TestInstanceCleanerAdapter_DetachAndDeleteENI_PrimaryENIReleased covers the

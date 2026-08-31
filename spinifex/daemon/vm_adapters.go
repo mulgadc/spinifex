@@ -832,6 +832,9 @@ func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
 			slog.Info("ENI already absent on termination",
 				"eni", instance.ENIId, "instanceId", instance.ID)
 		}
+		if err == nil {
+			a.disassociateENIEIP(instance.AccountID, instance.ENIId)
+		}
 	}
 
 	a.releaseAttachedENIs(instance)
@@ -876,6 +879,7 @@ func (a *instanceCleanerAdapter) releaseAttachedENIs(instance *vm.VM) {
 				"eni", eniId, "instanceId", instance.ID, "err", err)
 			continue
 		}
+		a.disassociateENIEIP(instance.AccountID, eniId)
 		if deleted {
 			slog.Info("Deleted attached ENI on termination",
 				"eni", eniId, "instanceId", instance.ID)
@@ -883,6 +887,30 @@ func (a *instanceCleanerAdapter) releaseAttachedENIs(instance *vm.VM) {
 			slog.Info("Attached ENI already absent on termination",
 				"eni", eniId, "instanceId", instance.ID)
 		}
+	}
+}
+
+// disassociateENIEIP releases any Elastic IP associated with an ENI that has
+// just been deleted. Nothing else did: the ENI delete deliberately leaves an
+// EIP-owned public address alone, since the allocation outlives the interface,
+// but the association is the interface's and has to go with it. Left behind, the
+// EIP record stays "associated" and the network reconciler keeps re-asserting a
+// NAT rule for a guest that no longer exists.
+//
+// Called after the delete, never before: the delete decides whether the ENI's
+// public address may return to the pool by looking for an EIP that names it.
+func (a *instanceCleanerAdapter) disassociateENIEIP(accountID, eniID string) {
+	eip, ok := a.d.eipService.(eipDisassociator)
+	if !ok {
+		return
+	}
+	found, err := eip.DisassociateByENI(context.Background(), accountID, eniID)
+	if err != nil {
+		slog.Warn("Failed to disassociate EIP on termination", "eni", eniID, "accountId", accountID, "err", err)
+		return
+	}
+	if found {
+		slog.Info("Disassociated EIP on termination", "eni", eniID, "accountId", accountID)
 	}
 }
 

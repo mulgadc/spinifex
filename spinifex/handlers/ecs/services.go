@@ -1,7 +1,9 @@
 package handlers_ecs
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -335,6 +337,12 @@ func (s *Service) reconcileService(ctx context.Context, kv jetstream.KeyValue, a
 	if svc.Status != ServiceStatusActive {
 		return nil
 	}
+	// Snapshotted before the normalisers run, so a normalisation that does change
+	// something is still persisted.
+	before, err := json.Marshal(svc)
+	if err != nil {
+		return err
+	}
 	svc.normalizeDeploymentConfig()
 	svc.ensurePrimaryDeployment()
 
@@ -347,10 +355,10 @@ func (s *Service) reconcileService(ctx context.Context, kv jetstream.KeyValue, a
 	primary := svc.primaryDeployment()
 	if primary != nil {
 		// A failing deployment trips the breaker (and may roll back); persist and
-		// let the next tick roll the replacement in.
+		// let the next pass roll the replacement in.
 		if tripCircuitBreaker(svc, primary) {
 			svc.RunningCount, svc.PendingCount = running, pending
-			return putJSON(ctx, kv, ServiceKey(svc.Cluster, svc.Name), svc)
+			return persistServiceIfChanged(ctx, kv, svc, before)
 		}
 		desired := svc.DesiredCount
 		maxCount := desired * svc.MaximumPercent / 100
@@ -373,23 +381,47 @@ func (s *Service) reconcileService(ctx context.Context, kv jetstream.KeyValue, a
 	}
 
 	svc.RunningCount, svc.PendingCount = running, pending
+	return persistServiceIfChanged(ctx, kv, svc, before)
+}
+
+// persistServiceIfChanged writes a service record only when the pass actually
+// altered it. The reconcile runs on every trigger and every resync, so writing
+// unconditionally churns every record on each one, and would wake any loop
+// watching the bucket with a change it made itself.
+//
+// The comparison is over the marshalled form rather than a field list: what a
+// pass may touch is spread across the deployment and rollout bookkeeping, and a
+// hand-maintained list of those fields would rot.
+func persistServiceIfChanged(ctx context.Context, kv jetstream.KeyValue, svc *ServiceRecord, before []byte) error {
+	after, err := json.Marshal(svc)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(before, after) {
+		return nil
+	}
 	return putJSON(ctx, kv, ServiceKey(svc.Cluster, svc.Name), svc)
 }
 
-// reconcileAllServices is the scheduler-tick fan-out: every ACTIVE service in
-// every ECS account bucket is reconciled. Runs only on the scheduler leader.
-// Returns an error when the account enumeration could not be completed, so a
-// pass that could not see the whole fleet is reported rather than read as "no
-// services to reconcile" — every unlisted account stalls below its desired count.
-func (s *Service) reconcileAllServices(ctx context.Context) error {
+// reconcileAllServices reconciles every ACTIVE service in every ECS account
+// bucket. Runs only on the scheduler leader. Returns an error when the account
+// enumeration could not be completed, so a pass that could not see the whole
+// fleet is reported rather than read as "no services to reconcile" — every
+// unlisted account stalls below its desired count.
+//
+// The duration asks for a revisit while any service is still in flight. A task
+// takes time to reach RUNNING and reports through the gateway, so the pass that
+// launched it comes back on its own rather than trusting a wake to arrive.
+func (s *Service) reconcileAllServices(ctx context.Context) (time.Duration, error) {
 	js, err := s.js()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	buckets, err := accountBuckets(ctx, s.nc)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	var next time.Duration
 	for _, bucket := range buckets {
 		kv, err := js.KeyValue(ctx, bucket.name)
 		if err != nil {
@@ -405,9 +437,26 @@ func (s *Service) reconcileAllServices(ctx context.Context) error {
 			if err := s.reconcileService(ctx, kv, bucket.accountID, &recs[i]); err != nil {
 				slog.Error("ECS reconcile: service failed", "service", recs[i].Name, "err", err)
 			}
+			if !serviceSettled(&recs[i]) {
+				next = reconcileInterval
+			}
 		}
 	}
-	return nil
+	return next, nil
+}
+
+// serviceSettled reports whether a service is where it was asked to be, with no
+// task mid-flight and no rollout still advancing. An unsettled service is what a
+// revisit deadline is for: nothing it is waiting on is a KV write it can watch.
+func serviceSettled(svc *ServiceRecord) bool {
+	if svc.Status != ServiceStatusActive {
+		return true
+	}
+	if svc.PendingCount > 0 || svc.RunningCount != svc.DesiredCount {
+		return false
+	}
+	primary := svc.primaryDeployment()
+	return primary == nil || primary.RolloutState != RolloutStateInProgress
 }
 
 // launchDeploymentTasks places n tasks for a specific deployment via the standard

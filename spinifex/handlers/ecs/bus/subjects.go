@@ -37,7 +37,9 @@ func TaskStateSubject(accountID, clusterName, taskID string) string {
 	return fmt.Sprintf("%s.task-state.%s", Prefix(accountID, clusterName), taskID)
 }
 
-// ServiceReconcileSubject is the scheduler-internal reconcile tick.
+// ServiceReconcileSubject wakes the scheduler's service reconcile. It carries no
+// payload — it says only that something the reconcile reads has changed — and it
+// crosses nodes, because the API worker that saw the change is rarely the leader.
 func ServiceReconcileSubject(accountID, clusterName string) string {
 	return fmt.Sprintf("%s.service-reconcile", Prefix(accountID, clusterName))
 }

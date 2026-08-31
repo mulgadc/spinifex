@@ -327,6 +327,12 @@ func (s *Service) SubmitTaskStateChange(ctx context.Context, input *ecs.SubmitTa
 	if err := s.recordTaskState(ctx, &msg); err != nil {
 		return nil, err
 	}
+	// A task changing state is what moves a service's running count, so the
+	// scheduler is woken here rather than left to find out on its own deadline.
+	// The worker serving this call is rarely the leader, hence a published wake.
+	if err := s.nc.Publish(bus.ServiceReconcileSubject(accountID, msg.ClusterName), nil); err != nil {
+		slog.Debug("ECS: reconcile wake failed", "cluster", msg.ClusterName, "err", err)
+	}
 	return &ecs.SubmitTaskStateChangeOutput{Acknowledgment: aws.String("OK")}, nil
 }
 

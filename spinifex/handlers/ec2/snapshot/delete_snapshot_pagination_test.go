@@ -1,4 +1,4 @@
-package handlers_ec2_snapshot
+package handlers_ec2_snapshot_test
 
 import (
 	"context"
@@ -12,10 +12,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/testutil/pagedstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+const testAccountID = "111122223333"
 
 // TestDeleteSnapshot_RemovesEveryObjectAcrossMultiplePages proves DeleteSnapshot
 // follows ListObjectsV2's continuation token to exhaustion. Before this fix it
@@ -31,13 +34,19 @@ func TestDeleteSnapshot_RemovesEveryObjectAcrossMultiplePages(t *testing.T) {
 			AccessKey: "test-owner-123",
 		},
 	}
-	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
-	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	svc := handlers_ec2_snapshot.NewSnapshotServiceImplWithStore(cfg, store, nil)
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	svc.SetEBSProvider(provider)
 
-	seedProviderVolume(t, svc, "vol-1", 10)
-	seedVolumeDocument(t, store, ebsmetadata.Volume{
-		VolumeID: "vol-1", CapacityGiB: 10, AvailabilityZone: "us-east-1a",
+	_, err := provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1",
+		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: 10 * 1024 * 1024 * 1024},
+		AvailabilityZone: "us-east-1a",
 	})
+	require.NoError(t, err)
+	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutVolume(context.Background(), ebsmetadata.Volume{
+		VolumeID: "vol-1", CapacityGiB: 10, AvailabilityZone: "us-east-1a",
+	}))
 
 	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
 		VolumeId: aws.String("vol-1"),

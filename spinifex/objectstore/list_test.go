@@ -1,4 +1,4 @@
-package objectstore
+package objectstore_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,9 +15,24 @@ import (
 // pagingStore replays a fixed sequence of ListObjectsV2 pages, honouring
 // continuation tokens the way a real paginating store would: each call
 // returns the next page and, while pages remain, a token pointing at it.
+//
+// This is deliberately separate from testutil/pagedstore, which slices a
+// real MemoryObjectStore's filtered, sorted contents into pages of a fixed
+// size for consumer-side integration tests. These tests are about ListAll's
+// own pagination contract: exact page content (including CommonPrefixes,
+// which pagedstore does not paginate at all) and the malformed-truncation
+// shapes below, neither of which a real store's paging can produce on
+// demand. GetObject/PutObject/etc are unused by ListAll, so they come from
+// an embedded MemoryObjectStore rather than being hand-stubbed.
 type pagingStore struct {
+	*objectstore.MemoryObjectStore
+
 	pages []*s3.ListObjectsV2Output
 	calls int
+}
+
+func newPagingStore(pages []*s3.ListObjectsV2Output) *pagingStore {
+	return &pagingStore{MemoryObjectStore: objectstore.NewMemoryObjectStore(), pages: pages}
 }
 
 func (p *pagingStore) ListObjectsV2(_ context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
@@ -39,30 +55,16 @@ func (p *pagingStore) ListObjectsV2(_ context.Context, input *s3.ListObjectsV2In
 	return out, nil
 }
 
-func (p *pagingStore) GetObject(context.Context, *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
-	return nil, nil
-}
-func (p *pagingStore) HeadObject(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
-	return nil, nil
-}
-func (p *pagingStore) PutObject(context.Context, *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
-	return nil, nil
-}
-func (p *pagingStore) DeleteObject(context.Context, *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
-	return nil, nil
-}
-func (p *pagingStore) EnsureBucket(context.Context, string) error { return nil }
-
 func tokenFor(page int) string {
 	return "page-" + strconv.Itoa(page)
 }
 
-var _ ObjectStore = (*pagingStore)(nil)
+var _ objectstore.ObjectStore = (*pagingStore)(nil)
 
 // truncatedNoTokenStore always reports truncation but never supplies a
 // continuation token to resume from — the shape a broken or misbehaving
 // store could produce.
-type truncatedNoTokenStore struct{ pagingStore }
+type truncatedNoTokenStore struct{ *pagingStore }
 
 func (t *truncatedNoTokenStore) ListObjectsV2(context.Context, *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
 	return &s3.ListObjectsV2Output{IsTruncated: aws.Bool(true)}, nil
@@ -70,7 +72,7 @@ func (t *truncatedNoTokenStore) ListObjectsV2(context.Context, *s3.ListObjectsV2
 
 // neverEndingStore always claims truncation with a fresh token, modelling a
 // server that never finishes a listing.
-type neverEndingStore struct{ pagingStore }
+type neverEndingStore struct{ *pagingStore }
 
 func (n *neverEndingStore) ListObjectsV2(context.Context, *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
 	n.calls++
@@ -81,11 +83,11 @@ func (n *neverEndingStore) ListObjectsV2(context.Context, *s3.ListObjectsV2Input
 }
 
 func TestListAll_SinglePage(t *testing.T) {
-	store := &pagingStore{pages: []*s3.ListObjectsV2Output{
+	store := newPagingStore([]*s3.ListObjectsV2Output{
 		{Contents: []*s3.Object{{Key: aws.String("a")}, {Key: aws.String("b")}}},
-	}}
+	})
 
-	contents, prefixes, err := ListAll(context.Background(), store, &s3.ListObjectsV2Input{
+	contents, prefixes, err := objectstore.ListAll(context.Background(), store, &s3.ListObjectsV2Input{
 		Bucket: aws.String("bucket"), Prefix: aws.String("p/"),
 	})
 	require.NoError(t, err)
@@ -99,13 +101,13 @@ func TestListAll_SinglePage(t *testing.T) {
 // A listing larger than one page must follow the continuation token to
 // exhaustion rather than stopping after the first page.
 func TestListAll_MultiPageFollowsContinuationToken(t *testing.T) {
-	store := &pagingStore{pages: []*s3.ListObjectsV2Output{
+	store := newPagingStore([]*s3.ListObjectsV2Output{
 		{Contents: []*s3.Object{{Key: aws.String("a")}, {Key: aws.String("b")}}},
 		{Contents: []*s3.Object{{Key: aws.String("c")}}},
 		{Contents: []*s3.Object{{Key: aws.String("d")}, {Key: aws.String("e")}}},
-	}}
+	})
 
-	contents, _, err := ListAll(context.Background(), store, &s3.ListObjectsV2Input{
+	contents, _, err := objectstore.ListAll(context.Background(), store, &s3.ListObjectsV2Input{
 		Bucket: aws.String("bucket"), Prefix: aws.String("p/"),
 	})
 	require.NoError(t, err)
@@ -121,12 +123,12 @@ func TestListAll_MultiPageFollowsContinuationToken(t *testing.T) {
 // A delimited listing accumulates CommonPrefixes across pages the same way
 // Contents does.
 func TestListAll_MultiPageCommonPrefixes(t *testing.T) {
-	store := &pagingStore{pages: []*s3.ListObjectsV2Output{
+	store := newPagingStore([]*s3.ListObjectsV2Output{
 		{CommonPrefixes: []*s3.CommonPrefix{{Prefix: aws.String("snap-1/")}}},
 		{CommonPrefixes: []*s3.CommonPrefix{{Prefix: aws.String("snap-2/")}}},
-	}}
+	})
 
-	_, prefixes, err := ListAll(context.Background(), store, &s3.ListObjectsV2Input{
+	_, prefixes, err := objectstore.ListAll(context.Background(), store, &s3.ListObjectsV2Input{
 		Bucket: aws.String("bucket"), Prefix: aws.String("snap-"), Delimiter: aws.String("/"),
 	})
 	require.NoError(t, err)
@@ -136,15 +138,15 @@ func TestListAll_MultiPageCommonPrefixes(t *testing.T) {
 }
 
 func TestListAll_ListError(t *testing.T) {
-	store := &erroringStore{err: assert.AnError}
-	_, _, err := ListAll(context.Background(), store, &s3.ListObjectsV2Input{
+	store := &erroringStore{pagingStore: newPagingStore(nil), err: assert.AnError}
+	_, _, err := objectstore.ListAll(context.Background(), store, &s3.ListObjectsV2Input{
 		Bucket: aws.String("bucket"), Prefix: aws.String("p/"),
 	})
 	require.Error(t, err)
 }
 
 type erroringStore struct {
-	pagingStore
+	*pagingStore
 
 	err error
 }
@@ -156,8 +158,8 @@ func (e *erroringStore) ListObjectsV2(context.Context, *s3.ListObjectsV2Input) (
 // Truncation reported with no continuation token to resume from must fail
 // rather than silently returning the partial page it already read.
 func TestListAll_TruncatedWithNoTokenErrors(t *testing.T) {
-	store := &truncatedNoTokenStore{}
-	_, _, err := ListAll(context.Background(), store, &s3.ListObjectsV2Input{
+	store := &truncatedNoTokenStore{pagingStore: newPagingStore(nil)}
+	_, _, err := objectstore.ListAll(context.Background(), store, &s3.ListObjectsV2Input{
 		Bucket: aws.String("bucket"), Prefix: aws.String("p/"),
 	})
 	require.Error(t, err)
@@ -167,11 +169,11 @@ func TestListAll_TruncatedWithNoTokenErrors(t *testing.T) {
 // A store that never stops claiming truncation must fail once the page
 // budget is exhausted rather than looping forever.
 func TestListAll_NeverEndingTruncationErrors(t *testing.T) {
-	store := &neverEndingStore{}
-	_, _, err := ListAll(context.Background(), store, &s3.ListObjectsV2Input{
+	store := &neverEndingStore{pagingStore: newPagingStore(nil)}
+	_, _, err := objectstore.ListAll(context.Background(), store, &s3.ListObjectsV2Input{
 		Bucket: aws.String("bucket"), Prefix: aws.String("p/"),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "did not finish within")
-	assert.Equal(t, maxListPages, store.calls)
+	assert.Equal(t, objectstore.MaxListPages, store.calls)
 }

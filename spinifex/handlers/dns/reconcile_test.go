@@ -46,7 +46,7 @@ func TestComputeConvergeUpsertsPassThroughAndPruneStale(t *testing.T) {
 		existingA("app-old-xyz.ap-southeast-2.elb.", "9.9.9.9"),
 		// A live EKS record still desired → kept (dedup by RRset, not re-deleted).
 		existingA("prod.ap-southeast-2.eks.", "2.2.2.2"),
-		// An EC2 record absent from this node's desired view → must NOT be pruned.
+		// An EC2 record, with no EC2 authority this cycle → must NOT be pruned.
 		existingA("ec2-4-4-4-4.ap-southeast-2.compute.", "4.4.4.4"),
 		// Structural apex NS → never pruned.
 		{label: "", rtype: nsconfig.TypeNS, value: "ns1.spx3.net."},
@@ -65,7 +65,7 @@ func TestComputeConvergeUpsertsPassThroughAndPruneStale(t *testing.T) {
 
 	// EC2 and structural records survive.
 	for _, d := range deletes {
-		assert.NotContains(t, d.Name, ".compute.", "EC2 records are never pruned")
+		assert.NotContains(t, d.Name, ".compute.", "EC2 pruning is suppressed when not enumerated")
 		assert.NotEmpty(t, d.Name, "structural apex records are never pruned")
 	}
 }
@@ -126,7 +126,7 @@ func TestComputeConvergePrunesRDSOnlyWhenEnumerated(t *testing.T) {
 	assert.Equal(t, "dropped-db.111122223333.ap-southeast-2.rds.spx3.net", deletes[0].Name)
 	for _, d := range deletes {
 		assert.NotContains(t, d.Name, ".elb.", "RDS authority does not grant ELB pruning")
-		assert.NotContains(t, d.Name, ".compute.", "EC2 records are never pruned")
+		assert.NotContains(t, d.Name, ".compute.", "EC2 pruning is suppressed when not enumerated")
 	}
 }
 

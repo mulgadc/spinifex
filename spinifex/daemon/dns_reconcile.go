@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
@@ -81,7 +82,10 @@ func (d *Daemon) rdsWatchBuckets(ctx context.Context) ([]*kvstore.Bucket, error)
 // records — the reconcile only ever repairs, never over-prunes, on a partial view.
 func (d *Daemon) dnsDesiredSet() handlers_dns.DesiredSet {
 	ds := handlers_dns.DesiredSet{}
-	ds.Changes = append(ds.Changes, d.desiredEC2DNSChanges()...)
+	if ch, ok := d.desiredEC2DNSChanges(); ok {
+		ds.Changes = append(ds.Changes, ch...)
+		ds.Prunable.EC2 = true
+	}
 
 	if d.elbv2Service != nil {
 		if ch, ok := d.elbv2Service.DesiredDNSChanges(); ok {
@@ -104,29 +108,41 @@ func (d *Daemon) dnsDesiredSet() handlers_dns.DesiredSet {
 	return ds
 }
 
-// desiredEC2DNSChanges returns UPSERTs for this node's running instances. EC2
-// records are node-local — vmMgr holds only this node's VMs — so they are never
-// pruned by the reconcile; the terminate hook owns EC2 record removal. The
-// domains mirror the lifecycle publish so re-asserting is a no-op when in sync.
-func (d *Daemon) desiredEC2DNSChanges() []handlers_dns.Change {
+// desiredEC2DNSChanges returns UPSERTs for every running instance in the
+// cluster, and whether that view was complete. The instance record key space
+// spans all nodes, unlike the vmMgr map it replaces here, which is what lets
+// the reconcile prune a record as well as repair one. The domains mirror the
+// lifecycle publish so re-asserting is a no-op when in sync.
+func (d *Daemon) desiredEC2DNSChanges() ([]handlers_dns.Change, bool) {
+	if d.jsManager == nil {
+		return nil, false
+	}
+	records, err := d.jsManager.ListInstanceRecords()
+	if err != nil {
+		// Reported without changes: a partial instance view is exactly the case
+		// pruning must not run on, and repairing from it would be repairing from
+		// the same partial view.
+		slog.Warn("dns reconcile: instance records unavailable, EC2 records left alone this cycle",
+			"error", err)
+		return nil, false
+	}
+
 	var changes []handlers_dns.Change
-	d.vmMgr.View(func(vms map[string]*vm.VM) {
-		for _, v := range vms {
-			if v == nil || v.Status != vm.StateRunning {
-				continue
-			}
-			privateIP := ""
-			if v.Instance != nil {
-				privateIP = aws.StringValue(v.Instance.PrivateIpAddress)
-			}
-			if v.PublicIP == "" && privateIP == "" {
-				continue
-			}
-			changes = append(changes, handlers_dns.EC2Changes(
-				handlers_dns.ActionUpsert, d.config.Region,
-				d.dnsBaseDomain, d.dnsInternalDomain, v.PublicIP, privateIP,
-			)...)
+	for _, record := range records {
+		if record == nil || record.Status.Status != vm.StateRunning {
+			continue
 		}
-	})
-	return changes
+		privateIP := ""
+		if record.Status.Instance != nil {
+			privateIP = aws.StringValue(record.Status.Instance.PrivateIpAddress)
+		}
+		if record.Status.PublicIP == "" && privateIP == "" {
+			continue
+		}
+		changes = append(changes, handlers_dns.EC2Changes(
+			handlers_dns.ActionUpsert, d.config.Region,
+			d.dnsBaseDomain, d.dnsInternalDomain, record.Status.PublicIP, privateIP,
+		)...)
+	}
+	return changes, true
 }

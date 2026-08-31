@@ -10,17 +10,26 @@ func dashIP(ip string) string {
 	return strings.ReplaceAll(ip, ".", "-")
 }
 
+const (
+	// ec2PublicLabelPrefix and ec2PrivateLabelPrefix open every instance record
+	// name. The reconcile matches on them to recognise a record as an instance
+	// record, so they are defined alongside the names they build.
+	ec2PublicLabelPrefix  = "ec2-"
+	ec2PrivateLabelPrefix = "ip-"
+)
+
 // EC2PublicName is the public AWS-shaped name for an instance:
 // ec2-{dashed-public-ip}.{region}.compute.{baseDomain}.
 func EC2PublicName(publicIP, region, baseDomain string) string {
-	return fmt.Sprintf("ec2-%s.%s.compute.%s", dashIP(publicIP), region, baseDomain)
+	return fmt.Sprintf("%s%s.%s.compute.%s", ec2PublicLabelPrefix, dashIP(publicIP), region, baseDomain)
 }
 
 // EC2PrivateName is the private AWS-parity name for an instance:
 // ip-{dashed-private-ip}.{region}.{internalDomain} (IMDS synthHostname). The
 // internal domain defaults to PrivateZone when empty.
 func EC2PrivateName(privateIP, region, internalDomain string) string {
-	return fmt.Sprintf("ip-%s.%s.%s", dashIP(privateIP), region, privateZoneOrDefault(internalDomain))
+	return fmt.Sprintf("%s%s.%s.%s", ec2PrivateLabelPrefix, dashIP(privateIP), region,
+		privateZoneOrDefault(internalDomain))
 }
 
 // EC2DNSNames returns the public and private AWS-shaped DNS names for an

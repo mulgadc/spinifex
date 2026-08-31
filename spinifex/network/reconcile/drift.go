@@ -6,17 +6,24 @@ import (
 	"log/slog"
 	"time"
 
+	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
+	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
+	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
+	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	loop "github.com/mulgadc/spinifex/spinifex/reconciler"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// DriftInterval is the gap between drift passes. Var (not const) so
-// integration tests can shrink it.
+// DriftInterval is the resync backstop between drift passes when nothing
+// changes. Var (not const) so integration tests can shrink it.
 var DriftInterval = 5 * time.Minute
 
-// driftBackoffBase is the requeue gap after the first incomplete pass. Var so
-// tests can shrink it.
+// driftBackoffBase is the requeue gap after the first incomplete pass, and the
+// floor on how often a change may drive a pass. Var so tests can shrink it.
 var driftBackoffBase = 5 * time.Second
 
 // driftBackoffFactor grows the requeue gap per consecutive incomplete pass, up
@@ -25,14 +32,50 @@ var driftBackoffBase = 5 * time.Second
 // of a VPC having no external gateway.
 const driftBackoffFactor = 3
 
-// DriftLoop runs Reconcile every DriftInterval, gated on AcquireLeader so
-// only one vpcd scans at a time. An incomplete pass requeues on a short
-// backoff instead. Returns when ctx is cancelled.
+// intentBuckets names every KV bucket LoadIntentFromKV reads. A write to one of
+// them is an intent change and nothing else: none of their writers is periodic,
+// and a pass writes OVN rather than KV, so watching them cannot self-trigger.
+var intentBuckets = []string{
+	handlers_ec2_vpc.KVBucketVPCs,
+	handlers_ec2_vpc.KVBucketSubnets,
+	handlers_ec2_vpc.KVBucketSecurityGroups,
+	handlers_ec2_vpc.KVBucketENIs,
+	handlers_ec2_igw.KVBucketIGW,
+	handlers_ec2_eip.KVBucketEIPs,
+	handlers_ec2_routetable.KVBucketRouteTables,
+	handlers_ec2_natgw.KVBucketNatGateways,
+}
+
+// intentSource watches the intent buckets. Enumerated rather than fixed so a
+// bucket that does not exist yet is left alone: the EC2 handlers own these and
+// set their history depth, and an opening watch would create one at the wrong
+// depth. A bucket that appears later is picked up on the next resync.
+func intentSource(js jetstream.JetStream) loop.Source {
+	return loop.Dynamic(func(ctx context.Context) ([]*kvstore.Bucket, error) {
+		buckets := make([]*kvstore.Bucket, 0, len(intentBuckets))
+		for _, name := range intentBuckets {
+			kv, err := js.KeyValue(ctx, name)
+			if err != nil {
+				slog.DebugContext(ctx, "reconcile/drift: intent bucket not available, skipping",
+					"bucket", name, "err", err)
+				continue
+			}
+			// js is passed so a watcher whose stream was lost can reconnect;
+			// RecreateIfMissing stays false so that reconnect never creates.
+			buckets = append(buckets, kvstore.NewOpenBucket(js, kv, kvstore.Config{Name: name}))
+		}
+		return buckets, nil
+	}, ">")
+}
+
+// DriftLoop reconciles on every intent change and every DriftInterval, gated on
+// AcquireLeader so only one vpcd scans at a time. An incomplete pass asks to be
+// revisited on a short backoff instead. Returns when ctx is cancelled.
 //
 // startup is the outcome of the bootstrap ReconcileApplyOnly pass, or nil when
-// this node did not run one. Seeding from it matters because the gateway LRP's
-// first DORA happens in that pass: without the seed a resource that failed
-// before the loop started waits a full DriftInterval for its first retry.
+// this node did not run one. It seeds the first deadline rather than triggering
+// a pass: that bootstrap pass is the startup scan, and running a second one here
+// would duplicate it and pull a scan forward on every clean boot.
 func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, localAZ, holder string, startup error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -40,30 +83,51 @@ func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, localAZ, hold
 		return
 	}
 
-	backoff := nextDriftBackoff(0, startup)
-	timer := time.NewTimer(driftWait(backoff))
-	defer timer.Stop()
+	loop.Run(ctx, loop.Config{
+		Name:      "vpcd/drift",
+		Sources:   []loop.Source{intentSource(js)},
+		Reconcile: driftPass(rec, nc, js, localAZ, holder, startup),
+		Resync:    DriftInterval,
+	})
+}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-			previous := backoff
-			backoff = nextDriftBackoff(backoff, runDriftCycle(ctx, rec, nc, js, localAZ, holder))
-			wait := driftWait(backoff)
-			if backoff != previous {
-				slog.Info("reconcile/drift: requeue interval changed", "wait_ms", otelsetup.Millis(wait))
-			}
-			timer.Reset(wait)
+// driftPass returns the reconcile pass, closing over the backoff ladder and the
+// last pass time. Run never calls it concurrently with itself, which is why
+// neither needs a lock.
+func driftPass(rec Reconciler, nc *nats.Conn, js jetstream.JetStream, localAZ, holder string, startup error) func(context.Context) (time.Duration, error) {
+	var backoff time.Duration
+	var lastPass time.Time
+	seeded := false
+
+	return func(ctx context.Context) (time.Duration, error) {
+		if !seeded {
+			seeded = true
+			backoff = nextDriftBackoff(0, startup)
+			return backoff, nil
 		}
+		// A change-driven pass is a repair check, not the apply path: the event
+		// subscriber has already applied the change, so coalescing a burst behind
+		// the floor the ladder starts at costs a scan nothing it would have
+		// found. Without it a launch storm scans continuously.
+		if wait := time.Until(lastPass.Add(driftBackoffBase)); wait > 0 {
+			return wait, nil
+		}
+		lastPass = time.Now()
+		previous := backoff
+		backoff = nextDriftBackoff(backoff, runDriftCycle(ctx, rec, nc, js, localAZ, holder))
+		if backoff != previous {
+			slog.Info("reconcile/drift: requeue interval changed", "backoff_ms", otelsetup.Millis(backoff))
+		}
+		// The outcome is logged by the cycle, and an unconverged pass is a change
+		// of schedule rather than a failure of the loop.
+		return backoff, nil
 	}
 }
 
 // nextDriftBackoff returns the requeue backoff after a pass: zero once a pass
 // converges, otherwise the previous backoff tripled from driftBackoffBase and
-// held at DriftInterval. Tracked separately from the wait it produces, so a
-// backoff sitting at the cap is not mistaken for a converged loop and reset.
+// held at DriftInterval. Zero means no deadline, leaving a converged loop to the
+// resync rather than asking for a revisit it does not need.
 func nextDriftBackoff(current time.Duration, err error) time.Duration {
 	if !errors.Is(err, ErrPassIncomplete) {
 		return 0
@@ -75,16 +139,7 @@ func nextDriftBackoff(current time.Duration, err error) time.Duration {
 	return min(next, DriftInterval)
 }
 
-// driftWait is the gap before the next pass for a backoff; no backoff means a
-// full DriftInterval.
-func driftWait(backoff time.Duration) time.Duration {
-	if backoff <= 0 {
-		return DriftInterval
-	}
-	return backoff
-}
-
-// runDriftCycle is one tick body, split out so tests can drive it directly.
+// runDriftCycle is one pass body, split out so tests can drive it directly.
 // Returns the reconcile outcome so the caller can size the next wait; a cycle
 // this node did not win the election for returns nil.
 func runDriftCycle(ctx context.Context, rec Reconciler, nc *nats.Conn, js jetstream.JetStream, localAZ, holder string) error {

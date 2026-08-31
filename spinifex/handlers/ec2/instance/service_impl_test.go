@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1574,8 +1575,9 @@ func (f *fakeVolumeDeleter) DetachVolumeOnTerminate(_ context.Context, volumeID,
 }
 
 type fakeENIDeleter struct {
-	calls []string
-	err   error
+	calls  []string
+	forced []bool // force flag per DetachAndDeleteENI call
+	err    error
 }
 
 func (f *fakeENIDeleter) DeleteNetworkInterface(_ context.Context, input *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
@@ -1586,10 +1588,24 @@ func (f *fakeENIDeleter) DeleteNetworkInterface(_ context.Context, input *ec2.De
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
 }
 
+// DetachAndDeleteENI records into the same calls slice as the plain delete:
+// callers assert which ENIs were released, not which entry point did it.
+// forced records the force flag per call so the owner-teardown contract is
+// assertable.
+func (f *fakeENIDeleter) DetachAndDeleteENI(_ context.Context, _, eniID string, force bool) (bool, error) {
+	f.calls = append(f.calls, eniID)
+	f.forced = append(f.forced, force)
+	if f.err != nil {
+		return false, f.err
+	}
+	return true, nil
+}
+
 type fakePublicIPReleaser struct {
 	pool     string
 	ip       string
 	ownerENI string
+	released []string // every address released, in call order
 	err      error
 }
 
@@ -1597,6 +1613,7 @@ func (f *fakePublicIPReleaser) ReleaseIP(_ context.Context, pool, ip, ownerENIID
 	f.pool = pool
 	f.ip = ip
 	f.ownerENI = ownerENIID
+	f.released = append(f.released, ip)
 	return f.err
 }
 
@@ -2984,14 +3001,17 @@ type fakeENICreator struct {
 	getENIByID      map[string]*ENIInfo
 	getENIErr       error
 	createOut       *ec2.CreateNetworkInterfaceOutput
+	createOuts      []*ec2.CreateNetworkInterfaceOutput // per-call outputs; overrides createOut when set
 	createCalls     int
 	createErr       error
 	createErrOnCall int // 1-based call index to fail; 0 fails every call when createErr is set
 	attachErr       error
+	attachErrOnCall int // 1-based call index to fail; 0 fails every call when attachErr is set
 	attachCalls     int
 	updateCalls     int
 	clearCalls      int // updateCalls where publicIP is ""
 	detachCalls     int
+	detached        []string
 	detachErr       error                // returned by every DetachENI call when set
 	instanceENIs    map[string][]ENIInfo // keyed by instanceID, for ListInstanceENIs
 	listENIsErr     error
@@ -3030,19 +3050,23 @@ func (f *fakeENICreator) CreateNetworkInterface(_ context.Context, _ *ec2.Create
 	if f.createErr != nil && (f.createErrOnCall == 0 || f.createErrOnCall == f.createCalls) {
 		return nil, f.createErr
 	}
+	if len(f.createOuts) > 0 {
+		return f.createOuts[min(f.createCalls, len(f.createOuts))-1], nil
+	}
 	return f.createOut, nil
 }
 
 func (f *fakeENICreator) AttachENI(_ context.Context, _, _, _ string, _ int64) (string, error) {
 	f.attachCalls++
-	if f.attachErr != nil {
+	if f.attachErr != nil && (f.attachErrOnCall == 0 || f.attachErrOnCall == f.attachCalls) {
 		return "", f.attachErr
 	}
 	return "attached", nil
 }
 
-func (f *fakeENICreator) DetachENI(_ context.Context, _, _ string) error {
+func (f *fakeENICreator) DetachENI(_ context.Context, _, eniID string) error {
 	f.detachCalls++
+	f.detached = append(f.detached, eniID)
 	return f.detachErr
 }
 
@@ -3062,14 +3086,20 @@ func (f *fakeENICreator) ListInstanceENIs(_ context.Context, _, instanceID strin
 }
 
 type fakeIPAllocator struct {
-	publicIP string
-	poolName string
-	err      error
+	publicIP  string
+	publicIPs []string // per-call addresses; overrides publicIP when set
+	calls     int
+	poolName  string
+	err       error
 }
 
 func (f *fakeIPAllocator) AllocateIP(_ context.Context, _, _, _, _, _, _ string) (string, string, error) {
+	f.calls++
 	if f.err != nil {
 		return "", "", f.err
+	}
+	if len(f.publicIPs) > 0 {
+		return f.publicIPs[min(f.calls, len(f.publicIPs))-1], f.poolName, nil
 	}
 	return f.publicIP, f.poolName, nil
 }
@@ -3229,9 +3259,10 @@ func TestPrepareRunInstances_PublicIPWithoutAllocator(t *testing.T) {
 			require.Error(t, err, "a public-IP launch with no allocator must fail, not boot an instance with no public address")
 			assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, err.Error())
 			assert.Empty(t, instances)
-			assert.Equal(t, 1, eni.detachCalls, "ENI must be detached before delete")
 			assert.Equal(t, []string{"eni-no-ipam"}, deleter.calls,
 				"the auto-created ENI must be deleted, otherwise it strands and blocks security group deletion")
+			assert.Equal(t, []bool{true}, deleter.forced, "the launch owns the ENI, so its teardown must force past the in-use guard")
+			assert.Zero(t, eni.detachCalls, "the detach belongs inside the atomic delete, not as a separate read")
 			assert.Len(t, prov.deallocated, 1, "capacity must be returned when the launch aborts")
 		})
 	}
@@ -3307,11 +3338,14 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	assert.Equal(t, 2, eni.updateCalls, "ENI public IP should be set once, then cleared on rollback")
 	assert.Equal(t, 1, eni.clearCalls, "ENI rollback should call UpdateENIPublicIP with empty publicIP")
 
-	// ENI itself must be detached + deleted; otherwise the dropped instance
-	// leaks an eniKV record (vmMgr.Insert never runs, so terminateCleanup
-	// never fires) and the subnet exhausts private IPs under vpcd brown-out.
-	assert.Equal(t, 1, eni.detachCalls, "rollback must detach the ENI before delete")
+	// ENI itself must go; otherwise the dropped instance leaks an eniKV record
+	// (vmMgr.Insert never runs, so terminateCleanup never fires) and the subnet
+	// exhausts private IPs under vpcd brown-out. Detach and delete travel
+	// together under one read — a separate detach lets a lagging replica serve
+	// the delete a pre-detach record and reject it as in-use.
 	assert.Equal(t, []string{"eni-nat-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
+	assert.Equal(t, []bool{true}, deleter.forced, "the launch owns the ENI, so its teardown must force past the in-use guard")
+	assert.Zero(t, eni.detachCalls, "the detach belongs inside the atomic delete, not as a separate read")
 
 	// Capacity deallocated so subsequent launches can use the slot.
 	require.Len(t, prov.deallocated, 1, "NAT failure must trigger Deallocate")
@@ -3329,6 +3363,174 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("rollback must publish vpc.delete-nat to neutralise a half-committed rule")
 	}
+}
+
+// TestPrepareRunInstances_PartialLaunchReleasesSucceededInstances covers the
+// batch that falls short of MinCount: the instances that *succeeded* are
+// abandoned too, so their ENIs, NAT rules and external addresses have to go
+// back. Leaving them is what wedged an account in TERMINATING, since an
+// orphaned ENI pins its subnet and VPC undeletable.
+func TestPrepareRunInstances_PartialLaunchReleasesSucceededInstances(t *testing.T) {
+	eni := &fakeENICreator{
+		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
+		createOuts: []*ec2.CreateNetworkInterfaceOutput{
+			{NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-ok"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:01"),
+				PrivateIpAddress:   aws.String("10.0.0.51"),
+				VpcId:              aws.String("vpc-1"),
+			}},
+			{NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-fail"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:02"),
+				PrivateIpAddress:   aws.String("10.0.0.52"),
+				VpcId:              aws.String("vpc-1"),
+			}},
+		},
+	}
+	ipam := &fakeIPAllocator{publicIPs: []string{"203.0.113.20", "203.0.113.21"}, poolName: "wan"}
+	releaser := &fakePublicIPReleaser{}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, ipam)
+	svc.ipReleaser = releaser
+	svc.eniDeleter = deleter
+
+	// vpcd acks the first instance's rule and times out on the second, which
+	// is the production shape: one instance fully built, the batch short.
+	var addNATCalls atomic.Int32
+	sub, err := svc.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+		if addNATCalls.Add(1) == 1 {
+			_ = msg.Respond([]byte(`{"success":true}`))
+			return
+		}
+		_ = msg.Respond([]byte(`{"success":false,"error":"northd unavailable"}`))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	deleteNATCh := make(chan natWirePayload, 2)
+	delSub, err := svc.natsConn.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		var p natWirePayload
+		_ = json.Unmarshal(msg.Data, &p)
+		select {
+		case deleteNATCh <- p:
+		default:
+		}
+	})
+	require.NoError(t, err)
+	defer func() { _ = delSub.Unsubscribe() }()
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, instances)
+
+	// Both interfaces gone: eni-fail by the in-loop NAT rollback, eni-ok by
+	// the MinCount rollback that used to release nothing but capacity.
+	assert.ElementsMatch(t, []string{"eni-ok", "eni-fail"}, deleter.calls,
+		"the succeeded instance's ENI must be deleted alongside the failed one")
+	assert.Equal(t, []bool{true, true}, deleter.forced,
+		"each teardown must force past the in-use guard — the launch owns both interfaces")
+	assert.Zero(t, eni.detachCalls,
+		"detach must travel with the delete under one read, not as a separate call a replica can race")
+	assert.ElementsMatch(t, []string{"203.0.113.20", "203.0.113.21"}, releaser.released,
+		"both external addresses must return to the pool")
+	assert.Len(t, prov.deallocated, 2, "both capacity slots must be returned")
+
+	// The succeeded instance's NAT rule was committed, so it must be
+	// withdrawn — otherwise it routes traffic for the next tenant that
+	// takes the released address.
+	var deletedNATIPs []string
+	for range 2 {
+		select {
+		case got := <-deleteNATCh:
+			deletedNATIPs = append(deletedNATIPs, got.ExternalIP)
+		case <-time.After(time.Second):
+			t.Fatal("rollback must publish vpc.delete-nat for every address it releases")
+		}
+	}
+	assert.ElementsMatch(t, []string{"203.0.113.20", "203.0.113.21"}, deletedNATIPs)
+}
+
+// TestPrepareRunInstances_PartialLaunchKeepsCallerSuppliedENI checks the EKS
+// launcher's path: an ENI created outside the launch is detached when the batch
+// is abandoned, never deleted, matching DeleteOnTermination=false.
+func TestPrepareRunInstances_PartialLaunchKeepsCallerSuppliedENI(t *testing.T) {
+	eni := &fakeENICreator{
+		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1"},
+		getENIByID: map[string]*ENIInfo{
+			"eni-customer": {
+				NetworkInterfaceID: "eni-customer",
+				SubnetID:           "subnet-1",
+				VpcID:              "vpc-1",
+				PrivateIpAddress:   "10.0.0.60",
+				MacAddress:         "aa:bb:cc:dd:ee:03",
+				Status:             "available",
+			},
+		},
+		// The second attach fails, dropping the batch below MinCount.
+		attachErr:       errors.New("attach failed"),
+		attachErrOnCall: 2,
+	}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+	svc.eniDeleter = deleter
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{
+			{NetworkInterfaceId: aws.String("eni-customer")},
+		},
+	}, "acc", "")
+
+	require.Error(t, err)
+	assert.Empty(t, instances)
+	assert.Equal(t, []string{"eni-customer"}, eni.detached, "an abandoned launch must release its attachment")
+	assert.Empty(t, deleter.calls, "an ENI the launch did not create must survive the rollback")
+	assert.Len(t, prov.deallocated, 2, "both capacity slots must be returned")
+}
+
+// TestPrepareRunInstances_SuccessRollsBackNothing guards the other direction:
+// a batch that meets MinCount must not touch the interfaces it just built.
+func TestPrepareRunInstances_SuccessRollsBackNothing(t *testing.T) {
+	eni := &fakeENICreator{
+		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1"},
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-live"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:04"),
+				PrivateIpAddress:   aws.String("10.0.0.70"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+	svc.eniDeleter = deleter
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "")
+
+	require.NoError(t, err)
+	require.Len(t, instances, 2)
+	assert.Empty(t, eni.detached, "a launch that met MinCount must not detach anything")
+	assert.Empty(t, deleter.calls, "a launch that met MinCount must not delete anything")
+	assert.Empty(t, prov.deallocated, "a launch that met MinCount must keep its capacity")
 }
 
 // TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch verifies that a
@@ -3386,10 +3588,13 @@ func TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch(t *testing.T) {
 				"the code must be resolved from the allocator's cause, not asserted by the caller")
 			assert.Empty(t, instances, "instance with no public IP must not be returned")
 
-			// The ENI is attached with a primary IP; rollback must detach before
-			// delete (in-use ENIs reject deletion) so no eniKV record leaks.
-			assert.Equal(t, 1, eni.detachCalls, "rollback must detach the ENI before delete")
+			// The ENI is attached with a primary IP, so the rollback must clear
+			// the attachment and the record together under one read — in-use
+			// ENIs reject deletion, and a separate detach lets a lagging
+			// replica serve the delete a pre-detach record.
 			assert.Equal(t, []string{"eni-pubip-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
+			assert.Equal(t, []bool{true}, deleter.forced, "the launch owns the ENI, so its teardown must force past the in-use guard")
+			assert.Zero(t, eni.detachCalls, "the detach belongs inside the atomic delete, not as a separate read")
 			assert.Equal(t, 0, eni.updateCalls, "no public IP was allocated, so the ENI must never be updated with one")
 
 			require.Len(t, prov.deallocated, 1, "public-IP allocation failure must trigger Deallocate")

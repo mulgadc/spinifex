@@ -101,6 +101,18 @@ func eniIDFromPort(lspName string) string {
 	return strings.TrimPrefix(lspName, "port-")
 }
 
+// reloadForPrune re-reads intent for an orphan sweep to compare against. Every
+// sweep matches live OVN rows against the start-of-pass snapshot, which the apply
+// phase can leave tens of seconds behind KV, so a resource created mid-pass looks
+// orphaned. Callers union the result into their keep set and skip the sweep on
+// error. A zero IntentState when no loader is wired unions nothing.
+func (r *reconciler) reloadForPrune(ctx context.Context) (IntentState, error) {
+	if r.reloadIntent == nil {
+		return IntentState{}, nil
+	}
+	return r.reloadIntent(ctx)
+}
+
 // applyVPCs ensures every intent VPC has a LogicalRouter. Stray OVN-only
 // routers are left alone.
 func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual ActualState, res *passResult) {
@@ -251,8 +263,21 @@ func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual Ac
 		return
 	}
 
-	wantPGs := make(map[string]struct{}, len(intent.SGs))
+	// An SG created after this pass snapshotted its intent is live but absent from
+	// that snapshot, and sweeping its port group breaks every later ENI create in
+	// the VPC. Union a re-read into the keep set; skip the sweep if it fails.
+	fresh, err := r.reloadForPrune(ctx)
+	if err != nil {
+		slog.Warn("reconcile/apply: fresh intent re-read failed; skipping orphan port group prune", "err", err)
+		res.fail(classSG, "orphan-prune", err)
+		return
+	}
+
+	wantPGs := make(map[string]struct{}, len(intent.SGs)+len(fresh.SGs))
 	for groupID := range intent.SGs {
+		wantPGs[topology.SecurityGroupPortGroup(groupID)] = struct{}{}
+	}
+	for groupID := range fresh.SGs {
 		wantPGs[topology.SecurityGroupPortGroup(groupID)] = struct{}{}
 	}
 	for pgName := range actual.PortGroups {
@@ -363,7 +388,17 @@ func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual 
 // intent ENI, closing the create-only gap that leaks ports across instance
 // terminate and host reinstall. DeletePort clears PG memberships then removes
 // the LSP (composed cascade).
+//
+// The listing is live but intent is the start-of-pass snapshot, so an ENI created
+// mid-pass looks orphaned against it. Re-read intent and union its ports into the
+// keep set, skipping the sweep when the re-read fails.
 func (r *reconciler) pruneOrphanPorts(ctx context.Context, intent IntentState, res *passResult) {
+	fresh, err := r.reloadForPrune(ctx)
+	if err != nil {
+		slog.Warn("reconcile/apply: fresh intent re-read failed; skipping orphan ENI port prune", "err", err)
+		res.fail(classPort, "orphan-prune", err)
+		return
+	}
 	lsps, err := r.ovn.ListLogicalSwitchPorts(ctx)
 	if err != nil {
 		slog.Warn("reconcile/apply: list LSPs for orphan prune failed", "err", err)
@@ -376,6 +411,9 @@ func (r *reconciler) pruneOrphanPorts(ctx context.Context, intent IntentState, r
 			continue
 		}
 		if _, ok := intent.Ports[eniID]; ok {
+			continue
+		}
+		if _, ok := fresh.Ports[eniID]; ok {
 			continue
 		}
 		spec := topology.PortSpec{PortID: eniID, SubnetID: lsps[i].ExternalIDs["spinifex:subnet_id"]}
@@ -656,15 +694,13 @@ func (r *reconciler) floatingIPSpecs(intent IntentState) []policy.EIPSpec {
 func (r *reconciler) pruneOrphanEIPs(ctx context.Context, intent IntentState, res *passResult) {
 	live := make(map[string]struct{}, len(intent.Ports)+len(intent.EIPs))
 	addLivePorts(live, intent)
-	if r.reloadIntent != nil {
-		fresh, err := r.reloadIntent(ctx)
-		if err != nil {
-			slog.Warn("reconcile/apply: fresh intent re-read failed; skipping orphan EIP prune", "err", err)
-			res.fail(classEIP, "orphan-prune", err)
-			return
-		}
-		addLivePorts(live, fresh)
+	fresh, err := r.reloadForPrune(ctx)
+	if err != nil {
+		slog.Warn("reconcile/apply: fresh intent re-read failed; skipping orphan EIP prune", "err", err)
+		res.fail(classEIP, "orphan-prune", err)
+		return
 	}
+	addLivePorts(live, fresh)
 	if pruned, err := r.nat.PruneOrphanEIPs(ctx, live); err != nil {
 		slog.Warn("reconcile/apply: orphan EIP prune failed", "err", err)
 		res.fail(classEIP, "orphan-prune", err)

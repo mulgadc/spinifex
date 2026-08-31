@@ -52,6 +52,64 @@ func TestReconcileOnce_ASettledInstanceAsksForItsHeartbeatDeadline(t *testing.T)
 	assert.LessOrEqual(t, revisit, settledHeartbeatBound)
 }
 
+// The window between a beat expiring and the instance being called failed is
+// where the whole detector lives, and nothing writes to KV during it. Returning
+// no deadline here left the pass that does the failing with nothing to schedule
+// it, so a dead database waited for the resync — slower than the ticker it
+// replaced, and the exact regression this design exists to avoid.
+func TestReconcileOnce_ADarkInstanceAsksForItsFailureGrace(t *testing.T) {
+	t.Parallel()
+	h := newReconcileHarness(t)
+	rec := healthyRecord()
+	rec.Status = StatusAvailable
+	stale := time.Now().UTC().Add(-2 * settledHeartbeatBound)
+	rec.Agent.LastSeen = &stale
+	seedInstance(t, h.svc, rec)
+
+	revisit, err := h.rec.reconcileOnce(t.Context())
+	require.NoError(t, err)
+
+	assert.Positive(t, revisit, "an expired beat must not read as nothing left to wait for")
+	assert.LessOrEqual(t, revisit, h.svc.failureGrace())
+}
+
+// Partway through the grace window the deadline is what remains of it, not the
+// whole window again — otherwise each pass would push the failure further out.
+func TestReconcileOnce_AFailureClockAlreadyRunningAsksForWhatIsLeftOfIt(t *testing.T) {
+	t.Parallel()
+	h := newReconcileHarness(t)
+	rec := healthyRecord()
+	rec.Status = StatusAvailable
+	stale := time.Now().UTC().Add(-2 * settledHeartbeatBound)
+	rec.Agent.LastSeen = &stale
+	started := time.Now().UTC().Add(-h.svc.failureGrace() / 2)
+	rec.UnhealthySince = &started
+	seedInstance(t, h.svc, rec)
+
+	revisit, err := h.rec.reconcileOnce(t.Context())
+	require.NoError(t, err)
+
+	assert.Positive(t, revisit)
+	assert.LessOrEqual(t, revisit, h.svc.failureGrace()/2)
+}
+
+// A failed instance has no clock left to run. Recovery is a heartbeat, which is
+// a KV write the watch already delivers.
+func TestReconcileOnce_AFailedInstanceAsksForNoDeadline(t *testing.T) {
+	t.Parallel()
+	h := newReconcileHarness(t)
+	rec := healthyRecord()
+	rec.Status = StatusFailed
+	stale := time.Now().UTC().Add(-2 * settledHeartbeatBound)
+	rec.Agent.LastSeen = &stale
+	seedInstance(t, h.svc, rec)
+
+	revisit, err := h.rec.reconcileOnce(t.Context())
+	require.NoError(t, err)
+
+	assert.Zero(t, revisit)
+}
+
 // The earliest across the fleet is the one that matters: one instance mid-create
 // sets the pace for the pass regardless of how many settled ones sit beside it.
 func TestReconcileOnce_TheEarliestDeadlineAcrossTheFleetWins(t *testing.T) {

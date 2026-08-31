@@ -295,15 +295,52 @@ func (r *Reconciler) revisitFor(accountID string, rec *DBInstanceRecord) time.Du
 	case StatusCreating, StatusRebooting, StatusStarting, StatusModifying,
 		StatusStopping, StatusDeleting, StatusBackingUp:
 		return reconcileInterval
-	case StatusAvailable, StatusFailed:
-		lastSeen, bound := r.lastHeartbeat(accountID, rec)
-		if lastSeen.IsZero() {
-			return 0
-		}
-		return time.Until(lastSeen.Add(bound))
+	case StatusFailed:
+		// Terminal for the control plane, and recovery arrives as a heartbeat,
+		// which is a write the watch already sees.
+		return 0
+	case StatusAvailable:
+		return r.settledRevisit(accountID, rec)
 	default:
 		return 0
 	}
+}
+
+// The deadline for an available instance, which is whichever of its two clocks
+// runs out first.
+//
+// Before the beat expires, that is the expiry itself. After it, the failure
+// clock is what decides: the instance is dark but stays available until the
+// grace window passes and a later pass agrees it is still dark. Returning
+// nothing here was wrong — it left the pass that does the failing with nothing
+// to schedule it, so a dead database waited for the resync.
+func (r *Reconciler) settledRevisit(accountID string, rec *DBInstanceRecord) time.Duration {
+	lastSeen, bound := r.lastHeartbeat(accountID, rec)
+	if lastSeen.IsZero() {
+		// Never reported at all, so there is no beat to expire and the failure
+		// clock is the only one running.
+		return r.failureRevisit(rec)
+	}
+	if expiry := time.Until(lastSeen.Add(bound)); expiry > 0 {
+		return expiry
+	}
+	return r.failureRevisit(rec)
+}
+
+// How long until the failure grace window closes. An unstamped clock is stamped
+// by the pass that just ran, so the window starts from here.
+func (r *Reconciler) failureRevisit(rec *DBInstanceRecord) time.Duration {
+	grace := r.svc.failureGrace()
+	if rec.UnhealthySince == nil {
+		return grace
+	}
+	if remaining := time.Until(rec.UnhealthySince.Add(grace)); remaining > 0 {
+		return remaining
+	}
+	// Already due and still not failed, which is the degraded reading: dark agent,
+	// live VM. Nothing has changed, so retry at the old interval rather than
+	// immediately, which would spin for as long as the condition holds.
+	return reconcileInterval
 }
 
 // Moves a system NIC launched before the RDS system security group existed onto

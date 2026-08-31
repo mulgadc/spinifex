@@ -795,6 +795,25 @@ type AccountENI struct {
 // the residue of a launch that died in between. Such a record keeps its
 // security group undeletable forever, since the SG dependency check counts it.
 func (s *VPCServiceImpl) ListAbandonedInstanceENIs(ctx context.Context, minAge time.Duration) ([]AccountENI, error) {
+	return s.scanENIs(ctx, func(record *ENIRecord) bool {
+		return eniIsAbandonedLaunch(record, minAge)
+	})
+}
+
+// ListAttachedInstanceENIs returns every ENI older than minAge that still names
+// an instance. The caller decides which of them are stale by asking whether the
+// instance still exists; this only narrows the bucket to the records where that
+// question is worth asking.
+func (s *VPCServiceImpl) ListAttachedInstanceENIs(ctx context.Context, minAge time.Duration) ([]AccountENI, error) {
+	return s.scanENIs(ctx, func(record *ENIRecord) bool {
+		return eniNamesInstance(record, minAge)
+	})
+}
+
+// scanENIs walks every account's ENI records and returns those match accepts.
+// An unreadable or undecodable record is skipped: one bad entry must not stop a
+// cluster-wide sweep.
+func (s *VPCServiceImpl) scanENIs(ctx context.Context, match func(*ENIRecord) bool) ([]AccountENI, error) {
 	keys, err := s.eniKV.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
@@ -820,7 +839,7 @@ func (s *VPCServiceImpl) ListAbandonedInstanceENIs(ctx context.Context, minAge t
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
 			continue
 		}
-		if !eniIsAbandonedLaunch(&record, minAge) {
+		if !match(&record) {
 			continue
 		}
 		out = append(out, AccountENI{AccountID: accountID, Record: record})
@@ -836,6 +855,20 @@ func eniIsAbandonedLaunch(record *ENIRecord, minAge time.Duration) bool {
 		return false
 	}
 	if record.InstanceId != "" || record.AttachmentId != "" || record.Status == "in-use" {
+		return false
+	}
+	if record.CreatedAt.IsZero() {
+		return false
+	}
+	return time.Since(record.CreatedAt) >= minAge
+}
+
+// eniNamesInstance reports whether a record claims an instance and is old enough
+// that a launch could no longer still be wiring it up. A zero CreatedAt is
+// excluded for the same reason it is in eniIsAbandonedLaunch: age is the only
+// guard against acting on an ENI a launch is still using.
+func eniNamesInstance(record *ENIRecord, minAge time.Duration) bool {
+	if record.InstanceId == "" {
 		return false
 	}
 	if record.CreatedAt.IsZero() {

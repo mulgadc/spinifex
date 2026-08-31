@@ -816,6 +816,7 @@ func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
 
 	var primaryErr error
 	if instance.ENIId != "" {
+		a.disassociateENIEIP(instance.AccountID, instance.ENIId)
 		// force=true bypasses the in-use guard for the owning instance,
 		// breaking the un-terminable-ENI deadlock (ADR-0003 §2). One call
 		// carries the detach's revision into the delete, so a lagging KV
@@ -867,6 +868,7 @@ func (a *instanceCleanerAdapter) releaseAttachedENIs(instance *vm.VM) {
 			continue
 		}
 
+		a.disassociateENIEIP(instance.AccountID, eniId)
 		// One call carries the detach's revision into the delete so a
 		// lagging KV replica can never decide the outcome (mirrors the
 		// primary ENI path above).
@@ -883,6 +885,30 @@ func (a *instanceCleanerAdapter) releaseAttachedENIs(instance *vm.VM) {
 			slog.Info("Attached ENI already absent on termination",
 				"eni", eniId, "instanceId", instance.ID)
 		}
+	}
+}
+
+// disassociateENIEIP releases any Elastic IP associated with an ENI that is
+// about to be deleted. Nothing else did: the ENI delete deliberately leaves an
+// EIP-owned public address alone, since the allocation outlives the interface,
+// but the association is the interface's and has to go with it. Left behind, the
+// EIP record stays "associated" and the network reconciler keeps re-asserting a
+// NAT rule for a guest that no longer exists.
+//
+// Best-effort and idempotent: a failure is logged, the ENI delete proceeds, and
+// the cluster-wide ENI orphan sweep retries it.
+func (a *instanceCleanerAdapter) disassociateENIEIP(accountID, eniID string) {
+	eip, ok := a.d.eipService.(eipDisassociator)
+	if !ok {
+		return
+	}
+	found, err := eip.DisassociateByENI(context.Background(), accountID, eniID)
+	if err != nil {
+		slog.Warn("Failed to disassociate EIP on termination", "eni", eniID, "accountId", accountID, "err", err)
+		return
+	}
+	if found {
+		slog.Info("Disassociated EIP on termination", "eni", eniID, "accountId", accountID)
 	}
 }
 

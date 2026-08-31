@@ -120,9 +120,11 @@ func driftPass(rec Reconciler, nc *nats.Conn, js jetstream.JetStream, localAZ, h
 		if wait := time.Until(lastPass.Add(driftBackoffBase)); wait > 0 {
 			return wait, nil
 		}
-		lastPass = time.Now()
 		previous := backoff
 		backoff = nextDriftBackoff(backoff, runDriftCycle(ctx, rec, nc, js, localAZ, holder))
+		// Stamped after the scan, not before: the floor is a gap between passes,
+		// and a pass slower than the floor would otherwise leave none at all.
+		lastPass = time.Now()
 		if backoff != previous {
 			slog.Info("reconcile/drift: requeue interval changed", "backoff_ms", otelsetup.Millis(backoff))
 		}

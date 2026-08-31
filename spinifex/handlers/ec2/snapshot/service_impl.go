@@ -508,7 +508,7 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	listResult, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+	_, commonPrefixes, err := objectstore.ListAll(ctx, s.store, &s3.ListObjectsV2Input{
 		Bucket:    aws.String(s.config.Predastore.Bucket),
 		Prefix:    aws.String("snap-"),
 		Delimiter: aws.String("/"),
@@ -526,8 +526,8 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 	}
 
 	var wanted []string
-	for _, prefix := range listResult.CommonPrefixes {
-		if prefix.Prefix == nil {
+	for _, prefix := range commonPrefixes {
+		if prefix == nil || prefix.Prefix == nil {
 			continue
 		}
 
@@ -734,7 +734,7 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	listResult, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+	objects, _, err := objectstore.ListAll(ctx, s.store, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.config.Predastore.Bucket),
 		Prefix: aws.String(snapshotID + "/"),
 	})
@@ -743,8 +743,8 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	for _, obj := range listResult.Contents {
-		if obj.Key == nil {
+	for _, obj := range objects {
+		if obj == nil || obj.Key == nil {
 			continue
 		}
 		_, err := s.store.DeleteObject(ctx, &s3.DeleteObjectInput{

@@ -388,7 +388,7 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 	prefix := fmt.Sprintf("keys/%s/", accountID)
 
 	// List all objects with the keys prefix
-	result, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+	objects, _, err := objectstore.ListAll(ctx, s.store, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucketName),
 		Prefix: aws.String(prefix),
 	})
@@ -398,8 +398,8 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 	}
 
 	// Check each .json metadata file
-	for _, obj := range result.Contents {
-		if obj.Key == nil {
+	for _, obj := range objects {
+		if obj == nil || obj.Key == nil {
 			continue
 		}
 
@@ -611,7 +611,7 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 	prefix := fmt.Sprintf("keys/%s/", accountID)
 
 	// List all objects with the keys prefix
-	result, err := s.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+	objects, _, err := objectstore.ListAll(ctx, s.store, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucketName),
 		Prefix: aws.String(prefix),
 	})
@@ -631,8 +631,8 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 	var keyPairs []*ec2.KeyPairInfo
 
 	// Check each .json metadata file
-	for _, obj := range result.Contents {
-		if obj.Key == nil {
+	for _, obj := range objects {
+		if obj == nil || obj.Key == nil {
 			continue
 		}
 

@@ -82,7 +82,7 @@ func resolveLatestSnapshot(ctx context.Context, store objectstore.ObjectStore, a
 		return "", errors.New("eks: no snapshot store configured; pass --snapshot explicitly")
 	}
 	prefix := accountID + "/" + clusterName + "/"
-	out, err := store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+	objects, _, err := objectstore.ListAll(ctx, store, &s3.ListObjectsV2Input{
 		Bucket: aws.String(eksBackupsBucket),
 		Prefix: aws.String(prefix),
 	})
@@ -91,7 +91,10 @@ func resolveLatestSnapshot(ctx context.Context, store objectstore.ObjectStore, a
 	}
 	var bestFrequent, bestAny etcdSnapshotKey
 	haveFrequent, haveAny := false, false
-	for _, obj := range out.Contents {
+	for _, obj := range objects {
+		if obj == nil {
+			continue
+		}
 		base := strings.TrimPrefix(aws.StringValue(obj.Key), prefix)
 		parsed, ok := parseEtcdSnapshotKey(base)
 		if !ok {

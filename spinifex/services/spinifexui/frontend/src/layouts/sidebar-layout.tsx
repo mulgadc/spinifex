@@ -53,6 +53,7 @@ import {
 import { useAdmin } from "@/contexts/admin-context"
 import { clearCredentials } from "@/lib/auth"
 import { clearClients } from "@/lib/awsClient"
+import { isOchreEnabled } from "@/lib/cluster-config"
 
 export function SidebarLayout() {
   const pathname = useLocation({
@@ -575,74 +576,78 @@ export function SidebarLayout() {
           </SidebarMenu>
         </SidebarGroup>
 
-        <SidebarGroup>
-          <SidebarGroupLabel>Ochre</SidebarGroupLabel>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <Link to="/bedrock/list-knowledge-bases">
-                <SidebarMenuButton
-                  isActive={pathname.startsWith(
-                    "/bedrock/list-knowledge-bases",
-                  )}
-                  tooltip="Knowledge Bases"
-                >
-                  <Brain className="size-4" />
-                  <span>Knowledge Bases</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <Link to="/bedrock/list-guardrails">
-                <SidebarMenuButton
-                  isActive={pathname.startsWith("/bedrock/list-guardrails")}
-                  tooltip="Guardrails"
-                >
-                  <Shield className="size-4" />
-                  <span>Guardrails</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <Link to="/bedrock/playground">
-                <SidebarMenuButton
-                  isActive={pathname.startsWith("/bedrock/playground")}
-                  tooltip="Playground"
-                >
-                  <MessageSquare className="size-4" />
-                  <span>Playground</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-            {isAdmin && (
+        {isOchreEnabled() && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Ochre</SidebarGroupLabel>
+            <SidebarMenu>
               <SidebarMenuItem>
-                <Link to="/bedrock/list-model-catalog">
+                <Link to="/bedrock/list-knowledge-bases">
                   <SidebarMenuButton
                     isActive={pathname.startsWith(
-                      "/bedrock/list-model-catalog",
+                      "/bedrock/list-knowledge-bases",
                     )}
-                    tooltip="Model Catalog"
+                    tooltip="Knowledge Bases"
                   >
-                    <LayoutList className="size-4" />
-                    <span>Model Catalog</span>
+                    <Brain className="size-4" />
+                    <span>Knowledge Bases</span>
                   </SidebarMenuButton>
                 </Link>
               </SidebarMenuItem>
-            )}
-            {isAdmin && (
               <SidebarMenuItem>
-                <Link to="/bedrock/list-model-access">
+                <Link to="/bedrock/list-guardrails">
                   <SidebarMenuButton
-                    isActive={pathname.startsWith("/bedrock/list-model-access")}
-                    tooltip="Model Access"
+                    isActive={pathname.startsWith("/bedrock/list-guardrails")}
+                    tooltip="Guardrails"
                   >
-                    <KeyRound className="size-4" />
-                    <span>Model Access</span>
+                    <Shield className="size-4" />
+                    <span>Guardrails</span>
                   </SidebarMenuButton>
                 </Link>
               </SidebarMenuItem>
-            )}
-          </SidebarMenu>
-        </SidebarGroup>
+              <SidebarMenuItem>
+                <Link to="/bedrock/playground">
+                  <SidebarMenuButton
+                    isActive={pathname.startsWith("/bedrock/playground")}
+                    tooltip="Playground"
+                  >
+                    <MessageSquare className="size-4" />
+                    <span>Playground</span>
+                  </SidebarMenuButton>
+                </Link>
+              </SidebarMenuItem>
+              {isAdmin && (
+                <SidebarMenuItem>
+                  <Link to="/bedrock/list-model-catalog">
+                    <SidebarMenuButton
+                      isActive={pathname.startsWith(
+                        "/bedrock/list-model-catalog",
+                      )}
+                      tooltip="Model Catalog"
+                    >
+                      <LayoutList className="size-4" />
+                      <span>Model Catalog</span>
+                    </SidebarMenuButton>
+                  </Link>
+                </SidebarMenuItem>
+              )}
+              {isAdmin && (
+                <SidebarMenuItem>
+                  <Link to="/bedrock/list-model-access">
+                    <SidebarMenuButton
+                      isActive={pathname.startsWith(
+                        "/bedrock/list-model-access",
+                      )}
+                      tooltip="Model Access"
+                    >
+                      <KeyRound className="size-4" />
+                      <span>Model Access</span>
+                    </SidebarMenuButton>
+                  </Link>
+                </SidebarMenuItem>
+              )}
+            </SidebarMenu>
+          </SidebarGroup>
+        )}
         {isAdmin && (
           <SidebarGroup>
             <SidebarGroupLabel>Documentation</SidebarGroupLabel>

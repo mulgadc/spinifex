@@ -41,12 +41,16 @@ type Config struct {
 	// Region is the cluster's AWS-parity region, served to the browser so the
 	// console can sign requests for the cluster it is actually talking to.
 	Region string `json:"region"`
+	// OchreEnabled gates the Ochre console (nav group and /bedrock/* routes)
+	// until it is ready to ship. Absent from the node config → false → hidden.
+	OchreEnabled bool `json:"ochre_enabled"`
 }
 
 // clusterConfig is the body of GET /api/config. It carries only non-secret
 // facts, matching the unauthenticated posture of /api/ca.pem.
 type clusterConfig struct {
-	Region string `json:"region"`
+	Region       string `json:"region"`
+	OchreEnabled bool   `json:"ochreEnabled"`
 }
 
 // namedRoute labels a route's request metrics with a fixed action, so
@@ -61,7 +65,7 @@ func namedRoute(action string, next http.Handler) http.Handler {
 // clusterConfigHandler serves the facts the SPA needs before it can sign
 // anything. no-store keeps a caching proxy in front of several clusters from
 // serving one the other's region.
-func clusterConfigHandler(region string) http.HandlerFunc {
+func clusterConfigHandler(region string, ochreEnabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if region == "" {
 			slog.Error("Cluster region is not configured; the console cannot sign requests")
@@ -70,7 +74,7 @@ func clusterConfigHandler(region string) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		if err := json.NewEncoder(w).Encode(clusterConfig{Region: region}); err != nil {
+		if err := json.NewEncoder(w).Encode(clusterConfig{Region: region, OchreEnabled: ochreEnabled}); err != nil {
 			slog.Error("Failed to write cluster config", "error", err)
 		}
 	}
@@ -268,7 +272,7 @@ func (svc *Service) launchService() error {
 		http.ServeFile(w, r, caCertPath)
 	})
 
-	mux.Handle("/api/config", namedRoute("ui.api.config", clusterConfigHandler(svc.Config.Region)))
+	mux.Handle("/api/config", namedRoute("ui.api.config", clusterConfigHandler(svc.Config.Region, svc.Config.OchreEnabled)))
 
 	// SPA catch-all.
 	mux.Handle("/", spaHandler)

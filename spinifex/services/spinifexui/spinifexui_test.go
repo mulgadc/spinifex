@@ -568,20 +568,38 @@ func TestStart_GracefulShutdownIsNotAnError(t *testing.T) {
 
 func TestClusterConfigHandler_ServesRegion(t *testing.T) {
 	rec := httptest.NewRecorder()
-	clusterConfigHandler("us-west-1")(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	clusterConfigHandler("us-west-1", false)(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
-	assert.JSONEq(t, `{"region":"us-west-1"}`, rec.Body.String())
+	assert.JSONEq(t, `{"region":"us-west-1","ochreEnabled":false}`, rec.Body.String())
 }
 
 // A proxy fronting several clusters must not be able to serve one cluster's
 // region to another.
 func TestClusterConfigHandler_IsNotCacheable(t *testing.T) {
 	rec := httptest.NewRecorder()
-	clusterConfigHandler("us-west-1")(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	clusterConfigHandler("us-west-1", false)(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
 
 	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+}
+
+// The flag must always be explicit in the body, both on and off, so the
+// browser never has to treat an absent field as ambiguous.
+func TestClusterConfigHandler_ServesOchreEnabledTrue(t *testing.T) {
+	rec := httptest.NewRecorder()
+	clusterConfigHandler("us-west-1", true)(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{"region":"us-west-1","ochreEnabled":true}`, rec.Body.String())
+}
+
+func TestClusterConfigHandler_ServesOchreEnabledFalse(t *testing.T) {
+	rec := httptest.NewRecorder()
+	clusterConfigHandler("us-west-1", false)(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{"region":"us-west-1","ochreEnabled":false}`, rec.Body.String())
 }
 
 // A build's chunks only agree with each other. Caching index.html would let a
@@ -663,7 +681,7 @@ func TestSPAHandler_FallsBackForClientRoutes(t *testing.T) {
 // an opaque credential error.
 func TestClusterConfigHandler_FailsWhenRegionUnset(t *testing.T) {
 	rec := httptest.NewRecorder()
-	clusterConfigHandler("")(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	clusterConfigHandler("", false)(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.NotContains(t, rec.Body.String(), "region\":")

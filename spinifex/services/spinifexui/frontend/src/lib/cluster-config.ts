@@ -4,7 +4,12 @@ import { z } from "zod"
 // would pin one binary to one region. The serving node reports its own region
 // instead, which is the value awsgw verifies signatures against.
 
-const clusterConfigSchema = z.object({ region: z.string().min(1) })
+const clusterConfigSchema = z.object({
+  region: z.string().min(1),
+  // Absent on an older node's response, which safe-defaults to hidden rather
+  // than exposing the console before it is meant to ship.
+  ochreEnabled: z.boolean().default(false),
+})
 
 type ClusterConfig = z.infer<typeof clusterConfigSchema>
 
@@ -38,4 +43,12 @@ export function getRegion(): string {
     throw new Error("cluster config has not been loaded")
   }
   return config.region
+}
+
+// Gates the Ochre console nav group and its routes until the flag ships on.
+export function isOchreEnabled(): boolean {
+  if (!config) {
+    throw new Error("cluster config has not been loaded")
+  }
+  return config.ochreEnabled
 }

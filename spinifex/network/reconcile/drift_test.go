@@ -1,6 +1,6 @@
 //test:in-package — the backoff ladder is unexported state (driftBackoffBase,
-//nextDriftBackoff, driftWait) and the tests drive runDriftCycle directly to
-//pin what DriftLoop does with its return value.
+//nextDriftBackoff) and the tests drive runDriftCycle directly to pin what
+//DriftLoop does with its return value.
 
 package reconcile
 
@@ -200,33 +200,30 @@ func TestRunDriftCycle_SkipsWhenNotElected(t *testing.T) {
 	}
 }
 
-// The ladder itself, as pure functions: exact gaps are asserted here because the
-// loop tests above run on compressed timings and can only prove ordering.
+// The ladder itself, as a pure function: exact gaps are asserted here because
+// the loop tests above run on compressed timings and can only prove ordering.
+// Zero is the converged value and means no deadline, which leaves the next pass
+// to the resync the loop configures at DriftInterval.
 func TestDrift_IncompletePassBacksOffThenResets(t *testing.T) {
 	incomplete := incompleteErr()
 	outcomes := []error{incomplete, incomplete, incomplete, incomplete, incomplete, incomplete, nil}
 
 	var backoff time.Duration
-	var waits []time.Duration
+	var got []time.Duration
 	for _, outcome := range outcomes {
 		backoff = nextDriftBackoff(backoff, outcome)
-		waits = append(waits, driftWait(backoff))
+		got = append(got, backoff)
 	}
 
 	want := []time.Duration{
 		5 * time.Second, 15 * time.Second, 45 * time.Second,
 		135 * time.Second, DriftInterval, DriftInterval, // capped, then held
-		DriftInterval, // converged: back to the routine interval
+		0, // converged: no deadline, the resync takes over
 	}
 	for i := range want {
-		if waits[i] != want[i] {
-			t.Fatalf("wait after pass %d = %v, want %v (full sequence %v)", i+1, waits[i], want[i], waits)
+		if got[i] != want[i] {
+			t.Fatalf("backoff after pass %d = %v, want %v (full sequence %v)", i+1, got[i], want[i], got)
 		}
-	}
-	// The cap and the reset produce the same wait, so pin the state behind it:
-	// a converged pass must clear the backoff, not sit at the cap.
-	if backoff != 0 {
-		t.Errorf("backoff after a converged pass = %v, want 0", backoff)
 	}
 }
 
@@ -246,9 +243,6 @@ func TestDrift_NonIncompleteOutcomesKeepDriftInterval(t *testing.T) {
 			// Start from a backoff already in force, so a reset is observable.
 			if got := nextDriftBackoff(45*time.Second, tt.err); got != 0 {
 				t.Errorf("nextDriftBackoff(45s, %v) = %v, want 0", tt.err, got)
-			}
-			if got := driftWait(0); got != DriftInterval {
-				t.Errorf("driftWait(0) = %v, want %v", got, DriftInterval)
 			}
 		})
 	}

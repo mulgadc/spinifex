@@ -43,6 +43,28 @@ func bucketNames(t *testing.T, js jetstream.JetStream) []string {
 	return names
 }
 
+// waitForWatch writes probe keys until one of them wakes a pass, and returns the
+// call count once it has. Watchers attach asynchronously and are UpdatesOnly, so
+// a single write racing startup is lost for good; retrying is what makes a test
+// that needs a live watcher deterministic rather than dependent on how fast the
+// machine got there.
+func waitForWatch(t *testing.T, rec *stubReconciler, kv jetstream.KeyValue, prefix string) int {
+	t.Helper()
+	before := rec.callCount()
+	deadline := time.Now().Add(10 * time.Second)
+	for i := 0; time.Now().Before(deadline); i++ {
+		if _, err := kv.Put(t.Context(), prefix+strconv.Itoa(i), []byte(`{}`)); err != nil {
+			t.Fatalf("probe write %d: %v", i, err)
+		}
+		if got := waitForCalls(t, rec, before+1, 250*time.Millisecond); got > before {
+			return got
+		}
+	}
+	t.Fatal("no intent write woke a pass within 10s, so the loop is still waiting " +
+		"out DriftInterval rather than watching the bucket")
+	return 0
+}
+
 // streamExists reports whether the KV bucket's backing stream is present, which
 // is how a test tells "watched" from "created by being watched".
 func streamExists(t *testing.T, js jetstream.JetStream, name string) bool {
@@ -71,13 +93,8 @@ func TestDriftLoop_IntentWriteWakesAPass(t *testing.T) {
 		t.Fatalf("reconcile ran %d times before any write, want 0", got)
 	}
 
-	if _, err := kv.Put(t.Context(), "vpc-watch-1", []byte(`{"VpcId":"vpc-watch-1"}`)); err != nil {
-		t.Fatalf("write intent: %v", err)
-	}
-	if got := waitForCalls(t, rec, 1, 5*time.Second); got < 1 {
-		t.Fatal("an intent write did not wake a pass within 5s, so the loop is " +
-			"still waiting out DriftInterval rather than watching the bucket")
-	}
+	// Well inside DriftInterval, so the pass can only have come from the write.
+	waitForWatch(t, rec, kv, "vpc-watch-")
 }
 
 // A burst is one pass, not one per key: the debounce coalesces it and the floor
@@ -90,18 +107,22 @@ func TestDriftLoop_BurstOfWritesIsOnePass(t *testing.T) {
 	rec := &stubReconciler{outcomes: []error{nil}}
 	startDriftLoop(t, rec, nc, nil)
 
+	// The burst has to land on a watcher that is already attached, or the writes
+	// it is meant to coalesce are simply never seen.
+	base := waitForWatch(t, rec, kv, "eni-probe-")
+
 	for i := range 20 {
 		if _, err := kv.Put(t.Context(), "eni-burst-"+strconv.Itoa(i), []byte(`{}`)); err != nil {
 			t.Fatalf("write %d: %v", i, err)
 		}
 	}
-	if got := waitForCalls(t, rec, 1, 5*time.Second); got < 1 {
+	if got := waitForCalls(t, rec, base+1, 10*time.Second); got < base+1 {
 		t.Fatal("a burst of intent writes never woke a pass")
 	}
-	// Well inside the 2s floor, so a second pass here could only come from the
+	// The burst is long spent, so a further pass here could only come from the
 	// loop tracking writes rather than coalescing them.
 	time.Sleep(500 * time.Millisecond)
-	if got := rec.callCount(); got != 1 {
+	if got := rec.callCount() - base; got != 1 {
 		t.Errorf("reconcile ran %d times for one burst of 20 writes, want 1", got)
 	}
 }

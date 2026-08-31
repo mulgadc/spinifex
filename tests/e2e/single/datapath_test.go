@@ -4,7 +4,10 @@ package single
 
 import (
 	"encoding/base64"
+	"encoding/csv"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +88,10 @@ func sgDatapathRevokeRounds() int {
 //     actually worked, "traffic is now blocked after revoke" would trivially
 //     and misleadingly pass for the wrong reason. So AllowedTraffic gates the
 //     revoke rounds.
+//   - DeniedTrafficNonIPv4 is read-only with respect to SG and ENI state, so
+//     it can sit anywhere before SameSGComms. It would in fact still hold
+//     after it — the default SG's -1 self-ingress is ip4-scoped like every
+//     tenant allow, so joining it cannot permit a non-IPv4 ethertype.
 //   - Each revoke round's restore half only depends on the revoke API call
 //     having actually removed the rule (tracked separately from the
 //     ICMP-style "verify blocked" assertion) — a flaky drop-detection
@@ -342,6 +349,110 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 		harness.Detail(t, "step5", "denied_traffic_ok")
 	})
 
+	// --- DeniedTrafficNonIPv4: the default-deny is not ethertype-scoped ---
+	//
+	// A guest-level IPv6 probe cannot test this on its own: every guest LSP
+	// carries port_security "<MAC> <IPv4>", and ovn-nb(5) makes that IPv4-only,
+	// so IPv6 dies two tables before the ACL. The first two subtests attribute
+	// the drop to the ACL; the third is the end-to-end backstop.
+	t.Run("DeniedTrafficNonIPv4", func(t *testing.T) {
+		targetPG := strings.ReplaceAll(targetSG, "-", "_")
+
+		// What OVN actually holds, not what the policy layer intended.
+		t.Run("DenyIsNotEthertypeScoped", func(t *testing.T) {
+			harness.Step(t, "8e-5b %s denies carry no ethertype qualifier", targetPG)
+			rows := portGroupACLs(t, targetPG)
+
+			denies := map[string]aclRow{}
+			arps := map[string]aclRow{}
+			for _, r := range rows {
+				switch {
+				case r.Action == "drop":
+					denies[r.Direction] = r
+				case strings.Contains(r.Match, "arp"):
+					arps[r.Direction] = r
+				}
+			}
+			require.Lenf(t, denies, 2,
+				"expected one default-deny per direction on %s, got %d (acls=%v)", targetPG, len(denies), rows)
+			for dir, r := range denies {
+				require.NotContainsf(t, r.Match, "ip4", "%s deny on %s is IPv4-scoped: %q", dir, targetPG, r.Match)
+				require.NotContainsf(t, r.Match, "ip6", "%s deny on %s is IPv6-scoped: %q", dir, targetPG, r.Match)
+			}
+
+			// An unqualified deny black-holes ARP without this, since the ACL
+			// tables run before the L2 lookup.
+			require.Lenf(t, arps, 2, "expected an ARP allow per direction on %s (acls=%v)", targetPG, rows)
+			for dir, r := range arps {
+				require.Equalf(t, "allow", r.Action, "%s ARP rule on %s must allow, got %q", dir, targetPG, r.Action)
+				require.Greaterf(t, r.Priority, denies[dir].Priority,
+					"%s ARP allow (priority %d) must outrank the deny (priority %d)", dir, r.Priority, denies[dir].Priority)
+			}
+			harness.Detail(t, "step5b", "deny_unscoped_ok")
+		})
+
+		// RARP is the ethertype that proves the point: ovn-nb(5) says port
+		// security does not restrict it, so it is the one thing that crosses
+		// port security and reaches the ACL.
+		t.Run("NonIPEthertypeDropsAtTheACL", func(t *testing.T) {
+			harness.Step(t, "8e-5c ovn-trace RARP client -> target must hit the egress deny")
+			ls := "subnet-" + def.SubnetID
+			clientMAC := eniMAC(t, fix, clientENI)
+			targetMAC := eniMAC(t, fix, targetENI)
+
+			// The deny is a from-lport ACL, so it is the CLIENT's port group that
+			// names it. Assert on the log record rather than the trace's own
+			// syntax: a logged ACL emits no `drop;` token (northd splits it into
+			// acl_eval + acl_action) and northd offsets NB priorities by +1000.
+			denyEgress := strings.ReplaceAll(clientSG, "-", "_") + "-deny-egress"
+
+			flow := fmt.Sprintf(`inport == "port-%s" && eth.src == %s && eth.dst == %s && eth.type == 0x8035`,
+				clientENI, clientMAC, targetMAC)
+			trace := harness.OvnTrace(t, ls, flow)
+			require.Containsf(t, trace, "verdict=drop",
+				"RARP client -> target was not dropped; the default-deny is still ethertype-scoped\n%s", trace)
+			require.Containsf(t, trace, denyEgress,
+				"RARP was dropped, but not by %s — the attribution this stage exists for is missing\n%s", denyEgress, trace)
+
+			// Control: the same trace for ARP must NOT be dropped, or the
+			// widened deny has taken the IPv4 datapath down with it.
+			arpFlow := fmt.Sprintf(`inport == "port-%s" && eth.src == %s && eth.dst == %s && eth.type == 0x0806`,
+				clientENI, clientMAC, targetMAC)
+			arpTrace := harness.OvnTrace(t, ls, arpFlow)
+			require.NotContainsf(t, arpTrace, "verdict=drop",
+				"ARP from the client was dropped — the ARP allow is missing or mis-prioritised\n%s", arpTrace)
+			harness.Detail(t, "step5c", "non_ip_dropped_ok")
+		})
+
+		// Port security drops this before the ACL sees it, so it cannot
+		// attribute the drop. It is here because "no layer lets IPv6 between
+		// two instances" is worth a regression test in its own right.
+		t.Run("IPv6BlockedEndToEnd", func(t *testing.T) {
+			harness.Step(t, "8e-5d IPv6 client -> target blocked end to end")
+			iface, clientLL := guestLinkLocal(t, clientTgt)
+
+			// Validates the EUI-64 formula and the ENI-MAC -> guest-NIC mapping.
+			// Without it a wrong derivation below would make the probe fail for
+			// the wrong reason and pass forever. Compared as addresses, not
+			// strings: fe80::0046:... and fe80::46:... are the same address.
+			derived := linkLocalFromMAC(eniMAC(t, fix, clientENI))
+			require.Truef(t, derived.Equal(net.ParseIP(clientLL)),
+				"EUI-64 derivation %s does not match the client's actual link-local %q on %s, so the derived target address cannot be trusted",
+				derived, clientLL, iface)
+
+			targetLL := linkLocalFromMAC(eniMAC(t, fix, targetENI)).String()
+			out, err := runSSHCombined(clientTgt, fmt.Sprintf("ping -6 -c 3 -W 3 %s%%%s", targetLL, iface))
+			require.Errorf(t, err, "FAIL: client reached target over IPv6 at %s\n%s", targetLL, out)
+
+			// A non-zero exit alone also covers a broken ssh session, a missing
+			// ping binary and a bad address literal. Only a loss summary proves
+			// the probe ran and the traffic was dropped.
+			require.Truef(t, pingDroppedRE.MatchString(out),
+				"ping -6 to %s produced no packet-loss summary — the probe never ran (out=%q)", targetLL, out)
+			harness.Detail(t, "step5d", "ipv6_blocked_ok", "target_link_local", targetLL)
+		})
+	})
+
 	// --- Revoke / re-authorize round-trip ---
 	//
 	// Only meaningful against a proven-working baseline: if AllowedTraffic
@@ -511,6 +622,85 @@ func runSGEInstance(t *testing.T, fix *Fixture, subnetID, sgID, userData string)
 	id := aws.StringValue(out.Instances[0].InstanceId)
 	require.NotEmpty(t, id, "run-instances sg=%s returned empty InstanceId", sgID)
 	return id
+}
+
+// aclRow is one NB ACL as OVN holds it, read back rather than rebuilt.
+type aclRow struct {
+	Priority  int
+	Direction string
+	Match     string
+	Action    string
+}
+
+// portGroupACLs returns the ACL set OVN actually holds for a port group. The
+// policy layer's intent is unit-tested; this is what landed in NB.
+func portGroupACLs(t *testing.T, pg string) []aclRow {
+	t.Helper()
+	acls := harness.OvnNbctl(t, "--no-leader-only", "--bare", "--columns=acls",
+		"find", "port_group", "name="+pg)
+	uuids := strings.Fields(acls)
+	require.NotEmptyf(t, uuids, "port_group %s carries no ACLs", pg)
+
+	args := append([]string{"--no-leader-only", "--format=csv", "--no-headings",
+		"--columns=priority,direction,match,action", "list", "acl"}, uuids...)
+	out := harness.OvnNbctl(t, args...)
+
+	recs, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+	require.NoErrorf(t, err, "parsing ovn-nbctl csv for %s: %q", pg, out)
+
+	rows := make([]aclRow, 0, len(recs))
+	for _, r := range recs {
+		require.Lenf(t, r, 4, "unexpected ovn-nbctl acl record %q", r)
+		prio, err := strconv.Atoi(strings.TrimSpace(r[0]))
+		require.NoErrorf(t, err, "unparseable ACL priority %q", r[0])
+		rows = append(rows, aclRow{
+			Priority:  prio,
+			Direction: strings.TrimSpace(r[1]),
+			Match:     strings.TrimSpace(r[2]),
+			Action:    strings.TrimSpace(r[3]),
+		})
+	}
+	return rows
+}
+
+// eniMAC returns an ENI's MAC. The target SG has no SSH ingress, so this is
+// the only channel to its addressing.
+func eniMAC(t *testing.T, fix *Fixture, eniID string) net.HardwareAddr {
+	t.Helper()
+	eni, err := describeENI(fix.AWS, eniID)
+	require.NoError(t, err, "describe ENI %s", eniID)
+	raw := aws.StringValue(eni.MacAddress)
+	mac, err := net.ParseMAC(raw)
+	require.NoErrorf(t, err, "ENI %s has an unparseable MacAddress %q", eniID, raw)
+	require.Lenf(t, mac, 6, "ENI %s MacAddress is not EUI-48: %s", eniID, mac)
+	return mac
+}
+
+// linkLocalFromMAC derives the IPv6 link-local a guest generates from an
+// EUI-48 MAC: invert the universal/local bit, then insert ff:fe mid-MAC.
+// Returns net.IP so callers compare numerically — the textual forms differ.
+func linkLocalFromMAC(mac net.HardwareAddr) net.IP {
+	return net.IP{
+		0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+		mac[0] ^ 0x02, mac[1], mac[2], 0xff, 0xfe, mac[3], mac[4], mac[5],
+	}
+}
+
+// guestLinkLocal returns a guest's default-route interface and the IPv6
+// link-local address configured on it.
+func guestLinkLocal(t *testing.T, tgt harness.SSHTarget) (string, string) {
+	t.Helper()
+	iface, err := runSSHCombined(tgt, "ip -o -4 route show default | awk '{print $5; exit}'")
+	require.NoError(t, err, "guest could not report its default-route interface")
+	iface = strings.TrimSpace(iface)
+	require.NotEmpty(t, iface, "guest has no default-route interface")
+
+	ll, err := runSSHCombined(tgt,
+		fmt.Sprintf("ip -6 -o addr show dev %s scope link | awk '{print $4; exit}' | cut -d/ -f1", iface))
+	require.NoError(t, err, "guest could not report its link-local address")
+	ll = strings.TrimSpace(ll)
+	require.NotEmptyf(t, ll, "guest has no IPv6 link-local on %s", iface)
+	return iface, ll
 }
 
 // primaryENI returns the NetworkInterfaceId of an instance's first ENI.

@@ -137,8 +137,8 @@ func TestRuleACLSpecs_UnsupportedProtocolErrors(t *testing.T) {
 
 func TestInfrastructureACLs_Shape(t *testing.T) {
 	specs := InfrastructureACLs("sg_test")
-	if assert.Len(t, specs, 4) {
-		// Priorities: deny-ingress 900, deny-egress 800, dhcp-egress 1050, dhcp-ingress 1050
+	if assert.Len(t, specs, 6) {
+		// Priorities: deny-ingress 900, deny-egress 800, dhcp 1050 x2, arp 950 x2
 		assert.Equal(t, ACLPriorityDefaultDenyIngress, specs[0].Priority)
 		assert.Equal(t, "drop", specs[0].Action)
 		assert.True(t, specs[0].Log)
@@ -147,6 +147,52 @@ func TestInfrastructureACLs_Shape(t *testing.T) {
 		assert.Equal(t, ACLPriorityAllowDHCP, specs[2].Priority)
 		assert.Equal(t, "allow", specs[2].Action)
 		assert.Equal(t, ACLPriorityAllowDHCP, specs[3].Priority)
+		assert.Equal(t, ACLPriorityAllowARP, specs[4].Priority)
+		assert.Equal(t, "allow", specs[4].Action)
+		assert.Equal(t, ACLPriorityAllowARP, specs[5].Priority)
+		assert.Equal(t, "allow", specs[5].Action)
+	}
+}
+
+// The default-denies are the backstop and must match every ethertype. OVN
+// allows on no-match, so an ip4-scoped deny lets IPv6 and any other ethertype
+// through untouched — the allows are meant to be narrow, the denies are not.
+func TestInfrastructureACLs_DenyCarriesNoEthertypeQualifier(t *testing.T) {
+	for _, spec := range InfrastructureACLs("sg_test") {
+		if spec.Action != "drop" {
+			continue
+		}
+		assert.NotContains(t, spec.Match, "ip4", "deny %q must not be IPv4-scoped", spec.Name)
+		assert.NotContains(t, spec.Match, "ip6", "deny %q must not be IPv6-scoped", spec.Name)
+	}
+}
+
+// ACL tables run before the L2 lookup, so the unqualified denies would drop
+// ARP without an explicit allow above them, taking the IPv4 datapath down.
+func TestInfrastructureACLs_ARPAllowedAboveDenies(t *testing.T) {
+	assert.Greater(t, ACLPriorityAllowARP, ACLPriorityDefaultDenyIngress)
+	assert.Less(t, ACLPriorityAllowARP, ACLPriorityTenantAllow)
+
+	byDirection := map[string]string{}
+	for _, spec := range InfrastructureACLs("sg_test") {
+		if spec.Priority == ACLPriorityAllowARP {
+			byDirection[spec.Direction] = spec.Match
+		}
+	}
+	assert.Equal(t, "inport == @sg_test && arp", byDirection["from-lport"])
+	assert.Equal(t, "outport == @sg_test && arp", byDirection["to-lport"])
+}
+
+// IPv6 is not merely unused: no ENI is assigned a routable IPv6 address, IPv6
+// CIDRs are rejected upstream and the derived address sets are _ip4. So ND and
+// DHCPv6 stay under the deny rather than becoming an unpoliced side channel.
+func TestInfrastructureACLs_NoIPv6Exemption(t *testing.T) {
+	for _, spec := range InfrastructureACLs("sg_test") {
+		if spec.Action == "drop" {
+			continue
+		}
+		assert.NotContains(t, spec.Match, "nd", "allow %q must not exempt neighbour discovery", spec.Name)
+		assert.NotContains(t, spec.Match, "icmp6", "allow %q must not exempt ICMPv6", spec.Name)
 	}
 }
 

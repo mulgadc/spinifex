@@ -3,9 +3,14 @@ import type {
   IngestionJobSummary,
 } from "@aws-sdk/client-bedrock-agent"
 import { useQuery } from "@tanstack/react-query"
+import { Trash2 } from "lucide-react"
+import { useState } from "react"
 
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { StateBadge } from "@/components/state-badge"
+import { Button } from "@/components/ui/button"
 import { formatDateTime } from "@/lib/utils"
+import { useDeleteDataSource } from "@/mutations/bedrockAgent"
 import { ingestionJobsQueryOptions } from "@/queries/bedrockAgent"
 
 const RECENT_JOBS_SHOWN = 3
@@ -43,11 +48,22 @@ export function DataSourceCard({
   dataSource,
 }: DataSourceCardProps) {
   const dataSourceId = dataSource.dataSourceId ?? ""
+  const [showDelete, setShowDelete] = useState(false)
   const { data, isLoading, isError, error } = useQuery(
     ingestionJobsQueryOptions(knowledgeBaseId, dataSourceId),
   )
+  const deleteDataSource = useDeleteDataSource()
 
   const jobs = (data?.ingestionJobSummaries ?? []).slice(0, RECENT_JOBS_SHOWN)
+
+  async function handleDelete() {
+    try {
+      await deleteDataSource.mutateAsync({ dataSourceId, knowledgeBaseId })
+      setShowDelete(false)
+    } catch {
+      // Left open so the refusal in the dialog description stays readable.
+    }
+  }
 
   return (
     <div className="rounded-lg border bg-card p-4">
@@ -58,7 +74,19 @@ export function DataSourceCard({
             {dataSourceId}
           </p>
         </div>
-        <StateBadge state={dataSource.status} />
+        <div className="flex items-center gap-2">
+          <StateBadge state={dataSource.status} />
+          <Button
+            aria-label={`Remove data source ${dataSource.name ?? dataSourceId}`}
+            onClick={() => {
+              setShowDelete(true)
+            }}
+            size="icon-sm"
+            variant="destructive"
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
+        </div>
       </div>
 
       <h4 className="mb-1 text-xs font-medium text-muted-foreground">
@@ -84,6 +112,26 @@ export function DataSourceCard({
           ))}
         </div>
       )}
+
+      <DeleteConfirmationDialog
+        description={
+          <>
+            {`This removes "${dataSource.name ?? dataSourceId}" from the knowledge base. It cannot be undone.`}
+            {deleteDataSource.error && (
+              <span className="mt-2 block text-destructive">
+                {deleteDataSource.error.message}
+              </span>
+            )}
+          </>
+        }
+        isPending={deleteDataSource.isPending}
+        onConfirm={() => {
+          void handleDelete()
+        }}
+        onOpenChange={setShowDelete}
+        open={showDelete}
+        title="Remove Data Source"
+      />
     </div>
   )
 }

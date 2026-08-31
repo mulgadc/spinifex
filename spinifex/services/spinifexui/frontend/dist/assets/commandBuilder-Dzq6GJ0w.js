@@ -1,0 +1,1 @@
+import{Ft as e,gt as t}from"./cluster-config-DpFRe0Nd.js";import{lr as n}from"./awsClient-ChGCpYoV.js";var r=e(n,`AWSWesleyFrontend`,`EKSClient`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

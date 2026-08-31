@@ -54,7 +54,12 @@ describe("KnowledgeBasesPage", () => {
       { ...KB, knowledgeBaseId: "kb-2", name: "zebra" },
       { ...KB, knowledgeBaseId: "kb-1", name: "alpha" },
     ])
-    const links = screen.getAllByRole("link")
+    const links = screen
+      .getAllByRole("link")
+      .filter(
+        (l) =>
+          l.getAttribute("href") !== "/bedrock/list-knowledge-bases/create",
+      )
     expect(links.map((l) => l.getAttribute("href"))).toStrictEqual([
       "/bedrock/list-knowledge-bases/$knowledgeBaseId/kb-1",
       "/bedrock/list-knowledge-bases/$knowledgeBaseId/kb-2",
@@ -78,5 +83,12 @@ describe("KnowledgeBasesPage", () => {
     renderSeeded([KB])
     expect(screen.getByText("kb-1")).toBeInTheDocument()
     expect(screen.getByText("ACTIVE")).toBeInTheDocument()
+  })
+
+  it("links to the create knowledge base route", () => {
+    renderSeeded([])
+    expect(
+      screen.getByRole("link", { name: "Create knowledge base" }),
+    ).toHaveAttribute("href", "/bedrock/list-knowledge-bases/create")
   })
 })

@@ -1,6 +1,7 @@
 import type { DataSourceSummary } from "@aws-sdk/client-bedrock-agent"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.fn()
@@ -84,5 +85,31 @@ describe("DataSourceCard", () => {
     expect(
       screen.getByText("scanned 10 · indexed 9 · failed 1"),
     ).toBeInTheDocument()
+  })
+
+  it("removes the data source after confirming the dialog", async () => {
+    mockSend.mockResolvedValue({ ingestionJobSummaries: [] })
+    const user = userEvent.setup()
+    renderWithClient()
+
+    await user.click(
+      screen.getByRole("button", { name: "Remove data source s3-docs" }),
+    )
+    await screen.findByText("Remove Data Source")
+    const confirmButtons = screen.getAllByRole("button", { name: "Delete" })
+    await user.click(confirmButtons.at(-1)!)
+
+    await waitFor(() => {
+      // The ingestion-jobs list call also carries dataSourceId, so the delete
+      // call is the one without its distinguishing sortBy field.
+      const deleteCall = mockSend.mock.calls.find(
+        (call) =>
+          call[0]?.input?.dataSourceId === "ds-1" && !call[0].input.sortBy,
+      )
+      expect(deleteCall?.[0].input).toStrictEqual({
+        dataSourceId: "ds-1",
+        knowledgeBaseId: "kb-1",
+      })
+    })
   })
 })

@@ -63,7 +63,11 @@ func (m *sgManager) DeleteSG(ctx context.Context, groupID string) error {
 // ClearACLs+AddACLs split left zero-ACL gaps that defaulted traffic to drop.
 func (m *sgManager) applyACLs(ctx context.Context, sg SGSpec) error {
 	pg := topology.SecurityGroupPortGroup(sg.GroupID)
-	specs := append(InfrastructureACLs(pg), RuleACLSpecs(pg, sg.IngressRules, sg.EgressRules)...)
+	ruleSpecs, err := RuleACLSpecs(pg, sg.IngressRules, sg.EgressRules)
+	if err != nil {
+		return fmt.Errorf("build ACLs for %s: %w", pg, err)
+	}
+	specs := append(InfrastructureACLs(pg), ruleSpecs...)
 	if err := m.ovn.ReplaceACLs(ctx, pg, specs); err != nil {
 		return fmt.Errorf("replace ACLs on %s: %w", pg, err)
 	}

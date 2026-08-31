@@ -326,7 +326,7 @@ func TestActiveBranchReplacesLostCPMember(t *testing.T) {
 	r.replacingSince = time.Now().Add(-10 * time.Minute)
 	r.latest.Store(freshReport("ok", 3))
 
-	require.NoError(t, r.reconcileOnce(context.Background()))
+	require.NoError(t, onePass(t, r))
 
 	require.Equal(t, 1, prov.calls, "wedged member replaced through the ACTIVE arm")
 	got, err := GetClusterMeta(t.Context(), acctKV, "alpha")

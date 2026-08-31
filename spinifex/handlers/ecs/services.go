@@ -1,7 +1,9 @@
 package handlers_ecs
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -335,6 +337,12 @@ func (s *Service) reconcileService(ctx context.Context, kv jetstream.KeyValue, a
 	if svc.Status != ServiceStatusActive {
 		return nil
 	}
+	// Snapshotted before the normalisers run, so a normalisation that does change
+	// something is still persisted.
+	before, err := json.Marshal(svc)
+	if err != nil {
+		return err
+	}
 	svc.normalizeDeploymentConfig()
 	svc.ensurePrimaryDeployment()
 
@@ -347,10 +355,10 @@ func (s *Service) reconcileService(ctx context.Context, kv jetstream.KeyValue, a
 	primary := svc.primaryDeployment()
 	if primary != nil {
 		// A failing deployment trips the breaker (and may roll back); persist and
-		// let the next tick roll the replacement in.
+		// let the next pass roll the replacement in.
 		if tripCircuitBreaker(svc, primary) {
 			svc.RunningCount, svc.PendingCount = running, pending
-			return putJSON(ctx, kv, ServiceKey(svc.Cluster, svc.Name), svc)
+			return persistServiceIfChanged(ctx, kv, svc, before)
 		}
 		desired := svc.DesiredCount
 		maxCount := desired * svc.MaximumPercent / 100
@@ -373,6 +381,25 @@ func (s *Service) reconcileService(ctx context.Context, kv jetstream.KeyValue, a
 	}
 
 	svc.RunningCount, svc.PendingCount = running, pending
+	return persistServiceIfChanged(ctx, kv, svc, before)
+}
+
+// persistServiceIfChanged writes a service record only when the pass actually
+// altered it. The reconcile runs on every trigger and every resync, so writing
+// unconditionally churns every record on each one, and would wake any loop
+// watching the bucket with a change it made itself.
+//
+// The comparison is over the marshalled form rather than a field list: what a
+// pass may touch is spread across the deployment and rollout bookkeeping, and a
+// hand-maintained list of those fields would rot.
+func persistServiceIfChanged(ctx context.Context, kv jetstream.KeyValue, svc *ServiceRecord, before []byte) error {
+	after, err := json.Marshal(svc)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(before, after) {
+		return nil
+	}
 	return putJSON(ctx, kv, ServiceKey(svc.Cluster, svc.Name), svc)
 }
 

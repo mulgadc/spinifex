@@ -25,9 +25,12 @@ func TestSweepStoppedBucket_PrunesOnlyStale(t *testing.T) {
 	put("running", TaskStatusRunning, time.Time{})           // not stopped -> keep
 	put("nostamp", TaskStatusStopped, time.Time{})           // STOPPED but no timestamp -> keep (defensive)
 
-	pruned, err := svc.sweepStoppedBucket(t.Context(), kv, now, time.Hour)
+	pruned, due, err := svc.sweepStoppedBucket(t.Context(), kv, now, time.Hour)
 	require.NoError(t, err)
 	assert.Equal(t, 1, pruned)
+	// "fresh" is the only survivor with a clock on it, so the sweep must come back
+	// when its retention expires, not on the resync.
+	assert.Equal(t, 55*time.Minute, due)
 
 	exists := func(id string) bool {
 		var rec TaskRecord

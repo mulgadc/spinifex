@@ -3,11 +3,21 @@ package handlers_ecs
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/stretchr/testify/require"
 )
+
+// dropRevisit adapts a pass that also reports its next deadline, so this test
+// stays about the error alone.
+func dropRevisit(pass func(context.Context) (time.Duration, error)) func(context.Context) error {
+	return func(ctx context.Context) error {
+		_, err := pass(ctx)
+		return err
+	}
+}
 
 // TestSchedulerPasses_EnumerationFailureIsReported pins the contract every
 // leader-only sweep depends on: the KV bucket lister closes its channel the same
@@ -22,8 +32,8 @@ func TestSchedulerPasses_EnumerationFailureIsReported(t *testing.T) {
 	require.NoError(t, err)
 
 	passes := map[string]func(context.Context) error{
-		"reap":                 sc.reap,
-		"sweepStoppedTasks":    sc.sweepStoppedTasks,
+		"reap":                 dropRevisit(sc.reap),
+		"sweepStoppedTasks":    dropRevisit(sc.sweepStoppedTasks),
 		"reconcileAllServices": svc.reconcileAllServices,
 	}
 	for name, pass := range passes {

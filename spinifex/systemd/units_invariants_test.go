@@ -441,7 +441,10 @@ var unitBodyHashes = map[string]map[int]string{
 	"spinifex-qmp-collector.service": {1: "beb18e6dd9351901f19d992cb2f757fb0e0e4a4d986402ccdb0ebb0a449f225c"},
 	"spinifex-shutdown.service":      {1: "bcdc455916f35aa7494b2fe25e691339e8f1e22f031dfd9fd95203a9aa4bdaa4"},
 	"spinifex-system.slice":          {1: "ca450c2b28a8b13dd767957fa9469bd74bd222d7abed79945e83d564d5ce16dd"},
-	"spinifex-ui.service":            {1: "9d5ec3785bf730405f23ec9df79675bf65ecbca9df47c15f5a4b4639393afbc5"},
+	"spinifex-ui.service": {
+		1: "9d5ec3785bf730405f23ec9df79675bf65ecbca9df47c15f5a4b4639393afbc5",
+		2: "f4e01839a7700ffa2120d618221e28b37afcebdd175dbeba0b3d47a88cf521e6",
+	},
 	"spinifex-viperblock.service": {
 		1: "5c8cdd2004abf8e5725cbce0200565b9b29be7ab3210a4e0a2cdfe37ec5facb9",
 		2: "5d691bf5ce4a5a636d5dcc07f7bfa36d0da9eb0d7fb26079f89358ca0e5440cd",

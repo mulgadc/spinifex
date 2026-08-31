@@ -840,6 +840,216 @@ func TestReconcile_PruneOrphanEIPs_SkipsOnReloadError(t *testing.T) {
 	}
 }
 
+// An SG created after the pass snapshotted its intent is live but missing from
+// that snapshot. Deleting its port group breaks every later ENI create in the VPC
+// ("port group not found"), so the prune must union a fresh re-read into the keep
+// set while still sweeping a genuine orphan.
+func TestReconcile_ApplySGs_SparesMidPassSecurityGroup(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	freshPG := topology.SecurityGroupPortGroup("sg-fresh")
+	deadPG := topology.SecurityGroupPortGroup("sg-dead")
+	for _, pgName := range []string{freshPG, deadPG} {
+		if _, _, err := m.EnsurePortGroup(ctx, pgName, nil); err != nil {
+			t.Fatalf("EnsurePortGroup %s: %v", pgName, err)
+		}
+	}
+
+	// The re-read sees the SG created mid-pass; the snapshot carries sg-a only.
+	r.reloadIntent = func(context.Context) (IntentState, error) {
+		fresh := freshIntent(t)
+		fresh.SGs["sg-fresh"] = policy.SGSpec{GroupID: "sg-fresh", VPCID: "vpc-a"}
+		return fresh, nil
+	}
+
+	if err := r.reconcile(ctx, freshIntent(t), true); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if _, ok := m.PortGroups[freshPG]; !ok {
+		t.Errorf("mid-pass SG port group %s must survive the prune via the fresh re-read", freshPG)
+	}
+	if _, ok := m.PortGroups[deadPG]; ok {
+		t.Errorf("genuine orphan port group %s must still be pruned", deadPG)
+	}
+}
+
+// When the fresh-intent re-read fails, the port group sweep is skipped wholesale
+// rather than risk deleting a live SG against a snapshot known to be stale.
+func TestReconcile_ApplySGs_SkipsPruneOnReloadError(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	deadPG := topology.SecurityGroupPortGroup("sg-dead")
+	if _, _, err := m.EnsurePortGroup(ctx, deadPG, nil); err != nil {
+		t.Fatalf("EnsurePortGroup: %v", err)
+	}
+	r.reloadIntent = func(context.Context) (IntentState, error) {
+		return IntentState{}, errors.New("kv unavailable")
+	}
+
+	res := &passResult{}
+	r.applySGs(ctx, freshIntent(t), scanOrFail(t, ctx, r), true, res)
+
+	if _, ok := m.PortGroups[deadPG]; !ok {
+		t.Errorf("prune must be skipped when the fresh re-read fails")
+	}
+	if len(res.failures) == 0 {
+		t.Errorf("a skipped prune must mark the pass incomplete so the loop requeues")
+	}
+}
+
+// Same window against guest LSPs: an ENI created mid-pass is absent from the
+// snapshot, and pruning its port strands the guest with no datapath.
+func TestReconcile_PruneOrphanPorts_SparesMidPassENI(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	if err := r.reconcile(ctx, freshIntent(t), false); err != nil {
+		t.Fatalf("reconcile (seed): %v", err)
+	}
+	for _, eniID := range []string{"eni-fresh", "eni-dead"} {
+		lsp := &nbdb.LogicalSwitchPort{
+			Name: topology.Port(eniID),
+			ExternalIDs: map[string]string{
+				"spinifex:eni_id":    eniID,
+				"spinifex:subnet_id": "subnet-a",
+				"spinifex:vpc_id":    "vpc-a",
+			},
+		}
+		if err := m.CreateLogicalSwitchPort(ctx, topology.SubnetSwitch("subnet-a"), lsp); err != nil {
+			t.Fatalf("seed LSP %s: %v", eniID, err)
+		}
+	}
+
+	mac, _ := net.ParseMAC("02:00:00:00:00:02")
+	r.reloadIntent = func(context.Context) (IntentState, error) {
+		fresh := freshIntent(t)
+		fresh.Ports["eni-fresh"] = topology.PortSpec{
+			PortID: "eni-fresh", SubnetID: "subnet-a", VPCID: "vpc-a",
+			PrivateIP: netip.MustParseAddr("10.0.1.20"), MAC: mac, SGIDs: []string{"sg-a"},
+		}
+		return fresh, nil
+	}
+
+	r.pruneOrphanPorts(ctx, freshIntent(t), &passResult{})
+
+	if _, ok := m.Ports[topology.Port("eni-fresh")]; !ok {
+		t.Errorf("mid-pass ENI port must survive the prune via the fresh re-read")
+	}
+	if _, ok := m.Ports[topology.Port("eni-dead")]; ok {
+		t.Errorf("genuine orphan ENI port must still be pruned")
+	}
+}
+
+// A failed re-read skips the guest LSP sweep entirely, same as the SG and EIP paths.
+func TestReconcile_PruneOrphanPorts_SkipsOnReloadError(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	if err := r.reconcile(ctx, freshIntent(t), false); err != nil {
+		t.Fatalf("reconcile (seed): %v", err)
+	}
+	orphan := &nbdb.LogicalSwitchPort{
+		Name: topology.Port("eni-dead"),
+		ExternalIDs: map[string]string{
+			"spinifex:eni_id":    "eni-dead",
+			"spinifex:subnet_id": "subnet-a",
+			"spinifex:vpc_id":    "vpc-a",
+		},
+	}
+	if err := m.CreateLogicalSwitchPort(ctx, topology.SubnetSwitch("subnet-a"), orphan); err != nil {
+		t.Fatalf("seed orphan LSP: %v", err)
+	}
+
+	r.reloadIntent = func(context.Context) (IntentState, error) {
+		return IntentState{}, errors.New("kv unavailable")
+	}
+	res := &passResult{}
+	r.pruneOrphanPorts(ctx, freshIntent(t), res)
+
+	if _, ok := m.Ports[topology.Port("eni-dead")]; !ok {
+		t.Errorf("prune must be skipped when the fresh re-read fails")
+	}
+	if len(res.failures) == 0 {
+		t.Errorf("a skipped prune must mark the pass incomplete so the loop requeues")
+	}
+}
+
+// racingOVN creates an ENI's LSP part-way through the sweep's own listing, so
+// the returned rows include a port that did not exist when the sweep started.
+type racingOVN struct {
+	*mock.Client
+
+	listed bool
+}
+
+func (o *racingOVN) ListLogicalSwitchPorts(ctx context.Context) ([]nbdb.LogicalSwitchPort, error) {
+	if !o.listed {
+		lsp := &nbdb.LogicalSwitchPort{
+			Name: topology.Port("eni-raced"),
+			ExternalIDs: map[string]string{
+				"spinifex:eni_id":    "eni-raced",
+				"spinifex:subnet_id": "subnet-a",
+				"spinifex:vpc_id":    "vpc-a",
+			},
+		}
+		if err := o.CreateLogicalSwitchPort(ctx, topology.SubnetSwitch("subnet-a"), lsp); err != nil {
+			return nil, err
+		}
+		o.listed = true
+	}
+	return o.Client.ListLogicalSwitchPorts(ctx)
+}
+
+// The create path writes the ENI to KV before it creates the LSP, so intent read
+// after the listing covers every row in it. Re-reading first reopens the window:
+// the new port is listed but absent from both snapshots and gets swept.
+func TestReconcile_PruneOrphanPorts_ReloadsAfterListing(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	if err := r.reconcile(ctx, freshIntent(t), false); err != nil {
+		t.Fatalf("reconcile (seed): %v", err)
+	}
+	racing := &racingOVN{Client: m}
+	r.ovn = racing
+
+	mac, _ := net.ParseMAC("02:00:00:00:00:03")
+	r.reloadIntent = func(context.Context) (IntentState, error) {
+		fresh := freshIntent(t)
+		// The KV record exists only once the LSP does, mirroring KV-then-OVN.
+		if racing.listed {
+			fresh.Ports["eni-raced"] = topology.PortSpec{
+				PortID: "eni-raced", SubnetID: "subnet-a", VPCID: "vpc-a",
+				PrivateIP: netip.MustParseAddr("10.0.1.30"), MAC: mac, SGIDs: []string{"sg-a"},
+			}
+		}
+		return fresh, nil
+	}
+
+	res := &passResult{}
+	r.pruneOrphanPorts(ctx, freshIntent(t), res)
+
+	if _, ok := m.Ports[topology.Port("eni-raced")]; !ok {
+		t.Errorf("ENI created during the listing must survive; re-read the intent after listing, not before")
+	}
+	if len(res.failures) != 0 {
+		t.Errorf("a clean sweep must not mark the pass incomplete, got %d failure(s)", len(res.failures))
+	}
+}
+
+// scanOrFail snapshots the mock's OVN state the way a pass does.
+func scanOrFail(t *testing.T, ctx context.Context, r *reconciler) ActualState {
+	t.Helper()
+	actual, err := scanActual(ctx, r.ovn)
+	if err != nil {
+		t.Fatalf("scanActual: %v", err)
+	}
+	return actual
+}
+
 // findNATByExternal returns the first NAT row matching (type, externalIP), or nil.
 func findNATByExternal(m *mock.Client, natType, externalIP string) *nbdb.NAT {
 	for _, n := range m.NATs {

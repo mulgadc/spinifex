@@ -14,7 +14,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -401,21 +400,27 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 			clientMAC := eniMAC(t, fix, clientENI)
 			targetMAC := eniMAC(t, fix, targetENI)
 
+			// The deny is a from-lport ACL, so it is the CLIENT's port group that
+			// names it. Assert on the log record rather than the trace's own
+			// syntax: a logged ACL emits no `drop;` token (northd splits it into
+			// acl_eval + acl_action) and northd offsets NB priorities by +1000.
+			denyEgress := strings.ReplaceAll(clientSG, "-", "_") + "-deny-egress"
+
 			flow := fmt.Sprintf(`inport == "port-%s" && eth.src == %s && eth.dst == %s && eth.type == 0x8035`,
 				clientENI, clientMAC, targetMAC)
 			trace := harness.OvnTrace(t, ls, flow)
-			require.Containsf(t, trace, "drop;",
+			require.Containsf(t, trace, "verdict=drop",
 				"RARP client -> target was not dropped; the default-deny is still ethertype-scoped\n%s", trace)
-			require.Containsf(t, trace, fmt.Sprintf("priority %d", policy.ACLPriorityDefaultDenyEgress),
-				"RARP was dropped, but not by the egress default-deny — the attribution this stage exists for is missing\n%s", trace)
+			require.Containsf(t, trace, denyEgress,
+				"RARP was dropped, but not by %s — the attribution this stage exists for is missing\n%s", denyEgress, trace)
 
-			// Control: the same trace for ARP must NOT reach the deny, or the
+			// Control: the same trace for ARP must NOT be dropped, or the
 			// widened deny has taken the IPv4 datapath down with it.
 			arpFlow := fmt.Sprintf(`inport == "port-%s" && eth.src == %s && eth.dst == %s && eth.type == 0x0806`,
 				clientENI, clientMAC, targetMAC)
 			arpTrace := harness.OvnTrace(t, ls, arpFlow)
-			require.NotContainsf(t, arpTrace, fmt.Sprintf("priority %d", policy.ACLPriorityDefaultDenyEgress),
-				"ARP from the client hit the egress default-deny — the ARP allow is missing or mis-prioritised\n%s", arpTrace)
+			require.NotContainsf(t, arpTrace, "verdict=drop",
+				"ARP from the client was dropped — the ARP allow is missing or mis-prioritised\n%s", arpTrace)
 			harness.Detail(t, "step5c", "non_ip_dropped_ok")
 		})
 
@@ -426,13 +431,16 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 			harness.Step(t, "8e-5d IPv6 client -> target blocked end to end")
 			iface, clientLL := guestLinkLocal(t, clientTgt)
 
-			// Validates the EUI-64 formula and the ENI-MAC -> guest-NIC
-			// mapping. Without it a wrong derivation below would make the
-			// probe fail for the wrong reason and pass forever.
-			require.Equalf(t, linkLocalFromMAC(eniMAC(t, fix, clientENI)), clientLL,
-				"EUI-64 derivation does not match the client's actual link-local on %s, so the derived target address cannot be trusted", iface)
+			// Validates the EUI-64 formula and the ENI-MAC -> guest-NIC mapping.
+			// Without it a wrong derivation below would make the probe fail for
+			// the wrong reason and pass forever. Compared as addresses, not
+			// strings: fe80::0046:... and fe80::46:... are the same address.
+			derived := linkLocalFromMAC(eniMAC(t, fix, clientENI))
+			require.Truef(t, derived.Equal(net.ParseIP(clientLL)),
+				"EUI-64 derivation %s does not match the client's actual link-local %q on %s, so the derived target address cannot be trusted",
+				derived, clientLL, iface)
 
-			targetLL := linkLocalFromMAC(eniMAC(t, fix, targetENI))
+			targetLL := linkLocalFromMAC(eniMAC(t, fix, targetENI)).String()
 			out, err := runSSHCombined(clientTgt, fmt.Sprintf("ping -6 -c 3 -W 3 %s%%%s", targetLL, iface))
 			require.Errorf(t, err, "FAIL: client reached target over IPv6 at %s\n%s", targetLL, out)
 
@@ -670,9 +678,12 @@ func eniMAC(t *testing.T, fix *Fixture, eniID string) net.HardwareAddr {
 
 // linkLocalFromMAC derives the IPv6 link-local a guest generates from an
 // EUI-48 MAC: invert the universal/local bit, then insert ff:fe mid-MAC.
-func linkLocalFromMAC(mac net.HardwareAddr) string {
-	return fmt.Sprintf("fe80::%02x%02x:%02xff:fe%02x:%02x%02x",
-		mac[0]^0x02, mac[1], mac[2], mac[3], mac[4], mac[5])
+// Returns net.IP so callers compare numerically — the textual forms differ.
+func linkLocalFromMAC(mac net.HardwareAddr) net.IP {
+	return net.IP{
+		0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+		mac[0] ^ 0x02, mac[1], mac[2], 0xff, 0xfe, mac[3], mac[4], mac[5],
+	}
 }
 
 // guestLinkLocal returns a guest's default-route interface and the IPv6

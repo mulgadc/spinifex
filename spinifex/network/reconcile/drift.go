@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -55,10 +56,17 @@ func intentSource(js jetstream.JetStream) loop.Source {
 		buckets := make([]*kvstore.Bucket, 0, len(intentBuckets))
 		for _, name := range intentBuckets {
 			kv, err := js.KeyValue(ctx, name)
-			if err != nil {
-				slog.DebugContext(ctx, "reconcile/drift: intent bucket not available, skipping",
-					"bucket", name, "err", err)
+			switch {
+			case errors.Is(err, jetstream.ErrBucketNotFound):
+				// Nothing of this kind has ever been created here.
+				slog.DebugContext(ctx, "reconcile/drift: intent bucket absent, not watched",
+					"bucket", name)
 				continue
+			case err != nil:
+				// Reported rather than skipped: a blip is not evidence the bucket
+				// went away, and a partial list would have the caller tear down
+				// the watchers it left out.
+				return nil, fmt.Errorf("resolve intent bucket %s: %w", name, err)
 			}
 			// js is passed so a watcher whose stream was lost can reconnect;
 			// RecreateIfMissing stays false so that reconnect never creates.

@@ -186,6 +186,11 @@ type Config struct {
 	// refuses rather than proceeding blind.
 	leases *volumeLeases
 
+	// ready is closed once every subscription is registered on the server.
+	// Nil in production; tests set it to wait for the real event instead of
+	// guessing at a sleep.
+	ready chan struct{}
+
 	mu sync.Mutex
 }
 
@@ -960,6 +965,16 @@ func launchService(cfg *Config) (err error) {
 
 	if err := registerProviderSubjects(cfg, nc); err != nil {
 		return err
+	}
+
+	// Subscriptions are written to the server asynchronously, so flush before
+	// signalling readiness: without the round trip a caller can act on the
+	// signal and still have its request arrive before the interest does.
+	if err := nc.Flush(); err != nil {
+		return fmt.Errorf("failed to flush subscriptions: %w", err)
+	}
+	if cfg.ready != nil {
+		close(cfg.ready)
 	}
 
 	// Create a channel to receive shutdown signals

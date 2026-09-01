@@ -59,6 +59,25 @@ func installTestVolumeLeases(t *testing.T, cfg *Config, natsURL string) {
 	cfg.leases = leases
 }
 
+// startTestService launches the daemon and blocks until every subscription is
+// registered on the server. launchService returns early on a startup error, so
+// the wait is bounded rather than blocking the suite on a daemon that died.
+func startTestService(t *testing.T, cfg *Config) {
+	t.Helper()
+
+	cfg.ready = make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() { errCh <- launchService(cfg) }()
+
+	select {
+	case <-cfg.ready:
+	case err := <-errCh:
+		t.Fatalf("launchService returned before becoming ready: %v", err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("launchService did not become ready")
+	}
+}
+
 // setupTestConfig creates a test configuration with proper paths.
 func setupTestConfig(t *testing.T, natsURL string) *Config {
 	testDir := t.TempDir()
@@ -166,13 +185,7 @@ func TestIntegration_ServiceStartWithEmbeddedNATS(t *testing.T) {
 	// Create test config
 	cfg := setupTestConfig(t, natsURL)
 
-	// Start service in background goroutine
-	go func() {
-		launchService(cfg)
-	}()
-
-	// Give service time to start and subscribe
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	// Verify server is responsive
 	nc, err := nats.Connect(natsURL)
@@ -203,13 +216,7 @@ func TestIntegration_EBSMountRequest(t *testing.T) {
 	// Create mock volume state (this will fail in viperblock.New, which is expected)
 	createMockVolumeState(t, cfg.BaseDir, "vol-test-001")
 
-	// Start service in goroutine
-	go func() {
-		launchService(cfg)
-	}()
-
-	// Give service time to subscribe
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	// Connect client to NATS
 	nc, err := nats.Connect(natsURL)
@@ -271,13 +278,7 @@ func TestIntegration_EBSUnmountRequest(t *testing.T) {
 		},
 	}
 
-	// Start service in goroutine
-	go func() {
-		launchService(cfg)
-	}()
-
-	// Give service time to subscribe
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	// Connect client to NATS
 	nc, err := nats.Connect(natsURL)
@@ -335,13 +336,7 @@ func TestIntegration_EBSUnmountNonExistentVolume(t *testing.T) {
 	// Create test config without any mounted volumes
 	cfg := setupTestConfig(t, natsURL)
 
-	// Start service in goroutine
-	go func() {
-		launchService(cfg)
-	}()
-
-	// Give service time to subscribe
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	// Connect client to NATS
 	nc, err := nats.Connect(natsURL)
@@ -392,8 +387,7 @@ func TestIntegration_EBSUnmountRetryAfterCompletedSealReportsNotFound(t *testing
 		{Name: "vol-retry-unmount", PID: 99999},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -451,8 +445,7 @@ func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
 		{Name: "vol-seal-fail", PID: 99999},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -504,8 +497,7 @@ func TestIntegration_EBSUnmountReceiptSkipsFallbackSeal(t *testing.T) {
 		{Name: "vol-clean-receipt", PID: 99999},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -556,8 +548,7 @@ func TestIntegration_EBSUnmountStateDirSealsRegardlessOfReceipt(t *testing.T) {
 		{Name: "vol-state-and-receipt", PID: 99999},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -599,8 +590,7 @@ func TestIntegration_EBSUnmountAuxVolumeNeverSeals(t *testing.T) {
 		{Name: "vol-aux-efi", PID: 99999},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -642,8 +632,7 @@ func TestIntegration_EBSUnmountNoStateNoReceiptWarns(t *testing.T) {
 		{Name: "vol-no-state-no-receipt", PID: 99999},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -679,8 +668,7 @@ func TestIntegration_EBSMountClearsStaleSealReceipt(t *testing.T) {
 	writeSealReceipt(t, cfg.BaseDir, "vol-mount-clear")
 	receiptPath := sealReceiptPath(cfg.BaseDir, "vol-mount-clear")
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -714,13 +702,7 @@ func TestIntegration_ConcurrentMountRequests(t *testing.T) {
 	// Create test config
 	cfg := setupTestConfig(t, natsURL)
 
-	// Start service in goroutine
-	go func() {
-		launchService(cfg)
-	}()
-
-	// Give service time to subscribe
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	// Connect client to NATS
 	nc, err := nats.Connect(natsURL)
@@ -781,13 +763,7 @@ func TestIntegration_MessageSubscriptions(t *testing.T) {
 	// Create test config
 	cfg := setupTestConfig(t, natsURL)
 
-	// Start service in goroutine
-	go func() {
-		launchService(cfg)
-	}()
-
-	// Give service time to subscribe
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	// Connect client to NATS
 	nc, err := nats.Connect(natsURL)
@@ -842,15 +818,7 @@ func TestIntegration_ServiceGracefulShutdown(t *testing.T) {
 		},
 	}
 
-	// Start service in goroutine
-	doneChan := make(chan struct{})
-	go func() {
-		launchService(cfg)
-		close(doneChan)
-	}()
-
-	// Give service time to start
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	// Note: We can't easily test SIGTERM handling without refactoring launchService
 	// to accept a context or shutdown channel. For now, we verify the service
@@ -888,8 +856,7 @@ func TestIntegration_GenericTopicRouting(t *testing.T) {
 		{Name: "vol-generic", PID: 99999},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	assert.NoError(t, err)
@@ -922,8 +889,7 @@ func TestIntegration_MountAuxiliaryVolumeSuffix(t *testing.T) {
 
 	cfg := setupTestConfig(t, natsURL)
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	assert.NoError(t, err)

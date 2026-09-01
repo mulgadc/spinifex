@@ -170,8 +170,7 @@ func TestEBSConfigQueueGroup_LiveVB(t *testing.T) {
 	cfg := setupTestConfig(t, natsURL)
 	cfg.MountedVolumes = []MountedVolume{{Name: "vol-qg-live", VB: vb}}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -199,8 +198,7 @@ func TestEBSConfigQueueGroup_InvalidJSON(t *testing.T) {
 
 	cfg := setupTestConfig(t, natsURL)
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -228,23 +226,14 @@ func TestEBSConfigQueueGroup_DetachedOpenFails(t *testing.T) {
 	// openVolumeVB against the mock S3 host, which fails.
 	cfg := setupTestConfig(t, natsURL)
 
-	go func() { launchService(cfg) }()
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
 	defer nc.Close()
 
-	// launchService subscribes to "ebs.config" asynchronously and CPU
-	// contention can delay that past a fixed sleep, so poll with a malformed
-	// request, rejected at json.Unmarshal before the slow S3 path, until ready.
-	require.Eventually(t, func() bool {
-		_, probeErr := nc.Request("ebs.config", []byte("not json {{{"), 200*time.Millisecond)
-		return probeErr == nil
-	}, 15*time.Second, 50*time.Millisecond, "ebs.config queue subscriber never became ready")
-
-	// The subscriber is confirmed live; openVolumeVB's S3 failure still needs
-	// to exhaust a jittered backoff (up to a few seconds), so give the real
-	// request more room than the readiness probe.
+	// The subscriber is live; openVolumeVB's S3 failure still needs to exhaust
+	// a jittered backoff (up to a few seconds), so give the request room.
 	reqData, _ := json.Marshal(configReq(t, "vol-qg-detached", 3))
 	msg, err := nc.Request("ebs.config", reqData, 10*time.Second)
 	require.NoError(t, err)

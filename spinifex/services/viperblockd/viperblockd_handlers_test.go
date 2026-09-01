@@ -71,8 +71,7 @@ func TestIntegration_EBSDeleteMountedVolume(t *testing.T) {
 		},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: "vol-del-test"})
 	msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
@@ -109,8 +108,7 @@ func TestIntegration_EBSDeleteUnmountedVolume(t *testing.T) {
 	cfg := setupTestConfig(t, natsURL)
 	// No mounted volumes
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -150,8 +148,7 @@ func TestIntegration_EBSDeleteRemovesLocalVolumeDirectory(t *testing.T) {
 	createMockVolumeState(t, cfg.BaseDir, "vol-residual-test")
 	createMockVolumeState(t, cfg.BaseDir, "vol-residual-test-efi")
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -188,8 +185,7 @@ func TestIntegration_EBSDeleteEmptyVolumeNameDoesNotWipeBaseDir(t *testing.T) {
 	cfg := setupTestConfig(t, natsURL)
 	createMockVolumeState(t, cfg.BaseDir, "vol-survivor")
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -225,8 +221,7 @@ func TestIntegration_EBSDeleteRejectsPathTraversal(t *testing.T) {
 	cfg := setupTestConfig(t, natsURL)
 	createMockVolumeState(t, cfg.BaseDir, "vol-survivor")
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -263,8 +258,7 @@ func TestIntegration_EBSDeleteValidNameLeavesSiblingsUntouched(t *testing.T) {
 	createMockVolumeState(t, cfg.BaseDir, "vol-target")
 	createMockVolumeState(t, cfg.BaseDir, "vol-sibling")
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -296,8 +290,7 @@ func TestIntegration_EBSDeleteInvalidJSON(t *testing.T) {
 
 	cfg := setupTestConfig(t, natsURL)
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -324,8 +317,7 @@ func TestIntegration_EBSSyncVolumeNotMounted(t *testing.T) {
 
 	cfg := setupTestConfig(t, natsURL)
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -355,8 +347,7 @@ func TestIntegration_EBSSyncVolumeNoVBInstance(t *testing.T) {
 		{Name: "vol-no-vb", VB: nil}, // Volume exists but no VB instance
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -383,8 +374,7 @@ func TestIntegration_EBSSyncInvalidJSON(t *testing.T) {
 
 	cfg := setupTestConfig(t, natsURL)
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -423,8 +413,7 @@ func TestIntegration_EBSUnmountRemovesSocket(t *testing.T) {
 		},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -461,8 +450,7 @@ func TestIntegration_EBSDeleteRemovesSocket(t *testing.T) {
 		{Name: "vol-del-socket", Socket: socketPath, PID: 99999},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -496,8 +484,7 @@ func TestIntegration_EBSSyncWithVBInstance(t *testing.T) {
 		{Name: "vol-sync-vb", VB: vb},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -526,8 +513,7 @@ func TestIntegration_EBSUnmountInvalidJSON(t *testing.T) {
 
 	cfg := setupTestConfig(t, natsURL)
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -577,8 +563,7 @@ func TestIntegration_EBSDeleteWithVBInstance(t *testing.T) {
 		},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: "vol-del-vb"})
 	msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
@@ -629,8 +614,7 @@ func TestIntegration_EBSUnmountWithVBInstance(t *testing.T) {
 		},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	reqData, _ := json.Marshal(types.EBSRequest{Name: "vol-unmount-vb"})
 	msg, err := nc.Request("ebs.test-node.unmount", reqData, 3*time.Second)
@@ -663,8 +647,7 @@ func TestIntegration_EBSUnmountDualPublish(t *testing.T) {
 		{Name: "vol-dual-pub", PID: 99999},
 	}
 
-	go func() { launchService(cfg) }()
-	time.Sleep(500 * time.Millisecond)
+	startTestService(t, cfg)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)

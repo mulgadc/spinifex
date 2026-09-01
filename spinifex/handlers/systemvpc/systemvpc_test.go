@@ -31,8 +31,10 @@ type fakeEC2 struct {
 	rts     map[string]*ec2.RouteTable
 	ngws    map[string]*ec2.NatGateway
 	igws    map[string]*ec2.InternetGateway
-	sgs     map[string]*ec2.SecurityGroup
-	eips    map[string]string
+	// igwIntent is igwID -> vpcID for attaches not yet confirmed.
+	igwIntent map[string]string
+	sgs       map[string]*ec2.SecurityGroup
+	eips      map[string]string
 
 	// routes records the default route installed on each route table, keyed by
 	// route-table id, as "<target-kind>:<target-id>".
@@ -52,16 +54,17 @@ var (
 
 func newFakeEC2() *fakeEC2 {
 	return &fakeEC2{
-		accs:    map[string]int{},
-		vpcs:    map[string]*ec2.Vpc{},
-		subnets: map[string]*ec2.Subnet{},
-		rts:     map[string]*ec2.RouteTable{},
-		ngws:    map[string]*ec2.NatGateway{},
-		igws:    map[string]*ec2.InternetGateway{},
-		sgs:     map[string]*ec2.SecurityGroup{},
-		eips:    map[string]string{},
-		routes:  map[string]string{},
-		creates: map[string]int{},
+		accs:      map[string]int{},
+		vpcs:      map[string]*ec2.Vpc{},
+		subnets:   map[string]*ec2.Subnet{},
+		rts:       map[string]*ec2.RouteTable{},
+		ngws:      map[string]*ec2.NatGateway{},
+		igws:      map[string]*ec2.InternetGateway{},
+		igwIntent: map[string]string{},
+		sgs:       map[string]*ec2.SecurityGroup{},
+		eips:      map[string]string{},
+		routes:    map[string]string{},
+		creates:   map[string]int{},
 	}
 }
 
@@ -335,23 +338,63 @@ func (f *fakeEC2) CreateInternetGateway(_ context.Context, in *ec2.CreateInterne
 	return &ec2.CreateInternetGatewayOutput{InternetGateway: igw}, nil
 }
 
+// Attaching is asynchronous in production: the record names the VPC straight
+// away, but DescribeInternetGateways reports no attachment until a reconcile
+// pass confirms it. The fake models both phases, so code that reads the
+// describe projection where it needs intent fails here rather than in a nightly.
 func (f *fakeEC2) AttachInternetGateway(_ context.Context, in *ec2.AttachInternetGatewayInput, _ string) (*ec2.AttachInternetGatewayOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	igw, ok := f.igws[aws.StringValue(in.InternetGatewayId)]
-	if !ok {
-		return nil, fmt.Errorf("no such igw %s", aws.StringValue(in.InternetGatewayId))
+	igwID := aws.StringValue(in.InternetGatewayId)
+	if _, ok := f.igws[igwID]; !ok {
+		return nil, fmt.Errorf("no such igw %s", igwID)
 	}
-	igw.Attachments = []*ec2.InternetGatewayAttachment{{VpcId: in.VpcId, State: aws.String("available")}}
+	if f.igwIntent == nil {
+		f.igwIntent = map[string]string{}
+	}
+	f.igwIntent[igwID] = aws.StringValue(in.VpcId)
 	return &ec2.AttachInternetGatewayOutput{}, nil
+}
+
+// confirmIGW is the reconcile pass: it makes the pending attach observable.
+func (f *fakeEC2) confirmIGW(igwID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if igw, ok := f.igws[igwID]; ok {
+		igw.Attachments = []*ec2.InternetGatewayAttachment{
+			{VpcId: aws.String(f.igwIntent[igwID]), State: aws.String("available")},
+		}
+	}
+}
+
+func (f *fakeEC2) AttachmentIntent(_ context.Context, _, vpcID string) (*ec2.InternetGateway, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for igwID, attached := range f.igwIntent {
+		if attached != vpcID {
+			continue
+		}
+		igw, ok := f.igws[igwID]
+		if !ok {
+			continue
+		}
+		out := *igw
+		out.Attachments = []*ec2.InternetGatewayAttachment{
+			{VpcId: aws.String(vpcID), State: aws.String("available")},
+		}
+		return &out, nil
+	}
+	return nil, nil
 }
 
 func (f *fakeEC2) DetachInternetGateway(_ context.Context, in *ec2.DetachInternetGatewayInput, _ string) (*ec2.DetachInternetGatewayOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if igw, ok := f.igws[aws.StringValue(in.InternetGatewayId)]; ok {
+	igwID := aws.StringValue(in.InternetGatewayId)
+	if igw, ok := f.igws[igwID]; ok {
 		igw.Attachments = nil
 	}
+	delete(f.igwIntent, igwID)
 	return &ec2.DetachInternetGatewayOutput{}, nil
 }
 
@@ -540,6 +583,30 @@ func TestEnsureBuildsTheFullTopology(t *testing.T) {
 	// landed in another account could not be found again by any later describe,
 	// which all run as the system account.
 	assert.Equal(t, []string{"000000000000"}, slices.Collect(maps.Keys(f.accs)))
+}
+
+// Ensure attaches an IGW and then re-reads it in the next breath. Attaching is
+// asynchronous, so that lookup has to see the request rather than waiting for a
+// reconcile pass, or every first-time EKS/RDS/Bedrock VPC fails to build.
+func TestEnsureSucceedsWhileTheAttachIsUnconfirmed(t *testing.T) {
+	f := newFakeEC2()
+
+	refs, err := Ensure(t.Context(), f.deps(), testSpec("cp-demo"), "000000000000")
+	require.NoError(t, err, "Ensure must not require the attach to be confirmed first")
+	require.NotEmpty(t, refs.IGWID)
+
+	// The AWS-facing projection still reports nothing, which is the point:
+	// Ensure is reading intent, not the confirmed attachment.
+	out, err := f.DescribeInternetGateways(t.Context(), &ec2.DescribeInternetGatewaysInput{}, "000000000000")
+	require.NoError(t, err)
+	require.Len(t, out.InternetGateways, 1)
+	assert.Empty(t, out.InternetGateways[0].Attachments, "an unconfirmed attach must not be reported")
+
+	f.confirmIGW(refs.IGWID)
+	out, err = f.DescribeInternetGateways(t.Context(), &ec2.DescribeInternetGatewaysInput{}, "000000000000")
+	require.NoError(t, err)
+	require.Len(t, out.InternetGateways, 1)
+	assert.Len(t, out.InternetGateways[0].Attachments, 1, "confirming makes the attachment observable")
 }
 
 func TestEnsureIsIdempotent(t *testing.T) {

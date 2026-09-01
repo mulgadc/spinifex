@@ -435,6 +435,53 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 	return &ec2.DetachInternetGatewayOutput{}, nil
 }
 
+// AttachmentIntent returns the IGW whose record names vpcID, or nil if none
+// does. Unlike DescribeInternetGateways it reports an attachment that has been
+// requested but not yet confirmed, because a caller provisioning or tearing
+// down a VPC asks what was asked for, not what OVN has caught up with. The AWS
+// surface must not answer that question, so this is the in-process seam for it.
+func (s *IGWServiceImpl) AttachmentIntent(ctx context.Context, accountID, vpcID string) (*ec2.InternetGateway, error) {
+	if vpcID == "" {
+		return nil, nil
+	}
+
+	prefix := accountID + "."
+	keys, err := s.igwKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	for _, key := range keys {
+		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := s.igwKV.Get(ctx, key)
+		if err != nil {
+			slog.WarnContext(ctx, "AttachmentIntent: IGW read failed", "key", key, "err", err)
+			continue
+		}
+		var record IGWRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			slog.WarnContext(ctx, "AttachmentIntent: IGW unmarshal failed", "key", key, "err", err)
+			continue
+		}
+		if record.VpcId != vpcID {
+			continue
+		}
+		igw := s.recordToEC2(&record)
+		// recordToEC2 hides a pending attachment; this view must show it.
+		igw.Attachments = []*ec2.InternetGatewayAttachment{
+			{VpcId: aws.String(record.VpcId), State: aws.String(record.State)},
+		}
+		return igw, nil
+	}
+
+	return nil, nil
+}
+
 // MarkAttached records that vpcd has brought the OVN gateway up for the IGW at
 // recordKey. Writing only on the pending transition keeps a reconcile pass from
 // waking the drift loop that watches this bucket. Detached or already-attached

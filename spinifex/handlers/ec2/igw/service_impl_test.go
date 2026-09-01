@@ -235,6 +235,70 @@ func TestAttachInternetGateway(t *testing.T) {
 	assert.Equal(t, "available", *desc.InternetGateways[0].Attachments[0].State)
 }
 
+// AttachmentIntent is the seam every internal provisioning and teardown caller
+// uses, because they must see a requested attachment. Reading the AWS-facing
+// describe instead makes them create duplicate gateways and skip teardowns.
+func TestAttachmentIntent_SeesPendingAndConfirmedAlike(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+	ctx := context.Background()
+
+	got, err := svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	assert.Nil(t, got, "no attach requested yet")
+
+	_, err = svc.AttachInternetGateway(ctx, &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got, err = svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	require.NotNil(t, got, "a pending attach is still intent: missing it creates a second gateway")
+	assert.Equal(t, igwID, *got.InternetGatewayId)
+	require.Len(t, got.Attachments, 1)
+	assert.Equal(t, "vpc-test123", *got.Attachments[0].VpcId)
+
+	confirmAttach(t, svc, igwID)
+	got, err = svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	require.NotNil(t, got, "a confirmed attachment is intent too")
+	assert.Equal(t, igwID, *got.InternetGatewayId)
+
+	_, err = svc.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got, err = svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	assert.Nil(t, got, "a detached gateway is no longer intent for that VPC")
+}
+
+// Scoped per account and per VPC: a gateway in another account or on another
+// VPC must not answer, or teardown detaches something it does not own.
+func TestAttachmentIntent_ScopedByAccountAndVPC(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+	ctx := context.Background()
+
+	_, err := svc.AttachInternetGateway(ctx, &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got, err := svc.AttachmentIntent(ctx, testAccountID, "vpc-other")
+	require.NoError(t, err)
+	assert.Nil(t, got, "another VPC must not match")
+
+	got, err = svc.AttachmentIntent(ctx, "000000009999", "vpc-test123")
+	require.NoError(t, err)
+	assert.Nil(t, got, "another account must not match")
+}
+
 // A record written before attach tracking existed has no AttachState. It must
 // still report its attachment rather than vanishing until the next drift pass.
 func TestDescribeInternetGateways_LegacyRecordReportsAttachment(t *testing.T) {

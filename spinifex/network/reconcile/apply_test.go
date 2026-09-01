@@ -1171,11 +1171,17 @@ type stubIGW struct {
 	external.IGWManager
 
 	attachErr error
+	// attachNoop returns success without building any OVN state, modelling an
+	// AttachIGW that reports nil on a gateway that does not actually forward.
+	attachNoop bool
 }
 
 func (s *stubIGW) AttachIGW(ctx context.Context, spec external.IGWSpec) error {
 	if s.attachErr != nil {
 		return s.attachErr
+	}
+	if s.attachNoop {
+		return nil
 	}
 	return s.IGWManager.AttachIGW(ctx, spec)
 }
@@ -1224,6 +1230,27 @@ func TestReconcile_MarksIGWAttachedOnlyOnSuccess(t *testing.T) {
 		}
 		if called {
 			t.Error("markAttached called after a failed attach: the API would report a gateway that is not up")
+		}
+	})
+
+	// AttachIGW returning nil is not proof the gateway forwards. Confirming
+	// before the chassis rebind would report a gateway with no bound chassis as
+	// attached, and the confirmation is one-way so it would never self-correct.
+	t.Run("chassis rebind failed", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		rec.chassis = []string{"chassis-1"}
+		rec.igw = &stubIGW{IGWManager: rec.igw, attachNoop: true}
+		called := false
+		rec.markAttached = func(context.Context, string) error {
+			called = true
+			return nil
+		}
+		if err := rec.Reconcile(ctx, igwIntent(t)); !errors.Is(err, ErrPassIncomplete) {
+			t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
+		}
+		if called {
+			t.Error("markAttached called after a failed chassis rebind: the gateway has no bound " +
+				"chassis, and the confirmation is one-way so no later pass would revert it")
 		}
 	})
 

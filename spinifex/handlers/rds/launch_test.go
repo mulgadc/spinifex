@@ -156,20 +156,24 @@ func (f *fakeSystemVPC) DeleteInternetGateway(context.Context, *ec2.DeleteIntern
 	return &ec2.DeleteInternetGatewayOutput{}, nil
 }
 
-// DescribeInternetGateways answers the post-attach lookup: the builder attaches
-// an IGW and then re-reads it, so this reports one attached to any VPC asked
-// about.
-func (f *fakeSystemVPC) DescribeInternetGateways(_ context.Context, in *ec2.DescribeInternetGatewaysInput, _ string) (*ec2.DescribeInternetGatewaysOutput, error) {
-	// The pre-create lookup must find nothing, or no IGW is ever created; only
-	// the post-attach one is answered. Distinguish them by whether an IGW has
-	// been created yet.
+// DescribeInternetGateways reports only confirmed attachments, and nothing in
+// this test ever confirms one — attaching is asynchronous, so the builder's
+// lookups go through AttachmentIntent instead.
+func (f *fakeSystemVPC) DescribeInternetGateways(context.Context, *ec2.DescribeInternetGatewaysInput, string) (*ec2.DescribeInternetGatewaysOutput, error) {
+	return &ec2.DescribeInternetGatewaysOutput{}, nil
+}
+
+// AttachmentIntent answers the post-attach lookup: the builder attaches an IGW
+// and then re-reads it, so this reports one for any VPC asked about once
+// created. The pre-create lookup must find nothing, or none is ever created.
+func (f *fakeSystemVPC) AttachmentIntent(_ context.Context, _, vpcID string) (*ec2.InternetGateway, error) {
 	if !f.igwCreated {
-		return &ec2.DescribeInternetGatewaysOutput{}, nil
+		return nil, nil
 	}
-	return &ec2.DescribeInternetGatewaysOutput{InternetGateways: []*ec2.InternetGateway{{
+	return &ec2.InternetGateway{
 		InternetGatewayId: aws.String("igw-rdssys"),
-		Attachments:       []*ec2.InternetGatewayAttachment{{VpcId: in.Filters[0].Values[0]}},
-	}}}, nil
+		Attachments:       []*ec2.InternetGatewayAttachment{{VpcId: aws.String(vpcID)}},
+	}, nil
 }
 
 // fakeENIs records the ENIs the launch helper created and deleted, per account,

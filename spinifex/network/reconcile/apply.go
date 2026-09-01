@@ -442,8 +442,14 @@ func (r *reconciler) applyIGWs(ctx context.Context, intent IntentState, actual A
 			continue
 		}
 		actual.ExternalSwch[vpcID] = struct{}{}
-		r.reportIGWAttached(ctx, spec)
+		// Confirmed only after the chassis rebind and datapath gate: AttachIGW
+		// returning nil is not proof the gateway forwards, and the confirmation
+		// is one-way, so reporting early would never self-correct.
+		before := len(res.failures)
 		r.rebindGatewayChassis(ctx, vpcID, eipProbeIP(intent, vpcID), res)
+		if len(res.failures) == before {
+			r.reportIGWAttached(ctx, spec)
+		}
 	}
 }
 

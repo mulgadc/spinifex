@@ -134,20 +134,27 @@ func (f *fakeSystemVPC) DeleteInternetGateway(context.Context, *ec2.DeleteIntern
 	return &ec2.DeleteInternetGatewayOutput{}, nil
 }
 
-// DescribeInternetGateways answers the post-attach lookup: the builder
-// attaches an IGW and then re-reads it, so the pre-create lookup must find
-// nothing (or no IGW is ever created) and only the post-attach one answered.
-func (f *fakeSystemVPC) DescribeInternetGateways(_ context.Context, in *ec2.DescribeInternetGatewaysInput, _ string) (*ec2.DescribeInternetGatewaysOutput, error) {
+// DescribeInternetGateways reports only confirmed attachments, and nothing in
+// this test ever confirms one — attaching is asynchronous, so the builder's
+// lookups go through AttachmentIntent instead.
+func (f *fakeSystemVPC) DescribeInternetGateways(context.Context, *ec2.DescribeInternetGatewaysInput, string) (*ec2.DescribeInternetGatewaysOutput, error) {
+	return &ec2.DescribeInternetGatewaysOutput{}, nil
+}
+
+// AttachmentIntent answers the post-attach lookup: the builder attaches an IGW
+// and then re-reads it, so the pre-create lookup must find nothing (or no IGW
+// is ever created) and only the post-attach one answered.
+func (f *fakeSystemVPC) AttachmentIntent(_ context.Context, _, vpcID string) (*ec2.InternetGateway, error) {
 	f.mu.Lock()
 	created := f.igwCreated
 	f.mu.Unlock()
 	if !created {
-		return &ec2.DescribeInternetGatewaysOutput{}, nil
+		return nil, nil
 	}
-	return &ec2.DescribeInternetGatewaysOutput{InternetGateways: []*ec2.InternetGateway{{
+	return &ec2.InternetGateway{
 		InternetGatewayId: aws.String("igw-bedrocksys"),
-		Attachments:       []*ec2.InternetGatewayAttachment{{VpcId: in.Filters[0].Values[0]}},
-	}}}, nil
+		Attachments:       []*ec2.InternetGatewayAttachment{{VpcId: aws.String(vpcID)}},
+	}, nil
 }
 
 // testModelID is the real self-host catalog entry (MinVRAMMiB=5120), used

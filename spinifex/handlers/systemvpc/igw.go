@@ -22,6 +22,11 @@ type IGWProvisioner interface {
 	AttachInternetGateway(ctx context.Context, input *ec2.AttachInternetGatewayInput, accountID string) (*ec2.AttachInternetGatewayOutput, error)
 	DetachInternetGateway(ctx context.Context, input *ec2.DetachInternetGatewayInput, accountID string) (*ec2.DetachInternetGatewayOutput, error)
 	DeleteInternetGateway(ctx context.Context, input *ec2.DeleteInternetGatewayInput, accountID string) (*ec2.DeleteInternetGatewayOutput, error)
+	// AttachmentIntent reports a requested attachment before it is confirmed.
+	// Attaching is asynchronous, so every lookup here must use it rather than
+	// DescribeInternetGateways, which reports only confirmed attachments and
+	// would have this code create a second gateway or skip a teardown.
+	AttachmentIntent(ctx context.Context, accountID, vpcID string) (*ec2.InternetGateway, error)
 }
 
 // EnsureIGW guarantees vpcID has an attached Internet Gateway. An IGW already
@@ -109,20 +114,14 @@ func DeleteIGW(ctx context.Context, igwp IGWProvisioner, owner Owner, accountID,
 }
 
 // AttachedIGW returns the Internet Gateway attached to vpcID, or nil if none.
+// Includes an attachment still being confirmed: every caller here is asking
+// whether this VPC already has a gateway, and a gateway mid-attach does.
 func AttachedIGW(ctx context.Context, igwp IGWProvisioner, accountID, vpcID string) (*ec2.InternetGateway, error) {
-	out, err := igwp.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{
-		Filters: []*ec2.Filter{{
-			Name:   aws.String("attachment.vpc-id"),
-			Values: aws.StringSlice([]string{vpcID}),
-		}},
-	}, accountID)
+	igw, err := igwp.AttachmentIntent(ctx, accountID, vpcID)
 	if err != nil {
 		return nil, fmt.Errorf("systemvpc: describe IGWs for vpc %s: %w", vpcID, err)
 	}
-	if out == nil || len(out.InternetGateways) == 0 {
-		return nil, nil
-	}
-	return out.InternetGateways[0], nil
+	return igw, nil
 }
 
 // ownedBy reports whether igw carries this owner's managed-by + name tags.

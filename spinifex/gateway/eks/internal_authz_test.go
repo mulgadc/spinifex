@@ -1,9 +1,10 @@
-package gateway_eks
+package gateway_eks_test
 
 import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -14,14 +15,19 @@ import (
 )
 
 const (
+	// The literal STS puts in the auth context, spelled out rather than shared
+	// with the gate: a silent change to either side must fail a test, not agree
+	// with itself.
+	principalTypeAssumedRole = "assumed-role"
+
 	tenantAccount = "111122223333"
 	cpInstanceID  = "i-cp0000000000001"
 	otherInstance = "i-cp0000000000002"
 )
 
 // cpAgent is the principal an IMDS-credentialed control-plane VM presents.
-func cpAgent(instanceID string) Caller {
-	return Caller{
+func cpAgent(instanceID string) gateway_eks.Caller {
+	return gateway_eks.Caller{
 		AccountID:     utils.GlobalAccountID,
 		PrincipalType: principalTypeAssumedRole,
 		RoleName:      handlers_eks.CPInstanceRoleName,
@@ -47,33 +53,33 @@ func assertDenied(t *testing.T, err error) {
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }
 
-// The bead's reach: a tenant holding eks:* names another account in the path.
-// The class gate rejects it before any cluster state is read, so it holds with
-// no NATS connection at all.
+// A tenant holding eks:* names another account in the path. The class gate
+// rejects it before any cluster state is read, so it holds with no NATS
+// connection at all.
 func TestAuthorizeInternal_RejectsNonCPPrincipals(t *testing.T) {
 	cases := []struct {
 		name   string
-		caller Caller
+		caller gateway_eks.Caller
 	}{
-		{"tenant user with eks:*", Caller{
+		{"tenant user with eks:*", gateway_eks.Caller{
 			AccountID: tenantAccount, PrincipalType: "user", SessionName: "alice",
 		}},
-		{"tenant role session", Caller{
+		{"tenant role session", gateway_eks.Caller{
 			AccountID:     tenantAccount,
 			PrincipalType: principalTypeAssumedRole,
 			RoleName:      handlers_eks.CPInstanceRoleName,
 			SessionName:   cpInstanceID,
 		}},
-		{"system user, not a role session", Caller{
+		{"system user, not a role session", gateway_eks.Caller{
 			AccountID: utils.GlobalAccountID, PrincipalType: "user", SessionName: "root",
 		}},
-		{"another role in the system account", Caller{
+		{"another role in the system account", gateway_eks.Caller{
 			AccountID:     utils.GlobalAccountID,
 			PrincipalType: principalTypeAssumedRole,
 			RoleName:      "spinifex-rds-instance",
 			SessionName:   cpInstanceID,
 		}},
-		{"no session name", Caller{
+		{"no session name", gateway_eks.Caller{
 			AccountID:     utils.GlobalAccountID,
 			PrincipalType: principalTypeAssumedRole,
 			RoleName:      handlers_eks.CPInstanceRoleName,
@@ -81,9 +87,9 @@ func TestAuthorizeInternal_RejectsNonCPPrincipals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assertDenied(t, AuthorizeInternal(t.Context(), nil, "ListInternalAddons",
+			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nil, "ListInternalAddons",
 				tc.caller, []string{"alpha", tenantAccount}))
-			assertDenied(t, AuthorizeInternal(t.Context(), nil, "GetRecoveryDirective",
+			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nil, "GetRecoveryDirective",
 				tc.caller, []string{"alpha", tenantAccount, cpInstanceID}))
 		})
 	}
@@ -91,9 +97,9 @@ func TestAuthorizeInternal_RejectsNonCPPrincipals(t *testing.T) {
 
 // Actions outside the internal set keep their own gating; this one adds none.
 func TestAuthorizeInternal_IgnoresOtherActions(t *testing.T) {
-	assert.False(t, IsInternalAction("DescribeCluster"))
-	require.NoError(t, AuthorizeInternal(t.Context(), nil, "DescribeCluster",
-		Caller{AccountID: tenantAccount, PrincipalType: "user"}, []string{"alpha"}))
+	assert.False(t, gateway_eks.IsInternalAction("DescribeCluster"))
+	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nil, "DescribeCluster",
+		gateway_eks.Caller{AccountID: tenantAccount, PrincipalType: "user"}, []string{"alpha"}))
 }
 
 func TestAuthorizeInternal_AllowsClusterMember(t *testing.T) {
@@ -104,9 +110,9 @@ func TestAuthorizeInternal_AllowsClusterMember(t *testing.T) {
 		},
 	})
 
-	require.NoError(t, AuthorizeInternal(t.Context(), nc, "ListInternalAddons",
+	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "ListInternalAddons",
 		cpAgent(cpInstanceID), []string{"alpha", tenantAccount}))
-	require.NoError(t, AuthorizeInternal(t.Context(), nc, "GetRecoveryDirective",
+	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "GetRecoveryDirective",
 		cpAgent(cpInstanceID), []string{"alpha", tenantAccount, cpInstanceID}))
 }
 
@@ -118,7 +124,7 @@ func TestAuthorizeInternal_AllowsLegacyScalarMember(t *testing.T) {
 		ControlPlaneInstanceID: cpInstanceID,
 	})
 
-	require.NoError(t, AuthorizeInternal(t.Context(), nc, "ListInternalAddons",
+	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "ListInternalAddons",
 		cpAgent(cpInstanceID), []string{"alpha", tenantAccount}))
 }
 
@@ -145,7 +151,7 @@ func TestAuthorizeInternal_RejectsClusterTheCallerDoesNotServe(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assertDenied(t, AuthorizeInternal(t.Context(), nc, "ListInternalAddons",
+			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "ListInternalAddons",
 				cpAgent(cpInstanceID), []string{tc.cluster, tc.account}))
 		})
 	}
@@ -160,13 +166,13 @@ func TestAuthorizeInternal_RecoveryIsSelfOnly(t *testing.T) {
 		},
 	})
 
-	assertDenied(t, AuthorizeInternal(t.Context(), nc, "GetRecoveryDirective",
+	assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "GetRecoveryDirective",
 		cpAgent(cpInstanceID), []string{"alpha", tenantAccount, otherInstance}))
 }
 
 func TestAuthorizeInternal_RejectsEmptyPathSegments(t *testing.T) {
 	for _, params := range [][]string{{"", tenantAccount}, {"alpha", ""}, {"alpha"}} {
-		err := AuthorizeInternal(t.Context(), nil, "ListInternalAddons", cpAgent(cpInstanceID), params)
+		err := gateway_eks.AuthorizeInternal(t.Context(), nil, "ListInternalAddons", cpAgent(cpInstanceID), params)
 		require.Error(t, err)
 		assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 	}
@@ -176,7 +182,7 @@ func TestAuthorizeInternal_RejectsEmptyPathSegments(t *testing.T) {
 // denial: reporting AccessDenied would send the on-VM agent's retry budget
 // chasing a permission it already has.
 func TestAuthorizeInternal_NoNATSIsServerInternal(t *testing.T) {
-	err := AuthorizeInternal(t.Context(), nil, "ListInternalAddons",
+	err := gateway_eks.AuthorizeInternal(t.Context(), nil, "ListInternalAddons",
 		cpAgent(cpInstanceID), []string{"alpha", tenantAccount})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
@@ -29,18 +30,12 @@ type Caller struct {
 	SessionName string
 }
 
-// The routes the CP VM calls with system credentials, naming the customer
-// account in the path. No customer grant can reach them: eks:* is a legitimate
-// tenant grant, and these return another account's cluster state.
-var internalActions = map[string]struct{}{
-	"ListInternalAddons":   {},
-	"GetRecoveryDirective": {},
-}
-
-// IsInternalAction reports whether action is one of the internal CP-VM routes.
+// IsInternalAction reports whether action is one of the internal CP-VM routes:
+// the ones naming the customer account in the path, which no customer grant may
+// reach. Derived from eksScopes so a new such route cannot ship ungated — that
+// table is exhaustive by contract against the dispatch table.
 func IsInternalAction(action string) bool {
-	_, ok := internalActions[action]
-	return ok
+	return slices.Contains(eksScopes[action], sourceInternalCluster)
 }
 
 // AuthorizeInternal is the principal gate for the internal CP-VM routes, run
@@ -100,10 +95,10 @@ func requireCPAgent(ctx context.Context, action string, caller Caller) error {
 	return nil
 }
 
-// Reads JetStream directly rather than adding a NATS round trip, matching the
-// OIDC discovery path, because this runs on every internal call. A nil meta is
-// returned for an account with no clusters and for a cluster that is absent;
-// both are denials rather than failures.
+// Reads JetStream directly, matching the OIDC discovery path, rather than a
+// service round trip through the handler. js.KeyValue still costs a STREAM.INFO
+// for the bucket handle. A nil meta is returned for an account with no clusters
+// and for a cluster that is absent; both are denials rather than failures.
 func lookupClusterMeta(ctx context.Context, natsConn *nats.Conn, accountID, clusterName string) (*handlers_eks.ClusterMeta, error) {
 	if natsConn == nil {
 		return nil, errors.New("gateway NATS connection not initialised")

@@ -28,20 +28,23 @@ const (
 )
 
 // ensureCPInstanceProfile returns the CP instance-profile ARN, or "" to signal
-// the caller should fall back to static creds. IAM unwired or a transient
-// failure both fall back rather than brick a cluster launch — the static-key
-// path still authenticates (it is what shipped before IMDS creds).
+// the caller should fall back to static creds. That fallback still launches, but
+// baked keys authenticate as a system user with no instance identity, so the VM
+// is denied the internal routes for its life — see the log lines below.
 func (s *EKSServiceImpl) ensureCPInstanceProfile(accountID string) string {
 	iam := s.iamEnsurer()
 	if iam == nil {
-		slog.Warn("EKS: IAM service unwired; CP VM falls back to baked static gateway creds")
+		slog.Warn("EKS: IAM service unwired; CP VM falls back to baked static gateway creds and "+
+			"will be denied eks:ListInternalAddons and eks:GetRecoveryDirective (no instance identity to bind)",
+			"accountID", accountID)
 		return ""
 	}
 	profileARN, err := handlers_iam.EnsureSystemInstanceProfile(iam, accountID,
 		CPInstanceRoleName, eksServerInlinePolicyName, eksServerInlinePolicy)
 	if err != nil {
-		slog.Warn("EKS: ensure CP instance profile failed; falling back to baked static gateway creds",
-			"err", err)
+		slog.Error("EKS: ensure CP instance profile failed; CP VM falls back to baked static gateway creds and "+
+			"will be denied eks:ListInternalAddons and eks:GetRecoveryDirective (no instance identity to bind)",
+			"accountID", accountID, "role", CPInstanceRoleName, "err", err)
 		return ""
 	}
 	return profileARN

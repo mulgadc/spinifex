@@ -23,6 +23,7 @@ func testLBRecord(id, state string, createdAt, lastHeartbeat time.Time) *LoadBal
 }
 
 func TestReapStuckProvisioningLBs(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	now := time.Now().UTC()
 
@@ -61,6 +62,7 @@ func TestReapStuckProvisioningLBs(t *testing.T) {
 // TestStartLifecycleReaper drives the ticker goroutine with a tiny interval and
 // confirms it reaps a stuck LB, then cancels to exercise the ctx.Done exit.
 func TestStartLifecycleReaper(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	svc.reaperInterval = 5 * time.Millisecond
 
@@ -74,7 +76,7 @@ func TestStartLifecycleReaper(t *testing.T) {
 	require.Eventually(t, func() bool {
 		got, err := svc.store.GetLoadBalancer(t.Context(), stuck.LoadBalancerID)
 		return err == nil && got != nil && got.State == StateFailed
-	}, time.Second, 10*time.Millisecond, "reaper goroutine should mark the stuck LB failed")
+	}, 3*time.Second, 10*time.Millisecond, "reaper goroutine should mark the stuck LB failed")
 
 	cancel()
 }

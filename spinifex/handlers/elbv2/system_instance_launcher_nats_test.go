@@ -29,6 +29,7 @@ func (s *stubResponder) close() {
 }
 
 func TestNATSSystemInstanceLauncher_LaunchRoundTrip(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -77,6 +78,7 @@ func TestNATSSystemInstanceLauncher_LaunchRoundTrip(t *testing.T) {
 }
 
 func TestNATSSystemInstanceLauncher_LaunchPropagatesRemoteError(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -99,6 +101,7 @@ func TestNATSSystemInstanceLauncher_LaunchPropagatesRemoteError(t *testing.T) {
 }
 
 func TestNATSSystemInstanceLauncher_LaunchFailsWhenNoResponder(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -111,6 +114,7 @@ func TestNATSSystemInstanceLauncher_LaunchFailsWhenNoResponder(t *testing.T) {
 }
 
 func TestNATSSystemInstanceLauncher_TerminateRoundTrip(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -138,6 +142,7 @@ func TestNATSSystemInstanceLauncher_TerminateRoundTrip(t *testing.T) {
 }
 
 func TestNewNATSSystemInstanceLauncher_DefaultTimeout(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -152,6 +157,7 @@ func TestNewNATSSystemInstanceLauncher_DefaultTimeout(t *testing.T) {
 }
 
 func TestNATSSystemInstanceLauncher_LaunchNilInput(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -162,6 +168,7 @@ func TestNATSSystemInstanceLauncher_LaunchNilInput(t *testing.T) {
 }
 
 func TestNATSSystemInstanceLauncher_LaunchMissingInstanceType(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -172,6 +179,7 @@ func TestNATSSystemInstanceLauncher_LaunchMissingInstanceType(t *testing.T) {
 }
 
 func TestNATSSystemInstanceLauncher_LaunchDecodeFailure(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -188,6 +196,7 @@ func TestNATSSystemInstanceLauncher_LaunchDecodeFailure(t *testing.T) {
 }
 
 func TestNATSSystemInstanceLauncher_LaunchMissingOutput(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -204,6 +213,7 @@ func TestNATSSystemInstanceLauncher_LaunchMissingOutput(t *testing.T) {
 }
 
 func TestNATSSystemInstanceLauncher_TerminateEmptyID(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -214,6 +224,7 @@ func TestNATSSystemInstanceLauncher_TerminateEmptyID(t *testing.T) {
 }
 
 func TestNATSSystemInstanceLauncher_TerminateNoResponder(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -223,6 +234,7 @@ func TestNATSSystemInstanceLauncher_TerminateNoResponder(t *testing.T) {
 }
 
 func TestNATSSystemInstanceLauncher_TerminateDecodeFailure(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
@@ -239,6 +251,7 @@ func TestNATSSystemInstanceLauncher_TerminateDecodeFailure(t *testing.T) {
 }
 
 func TestNATSSystemInstanceLauncher_TerminatePropagatesRemoteError(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()
 

@@ -35,6 +35,7 @@ func describeLB(t *testing.T, svc *ELBv2ServiceImpl, arn string) *elbv2.LoadBala
 }
 
 func TestSetIpAddressType_IPv4Idempotent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "ipt-lb")
 
@@ -48,6 +49,7 @@ func TestSetIpAddressType_IPv4Idempotent(t *testing.T) {
 }
 
 func TestSetIpAddressType_DualstackRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "ipt-ds")
 
@@ -60,6 +62,7 @@ func TestSetIpAddressType_DualstackRejected(t *testing.T) {
 }
 
 func TestSetIpAddressType_MissingParams(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "ipt-mp")
 
@@ -77,6 +80,7 @@ func TestSetIpAddressType_MissingParams(t *testing.T) {
 }
 
 func TestSetIpAddressType_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
 		LoadBalancerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/missing/lb-deadbeef"),
@@ -87,6 +91,7 @@ func TestSetIpAddressType_NotFound(t *testing.T) {
 }
 
 func TestSetSecurityGroups_UpdatesRecord(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "sg-lb")
 
@@ -100,6 +105,7 @@ func TestSetSecurityGroups_UpdatesRecord(t *testing.T) {
 }
 
 func TestSetSecurityGroups_EmptyRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "sg-empty")
 
@@ -111,6 +117,7 @@ func TestSetSecurityGroups_EmptyRejected(t *testing.T) {
 }
 
 func TestSetSecurityGroups_NLBRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("sg-nlb"),
@@ -128,6 +135,7 @@ func TestSetSecurityGroups_NLBRejected(t *testing.T) {
 }
 
 func TestSetSecurityGroups_NLBWithSGs_Replaces(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name:           aws.String("sg-nlb-repl"),
@@ -150,6 +158,7 @@ func TestSetSecurityGroups_NLBWithSGs_Replaces(t *testing.T) {
 }
 
 func TestSetSecurityGroups_TooManyRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "sg-too-many")
 
@@ -162,6 +171,7 @@ func TestSetSecurityGroups_TooManyRejected(t *testing.T) {
 }
 
 func TestSetSecurityGroups_CrossAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "sg-xacct")
 
@@ -187,6 +197,7 @@ func frontendPublicIP(lb *elbv2.LoadBalancer) string {
 }
 
 func TestCreateLoadBalancerSync_ReturnsFrontendIP(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, mock := setupSubnetTestService(t)
 	mock.launchResult.PublicIP = "203.0.113.9"
 	vid := vpcID(t, vpcSvc)
@@ -207,6 +218,7 @@ func TestCreateLoadBalancerSync_ReturnsFrontendIP(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_AsyncDefersFrontendIP(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, mock := setupSubnetTestService(t)
 	mock.launchResult.PublicIP = "203.0.113.9"
 	vid := vpcID(t, vpcSvc)
@@ -265,6 +277,7 @@ func vpcID(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) string {
 }
 
 func TestSetSubnets_AddSubnet(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, mock := setupSubnetTestService(t)
 	vid := vpcID(t, vpcSvc)
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.20.0/24", "us-east-1a")
@@ -298,6 +311,7 @@ func TestSetSubnets_AddSubnet(t *testing.T) {
 }
 
 func TestSetSubnets_RemoveSubnet(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, mock := setupSubnetTestService(t)
 	vid := vpcID(t, vpcSvc)
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.22.0/24", "us-east-1a")
@@ -332,6 +346,7 @@ func TestSetSubnets_RemoveSubnet(t *testing.T) {
 // yet caught up with the detach saw the ENI in use, logged, and left it behind.
 // An ENI still marked attached at delete time is that state, made deterministic.
 func TestSetSubnets_RemovedENIStillAttachedIsDeleted(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, _ := setupSubnetTestService(t)
 	vid := vpcID(t, vpcSvc)
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.30.0/24", "us-east-1a")
@@ -370,6 +385,7 @@ func TestSetSubnets_RemovedENIStillAttachedIsDeleted(t *testing.T) {
 }
 
 func TestSetSubnets_Replace(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, _ := setupSubnetTestService(t)
 	vid := vpcID(t, vpcSvc)
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.24.0/24", "us-east-1a")
@@ -396,6 +412,7 @@ func TestSetSubnets_Replace(t *testing.T) {
 }
 
 func TestSetSubnets_TerminateFailureRollsBackNewENIs(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, mock := setupSubnetTestService(t)
 	vid := vpcID(t, vpcSvc)
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.26.0/24", "us-east-1a")
@@ -428,6 +445,7 @@ func TestSetSubnets_TerminateFailureRollsBackNewENIs(t *testing.T) {
 }
 
 func TestSetSubnets_Idempotent(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, mock := setupSubnetTestService(t)
 	vid := vpcID(t, vpcSvc)
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.26.0/24", "us-east-1a")
@@ -453,6 +471,7 @@ func TestSetSubnets_Idempotent(t *testing.T) {
 }
 
 func TestSetSubnets_SubnetMappings(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, _ := setupSubnetTestService(t)
 	vid := vpcID(t, vpcSvc)
 	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.27.0/24", "us-east-1a")
@@ -478,6 +497,7 @@ func TestSetSubnets_SubnetMappings(t *testing.T) {
 }
 
 func TestSetSubnets_WithoutVPCService(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "novpc-subnets")
 
@@ -491,6 +511,7 @@ func TestSetSubnets_WithoutVPCService(t *testing.T) {
 }
 
 func TestSetSubnets_MissingParams(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "subnets-mp")
 
@@ -508,6 +529,7 @@ func TestSetSubnets_MissingParams(t *testing.T) {
 }
 
 func TestSetSubnets_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.SetSubnets(context.Background(), &elbv2.SetSubnetsInput{
 		LoadBalancerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/missing/lb-deadbeef"),
@@ -518,6 +540,7 @@ func TestSetSubnets_NotFound(t *testing.T) {
 }
 
 func TestSetSubnets_CrossAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "subnets-xacct")
 

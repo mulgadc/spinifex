@@ -17,6 +17,7 @@ import (
 // deleting an absent ELBv2 resource is success, not NotFound. Every delete endpoint
 // must have a case here — a missing case is an idempotency gap.
 func TestRLC1_ELBv2DeleteIdempotentOnAbsent(t *testing.T) {
+	t.Parallel()
 	const arnBase = "arn:aws:elasticloadbalancing:us-east-1:123456789012:"
 
 	cases := []struct {
@@ -59,6 +60,7 @@ func TestRLC1_ELBv2DeleteIdempotentOnAbsent(t *testing.T) {
 // after DeleteLoadBalancer no listener or rule owned by the LB may remain. Two
 // listeners are used so a single-listener cascade can't pass by accident.
 func TestRLC2_ELBv2NoOrphanAfterDeleteLB(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("rlc2-lb")}, testAccountID)
@@ -103,6 +105,7 @@ func TestRLC2_ELBv2NoOrphanAfterDeleteLB(t *testing.T) {
 // cascade: DeleteLoadBalancer must use deleteListenerCascade, not store.DeleteListener
 // directly (a direct call orphans rules). Enforced structurally against source.
 func TestRLC3_ELBv2DeleteLBDoesNotBypassListenerCascade(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile("service_impl.go")
 	require.NoError(t, err)
 
@@ -145,6 +148,7 @@ func stripComments(src string) string {
 // after LB+listener+rule teardown, the target group must not remain pinned as
 // ResourceInUse by an orphaned rule or stale listener default action.
 func TestRLC4_ELBv2TGDeletableAfterLBTeardown(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("rlc4-lb")}, testAccountID)
@@ -185,6 +189,7 @@ func TestRLC4_ELBv2TGDeletableAfterLBTeardown(t *testing.T) {
 // trap this guard prevents. Locks the liveLB/liveListener skip both ways so a
 // maintainer cannot regress the in-use scan back to a global rule sweep.
 func TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	// Orphan-rule TG: forwarded to by a rule whose owning LB/listener is gone.

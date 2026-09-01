@@ -27,6 +27,7 @@ func createTestInstanceProfile(t *testing.T, svc *IAMServiceImpl, name string) *
 // ============================================================================
 
 func TestCreateInstanceProfile(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	out, err := svc.CreateInstanceProfile(testAccountID, &iam.CreateInstanceProfileInput{
@@ -49,6 +50,7 @@ func TestCreateInstanceProfile(t *testing.T) {
 }
 
 func TestCreateInstanceProfile_DefaultPath(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	out, err := svc.CreateInstanceProfile(testAccountID, &iam.CreateInstanceProfileInput{
@@ -60,6 +62,7 @@ func TestCreateInstanceProfile_DefaultPath(t *testing.T) {
 }
 
 func TestCreateInstanceProfile_InvalidName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	longName := strings.Repeat("a", 129)
 
@@ -71,6 +74,7 @@ func TestCreateInstanceProfile_InvalidName(t *testing.T) {
 }
 
 func TestCreateInstanceProfile_InvalidPath(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.CreateInstanceProfile(testAccountID, &iam.CreateInstanceProfileInput{
@@ -82,6 +86,7 @@ func TestCreateInstanceProfile_InvalidPath(t *testing.T) {
 }
 
 func TestCreateInstanceProfile_Duplicate(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestInstanceProfile(t, svc, "dup-profile")
 
@@ -93,6 +98,7 @@ func TestCreateInstanceProfile_Duplicate(t *testing.T) {
 }
 
 func TestGetInstanceProfile(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestInstanceProfile(t, svc, "get-profile")
 
@@ -105,6 +111,7 @@ func TestGetInstanceProfile(t *testing.T) {
 }
 
 func TestGetInstanceProfile_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.GetInstanceProfile(testAccountID, &iam.GetInstanceProfileInput{
@@ -115,6 +122,7 @@ func TestGetInstanceProfile_NotFound(t *testing.T) {
 }
 
 func TestGetInstanceProfile_WithAttachedRole(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	role := createTestRole(t, svc, "embedded-role")
 	createTestInstanceProfile(t, svc, "wrap-profile")
@@ -134,6 +142,7 @@ func TestGetInstanceProfile_WithAttachedRole(t *testing.T) {
 }
 
 func TestListInstanceProfiles(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	createTestInstanceProfile(t, svc, "profile1")
@@ -154,6 +163,7 @@ func TestListInstanceProfiles(t *testing.T) {
 }
 
 func TestListInstanceProfiles_Empty(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	out, err := svc.ListInstanceProfiles(testAccountID, &iam.ListInstanceProfilesInput{})
@@ -162,6 +172,7 @@ func TestListInstanceProfiles_Empty(t *testing.T) {
 }
 
 func TestListInstanceProfiles_PathPrefix(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.CreateInstanceProfile(testAccountID, &iam.CreateInstanceProfileInput{
@@ -185,6 +196,7 @@ func TestListInstanceProfiles_PathPrefix(t *testing.T) {
 }
 
 func TestDeleteInstanceProfile(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestInstanceProfile(t, svc, "del-profile")
 
@@ -201,6 +213,7 @@ func TestDeleteInstanceProfile(t *testing.T) {
 }
 
 func TestDeleteInstanceProfile_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.DeleteInstanceProfile(testAccountID, &iam.DeleteInstanceProfileInput{
@@ -211,6 +224,7 @@ func TestDeleteInstanceProfile_NotFound(t *testing.T) {
 }
 
 func TestDeleteInstanceProfile_WithRoleAttached(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestRole(t, svc, "attached-role")
 	createTestInstanceProfile(t, svc, "loaded-profile")
@@ -233,6 +247,7 @@ func TestDeleteInstanceProfile_WithRoleAttached(t *testing.T) {
 // ============================================================================
 
 func TestAddRoleToInstanceProfile(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestRole(t, svc, "binding-role")
 	createTestInstanceProfile(t, svc, "binding-profile")
@@ -252,6 +267,7 @@ func TestAddRoleToInstanceProfile(t *testing.T) {
 }
 
 func TestAddRoleToInstanceProfile_RoleNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestInstanceProfile(t, svc, "no-role-profile")
 
@@ -264,6 +280,7 @@ func TestAddRoleToInstanceProfile_RoleNotFound(t *testing.T) {
 }
 
 func TestAddRoleToInstanceProfile_ProfileNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestRole(t, svc, "lonely-role")
 
@@ -276,6 +293,7 @@ func TestAddRoleToInstanceProfile_ProfileNotFound(t *testing.T) {
 }
 
 func TestAddRoleToInstanceProfile_OneRoleLimit(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestRole(t, svc, "first-role")
 	createTestRole(t, svc, "second-role")
@@ -325,6 +343,7 @@ func runConcurrently(n int, fn func(i int) error) []error {
 // guard from the same revision, so the later write silently replaced the first
 // role. Exactly one attach may win; the loser must see LimitExceeded.
 func TestAddRoleToInstanceProfile_ConcurrentDistinctRoles(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	roles := []string{"race-role-a", "race-role-b"}
 	for _, r := range roles {
@@ -367,6 +386,7 @@ func TestAddRoleToInstanceProfile_ConcurrentDistinctRoles(t *testing.T) {
 // callers detach the same role at once and exactly one may win, the loser
 // re-reading an empty profile and reporting NoSuchEntity.
 func TestRemoveRoleFromInstanceProfile_ConcurrentDetach(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestRole(t, svc, "detach-race-role")
 
@@ -409,6 +429,7 @@ func TestRemoveRoleFromInstanceProfile_ConcurrentDetach(t *testing.T) {
 // same lost update: a blind Put wrote back a stale RoleName and silently
 // undid a role attach that had already reported success.
 func TestTagInstanceProfile_ConcurrentWithAttach(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestRole(t, svc, "tag-race-role")
 
@@ -446,6 +467,7 @@ func TestTagInstanceProfile_ConcurrentWithAttach(t *testing.T) {
 // TestTagInstanceProfile_ConcurrentDistinctKeys pins tag writes against each
 // other: under a blind Put all but one of the racing keys were lost.
 func TestTagInstanceProfile_ConcurrentDistinctKeys(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestInstanceProfile(t, svc, "tag-keys-profile")
 
@@ -474,6 +496,7 @@ func TestTagInstanceProfile_ConcurrentDistinctKeys(t *testing.T) {
 }
 
 func TestRemoveRoleFromInstanceProfile(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestRole(t, svc, "remove-role")
 	createTestInstanceProfile(t, svc, "remove-profile")
@@ -498,6 +521,7 @@ func TestRemoveRoleFromInstanceProfile(t *testing.T) {
 }
 
 func TestRemoveRoleFromInstanceProfile_NoRoleAttached(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestInstanceProfile(t, svc, "empty-profile")
 
@@ -510,6 +534,7 @@ func TestRemoveRoleFromInstanceProfile_NoRoleAttached(t *testing.T) {
 }
 
 func TestRemoveRoleFromInstanceProfile_WrongRoleName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestRole(t, svc, "actual-role")
 	createTestInstanceProfile(t, svc, "wrong-name-profile")
@@ -529,6 +554,7 @@ func TestRemoveRoleFromInstanceProfile_WrongRoleName(t *testing.T) {
 }
 
 func TestListInstanceProfilesForRole(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestRole(t, svc, "popular-role")
 
@@ -562,6 +588,7 @@ func TestListInstanceProfilesForRole(t *testing.T) {
 }
 
 func TestListInstanceProfilesForRole_RoleNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.ListInstanceProfilesForRole(testAccountID, &iam.ListInstanceProfilesForRoleInput{
@@ -572,6 +599,7 @@ func TestListInstanceProfilesForRole_RoleNotFound(t *testing.T) {
 }
 
 func TestListInstanceProfilesForRole_None(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestRole(t, svc, "unused-role")
 
@@ -591,6 +619,7 @@ func TestListInstanceProfilesForRole_None(t *testing.T) {
 // ============================================================================
 
 func TestResolveInstanceProfile_ByName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	created := createTestInstanceProfile(t, svc, "by-name-profile")
 
@@ -602,6 +631,7 @@ func TestResolveInstanceProfile_ByName(t *testing.T) {
 }
 
 func TestResolveInstanceProfile_ByARN(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	created := createTestInstanceProfile(t, svc, "by-arn-profile")
 
@@ -612,6 +642,7 @@ func TestResolveInstanceProfile_ByARN(t *testing.T) {
 }
 
 func TestResolveInstanceProfile_ByARNWithPath(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	out, err := svc.CreateInstanceProfile(testAccountID, &iam.CreateInstanceProfileInput{
 		InstanceProfileName: aws.String("nested-profile"),
@@ -626,6 +657,7 @@ func TestResolveInstanceProfile_ByARNWithPath(t *testing.T) {
 }
 
 func TestResolveInstanceProfile_CrossAccountARNRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestInstanceProfile(t, svc, "shadow-profile")
 
@@ -636,6 +668,7 @@ func TestResolveInstanceProfile_CrossAccountARNRejected(t *testing.T) {
 }
 
 func TestResolveInstanceProfile_NameNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.ResolveInstanceProfile(testAccountID, "ghost-profile")
@@ -644,6 +677,7 @@ func TestResolveInstanceProfile_NameNotFound(t *testing.T) {
 }
 
 func TestResolveInstanceProfile_ARNNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	arn := "arn:aws:iam::" + testAccountID + ":instance-profile/ghost"
@@ -653,6 +687,7 @@ func TestResolveInstanceProfile_ARNNotFound(t *testing.T) {
 }
 
 func TestResolveInstanceProfile_MalformedARN(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	cases := []string{
@@ -670,6 +705,7 @@ func TestResolveInstanceProfile_MalformedARN(t *testing.T) {
 }
 
 func TestResolveInstanceProfile_EmptyReference(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.ResolveInstanceProfile(testAccountID, "")
@@ -678,6 +714,7 @@ func TestResolveInstanceProfile_EmptyReference(t *testing.T) {
 }
 
 func TestInstanceProfiles_AccountScoping(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	accA, err := svc.CreateAccount("Org A")

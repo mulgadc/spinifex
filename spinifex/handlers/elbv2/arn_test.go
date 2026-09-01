@@ -19,6 +19,7 @@ import (
 // TestBuildLBAgentEnv verifies that buildLBAgentEnv produces a KEY=value blob
 // containing all five env vars with the correct values.
 func TestBuildLBAgentEnv(t *testing.T) {
+	t.Parallel()
 	svc := &ELBv2ServiceImpl{
 		GatewayURL:      "https://10.0.0.1:9999",
 		SystemAccessKey: "AKIAIOSFODNN7EXAMPLE",
@@ -47,6 +48,7 @@ func TestBuildLBAgentEnv(t *testing.T) {
 // (staticCreds=false) the static keys are dropped so the lb-agent signs with
 // IMDS instance-role credentials via the SDK chain.
 func TestBuildLBAgentEnv_IMDSModeOmitsKeys(t *testing.T) {
+	t.Parallel()
 	svc := &ELBv2ServiceImpl{
 		GatewayURL:      "https://10.0.0.1:9999",
 		SystemAccessKey: "AKIAIOSFODNN7EXAMPLE",
@@ -64,6 +66,7 @@ func TestBuildLBAgentEnv_IMDSModeOmitsKeys(t *testing.T) {
 // system) heartbeats over the on-link mgmt-bridge URL, not the WAN GatewayURL,
 // so the control-plane heartbeat survives a reboot that strands the data plane.
 func TestBuildLBAgentEnv_UsesMgmtGateway(t *testing.T) {
+	t.Parallel()
 	svc := &ELBv2ServiceImpl{
 		GatewayURL:      "https://10.0.0.1:9999",
 		MgmtBridgeIP:    "192.168.50.1",
@@ -82,12 +85,14 @@ func TestBuildLBAgentEnv_UsesMgmtGateway(t *testing.T) {
 
 // TestSubnetCIDRForIP and TestSubnetGatewayIP cover the CIDR helpers.
 func TestSubnetCIDRForIP(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "10.0.1.5/24", subnetCIDRForIP("10.0.1.5", "10.0.1.0/24"))
 	assert.Equal(t, "172.16.2.10/20", subnetCIDRForIP("172.16.2.10", "172.16.0.0/20"))
 	assert.Empty(t, subnetCIDRForIP("10.0.1.5", "bad-cidr"))
 }
 
 func TestSubnetGatewayIP(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "10.0.1.1", subnetGatewayIP("10.0.1.0/24"))
 	assert.Equal(t, "172.16.0.1", subnetGatewayIP("172.16.0.0/20"))
 	assert.Empty(t, subnetGatewayIP("not-a-cidr"))
@@ -139,6 +144,7 @@ func setupMicrovmTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc
 // TestCreateLoadBalancer_DeliversCACert asserts the CACert plumbed into the
 // service is forwarded to the launcher for fw_cfg delivery.
 func TestCreateLoadBalancer_DeliversCACert(t *testing.T) {
+	t.Parallel()
 	svc, _, subnetID := setupMicrovmTestService(t)
 
 	mock := &mockSystemInstanceLauncher{
@@ -164,6 +170,7 @@ func TestCreateLoadBalancer_DeliversCACert(t *testing.T) {
 // TestCreateLoadBalancer_Microvm_LBAgentEnv asserts all five lb-agent env vars
 // appear in LBAgentEnv with correct values.
 func TestCreateLoadBalancer_Microvm_LBAgentEnv(t *testing.T) {
+	t.Parallel()
 	svc, _, subnetID := setupMicrovmTestService(t)
 
 	mock := &mockSystemInstanceLauncher{
@@ -192,6 +199,7 @@ func TestCreateLoadBalancer_Microvm_LBAgentEnv(t *testing.T) {
 // TestCreateLoadBalancer_Microvm_NICs asserts NIC[0].IsDefault=true and
 // NIC[1].IsDefault=false, and that CIDR/Gateway are derived from the subnet.
 func TestCreateLoadBalancer_Microvm_NICs(t *testing.T) {
+	t.Parallel()
 	svc, _, subnetID := setupMicrovmTestService(t)
 
 	mock := &mockSystemInstanceLauncher{
@@ -238,6 +246,7 @@ func parseEnvBlob(t *testing.T, blob string) map[string]string {
 // TestBuildMicrovmNICs_NilVPC verifies buildMicrovmNICs works when VPCService
 // is nil — CIDR and gateway remain empty, NIC structure is still correct.
 func TestBuildMicrovmNICs_NilVPC(t *testing.T) {
+	t.Parallel()
 	svc := &ELBv2ServiceImpl{VPCService: nil}
 	nics := svc.buildMicrovmNICs("10.0.1.5", "02:aa:bb:cc:dd:01", "subnet-abc", "eni-abc", SchemeInternal, nil, testAccountID)
 	require.Len(t, nics, 2, "primary ENI NIC + mgmt NIC")
@@ -249,6 +258,7 @@ func TestBuildMicrovmNICs_NilVPC(t *testing.T) {
 
 // TestBuildMicrovmNICs_ExtraENIs verifies NIC[2+] are appended for multi-subnet ALBs.
 func TestBuildMicrovmNICs_ExtraENIs(t *testing.T) {
+	t.Parallel()
 	svc := &ELBv2ServiceImpl{VPCService: nil}
 	extras := []ExtraENIInput{
 		{ENIID: "eni-extra1", ENIMac: "02:aa:bb:cc:dd:02", ENIIP: "10.0.2.5", SubnetID: "subnet-extra1"},
@@ -263,6 +273,7 @@ func TestBuildMicrovmNICs_ExtraENIs(t *testing.T) {
 // internet-facing single-node must not emit a /32 via mgmt to AdvertiseIP, as that
 // would steal the host's WAN return path and break same-chassis ingress.
 func TestBuildMicrovmNICs_MgmtRoute(t *testing.T) {
+	t.Parallel()
 	mk := func() *ELBv2ServiceImpl {
 		return &ELBv2ServiceImpl{
 			VPCService:   nil,

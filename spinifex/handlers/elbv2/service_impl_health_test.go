@@ -59,6 +59,7 @@ func setupTestServiceWithInstance(t *testing.T, instanceID, instanceIP string) (
 }
 
 func TestRegisterTargets_ResolvesPrivateIP(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestServiceWithInstance(t, "i-web001", "10.0.1.50")
 
 	// Create target group
@@ -91,6 +92,7 @@ func TestRegisterTargets_ResolvesPrivateIP(t *testing.T) {
 }
 
 func TestRegisterTargets_UnresolvableIP(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestServiceWithInstance(t, "i-web001", "10.0.1.50")
 
 	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -112,6 +114,7 @@ func TestRegisterTargets_UnresolvableIP(t *testing.T) {
 }
 
 func TestRegisterTargets_WithoutVPCService(t *testing.T) {
+	t.Parallel()
 	// When VPC service is nil, IP resolution is skipped gracefully
 	svc := setupTestService(t)
 
@@ -132,6 +135,7 @@ func TestRegisterTargets_WithoutVPCService(t *testing.T) {
 }
 
 func TestRegisterTargets_MultipleInstances(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, _ := setupTestServiceWithInstance(t, "i-web001", "10.0.1.50")
 
 	// Create a second instance ENI
@@ -169,6 +173,7 @@ func TestRegisterTargets_MultipleInstances(t *testing.T) {
 // startup resets non-draining targets to "initial", preventing stale "healthy"
 // claims before the lb-agent has posted a fresh report after a daemon restart.
 func TestResetTargetHealthOnStartup_TransitionsAllNonDrainingToInitial(t *testing.T) {
+	t.Parallel()
 	store := setupTestNATS(t)
 	svc := &ELBv2ServiceImpl{store: store}
 
@@ -204,6 +209,7 @@ func TestResetTargetHealthOnStartup_TransitionsAllNonDrainingToInitial(t *testin
 }
 
 func TestResetTargetHealthOnStartup_NilSafe(t *testing.T) {
+	t.Parallel()
 	var svc *ELBv2ServiceImpl
 	assert.NoError(t, svc.ResetTargetHealthOnStartup(t.Context()))
 
@@ -214,6 +220,7 @@ func TestResetTargetHealthOnStartup_NilSafe(t *testing.T) {
 // A target group not forwarded to by any listener serves no traffic, so its
 // targets report "unused" (Target.NotInUse) instead of stalling in "initial".
 func TestDescribeTargetHealth_UnusedWhenNoListener(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestServiceWithInstance(t, "i-web001", "10.0.1.50")
 
 	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -239,6 +246,7 @@ func TestDescribeTargetHealth_UnusedWhenNoListener(t *testing.T) {
 // Once a listener forwards to the target group it is in use, so DescribeTargetHealth
 // reports the live health state ("initial" until a health report lands), not "unused".
 func TestDescribeTargetHealth_InUseWhenListenerForwards(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := setupTestServiceWithInstance(t, "i-web001", "10.0.1.50")
 
 	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{

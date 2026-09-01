@@ -9,6 +9,7 @@ import (
 )
 
 func TestLBFrontendIP(t *testing.T) {
+	t.Parallel()
 	// internet-facing → the AZ-0 public IP.
 	inet := &LoadBalancerRecord{
 		Scheme:     SchemeInternetFacing,
@@ -35,6 +36,7 @@ func TestLBFrontendIP(t *testing.T) {
 }
 
 func TestPublishLBDNS_NoopWhenDisabled(t *testing.T) {
+	t.Parallel()
 	rec := &LoadBalancerRecord{
 		Scheme:    SchemeInternal,
 		DNSName:   "internal-web-abc.ap-southeast-2.elb.spx3.net",
@@ -48,6 +50,7 @@ func TestPublishLBDNS_NoopWhenDisabled(t *testing.T) {
 }
 
 func TestDesiredDNSChanges_IncludesEndpointReadyProvisioningLoadBalancers(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	svc.dnsBaseDomain = "spx3.net"
 

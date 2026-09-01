@@ -16,6 +16,7 @@ import (
 // --- DescribeLoadBalancers: ARN filter (service_impl_test.go covers FilterByName) ---
 
 func TestDescribeLoadBalancers_FilterByArn(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out1, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("lb-arn-a")}, testAccountID)
@@ -32,6 +33,7 @@ func TestDescribeLoadBalancers_FilterByArn(t *testing.T) {
 // --- DescribeTargetGroups: by name and by ARN (service_impl_test.go only covers FilterByLBArn) ---
 
 func TestDescribeTargetGroups_FilterByName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, _ = svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tg-alpha")}, testAccountID)
@@ -46,6 +48,7 @@ func TestDescribeTargetGroups_FilterByName(t *testing.T) {
 }
 
 func TestDescribeTargetGroups_FilterByArn(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out1, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tg-arn-a")}, testAccountID)
@@ -62,6 +65,7 @@ func TestDescribeTargetGroups_FilterByArn(t *testing.T) {
 // --- DescribeListeners: filter by listener ARN (service_impl_test.go covers FilterByLBArn) ---
 
 func TestDescribeListeners_FilterByListenerArn(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("lb-larn")}, testAccountID)
@@ -89,6 +93,7 @@ func TestDescribeListeners_FilterByListenerArn(t *testing.T) {
 // --- RegisterTargets edge cases ---
 
 func TestRegisterTargets_NilTargetSkipped(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	tg, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tg-nil"), Port: aws.Int64(80)}, testAccountID)
@@ -110,6 +115,7 @@ func TestRegisterTargets_NilTargetSkipped(t *testing.T) {
 }
 
 func TestRegisterTargets_TGNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
 		TargetGroupArn: aws.String("arn:nonexistent"),
@@ -119,6 +125,7 @@ func TestRegisterTargets_TGNotFound(t *testing.T) {
 }
 
 func TestDeregisterTargets_TGNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.DeregisterTargets(context.Background(), &elbv2.DeregisterTargetsInput{
 		TargetGroupArn: aws.String("arn:nonexistent"),
@@ -129,6 +136,7 @@ func TestDeregisterTargets_TGNotFound(t *testing.T) {
 // --- Missing-ARN error paths across the service surface ---
 
 func TestMissingArnReturnsError(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	tests := []struct {
@@ -198,6 +206,7 @@ func TestMissingArnReturnsError(t *testing.T) {
 // --- CreateListener: missing actions (separate from missing-ARN path) ---
 
 func TestCreateListener_MissingActions(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("lb-noact")}, testAccountID)
 

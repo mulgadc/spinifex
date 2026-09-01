@@ -22,6 +22,7 @@ const (
 // TestEnsureSystemInstanceProfile_CreatesAll asserts the role (EC2 trust), inline
 // policy, and instance profile are all created and the profile ARN is returned.
 func TestEnsureSystemInstanceProfile_CreatesAll(t *testing.T) {
+	t.Parallel()
 	f := iammock.New()
 	arn, err := handlers_iam.EnsureSystemInstanceProfile(f, testRoleAcct, testRoleName, testPolicyName, testPolicyDoc)
 	require.NoError(t, err)
@@ -39,6 +40,7 @@ func TestEnsureSystemInstanceProfile_CreatesAll(t *testing.T) {
 // TestEnsureSystemInstanceProfile_Idempotent asserts a re-run against existing
 // role+profile creates nothing new but still re-asserts the inline policy.
 func TestEnsureSystemInstanceProfile_Idempotent(t *testing.T) {
+	t.Parallel()
 	f := iammock.New()
 	_, err := handlers_iam.EnsureSystemInstanceProfile(f, testRoleAcct, testRoleName, testPolicyName, testPolicyDoc)
 	require.NoError(t, err)
@@ -53,6 +55,7 @@ func TestEnsureSystemInstanceProfile_Idempotent(t *testing.T) {
 // TestConvergeSystemRolePolicy_RewritesExistingRole asserts an account that
 // already carries the role picks up a changed document.
 func TestConvergeSystemRolePolicy_RewritesExistingRole(t *testing.T) {
+	t.Parallel()
 	f := iammock.New()
 	_, err := handlers_iam.EnsureSystemInstanceProfile(f, testRoleAcct, testRoleName, testPolicyName, testPolicyDoc)
 	require.NoError(t, err)
@@ -66,6 +69,7 @@ func TestConvergeSystemRolePolicy_RewritesExistingRole(t *testing.T) {
 // keeps a fleet-wide converge pass from writing IAM entities into accounts that
 // never launched capacity: no role means nothing to converge.
 func TestConvergeSystemRolePolicy_AbsentRoleIsNotProvisioned(t *testing.T) {
+	t.Parallel()
 	f := iammock.New()
 	require.NoError(t, handlers_iam.ConvergeSystemRolePolicy(f, testRoleAcct, testRoleName, testPolicyName, testPolicyDoc))
 
@@ -78,6 +82,7 @@ func TestConvergeSystemRolePolicy_AbsentRoleIsNotProvisioned(t *testing.T) {
 // TestConvergeSystemRolePolicy_PropagatesPutFailure keeps a failed write a
 // failure: swallowing it reports a converged fleet that is not converged.
 func TestConvergeSystemRolePolicy_PropagatesPutFailure(t *testing.T) {
+	t.Parallel()
 	f := iammock.New()
 	_, err := handlers_iam.EnsureSystemInstanceProfile(f, testRoleAcct, testRoleName, testPolicyName, testPolicyDoc)
 	require.NoError(t, err)

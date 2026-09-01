@@ -34,6 +34,7 @@ func createTestGroup(t *testing.T, svc *IAMServiceImpl, name string) *iam.Group 
 // ============================================================================
 
 func TestCreateGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	out, err := svc.CreateGroup(testAccountID, &iam.CreateGroupInput{
@@ -50,6 +51,7 @@ func TestCreateGroup(t *testing.T) {
 }
 
 func TestCreateGroup_DefaultPath(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	out, err := svc.CreateGroup(testAccountID, &iam.CreateGroupInput{
@@ -61,6 +63,7 @@ func TestCreateGroup_DefaultPath(t *testing.T) {
 }
 
 func TestCreateGroup_Duplicate(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "dup-group")
 
@@ -72,6 +75,7 @@ func TestCreateGroup_Duplicate(t *testing.T) {
 }
 
 func TestCreateGroup_InvalidName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	longName := strings.Repeat("a", 129)
 
@@ -83,6 +87,7 @@ func TestCreateGroup_InvalidName(t *testing.T) {
 }
 
 func TestCreateGroup_InvalidPath(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.CreateGroup(testAccountID, &iam.CreateGroupInput{
@@ -94,6 +99,7 @@ func TestCreateGroup_InvalidPath(t *testing.T) {
 }
 
 func TestGetGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "get-group")
 	createTestUser(t, svc, "member")
@@ -114,6 +120,7 @@ func TestGetGroup(t *testing.T) {
 }
 
 func TestGetGroup_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.GetGroup(testAccountID, &iam.GetGroupInput{
@@ -124,6 +131,7 @@ func TestGetGroup_NotFound(t *testing.T) {
 }
 
 func TestGetGroup_UsersNeverNil(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "empty-group")
 
@@ -136,6 +144,7 @@ func TestGetGroup_UsersNeverNil(t *testing.T) {
 }
 
 func TestListGroups(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "group1")
 	createTestGroup(t, svc, "group2")
@@ -155,6 +164,7 @@ func TestListGroups(t *testing.T) {
 }
 
 func TestListGroups_Empty(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	out, err := svc.ListGroups(testAccountID, &iam.ListGroupsInput{})
@@ -166,6 +176,7 @@ func TestListGroups_Empty(t *testing.T) {
 // TestListGroups_EmptyAfterOtherAccountsExist walks the filtering path rather
 // than the no-keys-at-all shortcut: the bucket has keys, none of them ours.
 func TestListGroups_EmptyAfterOtherAccountsExist(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.CreateGroup("999988887777", &iam.CreateGroupInput{GroupName: aws.String("othergroup")})
@@ -178,6 +189,7 @@ func TestListGroups_EmptyAfterOtherAccountsExist(t *testing.T) {
 }
 
 func TestListGroups_PathPrefix(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.CreateGroup(testAccountID, &iam.CreateGroupInput{
@@ -201,6 +213,7 @@ func TestListGroups_PathPrefix(t *testing.T) {
 }
 
 func TestDeleteGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "del-group")
 
@@ -217,6 +230,7 @@ func TestDeleteGroup(t *testing.T) {
 }
 
 func TestDeleteGroup_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.DeleteGroup(testAccountID, &iam.DeleteGroupInput{
@@ -227,6 +241,7 @@ func TestDeleteGroup_NotFound(t *testing.T) {
 }
 
 func TestDeleteGroup_WithAttachedPolicy(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "attached-group")
 	policy := createTestPolicy(t, svc, "GroupPolicy")
@@ -245,6 +260,7 @@ func TestDeleteGroup_WithAttachedPolicy(t *testing.T) {
 }
 
 func TestDeleteGroup_WithMembers(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "populated-group")
 	createTestUser(t, svc, "occupant")
@@ -267,6 +283,7 @@ func TestDeleteGroup_WithMembers(t *testing.T) {
 // ============================================================================
 
 func TestAddUserToGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "team")
 	createTestUser(t, svc, "alice")
@@ -286,6 +303,7 @@ func TestAddUserToGroup(t *testing.T) {
 }
 
 func TestAddUserToGroup_Idempotent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "team")
 	createTestUser(t, svc, "bob")
@@ -306,6 +324,7 @@ func TestAddUserToGroup_Idempotent(t *testing.T) {
 }
 
 func TestAddUserToGroup_LimitExceeded(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "busy")
 
@@ -330,6 +349,7 @@ func TestAddUserToGroup_LimitExceeded(t *testing.T) {
 }
 
 func TestAddUserToGroup_UserNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "team")
 
@@ -342,6 +362,7 @@ func TestAddUserToGroup_UserNotFound(t *testing.T) {
 }
 
 func TestAddUserToGroup_GroupNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "carol")
 
@@ -354,6 +375,7 @@ func TestAddUserToGroup_GroupNotFound(t *testing.T) {
 }
 
 func TestRemoveUserFromGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "team")
 	createTestUser(t, svc, "dave")
@@ -378,6 +400,7 @@ func TestRemoveUserFromGroup(t *testing.T) {
 }
 
 func TestRemoveUserFromGroup_NotMember(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "team")
 	createTestUser(t, svc, "erin")
@@ -391,6 +414,7 @@ func TestRemoveUserFromGroup_NotMember(t *testing.T) {
 }
 
 func TestRemoveUserFromGroup_UserNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "team")
 
@@ -406,6 +430,7 @@ func TestRemoveUserFromGroup_UserNotFound(t *testing.T) {
 // group that was deleted out from under the user is still cleanable — removal
 // operates purely on User.Groups and never fetches the group record.
 func TestRemoveUserFromGroup_DanglingPointer(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "doomed")
 	createTestUser(t, svc, "frank")
@@ -433,6 +458,7 @@ func TestRemoveUserFromGroup_DanglingPointer(t *testing.T) {
 }
 
 func TestListGroupsForUser(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "grace")
 	for _, name := range []string{"alpha", "bravo"} {
@@ -458,6 +484,7 @@ func TestListGroupsForUser(t *testing.T) {
 }
 
 func TestListGroupsForUser_Empty(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "loner")
 
@@ -469,6 +496,7 @@ func TestListGroupsForUser_Empty(t *testing.T) {
 }
 
 func TestListGroupsForUser_UserNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.ListGroupsForUser(testAccountID, &iam.ListGroupsForUserInput{
@@ -481,6 +509,7 @@ func TestListGroupsForUser_UserNotFound(t *testing.T) {
 // TestListGroupsForUser_SkipsMissingGroup proves a dangling membership pointer
 // is silently skipped rather than erroring the whole listing.
 func TestListGroupsForUser_SkipsMissingGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "live")
 	createTestGroup(t, svc, "vanishing")
@@ -509,6 +538,7 @@ func TestListGroupsForUser_SkipsMissingGroup(t *testing.T) {
 // ============================================================================
 
 func TestAttachGroupPolicy(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "policy-group")
 	policy := createTestPolicy(t, svc, "AttachPolicy")
@@ -529,6 +559,7 @@ func TestAttachGroupPolicy(t *testing.T) {
 }
 
 func TestAttachGroupPolicy_Idempotent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "idem-group")
 	policy := createTestPolicy(t, svc, "IdemPolicy")
@@ -549,6 +580,7 @@ func TestAttachGroupPolicy_Idempotent(t *testing.T) {
 }
 
 func TestAttachGroupPolicy_PolicyNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "needs-policy")
 
@@ -561,6 +593,7 @@ func TestAttachGroupPolicy_PolicyNotFound(t *testing.T) {
 }
 
 func TestAttachGroupPolicy_GroupNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	policy := createTestPolicy(t, svc, "OrphanPolicy")
 
@@ -575,6 +608,7 @@ func TestAttachGroupPolicy_GroupNotFound(t *testing.T) {
 // TestAttachGroupPolicy_AWSManagedOpaque proves an AWS-managed ARN with no
 // backing policy record round-trips opaquely instead of failing NoSuchEntity.
 func TestAttachGroupPolicy_AWSManagedOpaque(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "managed-group")
 	const managedARN = "arn:aws:iam::aws:policy/service-role/AmazonEKS_CNI_Policy"
@@ -595,6 +629,7 @@ func TestAttachGroupPolicy_AWSManagedOpaque(t *testing.T) {
 }
 
 func TestDetachGroupPolicy(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "detach-group")
 	policy := createTestPolicy(t, svc, "DetachPolicy")
@@ -619,6 +654,7 @@ func TestDetachGroupPolicy(t *testing.T) {
 }
 
 func TestDetachGroupPolicy_NotAttached(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "bare-group")
 	policy := createTestPolicy(t, svc, "NotAttachedPolicy")
@@ -632,6 +668,7 @@ func TestDetachGroupPolicy_NotAttached(t *testing.T) {
 }
 
 func TestDetachGroupPolicy_GroupNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	policy := createTestPolicy(t, svc, "OrphanDetach")
 
@@ -644,6 +681,7 @@ func TestDetachGroupPolicy_GroupNotFound(t *testing.T) {
 }
 
 func TestListAttachedGroupPolicies_Empty(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "empty-attach")
 
@@ -655,6 +693,7 @@ func TestListAttachedGroupPolicies_Empty(t *testing.T) {
 }
 
 func TestListAttachedGroupPolicies_GroupNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.ListAttachedGroupPolicies(testAccountID, &iam.ListAttachedGroupPoliciesInput{
@@ -669,6 +708,7 @@ func TestListAttachedGroupPolicies_GroupNotFound(t *testing.T) {
 // ============================================================================
 
 func TestPutGroupPolicy_RoundTrip(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "inline-group")
 
@@ -690,6 +730,7 @@ func TestPutGroupPolicy_RoundTrip(t *testing.T) {
 }
 
 func TestPutGroupPolicy_IdempotentOverwrite(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "overwrite-group")
 
@@ -722,6 +763,7 @@ func TestPutGroupPolicy_IdempotentOverwrite(t *testing.T) {
 }
 
 func TestPutGroupPolicy_InvalidName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "badname-group")
 
@@ -735,6 +777,7 @@ func TestPutGroupPolicy_InvalidName(t *testing.T) {
 }
 
 func TestPutGroupPolicy_MalformedDocument(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "malformed-group")
 
@@ -748,6 +791,7 @@ func TestPutGroupPolicy_MalformedDocument(t *testing.T) {
 }
 
 func TestPutGroupPolicy_OversizedDocument(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "oversized-group")
 
@@ -762,6 +806,7 @@ func TestPutGroupPolicy_OversizedDocument(t *testing.T) {
 }
 
 func TestPutGroupPolicy_GroupNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
@@ -774,6 +819,7 @@ func TestPutGroupPolicy_GroupNotFound(t *testing.T) {
 }
 
 func TestGetGroupPolicy_UnknownName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "get-unknown")
 
@@ -786,6 +832,7 @@ func TestGetGroupPolicy_UnknownName(t *testing.T) {
 }
 
 func TestGetGroupPolicy_GroupNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.GetGroupPolicy(testAccountID, &iam.GetGroupPolicyInput{
@@ -797,6 +844,7 @@ func TestGetGroupPolicy_GroupNotFound(t *testing.T) {
 }
 
 func TestListGroupPolicies_Sorted(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "list-group")
 
@@ -822,6 +870,7 @@ func TestListGroupPolicies_Sorted(t *testing.T) {
 }
 
 func TestListGroupPolicies_Empty(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "empty-inline-group")
 
@@ -835,6 +884,7 @@ func TestListGroupPolicies_Empty(t *testing.T) {
 }
 
 func TestListGroupPolicies_GroupNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.ListGroupPolicies(testAccountID, &iam.ListGroupPoliciesInput{
@@ -845,6 +895,7 @@ func TestListGroupPolicies_GroupNotFound(t *testing.T) {
 }
 
 func TestDeleteGroupPolicy(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "del-inline-group")
 
@@ -876,6 +927,7 @@ func TestDeleteGroupPolicy(t *testing.T) {
 }
 
 func TestDeleteGroupPolicy_DoubleDelete(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "double-del-group")
 
@@ -901,6 +953,7 @@ func TestDeleteGroupPolicy_DoubleDelete(t *testing.T) {
 }
 
 func TestDeleteGroupPolicy_GroupNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.DeleteGroupPolicy(testAccountID, &iam.DeleteGroupPolicyInput{
@@ -914,6 +967,7 @@ func TestDeleteGroupPolicy_GroupNotFound(t *testing.T) {
 // TestDeleteGroup_WithInlinePolicy proves a group carrying an inline policy
 // refuses deletion until the inline policy is removed, mirroring DeleteRole.
 func TestDeleteGroup_WithInlinePolicy(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "inline-conflict-group")
 
@@ -952,6 +1006,7 @@ func TestDeleteGroup_WithInlinePolicy(t *testing.T) {
 // permission set, and stop contributing once the user leaves the group. Without
 // this behaviour groups are cosmetic and grant nothing.
 func TestGetUserPolicies_GroupInheritance(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "grantor")
 	createTestUser(t, svc, "ivy")
@@ -1002,6 +1057,7 @@ func TestGetUserPolicies_GroupInheritance(t *testing.T) {
 // TestGetUserPolicies_DirectAndGroup proves direct user attachments and
 // group-inherited policies both surface in one combined effective set.
 func TestGetUserPolicies_DirectAndGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "combined-group")
 	createTestUser(t, svc, "jack")
@@ -1035,6 +1091,7 @@ func TestGetUserPolicies_DirectAndGroup(t *testing.T) {
 // skipped (not fail-closed): the user keeps their direct grants and the dangling
 // name remains cleanable via RemoveUserFromGroup.
 func TestGetUserPolicies_SkipsMissingGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "soon-gone")
 	createTestUser(t, svc, "kim")
@@ -1090,6 +1147,7 @@ func putRawGroupInlinePolicy(t *testing.T, svc *IAMServiceImpl, groupName, polic
 // permission set, and stop contributing once the inline policy is removed.
 // Without this, group inline policies are cosmetic and grant nothing.
 func TestGetUserPolicies_GroupInlineInheritance(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "inline-grantor")
 	createTestUser(t, svc, "nora")
@@ -1134,6 +1192,7 @@ func TestGetUserPolicies_GroupInlineInheritance(t *testing.T) {
 // and its inline document both surface in a member's combined effective set —
 // inline grants supplement managed grants rather than replacing them.
 func TestGetUserPolicies_GroupManagedAndInline(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "combined-inline-group")
 	createTestUser(t, svc, "omar")
@@ -1169,6 +1228,7 @@ func TestGetUserPolicies_GroupManagedAndInline(t *testing.T) {
 // document on a resolvable group fails the whole resolution closed rather than
 // silently dropping the grant source, mirroring GetRolePolicies.
 func TestGetUserPolicies_GroupInlineMalformedFailsClosed(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "corrupt-inline-group")
 	createTestUser(t, svc, "pam")
@@ -1190,6 +1250,7 @@ func TestGetUserPolicies_GroupInlineMalformedFailsClosed(t *testing.T) {
 // ============================================================================
 
 func TestDeleteUser_InGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestGroup(t, svc, "blocker")
 	createTestUser(t, svc, "leo")
@@ -1224,6 +1285,7 @@ func TestDeleteUser_InGroup(t *testing.T) {
 // ============================================================================
 
 func TestGroups_AccountScoping(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	accA, err := svc.CreateAccount("Org A")

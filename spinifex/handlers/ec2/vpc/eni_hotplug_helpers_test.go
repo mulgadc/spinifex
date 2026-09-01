@@ -11,6 +11,7 @@ import (
 )
 
 func TestGetENIRecord(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -25,12 +26,14 @@ func TestGetENIRecord(t *testing.T) {
 }
 
 func TestGetENIRecord_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.GetENIRecord(testAccountID, "eni-nonexistent")
 	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
 }
 
 func TestUpdateENI_PatchesFields(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -51,6 +54,7 @@ func TestUpdateENI_PatchesFields(t *testing.T) {
 }
 
 func TestUpdateENI_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	err := svc.UpdateENI(testAccountID, "eni-nonexistent", func(r *ENIRecord) {
 		r.AttachmentStatus = "attached"
@@ -59,6 +63,7 @@ func TestUpdateENI_NotFound(t *testing.T) {
 }
 
 func TestUpdateENI_NoopPatchPersists(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -73,6 +78,7 @@ func TestUpdateENI_NoopPatchPersists(t *testing.T) {
 }
 
 func TestFindENIByAttachment(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -89,12 +95,14 @@ func TestFindENIByAttachment(t *testing.T) {
 }
 
 func TestFindENIByAttachment_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.FindENIByAttachment(testAccountID, "eni-attach-missing")
 	assert.ErrorContains(t, err, "InvalidAttachmentID.NotFound")
 }
 
 func TestFindENIByAttachment_AccountScoped(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -111,6 +119,7 @@ func TestFindENIByAttachment_AccountScoped(t *testing.T) {
 // ENIRecord so a struct-field rename would surface as a test failure rather
 // than a silent JSON-tag drift.
 func TestUpdateENI_RoundTripsAllNewFields(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -136,6 +145,7 @@ func TestUpdateENI_RoundTripsAllNewFields(t *testing.T) {
 // TestUpdateENI_PreservesUnrelatedFields ensures a partial patch does not
 // clobber pre-existing record state.
 func TestUpdateENI_PreservesUnrelatedFields(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")

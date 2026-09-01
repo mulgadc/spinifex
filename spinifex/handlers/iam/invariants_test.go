@@ -20,6 +20,7 @@ import (
 // a new writer path bypassing the helpers also fails CI.
 
 func TestInvariant_AccessKeysBucket_RejectsNonAKIAPrefix(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	cases := []struct {
@@ -48,6 +49,7 @@ func TestInvariant_AccessKeysBucket_RejectsNonAKIAPrefix(t *testing.T) {
 }
 
 func TestInvariant_AccessKeysBucket_AcceptsAKIAPrefix(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	akid := LongLivedAccessKeyIDPrefix + "0123456789ABCDEF"

@@ -33,6 +33,7 @@ func testPool() external.ExternalPoolConfig {
 }
 
 func TestExternalIPAM_AllocateSequential(t *testing.T) {
+	t.Parallel()
 	pool := testPool()
 	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
@@ -52,6 +53,7 @@ func TestExternalIPAM_AllocateSequential(t *testing.T) {
 }
 
 func TestExternalIPAM_GatewayIPReserved(t *testing.T) {
+	t.Parallel()
 	pool := testPool()
 	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
@@ -69,6 +71,7 @@ func TestExternalIPAM_GatewayIPReserved(t *testing.T) {
 }
 
 func TestExternalIPAM_ExplicitGatewayIP(t *testing.T) {
+	t.Parallel()
 	pool := testPool()
 	pool.GatewayIP = "192.168.1.155"
 	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
@@ -89,6 +92,7 @@ func TestExternalIPAM_ExplicitGatewayIP(t *testing.T) {
 }
 
 func TestExternalIPAM_Release(t *testing.T) {
+	t.Parallel()
 	pool := testPool()
 	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
@@ -112,6 +116,7 @@ func TestExternalIPAM_Release(t *testing.T) {
 }
 
 func TestExternalIPAM_Exhaustion(t *testing.T) {
+	t.Parallel()
 	pool := external.ExternalPoolConfig{
 		Name:       "tiny",
 		RangeStart: "10.0.0.1",
@@ -136,6 +141,7 @@ func TestExternalIPAM_Exhaustion(t *testing.T) {
 }
 
 func TestExternalIPAM_CASConflict(t *testing.T) {
+	t.Parallel()
 	pool := testPool()
 	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
@@ -169,6 +175,7 @@ func TestExternalIPAM_CASConflict(t *testing.T) {
 }
 
 func TestExternalIPAM_MultiPool(t *testing.T) {
+	t.Parallel()
 	pools := []external.ExternalPoolConfig{
 		{
 			Name:       "us-east",
@@ -205,6 +212,7 @@ func TestExternalIPAM_MultiPool(t *testing.T) {
 }
 
 func TestExternalIPAM_PoolFallback(t *testing.T) {
+	t.Parallel()
 	pools := []external.ExternalPoolConfig{
 		{
 			Name:       "az-pool",
@@ -253,6 +261,7 @@ func TestExternalIPAM_PoolFallback(t *testing.T) {
 }
 
 func TestExternalIPAM_SpecificPool(t *testing.T) {
+	t.Parallel()
 	pools := []external.ExternalPoolConfig{
 		{
 			Name:       "pool-a",
@@ -278,6 +287,7 @@ func TestExternalIPAM_SpecificPool(t *testing.T) {
 }
 
 func TestExternalIPAM_RangeValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		pool    external.ExternalPoolConfig
@@ -337,6 +347,7 @@ func TestExternalIPAM_RangeValidation(t *testing.T) {
 }
 
 func TestExternalIPAM_InitFromConfig(t *testing.T) {
+	t.Parallel()
 	pool := testPool()
 	// Create IPAM twice — second init should be idempotent
 	_, nc, _ := testutil.StartTestJetStream(t)
@@ -362,6 +373,7 @@ func TestExternalIPAM_InitFromConfig(t *testing.T) {
 }
 
 func TestExternalIPAM_ReleaseNotAllocated(t *testing.T) {
+	t.Parallel()
 	pool := testPool()
 	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
@@ -370,6 +382,7 @@ func TestExternalIPAM_ReleaseNotAllocated(t *testing.T) {
 }
 
 func TestExternalIPAM_NoPoolAvailable(t *testing.T) {
+	t.Parallel()
 	pool := external.ExternalPoolConfig{
 		Name:       "us-only",
 		RangeStart: "10.0.0.1",
@@ -390,6 +403,7 @@ func TestExternalIPAM_NoPoolAvailable(t *testing.T) {
 }
 
 func TestExternalIPAM_FindPoolByName_NotFound(t *testing.T) {
+	t.Parallel()
 	pool := testPool()
 	ipam := setupTestExternalIPAM(t, []external.ExternalPoolConfig{pool})
 
@@ -402,6 +416,7 @@ func TestExternalIPAM_FindPoolByName_NotFound(t *testing.T) {
 }
 
 func TestValidatePoolConfig(t *testing.T) {
+	t.Parallel()
 	base := func() external.ExternalPoolConfig {
 		return external.ExternalPoolConfig{
 			Name:       "wan",

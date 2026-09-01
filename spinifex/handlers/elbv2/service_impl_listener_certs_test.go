@@ -40,6 +40,7 @@ func createHTTPSListener(t *testing.T, svc *ELBv2ServiceImpl) string {
 }
 
 func TestCreateListener_HTTPSRequiresCert(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "https-nocert")
 
@@ -54,6 +55,7 @@ func TestCreateListener_HTTPSRequiresCert(t *testing.T) {
 }
 
 func TestCreateListener_HTTPSDefaultsSslPolicy(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "https-default-policy")
 
@@ -83,6 +85,7 @@ func TestCreateListener_HTTPSDefaultsSslPolicy(t *testing.T) {
 }
 
 func TestCreateListener_HTTPRejectsCert(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "http-withcert")
 
@@ -98,6 +101,7 @@ func TestCreateListener_HTTPRejectsCert(t *testing.T) {
 }
 
 func TestCreateListener_UnknownSslPolicy(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "https-badpolicy")
 
@@ -114,6 +118,7 @@ func TestCreateListener_UnknownSslPolicy(t *testing.T) {
 }
 
 func TestModifyListener_SwitchToHTTPSRequiresCert(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "switch-lb")
 	lst, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
@@ -145,6 +150,7 @@ func TestModifyListener_SwitchToHTTPSRequiresCert(t *testing.T) {
 }
 
 func TestModifyListener_SwitchAwayClearsCerts(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createHTTPSListener(t, svc)
 
@@ -158,6 +164,7 @@ func TestModifyListener_SwitchAwayClearsCerts(t *testing.T) {
 }
 
 func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createHTTPSListener(t, svc)
 
@@ -208,6 +215,7 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 }
 
 func TestAddListenerCertificates_HTTPRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbArn := createLBArn(t, svc, "http-addcert")
 	lst, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
@@ -227,6 +235,7 @@ func TestAddListenerCertificates_HTTPRejected(t *testing.T) {
 }
 
 func TestListenerCertificates_ValidationAndNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	arn := createHTTPSListener(t, svc)
 	const otherAccount = "999999999999"
@@ -285,6 +294,7 @@ func TestListenerCertificates_ValidationAndNotFound(t *testing.T) {
 }
 
 func TestDescribeSSLPolicies_EmptyName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.DescribeSSLPolicies(context.Background(), &elbv2.DescribeSSLPoliciesInput{
 		Names: []*string{aws.String("")},
@@ -293,6 +303,7 @@ func TestDescribeSSLPolicies_EmptyName(t *testing.T) {
 }
 
 func TestDescribeSSLPolicies(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	// No filter → full catalog.
@@ -331,6 +342,7 @@ func attachedCertListener(t *testing.T, svc *ELBv2ServiceImpl, id, name string) 
 }
 
 func TestAddListenerCertificates_RerendersConfig(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbID, listenerArn := attachedCertListener(t, svc, "lb-rerender1", "rerender-lb1")
 
@@ -358,6 +370,7 @@ func TestAddListenerCertificates_RerendersConfig(t *testing.T) {
 }
 
 func TestRemoveListenerCertificates_RerendersConfig(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbID, listenerArn := attachedCertListener(t, svc, "lb-rerender2", "rerender-lb2")
 
@@ -392,6 +405,7 @@ func TestRemoveListenerCertificates_RerendersConfig(t *testing.T) {
 // move an existing deployment's PEM, and it must render first so a client that
 // sends no SNI still gets it.
 func TestListenerCerts_DefaultCertRendersFirstAndKeepsItsPath(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbID, listenerArn := attachedCertListener(t, svc, "lb-rerender3", "rerender-lb3")
 

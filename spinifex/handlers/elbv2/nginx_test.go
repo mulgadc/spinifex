@@ -42,6 +42,7 @@ func nlbTG(arn string, targets ...Target) *TargetGroupRecord {
 }
 
 func TestGenerateNLBStream_TCP(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-tcp", Type: LoadBalancerTypeNetwork}
 	tgArn := "arn:aws:elasticloadbalancing:us-east-1:1:targetgroup/db/tg-db"
 	listeners := []*ListenerRecord{tcpListener("arn:lst-tcp", "lst-tcp", ProtocolTCP, 5432, tgArn)}
@@ -67,6 +68,7 @@ func TestGenerateNLBStream_TCP(t *testing.T) {
 }
 
 func TestGenerateNLBStream_UDP(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-udp", Type: LoadBalancerTypeNetwork}
 	tgArn := "arn:tg-dns"
 	listeners := []*ListenerRecord{tcpListener("arn:lst-udp", "lst-udp", ProtocolUDP, 53, tgArn)}
@@ -83,6 +85,7 @@ func TestGenerateNLBStream_UDP(t *testing.T) {
 }
 
 func TestGenerateNLBStream_TLS(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-tls", Type: LoadBalancerTypeNetwork}
 	tgArn := "arn:tg-tls"
 	lst := tcpListener("arn:lst-tls", "lst-tls", ProtocolTLS, 443, tgArn)
@@ -104,6 +107,7 @@ func TestGenerateNLBStream_TLS(t *testing.T) {
 }
 
 func TestGenerateNLBStream_TCPUDP(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-both", Type: LoadBalancerTypeNetwork}
 	tgArn := "arn:tg-both"
 	listeners := []*ListenerRecord{tcpListener("arn:lst-both", "lst-both", ProtocolTCPUDP, 5000, tgArn)}
@@ -121,6 +125,7 @@ func TestGenerateNLBStream_TCPUDP(t *testing.T) {
 }
 
 func TestGenerateNLBStream_SkipsDrainingAndNoIP(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-drain", Type: LoadBalancerTypeNetwork}
 	tgArn := "arn:tg-drain"
 	listeners := []*ListenerRecord{tcpListener("arn:lst-drain", "lst-drain", ProtocolTCP, 3306, tgArn)}
@@ -140,6 +145,7 @@ func TestGenerateNLBStream_SkipsDrainingAndNoIP(t *testing.T) {
 }
 
 func TestGenerateNLBStream_EmptyUpstreamPlaceholder(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-empty", Type: LoadBalancerTypeNetwork}
 	tgArn := "arn:tg-empty"
 	listeners := []*ListenerRecord{tcpListener("arn:lst-empty", "lst-empty", ProtocolTCP, 80, tgArn)}
@@ -153,6 +159,7 @@ func TestGenerateNLBStream_EmptyUpstreamPlaceholder(t *testing.T) {
 }
 
 func TestBuildNLBHealthTargets_Resolution(t *testing.T) {
+	t.Parallel()
 	tgArn := "arn:aws:elasticloadbalancing:us-east-1:1:targetgroup/db/tg-db"
 	tgByArn := map[string]*TargetGroupRecord{
 		tgArn: nlbTG(tgArn,
@@ -174,6 +181,7 @@ func TestBuildNLBHealthTargets_Resolution(t *testing.T) {
 }
 
 func TestBuildNLBHealthTargets_ExplicitHCPortAndHTTP(t *testing.T) {
+	t.Parallel()
 	tgArn := "arn:tg-http"
 	tg := nlbTG(tgArn, Target{Id: "i-1", Port: 8080, PrivateIP: "10.0.0.9", HealthState: TargetHealthHealthy})
 	tg.HealthCheck.Protocol = ProtocolHTTP
@@ -215,6 +223,7 @@ func combinedPEM(t *testing.T, cn string, dnsNames ...string) string {
 }
 
 func TestGenerateNLBStream_SNICertGetsItsOwnMapEntry(t *testing.T) {
+	t.Parallel()
 	lb, lst, tgByArn := nlbTLSFixture("lst-sni", "arn:cert-1", "arn:cert-2")
 	certPEM := map[string]string{
 		"arn:cert-1": combinedPEM(t, "default.example.com", "default.example.com"),
@@ -244,6 +253,7 @@ func TestGenerateNLBStream_SNICertGetsItsOwnMapEntry(t *testing.T) {
 }
 
 func TestGenerateNLBStream_WildcardSANBecomesMapKey(t *testing.T) {
+	t.Parallel()
 	lb, lst, tgByArn := nlbTLSFixture("lst-wild", "arn:cert-1", "arn:cert-2")
 	certPEM := map[string]string{
 		"arn:cert-1": combinedPEM(t, "example.com", "example.com"),
@@ -259,6 +269,7 @@ func TestGenerateNLBStream_WildcardSANBecomesMapKey(t *testing.T) {
 // A single certificate must keep rendering a literal path: a variable makes nginx
 // re-read the PEM on every handshake.
 func TestGenerateNLBStream_SingleCertRendersLiteralPath(t *testing.T) {
+	t.Parallel()
 	lb, lst, tgByArn := nlbTLSFixture("lst-one", "arn:cert-1")
 	certPEM := map[string]string{"arn:cert-1": combinedPEM(t, "example.com", "example.com")}
 
@@ -272,6 +283,7 @@ func TestGenerateNLBStream_SingleCertRendersLiteralPath(t *testing.T) {
 // The default certificate already answers unmatched names, so a second cert that
 // only repeats them cannot be selected — and its key must not be shipped.
 func TestGenerateNLBStream_UnselectableSNICertNotDelivered(t *testing.T) {
+	t.Parallel()
 	lb, lst, tgByArn := nlbTLSFixture("lst-dup", "arn:cert-1", "arn:cert-2")
 	certPEM := map[string]string{
 		"arn:cert-1": combinedPEM(t, "example.com", "example.com"),
@@ -289,6 +301,7 @@ func TestGenerateNLBStream_UnselectableSNICertNotDelivered(t *testing.T) {
 // A subject is caller-supplied on import, so a name that could break the config
 // must never reach a map key.
 func TestCertDNSNames_DropsNamesThatAreNotHostnames(t *testing.T) {
+	t.Parallel()
 	pemText := combinedPEM(t, "ok.example.com", "ok.example.com", "bad name; }", "-leading-hyphen.com", "UPPER.example.com")
 
 	assert.Equal(t, []string{"ok.example.com", "upper.example.com"}, certDNSNames(pemText))

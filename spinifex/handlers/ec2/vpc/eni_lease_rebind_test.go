@@ -33,6 +33,7 @@ func stubAddNAT(t *testing.T, nc *nats.Conn, fail string) *[]string {
 }
 
 func TestRebindENIPublicIP_MovesRecordAndNAT(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	seen := stubAddNAT(t, nc, "")
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
@@ -56,6 +57,7 @@ func TestRebindENIPublicIP_MovesRecordAndNAT(t *testing.T) {
 // A NAT commit failure leaves the instance with no working ingress, so the
 // record must not be moved to advertise an address that does not route.
 func TestRebindENIPublicIP_NATFailureLeavesRecord(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	stubAddNAT(t, nc, "ovn unreachable")
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
@@ -72,6 +74,7 @@ func TestRebindENIPublicIP_NATFailureLeavesRecord(t *testing.T) {
 }
 
 func TestRebindENIPublicIP_IsIdempotent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	stubAddNAT(t, nc, "")
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
@@ -84,6 +87,7 @@ func TestRebindENIPublicIP_IsIdempotent(t *testing.T) {
 }
 
 func TestRebindENIPublicIP_RejectsMismatchAndUnknown(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	stubAddNAT(t, nc, "")
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")

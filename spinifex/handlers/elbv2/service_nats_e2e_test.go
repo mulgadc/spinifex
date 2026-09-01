@@ -89,6 +89,7 @@ func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(context.Context, *In,
 // --- Full round-trip E2E tests ---
 
 func TestNATSE2E_CreateAndDescribeLoadBalancer(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSELBv2Test(t)
 
 	out, err := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -109,6 +110,7 @@ func TestNATSE2E_CreateAndDescribeLoadBalancer(t *testing.T) {
 }
 
 func TestNATSE2E_FullWorkflow(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSELBv2Test(t)
 
 	// 1. Create target group
@@ -232,6 +234,7 @@ func TestNATSE2E_FullWorkflow(t *testing.T) {
 }
 
 func TestNATSE2E_DeleteLoadBalancerCascadesListeners(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSELBv2Test(t)
 
 	// Create LB + TG + 2 listeners
@@ -259,6 +262,7 @@ func TestNATSE2E_DeleteLoadBalancerCascadesListeners(t *testing.T) {
 }
 
 func TestNATSE2E_ModifyListener(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSELBv2Test(t)
 
 	tgOut, _ := client.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("e2e-mod-tg")}, testAccountID)
@@ -289,6 +293,7 @@ func TestNATSE2E_ModifyListener(t *testing.T) {
 }
 
 func TestNATSE2E_TargetGroupInUseProtection(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSELBv2Test(t)
 
 	tgOut, _ := client.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("protected-tg")}, testAccountID)
@@ -307,6 +312,7 @@ func TestNATSE2E_TargetGroupInUseProtection(t *testing.T) {
 }
 
 func TestNATSE2E_TagsLifecycle(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSELBv2Test(t)
 
 	lbOut, err := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-tags-lb")}, testAccountID)
@@ -348,6 +354,7 @@ func TestNATSE2E_TagsLifecycle(t *testing.T) {
 }
 
 func TestNATSE2E_AttributeRoundTrip(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSELBv2Test(t)
 
 	tgOut, err := client.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("e2e-attr-tg")}, testAccountID)
@@ -392,6 +399,7 @@ func TestNATSE2E_AttributeRoundTrip(t *testing.T) {
 }
 
 func TestNATSE2E_RedirectListener(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSELBv2Test(t)
 
 	lbOut, err := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-redir-lb")}, testAccountID)
@@ -425,6 +433,7 @@ func TestNATSE2E_RedirectListener(t *testing.T) {
 }
 
 func TestNATSE2E_IPTargetType(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSELBv2Test(t)
 
 	tgOut, err := client.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -457,6 +466,7 @@ func TestNATSE2E_IPTargetType(t *testing.T) {
 }
 
 func TestNATSE2E_SetSecurityGroupsAndIpAddressType(t *testing.T) {
+	t.Parallel()
 	client, _ := setupNATSELBv2Test(t)
 
 	lbOut, err := client.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{

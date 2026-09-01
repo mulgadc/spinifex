@@ -9,18 +9,21 @@ import (
 )
 
 func TestGenerateENIMac_Deterministic(t *testing.T) {
+	t.Parallel()
 	mac1 := generateENIMac("eni-abc123")
 	mac2 := generateENIMac("eni-abc123")
 	assert.Equal(t, mac1, mac2, "same input must produce same MAC")
 }
 
 func TestGenerateENIMac_DifferentInputs(t *testing.T) {
+	t.Parallel()
 	mac1 := generateENIMac("eni-aaa")
 	mac2 := generateENIMac("eni-bbb")
 	assert.NotEqual(t, mac1, mac2, "different inputs should produce different MACs")
 }
 
 func TestGenerateENIMac_LocallyAdministered(t *testing.T) {
+	t.Parallel()
 	mac := generateENIMac("eni-test123")
 	hw, err := net.ParseMAC(mac)
 	require.NoError(t, err)
@@ -29,6 +32,7 @@ func TestGenerateENIMac_LocallyAdministered(t *testing.T) {
 }
 
 func TestGenerateENIMac_EmptyString(t *testing.T) {
+	t.Parallel()
 	mac := generateENIMac("")
 	hw, err := net.ParseMAC(mac)
 	require.NoError(t, err)

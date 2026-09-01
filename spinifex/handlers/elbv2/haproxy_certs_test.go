@@ -39,6 +39,7 @@ func httpsListener() *ListenerRecord {
 }
 
 func TestGenerateHAProxyConfigWithCerts_HTTPSRendersSslCrt(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-abc123", Name: "my-alb"}
 	listeners := []*ListenerRecord{httpsListener()}
 	certPEM := "CERTPEM\nKEYPEM\n"
@@ -56,6 +57,7 @@ func TestGenerateHAProxyConfigWithCerts_HTTPSRendersSslCrt(t *testing.T) {
 }
 
 func TestGenerateHAProxyConfigWithCerts_HTTPHasNoSslCrt(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-abc123", Name: "my-alb"}
 	listeners := []*ListenerRecord{{
 		ListenerArn:    "arn:aws:elasticloadbalancing:us-east-1:123:listener/app/my-alb/lb-abc123/lst-http",
@@ -75,6 +77,7 @@ func TestGenerateHAProxyConfigWithCerts_HTTPHasNoSslCrt(t *testing.T) {
 // A secure listener whose cert ARN is unresolved renders without ssl crt — the
 // gap surfaces at HAProxy bind time rather than silently serving cleartext.
 func TestGenerateHAProxyConfigWithCerts_MissingCertRendersPlain(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-abc123", Name: "my-alb"}
 	config, certFiles, err := GenerateHAProxyConfigWithCerts(
 		lb, []*ListenerRecord{httpsListener()}, nil, nil, "0.0.0.0", nil,
@@ -85,6 +88,7 @@ func TestGenerateHAProxyConfigWithCerts_MissingCertRendersPlain(t *testing.T) {
 }
 
 func TestConfigCertHash_ChangesOnRotation(t *testing.T) {
+	t.Parallel()
 	const cfg = "frontend ft\n    bind *:443 ssl crt /etc/haproxy/certs/x.pem\n"
 	path := "/etc/haproxy/certs/x.pem"
 
@@ -112,6 +116,7 @@ func putTestCert(t *testing.T, svc *ELBv2ServiceImpl, arn, account, leaf, chain,
 }
 
 func TestResolveCertPEM_ConcatOrderAndOwnership(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	require.NotNil(t, svc.acmStore)
 	putTestCert(t, svc, certTestArn, testAccountID, "LEAF", "CHAIN", "KEY")
@@ -139,6 +144,7 @@ func TestResolveCertPEM_ConcatOrderAndOwnership(t *testing.T) {
 // ACMServiceImpl and ELBv2ServiceImpl each open their own Store over the
 // same JetStream bucket and must agree on the same key.
 func TestResolveCertPEM_CrossesACMServiceKeyBoundary(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	masterKey, err := handlers_iam.GenerateMasterKey()
@@ -175,6 +181,7 @@ func TestResolveCertPEM_CrossesACMServiceKeyBoundary(t *testing.T) {
 }
 
 func TestValidateListenerCerts_RejectsUnknownAndWrongAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	putTestCert(t, svc, certTestArn, testAccountID, "LEAF", "", "KEY")
 
@@ -199,6 +206,7 @@ func TestValidateListenerCerts_RejectsUnknownAndWrongAccount(t *testing.T) {
 }
 
 func TestResolveCertPEM_NoChain(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	putTestCert(t, svc, certTestArn, testAccountID, "LEAF", "", "KEY")
 
@@ -208,6 +216,7 @@ func TestResolveCertPEM_NoChain(t *testing.T) {
 }
 
 func TestResolveListenerCerts_DedupAndResolve(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	putTestCert(t, svc, certTestArn, testAccountID, "LEAF", "", "KEY")
 
@@ -224,6 +233,7 @@ func TestResolveListenerCerts_DedupAndResolve(t *testing.T) {
 }
 
 func TestGetLBConfig_DeliversCertFiles(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	rec := &LoadBalancerRecord{
 		LoadBalancerID: "lb-deliver1",
@@ -258,6 +268,7 @@ func TestGetLBConfig_DeliversCertFiles(t *testing.T) {
 }
 
 func TestCertFilesToSDK_SortedAndNilSafe(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, certFilesToSDK(nil))
 
 	out := certFilesToSDK(map[string]string{"/b.pem": "B", "/a.pem": "A"})

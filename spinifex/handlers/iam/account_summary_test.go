@@ -55,6 +55,7 @@ func resName(prefix string, i int) string {
 }
 
 func TestGetAccountSummary_Counts(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	accA, err := svc.CreateAccount("Org A")
@@ -87,6 +88,7 @@ func TestGetAccountSummary_Counts(t *testing.T) {
 }
 
 func TestGetAccountSummary_EmptyAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	acc, err := svc.CreateAccount("Empty Org")

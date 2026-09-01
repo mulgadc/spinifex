@@ -15,6 +15,7 @@ import (
 // controller always sends ProtocolVersion and recreates the TG (DuplicateTargetGroupName
 // loop) if Describe reads it back empty.
 func TestCreateTargetGroup_ProtocolVersionDefaultsAndRoundTrips(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -38,6 +39,7 @@ func TestCreateTargetGroup_ProtocolVersionDefaultsAndRoundTrips(t *testing.T) {
 
 // An explicit ProtocolVersion is preserved, not overwritten by the default.
 func TestCreateTargetGroup_ProtocolVersionExplicitPreserved(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -53,6 +55,7 @@ func TestCreateTargetGroup_ProtocolVersionExplicitPreserved(t *testing.T) {
 
 // An unknown ProtocolVersion is rejected.
 func TestCreateTargetGroup_ProtocolVersionInvalidRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -66,6 +69,7 @@ func TestCreateTargetGroup_ProtocolVersionInvalidRejected(t *testing.T) {
 // NLB (TCP/UDP/TLS) target groups have no ProtocolVersion; AWS omits it and so
 // must Spinifex, otherwise the controller sees spurious drift on NLB TGs.
 func TestCreateTargetGroup_ProtocolVersionOmittedForNLB(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{

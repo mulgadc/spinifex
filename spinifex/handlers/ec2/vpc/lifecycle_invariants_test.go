@@ -18,6 +18,7 @@ import (
 // is why unit tests on each operation individually all passed while it
 // existed — this asserts the end state across the ordering that matters.
 func TestRLC5_NoOrphanedRouteTableAfterSubnetThenVpcTeardown(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.70.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.70.1.0/24")
@@ -51,6 +52,7 @@ func TestRLC5_NoOrphanedRouteTableAfterSubnetThenVpcTeardown(t *testing.T) {
 // compatible so SDK callers and account-scoping checks see the real error.
 // Every VPC-family delete endpoint must have a case here.
 func TestRLC1_VPCDeleteNotFoundOnAbsent(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		wantErr string
@@ -88,6 +90,7 @@ func TestRLC1_VPCDeleteNotFoundOnAbsent(t *testing.T) {
 // and the in-use guard then blocks delete forever, so the instance can never
 // finish terminating.
 func TestRLC_ENINonDeadlock(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -125,6 +128,7 @@ func TestRLC_ENINonDeadlock(t *testing.T) {
 // detached/available (orphan) child must never pin its parent undeletable —
 // otherwise tofu destroy deadlocks on a child the GC backstop already reaps.
 func TestRLC3_VPCFamilyDeleteGuardsLiveDependents(t *testing.T) {
+	t.Parallel()
 	t.Run("DeleteSubnet blocked by an attached ENI", func(t *testing.T) {
 		svc := setupTestVPCService(t)
 		vpcId := createTestVPC(t, svc, "10.0.0.0/16")

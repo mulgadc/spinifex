@@ -13,6 +13,7 @@ import (
 // --- evaluateHealth ---
 
 func TestEvaluateHealth_InitialToHealthy(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultHealthCheck()
 	ctr := &targetCounter{consecutiveHealthy: 1}
 
@@ -22,6 +23,7 @@ func TestEvaluateHealth_InitialToHealthy(t *testing.T) {
 }
 
 func TestEvaluateHealth_InitialToUnhealthy(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultHealthCheck()
 	ctr := &targetCounter{consecutiveUnhealthy: cfg.UnhealthyThreshold}
 
@@ -30,6 +32,7 @@ func TestEvaluateHealth_InitialToUnhealthy(t *testing.T) {
 }
 
 func TestEvaluateHealth_InitialStaysInitial(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultHealthCheck()
 	ctr := &targetCounter{consecutiveUnhealthy: 1} // below threshold
 
@@ -38,6 +41,7 @@ func TestEvaluateHealth_InitialStaysInitial(t *testing.T) {
 }
 
 func TestEvaluateHealth_HealthyToUnhealthy(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultHealthCheck()
 	ctr := &targetCounter{consecutiveUnhealthy: cfg.UnhealthyThreshold}
 
@@ -46,6 +50,7 @@ func TestEvaluateHealth_HealthyToUnhealthy(t *testing.T) {
 }
 
 func TestEvaluateHealth_HealthyStaysHealthy(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultHealthCheck()
 	ctr := &targetCounter{consecutiveUnhealthy: 1} // below threshold
 
@@ -54,6 +59,7 @@ func TestEvaluateHealth_HealthyStaysHealthy(t *testing.T) {
 }
 
 func TestEvaluateHealth_UnhealthyToHealthy(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultHealthCheck()
 	ctr := &targetCounter{consecutiveHealthy: cfg.HealthyThreshold}
 
@@ -62,6 +68,7 @@ func TestEvaluateHealth_UnhealthyToHealthy(t *testing.T) {
 }
 
 func TestEvaluateHealth_UnhealthyStaysUnhealthy(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultHealthCheck()
 	ctr := &targetCounter{consecutiveHealthy: cfg.HealthyThreshold - 1}
 
@@ -70,6 +77,7 @@ func TestEvaluateHealth_UnhealthyStaysUnhealthy(t *testing.T) {
 }
 
 func TestEvaluateHealth_DrainingUnchanged(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultHealthCheck()
 	ctr := &targetCounter{consecutiveHealthy: 100}
 
@@ -111,6 +119,7 @@ func setupLBWithTG(t *testing.T, store *Store, lbID string, tg *TargetGroupRecor
 }
 
 func TestHandleHealthReport_TransitionsInitialToHealthy(t *testing.T) {
+	t.Parallel()
 	store := setupTestNATS(t)
 
 	hc := newHealthChecker(store)
@@ -141,6 +150,7 @@ func TestHandleHealthReport_TransitionsInitialToHealthy(t *testing.T) {
 }
 
 func TestHandleHealthReport_UnhealthyAfterThreshold(t *testing.T) {
+	t.Parallel()
 	store := setupTestNATS(t)
 
 	hc := newHealthChecker(store)
@@ -179,6 +189,7 @@ func TestHandleHealthReport_UnhealthyAfterThreshold(t *testing.T) {
 }
 
 func TestHandleHealthReport_SkipsDrainingTargets(t *testing.T) {
+	t.Parallel()
 	store := setupTestNATS(t)
 
 	hc := newHealthChecker(store)
@@ -209,6 +220,7 @@ func TestHandleHealthReport_SkipsDrainingTargets(t *testing.T) {
 }
 
 func TestRemoveTarget(t *testing.T) {
+	t.Parallel()
 	hc := newHealthChecker(nil)
 
 	hc.mu.Lock()
@@ -224,6 +236,7 @@ func TestRemoveTarget(t *testing.T) {
 }
 
 func TestHandleHealthReport_TargetPortZeroUsesTGPort(t *testing.T) {
+	t.Parallel()
 	store := setupTestNATS(t)
 	hc := newHealthChecker(store)
 
@@ -259,6 +272,7 @@ func TestHandleHealthReport_TargetPortZeroUsesTGPort(t *testing.T) {
 }
 
 func TestHandleHealthReportDirect_TransitionsInitialToHealthy(t *testing.T) {
+	t.Parallel()
 	store := setupTestNATS(t)
 	hc := newHealthChecker(store)
 
@@ -288,6 +302,7 @@ func TestHandleHealthReportDirect_TransitionsInitialToHealthy(t *testing.T) {
 }
 
 func TestHandleHealthReport_OnlyProcessesTGsForReportingLB(t *testing.T) {
+	t.Parallel()
 	store := setupTestNATS(t)
 	hc := newHealthChecker(store)
 
@@ -335,6 +350,7 @@ func TestHandleHealthReport_OnlyProcessesTGsForReportingLB(t *testing.T) {
 }
 
 func TestHandleHealthReport_FallbackListTargetGroups(t *testing.T) {
+	t.Parallel()
 	store := setupTestNATS(t)
 	hc := newHealthChecker(store)
 
@@ -366,6 +382,7 @@ func TestHandleHealthReport_FallbackListTargetGroups(t *testing.T) {
 }
 
 func TestEvaluateHealth_ZeroThresholdsUsesDefaults(t *testing.T) {
+	t.Parallel()
 	cfg := HealthCheckConfig{} // all zeros
 
 	// Unhealthy→healthy should require DefaultHealthyThreshold consecutive healthy

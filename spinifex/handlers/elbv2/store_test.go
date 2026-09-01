@@ -72,6 +72,7 @@ func newTestListener(id, lbArn string) *ListenerRecord {
 // bucket is not merely named, it opens against the live server so the DNS
 // reconcile can actually be woken by a load-balancer change.
 func TestStore_WatchBucketOpensAWatchableHandle(t *testing.T) {
+	t.Parallel()
 	store := setupTestStore(t)
 
 	bucket := store.WatchBucket()
@@ -84,6 +85,7 @@ func TestStore_WatchBucketOpensAWatchableHandle(t *testing.T) {
 }
 
 func TestLoadBalancerStoreLifecycle(t *testing.T) {
+	t.Parallel()
 	t.Run("put and get", func(t *testing.T) {
 		store := setupTestStore(t)
 		require.NoError(t, store.PutLoadBalancer(t.Context(), newTestLB("getput1", "lb-getput1")))
@@ -135,6 +137,7 @@ func TestLoadBalancerStoreLifecycle(t *testing.T) {
 }
 
 func TestTargetGroupStoreLifecycle(t *testing.T) {
+	t.Parallel()
 	t.Run("put and get", func(t *testing.T) {
 		store := setupTestStore(t)
 		require.NoError(t, store.PutTargetGroup(t.Context(), newTestTG("getput1", "tg-getput1")))
@@ -186,6 +189,7 @@ func TestTargetGroupStoreLifecycle(t *testing.T) {
 }
 
 func TestListenerStoreLifecycle(t *testing.T) {
+	t.Parallel()
 	lbArn := "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":loadbalancer/app/test/lb1"
 
 	t.Run("put and get", func(t *testing.T) {
@@ -241,6 +245,7 @@ func TestListenerStoreLifecycle(t *testing.T) {
 // --- LB-specific lookups (no equivalent on TG/Listener) ---
 
 func TestGetLoadBalancerByArn(t *testing.T) {
+	t.Parallel()
 	store := setupTestStore(t)
 	lb := newTestLB("arn123", "arn-test")
 	require.NoError(t, store.PutLoadBalancer(t.Context(), lb))
@@ -256,6 +261,7 @@ func TestGetLoadBalancerByArn(t *testing.T) {
 }
 
 func TestGetLoadBalancerByName(t *testing.T) {
+	t.Parallel()
 	store := setupTestStore(t)
 	lb := newTestLB("name123", "find-by-name")
 	require.NoError(t, store.PutLoadBalancer(t.Context(), lb))
@@ -267,6 +273,7 @@ func TestGetLoadBalancerByName(t *testing.T) {
 }
 
 func TestPutLoadBalancer_Update(t *testing.T) {
+	t.Parallel()
 	store := setupTestStore(t)
 	lb := newTestLB("upd123", "updatable")
 	require.NoError(t, store.PutLoadBalancer(t.Context(), lb))
@@ -285,6 +292,7 @@ func TestPutLoadBalancer_Update(t *testing.T) {
 // --- TG-specific lookups + targets ---
 
 func TestGetTargetGroupByArn(t *testing.T) {
+	t.Parallel()
 	store := setupTestStore(t)
 	tg := newTestTG("tgarn", "arn-tg")
 	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
@@ -296,6 +304,7 @@ func TestGetTargetGroupByArn(t *testing.T) {
 }
 
 func TestGetTargetGroupByName(t *testing.T) {
+	t.Parallel()
 	store := setupTestStore(t)
 	tg := newTestTG("tgname", "named-tg")
 	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
@@ -311,6 +320,7 @@ func TestGetTargetGroupByName(t *testing.T) {
 }
 
 func TestTargetGroupWithTargets(t *testing.T) {
+	t.Parallel()
 	store := setupTestStore(t)
 	tg := newTestTG("tgtargets", "targets-tg")
 	tg.Targets = []Target{
@@ -331,6 +341,7 @@ func TestTargetGroupWithTargets(t *testing.T) {
 // --- Listener-specific lookups ---
 
 func TestListListenersByLB(t *testing.T) {
+	t.Parallel()
 	store := setupTestStore(t)
 	lbArn1 := "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":loadbalancer/app/alb1/lb1"
 	lbArn2 := "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":loadbalancer/app/alb2/lb2"
@@ -356,6 +367,7 @@ func TestListListenersByLB(t *testing.T) {
 }
 
 func TestGetListenerByArn(t *testing.T) {
+	t.Parallel()
 	store := setupTestStore(t)
 	lbArn := "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":loadbalancer/app/test/lb1"
 	l := newTestListener("lstarn", lbArn)
@@ -380,6 +392,7 @@ func TestGetListenerByArn(t *testing.T) {
 // --- Cross-resource isolation: shared IDs across record types must not collide ---
 
 func TestResourceIsolation(t *testing.T) {
+	t.Parallel()
 	store := setupTestStore(t)
 
 	lb := newTestLB("shared1", "alb-shared")
@@ -414,6 +427,7 @@ func TestResourceIsolation(t *testing.T) {
 }
 
 func TestTargetGroupsForLB(t *testing.T) {
+	t.Parallel()
 	store := setupTestStore(t)
 
 	// Non-existent LB returns nil, nil

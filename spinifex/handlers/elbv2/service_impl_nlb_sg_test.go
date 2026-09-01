@@ -128,6 +128,7 @@ func createTCPListener(t *testing.T, svc *ELBv2ServiceImpl, lbArn *string, port 
 // dedicated internal SG (not the VPC default) attached to its ENI, recorded in
 // NLBManagedSGID, while DescribeLoadBalancers still reports no customer SGs.
 func TestCreateNLB_MintsManagedSGAttachedToENI(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, vpcID := firstSubnet(t, vpcSvc)
 
@@ -152,6 +153,7 @@ func TestCreateNLB_MintsManagedSGAttachedToENI(t *testing.T) {
 // customer SGs over the managed SG, falls back to the managed SG without them, and
 // an ALB always uses its customer SGs.
 func TestLBENIGroups_Precedence(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, []string{"sg-a"}, lbENIGroups(&LoadBalancerRecord{
 		Type: LoadBalancerTypeNetwork, SecurityGroups: []string{"sg-a"}, NLBManagedSGID: "sg-mgd",
 	}))
@@ -167,6 +169,7 @@ func TestLBENIGroups_Precedence(t *testing.T) {
 // with customer SGs joins those SGs on its ENI and skips the managed SG entirely;
 // the caller then owns the listener-port ingress rules.
 func TestCreateNLB_WithCustomerSGs_AttachesThemNoManagedSG(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, vpcID := firstSubnet(t, vpcSvc)
 
@@ -200,6 +203,7 @@ func TestCreateNLB_WithCustomerSGs_AttachesThemNoManagedSG(t *testing.T) {
 // TestCreateALB_NoManagedSG verifies the managed-SG behavior is NLB-only: an ALB
 // keeps the existing customer-SG / default-SG semantics.
 func TestCreateALB_NoManagedSG(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -217,6 +221,7 @@ func TestCreateALB_NoManagedSG(t *testing.T) {
 // TestCreateListener_Internal_OpensPortFromVPCCIDR verifies an internal NLB's
 // listener port is authorized on the managed SG from the VPC CIDR.
 func TestCreateListener_Internal_OpensPortFromVPCCIDR(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -234,6 +239,7 @@ func TestCreateListener_Internal_OpensPortFromVPCCIDR(t *testing.T) {
 // TestCreateListener_InternetFacing_OpensPortFromAnywhere verifies an
 // internet-facing NLB's listener port is authorized from 0.0.0.0/0.
 func TestCreateListener_InternetFacing_OpensPortFromAnywhere(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -250,6 +256,7 @@ func TestCreateListener_InternetFacing_OpensPortFromAnywhere(t *testing.T) {
 // TestCreateListener_TCPUDP_OpensBothProtocols verifies a TCP_UDP listener opens
 // both tcp and udp on the listener port.
 func TestCreateListener_TCPUDP_OpensBothProtocols(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -279,6 +286,7 @@ func TestCreateListener_TCPUDP_OpensBothProtocols(t *testing.T) {
 // swaps the scheme-default rule for the supplied CIDRs across existing listeners
 // and is idempotent on re-invocation.
 func TestSetLoadBalancerIngressCIDRs_RewritesListenerRules(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -310,6 +318,7 @@ func TestSetLoadBalancerIngressCIDRs_RewritesListenerRules(t *testing.T) {
 }
 
 func TestSetLoadBalancerIngressCIDRs_RejectsBadInput(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -330,6 +339,7 @@ func TestSetLoadBalancerIngressCIDRs_RejectsBadInput(t *testing.T) {
 // TestDeleteListener_RevokesPort verifies removing a listener closes its port on
 // the managed SG.
 func TestDeleteListener_RevokesPort(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -354,6 +364,7 @@ func TestDeleteListener_RevokesPort(t *testing.T) {
 // TestDeleteNLB_DeletesManagedSG verifies the managed SG is removed on LB
 // teardown.
 func TestDeleteNLB_DeletesManagedSG(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -380,6 +391,7 @@ func TestDeleteNLB_DeletesManagedSG(t *testing.T) {
 // record, no managed ENI, no managed SG, and the name claim released. The
 // leaked managed SG is what pinned the EKS control-plane VPC against DeleteVpc.
 func TestCreateLoadBalancerSync_LaunchFailure_RollsBackEverything(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, mock := setupSubnetTestService(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -407,6 +419,7 @@ func TestCreateLoadBalancerSync_LaunchFailure_RollsBackEverything(t *testing.T) 
 // code, while an unrecognised cause stays ServerInternal rather than inventing a
 // client error.
 func TestCreateLoadBalancerSync_LaunchFailure_SurfacesCause(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, mock := setupSubnetTestService(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -428,6 +441,7 @@ func TestCreateLoadBalancerSync_LaunchFailure_SurfacesCause(t *testing.T) {
 // launching, so its failed record and managed SG are kept — the caller can
 // reclaim them via DeleteLoadBalancer. Only the sync path rolls back fully.
 func TestCreateLoadBalancer_AsyncLaunchFailure_KeepsFailedRecord(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc, mock := setupSubnetTestService(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 	mock.launchErr = errors.New("allocate public IP: " + awserrors.ErrorInsufficientAddressCapacity)

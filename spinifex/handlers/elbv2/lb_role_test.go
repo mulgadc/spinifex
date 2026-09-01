@@ -13,6 +13,7 @@ import (
 // the lazy IAMProvider when the eager IAM field is unset — the daemon wires only
 // the provider so the IAM build cannot race the NATS KV backend at startup.
 func TestEnsureLBInstanceProfile_UsesLazyProvider(t *testing.T) {
+	t.Parallel()
 	f := iammock.New()
 	s := &ELBv2ServiceImpl{IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return f }}
 
@@ -25,6 +26,7 @@ func TestEnsureLBInstanceProfile_UsesLazyProvider(t *testing.T) {
 // resolves the profile under the instance's account, so a role created in the LB
 // owner account would be invisible to it and the lb-agent would get no creds.
 func TestEnsureLBInstanceProfile_CreatesInSystemAccount(t *testing.T) {
+	t.Parallel()
 	f := iammock.New()
 	s := &ELBv2ServiceImpl{IAM: f}
 
@@ -37,6 +39,7 @@ func TestEnsureLBInstanceProfile_CreatesInSystemAccount(t *testing.T) {
 // provider returns nil because the KV backend is not up yet) yields "" so the LB
 // VM falls back to baked static creds and retries on the next launch.
 func TestEnsureLBInstanceProfile_NotReadyFallsBack(t *testing.T) {
+	t.Parallel()
 	s := &ELBv2ServiceImpl{IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return nil }}
 	assert.Empty(t, s.ensureLBInstanceProfile(utils.GlobalAccountID))
 }

@@ -50,6 +50,7 @@ func httpsListenerInput(lbArn, certArn string, port int64) *elbv2.CreateListener
 }
 
 func TestCreateListener_AddsToInUseByIndex(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb := activeLB(t, svc, "lb-idx1", "idx-lb1")
 
@@ -62,6 +63,7 @@ func TestCreateListener_AddsToInUseByIndex(t *testing.T) {
 }
 
 func TestCreateListener_TwoListenersSameCert_SingleInUseByEntry(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb := activeLB(t, svc, "lb-idx2", "idx-lb2")
 
@@ -77,6 +79,7 @@ func TestCreateListener_TwoListenersSameCert_SingleInUseByEntry(t *testing.T) {
 }
 
 func TestDeleteListener_RemovesFromInUseByIndex(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb := activeLB(t, svc, "lb-idx3", "idx-lb3")
 
@@ -94,6 +97,7 @@ func TestDeleteListener_RemovesFromInUseByIndex(t *testing.T) {
 }
 
 func TestDeleteListener_KeepsInUseByWhenAnotherListenerSharesCert(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb := activeLB(t, svc, "lb-idx4", "idx-lb4")
 
@@ -113,6 +117,7 @@ func TestDeleteListener_KeepsInUseByWhenAnotherListenerSharesCert(t *testing.T) 
 }
 
 func TestModifyListener_SwitchesCertInInUseByIndex(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb := activeLB(t, svc, "lb-idx5", "idx-lb5")
 
@@ -135,6 +140,7 @@ func TestModifyListener_SwitchesCertInInUseByIndex(t *testing.T) {
 }
 
 func TestDeleteLoadBalancer_RemovesFromInUseByIndex(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb := activeLB(t, svc, "lb-idx6", "idx-lb6")
 
@@ -152,6 +158,7 @@ func TestDeleteLoadBalancer_RemovesFromInUseByIndex(t *testing.T) {
 }
 
 func TestAddRemoveListenerCertificates_MaintainInUseByIndex(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb := activeLB(t, svc, "lb-idx7", "idx-lb7")
 
@@ -186,11 +193,13 @@ func TestAddRemoveListenerCertificates_MaintainInUseByIndex(t *testing.T) {
 }
 
 func TestUpdateStoredConfigForCert_ZeroInUseBy_NoOp(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	require.NoError(t, svc.UpdateStoredConfigForCert(context.Background(), testCertArn))
 }
 
 func TestUpdateStoredConfigForCert_UnknownCert_NoOp(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	require.NoError(t, svc.UpdateStoredConfigForCert(context.Background(), "arn:aws:acm:ap-southeast-2:000000000001:certificate/does-not-exist"))
 }
@@ -200,6 +209,7 @@ func TestUpdateStoredConfigForCert_UnknownCert_NoOp(t *testing.T) {
 // LB was deleted out from under the index, and one whose LB exists but never
 // went active (empty InstanceID, so updateStoredConfig itself no-ops).
 func TestUpdateStoredConfigForCert_SkipsMissingOrInactiveLB(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	require.NoError(t, svc.acmStore.AddInUseBy(context.Background(), testCertArn,
@@ -233,6 +243,7 @@ func clearInUseBy(t *testing.T, svc *ELBv2ServiceImpl, certArn, lbArn string) {
 }
 
 func TestReconcileCertInUseIndex_BackfillsPreExistingListener(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb := activeLB(t, svc, "lb-rec1", "rec-lb1")
 
@@ -249,6 +260,7 @@ func TestReconcileCertInUseIndex_BackfillsPreExistingListener(t *testing.T) {
 }
 
 func TestReconcileCertInUseIndex_IsIdempotent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb := activeLB(t, svc, "lb-rec2", "rec-lb2")
 
@@ -265,6 +277,7 @@ func TestReconcileCertInUseIndex_IsIdempotent(t *testing.T) {
 }
 
 func TestReconcileCertInUseIndex_RemovesEntryWithNoListener(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb := activeLB(t, svc, "lb-rec3", "rec-lb3")
 
@@ -279,6 +292,7 @@ func TestReconcileCertInUseIndex_RemovesEntryWithNoListener(t *testing.T) {
 }
 
 func TestReconcileCertInUseIndex_RemovesEntryForDeletedLB(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	require.NoError(t, svc.acmStore.AddInUseBy(context.Background(), testCertArn,
@@ -292,6 +306,7 @@ func TestReconcileCertInUseIndex_RemovesEntryForDeletedLB(t *testing.T) {
 }
 
 func TestReconcileCertInUseIndex_TwoListenersSameLB_SingleEntry(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lb := activeLB(t, svc, "lb-rec4", "rec-lb4")
 
@@ -311,6 +326,7 @@ func TestReconcileCertInUseIndex_TwoListenersSameLB_SingleEntry(t *testing.T) {
 // A nil acmStore means HTTPS is unavailable, not that the index is broken, so
 // the reconcile has to no-op rather than panic on daemon startup.
 func TestReconcileCertInUseIndex_NilACMStore_NoOp(t *testing.T) {
+	t.Parallel()
 	require.NoError(t, (&ELBv2ServiceImpl{}).ReconcileCertInUseIndex(context.Background()))
 }
 
@@ -319,6 +335,7 @@ func TestReconcileCertInUseIndex_NilACMStore_NoOp(t *testing.T) {
 // re-import reaches no load balancer and the served leaf goes stale silently.
 // After a reconcile the same re-import must fan out again.
 func TestReconcileCertInUseIndex_RestoresRenewalFanOut(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	masterKey, err := handlers_iam.GenerateMasterKey()
@@ -416,6 +433,7 @@ func genLeafCertPEM(t *testing.T, cn string, dnsNames ...string) (certPEM, keyPE
 // CreateListener path (which builds the InUseBy index), and the real
 // UpdateStoredConfigForCert fan-out.
 func TestACMReimport_FansOutToInUseLoadBalancer(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	// Both services read the same bucket, so they must share one key or the

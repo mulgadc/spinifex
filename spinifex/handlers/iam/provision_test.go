@@ -26,6 +26,7 @@ func newIAMService(t *testing.T) *handlers_iam.IAMServiceImpl {
 }
 
 func TestNormalizeAccountName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -43,6 +44,7 @@ func TestNormalizeAccountName(t *testing.T) {
 }
 
 func TestProvisionAccountCreatesAdminIdentity(t *testing.T) {
+	t.Parallel()
 	svc := newIAMService(t)
 
 	got, err := handlers_iam.ProvisionAccount(svc, provisionAccountID, "ben@example.com")
@@ -64,6 +66,7 @@ func TestProvisionAccountCreatesAdminIdentity(t *testing.T) {
 // A retry must finish the job rather than fail on the steps that already ran:
 // account creation has no rollback, so resuming is the only recovery path.
 func TestProvisionAccountResumesPartialState(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		prepare func(t *testing.T, svc handlers_iam.IAMService)
@@ -108,6 +111,7 @@ func TestProvisionAccountResumesPartialState(t *testing.T) {
 // A key from an abandoned attempt was never handed to anyone, so it must not
 // survive alongside the one that is.
 func TestProvisionAccountLeavesExactlyOneAccessKey(t *testing.T) {
+	t.Parallel()
 	svc := newIAMService(t)
 
 	first, err := handlers_iam.ProvisionAccount(svc, provisionAccountID, "ben@example.com")
@@ -126,6 +130,7 @@ func TestProvisionAccountLeavesExactlyOneAccessKey(t *testing.T) {
 }
 
 func TestProvisionAccountRejectsEmptyInput(t *testing.T) {
+	t.Parallel()
 	svc := newIAMService(t)
 
 	_, err := handlers_iam.ProvisionAccount(svc, "", "ben@example.com")

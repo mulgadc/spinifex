@@ -35,6 +35,7 @@ func createAutoENI(t *testing.T, svc *VPCServiceImpl, subnetID, instanceID strin
 }
 
 func TestListAbandonedInstanceENIs(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -69,6 +70,7 @@ func TestListAbandonedInstanceENIs(t *testing.T) {
 // records that do name an instance, which is where a zombie hides. The two
 // listings must not overlap, or a sweep would act on the same record twice.
 func TestListAttachedInstanceENIs(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -102,6 +104,7 @@ func TestListAttachedInstanceENIs(t *testing.T) {
 // A record written before CreatedAt existed carries no age, and age is the only
 // thing standing between this listing and an ENI a launch is still using.
 func TestListAttachedInstanceENIsIgnoresZeroCreatedAt(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -122,6 +125,7 @@ func TestListAttachedInstanceENIsIgnoresZeroCreatedAt(t *testing.T) {
 // worth sweeping: the SG dependency check counts an abandoned ENI, so the group
 // stays undeletable for as long as the record survives.
 func TestAbandonedENIBlocksSecurityGroupDelete(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")

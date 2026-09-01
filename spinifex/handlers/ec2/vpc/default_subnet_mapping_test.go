@@ -10,6 +10,7 @@ import (
 )
 
 func TestEnsureDefaultVPC_PublicIPMappingDisabled(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	svc.SetDefaultPublicIPMapping(false)
 
@@ -24,6 +25,7 @@ func TestEnsureDefaultVPC_PublicIPMappingDisabled(t *testing.T) {
 }
 
 func TestEnsureDefaultVPC_PublicIPMappingDefaultOn(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	_, err := svc.EnsureDefaultVPC(testAccountID)

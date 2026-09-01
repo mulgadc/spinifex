@@ -67,6 +67,7 @@ func createTestSubnet(t *testing.T, svc *VPCServiceImpl, vpcID, cidr string) str
 // --- VPC Tests ---
 
 func TestCreateVpc(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	out, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
@@ -80,12 +81,14 @@ func TestCreateVpc(t *testing.T) {
 }
 
 func TestCreateVpc_MissingCidr(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
 }
 
 func TestCreateVpc_EmptyCidr(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String(""),
@@ -94,6 +97,7 @@ func TestCreateVpc_EmptyCidr(t *testing.T) {
 }
 
 func TestCreateVpc_InvalidCidr(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("not-a-cidr"),
@@ -102,6 +106,7 @@ func TestCreateVpc_InvalidCidr(t *testing.T) {
 }
 
 func TestCreateVpc_CidrTooLarge(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/8"),
@@ -110,6 +115,7 @@ func TestCreateVpc_CidrTooLarge(t *testing.T) {
 }
 
 func TestCreateVpc_CidrTooSmall(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/29"),
@@ -118,6 +124,7 @@ func TestCreateVpc_CidrTooSmall(t *testing.T) {
 }
 
 func TestCreateVpc_WithTags(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	out, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
@@ -144,6 +151,7 @@ func TestCreateVpc_WithTags(t *testing.T) {
 }
 
 func TestCreateVpc_TagsWrongResourceType(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	out, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
@@ -161,6 +169,7 @@ func TestCreateVpc_TagsWrongResourceType(t *testing.T) {
 }
 
 func TestCreateVpc_VNIIncrement(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	// Create two VPCs and verify they get different VNIs
@@ -174,6 +183,7 @@ func TestCreateVpc_VNIIncrement(t *testing.T) {
 }
 
 func TestDeleteVpc(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -191,12 +201,14 @@ func TestDeleteVpc(t *testing.T) {
 }
 
 func TestDeleteVpc_MissingID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
 }
 
 func TestDeleteVpc_WithSubnets(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -212,6 +224,7 @@ func TestDeleteVpc_WithSubnets(t *testing.T) {
 }
 
 func TestDescribeVpcs_All(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	createTestVPC(t, svc, "10.0.0.0/16")
 	createTestVPC(t, svc, "10.1.0.0/16")
@@ -222,6 +235,7 @@ func TestDescribeVpcs_All(t *testing.T) {
 }
 
 func TestDescribeVpcs_ByID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestVPC(t, svc, "10.1.0.0/16")
@@ -235,6 +249,7 @@ func TestDescribeVpcs_ByID(t *testing.T) {
 }
 
 func TestDescribeVpcs_Empty(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	desc, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{}, testAccountID)
 	require.NoError(t, err)
@@ -242,6 +257,7 @@ func TestDescribeVpcs_Empty(t *testing.T) {
 }
 
 func TestDescribeVpcs_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{
 		VpcIds: []*string{aws.String("vpc-nonexistent")},
@@ -252,6 +268,7 @@ func TestDescribeVpcs_NotFound(t *testing.T) {
 // --- Subnet Tests ---
 
 func TestCreateSubnet(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -270,6 +287,7 @@ func TestCreateSubnet(t *testing.T) {
 }
 
 func TestCreateSubnet_MissingVpcId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
 		CidrBlock: aws.String("10.0.1.0/24"),
@@ -278,6 +296,7 @@ func TestCreateSubnet_MissingVpcId(t *testing.T) {
 }
 
 func TestCreateSubnet_MissingCidr(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	_, err := svc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
@@ -287,6 +306,7 @@ func TestCreateSubnet_MissingCidr(t *testing.T) {
 }
 
 func TestCreateSubnet_InvalidVpcId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
 		VpcId:     aws.String("vpc-nonexistent"),
@@ -296,6 +316,7 @@ func TestCreateSubnet_InvalidVpcId(t *testing.T) {
 }
 
 func TestCreateSubnet_InvalidCidr(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	_, err := svc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
@@ -306,6 +327,7 @@ func TestCreateSubnet_InvalidCidr(t *testing.T) {
 }
 
 func TestCreateSubnet_OutsideVpcCidr(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	_, err := svc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
@@ -316,6 +338,7 @@ func TestCreateSubnet_OutsideVpcCidr(t *testing.T) {
 }
 
 func TestCreateSubnet_ConflictingCidr(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -329,6 +352,7 @@ func TestCreateSubnet_ConflictingCidr(t *testing.T) {
 }
 
 func TestCreateSubnet_WithTags(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -349,6 +373,7 @@ func TestCreateSubnet_WithTags(t *testing.T) {
 }
 
 func TestCreateSubnet_WithAZ(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -362,6 +387,7 @@ func TestCreateSubnet_WithAZ(t *testing.T) {
 }
 
 func TestDeleteSubnet(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -380,12 +406,14 @@ func TestDeleteSubnet(t *testing.T) {
 }
 
 func TestDeleteSubnet_MissingID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
 }
 
 func TestDescribeSubnets_All(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -397,6 +425,7 @@ func TestDescribeSubnets_All(t *testing.T) {
 }
 
 func TestDescribeSubnets_ByID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -411,6 +440,7 @@ func TestDescribeSubnets_ByID(t *testing.T) {
 }
 
 func TestDescribeSubnets_ByVpcId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpc1 := createTestVPC(t, svc, "10.0.0.0/16")
 	vpc2 := createTestVPC(t, svc, "10.1.0.0/16")
@@ -431,6 +461,7 @@ func TestDescribeSubnets_ByVpcId(t *testing.T) {
 }
 
 func TestDescribeSubnets_Empty(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	desc, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
 	require.NoError(t, err)
@@ -438,6 +469,7 @@ func TestDescribeSubnets_Empty(t *testing.T) {
 }
 
 func TestDescribeSubnets_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{
 		SubnetIds: []*string{aws.String("subnet-nonexistent")},
@@ -446,6 +478,7 @@ func TestDescribeSubnets_NotFound(t *testing.T) {
 }
 
 func TestCreateMultipleSubnetsInVpc(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -467,6 +500,7 @@ func TestCreateMultipleSubnetsInVpc(t *testing.T) {
 }
 
 func TestDeleteVpcAfterSubnetsDeleted(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -485,6 +519,7 @@ func TestDeleteVpcAfterSubnetsDeleted(t *testing.T) {
 }
 
 func TestCreateSubnet_CidrRanges(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -509,6 +544,7 @@ func TestCreateSubnet_CidrRanges(t *testing.T) {
 // --- Default VPC Tests ---
 
 func TestEnsureDefaultVPC(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	info, err := svc.EnsureDefaultVPC(testAccountID)
@@ -536,6 +572,7 @@ func TestEnsureDefaultVPC(t *testing.T) {
 }
 
 func TestEnsureDefaultVPC_Idempotent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	// Call twice — should be idempotent
@@ -555,6 +592,7 @@ func TestEnsureDefaultVPC_Idempotent(t *testing.T) {
 }
 
 func TestEnsureDefaultVPC_SkipsWhenDefaultExists(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	// Create default VPC first
@@ -586,6 +624,7 @@ func TestEnsureDefaultVPC_SkipsWhenDefaultExists(t *testing.T) {
 // call for the same VPC is a no-op. Concurrent calls otherwise create duplicate
 // IsMain=true records, corrupting route-table resolution.
 func TestCreateMainRouteTable_Idempotent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.99.0.0/16") // CreateVpc auto-calls createMainRouteTable
 
@@ -608,6 +647,7 @@ func TestCreateMainRouteTable_Idempotent(t *testing.T) {
 // (AWS-faithful), so without DeleteVpc reaping it the rtbKV bucket leaks one
 // orphaned main RT per deleted VPC.
 func TestDeleteVpc_ReapsMainRouteTable(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.77.0.0/16") // auto-creates the main RT
 
@@ -720,6 +760,7 @@ func getTestRouteTableAssociations(t *testing.T, svc *VPCServiceImpl, accountID,
 // is removed out from under the route table, orphaning it permanently since
 // DeleteRouteTable can never resolve a VpcId that no longer exists.
 func TestDeleteVpc_RejectsNonMainRouteTable(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.60.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.60.1.0/24")
@@ -743,6 +784,7 @@ func TestDeleteVpc_RejectsNonMainRouteTable(t *testing.T) {
 // strips the only id that can detach it, leaving a gateway that can never be
 // detached or deleted and an account teardown that can never finish.
 func TestDeleteVpc_RejectsAttachedInternetGateway(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.64.0.0/16")
 
@@ -762,6 +804,7 @@ func TestDeleteVpc_RejectsAttachedInternetGateway(t *testing.T) {
 
 // A gateway attached to some other VPC must not block this one.
 func TestDeleteVpc_IgnoresInternetGatewayOnAnotherVPC(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.65.0.0/16")
 
@@ -778,6 +821,7 @@ func TestDeleteVpc_IgnoresInternetGatewayOnAnotherVPC(t *testing.T) {
 // a transient/corrupt read must never let DeleteVpc orphan a route table it
 // could not evaluate.
 func TestDeleteVpc_RouteTableCheckFailsClosedOnCorruptRTB(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.61.0.0/16")
 
@@ -793,6 +837,7 @@ func TestDeleteVpc_RouteTableCheckFailsClosedOnCorruptRTB(t *testing.T) {
 // every association naming the deleted subnet, so the route table it leaves
 // behind never carries a reference to a subnet that no longer exists.
 func TestDeleteSubnet_ClearsRouteTableAssociations(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.62.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.62.1.0/24")
@@ -810,6 +855,7 @@ func TestDeleteSubnet_ClearsRouteTableAssociations(t *testing.T) {
 // it cannot be typed here; a mirror struct would silently erase every field
 // added to RouteTableRecord that the mirror had not caught up with.
 func TestDeleteSubnet_PreservesUnknownRouteTableFields(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.63.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.63.1.0/24")
@@ -845,6 +891,7 @@ func TestDeleteSubnet_PreservesUnknownRouteTableFields(t *testing.T) {
 // associations for one subnet does not touch a route table association
 // belonging to a different subnet/VPC.
 func TestDeleteSubnet_LeavesOtherVPCsAssociationsAlone(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	vpcA := createTestVPC(t, svc, "10.63.0.0/16")
@@ -868,6 +915,7 @@ func TestDeleteSubnet_LeavesOtherVPCsAssociationsAlone(t *testing.T) {
 // operation retryable, rather than deleting the subnet with a stale
 // association strand behind it unseen.
 func TestDeleteSubnet_RouteTableCheckFailsClosedOnCorruptRTB(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.65.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.65.1.0/24")
@@ -888,6 +936,7 @@ func TestDeleteSubnet_RouteTableCheckFailsClosedOnCorruptRTB(t *testing.T) {
 // EnsureDefaultVPC runs before vpcd has subscribed. The SG step is best-effort,
 // so subnet and RTB must still land in KV when vpcd is absent.
 func TestEnsureDefaultVPC_NoVpcdResponder(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
@@ -940,6 +989,7 @@ func TestEnsureDefaultVPC_NoVpcdResponder(t *testing.T) {
 }
 
 func TestGetDefaultSubnet(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	// No default subnet yet
@@ -957,6 +1007,7 @@ func TestGetDefaultSubnet(t *testing.T) {
 }
 
 func TestGetDefaultSubnet_NotConfusedByNonDefault(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	// Create a non-default VPC + subnet
@@ -976,6 +1027,7 @@ func TestGetDefaultSubnet_NotConfusedByNonDefault(t *testing.T) {
 }
 
 func TestCreateSubnet_CidrTooSmall(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	_, err := svc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
@@ -986,6 +1038,7 @@ func TestCreateSubnet_CidrTooSmall(t *testing.T) {
 }
 
 func TestVpcCidrBlockAssociation(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	out, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/16"),
@@ -999,6 +1052,7 @@ func TestVpcCidrBlockAssociation(t *testing.T) {
 // --- Filter tests ---
 
 func TestDescribeVpcs_NilFields(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1012,6 +1066,7 @@ func TestDescribeVpcs_NilFields(t *testing.T) {
 }
 
 func TestDescribeSubnets_FilterByVpcId_NoMatch(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1032,6 +1087,7 @@ func TestDescribeSubnets_FilterByVpcId_NoMatch(t *testing.T) {
 // --- NATS event tests ---
 
 func TestCreateVpc_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 
 	eventCh := make(chan *nats.Msg, 1)
@@ -1057,6 +1113,7 @@ func TestCreateVpc_PublishesEvent(t *testing.T) {
 }
 
 func TestDeleteVpc_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1081,6 +1138,7 @@ func TestDeleteVpc_PublishesEvent(t *testing.T) {
 }
 
 func TestCreateSubnet_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1108,6 +1166,7 @@ func TestCreateSubnet_PublishesEvent(t *testing.T) {
 }
 
 func TestDeleteSubnet_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1136,6 +1195,7 @@ func TestDeleteSubnet_PublishesEvent(t *testing.T) {
 // --- Additional coverage tests ---
 
 func TestEnsureDefaultVPC_WithConfigAZ(t *testing.T) {
+	t.Parallel()
 	// Create a service with custom config that has AZ set
 	_, nc, _ := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
@@ -1155,6 +1215,7 @@ func TestEnsureDefaultVPC_WithConfigAZ(t *testing.T) {
 }
 
 func TestCreateVpc_NormalizesNetworkCidr(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	// Pass a CIDR with host bits set — should be normalized to network address
 	out, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
@@ -1166,6 +1227,7 @@ func TestCreateVpc_NormalizesNetworkCidr(t *testing.T) {
 }
 
 func TestDeleteVpc_WithENIs(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1188,6 +1250,7 @@ func TestDeleteVpc_WithENIs(t *testing.T) {
 }
 
 func TestCreateNetworkInterface_WithExplicitIP(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1201,12 +1264,14 @@ func TestCreateNetworkInterface_WithExplicitIP(t *testing.T) {
 }
 
 func TestAttachENI_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.AttachENI(testAccountID, "eni-nonexistent", "i-test", 0)
 	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
 }
 
 func TestDetachENI_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	err := svc.DetachENI(context.Background(), testAccountID, "eni-nonexistent")
 	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
@@ -1215,6 +1280,7 @@ func TestDetachENI_NotFound(t *testing.T) {
 // --- Per-account isolation tests ---
 
 func TestEnsureDefaultVPC_PerAccountIsolation(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	accountA := "111111111111"
 	accountB := "222222222222"
@@ -1240,6 +1306,7 @@ func TestEnsureDefaultVPC_PerAccountIsolation(t *testing.T) {
 }
 
 func TestEnsureDefaultVPC_IndependentVNIs(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	accountA := "111111111111"
 	accountB := "222222222222"
@@ -1275,6 +1342,7 @@ func TestEnsureDefaultVPC_IndependentVNIs(t *testing.T) {
 }
 
 func TestDescribeVpcs_NoGlobalSharing(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	globalAccount := "000000000000"
 	otherAccount := "111111111111"
@@ -1290,6 +1358,7 @@ func TestDescribeVpcs_NoGlobalSharing(t *testing.T) {
 }
 
 func TestGetDefaultSubnet_PerAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	accountA := "111111111111"
 	accountB := "222222222222"
@@ -1312,6 +1381,7 @@ func TestGetDefaultSubnet_PerAccount(t *testing.T) {
 // --- EnsureDefaultVPC event test ---
 
 func TestEnsureDefaultVPC_PublishesEvents(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 
 	vpcCh := make(chan *nats.Msg, 1)
@@ -1346,6 +1416,7 @@ func TestEnsureDefaultVPC_PublishesEvents(t *testing.T) {
 // --- MapPublicIpOnLaunch tests ---
 
 func TestSubnet_MapPublicIpOnLaunch(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1360,6 +1431,7 @@ func TestSubnet_MapPublicIpOnLaunch(t *testing.T) {
 }
 
 func TestSubnet_ModifyAttribute(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1385,6 +1457,7 @@ func TestSubnet_ModifyAttribute(t *testing.T) {
 // --- VPC Attribute Tests ---
 
 func TestVpc_DescribeVpcAttribute_Defaults(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1415,6 +1488,7 @@ func TestVpc_DescribeVpcAttribute_Defaults(t *testing.T) {
 }
 
 func TestVpc_ModifyVpcAttribute_EnableDnsHostnames(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1435,6 +1509,7 @@ func TestVpc_ModifyVpcAttribute_EnableDnsHostnames(t *testing.T) {
 }
 
 func TestVpc_ModifyVpcAttribute_EnableDnsSupport(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1455,6 +1530,7 @@ func TestVpc_ModifyVpcAttribute_EnableDnsSupport(t *testing.T) {
 }
 
 func TestVpc_ModifyVpcAttribute_IndependentFields(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1474,6 +1550,7 @@ func TestVpc_ModifyVpcAttribute_IndependentFields(t *testing.T) {
 }
 
 func TestVpc_DescribeVpcAttribute_InvalidVpcID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	_, err := svc.DescribeVpcAttribute(context.Background(), &ec2.DescribeVpcAttributeInput{
@@ -1484,6 +1561,7 @@ func TestVpc_DescribeVpcAttribute_InvalidVpcID(t *testing.T) {
 }
 
 func TestVpc_DescribeVpcAttribute_InvalidAttribute(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1495,6 +1573,7 @@ func TestVpc_DescribeVpcAttribute_InvalidAttribute(t *testing.T) {
 }
 
 func TestVpc_DescribeVpcAttribute_MissingAttribute(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1505,6 +1584,7 @@ func TestVpc_DescribeVpcAttribute_MissingAttribute(t *testing.T) {
 }
 
 func TestVpc_ModifyVpcAttribute_EnableNetworkAddressUsageMetrics(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1523,6 +1603,7 @@ func TestVpc_ModifyVpcAttribute_EnableNetworkAddressUsageMetrics(t *testing.T) {
 }
 
 func TestVpc_ModifyVpcAttribute_NoAttributes(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1533,6 +1614,7 @@ func TestVpc_ModifyVpcAttribute_NoAttributes(t *testing.T) {
 }
 
 func TestVpc_ModifyVpcAttribute_InvalidVpcID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	_, err := svc.ModifyVpcAttribute(context.Background(), &ec2.ModifyVpcAttributeInput{
@@ -1545,6 +1627,7 @@ func TestVpc_ModifyVpcAttribute_InvalidVpcID(t *testing.T) {
 // --- DescribeVpcs filter tests ---
 
 func TestDescribeVpcs_FilterByCidr(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	createTestVPC(t, svc, "10.0.0.0/16")
 	createTestVPC(t, svc, "172.16.0.0/16")
@@ -1560,6 +1643,7 @@ func TestDescribeVpcs_FilterByCidr(t *testing.T) {
 }
 
 func TestDescribeVpcs_FilterByState(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1582,6 +1666,7 @@ func TestDescribeVpcs_FilterByState(t *testing.T) {
 }
 
 func TestDescribeVpcs_FilterByIsDefault(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1603,6 +1688,7 @@ func TestDescribeVpcs_FilterByIsDefault(t *testing.T) {
 }
 
 func TestDescribeVpcs_FilterMultipleValues_OR(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	createTestVPC(t, svc, "10.0.0.0/16")
 	createTestVPC(t, svc, "172.16.0.0/16")
@@ -1618,6 +1704,7 @@ func TestDescribeVpcs_FilterMultipleValues_OR(t *testing.T) {
 }
 
 func TestDescribeVpcs_FilterMultipleFilters_AND(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1643,6 +1730,7 @@ func TestDescribeVpcs_FilterMultipleFilters_AND(t *testing.T) {
 }
 
 func TestDescribeVpcs_FilterUnknownName_Error(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{
 		Filters: []*ec2.Filter{
@@ -1653,6 +1741,7 @@ func TestDescribeVpcs_FilterUnknownName_Error(t *testing.T) {
 }
 
 func TestDescribeVpcs_FilterWildcard(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	createTestVPC(t, svc, "10.0.0.0/16")
 	createTestVPC(t, svc, "10.1.0.0/16")
@@ -1668,6 +1757,7 @@ func TestDescribeVpcs_FilterWildcard(t *testing.T) {
 }
 
 func TestDescribeVpcs_FilterNoResults(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1681,6 +1771,7 @@ func TestDescribeVpcs_FilterNoResults(t *testing.T) {
 }
 
 func TestDescribeVpcs_FilterNoFilters(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	createTestVPC(t, svc, "10.0.0.0/16")
 	createTestVPC(t, svc, "172.16.0.0/16")
@@ -1691,6 +1782,7 @@ func TestDescribeVpcs_FilterNoFilters(t *testing.T) {
 }
 
 func TestDescribeVpcs_FilterByTag(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	out, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
@@ -1720,6 +1812,7 @@ func TestDescribeVpcs_FilterByTag(t *testing.T) {
 }
 
 func TestDescribeVpcs_FilterByVpcId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	id1 := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestVPC(t, svc, "172.16.0.0/16")
@@ -1735,6 +1828,7 @@ func TestDescribeVpcs_FilterByVpcId(t *testing.T) {
 }
 
 func TestDescribeVpcs_FilterByOwnerId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1758,6 +1852,7 @@ func TestDescribeVpcs_FilterByOwnerId(t *testing.T) {
 // --- DescribeSubnets filter tests ---
 
 func TestDescribeSubnets_FilterByVpcId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpc1 := createTestVPC(t, svc, "10.0.0.0/16")
 	vpc2 := createTestVPC(t, svc, "172.16.0.0/16")
@@ -1775,6 +1870,7 @@ func TestDescribeSubnets_FilterByVpcId(t *testing.T) {
 }
 
 func TestDescribeSubnets_FilterByCidr(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1791,6 +1887,7 @@ func TestDescribeSubnets_FilterByCidr(t *testing.T) {
 }
 
 func TestDescribeSubnets_FilterByState(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1813,6 +1910,7 @@ func TestDescribeSubnets_FilterByState(t *testing.T) {
 }
 
 func TestDescribeSubnets_FilterBySubnetId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1829,6 +1927,7 @@ func TestDescribeSubnets_FilterBySubnetId(t *testing.T) {
 }
 
 func TestDescribeSubnets_FilterByDefaultForAz(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1843,6 +1942,7 @@ func TestDescribeSubnets_FilterByDefaultForAz(t *testing.T) {
 }
 
 func TestDescribeSubnets_FilterMultipleValues_OR(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1859,6 +1959,7 @@ func TestDescribeSubnets_FilterMultipleValues_OR(t *testing.T) {
 }
 
 func TestDescribeSubnets_FilterMultipleFilters_AND(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpc1 := createTestVPC(t, svc, "10.0.0.0/16")
 	vpc2 := createTestVPC(t, svc, "172.16.0.0/16")
@@ -1887,6 +1988,7 @@ func TestDescribeSubnets_FilterMultipleFilters_AND(t *testing.T) {
 }
 
 func TestDescribeSubnets_FilterUnknownName_Error(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	_, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{
@@ -1898,6 +2000,7 @@ func TestDescribeSubnets_FilterUnknownName_Error(t *testing.T) {
 }
 
 func TestDescribeSubnets_FilterWildcard(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1913,6 +2016,7 @@ func TestDescribeSubnets_FilterWildcard(t *testing.T) {
 }
 
 func TestDescribeSubnets_FilterNoResults(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1927,6 +2031,7 @@ func TestDescribeSubnets_FilterNoResults(t *testing.T) {
 }
 
 func TestDescribeSubnets_FilterByTag(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1959,6 +2064,7 @@ func TestDescribeSubnets_FilterByTag(t *testing.T) {
 // --- SetExternalIPAM / GetSubnet ---
 
 func TestGetSubnet_Success(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -1971,6 +2077,7 @@ func TestGetSubnet_Success(t *testing.T) {
 }
 
 func TestGetSubnet_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	_, err := svc.GetSubnet(testAccountID, "subnet-missing")
@@ -1981,6 +2088,7 @@ func TestGetSubnet_NotFound(t *testing.T) {
 // --- CreateTags write-through ---
 
 func TestApplyRecordTags_SubnetTagFilteredDescribe(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
@@ -2013,6 +2121,7 @@ func TestApplyRecordTags_SubnetTagFilteredDescribe(t *testing.T) {
 }
 
 func TestApplyRecordTags_VpcMergePreservesRecord(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.1.0.0/16")
 
@@ -2033,6 +2142,7 @@ func TestApplyRecordTags_VpcMergePreservesRecord(t *testing.T) {
 }
 
 func TestRemoveRecordTags_Subnet(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.2.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.2.1.0/24")
@@ -2064,6 +2174,7 @@ func TestRemoveRecordTags_Subnet(t *testing.T) {
 }
 
 func TestApplyRecordTags_SecurityGroupTagFilteredDescribe(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.3.0.0/16")
 	sgID := createTestSG(t, svc, vpcID, "mirror-sg")
@@ -2086,6 +2197,7 @@ func TestApplyRecordTags_SecurityGroupTagFilteredDescribe(t *testing.T) {
 }
 
 func TestRemoveRecordTags_SecurityGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.4.0.0/16")
 	sgID := createTestSG(t, svc, vpcID, "mirror-sg-del")
@@ -2116,6 +2228,7 @@ func TestRemoveRecordTags_SecurityGroup(t *testing.T) {
 }
 
 func TestApplyRecordTags_ENITagFilteredDescribe(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.5.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.5.1.0/24")
@@ -2139,6 +2252,7 @@ func TestApplyRecordTags_ENITagFilteredDescribe(t *testing.T) {
 }
 
 func TestApplyRecordTags_UnknownResourceNoError(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	// Absent subnet + non-VPC-owned resource id: both skipped without error.
 	err := svc.ApplyRecordTags(&ec2.CreateTagsInput{

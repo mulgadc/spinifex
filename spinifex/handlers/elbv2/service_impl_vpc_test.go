@@ -67,6 +67,7 @@ func getTestSubnetID(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl, vpcI
 }
 
 func TestCreateLoadBalancer_CreatesENIs(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	// Find the subnet we created
@@ -118,6 +119,7 @@ func TestCreateLoadBalancer_CreatesENIs(t *testing.T) {
 // Subnets list. Ignoring SubnetMappings skips ENI allocation, so the data-plane VM
 // never launches and the ALB is created but cannot serve traffic.
 func TestCreateLoadBalancer_SubnetMappings_CreatesENIs(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -146,6 +148,7 @@ func TestCreateLoadBalancer_SubnetMappings_CreatesENIs(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_MultipleSubnets(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	// Get VPC ID
@@ -180,6 +183,7 @@ func TestCreateLoadBalancer_MultipleSubnets(t *testing.T) {
 // every subnet's ENI is threaded through to SystemInstanceInput, not just
 // the first one.
 func TestCreateLoadBalancer_MultiSubnet_AllENIsPassedToLauncher(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	vpcs, _ := vpcSvc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{}, testAccountID)
@@ -232,6 +236,7 @@ func TestCreateLoadBalancer_MultiSubnet_AllENIsPassedToLauncher(t *testing.T) {
 }
 
 func TestDeleteLoadBalancer_CleansUpENIs(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, _ := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -264,6 +269,7 @@ func TestDeleteLoadBalancer_CleansUpENIs(t *testing.T) {
 // delete fails persistently — the ownership edge (lb.ENIs) is the only thing
 // that would ever let a retry (or the orphan reaper) find and finish it.
 func TestDeleteLoadBalancer_PersistsSurvivingENIsOnPersistentDeleteFailure(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
@@ -320,6 +326,7 @@ func TestDeleteLoadBalancer_PersistsSurvivingENIsOnPersistentDeleteFailure(t *te
 }
 
 func TestCreateLoadBalancer_InvalidSubnet(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestServiceWithVPC(t)
 
 	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -331,6 +338,7 @@ func TestCreateLoadBalancer_InvalidSubnet(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_RollbackOnPartialFailure(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, _ := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -349,6 +357,7 @@ func TestCreateLoadBalancer_RollbackOnPartialFailure(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_WithoutVPCService(t *testing.T) {
+	t.Parallel()
 	// When vpcService is nil (e.g. in pure unit tests), ENI creation is skipped
 	svc := setupTestService(t)
 
@@ -364,6 +373,7 @@ func TestCreateLoadBalancer_WithoutVPCService(t *testing.T) {
 // --- Scheme networking integration tests ---
 
 func TestCreateLoadBalancer_InternetFacing_AllocatesPublicIP(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -422,6 +432,7 @@ func TestCreateLoadBalancer_InternetFacing_AllocatesPublicIP(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_Internal_NoPublicIP(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -463,6 +474,7 @@ func TestCreateLoadBalancer_Internal_NoPublicIP(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_NLB_Internal_NoPublicIP(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -511,6 +523,7 @@ func TestCreateLoadBalancer_NLB_Internal_NoPublicIP(t *testing.T) {
 }
 
 func TestDeleteLoadBalancer_TerminatesVM_WithPublicIP(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -560,6 +573,7 @@ func TestDeleteLoadBalancer_TerminatesVM_WithPublicIP(t *testing.T) {
 }
 
 func TestDeleteLoadBalancer_ReapsFloatingIPNAT(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -618,6 +632,7 @@ func TestDeleteLoadBalancer_ReapsFloatingIPNAT(t *testing.T) {
 }
 
 func TestDescribeLoadBalancers_InternetFacing_IncludesPublicIP(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -669,6 +684,7 @@ func TestDescribeLoadBalancers_InternetFacing_IncludesPublicIP(t *testing.T) {
 }
 
 func TestDescribeLoadBalancers_Internal_NoPublicIP(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -711,6 +727,7 @@ func TestDescribeLoadBalancers_Internal_NoPublicIP(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_LaunchFailure_SetsStateFailed(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -744,6 +761,7 @@ func TestCreateLoadBalancer_LaunchFailure_SetsStateFailed(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_MissingCredentials_SetsStateFailed(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -778,6 +796,7 @@ func TestCreateLoadBalancer_MissingCredentials_SetsStateFailed(t *testing.T) {
 }
 
 func TestENI_RequesterManagedFlag(t *testing.T) {
+	t.Parallel()
 	_, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, _ := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -823,6 +842,7 @@ func TestENI_RequesterManagedFlag(t *testing.T) {
 // SecurityGroups are applied to the ALB ENI; without this the OVN port-group misses
 // the user's allow rules and the default-deny ACL drops all inbound traffic.
 func TestCreateLoadBalancer_AttachesSpecifiedSecurityGroupsToENI(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -866,6 +886,7 @@ func TestCreateLoadBalancer_AttachesSpecifiedSecurityGroupsToENI(t *testing.T) {
 // AWS-semantics fallback: an ALB created without SecurityGroups joins the
 // VPC's default SG (so the default-deny ACL has at least one allow source).
 func TestCreateLoadBalancer_NoSecurityGroupsFallsBackToDefault(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -902,6 +923,7 @@ func TestCreateLoadBalancer_NoSecurityGroupsFallsBackToDefault(t *testing.T) {
 // same SystemInstanceInput as the original launch; a mismatch causes writeFwCfgBlobs
 // to emit a different netcfg/cacert blob than the persisted QEMU command line.
 func TestRebuildSystemInstanceInput_HappyPath(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
@@ -964,6 +986,7 @@ func TestRebuildSystemInstanceInput_HappyPath(t *testing.T) {
 // the LB record is gone from KV but the VM record survives; recovery must not
 // silently boot the VM into an unowned state.
 func TestRebuildSystemInstanceInput_NoLBRecord(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.RebuildSystemInstanceInput(RecoveryContext{
@@ -978,6 +1001,7 @@ func TestRebuildSystemInstanceInput_NoLBRecord(t *testing.T) {
 // multi-subnet ALBs; recovery must produce the same ExtraENIInput shape so the
 // daemon wires the same taps and NICs the persisted QEMU args reference.
 func TestRebuildSystemInstanceInput_MultiENI(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	vpcs, _ := vpcSvc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{}, testAccountID)
@@ -1024,6 +1048,7 @@ func TestRebuildSystemInstanceInput_MultiENI(t *testing.T) {
 }
 
 func TestCreateClusterNLBSync_CarriesCrossAccountENI(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)

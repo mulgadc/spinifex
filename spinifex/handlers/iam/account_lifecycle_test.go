@@ -22,6 +22,7 @@ func newLifecycleService(t *testing.T) handlers_iam.IAMService {
 }
 
 func TestSetAccountStatusMovesBetweenStates(t *testing.T) {
+	t.Parallel()
 	svc := newLifecycleService(t)
 	account, err := svc.CreateAccount("tenant@example.com")
 	require.NoError(t, err)
@@ -44,6 +45,7 @@ func TestSetAccountStatusMovesBetweenStates(t *testing.T) {
 // resumes service is worse than one that stays down, and "undo" here would
 // mean restoring deleted block storage.
 func TestTerminatingIsAOneWayDoor(t *testing.T) {
+	t.Parallel()
 	svc := newLifecycleService(t)
 	account, err := svc.CreateAccount("tenant@example.com")
 	require.NoError(t, err)
@@ -62,6 +64,7 @@ func TestTerminatingIsAOneWayDoor(t *testing.T) {
 }
 
 func TestSetAccountStatusRejectsAnUnknownStatus(t *testing.T) {
+	t.Parallel()
 	svc := newLifecycleService(t)
 	account, err := svc.CreateAccount("tenant@example.com")
 	require.NoError(t, err)
@@ -74,6 +77,7 @@ func TestSetAccountStatusRejectsAnUnknownStatus(t *testing.T) {
 // Deleting the record while the account is still ACTIVE would leave every
 // resource it owns unattributable, so the status gate is the invariant.
 func TestDeleteAccountRequiresTerminating(t *testing.T) {
+	t.Parallel()
 	svc := newLifecycleService(t)
 	// Account ids are sequential and the first is the super admin, which is
 	// protected — the tenant under test has to be the second.
@@ -95,6 +99,7 @@ func TestDeleteAccountRequiresTerminating(t *testing.T) {
 // No credential grants deleting these two, so the refusal lives in the library
 // rather than only in the CLI that usually calls it.
 func TestProtectedAccountsCanNeverBeDeleted(t *testing.T) {
+	t.Parallel()
 	svc := newLifecycleService(t)
 
 	for accountID := range handlers_iam.UndeletableAccountIDs {
@@ -113,6 +118,7 @@ func TestProtectedAccountsCanNeverBeDeleted(t *testing.T) {
 // A deleted account's name must be free again: a customer who leaves and comes
 // back must not be told their own address is taken.
 func TestReleaseDeletedFreesTheName(t *testing.T) {
+	t.Parallel()
 	index, _ := newAccountNameIndex(t)
 	ctx := t.Context()
 
@@ -132,6 +138,7 @@ func TestReleaseDeletedFreesTheName(t *testing.T) {
 // Releasing a name that belongs to a live account would unindex it and let a
 // second account take the same address.
 func TestReleaseDeletedRefusesAnotherAccountsName(t *testing.T) {
+	t.Parallel()
 	index, _ := newAccountNameIndex(t)
 	ctx := t.Context()
 
@@ -149,6 +156,7 @@ func TestReleaseDeletedRefusesAnotherAccountsName(t *testing.T) {
 // Teardown re-runs after a crash, so a name that is already released is a
 // success rather than a failure that blocks the account record's deletion.
 func TestReleaseDeletedIsIdempotent(t *testing.T) {
+	t.Parallel()
 	index, _ := newAccountNameIndex(t)
 	ctx := t.Context()
 

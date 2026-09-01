@@ -53,6 +53,7 @@ func newRuleTestEnv(t *testing.T, namePrefix string) ruleTestEnv {
 }
 
 func TestCreateRule_PathPattern(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-path")
 
 	out, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -76,6 +77,7 @@ func TestCreateRule_PathPattern(t *testing.T) {
 // Controller emits) was rejected with MissingParameter because only the flat
 // TargetGroupArn field was read.
 func TestCreateRule_ForwardConfig(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-fwdcfg")
 
 	out, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -102,6 +104,7 @@ func TestCreateRule_ForwardConfig(t *testing.T) {
 // DeleteLoadBalancer called store.DeleteListener directly, bypassing rule cascade,
 // leaving a rule's target group pinned as ResourceInUse permanently.
 func TestDeleteLoadBalancer_CascadesRuleDeletion(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "del-cascade")
 
 	// Rule on the listener forwards to the alt TG.
@@ -138,6 +141,7 @@ func TestDeleteLoadBalancer_CascadesRuleDeletion(t *testing.T) {
 }
 
 func TestCreateRule_PriorityInUse(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-pri")
 
 	mkInput := func() *elbv2.CreateRuleInput {
@@ -160,6 +164,7 @@ func TestCreateRule_PriorityInUse(t *testing.T) {
 }
 
 func TestCreateRule_InvalidPriority(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-inv")
 
 	for _, p := range []int64{0, 50001} {
@@ -175,6 +180,7 @@ func TestCreateRule_InvalidPriority(t *testing.T) {
 }
 
 func TestCreateRule_RedirectAction(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-redir")
 
 	out, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -198,6 +204,7 @@ func TestCreateRule_RedirectAction(t *testing.T) {
 }
 
 func TestCreateRule_FixedResponseAction(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-fixed")
 
 	out, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -220,6 +227,7 @@ func TestCreateRule_FixedResponseAction(t *testing.T) {
 }
 
 func TestCreateRule_RejectsBadRedirectStatus(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-badredir")
 
 	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -236,6 +244,7 @@ func TestCreateRule_RejectsBadRedirectStatus(t *testing.T) {
 }
 
 func TestCreateRule_RejectsUnknownAction(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-rej")
 
 	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -249,6 +258,7 @@ func TestCreateRule_RejectsUnknownAction(t *testing.T) {
 }
 
 func TestCreateRule_HostHeader(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-host")
 
 	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -264,6 +274,7 @@ func TestCreateRule_HostHeader(t *testing.T) {
 }
 
 func TestCreateRule_HTTPHeader(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-hdr")
 
 	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -282,6 +293,7 @@ func TestCreateRule_HTTPHeader(t *testing.T) {
 }
 
 func TestCreateRule_SourceIP(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-src")
 
 	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -309,6 +321,7 @@ func TestCreateRule_SourceIP(t *testing.T) {
 }
 
 func TestCreateRule_RejectsNewlineInjection(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-inj")
 
 	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -326,6 +339,7 @@ func TestCreateRule_RejectsNewlineInjection(t *testing.T) {
 }
 
 func TestModifyRule(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "mod")
 
 	out, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -348,6 +362,7 @@ func TestModifyRule(t *testing.T) {
 }
 
 func TestDeleteRule(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "del")
 
 	out, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -369,6 +384,7 @@ func TestDeleteRule(t *testing.T) {
 }
 
 func TestDeleteListener_CascadesRules(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cas")
 
 	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -388,6 +404,7 @@ func TestDeleteListener_CascadesRules(t *testing.T) {
 }
 
 func TestDeleteTargetGroup_BlockedByRule(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "tg-block")
 
 	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -404,6 +421,7 @@ func TestDeleteTargetGroup_BlockedByRule(t *testing.T) {
 }
 
 func TestDescribeRules_ByListener_SortedAndDefaultLast(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "desc")
 
 	for _, p := range []int64{30, 10, 20} {
@@ -430,6 +448,7 @@ func TestDescribeRules_ByListener_SortedAndDefaultLast(t *testing.T) {
 // DescribeTags with an empty resource and got MissingParameter, aborting the
 // Ingress reconcile right after listener creation.
 func TestDefaultRule_HasArnAndIsTaggable(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "defrule")
 
 	rules, err := env.svc.DescribeRules(context.Background(), &elbv2.DescribeRulesInput{ListenerArn: aws.String(env.listenerArn)}, testAccountID)
@@ -464,6 +483,7 @@ func TestDefaultRule_HasArnAndIsTaggable(t *testing.T) {
 }
 
 func TestSetRulePriorities_Reorders(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "spri")
 
 	r1, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -500,6 +520,7 @@ func TestSetRulePriorities_Reorders(t *testing.T) {
 }
 
 func TestSetRulePriorities_DuplicateRejected(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "spri-dup")
 
 	r1, _ := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
@@ -526,6 +547,7 @@ func TestSetRulePriorities_DuplicateRejected(t *testing.T) {
 }
 
 func TestBuildRuleArn(t *testing.T) {
+	t.Parallel()
 	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:123456789012:listener/app/my-alb/abc/lst123"
 	got, err := buildRuleArn(listenerArn, "rule999")
 	require.NoError(t, err)
@@ -534,6 +556,7 @@ func TestBuildRuleArn(t *testing.T) {
 }
 
 func TestHAProxyRender_PathPatternRule(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{
 		LoadBalancerID:  "lb1",
 		LoadBalancerArn: "arn:lb1",
@@ -568,6 +591,7 @@ func TestHAProxyRender_PathPatternRule(t *testing.T) {
 }
 
 func TestHAProxyRender_HostHeaderWildcardSuffix(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb1", LoadBalancerArn: "arn:lb1", Type: LoadBalancerTypeApplication}
 	listener := &ListenerRecord{
 		ListenerArn: "arn:lst1", ListenerID: "lst1", LoadBalancerArn: "arn:lb1",
@@ -590,6 +614,7 @@ func TestHAProxyRender_HostHeaderWildcardSuffix(t *testing.T) {
 }
 
 func TestHAProxyRender_RulesOrderedByPriority(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb1", LoadBalancerArn: "arn:lb1", Type: LoadBalancerTypeApplication}
 	listener := &ListenerRecord{
 		ListenerArn: "arn:lst1", ListenerID: "lst1", LoadBalancerArn: "arn:lb1",

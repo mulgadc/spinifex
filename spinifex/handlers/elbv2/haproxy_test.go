@@ -9,6 +9,7 @@ import (
 )
 
 func TestGenerateHAProxyConfig_SingleListenerAndBackend(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{
 		LoadBalancerID: "lb-abc123",
 		Name:           "my-alb",
@@ -68,6 +69,7 @@ func TestGenerateHAProxyConfig_SingleListenerAndBackend(t *testing.T) {
 // own check and proxied traffic both speak TLS. Without it the check fails and
 // the server is marked DOWN, returning 503.
 func TestGenerateHAProxyConfig_HTTPSBackendReencrypts(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-tls"}
 	tgArn := "arn:aws:elasticloadbalancing:us-east-1:123:targetgroup/tls-tg/tg-tls"
 	listeners := []*ListenerRecord{
@@ -98,6 +100,7 @@ func TestGenerateHAProxyConfig_HTTPSBackendReencrypts(t *testing.T) {
 }
 
 func TestGenerateHAProxyConfig_MultipleListeners(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-multi"}
 
 	tgArn1 := "arn:tg1"
@@ -141,6 +144,7 @@ func TestGenerateHAProxyConfig_MultipleListeners(t *testing.T) {
 }
 
 func TestGenerateHAProxyConfig_SkipsDrainingTargets(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-drain"}
 	tgArn := "arn:tg-drain"
 
@@ -172,6 +176,7 @@ func TestGenerateHAProxyConfig_SkipsDrainingTargets(t *testing.T) {
 }
 
 func TestGenerateHAProxyConfig_SharedTargetGroup(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-shared"}
 	tgArn := "arn:shared-tg"
 
@@ -199,6 +204,7 @@ func TestGenerateHAProxyConfig_SharedTargetGroup(t *testing.T) {
 // with host-header rules forwarding to target groups. The generator must synthesize a
 // default backend; a dangling `default_backend bk_` makes HAProxy fail to start.
 func TestGenerateHAProxyConfig_FixedResponseDefault(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-ingress"}
 	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/wd-ingress/lb-ingress/lst-616760baf6a3031c3"
 	appTG := "arn:aws:elasticloadbalancing:ap-southeast-2:1:targetgroup/wd-identity/tg-app1"
@@ -255,6 +261,7 @@ func TestGenerateHAProxyConfig_FixedResponseDefault(t *testing.T) {
 // TestGenerateHAProxyConfig_FixedResponseRejectsUnsafeBody falls back to a bare
 // status when the body or content-type contains injection bytes.
 func TestGenerateHAProxyConfig_FixedResponseRejectsUnsafeBody(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-evil"}
 	listeners := []*ListenerRecord{
 		{
@@ -282,6 +289,7 @@ func TestGenerateHAProxyConfig_FixedResponseRejectsUnsafeBody(t *testing.T) {
 // HTTP→HTTPS redirect (scheme-only change, all other fields default) as a
 // `redirect scheme https` directive so HAProxy preserves host/path/query.
 func TestGenerateHAProxyConfig_RedirectSchemeDefault(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-redir"}
 	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/r/lb-redir/lst-aa"
 	listeners := []*ListenerRecord{
@@ -312,6 +320,7 @@ func TestGenerateHAProxyConfig_RedirectSchemeDefault(t *testing.T) {
 // TestGenerateHAProxyConfig_RedirectLocation renders a redirect that changes
 // the host as a rebuilt `location` with HAProxy placeholders preserved.
 func TestGenerateHAProxyConfig_RedirectLocation(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-redir2"}
 	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/r/lb-redir2/lst-bb"
 	listeners := []*ListenerRecord{
@@ -341,6 +350,7 @@ func TestGenerateHAProxyConfig_RedirectLocation(t *testing.T) {
 // a placeholder protocol (resolved from the listener), an explicit port, and a
 // custom literal path + query.
 func TestGenerateHAProxyConfig_RedirectCustomAll(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-redir3"}
 	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/r/lb-redir3/lst-dd"
 	listeners := []*ListenerRecord{
@@ -370,6 +380,7 @@ func TestGenerateHAProxyConfig_RedirectCustomAll(t *testing.T) {
 // TestGenerateHAProxyConfig_RedirectRule renders a per-rule redirect action via
 // a synthetic backend reached by use_backend.
 func TestGenerateHAProxyConfig_RedirectRule(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-rr"}
 	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/r/lb-rr/lst-cc"
 	appTG := "arn:aws:elasticloadbalancing:ap-southeast-2:1:targetgroup/app/tg-app"
@@ -412,6 +423,7 @@ func TestGenerateHAProxyConfig_RedirectRule(t *testing.T) {
 // TestGenerateHAProxyConfig_RedirectRejectsInjection fails the render when a
 // redirect field carries HAProxy meta-characters that survived to the store.
 func TestGenerateHAProxyConfig_RedirectRejectsInjection(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-evil2"}
 	listeners := []*ListenerRecord{
 		{
@@ -432,6 +444,7 @@ func TestGenerateHAProxyConfig_RedirectRejectsInjection(t *testing.T) {
 }
 
 func TestGenerateHAProxyConfig_NoListeners(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-empty"}
 	config, _, err := GenerateHAProxyConfigWithCerts(lb, nil, nil, nil, "0.0.0.0", nil)
 	require.NoError(t, err)
@@ -444,6 +457,7 @@ func TestGenerateHAProxyConfig_NoListeners(t *testing.T) {
 }
 
 func TestSanitizeName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		prefix string
 		input  string
@@ -464,6 +478,7 @@ func TestSanitizeName(t *testing.T) {
 }
 
 func TestGenerateALBConfig_StillWorks(t *testing.T) {
+	t.Parallel()
 	// Regression: ALB (no Type set) should still generate HTTP-mode config
 	lb := &LoadBalancerRecord{
 		LoadBalancerID: "lb-alb-regression",

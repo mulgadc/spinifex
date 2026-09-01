@@ -63,6 +63,7 @@ func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(context.Context, *In,
 }
 
 func TestNATSVPCService_CreateVpc(t *testing.T) {
+	t.Parallel()
 	client, _, _ := setupNATSVPCServiceTest(t)
 
 	out, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
@@ -75,6 +76,7 @@ func TestNATSVPCService_CreateVpc(t *testing.T) {
 }
 
 func TestNATSVPCService_DescribeVpcs(t *testing.T) {
+	t.Parallel()
 	client, _, _ := setupNATSVPCServiceTest(t)
 
 	// Create a VPC first
@@ -98,6 +100,7 @@ func TestNATSVPCService_DescribeVpcs(t *testing.T) {
 }
 
 func TestNATSVPCService_DeleteVpc(t *testing.T) {
+	t.Parallel()
 	client, _, _ := setupNATSVPCServiceTest(t)
 
 	createOut, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
@@ -112,6 +115,7 @@ func TestNATSVPCService_DeleteVpc(t *testing.T) {
 }
 
 func TestNATSVPCService_CreateAndDeleteSubnet(t *testing.T) {
+	t.Parallel()
 	client, _, _ := setupNATSVPCServiceTest(t)
 
 	vpcOut, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
@@ -134,6 +138,7 @@ func TestNATSVPCService_CreateAndDeleteSubnet(t *testing.T) {
 }
 
 func TestNATSVPCService_DescribeSubnets(t *testing.T) {
+	t.Parallel()
 	client, _, _ := setupNATSVPCServiceTest(t)
 
 	vpcOut, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
@@ -153,6 +158,7 @@ func TestNATSVPCService_DescribeSubnets(t *testing.T) {
 }
 
 func TestNATSVPCService_CreateAndDeleteENI(t *testing.T) {
+	t.Parallel()
 	client, _, _ := setupNATSVPCServiceTest(t)
 
 	vpcOut, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{
@@ -179,6 +185,7 @@ func TestNATSVPCService_CreateAndDeleteENI(t *testing.T) {
 }
 
 func TestNATSVPCService_DescribeNetworkInterfaces(t *testing.T) {
+	t.Parallel()
 	client, _, _ := setupNATSVPCServiceTest(t)
 
 	vpcOut, err := client.CreateVpc(context.Background(), &ec2.CreateVpcInput{

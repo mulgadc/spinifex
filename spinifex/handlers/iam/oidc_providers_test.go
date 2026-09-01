@@ -12,6 +12,7 @@ import (
 const testIssuer = "https://10.0.0.1:9999/oidc/eks/ap-southeast-2/000000000001/h1"
 
 func TestCreateOpenIDConnectProvider(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	acct := "000000000001"
 
@@ -39,6 +40,7 @@ func TestCreateOpenIDConnectProvider(t *testing.T) {
 }
 
 func TestCreateOpenIDConnectProvider_Idempotent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	acct := "000000000001"
 	in := &iam.CreateOpenIDConnectProviderInput{Url: aws.String(testIssuer)}
@@ -53,6 +55,7 @@ func TestCreateOpenIDConnectProvider_Idempotent(t *testing.T) {
 }
 
 func TestCreateOpenIDConnectProvider_InvalidURL(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	for _, bad := range []string{"", "http://insecure.example", "://nohost", "ftp://x"} {
 		_, err := svc.CreateOpenIDConnectProvider("000000000001",
@@ -64,6 +67,7 @@ func TestCreateOpenIDConnectProvider_InvalidURL(t *testing.T) {
 }
 
 func TestGetOpenIDConnectProvider(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	acct := "000000000001"
 	created, err := svc.CreateOpenIDConnectProvider(acct, &iam.CreateOpenIDConnectProviderInput{
@@ -89,6 +93,7 @@ func TestGetOpenIDConnectProvider(t *testing.T) {
 }
 
 func TestGetOpenIDConnectProvider_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	_, err := svc.GetOpenIDConnectProvider("000000000001", &iam.GetOpenIDConnectProviderInput{
 		OpenIDConnectProviderArn: aws.String(OIDCProviderARN("000000000001", "10.0.0.1:9999/oidc/eks/x/y/z")),
@@ -99,6 +104,7 @@ func TestGetOpenIDConnectProvider_NotFound(t *testing.T) {
 }
 
 func TestListOpenIDConnectProviders(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	acct := "000000000001"
 
@@ -137,6 +143,7 @@ func TestListOpenIDConnectProviders(t *testing.T) {
 }
 
 func TestDeleteOpenIDConnectProvider(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	acct := "000000000001"
 	created, err := svc.CreateOpenIDConnectProvider(acct, &iam.CreateOpenIDConnectProviderInput{Url: aws.String(testIssuer)})
@@ -160,6 +167,7 @@ func TestDeleteOpenIDConnectProvider(t *testing.T) {
 }
 
 func TestIssuerProviderARNRoundTrip(t *testing.T) {
+	t.Parallel()
 	arn := OIDCProviderARN("000000000001", strings.TrimPrefix(testIssuer, "https://"))
 	got, err := issuerFromOIDCProviderARN(arn)
 	if err != nil {

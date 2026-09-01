@@ -37,6 +37,7 @@ func setupTestService(t *testing.T) *ELBv2ServiceImpl {
 // --- Load Balancer tests ---
 
 func TestCreateLoadBalancer(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -57,6 +58,7 @@ func TestCreateLoadBalancer(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_InternalScheme(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -69,6 +71,7 @@ func TestCreateLoadBalancer_InternalScheme(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_InvalidScheme(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -81,6 +84,7 @@ func TestCreateLoadBalancer_InvalidScheme(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_DuplicateName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -96,6 +100,7 @@ func TestCreateLoadBalancer_DuplicateName(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_MissingName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{}, testAccountID)
@@ -103,6 +108,7 @@ func TestCreateLoadBalancer_MissingName(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_WithTags(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -123,6 +129,7 @@ func TestCreateLoadBalancer_WithTags(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_NetworkType(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -139,6 +146,7 @@ func TestCreateLoadBalancer_NetworkType(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_NetworkType_AcceptsSecurityGroups(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -155,6 +163,7 @@ func TestCreateLoadBalancer_NetworkType_AcceptsSecurityGroups(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_NetworkType_RejectsTooManySecurityGroups(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -171,6 +180,7 @@ func TestCreateLoadBalancer_NetworkType_RejectsTooManySecurityGroups(t *testing.
 }
 
 func TestCreateLoadBalancer_NLBCrossZoneAttribute(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	// NLB: no stored attributes, Describe should return default cross-zone=false.
@@ -195,6 +205,7 @@ func TestCreateLoadBalancer_NLBCrossZoneAttribute(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_ALBCrossZoneAttribute(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	// ALB: no stored attributes either, Describe should return default cross-zone=true.
@@ -218,6 +229,7 @@ func TestCreateLoadBalancer_ALBCrossZoneAttribute(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_InvalidType(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -230,6 +242,7 @@ func TestCreateLoadBalancer_InvalidType(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_ALB_AllowsSecurityGroups(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -243,6 +256,7 @@ func TestCreateLoadBalancer_ALB_AllowsSecurityGroups(t *testing.T) {
 }
 
 func TestDeleteLoadBalancer(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -262,6 +276,7 @@ func TestDeleteLoadBalancer(t *testing.T) {
 }
 
 func TestDeleteLoadBalancer_IdempotentOnAbsent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
@@ -274,6 +289,7 @@ func TestDeleteLoadBalancer_IdempotentOnAbsent(t *testing.T) {
 }
 
 func TestDeleteLoadBalancer_CleansUpListeners(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	// Create LB, TG, and listener
@@ -301,6 +317,7 @@ func TestDeleteLoadBalancer_CleansUpListeners(t *testing.T) {
 }
 
 func TestDescribeLoadBalancers_FilterByName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("alb-one")}, testAccountID)
@@ -317,6 +334,7 @@ func TestDescribeLoadBalancers_FilterByName(t *testing.T) {
 }
 
 func TestDescribeLoadBalancers_AccountIsolation(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("acct-alb")}, testAccountID)
@@ -330,6 +348,7 @@ func TestDescribeLoadBalancers_AccountIsolation(t *testing.T) {
 // --- Target Group tests ---
 
 func TestCreateTargetGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -351,6 +370,7 @@ func TestCreateTargetGroup(t *testing.T) {
 }
 
 func TestCreateTargetGroup_CustomHealthCheck(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -372,6 +392,7 @@ func TestCreateTargetGroup_CustomHealthCheck(t *testing.T) {
 }
 
 func TestCreateTargetGroup_TCPProtocol(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -397,6 +418,7 @@ func TestCreateTargetGroup_TCPProtocol(t *testing.T) {
 }
 
 func TestCreateTargetGroup_NLBProtocols(t *testing.T) {
+	t.Parallel()
 	for _, proto := range []string{"TCP", "UDP", "TLS", "TCP_UDP"} {
 		t.Run(proto, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -417,6 +439,7 @@ func TestCreateTargetGroup_NLBProtocols(t *testing.T) {
 }
 
 func TestCreateTargetGroup_InvalidProtocol(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -429,6 +452,7 @@ func TestCreateTargetGroup_InvalidProtocol(t *testing.T) {
 }
 
 func TestCreateTargetGroup_TCPWithCustomHealthCheck(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -452,6 +476,7 @@ func TestCreateTargetGroup_TCPWithCustomHealthCheck(t *testing.T) {
 }
 
 func TestCreateTargetGroup_RejectsHealthCheckPathInjection(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	cases := map[string]string{
@@ -485,6 +510,7 @@ func TestCreateTargetGroup_RejectsHealthCheckPathInjection(t *testing.T) {
 }
 
 func TestCreateTargetGroup_RejectsMatcherInjection(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	cases := map[string]string{
@@ -512,6 +538,7 @@ func TestCreateTargetGroup_RejectsMatcherInjection(t *testing.T) {
 }
 
 func TestCreateTargetGroup_AcceptsValidHealthCheckInputs(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -525,6 +552,7 @@ func TestCreateTargetGroup_AcceptsValidHealthCheckInputs(t *testing.T) {
 }
 
 func TestCreateTargetGroup_AcceptsHealthCheckBoundaryLengths(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	maxPath := "/" + strings.Repeat("a", maxHealthCheckPathLen-1)
@@ -541,6 +569,7 @@ func TestCreateTargetGroup_AcceptsHealthCheckBoundaryLengths(t *testing.T) {
 }
 
 func TestCreateTargetGroup_DuplicateName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -558,6 +587,7 @@ func TestCreateTargetGroup_DuplicateName(t *testing.T) {
 }
 
 func TestModifyTargetGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	created, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -595,6 +625,7 @@ func TestModifyTargetGroup(t *testing.T) {
 }
 
 func TestModifyTargetGroup_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{
@@ -605,6 +636,7 @@ func TestModifyTargetGroup_NotFound(t *testing.T) {
 }
 
 func TestModifyTargetGroup_MissingArn(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{}, testAccountID)
@@ -613,6 +645,7 @@ func TestModifyTargetGroup_MissingArn(t *testing.T) {
 }
 
 func TestModifyTargetGroup_AllHealthCheckFields(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	created, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -650,6 +683,7 @@ func TestModifyTargetGroup_AllHealthCheckFields(t *testing.T) {
 }
 
 func TestModifyTargetGroup_InvalidPath(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	created, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -665,6 +699,7 @@ func TestModifyTargetGroup_InvalidPath(t *testing.T) {
 }
 
 func TestModifyTargetGroup_InvalidMatcher(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	created, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -680,6 +715,7 @@ func TestModifyTargetGroup_InvalidMatcher(t *testing.T) {
 }
 
 func TestModifyTargetGroup_WrongAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	created, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -696,6 +732,7 @@ func TestModifyTargetGroup_WrongAccount(t *testing.T) {
 }
 
 func TestDeleteTargetGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("del-tg")}, testAccountID)
@@ -708,6 +745,7 @@ func TestDeleteTargetGroup(t *testing.T) {
 }
 
 func TestDeleteTargetGroup_InUse(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("inuse-tg")}, testAccountID)
@@ -730,6 +768,7 @@ func TestDeleteTargetGroup_InUse(t *testing.T) {
 }
 
 func TestDeleteTargetGroup_IdempotentOnAbsent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{
@@ -741,6 +780,7 @@ func TestDeleteTargetGroup_IdempotentOnAbsent(t *testing.T) {
 }
 
 func TestDescribeTargetGroups_FilterByLBArn(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	tg1, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tg-linked")}, testAccountID)
@@ -763,6 +803,7 @@ func TestDescribeTargetGroups_FilterByLBArn(t *testing.T) {
 // --- Target registration tests ---
 
 func TestRegisterTargets(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -799,6 +840,7 @@ func TestRegisterTargets(t *testing.T) {
 }
 
 func TestRegisterTargets_IPType(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -839,6 +881,7 @@ func TestRegisterTargets_IPType(t *testing.T) {
 }
 
 func TestRegisterTargets_IPType_RejectsNonIP(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:       aws.String("ip-tg-bad"),
@@ -854,6 +897,7 @@ func TestRegisterTargets_IPType_RejectsNonIP(t *testing.T) {
 }
 
 func TestRegisterTargets_InstanceType_RejectsIP(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("inst-tg-badid"),
@@ -868,6 +912,7 @@ func TestRegisterTargets_InstanceType_RejectsIP(t *testing.T) {
 }
 
 func TestCreateTargetGroup_RejectsUnsupportedTargetType(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:       aws.String("lambda-tg"),
@@ -877,6 +922,7 @@ func TestCreateTargetGroup_RejectsUnsupportedTargetType(t *testing.T) {
 }
 
 func TestCreateTargetGroup_DefaultsToInstanceType(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name: aws.String("default-tt"),
@@ -886,6 +932,7 @@ func TestCreateTargetGroup_DefaultsToInstanceType(t *testing.T) {
 }
 
 func TestRegisterTargets_Idempotent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("idem-tg")}, testAccountID)
@@ -903,6 +950,7 @@ func TestRegisterTargets_Idempotent(t *testing.T) {
 }
 
 func TestDeregisterTargets(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("dereg-tg"), Port: aws.Int64(80)}, testAccountID)
@@ -928,6 +976,7 @@ func TestDeregisterTargets(t *testing.T) {
 }
 
 func TestDescribeTargetHealth_FilterByTarget(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("filter-tg"), Port: aws.Int64(80)}, testAccountID)
@@ -951,6 +1000,7 @@ func TestDescribeTargetHealth_FilterByTarget(t *testing.T) {
 }
 
 func TestDescribeTargetHealth_TGNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.DescribeTargetHealth(context.Background(), &elbv2.DescribeTargetHealthInput{
@@ -963,6 +1013,7 @@ func TestDescribeTargetHealth_TGNotFound(t *testing.T) {
 // --- Listener tests ---
 
 func TestCreateListener(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("lst-lb")}, testAccountID)
@@ -988,6 +1039,7 @@ func TestCreateListener(t *testing.T) {
 }
 
 func TestCreateListener_RedirectDefault(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("redir-lb")}, testAccountID)
@@ -1016,6 +1068,7 @@ func TestCreateListener_RedirectDefault(t *testing.T) {
 }
 
 func TestCreateListener_RedirectFullFields(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("redirfull-lb")}, testAccountID)
@@ -1056,6 +1109,7 @@ func TestCreateListener_RedirectFullFields(t *testing.T) {
 }
 
 func TestModifyListener_ToRedirect(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-redir-lb")}, testAccountID)
@@ -1091,6 +1145,7 @@ func TestModifyListener_ToRedirect(t *testing.T) {
 }
 
 func TestCreateListener_RejectsBadRedirect(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("badredir-lb")}, testAccountID)
@@ -1109,6 +1164,7 @@ func TestCreateListener_RejectsBadRedirect(t *testing.T) {
 }
 
 func TestCreateListener_DuplicatePort(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("dup-port-lb")}, testAccountID)
@@ -1133,6 +1189,7 @@ func TestCreateListener_DuplicatePort(t *testing.T) {
 }
 
 func TestCreateListener_LBNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
@@ -1144,6 +1201,7 @@ func TestCreateListener_LBNotFound(t *testing.T) {
 }
 
 func TestDeleteListener(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("dellst-lb")}, testAccountID)
@@ -1168,6 +1226,7 @@ func TestDeleteListener(t *testing.T) {
 }
 
 func TestDeleteListener_IdempotentOnAbsent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.DeleteListener(context.Background(), &elbv2.DeleteListenerInput{
@@ -1179,6 +1238,7 @@ func TestDeleteListener_IdempotentOnAbsent(t *testing.T) {
 }
 
 func TestModifyListener_Port(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-lb")}, testAccountID)
@@ -1210,6 +1270,7 @@ func TestModifyListener_Port(t *testing.T) {
 }
 
 func TestModifyListener_Protocol(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-proto-lb")}, testAccountID)
@@ -1233,6 +1294,7 @@ func TestModifyListener_Protocol(t *testing.T) {
 }
 
 func TestModifyListener_DefaultActions(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-act-lb")}, testAccountID)
@@ -1257,6 +1319,7 @@ func TestModifyListener_DefaultActions(t *testing.T) {
 }
 
 func TestModifyListener_DuplicatePort(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-dup-lb")}, testAccountID)
@@ -1286,6 +1349,7 @@ func TestModifyListener_DuplicatePort(t *testing.T) {
 }
 
 func TestModifyListener_SamePortNoConflict(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-same-lb")}, testAccountID)
@@ -1308,6 +1372,7 @@ func TestModifyListener_SamePortNoConflict(t *testing.T) {
 }
 
 func TestModifyListener_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
@@ -1319,6 +1384,7 @@ func TestModifyListener_NotFound(t *testing.T) {
 }
 
 func TestModifyListener_WrongAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-acct-lb")}, testAccountID)
@@ -1337,6 +1403,7 @@ func TestModifyListener_WrongAccount(t *testing.T) {
 }
 
 func TestModifyListener_TargetGroupNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-tgnf-lb")}, testAccountID)
@@ -1357,6 +1424,7 @@ func TestModifyListener_TargetGroupNotFound(t *testing.T) {
 }
 
 func TestModifyListener_NoOp(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-noop-lb")}, testAccountID)
@@ -1378,6 +1446,7 @@ func TestModifyListener_NoOp(t *testing.T) {
 }
 
 func TestModifyListener_InvalidProtocolForLBType(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("mod-bad-proto-lb")}, testAccountID)
@@ -1396,6 +1465,7 @@ func TestModifyListener_InvalidProtocolForLBType(t *testing.T) {
 }
 
 func TestModifyListener_NilInput(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.ModifyListener(context.Background(), nil, testAccountID)
@@ -1404,6 +1474,7 @@ func TestModifyListener_NilInput(t *testing.T) {
 }
 
 func TestModifyListener_EmptyArn(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
@@ -1418,6 +1489,7 @@ func TestModifyListener_EmptyArn(t *testing.T) {
 }
 
 func TestModifyListener_NLB_AcceptsAllProtocols(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		listenerProto string
 		tgProto       string
@@ -1464,6 +1536,7 @@ func TestModifyListener_NLB_AcceptsAllProtocols(t *testing.T) {
 }
 
 func TestModifyListener_NLB_RejectsHTTP(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1491,6 +1564,7 @@ func TestModifyListener_NLB_RejectsHTTP(t *testing.T) {
 }
 
 func TestModifyListener_ProtocolOnlyChange_TGIncompatible(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1518,6 +1592,7 @@ func TestModifyListener_ProtocolOnlyChange_TGIncompatible(t *testing.T) {
 }
 
 func TestModifyListener_DefaultActions_IncompatibleProtocol(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1553,6 +1628,7 @@ func TestModifyListener_DefaultActions_IncompatibleProtocol(t *testing.T) {
 }
 
 func TestDescribeListeners_FilterByLBArn(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb1, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("dl-lb1")}, testAccountID)
@@ -1575,6 +1651,7 @@ func TestDescribeListeners_FilterByLBArn(t *testing.T) {
 // LB-level isolation is tested separately; a regression dropping the listener-side
 // check would not be caught by the LB-level test.
 func TestDescribeListeners_AccountIsolation(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("iso-lb")}, testAccountID)
@@ -1592,6 +1669,7 @@ func TestDescribeListeners_AccountIsolation(t *testing.T) {
 // --- NLB Listener tests ---
 
 func TestCreateListener_NLB_TCPProtocol(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1622,6 +1700,7 @@ func TestCreateListener_NLB_TCPProtocol(t *testing.T) {
 }
 
 func TestCreateListener_NLB_AllProtocols(t *testing.T) {
+	t.Parallel()
 	for _, proto := range []string{"TCP", "UDP", "TLS", "TCP_UDP"} {
 		t.Run(proto, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -1656,6 +1735,7 @@ func TestCreateListener_NLB_AllProtocols(t *testing.T) {
 }
 
 func TestCreateListener_NLB_RejectsHTTPProtocol(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1679,6 +1759,7 @@ func TestCreateListener_NLB_RejectsHTTPProtocol(t *testing.T) {
 }
 
 func TestCreateListener_NLB_RejectsHTTPSProtocol(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1702,6 +1783,7 @@ func TestCreateListener_NLB_RejectsHTTPSProtocol(t *testing.T) {
 }
 
 func TestCreateListener_ALB_RejectsTCPProtocol(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1726,6 +1808,7 @@ func TestCreateListener_ALB_RejectsTCPProtocol(t *testing.T) {
 }
 
 func TestCreateListener_NLB_ProtocolCompatibility_TLSToTCP(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1754,6 +1837,7 @@ func TestCreateListener_NLB_ProtocolCompatibility_TLSToTCP(t *testing.T) {
 }
 
 func TestCreateListener_NLB_ProtocolIncompatible_TCPToUDP(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1781,6 +1865,7 @@ func TestCreateListener_NLB_ProtocolIncompatible_TCPToUDP(t *testing.T) {
 }
 
 func TestCreateListener_NLB_ProtocolIncompatible_UDPToTCP(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1808,6 +1893,7 @@ func TestCreateListener_NLB_ProtocolIncompatible_UDPToTCP(t *testing.T) {
 }
 
 func TestCreateListener_NLB_DefaultProtocol_Rejected(t *testing.T) {
+	t.Parallel()
 	// When no protocol is specified, it defaults to HTTP which is invalid for NLB
 	svc := setupTestService(t)
 
@@ -1833,6 +1919,7 @@ func TestCreateListener_NLB_DefaultProtocol_Rejected(t *testing.T) {
 // --- HAProxy sync tests ---
 
 func TestCreateListener_PushConfig_NoNATS(t *testing.T) {
+	t.Parallel()
 	// When NATS conn is nil, CreateListener should still succeed
 	// (updateStoredConfig is a no-op when InstanceID is empty)
 	svc := setupTestService(t)
@@ -1862,6 +1949,7 @@ func TestCreateListener_PushConfig_NoNATS(t *testing.T) {
 // an LB without a systemAMI has InstanceID=="" and must skip TerminateSystemInstance.
 // The positive case is covered by TestDeleteLoadBalancer_TerminatesVM_WithPublicIP.
 func TestDeleteLoadBalancer_NoTerminateWhenEmptyInstanceID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	mock := &mockTerminateLauncher{}
@@ -1897,6 +1985,7 @@ func (m *mockTerminateLauncher) TerminateSystemInstance(instanceID string) error
 // --- Scheme unit tests ---
 
 func TestCreateLoadBalancer_InternetFacingScheme_DNSName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1913,6 +2002,7 @@ func TestCreateLoadBalancer_InternetFacingScheme_DNSName(t *testing.T) {
 }
 
 func TestCreateLoadBalancer_InternalScheme_DNSPrefix(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1931,6 +2021,7 @@ func TestCreateLoadBalancer_InternalScheme_DNSPrefix(t *testing.T) {
 // --- LBAgentHeartbeat tests ---
 
 func TestLBAgentHeartbeat_TransitionsProvisioningToActive(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -1957,6 +2048,7 @@ func TestLBAgentHeartbeat_TransitionsProvisioningToActive(t *testing.T) {
 }
 
 func TestLBAgentHeartbeat_ReturnsConfigHash(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -1978,6 +2070,7 @@ func TestLBAgentHeartbeat_ReturnsConfigHash(t *testing.T) {
 }
 
 func TestLBAgentHeartbeat_ProcessesHealthReport(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2031,6 +2124,7 @@ func TestLBAgentHeartbeat_ProcessesHealthReport(t *testing.T) {
 // updateStoredConfig no-ops while InstanceID is empty; the first heartbeat
 // (provisioning→active) must build the full config so the agent gets a ConfigHash.
 func TestLBAgentHeartbeat_BuildsConfigOnActivation(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2090,6 +2184,7 @@ func TestLBAgentHeartbeat_BuildsConfigOnActivation(t *testing.T) {
 }
 
 func TestLBAgentHeartbeat_MissingLBID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{}, testAccountID)
@@ -2097,6 +2192,7 @@ func TestLBAgentHeartbeat_MissingLBID(t *testing.T) {
 }
 
 func TestLBAgentHeartbeat_LBNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
@@ -2108,6 +2204,7 @@ func TestLBAgentHeartbeat_LBNotFound(t *testing.T) {
 // --- GetLBConfig tests ---
 
 func TestGetLBConfig_ReturnsStoredConfig(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2131,6 +2228,7 @@ func TestGetLBConfig_ReturnsStoredConfig(t *testing.T) {
 }
 
 func TestGetLBConfig_DeliversHealthTargetsForNLB(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2158,6 +2256,7 @@ func TestGetLBConfig_DeliversHealthTargetsForNLB(t *testing.T) {
 }
 
 func TestGetLBConfig_HealthTargetsWireShape(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), &LoadBalancerRecord{
 		LoadBalancerID: "lb-wire",
@@ -2195,6 +2294,7 @@ func TestGetLBConfig_HealthTargetsWireShape(t *testing.T) {
 }
 
 func TestGetLBConfig_NoHealthTargetsForALB(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2216,6 +2316,7 @@ func TestGetLBConfig_NoHealthTargetsForALB(t *testing.T) {
 }
 
 func TestGetLBConfig_MissingLBID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{}, testAccountID)
@@ -2223,6 +2324,7 @@ func TestGetLBConfig_MissingLBID(t *testing.T) {
 }
 
 func TestGetLBConfig_LBNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{
@@ -2232,6 +2334,7 @@ func TestGetLBConfig_LBNotFound(t *testing.T) {
 }
 
 func TestLBAgentHeartbeat_WrongAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2251,6 +2354,7 @@ func TestLBAgentHeartbeat_WrongAccount(t *testing.T) {
 }
 
 func TestLBAgentHeartbeat_SystemAccountAllowed(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2270,6 +2374,7 @@ func TestLBAgentHeartbeat_SystemAccountAllowed(t *testing.T) {
 }
 
 func TestLBAgentHeartbeat_SkipsWriteWhenHeartbeatFresh(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	recentHeartbeat := time.Now().UTC().Add(-10 * time.Second) // well within 60s threshold
@@ -2295,6 +2400,7 @@ func TestLBAgentHeartbeat_SkipsWriteWhenHeartbeatFresh(t *testing.T) {
 }
 
 func TestLBAgentHeartbeat_PersistsWhenHeartbeatStale(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	staleHeartbeat := time.Now().UTC().Add(-2 * time.Minute) // beyond 60s threshold
@@ -2320,6 +2426,7 @@ func TestLBAgentHeartbeat_PersistsWhenHeartbeatStale(t *testing.T) {
 }
 
 func TestGetLBConfig_WrongAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2341,6 +2448,7 @@ func TestGetLBConfig_WrongAccount(t *testing.T) {
 }
 
 func TestGetLBConfig_SystemAccountAllowed(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2364,6 +2472,7 @@ func TestGetLBConfig_SystemAccountAllowed(t *testing.T) {
 // --- updateStoredConfig tests ---
 
 func TestUpdateStoredConfig_StoresConfigAndHash(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2409,6 +2518,7 @@ func TestUpdateStoredConfig_StoresConfigAndHash(t *testing.T) {
 }
 
 func TestUpdateStoredConfig_SkipsWhenNoInstance(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2433,6 +2543,7 @@ func TestUpdateStoredConfig_SkipsWhenNoInstance(t *testing.T) {
 // TestGetSystemInstanceType_ColdStart pins the no-resolver-wired path —
 // cold-start must return empty rather than panic on a nil func.
 func TestGetSystemInstanceType_ColdStart(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	assert.Empty(t, svc.getSystemInstanceType())
@@ -2442,6 +2553,7 @@ func TestGetSystemInstanceType_ColdStart(t *testing.T) {
 }
 
 func TestGetSystemInstanceType_RetryOnEmpty(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	calls := 0
@@ -2465,6 +2577,7 @@ func TestGetSystemInstanceType_RetryOnEmpty(t *testing.T) {
 }
 
 func TestGetSystemInstanceType_Concurrent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	svc.SetSystemInstanceTypeFunc(func() string { return "t3.micro" })
 
@@ -2479,11 +2592,13 @@ func TestGetSystemInstanceType_Concurrent(t *testing.T) {
 }
 
 func TestIsCompatibleProtocol_UnknownListenerProtocol(t *testing.T) {
+	t.Parallel()
 	assert.False(t, isCompatibleProtocol("SCTP", ProtocolTCP))
 	assert.False(t, isCompatibleProtocol("", ProtocolHTTP))
 }
 
 func TestCreateListener_TargetGroupNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -2507,6 +2622,7 @@ func TestCreateListener_TargetGroupNotFound(t *testing.T) {
 }
 
 func TestUpdateStoredConfig_MissingTargetGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	lb := &LoadBalancerRecord{
@@ -2541,6 +2657,7 @@ func TestUpdateStoredConfig_MissingTargetGroup(t *testing.T) {
 // --- Attribute tests ---
 
 func TestDescribeTargetGroupAttributes_Defaults(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tg-attr-defaults")}, testAccountID)
 	require.NoError(t, err)
@@ -2562,6 +2679,7 @@ func TestDescribeTargetGroupAttributes_Defaults(t *testing.T) {
 }
 
 func TestDescribeLoadBalancerAttributes_ALBDefaults(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("alb-attr-defaults")}, testAccountID)
 	require.NoError(t, err)
@@ -2586,6 +2704,7 @@ func TestDescribeLoadBalancerAttributes_ALBDefaults(t *testing.T) {
 }
 
 func TestDescribeLoadBalancerAttributes_NLBDefaults(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("nlb-attr-defaults"),
@@ -2610,6 +2729,7 @@ func TestDescribeLoadBalancerAttributes_NLBDefaults(t *testing.T) {
 // attribute keys that Terraform's default ModifyLoadBalancerAttributes call sends,
 // which would surface as ValidationError.
 func TestDefaultLoadBalancerAttributes_ALBCoversTerraformKeys(t *testing.T) {
+	t.Parallel()
 	attrs := DefaultLoadBalancerAttributes(LoadBalancerTypeApplication)
 
 	expected := map[string]string{
@@ -2644,6 +2764,7 @@ func TestDefaultLoadBalancerAttributes_ALBCoversTerraformKeys(t *testing.T) {
 // TestDefaultLoadBalancerAttributes_NLBCoversExpectedKeys is the NLB
 // counterpart guard. NLBs have a smaller but distinct key set.
 func TestDefaultLoadBalancerAttributes_NLBCoversExpectedKeys(t *testing.T) {
+	t.Parallel()
 	attrs := DefaultLoadBalancerAttributes(LoadBalancerTypeNetwork)
 
 	expected := map[string]string{
@@ -2674,6 +2795,7 @@ func TestDefaultLoadBalancerAttributes_NLBCoversExpectedKeys(t *testing.T) {
 // guard: terraform sends connection_logs.s3.enabled on every aws_lb apply and
 // the handler must accept it.
 func TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("alb-conn-logs"),
@@ -2697,6 +2819,7 @@ func TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey(t *testing.T) {
 // empty-string Value is treated as a real value, not skipped as invalid. AWS
 // uses "" to clear access_logs.s3.bucket, so the handler must persist it.
 func TestModifyLoadBalancerAttributes_EmptyStringClears(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("alb-clear")}, testAccountID)
 	require.NoError(t, err)
@@ -2906,6 +3029,7 @@ func attrKinds() []attrKind {
 }
 
 func TestAttributeRoundTrip(t *testing.T) {
+	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -2933,6 +3057,7 @@ func TestAttributeRoundTrip(t *testing.T) {
 }
 
 func TestAttributeNotFound(t *testing.T) {
+	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -2947,6 +3072,7 @@ func TestAttributeNotFound(t *testing.T) {
 }
 
 func TestAttributeMissingArn(t *testing.T) {
+	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -2961,6 +3087,7 @@ func TestAttributeMissingArn(t *testing.T) {
 }
 
 func TestAttributeWrongAccount(t *testing.T) {
+	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -2985,6 +3112,7 @@ func TestAttributeWrongAccount(t *testing.T) {
 // resource never see each other's attributes: a Modify by account A must not be
 // visible to a Describe by account B, even for similarly-named resources.
 func TestAttributeCrossAccountIsolation(t *testing.T) {
+	t.Parallel()
 	const accountB = "222222222222"
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
@@ -3013,6 +3141,7 @@ func TestAttributeCrossAccountIsolation(t *testing.T) {
 // and nil Values are skipped (with a warning) rather than panicking or being
 // silently dropped. Valid attributes in the same call must still be applied.
 func TestAttributeSkipsInvalidEntries(t *testing.T) {
+	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -3041,6 +3170,7 @@ func TestAttributeSkipsInvalidEntries(t *testing.T) {
 // TestAttributeAllInvalidReturnsError guards against silent success when every
 // attribute trips the nil guard, returning 200 OK with nothing applied.
 func TestAttributeAllInvalidReturnsError(t *testing.T) {
+	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -3060,6 +3190,7 @@ func TestAttributeAllInvalidReturnsError(t *testing.T) {
 // `rec.Attributes = newMap` would pass single-call tests but silently wipe
 // previous attributes on every subsequent call.
 func TestAttributeSequentialMerge(t *testing.T) {
+	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -3095,6 +3226,7 @@ func TestAttributeSequentialMerge(t *testing.T) {
 // does not bump the KV revision — Terraform's drift check hits Modify on every
 // apply, so the steady-state path must be a storage-layer no-op.
 func TestAttributeNoopSkipsPersist(t *testing.T) {
+	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -3123,6 +3255,7 @@ func TestAttributeNoopSkipsPersist(t *testing.T) {
 // AWS rejects unknowns with ValidationError; matching that surfaces typos at plan
 // time rather than letting them drift into KV.
 func TestAttributeRejectsUnknownKey(t *testing.T) {
+	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -3144,6 +3277,7 @@ func TestAttributeRejectsUnknownKey(t *testing.T) {
 // sorted-by-key order. Go map iteration is randomised, so without explicit
 // sorting Terraform would see spurious plan diffs between describe calls.
 func TestAttributeSortedOrder(t *testing.T) {
+	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
 			svc := setupTestService(t)
@@ -3176,6 +3310,7 @@ func TestAttributeSortedOrder(t *testing.T) {
 // --- DescribeTags tests ---
 
 func TestDescribeTags_LoadBalancer(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("tags-lb"),
@@ -3203,6 +3338,7 @@ func TestDescribeTags_LoadBalancer(t *testing.T) {
 }
 
 func TestDescribeTags_Listener_NoTags(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("tags-lst-lb")}, testAccountID)
 	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tags-lst-tg")}, testAccountID)
@@ -3229,6 +3365,7 @@ func TestDescribeTags_Listener_NoTags(t *testing.T) {
 }
 
 func TestDescribeTags_ListenerRule_NoTags(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("tags-rule-lb")}, testAccountID)
 	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tags-rule-tg")}, testAccountID)
@@ -3267,6 +3404,7 @@ func TestDescribeTags_ListenerRule_NoTags(t *testing.T) {
 }
 
 func TestDescribeTags_RuleNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{
@@ -3278,6 +3416,7 @@ func TestDescribeTags_RuleNotFound(t *testing.T) {
 }
 
 func TestDescribeTags_MultipleArns(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("multi-lb"),
@@ -3317,6 +3456,7 @@ func TestDescribeTags_MultipleArns(t *testing.T) {
 }
 
 func TestDescribeTags_LoadBalancerNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{
@@ -3328,6 +3468,7 @@ func TestDescribeTags_LoadBalancerNotFound(t *testing.T) {
 }
 
 func TestDescribeTags_TargetGroupNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{
@@ -3339,6 +3480,7 @@ func TestDescribeTags_TargetGroupNotFound(t *testing.T) {
 }
 
 func TestDescribeTags_ListenerNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.DescribeTags(context.Background(), &elbv2.DescribeTagsInput{
 		ResourceArns: []*string{
@@ -3350,6 +3492,7 @@ func TestDescribeTags_ListenerNotFound(t *testing.T) {
 }
 
 func TestDescribeTags_CrossAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("xa-lb"),
@@ -3365,6 +3508,7 @@ func TestDescribeTags_CrossAccount(t *testing.T) {
 }
 
 func TestDescribeTags_InvalidArn(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	cases := []string{
 		"not-an-arn",
@@ -3382,6 +3526,7 @@ func TestDescribeTags_InvalidArn(t *testing.T) {
 }
 
 func TestDescribeTags_MissingParameter(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	// Empty ResourceArns
@@ -3398,6 +3543,7 @@ func TestDescribeTags_MissingParameter(t *testing.T) {
 }
 
 func TestDescribeTags_UntaggedLoadBalancer(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("untagged-lb"),
@@ -3419,16 +3565,19 @@ func TestDescribeTags_UntaggedLoadBalancer(t *testing.T) {
 // --- DNSWatchBucket ---
 
 func TestDNSWatchBucket_NilReceiver(t *testing.T) {
+	t.Parallel()
 	var svc *ELBv2ServiceImpl
 	assert.Nil(t, svc.DNSWatchBucket())
 }
 
 func TestDNSWatchBucket_NoStore(t *testing.T) {
+	t.Parallel()
 	svc := &ELBv2ServiceImpl{}
 	assert.Nil(t, svc.DNSWatchBucket())
 }
 
 func TestDNSWatchBucket_WithStore(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	bucket := svc.DNSWatchBucket()

@@ -9,6 +9,7 @@ import (
 )
 
 func TestStringOrArr_UnmarshalSingleString(t *testing.T) {
+	t.Parallel()
 	var s StringOrArr
 	err := json.Unmarshal([]byte(`"s3:GetObject"`), &s)
 	require.NoError(t, err)
@@ -16,6 +17,7 @@ func TestStringOrArr_UnmarshalSingleString(t *testing.T) {
 }
 
 func TestStringOrArr_UnmarshalArray(t *testing.T) {
+	t.Parallel()
 	var s StringOrArr
 	err := json.Unmarshal([]byte(`["s3:Get*","s3:List*"]`), &s)
 	require.NoError(t, err)
@@ -23,6 +25,7 @@ func TestStringOrArr_UnmarshalArray(t *testing.T) {
 }
 
 func TestStringOrArr_UnmarshalNull(t *testing.T) {
+	t.Parallel()
 	// A JSON null yields a nil slice (an inert field), not [""].
 	var s StringOrArr
 	err := json.Unmarshal([]byte(`null`), &s)
@@ -31,6 +34,7 @@ func TestStringOrArr_UnmarshalNull(t *testing.T) {
 }
 
 func TestStringOrArr_UnmarshalEmptyArray(t *testing.T) {
+	t.Parallel()
 	var s StringOrArr
 	err := json.Unmarshal([]byte(`[]`), &s)
 	require.NoError(t, err)
@@ -38,6 +42,7 @@ func TestStringOrArr_UnmarshalEmptyArray(t *testing.T) {
 }
 
 func TestStringOrArr_MarshalSingleElement(t *testing.T) {
+	t.Parallel()
 	s := StringOrArr{"ec2:*"}
 	data, err := json.Marshal(s)
 	require.NoError(t, err)
@@ -45,6 +50,7 @@ func TestStringOrArr_MarshalSingleElement(t *testing.T) {
 }
 
 func TestStringOrArr_MarshalMultipleElements(t *testing.T) {
+	t.Parallel()
 	s := StringOrArr{"s3:Get*", "s3:Put*"}
 	data, err := json.Marshal(s)
 	require.NoError(t, err)
@@ -52,6 +58,7 @@ func TestStringOrArr_MarshalMultipleElements(t *testing.T) {
 }
 
 func TestStringOrArr_RoundTrip_Single(t *testing.T) {
+	t.Parallel()
 	original := StringOrArr{"iam:CreateUser"}
 	data, err := json.Marshal(original)
 	require.NoError(t, err)
@@ -63,6 +70,7 @@ func TestStringOrArr_RoundTrip_Single(t *testing.T) {
 }
 
 func TestStringOrArr_RoundTrip_Array(t *testing.T) {
+	t.Parallel()
 	original := StringOrArr{"ec2:Describe*", "ec2:Run*", "ec2:Stop*"}
 	data, err := json.Marshal(original)
 	require.NoError(t, err)

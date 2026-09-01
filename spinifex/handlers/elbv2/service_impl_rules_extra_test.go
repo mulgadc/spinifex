@@ -11,6 +11,7 @@ import (
 )
 
 func TestCreateRule_InputValidation(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-val")
 
 	cases := []struct {
@@ -33,6 +34,7 @@ func TestCreateRule_InputValidation(t *testing.T) {
 }
 
 func TestCreateRule_WrongAccount(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "cr-acct")
 	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
 		ListenerArn: aws.String(env.listenerArn),
@@ -45,6 +47,7 @@ func TestCreateRule_WrongAccount(t *testing.T) {
 }
 
 func TestModifyRule_InputValidation(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "mod-val")
 	_, err := env.svc.ModifyRule(context.Background(), nil, testAccountID)
 	require.Error(t, err)
@@ -60,6 +63,7 @@ func TestModifyRule_InputValidation(t *testing.T) {
 }
 
 func TestModifyRule_RewriteActions(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "mod-act")
 	cr, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
 		ListenerArn: aws.String(env.listenerArn),
@@ -78,6 +82,7 @@ func TestModifyRule_RewriteActions(t *testing.T) {
 }
 
 func TestDeleteRule_InputValidation(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "del-val")
 	_, err := env.svc.DeleteRule(context.Background(), nil, testAccountID)
 	require.Error(t, err)
@@ -94,6 +99,7 @@ func TestDeleteRule_InputValidation(t *testing.T) {
 }
 
 func TestDescribeRules_InputValidation(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "desc-val")
 	_, err := env.svc.DescribeRules(context.Background(), nil, testAccountID)
 	require.Error(t, err)
@@ -105,6 +111,7 @@ func TestDescribeRules_InputValidation(t *testing.T) {
 }
 
 func TestDescribeRules_ByRuleArns(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "desc-arns")
 	cr, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
 		ListenerArn: aws.String(env.listenerArn),
@@ -129,6 +136,7 @@ func TestDescribeRules_ByRuleArns(t *testing.T) {
 }
 
 func TestSetRulePriorities_InputValidation(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "spri-val")
 	_, err := env.svc.SetRulePriorities(context.Background(), nil, testAccountID)
 	require.Error(t, err)
@@ -146,6 +154,7 @@ func TestSetRulePriorities_InputValidation(t *testing.T) {
 }
 
 func TestSetRulePriorities_InvalidPriority(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "spri-bad")
 	cr, _ := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
 		ListenerArn: aws.String(env.listenerArn),
@@ -172,6 +181,7 @@ func TestSetRulePriorities_InvalidPriority(t *testing.T) {
 }
 
 func TestValidateConditions_TooMany(t *testing.T) {
+	t.Parallel()
 	in := make([]*elbv2.RuleCondition, MaxConditionsPerRule+1)
 	for i := range in {
 		in[i] = &elbv2.RuleCondition{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/a"})}
@@ -182,6 +192,7 @@ func TestValidateConditions_TooMany(t *testing.T) {
 }
 
 func TestValidateConditions_Empty(t *testing.T) {
+	t.Parallel()
 	_, err := validateAndConvertConditions(nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MissingParameter")
@@ -192,6 +203,7 @@ func TestValidateConditions_Empty(t *testing.T) {
 }
 
 func TestValidateConditions_InvalidField(t *testing.T) {
+	t.Parallel()
 	_, err := validateAndConvertConditions([]*elbv2.RuleCondition{
 		{Field: aws.String("unknown-field"), Values: aws.StringSlice([]string{"x"})},
 	})
@@ -200,6 +212,7 @@ func TestValidateConditions_InvalidField(t *testing.T) {
 }
 
 func TestValidateConditions_HTTPHeader(t *testing.T) {
+	t.Parallel()
 	// Missing HttpHeaderConfig.
 	_, err := validateAndConvertConditions([]*elbv2.RuleCondition{
 		{Field: aws.String("http-header")},
@@ -228,6 +241,7 @@ func TestValidateConditions_HTTPHeader(t *testing.T) {
 }
 
 func TestValidateConditions_Method(t *testing.T) {
+	t.Parallel()
 	_, err := validateAndConvertConditions([]*elbv2.RuleCondition{
 		{Field: aws.String("http-request-method")},
 	})
@@ -246,6 +260,7 @@ func TestValidateConditions_Method(t *testing.T) {
 }
 
 func TestValidateConditions_QueryString(t *testing.T) {
+	t.Parallel()
 	_, err := validateAndConvertConditions([]*elbv2.RuleCondition{
 		{Field: aws.String("query-string")},
 	})
@@ -270,6 +285,7 @@ func TestValidateConditions_QueryString(t *testing.T) {
 }
 
 func TestValidateConditions_SourceIP(t *testing.T) {
+	t.Parallel()
 	_, err := validateAndConvertConditions([]*elbv2.RuleCondition{
 		{Field: aws.String("source-ip")},
 	})
@@ -288,6 +304,7 @@ func TestValidateConditions_SourceIP(t *testing.T) {
 }
 
 func TestWildcardMatch(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in       string
 		wantFlag string
@@ -310,6 +327,7 @@ func TestWildcardMatch(t *testing.T) {
 }
 
 func TestValidateRenderSafe(t *testing.T) {
+	t.Parallel()
 	require.NoError(t, validateRenderSafe("/api/v1"))
 	for _, bad := range []string{"", "a b", "a\tb", "a\nb", "a\rb", "a#b", `a"b`} {
 		err := validateRenderSafe(bad)
@@ -321,6 +339,7 @@ func TestValidateRenderSafe(t *testing.T) {
 // ACL emission path in one render. Each rule uses a distinct backend so the
 // match expressions can be located in the generated config.
 func TestHAProxyRender_AllConditionFields(t *testing.T) {
+	t.Parallel()
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb1", LoadBalancerArn: "arn:lb1", Type: LoadBalancerTypeApplication}
 	listener := &ListenerRecord{
 		ListenerArn: "arn:lst1", ListenerID: "lst1", LoadBalancerArn: "arn:lb1",
@@ -374,11 +393,13 @@ func TestHAProxyRender_AllConditionFields(t *testing.T) {
 }
 
 func TestHAProxyRender_UnsupportedField(t *testing.T) {
+	t.Parallel()
 	_, err := buildHAProxyACLExprs(RuleCondition{Field: "nonsense", Values: []string{"x"}})
 	require.Error(t, err)
 }
 
 func TestBuildHAProxyRule_RoutesToBackend(t *testing.T) {
+	t.Parallel()
 	rule, err := buildHAProxyRule(&RuleRecord{
 		RuleID:     "r1",
 		Conditions: []RuleCondition{{Field: RuleFieldPathPattern, Values: []string{"/a"}}},
@@ -388,6 +409,7 @@ func TestBuildHAProxyRule_RoutesToBackend(t *testing.T) {
 }
 
 func TestRegisterRuleBackend_RejectsUnknownAction(t *testing.T) {
+	t.Parallel()
 	noopBackend := func(string) {}
 	noopFixed := func(string, *FixedResponseAction) {}
 	noopRedirect := func(string, *HAProxyRedirect) {}
@@ -402,6 +424,7 @@ func TestRegisterRuleBackend_RejectsUnknownAction(t *testing.T) {
 // without rule-action enumeration, the health checker never resolves rule-only TGs
 // and they time out at 0/1 healthy (TargetGroupsForLB walked only DefaultActions).
 func TestTargetGroupsForLB_IncludesRuleTGs(t *testing.T) {
+	t.Parallel()
 	env := newRuleTestEnv(t, "tgs-rule")
 	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
 		ListenerArn: aws.String(env.listenerArn),

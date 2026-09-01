@@ -7,6 +7,7 @@ import (
 )
 
 func TestDefaultHealthCheck(t *testing.T) {
+	t.Parallel()
 	hc := DefaultHealthCheck()
 
 	assert.Equal(t, ProtocolHTTP, hc.Protocol)

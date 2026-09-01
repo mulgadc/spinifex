@@ -30,6 +30,7 @@ func managedENIIDs(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) []stri
 // PutLoadBalancer-failure path runs leaves no orphan: ENIs deleted, managed SG
 // deleted, name claim released (so the name is immediately reclaimable).
 func TestRollbackLBInfra_RemovesAllInfra(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -69,6 +70,7 @@ func TestRollbackLBInfra_RemovesAllInfra(t *testing.T) {
 // updateStoredConfig-failure path: the listener port was already authorized, so
 // rollback must revoke it AND remove the persisted listener record.
 func TestRollbackListener_RevokesPortAndDeletesRecord(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 
@@ -100,6 +102,7 @@ func TestRollbackListener_RevokesPortAndDeletesRecord(t *testing.T) {
 // the port was never successfully opened, so rollback deletes the listener
 // record but must not touch SG authorizations (authorizedCIDRs is nil).
 func TestRollbackListener_NilCIDRsSkipsRevoke(t *testing.T) {
+	t.Parallel()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	subnetID, _ := firstSubnet(t, vpcSvc)
 

@@ -16,6 +16,7 @@ import (
 // one success and one DuplicateLoadBalancerName. The atomic name claim is the
 // barrier; under -race a double-claim would surface as a launcher/store race.
 func TestCreateLoadBalancer_ConcurrentSameNameSingleOwner(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	const n = 2
@@ -55,6 +56,7 @@ func TestCreateLoadBalancer_ConcurrentSameNameSingleOwner(t *testing.T) {
 // window: a claim with no persisted LB record yet — the gap a real create
 // leaves open — must not be stealable by a second claimer within the TTL.
 func TestClaimLBName_PendingClaimBlocksSecondClaimer(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	ok1, dup1, err := svc.store.ClaimLBName(t.Context(), "pending-lb", testAccountID, "lb-first")
@@ -74,6 +76,7 @@ func TestClaimLBName_PendingClaimBlocksSecondClaimer(t *testing.T) {
 // crashed prior create. A fresh CreateLoadBalancer must reclaim it and succeed.
 // The injectable clock ages the claim so the test never sleeps.
 func TestCreateLoadBalancer_ReclaimsCrashOrphanNameClaim(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	// Seed a name claim pointing at a non-existent LB (crashed create left no
@@ -97,6 +100,7 @@ func TestCreateLoadBalancer_ReclaimsCrashOrphanNameClaim(t *testing.T) {
 // Deleting a load balancer releases its name claim so the name is immediately
 // reusable.
 func TestDeleteLoadBalancer_ReleasesNameForReuse(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -121,6 +125,7 @@ func TestDeleteLoadBalancer_ReleasesNameForReuse(t *testing.T) {
 // provisioning on a nonexistent subnet) must release the claim on its way out, so
 // a retry with the same name is not permanently locked out by the failed attempt.
 func TestCreateLoadBalancer_FailureAfterClaimReleasesNameForRetry(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupTestServiceWithVPC(t)
 
 	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{

@@ -42,6 +42,7 @@ func storedTargets(t *testing.T, svc *ELBv2ServiceImpl, tgArn string) []Target {
 }
 
 func TestRegisterTargets_CrossAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	tgArn := ownedTargetGroup(t, svc, "reg-xacct-tg")
 
@@ -65,6 +66,7 @@ func TestRegisterTargets_CrossAccount(t *testing.T) {
 }
 
 func TestDeregisterTargets_CrossAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	tgArn := ownedTargetGroup(t, svc, "dereg-xacct-tg")
 
@@ -92,6 +94,7 @@ func TestDeregisterTargets_CrossAccount(t *testing.T) {
 }
 
 func TestDescribeTargetHealth_CrossAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	tgArn := ownedTargetGroup(t, svc, "health-xacct-tg")
 
@@ -115,6 +118,7 @@ func TestDescribeTargetHealth_CrossAccount(t *testing.T) {
 }
 
 func TestCreateListener_CrossAccountLoadBalancer(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbArn := ownedLoadBalancer(t, svc, "lst-xacct-lb", testAccountID)
 
@@ -152,6 +156,7 @@ func TestCreateListener_CrossAccountLoadBalancer(t *testing.T) {
 }
 
 func TestCreateListener_CrossAccountTargetGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	victimTGArn := ownedTargetGroup(t, svc, "lst-xacct-victim-tg")
 	attackerLBArn := ownedLoadBalancer(t, svc, "lst-xacct-att-lb", attackerAccountID)
@@ -173,6 +178,7 @@ func TestCreateListener_CrossAccountTargetGroup(t *testing.T) {
 }
 
 func TestModifyListener_CrossAccountTargetGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	victimTGArn := ownedTargetGroup(t, svc, "mod-xacct-victim-tg")
 	attackerLBArn := ownedLoadBalancer(t, svc, "mod-xacct-att-lb", attackerAccountID)
@@ -207,6 +213,7 @@ func TestModifyListener_CrossAccountTargetGroup(t *testing.T) {
 }
 
 func TestCreateRule_CrossAccountTargetGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	victimTGArn := ownedTargetGroup(t, svc, "rule-xacct-victim-tg")
 	attackerLBArn := ownedLoadBalancer(t, svc, "rule-xacct-att-lb", attackerAccountID)

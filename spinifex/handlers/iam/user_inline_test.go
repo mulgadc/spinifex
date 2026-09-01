@@ -17,6 +17,7 @@ import (
 // ============================================================================
 
 func TestPutUserPolicy_RoundTrip(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "inline-user")
 
@@ -38,6 +39,7 @@ func TestPutUserPolicy_RoundTrip(t *testing.T) {
 }
 
 func TestPutUserPolicy_IdempotentOverwrite(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "overwrite-user")
 
@@ -70,6 +72,7 @@ func TestPutUserPolicy_IdempotentOverwrite(t *testing.T) {
 }
 
 func TestPutUserPolicy_InvalidName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "badname-user")
 
@@ -83,6 +86,7 @@ func TestPutUserPolicy_InvalidName(t *testing.T) {
 }
 
 func TestPutUserPolicy_MalformedDocument(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "malformed-user")
 
@@ -96,6 +100,7 @@ func TestPutUserPolicy_MalformedDocument(t *testing.T) {
 }
 
 func TestPutUserPolicy_OversizedDocument(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "oversized-user")
 
@@ -110,6 +115,7 @@ func TestPutUserPolicy_OversizedDocument(t *testing.T) {
 }
 
 func TestPutUserPolicy_UserNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.PutUserPolicy(testAccountID, &iam.PutUserPolicyInput{
@@ -122,6 +128,7 @@ func TestPutUserPolicy_UserNotFound(t *testing.T) {
 }
 
 func TestGetUserPolicy_UnknownName(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "get-unknown")
 
@@ -134,6 +141,7 @@ func TestGetUserPolicy_UnknownName(t *testing.T) {
 }
 
 func TestGetUserPolicy_UserNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.GetUserPolicy(testAccountID, &iam.GetUserPolicyInput{
@@ -145,6 +153,7 @@ func TestGetUserPolicy_UserNotFound(t *testing.T) {
 }
 
 func TestListUserPolicies_Sorted(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "list-user")
 
@@ -170,6 +179,7 @@ func TestListUserPolicies_Sorted(t *testing.T) {
 }
 
 func TestListUserPolicies_Empty(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "empty-inline-user")
 
@@ -183,6 +193,7 @@ func TestListUserPolicies_Empty(t *testing.T) {
 }
 
 func TestListUserPolicies_UserNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.ListUserPolicies(testAccountID, &iam.ListUserPoliciesInput{
@@ -193,6 +204,7 @@ func TestListUserPolicies_UserNotFound(t *testing.T) {
 }
 
 func TestDeleteUserPolicy(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "del-inline-user")
 
@@ -224,6 +236,7 @@ func TestDeleteUserPolicy(t *testing.T) {
 }
 
 func TestDeleteUserPolicy_DoubleDelete(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "double-del-user")
 
@@ -249,6 +262,7 @@ func TestDeleteUserPolicy_DoubleDelete(t *testing.T) {
 }
 
 func TestDeleteUserPolicy_UserNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.DeleteUserPolicy(testAccountID, &iam.DeleteUserPolicyInput{
@@ -285,6 +299,7 @@ func putRawUserInlinePolicy(t *testing.T, svc *IAMServiceImpl, userName, policyN
 // stop contributing once the inline policy is removed. Without this, put-user-policy
 // appears to succeed while granting nothing — a silent no-op.
 func TestGetUserPolicies_UserInlineEnforced(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "quinn")
 
@@ -323,6 +338,7 @@ func TestGetUserPolicies_UserInlineEnforced(t *testing.T) {
 // set — inline grants supplement managed grants rather than replacing them, so a
 // deny-wins evaluator can honour an inline Deny alongside a managed Allow.
 func TestGetUserPolicies_UserManagedAndInline(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "rita")
 	managed := createTestPolicy(t, svc, "ManagedGrant")
@@ -351,6 +367,7 @@ func TestGetUserPolicies_UserManagedAndInline(t *testing.T) {
 // document on a user fails the whole resolution closed rather than silently
 // dropping the grant source, mirroring the group-inline handling.
 func TestGetUserPolicies_UserInlineMalformedFailsClosed(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "sam")
 
@@ -367,6 +384,7 @@ func TestGetUserPolicies_UserInlineMalformedFailsClosed(t *testing.T) {
 // TestDeleteUser_WithInlinePolicy proves a user carrying an inline policy refuses
 // deletion until the inline policy is removed, mirroring DeleteGroup.
 func TestDeleteUser_WithInlinePolicy(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 	createTestUser(t, svc, "inline-conflict-user")
 

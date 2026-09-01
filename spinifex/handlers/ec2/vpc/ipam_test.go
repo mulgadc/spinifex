@@ -22,6 +22,7 @@ func setupTestIPAM(t *testing.T) *IPAM {
 }
 
 func TestIPAM_AllocateFirst(t *testing.T) {
+	t.Parallel()
 	ipam := setupTestIPAM(t)
 
 	ip, err := ipam.AllocateIP(t.Context(), "subnet-1", "10.0.1.0/24", PurposeENIPrimary, "eni-1")
@@ -31,6 +32,7 @@ func TestIPAM_AllocateFirst(t *testing.T) {
 }
 
 func TestIPAM_AllocateSequential(t *testing.T) {
+	t.Parallel()
 	ipam := setupTestIPAM(t)
 
 	ip1, err := ipam.AllocateIP(t.Context(), "subnet-seq", "10.0.2.0/24", PurposeENIPrimary, "eni-seq")
@@ -47,6 +49,7 @@ func TestIPAM_AllocateSequential(t *testing.T) {
 }
 
 func TestIPAM_Release(t *testing.T) {
+	t.Parallel()
 	ipam := setupTestIPAM(t)
 
 	ip1, err := ipam.AllocateIP(t.Context(), "subnet-rel", "10.0.3.0/24", PurposeENIPrimary, "eni-rel")
@@ -68,6 +71,7 @@ func TestIPAM_Release(t *testing.T) {
 }
 
 func TestIPAM_ReleaseNotAllocated(t *testing.T) {
+	t.Parallel()
 	ipam := setupTestIPAM(t)
 
 	_, err := ipam.AllocateIP(t.Context(), "subnet-rna", "10.0.4.0/24", PurposeENIPrimary, "eni-rna")
@@ -78,6 +82,7 @@ func TestIPAM_ReleaseNotAllocated(t *testing.T) {
 }
 
 func TestIPAM_ReleaseNoRecord(t *testing.T) {
+	t.Parallel()
 	ipam := setupTestIPAM(t)
 
 	err := ipam.ReleaseIP(t.Context(), "subnet-nonexistent", "10.0.0.4")
@@ -85,6 +90,7 @@ func TestIPAM_ReleaseNoRecord(t *testing.T) {
 }
 
 func TestIPAM_Exhaustion(t *testing.T) {
+	t.Parallel()
 	ipam := setupTestIPAM(t)
 
 	// /28 = 16 IPs total. Reserved: .0, .1, .2, .3, .15 = 5. Available: 11
@@ -108,6 +114,7 @@ func TestIPAM_Exhaustion(t *testing.T) {
 }
 
 func TestIPAM_ReservedIPs(t *testing.T) {
+	t.Parallel()
 	ipam := setupTestIPAM(t)
 
 	cidr := "10.0.6.0/24"
@@ -123,6 +130,7 @@ func TestIPAM_ReservedIPs(t *testing.T) {
 }
 
 func TestIPAM_AllocatedIPs(t *testing.T) {
+	t.Parallel()
 	ipam := setupTestIPAM(t)
 
 	// No allocations yet
@@ -144,6 +152,7 @@ func TestIPAM_AllocatedIPs(t *testing.T) {
 }
 
 func TestIPAM_MultipleSubnets(t *testing.T) {
+	t.Parallel()
 	ipam := setupTestIPAM(t)
 
 	ip1, err := ipam.AllocateIP(t.Context(), "subnet-a", "10.0.10.0/24", PurposeENIPrimary, "eni-a")
@@ -161,6 +170,7 @@ func TestIPAM_MultipleSubnets(t *testing.T) {
 }
 
 func TestIPAM_LargerSubnet(t *testing.T) {
+	t.Parallel()
 	ipam := setupTestIPAM(t)
 
 	// /20 subnet — first allocable is still .4
@@ -170,6 +180,7 @@ func TestIPAM_LargerSubnet(t *testing.T) {
 }
 
 func TestIPAM_NewIPAMWithKV(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
@@ -188,6 +199,7 @@ func TestIPAM_NewIPAMWithKV(t *testing.T) {
 }
 
 func TestIPAM_InvalidCIDR(t *testing.T) {
+	t.Parallel()
 	ipam := setupTestIPAM(t)
 	_, err := ipam.AllocateIP(t.Context(), "subnet-bad", "not-a-cidr", PurposeENIPrimary, "eni-bad")
 	assert.Error(t, err)
@@ -195,6 +207,7 @@ func TestIPAM_InvalidCIDR(t *testing.T) {
 }
 
 func TestCompareIPs_NilSortsFirst(t *testing.T) {
+	t.Parallel()
 	assert.Negative(t, compareIPs(nil, net.ParseIP("10.0.0.1")))
 	assert.Zero(t, compareIPs(net.ParseIP("10.0.0.1"), net.ParseIP("10.0.0.1")))
 	assert.Positive(t, compareIPs(net.ParseIP("10.0.0.2"), net.ParseIP("10.0.0.1")))

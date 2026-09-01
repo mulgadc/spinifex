@@ -29,6 +29,7 @@ func createTestENI(t *testing.T, svc *VPCServiceImpl, subnetId string) string {
 }
 
 func TestCreateNetworkInterface(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -49,6 +50,7 @@ func TestCreateNetworkInterface(t *testing.T) {
 }
 
 func TestCreateNetworkInterface_SequentialIPs(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -67,12 +69,14 @@ func TestCreateNetworkInterface_SequentialIPs(t *testing.T) {
 }
 
 func TestCreateNetworkInterface_MissingSubnet(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{}, testAccountID)
 	assert.ErrorContains(t, err, "MissingParameter")
 }
 
 func TestCreateNetworkInterface_InvalidSubnet(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String("subnet-nonexistent"),
@@ -81,6 +85,7 @@ func TestCreateNetworkInterface_InvalidSubnet(t *testing.T) {
 }
 
 func TestCreateNetworkInterface_WithTags(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -109,6 +114,7 @@ func TestCreateNetworkInterface_WithTags(t *testing.T) {
 // marks the ENIRecord SuppressDHCP, threads it into the vpc.create-port event
 // for vpcd, and never persists as a customer-visible tag.
 func TestCreateNetworkInterface_DHCPDisabledTag_SuppressesDHCP(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -155,6 +161,7 @@ func TestCreateNetworkInterface_DHCPDisabledTag_SuppressesDHCP(t *testing.T) {
 // ordinary ENI (no internal tag) is unaffected: SuppressDHCP stays false and
 // the wire event carries no suppress_dhcp marker.
 func TestCreateNetworkInterface_NoDHCPDisabledTag_LeavesDHCPEnabled(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -185,6 +192,7 @@ func TestCreateNetworkInterface_NoDHCPDisabledTag_LeavesDHCPEnabled(t *testing.T
 }
 
 func TestDeleteNetworkInterface(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -203,6 +211,7 @@ func TestDeleteNetworkInterface(t *testing.T) {
 }
 
 func TestDeleteNetworkInterface_InUse(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -220,6 +229,7 @@ func TestDeleteNetworkInterface_InUse(t *testing.T) {
 }
 
 func TestDeleteNetworkInterface_ReleasesIP(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -245,6 +255,7 @@ func TestDeleteNetworkInterface_ReleasesIP(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_All(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -258,6 +269,7 @@ func TestDescribeNetworkInterfaces_All(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_ByID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -274,6 +286,7 @@ func TestDescribeNetworkInterfaces_ByID(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_FilterBySubnet(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetA := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -293,6 +306,7 @@ func TestDescribeNetworkInterfaces_FilterBySubnet(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String("eni-nonexistent")},
@@ -301,6 +315,7 @@ func TestDescribeNetworkInterfaces_NotFound(t *testing.T) {
 }
 
 func TestAttachENI(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -323,6 +338,7 @@ func TestAttachENI(t *testing.T) {
 }
 
 func TestAttachENI_AlreadyAttached(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -337,6 +353,7 @@ func TestAttachENI_AlreadyAttached(t *testing.T) {
 }
 
 func TestDetachENI(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -379,6 +396,7 @@ func (k *failNTimesDeleteKV) Delete(ctx context.Context, key string, opts ...jet
 // from a fresh read rather than giving up, so a lagging replica never causes
 // a leaked ENI.
 func TestDetachAndDeleteENI_RetriesOnDeleteCASConflict(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -402,6 +420,7 @@ func TestDetachAndDeleteENI_RetriesOnDeleteCASConflict(t *testing.T) {
 // bounded: a Delete that never stops conflicting must surface an error
 // rather than retry forever or silently drop the ENI.
 func TestDetachAndDeleteENI_ExhaustsRetriesReturnsError(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -419,6 +438,7 @@ func TestDetachAndDeleteENI_ExhaustsRetriesReturnsError(t *testing.T) {
 // another ENI in between — so a delete that never succeeds must leave the
 // allocation exactly as it found it.
 func TestDetachAndDeleteENI_HoldsIPUntilDeleteSucceeds(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -440,6 +460,7 @@ func TestDetachAndDeleteENI_HoldsIPUntilDeleteSucceeds(t *testing.T) {
 // the public-facing guard is unchanged by the new atomic path: a genuinely
 // attached ENI without force must still return InvalidNetworkInterface.InUse.
 func TestDetachAndDeleteENI_ForceFalseOnLiveAttachment_StaysAWSFaithful(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -463,6 +484,7 @@ func TestDetachAndDeleteENI_ForceFalseOnLiveAttachment_StaysAWSFaithful(t *testi
 // with no separate re-read between the two — the mechanism that closes the
 // stale-replica window DetachENI+DeleteNetworkInterface used to open.
 func TestDetachAndDeleteENI_ForceTrueDeletesLiveAttachment(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -485,6 +507,7 @@ func TestDetachAndDeleteENI_ForceTrueDeletesLiveAttachment(t *testing.T) {
 // stops the caller logging a false "Deleted ENI on termination" for an ENI
 // it never touched.
 func TestDetachAndDeleteENI_AbsentForceTrue_ReturnsNotDeletedNoError(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	deleted, err := svc.DetachAndDeleteENI(context.Background(), testAccountID, "eni-never-existed", true)
@@ -495,6 +518,7 @@ func TestDetachAndDeleteENI_AbsentForceTrue_ReturnsNotDeletedNoError(t *testing.
 // TestDetachAndDeleteENI_AbsentForceFalse_ReturnsNotFound asserts the public
 // (non-force) path stays AWS-faithful on an absent ENI.
 func TestDetachAndDeleteENI_AbsentForceFalse_ReturnsNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	_, err := svc.DetachAndDeleteENI(context.Background(), testAccountID, "eni-never-existed", false)
@@ -502,6 +526,7 @@ func TestDetachAndDeleteENI_AbsentForceFalse_ReturnsNotFound(t *testing.T) {
 }
 
 func TestGenerateENIMac(t *testing.T) {
+	t.Parallel()
 	mac := generateENIMac("eni-test123")
 	hw, err := net.ParseMAC(mac)
 	require.NoError(t, err)
@@ -517,6 +542,7 @@ func TestGenerateENIMac(t *testing.T) {
 // --- Filter tests ---
 
 func TestDescribeNetworkInterfaces_FilterByVpcId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpc1 := createTestVPC(t, svc, "10.0.0.0/16")
 	vpc2 := createTestVPC(t, svc, "10.1.0.0/16")
@@ -537,6 +563,7 @@ func TestDescribeNetworkInterfaces_FilterByVpcId(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_FilterByAttachmentInstanceId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -559,6 +586,7 @@ func TestDescribeNetworkInterfaces_FilterByAttachmentInstanceId(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_FilterByDescription(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -588,6 +616,7 @@ func TestDescribeNetworkInterfaces_FilterByDescription(t *testing.T) {
 }
 
 func TestCreateNetworkInterface_IPExhaustion(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	// /28 subnet: 16 IPs total, 4 reserved at start + 1 broadcast = 11 usable
@@ -611,6 +640,7 @@ func TestCreateNetworkInterface_IPExhaustion(t *testing.T) {
 // --- NATS event tests ---
 
 func TestCreateNetworkInterface_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -638,6 +668,7 @@ func TestCreateNetworkInterface_PublishesEvent(t *testing.T) {
 }
 
 func TestDeleteNetworkInterface_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -668,6 +699,7 @@ func TestDeleteNetworkInterface_PublishesEvent(t *testing.T) {
 // is already gone by the time this runs, so a failed teardown must still let
 // the caller (instance terminate, appliance teardown) converge.
 func TestDeleteNetworkInterface_VpcdDeletePortError_NonFatal(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -689,6 +721,7 @@ func TestDeleteNetworkInterface_VpcdDeletePortError_NonFatal(t *testing.T) {
 }
 
 func TestModifyNetworkInterfaceAttribute_SecurityGroups(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -713,6 +746,7 @@ func TestModifyNetworkInterfaceAttribute_SecurityGroups(t *testing.T) {
 }
 
 func TestModifyNetworkInterfaceAttribute_PublishesUpdatePortSGs(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -744,6 +778,7 @@ func TestModifyNetworkInterfaceAttribute_PublishesUpdatePortSGs(t *testing.T) {
 }
 
 func TestModifyNetworkInterfaceAttribute_DescriptionOnly_NoSGEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -770,6 +805,7 @@ func TestModifyNetworkInterfaceAttribute_DescriptionOnly_NoSGEvent(t *testing.T)
 }
 
 func TestCreateNetworkInterface_PublishesEventCarriesSGs(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -798,6 +834,7 @@ func TestCreateNetworkInterface_PublishesEventCarriesSGs(t *testing.T) {
 }
 
 func TestModifyNetworkInterfaceAttribute_Description(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -818,6 +855,7 @@ func TestModifyNetworkInterfaceAttribute_Description(t *testing.T) {
 }
 
 func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -855,6 +893,7 @@ func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly(t *testing.T) {
 }
 
 func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly_NoSGEvent(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -881,6 +920,7 @@ func TestModifyNetworkInterfaceAttribute_SourceDestCheckOnly_NoSGEvent(t *testin
 }
 
 func TestModifyNetworkInterfaceAttribute_NoAttributes(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -893,6 +933,7 @@ func TestModifyNetworkInterfaceAttribute_NoAttributes(t *testing.T) {
 }
 
 func TestModifyNetworkInterfaceAttribute_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
@@ -903,6 +944,7 @@ func TestModifyNetworkInterfaceAttribute_NotFound(t *testing.T) {
 }
 
 func TestModifyNetworkInterfaceAttribute_MissingID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
@@ -912,6 +954,7 @@ func TestModifyNetworkInterfaceAttribute_MissingID(t *testing.T) {
 }
 
 func TestCreateNetworkInterface_WithSecurityGroups(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -929,6 +972,7 @@ func TestCreateNetworkInterface_WithSecurityGroups(t *testing.T) {
 }
 
 func TestCreateNetworkInterface_FallsBackToDefaultSG(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -943,6 +987,7 @@ func TestCreateNetworkInterface_FallsBackToDefaultSG(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_FilterByNetworkInterfaceId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -970,6 +1015,7 @@ func TestDescribeNetworkInterfaces_FilterByNetworkInterfaceId(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_FilterByStatus(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -999,6 +1045,7 @@ func TestDescribeNetworkInterfaces_FilterByStatus(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_FilterByPrivateIpAddress(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -1035,6 +1082,7 @@ func TestDescribeNetworkInterfaces_FilterByPrivateIpAddress(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_FilterByAvailabilityZone(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	// Create subnet with explicit AZ
@@ -1066,6 +1114,7 @@ func TestDescribeNetworkInterfaces_FilterByAvailabilityZone(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_FilterByGroupId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -1103,6 +1152,7 @@ func TestDescribeNetworkInterfaces_FilterByGroupId(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_FilterByMacAddress(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -1131,6 +1181,7 @@ func TestDescribeNetworkInterfaces_FilterByMacAddress(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_FilterByAttachmentId(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -1152,6 +1203,7 @@ func TestDescribeNetworkInterfaces_FilterByAttachmentId(t *testing.T) {
 }
 
 func TestDescribeNetworkInterfaces_FilterByAttachmentStatus(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -1212,6 +1264,7 @@ func putEIPRecord(t *testing.T, kv jetstream.KeyValue, key, eniID string) {
 }
 
 func TestIsEIPOwned_NilKV(t *testing.T) {
+	t.Parallel()
 	svc := &VPCServiceImpl{eipKV: nil}
 
 	owned, err := svc.isEIPOwned(context.Background(), "eni-111", testAccountID)
@@ -1220,6 +1273,7 @@ func TestIsEIPOwned_NilKV(t *testing.T) {
 }
 
 func TestIsEIPOwned_NoKeys(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupEIPTestService(t)
 
 	owned, err := svc.isEIPOwned(context.Background(), "eni-111", testAccountID)
@@ -1228,6 +1282,7 @@ func TestIsEIPOwned_NoKeys(t *testing.T) {
 }
 
 func TestIsEIPOwned_MatchingENI(t *testing.T) {
+	t.Parallel()
 	svc, kv := setupEIPTestService(t)
 	putEIPRecord(t, kv, testAccountID+".eipalloc-001", "eni-111")
 
@@ -1237,6 +1292,7 @@ func TestIsEIPOwned_MatchingENI(t *testing.T) {
 }
 
 func TestIsEIPOwned_NonMatchingENI(t *testing.T) {
+	t.Parallel()
 	svc, kv := setupEIPTestService(t)
 	putEIPRecord(t, kv, testAccountID+".eipalloc-001", "eni-222")
 
@@ -1246,6 +1302,7 @@ func TestIsEIPOwned_NonMatchingENI(t *testing.T) {
 }
 
 func TestIsEIPOwned_WrongAccountPrefix(t *testing.T) {
+	t.Parallel()
 	svc, kv := setupEIPTestService(t)
 	putEIPRecord(t, kv, "999999999999.eipalloc-001", "eni-111")
 
@@ -1255,6 +1312,7 @@ func TestIsEIPOwned_WrongAccountPrefix(t *testing.T) {
 }
 
 func TestIsEIPOwned_MalformedJSON(t *testing.T) {
+	t.Parallel()
 	svc, kv := setupEIPTestService(t)
 	_, err := kv.Put(t.Context(), testAccountID+".eipalloc-001", []byte("not json"))
 	require.NoError(t, err)
@@ -1265,6 +1323,7 @@ func TestIsEIPOwned_MalformedJSON(t *testing.T) {
 }
 
 func TestIsEIPOwned_MultipleRecords_OneMatches(t *testing.T) {
+	t.Parallel()
 	svc, kv := setupEIPTestService(t)
 	putEIPRecord(t, kv, testAccountID+".eipalloc-001", "eni-aaa")
 	putEIPRecord(t, kv, testAccountID+".eipalloc-002", "eni-target")
@@ -1278,6 +1337,7 @@ func TestIsEIPOwned_MultipleRecords_OneMatches(t *testing.T) {
 // --- validateSGAttachment ---
 
 func TestValidateSGAttachment_OK(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sg := createTestSG(t, svc, vpcID, "ok")
@@ -1287,6 +1347,7 @@ func TestValidateSGAttachment_OK(t *testing.T) {
 }
 
 func TestValidateSGAttachment_EmptyList(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1295,6 +1356,7 @@ func TestValidateSGAttachment_EmptyList(t *testing.T) {
 }
 
 func TestValidateSGAttachment_TooMany(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgs := make([]string, 6)
@@ -1307,12 +1369,14 @@ func TestValidateSGAttachment_TooMany(t *testing.T) {
 }
 
 func TestValidateSGAttachment_UnknownVPC(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	err := svc.validateSGAttachment(t.Context(), testAccountID, []string{"sg-aaa"}, "vpc-missing")
 	assert.ErrorContains(t, err, "InvalidVpcID.NotFound")
 }
 
 func TestValidateSGAttachment_SGNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
@@ -1321,6 +1385,7 @@ func TestValidateSGAttachment_SGNotFound(t *testing.T) {
 }
 
 func TestValidateSGAttachment_CrossVPC(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcA := createTestVPC(t, svc, "10.0.0.0/16")
 	vpcB := createTestVPC(t, svc, "10.1.0.0/16")
@@ -1334,6 +1399,7 @@ func TestValidateSGAttachment_CrossVPC(t *testing.T) {
 // caller knows OVN port-group reconciliation didn't happen. The KV record
 // already changed by this point — that's intentional (reconciler converges).
 func TestModifyNetworkInterfaceAttribute_VpcdError_Propagated(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -1357,6 +1423,7 @@ func TestModifyNetworkInterfaceAttribute_VpcdError_Propagated(t *testing.T) {
 // the ENI record so DescribeNetworkInterfaces shows the auto-assigned public
 // IP after RunInstances and EIP associate-address.
 func TestUpdateENIPublicIP_Success(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
@@ -1374,6 +1441,7 @@ func TestUpdateENIPublicIP_Success(t *testing.T) {
 }
 
 func TestUpdateENIPublicIP_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 
 	err := svc.UpdateENIPublicIP(testAccountID, "eni-missing", "203.0.113.8", "amazon")

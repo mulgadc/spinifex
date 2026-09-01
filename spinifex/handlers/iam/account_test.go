@@ -19,6 +19,7 @@ import (
 // ============================================================================
 
 func TestCreateAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	acc1, err := svc.CreateAccount("Team Alpha")
@@ -36,6 +37,7 @@ func TestCreateAccount(t *testing.T) {
 }
 
 func TestCreateAccount_SequentialIDs(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	var prevID string
@@ -51,6 +53,7 @@ func TestCreateAccount_SequentialIDs(t *testing.T) {
 }
 
 func TestGetAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	created, err := svc.CreateAccount("Lookup Test")
@@ -64,6 +67,7 @@ func TestGetAccount(t *testing.T) {
 }
 
 func TestGetAccount_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	_, err := svc.GetAccount("999999999999")
@@ -71,6 +75,7 @@ func TestGetAccount_NotFound(t *testing.T) {
 }
 
 func TestListAccounts(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	svc.CreateAccount("Acct1")
@@ -91,6 +96,7 @@ func TestListAccounts(t *testing.T) {
 }
 
 func TestListAccounts_Empty(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	accounts, err := svc.ListAccounts()
@@ -103,6 +109,7 @@ func TestListAccounts_Empty(t *testing.T) {
 // ============================================================================
 
 func TestAccountScopedUsers(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	acc1, err := svc.CreateAccount("Org A")
@@ -160,6 +167,7 @@ func TestAccountScopedUsers(t *testing.T) {
 // ============================================================================
 
 func TestAccountScopedPolicies(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	acc1, err := svc.CreateAccount("Policy Org A")
@@ -199,6 +207,7 @@ func TestAccountScopedPolicies(t *testing.T) {
 // ============================================================================
 
 func TestAccessKeyReturnsAccountID(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	acc, err := svc.CreateAccount("Key Org")
@@ -230,6 +239,7 @@ func TestAccessKeyReturnsAccountID(t *testing.T) {
 // ============================================================================
 
 func TestCrossAccount_UserIsolation(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	accA, err := svc.CreateAccount("Account A")
@@ -256,6 +266,7 @@ func TestCrossAccount_UserIsolation(t *testing.T) {
 }
 
 func TestCrossAccount_AccessKeyIsolation(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	accA, err := svc.CreateAccount("Key Org A")
@@ -281,6 +292,7 @@ func TestCrossAccount_AccessKeyIsolation(t *testing.T) {
 }
 
 func TestCrossAccount_PolicyAttachmentFails(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	accA, err := svc.CreateAccount("Policy Org A")
@@ -312,6 +324,7 @@ func TestCrossAccount_PolicyAttachmentFails(t *testing.T) {
 }
 
 func TestCrossAccount_LookupAccessKeyReturnsCorrectAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	accA, err := svc.CreateAccount("Lookup A")
@@ -348,6 +361,7 @@ func TestCrossAccount_LookupAccessKeyReturnsCorrectAccount(t *testing.T) {
 // ============================================================================
 
 func TestSeedBootstrap_AccountScoped(t *testing.T) {
+	t.Parallel()
 	svc := setupTestIAMService(t)
 
 	encryptedSecret, err := svc.key.EncryptBase64("root-secret")
@@ -387,6 +401,7 @@ func TestSeedBootstrap_AccountScoped(t *testing.T) {
 // ============================================================================
 
 func TestCreateAccount_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	masterKey, err := GenerateMasterKey()

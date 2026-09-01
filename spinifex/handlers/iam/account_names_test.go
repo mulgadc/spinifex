@@ -21,6 +21,7 @@ func newAccountNameIndex(t *testing.T) (*handlers_iam.AccountNameIndex, jetstrea
 }
 
 func TestAccountNameIndexReserveCommitLookup(t *testing.T) {
+	t.Parallel()
 	index, _ := newAccountNameIndex(t)
 	ctx := t.Context()
 
@@ -44,6 +45,7 @@ func TestAccountNameIndexReserveCommitLookup(t *testing.T) {
 }
 
 func TestAccountNameIndexReserveConflicts(t *testing.T) {
+	t.Parallel()
 	index, _ := newAccountNameIndex(t)
 	ctx := t.Context()
 
@@ -63,6 +65,7 @@ func TestAccountNameIndexReserveConflicts(t *testing.T) {
 
 // Case and whitespace must not create a second account for the same person.
 func TestAccountNameIndexNormalizesName(t *testing.T) {
+	t.Parallel()
 	index, _ := newAccountNameIndex(t)
 	ctx := t.Context()
 
@@ -78,6 +81,7 @@ func TestAccountNameIndexNormalizesName(t *testing.T) {
 }
 
 func TestAccountNameIndexRelease(t *testing.T) {
+	t.Parallel()
 	index, _ := newAccountNameIndex(t)
 	ctx := t.Context()
 
@@ -101,6 +105,7 @@ func TestAccountNameIndexRelease(t *testing.T) {
 // Release on a name that was never reserved is a no-op, not an error: it runs
 // on the failure path where the reservation may already be gone.
 func TestAccountNameIndexReleaseUnknownName(t *testing.T) {
+	t.Parallel()
 	index, _ := newAccountNameIndex(t)
 	require.NoError(t, index.Release(t.Context(), "nobody@example.com", "token-a"))
 }
@@ -108,6 +113,7 @@ func TestAccountNameIndexReleaseUnknownName(t *testing.T) {
 // KV keys are readable by anyone with cluster access, so a customer's email
 // address must not appear in one.
 func TestAccountNameIndexKeysCarryNoEmailAddress(t *testing.T) {
+	t.Parallel()
 	index, js := newAccountNameIndex(t)
 	ctx := t.Context()
 
@@ -126,6 +132,7 @@ func TestAccountNameIndexKeysCarryNoEmailAddress(t *testing.T) {
 }
 
 func TestFindAccountByName(t *testing.T) {
+	t.Parallel()
 	svc := newIAMService(t)
 
 	created, err := svc.CreateAccount("ben@example.com")
@@ -144,6 +151,7 @@ func TestFindAccountByName(t *testing.T) {
 // A corrupt entry must surface as an error. Treating it as absent would let a
 // second account be created under a name that is already indexed.
 func TestAccountNameIndexRejectsCorruptEntry(t *testing.T) {
+	t.Parallel()
 	index, js := newAccountNameIndex(t)
 	ctx := t.Context()
 

@@ -26,6 +26,7 @@ func tagsFor(t *testing.T, svc *ELBv2ServiceImpl, arn string) map[string]string 
 }
 
 func TestAddTags_LoadBalancer(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("addtags-lb"),
@@ -47,6 +48,7 @@ func TestAddTags_LoadBalancer(t *testing.T) {
 }
 
 func TestAddTags_Listener(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("addtags-lst-lb")}, testAccountID)
 	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("addtags-lst-tg")}, testAccountID)
@@ -71,6 +73,7 @@ func TestAddTags_Listener(t *testing.T) {
 }
 
 func TestAddTags_CreateTimeTagsPreserved(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("addtags-tg-lb")}, testAccountID)
 	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -91,6 +94,7 @@ func TestAddTags_CreateTimeTagsPreserved(t *testing.T) {
 }
 
 func TestAddTags_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.AddTags(context.Background(), &elbv2.AddTagsInput{
 		ResourceArns: []*string{aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/missing/lb-deadbeef")},
@@ -101,6 +105,7 @@ func TestAddTags_NotFound(t *testing.T) {
 }
 
 func TestAddTags_CrossAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("addtags-xacct")}, testAccountID)
 	arn := *lbOut.LoadBalancers[0].LoadBalancerArn
@@ -117,6 +122,7 @@ func TestAddTags_CrossAccount(t *testing.T) {
 }
 
 func TestAddTags_MissingParams(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("addtags-mp")}, testAccountID)
 	arn := lbOut.LoadBalancers[0].LoadBalancerArn
@@ -131,6 +137,7 @@ func TestAddTags_MissingParams(t *testing.T) {
 }
 
 func TestAddTags_EmptyKeyRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("addtags-ek")}, testAccountID)
 	arn := lbOut.LoadBalancers[0].LoadBalancerArn
@@ -144,6 +151,7 @@ func TestAddTags_EmptyKeyRejected(t *testing.T) {
 }
 
 func TestRemoveTags_LoadBalancer(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("rmtags-lb"),
@@ -164,6 +172,7 @@ func TestRemoveTags_LoadBalancer(t *testing.T) {
 }
 
 func TestRemoveTags_Idempotent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("rmtags-idem"),
@@ -181,6 +190,7 @@ func TestRemoveTags_Idempotent(t *testing.T) {
 }
 
 func TestRemoveTags_NotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.RemoveTags(context.Background(), &elbv2.RemoveTagsInput{
 		ResourceArns: []*string{aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/missing/tg-deadbeef")},
@@ -191,6 +201,7 @@ func TestRemoveTags_NotFound(t *testing.T) {
 }
 
 func TestRemoveTags_MissingParams(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("rmtags-mp")}, testAccountID)
 	arn := lbOut.LoadBalancers[0].LoadBalancerArn

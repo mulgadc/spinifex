@@ -44,6 +44,9 @@ type EC2Handler func(string, map[string]string, *GatewayConfig, string, *http.Re
 type ec2Action struct {
 	parse    func(map[string]string) (any, error)
 	dispatch func(string, any, *GatewayConfig, string, *http.Request) ([]byte, error)
+	// idempotent records that this action honours ClientToken, so the set of
+	// actions that do is assertable rather than folklore.
+	idempotent bool
 }
 
 func (h ec2Action) withQueryPreprocessor(preprocess func(map[string]string)) ec2Action {
@@ -67,17 +70,21 @@ func requestContext(r *http.Request) context.Context {
 	return utils.WithIdempotencyKey(r.Context(), r.Header.Get(utils.SDKInvocationIDHeader))
 }
 
+// parseEC2Input parses query args into an action's input type. Shared by every
+// ec2Action constructor so they all consume the same parse.
+func parseEC2Input[In any](q map[string]string) (any, error) {
+	input := new(In)
+	if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
+		return nil, err
+	}
+	return input, nil
+}
+
 // ec2Handler creates a type-safe EC2Handler. Parsing is separate from dispatch
 // so authorization and execution consume the exact same input.
 func ec2Handler[In any](handler func(ctx context.Context, input *In, gw *GatewayConfig, accountID string) (any, error)) ec2Action {
 	return ec2Action{
-		parse: func(q map[string]string) (any, error) {
-			input := new(In)
-			if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
-				return nil, err
-			}
-			return input, nil
-		},
+		parse: parseEC2Input[In],
 		dispatch: func(action string, parsed any, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
 			input, ok := parsed.(*In)
 			if !ok {
@@ -117,13 +124,7 @@ func marshalEC2Response(action string, output any) ([]byte, error) {
 // e.g. RunInstances which enforces iam:PassRole on the supplied instance profile ARN.
 func ec2HandlerWithReq[In any](handler func(ctx context.Context, input *In, gw *GatewayConfig, accountID string, r *http.Request) (any, error)) ec2Action {
 	return ec2Action{
-		parse: func(q map[string]string) (any, error) {
-			input := new(In)
-			if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
-				return nil, err
-			}
-			return input, nil
-		},
+		parse: parseEC2Input[In],
 		dispatch: func(action string, parsed any, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
 			input, ok := parsed.(*In)
 			if !ok {
@@ -276,7 +277,7 @@ var ec2Actions = map[string]ec2Action{
 	"RegisterImage": ec2Handler(func(ctx context.Context, input *ec2.RegisterImageInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_image.RegisterImage(ctx, input, gw.NATSConn, accountID)
 	}),
-	"CopyImage": ec2Handler(func(ctx context.Context, input *ec2.CopyImageInput, gw *GatewayConfig, accountID string) (any, error) {
+	"CopyImage": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CopyImageInput, gw *GatewayConfig, accountID string) (ec2.CopyImageOutput, error) {
 		return gateway_ec2_image.CopyImage(ctx, input, gw.NATSConn, gw.Region, accountID)
 	}),
 	"DescribeImageAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeImageAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
@@ -303,9 +304,9 @@ var ec2Actions = map[string]ec2Action{
 		}
 		return gateway_ec2_volume.ModifyVolume(ctx, input, gw.NATSConn, accountID)
 	}),
-	"CreateVolume": ec2Handler(func(ctx context.Context, input *ec2.CreateVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
+	"CreateVolume": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateVolumeInput, gw *GatewayConfig, accountID string) (ec2.Volume, error) {
 		if err := gw.Quota.EnforceVolumeCreate(ctx, gw.NATSConn, accountID, int(aws.Int64Value(input.Size))); err != nil {
-			return nil, err
+			return ec2.Volume{}, err
 		}
 		return gateway_ec2_volume.CreateVolume(ctx, input, gw.NATSConn, accountID)
 	}),
@@ -381,7 +382,7 @@ var ec2Actions = map[string]ec2Action{
 	"DetachInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.DetachInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_igw.DetachInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
-	"CreateEgressOnlyInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.CreateEgressOnlyInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
+	"CreateEgressOnlyInternetGateway": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateEgressOnlyInternetGatewayInput, gw *GatewayConfig, accountID string) (ec2.CreateEgressOnlyInternetGatewayOutput, error) {
 		return gateway_ec2_eigw.CreateEgressOnlyInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteEgressOnlyInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.DeleteEgressOnlyInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
@@ -399,7 +400,7 @@ var ec2Actions = map[string]ec2Action{
 	"DescribePlacementGroups": ec2Handler(func(ctx context.Context, input *ec2.DescribePlacementGroupsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_placementgroup.DescribePlacementGroups(ctx, input, gw.NATSConn, accountID)
 	}),
-	"CreateCapacityReservation": ec2Handler(func(ctx context.Context, input *ec2.CreateCapacityReservationInput, gw *GatewayConfig, accountID string) (any, error) {
+	"CreateCapacityReservation": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateCapacityReservationInput, gw *GatewayConfig, accountID string) (ec2.CreateCapacityReservationOutput, error) {
 		return gateway_ec2_capacityreservation.CreateCapacityReservation(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"DescribeCapacityReservations": ec2Handler(func(ctx context.Context, input *ec2.DescribeCapacityReservationsInput, gw *GatewayConfig, accountID string) (any, error) {
@@ -474,7 +475,7 @@ var ec2Actions = map[string]ec2Action{
 	"ModifySubnetAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifySubnetAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_vpc.ModifySubnetAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
-	"CreateRouteTable": ec2Handler(func(ctx context.Context, input *ec2.CreateRouteTableInput, gw *GatewayConfig, accountID string) (any, error) {
+	"CreateRouteTable": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateRouteTableInput, gw *GatewayConfig, accountID string) (ec2.CreateRouteTableOutput, error) {
 		return gateway_ec2_routetable.CreateRouteTable(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteRouteTable": ec2Handler(func(ctx context.Context, input *ec2.DeleteRouteTableInput, gw *GatewayConfig, accountID string) (any, error) {
@@ -501,7 +502,7 @@ var ec2Actions = map[string]ec2Action{
 	"ReplaceRouteTableAssociation": ec2Handler(func(ctx context.Context, input *ec2.ReplaceRouteTableAssociationInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_routetable.ReplaceRouteTableAssociation(ctx, input, gw.NATSConn, accountID)
 	}),
-	"CreateNetworkInterface": ec2Handler(func(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, gw *GatewayConfig, accountID string) (any, error) {
+	"CreateNetworkInterface": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, gw *GatewayConfig, accountID string) (ec2.CreateNetworkInterfaceOutput, error) {
 		return gateway_ec2_vpc.CreateNetworkInterface(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteNetworkInterface": ec2Handler(func(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, gw *GatewayConfig, accountID string) (any, error) {
@@ -564,7 +565,7 @@ var ec2Actions = map[string]ec2Action{
 	"DescribeAddressesAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeAddressesAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_eip.DescribeAddressesAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
-	"CreateNatGateway": ec2Handler(func(ctx context.Context, input *ec2.CreateNatGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
+	"CreateNatGateway": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateNatGatewayInput, gw *GatewayConfig, accountID string) (ec2.CreateNatGatewayOutput, error) {
 		return gateway_ec2_natgw.CreateNatGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteNatGateway": ec2Handler(func(ctx context.Context, input *ec2.DeleteNatGatewayInput, gw *GatewayConfig, accountID string) (any, error) {

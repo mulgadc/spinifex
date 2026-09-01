@@ -172,3 +172,45 @@ func TestParamHash_DistinguishesRequests(t *testing.T) {
 	assert.Equal(t, first, again, "the same request must always hash the same")
 	assert.NotEqual(t, first, changed, "a changed request must change the hash")
 }
+
+// Actions share one bucket, so one action's token must never be seen — or
+// decoded as the wrong type — by another.
+func TestStore_NamespacesDoNotCollide(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	kv, err := idempotency.OpenBucket(t.Context(), testutil.NewJetStream(t, nc), "ns-tokens", time.Minute)
+	require.NoError(t, err)
+
+	volumes := idempotency.NewStore[payload](kv, "CreateVolume")
+	gateways := idempotency.NewStore[payload](kv, "CreateNatGateway")
+	const tok, hash = "shared-token", "h"
+
+	_, owned, err := volumes.Claim(t.Context(), testAccount, tok, hash)
+	require.NoError(t, err)
+	require.True(t, owned)
+	require.NoError(t, volumes.Finalize(t.Context(), testAccount, tok, hash, payload{ID: "vol-1"}))
+
+	replay, owned, err := gateways.Claim(t.Context(), testAccount, tok, hash)
+	require.NoError(t, err)
+	assert.True(t, owned, "a different action owns its own work under the same token")
+	assert.Nil(t, replay, "one action must never replay another's result")
+}
+
+// The stores that predate namespacing keep bare account.token keys: re-keying
+// live records would make a retry re-run the work instead of replaying it.
+func TestStore_EmptyNamespaceKeepsTheBareKey(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	kv, err := idempotency.OpenBucket(t.Context(), js, "bare-tokens", time.Minute)
+	require.NoError(t, err)
+
+	store := idempotency.NewStore[payload](kv, "")
+	const tok, hash = "bare-1", "h"
+	_, owned, err := store.Claim(t.Context(), testAccount, tok, hash)
+	require.NoError(t, err)
+	require.True(t, owned)
+
+	_, err = kv.Get(t.Context(), idempotency.Key(testAccount, tok))
+	assert.NoError(t, err, "the record must live at the unprefixed key")
+}

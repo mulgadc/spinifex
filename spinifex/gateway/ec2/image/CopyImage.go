@@ -13,7 +13,7 @@ import (
 
 // ValidateCopyImageInput validates the input parameters for CopyImage.
 // Copy is single-region and metadata-only; cross-region, encryption, and
-// Outposts are rejected here. ClientToken is accepted but not honoured.
+// Outposts are rejected here.
 func ValidateCopyImageInput(input *ec2.CopyImageInput, gwRegion string) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorMissingParameter)

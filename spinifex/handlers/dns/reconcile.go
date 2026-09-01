@@ -2,18 +2,15 @@ package dns
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	reconcilelock "github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/reconciler"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -23,15 +20,6 @@ import (
 // introduced outside KV — directly in the zone object, say — rather than the
 // path by which a normal lifecycle event reaches DNS.
 const DefaultReconcileInterval = reconciler.DefaultResync
-
-const (
-	// maxReconcileNATSPayloadBytes stays below nats.conf's 1 MB max_payload.
-	maxReconcileNATSPayloadBytes = 900 * 1024
-	// reconcileNATSHeaderHeadroom reserves space for account and trace headers
-	// when a deployment negotiates a lower server payload limit.
-	reconcileNATSHeaderHeadroom = 4 * 1024
-	changeBatchJSONOverhead     = len(`{"changes":[]}`)
-)
 
 // DesiredFunc returns the full desired managed record set built from the live
 // resource inventory across all tenants. The daemon supplies it by enumerating
@@ -70,10 +58,10 @@ type PruneScope struct {
 // are DELETEd. A pass runs on a change to any watched resource store, and on
 // the interval as the backstop for drift those stores cannot report.
 //
-// Each pass is gated on a CAS-elected leader so one node publishes the
-// converging batch. Without it every node published its own batch, and since
-// the queue group load-balances rather than serialises, an idle cluster raced
-// its own zone object once per cycle.
+// Each pass is gated on a CAS-elected leader, which then writes the zone itself
+// rather than publishing the batch to the queue group. Handing its own work to
+// a peer put a second writer on the object and left the read that computed the
+// deletes in a different process from the write that applied them.
 //
 // Only cluster-wide-enumerable records are pruned, and only for the classes a
 // cycle enumerated in full. Every class the desired set carries is readable
@@ -88,31 +76,34 @@ type Reconciler struct {
 	// leaves every stale private record behind.
 	internalDomain string
 	nc             *nats.Conn
-	desired        DesiredFunc
-	interval       time.Duration
-	accountID      string
-	holder         string
-	sources        []reconciler.Source
+	// writer applies the converged batch. The reconcile owns the zone object on
+	// the node that won the election, so the batch never leaves this process.
+	writer   *Writer
+	desired  DesiredFunc
+	interval time.Duration
+	holder   string
+	sources  []reconciler.Source
 }
 
 // NewReconciler builds the drift backstop. It is disabled (a no-op) when
-// northstar S3 is not configured or no desired-set provider is supplied.
-// sources name the buckets whose changes should wake the loop. They are
-// optional: with none supplied the loop falls back to the interval alone,
-// which is the behaviour that predates the watch.
-func NewReconciler(cfg *config.Config, nc *nats.Conn, desired DesiredFunc, sources ...reconciler.Source) *Reconciler {
+// northstar S3 is not configured, no desired-set provider is supplied, or the
+// writer that applies its batches is unavailable. sources name the buckets whose
+// changes should wake the loop. They are optional: with none supplied the loop
+// falls back to the interval alone, which is the behaviour that predates the
+// watch.
+func NewReconciler(cfg *config.Config, nc *nats.Conn, writer *Writer, desired DesiredFunc, sources ...reconciler.Source) *Reconciler {
 	r := &Reconciler{
-		nc:        nc,
-		desired:   desired,
-		interval:  DefaultReconcileInterval,
-		accountID: utils.GlobalAccountID,
-		sources:   sources,
+		nc:       nc,
+		writer:   writer,
+		desired:  desired,
+		interval: DefaultReconcileInterval,
+		sources:  sources,
 	}
 	if cfg != nil {
 		r.holder = cfg.Node
 	}
 	zoneCfg, ok := zoneS3Config(cfg)
-	if !ok || desired == nil {
+	if !ok || desired == nil || !writer.Enabled() {
 		return r
 	}
 	r.enabled = true
@@ -148,8 +139,10 @@ func (r *Reconciler) Run(ctx context.Context) {
 	})
 }
 
-// reconcileOnce computes the converging batch and publishes it best-effort, on
-// whichever node wins this cycle's election.
+// reconcileOnce computes the converging batch and applies it, on whichever node
+// wins this cycle's election. The read that finds the stale records and the
+// write that removes them now happen in one process, so a record re-added
+// between them is no longer deleted by a batch that predates it.
 func (r *Reconciler) reconcileOnce(ctx context.Context) {
 	if !r.enabled {
 		return
@@ -172,121 +165,12 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 		return
 	}
 	slog.Debug("dns reconcile: converging", "changes", len(batch))
-	payloadLimit := reconcilePayloadLimit(r.nc)
-	if err := publishReconcileBatches(batch, payloadLimit, func(changes []Change) error {
-		return publishReconcileBatch(r.nc, r.accountID, changes)
-	}); err != nil {
-		slog.Warn("dns reconcile: batching or publish failed, retrying next cycle", "changes", len(batch), "error", err)
+	res, err := r.writer.ApplyBatch(&ChangeBatch{Changes: batch})
+	if err != nil {
+		slog.Warn("dns reconcile: apply failed, retrying next cycle", "changes", len(batch), "error", err)
 		return
 	}
-	slog.Debug("dns reconcile: converged", "changes", len(batch))
-}
-
-// publishReconcileBatch requires the writer to acknowledge every submitted
-// change, so a missing transport or partial success cannot report convergence.
-func publishReconcileBatch(nc *nats.Conn, accountID string, changes []Change) error {
-	res, err := PublishChanges(nc, accountID, changes)
-	if err != nil {
-		return err
-	}
-	applied := 0
-	if res != nil {
-		applied = res.Applied
-	}
-	if applied != len(changes) {
-		return fmt.Errorf("writer acknowledged %d of %d changes", applied, len(changes))
-	}
-	return nil
-}
-
-// publishReconcileBatches sends bounded batches sequentially so each is
-// acknowledged before the next begins. On failure it stops: the next cycle
-// safely rebuilds and retries the complete idempotent desired state.
-func publishReconcileBatches(changes []Change, payloadLimit int, publish func([]Change) error) error {
-	batches, err := splitReconcileChanges(changes, payloadLimit)
-	if err != nil {
-		return err
-	}
-	for i, batch := range batches {
-		if err := publish(batch); err != nil {
-			return fmt.Errorf("publish batch %d of %d: %w", i+1, len(batches), err)
-		}
-	}
-	return nil
-}
-
-// reconcilePayloadLimit respects a lower limit advertised by the connected
-// server while retaining the repository policy ceiling.
-func reconcilePayloadLimit(nc *nats.Conn) int {
-	limit := maxReconcileNATSPayloadBytes
-	if nc == nil || nc.MaxPayload() <= 0 {
-		return limit
-	}
-	serverLimit := max(0, int(nc.MaxPayload())-reconcileNATSHeaderHeadroom)
-	return min(limit, serverLimit)
-}
-
-// splitReconcileChanges preserves change order while enforcing the Route 53
-// per-zone record/value request limits and the effective NATS payload ceiling.
-// UPSERT costs count twice, matching Route 53 semantics.
-func splitReconcileChanges(changes []Change, payloadLimit int) ([][]Change, error) {
-	var batches [][]Change
-	start := 0
-	zoneRecords := map[string]int{}
-	zoneValueChars := map[string]int{}
-	currentPayloadBytes := changeBatchJSONOverhead
-
-	flush := func(end int) {
-		if start == end {
-			return
-		}
-		batches = append(batches, changes[start:end])
-		start = end
-		clear(zoneRecords)
-		clear(zoneValueChars)
-		currentPayloadBytes = changeBatchJSONOverhead
-	}
-
-	for i, change := range changes {
-		encoded, err := json.Marshal(change)
-		if err != nil {
-			return nil, fmt.Errorf("marshal change %d for %s: %w", i+1, change.Name, err)
-		}
-		multiplier := 1
-		if change.Action == ActionUpsert {
-			multiplier = 2
-		}
-		records := multiplier
-		valueChars := multiplier * utf8.RuneCountInString(change.Value)
-		singlePayloadBytes := changeBatchJSONOverhead + len(encoded)
-
-		if records > MaxRecordsPerChangeRequest {
-			return nil, fmt.Errorf("change %d for %s has %d record elements; maximum is %d", i+1, change.Name, records, MaxRecordsPerChangeRequest)
-		}
-		if valueChars > MaxValueCharsPerChangeRequest {
-			return nil, fmt.Errorf("change %d for %s has %d value characters; maximum is %d", i+1, change.Name, valueChars, MaxValueCharsPerChangeRequest)
-		}
-		if singlePayloadBytes > payloadLimit {
-			return nil, fmt.Errorf("change %d for %s serializes to %d bytes; payload maximum is %d", i+1, change.Name, singlePayloadBytes, payloadLimit)
-		}
-
-		payloadBytes := len(encoded)
-		if i > start {
-			payloadBytes++ // JSON comma between adjacent changes.
-		}
-		if i > start && (zoneRecords[change.Zone]+records > MaxRecordsPerChangeRequest ||
-			zoneValueChars[change.Zone]+valueChars > MaxValueCharsPerChangeRequest ||
-			currentPayloadBytes+payloadBytes > payloadLimit) {
-			flush(i)
-			payloadBytes = len(encoded)
-		}
-
-		zoneRecords[change.Zone] += records
-		zoneValueChars[change.Zone] += valueChars
-		currentPayloadBytes += payloadBytes
-	}
-	flush(len(changes))
-	return batches, nil
+	slog.Debug("dns reconcile: converged", "changes", res.Applied, "zones", res.Zones)
 }
 
 // computeBatch reads every zone holding prunable records and converges the

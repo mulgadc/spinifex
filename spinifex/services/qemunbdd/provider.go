@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -349,25 +350,28 @@ func (p *Provider) ListVolumes(_ context.Context, req ebsprovider.ListVolumesReq
 		return nil, fmt.Errorf("qemunbdd: read volumes directory: %w", err)
 	}
 
-	pageSize := int(req.PageSize())
 	response := &ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned()}
-	// ReadDir returns entries sorted by filename, so resuming after the token
-	// walks the same order the previous page ended on.
+	response.Volumes, response.NextToken = ebsprovider.Page(qcow2IDs(entries), req.StartingToken, int(req.PageSize()),
+		func(id string) ebsprovider.VolumeRef {
+			return ebsprovider.VolumeRef{ID: id, Handle: p.volumePath(id)}
+		})
+	return response, nil
+}
+
+// qcow2IDs returns the sorted resource IDs backing a directory of qcow2 files.
+// Sorted on the trimmed ID rather than the filename: trimming ".qcow2" can
+// reorder entries, since '-' sorts before '.'.
+func qcow2IDs(entries []os.DirEntry) []string {
+	ids := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		volumeID := strings.TrimSuffix(entry.Name(), ".qcow2")
-		if entry.IsDir() || volumeID == entry.Name() || volumeID <= req.StartingToken {
+		id := strings.TrimSuffix(entry.Name(), ".qcow2")
+		if entry.IsDir() || id == entry.Name() {
 			continue
 		}
-		if len(response.Volumes) == pageSize {
-			response.NextToken = response.Volumes[pageSize-1].ID
-			break
-		}
-		response.Volumes = append(response.Volumes, ebsprovider.VolumeRef{
-			ID:     volumeID,
-			Handle: p.volumePath(volumeID),
-		})
+		ids = append(ids, id)
 	}
-	return response, nil
+	slices.Sort(ids)
+	return ids
 }
 
 func (p *Provider) ExpandVolume(ctx context.Context, req ebsprovider.ExpandVolumeRequest) (*ebsprovider.Volume, error) {
@@ -523,25 +527,15 @@ func (p *Provider) ListSnapshots(_ context.Context, req ebsprovider.ListSnapshot
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	pageSize := int(req.PageSize())
 	response := &ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned()}
-	// ReadDir returns entries sorted by filename, so resuming after the token
-	// walks the same order the previous page ended on.
-	for _, entry := range entries {
-		snapshotID := strings.TrimSuffix(entry.Name(), ".qcow2")
-		if entry.IsDir() || snapshotID == entry.Name() || snapshotID <= req.StartingToken {
-			continue
-		}
-		if len(response.Snapshots) == pageSize {
-			response.NextToken = response.Snapshots[pageSize-1].ID
-			break
-		}
-		response.Snapshots = append(response.Snapshots, ebsprovider.SnapshotRef{
-			ID:             snapshotID,
-			SourceVolumeID: p.snapshotMeta[snapshotID].sourceVolumeID,
-			Handle:         p.snapshotPath(snapshotID),
+	response.Snapshots, response.NextToken = ebsprovider.Page(qcow2IDs(entries), req.StartingToken, int(req.PageSize()),
+		func(id string) ebsprovider.SnapshotRef {
+			return ebsprovider.SnapshotRef{
+				ID:             id,
+				SourceVolumeID: p.snapshotMeta[id].sourceVolumeID,
+				Handle:         p.snapshotPath(id),
+			}
 		})
-	}
 	return response, nil
 }
 

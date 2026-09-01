@@ -26,6 +26,7 @@ import (
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
+	"github.com/mulgadc/spinifex/spinifex/idempotency"
 	"github.com/mulgadc/spinifex/spinifex/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -540,13 +541,19 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 		tokenHash = clusterTokenParamHash(input)
 		replayName, owned, cerr := tokenStore.Claim(ctx, accountID, token, tokenHash)
 		if cerr != nil {
-			if errors.Is(cerr, errClusterTokenParamMismatch) {
+			if errors.Is(cerr, idempotency.ErrParamMismatch) {
 				return nil, errors.New(awserrors.ErrorIdempotentParameterMismatch)
 			}
 			return nil, logCreateErr(name, accountID, "client token claim", cerr)
 		}
 		if !owned {
-			replayMeta, gerr := GetClusterMeta(ctx, acctKV, replayName)
+			// A finalized record always carries the name; without one there is
+			// nothing to replay and re-creating would defeat the token.
+			if replayName == nil {
+				return nil, logCreateErr(name, accountID, "client token replay",
+					errors.New("token record carries no cluster name"))
+			}
+			replayMeta, gerr := GetClusterMeta(ctx, acctKV, *replayName)
 			if gerr != nil {
 				return nil, logCreateErr(name, accountID, "client token replay", gerr)
 			}

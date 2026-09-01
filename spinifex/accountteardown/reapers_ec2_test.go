@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -401,6 +402,23 @@ func TestIGWReaperDeletesADetachedGatewayDirectly(t *testing.T) {
 		Resource{Kind: "internet-gateway", ID: "igw-1"}, false))
 
 	assert.Equal(t, []string{"ec2.DeleteInternetGateway"}, cluster.called())
+}
+
+// A gateway whose attach is not yet confirmed reports no attachment, so the
+// listing carries no VPC and the delete is refused. That is not a wedge: the
+// VPC survives because DeleteVpc rejects while the gateway is attached, and the
+// stage re-sweeps until the confirmation lands.
+func TestIGWReaperReportsARefusedDeleteForAnUnconfirmedAttach(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.fail("ec2.DeleteInternetGateway", awserrors.ErrorDependencyViolation)
+
+	reaper := &igwReaper{nc: cluster.nc}
+	err := reaper.Delete(testCtx(t), "000000000042",
+		Resource{Kind: "internet-gateway", ID: "igw-1"}, false)
+
+	require.Error(t, err)
+	assert.Equal(t, []string{"ec2.DeleteInternetGateway"}, cluster.called(),
+		"the reaper must not guess at the VPC: the next sweep sees the confirmed attachment")
 }
 
 // A VPC's main route table is deleted with the VPC and cannot be deleted on

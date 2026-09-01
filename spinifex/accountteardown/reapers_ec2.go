@@ -396,6 +396,10 @@ func (r *igwReaper) Delete(ctx context.Context, accountID string, resource Resou
 			return err
 		}
 	}
+	// A gateway whose attach is not yet confirmed reports no attachment, so
+	// Detail is empty and the delete is refused. DeleteVpc rejects while the
+	// gateway is attached, so the VPC survives and the next sweep, once the
+	// attachment is confirmed, takes the branch above.
 	_, err := gateway_ec2_igw.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(resource.ID),
 	}, r.nc, accountID)

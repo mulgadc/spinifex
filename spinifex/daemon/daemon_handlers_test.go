@@ -2300,6 +2300,57 @@ func createVPCTestDaemon(t *testing.T) *Daemon {
 	return daemon
 }
 
+// Attaching an IGW is asynchronous, so nothing confirms the attachment during
+// this test. Both regressions it guards were invisible while the default-VPC
+// bootstrap derived "does this VPC have a gateway" from the describe
+// projection, which reports only confirmed attachments.
+func TestEnsureDefaultVPCInfrastructure_PendingAttachIsNotReDone(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+
+	// One JetStream for all three services: CreateRoute validates the gateway
+	// against the IGW bucket, so a separate store would fail the lookup.
+	_, nc, _ := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
+
+	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
+	require.NoError(t, err)
+	daemon.vpcService = vpcSvc
+	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
+	require.NoError(t, err)
+	daemon.igwService = igwSvc
+	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
+	require.NoError(t, err)
+	daemon.routeTableService = rtbSvc
+
+	const accountID = "000000000042"
+	_, err = vpcSvc.EnsureDefaultVPC(accountID)
+	require.NoError(t, err)
+
+	daemon.ensureDefaultVPCInfrastructureFor(t.Context(), accountID)
+
+	// The route must be added in the same call: waiting for confirmation would
+	// leave a new account's default VPC with no egress until a later restart.
+	rtbs, err := rtbSvc.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{}, accountID)
+	require.NoError(t, err)
+	require.Len(t, rtbs.RouteTables, 1)
+	var defaultRoutes int
+	for _, r := range rtbs.RouteTables[0].Routes {
+		if aws.StringValue(r.DestinationCidrBlock) == "0.0.0.0/0" {
+			defaultRoutes++
+			assert.NotEmpty(t, aws.StringValue(r.GatewayId))
+		}
+	}
+	assert.Equal(t, 1, defaultRoutes, "the default VPC must get its 0.0.0.0/0 route even though the attach is unconfirmed")
+
+	// A restart inside the pending window must reuse the gateway, not add one.
+	daemon.ensureDefaultVPCInfrastructureFor(t.Context(), accountID)
+
+	igws, err := igwSvc.DescribeInternetGateways(t.Context(), &ec2.DescribeInternetGatewaysInput{}, accountID)
+	require.NoError(t, err)
+	assert.Len(t, igws.InternetGateways, 1,
+		"a second gateway was attached to the same VPC: intent.IGWs keys by VPC, so one of them orphans")
+}
+
 func TestDelegateHandlers_VPC(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 

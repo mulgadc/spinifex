@@ -36,8 +36,26 @@ type IGWRecord struct {
 	InternetGatewayId string            `json:"internet_gateway_id"`
 	VpcId             string            `json:"vpc_id,omitempty"` // empty when detached
 	State             string            `json:"state"`            // "available" — AWS attachment.state is "available" when attached
+	AttachState       string            `json:"attach_state,omitempty"`
 	Tags              map[string]string `json:"tags"`
 	CreatedAt         time.Time         `json:"created_at"`
+}
+
+// Observed attachment state, distinct from State. State stays the AWS-facing
+// attachment.state and doubles as the reconciler's intent signal; AttachState
+// records whether vpcd has actually brought the OVN gateway up.
+const (
+	// AttachStatePending is exported for the reconciler, which decides from the
+	// record whether an attachment still needs confirming.
+	AttachStatePending  = "pending"
+	attachStateAttached = "attached"
+)
+
+// attachmentVisible reports whether the record has an attachment AWS would
+// return. A pending attach has been requested but not yet confirmed in OVN; an
+// empty AttachState is a record predating attach tracking.
+func (r *IGWRecord) attachmentVisible() bool {
+	return r.VpcId != "" && r.AttachState != AttachStatePending
 }
 
 // GatePublisher recomputes per-subnet egress gate/ungate decisions for a VPC.
@@ -153,9 +171,12 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Cannot delete an attached IGW
+	// Cannot delete an attached IGW. The VPC is named because a pending
+	// attachment is hidden from describes, so the caller has no other way to
+	// learn what it must detach from.
 	if record.VpcId != "" {
-		return nil, errors.New(awserrors.ErrorDependencyViolation)
+		return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
+			"the internet gateway is attached to %s and must be detached first", record.VpcId)
 	}
 
 	if err := s.igwKV.Delete(ctx, key); err != nil {
@@ -258,9 +279,12 @@ func igwMatchesFilters(record *IGWRecord, filters map[string][]string) bool {
 			field = record.InternetGatewayId
 		case "attachment.vpc-id":
 			field = record.VpcId
+			if !record.attachmentVisible() {
+				field = "" // no reportable attachment means no vpc to match
+			}
 		case "attachment.state":
 			field = record.State
-			if record.VpcId == "" {
+			if !record.attachmentVisible() {
 				field = "" // no attachment means no state to match
 			}
 		default:
@@ -315,6 +339,9 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 
 	record.VpcId = vpcID
 	record.State = "available"
+	// vpcd attaches the OVN gateway asynchronously, so the attachment is not
+	// reported until a reconcile pass confirms it.
+	record.AttachState = AttachStatePending
 
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -376,6 +403,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 
 	record.VpcId = ""
 	record.State = "available"
+	record.AttachState = ""
 
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -412,12 +440,97 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 	return &ec2.DetachInternetGatewayOutput{}, nil
 }
 
+// AttachmentIntent returns the IGW whose record names vpcID, or nil if none
+// does. Unlike DescribeInternetGateways it reports an attachment that has been
+// requested but not yet confirmed, because a caller provisioning or tearing
+// down a VPC asks what was asked for, not what OVN has caught up with. The AWS
+// surface must not answer that question, so this is the in-process seam for it.
+func (s *IGWServiceImpl) AttachmentIntent(ctx context.Context, accountID, vpcID string) (*ec2.InternetGateway, error) {
+	if vpcID == "" {
+		return nil, nil
+	}
+
+	prefix := accountID + "."
+	keys, err := s.igwKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil
+		}
+		slog.ErrorContext(ctx, "AttachmentIntent: IGW key listing failed", "accountID", accountID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	for _, key := range keys {
+		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := s.igwKV.Get(ctx, key)
+		if err != nil {
+			// Fail closed: callers read nil as "no gateway" and build one, so a
+			// record this could not read must not read as absent.
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			slog.ErrorContext(ctx, "AttachmentIntent: IGW read failed", "key", key, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		var record IGWRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			slog.ErrorContext(ctx, "AttachmentIntent: IGW unmarshal failed", "key", key, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if record.VpcId != vpcID {
+			continue
+		}
+		// Built directly rather than through recordToEC2, which hides a pending
+		// attachment: this view exists to show one.
+		return &ec2.InternetGateway{
+			InternetGatewayId: aws.String(record.InternetGatewayId),
+			Attachments: []*ec2.InternetGatewayAttachment{
+				{VpcId: aws.String(record.VpcId), State: aws.String(record.State)},
+			},
+			Tags: utils.MapToEC2Tags(record.Tags),
+		}, nil
+	}
+
+	return nil, nil
+}
+
+// MarkAttached records that vpcd has brought the OVN gateway up for vpcID on the
+// IGW at recordKey. vpcID must match: a record key survives detach and re-attach,
+// so a pass that converged the previous VPC would otherwise confirm the new one.
+// Writing only on the pending transition keeps a pass from waking the drift loop.
+func MarkAttached(ctx context.Context, kv jetstream.KeyValue, recordKey, vpcID string) error {
+	confirmed := false
+	record, err := kvutil.Update(ctx, kv, recordKey, kvutil.CASConfig{}, func(r *IGWRecord) (bool, error) {
+		// Reset per attempt: a retried CAS may see a record another writer has
+		// already moved out of pending.
+		confirmed = r.VpcId == vpcID && r.AttachState == AttachStatePending
+		if !confirmed {
+			return false, nil
+		}
+		r.AttachState = attachStateAttached
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("confirm IGW attachment %s: %w", recordKey, err)
+	}
+
+	if confirmed {
+		slog.InfoContext(ctx, "IGW attachment confirmed", "internetGatewayId", record.InternetGatewayId, "vpcId", record.VpcId)
+	}
+
+	return nil
+}
+
 func (s *IGWServiceImpl) recordToEC2(record *IGWRecord) *ec2.InternetGateway {
 	igw := &ec2.InternetGateway{
 		InternetGatewayId: aws.String(record.InternetGatewayId),
 	}
 
-	if record.VpcId != "" {
+	// AWS returns no attachment at all unless one exists, so a requested but
+	// unconfirmed attach must not be reported as available.
+	if record.attachmentVisible() {
 		igw.Attachments = []*ec2.InternetGatewayAttachment{
 			{
 				VpcId: aws.String(record.VpcId),

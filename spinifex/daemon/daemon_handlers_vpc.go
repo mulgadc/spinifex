@@ -145,29 +145,22 @@ func (d *Daemon) ensureDefaultVPCInfrastructureFor(ctx context.Context, accountI
 		return
 	}
 
-	// Check if IGW already attached
-	igwOut, err := d.igwService.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{}, accountID)
+	// Check if IGW already attached. Uses the intent view: an attach requested
+	// by an earlier pass but not yet confirmed still counts, or this creates a
+	// second gateway for the same VPC every time it runs inside that window.
+	existingIGW, err := d.igwService.AttachmentIntent(ctx, accountID, defaultVpcId)
 	if err != nil {
-		slog.WarnContext(ctx, "DescribeInternetGateways failed for default VPC infrastructure, retrying",
+		slog.WarnContext(ctx, "IGW lookup failed for default VPC infrastructure, retrying",
 			"accountID", accountID, "err", err)
 		time.Sleep(500 * time.Millisecond)
-		igwOut, err = d.igwService.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{}, accountID)
+		existingIGW, err = d.igwService.AttachmentIntent(ctx, accountID, defaultVpcId)
 		if err != nil {
-			slog.ErrorContext(ctx, "DescribeInternetGateways failed for default VPC infrastructure after retry",
+			slog.ErrorContext(ctx, "IGW lookup failed for default VPC infrastructure after retry",
 				"accountID", accountID, "err", err)
 			return
 		}
 	}
-	hasIGW := false
-	for _, igw := range igwOut.InternetGateways {
-		for _, att := range igw.Attachments {
-			if att.VpcId != nil && *att.VpcId == defaultVpcId {
-				hasIGW = true
-				break
-			}
-		}
-	}
-	if !hasIGW {
+	if existingIGW == nil {
 		// Create and attach an IGW — use bootstrap ID if available
 		var createOut *ec2.CreateInternetGatewayOutput
 		var err error
@@ -228,24 +221,20 @@ func (d *Daemon) ensureDefaultIGWRoute(ctx context.Context, accountID, vpcID str
 		}
 	}
 
-	// Find the attached IGW for this VPC
-	igwOut, err := d.igwService.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{}, accountID)
+	// Find the IGW for this VPC. Uses the intent view because this runs in the
+	// same call that attaches it: waiting for confirmation would leave a new
+	// account's default VPC with no default route until some later restart.
+	igw, err := d.igwService.AttachmentIntent(ctx, accountID, vpcID)
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to query IGWs for default route", "vpcId", vpcID, "err", err)
 		return
 	}
-	var igwID string
-	for _, igw := range igwOut.InternetGateways {
-		for _, att := range igw.Attachments {
-			if att.VpcId != nil && *att.VpcId == vpcID {
-				igwID = *igw.InternetGatewayId
-				break
-			}
-		}
+	if igw == nil {
+		slog.WarnContext(ctx, "No IGW for default route; VPC has no egress until one is attached",
+			"vpcId", vpcID, "accountID", accountID)
+		return
 	}
-	if igwID == "" {
-		return // No IGW attached
-	}
+	igwID := *igw.InternetGatewayId
 
 	// Add the default route
 	dest := "0.0.0.0/0"

@@ -14,15 +14,15 @@ import (
 )
 
 type fakeIGWProvisioner struct {
-	createCalls   []*ec2.CreateInternetGatewayInput
-	attachCalls   []*ec2.AttachInternetGatewayInput
-	detachCalls   []*ec2.DetachInternetGatewayInput
-	deleteCalls   []*ec2.DeleteInternetGatewayInput
-	describeCalls []*ec2.DescribeInternetGatewaysInput
+	createCalls []*ec2.CreateInternetGatewayInput
+	attachCalls []*ec2.AttachInternetGatewayInput
+	detachCalls []*ec2.DetachInternetGatewayInput
+	deleteCalls []*ec2.DeleteInternetGatewayInput
 
-	// gateways are returned by DescribeInternetGateways (filtered on
-	// attachment.vpc-id), keyed by IGW id.
-	gateways  map[string]*ec2.InternetGateway
+	// gateways holds confirmed gateways keyed by IGW id.
+	gateways map[string]*ec2.InternetGateway
+	// intent is igwID -> vpcID for attaches not yet confirmed.
+	intent    map[string]string
 	nextID    string
 	createErr error
 }
@@ -31,25 +31,6 @@ var _ igwProvisioner = (*fakeIGWProvisioner)(nil)
 
 func newFakeIGWProvisioner() *fakeIGWProvisioner {
 	return &fakeIGWProvisioner{gateways: map[string]*ec2.InternetGateway{}, nextID: "igw-fake0001"}
-}
-
-func (f *fakeIGWProvisioner) DescribeInternetGateways(_ context.Context, input *ec2.DescribeInternetGatewaysInput, _ string) (*ec2.DescribeInternetGatewaysOutput, error) {
-	f.describeCalls = append(f.describeCalls, input)
-	var wantVPC string
-	for _, flt := range input.Filters {
-		if aws.StringValue(flt.Name) == "attachment.vpc-id" && len(flt.Values) > 0 {
-			wantVPC = aws.StringValue(flt.Values[0])
-		}
-	}
-	var out []*ec2.InternetGateway
-	for _, igw := range f.gateways {
-		for _, att := range igw.Attachments {
-			if aws.StringValue(att.VpcId) == wantVPC {
-				out = append(out, igw)
-			}
-		}
-	}
-	return &ec2.DescribeInternetGatewaysOutput{InternetGateways: out}, nil
 }
 
 func (f *fakeIGWProvisioner) CreateInternetGateway(_ context.Context, input *ec2.CreateInternetGatewayInput, _ string) (*ec2.CreateInternetGatewayOutput, error) {
@@ -65,22 +46,40 @@ func (f *fakeIGWProvisioner) CreateInternetGateway(_ context.Context, input *ec2
 	return &ec2.CreateInternetGatewayOutput{InternetGateway: igw}, nil
 }
 
+// Attaching is asynchronous: the record names the VPC immediately, but the
+// describe projection reports no attachment until a reconcile pass confirms it.
 func (f *fakeIGWProvisioner) AttachInternetGateway(_ context.Context, input *ec2.AttachInternetGatewayInput, _ string) (*ec2.AttachInternetGatewayOutput, error) {
 	f.attachCalls = append(f.attachCalls, input)
-	if igw, ok := f.gateways[aws.StringValue(input.InternetGatewayId)]; ok {
-		igw.Attachments = append(igw.Attachments, &ec2.InternetGatewayAttachment{
-			VpcId: input.VpcId,
-			State: aws.String("available"),
-		})
+	if f.intent == nil {
+		f.intent = map[string]string{}
 	}
+	f.intent[aws.StringValue(input.InternetGatewayId)] = aws.StringValue(input.VpcId)
 	return &ec2.AttachInternetGatewayOutput{}, nil
+}
+
+func (f *fakeIGWProvisioner) AttachmentIntent(_ context.Context, _, vpcID string) (*ec2.InternetGateway, error) {
+	for igwID, attached := range f.intent {
+		if attached != vpcID {
+			continue
+		}
+		if igw, ok := f.gateways[igwID]; ok {
+			out := *igw
+			out.Attachments = []*ec2.InternetGatewayAttachment{
+				{VpcId: aws.String(vpcID), State: aws.String("available")},
+			}
+			return &out, nil
+		}
+	}
+	return nil, nil
 }
 
 func (f *fakeIGWProvisioner) DetachInternetGateway(_ context.Context, input *ec2.DetachInternetGatewayInput, _ string) (*ec2.DetachInternetGatewayOutput, error) {
 	f.detachCalls = append(f.detachCalls, input)
-	if igw, ok := f.gateways[aws.StringValue(input.InternetGatewayId)]; ok {
+	igwID := aws.StringValue(input.InternetGatewayId)
+	if igw, ok := f.gateways[igwID]; ok {
 		igw.Attachments = nil
 	}
+	delete(f.intent, igwID)
 	return &ec2.DetachInternetGatewayOutput{}, nil
 }
 
@@ -100,6 +99,11 @@ func (f *fakeIGWProvisioner) seedAttached(igwID, vpcID string, tagKV ...string) 
 		igw.Tags = append(igw.Tags, &ec2.Tag{Key: aws.String(tagKV[i]), Value: aws.String(tagKV[i+1])})
 	}
 	f.gateways[igwID] = igw
+	if f.intent == nil {
+		f.intent = map[string]string{}
+	}
+	// A confirmed attachment is intent too.
+	f.intent[igwID] = vpcID
 }
 
 func TestEnsureClusterIGW_FreshCreatesAndAttaches(t *testing.T) {

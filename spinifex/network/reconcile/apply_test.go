@@ -1171,11 +1171,17 @@ type stubIGW struct {
 	external.IGWManager
 
 	attachErr error
+	// attachNoop returns success without building any OVN state, modelling an
+	// AttachIGW that reports nil on a gateway that does not actually forward.
+	attachNoop bool
 }
 
 func (s *stubIGW) AttachIGW(ctx context.Context, spec external.IGWSpec) error {
 	if s.attachErr != nil {
 		return s.attachErr
+	}
+	if s.attachNoop {
+		return nil
 	}
 	return s.IGWManager.AttachIGW(ctx, spec)
 }
@@ -1185,8 +1191,176 @@ func (s *stubIGW) AttachIGW(ctx context.Context, spec external.IGWSpec) error {
 func igwIntent(t *testing.T) IntentState {
 	t.Helper()
 	intent := freshIntent(t)
-	intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a"}
+	intent.IGWs["vpc-a"] = external.IGWSpec{
+		VPCID: "vpc-a", InternetGatewayID: "igw-a", RecordKey: "acct.igw-a", AttachPending: true,
+	}
 	return intent
+}
+
+// The control plane reports an attachment only once a pass confirms it, so the
+// hook must fire on success and stay silent on failure — a record marked
+// attached after a failed attach is the bug this replaced.
+func TestReconcile_MarksIGWAttachedOnlyOnSuccess(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("success", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		rec.chassis = []string{"chassis-1"}
+		rec.gwClaim = &fakeClaimVerifier{}
+		var keys, vpcs []string
+		rec.markAttached = func(_ context.Context, key, vpcID string) error {
+			keys = append(keys, key)
+			vpcs = append(vpcs, vpcID)
+			return nil
+		}
+		if err := rec.Reconcile(ctx, igwIntent(t)); err != nil {
+			t.Fatalf("Reconcile = %v, want nil", err)
+		}
+		if want := []string{"acct.igw-a"}; !slices.Equal(keys, want) {
+			t.Errorf("markAttached keys = %v, want %v — a converged attach must be reported "+
+				"or DescribeInternetGateways never stops calling it pending", keys, want)
+		}
+		if want := []string{"vpc-a"}; !slices.Equal(vpcs, want) {
+			t.Errorf("markAttached vpcs = %v, want %v — the record key survives detach and "+
+				"re-attach, so the VPC is what pins the confirmation to this attachment", vpcs, want)
+		}
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		rec.igw = &stubIGW{IGWManager: rec.igw, attachErr: errors.New("dhcp gw-lrp acquire: context deadline exceeded")}
+		called := false
+		rec.markAttached = func(context.Context, string, string) error {
+			called = true
+			return nil
+		}
+		if err := rec.Reconcile(ctx, igwIntent(t)); !errors.Is(err, ErrPassIncomplete) {
+			t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
+		}
+		if called {
+			t.Error("markAttached called after a failed attach: the API would report a gateway that is not up")
+		}
+	})
+
+	// The datapath gate logs at Error and records no pass failure, so a
+	// confirmation inferred from the failure count would report a gateway that
+	// demonstrably does not forward — the bug this branch exists to fix.
+	t.Run("datapath never converges", func(t *testing.T) {
+		withFastDatapathBounds(t)
+		rec, _ := newTestReconciler(t)
+		rec.chassis = []string{"chassis-1"}
+		rec.gwClaim = &fakeClaimVerifier{reachableAfter: -1}
+		called := false
+		rec.markAttached = func(context.Context, string, string) error {
+			called = true
+			return nil
+		}
+		// A distributed-NAT gateway LRP is link-local and gates the probe off,
+		// so an EIP is what gives the datapath check a target.
+		intent := igwIntent(t)
+		intent.EIPs["10.0.1.5"] = policy.EIPSpec{VPCID: "vpc-a", ExternalIP: "203.0.113.5", LogicalIP: "10.0.1.5"}
+		if err := rec.Reconcile(ctx, intent); err != nil {
+			t.Fatalf("Reconcile = %v, want nil", err)
+		}
+		if called {
+			t.Error("markAttached called while the gateway datapath is unreachable: the API would " +
+				"report an attachment that does not forward, and the confirmation never self-corrects")
+		}
+	})
+
+	// Same shape as the datapath gate: an unclaimed SB binding leaves floating
+	// IPs dark while every other signal is green.
+	t.Run("SB claim never converges", func(t *testing.T) {
+		withFastClaimBounds(t)
+		rec, _ := newTestReconciler(t)
+		rec.chassis = []string{"chassis-1"}
+		rec.gwClaim = &fakeClaimVerifier{claimedAfter: -1}
+		called := false
+		rec.markAttached = func(context.Context, string, string) error {
+			called = true
+			return nil
+		}
+		if err := rec.Reconcile(ctx, igwIntent(t)); err != nil {
+			t.Fatalf("Reconcile = %v, want nil", err)
+		}
+		if called {
+			t.Error("markAttached called while the SB chassisredirect binding is unclaimed")
+		}
+	})
+
+	// A spec built outside the store has no address to confirm against; sending
+	// an empty key would have vpcd read key "" on every pass.
+	t.Run("no record key", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		rec.chassis = []string{"chassis-1"}
+		rec.gwClaim = &fakeClaimVerifier{}
+		called := false
+		rec.markAttached = func(context.Context, string, string) error {
+			called = true
+			return nil
+		}
+		intent := freshIntent(t)
+		intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a", AttachPending: true}
+		if err := rec.Reconcile(ctx, intent); err != nil {
+			t.Fatalf("Reconcile = %v, want nil", err)
+		}
+		if called {
+			t.Error("markAttached called with no record key")
+		}
+	})
+
+	// A record already confirmed must cost nothing: the drift loop watches this
+	// bucket, so a per-pass read is a per-pass wakeup risk for no work.
+	t.Run("already confirmed", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		rec.chassis = []string{"chassis-1"}
+		rec.gwClaim = &fakeClaimVerifier{}
+		called := false
+		rec.markAttached = func(context.Context, string, string) error {
+			called = true
+			return nil
+		}
+		intent := igwIntent(t)
+		spec := intent.IGWs["vpc-a"]
+		spec.AttachPending = false
+		intent.IGWs["vpc-a"] = spec
+		if err := rec.Reconcile(ctx, intent); err != nil {
+			t.Fatalf("Reconcile = %v, want nil", err)
+		}
+		if called {
+			t.Error("markAttached called for an attachment already confirmed")
+		}
+	})
+
+	// AttachIGW returning nil is not proof the gateway forwards. Confirming
+	// before the chassis rebind would report a gateway with no bound chassis as
+	// attached, and the confirmation is one-way so it would never self-correct.
+	t.Run("chassis rebind failed", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		rec.chassis = []string{"chassis-1"}
+		rec.igw = &stubIGW{IGWManager: rec.igw, attachNoop: true}
+		called := false
+		rec.markAttached = func(context.Context, string, string) error {
+			called = true
+			return nil
+		}
+		if err := rec.Reconcile(ctx, igwIntent(t)); !errors.Is(err, ErrPassIncomplete) {
+			t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
+		}
+		if called {
+			t.Error("markAttached called after a failed chassis rebind: the gateway has no bound " +
+				"chassis, and the confirmation is one-way so no later pass would revert it")
+		}
+	})
+
+	// vpcd wires the hook, unit callers do not; a nil hook must not panic.
+	t.Run("nil hook", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		rec.markAttached = nil
+		if err := rec.Reconcile(ctx, igwIntent(t)); err != nil {
+			t.Fatalf("Reconcile = %v, want nil with no hook wired", err)
+		}
+	})
 }
 
 // A failed AttachIGW must surface as ErrPassIncomplete rather than a nil return:

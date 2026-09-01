@@ -3420,7 +3420,8 @@ var _ vm.VolumeStateUpdater = (*recordingVolState)(nil)
 // teardown-path durability gate: a per-volume seal failure during the bulk
 // Unmount (stop/terminate) must NOT transition that volume to available — a
 // reattach on a WAL-less node would find no checkpoint (bad superblock) — while
-// other volumes still seal and the loop completes (terminate stays idempotent).
+// other volumes still seal and the loop completes. The failure is returned, not
+// swallowed: the caller decides whether losing that seal is survivable.
 func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 	volState := &recordingVolState{}
@@ -3445,8 +3446,9 @@ func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 			Requests: []types.EBSRequest{{Name: "vol-fail"}, {Name: "vol-ok"}},
 		},
 	}
-	require.NoError(t, adapter.Unmount(t.Context(), inst),
-		"bulk Unmount must tolerate a per-volume seal failure so terminate stays idempotent")
+	err = adapter.Unmount(t.Context(), inst)
+	require.Error(t, err, "bulk Unmount must report a per-volume seal failure")
+	assert.Contains(t, err.Error(), "vol-fail", "the error must name the volume that did not seal")
 
 	calls := volState.snapshot()
 	assert.NotContains(t, calls, "vol-fail:available",

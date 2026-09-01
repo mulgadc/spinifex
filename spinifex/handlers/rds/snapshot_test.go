@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -46,7 +45,6 @@ func newSnapshotHarness(t *testing.T, agentFails bool) *snapshotHarness {
 	h.agent = newStubAgent(t, nc, testAccountID, testDBID, agentFails)
 	// Without a responder the best-effort endpoint publish would sit out its own
 	// timeout on every restore.
-	stubDNSWriter(t, nc)
 
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
 		LoadCA:             newTestCA(t),
@@ -58,17 +56,6 @@ func newSnapshotHarness(t *testing.T, agentFails bool) *snapshotHarness {
 		ServingCertKeyBits: testServingCertKeyBits,
 	})
 	return h
-}
-
-func stubDNSWriter(t *testing.T, nc *nats.Conn) {
-	t.Helper()
-	sub, err := nc.Subscribe(handlers_dns.SubjectRecordsetChange, func(msg *nats.Msg) {
-		if err := msg.Respond([]byte(`{}`)); err != nil {
-			t.Logf("respond on %s: %v", handlers_dns.SubjectRecordsetChange, err)
-		}
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }
 
 func (h *snapshotHarness) instance(t *testing.T, id string) DBInstanceRecord {

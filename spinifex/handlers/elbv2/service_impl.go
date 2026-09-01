@@ -1547,8 +1547,6 @@ func (s *ELBv2ServiceImpl) provisionLBDataPlane(ctx context.Context, lc lbLaunch
 	if putErr := s.store.PutLoadBalancer(ctx, record); putErr != nil {
 		return fmt.Errorf("persist launch result for %s: %w", lc.lbArn, putErr)
 	}
-	// Register the frontend A record now that the serving IP is allocated.
-	s.publishLBDNS(record, handlers_dns.ActionUpsert)
 	return nil
 }
 
@@ -1559,18 +1557,6 @@ func lbFrontendIP(r *LoadBalancerRecord) string {
 		return r.AvailZones[0].PublicIP
 	}
 	return r.VPCIP
-}
-
-// publishLBDNS registers or withdraws the load balancer's frontend A record with
-// the control-plane DNS writer. Best-effort and a no-op when northstar is not
-// configured or no frontend IP has been allocated; the reconcile loop repairs
-// any miss and never blocks the LB operation.
-func (s *ELBv2ServiceImpl) publishLBDNS(record *LoadBalancerRecord, action handlers_dns.Action) {
-	if s.dnsBaseDomain == "" || record == nil {
-		return
-	}
-	changes := handlers_dns.ELBChanges(action, record.DNSName, s.dnsBaseDomain, lbFrontendIP(record))
-	handlers_dns.PublishChangesBestEffort(s.nc, record.AccountID, changes)
 }
 
 // DesiredDNSChanges returns the UPSERT records for every endpoint-ready load
@@ -1802,9 +1788,6 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 	// Release the name claim so the name is reusable. Idempotent on a missing
 	// key, so a delete that races the record removal still converges.
 	s.releaseLBNameClaim(ctx, lb.Name, accountID)
-
-	// Withdraw the frontend A record (best-effort; reconcile repairs a miss).
-	s.publishLBDNS(lb, handlers_dns.ActionDelete)
 
 	slog.InfoContext(ctx, "DeleteLoadBalancer completed", "lbArn", *input.LoadBalancerArn, "enis", len(lb.ENIs), "accountID", accountID)
 

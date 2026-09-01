@@ -2,7 +2,6 @@ package handlers_rds
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -140,9 +139,6 @@ type createHarness struct {
 	network *fakeNetwork
 	iam     *iammock.SystemInstanceRoleEnsurer
 	nc      *nats.Conn
-
-	// dnsChanges collects what the endpoint publish put on the bus.
-	dnsChanges chan handlers_dns.ChangeBatch
 }
 
 func newCreateHarness(t *testing.T, baseDomain string) *createHarness {
@@ -150,11 +146,10 @@ func newCreateHarness(t *testing.T, baseDomain string) *createHarness {
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	h := &createHarness{
-		launch:     newLaunchHarness(),
-		network:    newFakeNetwork(),
-		iam:        iammock.New(),
-		nc:         nc,
-		dnsChanges: make(chan handlers_dns.ChangeBatch, 4),
+		launch:  newLaunchHarness(),
+		network: newFakeNetwork(),
+		iam:     iammock.New(),
+		nc:      nc,
 	}
 	// The storage key is configured on a real cluster, so the volume comes back
 	// encrypted; the unencrypted case is its own test.
@@ -162,7 +157,6 @@ func newCreateHarness(t *testing.T, baseDomain string) *createHarness {
 
 	// The DNS writer is a request-reply consumer, so without a responder the
 	// best-effort publish would sit out its own timeout on every create.
-	h.stubDNSWriter(t)
 
 	h.svc = NewService(nc, testRegion).WithDeps(Deps{
 		LoadCA:             newTestCA(t),
@@ -174,21 +168,6 @@ func newCreateHarness(t *testing.T, baseDomain string) *createHarness {
 		ServingCertKeyBits: testServingCertKeyBits,
 	})
 	return h
-}
-
-func (h *createHarness) stubDNSWriter(t *testing.T) {
-	t.Helper()
-	sub, err := h.nc.Subscribe(handlers_dns.SubjectRecordsetChange, func(msg *nats.Msg) {
-		var batch handlers_dns.ChangeBatch
-		if err := json.Unmarshal(msg.Data, &batch); err == nil {
-			h.dnsChanges <- batch
-		}
-		if err := msg.Respond([]byte(`{}`)); err != nil {
-			t.Logf("respond on %s: %v", handlers_dns.SubjectRecordsetChange, err)
-		}
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }
 
 func (h *createHarness) record(t *testing.T, id string) DBInstanceRecord {
@@ -322,16 +301,19 @@ func TestCreateDBInstance_IAMFailurePrecedesReservationAndLaunch(t *testing.T) {
 	assert.Empty(t, h.launch.volumes.created)
 }
 
-func TestCreateDBInstance_PublishesEndpointRecord(t *testing.T) {
+// A created instance has to be in the desired set immediately, because the
+// desired set is the only thing that puts its endpoint into the zone.
+func TestCreateDBInstance_ContributesEndpointRecordToDesiredSet(t *testing.T) {
 	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
 	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
 	require.NoError(t, err)
 
-	batch := <-h.dnsChanges
-	require.Len(t, batch.Changes, 1)
-	change := batch.Changes[0]
+	changes, authoritative := h.svc.DesiredDNSChanges()
+	require.True(t, authoritative)
+	require.Len(t, changes, 1)
+	change := changes[0]
 	assert.Equal(t, handlers_dns.ActionUpsert, change.Action)
 	assert.Equal(t, testBaseDomain, change.Zone)
 	assert.Equal(t, "A", change.Type)
@@ -358,11 +340,8 @@ func TestCreateDBInstance_EndpointFallsBackToENIIPWithoutBaseDomain(t *testing.T
 	require.NotNil(t, out.DBInstance.Endpoint)
 	assert.Equal(t, rec.ENIPrivateIP, aws.StringValue(out.DBInstance.Endpoint.Address))
 
-	select {
-	case batch := <-h.dnsChanges:
-		t.Fatalf("no base domain means no record to publish, got %+v", batch)
-	default:
-	}
+	changes, _ := h.svc.DesiredDNSChanges()
+	assert.Empty(t, changes, "no base domain means there is no name to put in a zone")
 }
 
 func TestCreateDBInstance_DuplicateIdentifierIsRejected(t *testing.T) {

@@ -831,8 +831,6 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist endpoint metadata", err)
 		return
 	}
-	// Register the endpoint A record (best-effort; reconcile repairs a miss).
-	s.publishEKSDNS(accountID, meta, handlers_dns.ActionUpsert)
 
 	oidcIssuer, err := ClusterOIDCIssuer(s.deps.GatewayBaseURL, region, accountID, name)
 	if err != nil {
@@ -1247,9 +1245,6 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 	if err := ZeroizeClusterOIDCKey(ctx, acctKV, name); err != nil {
 		teardownErrs = append(teardownErrs, fmt.Errorf("zeroize OIDC key: %w", err))
 	}
-
-	// Withdraw the endpoint A record alongside the NLB teardown (best-effort).
-	s.publishEKSDNS(accountID, meta, handlers_dns.ActionDelete)
 
 	if meta.NLBArn != "" {
 		// Deregister is best-effort: DeleteClusterNLB tears down the whole NLB
@@ -2101,18 +2096,6 @@ func clusterJoinEndpoint(meta *ClusterMeta) string {
 		return "https://" + net.JoinHostPort(meta.EndpointIP, strconv.FormatInt(clusterNLBListenPort, 10))
 	}
 	return meta.Endpoint
-}
-
-// publishEKSDNS registers or withdraws the cluster's account-qualified apiserver
-// endpoint A record ({cluster}.{accountID}.{region}.eks.{baseDomain} → EndpointIP)
-// with the control-plane DNS writer. Best-effort and a no-op when northstar is not configured; the reconcile
-// loop repairs any miss and it never blocks the cluster operation.
-func (s *EKSServiceImpl) publishEKSDNS(accountID string, meta *ClusterMeta, action handlers_dns.Action) {
-	if s.baseDomain == "" || meta == nil || meta.EndpointDNSName == "" {
-		return
-	}
-	changes := handlers_dns.EKSChanges(action, meta.EndpointDNSName, s.baseDomain, meta.EndpointIP)
-	handlers_dns.PublishChangesBestEffort(s.deps.NATSConn, accountID, changes)
 }
 
 // DesiredDNSChanges returns the UPSERT records for every endpoint-ready cluster

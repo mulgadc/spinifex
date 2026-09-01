@@ -29,7 +29,7 @@ const (
 // persistWithRetry runs op, retrying on transient errors up to
 // bootstrapPersistAttempts. A nil result or an errBootstrapPermanent result
 // returns immediately (no retry).
-func persistWithRetry(op func() error) error {
+func persistWithRetry(backoff time.Duration, op func() error) error {
 	var err error
 	for attempt := 1; attempt <= bootstrapPersistAttempts; attempt++ {
 		err = op()
@@ -37,7 +37,7 @@ func persistWithRetry(op func() error) error {
 			return err
 		}
 		if attempt < bootstrapPersistAttempts {
-			time.Sleep(bootstrapPersistBackoff)
+			time.Sleep(backoff)
 		}
 	}
 	return err
@@ -201,7 +201,7 @@ func (b *NATSBootstrap) RunForKinds(ctx context.Context, kinds []string) error {
 				return
 			}
 			mu.Unlock()
-			if err := persistWithRetry(func() error { return s.handler(ctx, m.Data) }); err != nil {
+			if err := persistWithRetry(bootstrapPersistBackoff, func() error { return s.handler(ctx, m.Data) }); err != nil {
 				errCh <- fmt.Errorf("persist %s: %w", s.kind, err)
 				return
 			}

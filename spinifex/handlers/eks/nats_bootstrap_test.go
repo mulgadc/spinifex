@@ -299,14 +299,14 @@ func TestNATSBootstrap_CANotBase64Rejected(t *testing.T) {
 func TestPersistWithRetry(t *testing.T) {
 	t.Run("succeeds first try", func(t *testing.T) {
 		calls := 0
-		err := persistWithRetry(func() error { calls++; return nil })
+		err := persistWithRetry(0, func() error { calls++; return nil })
 		require.NoError(t, err)
 		assert.Equal(t, 1, calls)
 	})
 
 	t.Run("retries transient then succeeds", func(t *testing.T) {
 		calls := 0
-		err := persistWithRetry(func() error {
+		err := persistWithRetry(0, func() error {
 			calls++
 			if calls < 2 {
 				return errors.New("transient kv blip")
@@ -319,7 +319,7 @@ func TestPersistWithRetry(t *testing.T) {
 
 	t.Run("permanent error returns immediately without retry", func(t *testing.T) {
 		calls := 0
-		err := persistWithRetry(func() error {
+		err := persistWithRetry(0, func() error {
 			calls++
 			return fmt.Errorf("%w: malformed envelope", errBootstrapPermanent)
 		})
@@ -329,7 +329,7 @@ func TestPersistWithRetry(t *testing.T) {
 
 	t.Run("transient error exhausts attempts", func(t *testing.T) {
 		calls := 0
-		err := persistWithRetry(func() error { calls++; return errors.New("always transient") })
+		err := persistWithRetry(0, func() error { calls++; return errors.New("always transient") })
 		require.Error(t, err)
 		assert.Equal(t, bootstrapPersistAttempts, calls)
 	})

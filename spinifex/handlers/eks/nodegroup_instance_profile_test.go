@@ -107,7 +107,6 @@ func TestEnsureNodeInstanceProfile_RejectsInvalidARNs(t *testing.T) {
 		"non-role resource": "arn:aws:iam::000000000001:user/bob",
 		"empty role name":   "arn:aws:iam::000000000001:role/",
 		"empty account":     "arn:aws:iam:::role/Worker",
-		"cross-account":     "arn:aws:iam::000000000002:role/Worker",
 	}
 	for name, arn := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -119,6 +118,22 @@ func TestEnsureNodeInstanceProfile_RejectsInvalidARNs(t *testing.T) {
 			assert.Zero(t, f.AddRoleToInstanceProfileCalls)
 		})
 	}
+}
+
+// A role another account owns is rejected by the account guard alone: the mock
+// holds it under the ARN the caller supplied, so the canonical comparison would
+// pass and only the guard can refuse it.
+func TestEnsureNodeInstanceProfile_RejectsCrossAccountRole(t *testing.T) {
+	const crossAccountARN = "arn:aws:iam::000000000002:role/Worker"
+	f := newEnsurerWithRole("Worker", crossAccountARN)
+	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
+
+	_, err := s.ensureNodeInstanceProfile("000000000001", crossAccountARN)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, auth.ErrRoleARNMismatch, "the guard must reject, not the ARN comparison")
+	assert.ErrorContains(t, err, "is not in account 000000000001")
+	assert.Zero(t, f.CreateInstanceProfileCalls)
+	assert.Zero(t, f.AddRoleToInstanceProfileCalls)
 }
 
 // A node role ARN carrying a path the stored role does not have must not bind a

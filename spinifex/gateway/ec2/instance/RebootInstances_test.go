@@ -124,6 +124,7 @@ func TestRebootInstances_DaemonError(t *testing.T) {
 		awserrors.ErrorServerInternal,
 	} {
 		t.Run(code, func(t *testing.T) {
+			t.Parallel()
 			_, nc := startTestNATSServer(t)
 			instanceID := "i-error"
 

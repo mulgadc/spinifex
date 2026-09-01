@@ -196,6 +196,7 @@ func TestParseRunInstances(t *testing.T) {
 	}
 
 	t.Run("MissingKeyNameIsValid", func(t *testing.T) {
+		t.Parallel()
 		input := defaults
 		input.KeyName = nil
 		assert.NoError(t, ValidateRunInstancesInput(&input))
@@ -203,6 +204,7 @@ func TestParseRunInstances(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			// For validation tests, we can pass nil conn since validation happens before NATS call
 			response, err := RunInstances(context.Background(), test.input, nil, nil, "123456789012", nil, nil, 1)
 

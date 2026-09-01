@@ -99,6 +99,7 @@ func TestMonitorInstances_InvalidInput(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := MonitorInstances(context.Background(), &ec2.MonitorInstancesInput{InstanceIds: tt.ids}, nc, "123456789012")
 			require.Error(t, err)
 			assert.Equal(t, tt.want, err.Error())

@@ -589,6 +589,7 @@ func TestDistributeInstances_PropagatesSGValidationErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, nc := startTestNATSServer(t)
 
 			statusSub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {

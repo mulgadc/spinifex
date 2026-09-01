@@ -23,6 +23,7 @@ func TestModifyInstanceMetadataOptions_RejectsMalformedID(t *testing.T) {
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, err := ModifyInstanceMetadataOptions(context.Background(), in, nil, "acct")
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error())

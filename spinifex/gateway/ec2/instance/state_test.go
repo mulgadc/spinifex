@@ -45,6 +45,7 @@ func TestNewStateChange(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := newStateChange(tt.instanceID, tt.currentCode, tt.currentName, tt.prevCode, tt.prevName)
 
 			require.NotNil(t, result)

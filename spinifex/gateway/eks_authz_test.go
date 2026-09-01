@@ -138,6 +138,19 @@ func TestEKSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 	}
 }
 
+// The internal CP-VM routes name the target account in the path, so eks:* on *
+// evaluated as permitted and returned another tenant's cluster state. The
+// principal gate now rejects the tenant ahead of the policy check.
+func TestEKSRequest_InternalRoutesRejectTenantPrincipal(t *testing.T) {
+	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
+
+	assertDenied(t, dispatchEKS(t, gw, http.MethodGet, "/clusters/prod/internal-addons/999988887777", ""))
+	assertDenied(t, dispatchEKS(t, gw, http.MethodGet,
+		"/clusters/prod/internal-recovery/999988887777/i-0abc", ""))
+	// Its own account is no different: a tenant is not a control-plane VM.
+	assertDenied(t, dispatchEKS(t, gw, http.MethodGet, "/clusters/prod/internal-addons/"+authzAccountID, ""))
+}
+
 // The account-ID read moved above the gate, which used to reject a missing
 // account itself. InternalError is the code the caller has always seen.
 func TestEKSRequest_MissingAccountIDReturnsInternalError(t *testing.T) {

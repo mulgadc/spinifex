@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 
+	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 )
@@ -67,7 +68,8 @@ var eksRoutes = []eksRoute{
 	// of staged add-on manifests for its cluster (system SigV4 creds) to render
 	// the baked bundles into the K3s auto-deploy dir. acct (system account) is
 	// ignored — the cluster account is the {accountId} path segment, since a GET
-	// carries no body to hold it (cf. PublishInternal).
+	// carries no body to hold it (cf. PublishInternal). AuthorizeInternal binds
+	// that segment to the caller's own cluster.
 	{"GET", regexp.MustCompile(`^/clusters/([^/]+)/internal-addons/([^/]+)$`), "ListInternalAddons",
 		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.ListInternalAddons(ctx, gw.NATSConn, p[0], p[1])
@@ -265,6 +267,15 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
+	// Ahead of the policy check: the internal routes name the target account in
+	// the path, so an eks:* grant evaluates as permitted and only the principal
+	// class plus the caller's own instance say whether that account is its own.
+	if gateway_eks.IsInternalAction(action) {
+		if err := gateway_eks.AuthorizeInternal(r.Context(), gw.NATSConn, action, eksCaller(r), params); err != nil {
+			return err
+		}
+	}
+
 	body, err := readBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "EKS_Request: failed to read body", "err", err)
@@ -309,6 +320,24 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 
 	gateway_eks.WriteJSONResponse(w, output)
 	return nil
+}
+
+// eksCaller reads the principal behind the request. The role name comes from the
+// underlying role ARN, never the session name, which the caller picks at
+// AssumeRole time and could name its way past the gate.
+func eksCaller(r *http.Request) gateway_eks.Caller {
+	accountID := mustCtxString(r, ctxAccountID)
+	caller := gateway_eks.Caller{
+		AccountID:     accountID,
+		PrincipalType: mustCtxString(r, ctxPrincipalType),
+		SessionName:   mustCtxString(r, ctxIdentity),
+	}
+	if roleARN := mustCtxString(r, ctxUnderlyingRoleARN); roleARN != "" {
+		if roleAcct, roleName, err := auth.ParseRoleARN(roleARN); err == nil && roleAcct == accountID {
+			caller.RoleName = roleName
+		}
+	}
+	return caller
 }
 
 // eksCallerPrincipalARN resolves the caller's IAM principal ARN from the SigV4

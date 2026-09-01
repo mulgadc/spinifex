@@ -7,10 +7,11 @@ import (
 )
 
 const (
-	// eksServerSystemRoleName is the Spinifex-managed instance role attached to
-	// the k3s control-plane VM. IMDS serves it so the VM's gateway publishes are
+	// CPInstanceRoleName is the Spinifex-managed instance role attached to the
+	// k3s control-plane VM. IMDS serves it so the VM's gateway publishes are
 	// signed with scoped, rotating credentials instead of a baked static key.
-	eksServerSystemRoleName = "spinifex-eks-server"
+	// The gateway's internal-route gate names it to tell a CP VM from a tenant.
+	CPInstanceRoleName = "spinifex-eks-server"
 
 	// eksServerInlinePolicyName is the inline policy granting the CP VM the
 	// internal gateway actions its bootstrap/state-report/addon-fetch need.
@@ -37,7 +38,7 @@ func (s *EKSServiceImpl) ensureCPInstanceProfile(accountID string) string {
 		return ""
 	}
 	profileARN, err := handlers_iam.EnsureSystemInstanceProfile(iam, accountID,
-		eksServerSystemRoleName, eksServerInlinePolicyName, eksServerInlinePolicy)
+		CPInstanceRoleName, eksServerInlinePolicyName, eksServerInlinePolicy)
 	if err != nil {
 		slog.Warn("EKS: ensure CP instance profile failed; falling back to baked static gateway creds",
 			"err", err)

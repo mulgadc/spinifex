@@ -25,19 +25,28 @@ type RoleGetter interface {
 // discards any path in the supplied ARN, so comparing the stored ARN back is
 // what stops an invented path reaching a role the ARN does not name.
 func ResolveRoleByARN(svc RoleGetter, roleARN string) (string, *iam.Role, error) {
-	accountID, roleName, err := auth.ParseRoleARN(roleARN)
-	if err != nil {
+	var role *iam.Role
+	accountID, _, err := auth.ResolveRoleARN(roleARN, func(accountID, roleName string) (string, error) {
+		out, err := svc.GetRole(accountID, &iam.GetRoleInput{RoleName: aws.String(roleName)})
+		if err != nil {
+			return "", err
+		}
+		if out == nil || out.Role == nil {
+			return "", nil
+		}
+		role = out.Role
+		return aws.StringValue(out.Role.Arn), nil
+	})
+	switch {
+	case errors.Is(err, auth.ErrInvalidRoleARN):
 		return "", nil, errors.New(awserrors.ErrorValidationError)
-	}
-	out, err := svc.GetRole(accountID, &iam.GetRoleInput{RoleName: aws.String(roleName)})
-	if err != nil {
+	case errors.Is(err, auth.ErrRoleARNMismatch):
+		return "", nil, ErrRoleUnresolved
+	case err != nil:
 		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
 			return "", nil, ErrRoleUnresolved
 		}
 		return "", nil, err
 	}
-	if out == nil || out.Role == nil || aws.StringValue(out.Role.Arn) != roleARN {
-		return "", nil, ErrRoleUnresolved
-	}
-	return accountID, out.Role, nil
+	return accountID, role, nil
 }

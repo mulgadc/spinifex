@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/nats-io/nats.go/jetstream"
@@ -49,7 +48,10 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 		return nil, errors.New(awserrors.ErrorPackedPolicyTooLarge)
 	}
 
-	roleAccountID, roleName, err := auth.ParseRoleARN(roleARN)
+	// Only the account is taken here: webIdentityKeyFunc needs it before the
+	// token is verified, and resolving the role would put an IAM read ahead of
+	// verification. The full ARN is verified below.
+	roleAccountID, _, err := auth.ParseRoleARN(roleARN)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
@@ -77,15 +79,15 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 		return nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 	}
 
-	roleOut, err := s.iamSvc.GetRole(roleAccountID, &iam.GetRoleInput{RoleName: aws.String(roleName)})
+	_, role, err := ResolveRoleByARN(s.iamSvc, roleARN)
 	if err != nil {
 		// All misses → AccessDenied to prevent cross-account role enumeration.
-		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+		// A supplied ARN that is not the stored one is one of those misses.
+		if errors.Is(err, ErrRoleUnresolved) {
 			return nil, errors.New(awserrors.ErrorAccessDenied)
 		}
 		return nil, err
 	}
-	role := roleOut.Role
 
 	duration := defaultDurationSeconds
 	if input.DurationSeconds != nil {

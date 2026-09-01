@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -45,12 +44,12 @@ func (gw *GatewayConfig) Tagging_Request(w http.ResponseWriter, r *http.Request)
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	if err := gw.checkPolicy(r, "tagging", action); err != nil {
+	resources, err := gateway_tagging.ResourceARNs(action)
+	if err != nil {
 		return err
 	}
-
-	if gw.NATSConn == nil {
-		return errors.New(awserrors.ErrorServerInternal)
+	if err := gw.checkPolicyResources(r, "tagging", action, resources); err != nil {
+		return err
 	}
 
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
@@ -59,10 +58,16 @@ func (gw *GatewayConfig) Tagging_Request(w http.ResponseWriter, r *http.Request)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	body, err := io.ReadAll(r.Body)
+	// Read ahead of the NATS guard so an oversized body is rejected on its own
+	// terms rather than behind a connection that happens to be down.
+	body, err := readBoundedBody(r)
 	if err != nil {
 		slog.Error("Tagging_Request: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return err
+	}
+
+	if gw.NATSConn == nil {
+		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	output, err := handler(r.Context(), gw, accountID, body)

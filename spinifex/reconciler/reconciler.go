@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/nats-io/nats.go/jetstream"
@@ -40,6 +41,10 @@ const (
 	// be established, so a bucket that is briefly unreachable is retried
 	// without spinning.
 	retryWatch = 5 * time.Second
+	// DefaultErrorRetry is how soon a pass that failed transiently asks to be
+	// revisited. Waiting out the resync leaves the world unconverged for minutes
+	// over a fault that usually clears in seconds.
+	DefaultErrorRetry = 15 * time.Second
 )
 
 // Source names the buckets to watch and the keys within them that matter.
@@ -332,6 +337,23 @@ func settle(ctx context.Context, changes <-chan struct{}, debounce time.Duration
 	}
 }
 
+// failed reports a reconcile failure and returns the deadline it should be
+// retried on. A terminal error will fail identically however often it is
+// repeated, so it is reported as needing intervention and asks for nothing
+// sooner than the resync; anything else is retried promptly.
+//
+// A deadline the callee asked for survives when it is sooner: a pass partway
+// through a transition still gets revisited on its own schedule.
+func failed(ctx context.Context, loop, what string, err error, revisit time.Duration, attrs ...any) time.Duration {
+	attrs = append([]any{"loop", loop}, append(attrs, "err", err)...)
+	if awserrors.IsTerminal(err) {
+		slog.ErrorContext(ctx, what+" failed and will not succeed unchanged", attrs...)
+		return revisit
+	}
+	slog.WarnContext(ctx, what+" failed, retrying", attrs...)
+	return Earliest(revisit, DefaultErrorRetry)
+}
+
 // pass runs one reconcile, logging rather than returning a failure: the loop
 // outlives any single pass, and the next resync retries. A failed pass keeps
 // its deadline, so a caller partway through a transition still gets revisited
@@ -340,9 +362,8 @@ func pass(ctx context.Context, cfg Config, trigger string) time.Duration {
 	start := time.Now()
 	revisit, err := cfg.Reconcile(ctx)
 	if err != nil {
-		slog.WarnContext(ctx, "reconcile pass failed, retrying next cycle",
-			"loop", cfg.Name, "trigger", trigger, "duration_ms", otelsetup.Millis(time.Since(start)), "err", err)
-		return revisit
+		return failed(ctx, cfg.Name, "reconcile pass", err, revisit,
+			"trigger", trigger, "duration_ms", otelsetup.Millis(time.Since(start)))
 	}
 	slog.DebugContext(ctx, "reconcile pass complete",
 		"loop", cfg.Name, "trigger", trigger, "duration_ms", otelsetup.Millis(time.Since(start)),
@@ -350,16 +371,15 @@ func pass(ctx context.Context, cfg Config, trigger string) time.Duration {
 	return revisit
 }
 
-// keyPass runs one per-key reconcile. Its failure is logged rather than
-// retried here: the resync re-reconciles the whole set, so a key that failed is
-// covered by the same backstop as a key the queue never saw.
+// keyPass runs one per-key reconcile. The resync re-reconciles the whole set, so
+// a key that failed is covered by the same backstop as a key the queue never
+// saw; the deadline a transient failure asks for only brings that forward.
 func keyPass(ctx context.Context, cfg Config, key string) time.Duration {
 	start := time.Now()
 	revisit, err := cfg.ReconcileKey(ctx, key)
 	if err != nil {
-		slog.WarnContext(ctx, "reconcile key failed, retrying on the next resync",
-			"loop", cfg.Name, "key", key, "duration_ms", otelsetup.Millis(time.Since(start)), "err", err)
-		return revisit
+		return failed(ctx, cfg.Name, "reconcile key", err, revisit,
+			"key", key, "duration_ms", otelsetup.Millis(time.Since(start)))
 	}
 	slog.DebugContext(ctx, "reconcile key complete",
 		"loop", cfg.Name, "key", key, "duration_ms", otelsetup.Millis(time.Since(start)),

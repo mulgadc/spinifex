@@ -18,8 +18,9 @@ type internalRecoveryOutput struct {
 // GetRecoveryDirective — GET /clusters/{name}/internal-recovery/{acct}/{instanceId}.
 // Internal control-plane VM route (not an AWS-SDK action): the CP VM holds system
 // SigV4 creds, so accountID names the customer cluster account explicitly — same
-// carve-out as ListInternalAddons. Returns the per-member recovery directive the
-// agent applies (none, cluster-reset, or wipe-rejoin) before k3s starts.
+// carve-out as ListInternalAddons, gated by AuthorizeInternal, which admits only
+// the member itself. Returns the per-member recovery directive the agent applies
+// (none, cluster-reset, or wipe-rejoin) before k3s starts.
 func GetRecoveryDirective(ctx context.Context, natsConn *nats.Conn, clusterName, accountID, instanceID string) (*internalRecoveryOutput, error) {
 	if natsConn == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)

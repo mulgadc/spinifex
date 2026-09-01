@@ -189,6 +189,21 @@ func PutClusterMeta(ctx context.Context, kv jetstream.KeyValue, meta *ClusterMet
 	return nil
 }
 
+// IsControlPlaneMember reports whether instanceID is one of this cluster's
+// control-plane server VMs. The scalar ControlPlaneInstanceID is consulted too,
+// for clusters persisted before ControlPlaneNodes existed.
+func (m *ClusterMeta) IsControlPlaneMember(instanceID string) bool {
+	if m == nil || instanceID == "" {
+		return false
+	}
+	for _, node := range m.ControlPlaneNodes {
+		if node.InstanceID == instanceID {
+			return true
+		}
+	}
+	return m.ControlPlaneInstanceID == instanceID
+}
+
 // GetClusterMeta reads the meta record. Returns ErrClusterNotFound if the
 // key is absent.
 func GetClusterMeta(ctx context.Context, kv jetstream.KeyValue, name string) (*ClusterMeta, error) {

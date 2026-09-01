@@ -20,13 +20,13 @@ func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
 	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
 
 	arn := s.ensureCPInstanceProfile(testSysAcct)
-	assert.Equal(t, "arn:aws:iam::"+testSysAcct+":instance-profile/"+eksServerSystemRoleName, arn)
+	assert.Equal(t, "arn:aws:iam::"+testSysAcct+":instance-profile/"+CPInstanceRoleName, arn)
 
 	assert.Equal(t, 1, f.CreateRoleCalls)
 	assert.Contains(t, f.LastTrustDoc, "ec2.amazonaws.com")
 	assert.Contains(t, f.LastTrustDoc, "sts:AssumeRole")
 
-	policy := f.RolePolicies[eksServerSystemRoleName]
+	policy := f.RolePolicies[CPInstanceRoleName]
 	assert.Contains(t, policy, "eks:PublishInternal")
 	assert.Contains(t, policy, "eks:ListInternalAddons")
 	// The eks-token-webhook relays get-token bearer tokens to the token-review
@@ -38,8 +38,8 @@ func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
 	// and a wedged control plane can never be auto-reset.
 	assert.Contains(t, policy, "eks:GetRecoveryDirective")
 
-	require.NotNil(t, f.Profiles[eksServerSystemRoleName])
-	assert.Len(t, f.Profiles[eksServerSystemRoleName].Roles, 1)
+	require.NotNil(t, f.Profiles[CPInstanceRoleName])
+	assert.Len(t, f.Profiles[CPInstanceRoleName].Roles, 1)
 }
 
 // TestEnsureK3sServerInstanceProfile_ExistingRoleConverges asserts a re-launch
@@ -47,16 +47,16 @@ func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
 // inline policy so a stale role converges onto the current permissions.
 func TestEnsureK3sServerInstanceProfile_ExistingRoleConverges(t *testing.T) {
 	f := newFakeEnsurer()
-	f.Roles[eksServerSystemRoleName] = &iam.Role{
-		RoleName: aws.String(eksServerSystemRoleName),
-		Arn:      aws.String("arn:aws:iam::" + testSysAcct + ":role/" + eksServerSystemRoleName),
+	f.Roles[CPInstanceRoleName] = &iam.Role{
+		RoleName: aws.String(CPInstanceRoleName),
+		Arn:      aws.String("arn:aws:iam::" + testSysAcct + ":role/" + CPInstanceRoleName),
 	}
 	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
 
 	arn := s.ensureCPInstanceProfile(testSysAcct)
 	assert.NotEmpty(t, arn)
 	assert.Zero(t, f.CreateRoleCalls)
-	assert.Contains(t, f.RolePolicies[eksServerSystemRoleName], "eks:PublishInternal")
+	assert.Contains(t, f.RolePolicies[CPInstanceRoleName], "eks:PublishInternal")
 }
 
 // TestEnsureCPInstanceProfile_NilIAMFallsBack asserts an unwired IAM service
@@ -75,7 +75,7 @@ func TestEnsureCPInstanceProfile_UsesLazyProvider(t *testing.T) {
 		IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return f },
 	}}
 	arn := s.ensureCPInstanceProfile(testSysAcct)
-	assert.Equal(t, "arn:aws:iam::"+testSysAcct+":instance-profile/"+eksServerSystemRoleName, arn)
+	assert.Equal(t, "arn:aws:iam::"+testSysAcct+":instance-profile/"+CPInstanceRoleName, arn)
 	assert.Equal(t, 1, f.CreateRoleCalls)
 }
 

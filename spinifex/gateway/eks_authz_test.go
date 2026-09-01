@@ -15,6 +15,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -136,6 +139,68 @@ func TestEKSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 			assert.NoError(t, gw.checkPolicyResources(req, "eks", action, resources))
 		})
 	}
+}
+
+// The internal CP-VM routes name the target account in the path, so eks:* on *
+// evaluated as permitted and returned another tenant's cluster state. The
+// principal gate now rejects the tenant ahead of the policy check.
+func TestEKSRequest_InternalRoutesRejectTenantPrincipal(t *testing.T) {
+	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
+
+	assertDenied(t, dispatchEKS(t, gw, http.MethodGet, "/clusters/prod/internal-addons/999988887777", ""))
+	assertDenied(t, dispatchEKS(t, gw, http.MethodGet,
+		"/clusters/prod/internal-recovery/999988887777/i-0abc", ""))
+	// Its own account is no different: a tenant is not a control-plane VM.
+	assertDenied(t, dispatchEKS(t, gw, http.MethodGet, "/clusters/prod/internal-addons/"+authzAccountID, ""))
+}
+
+// dispatchEKSAsCPAgent drives the gateway with the auth context a CP VM's IMDS
+// credentials actually produce, so the gate is exercised through eksCaller's
+// field mapping rather than a hand-built Caller.
+func dispatchEKSAsCPAgent(t *testing.T, gw *GatewayConfig, path, instanceID string) error {
+	t.Helper()
+	roleName := handlers_eks.CPInstanceRoleName
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	ctx := context.WithValue(req.Context(), ctxService, "eks")
+	ctx = context.WithValue(ctx, ctxAccountID, utils.GlobalAccountID)
+	ctx = context.WithValue(ctx, ctxIdentity, instanceID)
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeAssumedRole)
+	ctx = context.WithValue(ctx, ctxUnderlyingRoleARN,
+		"arn:aws:iam::"+utils.GlobalAccountID+":role/"+roleName)
+	ctx = context.WithValue(ctx, ctxAssumedRoleARN,
+		"arn:aws:sts::"+utils.GlobalAccountID+":assumed-role/"+roleName+"/"+instanceID)
+	return gw.EKS_Request(httptest.NewRecorder(), req.WithContext(ctx))
+}
+
+// The denial tests above all fail on the first clause of the class gate, so on
+// their own they would still pass if eksCaller stopped producing a CP agent at
+// all — which would deny every control-plane VM in production. This is the
+// other half: the real IMDS-shaped context reaches the handler.
+func TestEKSRequest_InternalRoutesAdmitTheCPAgentPrincipal(t *testing.T) {
+	const cpInstanceID = "i-cp0000000000001"
+	_, nc, js := testutil.StartTestJetStream(t)
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
+		Bucket: handlers_eks.AccountBucketName(authzAccountID),
+	})
+	require.NoError(t, err)
+	require.NoError(t, handlers_eks.PutClusterMeta(t.Context(), kv, &handlers_eks.ClusterMeta{
+		Name:              "prod",
+		ControlPlaneNodes: []handlers_eks.ControlPlaneNode{{InstanceID: cpInstanceID}},
+	}))
+
+	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
+	gw.NATSConn = nc
+
+	// No eks daemon is subscribed, so the handler fails on the absent responder.
+	// Anything but AccessDenied means the gate and the policy check both passed.
+	assertNotDenied(t, dispatchEKSAsCPAgent(t, gw,
+		"/clusters/prod/internal-addons/"+authzAccountID, cpInstanceID))
+	assertNotDenied(t, dispatchEKSAsCPAgent(t, gw,
+		"/clusters/prod/internal-recovery/"+authzAccountID+"/"+cpInstanceID, cpInstanceID))
+
+	// Same credentials, a cluster this VM does not serve: the binding still bites.
+	assertDenied(t, dispatchEKSAsCPAgent(t, gw,
+		"/clusters/other/internal-addons/"+authzAccountID, cpInstanceID))
 }
 
 // The account-ID read moved above the gate, which used to reject a missing

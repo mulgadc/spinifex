@@ -18,7 +18,8 @@ type internalAddonsOutput struct {
 // ListInternalAddons — GET /clusters/{name}/internal-addons?accountId={acct}.
 // Internal control-plane VM route (not an AWS-SDK action): the CP VM holds
 // system SigV4 creds, so accountID names the customer cluster account explicitly
-// — same carve-out as PublishInternal. Returns every staged add-on manifest so
+// — same carve-out as PublishInternal, gated by AuthorizeInternal, which admits
+// only a CP agent serving that account's cluster. Returns every staged manifest so
 // the VM can render the baked bundles into the K3s auto-deploy dir and GC the
 // locally-rendered manifests for add-ons no longer staged.
 func ListInternalAddons(ctx context.Context, natsConn *nats.Conn, clusterName, accountID string) (*internalAddonsOutput, error) {

@@ -57,7 +57,7 @@ func TestKillProcessEscalatesToSigkillWithinDeadline(t *testing.T) {
 	require.Equal(t, "ready", scanner.Text())
 
 	const pollInterval = 20 * time.Millisecond
-	const gracePeriod = 300 * time.Millisecond
+	const gracePeriod = 100 * time.Millisecond
 
 	start := time.Now()
 	err = killProcessWithTiming(pid, pollInterval, gracePeriod)

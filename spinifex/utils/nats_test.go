@@ -471,14 +471,16 @@ func TestConnectNATSWithRetry_Success(t *testing.T) {
 func TestConnectNATSWithRetry_RetriesOnFailure(t *testing.T) {
 	start := time.Now()
 	_, err := ConnectNATSWithRetry("nats://127.0.0.1:14222", "", "",
-		WithMaxWait(500*time.Millisecond),
-		WithRetryDelay(50*time.Millisecond),
+		WithMaxWait(100*time.Millisecond),
+		WithRetryDelay(20*time.Millisecond),
 	)
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "NATS connect failed")
-	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond, "should have retried at least once")
+	// Two attempts sleep 20ms then 40ms, so anything past the first delay
+	// alone can only have come from a retry.
+	assert.GreaterOrEqual(t, elapsed, 40*time.Millisecond, "should have retried at least once")
 	assert.Less(t, elapsed, 5*time.Second, "should fail within a few seconds")
 }
 
@@ -529,6 +531,9 @@ func TestConnectNATS_ReconnectCallbackFires(t *testing.T) {
 
 	reconnected := make(chan struct{}, 1)
 	nc, err := ConnectNATS(ns.ClientURL(), "", "",
+		// The default sleep between reconnect attempts is a second, which is
+		// most of this test's runtime and none of what it proves.
+		WithReconnectWait(50*time.Millisecond),
 		WithReconnectHandler(func(_ *nats.Conn) {
 			select {
 			case reconnected <- struct{}{}:
@@ -603,6 +608,7 @@ func TestConnectNATS_DisconnectReconnectCallbacks(t *testing.T) {
 	reconnects := make(chan struct{}, 4)
 
 	nc, err := ConnectNATS("nats://127.0.0.1:"+strconv.Itoa(port), "", "",
+		WithReconnectWait(50*time.Millisecond),
 		WithDisconnectHandler(func(_ *nats.Conn, _ error) { disconnects <- struct{}{} }),
 		WithReconnectHandler(func(_ *nats.Conn) { reconnects <- struct{}{} }),
 	)

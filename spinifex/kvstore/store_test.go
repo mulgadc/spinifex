@@ -54,6 +54,7 @@ func seedRaw(t *testing.T, store *kvstore.Store[record], key string, rec record)
 }
 
 func TestStore_GetAbsentKeyIsNotFound(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 
 	_, _, err := store.Get(t.Context(), "nobody")
@@ -62,6 +63,7 @@ func TestStore_GetAbsentKeyIsNotFound(t *testing.T) {
 }
 
 func TestStore_CreateRoundTripsAndRejectsDuplicate(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 
 	mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 3})
@@ -81,6 +83,7 @@ func TestStore_CreateRoundTripsAndRejectsDuplicate(t *testing.T) {
 }
 
 func TestStore_DeleteIsIdempotent(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	mustCreate(t, store, "acct-a/one", record{Name: "one"})
 
@@ -93,6 +96,7 @@ func TestStore_DeleteIsIdempotent(t *testing.T) {
 }
 
 func TestStore_ListOnEmptyBucketIsNotAnError(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 
 	out, err := store.List(t.Context(), "")
@@ -101,6 +105,7 @@ func TestStore_ListOnEmptyBucketIsNotAnError(t *testing.T) {
 }
 
 func TestStore_ListFiltersByPrefix(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	mustCreate(t, store, "acct-a/one", record{Name: "one"})
 	mustCreate(t, store, "acct-a/two", record{Name: "two"})
@@ -119,6 +124,7 @@ func TestStore_ListFiltersByPrefix(t *testing.T) {
 // rather than racing two goroutines: the first mutate attempt writes a competing
 // value out of band, so the commit that follows it must lose and re-read.
 func TestStore_MutateRetriesARevisionConflict(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 1})
 
@@ -140,6 +146,7 @@ func TestStore_MutateRetriesARevisionConflict(t *testing.T) {
 }
 
 func TestStore_MutateReportingNoChangeCommitsNoWrite(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 1})
 	_, before, err := store.Get(t.Context(), "acct-a/one")
@@ -158,6 +165,7 @@ func TestStore_MutateReportingNoChangeCommitsNoWrite(t *testing.T) {
 }
 
 func TestStore_MutateOnAbsentKeyIsNotFound(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 
 	err := store.Mutate(t.Context(), "nobody", func(*record) (bool, error) {
@@ -168,6 +176,7 @@ func TestStore_MutateOnAbsentKeyIsNotFound(t *testing.T) {
 }
 
 func TestStore_DeletePrefixLeavesOtherPrefixes(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	mustCreate(t, store, "acct-a/one", record{Name: "one"})
 	mustCreate(t, store, "acct-b/two", record{Name: "two"})
@@ -183,6 +192,7 @@ func TestStore_DeletePrefixLeavesOtherPrefixes(t *testing.T) {
 }
 
 func TestStore_NilJetStreamReportsTheConfiguredMessage(t *testing.T) {
+	t.Parallel()
 	store := kvstore.New[record](nil, kvstore.Config{
 		Name:    "kvstore-test",
 		Missing: "kvstore test: no JetStream client configured",
@@ -202,6 +212,7 @@ func TestStore_NilJetStreamReportsTheConfiguredMessage(t *testing.T) {
 // Config that omits Missing must not produce an error with an empty string,
 // which reads as a passing call to anything logging err.Error().
 func TestStore_NilJetStreamWithNoMessageStillSaysSomething(t *testing.T) {
+	t.Parallel()
 	store := kvstore.New[record](nil, kvstore.Config{Name: "kvstore-test"})
 
 	_, _, err := store.Get(t.Context(), "acct-a/one")
@@ -225,6 +236,7 @@ func newOpenBucket(t *testing.T) jetstream.KeyValue {
 // no JetStream client, so a nil-client guard running before the memo check
 // would fail every one of these calls with an empty error string.
 func TestOver_ServesAPreOpenedBucket(t *testing.T) {
+	t.Parallel()
 	kv := newOpenBucket(t)
 
 	// A record written straight to the bucket, as a pre-existing one would be.
@@ -246,6 +258,7 @@ func TestOver_ServesAPreOpenedBucket(t *testing.T) {
 }
 
 func TestStore_SetOverwritesWhereCreateWouldConflict(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	mustCreate(t, store, "acct-a/one", record{Name: "first"})
 	_, err := store.Create(t.Context(), "acct-a/one", &record{Name: "second"})
@@ -266,6 +279,7 @@ func TestStore_SetOverwritesWhereCreateWouldConflict(t *testing.T) {
 // Get in disguise: a record whose bytes will not unmarshal must still be
 // reported as present, or it becomes impossible to delete.
 func TestStore_ExistsDoesNotDecode(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	kv, err := store.KV(t.Context())
 	require.NoError(t, err)
@@ -286,6 +300,7 @@ func TestStore_ExistsDoesNotDecode(t *testing.T) {
 }
 
 func TestStore_ExistsIsFalseForAnAbsentKey(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 
 	present, err := store.Exists(t.Context(), "nobody")
@@ -294,6 +309,7 @@ func TestStore_ExistsIsFalseForAnAbsentKey(t *testing.T) {
 }
 
 func TestStore_CompareAndSetRejectsAStaleRevision(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	stale := mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 1})
 
@@ -317,6 +333,7 @@ func TestStore_CompareAndSetRejectsAStaleRevision(t *testing.T) {
 // single-writer state machine runs: the winner of the create holds a revision
 // good enough to commit its own first update, with no read in between.
 func TestStore_CreateReturnsTheClaimRevision(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 
 	claimed, err := store.Create(t.Context(), "singleton", &record{Name: "provisioning"})
@@ -343,6 +360,7 @@ func TestStore_CreateReturnsTheClaimRevision(t *testing.T) {
 // the loop stops after Attempts tries, and the caller's Exhausted error is what
 // surfaces rather than kvutil's default message.
 func TestStore_ConfigAttemptsBoundsMutate(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	errBudgetSpent := errors.New("budget spent")
 	var gotKey string
@@ -380,6 +398,7 @@ func TestStore_ConfigAttemptsBoundsMutate(t *testing.T) {
 // TestStore_UpsertCreatesAnAbsentKey covers Upsert's difference from Mutate:
 // the first write starts from the zero value rather than reporting ErrNotFound.
 func TestStore_UpsertCreatesAnAbsentKey(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 
 	err := store.Upsert(t.Context(), "counter", func(r *record) (bool, error) {
@@ -397,6 +416,7 @@ func TestStore_UpsertCreatesAnAbsentKey(t *testing.T) {
 // TestStore_UpsertAccumulatesOntoAnExistingRecord proves the second call reads
 // the first one's value rather than starting from zero again.
 func TestStore_UpsertAccumulatesOntoAnExistingRecord(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 
 	for range 3 {
@@ -414,6 +434,7 @@ func TestStore_UpsertAccumulatesOntoAnExistingRecord(t *testing.T) {
 // TestStore_UpsertRetriesARevisionConflict asserts a write that lands under an
 // in-flight Upsert is re-read rather than clobbered, so no increment is lost.
 func TestStore_UpsertRetriesARevisionConflict(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	mustCreate(t, store, "counter", record{Count: 1})
 
@@ -437,6 +458,7 @@ func TestStore_UpsertRetriesARevisionConflict(t *testing.T) {
 // TestBucket_ConfiguredReportsWhetherThereIsAnythingToOpen covers the flag the
 // callers whose absent-KV path is a legitimate fallback branch on.
 func TestBucket_ConfiguredReportsWhetherThereIsAnythingToOpen(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	assert.False(t, kvstore.NewBucket(nil, kvstore.Config{Name: "b"}).Configured())
@@ -447,6 +469,7 @@ func TestBucket_ConfiguredReportsWhetherThereIsAnythingToOpen(t *testing.T) {
 // TestBucket_TTLOpensABucketWithThatMaxAge covers Config.TTL, the branch of
 // Bucket.open no caller reached until the usage dedupe markers.
 func TestBucket_TTLOpensABucketWithThatMaxAge(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	bucket := kvstore.NewBucket(testutil.NewJetStream(t, nc), kvstore.Config{
 		Name:    "kvstore-ttl-test",
@@ -462,6 +485,7 @@ func TestBucket_TTLOpensABucketWithThatMaxAge(t *testing.T) {
 }
 
 func TestStore_PurgeIsIdempotent(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	mustCreate(t, store, "acct-a/one", record{Name: "one"})
 
@@ -477,6 +501,7 @@ func TestStore_PurgeIsIdempotent(t *testing.T) {
 // alongside Delete: a deleted key keeps its prior values in history, a purged
 // one collapses to the marker alone.
 func TestStore_PurgeDropsTheHistoryDeleteKeeps(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	store := kvstore.New[record](testutil.NewJetStream(t, nc), kvstore.Config{
 		Name:    "kvstore-purge-test",

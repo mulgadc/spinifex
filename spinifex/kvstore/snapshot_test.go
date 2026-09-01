@@ -19,6 +19,7 @@ func snapshotStore(t *testing.T, name string) *kvstore.Store[snapRecord] {
 }
 
 func TestSnapshotReturnsMatchingRecordsWithTheirRevisions(t *testing.T) {
+	t.Parallel()
 	store := snapshotStore(t, "snapshot-records")
 	require.NoError(t, store.Set(t.Context(), "i.a", &snapRecord{Name: "a"}))
 	require.NoError(t, store.Set(t.Context(), "i.b", &snapRecord{Name: "b"}))
@@ -43,6 +44,7 @@ func TestSnapshotReturnsMatchingRecordsWithTheirRevisions(t *testing.T) {
 // survives in it. A delete is a message, so a snapshot whose newest event is a
 // delete still reaches the watermark and can still lower a counter.
 func TestSnapshotCountsATombstoneTowardsTheHighWaterMark(t *testing.T) {
+	t.Parallel()
 	store := snapshotStore(t, "snapshot-tombstone")
 	require.NoError(t, store.Set(t.Context(), "i.a", &snapRecord{Name: "a"}))
 	require.NoError(t, store.Set(t.Context(), "i.b", &snapRecord{Name: "b"}))
@@ -60,6 +62,7 @@ func TestSnapshotCountsATombstoneTowardsTheHighWaterMark(t *testing.T) {
 }
 
 func TestSnapshotOfNothingIsNotAnError(t *testing.T) {
+	t.Parallel()
 	store := snapshotStore(t, "snapshot-empty")
 	require.NoError(t, store.Set(t.Context(), "node.1", &snapRecord{Name: "elsewhere"}))
 
@@ -70,6 +73,7 @@ func TestSnapshotOfNothingIsNotAnError(t *testing.T) {
 }
 
 func TestLastSequenceIsTheNewestMessageMatchingTheFilter(t *testing.T) {
+	t.Parallel()
 	store := snapshotStore(t, "watermark-newest")
 	require.NoError(t, store.Set(t.Context(), "i.a", &snapRecord{Name: "a"}))
 	items, highWater, err := store.Snapshot(t.Context(), "i.*")
@@ -89,6 +93,7 @@ func TestLastSequenceIsTheNewestMessageMatchingTheFilter(t *testing.T) {
 }
 
 func TestLastSequenceIsZeroWhenNothingMatches(t *testing.T) {
+	t.Parallel()
 	store := snapshotStore(t, "watermark-empty")
 	require.NoError(t, store.Set(t.Context(), "node.1", &snapRecord{Name: "elsewhere"}))
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
@@ -44,6 +45,7 @@ func loseStream(t *testing.T, js jetstream.JetStream) {
 // recreated bucket is empty, so a read reporting ErrNotFound has recovered:
 // what must not survive is a stream-unavailable error reaching the caller.
 func TestStore_RecoversAfterStreamLost(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		op      func(context.Context, *kvstore.Store[record]) error
@@ -97,6 +99,7 @@ func TestStore_RecoversAfterStreamLost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			_, js, store := newRecoverableStore(t, kvstore.Config{RecreateIfMissing: true})
 			require.NoError(t, store.Set(t.Context(), "acct-a/seed", &record{Name: "seed"}))
 			loseStream(t, js)
@@ -124,6 +127,7 @@ func TestStore_RecoversAfterStreamLost(t *testing.T) {
 // recovery: a bucket that existed and now does not has lost its records, and a
 // store that has not opted in must say so rather than hand back an empty one.
 func TestStore_RecreateIfMissingDefaultsOff(t *testing.T) {
+	t.Parallel()
 	_, js, store := newRecoverableStore(t, kvstore.Config{})
 	require.NoError(t, store.Set(t.Context(), "acct-a/one", &record{Name: "one"}))
 	loseStream(t, js)
@@ -140,6 +144,7 @@ func TestStore_RecreateIfMissingDefaultsOff(t *testing.T) {
 // its records are still there. RecreateIfMissing is off, so nothing else could
 // have produced this result.
 func TestStore_ReconnectsWithoutRecreating(t *testing.T) {
+	t.Parallel()
 	_, js, store := newRecoverableStore(t, kvstore.Config{})
 	require.NoError(t, store.Set(t.Context(), "acct-a/one", &record{Name: "one"}))
 
@@ -159,11 +164,18 @@ func TestStore_ReconnectsWithoutRecreating(t *testing.T) {
 // the caller sees. With the server gone both the operation and the reopen fail,
 // and the operation's error is the one describing what the caller was doing.
 func TestStore_RecoveryFailureSurfacesTheOriginalError(t *testing.T) {
+	t.Parallel()
 	ns, _, store := newRecoverableStore(t, kvstore.Config{RecreateIfMissing: true})
 	ns.Shutdown()
 	ns.WaitForShutdown()
 
-	err := store.Set(t.Context(), "acct-a/one", &record{Name: "one"})
+	// The server is gone, so this Set can only time out. Bound it: a
+	// deadline-free context leaves the jetstream client waiting out its own
+	// five-second default for a result the shutdown above already decided.
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+
+	err := store.Set(ctx, "acct-a/one", &record{Name: "one"})
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "put acct-a/one",
 		"the surfaced error must name the operation, not the failed reopen")
@@ -173,6 +185,7 @@ func TestStore_RecoveryFailureSurfacesTheOriginalError(t *testing.T) {
 // The revision is the caller's, so a second attempt against a reopened bucket
 // would be committing a precondition that no longer means anything.
 func TestStore_CompareAndSetDoesNotReRun(t *testing.T) {
+	t.Parallel()
 	_, js, store := newRecoverableStore(t, kvstore.Config{RecreateIfMissing: true})
 	rev, err := store.Create(t.Context(), "acct-a/one", &record{Name: "one"})
 	require.NoError(t, err)
@@ -186,6 +199,7 @@ func TestStore_CompareAndSetDoesNotReRun(t *testing.T) {
 // TestBucket_OnOpenRunsOnEveryOpen covers the hook a recreated bucket depends
 // on: an unstamped, unmigrated bucket is not a recovered one.
 func TestBucket_OnOpenRunsOnEveryOpen(t *testing.T) {
+	t.Parallel()
 	var opens atomic.Int32
 	_, js, store := newRecoverableStore(t, kvstore.Config{
 		RecreateIfMissing: true,
@@ -215,6 +229,7 @@ func TestBucket_OnOpenRunsOnEveryOpen(t *testing.T) {
 // memoised: a migration that could not run leaves records the caller's decoder
 // will not understand, so the open is the right place to stop.
 func TestBucket_OnOpenFailureFailsTheOpen(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	boom := errors.New("migration refused")
 	store := kvstore.New[record](testutil.NewJetStream(t, nc), kvstore.Config{
@@ -235,6 +250,7 @@ func TestBucket_OnOpenFailureFailsTheOpen(t *testing.T) {
 // TestBucket_ReopenWithoutAJetStreamClientReportsTheConfiguredMessage covers the
 // eager caller that passed nil: it cannot recover, and must say why.
 func TestBucket_ReopenWithoutAJetStreamClientReportsTheConfiguredMessage(t *testing.T) {
+	t.Parallel()
 	bucket := kvstore.NewOpenBucket(nil, newOpenBucket(t), kvstore.Config{
 		Name:    "kvstore-over-test",
 		Missing: "kvstore test: no JetStream client configured",
@@ -248,6 +264,7 @@ func TestBucket_ReopenWithoutAJetStreamClientReportsTheConfiguredMessage(t *test
 // than one record type needs: each view decodes its own records, and they open
 // the bucket once between them rather than once each.
 func TestOn_TwoTypedViewsShareOneBucket(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	var opens atomic.Int32
 	bucket := kvstore.NewBucket(testutil.NewJetStream(t, nc), kvstore.Config{
@@ -288,6 +305,7 @@ type counter struct {
 // Bucket rather than holding a handle each: a stale handle repaired by one
 // view must not leave the other still pointing at the lost stream.
 func TestOn_RecoveryThroughOneViewRepairsTheOther(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	bucket := kvstore.NewBucket(js, kvstore.Config{
@@ -315,6 +333,7 @@ func TestOn_RecoveryThroughOneViewRepairsTheOther(t *testing.T) {
 // a write that loses a race is retried against the winner's revision instead of
 // landing out of order.
 func TestStore_ReplaceRetriesARevisionConflict(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 1})
 
@@ -333,6 +352,7 @@ func TestStore_ReplaceRetriesARevisionConflict(t *testing.T) {
 // record, and every later one is told there was nothing to take rather than
 // handed a second copy.
 func TestStore_ClaimIsWonOnce(t *testing.T) {
+	t.Parallel()
 	store := newStore(t)
 	mustCreate(t, store, "acct-a/one", record{Name: "one", Count: 3})
 
@@ -354,6 +374,7 @@ func TestStore_ClaimIsWonOnce(t *testing.T) {
 // recreated bucket holds nothing, so notFound is the correct answer — what must
 // not happen is the stream error reaching the caller.
 func TestStore_ClaimRecoversAfterStreamLost(t *testing.T) {
+	t.Parallel()
 	_, js, store := newRecoverableStore(t, kvstore.Config{RecreateIfMissing: true})
 	require.NoError(t, store.Set(t.Context(), "acct-a/one", &record{Name: "one"}))
 	loseStream(t, js)
@@ -366,6 +387,7 @@ func TestStore_ClaimRecoversAfterStreamLost(t *testing.T) {
 // TestBucket_DescriptionReachesTheCreatedBucket covers Config.Description,
 // which exists so a bucket recreated by recovery is not left anonymous.
 func TestBucket_DescriptionReachesTheCreatedBucket(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	bucket := kvstore.NewBucket(js, kvstore.Config{

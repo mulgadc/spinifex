@@ -3,9 +3,33 @@ package dns
 import (
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Two callers read this predicate in opposite directions: the terminate hook
+// withdraws when it is false, and the reconcile's desired set omits — and so
+// prunes — when it is false. They have to agree on every state.
+func TestInstanceRetainsRecords(t *testing.T) {
+	tests := []struct {
+		name   string
+		status vm.InstanceState
+		want   bool
+	}{
+		{name: "running", status: vm.StateRunning, want: true},
+		{name: "stopping", status: vm.StateStopping, want: true},
+		{name: "stopped", status: vm.StateStopped, want: true},
+		{name: "shutting down", status: vm.StateShuttingDown, want: false},
+		{name: "terminated", status: vm.StateTerminated, want: false},
+		{name: "error", status: vm.StateError, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, InstanceRetainsRecords(tt.status))
+		})
+	}
+}
 
 func TestEC2Names(t *testing.T) {
 	assert.Equal(t, "ec2-1-2-3-4.ap-southeast-2.compute.spx3.net",

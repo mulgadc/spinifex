@@ -57,6 +57,11 @@ type PruneScope struct {
 	ELB bool
 	EKS bool
 	RDS bool
+
+	// EC2 is set only when the instance view spanned every node. A node's own
+	// VM manager does not qualify: pruning against it would delete the records
+	// of every instance running elsewhere.
+	EC2 bool
 }
 
 // Reconciler converges the zone toward the live inventory. On each pass it
@@ -70,21 +75,24 @@ type PruneScope struct {
 // the queue group load-balances rather than serialises, an idle cluster raced
 // its own zone object once per cycle.
 //
-// Only cluster-wide-enumerable records (load balancers, EKS clusters) are
-// pruned: any node sees the full ELB/EKS set from KV. EC2 records are never
-// pruned here because a node's vmMgr holds only its own instances — an
-// incomplete view would delete another node's records. EC2 removal stays with
-// the terminate hook; the reconcile only repairs missing/incorrect EC2 records.
+// Only cluster-wide-enumerable records are pruned, and only for the classes a
+// cycle enumerated in full. Every class the desired set carries is readable
+// from KV across the whole cluster, so a pass that reads them all can prune
+// them all; one that could not read a class repairs it without pruning it.
 type Reconciler struct {
 	enabled    bool
 	s3cfg      *nsconfig.S3Config
 	baseDomain string
-	nc         *nats.Conn
-	desired    DesiredFunc
-	interval   time.Duration
-	accountID  string
-	holder     string
-	sources    []reconciler.Source
+	// internalDomain is the private zone instance records land in. It is read
+	// as well as the base domain because pruning one zone and not the other
+	// leaves every stale private record behind.
+	internalDomain string
+	nc             *nats.Conn
+	desired        DesiredFunc
+	interval       time.Duration
+	accountID      string
+	holder         string
+	sources        []reconciler.Source
 }
 
 // NewReconciler builds the drift backstop. It is disabled (a no-op) when
@@ -110,6 +118,7 @@ func NewReconciler(cfg *config.Config, nc *nats.Conn, desired DesiredFunc, sourc
 	r.enabled = true
 	r.s3cfg = zoneCfg.s3
 	r.baseDomain = strings.TrimSpace(zoneCfg.server.DefaultDomain)
+	r.internalDomain = ResolveInternalDomain(cfg)
 	return r
 }
 
@@ -280,30 +289,49 @@ func splitReconcileChanges(changes []Change, payloadLimit int) ([][]Change, erro
 	return batches, nil
 }
 
-// computeBatch reads the base zone (the only zone holding prunable ELB/EKS
-// records) and converges the desired set against it.
+// computeBatch reads every zone holding prunable records and converges the
+// desired set against them. That is the base domain, plus the private zone once
+// instance records are prunable — a stale private record is as wrong as a stale
+// public one, and only this zone holds it.
 func (r *Reconciler) computeBatch() ([]Change, error) {
 	ds := r.desired()
 	existing := map[string][]zoneRecord{}
-	recs, ok, err := r.readZone(r.baseDomain)
-	if err != nil {
-		return nil, err
+	zones := []string{r.baseDomain}
+	if ds.Prunable.EC2 {
+		zones = append(zones, privateZoneOrDefault(r.internalDomain))
 	}
-	if ok {
-		existing[r.baseDomain] = recs
+	for _, zone := range zones {
+		if _, seen := existing[zone]; seen || zone == "" {
+			continue
+		}
+		recs, ok, err := r.readZone(zone)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			existing[zone] = recs
+		}
 	}
 	return computeConverge(ds.Changes, existing, r.prunable(ds.Prunable))
 }
 
 // prunable returns the predicate deciding whether a (zone, label) record may be
-// deleted when absent from the desired set: load-balancer, EKS and RDS records
-// in the base domain, but only for the classes this cycle enumerated authoritatively
-// across all tenants. EC2 (`.compute.`) records are never pruned (a node sees
-// only its own instances); structural (apex/NS/glue) records never match.
+// deleted when absent from the desired set, for the classes this cycle
+// enumerated authoritatively across all tenants. Structural (apex/NS/glue)
+// records carry none of these prefixes, so they never match.
 func (r *Reconciler) prunable(scope PruneScope) func(zone, label string) bool {
+	private := privateZoneOrDefault(r.internalDomain)
 	return func(zone, label string) bool {
+		// The private zone holds instance records and nothing else: every other
+		// producer writes the base domain.
+		if zone == private {
+			return scope.EC2 && strings.HasPrefix(label, ec2PrivateLabelPrefix)
+		}
 		if zone != r.baseDomain {
 			return false
+		}
+		if scope.EC2 && strings.HasPrefix(label, ec2PublicLabelPrefix) {
+			return true
 		}
 		if scope.ELB && strings.Contains(label, ".elb.") {
 			return true

@@ -37,26 +37,6 @@ func TestPublishDNS(t *testing.T) {
 	enabled.publishDNS("123456789012", handlers_dns.ActionUpsert, nil)
 }
 
-func TestNeedsDNSWithdrawal(t *testing.T) {
-	tests := []struct {
-		name   string
-		status vm.InstanceState
-		want   bool
-	}{
-		{name: "running", status: vm.StateRunning, want: false},
-		{name: "stopping", status: vm.StateStopping, want: false},
-		{name: "stopped", status: vm.StateStopped, want: false},
-		{name: "shutting down", status: vm.StateShuttingDown, want: true},
-		{name: "terminated", status: vm.StateTerminated, want: true},
-		{name: "error", status: vm.StateError, want: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, needsDNSWithdrawal(tt.status))
-		})
-	}
-}
-
 // The race the check exists for: terminate lands while the deferred launch is
 // still publishing the UPSERT, so Status has not caught up and only the
 // deletion mark says the record is going away.

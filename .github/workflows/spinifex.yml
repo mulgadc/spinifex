@@ -89,8 +89,11 @@ jobs:
       # Build artifacts follow source, so the key rolls per run and falls back to
       # this job's newest entry. Keyed per job because -race, -covermode=atomic
       # and plain builds produce disjoint entries and would evict each other.
-      - name: Cache Go build
-        uses: actions/cache@v6
+      # Restore runs everywhere; the matching save is gated to dev and main, so
+      # a PR reads the base branch's entry without spending a minute uploading
+      # one only that PR would ever read.
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
@@ -130,6 +133,27 @@ jobs:
 
       - name: Check Diff Coverage
         run: cd spinifex && scripts/diff-coverage.sh coverage.out --base HEAD~1
+
+      # Compiled output stays valid whatever the tests said, and skipping the
+      # save on a red run would leave the next one rebuilding it, so this is
+      # gated on the branch rather than on success.
+      # Go bumps an entry's mtime when a run uses it, so this run's working set
+      # survives and objects superseded by later commits do not. Runs after the
+      # work, so it costs this job nothing and only shrinks what the next reads.
+      - name: Trim Go build cache
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        run: |
+          C="$(go env GOCACHE)"
+          before=$(du -sm "$C" | cut -f1)
+          find "$C" -type f -mmin +240 -delete
+          echo "trimmed ${before}MB -> $(du -sm "$C" | cut -f1)MB"
+
+      - name: Save Go build cache
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: gobuild-${{ github.job }}-${{ github.run_id }}
 
   race_detection:
     name: Race Detection
@@ -198,8 +222,11 @@ jobs:
       # Build artifacts follow source, so the key rolls per run and falls back to
       # this job's newest entry. Keyed per job because -race, -covermode=atomic
       # and plain builds produce disjoint entries and would evict each other.
-      - name: Cache Go build
-        uses: actions/cache@v6
+      # Restore runs everywhere; the matching save is gated to dev and main, so
+      # a PR reads the base branch's entry without spending a minute uploading
+      # one only that PR would ever read.
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
@@ -210,6 +237,24 @@ jobs:
 
       - name: Run Tests with Race Detector
         run: make -C spinifex test-race GOTESTFLAGS=-count=1
+
+      # Go bumps an entry's mtime when a run uses it, so this run's working set
+      # survives and objects superseded by later commits do not. Runs after the
+      # work, so it costs this job nothing and only shrinks what the next reads.
+      - name: Trim Go build cache
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        run: |
+          C="$(go env GOCACHE)"
+          before=$(du -sm "$C" | cut -f1)
+          find "$C" -type f -mmin +240 -delete
+          echo "trimmed ${before}MB -> $(du -sm "$C" | cut -f1)MB"
+
+      - name: Save Go build cache
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: gobuild-${{ github.job }}-${{ github.run_id }}
 
   lint_and_security:
     name: Lint + Security + Integration
@@ -279,8 +324,11 @@ jobs:
       # Build artifacts follow source, so the key rolls per run and falls back to
       # this job's newest entry. Keyed per job because -race, -covermode=atomic
       # and plain builds produce disjoint entries and would evict each other.
-      - name: Cache Go build
-        uses: actions/cache@v6
+      # Restore runs everywhere; the matching save is gated to dev and main, so
+      # a PR reads the base branch's entry without spending a minute uploading
+      # one only that PR would ever read.
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
@@ -301,3 +349,21 @@ jobs:
       - name: Run Integration Tests
         if: ${{ !cancelled() }}
         run: make -C spinifex test-integration
+
+      # Go bumps an entry's mtime when a run uses it, so this run's working set
+      # survives and objects superseded by later commits do not. Runs after the
+      # work, so it costs this job nothing and only shrinks what the next reads.
+      - name: Trim Go build cache
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        run: |
+          C="$(go env GOCACHE)"
+          before=$(du -sm "$C" | cut -f1)
+          find "$C" -type f -mmin +240 -delete
+          echo "trimmed ${before}MB -> $(du -sm "$C" | cut -f1)MB"
+
+      - name: Save Go build cache
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: gobuild-${{ github.job }}-${{ github.run_id }}

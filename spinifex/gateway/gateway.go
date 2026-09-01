@@ -38,6 +38,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -105,7 +106,12 @@ type GatewayConfig struct {
 	activeNodesMu    sync.RWMutex
 	activeNodesCount int
 	activeNodesAt    time.Time
-	InternalSuffix   string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
+	// The EC2 client-token KV binding, bound on first use and reused after, so
+	// the creates that honour ClientToken do not rebind it per request.
+	ec2TokenOnce   sync.Once
+	ec2TokenKV     jetstream.KeyValue
+	ec2TokenErr    error
+	InternalSuffix string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
 	// RegistryPort is the gateway's advertised port, appended to the ECR
 	// registry host so docker login/tag/push dial the right port. Empty or
 	// "443" renders a port-less host (standard HTTPS parity).

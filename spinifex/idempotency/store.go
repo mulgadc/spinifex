@@ -28,11 +28,16 @@ var (
 	pollStep    = 250 * time.Millisecond
 )
 
-// ErrParamMismatch signals a token reused with different request parameters.
-// ErrWaitTimeout signals a duplicate polled an in-flight owner past WaitTimeout.
+// ErrParamMismatch signals a token reused with different request parameters: a
+// caller error, and the only token failure that is not ErrUnavailable.
+var ErrParamMismatch = errors.New("idempotency: parameter mismatch")
+
+// ErrUnavailable signals the token record could not be read or settled, so the
+// request cannot be safely deduplicated. Every store failure wraps it, which is
+// what lets a caller map them all onto one API error.
 var (
-	ErrParamMismatch = errors.New("idempotency: parameter mismatch")
-	ErrWaitTimeout   = errors.New("idempotency: timed out waiting for the in-flight owner")
+	ErrUnavailable = errors.New("idempotency: token record unavailable")
+	ErrWaitTimeout = fmt.Errorf("%w: timed out waiting for the in-flight owner", ErrUnavailable)
 )
 
 // record is the per-token record stored in the KV bucket.
@@ -46,13 +51,14 @@ type record[T any] struct {
 // Store owns the token records for one kind of request. T is what a duplicate
 // caller replays: a whole response, or just the name of what was created.
 type Store[T any] struct {
-	kv jetstream.KeyValue
+	kv        jetstream.KeyValue
+	namespace string
 }
 
-// OpenStore binds the bucket, creating it with the given TTL if absent. The
-// caller owns the JetStream handle, so a store never outlives the connection it
-// was built from.
-func OpenStore[T any](ctx context.Context, js jetstream.JetStream, bucket string, ttl time.Duration) (*Store[T], error) {
+// OpenBucket binds the bucket, creating it with the given TTL if absent. Split
+// from NewStore so several typed stores can share one bucket without rebinding
+// it per request.
+func OpenBucket(ctx context.Context, js jetstream.JetStream, bucket string, ttl time.Duration) (jetstream.KeyValue, error) {
 	kv, err := js.KeyValue(ctx, bucket)
 	if errors.Is(err, jetstream.ErrBucketNotFound) {
 		kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
@@ -64,13 +70,41 @@ func OpenStore[T any](ctx context.Context, js jetstream.JetStream, bucket string
 	if err != nil {
 		return nil, fmt.Errorf("open idempotency bucket %s: %w", bucket, err)
 	}
-	return &Store[T]{kv: kv}, nil
+	return kv, nil
+}
+
+// NewStore builds a typed view over an already-bound bucket. Stores sharing a
+// bucket must use distinct namespaces, else one caller's record is decoded as
+// another caller's T.
+func NewStore[T any](kv jetstream.KeyValue, namespace string) *Store[T] {
+	return &Store[T]{kv: kv, namespace: namespace}
+}
+
+// OpenStore binds the bucket and takes the whole of it, with unprefixed keys.
+// The caller owns the JetStream handle, so a store never outlives the
+// connection it was built from.
+func OpenStore[T any](ctx context.Context, js jetstream.JetStream, bucket string, ttl time.Duration) (*Store[T], error) {
+	kv, err := OpenBucket(ctx, js, bucket, ttl)
+	if err != nil {
+		return nil, err
+	}
+	return NewStore[T](kv, ""), nil
 }
 
 // Key scopes a token to its account, so the same token from two accounts is two
 // separate pieces of work.
 func Key(accountID, token string) string {
 	return accountID + "." + token
+}
+
+// key prefixes Key with the store's namespace. An empty namespace yields the
+// bare account.token key, which is what the stores that predate namespacing
+// have on disk.
+func (s *Store[T]) key(accountID, token string) string {
+	if s.namespace == "" {
+		return Key(accountID, token)
+	}
+	return s.namespace + "." + Key(accountID, token)
 }
 
 // ParamHash hashes a request so a token reused with different parameters is
@@ -90,19 +124,19 @@ func ParamHash(request any) string {
 // when the caller owns it and must Finalize or Abort, (payload, false, nil) to
 // replay a completed one, or an error on mismatch or timeout.
 func (s *Store[T]) Claim(ctx context.Context, accountID, token, paramHash string) (*T, bool, error) {
-	key := Key(accountID, token)
+	key := s.key(accountID, token)
 	inflight, err := json.Marshal(record[T]{
 		Status:    statusInFlight,
 		ParamHash: paramHash,
 		StartedAt: time.Now().UTC(),
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("idempotency marshal: %w", err)
+		return nil, false, fmt.Errorf("%w: marshal: %w", ErrUnavailable, err)
 	}
 	if _, cerr := s.kv.Create(ctx, key, inflight); cerr == nil {
 		return nil, true, nil
 	} else if !errors.Is(cerr, jetstream.ErrKeyExists) {
-		return nil, false, fmt.Errorf("idempotency create %s: %w", key, cerr)
+		return nil, false, fmt.Errorf("%w: create %s: %w", ErrUnavailable, key, cerr)
 	}
 
 	deadline := time.Now().Add(waitTimeout)
@@ -114,15 +148,15 @@ func (s *Store[T]) Claim(ctx context.Context, accountID, token, paramHash string
 				if _, rcerr := s.kv.Create(ctx, key, inflight); rcerr == nil {
 					return nil, true, nil
 				} else if !errors.Is(rcerr, jetstream.ErrKeyExists) {
-					return nil, false, fmt.Errorf("idempotency recreate %s: %w", key, rcerr)
+					return nil, false, fmt.Errorf("%w: recreate %s: %w", ErrUnavailable, key, rcerr)
 				}
 				continue
 			}
-			return nil, false, fmt.Errorf("idempotency get %s: %w", key, gerr)
+			return nil, false, fmt.Errorf("%w: get %s: %w", ErrUnavailable, key, gerr)
 		}
 		var rec record[T]
 		if uerr := json.Unmarshal(entry.Value(), &rec); uerr != nil {
-			return nil, false, fmt.Errorf("idempotency unmarshal %s: %w", key, uerr)
+			return nil, false, fmt.Errorf("%w: unmarshal %s: %w", ErrUnavailable, key, uerr)
 		}
 		if rec.ParamHash != paramHash {
 			return nil, false, ErrParamMismatch
@@ -139,7 +173,7 @@ func (s *Store[T]) Claim(ctx context.Context, accountID, token, paramHash string
 
 // Finalize marks the token done with the payload duplicates should replay.
 func (s *Store[T]) Finalize(ctx context.Context, accountID, token, paramHash string, payload T) error {
-	key := Key(accountID, token)
+	key := s.key(accountID, token)
 	data, err := json.Marshal(record[T]{
 		Status:    statusDone,
 		ParamHash: paramHash,
@@ -157,12 +191,8 @@ func (s *Store[T]) Finalize(ctx context.Context, accountID, token, paramHash str
 
 // Abort drops the in-flight token so a retry can re-attempt the work.
 func (s *Store[T]) Abort(ctx context.Context, accountID, token string) {
-	key := Key(accountID, token)
+	key := s.key(accountID, token)
 	if err := s.kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		slog.Warn("idempotency: failed to abort token record", "key", key, "err", err)
 	}
 }
-
-// There is deliberately no Do wrapper. The two callers orchestrate differently:
-// RunInstances wraps one launch closure, while CreateCluster interleaves aborts
-// through a long create and replays by name rather than from the payload.

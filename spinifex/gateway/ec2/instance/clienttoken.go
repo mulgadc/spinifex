@@ -6,22 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_ec2_idem "github.com/mulgadc/spinifex/spinifex/gateway/ec2/idem"
 	"github.com/mulgadc/spinifex/spinifex/idempotency"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-)
-
-const (
-	// kvBucketClientTokens is the JetStream KV bucket for ClientToken records.
-	kvBucketClientTokens = "spinifex-ec2-clienttokens" //nolint:gosec // G101 false positive: KV bucket name, not a credential
-
-	// clientTokenTTL must outlast SDK retry windows; short enough that a crashed
-	// in-flight record ages out and frees the token for a fresh launch.
-	clientTokenTTL = 15 * time.Minute
 )
 
 // ClientTokenStore is the RunInstances idempotency store: the first caller owns
@@ -53,8 +44,11 @@ func getClientTokenStore(ctx context.Context, nc *nats.Conn) (*ClientTokenStore,
 	return ctStore, errCTStoreInit
 }
 
+// newClientTokenStore takes the bucket unnamespaced. Every other EC2 action
+// namespaces its keys by action, but RunInstances predates that: re-keying live
+// records would make a retry re-launch instead of replay.
 func newClientTokenStore(ctx context.Context, js jetstream.JetStream) (*ClientTokenStore, error) {
-	return idempotency.OpenStore[ec2.Reservation](ctx, js, kvBucketClientTokens, clientTokenTTL)
+	return idempotency.OpenStore[ec2.Reservation](ctx, js, gateway_ec2_idem.KVBucket, gateway_ec2_idem.TTL)
 }
 
 // clientTokenParamHash hashes the request excluding ClientToken, so the same
@@ -65,44 +59,22 @@ func clientTokenParamHash(input *ec2.RunInstancesInput) string {
 	return idempotency.ParamHash(&clone)
 }
 
-// runInstancesWithClientToken wraps a launch in ClientToken idempotency:
-// claims the token, replays a completed reservation, or (as owner) launches,
-// finalizes, and aborts on failure. Extracted for unit-testability.
+// runInstancesWithClientToken wraps a launch in ClientToken idempotency and maps
+// the token errors onto the AWS ones RunInstances returns. Extracted for
+// unit-testability.
 func runInstancesWithClientToken(
 	ctx context.Context,
 	store *ClientTokenStore,
 	accountID, token, paramHash string,
 	launch func() (ec2.Reservation, error),
 ) (ec2.Reservation, error) {
-	var zero ec2.Reservation
-	replay, owned, cerr := store.Claim(ctx, accountID, token, paramHash)
-	if cerr != nil {
-		if errors.Is(cerr, idempotency.ErrParamMismatch) {
-			return zero, errors.New(awserrors.ErrorIdempotentParameterMismatch)
-		}
-		slog.Error("RunInstances: client-token claim failed", "token", token, "err", cerr)
-		return zero, errors.New(awserrors.ErrorServerInternal)
+	res, err := idempotency.Do(ctx, store, accountID, token, paramHash, launch)
+	switch {
+	case errors.Is(err, idempotency.ErrParamMismatch):
+		return ec2.Reservation{}, errors.New(awserrors.ErrorIdempotentParameterMismatch)
+	case errors.Is(err, idempotency.ErrUnavailable):
+		slog.ErrorContext(ctx, "RunInstances: client-token claim failed", "token", token, "err", err)
+		return ec2.Reservation{}, errors.New(awserrors.ErrorServerInternal)
 	}
-	if replay != nil {
-		return *replay, nil
-	}
-	if !owned {
-		return zero, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	res, rerr := launch()
-
-	// Recording the launch outcome outlives ctx: a caller that went away mid-launch
-	// is exactly when the record must be settled, and leaving it in-flight parks
-	// every retry of that token behind the poll deadline until the record ages out.
-	outcomeCtx := context.WithoutCancel(ctx)
-	if rerr != nil {
-		store.Abort(outcomeCtx, accountID, token)
-		return zero, rerr
-	}
-	if ferr := store.Finalize(outcomeCtx, accountID, token, paramHash, res); ferr != nil {
-		// Launch succeeded; finalize failure only weakens future dedup — don't fail.
-		slog.Warn("RunInstances: failed to finalize client-token record", "token", token, "err", ferr)
-	}
-	return res, nil
+	return res, err
 }

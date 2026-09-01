@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -88,18 +89,25 @@ func init() {
 // hash agrees. An optional signingTime pins the clock for skew tests.
 func signTestRequest(t *testing.T, req *http.Request, body []byte, accessKey, secret string, signingTime ...time.Time) {
 	t.Helper()
-	sum := sha256.Sum256(body)
-	payloadHash := hex.EncodeToString(sum[:])
 	when := time.Now().UTC()
 	if len(signingTime) > 0 {
 		when = signingTime[0]
 	}
+	signTestRequestAs(t, req, body, accessKey, secret, testService, when)
+}
+
+// signTestRequestAs signs with an explicit credential-scope service, so a test
+// can drive a scope the gateway does not serve.
+func signTestRequestAs(t *testing.T, req *http.Request, body []byte, accessKey, secret, service string, when time.Time) {
+	t.Helper()
+	sum := sha256.Sum256(body)
+	payloadHash := hex.EncodeToString(sum[:])
 	// gwsign sets this header so the SDK signs it; sigv4 reproduces it when
 	// reconstructing the canonical request.
 	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
 	require.NoError(t, v4.NewSigner().SignHTTP(context.Background(),
 		aws.Credentials{AccessKeyID: accessKey, SecretAccessKey: secret},
-		req, payloadHash, testService, testRegion, when))
+		req, payloadHash, service, testRegion, when))
 }
 
 func setupTestApp(accessKey, secretKey string) http.Handler {
@@ -656,6 +664,54 @@ func TestWriteSigV4Error_IgnoresClientRequestID(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "<RequestID>") {
 		t.Errorf("Expected RequestID in response, got: %s", string(body))
+	}
+}
+
+// The gateway does not serve S3 — predastore does — so an S3-scoped request is
+// rejected on credential scope before any verb or path parsing. Every S3 verb
+// therefore takes one path, and all that varies below is the request shape.
+func TestSigV4Auth_S3ScopeReturnsFlatS3Error(t *testing.T) {
+	handler := setupTestApp(testAccessKey, testSecretKey)
+
+	testCases := []struct {
+		name   string
+		method string
+		path   string
+		body   []byte
+	}{
+		{"PutObject", http.MethodPut, "/bucket/key.txt", []byte("payload")},
+		{"ListObjectsV2", http.MethodGet, "/bucket?list-type=2&prefix=a%2F", nil},
+		{"CreateBucket", http.MethodPut, "/bucket", nil},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, bytes.NewReader(tc.body))
+			req.Host = "localhost:9999"
+			signTestRequestAs(t, req, tc.body, testAccessKey, testSecretKey, "s3", time.Now().UTC())
+
+			resp := doRequest(handler, req)
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			var parsed struct {
+				Code      string `xml:"Code"`
+				Message   string `xml:"Message"`
+				Resource  string `xml:"Resource"`
+				RequestID string `xml:"RequestId"`
+			}
+			require.NoError(t, xml.Unmarshal(body, &parsed), "body: %s", body)
+
+			// The flat root element is the whole point: an SDK that finds
+			// <Response> here reports an empty code and an empty message.
+			assert.Equal(t, "Error", xmlRootName(t, body))
+			assert.Equal(t, awserrors.ErrorSignatureDoesNotMatch, parsed.Code)
+			assert.NotEmpty(t, parsed.Message)
+			assert.NotEmpty(t, parsed.RequestID)
+			assert.Equal(t, req.URL.Path, parsed.Resource)
+		})
 	}
 }
 

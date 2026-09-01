@@ -379,18 +379,28 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 		errorMsg = awserrors.ErrorMessage{HTTPCode: 500, Message: "Internal error"}
 	}
 
+	svc := signedService(r)
+
 	// AWS JSON 1.1 services (bedrock family, EKS, …) need a JSON error body, or
 	// the SDK chokes deserializing our XML into its shape.
-	if svc, _ := gw.GetService(r); jsonErrorService(svc) {
+	if jsonErrorService(svc) {
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.WriteHeader(errorMsg.HTTPCode)
 		_, _ = w.Write(GenerateEKSErrorResponse(errorCode, errorMsg.Message, requestID))
 		return
 	}
 
-	xmlError := GenerateEC2ErrorResponse(errorCode, errorMsg.Message, requestID)
+	xmlError := xmlErrorBody(svc, errorCode, errorMsg.Message, requestID, r.URL.Path)
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(errorMsg.HTTPCode)
 	_, _ = w.Write(xmlError)
+}
+
+// signedService returns the credential-scope service the client signed with,
+// including a scope the gateway does not serve. A rejection has to render in
+// the client's format, and GetService reports those scopes as empty.
+func signedService(r *http.Request) string {
+	svc, _ := r.Context().Value(ctxService).(string)
+	return svc
 }

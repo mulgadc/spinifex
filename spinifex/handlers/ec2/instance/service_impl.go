@@ -863,25 +863,6 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	return reservation, instances, instanceType, nil
 }
 
-// publishDNS registers (or withdraws) the public + private A records for a batch
-// of instances with the control-plane DNS writer. Best-effort: a failure is
-// logged by the writer helper and never blocks the lifecycle operation; the
-// reconcile loop repairs any miss. No-op when northstar is not configured.
-func (s *InstanceServiceImpl) publishDNS(accountID string, action handlers_dns.Action, instances []*vm.VM) {
-	if s.dnsBaseDomain == "" || len(instances) == 0 {
-		return
-	}
-	var changes []handlers_dns.Change
-	for _, instance := range instances {
-		privateIP := ""
-		if instance.Instance != nil && instance.Instance.PrivateIpAddress != nil {
-			privateIP = *instance.Instance.PrivateIpAddress
-		}
-		changes = append(changes, handlers_dns.EC2Changes(action, s.config.Region, s.dnsBaseDomain, s.dnsInternalDomain, instance.PublicIP, privateIP)...)
-	}
-	handlers_dns.PublishChangesBestEffort(s.natsConn, accountID, changes)
-}
-
 // attachPreCreatedENI verifies the ENI is available, attaches it as device-0,
 // and populates the VM + ec2.Instance. Public-IP auto-assignment is skipped;
 // the caller manages that out-of-band.
@@ -939,7 +920,6 @@ func (s *InstanceServiceImpl) attachPreCreatedENI(ctx context.Context, accountID
 // into vmMgr: volume prep, GPU claim, vmMgr.Run. Partial failures are tolerated.
 func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances []*vm.VM, input *ec2.RunInstancesInput, instanceType *ec2.InstanceTypeInfo) {
 	var successCount int
-	launchedByAccount := make(map[string][]*vm.VM)
 	for _, instance := range instances {
 		// Skip if a concurrent terminate raced with prepare.
 		status := s.vmMgr.Status(instance)
@@ -1005,34 +985,10 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 		s.vmMgr.UpdateGuestDeviceNames(instance)
 
 		successCount++
-		launchedByAccount[instance.AccountID] = append(launchedByAccount[instance.AccountID], instance)
 		slog.InfoContext(ctx, "LaunchRunInstances: launched instance", "instanceId", instance.ID)
 	}
 
-	withdrawByAccount := make(map[string][]*vm.VM)
-	for accountID, launched := range launchedByAccount {
-		s.publishDNS(accountID, handlers_dns.ActionUpsert, launched)
-		for _, instance := range launched {
-			if s.terminateRacedLaunch(instance) {
-				withdrawByAccount[accountID] = append(withdrawByAccount[accountID], instance)
-			}
-		}
-	}
-	for accountID, instances := range withdrawByAccount {
-		s.publishDNS(accountID, handlers_dns.ActionDelete, instances)
-	}
 	slog.InfoContext(ctx, "LaunchRunInstances: completed", "requested", len(instances), "launched", successCount)
-}
-
-// terminateRacedLaunch reports whether a terminate raced the deferred launch
-// UPSERT: it reads the terminate flag stamped under the lock (plus status) since
-// the async state transition may not have landed, which a status-only check misses.
-func (s *InstanceServiceImpl) terminateRacedLaunch(instance *vm.VM) bool {
-	withdraw := false
-	s.vmMgr.Inspect(instance, func(v *vm.VM) {
-		withdraw = v.DeletionTimestamp != nil || !handlers_dns.InstanceRetainsRecords(v.Status)
-	})
-	return withdraw
 }
 
 // RunInstances is for non-daemon callers (tests). The daemon calls
@@ -1194,12 +1150,6 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, insta
 		slog.WarnContext(ctx, "StopOrTerminateInstance: instance in incorrect state for "+strings.ToLower(action),
 			"instanceId", instance.ID, "currentState", string(currentState))
 		return errors.New(awserrors.ErrorIncorrectInstanceState)
-	}
-
-	// Withdraw the instance's DNS records on terminate; stop/start retains
-	// the IP and the name, so they are a no-op here.
-	if isTerminate {
-		s.publishDNS(instance.AccountID, handlers_dns.ActionDelete, []*vm.VM{instance})
 	}
 
 	go func(id, ownerAccountID string) { //nolint:gosec // detached lifecycle op: stop/terminate continues after the API ack; request ctx would cancel it

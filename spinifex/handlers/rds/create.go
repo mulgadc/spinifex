@@ -9,7 +9,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go/jetstream"
@@ -134,7 +133,6 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	// Published as soon as the ENI IP is known rather than on available, so the
 	// name resolves the moment the engine comes up; the security group is what
 	// gates connectivity until then.
-	s.publishDNS(ctx, accountID, stored, handlers_dns.ActionUpsert)
 
 	s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, req.Identifier,
 		"DB instance created.", EventCategoryCreation)

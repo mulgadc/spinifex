@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -148,7 +147,6 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 		s.unwindLaunched(ctx, launched)
 		return nil, fmt.Errorf("rds: write instance index for %s: %w", req.Identifier, err)
 	}
-	s.publishDNS(ctx, accountID, stored, handlers_dns.ActionUpsert)
 
 	s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, req.Identifier,
 		fmt.Sprintf("Restored from DB snapshot %s.", snapshot.DBSnapshotIdentifier),

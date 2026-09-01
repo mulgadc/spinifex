@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -202,7 +201,6 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv jetstream.KeyValue,
 	}
 
 	s.deleteInstanceENIs(ctx, accountID, rec)
-	s.publishDNS(ctx, accountID, rec, handlers_dns.ActionDelete)
 
 	if rec.InstanceID != "" {
 		if err := s.DeleteInstanceIndex(ctx, rec.InstanceID); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {

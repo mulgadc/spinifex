@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,13 +11,13 @@ import (
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	toml "github.com/pelletier/go-toml/v2"
 )
 
 // Writer is the control-plane DNS record writer. It owns the read-modify-write
 // of zone TOML files in s3://northstar/ using the system predastore credentials.
+// Only the reconcile's elected node calls it, so a zone has one writer at a time.
 type Writer struct {
 	enabled      bool
 	s3cfg        *nsconfig.S3Config
@@ -28,7 +27,6 @@ type Writer struct {
 	nc           *nats.Conn
 	quotaEnabled bool
 	quotas       Quotas
-	locker       *zoneLocker
 }
 
 // NewWriter resolves the northstar S3 endpoint/bucket from the node's
@@ -39,9 +37,6 @@ type Writer struct {
 // events.
 func NewWriter(cfg *config.Config, cluster *config.ClusterConfig, nc *nats.Conn) *Writer {
 	w := &Writer{ttl: DefaultTTL, nc: nc, quotas: DefaultQuotas()}
-	if cfg != nil {
-		w.locker = newZoneLocker(nc, cfg.Node)
-	}
 	zoneCfg, ok := zoneS3Config(cfg)
 	if !ok {
 		slog.Info("dns writer: northstar S3 not configured, record registration disabled")
@@ -64,19 +59,6 @@ func NewWriter(cfg *config.Config, cluster *config.ClusterConfig, nc *nats.Conn)
 // Enabled reports whether the writer will process changes. Nil-safe: the
 // reconciler asks before it has one, and a missing writer is a disabled one.
 func (w *Writer) Enabled() bool { return w != nil && w.enabled }
-
-// Subscribe registers the queue-group request-reply consumer. It is a no-op when
-// the writer is disabled. Joining the queue group is what exposes this writer to
-// its peers, so the zone locker adopts the connection here if it has none yet.
-func (w *Writer) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
-	if !w.enabled {
-		return nil, nil
-	}
-	w.locker.bindConn(nc)
-	return nc.QueueSubscribe(SubjectRecordsetChange, QueueGroup, func(msg *nats.Msg) {
-		utils.ServeNATSRequest(msg, w.ApplyBatch)
-	})
-}
 
 // ApplyBatch applies a batch of changes, grouped per zone so each zone object is
 // read-modified-written once.
@@ -128,22 +110,10 @@ func (w *Writer) publishReload(zone string) {
 }
 
 // applyZone read-modify-writes a single zone TOML for its changes. It returns
-// whether the zone object was rewritten. The read-modify-write holds the
-// cluster-wide per-zone lock: a NATS queue group load-balances messages rather
-// than serialising them, so without it concurrent daemons lose each other's
-// records and can leave the object unparseable.
+// whether the zone object was rewritten. Unserialised on purpose: the only
+// caller is the reconcile pass on the elected node, so there is no second writer
+// for a lock to exclude.
 func (w *Writer) applyZone(zone string, changes []Change) (bool, error) {
-	// Bounded by the producer's ack budget: a lock wait outliving the request
-	// would apply a change nobody is listening for any more.
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
-	defer cancel()
-
-	lock, err := w.locker.lockZone(ctx, zone)
-	if err != nil {
-		return false, err
-	}
-	defer lock.Release(ctx)
-
 	cfg, exists, err := nsconfig.ReadZoneRaw(w.s3cfg, zone)
 	switch {
 	case isCorruptZone(err):
@@ -206,11 +176,6 @@ func (w *Writer) applyZone(zone string, changes []Change) (bool, error) {
 	body, err := nsconfig.RenderZone(cfg)
 	if err != nil {
 		return false, err
-	}
-	// The lease may have been reaped while the read ran, in which case a peer can
-	// already hold the zone. Abort rather than complete the write unserialised.
-	if lock.Expired() {
-		return false, fmt.Errorf("apply zone %s: lock lease expired before write, retry", zone)
 	}
 	if err := nsconfig.WriteZoneFile(w.s3cfg, zone, body); err != nil {
 		return false, err

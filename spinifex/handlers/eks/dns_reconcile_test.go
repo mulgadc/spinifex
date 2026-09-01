@@ -4,9 +4,7 @@ import (
 	"context"
 	"testing"
 
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,14 +13,7 @@ func TestCreateCluster_EndpointDNSNameUsesOwnerAccount(t *testing.T) {
 	fixture := newEKSServiceFixture(t)
 	fixture.svc.baseDomain = "spx3.net"
 
-	sub, err := fixture.svc.deps.NATSConn.Subscribe(handlers_dns.SubjectRecordsetChange, func(msg *nats.Msg) {
-		_ = msg.Respond([]byte(`{"applied":1}`))
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	require.NoError(t, fixture.svc.deps.NATSConn.Flush())
-
-	_, err = fixture.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
+	_, err := fixture.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	fixture.svc.WaitLaunches()
 

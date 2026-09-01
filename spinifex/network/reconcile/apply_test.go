@@ -1203,9 +1203,12 @@ func TestReconcile_MarksIGWAttachedOnlyOnSuccess(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		rec, _ := newTestReconciler(t)
-		var keys []string
-		rec.markAttached = func(_ context.Context, key string) error {
+		rec.chassis = []string{"chassis-1"}
+		rec.gwClaim = &fakeClaimVerifier{}
+		var keys, vpcs []string
+		rec.markAttached = func(_ context.Context, key, vpcID string) error {
 			keys = append(keys, key)
+			vpcs = append(vpcs, vpcID)
 			return nil
 		}
 		if err := rec.Reconcile(ctx, igwIntent(t)); err != nil {
@@ -1215,13 +1218,17 @@ func TestReconcile_MarksIGWAttachedOnlyOnSuccess(t *testing.T) {
 			t.Errorf("markAttached keys = %v, want %v — a converged attach must be reported "+
 				"or DescribeInternetGateways never stops calling it pending", keys, want)
 		}
+		if want := []string{"vpc-a"}; !slices.Equal(vpcs, want) {
+			t.Errorf("markAttached vpcs = %v, want %v — the record key survives detach and "+
+				"re-attach, so the VPC is what pins the confirmation to this attachment", vpcs, want)
+		}
 	})
 
 	t.Run("failure", func(t *testing.T) {
 		rec, _ := newTestReconciler(t)
 		rec.igw = &stubIGW{IGWManager: rec.igw, attachErr: errors.New("dhcp gw-lrp acquire: context deadline exceeded")}
 		called := false
-		rec.markAttached = func(context.Context, string) error {
+		rec.markAttached = func(context.Context, string, string) error {
 			called = true
 			return nil
 		}
@@ -1233,6 +1240,73 @@ func TestReconcile_MarksIGWAttachedOnlyOnSuccess(t *testing.T) {
 		}
 	})
 
+	// The datapath gate logs at Error and records no pass failure, so a
+	// confirmation inferred from the failure count would report a gateway that
+	// demonstrably does not forward — the bug this branch exists to fix.
+	t.Run("datapath never converges", func(t *testing.T) {
+		withFastDatapathBounds(t)
+		rec, _ := newTestReconciler(t)
+		rec.chassis = []string{"chassis-1"}
+		rec.gwClaim = &fakeClaimVerifier{reachableAfter: -1}
+		called := false
+		rec.markAttached = func(context.Context, string, string) error {
+			called = true
+			return nil
+		}
+		// A distributed-NAT gateway LRP is link-local and gates the probe off,
+		// so an EIP is what gives the datapath check a target.
+		intent := igwIntent(t)
+		intent.EIPs["10.0.1.5"] = policy.EIPSpec{VPCID: "vpc-a", ExternalIP: "203.0.113.5", LogicalIP: "10.0.1.5"}
+		if err := rec.Reconcile(ctx, intent); err != nil {
+			t.Fatalf("Reconcile = %v, want nil", err)
+		}
+		if called {
+			t.Error("markAttached called while the gateway datapath is unreachable: the API would " +
+				"report an attachment that does not forward, and the confirmation never self-corrects")
+		}
+	})
+
+	// Same shape as the datapath gate: an unclaimed SB binding leaves floating
+	// IPs dark while every other signal is green.
+	t.Run("SB claim never converges", func(t *testing.T) {
+		withFastClaimBounds(t)
+		rec, _ := newTestReconciler(t)
+		rec.chassis = []string{"chassis-1"}
+		rec.gwClaim = &fakeClaimVerifier{claimedAfter: -1}
+		called := false
+		rec.markAttached = func(context.Context, string, string) error {
+			called = true
+			return nil
+		}
+		if err := rec.Reconcile(ctx, igwIntent(t)); err != nil {
+			t.Fatalf("Reconcile = %v, want nil", err)
+		}
+		if called {
+			t.Error("markAttached called while the SB chassisredirect binding is unclaimed")
+		}
+	})
+
+	// A spec built outside the store has no address to confirm against; sending
+	// an empty key would have vpcd read key "" on every pass.
+	t.Run("no record key", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		rec.chassis = []string{"chassis-1"}
+		rec.gwClaim = &fakeClaimVerifier{}
+		called := false
+		rec.markAttached = func(context.Context, string, string) error {
+			called = true
+			return nil
+		}
+		intent := freshIntent(t)
+		intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a"}
+		if err := rec.Reconcile(ctx, intent); err != nil {
+			t.Fatalf("Reconcile = %v, want nil", err)
+		}
+		if called {
+			t.Error("markAttached called with no record key")
+		}
+	})
+
 	// AttachIGW returning nil is not proof the gateway forwards. Confirming
 	// before the chassis rebind would report a gateway with no bound chassis as
 	// attached, and the confirmation is one-way so it would never self-correct.
@@ -1241,7 +1315,7 @@ func TestReconcile_MarksIGWAttachedOnlyOnSuccess(t *testing.T) {
 		rec.chassis = []string{"chassis-1"}
 		rec.igw = &stubIGW{IGWManager: rec.igw, attachNoop: true}
 		called := false
-		rec.markAttached = func(context.Context, string) error {
+		rec.markAttached = func(context.Context, string, string) error {
 			called = true
 			return nil
 		}

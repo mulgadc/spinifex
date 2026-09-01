@@ -210,11 +210,48 @@ func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
 		t.Fatalf("LoadIntentFromKV: %v", err)
 	}
 
-	if _, ok := intent.IGWs["vpc-local"]; !ok {
-		t.Errorf("attached IGW missing from intent")
+	spec, ok := intent.IGWs["vpc-local"]
+	if !ok {
+		t.Fatalf("attached IGW missing from intent")
+	}
+	// RecordKey is the only address the pass has to confirm the attachment
+	// against; dropping it silently stops every confirmation forever.
+	if spec.RecordKey != "acct/igw-attached" {
+		t.Errorf("RecordKey = %q, want %q — without it no attach is ever confirmed and "+
+			"DescribeInternetGateways reports every gateway as detached", spec.RecordKey, "acct/igw-attached")
 	}
 	if len(intent.IGWs) != 1 {
 		t.Errorf("got %d IGWs, want 1 (detached should be excluded)", len(intent.IGWs))
+	}
+}
+
+// Intent gates on State, never on AttachState: an IGW enters intent so a pass
+// can attach it, and every attach starts pending. Gating intent on the observed
+// state instead would mean nothing is ever attached, so nothing is ever
+// confirmed — a total IGW outage that no other test would catch.
+func TestLoadIntentFromKV_PendingIGWStillEntersIntent(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
+		"acct/igw-pending": mustJSON(t, handlers_ec2_igw.IGWRecord{
+			InternetGatewayId: "igw-pending", VpcId: "vpc-local",
+			State: "available", AttachState: "pending",
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	if _, ok := intent.IGWs["vpc-local"]; !ok {
+		t.Error("a pending IGW was excluded from intent: no pass would attach it, so it would " +
+			"stay pending forever and no VPC would ever get an external gateway")
 	}
 }
 

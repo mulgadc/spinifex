@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -674,6 +675,25 @@ func launchService(cfg *Config) error {
 		}
 	}()
 
+	// Cached on success only: the attach confirmation runs per IGW per pass and
+	// each KeyValue call is a stream-info round trip, but a transient open must
+	// stay retryable.
+	var igwKVMu sync.Mutex
+	var igwKVHandle jetstream.KeyValue
+	igwKV := func(ctx context.Context) (jetstream.KeyValue, error) {
+		igwKVMu.Lock()
+		defer igwKVMu.Unlock()
+		if igwKVHandle != nil {
+			return igwKVHandle, nil
+		}
+		kv, err := js.KeyValue(ctx, handlers_ec2_igw.KVBucketIGW)
+		if err != nil {
+			return nil, fmt.Errorf("open %s: %w", handlers_ec2_igw.KVBucketIGW, err)
+		}
+		igwKVHandle = kv
+		return kv, nil
+	}
+
 	rec, err := reconcile.New(reconcile.Config{
 		OVN:           liveClient,
 		SG:            sgMgr,
@@ -693,12 +713,12 @@ func launchService(cfg *Config) error {
 		FreshIntent: func(ctx context.Context) (reconcile.IntentState, error) {
 			return reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
 		},
-		MarkIGWAttached: func(ctx context.Context, recordKey string) error {
-			kv, err := js.KeyValue(ctx, handlers_ec2_igw.KVBucketIGW)
+		MarkIGWAttached: func(ctx context.Context, recordKey, vpcID string) error {
+			kv, err := igwKV(ctx)
 			if err != nil {
-				return fmt.Errorf("open %s: %w", handlers_ec2_igw.KVBucketIGW, err)
+				return err
 			}
-			return handlers_ec2_igw.MarkAttached(ctx, kv, recordKey)
+			return handlers_ec2_igw.MarkAttached(ctx, kv, recordKey, vpcID)
 		},
 	})
 	if err != nil {

@@ -738,6 +738,41 @@ func TestDeleteVpc_RejectsNonMainRouteTable(t *testing.T) {
 	require.NoError(t, err, "non-main route table must not be reaped by a rejected DeleteVpc")
 }
 
+// An attach awaiting confirmation is hidden from describes, so the gateway
+// record is the only place the attachment is visible. Deleting the VPC anyway
+// strips the only id that can detach it, leaving a gateway that can never be
+// detached or deleted and an account teardown that can never finish.
+func TestDeleteVpc_RejectsAttachedInternetGateway(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.64.0.0/16")
+
+	_, err := svc.igwKV.Put(t.Context(), testAccountID+".igw-pending",
+		[]byte(`{"internet_gateway_id":"igw-pending","vpc_id":"`+vpcID+`","state":"available","attach_state":"pending"}`))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "DependencyViolation")
+	assert.ErrorContains(t, err, "igw-pending", "the caller must be told which gateway to detach")
+
+	desc, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Vpcs, 1, "VPC must persist so the caller can detach the gateway and retry")
+}
+
+// A gateway attached to some other VPC must not block this one.
+func TestDeleteVpc_IgnoresInternetGatewayOnAnotherVPC(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.65.0.0/16")
+
+	_, err := svc.igwKV.Put(t.Context(), testAccountID+".igw-elsewhere",
+		[]byte(`{"internet_gateway_id":"igw-elsewhere","vpc_id":"vpc-somewhere-else","state":"available"}`))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.NoError(t, err)
+}
+
 // TestDeleteVpc_RouteTableCheckFailsClosedOnCorruptRTB asserts a corrupt
 // route table record blocks DeleteVpc rather than being silently skipped —
 // a transient/corrupt read must never let DeleteVpc orphan a route table it

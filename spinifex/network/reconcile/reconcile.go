@@ -125,9 +125,9 @@ type Config struct {
 	FreshIntent func(ctx context.Context) (IntentState, error)
 	// MarkIGWAttached reports a confirmed IGW attachment back to the control
 	// plane, so DescribeInternetGateways stops claiming an attachment exists
-	// before one does. Called with the record key carried on the IGW spec.
-	// Optional: nil leaves the record untouched.
-	MarkIGWAttached func(ctx context.Context, recordKey string) error
+	// before one does. Called with the record key and VPC carried on the IGW
+	// spec. Optional: nil leaves the record untouched.
+	MarkIGWAttached func(ctx context.Context, recordKey, vpcID string) error
 }
 
 type reconciler struct {
@@ -145,7 +145,7 @@ type reconciler struct {
 	ipsecEnabled bool
 	underlayMTU  int
 	reloadIntent func(ctx context.Context) (IntentState, error)
-	markAttached func(ctx context.Context, recordKey string) error
+	markAttached func(ctx context.Context, recordKey, vpcID string) error
 
 	// Guest ports that burned their convergence deadline, so a port whose guest
 	// is gone stops paying the full nudge sequence every cycle.

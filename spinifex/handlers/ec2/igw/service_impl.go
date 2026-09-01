@@ -169,9 +169,12 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Cannot delete an attached IGW
+	// Cannot delete an attached IGW. The VPC is named because a pending
+	// attachment is hidden from describes, so the caller has no other way to
+	// learn what it must detach from.
 	if record.VpcId != "" {
-		return nil, errors.New(awserrors.ErrorDependencyViolation)
+		return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
+			"the internet gateway is attached to %s and must be detached first", record.VpcId)
 	}
 
 	if err := s.igwKV.Delete(ctx, key); err != nil {
@@ -451,6 +454,7 @@ func (s *IGWServiceImpl) AttachmentIntent(ctx context.Context, accountID, vpcID 
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
 		}
+		slog.ErrorContext(ctx, "AttachmentIntent: IGW key listing failed", "accountID", accountID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -460,56 +464,59 @@ func (s *IGWServiceImpl) AttachmentIntent(ctx context.Context, accountID, vpcID 
 		}
 		entry, err := s.igwKV.Get(ctx, key)
 		if err != nil {
-			slog.WarnContext(ctx, "AttachmentIntent: IGW read failed", "key", key, "err", err)
-			continue
+			// Fail closed: callers read nil as "no gateway" and build one, so a
+			// record this could not read must not read as absent.
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			slog.ErrorContext(ctx, "AttachmentIntent: IGW read failed", "key", key, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		var record IGWRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			slog.WarnContext(ctx, "AttachmentIntent: IGW unmarshal failed", "key", key, "err", err)
-			continue
+			slog.ErrorContext(ctx, "AttachmentIntent: IGW unmarshal failed", "key", key, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if record.VpcId != vpcID {
 			continue
 		}
-		igw := s.recordToEC2(&record)
-		// recordToEC2 hides a pending attachment; this view must show it.
-		igw.Attachments = []*ec2.InternetGatewayAttachment{
-			{VpcId: aws.String(record.VpcId), State: aws.String(record.State)},
-		}
-		return igw, nil
+		// Built directly rather than through recordToEC2, which hides a pending
+		// attachment: this view exists to show one.
+		return &ec2.InternetGateway{
+			InternetGatewayId: aws.String(record.InternetGatewayId),
+			Attachments: []*ec2.InternetGatewayAttachment{
+				{VpcId: aws.String(record.VpcId), State: aws.String(record.State)},
+			},
+			Tags: utils.MapToEC2Tags(record.Tags),
+		}, nil
 	}
 
 	return nil, nil
 }
 
-// MarkAttached records that vpcd has brought the OVN gateway up for the IGW at
-// recordKey. Writing only on the pending transition keeps a reconcile pass from
-// waking the drift loop that watches this bucket. Detached or already-attached
-// records are left alone, and a CAS conflict is left to the next pass.
-func MarkAttached(ctx context.Context, kv jetstream.KeyValue, recordKey string) error {
-	entry, err := kv.Get(ctx, recordKey)
+// MarkAttached records that vpcd has brought the OVN gateway up for vpcID on the
+// IGW at recordKey. vpcID must match: a record key survives detach and re-attach,
+// so a pass that converged the previous VPC would otherwise confirm the new one.
+// Writing only on the pending transition keeps a pass from waking the drift loop.
+func MarkAttached(ctx context.Context, kv jetstream.KeyValue, recordKey, vpcID string) error {
+	confirmed := false
+	record, err := kvutil.Update(ctx, kv, recordKey, kvutil.CASConfig{}, func(r *IGWRecord) (bool, error) {
+		// Reset per attempt: a retried CAS may see a record another writer has
+		// already moved out of pending.
+		confirmed = r.VpcId == vpcID && r.AttachState == attachStatePending
+		if !confirmed {
+			return false, nil
+		}
+		r.AttachState = attachStateAttached
+		return true, nil
+	})
 	if err != nil {
-		return fmt.Errorf("read IGW record %s: %w", recordKey, err)
+		return fmt.Errorf("confirm IGW attachment %s: %w", recordKey, err)
 	}
 
-	var record IGWRecord
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return fmt.Errorf("unmarshal IGW record %s: %w", recordKey, err)
+	if confirmed {
+		slog.InfoContext(ctx, "IGW attachment confirmed", "internetGatewayId", record.InternetGatewayId, "vpcId", record.VpcId)
 	}
-	if record.VpcId == "" || record.AttachState != attachStatePending {
-		return nil
-	}
-
-	record.AttachState = attachStateAttached
-	data, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("marshal IGW record %s: %w", recordKey, err)
-	}
-	if _, err := kv.Update(ctx, recordKey, data, entry.Revision()); err != nil {
-		return fmt.Errorf("update IGW record %s: %w", recordKey, err)
-	}
-
-	slog.InfoContext(ctx, "IGW attachment confirmed", "internetGatewayId", record.InternetGatewayId, "vpcId", record.VpcId)
 
 	return nil
 }

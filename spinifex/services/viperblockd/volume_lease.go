@@ -33,6 +33,11 @@ const volumeLeaseRenewInterval = 15 * time.Second
 // one lease failure a caller can do something about, so it is distinguishable.
 var errVolumeLeaseHeld = errors.New("volume is leased by another owner")
 
+// errNoVolumeLeaseStore reports that exclusive access could not be established
+// at all. Distinguishable from a refusal so a caller can tell "somebody else
+// holds this" from "nobody can say who does".
+var errNoVolumeLeaseStore = errors.New("no volume lease store")
+
 // volumeLeaseKeyPattern is what JetStream KV accepts as a key. Volume names
 // reach here from the wire, and a name carrying "." or ">" would address
 // somebody else's key.
@@ -321,7 +326,7 @@ func (cfg *Config) leaseOwner() string {
 // it refuses rather than opening blind.
 func (cfg *Config) acquireVolumeLease(ctx context.Context, volumeName string) (*volumeLease, error) {
 	if cfg.leases == nil {
-		return nil, fmt.Errorf("no volume lease store: cannot establish exclusive access to %s", volumeName)
+		return nil, fmt.Errorf("%w: cannot establish exclusive access to %s", errNoVolumeLeaseStore, volumeName)
 	}
 	return cfg.leases.acquire(ctx, volumeName)
 }

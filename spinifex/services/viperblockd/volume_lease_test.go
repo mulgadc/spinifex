@@ -3,8 +3,10 @@ package viperblockd
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -118,6 +120,51 @@ func TestVolumeLease_OpenRefusesWithoutALeaseStore(t *testing.T) {
 	lease, err := cfg.acquireVolumeLease(t.Context(), "vol-nostore00000001")
 	require.Error(t, err, "no lease store must refuse the open, not wave it through")
 	assert.Nil(t, lease)
+}
+
+// TestVolumeLease_UnmountedSnapshotIsRefusedByTheHolder is the bead's case: a
+// snapshot request that lands on a node without the volume mounted must not
+// open a second engine over storage another node is writing.
+func TestVolumeLease_UnmountedSnapshotIsRefusedByTheHolder(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+
+	const volumeName = "vol-snapshotexcl01"
+	holder := newTestLeases(t, natsURL, "node-a")
+	_, err := holder.acquire(t.Context(), volumeName)
+	require.NoError(t, err)
+
+	// node-b has nothing mounted, so this is the unmounted branch.
+	cfg := &Config{NodeName: "node-b", BaseDir: t.TempDir(), leases: newTestLeases(t, natsURL, "node-b")}
+	snapshot, err := snapshotVolumeEngine(t.Context(), cfg, volumeName, "snap-excl0000000001")
+
+	require.ErrorIs(t, err, errVolumeLeaseHeld, "a snapshot must not open an engine on a volume another node holds")
+	assert.Nil(t, snapshot)
+	assert.Equal(t, ebsprovider.ErrorCodeUnavailable, snapshotErrorCode(err),
+		"the holder detaches eventually, so the caller has to be told this is worth retrying")
+	assert.Empty(t, dirEntries(t, cfg.BaseDir), "the refusal must come before any engine touches the volume's directory")
+}
+
+// TestVolumeLease_UnmountedSnapshotRefusesWithoutALeaseStore pins the
+// fail-closed default on the snapshot path specifically. A daemon that cannot
+// reach JetStream cannot establish that it is the only opener.
+func TestVolumeLease_UnmountedSnapshotRefusesWithoutALeaseStore(t *testing.T) {
+	cfg := &Config{NodeName: "node-a", BaseDir: t.TempDir()}
+
+	snapshot, err := snapshotVolumeEngine(t.Context(), cfg, "vol-snapshotnostor", "snap-nostore00000001")
+
+	require.ErrorIs(t, err, errNoVolumeLeaseStore, "unprovable exclusion must refuse the snapshot, not wave it through")
+	assert.Nil(t, snapshot)
+	assert.Equal(t, ebsprovider.ErrorCodeUnavailable, snapshotErrorCode(err))
+	assert.Empty(t, dirEntries(t, cfg.BaseDir))
+}
+
+// dirEntries lists dir, which a refused open must have left alone.
+func dirEntries(t *testing.T, dir string) []os.DirEntry {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	return entries
 }
 
 // conflictKV fails every Update with a wrong-last-sequence response under the

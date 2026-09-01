@@ -185,6 +185,24 @@ func TestIdempotentHandler_SameTokenCreatesOneResource(t *testing.T) {
 		assert.Contains(t, string(second), "ami-1")
 	})
 
+	// A duplicate would add a second identical version and move $Latest under a
+	// client that thought it made one call.
+	t.Run("CreateLaunchTemplateVersion", func(t *testing.T) {
+		t.Parallel()
+		gw := newTokenGateway(t)
+		calls, first, second := dispatchTwice(t, gw, "CreateLaunchTemplateVersion",
+			&ec2.CreateLaunchTemplateVersionInput{LaunchTemplateId: aws.String("lt-1"), ClientToken: tok},
+			ec2.CreateLaunchTemplateVersionOutput{
+				LaunchTemplateVersion: &ec2.LaunchTemplateVersion{
+					LaunchTemplateId: aws.String("lt-1"),
+					VersionNumber:    aws.Int64(2),
+				},
+			})
+		assert.Equal(t, 1, calls)
+		assert.Equal(t, responseFields(t, first), responseFields(t, second))
+		assert.Contains(t, string(second), "<versionNumber>2</versionNumber>")
+	})
+
 	t.Run("CreateCapacityReservation", func(t *testing.T) {
 		t.Parallel()
 		gw := newTokenGateway(t)
@@ -288,6 +306,7 @@ func TestEC2Actions_CreatesHonourClientToken(t *testing.T) {
 		"CopyImage",
 		"CreateCapacityReservation",
 		"CreateEgressOnlyInternetGateway",
+		"CreateLaunchTemplateVersion",
 		"CreateNatGateway",
 		"CreateNetworkInterface",
 		"CreateRouteTable",

@@ -123,7 +123,7 @@ func (m *natsEIPManager) Release(ctx context.Context, accountID, allocationID st
 
 // CreateService persists a REPLICA service and reconciles up to desiredCount.
 // DAEMON scheduling and serviceRegistries are rejected in v1 (Q15). Re-creating
-// an existing ACTIVE service returns the existing record (idempotent).
+// an existing ACTIVE service returns it, so ClientToken needs no store.
 func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error) {
 	name := aws.StringValue(input.ServiceName)
 	if name == "" {

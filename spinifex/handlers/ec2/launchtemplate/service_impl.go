@@ -254,6 +254,9 @@ func (s *LaunchTemplateServiceImpl) resolveVersionNumber(ctx context.Context, ac
 
 // --- CreateLaunchTemplate ---
 
+// ClientToken is accepted but not stored: claimName reserves the name with an
+// atomic Create, so a duplicate request cannot make a second template. It gets
+// AlreadyExists where AWS would replay the first response.
 func (s *LaunchTemplateServiceImpl) CreateLaunchTemplate(ctx context.Context, input *ec2.CreateLaunchTemplateInput, accountID string) (*ec2.CreateLaunchTemplateOutput, error) {
 	if input.LaunchTemplateData == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -433,6 +436,9 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 
 // --- ModifyLaunchTemplate ---
 
+// ClientToken is accepted but not stored: this only moves the default version
+// under a CAS, so applying the same request twice converges on the same state
+// and creates nothing.
 func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, input *ec2.ModifyLaunchTemplateInput, accountID string) (*ec2.ModifyLaunchTemplateOutput, error) {
 	header, entry, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
 	if err != nil {

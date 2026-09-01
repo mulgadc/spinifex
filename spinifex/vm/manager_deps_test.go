@@ -146,6 +146,7 @@ type fakeVolumeMounter struct {
 	mountedOne, unmountedOne []string
 	mountErr                 error
 	mountOneErr              error
+	unmountErr               error
 	unmountOneErr            error
 	mountOneURI              string
 	// onMount fires synchronously inside Mount before the configured
@@ -169,8 +170,9 @@ func (f *fakeVolumeMounter) Mount(_ context.Context, v *VM) error {
 func (f *fakeVolumeMounter) Unmount(_ context.Context, v *VM) error {
 	f.mu.Lock()
 	f.unmounted = append(f.unmounted, v.ID)
+	err := f.unmountErr
 	f.mu.Unlock()
-	return nil
+	return err
 }
 
 func (f *fakeVolumeMounter) MountOne(_ context.Context, _ string, req *types.EBSRequest) error {

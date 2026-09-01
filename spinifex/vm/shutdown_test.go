@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -631,7 +632,7 @@ func TestStopCleanup_InvokesReleaseGPU(t *testing.T) {
 	m := NewManagerWithDeps(Deps{InstanceCleaner: cleaner})
 	instance := &VM{ID: "i-stop", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:01:00.0"}}}
 
-	m.stopCleanup(instance)
+	require.NoError(t, m.stopCleanup(instance))
 
 	if got := cleaner.releaseGPU; len(got) != 1 || got[0] != "i-stop" {
 		t.Fatalf("ReleaseGPU on stopCleanup: got %v, want [i-stop]", got)
@@ -653,7 +654,7 @@ func TestStopCleanup_ReservationBoundReleasesAndClears(t *testing.T) {
 	instance := &VM{ID: "i-cr", InstanceType: "t3.micro", CapacityReservationId: "cr-123"}
 	m.Insert(instance)
 
-	m.stopCleanup(instance)
+	require.NoError(t, m.stopCleanup(instance))
 
 	if got := rc.releasedToCRID; len(got) != 1 || got[0] != "cr-123" {
 		t.Fatalf("stop must release the slot to the reservation: got %v, want [cr-123]", got)
@@ -691,7 +692,7 @@ func TestCleanup_NoGPU_StillInvokesReleaseGPU(t *testing.T) {
 	m := NewManagerWithDeps(Deps{InstanceCleaner: cleaner})
 	instance := &VM{ID: "i-cpu"}
 
-	m.stopCleanup(instance)
+	require.NoError(t, m.stopCleanup(instance))
 	m.terminateCleanup(instance)
 
 	if got := len(cleaner.releaseGPU); got != 2 {
@@ -1355,7 +1356,7 @@ func TestShutdownAndUnmount_NilQMPClient_ProceedsToUnmount(t *testing.T) {
 	instance := &VM{ID: "i-noqmp", QMPClient: nil}
 
 	require.NotPanics(t, func() {
-		m.shutdownAndUnmount(instance)
+		_ = m.shutdownAndUnmount(instance)
 	})
 
 	mounter.mu.Lock()
@@ -1383,7 +1384,7 @@ func TestShutdownAndUnmount_PowerdownSent_NoForceKill(t *testing.T) {
 
 	instance := &VM{ID: "i-powerdown", QMPClient: qmpClient}
 
-	m.shutdownAndUnmount(instance)
+	require.NoError(t, m.shutdownAndUnmount(instance))
 
 	assert.Equal(t, []string{"system_powerdown"}, recorder.executes(),
 		"shutdownAndUnmount must dispatch exactly one system_powerdown QMP command")
@@ -1413,7 +1414,7 @@ func TestShutdownAndUnmount_PIDFileRemovedBeforeTimeout_NoForceKill(t *testing.T
 	instance := &VM{ID: "i-pid-removed", QMPClient: nil}
 
 	start := time.Now()
-	m.shutdownAndUnmount(instance)
+	require.NoError(t, m.shutdownAndUnmount(instance))
 	elapsed := time.Since(start)
 
 	assert.Less(t, elapsed, pidFileRemovalTimeout,
@@ -1436,6 +1437,144 @@ func TestShutdownAndUnmount_NilVolumeMounter_SkipsUnmount(t *testing.T) {
 	instance := &VM{ID: "i-nomounter", QMPClient: nil}
 
 	require.NotPanics(t, func() {
-		m.shutdownAndUnmount(instance)
+		_ = m.shutdownAndUnmount(instance)
 	})
+}
+
+// errSealStalled is the shape a stalled predastore blob node produces: the
+// block-map seal never completes, so ebs.unmount reports a failure.
+var errSealStalled = errors.New("seal volume to predastore: transfer stalled: idle timeout")
+
+// TestShutdownAndUnmount_SealFailure_ReturnsErrorAndCompletesCleanup proves the
+// volume seal is the one step whose failure is reported: the error wraps
+// ErrVolumeSealFailed, and the best-effort fw_cfg cleanup after it still runs.
+func TestShutdownAndUnmount_SealFailure_ReturnsErrorAndCompletesCleanup(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	mounter := &fakeVolumeMounter{unmountErr: errSealStalled}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter})
+
+	fwPath := filepath.Join(t.TempDir(), "netcfg.json")
+	require.NoError(t, os.WriteFile(fwPath, []byte("{}"), 0o600))
+	instance := &VM{ID: "i-seal-fail"}
+	instance.Config.FwCfg = []FwCfgEntry{{Name: "opt/spinifex/netcfg", File: fwPath}}
+
+	err := m.shutdownAndUnmount(instance)
+
+	require.ErrorIs(t, err, ErrVolumeSealFailed,
+		"a failed volume unmount must be reported as a seal failure")
+	require.ErrorIs(t, err, errSealStalled, "the mounter's cause must be preserved")
+	assert.Contains(t, err.Error(), "i-seal-fail", "the error must name the instance")
+	assert.NoFileExists(t, fwPath,
+		"fw_cfg cleanup is best-effort and must still run after a failed seal")
+}
+
+// TestStopCleanup_SealFailure_StillRunsBestEffortSteps verifies the seal error
+// does not abort the rest of the teardown: tap/GPU/resource cleanup all run,
+// because QEMU is already down by the time the seal is attempted.
+func TestStopCleanup_SealFailure_StillRunsBestEffortSteps(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	cleaner := &recordingInstanceCleaner{}
+	rc := &countingResourceController{}
+	m := NewManagerWithDeps(Deps{
+		VolumeMounter:   &fakeVolumeMounter{unmountErr: errSealStalled},
+		InstanceCleaner: cleaner,
+		Resources:       rc,
+	})
+	instance := &VM{ID: "i-seal-cleanup", InstanceType: "t3.micro"}
+	m.Insert(instance)
+
+	err := m.stopCleanup(instance)
+
+	require.ErrorIs(t, err, ErrVolumeSealFailed)
+	assert.Equal(t, []string{"i-seal-cleanup"}, cleaner.releaseGPU,
+		"GPU release must still run after a failed seal")
+	assert.Equal(t, []string{"i-seal-cleanup"}, cleaner.cleanupMgmt,
+		"mgmt network cleanup must still run after a failed seal")
+	assert.Equal(t, 1, rc.deallocations,
+		"resources must still be released after a failed seal")
+	assert.Empty(t, cleaner.deleteVolumes,
+		"a failed seal must never escalate stop into volume deletion")
+}
+
+// TestStopAll_SealFailure_AggregatesAndPropagates is the DRAIN invariant: every
+// VM is still stopped, and every per-VM seal failure comes back to the caller so
+// the coordinated shutdown refuses to advance to the STORAGE phase.
+func TestStopAll_SealFailure_AggregatesAndPropagates(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	m, _, mounter, _, _ := shutdownTestManager(t)
+	mounter.unmountErr = errSealStalled
+
+	ids := []string{"i-drain-seal-a", "i-drain-seal-b"}
+	for _, id := range ids {
+		m.Insert(&VM{ID: id, Status: StateRunning, DesiredState: DesiredStopped})
+	}
+
+	err := m.StopAll()
+
+	require.Error(t, err, "StopAll must not report success when a volume seal failed")
+	require.ErrorIs(t, err, ErrVolumeSealFailed)
+	for _, id := range ids {
+		assert.Contains(t, err.Error(), id,
+			"the aggregate must name every VM whose seal failed")
+	}
+
+	mounter.mu.Lock()
+	defer mounter.mu.Unlock()
+	assert.ElementsMatch(t, ids, mounter.unmounted,
+		"a failed seal on one VM must not abort the fan-out")
+}
+
+// TestStopAll_SealSucceeds_ReturnsNil is the control for the test above: an
+// identical fan-out whose seals all succeed must still report success.
+func TestStopAll_SealSucceeds_ReturnsNil(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	m, _, mounter, _, _ := shutdownTestManager(t)
+
+	m.Insert(&VM{ID: "i-drain-ok", Status: StateRunning, DesiredState: DesiredStopped})
+
+	require.NoError(t, m.StopAll())
+
+	mounter.mu.Lock()
+	defer mounter.mu.Unlock()
+	assert.Equal(t, []string{"i-drain-ok"}, mounter.unmounted)
+}
+
+// TestStop_SealFailure_CompletesStopAndReportsError verifies the seal error does
+// not short-circuit Stop: the instance still reaches Stopped and migrates to the
+// shared KV, and the caller still learns the volume was not sealed.
+func TestStop_SealFailure_CompletesStopAndReportsError(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	m, store, mounter, _, _ := shutdownTestManager(t)
+	mounter.unmountErr = errSealStalled
+
+	instance := &VM{ID: "i-stop-seal", Status: StateRunning, DesiredState: DesiredStopped}
+	m.Insert(instance)
+
+	err := m.Stop(instance.ID)
+
+	require.ErrorIs(t, err, ErrVolumeSealFailed)
+	assert.Equal(t, StateStopped, m.Status(instance),
+		"the guest is down regardless of the seal, so the stop must complete")
+	_, present := m.Get(instance.ID)
+	assert.False(t, present, "a completed stop must still migrate out of the local map")
+	stopped, listErr := store.ListStoppedInstances()
+	require.NoError(t, listErr)
+	assert.Len(t, stopped, 1, "the stopped-instance record must still be written")
+}
+
+// TestTerminate_SealFailure_Tolerated verifies terminate is unchanged by the
+// stricter stop path: the volumes are deleted next, so an unsealed block map
+// loses nothing and terminate must stay idempotent.
+func TestTerminate_SealFailure_Tolerated(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	m, _, mounter, cleaner, _ := shutdownTestManager(t)
+	mounter.unmountErr = errSealStalled
+
+	instance := &VM{ID: "i-term-seal", Status: StateRunning}
+	m.Insert(instance)
+
+	require.NoError(t, m.Terminate(instance.ID),
+		"terminate must tolerate a failed seal")
+	assert.Equal(t, []string{"i-term-seal"}, cleaner.deleteVolumes,
+		"terminate must still delete the volumes after a failed seal")
 }

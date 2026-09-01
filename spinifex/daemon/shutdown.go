@@ -142,7 +142,11 @@ func (d *Daemon) handleShutdownDrain(msg *nats.Msg) string {
 	// iteration from concurrent terminate handlers.
 	if total > 0 {
 		if err := d.vmMgr.StopAll(); err != nil {
-			slog.Error("Failed to stop instances during DRAIN", "error", err)
+			// A failed volume seal lands here. ACK with the error and do not
+			// report vms_stopped: the coordinator must refuse to advance to
+			// STORAGE rather than stop viperblock over an unsealed block map.
+			slog.Error("Failed to stop instances during DRAIN, refusing to advance",
+				"node", d.node, "error", err)
 			ack := ShutdownACK{
 				Node:  d.node,
 				Phase: "drain",

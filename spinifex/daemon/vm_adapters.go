@@ -223,27 +223,30 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 
+	var sealErrs []error
 	for _, ebsRequest := range instance.EBSRequests.Requests {
 		ebsUnMountRequest, err := json.Marshal(ebsRequest)
 		if err != nil {
 			slog.Error("Failed to marshal volume payload for unmount", "err", err)
+			sealErrs = append(sealErrs, fmt.Errorf("marshal unmount request for %s: %w", ebsRequest.Name, err))
 			continue
 		}
 
-		// ebs.unmount seals the block map to predastore. Teardown tolerates a
-		// failed seal (log + continue) so terminate stays idempotent, but the
-		// volume must NOT then go available: a reattach on a node without the
-		// local WAL would find no checkpoint (bad superblock). On terminate the
-		// volume is deleted regardless; on stop it stays attached/retryable.
+		// ebs.unmount seals the block map to predastore. Every volume is
+		// attempted, and the failures are aggregated for the caller: the
+		// volume must NOT go available, because a reattach on a node without
+		// the local WAL would find no checkpoint (bad superblock).
 		sealed := true
 		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
 		if err != nil {
 			slog.Error("Failed to unmount volume",
 				"name", ebsRequest.Name, "instance", instance.ID, "err", err)
+			sealErrs = append(sealErrs, fmt.Errorf("unmount %s: %w", ebsRequest.Name, err))
 			sealed = false
 		} else if sealErr := unmountResponseError(msg.Data); sealErr != nil {
 			slog.Error("Volume unmount seal failed, leaving volume non-available",
 				"instance", instance.ID, "volume", ebsRequest.Name, "err", sealErr)
+			sealErrs = append(sealErrs, fmt.Errorf("seal %s: %w", ebsRequest.Name, sealErr))
 			sealed = false
 		} else {
 			slog.Info("Unmounted volume",
@@ -262,7 +265,7 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 		}
 	}
 
-	return nil
+	return errors.Join(sealErrs...)
 }
 
 // MountOne sends ebs.mount for a single request and writes the resolved

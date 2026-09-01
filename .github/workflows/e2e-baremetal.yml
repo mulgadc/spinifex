@@ -14,6 +14,21 @@ on:
         required: false
         type: string
         default: ""
+      suites:
+        description: "Space-separated e2e suites to run on the node. Default is the correctness set; a performance caller names its own so its numbers come off an otherwise idle cell"
+        required: false
+        type: string
+        default: "single cert lb"
+      suite-env:
+        description: "Extra environment for the suite invocation, e.g. SPINIFEX_DISKPERF_REPS=3"
+        required: false
+        type: string
+        default: ""
+      cell:
+        description: "Nightly cell number this run reports as. Names the artifact bundle and the ES dimension, so two callers of this workflow stay distinguishable in the sink"
+        required: false
+        type: string
+        default: "20"
 
 permissions:
   contents: read
@@ -30,13 +45,14 @@ jobs:
   e2e_baremetal:
     name: Bare-Metal Single-Node E2E
     runs-on: [ self-hosted, ci-baremetal ]
-    timeout-minutes: 120
+    timeout-minutes: 240
     concurrency:
       group: e2e-baremetal-cluster
       cancel-in-progress: false
     env:
       BM_ISO_CACHE: /var/cache/spinifex-iso-builder
-      ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-20-${{ github.run_id }}
+      BM_CELL: ${{ inputs.cell || '20' }}
+      ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-${{ inputs.cell || '20' }}-${{ github.run_id }}
       # Caller-supplied (workflow_call input); empty for a manual
       # workflow_dispatch run, which bm-bootstrap.sh treats as "no attrs".
       SPINIFEX_OTEL_ATTRS: ${{ inputs.otel-attrs }}
@@ -126,9 +142,23 @@ jobs:
           BM_EPDU_ENV: ${{ runner.temp }}/epdu.env
           BM_UBUNTU_IMAGE: ${{ env.BM_ISO_CACHE }}/ubuntu-26.04-cloudimg-amd64.img
           SPX_EXTERNAL_POOL: ${{ env.SPINIFEX_CI_POOL }}
+          BM_SUITES: ${{ inputs.suites || 'single cert lb' }}
+          BM_SUITE_ENV: ${{ inputs.suite-env }}
         run: |
           mkdir -p "${ARTIFACT_DIR}"
           set -o pipefail
+          # Per-suite budgets are declared once in suite-sets.sh. The script
+          # applies one timeout to every suite in the list, so the widest wins.
+          . "${GITHUB_WORKSPACE}/.github/scripts/suite-sets.sh"
+          BM_TEST_TIMEOUT=""
+          for suite in ${BM_SUITES}; do
+            tmo="$(e2e_suite_timeout "${suite}")"
+            if [ -z "${BM_TEST_TIMEOUT}" ] || [ "${tmo%m}" -gt "${BM_TEST_TIMEOUT%m}" ]; then
+              BM_TEST_TIMEOUT="${tmo}"
+            fi
+          done
+          export BM_TEST_TIMEOUT
+          echo "suites=${BM_SUITES} test-timeout=${BM_TEST_TIMEOUT}"
           sudo -E mulga/scripts/baremetal/run-baremetal-e2e.sh \
             --vmlinuz   "${BM_ISO_CACHE}/vmlinuz" \
             --initrd    "${BM_ISO_CACHE}/initrd.img" \
@@ -151,7 +181,7 @@ jobs:
         uses: ./.github/actions/junit-to-es
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
-          cell: "20"
+          cell: ${{ env.BM_CELL }}
 
       - name: Analyze e2e failures
         if: always()
@@ -159,12 +189,12 @@ jobs:
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           log-dir: ${{ env.ARTIFACT_DIR }}
-          title: "E2E failure analysis (cell 20)"
+          title: "E2E failure analysis (cell ${{ env.BM_CELL }})"
 
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: e2e-artifacts-cell-20-${{ github.run_id }}
+          name: e2e-artifacts-cell-${{ env.BM_CELL }}-${{ github.run_id }}
           path: ${{ env.ARTIFACT_DIR }}
           if-no-files-found: warn
           retention-days: 14

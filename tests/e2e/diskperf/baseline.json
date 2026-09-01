@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "origin": "unmeasured — no committed numbers yet. Every job below is zeroed, so the throughput and latency assertions record and warn rather than gate. Capture on the bare-metal cell with SPINIFEX_DISKPERF_REPS=3, take the median the suite prints, and replace this string with the host, the spinifex/viperblock/predastore versions and the date the numbers were taken on.",
+  "jobs": {
+    "randwrite-4k": {
+      "read_iops": 0,
+      "write_iops": 0,
+      "read_p99_9_ms": 0,
+      "write_p99_9_ms": 0
+    },
+    "randrw-70-30-4k": {
+      "read_iops": 0,
+      "write_iops": 0,
+      "read_p99_9_ms": 0,
+      "write_p99_9_ms": 0
+    }
+  }
+}

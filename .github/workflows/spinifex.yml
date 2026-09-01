@@ -131,92 +131,6 @@ jobs:
       - name: Check Diff Coverage
         run: cd spinifex && scripts/diff-coverage.sh coverage.out --base HEAD~1
 
-  # In-process integration tier (gateway.SetupRoutes over embedded NATS
-  # JetStream). Its own job so it runs in parallel with the unit tiers rather
-  # than adding to their wall time, and it still blocks a PR — unlike e2e.yml's
-  # "Integration (front gate)" job, which is push-triggered against main/dev on
-  # a self-hosted runner and so never gates a PR before merge.
-  integration_tests:
-    name: Integration Tests
-    runs-on: ubuntu-26.04
-
-    steps:
-      - name: Checkout Spinifex
-        uses: actions/checkout@v7
-        with:
-          path: spinifex
-          fetch-depth: 2
-
-      - name: Resolve sibling refs
-        id: siblings
-        env:
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-        run: bash .github/resolve-sibling-refs.sh
-        working-directory: spinifex
-
-      - name: Checkout Viperblock
-        uses: actions/checkout@v7
-        with:
-          repository: mulgadc/viperblock
-          ref: ${{ steps.siblings.outputs.viperblock }}
-          path: viperblock
-
-      - name: Checkout Predastore
-        uses: actions/checkout@v7
-        with:
-          repository: mulgadc/predastore
-          ref: ${{ steps.siblings.outputs.predastore }}
-          path: predastore
-
-      - name: Checkout Northstar
-        uses: actions/checkout@v7
-        with:
-          repository: mulgadc/northstar
-          ref: ${{ steps.siblings.outputs.northstar }}
-          path: northstar
-
-      - name: Checkout Bluebottle
-        uses: actions/checkout@v7
-        with:
-          repository: mulgadc/bluebottle
-          ref: ${{ steps.siblings.outputs.bluebottle }}
-          path: bluebottle
-
-      # setup-go's own cache only writes on a key miss, so it froze a snapshot at
-      # the last go.sum change and never refreshed it. Both caches are managed
-      # below instead.
-      - name: Setup Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: "spinifex/go.mod"
-          cache: false
-
-      # Module contents follow the five go.sum files, so a content key is exact.
-      # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
-      # dependencies out of the key and re-downloading on every run.
-      - name: Cache Go modules
-        uses: actions/cache@v6
-        with:
-          path: ~/go/pkg/mod
-          key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
-          restore-keys: gomod-
-
-      # Build artifacts follow source, so the key rolls per run and falls back to
-      # this job's newest entry. Keyed per job because -race, -covermode=atomic
-      # and plain builds produce disjoint entries and would evict each other.
-      - name: Cache Go build
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/go-build
-          key: gobuild-${{ github.job }}-${{ github.run_id }}
-          restore-keys: gobuild-${{ github.job }}-
-
-      - name: Setup Go Workspace
-        run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
-
-      - name: Run Integration Tests
-        run: make -C spinifex test-integration
-
   race_detection:
     name: Race Detection
     runs-on: ubuntu-26.04
@@ -298,7 +212,7 @@ jobs:
         run: make -C spinifex test-race GOTESTFLAGS=-count=1
 
   lint_and_security:
-    name: Lint and Security
+    name: Lint + Security + Integration
     runs-on: ubuntu-26.04
 
     steps:
@@ -306,6 +220,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: spinifex
+          fetch-depth: 2
 
       - name: Resolve sibling refs
         id: siblings
@@ -382,3 +297,7 @@ jobs:
 
       - name: Govulncheck
         run: make -C spinifex govulncheck
+
+      - name: Run Integration Tests
+        if: ${{ !cancelled() }}
+        run: make -C spinifex test-integration

@@ -60,8 +60,9 @@ func NewWriter(cfg *config.Config, cluster *config.ClusterConfig, nc *nats.Conn)
 	return w
 }
 
-// Enabled reports whether the writer will process changes.
-func (w *Writer) Enabled() bool { return w.enabled }
+// Enabled reports whether the writer will process changes. Nil-safe: the
+// reconciler asks before it has one, and a missing writer is a disabled one.
+func (w *Writer) Enabled() bool { return w != nil && w.enabled }
 
 // Subscribe registers the queue-group request-reply consumer. It is a no-op when
 // the writer is disabled. Joining the queue group is what exposes this writer to

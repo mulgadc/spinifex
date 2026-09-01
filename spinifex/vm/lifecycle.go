@@ -1353,21 +1353,6 @@ type driveConfig struct {
 // (state written before hot-plug port accounting existed, or a volume
 // attached at RunInstances time) gets one allocated and written back, so a
 // later relaunch reuses the same port instead of reallocating it.
-// resolveBlkIOThreads returns the boot disk's IOThread pool size.
-//
-// EXPERIMENT SCAFFOLDING — remove before this branch merges. SPINIFEX_BLK_IOTHREADS
-// overrides the derived size so a pool sweep does not need a rebuild and a
-// full cluster redeploy per value. The shipping behaviour is the unset path.
-func resolveBlkIOThreads(cpuCount int) int {
-	if s := os.Getenv("SPINIFEX_BLK_IOTHREADS"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n >= 1 && n <= 16 {
-			return n
-		}
-		slog.Warn("ignoring unusable SPINIFEX_BLK_IOTHREADS", "value", s)
-	}
-	return BlkIOThreadPoolSize(cpuCount)
-}
-
 func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) (driveConfig, error) {
 	var cfg driveConfig
 
@@ -1398,7 +1383,7 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 			// The boot disk's virtqueues are spread across a pool rather than
 			// all served by one host thread. A pool of 1 emits exactly the
 			// command line this used to, which is every guest below 4 vCPUs.
-			pool := resolveBlkIOThreads(cpuCount)
+			pool := BlkIOThreadPoolSize(cpuCount)
 			for i := range pool {
 				cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: BlkIOThreadID("ioth-os", i, pool)})
 			}

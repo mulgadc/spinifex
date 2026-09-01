@@ -1066,14 +1066,7 @@ func completeCreateSnapshot(ctx context.Context, cfg *Config, nc *nats.Conn, req
 	snapshot, err := snapshotVolumeEngine(ctx, cfg, req.VolumeID, req.SnapshotID)
 	if err != nil {
 		slog.Error("ebs.provider.snapshot.create: snapshot failed", "volume", req.VolumeID, "snapshot", req.SnapshotID, "err", err)
-		code := ebsprovider.ErrorCodeInternal
-		switch {
-		case errors.Is(err, viperblock.ErrStateNotFound):
-			code = ebsprovider.ErrorCodeNotFound
-		case errors.Is(err, errSnapshotExistsElsewhere):
-			code = ebsprovider.ErrorCodeAlreadyExists
-		}
-		completion.Error = &ebsprovider.ProviderError{Code: code, Message: err.Error()}
+		completion.Error = &ebsprovider.ProviderError{Code: snapshotErrorCode(err), Message: err.Error()}
 	} else {
 		completion.Snapshot = snapshot
 	}
@@ -1085,6 +1078,25 @@ func completeCreateSnapshot(ctx context.Context, cfg *Config, nc *nats.Conn, req
 	}
 	if err := nc.Publish(completionSubject, data); err != nil {
 		slog.Error("ebs.provider.snapshot.create: failed to publish completion", "subject", completionSubject, "err", err)
+	}
+}
+
+// snapshotErrorCode classifies a failed snapshot for the caller. Only
+// ErrorCodeUnavailable invites a retry, so a refusal that will clear on its own
+// has to be told apart from one that will not.
+func snapshotErrorCode(err error) ebsprovider.ErrorCode {
+	switch {
+	case errors.Is(err, viperblock.ErrStateNotFound):
+		return ebsprovider.ErrorCodeNotFound
+	case errors.Is(err, errSnapshotExistsElsewhere):
+		return ebsprovider.ErrorCodeAlreadyExists
+	case errors.Is(err, errVolumeLeaseHeld), errors.Is(err, errNoVolumeLeaseStore):
+		// Exclusive access could not be established. The holder gives the
+		// volume up on detach, so this is worth repeating rather than the
+		// permanent failure an internal error reads as.
+		return ebsprovider.ErrorCodeUnavailable
+	default:
+		return ebsprovider.ErrorCodeInternal
 	}
 }
 
@@ -1109,48 +1121,30 @@ func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) error {
 // preferring an already-mounted VB over opening a second engine on the same
 // volume. Draining the volume so the checkpoint is current is the caller's
 // responsibility (see handleCreateSnapshot).
+//
+// The unmounted branch opens through openVolumeVB, so it holds the volume's
+// cluster-wide lease for as long as the engine is open: a snapshot taken
+// beside a live writer on another node is two engines on one volume.
 func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
 	if mv, ok := findMountedVolume(cfg, volumeID); ok && mv.VB != nil {
-		if err := checkSnapshotIDFree(mv.VB, volumeID, snapshotID); err != nil {
-			return nil, err
-		}
-		if err := mv.VB.LoadLiveCheckpoint(); err != nil {
-			return nil, fmt.Errorf("load live checkpoint: %w", err)
-		}
-		if _, err := mv.VB.CreateSnapshot(snapshotID); err != nil {
-			return nil, fmt.Errorf("create snapshot: %w", err)
-		}
-		return &ebsprovider.Snapshot{
-			ID:             snapshotID,
-			SourceVolumeID: volumeID,
-			SizeBytes:      safecast.Uint64ToInt64(mv.VB.GetVolumeSize()),
-			CreatedAt:      time.Now().UTC(),
-			State:          ebsprovider.SnapshotStateCompleted,
-			Handle:         snapshotHandle(snapshotID),
-		}, nil
+		return createSnapshotWithVB(mv.VB, volumeID, snapshotID)
 	}
 
-	s3cfg := cfg.volumeS3Config(volumeID)
-	vbconfig := &viperblock.VB{
-		VolumeName:        volumeID,
-		VolumeSize:        1, // Recalculated on LoadState.
-		BaseDir:           cfg.BaseDir,
-		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
-		MasterKey:         cfg.masterKey,
-		EncryptionEnabled: cfg.masterKey != nil,
-		GCEnabled:         cfg.GCEnabled,
-	}
-	vb, err := viperblock.New(vbconfig, "s3", s3cfg)
+	vb, lease, err := openVolumeVB(ctx, cfg, volumeID)
 	if err != nil {
-		return nil, fmt.Errorf("new viperblock: %w", err)
+		return nil, err
 	}
-	defer vb.Detach()
-	if err := vb.Backend.InitCtx(ctx); err != nil {
-		return nil, fmt.Errorf("backend init: %w", err)
-	}
-	if err := loadStateWithRetry(ctx, cfg, vb, volumeID); err != nil {
-		return nil, fmt.Errorf("load state: %w", err)
-	}
+	defer func() {
+		vb.Detach()
+		cfg.releaseVolumeLease(ctx, lease)
+	}()
+	return createSnapshotWithVB(vb, volumeID, snapshotID)
+}
+
+// createSnapshotWithVB takes the snapshot against an already-resolved VB,
+// shared by snapshotVolumeEngine's mounted and freshly-opened branches so the
+// two cannot drift on what a snapshot of a volume means.
+func createSnapshotWithVB(vb *viperblock.VB, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
 	if err := checkSnapshotIDFree(vb, volumeID, snapshotID); err != nil {
 		return nil, err
 	}

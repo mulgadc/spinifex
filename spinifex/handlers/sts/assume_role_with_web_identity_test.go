@@ -616,3 +616,30 @@ func TestJWKToECDSAPublicKey_RejectsUnsupportedShapes(t *testing.T) {
 		})
 	}
 }
+
+// A RoleArn carrying a path the stored role does not have must not reach the
+// role its final segment names, even when the token and trust policy are valid.
+func TestAssumeRoleWithWebIdentity_RejectsFabricatedPath(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	f := newWebIdentityFixture(t, svc, testCallerAccountID)
+	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-app",
+		webIdentityTrustPolicy(f.federatedARN, f.issuer, "system:serviceaccount:default:my-sa"))
+
+	token := f.signToken(f.defaultClaims())
+	pathed := strings.Replace(aws.StringValue(role.Arn), ":role/", ":role/decoy/", 1)
+	_, err := svc.AssumeRoleWithWebIdentity(&sts.AssumeRoleWithWebIdentityInput{
+		RoleArn:          aws.String(pathed),
+		RoleSessionName:  aws.String("pod-1"),
+		WebIdentityToken: aws.String(token),
+	})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+
+	// The stored ARN still works, so the denial is the path and nothing else.
+	_, err = svc.AssumeRoleWithWebIdentity(&sts.AssumeRoleWithWebIdentityInput{
+		RoleArn:          role.Arn,
+		RoleSessionName:  aws.String("pod-1"),
+		WebIdentityToken: aws.String(token),
+	})
+	require.NoError(t, err)
+}

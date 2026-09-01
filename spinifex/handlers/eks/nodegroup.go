@@ -706,14 +706,25 @@ func gatewayHostIP(gatewayURL string) string {
 // provider, mirroring the implicit instance profile real EKS creates for a node
 // role. Idempotent: concurrent worker launches converge on the same profile.
 func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string) (string, error) {
-	roleAccount, roleName, err := auth.ParseRoleARN(nodeRoleARN)
+	// Resolution compares the supplied ARN against the stored one, so an invented
+	// path cannot bind a profile to the role its trailing name happens to match.
+	_, roleName, err := auth.ResolveRoleARN(nodeRoleARN, func(account, name string) (string, error) {
+		// The profile is created under the caller's account, so a role from
+		// another account would silently bind a name that account does not own.
+		if account != accountID {
+			return "", fmt.Errorf("is not in account %s", accountID)
+		}
+		out, gerr := s.iamEnsurer().GetRole(account, &iam.GetRoleInput{RoleName: aws.String(name)})
+		if gerr != nil {
+			return "", gerr
+		}
+		if out == nil || out.Role == nil {
+			return "", nil
+		}
+		return aws.StringValue(out.Role.Arn), nil
+	})
 	if err != nil {
 		return "", fmt.Errorf("node role ARN %q: %w", nodeRoleARN, err)
-	}
-	// The profile is created under the caller's account, so a role from another
-	// account would silently bind a name that account does not own.
-	if roleAccount != accountID {
-		return "", fmt.Errorf("node role ARN %q is not in account %s", nodeRoleARN, accountID)
 	}
 	profileName := roleName
 

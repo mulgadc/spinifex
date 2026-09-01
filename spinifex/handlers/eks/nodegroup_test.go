@@ -181,7 +181,7 @@ func createNGInput(cluster, ng string, desired int64) *eks.CreateNodegroupInput 
 	return &eks.CreateNodegroupInput{
 		ClusterName:   aws.String(cluster),
 		NodegroupName: aws.String(ng),
-		NodeRole:      aws.String("arn:aws:iam::111122223333:role/eks-node"),
+		NodeRole:      aws.String(fixtureNodeRoleARN),
 		Subnets:       aws.StringSlice([]string{"subnet-aaa"}),
 		ScalingConfig: &eks.NodegroupScalingConfig{
 			MinSize:     aws.Int64(1),

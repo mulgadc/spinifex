@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 	"github.com/stretchr/testify/assert"
@@ -20,8 +21,20 @@ func newFakeEnsurer() *iammock.SystemInstanceRoleEnsurer {
 
 const testNodeRoleARN = "arn:aws:iam::000000000001:role/eks-quickstart-node-role"
 
-func TestEnsureNodeInstanceProfile_CreatesAndAttaches(t *testing.T) {
+// fixtureNodeRoleARN is the node role the shared service fixture's nodegroups
+// launch with; resolution requires it to exist in the mock's IAM.
+const fixtureNodeRoleARN = "arn:aws:iam::111122223333:role/eks-node"
+
+// newEnsurerWithRole returns a mock holding roleName with the canonical ARN IAM
+// would have stored for it, which node role resolution verifies against.
+func newEnsurerWithRole(roleName, roleARN string) *iammock.SystemInstanceRoleEnsurer {
 	f := newFakeEnsurer()
+	f.Roles[roleName] = &iam.Role{RoleName: aws.String(roleName), Arn: aws.String(roleARN)}
+	return f
+}
+
+func TestEnsureNodeInstanceProfile_CreatesAndAttaches(t *testing.T) {
+	f := newEnsurerWithRole("eks-quickstart-node-role", testNodeRoleARN)
 	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
 
 	arn, err := s.ensureNodeInstanceProfile("000000000001", testNodeRoleARN)
@@ -33,7 +46,7 @@ func TestEnsureNodeInstanceProfile_CreatesAndAttaches(t *testing.T) {
 }
 
 func TestEnsureNodeInstanceProfile_ExistingWithRoleIsNoop(t *testing.T) {
-	f := newFakeEnsurer()
+	f := newEnsurerWithRole("eks-quickstart-node-role", testNodeRoleARN)
 	f.Profiles["eks-quickstart-node-role"] = &iam.InstanceProfile{
 		InstanceProfileName: aws.String("eks-quickstart-node-role"),
 		Arn:                 aws.String("arn:aws:iam::000000000001:instance-profile/eks-quickstart-node-role"),
@@ -49,7 +62,7 @@ func TestEnsureNodeInstanceProfile_ExistingWithRoleIsNoop(t *testing.T) {
 }
 
 func TestEnsureNodeInstanceProfile_ExistingWithoutRoleAttaches(t *testing.T) {
-	f := newFakeEnsurer()
+	f := newEnsurerWithRole("eks-quickstart-node-role", testNodeRoleARN)
 	f.Profiles["eks-quickstart-node-role"] = &iam.InstanceProfile{
 		InstanceProfileName: aws.String("eks-quickstart-node-role"),
 		Arn:                 aws.String("arn:aws:iam::000000000001:instance-profile/eks-quickstart-node-role"),
@@ -63,7 +76,7 @@ func TestEnsureNodeInstanceProfile_ExistingWithoutRoleAttaches(t *testing.T) {
 }
 
 func TestEnsureNodeInstanceProfile_AddRoleLimitExceededIsSuccess(t *testing.T) {
-	f := newFakeEnsurer()
+	f := newEnsurerWithRole("eks-quickstart-node-role", testNodeRoleARN)
 	f.AddRoleToInstanceProfileErr = errors.New(awserrors.ErrorIAMLimitExceeded)
 	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
 
@@ -75,7 +88,7 @@ func TestEnsureNodeInstanceProfile_AddRoleLimitExceededIsSuccess(t *testing.T) {
 // A path-bearing role ARN names its profile after the final segment only; the
 // path is not a legal instance-profile name character.
 func TestEnsureNodeInstanceProfile_PathBearingRoleUsesFinalSegment(t *testing.T) {
-	f := newFakeEnsurer()
+	f := newEnsurerWithRole("Worker", "arn:aws:iam::000000000001:role/team/Worker")
 	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
 
 	arn, err := s.ensureNodeInstanceProfile("000000000001", "arn:aws:iam::000000000001:role/team/Worker")
@@ -98,7 +111,7 @@ func TestEnsureNodeInstanceProfile_RejectsInvalidARNs(t *testing.T) {
 	}
 	for name, arn := range cases {
 		t.Run(name, func(t *testing.T) {
-			f := newFakeEnsurer()
+			f := newEnsurerWithRole("Worker", "arn:aws:iam::000000000001:role/Worker")
 			s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
 			_, err := s.ensureNodeInstanceProfile("000000000001", arn)
 			require.Error(t, err)
@@ -106,4 +119,38 @@ func TestEnsureNodeInstanceProfile_RejectsInvalidARNs(t *testing.T) {
 			assert.Zero(t, f.AddRoleToInstanceProfileCalls)
 		})
 	}
+}
+
+// A node role ARN carrying a path the stored role does not have must not bind a
+// profile to the role its final segment names.
+func TestEnsureNodeInstanceProfile_RejectsFabricatedPath(t *testing.T) {
+	f := newEnsurerWithRole("eks-quickstart-node-role", testNodeRoleARN)
+	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
+
+	_, err := s.ensureNodeInstanceProfile("000000000001",
+		"arn:aws:iam::000000000001:role/decoy/eks-quickstart-node-role")
+	require.ErrorIs(t, err, auth.ErrRoleARNMismatch)
+	assert.Zero(t, f.CreateInstanceProfileCalls)
+	assert.Zero(t, f.AddRoleToInstanceProfileCalls)
+}
+
+// A pathed role is likewise not reachable by its pathless ARN.
+func TestEnsureNodeInstanceProfile_RejectsStrippedPath(t *testing.T) {
+	f := newEnsurerWithRole("Worker", "arn:aws:iam::000000000001:role/team/Worker")
+	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
+
+	_, err := s.ensureNodeInstanceProfile("000000000001", "arn:aws:iam::000000000001:role/Worker")
+	require.ErrorIs(t, err, auth.ErrRoleARNMismatch)
+	assert.Zero(t, f.CreateInstanceProfileCalls)
+}
+
+// A node role that does not exist in IAM cannot be resolved, so no profile is
+// created for it.
+func TestEnsureNodeInstanceProfile_RejectsUnknownRole(t *testing.T) {
+	f := newFakeEnsurer()
+	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
+
+	_, err := s.ensureNodeInstanceProfile("000000000001", testNodeRoleARN)
+	require.Error(t, err)
+	assert.Zero(t, f.CreateInstanceProfileCalls)
 }

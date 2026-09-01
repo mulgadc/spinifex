@@ -131,19 +131,6 @@ jobs:
       - name: Check Diff Coverage
         run: cd spinifex && scripts/diff-coverage.sh coverage.out --base HEAD~1
 
-      # Measure-only: how much of the build cache this job uploads is stale.
-      # Go trims at 5 days, so entries below that age band are dead weight
-      # carried in every restore and save. Reports, deletes nothing.
-      - name: Go build cache age census
-        run: |
-          C="$(go env GOCACHE)"
-          echo "total: $(du -sh "$C" | cut -f1) across $(find "$C" -type f | wc -l) files"
-          for d in 1 2 3 5; do
-            find "$C" -type f -mtime +"$d" -printf '%s\n' | awk -v d="$d" '
-              {s += $1; n++}
-              END {printf "older than %sd: %.2f GB across %d files\n", d, s/1073741824, n}'
-          done
-
   # In-process integration tier (gateway.SetupRoutes over embedded NATS
   # JetStream). Its own job so it runs in parallel with the unit tiers rather
   # than adding to their wall time, and it still blocks a PR — unlike e2e.yml's

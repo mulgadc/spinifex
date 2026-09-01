@@ -39,7 +39,9 @@ func TestNATSTracePropagation(t *testing.T) {
 
 	var gotAccount string
 	var consumerSC trace.SpanContext
+	served := newHandlerDone()
 	_, err = nc.Subscribe("test.trace.echo", func(msg *nats.Msg) {
+		defer served.done()
 		gotAccount = AccountIDFromMsg(msg)
 		ServeNATSRequestCtx(msg, func(ctx context.Context, in *traceEchoRequest) (*traceEchoResponse, error) {
 			consumerSC = trace.SpanContextFromContext(ctx)
@@ -51,6 +53,7 @@ func TestNATSTracePropagation(t *testing.T) {
 	ctx, parent := otel.Tracer("test").Start(context.Background(), "parent-op")
 	out, err := NATSRequest[traceEchoResponse](ctx, nc, "test.trace.echo", traceEchoRequest{Name: "spinifex"}, 5*time.Second, "123456789012")
 	require.NoError(t, err)
+	served.wait(t)
 	parent.End()
 
 	assert.Equal(t, "spinifex", out.Name)

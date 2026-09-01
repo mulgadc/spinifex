@@ -13,6 +13,24 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// handlerDone signals that a subscriber callback has returned. ServeNATSRequestCtx
+// ends its consumer span in a defer, after the reply is published, so a test that
+// asserts on recorded spans must wait for the callback rather than for the reply.
+type handlerDone chan struct{}
+
+func newHandlerDone() handlerDone { return make(handlerDone, 1) }
+
+func (d handlerDone) done() { d <- struct{}{} }
+
+func (d handlerDone) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-d:
+	case <-time.After(5 * time.Second):
+		t.Fatal("NATS subscriber callback did not return")
+	}
+}
+
 // spanAccounts returns the account attribute of each recorded span by kind,
 // with an empty string where the span carries none.
 func spanAccounts(spans []sdktrace.ReadOnlySpan) map[trace.SpanKind]string {
@@ -39,7 +57,9 @@ func TestNATSSpansCarryTheCallerAccount(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
+	served := newHandlerDone()
 	_, err = nc.Subscribe("test.account.echo", func(msg *nats.Msg) {
+		defer served.done()
 		ServeNATSRequestCtx(msg, func(context.Context, *traceEchoRequest) (*traceEchoResponse, error) {
 			return &traceEchoResponse{Name: "ok"}, nil
 		})
@@ -49,6 +69,7 @@ func TestNATSSpansCarryTheCallerAccount(t *testing.T) {
 	_, err = NATSRequest[traceEchoResponse](context.Background(), nc, "test.account.echo",
 		traceEchoRequest{Name: "x"}, 5*time.Second, "000000000042")
 	require.NoError(t, err)
+	served.wait(t)
 
 	accounts := spanAccounts(recorder.Ended())
 	assert.Equal(t, "000000000042", accounts[trace.SpanKindClient], "producer span must name the account it sent for")

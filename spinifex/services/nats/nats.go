@@ -97,6 +97,12 @@ func launchService(config *Config) (err error) {
 
 	slog.Debug("NATS server options", "opts", opts)
 
+	reserve := &StoreReserve{Dir: opts.StoreDir, Size: DefaultStoreReserveBytes}
+	if !opts.JetStream {
+		reserve.Size = 0
+	}
+	reserve.Apply()
+
 	// Initialize new server with options
 	ns, err := server.NewServer(opts)
 	if err != nil {
@@ -109,6 +115,10 @@ func launchService(config *Config) (err error) {
 	if err := server.Run(ns); err != nil {
 		server.PrintAndDie(err.Error())
 	}
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go reserve.Maintain(stop)
 
 	ns.WaitForShutdown()
 

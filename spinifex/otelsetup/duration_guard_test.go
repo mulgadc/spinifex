@@ -33,9 +33,12 @@ var logMethods = map[string]bool{
 func TestSlogDurationConvention(t *testing.T) {
 	root := moduleRoot(t)
 
+	// No NeedDeps: the guard only reads types for the syntax it walks, which
+	// resolves from dependency export data. Asking for dependency syntax as
+	// well type-checks the whole graph from source for no extra coverage.
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedSyntax | packages.NeedTypes |
-			packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports,
+			packages.NeedTypesInfo | packages.NeedImports,
 		Dir: root,
 	}
 	pkgs, err := packages.Load(cfg, "./spinifex/...", "./cmd/...")

@@ -28,10 +28,18 @@
 # that runs identically on either, and because a quota left switched on would
 # cap every suite sharing the environment — so it must be proved to restore
 # itself wherever it runs, not only on one node.
-E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota"
+# storagefault runs last in both lists and belongs to both topologies, for
+# different reasons. On one node it is RS(1,0), so freezing the only predastore
+# is a total outage and the guest-survival assertion is unambiguous. On three it
+# is RS(2,1) with degraded writes on, so two must be frozen to break the shard
+# floor — and only there is a cross-node restart possible at all, which is the
+# case that loses data silently. It is last because it SIGSTOPs a cluster-wide
+# service: anything sharing the environment would see the same outage and report
+# a failure that says nothing about itself.
+E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota storagefault"
 
 # Suites runnable against a multi-node environment.
-E2E_SUITES_MULTI="multinode lb cert quota"
+E2E_SUITES_MULTI="multinode lb cert quota storagefault"
 
 # grep -xE alternation form, for narrowing a requested set to the eligible one.
 E2E_SUITES_SINGLE_RE="$(printf '%s' "${E2E_SUITES_SINGLE}" | tr ' ' '|')"

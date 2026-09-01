@@ -3,9 +3,12 @@ package gateway_ecs
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/nats-io/nats.go"
 )
@@ -177,17 +180,48 @@ func ListContainerInstances(ctx context.Context, nc *nats.Conn, accountID string
 
 // --- Task ---
 
+// RunTask honours ClientToken: a placement reserves capacity, hot-plugs an ENI
+// in awsvpc mode and starts containers, so a retried request would double all
+// three rather than leave one stray resource behind.
 func RunTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.RunTaskInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return runTask(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck)
+	svc := handlers_ecs.NewNATSECSService(nc)
+
+	// No token means the caller did not ask for idempotency, as on AWS.
+	token := aws.StringValue(input.ClientToken)
+	if token == "" {
+		return runTask(ctx, svc, accountID, input, passRoleCheck)
+	}
+
+	store, serr := getRunTaskStore(ctx, nc)
+	if serr != nil {
+		// Launching anyway would place the duplicate tasks the token was sent to
+		// prevent, so this fails rather than degrading to no idempotency.
+		slog.ErrorContext(ctx, "ECS RunTask: client-token store unavailable", "err", serr)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	// Hashed before the launch, so a handler that mutates its input cannot change
+	// what a retry of the same token hashes to.
+	paramHash := runTaskParamHash(input)
+	out, err := runTaskWithClientToken(ctx, store, accountID, token, paramHash, func() (ecs.RunTaskOutput, error) {
+		res, rerr := runTask(ctx, svc, accountID, input, passRoleCheck)
+		if rerr != nil {
+			return ecs.RunTaskOutput{}, rerr
+		}
+		return *res, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // runTask is RunTask's core, split out so tests can inject a fake ECSService
 // instead of a live NATS connection.
-func runTask(ctx context.Context, svc handlers_ecs.ECSService, accountID string, input *ecs.RunTaskInput, passRoleCheck PassRoleChecker) (any, error) {
+func runTask(ctx context.Context, svc handlers_ecs.ECSService, accountID string, input *ecs.RunTaskInput, passRoleCheck PassRoleChecker) (*ecs.RunTaskOutput, error) {
 	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
 		return nil, err
 	}

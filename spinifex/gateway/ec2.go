@@ -412,7 +412,7 @@ var ec2Actions = map[string]ec2Action{
 	"CreateLaunchTemplate": ec2Handler(func(ctx context.Context, input *ec2.CreateLaunchTemplateInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_launchtemplate.CreateLaunchTemplate(ctx, input, gw.NATSConn, accountID)
 	}),
-	"CreateLaunchTemplateVersion": ec2Handler(func(ctx context.Context, input *ec2.CreateLaunchTemplateVersionInput, gw *GatewayConfig, accountID string) (any, error) {
+	"CreateLaunchTemplateVersion": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateLaunchTemplateVersionInput, gw *GatewayConfig, accountID string) (ec2.CreateLaunchTemplateVersionOutput, error) {
 		return gateway_ec2_launchtemplate.CreateLaunchTemplateVersion(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteLaunchTemplate": ec2Handler(func(ctx context.Context, input *ec2.DeleteLaunchTemplateInput, gw *GatewayConfig, accountID string) (any, error) {

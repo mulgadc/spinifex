@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -66,22 +67,12 @@ func parseRegistryHost(host, suffix string) (accountID, region string, ok bool) 
 
 // stripPort removes a trailing :port from a host, leaving bare IPv6 intact.
 func stripPort(host string) string {
-	if host == "" {
-		return ""
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
 	}
-	// Bracketed IPv6 with optional port: [::1]:5000 or [::1].
-	if strings.HasPrefix(host, "[") {
-		if end := strings.IndexByte(host, ']'); end >= 0 {
-			return host[1:end]
-		}
-		return host
-	}
-	// Single colon means host:port; multiple colons mean bare IPv6, never a
-	// registry host, so leave it untouched.
-	if strings.Count(host, ":") == 1 {
-		if h, _, found := strings.Cut(host, ":"); found {
-			return h
-		}
+	// No port: unwrap a bracketed IPv6 literal, leave anything else as-is.
+	if h, ok := strings.CutPrefix(host, "["); ok {
+		return strings.TrimSuffix(h, "]")
 	}
 	return host
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -90,12 +91,9 @@ func matchWebIdentityStatement(actions []string, principalRaw, conditionRaw json
 }
 
 func matchWebIdentityAction(actions []string) bool {
-	for _, a := range actions {
-		if a == stsActionAssumeRoleWithWebIdentity || a == stsActionWildcard || a == globalWildcard {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(actions, func(a string) bool {
+		return a == stsActionAssumeRoleWithWebIdentity || a == stsActionWildcard || a == globalWildcard
+	})
 }
 
 // matchFederatedPrincipal accepts Principal.Federated as a string or array.

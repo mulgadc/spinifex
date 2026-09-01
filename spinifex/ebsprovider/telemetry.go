@@ -3,6 +3,8 @@ package ebsprovider
 import (
 	"context"
 	"encoding/json"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/nats-io/nats.go"
@@ -138,11 +140,7 @@ type headerCarrier nats.Header
 func (c headerCarrier) Get(key string) string { return nats.Header(c).Get(key) }
 func (c headerCarrier) Set(key, value string) { nats.Header(c).Set(key, value) }
 func (c headerCarrier) Keys() []string {
-	keys := make([]string, 0, len(c))
-	for key := range c {
-		keys = append(keys, key)
-	}
-	return keys
+	return slices.Collect(maps.Keys(c))
 }
 
 // startClientSpan opens a span for an outbound request and injects the trace

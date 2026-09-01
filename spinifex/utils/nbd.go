@@ -131,13 +131,12 @@ func ParseNBDURI(nbdURI string) (serverType, path, host string, port int, err er
 	}
 
 	if after, ok := strings.CutPrefix(nbdURI, "nbd://"); ok {
-		hostPort := after
-		colonIdx := strings.LastIndex(hostPort, ":")
-		if colonIdx < 0 {
+		var portStr string
+		host, portStr, err = net.SplitHostPort(after)
+		if err != nil {
 			return "", "", "", 0, fmt.Errorf("missing port in NBD TCP URI: %s", nbdURI)
 		}
-		host = hostPort[:colonIdx]
-		port, err = strconv.Atoi(hostPort[colonIdx+1:])
+		port, err = strconv.Atoi(portStr)
 		if err != nil {
 			return "", "", "", 0, fmt.Errorf("invalid port in NBD URI: %s", nbdURI)
 		}

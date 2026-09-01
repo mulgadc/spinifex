@@ -1,7 +1,8 @@
 package gateway
 
 import (
-	"sort"
+	"maps"
+	"slices"
 
 	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
@@ -56,36 +57,18 @@ func AWSOperationInventory() map[string]ServiceOperationInventory {
 	}
 }
 
-func mapKeys[K ~string, V any](values map[K]V) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, string(key))
-	}
-	sort.Strings(keys)
-	return keys
+func mapKeys[V any](values map[string]V) []string {
+	return slices.Sorted(maps.Keys(values))
 }
 
 func without(values, excluded []string) []string {
-	exclude := make(map[string]bool, len(excluded))
-	for _, value := range excluded {
-		exclude[value] = true
-	}
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		if !exclude[value] {
-			result = append(result, value)
-		}
-	}
-	return result
+	return slices.DeleteFunc(slices.Clone(values), func(value string) bool {
+		return slices.Contains(excluded, value)
+	})
 }
 
 func union(left, right []string) []string {
-	set := make(map[string]bool, len(left)+len(right))
-	for _, value := range left {
-		set[value] = true
-	}
-	for _, value := range right {
-		set[value] = true
-	}
-	return mapKeys(set)
+	merged := slices.Concat(left, right)
+	slices.Sort(merged)
+	return slices.Compact(merged)
 }

@@ -3,6 +3,8 @@ package vm
 import (
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -139,11 +141,7 @@ func (m *Manager) ENISlotMapKeys(instance *VM) []string {
 	}
 	instance.ENIRequests.Mu.Lock()
 	defer instance.ENIRequests.Mu.Unlock()
-	out := make([]string, 0, len(instance.ENIRequests.AttachedByENIID))
-	for eniID := range instance.ENIRequests.AttachedByENIID {
-		out = append(out, eniID)
-	}
-	return out
+	return slices.Collect(maps.Keys(instance.ENIRequests.AttachedByENIID))
 }
 
 // CleanupENITap removes the tap + OVS port for an ENI. Exported wrapper over

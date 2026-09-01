@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -249,21 +250,15 @@ func recordType(t string) (uint16, error) {
 // recordSetExists reports whether the zone already holds a record set for
 // (label, rtype); an upsert to it replaces in place and never grows the count.
 func recordSetExists(cfg nsconfig.ConfigArr, label string, rtype uint16) bool {
-	for _, r := range cfg.Records {
-		if strings.EqualFold(r.Domain, label) && r.Type == rtype {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(cfg.Records, func(r nsconfig.Records) bool {
+		return strings.EqualFold(r.Domain, label) && r.Type == rtype
+	})
 }
 
 func hasUpsert(changes []Change) bool {
-	for _, c := range changes {
-		if c.Action == ActionUpsert {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(changes, func(c Change) bool {
+		return c.Action == ActionUpsert
+	})
 }
 
 // northstarZoneConfig bundles the parsed service config with the writer's

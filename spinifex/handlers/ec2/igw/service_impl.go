@@ -45,7 +45,9 @@ type IGWRecord struct {
 // attachment.state and doubles as the reconciler's intent signal; AttachState
 // records whether vpcd has actually brought the OVN gateway up.
 const (
-	attachStatePending  = "pending"
+	// AttachStatePending is exported for the reconciler, which decides from the
+	// record whether an attachment still needs confirming.
+	AttachStatePending  = "pending"
 	attachStateAttached = "attached"
 )
 
@@ -53,7 +55,7 @@ const (
 // return. A pending attach has been requested but not yet confirmed in OVN; an
 // empty AttachState is a record predating attach tracking.
 func (r *IGWRecord) attachmentVisible() bool {
-	return r.VpcId != "" && r.AttachState != attachStatePending
+	return r.VpcId != "" && r.AttachState != AttachStatePending
 }
 
 // GatePublisher recomputes per-subnet egress gate/ungate decisions for a VPC.
@@ -339,7 +341,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 	record.State = "available"
 	// vpcd attaches the OVN gateway asynchronously, so the attachment is not
 	// reported until a reconcile pass confirms it.
-	record.AttachState = attachStatePending
+	record.AttachState = AttachStatePending
 
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -503,7 +505,7 @@ func MarkAttached(ctx context.Context, kv jetstream.KeyValue, recordKey, vpcID s
 	record, err := kvutil.Update(ctx, kv, recordKey, kvutil.CASConfig{}, func(r *IGWRecord) (bool, error) {
 		// Reset per attempt: a retried CAS may see a record another writer has
 		// already moved out of pending.
-		confirmed = r.VpcId == vpcID && r.AttachState == attachStatePending
+		confirmed = r.VpcId == vpcID && r.AttachState == AttachStatePending
 		if !confirmed {
 			return false, nil
 		}

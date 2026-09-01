@@ -1191,7 +1191,9 @@ func (s *stubIGW) AttachIGW(ctx context.Context, spec external.IGWSpec) error {
 func igwIntent(t *testing.T) IntentState {
 	t.Helper()
 	intent := freshIntent(t)
-	intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a", RecordKey: "acct.igw-a"}
+	intent.IGWs["vpc-a"] = external.IGWSpec{
+		VPCID: "vpc-a", InternetGatewayID: "igw-a", RecordKey: "acct.igw-a", AttachPending: true,
+	}
 	return intent
 }
 
@@ -1298,12 +1300,35 @@ func TestReconcile_MarksIGWAttachedOnlyOnSuccess(t *testing.T) {
 			return nil
 		}
 		intent := freshIntent(t)
-		intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a"}
+		intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a", AttachPending: true}
 		if err := rec.Reconcile(ctx, intent); err != nil {
 			t.Fatalf("Reconcile = %v, want nil", err)
 		}
 		if called {
 			t.Error("markAttached called with no record key")
+		}
+	})
+
+	// A record already confirmed must cost nothing: the drift loop watches this
+	// bucket, so a per-pass read is a per-pass wakeup risk for no work.
+	t.Run("already confirmed", func(t *testing.T) {
+		rec, _ := newTestReconciler(t)
+		rec.chassis = []string{"chassis-1"}
+		rec.gwClaim = &fakeClaimVerifier{}
+		called := false
+		rec.markAttached = func(context.Context, string, string) error {
+			called = true
+			return nil
+		}
+		intent := igwIntent(t)
+		spec := intent.IGWs["vpc-a"]
+		spec.AttachPending = false
+		intent.IGWs["vpc-a"] = spec
+		if err := rec.Reconcile(ctx, intent); err != nil {
+			t.Fatalf("Reconcile = %v, want nil", err)
+		}
+		if called {
+			t.Error("markAttached called for an attachment already confirmed")
 		}
 	})
 

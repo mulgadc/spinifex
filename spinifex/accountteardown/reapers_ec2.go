@@ -396,54 +396,14 @@ func (r *igwReaper) Delete(ctx context.Context, accountID string, resource Resou
 			return err
 		}
 	}
+	// A gateway whose attach is not yet confirmed reports no attachment, so
+	// Detail is empty and the delete is refused. DeleteVpc rejects while the
+	// gateway is attached, so the VPC survives and the next sweep, once the
+	// attachment is confirmed, takes the branch above.
 	_, err := gateway_ec2_igw.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(resource.ID),
 	}, r.nc, accountID)
-	if err != nil && resource.Detail == "" && awserrors.IsErrorCode(err, awserrors.ErrorDependencyViolation) {
-		if derr := r.detachFromAnyVPC(ctx, accountID, resource.ID); derr != nil {
-			return derr
-		}
-		_, err = gateway_ec2_igw.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{
-			InternetGatewayId: aws.String(resource.ID),
-		}, r.nc, accountID)
-	}
 	return ignoreAlreadyGone(err)
-}
-
-// detachFromAnyVPC handles a gateway whose attach was requested but not yet
-// confirmed, so it reported no attachment to detach and the delete was refused.
-// The VPC is unknown, so every candidate is tried. Only Gateway.NotAttached
-// means "wrong VPC": anything else is a real failure and is returned, because
-// treating a timeout as a non-match reports the wrong cause and, once the VPC
-// reaper removes the VPC, leaves the attachment unnameable through the API.
-func (r *igwReaper) detachFromAnyVPC(ctx context.Context, accountID, igwID string) error {
-	out, err := gateway_ec2_vpc.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{}, r.nc, accountID)
-	if err != nil {
-		return fmt.Errorf("enumerate VPCs to detach pending gateway %s: %w", igwID, err)
-	}
-
-	rejected := 0
-	for _, vpc := range out.Vpcs {
-		if vpc == nil || aws.StringValue(vpc.VpcId) == "" {
-			continue
-		}
-		_, err := gateway_ec2_igw.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
-			InternetGatewayId: aws.String(igwID),
-			VpcId:             vpc.VpcId,
-		}, r.nc, accountID)
-		switch {
-		case err == nil:
-			return nil
-		case isAlreadyGone(err):
-			return nil
-		case awserrors.IsErrorCode(err, awserrors.ErrorGatewayNotAttached):
-			rejected++
-		default:
-			return fmt.Errorf("detach pending gateway %s from %s: %w", igwID, aws.StringValue(vpc.VpcId), err)
-		}
-	}
-
-	return fmt.Errorf("internet gateway %s is attached to a VPC not visible in this account (%d candidates rejected)", igwID, rejected)
 }
 
 type routeTableReaper struct{ nc *nats.Conn }

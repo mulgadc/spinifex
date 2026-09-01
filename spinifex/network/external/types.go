@@ -59,4 +59,7 @@ type IGWSpec struct {
 	// so a successful attach can be reported back against it. Empty when the
 	// spec did not come from the store.
 	RecordKey string
+	// AttachPending is set when the record still awaits confirmation, so a pass
+	// reports one back only for an attachment that needs it.
+	AttachPending bool
 }

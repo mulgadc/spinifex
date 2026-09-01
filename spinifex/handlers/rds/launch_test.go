@@ -156,13 +156,6 @@ func (f *fakeSystemVPC) DeleteInternetGateway(context.Context, *ec2.DeleteIntern
 	return &ec2.DeleteInternetGatewayOutput{}, nil
 }
 
-// DescribeInternetGateways reports only confirmed attachments, and nothing in
-// this test ever confirms one — attaching is asynchronous, so the builder's
-// lookups go through AttachmentIntent instead.
-func (f *fakeSystemVPC) DescribeInternetGateways(context.Context, *ec2.DescribeInternetGatewaysInput, string) (*ec2.DescribeInternetGatewaysOutput, error) {
-	return &ec2.DescribeInternetGatewaysOutput{}, nil
-}
-
 // AttachmentIntent answers the post-attach lookup: the builder attaches an IGW
 // and then re-reads it, so this reports one for any VPC asked about once
 // created. The pre-create lookup must find nothing, or none is ever created.

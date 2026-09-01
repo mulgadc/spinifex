@@ -17,15 +17,13 @@ import (
 // answerable on the wire are built only once an IGW is attached, and a system
 // VPC has no customer to provision one.
 type IGWProvisioner interface {
-	DescribeInternetGateways(ctx context.Context, input *ec2.DescribeInternetGatewaysInput, accountID string) (*ec2.DescribeInternetGatewaysOutput, error)
 	CreateInternetGateway(ctx context.Context, input *ec2.CreateInternetGatewayInput, accountID string) (*ec2.CreateInternetGatewayOutput, error)
 	AttachInternetGateway(ctx context.Context, input *ec2.AttachInternetGatewayInput, accountID string) (*ec2.AttachInternetGatewayOutput, error)
 	DetachInternetGateway(ctx context.Context, input *ec2.DetachInternetGatewayInput, accountID string) (*ec2.DetachInternetGatewayOutput, error)
 	DeleteInternetGateway(ctx context.Context, input *ec2.DeleteInternetGatewayInput, accountID string) (*ec2.DeleteInternetGatewayOutput, error)
-	// AttachmentIntent reports a requested attachment before it is confirmed.
-	// Attaching is asynchronous, so every lookup here must use it rather than
-	// DescribeInternetGateways, which reports only confirmed attachments and
-	// would have this code create a second gateway or skip a teardown.
+	// AttachmentIntent is the only lookup offered because attaching is
+	// asynchronous: DescribeInternetGateways reports confirmed attachments only,
+	// and using it here creates a second gateway or skips a teardown.
 	AttachmentIntent(ctx context.Context, accountID, vpcID string) (*ec2.InternetGateway, error)
 }
 

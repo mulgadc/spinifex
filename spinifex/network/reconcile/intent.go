@@ -442,6 +442,7 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 			VPCID:             rec.VpcId,
 			InternetGatewayID: rec.InternetGatewayId,
 			RecordKey:         key,
+			AttachPending:     rec.AttachState == handlers_ec2_igw.AttachStatePending,
 		}
 	}
 	return nil

@@ -404,81 +404,21 @@ func TestIGWReaperDeletesADetachedGatewayDirectly(t *testing.T) {
 	assert.Equal(t, []string{"ec2.DeleteInternetGateway"}, cluster.called())
 }
 
-// An attach that vpcd has not yet confirmed reports no attachment, so the
-// listing carries no VPC and the delete is refused. The fallback has to find
-// the VPC itself or the account wedges — DeleteVpc has no IGW dependency check,
-// so once the VPC reaper removes the VPC the attachment is unnameable.
-func TestIGWReaperDetachesAPendingGatewayTheListingCouldNotName(t *testing.T) {
+// A gateway whose attach is not yet confirmed reports no attachment, so the
+// listing carries no VPC and the delete is refused. That is not a wedge: the
+// VPC survives because DeleteVpc rejects while the gateway is attached, and the
+// stage re-sweeps until the confirmation lands.
+func TestIGWReaperReportsARefusedDeleteForAnUnconfirmedAttach(t *testing.T) {
 	cluster := newFakeCluster(t)
 	cluster.fail("ec2.DeleteInternetGateway", awserrors.ErrorDependencyViolation)
-	cluster.fail("ec2.DetachInternetGateway", awserrors.ErrorGatewayNotAttached)
-	cluster.reply("ec2.DescribeVpcs", ec2.DescribeVpcsOutput{
-		Vpcs: []*ec2.Vpc{{VpcId: aws.String("vpc-1")}, {VpcId: aws.String("vpc-2")}},
-	})
 
 	reaper := &igwReaper{nc: cluster.nc}
 	err := reaper.Delete(testCtx(t), "000000000042",
 		Resource{Kind: "internet-gateway", ID: "igw-1"}, false)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "2 candidates rejected",
-		"the reason must say every VPC was tried and rejected, not invent a cause")
-	assert.Equal(t, []string{
-		"ec2.DeleteInternetGateway", "ec2.DescribeVpcs",
-		"ec2.DetachInternetGateway", "ec2.DetachInternetGateway",
-	}, cluster.called(), "every VPC must be tried: only Gateway.NotAttached means wrong VPC")
-}
-
-// A detach failure that is not Gateway.NotAttached is a real failure, not a
-// non-match. Swallowing it reports "no VPC" for what was actually a timeout,
-// and the gateway it never managed to ask about is left attached.
-func TestIGWReaperStopsOnADetachErrorThatIsNotAMismatch(t *testing.T) {
-	cluster := newFakeCluster(t)
-	cluster.fail("ec2.DeleteInternetGateway", awserrors.ErrorDependencyViolation)
-	cluster.fail("ec2.DetachInternetGateway", awserrors.ErrorServerInternal)
-	cluster.reply("ec2.DescribeVpcs", ec2.DescribeVpcsOutput{
-		Vpcs: []*ec2.Vpc{{VpcId: aws.String("vpc-1")}, {VpcId: aws.String("vpc-2")}},
-	})
-
-	reaper := &igwReaper{nc: cluster.nc}
-	err := reaper.Delete(testCtx(t), "000000000042",
-		Resource{Kind: "internet-gateway", ID: "igw-1"}, false)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorServerInternal,
-		"the real error must reach the teardown report, not be replaced by a guess")
-	assert.Equal(t, []string{
-		"ec2.DeleteInternetGateway", "ec2.DescribeVpcs", "ec2.DetachInternetGateway",
-	}, cluster.called(), "must stop at the first real failure rather than burn the remaining VPCs")
-}
-
-// The fallback exists only for an attachment the listing could not see. A
-// gateway whose VPC is known, or a delete refused for another reason, must not
-// fan out a detach across every VPC in the account.
-func TestIGWReaperDoesNotFanOutWhenTheFallbackDoesNotApply(t *testing.T) {
-	t.Run("vpc already known", func(t *testing.T) {
-		cluster := newFakeCluster(t)
-		cluster.fail("ec2.DeleteInternetGateway", awserrors.ErrorDependencyViolation)
-
-		reaper := &igwReaper{nc: cluster.nc}
-		err := reaper.Delete(testCtx(t), "000000000042",
-			Resource{Kind: "internet-gateway", ID: "igw-1", Detail: "vpc-1"}, false)
-
-		require.Error(t, err)
-		assert.NotContains(t, cluster.called(), "ec2.DescribeVpcs")
-	})
-
-	t.Run("not a dependency violation", func(t *testing.T) {
-		cluster := newFakeCluster(t)
-		cluster.fail("ec2.DeleteInternetGateway", awserrors.ErrorServerInternal)
-
-		reaper := &igwReaper{nc: cluster.nc}
-		err := reaper.Delete(testCtx(t), "000000000042",
-			Resource{Kind: "internet-gateway", ID: "igw-1"}, false)
-
-		require.Error(t, err)
-		assert.NotContains(t, cluster.called(), "ec2.DescribeVpcs")
-	})
+	assert.Equal(t, []string{"ec2.DeleteInternetGateway"}, cluster.called(),
+		"the reaper must not guess at the VPC: the next sweep sees the confirmed attachment")
 }
 
 // A VPC's main route table is deleted with the VPC and cannot be deleted on

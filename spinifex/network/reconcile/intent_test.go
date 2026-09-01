@@ -249,9 +249,14 @@ func TestLoadIntentFromKV_PendingIGWStillEntersIntent(t *testing.T) {
 		t.Fatalf("LoadIntentFromKV: %v", err)
 	}
 
-	if _, ok := intent.IGWs["vpc-local"]; !ok {
-		t.Error("a pending IGW was excluded from intent: no pass would attach it, so it would " +
+	spec, ok := intent.IGWs["vpc-local"]
+	if !ok {
+		t.Fatal("a pending IGW was excluded from intent: no pass would attach it, so it would " +
 			"stay pending forever and no VPC would ever get an external gateway")
+	}
+	if !spec.AttachPending {
+		t.Error("AttachPending not set: the pass skips the confirmation, so the attachment " +
+			"stays pending and is never reported")
 	}
 }
 

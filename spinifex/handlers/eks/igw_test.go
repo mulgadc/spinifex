@@ -14,14 +14,12 @@ import (
 )
 
 type fakeIGWProvisioner struct {
-	createCalls   []*ec2.CreateInternetGatewayInput
-	attachCalls   []*ec2.AttachInternetGatewayInput
-	detachCalls   []*ec2.DetachInternetGatewayInput
-	deleteCalls   []*ec2.DeleteInternetGatewayInput
-	describeCalls []*ec2.DescribeInternetGatewaysInput
+	createCalls []*ec2.CreateInternetGatewayInput
+	attachCalls []*ec2.AttachInternetGatewayInput
+	detachCalls []*ec2.DetachInternetGatewayInput
+	deleteCalls []*ec2.DeleteInternetGatewayInput
 
-	// gateways are returned by DescribeInternetGateways (filtered on
-	// attachment.vpc-id), keyed by IGW id.
+	// gateways holds confirmed gateways keyed by IGW id.
 	gateways map[string]*ec2.InternetGateway
 	// intent is igwID -> vpcID for attaches not yet confirmed.
 	intent    map[string]string
@@ -33,25 +31,6 @@ var _ igwProvisioner = (*fakeIGWProvisioner)(nil)
 
 func newFakeIGWProvisioner() *fakeIGWProvisioner {
 	return &fakeIGWProvisioner{gateways: map[string]*ec2.InternetGateway{}, nextID: "igw-fake0001"}
-}
-
-func (f *fakeIGWProvisioner) DescribeInternetGateways(_ context.Context, input *ec2.DescribeInternetGatewaysInput, _ string) (*ec2.DescribeInternetGatewaysOutput, error) {
-	f.describeCalls = append(f.describeCalls, input)
-	var wantVPC string
-	for _, flt := range input.Filters {
-		if aws.StringValue(flt.Name) == "attachment.vpc-id" && len(flt.Values) > 0 {
-			wantVPC = aws.StringValue(flt.Values[0])
-		}
-	}
-	var out []*ec2.InternetGateway
-	for _, igw := range f.gateways {
-		for _, att := range igw.Attachments {
-			if aws.StringValue(att.VpcId) == wantVPC {
-				out = append(out, igw)
-			}
-		}
-	}
-	return &ec2.DescribeInternetGatewaysOutput{InternetGateways: out}, nil
 }
 
 func (f *fakeIGWProvisioner) CreateInternetGateway(_ context.Context, input *ec2.CreateInternetGatewayInput, _ string) (*ec2.CreateInternetGatewayOutput, error) {

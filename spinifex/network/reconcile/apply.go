@@ -455,7 +455,9 @@ func (r *reconciler) applyIGWs(ctx context.Context, intent IntentState, actual A
 // stop reporting one before it exists. Not a pass failure: the gateway is up,
 // and a failed report is retried by the next pass rather than driving backoff.
 func (r *reconciler) reportIGWAttached(ctx context.Context, spec external.IGWSpec) {
-	if r.markAttached == nil {
+	// Steady state is every pass after the first, so a record already confirmed
+	// must not cost a KV round trip per pass.
+	if r.markAttached == nil || !spec.AttachPending {
 		return
 	}
 	// A spec built outside the store carries no address to report against, so

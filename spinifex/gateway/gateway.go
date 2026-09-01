@@ -247,6 +247,17 @@ type ErrorDetail struct {
 	Message string `xml:"Message"`
 }
 
+// S3ErrorResponse is the S3 REST error envelope: a flat <Error> document rather
+// than the query-API wrapper. SDKs look for a top-level <Error><Code> on an S3
+// response and report an empty code for anything else.
+type S3ErrorResponse struct {
+	XMLName   xml.Name `xml:"Error"`
+	Code      string   `xml:"Code"`
+	Message   string   `xml:"Message"`
+	Resource  string   `xml:"Resource,omitempty"`
+	RequestID string   `xml:"RequestId"`
+}
+
 func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	var logLevel slog.Level
 
@@ -354,9 +365,8 @@ func jsonErrorService(svc string) bool {
 const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check daemon /local/status"
 
 // writeClusterUnavailable writes a 503 ServiceUnavailable in the service-appropriate
-// format. It emits XML directly (not via GenerateEC2ErrorResponse) to ensure the
-// /local/status hint is preserved in <Message>.
-func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.Request, svc string) {
+// format, carrying the /local/status hint in <Message>.
+func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.Request, svc string) {
 	requestID := uuid.NewV4().String()
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
@@ -370,32 +380,11 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.
 		return
 	}
 
-	var xmlBody string
-	if svc == "iam" || svc == "sts" || svc == "rds" {
-		iam := IAMErrorResponse{
-			Error: IAMErrorDetail{
-				Type:    "Sender",
-				Code:    awserrors.ErrorServiceUnavailable,
-				Message: clusterUnavailableMsg,
-			},
-			RequestID: requestID,
-		}
-		out, err := xml.MarshalIndent(iam, "", "  ")
-		if err != nil {
-			slog.Error("Failed to marshal IAM cluster-unavailable XML", "err", err)
-			out = []byte(`<ErrorResponse><Error><Type>Sender</Type><Code>ServiceUnavailable</Code><Message>` + clusterUnavailableMsg + `</Message></Error><RequestId>` + requestID + `</RequestId></ErrorResponse>`)
-		}
-		xmlBody = xml.Header + string(out)
-	} else {
-		// ec2, elasticloadbalancing, account, spinifex all share the EC2 envelope.
-		xmlBody = xml.Header + `<Response><Errors><Error><Code>` + awserrors.ErrorServiceUnavailable +
-			`</Code><Message>` + clusterUnavailableMsg + `</Message></Error></Errors><RequestID>` +
-			requestID + `</RequestID></Response>`
-	}
+	xmlBody := xmlErrorBody(svc, awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID, r.URL.Path)
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusServiceUnavailable)
-	if _, err := w.Write([]byte(xmlBody)); err != nil {
+	if _, err := w.Write(xmlBody); err != nil {
 		slog.Error("Failed to write cluster-unavailable response", "err", err)
 	}
 }
@@ -422,12 +411,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var xmlErr []byte
-	if svc == "iam" || svc == "sts" || svc == "elasticloadbalancing" || svc == "rds" {
-		xmlErr = GenerateIAMErrorResponse(errorCode, errorMsg.Message, requestID)
-	} else { // ec2, account, spinifex
-		xmlErr = GenerateEC2ErrorResponse(errorCode, errorMsg.Message, requestID)
-	}
+	xmlErr := xmlErrorBody(svc, errorCode, errorMsg.Message, requestID, r.URL.Path)
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(errorMsg.HTTPCode)
@@ -791,12 +775,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		return
 	}
 
-	var xmlError []byte
-	if svc == "iam" || svc == "sts" || svc == "elasticloadbalancing" || svc == "rds" {
-		xmlError = GenerateIAMErrorResponse(code, errorMsg.Message, requestId)
-	} else {
-		xmlError = GenerateEC2ErrorResponse(code, errorMsg.Message, requestId)
-	}
+	xmlError := xmlErrorBody(svc, code, errorMsg.Message, requestId, r.URL.Path)
 
 	slog.Debug("Generated error response", "error", err, "code", code, "xml", string(xmlError), "requestId", requestId)
 
@@ -898,6 +877,42 @@ func GenerateIAMErrorResponse(code, message, requestID string) (output []byte) {
 
 	output = append([]byte(xml.Header), output...)
 	return output
+}
+
+// GenerateS3ErrorResponse builds the flat S3 REST error document. resource is
+// the request path and is omitted when empty.
+func GenerateS3ErrorResponse(code, message, requestID, resource string) (output []byte) {
+	errorXml := S3ErrorResponse{
+		Code:      code,
+		Message:   message,
+		Resource:  resource,
+		RequestID: requestID,
+	}
+
+	output, err := xml.MarshalIndent(errorXml, "", "  ")
+	if err != nil {
+		slog.Error("Failed to build S3 error XML", "error", err)
+		return []byte(xml.Header + "<Error><Code>InternalError</Code><Message>Internal error</Message><RequestId>" + requestID + "</RequestId></Error>")
+	}
+
+	output = append([]byte(xml.Header), output...)
+	return output
+}
+
+// xmlErrorBody renders an error in the XML envelope svc's clients expect. The
+// one place the service-to-envelope mapping lives, so a service cannot be added
+// to some emitters and missed by others. JSON services never reach here — every
+// caller checks jsonErrorService first.
+func xmlErrorBody(svc, code, message, requestID, resource string) []byte {
+	switch svc {
+	case "s3":
+		return GenerateS3ErrorResponse(code, message, requestID, resource)
+	case "iam", "sts", "elasticloadbalancing", "rds":
+		return GenerateIAMErrorResponse(code, message, requestID)
+	default:
+		// ec2, account, spinifex, and any scope the gateway does not serve.
+		return GenerateEC2ErrorResponse(code, message, requestID)
+	}
 }
 
 // How long a discovered node count is reused before it is gathered again.

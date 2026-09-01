@@ -82,6 +82,71 @@ func TestGenerateEC2ErrorResponse_Structure(t *testing.T) {
 	}
 }
 
+// xmlRootName returns the local name of body's root element, which is what
+// distinguishes the S3, IAM and EC2 error envelopes from each other.
+func xmlRootName(t *testing.T, body []byte) string {
+	t.Helper()
+	dec := xml.NewDecoder(strings.NewReader(string(body)))
+	for {
+		tok, err := dec.Token()
+		require.NoError(t, err)
+		if se, ok := tok.(xml.StartElement); ok {
+			return se.Name.Local
+		}
+	}
+}
+
+func TestGenerateS3ErrorResponse_FlatEnvelope(t *testing.T) {
+	output := GenerateS3ErrorResponse("SignatureDoesNotMatch", "bad signature", "req-s3-1", "/bucket/key.txt")
+	require.NotNil(t, output)
+
+	assert.True(t, strings.HasPrefix(string(output), xml.Header))
+	assert.Equal(t, "Error", xmlRootName(t, output))
+
+	var parsed struct {
+		Code      string `xml:"Code"`
+		Message   string `xml:"Message"`
+		Resource  string `xml:"Resource"`
+		RequestID string `xml:"RequestId"`
+	}
+	require.NoError(t, xml.Unmarshal(output, &parsed))
+
+	assert.Equal(t, "SignatureDoesNotMatch", parsed.Code)
+	assert.Equal(t, "bad signature", parsed.Message)
+	assert.Equal(t, "/bucket/key.txt", parsed.Resource)
+	assert.Equal(t, "req-s3-1", parsed.RequestID)
+}
+
+func TestGenerateS3ErrorResponse_OmitsEmptyResource(t *testing.T) {
+	output := GenerateS3ErrorResponse("AccessDenied", "denied", "req-s3-2", "")
+	assert.NotContains(t, string(output), "<Resource>")
+}
+
+func TestXMLErrorBody_EnvelopePerService(t *testing.T) {
+	tests := []struct {
+		svc  string
+		root string
+	}{
+		{"s3", "Error"},
+		{"iam", "ErrorResponse"},
+		{"sts", "ErrorResponse"},
+		{"elasticloadbalancing", "ErrorResponse"},
+		{"rds", "ErrorResponse"},
+		{"ec2", "Response"},
+		{"spinifex", "Response"},
+		{"unknown-service", "Response"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.svc, func(t *testing.T) {
+			body := xmlErrorBody(tc.svc, "AccessDenied", "denied", "req-1", "/path")
+
+			assert.Equal(t, tc.root, xmlRootName(t, body))
+			assert.Contains(t, string(body), "<Code>AccessDenied</Code>")
+		})
+	}
+}
+
 func TestGenerateEC2ErrorResponse_ValidXML(t *testing.T) {
 	output := GenerateEC2ErrorResponse("TestCode", "Test message", "req-999")
 	require.NotNil(t, output)

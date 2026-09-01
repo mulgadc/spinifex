@@ -731,6 +731,9 @@ func (d *Daemon) cleanupFailedSystemInstance(instance *vm.VM, _ *ec2.InstanceTyp
 	d.vmMgr.MarkFailed(context.Background(), instance, "system_instance_launch_failed")
 }
 
+// waitPollSleep is the poll delay seam used by WaitForSystemInstance; tests override it.
+var waitPollSleep = time.Sleep
+
 // WaitForSystemInstance polls until the instance reaches running state or times out.
 func (d *Daemon) WaitForSystemInstance(instanceID string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
@@ -749,7 +752,7 @@ func (d *Daemon) WaitForSystemInstance(instanceID string, timeout time.Duration)
 			return fmt.Errorf("instance %s in terminal state: %s", instanceID, status)
 		}
 
-		time.Sleep(500 * time.Millisecond)
+		waitPollSleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("instance %s did not reach running state within %s", instanceID, timeout)
 }

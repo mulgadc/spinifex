@@ -60,8 +60,13 @@ func ConnectNATS(host, token, caCertPath string, opts ...RetryOption) (*nats.Con
 		o(&cfg)
 	}
 
+	reconnectWait := cfg.reconnectWait
+	if reconnectWait <= 0 {
+		reconnectWait = time.Second
+	}
+
 	natsOpts := []nats.Option{
-		nats.ReconnectWait(time.Second),
+		nats.ReconnectWait(reconnectWait),
 		nats.MaxReconnects(-1),
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
 			slog.Warn("NATS disconnected", "err", err)
@@ -107,6 +112,7 @@ type retryConfig struct {
 	maxWait       time.Duration
 	retryDelay    time.Duration
 	maxRetryDelay time.Duration
+	reconnectWait time.Duration
 	onDisconnect  func(*nats.Conn, error)
 	onReconnect   func(*nats.Conn)
 	onAttemptErr  func(err error, attempt int)
@@ -130,6 +136,12 @@ func WithRetryDelay(d time.Duration) RetryOption {
 // (default 10s).
 func WithMaxRetryDelay(d time.Duration) RetryOption {
 	return func(c *retryConfig) { c.maxRetryDelay = d }
+}
+
+// WithReconnectWait overrides how long the client waits between reconnect
+// attempts to the same server (default 1s).
+func WithReconnectWait(d time.Duration) RetryOption {
+	return func(c *retryConfig) { c.reconnectWait = d }
 }
 
 // WithDisconnectHandler registers a callback invoked after the default disconnect log line.

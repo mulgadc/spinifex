@@ -150,9 +150,11 @@ func TestRecordKeys_SlashSeparatorWasNotWatchable(t *testing.T) {
 	_, err = kv.Put(context.Background(), slashPrefix+"i-1", []byte("{}"))
 	require.NoError(t, err)
 
+	// A watch that will deliver delivers in milliseconds — the server pushes on
+	// the Put. 200ms is a wide margin for the negative assertion.
 	select {
 	case entry := <-watcher.Updates():
 		t.Fatalf("the slash separator delivered a watch event for %q, so the re-key was not needed", entry.Key())
-	case <-time.After(2 * time.Second):
+	case <-time.After(200 * time.Millisecond):
 	}
 }

@@ -62,28 +62,53 @@ func TestWaitForSystemInstance_ErrorState(t *testing.T) {
 	}
 }
 
+// stubWaitPollSleep swaps the WaitForSystemInstance poll delay for fn so tests
+// drive the loop instead of waiting out 500ms per iteration. Restored via t.Cleanup.
+func stubWaitPollSleep(t *testing.T, fn func(time.Duration)) {
+	t.Helper()
+	prev := waitPollSleep
+	waitPollSleep = fn
+	t.Cleanup(func() { waitPollSleep = prev })
+}
+
 func TestWaitForSystemInstance_TransitionsToRunning(t *testing.T) {
 	inst := &vm.VM{ID: "i-pending", Status: vm.StateProvisioning}
 	d := newDaemonWithVMs(inst)
 
-	// Transition to running after a short delay
-	go func() {
-		time.Sleep(200 * time.Millisecond)
+	// Transition to running from inside the poll delay, so the second iteration
+	// observes it without the loop waiting on wall-clock time.
+	polls := 0
+	stubWaitPollSleep(t, func(time.Duration) {
+		polls++
 		d.vmMgr.UpdateState(inst.ID, func(v *vm.VM) { v.Status = vm.StateRunning })
-	}()
+	})
 
 	err := d.WaitForSystemInstance("i-pending", 2*time.Second)
 	if err != nil {
 		t.Fatalf("expected instance to reach running, got: %v", err)
+	}
+	if polls != 1 {
+		t.Fatalf("expected 1 poll delay before running was observed, got %d", polls)
 	}
 }
 
 func TestWaitForSystemInstance_Timeout(t *testing.T) {
 	d := newDaemonWithVMs(&vm.VM{ID: "i-stuck", Status: vm.StateProvisioning})
 
-	err := d.WaitForSystemInstance("i-stuck", 600*time.Millisecond)
+	// Sleep a token amount so the deadline is still reached by elapsed time
+	// rather than by spinning the loop.
+	polls := 0
+	stubWaitPollSleep(t, func(time.Duration) {
+		polls++
+		time.Sleep(time.Millisecond)
+	})
+
+	err := d.WaitForSystemInstance("i-stuck", 5*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error")
+	}
+	if polls == 0 {
+		t.Fatal("expected the poll loop to run at least once before timing out")
 	}
 }
 

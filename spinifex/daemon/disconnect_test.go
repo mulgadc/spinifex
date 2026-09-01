@@ -19,6 +19,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testReconnectWait shortens the client's per-server reconnect delay from the
+// 1s production default. Tests that kill and restart a server otherwise wait
+// out that delay before the reconnect handler fires.
+var testReconnectWait = utils.WithReconnectWait(50 * time.Millisecond)
+
 // TestDaemonModeDefaultStandalone — Mode() returns standalone before Start().
 func TestDaemonModeDefaultStandalone(t *testing.T) {
 	clusterCfg := &config.ClusterConfig{
@@ -45,7 +50,7 @@ func TestDaemonModeFlipsOnConnectAndDisconnect(t *testing.T) {
 	d, err := NewDaemon(clusterCfg)
 	require.NoError(t, err)
 
-	require.NoError(t, d.connectNATS())
+	require.NoError(t, d.connectNATS(testReconnectWait))
 	defer d.natsConn.Close()
 	assert.Equal(t, DaemonModeCluster, d.Mode())
 
@@ -66,7 +71,7 @@ func TestDaemonReconnectBumpsRetryCount(t *testing.T) {
 	d, err := NewDaemon(clusterCfg)
 	require.NoError(t, err)
 
-	require.NoError(t, d.connectNATS())
+	require.NoError(t, d.connectNATS(testReconnectWait))
 	defer d.natsConn.Close()
 	require.Equal(t, int64(0), d.NATSRetryCount())
 

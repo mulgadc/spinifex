@@ -137,6 +137,17 @@ jobs:
       # Compiled output stays valid whatever the tests said, and skipping the
       # save on a red run would leave the next one rebuilding it, so this is
       # gated on the branch rather than on success.
+      # Go bumps an entry's mtime when a run uses it, so this run's working set
+      # survives and objects superseded by later commits do not. Runs after the
+      # work, so it costs this job nothing and only shrinks what the next reads.
+      - name: Trim Go build cache
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        run: |
+          C="$(go env GOCACHE)"
+          before=$(du -sm "$C" | cut -f1)
+          find "$C" -type f -mmin +240 -delete
+          echo "trimmed ${before}MB -> $(du -sm "$C" | cut -f1)MB"
+
       - name: Save Go build cache
         if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
         uses: actions/cache/save@v6
@@ -226,6 +237,17 @@ jobs:
 
       - name: Run Tests with Race Detector
         run: make -C spinifex test-race GOTESTFLAGS=-count=1
+
+      # Go bumps an entry's mtime when a run uses it, so this run's working set
+      # survives and objects superseded by later commits do not. Runs after the
+      # work, so it costs this job nothing and only shrinks what the next reads.
+      - name: Trim Go build cache
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        run: |
+          C="$(go env GOCACHE)"
+          before=$(du -sm "$C" | cut -f1)
+          find "$C" -type f -mmin +240 -delete
+          echo "trimmed ${before}MB -> $(du -sm "$C" | cut -f1)MB"
 
       - name: Save Go build cache
         if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
@@ -327,6 +349,17 @@ jobs:
       - name: Run Integration Tests
         if: ${{ !cancelled() }}
         run: make -C spinifex test-integration
+
+      # Go bumps an entry's mtime when a run uses it, so this run's working set
+      # survives and objects superseded by later commits do not. Runs after the
+      # work, so it costs this job nothing and only shrinks what the next reads.
+      - name: Trim Go build cache
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        run: |
+          C="$(go env GOCACHE)"
+          before=$(du -sm "$C" | cut -f1)
+          find "$C" -type f -mmin +240 -delete
+          echo "trimmed ${before}MB -> $(du -sm "$C" | cut -f1)MB"
 
       - name: Save Go build cache
         if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}

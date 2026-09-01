@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 )
@@ -162,23 +163,13 @@ func (m *MemoryProvider) ListVolumes(_ context.Context, req ListVolumesRequest) 
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	ids := make([]string, 0, len(m.volumes))
-	for id := range m.volumes {
-		if id > req.StartingToken {
-			ids = append(ids, id)
-		}
-	}
-	sort.Strings(ids)
+	ids := slices.Sorted(maps.Keys(m.volumes))
 
-	pageSize := int(req.PageSize())
 	response := &ListVolumesResponse{Versioned: NewVersioned()}
-	if len(ids) > pageSize {
-		response.NextToken = ids[pageSize-1]
-		ids = ids[:pageSize]
-	}
-	for _, id := range ids {
-		response.Volumes = append(response.Volumes, VolumeRef{ID: id, Handle: m.volumes[id].volume.Handle})
-	}
+	response.Volumes, response.NextToken = Page(ids, req.StartingToken, int(req.PageSize()),
+		func(id string) VolumeRef {
+			return VolumeRef{ID: id, Handle: m.volumes[id].volume.Handle}
+		})
 	return response, nil
 }
 
@@ -343,28 +334,17 @@ func (m *MemoryProvider) ListSnapshots(_ context.Context, req ListSnapshotsReque
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	ids := make([]string, 0, len(m.snapshots))
-	for id := range m.snapshots {
-		if id > req.StartingToken {
-			ids = append(ids, id)
-		}
-	}
-	sort.Strings(ids)
+	ids := slices.Sorted(maps.Keys(m.snapshots))
 
-	pageSize := int(req.PageSize())
 	response := &ListSnapshotsResponse{Versioned: NewVersioned()}
-	if len(ids) > pageSize {
-		response.NextToken = ids[pageSize-1]
-		ids = ids[:pageSize]
-	}
-	for _, id := range ids {
-		snapshot := m.snapshots[id]
-		response.Snapshots = append(response.Snapshots, SnapshotRef{
-			ID:             id,
-			SourceVolumeID: snapshot.SourceVolumeID,
-			Handle:         snapshot.Handle,
+	response.Snapshots, response.NextToken = Page(ids, req.StartingToken, int(req.PageSize()),
+		func(id string) SnapshotRef {
+			return SnapshotRef{
+				ID:             id,
+				SourceVolumeID: m.snapshots[id].SourceVolumeID,
+				Handle:         m.snapshots[id].Handle,
+			}
 		})
-	}
 	return response, nil
 }
 

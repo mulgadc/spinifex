@@ -353,17 +353,10 @@ func handleListVolumes(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	}
 
 	response := ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned()}
-	pageSize := int(req.PageSize())
-	for _, id := range ids {
-		if id <= req.StartingToken {
-			continue
-		}
-		if len(response.Volumes) == pageSize {
-			response.NextToken = response.Volumes[pageSize-1].ID
-			break
-		}
-		response.Volumes = append(response.Volumes, ebsprovider.VolumeRef{ID: id, Handle: volumeHandle(id)})
-	}
+	response.Volumes, response.NextToken = ebsprovider.Page(ids, req.StartingToken, int(req.PageSize()),
+		func(id string) ebsprovider.VolumeRef {
+			return ebsprovider.VolumeRef{ID: id, Handle: volumeHandle(id)}
+		})
 	respondProvider(ctx, msg, response)
 }
 
@@ -390,17 +383,10 @@ func handleListSnapshots(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	}
 
 	response := ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned()}
-	pageSize := int(req.PageSize())
-	for _, id := range ids {
-		if id <= req.StartingToken {
-			continue
-		}
-		if len(response.Snapshots) == pageSize {
-			response.NextToken = response.Snapshots[pageSize-1].ID
-			break
-		}
-		response.Snapshots = append(response.Snapshots, ebsprovider.SnapshotRef{ID: id, Handle: snapshotHandle(id)})
-	}
+	response.Snapshots, response.NextToken = ebsprovider.Page(ids, req.StartingToken, int(req.PageSize()),
+		func(id string) ebsprovider.SnapshotRef {
+			return ebsprovider.SnapshotRef{ID: id, Handle: snapshotHandle(id)}
+		})
 	respondProvider(ctx, msg, response)
 }
 

@@ -37,6 +37,19 @@ func TestTaggingRequest_ActionsAreAccountLevel(t *testing.T) {
 	assertPermitted(t, dispatchTagging(t, wide, "GetResources", `{}`))
 }
 
+// A Deny scoped to a resource ARN must not fire: AWS evaluates every tag:
+// action against "*", so denying here would reject a call AWS permits. This is
+// the D2 guard — it fails the moment the dispatcher or the resolver passes any
+// resource beyond "*".
+func TestTaggingRequest_ScopedDenyDoesNotFire(t *testing.T) {
+	gw := scopedPolicyGateway(
+		statement("Allow", "tagging:*", "*"),
+		statement("Deny", "tagging:GetResources", "arn:aws:ec2:"+authzRegion+":"+authzAccountID+":instance/i-prod"),
+	)
+
+	assertPermitted(t, dispatchTagging(t, gw, "GetResources", `{}`))
+}
+
 // The property the per-service rollout rests on: every policy that works today
 // carries Resource "*", and resolving the scope table cannot turn one into a
 // denial.

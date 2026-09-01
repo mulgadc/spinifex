@@ -15,6 +15,7 @@ import (
 // exists: a loop waiting on something outside KV gets no watch update at all,
 // so without this it would run only on the resync.
 func TestRun_ARevisitDeadlineFiresWithNoWatchTraffic(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "revisit-deadline")
 	p := newPasses()
 
@@ -32,6 +33,7 @@ func TestRun_ARevisitDeadlineFiresWithNoWatchTraffic(t *testing.T) {
 // may not move: the resync is the outer bound on staleness, so a longer deadline
 // is ignored rather than allowed to defer past it.
 func TestRun_ARevisitDeadlineIsClampedToTheResync(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "revisit-clamped")
 	p := newPasses()
 
@@ -49,6 +51,7 @@ func TestRun_ARevisitDeadlineIsClampedToTheResync(t *testing.T) {
 // finishes: once the last transitional resource settles it stops asking, and the
 // loop must fall back to the resync rather than keep the old deadline armed.
 func TestRun_DroppingTheDeadlineStopsTheEarlyPasses(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "revisit-dropped")
 	p := newPasses()
 	var calls atomic.Int64
@@ -74,6 +77,7 @@ func TestRun_DroppingTheDeadlineStopsTheEarlyPasses(t *testing.T) {
 // the resync. A pass that fails partway through a transition is exactly the one
 // that most needs revisiting on its own schedule.
 func TestRun_AFailedPassKeepsItsRevisitDeadline(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "revisit-failed")
 	p := newPasses()
 
@@ -94,6 +98,7 @@ func TestRun_AFailedPassKeepsItsRevisitDeadline(t *testing.T) {
 // The wait is capped well below the deadline asked for, so a pass arriving at all
 // proves the change woke the loop rather than the timer.
 func TestRun_AChangeBeforeTheDeadlineStillTriggersAPass(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "revisit-change-wins")
 	p := newPasses()
 
@@ -113,6 +118,7 @@ func TestRun_AChangeBeforeTheDeadlineStillTriggersAPass(t *testing.T) {
 // deadline serves. Nothing changed, so there is no key to name, and only a
 // whole-set pass can work out what the next deadline should be.
 func TestRun_ADeadlinePassRunsTheWholeSet(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "revisit-whole-set")
 	p, keys := newPasses(), newKeyLog()
 

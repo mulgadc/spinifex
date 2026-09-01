@@ -14,6 +14,7 @@ import (
 // than a KV write would otherwise see it only when the next pass happened to
 // look, which is the poll the watch was supposed to replace.
 func TestRun_ATriggerWakesTheLoopWithNoWatchTraffic(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "trigger-wakes")
 	p := newPasses()
 	trigger := make(chan struct{}, 1)
@@ -35,6 +36,7 @@ func TestRun_ATriggerWakesTheLoopWithNoWatchTraffic(t *testing.T) {
 // A quiet trigger must not be a source of passes on its own: the loop still
 // falls back to the resync and nothing else.
 func TestRun_AQuietTriggerAddsNoPasses(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "trigger-quiet")
 	p := newPasses()
 	trigger := make(chan struct{}, 1)
@@ -55,6 +57,7 @@ func TestRun_AQuietTriggerAddsNoPasses(t *testing.T) {
 // caller signalling several times in a row is describing one thing to converge,
 // not several.
 func TestRun_ABurstOfTriggersCoalescesIntoOnePass(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "trigger-burst")
 	p := newPasses()
 	trigger := make(chan struct{}, 8)
@@ -80,6 +83,7 @@ func TestRun_ABurstOfTriggersCoalescesIntoOnePass(t *testing.T) {
 // A trigger names no key, so a per-key loop has to be served by the whole-set
 // pass. Anything else would leave the caller's signal describing nothing.
 func TestRun_ATriggerRunsTheWholeSetOnAPerKeyLoop(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "trigger-whole-set")
 	whole := newPasses()
 	keyed := newPasses()
@@ -104,6 +108,7 @@ func TestRun_ATriggerRunsTheWholeSetOnAPerKeyLoop(t *testing.T) {
 // The deadline a triggered pass returns has to be armed like any other, or a
 // loop woken by a trigger would silently lose the schedule it just asked for.
 func TestRun_ATriggeredPassStillArmsItsDeadline(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "trigger-deadline")
 	p := newPasses()
 	trigger := make(chan struct{}, 1)
@@ -125,6 +130,7 @@ func TestRun_ATriggeredPassStillArmsItsDeadline(t *testing.T) {
 // Closing the trigger is how a caller says its source is finished. The loop must
 // survive it rather than spin on a closed channel.
 func TestRun_AClosedTriggerDoesNotSpin(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "trigger-closed")
 	p := newPasses()
 	trigger := make(chan struct{})

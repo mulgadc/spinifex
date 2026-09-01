@@ -102,6 +102,7 @@ func run(t *testing.T, cfg reconciler.Config) {
 }
 
 func TestRun_ReconcilesOnceAtStartup(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "reconciler-startup")
 	p := newPasses()
 
@@ -117,6 +118,7 @@ func TestRun_ReconcilesOnceAtStartup(t *testing.T) {
 }
 
 func TestRun_AnUpdateTriggersAPass(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "reconciler-update")
 	p := newPasses()
 
@@ -136,6 +138,7 @@ func TestRun_AnUpdateTriggersAPass(t *testing.T) {
 // multi-key write is one logical change, and a full-recompute reconcile gains
 // nothing from running once per key.
 func TestRun_ABurstCollapsesIntoOnePass(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "reconciler-burst")
 	p := newPasses()
 
@@ -157,6 +160,7 @@ func TestRun_ABurstCollapsesIntoOnePass(t *testing.T) {
 }
 
 func TestRun_ResyncFiresWithNoWatchTraffic(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "reconciler-resync")
 	p := newPasses()
 
@@ -173,6 +177,7 @@ func TestRun_ResyncFiresWithNoWatchTraffic(t *testing.T) {
 // TestRun_NoSourcesStillReconcilesOnTheResync pins the degenerate case: a loop
 // with nothing watchable is the pre-watch behaviour, not a dead loop.
 func TestRun_NoSourcesStillReconcilesOnTheResync(t *testing.T) {
+	t.Parallel()
 	p := newPasses()
 
 	run(t, reconciler.Config{
@@ -187,6 +192,7 @@ func TestRun_NoSourcesStillReconcilesOnTheResync(t *testing.T) {
 // TestRun_AFailedPassDoesNotStopTheLoop covers the reason Reconcile's error is
 // logged rather than returned: the loop outlives any single pass.
 func TestRun_AFailedPassDoesNotStopTheLoop(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "reconciler-failure")
 	p := newPasses()
 	var calls atomic.Int64
@@ -211,6 +217,7 @@ func TestRun_AFailedPassDoesNotStopTheLoop(t *testing.T) {
 // waking a loop that does not care about it — the ELBv2 bucket holds listeners
 // and rules alongside the load balancers DNS reconciles on.
 func TestRun_AFilterExcludesOtherKeys(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "reconciler-filter")
 	p := newPasses()
 
@@ -252,6 +259,7 @@ func (s *bucketSet) add(b *kvstore.Bucket) {
 // case: EKS and RDS create a bucket per account, and JetStream has no
 // bucket-created event, so discovery rides on the resync.
 func TestRun_ABucketAppearingAfterStartupIsPickedUp(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	first := kvstore.New[record](js, kvstore.Config{Name: "reconciler-acct-a", History: 1})
@@ -286,6 +294,7 @@ func TestRun_ABucketAppearingAfterStartupIsPickedUp(t *testing.T) {
 // JetStream behind it cannot be watched, and the loop must degrade to the timer
 // rather than stop.
 func TestRun_AnUnwatchableSourceStillResyncs(t *testing.T) {
+	t.Parallel()
 	unwatchable := kvstore.NewBucket(nil, kvstore.Config{
 		Name:    "reconciler-unwatchable",
 		Missing: "no JetStream configured",
@@ -303,6 +312,7 @@ func TestRun_AnUnwatchableSourceStillResyncs(t *testing.T) {
 }
 
 func TestFixed_ReportsItsBucketAndFilter(t *testing.T) {
+	t.Parallel()
 	bucket := kvstore.NewBucket(nil, kvstore.Config{Name: "b"})
 	src := reconciler.Fixed(bucket, "node.*")
 
@@ -314,6 +324,7 @@ func TestFixed_ReportsItsBucketAndFilter(t *testing.T) {
 }
 
 func TestBucket_WatchOnANilJetStreamReportsTheConfiguredMessage(t *testing.T) {
+	t.Parallel()
 	bucket := kvstore.NewBucket(nil, kvstore.Config{
 		Name:    "b",
 		Missing: "watch test: no JetStream client configured",
@@ -327,6 +338,7 @@ func TestBucket_WatchOnANilJetStreamReportsTheConfiguredMessage(t *testing.T) {
 // watcher established over a bucket that already holds keys must not replay
 // them, or every re-establish would fire a redundant pass per existing key.
 func TestBucket_WatchDeliversUpdatesOnly(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "reconciler-updatesonly")
 	require.NoError(t, store.Set(t.Context(), "existing", &record{Name: "existing"}))
 

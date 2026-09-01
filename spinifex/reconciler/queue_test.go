@@ -62,6 +62,7 @@ func (l *keyLog) stillAt(t *testing.T, n int, why string) {
 }
 
 func TestRun_AnUpdateReconcilesTheKeyThatChanged(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "perkey-one")
 	p, keys := newPasses(), newKeyLog()
 
@@ -84,6 +85,7 @@ func TestRun_AnUpdateReconcilesTheKeyThatChanged(t *testing.T) {
 // The burst case the whole-set path collapses into one pass becomes one pass
 // per distinct key here, which is the entire point of the extension.
 func TestRun_ABurstReconcilesEachKeyOnce(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "perkey-burst")
 	p, keys := newPasses(), newKeyLog()
 
@@ -111,6 +113,7 @@ func TestRun_ABurstReconcilesEachKeyOnce(t *testing.T) {
 // key, not five: a fresh read makes the reconcile idempotent, so the four
 // earlier revisions have nothing left to say.
 func TestRun_RepeatedWritesToOneKeyReconcileItOnce(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "perkey-dedup")
 	p, keys := newPasses(), newKeyLog()
 
@@ -136,6 +139,7 @@ func TestRun_RepeatedWritesToOneKeyReconcileItOnce(t *testing.T) {
 // pending, so a change arriving while it is being reconciled is a new piece of
 // work rather than one the running pass is assumed to cover.
 func TestRun_AChangeDuringAKeysReconcileIsNotLost(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "perkey-inflight")
 	p, keys := newPasses(), newKeyLog()
 	keys.block = make(chan struct{})
@@ -164,6 +168,7 @@ func TestRun_AChangeDuringAKeysReconcileIsNotLost(t *testing.T) {
 // KeyFor exists for a caller whose unit of work is coarser than a key. Two
 // instances in one account are one recompute, not two.
 func TestRun_KeyForMapsUpdatesOntoTheCallersUnitOfWork(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "perkey-keyfor")
 	p, keys := newPasses(), newKeyLog()
 
@@ -193,6 +198,7 @@ func TestRun_KeyForMapsUpdatesOntoTheCallersUnitOfWork(t *testing.T) {
 // lived in a value the tombstone does not carry — falls back to the pass that
 // needs no attribution.
 func TestRun_AnUnattributableUpdateFallsBackToTheWholeSet(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "perkey-fallback")
 	p, keys := newPasses(), newKeyLog()
 
@@ -224,6 +230,7 @@ func TestRun_AnUnattributableUpdateFallsBackToTheWholeSet(t *testing.T) {
 // replacement: a key the queue never learned about — deleted while the watch
 // was down, so nothing observed it — is still covered.
 func TestRun_TheResyncStillRunsTheWholeSet(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "perkey-resync")
 	p, keys := newPasses(), newKeyLog()
 
@@ -240,6 +247,7 @@ func TestRun_TheResyncStillRunsTheWholeSet(t *testing.T) {
 }
 
 func TestRun_AFailedKeyDoesNotStopTheLoop(t *testing.T) {
+	t.Parallel()
 	store, _ := newBucket(t, "perkey-failure")
 	p, keys := newPasses(), newKeyLog()
 

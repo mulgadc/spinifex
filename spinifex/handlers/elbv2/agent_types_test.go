@@ -79,6 +79,7 @@ func TestToHealthReport(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			report := tt.in.toHealthReport()
 			assert.Equal(t, tt.wantLB, report.LBID)
 			if tt.wantSrv == nil {

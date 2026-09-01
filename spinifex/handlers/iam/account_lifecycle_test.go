@@ -104,6 +104,7 @@ func TestProtectedAccountsCanNeverBeDeleted(t *testing.T) {
 
 	for accountID := range handlers_iam.UndeletableAccountIDs {
 		t.Run(accountID, func(t *testing.T) {
+			t.Parallel()
 			// Even a status that would otherwise permit deletion must not.
 			_, _ = svc.SetAccountStatus(accountID, handlers_iam.AccountStatusTerminating)
 

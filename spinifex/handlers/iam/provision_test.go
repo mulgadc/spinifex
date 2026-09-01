@@ -38,6 +38,7 @@ func TestNormalizeAccountName(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tc.want, handlers_iam.NormalizeAccountName(tc.in))
 		})
 	}
@@ -98,6 +99,7 @@ func TestProvisionAccountResumesPartialState(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc := newIAMService(t)
 			tc.prepare(t, svc)
 

@@ -421,6 +421,7 @@ func TestCreateTargetGroup_NLBProtocols(t *testing.T) {
 	t.Parallel()
 	for _, proto := range []string{"TCP", "UDP", "TLS", "TCP_UDP"} {
 		t.Run(proto, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 
 			out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
@@ -499,6 +500,7 @@ func TestCreateTargetGroup_RejectsHealthCheckPathInjection(t *testing.T) {
 
 	for name, payload := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 				Name:            aws.String("inj-" + name),
 				HealthCheckPath: aws.String(payload),
@@ -527,6 +529,7 @@ func TestCreateTargetGroup_RejectsMatcherInjection(t *testing.T) {
 
 	for name, payload := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 				Name:    aws.String("matcher-" + name),
 				Matcher: &elbv2.Matcher{HttpCode: aws.String(payload)},
@@ -1501,6 +1504,7 @@ func TestModifyListener_NLB_AcceptsAllProtocols(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.listenerProto, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 
 			lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -1703,6 +1707,7 @@ func TestCreateListener_NLB_AllProtocols(t *testing.T) {
 	t.Parallel()
 	for _, proto := range []string{"TCP", "UDP", "TLS", "TCP_UDP"} {
 		t.Run(proto, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 
 			lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
@@ -3032,6 +3037,7 @@ func TestAttributeRoundTrip(t *testing.T) {
 	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 			arn := k.create(t, svc, "attr-rt")
 
@@ -3060,6 +3066,7 @@ func TestAttributeNotFound(t *testing.T) {
 	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 
 			_, err := k.modify(svc, k.missingArn, testAccountID, kvAttrs([2]string{k.keyB, k.valB}))
@@ -3075,6 +3082,7 @@ func TestAttributeMissingArn(t *testing.T) {
 	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 
 			_, err := k.modify(svc, "", testAccountID, kvAttrs([2]string{k.keyB, k.valB}))
@@ -3090,6 +3098,7 @@ func TestAttributeWrongAccount(t *testing.T) {
 	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 			arn := k.create(t, svc, "attr-wrong-acct")
 
@@ -3116,6 +3125,7 @@ func TestAttributeCrossAccountIsolation(t *testing.T) {
 	const accountB = "222222222222"
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
+			t.Parallel()
 			svcA := setupTestService(t)
 			arnA := k.create(t, svcA, "attr-iso")
 
@@ -3144,6 +3154,7 @@ func TestAttributeSkipsInvalidEntries(t *testing.T) {
 	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 			arn := k.create(t, svc, "attr-skip")
 
@@ -3173,6 +3184,7 @@ func TestAttributeAllInvalidReturnsError(t *testing.T) {
 	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 			arn := k.create(t, svc, "attr-all-invalid")
 
@@ -3193,6 +3205,7 @@ func TestAttributeSequentialMerge(t *testing.T) {
 	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 			arn := k.create(t, svc, "attr-seq-merge")
 
@@ -3229,6 +3242,7 @@ func TestAttributeNoopSkipsPersist(t *testing.T) {
 	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 			arn := k.create(t, svc, "attr-noop")
 
@@ -3258,6 +3272,7 @@ func TestAttributeRejectsUnknownKey(t *testing.T) {
 	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 			arn := k.create(t, svc, "attr-unknown-key")
 
@@ -3280,6 +3295,7 @@ func TestAttributeSortedOrder(t *testing.T) {
 	t.Parallel()
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 			arn := k.create(t, svc, "attr-sorted")
 

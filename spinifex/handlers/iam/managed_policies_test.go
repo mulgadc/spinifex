@@ -47,6 +47,7 @@ func TestParseBuiltinManagedPolicies(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			parsed, err := parseBuiltinManagedPolicies(tt.raw)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)

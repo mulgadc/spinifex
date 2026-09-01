@@ -44,6 +44,7 @@ func TestValidateTags(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateTags(tc.tags)
 			if tc.wantErr == "" {
 				require.NoError(t, err)
@@ -86,6 +87,7 @@ func TestMergeTags(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got := mergeTags(tc.existing, tc.add)
 			assert.Equal(t, tc.want, got)
 		})
@@ -116,6 +118,7 @@ func TestRemoveTagKeys(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got := removeTagKeys(existing, tc.keys)
 			assert.Equal(t, tc.want, got)
 		})
@@ -269,6 +272,7 @@ func TestResourceTagging_RoundTrip(t *testing.T) {
 	t.Parallel()
 	for _, ops := range allTagOps() {
 		t.Run(ops.resource, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestIAMService(t)
 			id := ops.create(t, svc)
 
@@ -316,6 +320,7 @@ func TestResourceTagging_MissingEntity(t *testing.T) {
 	t.Parallel()
 	for _, ops := range allTagOps() {
 		t.Run(ops.resource, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestIAMService(t)
 
 			err := ops.tag(svc, ops.missingID, []*iam.Tag{sdkTag("env", "prod")})

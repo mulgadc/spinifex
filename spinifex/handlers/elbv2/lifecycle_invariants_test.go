@@ -48,6 +48,7 @@ func TestRLC1_ELBv2DeleteIdempotentOnAbsent(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestService(t)
 			out, err := tc.call(svc)
 			require.NoErrorf(t, err, "%s on an absent resource must return success (RLC rule #1)", tc.name)

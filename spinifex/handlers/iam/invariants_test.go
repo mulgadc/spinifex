@@ -37,6 +37,7 @@ func TestInvariant_AccessKeysBucket_RejectsNonAKIAPrefix(t *testing.T) {
 	payload := []byte(`{}`)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			err := svc.putAccessKey(t.Context(), tc.akid, payload)
 			require.Error(t, err, "putAccessKey accepted invalid prefix %q", tc.akid)
 			assert.Contains(t, err.Error(), LongLivedAccessKeyIDPrefix)

@@ -868,6 +868,7 @@ func TestValidateSGRule(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			// Fixtures exercise CidrIp/SourceSG; supply a valid protocol so the
 			// protocol check is never what fails.
 			if c.rule.IpProtocol == "" {

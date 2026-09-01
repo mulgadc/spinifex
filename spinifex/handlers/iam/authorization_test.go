@@ -41,6 +41,7 @@ func TestCanonicalResourceARNPreservesStoredPaths(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.kind), func(t *testing.T) {
+			t.Parallel()
 			got, err := svc.CanonicalResourceARN(testAccountID, tt.kind, tt.name)
 			require.NoError(t, err)
 			require.Equal(t, tt.want, got)

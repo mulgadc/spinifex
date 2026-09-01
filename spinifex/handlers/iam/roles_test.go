@@ -146,6 +146,7 @@ func TestCreateRole_PermissionsBoundaryAbsent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			out, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
 				RoleName:                 aws.String(tt.roleName),
 				AssumeRolePolicyDocument: aws.String(validTrustPolicy()),

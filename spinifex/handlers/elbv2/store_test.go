@@ -87,6 +87,7 @@ func TestStore_WatchBucketOpensAWatchableHandle(t *testing.T) {
 func TestLoadBalancerStoreLifecycle(t *testing.T) {
 	t.Parallel()
 	t.Run("put and get", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.PutLoadBalancer(t.Context(), newTestLB("getput1", "lb-getput1")))
 
@@ -97,6 +98,7 @@ func TestLoadBalancerStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("get not found", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		got, err := store.GetLoadBalancer(t.Context(), "nonexistent")
 		require.NoError(t, err)
@@ -104,6 +106,7 @@ func TestLoadBalancerStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("delete removes record", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.PutLoadBalancer(t.Context(), newTestLB("del1", "lb-del1")))
 		require.NoError(t, store.DeleteLoadBalancer(t.Context(), "del1"))
@@ -114,11 +117,13 @@ func TestLoadBalancerStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("delete idempotent", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.DeleteLoadBalancer(t.Context(), "doesnt-exist"))
 	})
 
 	t.Run("list returns all", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.PutLoadBalancer(t.Context(), newTestLB("a", "lb-a")))
 		require.NoError(t, store.PutLoadBalancer(t.Context(), newTestLB("b", "lb-b")))
@@ -129,6 +134,7 @@ func TestLoadBalancerStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("list empty", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		records, err := store.ListLoadBalancers(t.Context())
 		require.NoError(t, err)
@@ -139,6 +145,7 @@ func TestLoadBalancerStoreLifecycle(t *testing.T) {
 func TestTargetGroupStoreLifecycle(t *testing.T) {
 	t.Parallel()
 	t.Run("put and get", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.PutTargetGroup(t.Context(), newTestTG("getput1", "tg-getput1")))
 
@@ -149,6 +156,7 @@ func TestTargetGroupStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("get not found", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		got, err := store.GetTargetGroup(t.Context(), "nonexistent")
 		require.NoError(t, err)
@@ -156,6 +164,7 @@ func TestTargetGroupStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("delete removes record", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.PutTargetGroup(t.Context(), newTestTG("del1", "tg-del1")))
 		require.NoError(t, store.DeleteTargetGroup(t.Context(), "del1"))
@@ -166,11 +175,13 @@ func TestTargetGroupStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("delete idempotent", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.DeleteTargetGroup(t.Context(), "doesnt-exist"))
 	})
 
 	t.Run("list returns all", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.PutTargetGroup(t.Context(), newTestTG("a", "tg-a")))
 		require.NoError(t, store.PutTargetGroup(t.Context(), newTestTG("b", "tg-b")))
@@ -181,6 +192,7 @@ func TestTargetGroupStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("list empty", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		records, err := store.ListTargetGroups(t.Context())
 		require.NoError(t, err)
@@ -193,6 +205,7 @@ func TestListenerStoreLifecycle(t *testing.T) {
 	lbArn := "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":loadbalancer/app/test/lb1"
 
 	t.Run("put and get", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.PutListener(t.Context(), newTestListener("getput1", lbArn)))
 
@@ -203,6 +216,7 @@ func TestListenerStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("get not found", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		got, err := store.GetListener(t.Context(), "nonexistent")
 		require.NoError(t, err)
@@ -210,6 +224,7 @@ func TestListenerStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("delete removes record", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.PutListener(t.Context(), newTestListener("del1", lbArn)))
 		require.NoError(t, store.DeleteListener(t.Context(), "del1"))
@@ -220,11 +235,13 @@ func TestListenerStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("delete idempotent", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.DeleteListener(t.Context(), "doesnt-exist"))
 	})
 
 	t.Run("list returns all", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		require.NoError(t, store.PutListener(t.Context(), newTestListener("a", lbArn)))
 		require.NoError(t, store.PutListener(t.Context(), newTestListener("b", lbArn)))
@@ -235,6 +252,7 @@ func TestListenerStoreLifecycle(t *testing.T) {
 	})
 
 	t.Run("list empty", func(t *testing.T) {
+		t.Parallel()
 		store := setupTestStore(t)
 		records, err := store.ListListeners(t.Context())
 		require.NoError(t, err)

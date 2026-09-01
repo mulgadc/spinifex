@@ -26,6 +26,7 @@ func TestCreateRule_InputValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := env.svc.CreateRule(context.Background(), tc.input, testAccountID)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
@@ -319,6 +320,7 @@ func TestWildcardMatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
+			t.Parallel()
 			flag, lit := wildcardMatch(tc.in)
 			assert.Equal(t, tc.wantFlag, flag)
 			assert.Equal(t, tc.wantLit, lit)

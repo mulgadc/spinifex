@@ -126,6 +126,7 @@ func TestCreateUser_PermissionsBoundaryAbsent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			out, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
 				UserName:            aws.String(tt.userName),
 				PermissionsBoundary: tt.boundary,
@@ -270,6 +271,7 @@ func TestListRequiredMembersAreEmptyNotNil(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.operation, func(t *testing.T) {
+			t.Parallel()
 			svc := setupTestIAMService(t)
 			tt.seed(t, svc)
 
@@ -1271,6 +1273,7 @@ func TestGetPolicy_ARNParsingEdgeCases(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{
 				PolicyArn: aws.String(tc.arn),
 			})
@@ -1849,6 +1852,7 @@ func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
 			 "Action":"s3:*","Resource":"*","Condition":` + tt.cond + `}]}`)
 			require.Error(t, err)
@@ -2161,6 +2165,7 @@ func TestValidateUserName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateUserName(tt.input)
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -2189,6 +2194,7 @@ func TestValidatePolicyName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := validatePolicyName(tt.input)
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -2217,6 +2223,7 @@ func TestValidatePath(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := validatePath(tt.input)
 			if tt.wantErr {
 				assert.Error(t, err)

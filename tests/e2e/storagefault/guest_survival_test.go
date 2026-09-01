@@ -53,10 +53,12 @@ const (
 	// fio's own fsyncs, short enough not to eat into the pre-fault settle.
 	rootWriteSample = 3 * time.Second
 
-	// freezeHold is how long predastore stays frozen. It has to outlast any
-	// retry budget in the I/O path, or the test measures the retry rather than
-	// the outage, and it has to leave fio still running when the fault lands.
-	freezeHold = 90 * time.Second
+	// freezeHold is how long predastore stays frozen. It is derived, not tuned:
+	// viperblock tolerates maxDrainFailures=10 consecutive drain failures, and a
+	// drain against a frozen backend returns at the 30s backend timeout, so the
+	// earliest a write can fail is ~300s. Below that the test measures the retry
+	// budget rather than the outage and passes for the wrong reason.
+	freezeHold = 420 * time.Second
 
 	// fioSettle is how long to let fio establish real in-flight I/O before the
 	// fault. A freeze that lands before the first write proves nothing.

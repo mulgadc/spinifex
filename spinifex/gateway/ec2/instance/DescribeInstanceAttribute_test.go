@@ -18,12 +18,14 @@ import (
 // --- Validation tests ---
 
 func TestValidateDescribeInstanceAttributeInput_NilInput(t *testing.T) {
+	t.Parallel()
 	err := ValidateDescribeInstanceAttributeInput(nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
 
 func TestValidateDescribeInstanceAttributeInput_MissingInstanceId(t *testing.T) {
+	t.Parallel()
 	err := ValidateDescribeInstanceAttributeInput(&ec2.DescribeInstanceAttributeInput{
 		Attribute: aws.String(ec2.InstanceAttributeNameInstanceType),
 	})
@@ -32,6 +34,7 @@ func TestValidateDescribeInstanceAttributeInput_MissingInstanceId(t *testing.T) 
 }
 
 func TestValidateDescribeInstanceAttributeInput_EmptyInstanceId(t *testing.T) {
+	t.Parallel()
 	err := ValidateDescribeInstanceAttributeInput(&ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String(""),
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
@@ -41,6 +44,7 @@ func TestValidateDescribeInstanceAttributeInput_EmptyInstanceId(t *testing.T) {
 }
 
 func TestValidateDescribeInstanceAttributeInput_BadPrefix(t *testing.T) {
+	t.Parallel()
 	err := ValidateDescribeInstanceAttributeInput(&ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String("x-12345"),
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
@@ -50,6 +54,7 @@ func TestValidateDescribeInstanceAttributeInput_BadPrefix(t *testing.T) {
 }
 
 func TestValidateDescribeInstanceAttributeInput_MissingAttribute(t *testing.T) {
+	t.Parallel()
 	err := ValidateDescribeInstanceAttributeInput(&ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String("i-abc123"),
 	})
@@ -58,6 +63,7 @@ func TestValidateDescribeInstanceAttributeInput_MissingAttribute(t *testing.T) {
 }
 
 func TestValidateDescribeInstanceAttributeInput_EmptyAttribute(t *testing.T) {
+	t.Parallel()
 	err := ValidateDescribeInstanceAttributeInput(&ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String("i-abc123"),
 		Attribute:  aws.String(""),
@@ -67,6 +73,7 @@ func TestValidateDescribeInstanceAttributeInput_EmptyAttribute(t *testing.T) {
 }
 
 func TestValidateDescribeInstanceAttributeInput_Valid(t *testing.T) {
+	t.Parallel()
 	err := ValidateDescribeInstanceAttributeInput(&ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String("i-abc123"),
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
@@ -100,6 +107,7 @@ func respondWithError(code string) nats.MsgHandler {
 }
 
 func TestDescribeInstanceAttribute_SingleNode(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := nc.Subscribe("ec2.DescribeInstanceAttribute", respondWithInstance(t, "i-test123", "t3.micro"))
@@ -125,6 +133,7 @@ func TestDescribeInstanceAttribute_SingleNode(t *testing.T) {
 // ~50% of the time. Post-fix, the aggregator drops the NotFound and surfaces
 // the success.
 func TestDescribeInstanceAttribute_MultipleNodes_OwnerWins(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := nc.Subscribe("ec2.DescribeInstanceAttribute", respondWithError(awserrors.ErrorInvalidInstanceIDNotFound))
@@ -154,6 +163,7 @@ func TestDescribeInstanceAttribute_MultipleNodes_OwnerWins(t *testing.T) {
 // TestDescribeInstanceAttribute_AllNodesNotFound covers the genuine missing
 // instance case: every daemon confirms the instance is absent.
 func TestDescribeInstanceAttribute_AllNodesNotFound(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := nc.Subscribe("ec2.DescribeInstanceAttribute", respondWithError(awserrors.ErrorInvalidInstanceIDNotFound))
@@ -182,6 +192,7 @@ func TestDescribeInstanceAttribute_AllNodesNotFound(t *testing.T) {
 // validation-class error (deterministic across daemons) is surfaced to the
 // caller rather than getting masked by NotFound.
 func TestDescribeInstanceAttribute_ClientErrorPropagates(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := nc.Subscribe("ec2.DescribeInstanceAttribute", respondWithError(awserrors.ErrorInvalidParameterValue))
@@ -203,6 +214,7 @@ func TestDescribeInstanceAttribute_ClientErrorPropagates(t *testing.T) {
 // masked by sibling NotFound replies — otherwise terraform treats a live
 // instance as deleted.
 func TestDescribeInstanceAttribute_ServerErrorNotMaskedByNotFound(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := nc.Subscribe("ec2.DescribeInstanceAttribute", respondWithError(awserrors.ErrorServerInternal))
@@ -230,6 +242,7 @@ func TestDescribeInstanceAttribute_ServerErrorNotMaskedByNotFound(t *testing.T) 
 // TestDescribeInstanceAttribute_NoResponders returns NotFound (not a NATS
 // timeout) so terraform retries cleanly rather than hanging.
 func TestDescribeInstanceAttribute_NoResponders(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	input := &ec2.DescribeInstanceAttributeInput{
@@ -248,6 +261,7 @@ func TestDescribeInstanceAttribute_NoResponders(t *testing.T) {
 }
 
 func TestDescribeInstanceAttribute_ValidationFailure(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := DescribeInstanceAttribute(context.Background(), nil, nc, 1, "123456789012")

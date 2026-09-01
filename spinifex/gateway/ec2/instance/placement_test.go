@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -21,6 +20,7 @@ import (
 // --- spreadAllocate tests (pure algorithm) ---
 
 func TestSpreadAllocate_EqualDistribution(t *testing.T) {
+	t.Parallel()
 	// 3 instances across 3 nodes → 1 per node
 	nodes := []nodeAllocation{
 		{NodeID: "A", Available: 4},
@@ -36,6 +36,7 @@ func TestSpreadAllocate_EqualDistribution(t *testing.T) {
 }
 
 func TestSpreadAllocate_SpreadThenPack(t *testing.T) {
+	t.Parallel()
 	// 5 instances across 3 nodes (capacities: A=4, B=3, C=2)
 	// Round 1: A=1, B=1, C=1 (3 assigned, 2 remaining)
 	// Round 2: A gets 1 (remaining cap 3), B gets 1 (remaining cap 2)
@@ -57,6 +58,7 @@ func TestSpreadAllocate_SpreadThenPack(t *testing.T) {
 }
 
 func TestSpreadAllocate_SingleNode(t *testing.T) {
+	t.Parallel()
 	// All 3 instances on 1 node
 	nodes := []nodeAllocation{
 		{NodeID: "A", Available: 5},
@@ -69,6 +71,7 @@ func TestSpreadAllocate_SingleNode(t *testing.T) {
 }
 
 func TestSpreadAllocate_MoreNodesThanInstances(t *testing.T) {
+	t.Parallel()
 	// 2 instances across 5 nodes → only 2 get assigned
 	nodes := []nodeAllocation{
 		{NodeID: "A", Available: 4},
@@ -89,6 +92,7 @@ func TestSpreadAllocate_MoreNodesThanInstances(t *testing.T) {
 }
 
 func TestSpreadAllocate_HeavyPacking(t *testing.T) {
+	t.Parallel()
 	// 10 instances across 2 nodes (A=8, B=6)
 	// Round 1: A=1, B=1
 	// Packing: each round picks node with most remaining
@@ -110,6 +114,7 @@ func TestSpreadAllocate_HeavyPacking(t *testing.T) {
 }
 
 func TestSpreadAllocate_ExactCapacity(t *testing.T) {
+	t.Parallel()
 	// Request exactly matches total capacity
 	nodes := []nodeAllocation{
 		{NodeID: "A", Available: 2},
@@ -127,6 +132,7 @@ func TestSpreadAllocate_ExactCapacity(t *testing.T) {
 }
 
 func TestSpreadAllocate_ZeroCount(t *testing.T) {
+	t.Parallel()
 	nodes := []nodeAllocation{
 		{NodeID: "A", Available: 4},
 	}
@@ -135,6 +141,7 @@ func TestSpreadAllocate_ZeroCount(t *testing.T) {
 }
 
 func TestSpreadAllocate_EmptyNodes(t *testing.T) {
+	t.Parallel()
 	result := spreadAllocate(nil, 3)
 	assert.Empty(t, result)
 }
@@ -142,6 +149,7 @@ func TestSpreadAllocate_EmptyNodes(t *testing.T) {
 // --- queryNodeCapacity tests (NATS-based) ---
 
 func TestQueryNodeCapacity_FiltersEligibleNodes(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Simulate 3 daemons responding to spinifex.node.status
@@ -190,6 +198,7 @@ func TestQueryNodeCapacity_FiltersEligibleNodes(t *testing.T) {
 }
 
 func TestQueryNodeCapacity_NoNodes(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// No subscribers → timeout, empty result
@@ -201,6 +210,7 @@ func TestQueryNodeCapacity_NoNodes(t *testing.T) {
 // --- aggregateResults tests ---
 
 func TestAggregateResults_AllSucceed(t *testing.T) {
+	t.Parallel()
 	results := []nodeLaunchResult{
 		{
 			NodeID: "node-1",
@@ -231,6 +241,7 @@ func TestAggregateResults_AllSucceed(t *testing.T) {
 }
 
 func TestAggregateResults_PartialSuccessMeetsMinCount(t *testing.T) {
+	t.Parallel()
 	results := []nodeLaunchResult{
 		{
 			NodeID: "node-1",
@@ -284,6 +295,7 @@ func TestAggregateResults_PartialFailureBelowMinCount(t *testing.T) {
 }
 
 func TestAggregateResults_AllFail(t *testing.T) {
+	t.Parallel()
 	results := []nodeLaunchResult{
 		{NodeID: "node-1", Err: assert.AnError},
 		{NodeID: "node-2", Err: assert.AnError},
@@ -298,6 +310,7 @@ func TestAggregateResults_AllFail(t *testing.T) {
 // A node-side capacity race (queryNodeCapacity saw room, the node then rejected)
 // still propagates as InsufficientInstanceCapacity via the client-error whitelist.
 func TestAggregateResults_NodeCapacityRacePropagates(t *testing.T) {
+	t.Parallel()
 	inner := errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	wrapped := fmt.Errorf("launch on node-1: %w", inner)
 	results := []nodeLaunchResult{
@@ -311,6 +324,7 @@ func TestAggregateResults_NodeCapacityRacePropagates(t *testing.T) {
 
 // A node RPC timeout must surface as the real error, never masquerade as capacity.
 func TestAggregateResults_TimeoutSurfacedNotMasked(t *testing.T) {
+	t.Parallel()
 	timeoutErr := fmt.Errorf("launch on node-1: %w", context.DeadlineExceeded)
 	results := []nodeLaunchResult{
 		{NodeID: "node-1", Err: timeoutErr},
@@ -346,6 +360,7 @@ func TestAggregateResults_ShortWithoutNodeErrors(t *testing.T) {
 // --- extractClientError tests ---
 
 func TestExtractClientError_NoErrors(t *testing.T) {
+	t.Parallel()
 	results := []nodeLaunchResult{
 		{NodeID: "node-1", Reservation: &ec2.Reservation{}},
 	}
@@ -353,6 +368,7 @@ func TestExtractClientError_NoErrors(t *testing.T) {
 }
 
 func TestExtractClientError_GenericError(t *testing.T) {
+	t.Parallel()
 	results := []nodeLaunchResult{
 		{NodeID: "node-1", Err: assert.AnError},
 	}
@@ -360,6 +376,7 @@ func TestExtractClientError_GenericError(t *testing.T) {
 }
 
 func TestExtractClientError_AMINotFound(t *testing.T) {
+	t.Parallel()
 	// Simulate the error wrapping that launchOnNodes does
 	inner := errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	wrapped := fmt.Errorf("launch on node-1: %w", inner)
@@ -372,6 +389,7 @@ func TestExtractClientError_AMINotFound(t *testing.T) {
 }
 
 func TestExtractClientError_NestedWrappedCode(t *testing.T) {
+	t.Parallel()
 	inner := errors.New(awserrors.ErrorInvalidParameterValue)
 	wrapped := fmt.Errorf("launch on node-1: %w", fmt.Errorf("prepare instance: %w", inner))
 	results := []nodeLaunchResult{
@@ -383,6 +401,7 @@ func TestExtractClientError_NestedWrappedCode(t *testing.T) {
 }
 
 func TestExtractClientError_JoinedCode(t *testing.T) {
+	t.Parallel()
 	joined := errors.Join(assert.AnError, errors.New(awserrors.ErrorInvalidGroupNotFound))
 	results := []nodeLaunchResult{
 		{NodeID: "node-1", Err: fmt.Errorf("launch on node-1: %w", joined)},
@@ -393,6 +412,7 @@ func TestExtractClientError_JoinedCode(t *testing.T) {
 }
 
 func TestExtractClientError_KeyPairNotFound(t *testing.T) {
+	t.Parallel()
 	inner := errors.New(awserrors.ErrorInvalidKeyPairNotFound)
 	wrapped := fmt.Errorf("launch on node-1: %w", inner)
 	results := []nodeLaunchResult{
@@ -404,6 +424,7 @@ func TestExtractClientError_KeyPairNotFound(t *testing.T) {
 }
 
 func TestAggregateResults_PropagatesClientError(t *testing.T) {
+	t.Parallel()
 	inner := errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	wrapped := fmt.Errorf("launch on node-1: %w", inner)
 	results := []nodeLaunchResult{
@@ -419,6 +440,7 @@ func TestAggregateResults_PropagatesClientError(t *testing.T) {
 // --- distributeInstances integration tests (end-to-end with mock daemons) ---
 
 func TestDistributeInstances_SuccessfulSpread(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Mock node.status responder
@@ -458,7 +480,7 @@ func TestDistributeInstances_SuccessfulSpread(t *testing.T) {
 	require.NoError(t, err)
 	defer sub2.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond) // let subscriptions propagate
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),
@@ -481,6 +503,7 @@ func TestDistributeInstances_SuccessfulSpread(t *testing.T) {
 }
 
 func TestDistributeInstances_InsufficientCapacity(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Mock node.status with only 1 available slot total
@@ -495,7 +518,7 @@ func TestDistributeInstances_InsufficientCapacity(t *testing.T) {
 	require.NoError(t, err)
 	defer statusSub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),
@@ -510,6 +533,7 @@ func TestDistributeInstances_InsufficientCapacity(t *testing.T) {
 }
 
 func TestDistributeInstances_PropagatesAMINotFound(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Mock node.status with capacity available
@@ -531,7 +555,7 @@ func TestDistributeInstances_PropagatesAMINotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer sub1.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-0000000000000dead"),
@@ -554,6 +578,7 @@ func TestDistributeInstances_PropagatesAMINotFound(t *testing.T) {
 // Terraform / SDK consumers branch on the specific code; masking it as
 // "no capacity" makes a typo'd SG ID look like a transient cluster issue.
 func TestDistributeInstances_PropagatesSGValidationErrors(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name          string
 		daemonErrCode string
@@ -583,7 +608,7 @@ func TestDistributeInstances_PropagatesSGValidationErrors(t *testing.T) {
 			require.NoError(t, err)
 			defer daemonSub.Unsubscribe()
 
-			time.Sleep(50 * time.Millisecond)
+			require.NoError(t, nc.Flush())
 
 			input := &ec2.RunInstancesInput{
 				ImageId:      aws.String("ami-test"),
@@ -601,6 +626,7 @@ func TestDistributeInstances_PropagatesSGValidationErrors(t *testing.T) {
 }
 
 func TestDistributeInstances_LaunchCountCappedToMaxCount(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// 3 nodes with capacity, but MaxCount=2
@@ -631,7 +657,7 @@ func TestDistributeInstances_LaunchCountCappedToMaxCount(t *testing.T) {
 		defer sub.Unsubscribe()
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),
@@ -647,10 +673,11 @@ func TestDistributeInstances_LaunchCountCappedToMaxCount(t *testing.T) {
 }
 
 func TestDistributeInstances_NoNodesAvailable(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// No responders to node.status
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),
@@ -667,6 +694,7 @@ func TestDistributeInstances_NoNodesAvailable(t *testing.T) {
 // --- RunInstances routing tests ---
 
 func TestRunInstances_SingleInstanceDistributes(t *testing.T) {
+	t.Parallel()
 	// For MinCount=MaxCount=1, RunInstances should still query node capacity
 	// and route to a specific node via targeted topic (not queue group).
 	_, nc := startTestNATSServer(t)
@@ -695,7 +723,7 @@ func TestRunInstances_SingleInstanceDistributes(t *testing.T) {
 	require.NoError(t, err)
 	defer nodeSub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),
@@ -714,6 +742,7 @@ func TestRunInstances_SingleInstanceDistributes(t *testing.T) {
 // --- placementGroupName tests ---
 
 func TestPlacementGroupName_WithGroupName(t *testing.T) {
+	t.Parallel()
 	input := &ec2.RunInstancesInput{
 		Placement: &ec2.Placement{
 			GroupName: aws.String("my-group"),
@@ -723,11 +752,13 @@ func TestPlacementGroupName_WithGroupName(t *testing.T) {
 }
 
 func TestPlacementGroupName_NilPlacement(t *testing.T) {
+	t.Parallel()
 	input := &ec2.RunInstancesInput{}
 	assert.Empty(t, placementGroupName(input))
 }
 
 func TestPlacementGroupName_NilGroupName(t *testing.T) {
+	t.Parallel()
 	input := &ec2.RunInstancesInput{
 		Placement: &ec2.Placement{},
 	}
@@ -735,6 +766,7 @@ func TestPlacementGroupName_NilGroupName(t *testing.T) {
 }
 
 func TestPlacementGroupName_EmptyGroupName(t *testing.T) {
+	t.Parallel()
 	input := &ec2.RunInstancesInput{
 		Placement: &ec2.Placement{
 			GroupName: aws.String(""),
@@ -746,6 +778,7 @@ func TestPlacementGroupName_EmptyGroupName(t *testing.T) {
 // --- lookupPlacementGroupStrategy tests ---
 
 func TestLookupPlacementGroupStrategy_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Mock DescribePlacementGroups responder
@@ -765,7 +798,7 @@ func TestLookupPlacementGroupStrategy_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	strategy, err := lookupPlacementGroupStrategy(context.Background(), nc, "test-account", "my-group")
 	require.NoError(t, err)
@@ -773,6 +806,7 @@ func TestLookupPlacementGroupStrategy_Success(t *testing.T) {
 }
 
 func TestLookupPlacementGroupStrategy_NotFound(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Mock responder returns error
@@ -783,13 +817,14 @@ func TestLookupPlacementGroupStrategy_NotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	_, err = lookupPlacementGroupStrategy(context.Background(), nc, "test-account", "ghost-group")
 	require.Error(t, err)
 }
 
 func TestLookupPlacementGroupStrategy_NotAvailable(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	sub, err := nc.QueueSubscribe("ec2.DescribePlacementGroups", "spinifex-workers", func(msg *nats.Msg) {
@@ -808,7 +843,7 @@ func TestLookupPlacementGroupStrategy_NotAvailable(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	_, err = lookupPlacementGroupStrategy(context.Background(), nc, "test-account", "my-group")
 	require.Error(t, err)
@@ -816,6 +851,7 @@ func TestLookupPlacementGroupStrategy_NotAvailable(t *testing.T) {
 }
 
 func TestLookupPlacementGroupStrategy_EmptyResult(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	sub, err := nc.QueueSubscribe("ec2.DescribePlacementGroups", "spinifex-workers", func(msg *nats.Msg) {
@@ -828,7 +864,7 @@ func TestLookupPlacementGroupStrategy_EmptyResult(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	_, err = lookupPlacementGroupStrategy(context.Background(), nc, "test-account", "my-group")
 	require.Error(t, err)
@@ -838,6 +874,7 @@ func TestLookupPlacementGroupStrategy_EmptyResult(t *testing.T) {
 // --- distributeInstancesCluster tests ---
 
 func TestDistributeInstancesCluster_FirstLaunchPicksBestNode(t *testing.T) {
+	t.Parallel()
 	// First launch on empty cluster group should pick node with most capacity
 	_, nc := startTestNATSServer(t)
 
@@ -889,7 +926,7 @@ func TestDistributeInstancesCluster_FirstLaunchPicksBestNode(t *testing.T) {
 	require.NoError(t, err)
 	defer finalizeSub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),
@@ -909,6 +946,7 @@ func TestDistributeInstancesCluster_FirstLaunchPicksBestNode(t *testing.T) {
 }
 
 func TestDistributeInstancesCluster_SubsequentLaunchPinsToExistingNode(t *testing.T) {
+	t.Parallel()
 	// Subsequent launch should go to the same node the group already uses
 	_, nc := startTestNATSServer(t)
 
@@ -966,7 +1004,7 @@ func TestDistributeInstancesCluster_SubsequentLaunchPinsToExistingNode(t *testin
 	require.NoError(t, err)
 	defer finalizeSub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),
@@ -982,6 +1020,7 @@ func TestDistributeInstancesCluster_SubsequentLaunchPinsToExistingNode(t *testin
 }
 
 func TestDistributeInstancesCluster_InsufficientCapacityOnPinnedNode(t *testing.T) {
+	t.Parallel()
 	// Pinned node doesn't have enough capacity → InsufficientInstanceCapacity
 	_, nc := startTestNATSServer(t)
 
@@ -1009,7 +1048,7 @@ func TestDistributeInstancesCluster_InsufficientCapacityOnPinnedNode(t *testing.
 	require.NoError(t, err)
 	defer reserveSub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),
@@ -1024,6 +1063,7 @@ func TestDistributeInstancesCluster_InsufficientCapacityOnPinnedNode(t *testing.
 }
 
 func TestDistributeInstancesCluster_PinnedNodeNotInCapacityResults(t *testing.T) {
+	t.Parallel()
 	// Pinned node has no capacity at all (not in fan-out results) → InsufficientInstanceCapacity
 	_, nc := startTestNATSServer(t)
 
@@ -1050,7 +1090,7 @@ func TestDistributeInstancesCluster_PinnedNodeNotInCapacityResults(t *testing.T)
 	require.NoError(t, err)
 	defer reserveSub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),
@@ -1065,6 +1105,7 @@ func TestDistributeInstancesCluster_PinnedNodeNotInCapacityResults(t *testing.T)
 }
 
 func TestDistributeInstancesCluster_LaunchCountCappedByCapacityAndMaxCount(t *testing.T) {
+	t.Parallel()
 	// Target node has 3 available but MaxCount=2 → should launch 2
 	_, nc := startTestNATSServer(t)
 
@@ -1115,7 +1156,7 @@ func TestDistributeInstancesCluster_LaunchCountCappedByCapacityAndMaxCount(t *te
 	require.NoError(t, err)
 	defer finalizeSub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),
@@ -1130,6 +1171,7 @@ func TestDistributeInstancesCluster_LaunchCountCappedByCapacityAndMaxCount(t *te
 }
 
 func TestRunInstances_ClusterPlacementGroupRouting(t *testing.T) {
+	t.Parallel()
 	// RunInstances with a cluster placement group should route through
 	// the cluster path (lookupPlacementGroupStrategy → distributeInstancesCluster).
 	_, nc := startTestNATSServer(t)
@@ -1197,7 +1239,7 @@ func TestRunInstances_ClusterPlacementGroupRouting(t *testing.T) {
 	require.NoError(t, err)
 	defer finalizeSub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),
@@ -1216,6 +1258,7 @@ func TestRunInstances_ClusterPlacementGroupRouting(t *testing.T) {
 }
 
 func TestRunInstances_MultiInstanceUsesDistribution(t *testing.T) {
+	t.Parallel()
 	// For MaxCount > 1, RunInstances should use the distribution path,
 	// which queries spinifex.node.status.
 	_, nc := startTestNATSServer(t)
@@ -1248,7 +1291,7 @@ func TestRunInstances_MultiInstanceUsesDistribution(t *testing.T) {
 	require.NoError(t, err)
 	defer nodeSub.Unsubscribe()
 
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-test"),

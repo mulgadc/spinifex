@@ -16,6 +16,7 @@ import (
 )
 
 func TestRebootInstances_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-0123456789abcdef0"
@@ -42,6 +43,7 @@ func TestRebootInstances_Success(t *testing.T) {
 }
 
 func TestRebootInstances_MultipleInstances(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	ids := []string{"i-001", "i-002"}
@@ -63,6 +65,7 @@ func TestRebootInstances_MultipleInstances(t *testing.T) {
 }
 
 func TestRebootInstances_EmptyInstanceIds(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	input := &ec2.RebootInstancesInput{
@@ -75,6 +78,7 @@ func TestRebootInstances_EmptyInstanceIds(t *testing.T) {
 }
 
 func TestRebootInstances_NATSRequestFails(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	input := &ec2.RebootInstancesInput{
@@ -87,6 +91,7 @@ func TestRebootInstances_NATSRequestFails(t *testing.T) {
 }
 
 func TestRebootInstances_StoppedInstance(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-stopped"
@@ -113,6 +118,7 @@ func TestRebootInstances_StoppedInstance(t *testing.T) {
 }
 
 func TestRebootInstances_DaemonError(t *testing.T) {
+	t.Parallel()
 	for _, code := range []string{
 		awserrors.ErrorIncorrectInstanceState,
 		awserrors.ErrorServerInternal,

@@ -11,6 +11,7 @@ import (
 )
 
 func TestDescribeInstanceCreditSpecifications_NilInput(t *testing.T) {
+	t.Parallel()
 	out, err := DescribeInstanceCreditSpecifications(nil)
 	require.Error(t, err)
 	assert.Nil(t, out)
@@ -18,12 +19,14 @@ func TestDescribeInstanceCreditSpecifications_NilInput(t *testing.T) {
 }
 
 func TestDescribeInstanceCreditSpecifications_EmptyInstanceIds(t *testing.T) {
+	t.Parallel()
 	out, err := DescribeInstanceCreditSpecifications(&ec2.DescribeInstanceCreditSpecificationsInput{})
 	require.NoError(t, err)
 	assert.Empty(t, out.InstanceCreditSpecifications)
 }
 
 func TestDescribeInstanceCreditSpecifications_SingleInstance(t *testing.T) {
+	t.Parallel()
 	out, err := DescribeInstanceCreditSpecifications(&ec2.DescribeInstanceCreditSpecificationsInput{
 		InstanceIds: []*string{aws.String("i-abc123")},
 	})
@@ -34,6 +37,7 @@ func TestDescribeInstanceCreditSpecifications_SingleInstance(t *testing.T) {
 }
 
 func TestDescribeInstanceCreditSpecifications_MultipleInstances(t *testing.T) {
+	t.Parallel()
 	out, err := DescribeInstanceCreditSpecifications(&ec2.DescribeInstanceCreditSpecificationsInput{
 		InstanceIds: []*string{aws.String("i-aaa"), aws.String("i-bbb"), aws.String("i-ccc")},
 	})
@@ -45,6 +49,7 @@ func TestDescribeInstanceCreditSpecifications_MultipleInstances(t *testing.T) {
 }
 
 func TestDescribeInstanceCreditSpecifications_SkipsNilAndEmpty(t *testing.T) {
+	t.Parallel()
 	out, err := DescribeInstanceCreditSpecifications(&ec2.DescribeInstanceCreditSpecificationsInput{
 		InstanceIds: []*string{nil, aws.String(""), aws.String("i-valid"), nil, aws.String("i-also")},
 	})

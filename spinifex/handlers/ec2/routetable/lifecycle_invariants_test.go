@@ -16,6 +16,7 @@ import (
 // table, not success. Idempotent convergence belongs to destroy orchestration,
 // which tolerates NotFound via awserrors.IsNotFound; the public API stays AWS compatible.
 func TestRLC1_RouteTableDeleteNotFoundOnAbsent(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.DeleteRouteTable(t.Context(), &ec2.DeleteRouteTableInput{

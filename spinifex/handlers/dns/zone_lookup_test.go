@@ -33,8 +33,9 @@ class = 1
 }
 
 // fakeZoneS3 is a mutable path-style S3 endpoint (GET only) backing HostsZone
-// lookups. Keys listed in errorKeys return 500 instead of the usual 200/404,
-// simulating a transient S3 failure for that specific zone object. requested
+// lookups. Keys listed in errorKeys return 403 instead of the usual 200/404,
+// simulating a read failure for that zone object — 403 rather than a retried
+// (and so slow) 5xx, since HostsZone branches only on err != nil. requested
 // records every key fetched, letting a test assert which candidate zones were
 // actually queried.
 func fakeZoneS3(t *testing.T, bucket string, objects map[string]string, errorKeys map[string]bool) (endpoint string, requested *[]string) {
@@ -48,7 +49,7 @@ func fakeZoneS3(t *testing.T, bucket string, objects map[string]string, errorKey
 		log = append(log, key)
 		mu.Unlock()
 		if errorKeys[key] {
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			http.Error(w, "access denied", http.StatusForbidden)
 			return
 		}
 		body, ok := objects[key]

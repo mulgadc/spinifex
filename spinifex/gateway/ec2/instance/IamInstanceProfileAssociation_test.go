@@ -76,6 +76,7 @@ func profileNoRole() *handlers_iam.InstanceProfile {
 // --- helper-level tests --------------------------------------------------
 
 func TestResolveAndAuthorizeProfile_NameForm(t *testing.T) {
+	t.Parallel()
 	gotNameOrARN := ""
 	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
 		gotNameOrARN = nameOrARN
@@ -99,6 +100,7 @@ func TestResolveAndAuthorizeProfile_NameForm(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeProfile_ArnForm(t *testing.T) {
+	t.Parallel()
 	gotNameOrARN := ""
 	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
 		gotNameOrARN = nameOrARN
@@ -112,6 +114,7 @@ func TestResolveAndAuthorizeProfile_ArnForm(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeProfile_MissingNameAndArn(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{}
 	_, err := resolveAndAuthorizeProfile(
 		&ec2.IamInstanceProfileSpecification{},
@@ -121,6 +124,7 @@ func TestResolveAndAuthorizeProfile_MissingNameAndArn(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeProfile_NilIAMService(t *testing.T) {
+	t.Parallel()
 	_, err := resolveAndAuthorizeProfile(
 		&ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 		nil, testGwAccountID, nil)
@@ -129,6 +133,7 @@ func TestResolveAndAuthorizeProfile_NilIAMService(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeProfile_NotFoundMapsToEC2Error(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}}
@@ -141,6 +146,7 @@ func TestResolveAndAuthorizeProfile_NotFoundMapsToEC2Error(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeProfile_PassthroughOtherIAMError(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}}
@@ -153,6 +159,7 @@ func TestResolveAndAuthorizeProfile_PassthroughOtherIAMError(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeProfile_PassRoleDenied(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return profileWithRole(), nil
 	}}
@@ -165,6 +172,7 @@ func TestResolveAndAuthorizeProfile_PassRoleDenied(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeProfile_NoRoleSkipsPassRole(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return profileNoRole(), nil
 	}}
@@ -183,6 +191,7 @@ func TestResolveAndAuthorizeProfile_NoRoleSkipsPassRole(t *testing.T) {
 }
 
 func TestEnrichProfileID_FillsIdFromResolvedProfile(t *testing.T) {
+	t.Parallel()
 	assoc := &ec2.IamInstanceProfileAssociation{
 		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNApp)},
 	}
@@ -193,10 +202,12 @@ func TestEnrichProfileID_FillsIdFromResolvedProfile(t *testing.T) {
 }
 
 func TestEnrichProfileID_NilAssociationIsNoOp(t *testing.T) {
+	t.Parallel()
 	enrichProfileID(nil, profileWithRole()) // must not panic
 }
 
 func TestEnrichProfileID_NilInnerProfileIsAllocated(t *testing.T) {
+	t.Parallel()
 	assoc := &ec2.IamInstanceProfileAssociation{}
 	enrichProfileID(assoc, profileWithRole())
 	require.NotNil(t, assoc.IamInstanceProfile)
@@ -206,12 +217,14 @@ func TestEnrichProfileID_NilInnerProfileIsAllocated(t *testing.T) {
 // --- AssociateIamInstanceProfile ---------------------------------------------
 
 func TestAssociateIamInstanceProfile_NilInput(t *testing.T) {
+	t.Parallel()
 	_, err := AssociateIamInstanceProfile(context.Background(), nil, nil, &fakeIAMService{}, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestAssociateIamInstanceProfile_MissingInstanceID(t *testing.T) {
+	t.Parallel()
 	in := &ec2.AssociateIamInstanceProfileInput{
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}
@@ -221,6 +234,7 @@ func TestAssociateIamInstanceProfile_MissingInstanceID(t *testing.T) {
 }
 
 func TestAssociateIamInstanceProfile_MissingProfileSpec(t *testing.T) {
+	t.Parallel()
 	in := &ec2.AssociateIamInstanceProfileInput{InstanceId: aws.String("i-001")}
 	_, err := AssociateIamInstanceProfile(context.Background(), in, nil, &fakeIAMService{}, testGwAccountID, nil)
 	require.Error(t, err)
@@ -228,6 +242,7 @@ func TestAssociateIamInstanceProfile_MissingProfileSpec(t *testing.T) {
 }
 
 func TestAssociateIamInstanceProfile_ProfileNotFound(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{} // default resolve → NoSuchEntity
 	in := &ec2.AssociateIamInstanceProfileInput{
 		InstanceId:         aws.String("i-001"),
@@ -239,6 +254,7 @@ func TestAssociateIamInstanceProfile_ProfileNotFound(t *testing.T) {
 }
 
 func TestAssociateIamInstanceProfile_PassRoleDenied(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return profileWithRole(), nil
 	}}
@@ -253,6 +269,7 @@ func TestAssociateIamInstanceProfile_PassRoleDenied(t *testing.T) {
 }
 
 func TestAssociateIamInstanceProfile_NoResponders(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return profileNoRole(), nil
@@ -270,6 +287,7 @@ func TestAssociateIamInstanceProfile_NoResponders(t *testing.T) {
 }
 
 func TestAssociateIamInstanceProfile_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return profileWithRole(), nil
@@ -315,6 +333,7 @@ func TestAssociateIamInstanceProfile_Success(t *testing.T) {
 }
 
 func TestAssociateIamInstanceProfile_DaemonAlreadyAssociated(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return profileNoRole(), nil
@@ -336,18 +355,21 @@ func TestAssociateIamInstanceProfile_DaemonAlreadyAssociated(t *testing.T) {
 // --- DisassociateIamInstanceProfile -----------------------------------------
 
 func TestDisassociateIamInstanceProfile_MissingAssociationID(t *testing.T) {
+	t.Parallel()
 	_, err := DisassociateIamInstanceProfile(context.Background(), &ec2.DisassociateIamInstanceProfileInput{}, nil, 0, testGwAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestDisassociateIamInstanceProfile_NilInput(t *testing.T) {
+	t.Parallel()
 	_, err := DisassociateIamInstanceProfile(context.Background(), nil, nil, 0, testGwAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestDisassociateIamInstanceProfile_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	const assocID = "iip-assoc-disassoc00000001"
 	const instanceID = "i-dis-success"
@@ -396,6 +418,7 @@ func TestDisassociateIamInstanceProfile_Success(t *testing.T) {
 }
 
 func TestDisassociateIamInstanceProfile_NoSuchAssociation(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	// Every daemon NoOps with JSON null — gateway must surface
 	// NoSuchAssociation, not timeout.
@@ -414,12 +437,14 @@ func TestDisassociateIamInstanceProfile_NoSuchAssociation(t *testing.T) {
 // --- ReplaceIamInstanceProfileAssociation -----------------------------------
 
 func TestReplaceIamInstanceProfileAssociation_NilInput(t *testing.T) {
+	t.Parallel()
 	_, err := ReplaceIamInstanceProfileAssociation(context.Background(), nil, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
 func TestReplaceIamInstanceProfileAssociation_MissingAssociationID(t *testing.T) {
+	t.Parallel()
 	in := &ec2.ReplaceIamInstanceProfileAssociationInput{
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
 	}
@@ -429,6 +454,7 @@ func TestReplaceIamInstanceProfileAssociation_MissingAssociationID(t *testing.T)
 }
 
 func TestReplaceIamInstanceProfileAssociation_MissingProfileSpec(t *testing.T) {
+	t.Parallel()
 	in := &ec2.ReplaceIamInstanceProfileAssociationInput{AssociationId: aws.String("iip-assoc-x")}
 	_, err := ReplaceIamInstanceProfileAssociation(context.Background(), in, nil, &fakeIAMService{}, 0, testGwAccountID, nil)
 	require.Error(t, err)
@@ -436,6 +462,7 @@ func TestReplaceIamInstanceProfileAssociation_MissingProfileSpec(t *testing.T) {
 }
 
 func TestReplaceIamInstanceProfileAssociation_PassRoleDeniedBeforeBroadcast(t *testing.T) {
+	t.Parallel()
 	// nc=nil proves the call is rejected before any NATS dispatch.
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return profileWithRole(), nil
@@ -450,6 +477,7 @@ func TestReplaceIamInstanceProfileAssociation_PassRoleDeniedBeforeBroadcast(t *t
 }
 
 func TestReplaceIamInstanceProfileAssociation_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return profileWithRole(), nil
@@ -490,6 +518,7 @@ func TestReplaceIamInstanceProfileAssociation_Success(t *testing.T) {
 }
 
 func TestReplaceIamInstanceProfileAssociation_NoSuchAssociation(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return profileNoRole(), nil
@@ -510,6 +539,7 @@ func TestReplaceIamInstanceProfileAssociation_NoSuchAssociation(t *testing.T) {
 // --- DescribeIamInstanceProfileAssociations ---------------------------------
 
 func TestDescribeIamInstanceProfileAssociations_FanOutAggregates(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	// Two daemons each return one record; the gateway must concatenate them.
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) {
@@ -550,6 +580,7 @@ func TestDescribeIamInstanceProfileAssociations_FanOutAggregates(t *testing.T) {
 }
 
 func TestDescribeIamInstanceProfileAssociations_ForwardsFilters(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	var gotInput ec2.DescribeIamInstanceProfileAssociationsInput
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) {
@@ -575,6 +606,7 @@ func TestDescribeIamInstanceProfileAssociations_ForwardsFilters(t *testing.T) {
 }
 
 func TestDescribeIamInstanceProfileAssociations_InvalidFilterName(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	_, err := DescribeIamInstanceProfileAssociations(context.Background(), &ec2.DescribeIamInstanceProfileAssociationsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("not-a-valid-filter")}},
@@ -584,6 +616,7 @@ func TestDescribeIamInstanceProfileAssociations_InvalidFilterName(t *testing.T) 
 }
 
 func TestDescribeIamInstanceProfileAssociations_EmptyResultIsValid(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) {
 		resp, _ := json.Marshal(&ec2.DescribeIamInstanceProfileAssociationsOutput{})
@@ -599,6 +632,7 @@ func TestDescribeIamInstanceProfileAssociations_EmptyResultIsValid(t *testing.T)
 // --- CountInstanceProfileAssociations ---------------------------------------
 
 func TestCountInstanceProfileAssociations_MatchesByARN(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) {
 		resp, _ := json.Marshal(&ec2.DescribeIamInstanceProfileAssociationsOutput{
@@ -618,6 +652,7 @@ func TestCountInstanceProfileAssociations_MatchesByARN(t *testing.T) {
 }
 
 func TestCountInstanceProfileAssociations_NoMatches(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) {
 		resp, _ := json.Marshal(&ec2.DescribeIamInstanceProfileAssociationsOutput{
@@ -640,6 +675,7 @@ func TestCountInstanceProfileAssociations_NoMatches(t *testing.T) {
 // (which produces it) and clients (who parse it via SDKs); regressions in the
 // utils generator would break replay parsing of Disassociate/Replace.
 func TestAssociationIDFormat(t *testing.T) {
+	t.Parallel()
 	id := utils.GenerateResourceID("iip-assoc")
 	assert.True(t, strings.HasPrefix(id, "iip-assoc-"),
 		"GenerateResourceID must preserve the AWS-style hyphen between prefix and suffix")

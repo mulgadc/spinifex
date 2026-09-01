@@ -19,6 +19,7 @@ func rtbTagVal(tags []*ec2.Tag, key string) string {
 }
 
 func TestRouteTableRecordTagsMirror(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	rtbID := createTestRtb(t, svc)
 
@@ -57,6 +58,7 @@ func TestRouteTableRecordTagsMirror(t *testing.T) {
 }
 
 func TestRouteTableRecordTagsMirror_UnownedNoError(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	// Absent rtb + non-rtb id: both skipped without error.
 	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{

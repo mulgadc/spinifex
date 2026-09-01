@@ -14,6 +14,7 @@ import (
 )
 
 func TestDescribeInstanceTypes_SingleNode(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.Subscribe("ec2.DescribeInstanceTypes", func(msg *nats.Msg) {
@@ -37,6 +38,7 @@ func TestDescribeInstanceTypes_SingleNode(t *testing.T) {
 }
 
 func TestDescribeInstanceTypes_DeduplicatesAcrossNodes(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Node 1
@@ -86,6 +88,7 @@ func TestDescribeInstanceTypes_DeduplicatesAcrossNodes(t *testing.T) {
 }
 
 func TestDescribeInstanceTypes_CapacityFilterShowsDuplicates(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Node 1
@@ -133,6 +136,7 @@ func TestDescribeInstanceTypes_CapacityFilterShowsDuplicates(t *testing.T) {
 }
 
 func TestDescribeInstanceTypes_CapacityFilterFalseDeduplicates(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.Subscribe("ec2.DescribeInstanceTypes", func(msg *nats.Msg) {
@@ -162,6 +166,7 @@ func TestDescribeInstanceTypes_CapacityFilterFalseDeduplicates(t *testing.T) {
 }
 
 func TestDescribeInstanceTypes_NoSubscribers(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	input := &ec2.DescribeInstanceTypesInput{}
@@ -173,6 +178,7 @@ func TestDescribeInstanceTypes_NoSubscribers(t *testing.T) {
 }
 
 func TestDescribeInstanceTypes_NodeReturnsError(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.Subscribe("ec2.DescribeInstanceTypes", func(msg *nats.Msg) {
@@ -189,6 +195,7 @@ func TestDescribeInstanceTypes_NodeReturnsError(t *testing.T) {
 }
 
 func TestDescribeInstanceTypes_MalformedJSON(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.Subscribe("ec2.DescribeInstanceTypes", func(msg *nats.Msg) {
@@ -204,6 +211,7 @@ func TestDescribeInstanceTypes_MalformedJSON(t *testing.T) {
 }
 
 func TestDescribeInstanceTypes_NilInstanceTypeSkipped(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.Subscribe("ec2.DescribeInstanceTypes", func(msg *nats.Msg) {
@@ -227,6 +235,7 @@ func TestDescribeInstanceTypes_NilInstanceTypeSkipped(t *testing.T) {
 }
 
 func TestDescribeInstanceTypes_ClosedConnection(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	closedNC, err := nats.Connect(nc.ConnectedUrl())

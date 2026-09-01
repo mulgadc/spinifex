@@ -15,6 +15,7 @@ import (
 )
 
 func TestTerminateInstances_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-0123456789abcdef0"
@@ -50,6 +51,7 @@ func TestTerminateInstances_Success(t *testing.T) {
 }
 
 func TestTerminateInstances_MultipleInstances(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	ids := []string{"i-001", "i-002", "i-003"}
@@ -77,6 +79,7 @@ func TestTerminateInstances_MultipleInstances(t *testing.T) {
 }
 
 func TestTerminateInstances_EmptyInstanceIds(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	input := &ec2.TerminateInstancesInput{
@@ -89,6 +92,7 @@ func TestTerminateInstances_EmptyInstanceIds(t *testing.T) {
 }
 
 func TestTerminateInstances_NilInstanceIdSkipped(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-valid"
@@ -148,6 +152,7 @@ func TestTerminateInstances_MixedSuccessAndFailure(t *testing.T) {
 }
 
 func TestTerminateInstances_VerifiesQMPAttributes(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-verify"

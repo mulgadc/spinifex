@@ -28,6 +28,7 @@ func newTestClientTokenStore(t *testing.T) *ClientTokenStore {
 // A completed token replays the stored reservation for a duplicate caller with
 // matching params.
 func TestClientToken_ReplaysCompletedReservation(t *testing.T) {
+	t.Parallel()
 	store := newTestClientTokenStore(t)
 	const tok, hash = "tok-1", "hash-a"
 
@@ -47,6 +48,7 @@ func TestClientToken_ReplaysCompletedReservation(t *testing.T) {
 
 // Reusing a token with different params is IdempotentParameterMismatch.
 func TestClientToken_ParamMismatchRejected(t *testing.T) {
+	t.Parallel()
 	store := newTestClientTokenStore(t)
 	const tok = "tok-2"
 
@@ -62,6 +64,7 @@ func TestClientToken_ParamMismatchRejected(t *testing.T) {
 // A failed launch aborts the token so a later retry with the same token
 // re-launches instead of replaying a non-existent reservation.
 func TestClientToken_AbortAllowsRelaunch(t *testing.T) {
+	t.Parallel()
 	store := newTestClientTokenStore(t)
 	const tok, hash = "tok-3", "hash-a"
 
@@ -79,6 +82,7 @@ func TestClientToken_AbortAllowsRelaunch(t *testing.T) {
 // Concurrent callers with the same token must yield exactly one owner; the
 // others replay the owner's reservation. Proves single-launch under -race.
 func TestClientToken_ConcurrentSingleOwner(t *testing.T) {
+	t.Parallel()
 	store := newTestClientTokenStore(t)
 	const tok, hash = "tok-4", "hash-a"
 	res := &ec2.Reservation{ReservationId: aws.String("r-only")}
@@ -122,6 +126,7 @@ func TestClientToken_ConcurrentSingleOwner(t *testing.T) {
 // clientTokenParamHash ignores ClientToken (same params, different token →
 // same hash) but reflects a real parameter change.
 func TestClientTokenParamHash_IgnoresTokenReflectsParams(t *testing.T) {
+	t.Parallel()
 	base := &ec2.RunInstancesInput{
 		ImageId:      aws.String("ami-123"),
 		InstanceType: aws.String("t3.micro"),
@@ -144,6 +149,7 @@ func TestClientTokenParamHash_IgnoresTokenReflectsParams(t *testing.T) {
 
 // A completed token replays its reservation and must NOT invoke the launcher.
 func TestRunInstancesWithClientToken_ReplaySkipsLaunch(t *testing.T) {
+	t.Parallel()
 	store := newTestClientTokenStore(t)
 	const tok, hash = "rt-1", "h"
 	_, owned, err := store.Claim(t.Context(), ctTestAccount, tok, hash)
@@ -163,6 +169,7 @@ func TestRunInstancesWithClientToken_ReplaySkipsLaunch(t *testing.T) {
 
 // The owner launches once and finalizes; a duplicate replays without launching.
 func TestRunInstancesWithClientToken_OwnerLaunchesOnceThenReplay(t *testing.T) {
+	t.Parallel()
 	store := newTestClientTokenStore(t)
 	const tok, hash = "rt-2", "h"
 	launches := 0
@@ -183,6 +190,7 @@ func TestRunInstancesWithClientToken_OwnerLaunchesOnceThenReplay(t *testing.T) {
 
 // A launch failure aborts the token so a retry re-launches.
 func TestRunInstancesWithClientToken_LaunchFailureAborts(t *testing.T) {
+	t.Parallel()
 	store := newTestClientTokenStore(t)
 	const tok, hash = "rt-3", "h"
 
@@ -204,6 +212,7 @@ func TestRunInstancesWithClientToken_LaunchFailureAborts(t *testing.T) {
 // Token reuse with different params maps to the AWS IdempotentParameterMismatch
 // error code and never launches.
 func TestRunInstancesWithClientToken_ParamMismatchMapsAWSError(t *testing.T) {
+	t.Parallel()
 	store := newTestClientTokenStore(t)
 	const tok = "rt-4"
 	_, owned, err := store.Claim(t.Context(), ctTestAccount, tok, "hA")
@@ -223,6 +232,7 @@ func TestRunInstancesWithClientToken_ParamMismatchMapsAWSError(t *testing.T) {
 // getClientTokenStore binds the process-wide store once and returns the same
 // instance on subsequent calls.
 func TestGetClientTokenStore_BindsOnce(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	s1, err := getClientTokenStore(t.Context(), nc)
 	require.NoError(t, err)

@@ -14,6 +14,7 @@ import (
 )
 
 func TestStartInstances_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-0123456789abcdef0"
@@ -48,6 +49,7 @@ func TestStartInstances_Success(t *testing.T) {
 }
 
 func TestStartInstances_MultipleInstances(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	ids := []string{"i-001", "i-002", "i-003"}
@@ -76,6 +78,7 @@ func TestStartInstances_MultipleInstances(t *testing.T) {
 }
 
 func TestStartInstances_EmptyInstanceIds(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	input := &ec2.StartInstancesInput{
@@ -88,6 +91,7 @@ func TestStartInstances_EmptyInstanceIds(t *testing.T) {
 }
 
 func TestStartInstances_NilInstanceIdSkipped(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-valid"
@@ -109,6 +113,7 @@ func TestStartInstances_NilInstanceIdSkipped(t *testing.T) {
 }
 
 func TestStartInstances_NATSRequestFails(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// No subscriber for ec2.start, so NATS request will fail
@@ -134,6 +139,7 @@ func TestStartInstances_NATSRequestFails(t *testing.T) {
 }
 
 func TestStartInstances_MixedSuccessAndFailure(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	goodID := "i-good"

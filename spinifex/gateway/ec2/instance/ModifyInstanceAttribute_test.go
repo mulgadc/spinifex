@@ -16,18 +16,21 @@ import (
 // --- Validation tests ---
 
 func TestValidateModifyInstanceAttributeInput_NilInput(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(nil)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
 
 func TestValidateModifyInstanceAttributeInput_MissingInstanceId(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error())
 }
 
 func TestValidateModifyInstanceAttributeInput_EmptyInstanceId(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId: aws.String(""),
 	})
@@ -36,6 +39,7 @@ func TestValidateModifyInstanceAttributeInput_EmptyInstanceId(t *testing.T) {
 }
 
 func TestValidateModifyInstanceAttributeInput_BadPrefix(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String("x-12345"),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.micro")},
@@ -45,6 +49,7 @@ func TestValidateModifyInstanceAttributeInput_BadPrefix(t *testing.T) {
 }
 
 func TestValidateModifyInstanceAttributeInput_NoAttributeSet(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId: aws.String("i-abc123"),
 	})
@@ -53,6 +58,7 @@ func TestValidateModifyInstanceAttributeInput_NoAttributeSet(t *testing.T) {
 }
 
 func TestValidateModifyInstanceAttributeInput_MultipleAttributes(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String("i-abc123"),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.micro")},
@@ -63,6 +69,7 @@ func TestValidateModifyInstanceAttributeInput_MultipleAttributes(t *testing.T) {
 }
 
 func TestValidateModifyInstanceAttributeInput_EmptyInstanceType(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String("i-abc123"),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("")},
@@ -72,6 +79,7 @@ func TestValidateModifyInstanceAttributeInput_EmptyInstanceType(t *testing.T) {
 }
 
 func TestValidateModifyInstanceAttributeInput_NilInstanceTypeValue(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String("i-abc123"),
 		InstanceType: &ec2.AttributeValue{},
@@ -81,6 +89,7 @@ func TestValidateModifyInstanceAttributeInput_NilInstanceTypeValue(t *testing.T)
 }
 
 func TestValidateModifyInstanceAttributeInput_ValidInstanceType(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId:   aws.String("i-abc123"),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
@@ -89,6 +98,7 @@ func TestValidateModifyInstanceAttributeInput_ValidInstanceType(t *testing.T) {
 }
 
 func TestValidateModifyInstanceAttributeInput_ValidUserData(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId: aws.String("i-abc123"),
 		UserData:   &ec2.BlobAttributeValue{Value: []byte("IyEvYmluL2Jhc2g=")},
@@ -97,6 +107,7 @@ func TestValidateModifyInstanceAttributeInput_ValidUserData(t *testing.T) {
 }
 
 func TestValidateModifyInstanceAttributeInput_ValidDisableApiTermination(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId:            aws.String("i-abc123"),
 		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
@@ -105,6 +116,7 @@ func TestValidateModifyInstanceAttributeInput_ValidDisableApiTermination(t *test
 }
 
 func TestValidateModifyInstanceAttributeInput_DisableApiTerminationWithOther(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId:            aws.String("i-abc123"),
 		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
@@ -115,6 +127,7 @@ func TestValidateModifyInstanceAttributeInput_DisableApiTerminationWithOther(t *
 }
 
 func TestValidateModifyInstanceAttributeInput_ValidSourceDestCheck(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId:      aws.String("i-abc123"),
 		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
@@ -123,6 +136,7 @@ func TestValidateModifyInstanceAttributeInput_ValidSourceDestCheck(t *testing.T)
 }
 
 func TestValidateModifyInstanceAttributeInput_SourceDestCheckWithOtherAttribute(t *testing.T) {
+	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId:      aws.String("i-abc123"),
 		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
@@ -135,6 +149,7 @@ func TestValidateModifyInstanceAttributeInput_SourceDestCheckWithOtherAttribute(
 // --- Gateway function tests ---
 
 func TestModifyInstanceAttribute_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.QueueSubscribe("ec2.ModifyInstanceAttribute", "spinifex-workers", func(msg *nats.Msg) {
@@ -155,6 +170,7 @@ func TestModifyInstanceAttribute_Success(t *testing.T) {
 }
 
 func TestModifyInstanceAttribute_SourceDestCheck(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.QueueSubscribe("ec2.ModifyInstanceAttribute", "spinifex-workers", func(msg *nats.Msg) {
@@ -171,6 +187,7 @@ func TestModifyInstanceAttribute_SourceDestCheck(t *testing.T) {
 }
 
 func TestModifyInstanceAttribute_DaemonError(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.QueueSubscribe("ec2.ModifyInstanceAttribute", "spinifex-workers", func(msg *nats.Msg) {
@@ -188,6 +205,7 @@ func TestModifyInstanceAttribute_DaemonError(t *testing.T) {
 }
 
 func TestModifyInstanceAttribute_ValidationFailure(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := ModifyInstanceAttribute(context.Background(), nil, nc, "123456789012")

@@ -39,6 +39,7 @@ func serveMonitoring(t *testing.T, nc *nats.Conn, subject, state string, ids ...
 }
 
 func TestMonitorInstances_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	seen := serveMonitoring(t, nc, "ec2.MonitorInstances", ec2.MonitoringStateEnabled, "i-0123456789abcdef0")
 
@@ -53,6 +54,7 @@ func TestMonitorInstances_Success(t *testing.T) {
 }
 
 func TestUnmonitorInstances_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	seen := serveMonitoring(t, nc, "ec2.UnmonitorInstances", ec2.MonitoringStateDisabled, "i-0123456789abcdef0")
 
@@ -69,6 +71,7 @@ func TestUnmonitorInstances_Success(t *testing.T) {
 // The two actions must not share a subject, or disabling monitoring would
 // enable it.
 func TestMonitorInstances_DistinctSubjects(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	serveMonitoring(t, nc, "ec2.MonitorInstances", ec2.MonitoringStateEnabled, "i-0123456789abcdef0")
 
@@ -79,6 +82,7 @@ func TestMonitorInstances_DistinctSubjects(t *testing.T) {
 }
 
 func TestMonitorInstances_InvalidInput(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	tests := []struct {
@@ -107,6 +111,7 @@ func TestMonitorInstances_InvalidInput(t *testing.T) {
 }
 
 func TestMonitorInstances_NilInput(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := MonitorInstances(context.Background(), nil, nc, "123456789012")

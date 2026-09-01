@@ -26,6 +26,7 @@ func shrinkPasswordDataTimeout(t *testing.T) {
 }
 
 func TestValidateGetPasswordDataInput(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		input   *ec2.GetPasswordDataInput
@@ -66,6 +67,7 @@ func TestValidateGetPasswordDataInput(t *testing.T) {
 }
 
 func TestGetPasswordData_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-0123456789abcdef0"
@@ -108,6 +110,7 @@ func TestGetPasswordData_Success(t *testing.T) {
 }
 
 func TestGetPasswordData_NoResponders(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// No subscriber on the topic: an unknown/stopped/terminated instance.
@@ -140,6 +143,7 @@ func TestGetPasswordData_Timeout(t *testing.T) {
 }
 
 func TestGetPasswordData_DaemonError(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-error"
@@ -158,6 +162,7 @@ func TestGetPasswordData_DaemonError(t *testing.T) {
 }
 
 func TestGetPasswordData_MalformedResponse(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-malformed"

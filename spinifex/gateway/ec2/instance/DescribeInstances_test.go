@@ -18,6 +18,7 @@ import (
 )
 
 func TestDescribeInstances_SingleNode(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	reservation := &ec2.Reservation{
@@ -50,6 +51,7 @@ func TestDescribeInstances_SingleNode(t *testing.T) {
 }
 
 func TestDescribeInstances_MultipleNodes(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Two nodes each return different instances
@@ -99,6 +101,7 @@ func TestDescribeInstances_MultipleNodes(t *testing.T) {
 }
 
 func TestDescribeInstances_NoSubscribers(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	input := &ec2.DescribeInstancesInput{}
@@ -111,6 +114,7 @@ func TestDescribeInstances_NoSubscribers(t *testing.T) {
 }
 
 func TestDescribeInstances_NodeReturnsError(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
@@ -128,6 +132,7 @@ func TestDescribeInstances_NodeReturnsError(t *testing.T) {
 }
 
 func TestDescribeInstances_MixedResponses(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Node 1: returns valid data
@@ -167,6 +172,7 @@ func TestDescribeInstances_MixedResponses(t *testing.T) {
 }
 
 func TestDescribeInstances_MalformedJSON(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
@@ -183,6 +189,7 @@ func TestDescribeInstances_MalformedJSON(t *testing.T) {
 }
 
 func TestDescribeInstances_EmptyReservations(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
@@ -201,11 +208,12 @@ func TestDescribeInstances_EmptyReservations(t *testing.T) {
 }
 
 func TestDescribeInstances_TimeoutCollection(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Node responds after a delay (but within timeout)
 	nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{
 			Reservations: []*ec2.Reservation{
 				{ReservationId: aws.String("r-delayed")},
@@ -215,7 +223,9 @@ func TestDescribeInstances_TimeoutCollection(t *testing.T) {
 	})
 
 	input := &ec2.DescribeInstancesInput{}
-	output, err := DescribeInstances(context.Background(), input, nc, 0, "123456789012") // 0 = timeout-based collection
+	// 0 expected nodes = timeout-based collection: the whole window is waited out.
+	output, err := DescribeInstances(context.Background(), input, nc, 0, "123456789012",
+		WithFanoutTimeout(300*time.Millisecond))
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -223,6 +233,7 @@ func TestDescribeInstances_TimeoutCollection(t *testing.T) {
 }
 
 func TestDescribeInstances_EarlyExitWithExpectedNodes(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
@@ -267,6 +278,7 @@ func subscribeEmptyInstanceBuckets(t *testing.T, nc *nats.Conn) {
 // fully-answered fan-out returns InvalidInstanceID.NotFound instead of a
 // silent empty list.
 func TestDescribeInstancesChecked_ExplicitIDNotFound_CompleteSweep(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
 
@@ -297,6 +309,7 @@ func TestDescribeInstancesChecked_ExplicitIDNotFound_CompleteSweep(t *testing.T)
 // meaning an empty list, not an error. Only DescribeInstancesChecked — used
 // solely by the gateway's customer-facing action — may assert NotFound.
 func TestDescribeInstances_ExplicitIDNotFound_StaysSilent(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
 
@@ -321,6 +334,7 @@ func TestDescribeInstances_ExplicitIDNotFound_StaysSilent(t *testing.T) {
 // counterpart: the same complete sweep, but the requested ID is present, so
 // no error is raised.
 func TestDescribeInstancesChecked_ExplicitIDFound_CompleteSweep(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
 
@@ -350,6 +364,7 @@ func TestDescribeInstancesChecked_ExplicitIDFound_CompleteSweep(t *testing.T) {
 // must still return rc=0 with an empty list, never NotFound (no instance IDs
 // were named).
 func TestDescribeInstancesChecked_FilterOnlyNoMatch_ReturnsEmptyNotNotFound(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
 
@@ -376,11 +391,12 @@ func TestDescribeInstancesChecked_FilterOnlyNoMatch_ReturnsEmptyNotNotFound(t *t
 // sweep is provably incomplete and the naive found-set check must be
 // suppressed.
 func TestDescribeInstancesChecked_ExplicitIDNotFound_NodeTimeout(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
 
 	// Only one of the two expected nodes has a subscriber; the second never
-	// answers, so the fan-out hits its 3s deadline with sum.TimedOut=true.
+	// answers, so the fan-out hits its deadline with sum.TimedOut=true.
 	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
 		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}})
 		msg.Respond(data)
@@ -389,7 +405,8 @@ func TestDescribeInstancesChecked_ExplicitIDNotFound_NodeTimeout(t *testing.T) {
 	nc.Flush()
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-on-the-slow-node")}}
-	output, err := DescribeInstancesChecked(context.Background(), input, nc, 2, "123456789012")
+	output, err := DescribeInstancesChecked(context.Background(), input, nc, 2, "123456789012",
+		WithFanoutTimeout(300*time.Millisecond))
 
 	require.NoError(t, err, "an incomplete sweep must never assert a false NotFound")
 	require.NotNil(t, output)
@@ -397,6 +414,7 @@ func TestDescribeInstancesChecked_ExplicitIDNotFound_NodeTimeout(t *testing.T) {
 }
 
 func TestDescribeInstances_ClosedConnection(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	closedNC, err := nats.Connect(nc.ConnectedUrl())
@@ -427,6 +445,7 @@ func describeOutputWithProfiles(arns ...string) *ec2.DescribeInstancesOutput {
 }
 
 func TestEnrichInstanceProfileIDs_CachesPerARN(t *testing.T) {
+	t.Parallel()
 	arn := "arn:aws:iam::123456789012:instance-profile/shared"
 	var calls int
 	svc := &fakeIAMService{
@@ -446,6 +465,7 @@ func TestEnrichInstanceProfileIDs_CachesPerARN(t *testing.T) {
 }
 
 func TestEnrichInstanceProfileIDs_ResolveErrorLeavesIdEmpty(t *testing.T) {
+	t.Parallel()
 	failingARN := "arn:aws:iam::123456789012:instance-profile/missing"
 	okARN := "arn:aws:iam::123456789012:instance-profile/present"
 	svc := &fakeIAMService{
@@ -467,6 +487,7 @@ func TestEnrichInstanceProfileIDs_ResolveErrorLeavesIdEmpty(t *testing.T) {
 }
 
 func TestEnrichInstanceProfileIDs_NoOpInputs(t *testing.T) {
+	t.Parallel()
 	// Should not panic on nil out or nil iamSvc, and instances without a
 	// profile attached are untouched.
 	EnrichInstanceProfileIDs(nil, &fakeIAMService{}, "123456789012")

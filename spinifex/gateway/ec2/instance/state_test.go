@@ -8,6 +8,7 @@ import (
 )
 
 func TestNewStateChange(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		instanceID  string

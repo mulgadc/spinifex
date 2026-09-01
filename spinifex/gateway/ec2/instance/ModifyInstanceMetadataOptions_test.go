@@ -14,6 +14,7 @@ import (
 // A nil, empty, or non-"i-" instance ID is rejected at the gateway before any
 // NATS round-trip, so a nil connection is never dereferenced.
 func TestModifyInstanceMetadataOptions_RejectsMalformedID(t *testing.T) {
+	t.Parallel()
 	cases := map[string]*ec2.ModifyInstanceMetadataOptionsInput{
 		"nil input":  nil,
 		"nil id":     {},

@@ -42,6 +42,7 @@ func respondJSON(t *testing.T, msg *nats.Msg, payload any) {
 }
 
 func TestDescribeInstanceStatus_SingleNode(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
@@ -60,6 +61,7 @@ func TestDescribeInstanceStatus_SingleNode(t *testing.T) {
 }
 
 func TestDescribeInstanceStatus_TwoNodesDedup(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// First node returns i-001 (running)
@@ -92,6 +94,7 @@ func TestDescribeInstanceStatus_TwoNodesDedup(t *testing.T) {
 }
 
 func TestDescribeInstanceStatus_OneNodeErrorOthersData(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Node 1: data
@@ -121,6 +124,7 @@ func TestDescribeInstanceStatus_OneNodeErrorOthersData(t *testing.T) {
 }
 
 func TestDescribeInstanceStatus_AllNodesError(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
@@ -134,6 +138,7 @@ func TestDescribeInstanceStatus_AllNodesError(t *testing.T) {
 }
 
 func TestDescribeInstanceStatus_AllNodesTimeoutReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 0, "123456789012", "az-a")
@@ -143,6 +148,7 @@ func TestDescribeInstanceStatus_AllNodesTimeoutReturnsEmpty(t *testing.T) {
 }
 
 func TestDescribeInstanceStatus_IncludeAllAddsStoppedAsNotApplicable(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Fan-out responder: a running instance
@@ -192,6 +198,7 @@ func TestDescribeInstanceStatus_IncludeAllAddsStoppedAsNotApplicable(t *testing.
 }
 
 func TestDescribeInstanceStatus_RunningWinsOverStoppedDuringRace(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Fan-out: i-001 is running
@@ -225,6 +232,7 @@ func TestDescribeInstanceStatus_RunningWinsOverStoppedDuringRace(t *testing.T) {
 }
 
 func TestDescribeInstanceStatus_NilInput(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
@@ -239,6 +247,7 @@ func TestDescribeInstanceStatus_NilInput(t *testing.T) {
 }
 
 func TestDescribeInstanceStatus_ClosedConnection(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	closed, err := nats.Connect(nc.ConnectedUrl())
@@ -250,6 +259,7 @@ func TestDescribeInstanceStatus_ClosedConnection(t *testing.T) {
 }
 
 func TestBuildInstanceStatusFromInstance_PopulatesState(t *testing.T) {
+	t.Parallel()
 	in := &ec2.Instance{
 		InstanceId: aws.String("i-x"),
 		State:      &ec2.InstanceState{Code: aws.Int64(80), Name: aws.String("stopped")},
@@ -265,6 +275,7 @@ func TestBuildInstanceStatusFromInstance_PopulatesState(t *testing.T) {
 }
 
 func TestBuildInstanceStatusFromInstance_FallbackStateName(t *testing.T) {
+	t.Parallel()
 	in := &ec2.Instance{InstanceId: aws.String("i-x")}
 	got := buildInstanceStatusFromInstance(in, "az-a")
 	assert.Equal(t, "stopped", *got.InstanceState.Name)
@@ -275,6 +286,7 @@ func TestBuildInstanceStatusFromInstance_FallbackStateName(t *testing.T) {
 // because of the IncludeAllInstances field. The gateway must project to
 // DescribeInstancesInput before publishing.
 func TestDescribeInstanceStatus_IncludeAllProjectsInputForStoppedHandler(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
@@ -313,6 +325,7 @@ func TestDescribeInstanceStatus_IncludeAllProjectsInputForStoppedHandler(t *test
 }
 
 func TestStoppedCompatibleFilters_StripsStatusOnlyNames(t *testing.T) {
+	t.Parallel()
 	filters := []*ec2.Filter{
 		{Name: aws.String("availability-zone"), Values: []*string{aws.String("az-a")}},
 		{Name: aws.String("instance-state-code"), Values: []*string{aws.String("80")}},
@@ -326,11 +339,13 @@ func TestStoppedCompatibleFilters_StripsStatusOnlyNames(t *testing.T) {
 }
 
 func TestStoppedCompatibleFilters_Empty(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, stoppedCompatibleFilters(nil))
 	assert.Nil(t, stoppedCompatibleFilters([]*ec2.Filter{}))
 }
 
 func TestFilterStoppedStatuses_AvailabilityZoneMatch(t *testing.T) {
+	t.Parallel()
 	in := []*ec2.InstanceStatus{
 		{InstanceId: aws.String("i-1"), AvailabilityZone: aws.String("az-a"),
 			InstanceState: &ec2.InstanceState{Code: aws.Int64(80)}},
@@ -343,6 +358,7 @@ func TestFilterStoppedStatuses_AvailabilityZoneMatch(t *testing.T) {
 }
 
 func TestFilterStoppedStatuses_AvailabilityZoneMiss(t *testing.T) {
+	t.Parallel()
 	in := []*ec2.InstanceStatus{
 		{InstanceId: aws.String("i-1"), AvailabilityZone: aws.String("az-a"),
 			InstanceState: &ec2.InstanceState{Code: aws.Int64(80)}},
@@ -355,6 +371,7 @@ func TestFilterStoppedStatuses_AvailabilityZoneMiss(t *testing.T) {
 }
 
 func TestFilterStoppedStatuses_StateCodeMatch(t *testing.T) {
+	t.Parallel()
 	in := []*ec2.InstanceStatus{
 		{InstanceId: aws.String("i-1"), AvailabilityZone: aws.String("az-a"),
 			InstanceState: &ec2.InstanceState{Code: aws.Int64(80)}},
@@ -367,6 +384,7 @@ func TestFilterStoppedStatuses_StateCodeMatch(t *testing.T) {
 }
 
 func TestFilterStoppedStatuses_StateCodeMiss(t *testing.T) {
+	t.Parallel()
 	in := []*ec2.InstanceStatus{
 		{InstanceId: aws.String("i-1"), AvailabilityZone: aws.String("az-a"),
 			InstanceState: &ec2.InstanceState{Code: aws.Int64(80)}},
@@ -379,12 +397,14 @@ func TestFilterStoppedStatuses_StateCodeMiss(t *testing.T) {
 }
 
 func TestFilterStoppedStatuses_NoFiltersPassthrough(t *testing.T) {
+	t.Parallel()
 	in := []*ec2.InstanceStatus{{InstanceId: aws.String("i-1")}}
 	got := filterStoppedStatuses(in, nil, "az-a")
 	assert.Equal(t, in, got)
 }
 
 func TestFilterStoppedStatuses_UnknownFilterIgnored(t *testing.T) {
+	t.Parallel()
 	in := []*ec2.InstanceStatus{
 		{InstanceId: aws.String("i-1"), AvailabilityZone: aws.String("az-a"),
 			InstanceState: &ec2.InstanceState{Code: aws.Int64(80)}},
@@ -399,6 +419,7 @@ func TestFilterStoppedStatuses_UnknownFilterIgnored(t *testing.T) {
 }
 
 func TestDescribeInstanceStatus_IncludeAllWithAZFilterMatches(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
@@ -429,6 +450,7 @@ func TestDescribeInstanceStatus_IncludeAllWithAZFilterMatches(t *testing.T) {
 }
 
 func TestDescribeInstanceStatus_IncludeAllWithAZFilterMisses(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
@@ -458,6 +480,7 @@ func TestDescribeInstanceStatus_IncludeAllWithAZFilterMisses(t *testing.T) {
 }
 
 func TestDedupStatuses_FirstWins(t *testing.T) {
+	t.Parallel()
 	first := runningStatus("i-001", "az-a")
 	second := &ec2.InstanceStatus{
 		InstanceId:    aws.String("i-001"),

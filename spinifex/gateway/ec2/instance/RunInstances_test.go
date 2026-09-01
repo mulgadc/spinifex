@@ -26,6 +26,7 @@ var defaults = ec2.RunInstancesInput{
 }
 
 func TestParseRunInstances(t *testing.T) {
+	t.Parallel()
 	// Group multiple tests
 	tests := []struct {
 		name  string
@@ -231,6 +232,7 @@ func runValidInputWithProfile(spec *ec2.IamInstanceProfileSpecification) *ec2.Ru
 }
 
 func TestResolveAndAuthorizeInstanceProfile_Absent(t *testing.T) {
+	t.Parallel()
 	// No IamInstanceProfile on the input → no resolution, no PassRole check.
 	in := &ec2.RunInstancesInput{} // empty
 	profile, err := resolveAndAuthorizeInstanceProfile(in, nil, testGwAccountID, nil)
@@ -239,6 +241,7 @@ func TestResolveAndAuthorizeInstanceProfile_Absent(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeInstanceProfile_NameForm_NormalisesToARN(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
 		assert.Equal(t, testProfileNameApp, nameOrARN)
 		return profileWithRole(), nil
@@ -257,6 +260,7 @@ func TestResolveAndAuthorizeInstanceProfile_NameForm_NormalisesToARN(t *testing.
 }
 
 func TestResolveAndAuthorizeInstanceProfile_ArnForm(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
 		assert.Equal(t, testProfileARNApp, nameOrARN)
 		return profileWithRole(), nil
@@ -269,6 +273,7 @@ func TestResolveAndAuthorizeInstanceProfile_ArnForm(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeInstanceProfile_MissingNameAndArn(t *testing.T) {
+	t.Parallel()
 	in := runValidInputWithProfile(&ec2.IamInstanceProfileSpecification{})
 	_, err := resolveAndAuthorizeInstanceProfile(in, &fakeIAMService{}, testGwAccountID, nil)
 	require.Error(t, err)
@@ -276,6 +281,7 @@ func TestResolveAndAuthorizeInstanceProfile_MissingNameAndArn(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeInstanceProfile_NilIAMService(t *testing.T) {
+	t.Parallel()
 	in := runValidInputWithProfile(&ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)})
 	_, err := resolveAndAuthorizeInstanceProfile(in, nil, testGwAccountID, nil)
 	require.Error(t, err)
@@ -283,6 +289,7 @@ func TestResolveAndAuthorizeInstanceProfile_NilIAMService(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeInstanceProfile_NotFoundMapsToEC2Error(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}}
@@ -293,6 +300,7 @@ func TestResolveAndAuthorizeInstanceProfile_NotFoundMapsToEC2Error(t *testing.T)
 }
 
 func TestResolveAndAuthorizeInstanceProfile_CrossAccountARNPassthrough(t *testing.T) {
+	t.Parallel()
 	// IAM service rejects cross-account; gateway surfaces the AccessDenied verbatim.
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return nil, errors.New(awserrors.ErrorAccessDenied)
@@ -304,6 +312,7 @@ func TestResolveAndAuthorizeInstanceProfile_CrossAccountARNPassthrough(t *testin
 }
 
 func TestResolveAndAuthorizeInstanceProfile_PassRoleDenied(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return profileWithRole(), nil
 	}}
@@ -318,6 +327,7 @@ func TestResolveAndAuthorizeInstanceProfile_PassRoleDenied(t *testing.T) {
 }
 
 func TestResolveAndAuthorizeInstanceProfile_NoRoleSkipsPassRole(t *testing.T) {
+	t.Parallel()
 	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
 		return profileNoRole(), nil
 	}}
@@ -334,6 +344,7 @@ func TestResolveAndAuthorizeInstanceProfile_NoRoleSkipsPassRole(t *testing.T) {
 }
 
 func TestEnrichReservationWithProfileID_PopulatesID(t *testing.T) {
+	t.Parallel()
 	r := &ec2.Reservation{Instances: []*ec2.Instance{
 		{InstanceId: aws.String("i-001"), IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNApp)}},
 		{InstanceId: aws.String("i-002")}, // no IamInstanceProfile yet — gateway fills both Arn + Id
@@ -348,11 +359,13 @@ func TestEnrichReservationWithProfileID_PopulatesID(t *testing.T) {
 }
 
 func TestEnrichReservationWithProfileID_NoProfileIsNoOp(t *testing.T) {
+	t.Parallel()
 	r := &ec2.Reservation{Instances: []*ec2.Instance{{InstanceId: aws.String("i-001")}}}
 	enrichReservationWithProfileID(r, nil)
 	assert.Nil(t, r.Instances[0].IamInstanceProfile, "nil profile must not synthesise an empty IamInstanceProfile")
 }
 
 func TestEnrichReservationWithProfileID_NilReservationIsSafe(t *testing.T) {
+	t.Parallel()
 	enrichReservationWithProfileID(nil, profileWithRole()) // must not panic
 }

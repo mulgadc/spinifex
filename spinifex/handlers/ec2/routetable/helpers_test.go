@@ -11,23 +11,27 @@ import (
 // --- rtbMatchesFilters ---
 
 func TestRtbMatchesFilters_EmptyFilters(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{RouteTableId: "rtb-1", VpcId: "vpc-1"}
 	assert.True(t, rtbMatchesFilters(record, map[string][]string{}))
 }
 
 func TestRtbMatchesFilters_VpcId(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{RouteTableId: "rtb-1", VpcId: "vpc-aaa"}
 	assert.True(t, rtbMatchesFilters(record, map[string][]string{"vpc-id": {"vpc-aaa"}}))
 	assert.False(t, rtbMatchesFilters(record, map[string][]string{"vpc-id": {"vpc-bbb"}}))
 }
 
 func TestRtbMatchesFilters_RouteTableId(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{RouteTableId: "rtb-xyz", VpcId: "vpc-1"}
 	assert.True(t, rtbMatchesFilters(record, map[string][]string{"route-table-id": {"rtb-xyz"}}))
 	assert.False(t, rtbMatchesFilters(record, map[string][]string{"route-table-id": {"rtb-other"}}))
 }
 
 func TestRtbMatchesFilters_AssociationMain_True(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		Associations: []AssociationRecord{
 			{AssociationId: "rtbassoc-1", Main: true},
@@ -38,6 +42,7 @@ func TestRtbMatchesFilters_AssociationMain_True(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_AssociationMain_False(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		Associations: []AssociationRecord{
 			{AssociationId: "rtbassoc-1", Main: false},
@@ -47,6 +52,7 @@ func TestRtbMatchesFilters_AssociationMain_False(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_AssociationId(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		Associations: []AssociationRecord{
 			{AssociationId: "rtbassoc-abc"},
@@ -61,6 +67,7 @@ func TestRtbMatchesFilters_AssociationId(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_AssociationSubnetId(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		Associations: []AssociationRecord{
 			{AssociationId: "rtbassoc-1", SubnetId: "subnet-aaa"},
@@ -75,6 +82,7 @@ func TestRtbMatchesFilters_AssociationSubnetId(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_RouteDestinationCidr(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		Routes: []RouteRecord{
 			{DestinationCidrBlock: "10.0.0.0/16", GatewayId: "local", State: "active"},
@@ -90,6 +98,7 @@ func TestRtbMatchesFilters_RouteDestinationCidr(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_RouteGatewayId(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		Routes: []RouteRecord{
 			{DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-abc", State: "active"},
@@ -104,6 +113,7 @@ func TestRtbMatchesFilters_RouteGatewayId(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_MultipleFilters(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		RouteTableId: "rtb-1",
 		VpcId:        "vpc-aaa",
@@ -124,6 +134,7 @@ func TestRtbMatchesFilters_MultipleFilters(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_MultipleValues(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{VpcId: "vpc-bbb"}
 	assert.True(t, rtbMatchesFilters(record, map[string][]string{
 		"vpc-id": {"vpc-aaa", "vpc-bbb", "vpc-ccc"},
@@ -131,6 +142,7 @@ func TestRtbMatchesFilters_MultipleValues(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_NoAssociations(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{RouteTableId: "rtb-1"}
 	assert.False(t, rtbMatchesFilters(record, map[string][]string{
 		"association.subnet-id": {"subnet-1"},
@@ -138,6 +150,7 @@ func TestRtbMatchesFilters_NoAssociations(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_NoRoutes(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{RouteTableId: "rtb-1"}
 	assert.False(t, rtbMatchesFilters(record, map[string][]string{
 		"route.destination-cidr-block": {"0.0.0.0/0"},
@@ -145,6 +158,7 @@ func TestRtbMatchesFilters_NoRoutes(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_UnknownFilter(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{RouteTableId: "rtb-1", VpcId: "vpc-1"}
 	assert.False(t, rtbMatchesFilters(record, map[string][]string{
 		"bogus-filter": {"value"},
@@ -152,6 +166,7 @@ func TestRtbMatchesFilters_UnknownFilter(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_Wildcard(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{RouteTableId: "rtb-1", VpcId: "vpc-aaa"}
 	assert.True(t, rtbMatchesFilters(record, map[string][]string{
 		"vpc-id": {"vpc-*"},
@@ -159,6 +174,7 @@ func TestRtbMatchesFilters_Wildcard(t *testing.T) {
 }
 
 func TestRtbMatchesFilters_TagFilter(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		RouteTableId: "rtb-1",
 		VpcId:        "vpc-1",
@@ -178,6 +194,7 @@ func TestRtbMatchesFilters_TagFilter(t *testing.T) {
 // --- recordToEC2 ---
 
 func TestRecordToEC2_Basic(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		RouteTableId: "rtb-abc",
 		VpcId:        "vpc-123",
@@ -193,6 +210,7 @@ func TestRecordToEC2_Basic(t *testing.T) {
 }
 
 func TestRecordToEC2_Routes(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		RouteTableId: "rtb-1",
 		VpcId:        "vpc-1",
@@ -217,6 +235,7 @@ func TestRecordToEC2_Routes(t *testing.T) {
 }
 
 func TestRecordToEC2_Associations(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		RouteTableId: "rtb-1",
 		VpcId:        "vpc-1",
@@ -240,6 +259,7 @@ func TestRecordToEC2_Associations(t *testing.T) {
 }
 
 func TestRecordToEC2_Tags(t *testing.T) {
+	t.Parallel()
 	record := &RouteTableRecord{
 		RouteTableId: "rtb-1",
 		VpcId:        "vpc-1",

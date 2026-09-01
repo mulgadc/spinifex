@@ -15,6 +15,7 @@ import (
 )
 
 func TestStopInstances_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-0123456789abcdef0"
@@ -50,6 +51,7 @@ func TestStopInstances_Success(t *testing.T) {
 }
 
 func TestStopInstances_MultipleInstances(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	ids := []string{"i-001", "i-002"}
@@ -77,6 +79,7 @@ func TestStopInstances_MultipleInstances(t *testing.T) {
 }
 
 func TestStopInstances_EmptyInstanceIds(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	input := &ec2.StopInstancesInput{
@@ -89,6 +92,7 @@ func TestStopInstances_EmptyInstanceIds(t *testing.T) {
 }
 
 func TestStopInstances_NilInstanceIdSkipped(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-valid"
@@ -108,6 +112,7 @@ func TestStopInstances_NilInstanceIdSkipped(t *testing.T) {
 }
 
 func TestStopInstances_NATSRequestFails(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-nosubscriber"
@@ -131,6 +136,7 @@ func TestStopInstances_NATSRequestFails(t *testing.T) {
 }
 
 func TestStopInstances_MixedSuccessAndFailure(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	goodID := "i-good"

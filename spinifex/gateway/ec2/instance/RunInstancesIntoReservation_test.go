@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -29,6 +28,7 @@ func crTargetedInput(crID string) *ec2.RunInstancesInput {
 }
 
 func TestCapacityReservationTargetID(t *testing.T) {
+	t.Parallel()
 	assert.Empty(t, capacityReservationTargetID(&ec2.RunInstancesInput{}), "no spec → general path")
 	assert.Empty(t, capacityReservationTargetID(&ec2.RunInstancesInput{
 		CapacityReservationSpecification: &ec2.CapacityReservationSpecification{
@@ -40,6 +40,7 @@ func TestCapacityReservationTargetID(t *testing.T) {
 
 // A malformed reservation id is rejected at the gateway before any NATS call.
 func TestRunInstancesInner_TargetedMalformedID(t *testing.T) {
+	t.Parallel()
 	_, err := runInstancesInner(context.Background(), crTargetedInput("bogus-id"), nil, nil, "123456789012", nil, nil, 1)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidCapacityReservationIdMalformed, err.Error())
@@ -47,6 +48,7 @@ func TestRunInstancesInner_TargetedMalformedID(t *testing.T) {
 
 // The placement-group + capacity-reservation combination is rejected.
 func TestRunInstancesInner_TargetedWithPlacementGroup(t *testing.T) {
+	t.Parallel()
 	input := crTargetedInput(testCRID)
 	input.Placement = &ec2.Placement{GroupName: aws.String("pg-cluster")}
 	_, err := runInstancesInner(context.Background(), input, nil, nil, "123456789012", nil, nil, 1)
@@ -57,6 +59,7 @@ func TestRunInstancesInner_TargetedWithPlacementGroup(t *testing.T) {
 // No responder on the cr-subject (cancelled / restarted reservation) maps the
 // transport-level ErrNoResponders to InvalidCapacityReservationId.NotFound.
 func TestRunIntoReservation_NoResponder(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	_, err := runIntoReservation(context.Background(), crTargetedInput(testCRID), nc, "123456789012", testCRID)
 	require.Error(t, err)
@@ -66,6 +69,7 @@ func TestRunIntoReservation_NoResponder(t *testing.T) {
 // A targeted launch routes to ec2.RunInstances.cr.<crID> and returns the owning
 // daemon's reservation verbatim.
 func TestRunIntoReservation_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	sub, err := nc.Subscribe("ec2.RunInstances.cr."+testCRID, func(msg *nats.Msg) {
@@ -77,7 +81,7 @@ func TestRunIntoReservation_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	reservation, err := runIntoReservation(context.Background(), crTargetedInput(testCRID), nc, "123456789012", testCRID)
 	require.NoError(t, err)
@@ -88,6 +92,7 @@ func TestRunIntoReservation_Success(t *testing.T) {
 // A semantic error from the owning daemon (e.g. a full reservation) rides back
 // as its awserror code, not the generic NotFound.
 func TestRunIntoReservation_DaemonErrorPropagates(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	sub, err := nc.Subscribe("ec2.RunInstances.cr."+testCRID, func(msg *nats.Msg) {
@@ -95,7 +100,7 @@ func TestRunIntoReservation_DaemonErrorPropagates(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	_, err = runIntoReservation(context.Background(), crTargetedInput(testCRID), nc, "123456789012", testCRID)
 	require.Error(t, err)
@@ -105,6 +110,7 @@ func TestRunIntoReservation_DaemonErrorPropagates(t *testing.T) {
 // The full runInstancesInner branch routes a targeted launch to the cr-subject
 // (not the general distribute path) and enriches the result.
 func TestRunInstancesInner_TargetedRoutesToCRSubject(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	sub, err := nc.Subscribe("ec2.RunInstances.cr."+testCRID, func(msg *nats.Msg) {
@@ -116,7 +122,7 @@ func TestRunInstancesInner_TargetedRoutesToCRSubject(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, nc.Flush())
 
 	reservation, err := runInstancesInner(context.Background(), crTargetedInput(testCRID), nc, nil, "123456789012", nil, nil, 1)
 	require.NoError(t, err)

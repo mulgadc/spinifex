@@ -154,3 +154,105 @@ func TestRunTaskParamHash_LeavesTheInputIntact(t *testing.T) {
 	require.NotNil(t, input.ClientToken)
 	assert.Equal(t, "tok", *input.ClientToken)
 }
+
+// --- runTaskIdempotent -------------------------------------------------------
+
+func tokenTestInput(token string) *ecs.RunTaskInput {
+	input := &ecs.RunTaskInput{TaskDefinition: aws.String("web:1")}
+	if token != "" {
+		input.ClientToken = aws.String(token)
+	}
+	return input
+}
+
+func placingService(arn string) *fakeECSService {
+	out := taskOutput(arn)
+	return &fakeECSService{describeOut: taskDefWithRole(), runOut: &out}
+}
+
+// A request with no token must not pay for the store, let alone fail when the
+// store is unreachable: AWS treats an absent token as opting out.
+func TestRunTaskIdempotent_NoTokenRunsUnwrapped(t *testing.T) {
+	t.Parallel()
+	svc := placingService("task-a")
+	openStore := func() (*runTaskStore, error) {
+		t.Error("the store must not be opened for an untokened request")
+		return nil, nil
+	}
+
+	out, err := runTaskIdempotent(t.Context(), svc, tokenTestAccount, tokenTestInput(""),
+		allowCheck(t, testTaskRoleARN), openStore)
+
+	require.NoError(t, err)
+	assert.True(t, svc.runCalled, "an untokened request still places")
+	require.Len(t, out.Tasks, 1)
+}
+
+// With no store there is no way to tell a retry from a first attempt, so placing
+// anyway would create exactly the duplicate the token was sent to prevent.
+func TestRunTaskIdempotent_StoreFailureRefusesToPlace(t *testing.T) {
+	t.Parallel()
+	svc := placingService("task-a")
+	openStore := func() (*runTaskStore, error) { return nil, errors.New("jetstream down") }
+
+	_, err := runTaskIdempotent(t.Context(), svc, tokenTestAccount, tokenTestInput("tok-store"),
+		allowCheck(t, testTaskRoleARN), openStore)
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.False(t, svc.runCalled, "a request that cannot be deduplicated must not place")
+}
+
+// The whole path, from the token on the input through to a replayed output.
+func TestRunTaskIdempotent_PlacesOnceAcrossRetries(t *testing.T) {
+	t.Parallel()
+	store := newRunTaskStore(t)
+	openStore := func() (*runTaskStore, error) { return store, nil }
+
+	first := placingService("task-a")
+	firstOut, err := runTaskIdempotent(t.Context(), first, tokenTestAccount, tokenTestInput("tok-retry"),
+		allowCheck(t, testTaskRoleARN), openStore)
+	require.NoError(t, err)
+	require.Len(t, firstOut.Tasks, 1)
+
+	// A retry is a fresh service: the replay must come from the store, not from
+	// any state the first call left on the fake.
+	second := placingService("task-b")
+	replay, err := runTaskIdempotent(t.Context(), second, tokenTestAccount, tokenTestInput("tok-retry"),
+		allowCheck(t, testTaskRoleARN), openStore)
+	require.NoError(t, err)
+
+	assert.False(t, second.runCalled, "the retry must replay rather than place again")
+	require.Len(t, replay.Tasks, 1)
+	assert.Equal(t, "task-a", aws.StringValue(replay.Tasks[0].TaskArn))
+}
+
+// A launch error must reach the caller unwrapped, and must not be recorded as a
+// placement that a retry would replay.
+func TestRunTaskIdempotent_LaunchErrorPropagates(t *testing.T) {
+	t.Parallel()
+	store := newRunTaskStore(t)
+	openStore := func() (*runTaskStore, error) { return store, nil }
+	svc := &fakeECSService{describeOut: taskDefWithRole()}
+
+	_, err := runTaskIdempotent(t.Context(), svc, tokenTestAccount, tokenTestInput("tok-denied"),
+		denyCheck(t, testTaskRoleARN), openStore)
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assert.False(t, svc.runCalled)
+}
+
+// The store binds once per process, so a second caller must get the first
+// caller's store rather than rebind the bucket.
+func TestGetRunTaskStore_BindsOnce(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	first, err := getRunTaskStore(t.Context(), nc)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+
+	second, err := getRunTaskStore(t.Context(), nc)
+	require.NoError(t, err)
+	assert.Same(t, first, second, "the bucket must be bound once, not per request")
+}

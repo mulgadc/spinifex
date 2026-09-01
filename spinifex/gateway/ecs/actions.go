@@ -188,15 +188,33 @@ func RunTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, 
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	svc := handlers_ecs.NewNATSECSService(nc)
+	out, err := runTaskIdempotent(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck,
+		func() (*runTaskStore, error) { return getRunTaskStore(ctx, nc) })
+	if err != nil {
+		// Returned as a typed nil otherwise, which is a non-nil any.
+		return nil, err
+	}
+	return out, nil
+}
 
+// runTaskIdempotent is RunTask's token layer, split from the NATS binding the
+// way runTask is. openStore is a function so an untokened request never pays
+// the bind, and so a test can supply a store without a live connection.
+func runTaskIdempotent(
+	ctx context.Context,
+	svc handlers_ecs.ECSService,
+	accountID string,
+	input *ecs.RunTaskInput,
+	passRoleCheck PassRoleChecker,
+	openStore func() (*runTaskStore, error),
+) (*ecs.RunTaskOutput, error) {
 	// No token means the caller did not ask for idempotency, as on AWS.
 	token := aws.StringValue(input.ClientToken)
 	if token == "" {
 		return runTask(ctx, svc, accountID, input, passRoleCheck)
 	}
 
-	store, serr := getRunTaskStore(ctx, nc)
+	store, serr := openStore()
 	if serr != nil {
 		// Launching anyway would place the duplicate tasks the token was sent to
 		// prevent, so this fails rather than degrading to no idempotency.

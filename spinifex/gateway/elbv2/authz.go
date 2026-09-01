@@ -3,7 +3,8 @@ package gateway_elbv2
 import (
 	"errors"
 	"log/slog"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/arn"
@@ -112,12 +113,7 @@ func HasScope(action string) bool {
 // ScopedActions returns every action represented in the ELBv2 scope table, so a
 // scope left behind by a deleted or renamed action fails completeness too.
 func ScopedActions() []string {
-	actions := make([]string, 0, len(elbv2Scopes))
-	for action := range elbv2Scopes {
-		actions = append(actions, action)
-	}
-	sort.Strings(actions)
-	return actions
+	return slices.Sorted(maps.Keys(elbv2Scopes))
 }
 
 // ResourceARNs resolves the resources an ELBv2 request authorizes against from

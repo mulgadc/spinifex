@@ -4,7 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
@@ -105,12 +106,7 @@ func HasScope(action string) bool {
 
 // ScopedActions returns every action represented in the ECR scope table.
 func ScopedActions() []string {
-	actions := make([]string, 0, len(ecrScopes))
-	for action := range ecrScopes {
-		actions = append(actions, action)
-	}
-	sort.Strings(actions)
-	return actions
+	return slices.Sorted(maps.Keys(ecrScopes))
 }
 
 // ResourceARNs resolves the resources an ECR control-plane request authorizes

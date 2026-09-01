@@ -3,7 +3,8 @@ package gateway_acm
 import (
 	"errors"
 	"log/slog"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -67,12 +68,7 @@ func HasScope(action string) bool {
 
 // ScopedActions returns every action represented in the ACM scope table.
 func ScopedActions() []string {
-	actions := make([]string, 0, len(acmScopes))
-	for action := range acmScopes {
-		actions = append(actions, action)
-	}
-	sort.Strings(actions)
-	return actions
+	return slices.Sorted(maps.Keys(acmScopes))
 }
 
 // ResourceARNs resolves the resources an ACM request authorizes against from the

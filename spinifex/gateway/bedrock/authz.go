@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
-	"sort"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
@@ -122,12 +122,7 @@ func HasScope(service, action string) bool {
 // ScopedActions returns every action represented in service's scope table.
 func ScopedActions(service string) []string {
 	scopes := bedrockScopes[service]
-	actions := make([]string, 0, len(scopes))
-	for action := range scopes {
-		actions = append(actions, action)
-	}
-	sort.Strings(actions)
-	return actions
+	return slices.Sorted(maps.Keys(scopes))
 }
 
 // ResourceARNs resolves the resources a Bedrock-family request authorizes

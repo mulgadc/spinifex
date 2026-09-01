@@ -5,7 +5,8 @@ package gateway_ec2
 
 import (
 	"errors"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
@@ -298,12 +299,7 @@ func HasScope(action string) bool {
 // ScopedActions returns every action the scope table covers, so a scope left
 // behind by a deleted or renamed action fails the completeness test too.
 func ScopedActions() []string {
-	actions := make([]string, 0, len(ec2Scopes))
-	for action := range ec2Scopes {
-		actions = append(actions, action)
-	}
-	sort.Strings(actions)
-	return actions
+	return slices.Sorted(maps.Keys(ec2Scopes))
 }
 
 // ResourceARNs builds every resource the action's policy check evaluates from

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -118,12 +118,7 @@ func HasScope(action string) bool {
 
 // ScopedActions returns every action represented in the EKS scope table.
 func ScopedActions() []string {
-	actions := make([]string, 0, len(eksScopes))
-	for action := range eksScopes {
-		actions = append(actions, action)
-	}
-	sort.Strings(actions)
-	return actions
+	return slices.Sorted(maps.Keys(eksScopes))
 }
 
 // ResourceARNs resolves the resources an EKS request authorizes against from

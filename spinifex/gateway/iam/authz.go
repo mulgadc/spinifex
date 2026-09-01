@@ -4,8 +4,9 @@ package gateway_iam
 import (
 	"errors"
 	"log/slog"
+	"maps"
 	"reflect"
-	"sort"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -140,12 +141,7 @@ func HasScope(action string) bool {
 
 // ScopedActions returns every action represented in the IAM scope table.
 func ScopedActions() []string {
-	actions := make([]string, 0, len(iamScopes))
-	for action := range iamScopes {
-		actions = append(actions, action)
-	}
-	sort.Strings(actions)
-	return actions
+	return slices.Sorted(maps.Keys(iamScopes))
 }
 
 // ResourceARNs resolves the resource an IAM request authorizes against from

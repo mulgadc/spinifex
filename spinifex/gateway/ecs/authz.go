@@ -3,7 +3,8 @@ package gateway_ecs
 import (
 	"errors"
 	"log/slog"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -130,12 +131,7 @@ func HasScope(action string) bool {
 
 // ScopedActions returns every action represented in the ECS scope table.
 func ScopedActions() []string {
-	actions := make([]string, 0, len(ecsScopes))
-	for action := range ecsScopes {
-		actions = append(actions, action)
-	}
-	sort.Strings(actions)
-	return actions
+	return slices.Sorted(maps.Keys(ecsScopes))
 }
 
 // ResourceARNs resolves the resources an ECS request authorizes against from

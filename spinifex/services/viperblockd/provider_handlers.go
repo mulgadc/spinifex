@@ -871,7 +871,7 @@ func handleDeleteVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *na
 
 	// The volume is gone, so a marker pinning it to this node pins nothing.
 	// Left behind it would outlive every copy of the data it describes.
-	cfg.clearVolumeDirty(ctx, req.VolumeID)
+	cfg.purgeVolumeDirty(ctx, req.VolumeID)
 
 	slog.Info("ebs.provider.volume.delete: deleted", "volume", req.VolumeID)
 	respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned()})
@@ -1613,8 +1613,15 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 			matched.VB.Detach()
 		}
 
-		if err := utils.KillProcess(matched.PID); err != nil {
-			slog.ErrorContext(ctx, "Failed to kill nbdkit process", "pid", matched.PID, "err", err)
+		// The seal below rewrites the directory nbdkit writes, so a kill that
+		// did not take makes it a concurrent write to that directory. Fail the
+		// unmount instead: the entry stays mounted and a retry re-attempts
+		// both, which is what a failed seal already does.
+		if err := utils.ForceKillProcess(matched.PID, fenceKillTimeout); err != nil {
+			slog.ErrorContext(ctx, "ebs.unmount: nbdkit did not exit, refusing to seal underneath a live writer",
+				"volume", matched.Name, "pid", matched.PID, "err", err)
+			ebsResponse.Error = fmt.Sprintf("kill nbdkit for %s: %v", matched.Name, err)
+			return ebsResponse, errors.New(ebsResponse.Error)
 		}
 
 		// nbdkit is now dead, so no process writes the shared BaseDir: seal
@@ -1631,16 +1638,16 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 				ebsResponse.Error = fmt.Sprintf("seal volume: %v", err)
 				// The un-uploaded writes are now this node's alone, and the
 				// lease saying so dies with the node. Record it durably.
-				cfg.markVolumeDirty(ctx, matched.Name, err.Error())
+				cfg.markVolumeDirtyAfterFailedSeal(ctx, matched.Name, matched.leaseGeneration(), err.Error())
 			} else {
 				slog.InfoContext(ctx, "ebs.unmount: volume sealed to predastore", "volume", matched.Name)
-				cfg.clearVolumeDirty(ctx, matched.Name)
+				cfg.clearVolumeDirty(ctx, matched.Name, matched.leaseGeneration())
 			}
 		} else if consumeSealReceipt(cfg.BaseDir, matched.Name) {
 			// Healthy path: the plugin sealed to predastore and removed
 			// its local state itself, leaving this receipt as proof.
 			slog.InfoContext(ctx, "ebs.unmount: volume already sealed by nbdkit plugin", "volume", matched.Name)
-			cfg.clearVolumeDirty(ctx, matched.Name)
+			cfg.clearVolumeDirty(ctx, matched.Name, matched.leaseGeneration())
 		} else {
 			// A durable volume reached unmount with no local WAL and no
 			// seal receipt: this node never held its state, so there is

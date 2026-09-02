@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -23,6 +24,11 @@ import (
 // make a stale write impossible — only an epoch the backend enforces does that
 // — but it closes the window from the lease TTL down to one renewal interval,
 // and it costs nothing on the write path.
+
+// fenceKillTimeout bounds the wait for nbdkit to exit after SIGKILL. Generous
+// for an uninterruptible sleep in the storage path; short enough that a fence
+// that will never complete is reported rather than waited on.
+const fenceKillTimeout = 30 * time.Second
 
 // VolumeFencedSubject is where a fenced volume is announced so the daemon on
 // this node can stop the guest that was using it. Node-addressed: the guest is
@@ -44,59 +50,41 @@ type VolumeFencedEvent struct {
 	Reason string `json:"reason"`
 }
 
-// onVolumeLeaseLost decides what a lost lease means and acts on it. Called from
-// the renewal goroutine's failure path, on its own goroutine: fencing releases
-// the lease, and releasing waits for that renewal goroutine to exit.
+// onVolumeLeaseLost fences a volume this node can no longer show it owns.
+// Called from the renewal goroutine's failure path, on its own goroutine:
+// fencing releases the lease, and releasing waits for that goroutine to exit.
 //
-// A revision mismatch is not by itself a takeover. The entry may simply have
-// aged out under JetStream pressure with nobody claiming it, and stopping a
-// healthy guest for that would be a failure this code invented. So the holder
-// decides: somebody else means fence, nobody means reclaim and carry on.
-func (cfg *Config) onVolumeLeaseLost(ctx context.Context, volumeName string) {
+// It never tries to reclaim. Reclaiming looks attractive — an entry that merely
+// aged out under JetStream pressure has no new holder, and stopping a healthy
+// guest for that is availability spent on nothing — but the two errors are not
+// symmetric. A false fence costs one guest a restart. A false reclaim leaves two
+// nodes writing one volume. Reclaiming correctly needs a state transition that
+// atomically replaces the lost in-memory lease and starts a new renewal loop,
+// and that is an optimisation, not a safety property.
+//
+// The holder is read only to say who won, which is what the operator needs and
+// not something the decision turns on.
+func (cfg *Config) onVolumeLeaseLost(ctx context.Context, volumeName string, kind leaseLossKind) {
 	if cfg.leases == nil {
 		return
 	}
 
-	owner, held := cfg.leases.currentOwner(ctx, volumeName)
+	// Read only to name the winner for the operator. No holder, or one this node
+	// cannot read, still fences: it cannot show it is the only writer, and
+	// continuing to write is the one option that can corrupt.
+	winner := "unknown"
+	if owner, held := cfg.leases.currentOwner(ctx, volumeName); held && owner != cfg.leases.owner {
+		winner = owner
+	}
+
+	outcome := otelsetup.FenceOutcomeExpired
 	switch {
-	case held && owner != cfg.leases.owner:
-		cfg.fenceVolume(ctx, volumeName, owner)
-	case cfg.reacquireVolumeLease(ctx, volumeName):
-		slog.WarnContext(ctx, "volume lease lapsed and was reclaimed: no other node had taken it",
-			"volume", volumeName, "owner", cfg.leases.owner)
-		otelsetup.RecordVolumeFence(ctx, otelsetup.FenceOutcomeReacquired)
-	default:
-		// Reclaiming failed, so this node cannot show it is the only writer.
-		// The volume is fenced on that basis rather than on evidence of a
-		// winner: continuing to write is the one option that can corrupt.
-		cfg.fenceVolume(ctx, volumeName, "unknown")
+	case kind == leaseLostStalled:
+		outcome = otelsetup.FenceOutcomeStalled
+	case winner != "unknown":
+		outcome = otelsetup.FenceOutcomeTaken
 	}
-}
-
-// reacquireVolumeLease re-establishes a lapsed claim on a volume this node is
-// still exporting, and re-points the mounted entry at the new lease so the
-// renewal keeps running.
-func (cfg *Config) reacquireVolumeLease(ctx context.Context, volumeName string) bool {
-	lease, err := cfg.leases.acquire(ctx, volumeName)
-	if err != nil {
-		slog.ErrorContext(ctx, "volume lease lapsed and could not be reclaimed",
-			"volume", volumeName, "err", err)
-		return false
-	}
-
-	cfg.mu.Lock()
-	defer cfg.mu.Unlock()
-	for i := range cfg.MountedVolumes {
-		if cfg.MountedVolumes[i].Name == volumeName {
-			cfg.MountedVolumes[i].Lease = lease
-			return true
-		}
-	}
-	// Nothing is exporting it any more, so the claim just taken is not needed.
-	// Released outside the lock is unnecessary here: release only touches the
-	// lease store.
-	cfg.releaseVolumeLease(ctx, lease)
-	return true
+	cfg.fenceVolume(ctx, volumeName, winner, outcome)
 }
 
 // fenceVolume tears this node's export down because the volume belongs to
@@ -106,14 +94,13 @@ func (cfg *Config) reacquireVolumeLease(ctx context.Context, volumeName string) 
 // Deliberately does not seal. This node's copy is the stale one, and sealing it
 // would publish an older state over the winner's. For the same reason the dirty
 // marker is left alone — the winner has taken it over and it now names them.
-func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string) {
+func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner, outcome string) {
 	cfg.mu.Lock()
 	var matched MountedVolume
 	found := false
-	for i, volume := range cfg.MountedVolumes {
+	for _, volume := range cfg.MountedVolumes {
 		if volume.Name == volumeName {
 			matched, found = volume, true
-			cfg.MountedVolumes = append(cfg.MountedVolumes[:i], cfg.MountedVolumes[i+1:]...)
 			break
 		}
 	}
@@ -142,10 +129,27 @@ func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string) {
 	if matched.VB != nil {
 		matched.VB.Detach()
 	}
-	if err := utils.KillProcess(matched.PID); err != nil {
-		slog.ErrorContext(ctx, "fence: could not kill nbdkit, the export may still be writable",
-			"volume", volumeName, "pid", matched.PID, "err", err)
+
+	// Everything below assumes the writer is gone, so nothing below may run
+	// until it is observed gone. A fence that has not killed nbdkit has fenced
+	// nothing, and reporting it as done is the failure that lets a second
+	// writer keep going while the cluster believes it stopped.
+	if err := utils.ForceKillProcess(matched.PID, fenceKillTimeout); err != nil {
+		slog.ErrorContext(ctx, "fence FAILED: nbdkit did not exit, so this node is still a writer on a volume it does not own",
+			"volume", volumeName, "pid", matched.PID, "winner", winner, "err", err)
+		otelsetup.RecordVolumeFence(ctx, otelsetup.FenceOutcomeKillFailed)
+		return
 	}
+
+	cfg.mu.Lock()
+	for i, volume := range cfg.MountedVolumes {
+		if volume.Name == matched.Name {
+			cfg.MountedVolumes = append(cfg.MountedVolumes[:i], cfg.MountedVolumes[i+1:]...)
+			break
+		}
+	}
+	cfg.mu.Unlock()
+
 	if matched.Socket != "" {
 		if err := os.Remove(matched.Socket); err != nil && !os.IsNotExist(err) {
 			slog.ErrorContext(ctx, "fence: could not remove nbd socket", "socket", matched.Socket, "err", err)
@@ -156,7 +160,7 @@ func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string) {
 	// already flagged lost, so this cannot delete the winner's key.
 	cfg.releaseVolumeLease(ctx, matched.Lease)
 
-	otelsetup.RecordVolumeFence(ctx, otelsetup.FenceOutcomeFenced)
+	otelsetup.RecordVolumeFence(ctx, outcome)
 	cfg.publishVolumeFenced(ctx, volumeName, winner)
 }
 

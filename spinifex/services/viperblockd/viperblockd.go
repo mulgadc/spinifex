@@ -110,6 +110,17 @@ type MountedVolume struct {
 	// export is up and given back when this entry leaves cfg.MountedVolumes.
 	Lease *volumeLease
 }
+
+// leaseGeneration is the epoch this export writes under, or 0 for a mount that
+// predates the lease store. Zero never matches a real marker, so a clear that
+// falls back to it declines rather than removing somebody else's.
+func (v MountedVolume) leaseGeneration() uint64 {
+	if v.Lease == nil {
+		return 0
+	}
+	return v.Lease.generation
+}
+
 type Config struct {
 	ConfigPath     string
 	PluginPath     string

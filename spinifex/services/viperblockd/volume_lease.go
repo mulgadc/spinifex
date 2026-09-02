@@ -29,6 +29,22 @@ const volumeLeaseTTL = 45 * time.Second
 // TTL so one missed renewal does not surrender the lease.
 const volumeLeaseRenewInterval = 15 * time.Second
 
+// volumeLeaseRenewTimeout bounds one renewal attempt. Without it a JetStream
+// call that hangs holds the renewal goroutine past the point where the server
+// has already given the entry away, and the holder never notices.
+const volumeLeaseRenewTimeout = 5 * time.Second
+
+// volumeLeaseValidity is how long a holder may keep writing after its last
+// *confirmed* renewal. Set below volumeLeaseTTL on purpose: a server-side TTL
+// is not a lease unless the holder stops before the server may re-grant, so the
+// difference is the margin covering scheduling delay and request latency.
+const volumeLeaseValidity = 30 * time.Second
+
+// volumeLeaseCheckInterval is how often validity is tested. Shorter than the
+// renewal interval so a lapsed holder is fenced on its own schedule rather than
+// on the next renewal that happens to come due.
+const volumeLeaseCheckInterval = 5 * time.Second
+
 // errVolumeLeaseHeld reports that another claimant owns the volume. It is the
 // one lease failure a caller can do something about, so it is distinguishable.
 var errVolumeLeaseHeld = errors.New("volume is leased by another owner")
@@ -52,16 +68,31 @@ type volumeLeaseRecord struct {
 	AcquiredAt time.Time `json:"acquired_at"`
 }
 
+// leaseLossKind is why a holder stopped being able to prove it owns a volume.
+// The two are not the same event and a fence reports them separately: one says
+// the cluster moved the volume, the other says this node lost contact with it.
+type leaseLossKind int
+
+const (
+	// leaseLostToPeer: a conditional update was rejected, so the entry changed
+	// under this node and another may hold it now.
+	leaseLostToPeer leaseLossKind = iota
+
+	// leaseLostStalled: renewal went unconfirmed for long enough that the server
+	// TTL is about to admit another owner. Nobody has necessarily taken it yet.
+	leaseLostStalled
+)
+
 // volumeLeases hands out cluster-wide volume leases from a JetStream KV
 // bucket, and remembers which ones this node holds.
 type volumeLeases struct {
 	kv    jetstream.KeyValue
 	owner string
 
-	// onLost is called when a renewal finds the entry has moved out from under
-	// this node. Nil leaves the loss logged and nothing else, which is what a
-	// unit test with no export to tear down wants.
-	onLost func(context.Context, string)
+	// onLost is called when this node can no longer prove it owns a volume. Nil
+	// leaves the loss logged and nothing else, which is what a unit test with no
+	// export to tear down wants.
+	onLost func(context.Context, string, leaseLossKind)
 
 	mu   sync.Mutex
 	held map[string]*volumeLease
@@ -103,6 +134,10 @@ type volumeLease struct {
 	// lost records that the entry moved out from under this holder, which
 	// means somebody else may now be writing the volume.
 	lost bool
+	// confirmed is when the last conditional update was acknowledged by the
+	// server. An attempt still in flight does not count: only a write the
+	// server accepted proves the entry is still ours.
+	confirmed time.Time
 	// refs counts opens on this node sharing the lease. The lease is released
 	// when the last one lets go.
 	refs int
@@ -148,6 +183,7 @@ func (l *volumeLeases) acquire(ctx context.Context, volumeName string) (*volumeL
 		volume:     volumeName,
 		generation: revision,
 		revision:   revision,
+		confirmed:  time.Now(),
 		done:       make(chan struct{}),
 		refs:       1,
 	}
@@ -254,11 +290,19 @@ func (l *volumeLeases) release(ctx context.Context, lease *volumeLease) {
 }
 
 // renewLoop refreshes the entry so the bucket TTL does not expire a live
-// holder, and notices when the lease has been taken away.
+// holder, notices when the lease has been taken away, and — the part that makes
+// it a lease rather than a hint — gives the volume up when it can no longer
+// prove the entry is still ours.
+//
+// The validity check is separate from the renewal because the two answer
+// different questions. Renewal asks "can I still reach JetStream"; validity
+// asks "may I still write". A holder partitioned from NATS keeps failing the
+// first indefinitely while the server hands the entry to somebody else, and
+// only the second stops it.
 func (lease *volumeLease) renewLoop(ctx context.Context) {
 	defer close(lease.done)
 
-	ticker := time.NewTicker(volumeLeaseRenewInterval)
+	ticker := time.NewTicker(volumeLeaseCheckInterval)
 	defer ticker.Stop()
 
 	for {
@@ -266,6 +310,13 @@ func (lease *volumeLease) renewLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if lease.expiredLocally() {
+				lease.surrender(ctx)
+				return
+			}
+			if time.Since(lease.lastConfirmed()) < volumeLeaseRenewInterval {
+				continue
+			}
 			if !lease.renew(ctx) {
 				return
 			}
@@ -273,12 +324,43 @@ func (lease *volumeLease) renewLoop(ctx context.Context) {
 	}
 }
 
+// expiredLocally reports that this holder has gone longer than
+// volumeLeaseValidity without a confirmed renewal, so the server may be about
+// to grant the entry to somebody else.
+func (lease *volumeLease) expiredLocally() bool {
+	return time.Since(lease.lastConfirmed()) >= volumeLeaseValidity
+}
+
+func (lease *volumeLease) lastConfirmed() time.Time {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	return lease.confirmed
+}
+
+// surrender gives the volume up because this holder can no longer prove it owns
+// it. Marked lost so the release path cannot delete an entry that may already
+// belong to another node.
+func (lease *volumeLease) surrender(ctx context.Context) {
+	lease.mu.Lock()
+	lease.lost = true
+	since := time.Since(lease.confirmed)
+	lease.mu.Unlock()
+
+	slog.Error("volume lease could not be confirmed before its TTL, surrendering the volume",
+		"volume", lease.volume, "generation", lease.generation,
+		"unconfirmed_for_ms", otelsetup.Millis(since), "ttl_ms", otelsetup.Millis(volumeLeaseTTL))
+
+	if onLost := lease.leases.onLost; onLost != nil {
+		go onLost(context.WithoutCancel(ctx), lease.volume, leaseLostStalled)
+	}
+}
+
 // renew rewrites the entry conditioned on the revision this holder last saw,
 // and reports whether the lease is still ours.
 //
-// Losing it hands off to onLost, which decides between reclaiming a lapsed
-// entry and fencing the export. That runs on its own goroutine because fencing
-// releases the lease, and releasing waits for this one to exit.
+// Losing it hands off to onLost, which fences the export. That runs on its own
+// goroutine because fencing releases the lease, and releasing waits for this
+// one to exit.
 func (lease *volumeLease) renew(ctx context.Context) bool {
 	record := volumeLeaseRecord{Owner: lease.leases.owner, Generation: lease.generation, AcquiredAt: time.Now().UTC()}
 	payload, err := json.Marshal(record)
@@ -291,11 +373,17 @@ func (lease *volumeLease) renew(ctx context.Context) bool {
 	revision := lease.revision
 	lease.mu.Unlock()
 
+	// Bounded so a hung JetStream call cannot hold this goroutine past the
+	// point where the server has already re-granted the entry.
+	ctx, cancel := context.WithTimeout(ctx, volumeLeaseRenewTimeout)
+	defer cancel()
+
 	renewed, err := lease.leases.kv.Update(ctx, lease.key, payload, revision)
 	switch {
 	case err == nil:
 		lease.mu.Lock()
 		lease.revision = renewed
+		lease.confirmed = time.Now()
 		lease.mu.Unlock()
 		return true
 	case errors.Is(err, context.Canceled):
@@ -310,7 +398,7 @@ func (lease *volumeLease) renew(ctx context.Context) bool {
 		if onLost := lease.leases.onLost; onLost != nil {
 			// WithoutCancel: release cancels this context, and the fence has
 			// KV reads and a teardown to finish after that.
-			go onLost(context.WithoutCancel(ctx), lease.volume)
+			go onLost(context.WithoutCancel(ctx), lease.volume, leaseLostToPeer)
 		}
 		return false
 	default:
@@ -346,8 +434,16 @@ func (cfg *Config) acquireVolumeLease(ctx context.Context, volumeName string) (*
 	// Mark before a single write lands, not when a seal fails. A node killed
 	// mid-write never reaches its seal, so marking there leaves no trace of the
 	// case the marker exists for. A takeover writes its own richer reason.
-	if !cfg.reportVolumeTakeover(ctx, volumeName) {
-		cfg.markVolumeDirty(ctx, volumeName, "volume open, writes not yet confirmed to the backend")
+	took, err := cfg.reportVolumeTakeover(ctx, volumeName, lease.generation)
+	if err == nil && !took {
+		err = cfg.markVolumeDirty(ctx, volumeName, lease.generation,
+			"volume open, writes not yet confirmed to the backend")
+	}
+	if err != nil {
+		// Opening anyway would leave writes nothing records, so a later takeover
+		// could not tell this node ever held them. Give the lease back instead.
+		cfg.leases.release(ctx, lease)
+		return nil, fmt.Errorf("record unconfirmed writes for %s: %w", volumeName, err)
 	}
 	return lease, nil
 }

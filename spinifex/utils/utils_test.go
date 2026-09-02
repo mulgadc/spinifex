@@ -684,6 +684,20 @@ func TestForceKillProcess(t *testing.T) {
 	assert.Error(t, ForceKillProcess(0, time.Second), "invalid pid must error")
 }
 
+// TestForceKillProcess_AlreadyExitedIsSuccess pins the contract callers rely on.
+// This is asked "make sure this process is gone", and one that died on its own
+// is as gone as one it killed — reporting a failure there makes a caller treat
+// a stopped writer as a live one.
+func TestForceKillProcess_AlreadyExitedIsSuccess(t *testing.T) {
+	cmd := exec.Command("true")
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+	require.NoError(t, cmd.Wait())
+
+	assert.NoError(t, ForceKillProcess(pid, time.Second),
+		"an already-exited process satisfies the request, it does not fail it")
+}
+
 func TestStopProcess(t *testing.T) {
 	// Create and start a test process
 	cmd := exec.Command("sleep", "60")

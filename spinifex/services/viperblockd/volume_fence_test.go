@@ -5,15 +5,36 @@ package viperblockd
 
 import (
 	"context"
+	"os/exec"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+// stubExport starts a real process to stand in for nbdkit. The fence must
+// observe the writer gone before it does anything else, so a fixture with a
+// fake PID would exercise the failure path and prove nothing about the kill.
+//
+// Reaped on its own goroutine as the mount path does, because kill(pid,0)
+// succeeds against a zombie: an unreaped child never looks like it exited.
+func stubExport(t *testing.T) int {
+	t.Helper()
+
+	cmd := exec.Command("sleep", "300")
+	require.NoError(t, cmd.Start())
+	reaped := make(chan struct{})
+	go func() { defer close(reaped); _ = cmd.Wait() }()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-reaped
+	})
+	return cmd.Process.Pid
+}
+
 // fencedConfig builds a Config owning volumeName with one mounted entry, as a
-// node that has an export up would have. PID 0 so the fence's KillProcess is a
-// no-op rather than signalling something real.
+// node that has an export up would have.
 func fencedConfig(t *testing.T, natsURL, owner, volumeName string) *Config {
 	t.Helper()
 
@@ -26,7 +47,11 @@ func fencedConfig(t *testing.T, natsURL, owner, volumeName string) *Config {
 
 	lease, err := cfg.acquireVolumeLease(t.Context(), volumeName)
 	require.NoError(t, err)
-	cfg.MountedVolumes = []MountedVolume{{Name: volumeName, Lease: lease}}
+	cfg.MountedVolumes = []MountedVolume{{Name: volumeName, Lease: lease, PID: stubExport(t)}}
+
+	// Stop the renewal goroutine before the embedded server goes away, or it
+	// spends the TTL surrendering a lease no test is looking at any more.
+	t.Cleanup(func() { cfg.releaseVolumeLease(context.Background(), lease) })
 	return cfg
 }
 
@@ -40,6 +65,7 @@ func TestVolumeFence_TearsDownWhenAnotherNodeHoldsTheLease(t *testing.T) {
 	const volumeName = "vol-fencelost"
 
 	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
+	pid := cfg.MountedVolumes[0].PID
 
 	// node-b takes the volume, which is what the renewal would discover.
 	winner := newTestLeases(t, natsURL, "node-b")
@@ -47,44 +73,57 @@ func TestVolumeFence_TearsDownWhenAnotherNodeHoldsTheLease(t *testing.T) {
 	_, err := winner.acquire(t.Context(), volumeName)
 	require.NoError(t, err)
 
-	cfg.onVolumeLeaseLost(t.Context(), volumeName)
+	cfg.onVolumeLeaseLost(t.Context(), volumeName, leaseLostToPeer)
 
 	cfg.mu.Lock()
 	mounted := len(cfg.MountedVolumes)
 	cfg.mu.Unlock()
 	assert.Zero(t, mounted, "a fenced volume must not be left exported: the export is the second writer")
+	assert.False(t, utils.ProcessAlive(pid), "the export process has to be gone, not merely forgotten")
 }
 
-// TestVolumeFence_ReclaimsALapsedEntryInsteadOfStoppingTheGuest is the half
-// that keeps the fence from being worse than the problem. An entry that aged
-// out under JetStream pressure with nobody claiming it is not a takeover, and
-// killing a healthy guest for one would be a failure this code invented.
-func TestVolumeFence_ReclaimsALapsedEntryInsteadOfStoppingTheGuest(t *testing.T) {
+// TestVolumeFence_FencesAnEntryNobodyHolds covers the lapsed case. An entry that
+// aged out with no successor is not proof this node is safe to keep writing —
+// it is proof this node cannot tell. Stopping one guest is the cheaper error
+// than leaving two nodes writing one volume.
+func TestVolumeFence_FencesAnEntryNobodyHolds(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencelapsed"
 
 	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
-
-	// The entry ages out with no successor, which is what a JetStream stall
-	// looks like from here.
 	require.NoError(t, cfg.leases.kv.Delete(t.Context(), volumeName))
-	cfg.leases.mu.Lock()
-	delete(cfg.leases.held, volumeName)
-	cfg.leases.mu.Unlock()
 
-	cfg.onVolumeLeaseLost(t.Context(), volumeName)
+	cfg.onVolumeLeaseLost(t.Context(), volumeName, leaseLostToPeer)
 
 	cfg.mu.Lock()
 	mounted := len(cfg.MountedVolumes)
-	released := cfg.MountedVolumes
 	cfg.mu.Unlock()
-	require.Equal(t, 1, mounted, "a lapsed lease nobody took must not cost the guest its disk")
-	assert.NotNil(t, released[0].Lease, "the reclaimed lease has to be the one the entry now renews")
+	assert.Zero(t, mounted, "a lease this node cannot prove it holds must not stay exported")
+}
+
+// TestVolumeFence_KillFailureLeavesTheVolumeMounted pins the ordering the fence
+// depends on. Releasing the lease or announcing the fence after a kill that did
+// not take would tell the cluster a writer stopped that is still running, which
+// is worse than not fencing at all.
+func TestVolumeFence_KillFailureLeavesTheVolumeMounted(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+
+	const volumeName = "vol-fencekillfails"
+
+	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
+	cfg.MountedVolumes[0].PID = 0 // rejected by ForceKillProcess, so the kill cannot succeed
+
+	cfg.fenceVolume(t.Context(), volumeName, "node-b", "taken")
+
+	cfg.mu.Lock()
+	mounted := len(cfg.MountedVolumes)
+	cfg.mu.Unlock()
+	require.Equal(t, 1, mounted, "a fence that could not stop the writer must not report the volume released")
 
 	owner, held := cfg.leases.currentOwner(t.Context(), volumeName)
-	assert.True(t, held)
-	assert.Equal(t, "node-a", owner, "reclaiming means this node holds the entry again")
+	require.True(t, held, "the lease must not be released while this node is still exporting")
+	assert.Equal(t, "node-a", owner)
 }
 
 // TestVolumeFence_DoesNotSealOnTheWayOut pins the one thing the fence must
@@ -99,7 +138,7 @@ func TestVolumeFence_DoesNotSealOnTheWayOut(t *testing.T) {
 	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
 	cfg.sealVolume = func(context.Context, string) error { sealed = true; return nil }
 
-	cfg.fenceVolume(t.Context(), volumeName, "node-b")
+	cfg.fenceVolume(t.Context(), volumeName, "node-b", "taken")
 
 	assert.False(t, sealed, "fencing must never seal: this node's copy is behind the winner's")
 }
@@ -114,7 +153,7 @@ func TestVolumeFence_LeavesTheDirtyMarkerToTheWinner(t *testing.T) {
 
 	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
 
-	cfg.fenceVolume(t.Context(), volumeName, "node-b")
+	cfg.fenceVolume(t.Context(), volumeName, "node-b", "taken")
 
 	record, ok := cfg.dirty.holder(t.Context(), volumeName)
 	require.True(t, ok, "fencing must leave the marker behind for the winner to take over")
@@ -132,7 +171,7 @@ func TestVolumeFence_AlreadyUnmountedIsNotAnError(t *testing.T) {
 		dirty:    newTestDirty(t, natsURL, "node-a"),
 	}
 
-	cfg.fenceVolume(t.Context(), "vol-fencenotmounted", "node-b")
+	cfg.fenceVolume(t.Context(), "vol-fencenotmounted", "node-b", "taken")
 }
 
 // TestVolumeFencedSubject_IsNodeAddressed pins the routing. A fenced guest is on

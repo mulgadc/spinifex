@@ -24,19 +24,28 @@ const actionAttrKey = "rpc.method"
 const leakKindAttrKey = "resource.kind"
 
 // fenceOutcomeAttrKey names what a node did after losing a volume lease.
-// Two values only, and neither carries a volume or node identity: those are
-// high-cardinality and belong in the log line beside the metric.
+// The four FenceOutcome constants below are the whole domain, and none carries
+// a volume or node identity: those belong in the log line beside the metric.
 const fenceOutcomeAttrKey = "outcome"
 
-// FenceOutcomeFenced means the lease had moved to another node, so the local
-// export was torn down without sealing. Every one of these is a guest that
-// stopped serving I/O, so this is the series to alert on.
-const FenceOutcomeFenced = "fenced"
+// FenceOutcomeTaken means another node held the lease, so this one gave up its
+// export. The clearest signal in the set: somewhere a volume changed hands.
+const FenceOutcomeTaken = "taken"
 
-// FenceOutcomeReacquired means the entry had merely aged out with no new
-// holder, so the volume was reclaimed and the guest left running. Expected
-// under JetStream pressure; only a rising rate is interesting.
-const FenceOutcomeReacquired = "reacquired"
+// FenceOutcomeExpired means the entry was gone or unreadable with no successor.
+// The node could not show it was the only writer, which is fenced on the same
+// terms — a node that cannot prove ownership must not keep writing.
+const FenceOutcomeExpired = "expired"
+
+// FenceOutcomeStalled means renewal could not be confirmed for long enough that
+// the server TTL was about to admit another owner. This is the self-fence, and
+// a rising rate is a NATS problem showing up as guest restarts.
+const FenceOutcomeStalled = "stalled"
+
+// FenceOutcomeKillFailed means the export could not be torn down: nbdkit did
+// not exit. Nothing downstream is safe after this — the volume is neither
+// fenced nor released — so it is the one value here that is a page.
+const FenceOutcomeKillFailed = "kill_failed"
 
 var (
 	instrumentsOnce sync.Once
@@ -112,12 +121,12 @@ func RecordResourceLeak(ctx context.Context, kind string) {
 }
 
 // RecordVolumeFence counts one volume whose lease this node stopped holding
-// while an engine was open on it. outcome is FenceOutcomeFenced or
-// FenceOutcomeReacquired.
+// while an engine was open on it. outcome is one of the FenceOutcome constants.
 //
-// A non-zero fenced rate means guests are being stopped to protect a volume
-// somebody else now owns, which is a correctness action with an availability
-// cost and is worth paging on.
+// Any non-zero rate means guests are being stopped to protect a volume somebody
+// else now owns, which is a correctness action with an availability cost and is
+// worth paging on. FenceOutcomeKillFailed is the urgent one: the guest was not
+// stopped, so the protection did not happen.
 func RecordVolumeFence(ctx context.Context, outcome string) {
 	fenceOnce.Do(func() {
 		var err error

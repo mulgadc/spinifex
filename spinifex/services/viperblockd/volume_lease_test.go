@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/nats-io/nats.go"
@@ -223,4 +224,86 @@ func TestVolumeLease_RejectsUnsafeKeys(t *testing.T) {
 		_, err := leases.acquire(t.Context(), name)
 		require.Errorf(t, err, "volume name %q must not become a lease key", name)
 	}
+}
+
+// TestVolumeLease_ValidityIsBoundedBelowTheServerTTL pins the arithmetic that
+// makes this a lease rather than a hint. The holder has to stop writing before
+// the server may grant the entry to somebody else, and it has to get at least
+// one check in between giving up on renewal and reaching that point.
+func TestVolumeLease_ValidityIsBoundedBelowTheServerTTL(t *testing.T) {
+	require.Less(t, volumeLeaseValidity, volumeLeaseTTL,
+		"a holder that stops only when the server expires the entry has already overlapped its successor")
+	require.Less(t, volumeLeaseRenewInterval, volumeLeaseValidity,
+		"a renewal that comes due after validity lapses can never confirm one in time")
+	require.Less(t, volumeLeaseCheckInterval, volumeLeaseValidity-volumeLeaseRenewInterval,
+		"validity has to be tested at least once between a missed renewal and the deadline it enforces")
+	require.Less(t, volumeLeaseRenewTimeout, volumeLeaseCheckInterval+volumeLeaseRenewInterval,
+		"an unbounded renewal holds the goroutine past the point the entry may have been re-granted")
+}
+
+// TestVolumeLease_UnconfirmedRenewalSurrendersTheVolume is the partition case
+// revision checking cannot see. A node that loses NATS while the winner keeps
+// it never gets an update rejected, so nothing tells it the volume moved. It
+// has to give the volume up on its own clock, and report the reason as a stall
+// rather than as a peer taking it — nobody has necessarily taken it yet.
+func TestVolumeLease_UnconfirmedRenewalSurrendersTheVolume(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+
+	const volumeName = "vol-leasestalled"
+	lost := make(chan leaseLossKind, 1)
+	leases.onLost = func(_ context.Context, volume string, kind leaseLossKind) {
+		assert.Equal(t, volumeName, volume)
+		lost <- kind
+	}
+
+	lease, err := leases.acquire(t.Context(), volumeName)
+	require.NoError(t, err)
+	lease.stop()
+	<-lease.done
+
+	require.False(t, lease.expiredLocally(), "a lease confirmed just now is still valid")
+
+	// Age the last confirmation past the validity window, which is what a node
+	// that cannot reach JetStream looks like from inside.
+	lease.mu.Lock()
+	lease.confirmed = time.Now().Add(-volumeLeaseValidity - time.Second)
+	lease.mu.Unlock()
+	require.True(t, lease.expiredLocally(), "an unconfirmed holder must not still consider itself valid")
+
+	lease.surrender(t.Context())
+
+	select {
+	case kind := <-lost:
+		assert.Equal(t, leaseLostStalled, kind,
+			"a stall is not a takeover: reporting it as one would name a winner that may not exist")
+	case <-time.After(5 * time.Second):
+		t.Fatal("a surrendered lease must fence its export, and nothing was called")
+	}
+
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	assert.True(t, lease.lost, "a surrendered lease must be marked lost so release cannot delete the successor's entry")
+}
+
+// TestVolumeLease_SurrenderedLeaseIsNotDeletedOnRelease covers what happens
+// after. The entry may already belong to another node, so deleting it on the
+// way out would evict a live holder and hand the volume to a third opener.
+func TestVolumeLease_SurrenderedLeaseIsNotDeletedOnRelease(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+
+	const volumeName = "vol-leasestalledrelease"
+	lease, err := leases.acquire(t.Context(), volumeName)
+	require.NoError(t, err)
+
+	lease.mu.Lock()
+	lease.confirmed = time.Now().Add(-volumeLeaseValidity - time.Second)
+	lease.mu.Unlock()
+	lease.surrender(t.Context())
+
+	leases.release(t.Context(), lease)
+
+	_, err = leases.kv.Get(t.Context(), volumeName)
+	require.NoError(t, err, "releasing a surrendered lease must leave the entry alone: it may be the successor's now")
 }

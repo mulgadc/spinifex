@@ -182,3 +182,32 @@ func TestVolumeFencedSubject_IsNodeAddressed(t *testing.T) {
 	assert.Equal(t, "ebs.fenced", VolumeFencedSubject(""),
 		"a single-node daemon has no node name, and still has to hear its own fences")
 }
+
+// TestUnmountVolume_RefusesToSealUnderALiveWriter is the unmount side of the
+// same ordering. The seal rewrites the directory nbdkit writes, so a kill that
+// did not take makes it a concurrent write to that directory — and the seal
+// would publish a state torn between two writers. The entry has to stay
+// mounted so a retry re-attempts both.
+func TestUnmountVolume_RefusesToSealUnderALiveWriter(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+
+	const volumeName = "vol-unmountkillfails"
+
+	sealed := false
+	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
+	cfg.sealVolume = func(context.Context, string) error { sealed = true; return nil }
+	cfg.MountedVolumes[0].PID = 0 // rejected by ForceKillProcess, so the kill cannot succeed
+
+	response, err := unmountVolume(t.Context(), cfg, volumeName)
+
+	require.Error(t, err, "an unmount that could not stop the writer must not report success")
+	assert.Contains(t, response.Error, "kill nbdkit",
+		"the caller needs to know the writer is still up, not that some seal failed")
+	assert.False(t, response.NotFound, "the volume is mounted here; reporting it missing would read as an already-completed unmount")
+	assert.False(t, sealed, "sealing under a live nbdkit writes a state torn between two writers")
+
+	cfg.mu.Lock()
+	mounted := len(cfg.MountedVolumes)
+	cfg.mu.Unlock()
+	assert.Equal(t, 1, mounted, "a failed unmount must leave the entry so a retry re-attempts the kill and the seal")
+}

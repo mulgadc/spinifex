@@ -116,6 +116,13 @@ func TestSpotInstanceLifecycle(t *testing.T) {
 	runSpotInstanceLifecycle(t, requireSingleNodeFixture(t))
 }
 
+// TestLaunchTemplateBoot launches one instance from a launch template alone
+// and asserts the template's fields reached the real VM. Sequential: it
+// consumes node capacity for its own two short-lived VMs.
+func TestLaunchTemplateBoot(t *testing.T) {
+	runLaunchTemplateBoot(t, requireSingleNodeFixture(t))
+}
+
 // TestInstanceStatus drives DescribeInstanceStatus and the real SDK
 // instance-status-ok waiter. Sequential: it launches, stops and terminates its
 // own short-lived guest, which the initializing → ok transition requires.

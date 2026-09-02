@@ -710,3 +710,56 @@ func TestAllRequestedInstancesFound_NoIDsYieldsNoPredicate(t *testing.T) {
 	assert.Nil(t, allRequestedInstancesFound(nil))
 	assert.Nil(t, allRequestedInstancesFound([]*string{nil}))
 }
+
+func TestAcquireAbsenceProofSlot_ThrottlesPastTheLimitAndRecovers(t *testing.T) {
+	releases := make([]func(), 0, maxConcurrentAbsenceProofs)
+	t.Cleanup(func() {
+		for _, release := range releases {
+			release()
+		}
+	})
+
+	for i := range maxConcurrentAbsenceProofs {
+		release, ok := acquireAbsenceProofSlot()
+		require.True(t, ok, "slot %d of the budget must be available", i)
+		releases = append(releases, release)
+	}
+
+	_, ok := acquireAbsenceProofSlot()
+	assert.False(t, ok, "the budget must refuse rather than queue once exhausted")
+
+	releases[0]()
+	releases = releases[1:]
+	regained, ok := acquireAbsenceProofSlot()
+	require.True(t, ok, "releasing a slot must return it to the budget")
+	releases = append(releases, regained)
+}
+
+// The throttle decision is made before any reply is read, so it cannot vary
+// with whether the instance exists — otherwise it would reintroduce the timing
+// oracle the full deadline exists to close.
+func TestAcquireAbsenceProofSlot_DoesNotBlockWhenExhausted(t *testing.T) {
+	releases := make([]func(), 0, maxConcurrentAbsenceProofs)
+	t.Cleanup(func() {
+		for _, release := range releases {
+			release()
+		}
+	})
+	for range maxConcurrentAbsenceProofs {
+		release, ok := acquireAbsenceProofSlot()
+		require.True(t, ok)
+		releases = append(releases, release)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = acquireAbsenceProofSlot()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("acquireAbsenceProofSlot blocked; it must refuse immediately so the backlog cannot grow")
+	}
+}

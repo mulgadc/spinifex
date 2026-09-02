@@ -17,6 +17,31 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// maxConcurrentAbsenceProofs bounds how many describes may hold a full fan-out
+// deadline at once. Sized so the gateway can absorb a burst of genuine misses
+// while the ceiling on pinned state stays flat.
+const maxConcurrentAbsenceProofs = 64
+
+// absenceProofSlots is the budget for describes that cannot settle early. A
+// caller describing its own instances settles in milliseconds and barely
+// touches it; only a describe naming an id the caller cannot see holds a slot
+// for the whole deadline, and issuing those is free for the caller.
+var absenceProofSlots = make(chan struct{}, maxConcurrentAbsenceProofs)
+
+// acquireAbsenceProofSlot takes a slot without blocking, returning a release
+// func and whether it succeeded. It never queues: waiting for a slot would let
+// the backlog grow, which is the thing being defended against. The decision is
+// made before any reply is read, so it cannot depend on whether the instance
+// exists — a nonexistent id and another account's id throttle identically.
+func acquireAbsenceProofSlot() (release func(), ok bool) {
+	select {
+	case absenceProofSlots <- struct{}{}:
+		return func() { <-absenceProofSlots }, true
+	default:
+		return nil, false
+	}
+}
+
 // defaultDescribeFanoutTimeout is the hard deadline the describe fan-out waits
 // for node replies before treating the sweep as incomplete.
 const defaultDescribeFanoutTimeout = 3 * time.Second
@@ -144,6 +169,14 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 	if identity {
 		gatherOpts.ExpectedResponders = len(nodeIDs)
 		if len(input.InstanceIds) > 0 {
+			release, ok := acquireAbsenceProofSlot()
+			if !ok {
+				slog.WarnContext(ctx, "DescribeInstances: absence proof budget exhausted, throttling",
+					"limit", maxConcurrentAbsenceProofs)
+				return nil, false, "", errors.New(awserrors.ErrorRequestLimitExceeded)
+			}
+			defer release()
+
 			// Only the path that could assert absence pays for the full
 			// deadline; a filters-only listing may still exit early.
 			gatherOpts.Mode = utils.CollectUntilDeadline

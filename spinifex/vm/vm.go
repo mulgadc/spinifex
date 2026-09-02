@@ -32,6 +32,12 @@ type InstanceHealthState struct {
 	QMPConsecutiveFailures int       `json:"qmp_consecutive_failures"`
 	LastQMPSuccess         time.Time `json:"last_qmp_success,omitzero"`
 	ImpairedSince          time.Time `json:"impaired_since,omitzero"`
+
+	// IOErrorResumes counts consecutive cont attempts made against a VM paused
+	// by werror=stop. It clears on the first running poll, so it measures a
+	// backend that keeps failing rather than one that failed once.
+	IOErrorResumes int       `json:"io_error_resumes,omitempty"`
+	IOErrorSince   time.Time `json:"io_error_since,omitzero"`
 }
 
 // ExtraENI describes an additional VPC network interface attached to a VM
@@ -285,15 +291,15 @@ type Drive struct {
 	Media  string `json:"media"`
 	ID     string `json:"id"`
 	Cache  string `json:"cache,omitempty"`
-	// Werror and Rerror set QEMU's block on-error policy. Left empty, QEMU
-	// applies its default werror=enospc, which pauses the whole VM on an
-	// out-of-space write rather than reporting it — so a guest never sees the
-	// backend's ENOSPC. Setting "report" delivers the error to the guest,
-	// letting its filesystem surface a clean out-of-space to userspace and stay
-	// alive. Set on the drive: with if=none the virtio-blk device inherits the
-	// BlockBackend's on-error policy.
+	// Werror and Rerror set QEMU's block on-error policy. "stop" pauses the VM
+	// and holds the failed request, so a transient backend loss is resumed with
+	// cont instead of reaching the guest as EIO and corrupting its filesystem.
 	Werror string `json:"werror,omitempty"`
 	Rerror string `json:"rerror,omitempty"`
+	// ReconnectDelay emits file.reconnect-delay, the seconds an NBD disconnect
+	// pauses requests before failing them. The file. prefix is required: the
+	// bare name reaches the format driver, which has no such option.
+	ReconnectDelay int `json:"reconnect_delay,omitempty"`
 	// Unit selects the pflash slot when If=="pflash": 0 is the CODE blob,
 	// 1 is the per-VM VARS volume. Ignored for non-pflash drives.
 	Unit int `json:"unit,omitempty"`
@@ -506,6 +512,10 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 
 		if drive.Rerror != "" {
 			opts = append(opts, fmt.Sprintf("rerror=%s", drive.Rerror))
+		}
+
+		if drive.ReconnectDelay > 0 {
+			opts = append(opts, fmt.Sprintf("file.reconnect-delay=%d", drive.ReconnectDelay))
 		}
 
 		args = append(args, "-drive", strings.Join(opts, ","))

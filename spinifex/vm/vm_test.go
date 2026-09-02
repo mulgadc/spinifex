@@ -255,7 +255,7 @@ func TestExecute_Blockdev_UnixServer(t *testing.T) {
 		}
 	}
 	require.Greater(t, blockdevIdx, -1, "-blockdev must be emitted")
-	assert.Equal(t, "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/run/spinifex/nbd/nbd-vol-data-a.sock,export=", args[blockdevIdx+1])
+	assert.Equal(t, "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/run/spinifex/nbd/nbd-vol-data-a.sock,export=,reconnect-delay=30", args[blockdevIdx+1])
 
 	deviceIdx := -1
 	for i, a := range args {
@@ -266,7 +266,7 @@ func TestExecute_Blockdev_UnixServer(t *testing.T) {
 	}
 	require.Greater(t, deviceIdx, -1)
 	assert.Greater(t, deviceIdx, blockdevIdx, "-blockdev must precede the -device referencing it")
-	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=report,rerror=report", args[deviceIdx+1])
+	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop", args[deviceIdx+1])
 }
 
 // TestExecute_Blockdev_InetServer asserts the TCP NBD form renders
@@ -285,7 +285,7 @@ func TestExecute_Blockdev_InetServer(t *testing.T) {
 	cmd, err := cfg.Execute()
 	require.NoError(t, err)
 
-	assert.Equal(t, "driver=nbd,node-name=nbd-vol-data-b,server.type=inet,server.host=10.0.0.5,server.port=10809,export=",
+	assert.Equal(t, "driver=nbd,node-name=nbd-vol-data-b,server.type=inet,server.host=10.0.0.5,server.port=10809,export=,reconnect-delay=30",
 		argValue(cmd.Args[1:], "-blockdev"))
 }
 

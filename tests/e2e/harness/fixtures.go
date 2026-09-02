@@ -606,6 +606,10 @@ func EnsureSG(t *testing.T, fx *Fixture, vpcID, namePrefix string) string {
 // ----------------------------------------------------------------------------
 
 // InstanceSpec captures the inputs to RunInstances. UserData is optional.
+//
+// Scope names a group of callers that must not share a guest. It reaches the
+// memo key and nothing else, so two identical specs with different scopes get
+// an instance each — what a test needs when it damages the guest on purpose.
 type InstanceSpec struct {
 	AMIID        string
 	InstanceType string
@@ -613,6 +617,7 @@ type InstanceSpec struct {
 	SubnetID     string
 	SGID         string
 	UserData     string
+	Scope        string
 }
 
 // EnsureInstance launches a single instance matching spec, polls to
@@ -627,8 +632,8 @@ func EnsureInstance(t *testing.T, fx *Fixture, spec InstanceSpec) string {
 		sum := sha256.Sum256([]byte(spec.UserData))
 		udHash = hex.EncodeToString(sum[:8])
 	}
-	key := fmt.Sprintf("instance:%s:%s:%s:%s:%s:%s",
-		spec.AMIID, spec.InstanceType, spec.KeyName, spec.SubnetID, spec.SGID, udHash)
+	key := fmt.Sprintf("instance:%s:%s:%s:%s:%s:%s:%s",
+		spec.AMIID, spec.InstanceType, spec.KeyName, spec.SubnetID, spec.SGID, udHash, spec.Scope)
 	id, err := fx.ensureOnce(t, key, func() (string, func() error, error) {
 		input := &ec2.RunInstancesInput{
 			ImageId:      aws.String(spec.AMIID),

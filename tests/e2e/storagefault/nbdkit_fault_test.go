@@ -25,6 +25,19 @@ const nbdkitPluginSuffix = "viperblock-plugin.so"
 // guest, so an assertion cannot race the signal.
 const nbdkitSettle = 5 * time.Second
 
+// qemuUser is the account the guests run as. The relaunched socket has to be
+// writable by it, because that is who reconnects to it.
+const qemuUser = "spinifex-daemon"
+
+// nbdkitUser is the account viperblockd starts nbdkit as. The relaunch matches
+// it so the process keeps the same access to the volume's cache and key.
+const nbdkitUser = "spinifex-viperblock"
+
+// nbdkitRelaunchTimeout bounds the wait for a relaunched nbdkit to rebind its
+// socket. Opening a volume reads its state from the backend, so this is not
+// instant.
+const nbdkitRelaunchTimeout = 90 * time.Second
+
 // nbdkitPIDForVolume resolves the pid of the nbdkit serving exactly volumeID on
 // node. It matches on three things together — the comm, our plugin, and the
 // volume argument — because every other nbdkit on these hosts belongs to
@@ -131,20 +144,157 @@ func thawNbdkit(t *testing.T, f *Fixture, node harness.Node, pid int) {
 	t.Logf("thawed nbdkit pid %d on %s", pid, node.Name)
 }
 
-// killNbdkit SIGKILLs the volume's nbdkit. Nothing restarts it: viperblockd's
-// recovery only re-adopts survivors after its own restart and never starts a
-// process, so the volume stays unserved until the instance is torn down.
+// nbdkitCmdline reads a running nbdkit's argv, so the process can be recreated
+// exactly. Capturing it before the kill is what makes the relaunch faithful:
+// the socket path carries a launch-time nonce that cannot be derived from the
+// volume id.
+func nbdkitCmdline(ctx context.Context, f *Fixture, node harness.Node, pid int) (string, error) {
+	raw, err := f.SSH.Run(ctx, node, fmt.Sprintf("sudo tr '\\0' '\\n' < /proc/%d/cmdline", pid))
+	if err != nil {
+		return "", fmt.Errorf("read cmdline of pid %d on %s: %w", pid, node.Name, err)
+	}
+	args := strings.Fields(string(raw))
+	if len(args) == 0 {
+		return "", fmt.Errorf("pid %d on %s has an empty cmdline", pid, node.Name)
+	}
+	return strings.Join(args, " "), nil
+}
+
+// nbdkitSocketPath pulls the --unix argument out of a captured argv. The
+// relaunch must bind the same path or QEMU has nothing to reconnect to.
+func nbdkitSocketPath(cmdline string) (string, error) {
+	args := strings.Fields(cmdline)
+	for i, a := range args {
+		if a == "--unix" && i+1 < len(args) {
+			return args[i+1], nil
+		}
+	}
+	return "", fmt.Errorf("no --unix argument in nbdkit cmdline %q", cmdline)
+}
+
+// killedNbdkit is what a kill leaves behind: enough to put the process back.
+// envFile is a path on the node, never the credentials themselves — see
+// captureNbdkitEnv.
+type killedNbdkit struct {
+	cmdline string
+	socket  string
+	envFile string
+}
+
+// captureNbdkitEnv copies the credential variables out of a running nbdkit's
+// environment into a file on the same node. viperblockd passes them this way
+// rather than on the command line so they stay out of the world-readable
+// /proc/<pid>/cmdline, so a relaunch built from argv alone fails with
+// "access_key parameter is required".
 //
-// The guest reaches EIO by a different route to a freeze. The socket closes,
-// and QEMU's nbd driver is left at the default reconnect-delay of 0, so
-// requests fail immediately rather than pausing for a reconnect.
-func killNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string, pid int) {
+// The values are never read back into the test: the file is written on the
+// node, consumed on the node and deleted there, so they stay exactly as
+// confined as the original design intended.
+func captureNbdkitEnv(ctx context.Context, f *Fixture, node harness.Node, volumeID string, pid int) (string, error) {
+	path := fmt.Sprintf("/tmp/nbdkit-env-%s", volumeID)
+	capture := fmt.Sprintf(
+		"sudo sh -c 'umask 077; tr \"\\0\" \"\\n\" < /proc/%d/environ | grep -E \"^VB_(ACCESS|SECRET)_KEY=\" > %s' && "+
+			"sudo chown %s %s && sudo test -s %s",
+		pid, path, nbdkitUser, path, path)
+	if _, err := f.SSH.Run(ctx, node, capture); err != nil {
+		return "", fmt.Errorf("capture nbdkit credentials on %s: %w", node.Name, err)
+	}
+	return path, nil
+}
+
+// killNbdkit SIGKILLs the volume's nbdkit, first capturing what is needed to
+// bring it back. Nothing restarts it on its own — viperblockd re-adopts
+// survivors after its own restart and never starts a process — so the volume
+// stays unserved until relaunchNbdkit puts it back.
+//
+// The guest reaches this by a different route to a freeze: the socket closes
+// rather than going quiet, so requests fail instead of blocking.
+func killNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string, pid int) killedNbdkit {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	cmdline, err := nbdkitCmdline(ctx, f, node, pid)
+	if err != nil {
+		t.Fatalf("capture nbdkit cmdline before killing it: %v", err)
+	}
+	socket, err := nbdkitSocketPath(cmdline)
+	if err != nil {
+		t.Fatalf("locate the nbd socket for %s: %v", volumeID, err)
+	}
+	envFile, err := captureNbdkitEnv(ctx, f, node, volumeID, pid)
+	if err != nil {
+		t.Fatalf("capture the environment before killing nbdkit for %s: %v", volumeID, err)
+	}
+	t.Cleanup(func() {
+		cleanCtx, cancelClean := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancelClean()
+		_, _ = f.SSH.Run(cleanCtx, node, fmt.Sprintf("sudo rm -f %s", envFile))
+	})
+
 	if err := signalNbdkit(ctx, f, node, volumeID, pid, "KILL"); err != nil {
 		t.Fatalf("kill nbdkit for %s: %v", volumeID, err)
 	}
-	t.Logf("killed nbdkit pid %d serving %s on %s", pid, volumeID, node.Name)
+	t.Logf("killed nbdkit pid %d serving %s on %s (socket %s)", pid, volumeID, node.Name, socket)
 	time.Sleep(nbdkitSettle)
+	return killedNbdkit{cmdline: cmdline, socket: socket, envFile: envFile}
+}
+
+// relaunchNbdkit puts the volume's NBD server back on the same socket path,
+// which is what turns the kill into a recoverable fault rather than a
+// destructive one. The stale socket is removed first: nbdkit will not bind a
+// path that already exists, and a SIGKILL leaves the file behind.
+//
+// It runs as the same user under setsid, because nbdkit was started with -f
+// and would otherwise die with the SSH session that launched it.
+func relaunchNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string, k killedNbdkit) {
+	t.Helper()
+	// Budgeted to outlast the poll below with room for its round trips. Sharing
+	// a shorter context with the poll left it expired by the time the
+	// diagnostics ran, so a failure reported nothing at all.
+	ctx, cancel := context.WithTimeout(context.Background(), nbdkitRelaunchTimeout+3*time.Minute)
+	defer cancel()
+
+	// Output goes to a file rather than /dev/null: an nbdkit that starts and
+	// exits is the interesting failure, and its reason is only on stderr.
+	// The credentials are sourced inside the target user's shell rather than
+	// placed on the command line, so they are no more exposed than viperblockd
+	// leaves them. Reading with `export "$line"` keeps any character in the
+	// value intact, which quoting into a command string would not.
+	log := fmt.Sprintf("/tmp/nbdkit-relaunch-%s.log", volumeID)
+	start := fmt.Sprintf(
+		"sudo rm -f %s; sudo touch %s && sudo chmod 666 %s && "+
+			"sudo -u %s bash -c 'while IFS= read -r l; do export \"$l\"; done < %s; exec setsid %s' "+
+			"</dev/null >%s 2>&1 & sleep 5; cat %s",
+		k.socket, log, log, nbdkitUser, k.envFile, k.cmdline, log, log)
+	// The early output is read here rather than only on failure: a later query
+	// can fail on its own and take the reason with it.
+	early, err := f.SSH.Run(ctx, node, start)
+	if err != nil {
+		t.Fatalf("relaunch nbdkit for %s on %s: %v", volumeID, node.Name, err)
+	}
+	if len(strings.TrimSpace(string(early))) > 0 {
+		t.Logf("nbdkit relaunch said: %s", strings.TrimSpace(string(early)))
+	}
+
+	// QEMU reconnects to the path, not to the process, so the socket being
+	// back and writable by the account QEMU runs as is the whole signal. The
+	// chmod is viperblockd's own step, not a workaround: nbdkit binds the
+	// socket 0755 and a QEMU with no group-write bit can never reconnect.
+	ready := fmt.Sprintf("sudo test -S %s && sudo chmod 0770 %s && sudo -u %s test -w %s",
+		k.socket, k.socket, qemuUser, k.socket)
+	deadline := time.Now().Add(nbdkitRelaunchTimeout)
+	for time.Now().Before(deadline) {
+		if _, err := f.SSH.Run(ctx, node, ready); err == nil {
+			t.Logf("relaunched nbdkit for %s on %s, socket %s is back", volumeID, node.Name, k.socket)
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	out, _ := f.SSH.Run(ctx, node, fmt.Sprintf(
+		"cat %s 2>/dev/null; echo '--- socket ---'; sudo ls -la %s 2>&1; echo '--- procs ---'; pgrep -ax nbdkit | head",
+		log, k.socket))
+	t.Fatalf("nbdkit for %s did not rebind %s on %s within %s\ncommand: %s\n%s",
+		volumeID, k.socket, node.Name, nbdkitRelaunchTimeout, k.cmdline, out)
 }

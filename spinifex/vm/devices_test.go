@@ -167,21 +167,20 @@ func TestRngDevice_MMIO_WithOptions(t *testing.T) {
 	assert.Equal(t, "virtio-rng-device", d.Value)
 }
 
-// TestVolumeBlkDevice_OnErrorReport pins the cold-boot data-volume device
-// string to werror=report,rerror=report, mirroring the boot drive's existing
-// on-error policy so a full backend reports ENOSPC to the guest instead of
-// pausing the VM.
-func TestVolumeBlkDevice_OnErrorReport(t *testing.T) {
+// TestVolumeBlkDevice_OnErrorStop pins the cold-boot data-volume device string
+// to werror=stop,rerror=stop. Reporting the error handed a backend outage to
+// the guest as EIO, which aborts its journal; stop holds the request instead.
+func TestVolumeBlkDevice_OnErrorStop(t *testing.T) {
 	d := VolumeBlkDevice("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3")
-	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=report,rerror=report", d.Value)
+	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop", d.Value)
 }
 
-// TestVolumeBlkDeviceQMPArgs_OnErrorReport is the hotplug counterpart: the
-// QMP device_add argument map AttachVolume sends must carry the same policy.
-func TestVolumeBlkDeviceQMPArgs_OnErrorReport(t *testing.T) {
+// TestVolumeBlkDeviceQMPArgs_OnErrorStop is the hotplug counterpart: the QMP
+// device_add argument map AttachVolume sends must carry the same policy.
+func TestVolumeBlkDeviceQMPArgs_OnErrorStop(t *testing.T) {
 	args := VolumeBlkDeviceQMPArgs("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3")
-	assert.Equal(t, "report", args["werror"])
-	assert.Equal(t, "report", args["rerror"])
+	assert.Equal(t, "stop", args["werror"])
+	assert.Equal(t, "stop", args["rerror"])
 }
 
 // host_mtu is how a guest that never takes a DHCP lease — statically addressed,

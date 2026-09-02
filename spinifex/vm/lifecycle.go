@@ -890,6 +890,18 @@ const (
 	// mark an instance impaired and trigger a process-liveness check (90s of
 	// unresponsiveness). Exported so DescribeInstanceStatus uses the same gate.
 	QMPMaxConsecutiveFailures = 3
+	// qmpStatusIOError is the run state QEMU reports for a VM paused by
+	// werror=stop or rerror=stop.
+	qmpStatusIOError = "io-error"
+	// qmpMaxIOErrorResumes is how many cont attempts are made at heartbeat rate
+	// before the instance is called impaired. It is a reporting threshold, not
+	// a stopping one: QEMU holds the failed request for as long as the guest
+	// exists, so there is always something to recover.
+	qmpMaxIOErrorResumes = 10
+	// qmpIOErrorRetryEvery is the heartbeat count between cont attempts after
+	// that. Each one re-submits the held request, so a backend still down pays
+	// a failed I/O every five minutes rather than every thirty seconds.
+	qmpIOErrorRetryEvery = 10
 )
 
 // qmpHeartbeat polls query-status every qmpHeartbeatInterval. A dead process
@@ -922,6 +934,15 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 	slog.Debug("QMP heartbeat", "instance", instance.ID)
 	ctx := context.WithValue(context.Background(), noTraceKey{}, true)
 	qmpStatus, err := queryQMPStatus(ctx, instance, qmpCommandTimeout)
+
+	// A VM paused by werror=stop is not a failure to recover from: the guest is
+	// intact and its failed request is still held, so the answer is to re-submit
+	// it once the backend is back rather than to count it as unresponsive.
+	if err == nil && qmpStatus.Status == qmpStatusIOError && m.Status(instance) == StateRunning {
+		m.resumeAfterIOError(ctx, instance)
+		return true
+	}
+
 	if err == nil && !qmpStatus.Running && m.Status(instance) == StateRunning {
 		err = fmt.Errorf("QMP reported non-running status %q", qmpStatus.Status)
 	}
@@ -946,6 +967,48 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 	}
 	slog.Debug("QMP status", "instance", instance.ID, "status", qmpStatus.Status, "running", qmpStatus.Running)
 	return true
+}
+
+// resumeAfterIOError re-submits the held request on a VM that werror=stop
+// paused. cont replays the failed I/O rather than discarding it, so a backend
+// that has come back leaves the guest with nothing to notice but latency.
+//
+// Retries never stop, they slow down. After qmpMaxIOErrorResumes the instance
+// is reported impaired and cont drops to one attempt per qmpIOErrorRetryEvery
+// heartbeats. Giving up entirely would be the wrong shape: the held request
+// stays held, so a backend that comes back an hour later can still be resumed
+// with nothing lost, and a guest that could have recovered would instead sit
+// paused because a five-minute timer had expired.
+func (m *Manager) resumeAfterIOError(ctx context.Context, instance *VM) {
+	var attempt int
+	m.UpdateState(instance.ID, func(v *VM) {
+		v.Health.IOErrorResumes++
+		attempt = v.Health.IOErrorResumes
+		if attempt == 1 {
+			v.Health.IOErrorSince = time.Now()
+		}
+		if attempt == qmpMaxIOErrorResumes {
+			v.Health.ImpairedSince = time.Now()
+		}
+	})
+
+	if attempt == qmpMaxIOErrorResumes {
+		slog.Error("Guest still paused on I/O error; reporting impaired and slowing retries",
+			"instance", instance.ID, "attempts", attempt)
+	}
+	// Past the threshold only every nth heartbeat retries, and only those log.
+	// A paused guest is polled for as long as it exists, so logging each one
+	// would bury the transition that matters in copies of itself.
+	if attempt > qmpMaxIOErrorResumes && attempt%qmpIOErrorRetryEvery != 0 {
+		return
+	}
+
+	slog.Warn("Guest paused on a backend I/O error, resuming",
+		"instance", instance.ID, "attempt", attempt)
+	if _, err := sendQMPCommandWithTimeout(ctx, instance.QMPClient,
+		qmp.QMPCommand{Execute: "cont"}, instance.ID, qmpCommandTimeout); err != nil {
+		slog.Error("Failed to resume guest after I/O error", "instance", instance.ID, "err", err)
+	}
 }
 
 // queryQMPStatus decodes query-status so monitor responsiveness is not
@@ -988,6 +1051,8 @@ func (m *Manager) recordQMPSuccess(instance *VM) {
 		v.Health.QMPConsecutiveFailures = 0
 		v.Health.ImpairedSince = time.Time{}
 		v.Health.LastQMPSuccess = time.Now()
+		v.Health.IOErrorResumes = 0
+		v.Health.IOErrorSince = time.Time{}
 	})
 }
 
@@ -1310,12 +1375,12 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 				ID:     "os",
 				Cache:  "none",
 
-				// Report backend write errors to the guest rather than letting
-				// QEMU's default werror=enospc pause the VM: when the storage
-				// pool exhausts, the guest fs then returns a clean ENOSPC to
-				// userspace and the VM stays reachable instead of freezing.
-				Werror: "report",
-				Rerror: "report",
+				// Pause the VM and hold the failed request rather than
+				// delivering EIO to the guest, which aborts its journal. A
+				// transient backend loss is then recovered with cont.
+				Werror:         "stop",
+				Rerror:         "stop",
+				ReconnectDelay: NBDReconnectDelaySeconds,
 			}
 
 			iothreadID := "ioth-os"

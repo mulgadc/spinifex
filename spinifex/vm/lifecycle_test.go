@@ -127,7 +127,7 @@ func TestBuildDrives(t *testing.T) {
 			},
 			cpuCount: 4,
 			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "report", Rerror: "report"},
+				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
 			},
 			wantIOThreads: []IOThread{{ID: "ioth-os"}},
 			wantDevices: []Device{
@@ -168,10 +168,10 @@ func TestBuildDrives(t *testing.T) {
 			cpuCount:      2,
 			wantIOThreads: []IOThread{{ID: "ioth-vol-data-a"}},
 			wantBlockdevs: []Blockdev{
-				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export="},
+				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
 			},
 			wantDevices: []Device{
-				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=report,rerror=report"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{3},
 		},
@@ -183,10 +183,10 @@ func TestBuildDrives(t *testing.T) {
 			cpuCount:      2,
 			wantIOThreads: []IOThread{{ID: "ioth-vol-data-b"}},
 			wantBlockdevs: []Blockdev{
-				{Value: "driver=nbd,node-name=nbd-vol-data-b,server.type=unix,server.path=/tmp/data-b.sock,export="},
+				{Value: "driver=nbd,node-name=nbd-vol-data-b,server.type=unix,server.path=/tmp/data-b.sock,export=,reconnect-delay=30"},
 			},
 			wantDevices: []Device{
-				{Value: "virtio-blk-pci,id=vdisk-vol-data-b,drive=nbd-vol-data-b,iothread=ioth-vol-data-b,serial=voldatab,bus=hotplug-ebs1,werror=report,rerror=report"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-b,drive=nbd-vol-data-b,iothread=ioth-vol-data-b,serial=voldatab,bus=hotplug-ebs1,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{1},
 		},
@@ -202,12 +202,12 @@ func TestBuildDrives(t *testing.T) {
 				{ID: "ioth-vol-data-d"},
 			},
 			wantBlockdevs: []Blockdev{
-				{Value: "driver=nbd,node-name=nbd-vol-data-c,server.type=unix,server.path=/tmp/data-c.sock,export="},
-				{Value: "driver=nbd,node-name=nbd-vol-data-d,server.type=unix,server.path=/tmp/data-d.sock,export="},
+				{Value: "driver=nbd,node-name=nbd-vol-data-c,server.type=unix,server.path=/tmp/data-c.sock,export=,reconnect-delay=30"},
+				{Value: "driver=nbd,node-name=nbd-vol-data-d,server.type=unix,server.path=/tmp/data-d.sock,export=,reconnect-delay=30"},
 			},
 			wantDevices: []Device{
-				{Value: "virtio-blk-pci,id=vdisk-vol-data-c,drive=nbd-vol-data-c,iothread=ioth-vol-data-c,serial=voldatac,bus=hotplug-ebs1,werror=report,rerror=report"},
-				{Value: "virtio-blk-pci,id=vdisk-vol-data-d,drive=nbd-vol-data-d,iothread=ioth-vol-data-d,serial=voldatad,bus=hotplug-ebs2,werror=report,rerror=report"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-c,drive=nbd-vol-data-c,iothread=ioth-vol-data-c,serial=voldatac,bus=hotplug-ebs1,werror=stop,rerror=stop"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-d,drive=nbd-vol-data-d,iothread=ioth-vol-data-d,serial=voldatad,bus=hotplug-ebs2,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{1, 2},
 		},
@@ -227,7 +227,7 @@ func TestBuildDrives(t *testing.T) {
 			wantErr:  "no free EBS hot-plug port for volume vol-overflow",
 		},
 		{
-			name: "mixed boot + EFI + data: boot and EFI stay byte-identical to the legacy shape",
+			name: "mixed boot + EFI + data: boot and EFI keep the legacy -drive shape",
 			requests: []types.EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
@@ -235,7 +235,7 @@ func TestBuildDrives(t *testing.T) {
 			},
 			cpuCount: 4,
 			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "report", Rerror: "report"},
+				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
 				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
 			},
 			wantIOThreads: []IOThread{
@@ -243,11 +243,11 @@ func TestBuildDrives(t *testing.T) {
 				{ID: "ioth-vol-data-a"},
 			},
 			wantBlockdevs: []Blockdev{
-				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export="},
+				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
 			},
 			wantDevices: []Device{
 				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=4,bootindex=1"},
-				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=report,rerror=report"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{0, 0, 3},
 		},

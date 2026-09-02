@@ -25,12 +25,14 @@ const nbdkitHold = 60 * time.Second
 //
 //   - SIGSTOP holds the NBD socket open and answers nothing. The guest blocks.
 //     No error is ever delivered, so ext4 has no reason to abort.
-//   - SIGKILL closes the socket. QEMU's nbd driver is left at the default
-//     reconnect-delay of 0, so requests fail immediately with EIO, which under
-//     werror=report reaches the guest and aborts the journal.
+//   - SIGKILL closes the socket, so requests fail rather than block. Under the
+//     nbd driver's default reconnect-delay of 0 they fail instantly, and under
+//     werror=report that EIO reaches the guest and aborts its journal.
 //
-// Under werror=stop,rerror=stop both must become stalls and neither may show a
-// corruption signature. That is the assertion this suite exists to make.
+// The killed variant is put back on the same socket path afterwards, because a
+// volume left dead tests the fault and not the recovery. Under
+// reconnect-delay plus werror=stop,rerror=stop both must become stalls that
+// resume, and neither may show a corruption signature.
 func TestGuestSurvivesNbdkitLoss(t *testing.T) {
 	cases := []struct {
 		name string
@@ -59,25 +61,28 @@ func TestGuestSurvivesNbdkitLoss(t *testing.T) {
 			t.Cleanup(func() { harness.DetachVolumeWait(t, fix.AWS, volID) })
 
 			prepareWorkloadFilesystem(t, tgt, dev)
+			quiesceWorkload(t, tgt)
 
 			pid := requireNbdkitForVolume(t, fix, *hostNode, volID)
 			harness.Detail(t, "instance", instanceID, "volume", volID, "guest_device", dev,
 				"host_node", nodeName(hostNode), "nbdkit_pid", pid)
 
-			harness.Step(t, "writing the %s verifiable region and flushing it", fioSize)
-			writeVerifiableRegion(t, tgt)
+			harness.Step(t, "writing the %d MiB verifiable region and flushing it", verifyMiB)
+			digest := writeVerifiableRegion(t, tgt)
 
-			loadRuntime := fioSettle + nbdkitHold + recoverySettle
+			loadRuntime := loadSettle + nbdkitHold + recoverySettle
 			harness.Step(t, "starting sustained load for %s", loadRuntime)
 			startLoad(t, tgt, loadRuntime)
-			time.Sleep(fioSettle)
-			if !fioRunning(t, tgt) {
-				t.Fatalf("fio exited before the fault was injected, so nothing was under load: %s", fioLog(t, tgt))
+			time.Sleep(loadSettle)
+			if !loadRunning(t, tgt) {
+				t.Fatalf("the load exited before the fault was injected, so nothing was under load: %s",
+					loadLogTail(t, tgt))
 			}
 
+			var killed killedNbdkit
 			if tc.kill {
 				harness.Step(t, "killing nbdkit for %s, then holding %s", volID, nbdkitHold)
-				killNbdkit(t, fix, *hostNode, volID, pid)
+				killed = killNbdkit(t, fix, *hostNode, volID, pid)
 			} else {
 				harness.Step(t, "freezing nbdkit for %s for %s", volID, nbdkitHold)
 				freezeNbdkit(t, fix, *hostNode, volID, pid)
@@ -85,13 +90,14 @@ func TestGuestSurvivesNbdkitLoss(t *testing.T) {
 
 			observeDuringOutage(t, fix, instanceID, tgt)
 
-			if !tc.kill {
+			if tc.kill {
+				harness.Step(t, "relaunching nbdkit on %s, then waiting %s", killed.socket, recoverySettle)
+				relaunchNbdkit(t, fix, *hostNode, volID, killed)
+			} else {
 				harness.Step(t, "thawing nbdkit and waiting %s", recoverySettle)
 				thawNbdkit(t, fix, *hostNode, pid)
-			} else {
-				harness.Step(t, "nbdkit stays dead; waiting %s before judging the guest", recoverySettle)
 			}
-			time.Sleep(recoverySettle)
+			awaitGuestRecovered(t, tgt)
 
 			console, consoleErr := harness.InstanceConsole(fix.AWS, instanceID)
 			if consoleErr != nil {
@@ -100,6 +106,8 @@ func TestGuestSurvivesNbdkitLoss(t *testing.T) {
 			evidence := console + "\n" + bestEffort(tgt, "sudo dmesg | tail -n 400")
 
 			assertNoCorruption(t, evidence, instanceID, fix)
+			assertStillWritable(t, tgt, dev)
+			assertWorkloadIntegrity(t, tgt, digest)
 		})
 	}
 }

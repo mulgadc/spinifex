@@ -2,6 +2,7 @@ package handlers_imds
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -145,6 +146,49 @@ func TestDescribe_WrongAccount_IsAMiss(t *testing.T) {
 	facts, err := l.describe(context.Background(), "222222222222", "i-local")
 	require.NoError(t, err)
 	assert.Nil(t, facts)
+}
+
+func TestLocalVM_CachesParseUntilFileChanges(t *testing.T) {
+	dataDir := t.TempDir()
+	writeLocalState(t, dataDir, map[string]*vm.VM{"i-a": testVM("i-a")})
+
+	parses := 0
+	l := &localInstanceLookup{
+		dataDir: dataDir,
+		readState: func(path string) (*daemon.LocalState, error) {
+			parses++
+			return daemon.ReadLocalState(path)
+		},
+	}
+
+	require.NotNil(t, l.localVM(context.Background(), "i-a"))
+	require.NotNil(t, l.localVM(context.Background(), "i-a"))
+	assert.Equal(t, 1, parses, "a second lookup on an unchanged file must reuse the cached parse")
+
+	writeLocalState(t, dataDir, map[string]*vm.VM{"i-a": testVM("i-a"), "i-b": testVM("i-b")})
+	require.NotNil(t, l.localVM(context.Background(), "i-b"))
+	assert.Equal(t, 2, parses, "a changed file must be re-parsed")
+}
+
+// TestDescribe_LocalStateCorrupt_FallsBackToRecordSpace proves the cache does
+// not mask a genuine read failure by serving its last good parse: once the
+// state file is corrupted, describe must fall through to the record space
+// rather than error out or serve the stale hit it cached earlier.
+func TestDescribe_LocalStateCorrupt_FallsBackToRecordSpace(t *testing.T) {
+	dataDir := t.TempDir()
+	writeLocalState(t, dataDir, map[string]*vm.VM{"i-a": testVM("i-a")})
+
+	l := &localInstanceLookup{dataDir: dataDir}
+	require.NotNil(t, l.localVM(context.Background(), "i-a"), "warm the cache with a good parse")
+
+	// Different size than the good state, so the cache cannot mistake this
+	// for an unchanged file and must attempt (and fail) a re-parse.
+	require.NoError(t, os.WriteFile(daemon.LocalStatePath(dataDir), []byte("not json"), 0o600))
+
+	l.records = fakeRecordLoader{record: testVM("i-a").Record()}
+	facts, err := l.describe(context.Background(), "111111111111", "i-a")
+	require.NoError(t, err)
+	require.NotNil(t, facts, "a corrupt local state must fall back to the record space, not error or go stale")
 }
 
 // TestLocalInstanceLookupHasNoNATSSurface pins the "never fan out" contract at

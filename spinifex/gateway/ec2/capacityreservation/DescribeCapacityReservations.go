@@ -56,7 +56,7 @@ func DescribeCapacityReservations(ctx context.Context, input *ec2.DescribeCapaci
 	var all []*ec2.CapacityReservation
 	for _, frame := range frames {
 		var o ec2.DescribeCapacityReservationsOutput
-		if json.Unmarshal(frame, &o) == nil {
+		if json.Unmarshal(frame.Data, &o) == nil {
 			all = append(all, o.CapacityReservations...)
 		}
 	}

@@ -46,7 +46,7 @@ func (s *NATSImageService) CreateImage(ctx context.Context, input *ec2.CreateIma
 
 	if len(frames) > 0 {
 		var out ec2.CreateImageOutput
-		if err := json.Unmarshal(frames[0], &out); err != nil {
+		if err := json.Unmarshal(frames[0].Data, &out); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal CreateImage response: %w", err)
 		}
 		return &out, nil

@@ -73,7 +73,7 @@ func queryNodeCapacity(ctx context.Context, natsConn *nats.Conn, instanceType st
 	var nodes []nodeAllocation
 	for _, frame := range frames {
 		var status types.NodeStatusResponse
-		if err := json.Unmarshal(frame, &status); err != nil {
+		if err := json.Unmarshal(frame.Data, &status); err != nil {
 			slog.DebugContext(ctx, "queryNodeCapacity: failed to unmarshal response", "err", err)
 			continue
 		}

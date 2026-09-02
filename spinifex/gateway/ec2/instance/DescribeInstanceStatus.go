@@ -44,7 +44,7 @@ func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStat
 	var allStatuses []*ec2.InstanceStatus
 	for _, frame := range frames {
 		var nodeOutput ec2.DescribeInstanceStatusOutput
-		if json.Unmarshal(frame, &nodeOutput) == nil {
+		if json.Unmarshal(frame.Data, &nodeOutput) == nil {
 			allStatuses = append(allStatuses, nodeOutput.InstanceStatuses...)
 		}
 	}

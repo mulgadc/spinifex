@@ -130,7 +130,7 @@ func TestHandleNATSRequestReportsOutcome(t *testing.T) {
 			defer nc.Close()
 
 			handler := natsMetricsHandler(tc.subject,
-				handleNATSRequest(func(context.Context, *testInput, string) (*testOutput, error) {
+				handleNATSRequest("test-node", func(context.Context, *testInput, string) (*testOutput, error) {
 					if tc.svcErr != nil {
 						return nil, tc.svcErr
 					}
@@ -162,7 +162,7 @@ func TestHandleNATSRequestReportsOutcomeForBadPayload(t *testing.T) {
 	defer nc.Close()
 
 	handler := natsMetricsHandler(subject,
-		handleNATSRequest(func(context.Context, *testInput, string) (*testOutput, error) {
+		handleNATSRequest("test-node", func(context.Context, *testInput, string) (*testOutput, error) {
 			t.Fatal("service must not be reached for a malformed payload")
 			return nil, nil
 		}))

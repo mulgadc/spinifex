@@ -26,7 +26,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 
 	if command.AttachVolumeData == nil || command.AttachVolumeData.VolumeID == "" {
 		slog.ErrorContext(ctx, "AttachVolume: missing attach volume data")
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidParameterValue)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidParameterValue)
 	}
 
 	volumeID := command.AttachVolumeData.VolumeID
@@ -37,13 +37,13 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 	if status != vm.StateRunning {
 		slog.ErrorContext(ctx, "AttachVolume: instance not running",
 			"instanceId", command.ID, "status", status)
-		return respondErrorOutcome(msg, awserrors.ErrorIncorrectInstanceState)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorIncorrectInstanceState)
 	}
 
 	volMeta, err := d.volumeService.GetVolumeMetadata(volumeID)
 	if err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: failed to get volume metadata", "volumeId", volumeID, "err", err)
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidVolumeNotFound)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidVolumeNotFound)
 	}
 
 	callerAccountID := utils.AccountIDFromMsg(msg)
@@ -52,7 +52,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 			"volumeId", volumeID,
 			"callerAccount", callerAccountID,
 			"ownerAccount", volMeta.TenantID)
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidVolumeNotFound)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidVolumeNotFound)
 	}
 
 	if volMeta.State != "available" {
@@ -65,7 +65,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 					"attachedDevice", volMeta.DeviceName)
 				// AWS returns VolumeInUse (not InvalidParameterValue) when a
 				// re-attach targets a device other than the one already in use.
-				return respondErrorOutcome(msg, awserrors.ErrorVolumeInUse)
+				return respondErrorOutcome(d.node, msg, awserrors.ErrorVolumeInUse)
 			}
 
 			// Volume is already attached to this instance (e.g. a CSI
@@ -79,7 +79,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 
 		slog.ErrorContext(ctx, "AttachVolume: volume not available",
 			"volumeId", volumeID, "state", volMeta.State)
-		return respondErrorOutcome(msg, awserrors.ErrorVolumeInUse)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorVolumeInUse)
 	}
 
 	if volMeta.AvailabilityZone != "" && d.config.AZ != "" &&
@@ -88,12 +88,12 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 			"volumeId", volumeID,
 			"volumeAZ", volMeta.AvailabilityZone,
 			"instanceAZ", d.config.AZ)
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidVolumeZoneMismatch)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidVolumeZoneMismatch)
 	}
 
 	device, err := d.vmMgr.AttachVolume(ctx, instance.ID, volumeID, command.AttachVolumeData.Device)
 	if err != nil {
-		return respondErrorOutcome(msg, attachDetachErrorCode(err))
+		return respondErrorOutcome(d.node, msg, attachDetachErrorCode(err))
 	}
 
 	// AttachVolume returns the API-form device name (/dev/sd[f-p]), not
@@ -114,7 +114,7 @@ func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command 
 
 	if command.DetachVolumeData == nil || command.DetachVolumeData.VolumeID == "" {
 		slog.ErrorContext(ctx, "DetachVolume: missing detach volume data")
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidParameterValue)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidParameterValue)
 	}
 
 	deviceName, err := d.vmMgr.DetachVolume(
@@ -125,7 +125,7 @@ func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command 
 		command.DetachVolumeData.Force,
 	)
 	if err != nil {
-		return respondErrorOutcome(msg, attachDetachErrorCode(err))
+		return respondErrorOutcome(d.node, msg, attachDetachErrorCode(err))
 	}
 
 	d.respondWithVolumeAttachment(msg, command.DetachVolumeData.VolumeID, command.ID, deviceName, "detaching")
@@ -146,7 +146,7 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command t
 
 	if command.DrainVolumeData == nil || command.DrainVolumeData.VolumeID == "" {
 		slog.ErrorContext(ctx, "DrainVolume: missing drain volume data", "instanceId", command.ID)
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidParameterValue)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidParameterValue)
 	}
 
 	volumeID := command.DrainVolumeData.VolumeID
@@ -158,7 +158,7 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command t
 	if status == vm.StateStopped || status == vm.StateTerminated {
 		slog.InfoContext(ctx, "DrainVolume: instance teardown is complete, nothing to drain",
 			"volumeId", volumeID, "instanceId", command.ID, "status", status)
-		respondWithJSON(msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusNotRunning})
+		respondWithJSON(d.node, msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusNotRunning})
 		return outcomeSuccess
 	}
 
@@ -169,10 +169,10 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command t
 	// read a stale checkpoint.
 	if err = handlers_ec2_snapshot.DrainVolumeSocket(d.config.DataDir, volumeID); err != nil {
 		slog.ErrorContext(ctx, "DrainVolume: drain failed", "volumeId", volumeID, "instanceId", command.ID, "err", err)
-		return respondErrorOutcome(msg, awserrors.ErrorServerInternal)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
 	}
 
-	respondWithJSON(msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusDrained})
+	respondWithJSON(d.node, msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusDrained})
 	return outcomeSuccess
 }
 
@@ -226,11 +226,11 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) string {
 	if err != nil {
 		slog.ErrorContext(ctx, "handleEC2ModifyVolume service.ModifyVolume failed", "err", err)
 		utils.MarkSpanError(span, err)
-		respondWithServiceError(msg, err)
+		respondWithServiceError(d.node, msg, err)
 		return outcomeError
 	}
 
-	respondWithJSON(msg, output)
+	respondWithJSON(d.node, msg, output)
 
 	// Notify viperblockd to reload state after volume modification (e.g. resize)
 	if modifyVolumeInput.VolumeId != nil {

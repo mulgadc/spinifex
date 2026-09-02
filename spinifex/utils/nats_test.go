@@ -860,7 +860,7 @@ func TestGather_StopOnFirstSkipsErrors(t *testing.T) {
 	var out struct {
 		Value string `json:"value"`
 	}
-	require.NoError(t, json.Unmarshal(frames[0], &out))
+	require.NoError(t, json.Unmarshal(frames[0].Data, &out))
 	assert.Equal(t, "found", out.Value)
 	assert.Equal(t, 1, sum.Successes)
 	assert.False(t, sum.TimedOut)
@@ -925,7 +925,7 @@ func TestGather_AccountIDHeaderSet(t *testing.T) {
 	require.Len(t, frames, 1)
 
 	var echo gatherAcctEcho
-	require.NoError(t, json.Unmarshal(frames[0], &echo))
+	require.NoError(t, json.Unmarshal(frames[0].Data, &echo))
 	assert.True(t, echo.Present)
 	assert.Equal(t, "111122223333", echo.ID)
 }
@@ -949,7 +949,7 @@ func TestGather_AccountIDHeaderAbsentWhenEmpty(t *testing.T) {
 	require.Len(t, frames, 1)
 
 	var echo gatherAcctEcho
-	require.NoError(t, json.Unmarshal(frames[0], &echo))
+	require.NoError(t, json.Unmarshal(frames[0].Data, &echo))
 	assert.False(t, echo.Present)
 	assert.Empty(t, echo.ID)
 }
@@ -971,4 +971,188 @@ func TestGather_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
 	_, _, err = Gather(context.Background(), nc, "test.never", []byte("{}"),
 		GatherOpts{Timeout: 50 * time.Millisecond, ExpectedNodes: 1})
 	require.ErrorIs(t, err, ErrClusterUnavailable)
+}
+
+// --- Gather identity-mode tests ---
+
+// subscribeAsNode replies on subject as nodeID, carrying the X-Node-ID header
+// a real daemon reply would set. delay, if non-zero, is applied before
+// responding, so tests can control arrival order.
+func subscribeAsNode(t *testing.T, nc *nats.Conn, subject, nodeID string, data []byte, delay time.Duration) {
+	t.Helper()
+	_, err := nc.Subscribe(subject, func(msg *nats.Msg) {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		reply := nats.NewMsg(msg.Reply)
+		reply.Data = data
+		if nodeID != "" {
+			reply.Header.Set(NodeIDHeader, nodeID)
+		}
+		_ = msg.RespondMsg(reply)
+	})
+	require.NoError(t, err)
+}
+
+// A caller that sets neither ExpectedResponders nor CollectUntilDeadline gets
+// exactly the pre-identity-mode Gather: the new Summary fields stay nil, not
+// merely empty, so a caller checking len(sum.Responders) == 0 cannot
+// accidentally read "identity mode ran and saw nobody" from "identity mode
+// never ran".
+func TestGather_LegacyMode_IdentityFieldsStayNil(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.legacy", "node-a", []byte(`{"ok":true}`), 0)
+
+	frames, sum, err := Gather(context.Background(), nc, "test.gather.legacy", []byte("{}"),
+		GatherOpts{Timeout: time.Second, ExpectedNodes: 1})
+
+	require.NoError(t, err)
+	require.Len(t, frames, 1)
+	assert.Equal(t, "node-a", frames[0].NodeID, "the frame still carries whatever node ID the reply set")
+	assert.Nil(t, sum.Responders)
+	assert.Nil(t, sum.SuccessResponders)
+	assert.Nil(t, sum.ErrorResponders)
+	assert.Nil(t, sum.ConflictNodes)
+}
+
+// ExpectedResponders under the default CollectServeData mode exits as soon as
+// the distinct-node count is met, same early-exit shape as ExpectedNodes, and
+// tags each frame with the node that sent it.
+func TestGather_IdentityMode_NodeIDCarriedOnFramesAndEarlyExit(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.identity.early", "node-a", []byte(`{"ok":true}`), 0)
+	subscribeAsNode(t, nc, "test.gather.identity.early", "node-b", []byte(`{"ok":true}`), 0)
+
+	start := time.Now()
+	frames, sum, err := Gather(context.Background(), nc, "test.gather.identity.early", []byte("{}"),
+		GatherOpts{Timeout: 5 * time.Second, ExpectedResponders: 2})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.Len(t, frames, 2)
+	assert.Less(t, elapsed, 2*time.Second)
+	assert.False(t, sum.TimedOut)
+	gotIDs := map[string]bool{frames[0].NodeID: true, frames[1].NodeID: true}
+	assert.Equal(t, map[string]bool{"node-a": true, "node-b": true}, gotIDs)
+	assert.Len(t, sum.Responders, 2)
+}
+
+// Responders is every node that answered at all; SuccessResponders and
+// ErrorResponders partition it by how. A node cannot land in both from a
+// single reply.
+func TestGather_IdentityMode_RespondersPartitionSuccessAndError(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.identity.partition", "node-ok", []byte(`{"ok":true}`), 0)
+	subscribeAsNode(t, nc, "test.gather.identity.partition", "node-err",
+		GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound), 0)
+
+	_, sum, err := Gather(context.Background(), nc, "test.gather.identity.partition", []byte("{}"),
+		GatherOpts{Timeout: 2 * time.Second, ExpectedResponders: 2})
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]bool{"node-ok": true, "node-err": true}, sum.Responders)
+	assert.Equal(t, map[string]bool{"node-ok": true}, sum.SuccessResponders)
+	assert.Equal(t, map[string]bool{"node-err": true}, sum.ErrorResponders)
+}
+
+// A reply with no X-Node-ID header (an older daemon, or a stray publisher on
+// the subject) cannot be attributed to any node, so it is counted separately
+// rather than silently folded into the responder sets — a describe-level
+// completeness judgement must be able to see it and refuse to trust the sweep.
+func TestGather_IdentityMode_UnidentifiedFrameCounted(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.identity.unident", "node-a", []byte(`{"ok":true}`), 0)
+	// No node ID set on this reply.
+	_, err := nc.Subscribe("test.gather.identity.unident", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"ok":true}`))
+	})
+	require.NoError(t, err)
+
+	_, sum, err := Gather(context.Background(), nc, "test.gather.identity.unident", []byte("{}"),
+		GatherOpts{Timeout: 500 * time.Millisecond, ExpectedResponders: 2})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, sum.Unidentified)
+	assert.Len(t, sum.Responders, 1, "only the identified reply counts toward the responder set")
+}
+
+// A node that replies twice with disagreeing payloads (the restart-overlap
+// case: an old subscription still draining alongside the new one) keeps only
+// its first payload — never the second, win or lose — and is flagged in
+// ConflictNodes so a completeness judgement downstream can refuse to trust it.
+func TestGather_IdentityMode_DuplicateDisagreeingFrame_FirstPayloadWinsAndFlagsConflict(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	// Two subscribers answering as the same node ID: the first reply must be
+	// the one retained regardless of arrival order tie-breaks, so give the
+	// disagreeing second reply a small delay to make the ordering deterministic.
+	subscribeAsNode(t, nc, "test.gather.identity.dup", "node-a", []byte(`{"value":"first"}`), 0)
+	subscribeAsNode(t, nc, "test.gather.identity.dup", "node-a", []byte(`{"value":"second"}`), 50*time.Millisecond)
+
+	frames, sum, err := Gather(context.Background(), nc, "test.gather.identity.dup", []byte("{}"),
+		GatherOpts{Timeout: time.Second, Mode: CollectUntilDeadline, ExpectedResponders: 1})
+
+	require.NoError(t, err)
+	require.Len(t, frames, 1, "the disagreeing duplicate's bytes must never be retained")
+	assert.JSONEq(t, `{"value":"first"}`, string(frames[0].Data))
+	assert.Equal(t, map[string]bool{"node-a": true}, sum.ConflictNodes)
+	assert.Equal(t, 1, sum.DuplicateFrames)
+}
+
+// A node replying twice with identical payloads (a harmless at-least-once
+// redelivery) is still counted as a duplicate frame, but is not a conflict:
+// there is nothing to disagree about.
+func TestGather_IdentityMode_DuplicateIdenticalFrame_NotFlaggedAsConflict(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.identity.dupsame", "node-a", []byte(`{"value":"same"}`), 0)
+	subscribeAsNode(t, nc, "test.gather.identity.dupsame", "node-a", []byte(`{"value":"same"}`), 50*time.Millisecond)
+
+	_, sum, err := Gather(context.Background(), nc, "test.gather.identity.dupsame", []byte("{}"),
+		GatherOpts{Timeout: 300 * time.Millisecond, Mode: CollectUntilDeadline, ExpectedResponders: 1})
+
+	require.NoError(t, err)
+	assert.Empty(t, sum.ConflictNodes)
+	assert.Equal(t, 1, sum.DuplicateFrames)
+}
+
+// CollectUntilDeadline exists specifically because absence cannot be proven
+// from a prefix of the replies: it must not exit early just because every
+// currently-expected responder has already answered.
+func TestGather_CollectUntilDeadline_DoesNotExitEarly(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.identity.deadline", "node-a", []byte(`{"ok":true}`), 0)
+
+	const budget = 400 * time.Millisecond
+	start := time.Now()
+	_, sum, err := Gather(context.Background(), nc, "test.gather.identity.deadline", []byte("{}"),
+		GatherOpts{Timeout: budget, Mode: CollectUntilDeadline, ExpectedResponders: 1})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, elapsed, budget-20*time.Millisecond,
+		"CollectUntilDeadline must run to the deadline even though the only expected responder already answered")
+	assert.True(t, sum.TimedOut)
+	assert.Equal(t, map[string]bool{"node-a": true}, sum.Responders)
+}
+
+// Adapted restart-overlap acceptance scenario: node-1 has an old subscription
+// still draining alongside its new one and answers twice with disagreeing
+// payloads (simulating a daemon mid-restart); node-2 never answers within the
+// deadline. The mechanism this pins is what a describe-level completeness
+// judgement relies on: ConflictNodes and the missing node-2 are both visible
+// in Summary, so the caller can refuse the sweep rather than trust a stale
+// answer. It does not assert the instance is present in the result — under
+// the documented first-payload-wins rule the disagreeing reply's data is
+// dropped regardless, only the conflict flag survives it.
+func TestGather_CollectUntilDeadline_RestartOverlap_SurfacesConflictAndMissingNode(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.identity.restart", "node-1", []byte(`{"value":"stale"}`), 0)
+	subscribeAsNode(t, nc, "test.gather.identity.restart", "node-1", []byte(`{"value":"fresh"}`), 50*time.Millisecond)
+	// node-2 is expected but never answers.
+
+	_, sum, err := Gather(context.Background(), nc, "test.gather.identity.restart", []byte("{}"),
+		GatherOpts{Timeout: 300 * time.Millisecond, Mode: CollectUntilDeadline, ExpectedResponders: 2})
+
+	require.NoError(t, err)
+	assert.True(t, sum.ConflictNodes["node-1"], "the restart overlap must be visible as a conflict, not silently resolved")
+	assert.False(t, sum.Responders["node-2"], "node-2 never answered and must not be reported as having done so")
 }

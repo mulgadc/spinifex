@@ -48,7 +48,7 @@ func CancelCapacityReservation(ctx context.Context, input *ec2.CancelCapacityRes
 
 	for _, frame := range frames {
 		var ack ec2.CancelCapacityReservationOutput
-		if json.Unmarshal(frame, &ack) == nil && aws.BoolValue(ack.Return) {
+		if json.Unmarshal(frame.Data, &ack) == nil && aws.BoolValue(ack.Return) {
 			output.Return = aws.Bool(true)
 			return output, nil
 		}

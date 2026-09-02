@@ -12,22 +12,23 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// volumeDirtyBucket names the volumes whose last seal failed, so the node
-// holding the only current copy is still known after that node is gone.
+// volumeDirtyBucket names the volumes whose writes are not confirmed to have
+// reached the backend, so the node holding them is still known after that node
+// is gone.
 //
-// Deliberately no TTL. The volume lease already answers "who is writing this
-// right now" and expires with its holder, which is exactly the property
-// durability cannot be built on: a node that dies holding un-uploaded writes
-// stops renewing, and 45 seconds later nothing refuses a stale start elsewhere.
+// Deliberately no TTL. The volume lease answers "who is writing this right now"
+// and expires with its holder; this answers "whose copy is ahead of the
+// backend", which has to outlive the holder to be worth anything.
+//
+// It is a placement input, not a gate. Instance start already prefers the node
+// that last ran the instance and falls back after a window, and refusing the
+// fallback here would trade a rare data-loss risk for a volume that cannot run
+// anywhere.
 const volumeDirtyBucket = "VIPERBLOCK_VOLUME_DIRTY"
 
-// errVolumeDirtyElsewhere reports that the volume's current data is on another
-// node. Distinguishable so a caller can name the node rather than fail blankly.
-var errVolumeDirtyElsewhere = errors.New("volume was last written on another node")
-
-// volumeDirtyRecord is what a node publishes about a seal it could not
-// complete. Reason carries the seal error so an operator sees why the volume
-// is pinned without correlating journals across nodes.
+// volumeDirtyRecord is what a node publishes about writes the backend may not
+// have. Reason says how it got that way, so an operator reading a takeover
+// warning does not have to correlate journals across nodes.
 type volumeDirtyRecord struct {
 	Owner  string    `json:"owner"`
 	Since  time.Time `json:"since"`
@@ -119,7 +120,9 @@ func (cfg *Config) markVolumeDirty(ctx context.Context, volumeName, reason strin
 			"volume", volumeName, "err", err)
 		return
 	}
-	slog.WarnContext(ctx, "volume marked dirty: its only current copy is on this node",
+	// Every open marks, so this is the routine case. The events worth a human's
+	// attention — a failed seal, a takeover — are logged by their own callers.
+	slog.DebugContext(ctx, "volume writes not yet confirmed to the backend",
 		"volume", volumeName, "owner", cfg.dirty.owner, "reason", reason)
 }
 
@@ -134,17 +137,99 @@ func (cfg *Config) clearVolumeDirty(ctx context.Context, volumeName string) {
 	}
 }
 
-// checkVolumeDirty refuses a mount of a volume whose current data is on another
-// node. This is the durable half of the exclusion: the lease refuses a live
-// remote holder and expires with it, and this refuses a dead one indefinitely.
-func (cfg *Config) checkVolumeDirty(ctx context.Context, volumeName string) error {
+// reportVolumeTakeover records that this node is opening a volume another node
+// holds unsealed writes for, and takes ownership of the marker.
+//
+// It never refuses. Instance start forwards to the node that last ran the
+// instance and only falls back here once that node has failed its window, so by
+// the time this runs the alternative is not "wait for the better copy", it is
+// "the instance runs nowhere". The warning is the deliverable: this is the one
+// moment a human can be told which writes are about to be left behind.
+// It reports whether it took the marker over, so the caller does not then
+// overwrite the detail with a generic one.
+func (cfg *Config) reportVolumeTakeover(ctx context.Context, volumeName string) bool {
 	if cfg.dirty == nil {
-		return nil
+		return false
 	}
 	record, ok := cfg.dirty.holder(ctx, volumeName)
 	if !ok || record.Owner == "" || record.Owner == cfg.dirty.owner {
-		return nil
+		return false
 	}
-	return fmt.Errorf("%w: %s holds it since %s (last seal failed: %s)",
-		errVolumeDirtyElsewhere, record.Owner, record.Since.Format(time.RFC3339), record.Reason)
+
+	slog.WarnContext(ctx, "opening a volume whose writes were last held by another node, from the backend checkpoint instead",
+		"volume", volumeName, "previous_owner", record.Owner,
+		"unsealed_since", record.Since.Format(time.RFC3339), "previous_reason", record.Reason)
+
+	// Take the marker over. The previous owner's copy is now behind this one,
+	// so if that node returns it must not be treated as the better source.
+	reason := fmt.Sprintf("took over from %s, which held unsealed writes since %s (%s)",
+		record.Owner, record.Since.Format(time.RFC3339), record.Reason)
+	cfg.markVolumeDirty(ctx, volumeName, reason)
+	return true
+}
+
+// UnsealedVolume reports a volume whose writes are not confirmed to have
+// reached the backend, and which node holds them.
+type UnsealedVolume struct {
+	VolumeID string
+	Owner    string
+	Since    time.Time
+	Reason   string
+}
+
+// bindDirtyBucket opens the dirty bucket read-only for an operator tool. It does
+// not create the bucket: a cluster where no volume has ever been opened has no
+// bucket, and reporting that as an error would read as a fault.
+func bindDirtyBucket(ctx context.Context, nc *nats.Conn) (jetstream.KeyValue, error) {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
+	}
+	kv, err := js.KeyValue(ctx, volumeDirtyBucket)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("volume dirty bucket: %w", err)
+	}
+	return kv, nil
+}
+
+// ListUnsealedVolumes reports every volume a node holds writes for that the
+// backend may not have.
+//
+// Starting one elsewhere is allowed and preferred over an instance that cannot
+// run, but it opens from the last checkpoint that did reach the backend. This
+// is the list of volumes where that trade would cost something.
+func ListUnsealedVolumes(ctx context.Context, nc *nats.Conn) ([]UnsealedVolume, error) {
+	kv, err := bindDirtyBucket(ctx, nc)
+	if err != nil || kv == nil {
+		return nil, err
+	}
+	keys, err := kv.Keys(ctx)
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list unsealed volumes: %w", err)
+	}
+
+	unsealed := make([]UnsealedVolume, 0, len(keys))
+	for _, key := range keys {
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			continue
+		}
+		var record volumeDirtyRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			// Something holds writes for this volume even if the record cannot
+			// be read, so report it rather than hide it.
+			unsealed = append(unsealed, UnsealedVolume{VolumeID: key, Reason: "marker is unreadable"})
+			continue
+		}
+		unsealed = append(unsealed, UnsealedVolume{
+			VolumeID: key, Owner: record.Owner, Since: record.Since, Reason: record.Reason,
+		})
+	}
+	return unsealed, nil
 }

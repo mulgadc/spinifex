@@ -328,13 +328,18 @@ func (cfg *Config) acquireVolumeLease(ctx context.Context, volumeName string) (*
 	if cfg.leases == nil {
 		return nil, fmt.Errorf("%w: cannot establish exclusive access to %s", errNoVolumeLeaseStore, volumeName)
 	}
-	// The lease answers "is somebody writing this now" and expires with its
-	// holder. Ask the durable question first, or a node that died holding
-	// un-uploaded writes stops refusing 45 seconds after it goes.
-	if err := cfg.checkVolumeDirty(ctx, volumeName); err != nil {
+	lease, err := cfg.leases.acquire(ctx, volumeName)
+	if err != nil {
 		return nil, err
 	}
-	return cfg.leases.acquire(ctx, volumeName)
+
+	// Mark before a single write lands, not when a seal fails. A node killed
+	// mid-write never reaches its seal, so marking there leaves no trace of the
+	// case the marker exists for. A takeover writes its own richer reason.
+	if !cfg.reportVolumeTakeover(ctx, volumeName) {
+		cfg.markVolumeDirty(ctx, volumeName, "volume open, writes not yet confirmed to the backend")
+	}
+	return lease, nil
 }
 
 // releaseVolumeLease gives up a lease taken by acquireVolumeLease.

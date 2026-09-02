@@ -41,6 +41,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/hostdns"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -219,6 +220,18 @@ decision made per volume.`,
 	Run: runVolumesOrphansCmd,
 }
 
+var volumesUnsealedCmd = &cobra.Command{
+	Use:   "unsealed",
+	Short: "Report volumes whose writes have not been confirmed to the backend",
+	Long: `List volumes a node has open, or had open, without a confirmed seal to the
+backend. The node named holds writes that predastore may not have.
+
+Starting such a volume elsewhere is allowed and is preferred over leaving the
+instance unable to run, but it opens from the last checkpoint that did reach
+the backend. This is the list of volumes where that would cost something.`,
+	Run: runVolumesUnsealedCmd,
+}
+
 var accountCmd = &cobra.Command{
 	Use:   "account",
 	Short: "Manage Spinifex accounts",
@@ -319,6 +332,7 @@ func init() {
 
 	adminCmd.AddCommand(volumesCmd)
 	volumesCmd.AddCommand(volumesOrphansCmd)
+	volumesCmd.AddCommand(volumesUnsealedCmd)
 
 	adminCmd.AddCommand(accountCmd)
 	accountCmd.AddCommand(accountCreateCmd)
@@ -3662,4 +3676,38 @@ func printChecksumError(w io.Writer, imageFile, imageName string, image utils.Im
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "The cached file was left in place. To re-download and retry:")
 	fmt.Fprintf(w, "  spx admin images import --name %s --force\n", imageName)
+}
+
+func runVolumesUnsealedCmd(_ *cobra.Command, _ []string) {
+	_, nc, err := loadConfigAndConnect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Could not connect to the cluster: %v\n", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	unsealed, err := viperblockd.ListUnsealedVolumes(context.Background(), nc)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Could not read the unsealed volumes:", err)
+		os.Exit(1)
+	}
+	if len(unsealed) == 0 {
+		fmt.Println("No unsealed volumes: every volume's writes are confirmed to the backend.")
+		return
+	}
+
+	sort.Slice(unsealed, func(i, j int) bool { return unsealed[i].VolumeID < unsealed[j].VolumeID })
+	fmt.Printf("%d volume(s) with writes the backend may not have:\n\n", len(unsealed))
+	for _, volume := range unsealed {
+		fmt.Printf("  %s\n", volume.VolumeID)
+		fmt.Printf("    held by: %s\n", volume.Owner)
+		if !volume.Since.IsZero() {
+			fmt.Printf("    since:   %s\n", volume.Since.Format(time.RFC3339))
+		}
+		fmt.Printf("    reason:  %s\n", volume.Reason)
+	}
+	fmt.Println()
+	fmt.Println("A volume open right now is listed here and that is normal — the entry")
+	fmt.Println("clears on its next successful seal. One naming a node that is gone is")
+	fmt.Println("the case worth acting on: starting it elsewhere loses writes made since.")
 }

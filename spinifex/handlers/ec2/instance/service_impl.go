@@ -2333,12 +2333,12 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil
 }
 
-// volumeExclusionMarkers are the two refusals that mean "this volume's data is
-// on another node": the lease covers a live holder, the dirty marker a dead
-// one. Both arrive here as text, having crossed NATS from viperblockd.
+// volumeExclusionMarkers are the refusals that mean another node is writing this
+// volume right now. Only the lease refuses: a volume whose writes are merely
+// unsealed is opened here with a warning rather than blocked, so the instance
+// still runs. The text arrives having crossed NATS from viperblockd.
 var volumeExclusionMarkers = []string{
 	"volume is leased by another owner",
-	"volume was last written on another node",
 }
 
 // volumeHeldElsewhereError converts a mount refused because another node holds

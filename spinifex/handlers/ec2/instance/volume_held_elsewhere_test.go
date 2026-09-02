@@ -27,11 +27,6 @@ func TestVolumeHeldElsewhere_NamesTheHolder(t *testing.T) {
 			err: errors.New("failed to mount volume: volume is leased by another owner: " +
 				"held by bottlebrush since 2026-09-02T17:04:39Z"),
 		},
-		{
-			name: "dead holder, refused by the dirty marker",
-			err: errors.New("failed to mount volume: volume was last written on another node: " +
-				"bottlebrush holds it since 2026-09-02T17:04:39Z (last seal failed: predastore unreachable)"),
-		},
 	}
 
 	for _, tc := range cases {
@@ -54,4 +49,9 @@ func TestVolumeHeldElsewhere_IgnoresUnrelatedFailures(t *testing.T) {
 	assert.NoError(t, volumeHeldElsewhereError(nil))
 	assert.NoError(t, volumeHeldElsewhereError(errors.New("nbd endpoint not ready: timeout waiting for unix socket")))
 	assert.NoError(t, volumeHeldElsewhereError(fmt.Errorf("qemu exited: %w", errors.New("no such file"))))
+
+	// A volume whose writes are merely unsealed is opened with a warning rather
+	// than refused, so this text is not an exclusion and must not become one.
+	assert.NoError(t, volumeHeldElsewhereError(errors.New(
+		"took over from bottlebrush, which held unsealed writes since 2026-09-02T17:04:39Z")))
 }

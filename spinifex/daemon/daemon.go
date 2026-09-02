@@ -2617,7 +2617,7 @@ func (d *Daemon) persistState(nodeID string, vms map[string]*vm.VM) error {
 	// cannot change underneath either write.
 	if d.jsManager != nil {
 		d.jsManager.WriteNodeMarkerBestEffort(nodeID, kvSyncTimeout)
-		d.jsManager.WriteRunningSet(nodeID, vms)
+		d.jsManager.WriteRunningSet(nodeID, d.config.AZ, vms)
 	}
 
 	if localErr != nil {

@@ -145,7 +145,7 @@ func ec2HandlerWithReq[In any](handler func(ctx context.Context, input *In, gw *
 
 var ec2Actions = map[string]ec2Action{
 	"DescribeInstances": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		out, err := gateway_ec2_instance.DescribeInstancesChecked(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		out, err := gateway_ec2_instance.DescribeInstancesChecked(ctx, input, gw.NATSConn, 0, gw.NodeIDs, accountID)
 		if err != nil {
 			return out, err
 		}

@@ -243,32 +243,38 @@ func writePattern(t *testing.T, tgt harness.SSHTarget, dev string) string {
 	t.Helper()
 	cmd := fmt.Sprintf(
 		"sudo dd if=/dev/urandom of=/dev/%s bs=1M count=%d oflag=direct status=none && "+
-			"sudo blockdev --flushbufs /dev/%s && sync && "+
-			"sudo dd if=/dev/%s bs=1M count=%d iflag=direct status=none | sha256sum | cut -d' ' -f1",
-		dev, patternMiB, dev, dev, patternMiB)
+			"sudo blockdev --flushbufs /dev/%s && sync",
+		dev, patternMiB, dev)
 	out, err := harness.GuestExecTimeout(tgt, cmd, 5*time.Minute)
 	if err != nil {
-		t.Fatalf("write pattern to /dev/%s: %v\n%s", dev, err, out)
+		t.Fatalf("write pattern to /dev/%s: %v\n%s\n%s", dev, err, out, deviceGeometry(tgt, dev))
 	}
-	sum := strings.TrimSpace(out)
-	if len(sum) != 64 {
-		t.Fatalf("expected a sha256 from the pattern write, got %q", sum)
-	}
-	return sum
+	return readPattern(t, tgt, dev)
 }
 
-// readPattern re-reads the pattern region and returns its checksum. Reads
-// O_DIRECT so the guest's page cache cannot answer with what was written
-// before the restart.
+// readPattern re-reads the pattern region and returns its checksum. The page
+// cache is dropped first so the read comes from the device rather than from
+// what was written before the restart.
+//
+// Not O_DIRECT: this image ships uutils dd, whose O_DIRECT read path only
+// handles 512-byte transfers and fails EINVAL at 4k and above. Dropping the
+// cache gives the same guarantee and works under either dd.
 func readPattern(t *testing.T, tgt harness.SSHTarget, dev string) string {
 	t.Helper()
-	cmd := fmt.Sprintf("sudo dd if=/dev/%s bs=1M count=%d iflag=direct status=none | sha256sum | cut -d' ' -f1",
+	cmd := fmt.Sprintf(
+		"set -o pipefail; sudo blockdev --flushbufs /dev/%[1]s && sync && "+
+			"echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null && "+
+			"sudo dd if=/dev/%[1]s bs=1M count=%[2]d status=none | sha256sum | cut -d' ' -f1",
 		dev, patternMiB)
 	out, err := harness.GuestExecTimeout(tgt, cmd, 5*time.Minute)
 	if err != nil {
-		t.Fatalf("read pattern back from /dev/%s: %v\n%s", dev, err, out)
+		t.Fatalf("read pattern back from /dev/%s: %v\n%s\n%s", dev, err, out, deviceGeometry(tgt, dev))
 	}
-	return strings.TrimSpace(out)
+	sum := strings.TrimSpace(out)
+	if len(sum) != 64 {
+		t.Fatalf("expected a sha256 from /dev/%s, got %q\n%s", dev, sum, deviceGeometry(tgt, dev))
+	}
+	return sum
 }
 
 // stopInstance stops the instance and waits for it to settle. The error is
@@ -333,4 +339,25 @@ func errOrOK(err error) string {
 		return "success"
 	}
 	return err.Error()
+}
+
+// deviceGeometry reports what the guest kernel thinks the device is, for a
+// pattern write or read that failed. An alignment or size mismatch is the usual
+// cause of an EINVAL on an O_DIRECT transfer, and neither is visible in dd's
+// own message.
+func deviceGeometry(tgt harness.SSHTarget, dev string) string {
+	cmd := fmt.Sprintf(
+		"for p in getsize64 getss getpbsz getiomin getioopt; do "+
+			"printf '%%s=%%s ' $p $(sudo blockdev --$p /dev/%[1]s 2>&1); done; echo; "+
+			"dd --version | head -1; "+
+			"echo -n 'direct 512:  '; sudo dd if=/dev/%[1]s bs=512 count=1 iflag=direct of=/dev/null 2>&1 | tail -1; "+
+			"echo -n 'direct 4k:   '; sudo dd if=/dev/%[1]s bs=4k  count=1 iflag=direct of=/dev/null 2>&1 | tail -1; "+
+			"echo -n 'direct 1M:   '; sudo dd if=/dev/%[1]s bs=1M  count=1 iflag=direct of=/dev/null 2>&1 | tail -1; "+
+			"echo -n 'buffered 1M: '; sudo dd if=/dev/%[1]s bs=1M  count=1 of=/dev/null 2>&1 | tail -1",
+		dev)
+	out, err := harness.GuestExecTimeout(tgt, cmd, time.Minute)
+	if err != nil {
+		return fmt.Sprintf("device geometry unavailable: %v\n%s", err, out)
+	}
+	return "device geometry:\n" + out
 }

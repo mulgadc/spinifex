@@ -2,6 +2,7 @@ package viperblockd
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,10 +20,13 @@ func TestMountVolume_AlreadyMountedReturnsExistingExport(t *testing.T) {
 
 	const volumeName = "vol-mountidempotent01"
 	const existingURI = "nbd://127.0.0.1:10809"
+	// A live pid, because the guard only hands back an export it can still see
+	// running: an entry whose process is gone describes a dead export and is
+	// dropped instead, which is what stops a volume becoming unstartable.
 	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
 		Name:     volumeName,
 		NBDURI:   existingURI,
-		PID:      4242,
+		PID:      os.Getpid(),
 		ReadOnly: false,
 	})
 

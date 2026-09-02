@@ -191,6 +191,11 @@ type Config struct {
 	// dead one and does not expire.
 	dirty *volumeDirty
 
+	// nc announces a fenced volume to this node's daemon. Held here because the
+	// fence runs from a lease-renewal goroutine, which has no handler's
+	// connection to borrow. Nil in tests that never fence.
+	nc *nats.Conn
+
 	// ready is closed once every subscription is registered on the server.
 	// Nil in production; tests set it to wait for the real event instead of
 	// guessing at a sleep.
@@ -662,7 +667,8 @@ func launchService(cfg *Config) (err error) {
 	if err != nil {
 		return fmt.Errorf("volume leases: %w", err)
 	}
-	cfg.leases = leases
+	cfg.leases = cfg.bindLeaseFence(leases)
+	cfg.nc = nc
 
 	// Rebuild MountedVolumes from any nbdkit processes that survived a
 	// restart before the daemon accepts a single request, so a handler can

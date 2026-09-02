@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -159,6 +160,7 @@ func (cfg *Config) reportVolumeTakeover(ctx context.Context, volumeName string) 
 	slog.WarnContext(ctx, "opening a volume whose writes were last held by another node, from the backend checkpoint instead",
 		"volume", volumeName, "previous_owner", record.Owner,
 		"unsealed_since", record.Since.Format(time.RFC3339), "previous_reason", record.Reason)
+	otelsetup.RecordVolumeTakeover(ctx)
 
 	// Take the marker over. The previous owner's copy is now behind this one,
 	// so if that node returns it must not be treated as the better source.

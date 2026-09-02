@@ -58,6 +58,11 @@ type volumeLeases struct {
 	kv    jetstream.KeyValue
 	owner string
 
+	// onLost is called when a renewal finds the entry has moved out from under
+	// this node. Nil leaves the loss logged and nothing else, which is what a
+	// unit test with no export to tear down wants.
+	onLost func(context.Context, string)
+
 	mu   sync.Mutex
 	held map[string]*volumeLease
 }
@@ -271,9 +276,9 @@ func (lease *volumeLease) renewLoop(ctx context.Context) {
 // renew rewrites the entry conditioned on the revision this holder last saw,
 // and reports whether the lease is still ours.
 //
-// Losing it is logged rather than enforced: until the object store can refuse
-// a stale writer's PUT, failing live guest I/O here would add a failure mode
-// without stopping anything.
+// Losing it hands off to onLost, which decides between reclaiming a lapsed
+// entry and fencing the export. That runs on its own goroutine because fencing
+// releases the lease, and releasing waits for this one to exit.
 func (lease *volumeLease) renew(ctx context.Context) bool {
 	record := volumeLeaseRecord{Owner: lease.leases.owner, Generation: lease.generation, AcquiredAt: time.Now().UTC()}
 	payload, err := json.Marshal(record)
@@ -302,6 +307,11 @@ func (lease *volumeLease) renew(ctx context.Context) bool {
 		lease.lost = true
 		lease.mu.Unlock()
 		slog.Error("volume lease lost: another opener may hold this volume", "volume", lease.volume, "generation", lease.generation, "err", err)
+		if onLost := lease.leases.onLost; onLost != nil {
+			// WithoutCancel: release cancels this context, and the fence has
+			// KV reads and a teardown to finish after that.
+			go onLost(context.WithoutCancel(ctx), lease.volume)
+		}
 		return false
 	default:
 		// A transient JetStream error is not a lost lease. Keep renewing; the

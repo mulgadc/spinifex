@@ -67,8 +67,9 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		if err != nil {
 			return fmt.Errorf("volume leases: %w", err)
 		}
-		cfg.leases = leases
+		cfg.leases = cfg.bindLeaseFence(leases)
 	}
+	cfg.nc = nc
 
 	// Same reasoning as the lease store: a mount that cannot consult the dirty
 	// marker cannot tell a stale cross-node start from a routine one.

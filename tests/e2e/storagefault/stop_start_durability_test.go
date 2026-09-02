@@ -147,11 +147,11 @@ func TestCrossNodeStartAfterFailedSealTakesOverLoudly(t *testing.T) {
 	thawPredastore(t, fix, freezeSet)
 	time.Sleep(recoverySettle)
 
-	// Taking the daemon down on the owning node makes ec2.start.{lastNode}
-	// return no responders, which is one of the three paths that silently
-	// falls back to starting somewhere else.
-	harness.Step(t, "stopping spinifex-daemon on %s to force the start elsewhere", hostNode.Name)
-	stopDaemon(t, fix, *hostNode)
+	// The node has to be gone, not merely quiet. A live viperblockd goes on
+	// renewing the lease on a volume whose seal failed, and that refusal is
+	// correct: the node could still be writing.
+	harness.Step(t, "taking %s out so the start has to happen elsewhere", hostNode.Name)
+	isolateNode(t, fix, *hostNode)
 
 	if startErr := startInstance(t, fix, instanceID); startErr != nil {
 		t.Fatalf("the start was refused, so the instance can run nowhere while %s is down: %v\n"+
@@ -214,9 +214,11 @@ func assertTakeoverLogged(t *testing.T, fix *Fixture, landed, previous *harness.
 			landed.Name, volID, previous.Name)
 		return
 	}
-	if !strings.Contains(journal, previous.Name) {
-		t.Errorf("%s logged a takeover for %s but did not name %s, so an operator cannot tell whose "+
-			"writes were left behind:\n%s", landed.Name, volID, previous.Name, journal)
+	// The marker records the spinifex node name, which is the host's own name
+	// and not the harness's nodeN label, so accept either identity.
+	if !strings.Contains(journal, previous.Name) && !strings.Contains(journal, previous.Addr) {
+		t.Errorf("%s logged a takeover for %s but did not name %s (%s), so an operator cannot tell "+
+			"whose writes were left behind:\n%s", landed.Name, volID, previous.Name, previous.Addr, journal)
 		return
 	}
 	harness.Step(t, "%s logged the takeover and named %s", landed.Name, previous.Name)
@@ -333,27 +335,49 @@ func startInstance(t *testing.T, fix *Fixture, instanceID string) error {
 	return err
 }
 
-// stopDaemon stops spinifex-daemon on node and restores it on cleanup. Only
-// the daemon: stopping the target would take storage down with it and change
-// which fault is being tested.
-func stopDaemon(t *testing.T, fix *Fixture, node harness.Node) {
+// isolatedUnits are the two services that have to be down for a node to look
+// gone. The daemon so ec2.start.{lastNode} has no responder, and viperblock so
+// nothing on this node keeps renewing the lease it holds on the volume.
+//
+// Not the whole target: predastore stays up so the node keeps serving its shard,
+// which is what a node whose control plane died looks like from the cluster.
+var isolatedUnits = []string{"spinifex-daemon", "spinifex-viperblock"}
+
+// leaseExpiryBudget is how long to wait for an unrenewed volume lease to age
+// out of JetStream once its holder is gone. Comfortably past the 45s TTL, since
+// the entry only disappears on the bucket's own schedule.
+const leaseExpiryBudget = 75 * time.Second
+
+// isolateNode stops the control-plane services on node and restores them on
+// cleanup, then waits for the volume lease the node held to expire.
+//
+// Waiting is the point. Without it the start elsewhere is refused by a lease
+// that is simply still current, which says nothing about what happens when its
+// holder is not coming back.
+func isolateNode(t *testing.T, fix *Fixture, node harness.Node) {
 	t.Helper()
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 		defer cancel()
-		if _, err := fix.SSH.Run(ctx, node, "sudo systemctl start spinifex-daemon"); err != nil {
-			t.Errorf("could not restart spinifex-daemon on %s — the node is left without one: %v", node.Name, err)
-			return
+		for _, unit := range isolatedUnits {
+			if _, err := fix.SSH.Run(ctx, node, "sudo systemctl start "+unit); err != nil {
+				t.Errorf("could not restart %s on %s — the node is left without it: %v", unit, node.Name, err)
+				continue
+			}
+			t.Logf("restarted %s on %s", unit, node.Name)
 		}
-		t.Logf("restarted spinifex-daemon on %s", node.Name)
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
-	if _, err := fix.SSH.Run(ctx, node, "sudo systemctl stop spinifex-daemon"); err != nil {
-		t.Fatalf("stop spinifex-daemon on %s: %v", node.Name, err)
+	for _, unit := range isolatedUnits {
+		if _, err := fix.SSH.Run(ctx, node, "sudo systemctl stop "+unit); err != nil {
+			t.Fatalf("stop %s on %s: %v", unit, node.Name, err)
+		}
 	}
-	time.Sleep(freezeSettle)
+
+	harness.Step(t, "waiting %s for %s's volume lease to age out", leaseExpiryBudget, node.Name)
+	time.Sleep(leaseExpiryBudget)
 }
 
 func errOrOK(err error) string {

@@ -33,7 +33,8 @@
 # is a total outage and the guest-survival assertion is unambiguous. On three it
 # is RS(2,1) with degraded writes on, so two must be frozen to break the shard
 # floor — and only there is a cross-node restart possible at all, which is the
-# case that loses data silently. It is last because it SIGSTOPs a cluster-wide
+# case that takes a volume over from a node holding writes the backend never
+# received. It is last because it SIGSTOPs a cluster-wide
 # service: anything sharing the environment would see the same outage and report
 # a failure that says nothing about itself.
 E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota storagefault"

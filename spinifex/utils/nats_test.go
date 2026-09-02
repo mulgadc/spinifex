@@ -1156,3 +1156,59 @@ func TestGather_CollectUntilDeadline_RestartOverlap_SurfacesConflictAndMissingNo
 	assert.True(t, sum.ConflictNodes["node-1"], "the restart overlap must be visible as a conflict, not silently resolved")
 	assert.False(t, sum.Responders["node-2"], "node-2 never answered and must not be reported as having done so")
 }
+
+func TestGather_Settled_EndsCollectionBeforeTheDeadline(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.settled.hit", "node-a", []byte(`{"ok":true}`), 0)
+
+	const budget = 800 * time.Millisecond
+	start := time.Now()
+	_, sum, err := Gather(context.Background(), nc, "test.gather.settled.hit", []byte("{}"),
+		GatherOpts{
+			Timeout: budget, Mode: CollectUntilDeadline, ExpectedResponders: 2,
+			Settled: func(frames []Frame, _ Summary) bool { return len(frames) >= 1 },
+		})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Less(t, elapsed, budget/2, "a settled fan-out must not wait out the deadline")
+	assert.True(t, sum.SettledEarly)
+	assert.False(t, sum.TimedOut, "settling is not a timeout")
+}
+
+// A predicate that never settles must leave CollectUntilDeadline's guarantee
+// intact, since that is the case where absence is still being proven.
+func TestGather_Settled_NeverTrue_StillRunsToTheDeadline(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.settled.miss", "node-a", []byte(`{"ok":true}`), 0)
+
+	const budget = 400 * time.Millisecond
+	start := time.Now()
+	_, sum, err := Gather(context.Background(), nc, "test.gather.settled.miss", []byte("{}"),
+		GatherOpts{
+			Timeout: budget, Mode: CollectUntilDeadline, ExpectedResponders: 1,
+			Settled: func([]Frame, Summary) bool { return false },
+		})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, elapsed, budget-20*time.Millisecond)
+	assert.False(t, sum.SettledEarly)
+	assert.True(t, sum.TimedOut)
+}
+
+func TestGather_Settled_IgnoredUnderCollectServeData(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.settled.mode", "node-a", []byte(`{"ok":true}`), 0)
+
+	called := false
+	_, sum, err := Gather(context.Background(), nc, "test.gather.settled.mode", []byte("{}"),
+		GatherOpts{
+			Timeout: 300 * time.Millisecond, ExpectedResponders: 1,
+			Settled: func([]Frame, Summary) bool { called = true; return true },
+		})
+
+	require.NoError(t, err)
+	assert.False(t, called, "Settled belongs to CollectUntilDeadline and must not run in serve-data mode")
+	assert.False(t, sum.SettledEarly)
+}

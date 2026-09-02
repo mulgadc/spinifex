@@ -401,10 +401,11 @@ const (
 	// frames, ExpectedResponders unique nodes, or StopOnFirst. The zero value,
 	// so every caller that does not opt in keeps today's exact behavior.
 	CollectServeData CollectionMode = iota
-	// CollectUntilDeadline never exits early; it collects for the full
-	// Timeout. A fan-out proving a negative (nobody has it) cannot be
-	// established from a prefix of the replies — the frame that would refute
-	// it is the one most likely to be late.
+	// CollectUntilDeadline collects for the full Timeout. A fan-out proving a
+	// negative (nobody has it) cannot be established from a prefix of the
+	// replies — the frame that would refute it is the one most likely to be
+	// late. GatherOpts.Settled is the one way out, for the case where the
+	// replies so far mean nothing is left to prove.
 	CollectUntilDeadline
 )
 
@@ -433,6 +434,7 @@ type Summary struct {
 	Unidentified      int             // frames received with no node ID header
 	DuplicateFrames   int             // frames whose node had already answered; bytes dropped, identity kept
 	CapHit            bool            // the identity frame or byte cap ended collection early
+	SettledEarly      bool            // GatherOpts.Settled ended collection before the deadline
 }
 
 // GatherOpts configures a Gather fan-out.
@@ -443,6 +445,12 @@ type GatherOpts struct {
 	Mode               CollectionMode // CollectServeData (default) or CollectUntilDeadline
 	StopOnFirst        bool           // return after the first non-error frame (first-wins)
 	AccountID          string         // sets X-Account-ID header when non-empty
+
+	// Settled ends a CollectUntilDeadline fan-out early; it is ignored in every
+	// other mode. Consulted after each retained frame, it returns true once the
+	// replies already answer the question, so only a caller still trying to
+	// prove a negative pays the rest of the deadline.
+	Settled func(frames []Frame, sum Summary) bool
 }
 
 // Gather publishes payload to subject over a fresh inbox and collects reply
@@ -601,6 +609,10 @@ func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte
 		frames = append(frames, Frame{NodeID: nodeID, Data: msg.Data})
 		if opts.StopOnFirst {
 			return frames, sum, nil
+		}
+		if opts.Mode == CollectUntilDeadline && opts.Settled != nil && opts.Settled(frames, sum) {
+			sum.SettledEarly = true
+			break
 		}
 	}
 

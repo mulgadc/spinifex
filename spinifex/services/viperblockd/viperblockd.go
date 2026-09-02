@@ -186,6 +186,11 @@ type Config struct {
 	// refuses rather than proceeding blind.
 	leases *volumeLeases
 
+	// dirty names the node holding a volume's only current copy after a failed
+	// seal. The lease covers a live holder and expires with it; this covers a
+	// dead one and does not expire.
+	dirty *volumeDirty
+
 	// ready is closed once every subscription is registered on the server.
 	// Nil in production; tests set it to wait for the real event instead of
 	// guessing at a sleep.

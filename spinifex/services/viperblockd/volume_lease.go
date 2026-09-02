@@ -328,6 +328,12 @@ func (cfg *Config) acquireVolumeLease(ctx context.Context, volumeName string) (*
 	if cfg.leases == nil {
 		return nil, fmt.Errorf("%w: cannot establish exclusive access to %s", errNoVolumeLeaseStore, volumeName)
 	}
+	// The lease answers "is somebody writing this now" and expires with its
+	// holder. Ask the durable question first, or a node that died holding
+	// un-uploaded writes stops refusing 45 seconds after it goes.
+	if err := cfg.checkVolumeDirty(ctx, volumeName); err != nil {
+		return nil, err
+	}
 	return cfg.leases.acquire(ctx, volumeName)
 }
 

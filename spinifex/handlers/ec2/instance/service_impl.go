@@ -2320,6 +2320,9 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 		s.resourceMgr.Deallocate(instanceType)
 		s.vmMgr.Delete(instance.ID)
 		s.restoreClaimedStoppedInstance(ctx, instance)
+		if refusal := volumeHeldElsewhereError(err); refusal != nil {
+			return nil, refusal
+		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -2328,6 +2331,32 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 
 	slog.InfoContext(ctx, "Started stopped instance from shared KV", "instanceId", instance.ID)
 	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil
+}
+
+// volumeExclusionMarkers are the two refusals that mean "this volume's data is
+// on another node": the lease covers a live holder, the dirty marker a dead
+// one. Both arrive here as text, having crossed NATS from viperblockd.
+var volumeExclusionMarkers = []string{
+	"volume is leased by another owner",
+	"volume was last written on another node",
+}
+
+// volumeHeldElsewhereError converts a mount refused because another node holds
+// the volume into a client-facing error carrying that reason. Returns nil for
+// anything else. Without it the caller gets ServerInternal and is told to
+// retry, which cannot succeed while the holder is down, and the text naming the
+// holder never leaves the node's log.
+func volumeHeldElsewhereError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	for _, marker := range volumeExclusionMarkers {
+		if strings.Contains(msg, marker) {
+			return awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", msg)
+		}
+	}
+	return nil
 }
 
 // restoreClaimedStoppedInstance writes instance back to the shared

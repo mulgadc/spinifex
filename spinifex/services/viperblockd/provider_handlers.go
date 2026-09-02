@@ -70,6 +70,16 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		cfg.leases = leases
 	}
 
+	// Same reasoning as the lease store: a mount that cannot consult the dirty
+	// marker cannot tell a stale cross-node start from a routine one.
+	if cfg.dirty == nil {
+		dirty, err := newVolumeDirty(context.Background(), nc, cfg.leaseOwner())
+		if err != nil {
+			return fmt.Errorf("volume dirty markers: %w", err)
+		}
+		cfg.dirty = dirty
+	}
+
 	subs := []struct {
 		subject string
 		handler providerMsgHandler
@@ -858,6 +868,10 @@ func handleDeleteVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *na
 		}
 	}
 
+	// The volume is gone, so a marker pinning it to this node pins nothing.
+	// Left behind it would outlive every copy of the data it describes.
+	cfg.clearVolumeDirty(ctx, req.VolumeID)
+
 	slog.Info("ebs.provider.volume.delete: deleted", "volume", req.VolumeID)
 	respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned()})
 }
@@ -1614,13 +1628,18 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 			if err := cfg.seal(ctx, matched.Name); err != nil {
 				slog.ErrorContext(ctx, "ebs.unmount: failed to seal volume to predastore", "volume", matched.Name, "err", err)
 				ebsResponse.Error = fmt.Sprintf("seal volume: %v", err)
+				// The un-uploaded writes are now this node's alone, and the
+				// lease saying so dies with the node. Record it durably.
+				cfg.markVolumeDirty(ctx, matched.Name, err.Error())
 			} else {
 				slog.InfoContext(ctx, "ebs.unmount: volume sealed to predastore", "volume", matched.Name)
+				cfg.clearVolumeDirty(ctx, matched.Name)
 			}
 		} else if consumeSealReceipt(cfg.BaseDir, matched.Name) {
 			// Healthy path: the plugin sealed to predastore and removed
 			// its local state itself, leaving this receipt as proof.
 			slog.InfoContext(ctx, "ebs.unmount: volume already sealed by nbdkit plugin", "volume", matched.Name)
+			cfg.clearVolumeDirty(ctx, matched.Name)
 		} else {
 			// A durable volume reached unmount with no local WAL and no
 			// seal receipt: this node never held its state, so there is

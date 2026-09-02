@@ -358,6 +358,10 @@ jobs:
           # suite-sets.sh also carries the per-suite rationale.
           . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
           SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -xE "${E2E_SUITES_SINGLE_RE}" | tr '\n' ' ')
+          # Resolve each suite's timeout here, where suite-sets.sh is readable, and
+          # carry the pairs into the remote loop below — the VM has no checkout.
+          SUITE_TMOS=""
+          for s in ${SUITES_RUN}; do SUITE_TMOS="${SUITE_TMOS}${s}:$(e2e_suite_timeout "${s}") "; done
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no in-VM suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"
@@ -389,7 +393,7 @@ jobs:
                echo \"::group::suite \$SUITE\"; \
                printf '\n%s%s━━ suite %s ━━%s\n' \"\$B\" \"\$C\" \"\$SUITE\" \"\$R\"; \
                date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
-               case \$SUITE in rds) TMO=50m ;; *) TMO=30m ;; esac; \
+               TMO=30m; for kv in ${SUITE_TMOS}; do case \$kv in \$SUITE:*) TMO=\${kv#*:} ;; esac; done; \
                GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \
                  ./\$SUITE.test -test.v -test.timeout=\$TMO ${TEST_RUN_FLAG} \
@@ -773,6 +777,8 @@ jobs:
           # Allow-list, not a deny-list — see the single-node job for why.
           . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
           SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -xE "${E2E_SUITES_MULTI_RE}" | tr '\n' ' ')
+          SUITE_TMOS=""
+          for s in ${SUITES_RUN}; do SUITE_TMOS="${SUITE_TMOS}${s}:$(e2e_suite_timeout "${s}") "; done
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"
@@ -804,13 +810,14 @@ jobs:
                echo \"::group::suite \$SUITE\"; \
                printf '\n%s%s━━ suite %s ━━%s\n' \"\$B\" \"\$C\" \"\$SUITE\" \"\$R\"; \
                date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
+               TMO=30m; for kv in ${SUITE_TMOS}; do case \$kv in \$SUITE:*) TMO=\${kv#*:} ;; esac; done; \
                GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=multinode \
                  SPINIFEX_NODES='${NODES_CSV}' \
                  SPINIFEX_NODE_IPS='${NODES_CSV}' \
                  SPINIFEX_SSH_USER=tf-user \
                  SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \
-                 ./\$SUITE.test -test.v -test.timeout=30m ${TEST_RUN_FLAG} \
+                 ./\$SUITE.test -test.v -test.timeout=\$TMO ${TEST_RUN_FLAG} \
                  2>&1 | tee '${ARTIFACT_DIR}/test-'\$SUITE'.log' \
                       | sed -uE 's/^[[:space:]]+([a-zA-Z0-9_]+_test\.go:[0-9]+: )?//'; \
                rc=\${PIPESTATUS[0]}; \

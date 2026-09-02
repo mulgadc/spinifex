@@ -343,6 +343,8 @@ jobs:
         run: |
           set +e
           SUITE="${{ matrix.suite }}"
+          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
+          TMO="$(e2e_suite_timeout "${SUITE}")"
           VM_HOST="tf-user@${WAN_IP}"
           TEST_RUN_FLAG=""
           [ -n "${TEST_RUN}" ] && TEST_RUN_FLAG="-test.run=${TEST_RUN}"
@@ -360,7 +362,7 @@ jobs:
              GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
                SPINIFEX_E2E_RUN_ID='${{ github.run_id }}' \
                ARTIFACT_DIR='${ARTIFACT_DIR}' \
-               ./${SUITE}.test -test.v -test.timeout=30m ${TEST_RUN_FLAG} \
+               ./${SUITE}.test -test.v -test.timeout=${TMO} ${TEST_RUN_FLAG} \
                2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log' \
                     | sed -uE 's/^[[:space:]]+([a-zA-Z0-9_]+_test\.go:[0-9]+: )?//'; \
              exit \${PIPESTATUS[0]}"
@@ -755,6 +757,8 @@ jobs:
         run: |
           set +e
           SUITE="${{ matrix.suite }}"
+          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
+          TMO="$(e2e_suite_timeout "${SUITE}")"
           VM_HOST="tf-user@${NODE1_IP}"
           TEST_RUN_FLAG=""
           [ -n "${TEST_RUN}" ] && TEST_RUN_FLAG="-test.run=${TEST_RUN}"
@@ -773,7 +777,7 @@ jobs:
                SPINIFEX_NODES='${NODES_CSV}' SPINIFEX_NODE_IPS='${NODES_CSV}' \
                SPINIFEX_SSH_USER=tf-user SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
                ARTIFACT_DIR='${ARTIFACT_DIR}' \
-               ./${SUITE}.test -test.v -test.timeout=30m ${TEST_RUN_FLAG} \
+               ./${SUITE}.test -test.v -test.timeout=${TMO} ${TEST_RUN_FLAG} \
                2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log' \
                     | sed -uE 's/^[[:space:]]+([a-zA-Z0-9_]+_test\.go:[0-9]+: )?//'; \
              exit \${PIPESTATUS[0]}"

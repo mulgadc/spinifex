@@ -49,7 +49,7 @@ jobs:
           - { cell: 27, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "rds", suite: "rds" }
 
     runs-on: [ self-hosted, "${{ matrix.runner }}" ]
-    timeout-minutes: 45
+    timeout-minutes: 50
     env:
       TOFU_LOG: /tmp/e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}
@@ -417,6 +417,7 @@ jobs:
           # here rather than skipping half its assertions.
           . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
           e2e_suites_assert_subset "e2e-nightly cell-${{ matrix.cell }}" "${SUITE}" "${E2E_SUITES_SINGLE}"
+          TMO="$(e2e_suite_timeout "${SUITE}")"
 
           ssh -tt -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \
@@ -425,7 +426,7 @@ jobs:
              date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-${SUITE}.start'; \
              GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
                ARTIFACT_DIR='${ARTIFACT_DIR}' \
-               ./${SUITE}.test -test.v -test.timeout=30m \
+               ./${SUITE}.test -test.v -test.timeout=${TMO} \
                2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log'; \
              rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
              if [ \$rc -ne 0 ]; then echo \"${SUITE}: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; fi; \

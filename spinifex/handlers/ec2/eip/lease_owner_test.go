@@ -9,7 +9,7 @@ import (
 )
 
 func TestAllocationExists(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 	out, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
@@ -21,7 +21,7 @@ func TestAllocationExists(t *testing.T) {
 // The lease store keys on the client-id alone, so the lookup has to work without
 // the owning account.
 func TestAllocationExistsIgnoresAccount(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 	out, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, "210987654321")
 	require.NoError(t, err)
 
@@ -33,7 +33,7 @@ func TestAllocationExistsIgnoresAccount(t *testing.T) {
 // A released allocation is what the reaper acts on, so this answer costs an
 // address if it is wrong.
 func TestAllocationExistsFalseAfterRelease(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 	out, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	_, err = svc.ReleaseAddress(t.Context(), &ec2.ReleaseAddressInput{AllocationId: out.AllocationId}, testAccountID)
@@ -45,7 +45,7 @@ func TestAllocationExistsFalseAfterRelease(t *testing.T) {
 }
 
 func TestAllocationExistsUnknownID(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	exists, err := svc.AllocationExists(t.Context(), "eipalloc-missing")
 	require.NoError(t, err)
@@ -53,7 +53,7 @@ func TestAllocationExistsUnknownID(t *testing.T) {
 }
 
 func TestAllocationExistsRejectsEmptyID(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.AllocationExists(t.Context(), "")
 	require.Error(t, err)

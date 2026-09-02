@@ -28,7 +28,10 @@ func testPool() external.ExternalPoolConfig {
 	}
 }
 
-func setupTestEIP(t *testing.T) (*EIPServiceImpl, *handlers_ec2_vpc.ExternalIPAM) {
+// setupTestEIP wires a real VPC service behind the EIP service. Every ENI
+// lookup AssociateAddress performs goes through it, so a nil one makes the
+// whole association path unreachable.
+func setupTestEIP(t *testing.T) (*EIPServiceImpl, *handlers_ec2_vpc.ExternalIPAM, *handlers_ec2_vpc.VPCServiceImpl) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
@@ -37,14 +40,18 @@ func setupTestEIP(t *testing.T) (*EIPServiceImpl, *handlers_ec2_vpc.ExternalIPAM
 	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{pool})
 	require.NoError(t, err)
 
-	svc, err := NewEIPServiceImpl(t.Context(), nc, ipam, nil)
+	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	require.NoError(t, err)
+	testutil.StubVpcdSGResponder(t, nc)
+
+	svc, err := NewEIPServiceImpl(t.Context(), nc, ipam, vpcSvc)
 	require.NoError(t, err)
 
-	return svc, ipam
+	return svc, ipam, vpcSvc
 }
 
 func TestEIP_Allocate(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -58,7 +65,7 @@ func TestEIP_Allocate(t *testing.T) {
 }
 
 func TestEIP_AllocateFromSpecificPool(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{
 		Domain: aws.String("vpc"),
@@ -75,7 +82,7 @@ func TestEIP_AllocateFromSpecificPool(t *testing.T) {
 // rather than a flat capacity code, so an upstream fault is not misreported
 // as a genuinely exhausted pool.
 func TestEIP_AllocateFromNamedPoolThatDoesNotExist(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{
 		PublicIpv4Pool: aws.String("no-such-pool"),
@@ -87,7 +94,7 @@ func TestEIP_AllocateFromNamedPoolThatDoesNotExist(t *testing.T) {
 // allocation must still resolve to InsufficientAddressCapacity — the wrap
 // added around the allocator's error must not swallow the AWS error code.
 func TestEIP_AllocateFromExhaustedDefaultPool(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	for range 10 {
 		_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -100,7 +107,7 @@ func TestEIP_AllocateFromExhaustedDefaultPool(t *testing.T) {
 }
 
 func TestEIP_Release(t *testing.T) {
-	svc, ipam := setupTestEIP(t)
+	svc, ipam, _ := setupTestEIP(t)
 
 	// Allocate
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -133,21 +140,15 @@ func TestEIP_Release(t *testing.T) {
 }
 
 func TestEIP_ReleaseWhileAssociated(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	// Allocate
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
-	// Manually mark as associated by writing to KV (simulates AssociateAddress without needing a real VPCService)
+	// Mark the record associated directly in KV, so the release lock is asserted
+	// without depending on an ENI existing.
 	allocID := *out.AllocationId
-	// We can't easily associate without a VPC service, but we can test the error path
-	// by directly updating the record's state in the KV store.
-	// Instead, let's verify that ReleaseAddress checks the state.
-	// Since we haven't associated, this should succeed (testing the non-associated path).
-	// To test the associated path, we need to manipulate the KV directly.
-
-	// Get the KV entry and update state to "associated"
 	entry, err := svc.eipKV.Get(t.Context(), testAccountID+"."+allocID)
 	require.NoError(t, err)
 
@@ -172,7 +173,7 @@ func TestEIP_ReleaseWhileAssociated(t *testing.T) {
 }
 
 func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -201,7 +202,7 @@ func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {
 }
 
 // associateToENI marks an allocated EIP as associated with eniID the way
-// AssociateAddress would, without needing a real VPC service behind it.
+// AssociateAddress would, without needing the ENI to exist.
 func associateToENI(t *testing.T, svc *EIPServiceImpl, allocID, eniID string) {
 	t.Helper()
 	key := testAccountID + "." + allocID
@@ -225,7 +226,7 @@ func associateToENI(t *testing.T, svc *EIPServiceImpl, allocID, eniID string) {
 // TestEIP_DisassociateByENI is the teardown path the zombie ENIs needed: the
 // association goes with the interface, and the allocation stays behind.
 func TestEIP_DisassociateByENI(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -260,7 +261,7 @@ func TestEIP_DisassociateByENI(t *testing.T) {
 // overwhelmingly common case on terminate — leaves other accounts' associations
 // alone and reports no error.
 func TestEIP_DisassociateByENI_NoMatchIsNoOp(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -287,7 +288,7 @@ func TestEIP_DisassociateByENI_NoMatchIsNoOp(t *testing.T) {
 // account prefix: a cluster-wide sweep passes the account the key was found
 // under, and matching across accounts would disassociate a stranger's address.
 func TestEIP_DisassociateByENI_ScopedToAccount(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -303,7 +304,7 @@ func TestEIP_DisassociateByENI_ScopedToAccount(t *testing.T) {
 // "no EIP" answer, and the association would then be stranded with nothing
 // left that could find it.
 func TestEIP_DisassociateByENI_SkipsMalformedRecord(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.eipKV.Put(t.Context(), testAccountID+".eipalloc-corrupt", []byte("{"))
 	require.NoError(t, err)
@@ -318,7 +319,7 @@ func TestEIP_DisassociateByENI_SkipsMalformedRecord(t *testing.T) {
 }
 
 func TestEIP_ReleaseByInstanceID_NoMatchIsNoOp(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -335,7 +336,7 @@ func TestEIP_ReleaseByInstanceID_NoMatchIsNoOp(t *testing.T) {
 }
 
 func TestEIP_ReleaseMissingParams(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	// Nil AllocationId
 	_, err := svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{}, testAccountID)
@@ -347,7 +348,7 @@ func TestEIP_ReleaseMissingParams(t *testing.T) {
 }
 
 func TestEIP_ReleaseNotFound(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: aws.String("eipalloc-nonexistent")}, testAccountID)
 	assert.Error(t, err)
@@ -355,7 +356,7 @@ func TestEIP_ReleaseNotFound(t *testing.T) {
 }
 
 func TestEIP_AssociateMissingAllocationId(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	// Nil AllocationId
 	_, err := svc.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{}, testAccountID)
@@ -367,7 +368,7 @@ func TestEIP_AssociateMissingAllocationId(t *testing.T) {
 }
 
 func TestEIP_AssociateInvalidAllocationId(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{
 		AllocationId:       aws.String("eipalloc-nonexistent"),
@@ -378,7 +379,7 @@ func TestEIP_AssociateInvalidAllocationId(t *testing.T) {
 }
 
 func TestEIP_AssociateMissingTarget(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	// Allocate first
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -392,7 +393,7 @@ func TestEIP_AssociateMissingTarget(t *testing.T) {
 }
 
 func TestEIP_DisassociateMissingParams(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	// Nil AssociationId
 	_, err := svc.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{}, testAccountID)
@@ -404,7 +405,7 @@ func TestEIP_DisassociateMissingParams(t *testing.T) {
 }
 
 func TestEIP_DisassociateNotFound(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{
 		AssociationId: aws.String("eipassoc-nonexistent"),
@@ -414,7 +415,7 @@ func TestEIP_DisassociateNotFound(t *testing.T) {
 }
 
 func TestEIP_RecordToEC2_WithTags(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	record := &EIPRecord{
 		AllocationId:  "eipalloc-test",
@@ -440,7 +441,7 @@ func TestEIP_RecordToEC2_WithTags(t *testing.T) {
 }
 
 func TestEIP_RecordToEC2_WithoutTags(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	record := &EIPRecord{
 		AllocationId: "eipalloc-notags",
@@ -461,7 +462,7 @@ func TestEIP_RecordToEC2_WithoutTags(t *testing.T) {
 }
 
 func TestEIP_FindByAssociationID_NotFound(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	_, _, _, err := svc.findByAssociationID(t.Context(), testAccountID, "eipassoc-nonexistent")
 	assert.Error(t, err)
@@ -469,7 +470,7 @@ func TestEIP_FindByAssociationID_NotFound(t *testing.T) {
 }
 
 func TestEIP_DescribeAddressesAttribute(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	// Allocate multiple EIPs
 	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -509,7 +510,7 @@ func TestEIP_DescribeAddressesAttribute(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	// Allocate multiple EIPs
 	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
@@ -544,7 +545,7 @@ func TestEIP_DescribeAddresses(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterByAllocationId(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -562,7 +563,7 @@ func TestEIP_DescribeAddresses_FilterByAllocationId(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterByPublicIp(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -580,7 +581,7 @@ func TestEIP_DescribeAddresses_FilterByPublicIp(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterByDomain(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -604,7 +605,7 @@ func TestEIP_DescribeAddresses_FilterByDomain(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterByInstanceId(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -636,7 +637,7 @@ func TestEIP_DescribeAddresses_FilterByInstanceId(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterMultipleValues_OR(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out1, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -655,7 +656,7 @@ func TestEIP_DescribeAddresses_FilterMultipleValues_OR(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterMultipleFilters_AND(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -684,7 +685,7 @@ func TestEIP_DescribeAddresses_FilterMultipleFilters_AND(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterUnknownName_Error(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
 		Filters: []*ec2.Filter{
@@ -695,7 +696,7 @@ func TestEIP_DescribeAddresses_FilterUnknownName_Error(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterWildcard(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -711,7 +712,7 @@ func TestEIP_DescribeAddresses_FilterWildcard(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterNoResults(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -726,7 +727,7 @@ func TestEIP_DescribeAddresses_FilterNoResults(t *testing.T) {
 }
 
 func TestEIP_DescribeAddresses_FilterByTag(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{
 		TagSpecifications: []*ec2.TagSpecification{
@@ -756,7 +757,7 @@ func TestEIP_DescribeAddresses_FilterByTag(t *testing.T) {
 // uses topology.Port(eniID) as PortName. A raw ENI id mismatch creates a
 // dnat_and_snat row pointing at a nonexistent OVN port, black-holing the EIP.
 func TestEIP_PublishNATEvent_PortNameHasPortPrefix(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	sub, err := svc.natsConn.SubscribeSync("vpc.add-nat")
 	require.NoError(t, err)

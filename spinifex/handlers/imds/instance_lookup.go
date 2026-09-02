@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -62,16 +64,23 @@ type recordLoader interface {
 type localInstanceLookup struct {
 	dataDir string
 	records recordLoader // nil-safe: fallback is skipped without it
+
+	// readState parses the local state file; overridable in tests to count
+	// calls. Defaults to daemon.ReadLocalState.
+	readState func(path string) (*daemon.LocalState, error)
+
+	cacheMu    sync.Mutex
+	cacheMtime time.Time
+	cacheSize  int64
+	cached     *daemon.LocalState
 }
 
 var _ instanceLookup = (*localInstanceLookup)(nil)
 
 func (l *localInstanceLookup) describe(ctx context.Context, accountID, instanceID string) (*instanceFacts, error) {
-	v, err := l.localVM(instanceID)
-	if err != nil {
-		return nil, fmt.Errorf("read local instance state: %w", err)
-	}
+	v := l.localVM(ctx, instanceID)
 	if v == nil {
+		var err error
 		v, err = l.recordVM(ctx, instanceID)
 		if err != nil {
 			return nil, err
@@ -83,14 +92,76 @@ func (l *localInstanceLookup) describe(ctx context.Context, accountID, instanceI
 	return instanceFactsFromVM(v), nil
 }
 
-// localVM reads the instance straight off this node's on-disk VM state.
-// Returns (nil, nil) if the file is absent or the instance is not on it.
-func (l *localInstanceLookup) localVM(instanceID string) (*vm.VM, error) {
-	state, err := daemon.ReadLocalState(daemon.LocalStatePath(l.dataDir))
-	if err != nil || state == nil {
+// instanceVisible replicates the per-node DescribeInstances filtering this
+// path bypasses by not going through the daemon's NATS handler: account
+// ownership, plus the platform-managed (LB/EKS) hide rule.
+func instanceVisible(accountID string, v *vm.VM) bool {
+	if !handlers_ec2_instance.IsInstanceVisible(accountID, v.AccountID) {
+		return false
+	}
+	if v.ManagedBy != "" && accountID != utils.GlobalAccountID {
+		return false
+	}
+	return true
+}
+
+// localVM reads the instance straight off this node's on-disk VM state,
+// through a cache. Returns nil if the file is absent, the instance is not on
+// it, or the read fails — a read failure logs and falls through to the
+// record-space fallback rather than serving a stale cached hit.
+func (l *localInstanceLookup) localVM(ctx context.Context, instanceID string) *vm.VM {
+	state, err := l.readCachedState()
+	if err != nil {
+		slog.WarnContext(ctx, "IMDS: local instance state unavailable, falling back to record space", "err", err)
+		return nil
+	}
+	if state == nil {
+		return nil
+	}
+	return state.VMS[instanceID]
+}
+
+// readCachedState reads the local state file, reusing the last parse while
+// the file's mtime and size are unchanged. IMDS is guest-driven and served
+// concurrently across per-tap responders, so this is mutex-guarded; a stat or
+// parse failure clears the cache and returns the error rather than serving a
+// stale hit.
+func (l *localInstanceLookup) readCachedState() (*daemon.LocalState, error) {
+	l.cacheMu.Lock()
+	defer l.cacheMu.Unlock()
+
+	path := daemon.LocalStatePath(l.dataDir)
+	info, err := os.Stat(path)
+	if err != nil {
+		l.cached = nil
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
-	return state.VMS[instanceID], nil
+
+	if l.cached != nil && info.ModTime().Equal(l.cacheMtime) && info.Size() == l.cacheSize {
+		return l.cached, nil
+	}
+
+	read := l.readState
+	if read == nil {
+		read = daemon.ReadLocalState
+	}
+	state, err := read(path)
+	if err != nil {
+		l.cached = nil
+		return nil, err
+	}
+	if state == nil {
+		l.cached = nil
+		return nil, nil
+	}
+
+	l.cached = state
+	l.cacheMtime = info.ModTime()
+	l.cacheSize = info.Size()
+	return state, nil
 }
 
 // recordVM falls back to the shared instance record space for an instance not
@@ -109,19 +180,6 @@ func (l *localInstanceLookup) recordVM(ctx context.Context, instanceID string) (
 		return nil, nil
 	}
 	return vm.VMFromRecord(record), nil
-}
-
-// instanceVisible replicates the per-node DescribeInstances filtering this
-// path bypasses by not going through the daemon's NATS handler: account
-// ownership, plus the platform-managed (LB/EKS) hide rule.
-func instanceVisible(accountID string, v *vm.VM) bool {
-	if !handlers_ec2_instance.IsInstanceVisible(accountID, v.AccountID) {
-		return false
-	}
-	if v.ManagedBy != "" && accountID != utils.GlobalAccountID {
-		return false
-	}
-	return true
 }
 
 // instanceFactsFromVM projects the write-once spec fields IMDS serves. Returns

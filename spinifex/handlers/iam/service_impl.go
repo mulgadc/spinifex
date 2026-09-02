@@ -2059,6 +2059,11 @@ func validateStatementRestrictions(i int, stmt Statement) error {
 	if len(stmt.NotResource) > 0 {
 		return fmt.Errorf("statement %d: NotResource blocks are not supported in this release; use Resource with an explicit list instead", i)
 	}
+	for _, resource := range stmt.Resource {
+		if err := validatePolicyVariables(i, "Resource", resource); err != nil {
+			return err
+		}
+	}
 	for op, keys := range stmt.Condition {
 		for key, values := range keys {
 			if !iampolicy.SupportedCondition(op, key) {
@@ -2080,6 +2085,13 @@ func validateConditionValues(i int, op, key string, values ConditionValue) error
 		return fmt.Errorf("statement %d: Condition operator %q on key %q has no value", i, op, key)
 	}
 	for _, v := range values {
+		// Only the string operators expand variables; a reference in a Bool or
+		// IpAddress value is already rejected as unparseable below.
+		if op == iampolicy.OpStringEquals || op == iampolicy.OpStringLike {
+			if err := validatePolicyVariables(i, fmt.Sprintf("Condition %s on key %q", op, key), v); err != nil {
+				return err
+			}
+		}
 		switch op {
 		case iampolicy.OpIPAddress:
 			if _, prefixErr := netip.ParsePrefix(v); prefixErr != nil {
@@ -2095,6 +2107,35 @@ func validateConditionValues(i int, op, key string, values ConditionValue) error
 		}
 	}
 	return nil
+}
+
+// supportedVariableList renders the substitutable keys for an error message,
+// read from the evaluator's registry so the advice cannot go stale.
+func supportedVariableList() string {
+	keys := iampolicy.SubstitutableKeys()
+	for i, key := range keys {
+		keys[i] = iampolicy.VariablePrefix + key + "}"
+	}
+	return strings.Join(keys, ", ")
+}
+
+// validatePolicyVariables rejects a ${...} reference the evaluator can never
+// resolve, naming the field it sits in. Such a pattern selects nothing on an
+// Allow and everything it named on a Deny, so the policy would be stored meaning
+// something other than what it reads as.
+func validatePolicyVariables(i int, field, value string) error {
+	key, unsupported := iampolicy.UnsupportedVariable(value)
+	if !unsupported {
+		return nil
+	}
+	// An unterminated reference reports the text after "${", which runs to the
+	// end of the value because it never found a closing brace.
+	if open := iampolicy.VariablePrefix + key; strings.HasSuffix(value, open) {
+		return fmt.Errorf("statement %d: %s: %q has an unterminated policy variable reference: "+
+			"%q is missing its closing brace", i, field, value, open)
+	}
+	return fmt.Errorf("statement %d: %s: %q references policy variable %q, which no request supplies; "+
+		"the supported variables are %s", i, field, value, key, supportedVariableList())
 }
 
 // summaryQuotaDefaults holds the static SummaryMap entries returned by

@@ -1861,6 +1861,70 @@ func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
 	}
 }
 
+// A reference the evaluator cannot resolve makes an Allow select nothing and a
+// Deny select everything it named, so the policy does not do what it reads as.
+// Rejecting it on write is the only place an operator can be told.
+func TestValidatePolicyDocument_RejectsUnresolvableVariables(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		stmt    string
+		wantErr string
+	}{
+		{"userid in a resource", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:userid}/*"`,
+			`references policy variable "aws:userid"`},
+		{"userid in a StringEquals value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringEquals":{"aws:username":"${aws:userid}"}}`,
+			`references policy variable "aws:userid"`},
+		{"userid in a StringLike value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringLike":{"s3:prefix":"${aws:userid}/*"}}`,
+			`references policy variable "aws:userid"`},
+		{"unknown key", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:bogus}/*"`,
+			`references policy variable "aws:bogus"`},
+		{"condition key that is not substitutable",
+			`"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:SourceIp}/*"`,
+			`references policy variable "aws:SourceIp"`},
+		{"unterminated", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:username"`,
+			"unterminated policy variable reference"},
+		{"empty reference", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${}/*"`,
+			"references policy variable"},
+		{"second resource carries it",
+			`"Action":"s3:*","Resource":["arn:aws:s3:::a/*","arn:aws:s3:::${aws:userid}/*"]`,
+			`references policy variable "aws:userid"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",` +
+				tt.stmt + `}]}`)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// ${aws:username} resolves for an IAM user and is deliberately absent for a role
+// session, so it is inert on a role-only path but correct on a user path.
+// Rejecting it here would refuse a policy that works.
+func TestValidatePolicyDocument_AcceptsSupportedVariables(t *testing.T) {
+	t.Parallel()
+	for _, stmt := range []string{
+		`"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:username}/*"`,
+		`"Action":"s3:*","Resource":"arn:aws:s3:::${aws:PrincipalAccount}/*"`,
+		`"Action":"s3:*","Resource":"*","Condition":{"StringEquals":{"aws:username":"${aws:username}"}}`,
+		`"Action":"s3:*","Resource":"*","Condition":{"StringLike":{"s3:prefix":"home/${aws:username}/*"}}`,
+		// AWS's literal escapes: the only way to write these characters
+		// literally in a pattern, so they must survive the gate.
+		`"Action":"s3:*","Resource":"arn:aws:s3:::home/${*}/${?}/${$}"`,
+		// A "$" that opens nothing is ordinary text.
+		`"Action":"s3:*","Resource":"arn:aws:s3:::home/$aws:username/*"`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",` +
+			stmt + `}]}`)
+		assert.NoError(t, err, "the evaluator resolves this policy's variables, so the write path must accept it: %s", stmt)
+	}
+}
+
 // D4's lenient leaf parsing must survive at the API surface: a native JSON bool
 // is what Terraform emits, and rejecting it would fail ordinary valid policies.
 func TestValidatePolicyDocument_AcceptsNativeBoolAndCIDRForms(t *testing.T) {

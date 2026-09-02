@@ -171,6 +171,154 @@ func TestSeedNexthopMAC_UnresolvedEvenAfterPing(t *testing.T) {
 	}
 }
 
+// Routed NAT points the gateway router at 100.127.0.1, an address on this
+// host's own transit veth. `ip route get` answers lo and no neigh entry can
+// ever exist, so the MAC has to come from the link that owns the address.
+func TestSeedNexthopMAC_LocalNexthopResolvesFromOwningLink(t *testing.T) {
+	r := &scriptedRunner{
+		responses: map[string][]byte{
+			"ip route get 100.127.0.1": []byte("local 100.127.0.1 dev lo src 100.127.0.1 uid 0"),
+			"ip -4 -o addr show to 100.127.0.1/32": []byte(
+				"7: spx-nat-host    inet 100.127.0.1/24 scope global spx-nat-host\\       valid_lft forever preferred_lft forever"),
+			"ip -o link show dev spx-nat-host": []byte(
+				"7: spx-nat-host@spx-nat-ovs: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 6a:1b:2c:3d:4e:5f brd ff:ff:ff:ff:ff:ff"),
+		},
+	}
+	if err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "100.127.0.1"); err != nil {
+		t.Fatalf("SeedNexthopMAC: %v", err)
+	}
+	if calls := r.callArgs("ping"); len(calls) != 0 {
+		t.Fatalf("expected no ping prime for a host-local nexthop, got %v", calls)
+	}
+	if calls := r.callArgs("ip neigh"); len(calls) != 0 {
+		t.Fatalf("expected no neigh read for a host-local nexthop, got %v", calls)
+	}
+	addCalls := r.callArgs("ovn-nbctl static-mac-binding-add")
+	if len(addCalls) != 1 {
+		t.Fatalf("expected 1 static-mac-binding-add call, got %d: %v", len(addCalls), r.calls)
+	}
+	wantAdd := "ovn-nbctl static-mac-binding-add gw-vpc-1 100.127.0.1 6a:1b:2c:3d:4e:5f"
+	if got := strings.Join(addCalls[0], " "); got != wantAdd {
+		t.Fatalf("add argv mismatch\n got: %s\nwant: %s", got, wantAdd)
+	}
+}
+
+// Dynamic ARP cannot rescue a host-local nexthop, so an unresolved one is
+// permanent egress loss and must surface as an error, not a best-effort nil.
+func TestSeedNexthopMAC_LocalNexthopNoOwningLink(t *testing.T) {
+	r := &scriptedRunner{
+		responses: map[string][]byte{
+			"ip route get 100.127.0.1":             []byte("local 100.127.0.1 dev lo src 100.127.0.1 uid 0"),
+			"ip -4 -o addr show to 100.127.0.1/32": []byte(""),
+		},
+	}
+	err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "100.127.0.1")
+	if err == nil {
+		t.Fatal("expected an error when no link carries a host-local nexthop")
+	}
+	if !strings.Contains(err.Error(), "no link carries 100.127.0.1") {
+		t.Fatalf("error must name the unresolved nexthop, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), NATTransitHostEnd) {
+		t.Fatalf("error must point at %s for remediation, got: %v", NATTransitHostEnd, err)
+	}
+	if calls := r.callArgs("ovn-nbctl"); len(calls) != 0 {
+		t.Fatalf("expected no ovn-nbctl calls when no link owns the nexthop, got %v", calls)
+	}
+}
+
+// A nexthop on a link with no ethernet address (tun, dummy) has no MAC to bind
+// to. The addr lookup must name that link so ip link show is actually reached.
+func TestSeedNexthopMAC_LocalNexthopLinkHasNoEtherAddr(t *testing.T) {
+	r := &scriptedRunner{
+		responses: map[string][]byte{
+			"ip route get 100.127.0.1": []byte("local 100.127.0.1 dev lo src 100.127.0.1 uid 0"),
+			"ip -4 -o addr show to 100.127.0.1/32": []byte(
+				"9: spx-nat-tun    inet 100.127.0.1/24 scope global spx-nat-tun\\       valid_lft forever preferred_lft forever"),
+			"ip -o link show dev spx-nat-tun": []byte(
+				"9: spx-nat-tun: <POINTOPOINT,MULTICAST,NOARP,UP> mtu 1500 qdisc fq_codel state UNKNOWN mode DEFAULT group default qlen 500\\    link/none"),
+		},
+	}
+	err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "100.127.0.1")
+	if err == nil {
+		t.Fatal("expected an error when the owning link has no ethernet address")
+	}
+	if !strings.Contains(err.Error(), "spx-nat-tun") {
+		t.Fatalf("error must name the owning link, got: %v", err)
+	}
+	if calls := r.callArgs("ip -o link show"); len(calls) != 1 {
+		t.Fatalf("expected the link show to be reached exactly once, got %d: %v", len(calls), r.calls)
+	}
+	if calls := r.callArgs("ovn-nbctl"); len(calls) != 0 {
+		t.Fatalf("expected no ovn-nbctl calls for a link with no MAC, got %v", calls)
+	}
+}
+
+// `ip addr show to` exits 0 with empty output when nothing matches, so a real
+// error there is always unexpected and its diagnostic must reach the caller.
+func TestSeedNexthopMAC_LocalNexthopAddrShowErrorPropagates(t *testing.T) {
+	r := &scriptedRunner{
+		responses: map[string][]byte{
+			"ip route get 100.127.0.1": []byte("local 100.127.0.1 dev lo src 100.127.0.1 uid 0"),
+		},
+		errors: map[string]error{
+			"ip -4 -o addr show to 100.127.0.1/32": errors.New("sudo: a password is required"),
+		},
+	}
+	err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "100.127.0.1")
+	if err == nil {
+		t.Fatal("expected the addr show failure to propagate, not be swallowed")
+	}
+	if !strings.Contains(err.Error(), "sudo: a password is required") {
+		t.Fatalf("underlying diagnostic must survive, got: %v", err)
+	}
+	if calls := r.callArgs("ovn-nbctl"); len(calls) != 0 {
+		t.Fatalf("expected no ovn-nbctl calls after a failed lookup, got %v", calls)
+	}
+}
+
+// A link that vanishes between the addr lookup and the link read is a TOCTOU
+// signal, not a missing MAC — it must not collapse into the same outcome.
+func TestSeedNexthopMAC_LocalNexthopLinkShowErrorPropagates(t *testing.T) {
+	r := &scriptedRunner{
+		responses: map[string][]byte{
+			"ip route get 100.127.0.1": []byte("local 100.127.0.1 dev lo src 100.127.0.1 uid 0"),
+			"ip -4 -o addr show to 100.127.0.1/32": []byte(
+				"7: spx-nat-host    inet 100.127.0.1/24 scope global spx-nat-host\\       valid_lft forever preferred_lft forever"),
+		},
+		errors: map[string]error{
+			"ip -o link show dev spx-nat-host": errors.New(`Device "spx-nat-host" does not exist.`),
+		},
+	}
+	err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "100.127.0.1")
+	if err == nil {
+		t.Fatal("expected the link show failure to propagate, not be swallowed")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("underlying diagnostic must survive, got: %v", err)
+	}
+	if calls := r.callArgs("ovn-nbctl"); len(calls) != 0 {
+		t.Fatalf("expected no ovn-nbctl calls after a failed lookup, got %v", calls)
+	}
+}
+
+func TestParseLinkEtherMAC(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want string
+	}{
+		{"ether", "7: spx-nat-host@spx-nat-ovs: <UP> mtu 1500\\    link/ether 6a:1b:2c:3d:4e:5f brd ff:ff:ff:ff:ff:ff", "6a:1b:2c:3d:4e:5f"},
+		{"loopback", "1: lo: <LOOPBACK,UP> mtu 65536\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00", ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		if got := parseLinkEtherMAC(tc.out); got != tc.want {
+			t.Errorf("%s: parseLinkEtherMAC = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestSeedNexthopMAC_EmptyArgsNoop(t *testing.T) {
 	r := &scriptedRunner{}
 	if err := SeedNexthopMAC(context.Background(), r, "", "", "192.168.1.1"); err != nil {

@@ -227,8 +227,15 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 
 	if m.nexthopSeed != nil && m.gatewayOwnsNAT() && wanNexthop != "" {
 		if err := m.nexthopSeed(ctx, gwPortName, wanNexthop); err != nil {
-			slog.Warn("external: seed nexthop MAC binding failed; egress relies on dynamic ARP",
-				"vpc_id", spec.VPCID, "gw_port", gwPortName, "nexthop", wanNexthop, "err", err)
+			// Routed mode's nexthop is host-local, so nothing answers an ARP for
+			// it and the seed is the only way egress ever resolves.
+			if m.natMode == policy.NATModeRouted {
+				slog.Error("external: seed nexthop MAC binding failed; routed-NAT egress will black-hole",
+					"vpc_id", spec.VPCID, "gw_port", gwPortName, "nexthop", wanNexthop, "err", err)
+			} else {
+				slog.Warn("external: seed nexthop MAC binding failed; egress relies on dynamic ARP",
+					"vpc_id", spec.VPCID, "gw_port", gwPortName, "nexthop", wanNexthop, "err", err)
+			}
 		}
 	}
 

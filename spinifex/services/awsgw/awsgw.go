@@ -476,6 +476,14 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	go gateway_bedrock.NewUsageConsumer(bedrockUsage, bedrockPrices).Run(janitorCtx, usageConsumer)
 
+	// nodeIDs is the configured cluster node set, in the same namespace as the
+	// daemon reply header, so a fan-out's completeness can be judged by
+	// responder identity rather than by count.
+	nodeIDs := make([]string, 0, len(config.Nodes))
+	for nodeID := range config.Nodes {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+
 	gw := gateway.GatewayConfig{
 		Debug:                   nodeConfig.AWSGW.Debug,
 		DisableLogging:          false,
@@ -483,6 +491,7 @@ func launchService(config *config.ClusterConfig) error {
 		RootCAs:                 rootCAs,
 		Config:                  nodeConfig.AWSGW.Config,
 		ExpectedNodes:           len(config.Nodes),
+		NodeIDs:                 nodeIDs,
 		Region:                  nodeConfig.Region,
 		InternalSuffix:          config.AWS.InternalSuffix,
 		RegistryPort:            registryPort,

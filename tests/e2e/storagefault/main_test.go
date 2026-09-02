@@ -128,6 +128,12 @@ const predastoreCmdline = "service predastore"
 // change as in effect, so an assertion cannot race the signal.
 const freezeSettle = 2 * time.Second
 
+// backendRecoveryBudget is how long the backend has to serve object I/O again
+// once a fault is cleared. Generous because reconnection and meta re-election
+// both have to happen; a wedge does not clear at all, so the budget only has to
+// tell the two apart.
+const backendRecoveryBudget = 3 * time.Minute
+
 // predastorePID resolves the predastore unit's MainPID on node and confirms the
 // process is the one expected. Returns 0 with no error when the unit is not
 // running, which is a fact the caller decides what to do about.
@@ -248,6 +254,27 @@ func thawPredastore(t *testing.T, f *Fixture, nodes []harness.Node) {
 		t.Logf("thawed predastore pid %d on %s", pid, n.Name)
 	}
 	time.Sleep(freezeSettle)
+
+	requireBackendServing(t, f)
+}
+
+// requireBackendServing proves the whole cluster answers object I/O again, not
+// just the nodes that were frozen: the fault reaches every node through the
+// stripe, and a wedged one is reached through whichever gate is asked.
+func requireBackendServing(t *testing.T, f *Fixture) {
+	t.Helper()
+	if f == nil || f.Cluster == nil {
+		return
+	}
+
+	hosts := make([]string, 0, len(f.Cluster.Nodes))
+	for _, n := range f.Cluster.Nodes {
+		hosts = append(hosts, n.Addr)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), backendRecoveryBudget+time.Minute)
+	defer cancel()
+	harness.AssertPredastoreServing(ctx, t, hosts, backendRecoveryBudget)
 }
 
 // freezeSetFor returns the nodes to freeze so the backend is definitively below

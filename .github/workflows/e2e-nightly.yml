@@ -283,12 +283,10 @@ jobs:
         working-directory: spinifex
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
-          # Debian/Ubuntu ship /boot/vmlinuz-* mode 0600; the libguestfs
-          # appliance needs to read a host kernel. direct backend = no libvirt.
+          # direct backend = no libvirt. Set here rather than in the script:
+          # it has to be in the environment the build itself runs in.
           export LIBGUESTFS_BACKEND=direct
-          sudo chmod 0644 /boot/vmlinuz-* || true
+          "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ensure-libguestfs.sh"
           make build-eks-node-image
 
       - name: Import eks-node AMI on VM
@@ -343,10 +341,10 @@ jobs:
         working-directory: spinifex
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
+          # direct backend = no libvirt. Set here rather than in the script:
+          # it has to be in the environment the build itself runs in.
           export LIBGUESTFS_BACKEND=direct
-          sudo chmod 0644 /boot/vmlinuz-* || true
+          "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ensure-libguestfs.sh"
           make build-ecs-node-image
 
       - name: Import ecs-node AMI on VM
@@ -375,10 +373,10 @@ jobs:
         working-directory: spinifex
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
+          # direct backend = no libvirt. Set here rather than in the script:
+          # it has to be in the environment the build itself runs in.
           export LIBGUESTFS_BACKEND=direct
-          sudo chmod 0644 /boot/vmlinuz-* || true
+          "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ensure-libguestfs.sh"
           for IMAGE in rds-postgres rds-mariadb; do
             make "build-${IMAGE}-image"
           done

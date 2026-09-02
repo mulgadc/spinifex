@@ -62,8 +62,26 @@ func TestEKSRequest_ScopedAllowGrants(t *testing.T) {
 	assertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod", ""))
 }
 
-// A nodegroup ARN carries a UUID the gate cannot see, so the resolver leaves it
-// wildcarded. The AWS-documented policy spelling must still match.
+// The bypass this work closes. A tenant pastes the ARN out of DescribeNodegroup
+// and fences it; before the discriminator was derived the gate evaluated a
+// wildcarded spelling that this exact-ARN pattern could not match, so the fence
+// was inert and the delete went through.
+func TestEKSRequest_NodegroupScopeMatchesExactStoredARN(t *testing.T) {
+	stored := arn.FormatEKSNodegroup(authzRegion, authzAccountID, "prod", "workers",
+		arn.EKSNodegroupDiscriminator(authzAccountID, "prod", "workers"))
+
+	gw := scopedPolicyGateway(
+		statement("Allow", "eks:*", "*"),
+		statement("Deny", "eks:DeleteNodegroup", stored),
+	)
+
+	assertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/workers", ""))
+	assertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/batch", ""))
+	assertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev/node-groups/workers", ""))
+}
+
+// The AWS-documented policy spelling wildcards the discriminator, and was the
+// only spelling that worked before. It must keep working.
 func TestEKSRequest_NodegroupScopeMatchesWildcardUUID(t *testing.T) {
 	gw := scopedPolicyGateway(
 		statement("Allow", "eks:*", "*"),

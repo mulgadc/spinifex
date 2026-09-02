@@ -1,10 +1,11 @@
-package handlers_eks
+package handlers_eks_test
 
 import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
+	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,9 +29,9 @@ func TestClusterTokenParamHash_IgnoresTokenReflectsParams(t *testing.T) {
 	diffParams := *base
 	diffParams.Version = aws.String("1.31")
 
-	assert.Equal(t, clusterTokenParamHash(base), clusterTokenParamHash(&sameParamsDiffToken),
+	assert.Equal(t, handlers_eks.ClusterTokenParamHash(base), handlers_eks.ClusterTokenParamHash(&sameParamsDiffToken),
 		"token must not affect the param hash")
-	assert.NotEqual(t, clusterTokenParamHash(base), clusterTokenParamHash(&diffParams),
+	assert.NotEqual(t, handlers_eks.ClusterTokenParamHash(base), handlers_eks.ClusterTokenParamHash(&diffParams),
 		"a real param change must change the hash")
 }
 
@@ -39,7 +40,7 @@ func TestClusterTokenParamHash_LeavesTheInputAlone(t *testing.T) {
 	t.Parallel()
 	input := &eks.CreateClusterInput{Name: aws.String("c1"), ClientRequestToken: aws.String("tok-A")}
 
-	clusterTokenParamHash(input)
+	handlers_eks.ClusterTokenParamHash(input)
 
 	assert.Equal(t, "tok-A", aws.StringValue(input.ClientRequestToken),
 		"hashing must not strip the token the create still needs")
@@ -50,7 +51,7 @@ func TestClusterTokenParamHash_LeavesTheInputAlone(t *testing.T) {
 func TestClusterTokenStore_ReplaysTheClusterName(t *testing.T) {
 	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store, err := newClusterTokenStore(t.Context(), testutil.NewJetStream(t, nc))
+	store, err := handlers_eks.NewClusterTokenStore(t.Context(), testutil.NewJetStream(t, nc))
 	require.NoError(t, err)
 	const account, tok, hash = "111122223333", "tok-1", "h"
 

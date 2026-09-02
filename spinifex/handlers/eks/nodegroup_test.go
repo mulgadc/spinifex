@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/tags"
@@ -339,7 +340,12 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 	// The create accepts the request as CREATING; worker launch runs async.
 	assert.Equal(t, eks.NodegroupStatusCreating, aws.StringValue(out.Nodegroup.Status))
 	assert.Equal(t, int64(2), aws.Int64Value(out.Nodegroup.ScalingConfig.DesiredSize))
-	assert.Contains(t, aws.StringValue(out.Nodegroup.NodegroupArn), ":nodegroup/c1/ng1/")
+	// Full equality, not a prefix: the policy gate rebuilds this ARN from the
+	// identifiers alone, and a Deny naming it only fires if it matches exactly.
+	assert.Equal(t,
+		arn.FormatEKSNodegroup(f.svc.deps.Region, testAccountID, "c1", "ng1",
+			arn.EKSNodegroupDiscriminator(testAccountID, "c1", "ng1")),
+		aws.StringValue(out.Nodegroup.NodegroupArn))
 
 	// Both workers register Ready → the Ready-gate lets the nodegroup go ACTIVE.
 	markWorkersReady(t, f, "c1", "ng1", 2)

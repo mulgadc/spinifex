@@ -150,3 +150,61 @@ func TestResourceARNs_MissingAndLookupErrors(t *testing.T) {
 	_, err = gateway_iam.ResourceARNs("NotAnAction", testAccount, &iam.ListUsersInput{}, svc)
 	require.EqualError(t, err, awserrors.ErrorInvalidAction)
 }
+
+// TestResourceARNs_PolicyARNIsReanchoredOntoCallerAccount pins that the account
+// segment of a caller-supplied PolicyArn never reaches the evaluator. Every
+// action resolved from one is covered, so a new one cannot join by copying a
+// neighbour and inherit the caller's own account id as authoritative.
+func TestResourceARNs_PolicyARNIsReanchoredOntoCallerAccount(t *testing.T) {
+	const foreign = "arn:aws:iam::999999999999:policy/team/app"
+	const want = "arn:aws:iam::123456789012:policy/team/app"
+	svc := &resolverService{}
+
+	tests := []struct {
+		action string
+		input  any
+	}{
+		{"GetPolicy", &iam.GetPolicyInput{PolicyArn: aws.String(foreign)}},
+		{"GetPolicyVersion", &iam.GetPolicyVersionInput{PolicyArn: aws.String(foreign), VersionId: aws.String("v1")}},
+		{"ListPolicyVersions", &iam.ListPolicyVersionsInput{PolicyArn: aws.String(foreign)}},
+		{"DeletePolicy", &iam.DeletePolicyInput{PolicyArn: aws.String(foreign)}},
+		{"TagPolicy", &iam.TagPolicyInput{PolicyArn: aws.String(foreign)}},
+		{"UntagPolicy", &iam.UntagPolicyInput{PolicyArn: aws.String(foreign)}},
+		{"ListPolicyTags", &iam.ListPolicyTagsInput{PolicyArn: aws.String(foreign)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.action, func(t *testing.T) {
+			got, err := gateway_iam.ResourceARNs(tt.action, testAccount, tt.input, svc)
+			require.NoError(t, err)
+			assert.Equal(t, []string{want}, got)
+		})
+	}
+}
+
+// TestResourceARNs_PolicyARNShapes covers the spellings either side of the
+// re-anchor: an AWS-managed ARN is not a special case, and an ARN that carries
+// no policy component widens to account-wide rather than reaching the evaluator
+// as caller-controlled text.
+func TestResourceARNs_PolicyARNShapes(t *testing.T) {
+	svc := &resolverService{}
+	tests := []struct {
+		name      string
+		policyARN string
+		want      string
+	}{
+		{"caller's own account", "arn:aws:iam::123456789012:policy/Admin", "arn:aws:iam::123456789012:policy/Admin"},
+		{"AWS-managed", "arn:aws:iam::aws:policy/AdministratorAccess", "arn:aws:iam::123456789012:policy/AdministratorAccess"},
+		{"nested path", "arn:aws:iam::999999999999:policy/a/b/Admin", "arn:aws:iam::123456789012:policy/a/b/Admin"},
+		{"not a policy ARN", "arn:aws:iam::999999999999:user/alice", "*"},
+		{"no name", "arn:aws:iam::999999999999:policy/", "*"},
+		{"not an ARN", "Admin", "*"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := &iam.GetPolicyInput{PolicyArn: aws.String(tt.policyARN)}
+			got, err := gateway_iam.ResourceARNs("GetPolicy", testAccount, input, svc)
+			require.NoError(t, err)
+			assert.Equal(t, []string{tt.want}, got)
+		})
+	}
+}

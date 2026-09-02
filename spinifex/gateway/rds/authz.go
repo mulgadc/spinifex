@@ -61,6 +61,19 @@ func requireAgentPrincipal(ctx context.Context, caller Caller) error {
 	return nil
 }
 
+// HasScope reports whether the action's policy check evaluates a resource ARN
+// rather than the account-wide "*".
+func HasScope(action string) bool {
+	def, ok := actions[action]
+	return ok && len(def.scopes) > 0
+}
+
+// ScopedActions returns every action whose policy check evaluates a resource
+// ARN, in stable order.
+func ScopedActions() []string {
+	return actionNames(func(def actionDef) bool { return len(def.scopes) > 0 })
+}
+
 // ResourceARN builds every resource the action's policy checks evaluate. A
 // policy written for arn:aws:rds:*:*:db:prod-* but checked against "*" would
 // permit every instance in the account, which is worse than no policy at all.

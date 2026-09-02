@@ -267,6 +267,163 @@ func TestMemoryProviderSeedIsStoredOnce(t *testing.T) {
 	assert.Equal(t, seed, stored, "an existing volume must never be reseeded")
 }
 
+// TestMemoryProviderEnumerationRequiresCapability pins the refusal a caller
+// branches on: a provider that cannot enumerate must say so, because an empty
+// page and "I do not enumerate" mean opposite things to a reconciler deciding
+// whether volumes with no metadata document have been orphaned.
+func TestMemoryProviderEnumerationRequiresCapability(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{})
+	ctx := context.Background()
+
+	_, err := provider.ListVolumes(ctx, ListVolumesRequest{Versioned: NewVersioned()})
+	require.ErrorIs(t, err, ErrUnsupportedCapability)
+
+	_, err = provider.ListSnapshots(ctx, ListSnapshotsRequest{Versioned: NewVersioned()})
+	require.ErrorIs(t, err, ErrUnsupportedCapability)
+}
+
+// TestMemoryProviderListVolumesPages walks a full enumeration one page at a
+// time. The token is the ID to resume after, so the property worth pinning is
+// that concatenating the pages yields every volume exactly once, in ID order,
+// with the last page carrying no token.
+func TestMemoryProviderListVolumesPages(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{VolumeEnumeration: true})
+	ctx := context.Background()
+
+	empty, err := provider.ListVolumes(ctx, ListVolumesRequest{Versioned: NewVersioned()})
+	require.NoError(t, err)
+	assert.Empty(t, empty.Volumes)
+	assert.Empty(t, empty.NextToken, "holding nothing is a last page, not a page to resume")
+
+	for _, id := range []string{"vol-c", "vol-a", "vol-e", "vol-b", "vol-d"} {
+		_, err := provider.CreateVolume(ctx, CreateVolumeRequest{
+			Versioned: NewVersioned(), VolumeID: id, CapacityRange: CapacityRange{RequiredBytes: 1 << 30},
+		})
+		require.NoError(t, err)
+	}
+
+	var seen []VolumeRef
+	var token string
+	for range 3 {
+		page, err := provider.ListVolumes(ctx, ListVolumesRequest{
+			Versioned: NewVersioned(), MaxResults: 2, StartingToken: token,
+		})
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(page.Volumes), 2, "a page must not exceed MaxResults")
+		seen = append(seen, page.Volumes...)
+		token = page.NextToken
+		if token == "" {
+			break
+		}
+	}
+
+	assert.Empty(t, token, "the walk must terminate")
+	assert.Equal(t, []VolumeRef{
+		{ID: "vol-a", Handle: "memory://volume/vol-a"},
+		{ID: "vol-b", Handle: "memory://volume/vol-b"},
+		{ID: "vol-c", Handle: "memory://volume/vol-c"},
+		{ID: "vol-d", Handle: "memory://volume/vol-d"},
+		{ID: "vol-e", Handle: "memory://volume/vol-e"},
+	}, seen)
+}
+
+// TestMemoryProviderListSnapshotsCarriesSourceVolume covers the one field that
+// makes snapshot enumeration actionable: a snapshot found with no metadata
+// document can only be reconciled once the volume it came from is known.
+func TestMemoryProviderListSnapshotsCarriesSourceVolume(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{SnapshotEnumeration: true})
+	ctx := context.Background()
+
+	_, err := provider.CreateVolume(ctx, CreateVolumeRequest{
+		Versioned: NewVersioned(), VolumeID: "vol-src", CapacityRange: CapacityRange{RequiredBytes: 1 << 30},
+	})
+	require.NoError(t, err)
+	for _, id := range []string{"snap-b", "snap-a"} {
+		_, err := provider.CreateSnapshot(ctx, CreateSnapshotRequest{
+			Versioned: NewVersioned(), SnapshotID: id, VolumeID: "vol-src",
+		})
+		require.NoError(t, err)
+	}
+
+	first, err := provider.ListSnapshots(ctx, ListSnapshotsRequest{Versioned: NewVersioned(), MaxResults: 1})
+	require.NoError(t, err)
+	assert.Equal(t, []SnapshotRef{{ID: "snap-a", SourceVolumeID: "vol-src", Handle: "memory://snapshot/snap-a"}}, first.Snapshots)
+	require.Equal(t, "snap-a", first.NextToken)
+
+	second, err := provider.ListSnapshots(ctx, ListSnapshotsRequest{
+		Versioned: NewVersioned(), MaxResults: 1, StartingToken: first.NextToken,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []SnapshotRef{{ID: "snap-b", SourceVolumeID: "vol-src", Handle: "memory://snapshot/snap-b"}}, second.Snapshots)
+	assert.Empty(t, second.NextToken)
+}
+
+// TestMemoryProviderCopySnapshot covers the duplication contract: the copy is
+// an independent snapshot over the same frozen data, and every refusal is a
+// case where copying would either lose data or attribute it to the wrong
+// volume.
+func TestMemoryProviderCopySnapshot(t *testing.T) {
+	provider := NewMemoryProvider(Capabilities{})
+	copiedAt := time.Date(2026, 8, 5, 6, 0, 0, 0, time.UTC)
+	provider.now = func() time.Time { return copiedAt }
+	ctx := context.Background()
+
+	_, err := provider.CreateVolume(ctx, CreateVolumeRequest{
+		Versioned: NewVersioned(), VolumeID: "vol-src", CapacityRange: CapacityRange{RequiredBytes: 4 << 30},
+	})
+	require.NoError(t, err)
+	source, err := provider.CreateSnapshot(ctx, CreateSnapshotRequest{
+		Versioned: NewVersioned(), SnapshotID: "snap-src", VolumeID: "vol-src",
+	})
+	require.NoError(t, err)
+
+	copied, err := provider.CopySnapshot(ctx, CopySnapshotRequest{
+		Versioned: NewVersioned(), SourceSnapshotID: "snap-src", DestinationSnapshotID: "snap-dst", VolumeID: "vol-src",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "snap-dst", copied.ID)
+	assert.Equal(t, "memory://snapshot/snap-dst", copied.Handle, "the copy must be independently addressable")
+	assert.Equal(t, source.SourceVolumeID, copied.SourceVolumeID)
+	assert.Equal(t, source.SizeBytes, copied.SizeBytes)
+	assert.Equal(t, copiedAt, copied.CreatedAt)
+	assert.Equal(t, SnapshotStateCompleted, copied.State)
+
+	stored, ok := provider.Snapshot("snap-dst")
+	require.True(t, ok, "the copy must reach the provider, not just the response")
+	assert.Equal(t, copied, stored)
+	_, ok = provider.Snapshot("snap-absent")
+	assert.False(t, ok)
+
+	refusals := []struct {
+		name string
+		req  CopySnapshotRequest
+		want error
+	}{
+		{"missing source", CopySnapshotRequest{DestinationSnapshotID: "snap-x", VolumeID: "vol-src"}, ErrInvalidArgument},
+		{"missing destination", CopySnapshotRequest{SourceSnapshotID: "snap-src", VolumeID: "vol-src"}, ErrInvalidArgument},
+		{"missing volume", CopySnapshotRequest{SourceSnapshotID: "snap-src", DestinationSnapshotID: "snap-x"}, ErrInvalidArgument},
+		{"destination equals source", CopySnapshotRequest{SourceSnapshotID: "snap-src", DestinationSnapshotID: "snap-src", VolumeID: "vol-src"}, ErrInvalidArgument},
+		{"unknown source", CopySnapshotRequest{SourceSnapshotID: "snap-absent", DestinationSnapshotID: "snap-x", VolumeID: "vol-src"}, ErrNotFound},
+		{"wrong source volume", CopySnapshotRequest{SourceSnapshotID: "snap-src", DestinationSnapshotID: "snap-x", VolumeID: "vol-other"}, ErrInvalidArgument},
+		{"destination exists", CopySnapshotRequest{SourceSnapshotID: "snap-src", DestinationSnapshotID: "snap-dst", VolumeID: "vol-src"}, ErrAlreadyExists},
+	}
+	for _, tt := range refusals {
+		t.Run(tt.name, func(t *testing.T) {
+			req := tt.req
+			req.Versioned = NewVersioned()
+			_, err := provider.CopySnapshot(ctx, req)
+			require.ErrorIs(t, err, tt.want)
+		})
+	}
+
+	t.Run("version skew", func(t *testing.T) {
+		_, err := provider.CopySnapshot(ctx, CopySnapshotRequest{
+			SourceSnapshotID: "snap-src", DestinationSnapshotID: "snap-y", VolumeID: "vol-src",
+		})
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
+	})
+}
+
 func TestValidateSeedData(t *testing.T) {
 	require.NoError(t, ValidateSeedData(nil))
 	require.NoError(t, ValidateSeedData(make([]byte, MaxSeedBytes)))

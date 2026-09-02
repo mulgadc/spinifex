@@ -273,9 +273,11 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 
 	now := time.Now().UTC()
 	rec := &NodegroupRecord{
-		ClusterName:    cluster,
-		Name:           ng,
-		Arn:            arn.FormatEKSNodegroup(s.deps.Region, accountID, cluster, ng, uuid.NewV4().String()),
+		ClusterName: cluster,
+		Name:        ng,
+		// Derived, not random: the policy gate builds the same ARN from the same
+		// identifiers, so a Deny naming this exact ARN fires without a lookup.
+		Arn:            arn.FormatEKSNodegroup(s.deps.Region, accountID, cluster, ng, arn.EKSNodegroupDiscriminator(accountID, cluster, ng)),
 		Status:         eks.NodegroupStatusCreating,
 		Subnets:        subnets,
 		InstanceTypes:  instanceTypes,

@@ -31,7 +31,7 @@ func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(context.Context, *In,
 func setupNATSEIPServiceTest(t *testing.T) (EIPService, *EIPServiceImpl) {
 	t.Helper()
 
-	backend, _ := setupTestEIP(t)
+	backend, _, _ := setupTestEIP(t)
 
 	nc, err := nats.Connect(backend.natsConn.ConnectedUrl())
 	require.NoError(t, err)

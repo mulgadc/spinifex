@@ -11,7 +11,7 @@ import (
 
 // An unassociated EIP has no dnat_and_snat, so the record move needs no vpcd.
 func TestRebindPublicIP_MovesUnassociatedRecord(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	allocID, oldIP := *out.AllocationId, *out.PublicIp
@@ -28,7 +28,7 @@ func TestRebindPublicIP_MovesUnassociatedRecord(t *testing.T) {
 // Duplicate delivery must not fail: the revision check would reject the second
 // write even though the record already holds the target address.
 func TestRebindPublicIP_IsIdempotent(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	allocID, oldIP := *out.AllocationId, *out.PublicIp
@@ -40,7 +40,7 @@ func TestRebindPublicIP_IsIdempotent(t *testing.T) {
 // Moving a record that names neither address would overwrite an allocation this
 // lease does not own.
 func TestRebindPublicIP_RejectsMismatchedOldIP(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
@@ -51,7 +51,7 @@ func TestRebindPublicIP_RejectsMismatchedOldIP(t *testing.T) {
 
 // A lease that outlived its allocation must report, not silently pass.
 func TestRebindPublicIP_UnknownAllocationErrors(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	err := svc.RebindPublicIP(t.Context(), "eipalloc-missing", "198.51.100.11", "198.51.100.99")
 	require.Error(t, err)
@@ -59,7 +59,7 @@ func TestRebindPublicIP_UnknownAllocationErrors(t *testing.T) {
 }
 
 func TestRebindPublicIP_RejectsEmptyArgs(t *testing.T) {
-	svc, _ := setupTestEIP(t)
+	svc, _, _ := setupTestEIP(t)
 
 	assert.Error(t, svc.RebindPublicIP(t.Context(), "", "198.51.100.11", "198.51.100.99"))
 	assert.Error(t, svc.RebindPublicIP(t.Context(), "eipalloc-1", "198.51.100.11", ""))

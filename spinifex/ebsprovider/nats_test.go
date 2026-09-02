@@ -365,6 +365,221 @@ func TestNATSProviderOwnerFirst_NonNoRespondersDoesNotFallBack(t *testing.T) {
 	assert.Equal(t, int32(0), queueHits.Load(), "a timeout must never fall back to the queue-group subject")
 }
 
+// respondWith subscribes subject with a canned reply, so a client-side guard
+// can be driven against a response shape a healthy server never sends.
+func respondWith(t *testing.T, conn *nats.Conn, subject string, response any) {
+	t.Helper()
+	payload, err := json.Marshal(response)
+	require.NoError(t, err)
+	sub, err := conn.Subscribe(subject, func(msg *nats.Msg) {
+		require.NoError(t, msg.Respond(payload))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, conn.Flush())
+}
+
+// TestNATSProviderRejectsEmptySuccessResponse covers the nil-payload guard on
+// every method that returns a pointer. A reply carrying neither an error nor a
+// body is a server bug, and without these guards each method would hand the
+// caller a nil *Volume or *Snapshot alongside a nil error.
+func TestNATSProviderRejectsEmptySuccessResponse(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+	provider := NewNATSProvider(conn, time.Second)
+	ctx := t.Context()
+	empty := Versioned{SchemaVersion: SchemaVersion}
+
+	t.Run("CreateVolume", func(t *testing.T) {
+		respondWith(t, conn, CreateVolumeSubject, CreateVolumeResponse{Versioned: empty})
+		_, err := provider.CreateVolume(ctx, CreateVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-empty"})
+		require.EqualError(t, err, "ebs.create returned no volume")
+	})
+
+	t.Run("GetVolume", func(t *testing.T) {
+		respondWith(t, conn, GetVolumeSubject, GetVolumeResponse{Versioned: empty})
+		_, err := provider.GetVolume(ctx, GetVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-empty"})
+		require.EqualError(t, err, "ebs.describe returned no volume")
+	})
+
+	t.Run("ExpandVolume", func(t *testing.T) {
+		respondWith(t, conn, ExpandVolumeSubject, ExpandVolumeResponse{Versioned: empty})
+		_, err := provider.ExpandVolume(ctx, ExpandVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-empty"})
+		require.EqualError(t, err, "ebs.expand returned no volume")
+	})
+
+	t.Run("CopySnapshot", func(t *testing.T) {
+		respondWith(t, conn, CopySnapshotSubject, CopySnapshotResponse{Versioned: empty})
+		_, err := provider.CopySnapshot(ctx, CopySnapshotRequest{
+			Versioned: NewVersioned(), SourceSnapshotID: "snap-1", DestinationSnapshotID: "snap-2", VolumeID: "vol-empty",
+		})
+		require.EqualError(t, err, "ebs.snapshot.copy returned no snapshot")
+	})
+
+	t.Run("PublishVolume", func(t *testing.T) {
+		subject, err := PublishSubject("node-empty")
+		require.NoError(t, err)
+		respondWith(t, conn, subject, PublishVolumeResponse{Versioned: empty})
+		_, err = provider.PublishVolume(ctx, PublishVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-empty", NodeID: "node-empty"})
+		require.EqualError(t, err, subject+" returned no published volume")
+	})
+
+	t.Run("CreateSnapshot", func(t *testing.T) {
+		subject, err := SnapshotSubject("vol-empty")
+		require.NoError(t, err)
+		respondWith(t, conn, subject, CreateSnapshotResponse{Versioned: empty})
+		_, err = provider.CreateSnapshot(ctx, CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-empty", VolumeID: "vol-empty"})
+		require.EqualError(t, err, subject+" returned no operation ID")
+	})
+}
+
+// TestNATSProviderPropagatesProviderErrors covers responseError's populated
+// branch on the enumeration and unpublish verbs, whose errors otherwise reach
+// the caller as an empty page or a silent success.
+func TestNATSProviderPropagatesProviderErrors(t *testing.T) {
+	t.Run("ListSnapshots refusal", func(t *testing.T) {
+		_, conn := testutil.StartTestNATS(t)
+		respondWith(t, conn, ListSnapshotsSubject, ListSnapshotsResponse{
+			Versioned: NewVersioned(), Error: &ProviderError{Code: ErrorCodeUnsupportedCap, Message: "snapshot enumeration"},
+		})
+		_, err := NewNATSProvider(conn, time.Second).ListSnapshots(t.Context(), ListSnapshotsRequest{Versioned: NewVersioned()})
+		require.ErrorIs(t, err, ErrUnsupportedCapability)
+	})
+
+	t.Run("ListSnapshots page", func(t *testing.T) {
+		_, conn := testutil.StartTestNATS(t)
+		respondWith(t, conn, ListSnapshotsSubject, ListSnapshotsResponse{
+			Versioned: NewVersioned(),
+			Snapshots: []SnapshotRef{{ID: "snap-1", SourceVolumeID: "vol-1", Handle: "vb://snap-1"}},
+			NextToken: "snap-1",
+		})
+		page, err := NewNATSProvider(conn, time.Second).ListSnapshots(t.Context(), ListSnapshotsRequest{Versioned: NewVersioned()})
+		require.NoError(t, err)
+		assert.Equal(t, []SnapshotRef{{ID: "snap-1", SourceVolumeID: "vol-1", Handle: "vb://snap-1"}}, page.Snapshots)
+		assert.Equal(t, "snap-1", page.NextToken)
+	})
+
+	t.Run("UnpublishVolume", func(t *testing.T) {
+		_, conn := testutil.StartTestNATS(t)
+		subject, err := UnpublishSubject("node-err")
+		require.NoError(t, err)
+		respondWith(t, conn, subject, UnpublishVolumeResponse{
+			Versioned: NewVersioned(), Error: &ProviderError{Code: ErrorCodeNotFound, Message: "no such mount"},
+		})
+		err = NewNATSProvider(conn, time.Second).UnpublishVolume(t.Context(), UnpublishVolumeRequest{
+			Versioned: NewVersioned(), VolumeID: "vol-1", NodeID: "node-err",
+		})
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+}
+
+// TestNATSProviderValidatesSubjectTokensBeforeTransport extends the check to
+// every method that embeds a caller-supplied ID in a subject: an unsafe token
+// must be refused before a request is published, or the client publishes to a
+// wildcard subject and takes an unrelated node's reply as its own.
+func TestNATSProviderValidatesSubjectTokensBeforeTransport(t *testing.T) {
+	provider := NewNATSProvider(nil, time.Second)
+	ctx := t.Context()
+
+	t.Run("GetVolume", func(t *testing.T) {
+		_, err := provider.GetVolume(ctx, GetVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol.*"})
+		require.ErrorIs(t, err, ErrInvalidArgument)
+	})
+	t.Run("ExpandVolume", func(t *testing.T) {
+		_, err := provider.ExpandVolume(ctx, ExpandVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol.*"})
+		require.ErrorIs(t, err, ErrInvalidArgument)
+	})
+	t.Run("CopySnapshot", func(t *testing.T) {
+		_, err := provider.CopySnapshot(ctx, CopySnapshotRequest{
+			Versioned: NewVersioned(), SourceSnapshotID: "snap-1", DestinationSnapshotID: "snap-2", VolumeID: "vol.*",
+		})
+		require.ErrorIs(t, err, ErrInvalidArgument)
+	})
+	t.Run("CreateSnapshot volume", func(t *testing.T) {
+		_, err := provider.CreateSnapshot(ctx, CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol.*"})
+		require.ErrorIs(t, err, ErrInvalidArgument)
+	})
+	t.Run("CreateSnapshot snapshot", func(t *testing.T) {
+		_, err := provider.CreateSnapshot(ctx, CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap.*", VolumeID: "vol-1"})
+		require.ErrorIs(t, err, ErrInvalidArgument)
+	})
+	t.Run("UnpublishVolume", func(t *testing.T) {
+		err := provider.UnpublishVolume(ctx, UnpublishVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-1", NodeID: "node.*"})
+		require.ErrorIs(t, err, ErrInvalidArgument)
+	})
+}
+
+// TestNATSProviderCreateSnapshotRejectsMismatchedCompletion covers the two
+// identity checks on the asynchronous path. Both exist because the completion
+// arrives out of band: a subject or operation ID the client did not ask for
+// means it is reading someone else's snapshot result.
+func TestNATSProviderCreateSnapshotRejectsMismatchedCompletion(t *testing.T) {
+	t.Run("completion subject mismatch", func(t *testing.T) {
+		_, conn := testutil.StartTestNATS(t)
+		subject, err := SnapshotSubject("vol-mismatch")
+		require.NoError(t, err)
+		respondWith(t, conn, subject, CreateSnapshotResponse{
+			Versioned: NewVersioned(), OperationID: "op-1", CompletionSubject: "ebs.provider.v1.snapshot.response.someone-else",
+		})
+
+		provider := NewNATSProvider(conn, time.Second)
+		_, err = provider.CreateSnapshot(t.Context(), CreateSnapshotRequest{
+			Versioned: NewVersioned(), SnapshotID: "snap-mismatch", VolumeID: "vol-mismatch",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "snapshot completion subject mismatch")
+	})
+
+	t.Run("operation id mismatch", func(t *testing.T) {
+		_, conn := testutil.StartTestNATS(t)
+		subject, err := SnapshotSubject("vol-opid")
+		require.NoError(t, err)
+		completionSubject, err := SnapshotCompletionSubject("snap-opid")
+		require.NoError(t, err)
+
+		sub, err := conn.Subscribe(subject, func(msg *nats.Msg) {
+			accepted, marshalErr := json.Marshal(CreateSnapshotResponse{
+				Versioned: NewVersioned(), OperationID: "op-expected", CompletionSubject: completionSubject,
+			})
+			require.NoError(t, marshalErr)
+			require.NoError(t, msg.Respond(accepted))
+
+			completed, marshalErr := json.Marshal(CreateSnapshotResponse{
+				Versioned: NewVersioned(), OperationID: "op-other",
+				Snapshot: &Snapshot{ID: "snap-opid", SourceVolumeID: "vol-opid", State: SnapshotStateCompleted},
+			})
+			require.NoError(t, marshalErr)
+			require.NoError(t, conn.Publish(completionSubject, completed))
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+		require.NoError(t, conn.Flush())
+
+		provider := NewNATSProvider(conn, time.Second)
+		_, err = provider.CreateSnapshot(t.Context(), CreateSnapshotRequest{
+			Versioned: NewVersioned(), SnapshotID: "snap-opid", VolumeID: "vol-opid",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "snapshot operation mismatch")
+	})
+
+	t.Run("already completed reply short-circuits the wait", func(t *testing.T) {
+		_, conn := testutil.StartTestNATS(t)
+		subject, err := SnapshotSubject("vol-sync")
+		require.NoError(t, err)
+		respondWith(t, conn, subject, CreateSnapshotResponse{
+			Versioned: NewVersioned(), OperationID: "op-sync",
+			Snapshot: &Snapshot{ID: "snap-sync", SourceVolumeID: "vol-sync", State: SnapshotStateCompleted},
+		})
+
+		provider := NewNATSProvider(conn, time.Second)
+		snapshot, err := provider.CreateSnapshot(t.Context(), CreateSnapshotRequest{
+			Versioned: NewVersioned(), SnapshotID: "snap-sync", VolumeID: "vol-sync",
+		})
+		require.NoError(t, err, "a server answering synchronously must not be made to wait for a completion it will never publish")
+		assert.Equal(t, "snap-sync", snapshot.ID)
+	})
+}
+
 // TestResponseErrorRejectsZeroSchemaVersion covers responseError directly: a
 // reply carrying the zero SchemaVersion (e.g. a server that forgot to set
 // Versioned on an error path) must be rejected before its Error field is

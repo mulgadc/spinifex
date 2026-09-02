@@ -2,9 +2,11 @@ package arn_test
 
 import (
 	"testing"
+	"uuid"
 
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFormatEKS(t *testing.T) {
@@ -23,6 +25,32 @@ func TestFormatEKS(t *testing.T) {
 		arn.FormatEKSAccessEntry(region, account, "prod", "9f86d081"))
 	assert.Equal(t, "arn:aws:eks:ap-southeast-2:123456789012:cluster/prod",
 		arn.FormatEKSResource(region, account, "cluster/prod"))
+}
+
+// The policy gate rebuilds a nodegroup ARN from identifiers alone and expects
+// byte equality with the one the create path persisted, so the derivation has
+// to be stable, sensitive to every input, and shaped like the UUID AWS emits.
+func TestEKSNodegroupDiscriminator(t *testing.T) {
+	const (
+		account = "123456789012"
+		cluster = "prod"
+		name    = "workers"
+	)
+	got := arn.EKSNodegroupDiscriminator(account, cluster, name)
+
+	assert.Equal(t, got, arn.EKSNodegroupDiscriminator(account, cluster, name))
+	assert.NotEqual(t, got, arn.EKSNodegroupDiscriminator("999988887777", cluster, name))
+	assert.NotEqual(t, got, arn.EKSNodegroupDiscriminator(account, "dev", name))
+	assert.NotEqual(t, got, arn.EKSNodegroupDiscriminator(account, cluster, "batch"))
+
+	// Concatenating the inputs without a separator would collide these two.
+	assert.NotEqual(t,
+		arn.EKSNodegroupDiscriminator(account, "prod", "workers"),
+		arn.EKSNodegroupDiscriminator(account, "prodwork", "ers"))
+
+	parsed, err := uuid.Parse(got)
+	require.NoError(t, err)
+	assert.Equal(t, got, parsed.String())
 }
 
 // A name that needs percent-decoding in a URL path is placed in the ARN

@@ -2300,11 +2300,18 @@ func initServiceWithRetry[T any](name string, initFn func() (T, error)) (T, erro
 	}
 }
 
+// clusterReadySleep is the poll delay seam used by waitForClusterReady, and
+// clusterReadyMaxWait bounds the loop; tests override both.
+var (
+	clusterReadySleep   = time.Sleep
+	clusterReadyMaxWait = 2 * time.Minute
+)
+
 // waitForClusterReady blocks until viperblock and predastore are reachable,
 // preventing races during VM recovery.
 func (d *Daemon) waitForClusterReady() {
 	slog.Info("Waiting for cluster readiness...")
-	maxWait := 2 * time.Minute
+	maxWait := clusterReadyMaxWait
 	start := time.Now()
 	interval := 2 * time.Second
 
@@ -2330,7 +2337,7 @@ func (d *Daemon) waitForClusterReady() {
 		}
 
 		slog.Debug("Cluster not ready, waiting...", "reason", reason, "elapsed_ms", otelsetup.Millis(time.Since(start)))
-		time.Sleep(interval)
+		clusterReadySleep(interval)
 	}
 
 	slog.Warn("Cluster readiness timeout, proceeding with recovery anyway", "max_wait_ms", otelsetup.Millis(maxWait))

@@ -171,6 +171,87 @@ func TestSeedNexthopMAC_UnresolvedEvenAfterPing(t *testing.T) {
 	}
 }
 
+// Routed NAT points the gateway router at 100.127.0.1, an address on this
+// host's own transit veth. `ip route get` answers lo and no neigh entry can
+// ever exist, so the MAC has to come from the link that owns the address.
+func TestSeedNexthopMAC_LocalNexthopResolvesFromOwningLink(t *testing.T) {
+	r := &scriptedRunner{
+		responses: map[string][]byte{
+			"ip route get 100.127.0.1": []byte("local 100.127.0.1 dev lo src 100.127.0.1 uid 0"),
+			"ip -4 -o addr show to 100.127.0.1/32": []byte(
+				"7: spx-nat-host    inet 100.127.0.1/24 scope global spx-nat-host\\       valid_lft forever preferred_lft forever"),
+			"ip -o link show dev spx-nat-host": []byte(
+				"7: spx-nat-host@spx-nat-ovs: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 6a:1b:2c:3d:4e:5f brd ff:ff:ff:ff:ff:ff"),
+		},
+	}
+	if err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "100.127.0.1"); err != nil {
+		t.Fatalf("SeedNexthopMAC: %v", err)
+	}
+	if calls := r.callArgs("ping"); len(calls) != 0 {
+		t.Fatalf("expected no ping prime for a host-local nexthop, got %v", calls)
+	}
+	if calls := r.callArgs("ip neigh"); len(calls) != 0 {
+		t.Fatalf("expected no neigh read for a host-local nexthop, got %v", calls)
+	}
+	addCalls := r.callArgs("ovn-nbctl static-mac-binding-add")
+	if len(addCalls) != 1 {
+		t.Fatalf("expected 1 static-mac-binding-add call, got %d: %v", len(addCalls), r.calls)
+	}
+	wantAdd := "ovn-nbctl static-mac-binding-add gw-vpc-1 100.127.0.1 6a:1b:2c:3d:4e:5f"
+	if got := strings.Join(addCalls[0], " "); got != wantAdd {
+		t.Fatalf("add argv mismatch\n got: %s\nwant: %s", got, wantAdd)
+	}
+}
+
+func TestSeedNexthopMAC_LocalNexthopNoOwningLink(t *testing.T) {
+	r := &scriptedRunner{
+		responses: map[string][]byte{
+			"ip route get 100.127.0.1":             []byte("local 100.127.0.1 dev lo src 100.127.0.1 uid 0"),
+			"ip -4 -o addr show to 100.127.0.1/32": []byte(""),
+		},
+	}
+	if err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "100.127.0.1"); err != nil {
+		t.Fatalf("SeedNexthopMAC must stay best-effort, got: %v", err)
+	}
+	if calls := r.callArgs("ovn-nbctl"); len(calls) != 0 {
+		t.Fatalf("expected no ovn-nbctl calls when no link owns the nexthop, got %v", calls)
+	}
+}
+
+// A nexthop aliased onto loopback has no ethernet address to bind to.
+func TestSeedNexthopMAC_LocalNexthopOnLoopbackOnly(t *testing.T) {
+	r := &scriptedRunner{
+		responses: map[string][]byte{
+			"ip route get 100.127.0.1": []byte("local 100.127.0.1 dev lo src 100.127.0.1 uid 0"),
+			"ip -4 -o addr show to 100.127.0.1/32": []byte(
+				"1: lo    inet 100.127.0.1/32 scope host lo\\       valid_lft forever preferred_lft forever"),
+		},
+	}
+	if err := SeedNexthopMAC(context.Background(), r, "", "gw-vpc-1", "100.127.0.1"); err != nil {
+		t.Fatalf("SeedNexthopMAC must stay best-effort, got: %v", err)
+	}
+	if calls := r.callArgs("ovn-nbctl"); len(calls) != 0 {
+		t.Fatalf("expected no ovn-nbctl calls for a loopback-only nexthop, got %v", calls)
+	}
+}
+
+func TestParseLinkEtherMAC(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want string
+	}{
+		{"ether", "7: spx-nat-host@spx-nat-ovs: <UP> mtu 1500\\    link/ether 6a:1b:2c:3d:4e:5f brd ff:ff:ff:ff:ff:ff", "6a:1b:2c:3d:4e:5f"},
+		{"loopback", "1: lo: <LOOPBACK,UP> mtu 65536\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00", ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		if got := parseLinkEtherMAC(tc.out); got != tc.want {
+			t.Errorf("%s: parseLinkEtherMAC = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestSeedNexthopMAC_EmptyArgsNoop(t *testing.T) {
 	r := &scriptedRunner{}
 	if err := SeedNexthopMAC(context.Background(), r, "", "", "192.168.1.1"); err != nil {

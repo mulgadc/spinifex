@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
@@ -66,6 +67,8 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 		device = *input.Device
 	}
 
+	force := input.Force != nil && *input.Force
+
 	command := types.EC2InstanceCommand{
 		ID: instanceID,
 		Attributes: types.EC2CommandAttributes{
@@ -74,7 +77,7 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 		DetachVolumeData: &types.DetachVolumeData{
 			VolumeID: volumeID,
 			Device:   device,
-			Force:    input.Force != nil && *input.Force,
+			Force:    force,
 		},
 	}
 
@@ -93,6 +96,9 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 	if err != nil {
 		slog.ErrorContext(ctx, "DetachVolume: NATS request failed", "instanceId", instanceID, "volumeId", volumeID, "err", err)
 		if errors.Is(err, nats.ErrNoResponders) {
+			if force {
+				return forceDetach(ctx, natsConn, accountID, volumeID, instanceID)
+			}
 			return output, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		}
 		return output, errors.New(awserrors.ErrorServerInternal)
@@ -113,4 +119,32 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 
 	slog.InfoContext(ctx, "DetachVolume completed", "instanceId", instanceID, "volumeId", volumeID)
 	return output, nil
+}
+
+// forceDetachSubject clears a volume's attachment in the control plane only and
+// is answered by any node, unlike the ordinary detach, which routes to the host
+// running the instance and so cannot help when that host is the problem.
+const forceDetachSubject = "ec2.ForceDetachVolume"
+
+// forceDetach releases a volume whose instance has no responder.
+//
+// A volume outlives the instance it was attached to whenever teardown failed
+// part-way, and the ordinary detach then has nowhere to go: there is no guest
+// to unplug it from and no host to ask. Without this the volume is attached
+// forever, which also makes it undeletable. Reaching here needs Force, which is
+// the caller stating that no clean guest unmount is expected.
+func forceDetach(ctx context.Context, natsConn *nats.Conn, accountID, volumeID, instanceID string) (ec2.VolumeAttachment, error) {
+	attachment, err := utils.NATSRequest[ec2.VolumeAttachment](ctx, natsConn, forceDetachSubject,
+		&ec2.DetachVolumeInput{VolumeId: &volumeID, Force: aws.Bool(true)}, 30*time.Second, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "DetachVolume: force detach failed", "volumeId", volumeID, "instanceId", instanceID, "err", err)
+		return ec2.VolumeAttachment{}, err
+	}
+
+	slog.WarnContext(ctx, "DetachVolume: forced, the instance had no responder",
+		"volumeId", volumeID, "instanceId", instanceID)
+	if attachment == nil {
+		return ec2.VolumeAttachment{}, nil
+	}
+	return *attachment, nil
 }

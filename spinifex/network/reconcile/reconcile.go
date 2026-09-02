@@ -151,6 +151,11 @@ type reconciler struct {
 	// is gone stops paying the full nudge sequence every cycle.
 	portBackoffMu sync.Mutex
 	portBackoff   map[string]portBackoffState
+
+	// Serialises sb-cluster-state-reset. It is cluster-wide and re-syncs every
+	// chassis, so concurrent guest-port probes must not each fire one.
+	sbResetMu   sync.Mutex
+	sbResetLast time.Time
 }
 
 // portBackoffState is one guest port's consecutive failure count and the instant

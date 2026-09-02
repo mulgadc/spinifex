@@ -2874,13 +2874,14 @@ func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM, systemImpaired bool)
 	}
 
 	// SystemStatus reflects host/node health, independent of the VM process: a
-	// running VM's host is reachable unless under memory pressure; non-running
-	// instances are not-applicable.
+	// running VM's host is reachable unless under memory pressure. A guest held
+	// on a backend I/O error is an infrastructure fault rather than a guest one,
+	// which is the distinction this check exists to draw.
 	systemStatus, systemReach := instanceStatusOK, instanceStatusPassed
 	switch {
 	case v.Status != vm.StateRunning:
 		systemStatus, systemReach = instanceStatusNotApplicable, instanceStatusNotApplicable
-	case systemImpaired:
+	case systemImpaired, v.Health.IOErrorResumes > 0:
 		systemStatus, systemReach = instanceStatusImpaired, instanceStatusFailed
 	}
 
@@ -2920,6 +2921,18 @@ func instanceHealthSummary(v *vm.VM) (status, reachability string, impairedSince
 		var impPtr *time.Time
 		if !v.Health.ImpairedSince.IsZero() {
 			since := v.Health.ImpairedSince
+			impPtr = &since
+		}
+		return instanceStatusImpaired, instanceStatusFailed, impPtr
+	}
+
+	// Paused by werror=stop on a backend I/O error. The counter is cleared the
+	// moment a poll sees the guest running again, so this reports for exactly
+	// as long as the guest is actually held.
+	if v.Health.IOErrorResumes > 0 {
+		var impPtr *time.Time
+		if !v.Health.IOErrorSince.IsZero() {
+			since := v.Health.IOErrorSince
 			impPtr = &since
 		}
 		return instanceStatusImpaired, instanceStatusFailed, impPtr

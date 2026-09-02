@@ -3967,6 +3967,58 @@ func TestBuildInstanceStatus_NeverSurfacesNonAWSName(t *testing.T) {
 	}
 }
 
+// A guest werror=stop has paused on a backend I/O error is unreachable, and the
+// cause is ours rather than the guest's. Before this it reported ok/passed on
+// both checks, because QMP stays perfectly responsive while the guest is held —
+// so the one state a customer most needs to see was the one that looked fine.
+func TestBuildInstanceStatus_IOErrorPauseIsImpaired(t *testing.T) {
+	owner := "111122223333"
+	paused := runningVM("i-io", owner)
+	paused.Health.IOErrorResumes = 1
+	paused.Health.IOErrorSince = time.Now().Add(-45 * time.Second)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{paused.ID: paused})
+
+	is := svc.buildInstanceStatus(paused, false)
+	assert.Equal(t, "impaired", *is.InstanceStatus.Status)
+	assert.Equal(t, "failed", *is.InstanceStatus.Details[0].Status)
+	assert.Equal(t, "impaired", *is.SystemStatus.Status,
+		"a backend I/O error is an infrastructure fault, so the system check must fail too")
+	require.NotNil(t, is.InstanceStatus.Details[0].ImpairedSince)
+	assert.Equal(t, paused.Health.IOErrorSince, *is.InstanceStatus.Details[0].ImpairedSince,
+		"impairedSince must be when the guest first paused, not when it was escalated")
+}
+
+// The counter is cleared by the first poll that sees the guest running, so
+// clearing it must take the instance back to ok on both checks. An impairment
+// that outlives the fault is as misleading as one that never appears.
+func TestBuildInstanceStatus_ResumedGuestClearsImpairment(t *testing.T) {
+	owner := "111122223333"
+	resumed := runningVM("i-io-ok", owner)
+	resumed.Instance.LaunchTime = aws.Time(time.Now().Add(-time.Hour))
+	resumed.Health.IOErrorResumes = 0
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{resumed.ID: resumed})
+
+	is := svc.buildInstanceStatus(resumed, false)
+	assert.Equal(t, "ok", *is.InstanceStatus.Status)
+	assert.Equal(t, "ok", *is.SystemStatus.Status)
+	assert.Nil(t, is.InstanceStatus.Details[0].ImpairedSince)
+}
+
+// A guest that pauses inside the launch grace window is impaired, not
+// initializing: the grace period exists to hide a guest that has not booted
+// yet, and one held on a failed write is not that.
+func TestBuildInstanceStatus_IOErrorBeatsLaunchGrace(t *testing.T) {
+	owner := "111122223333"
+	fresh := runningVM("i-io-new", owner)
+	fresh.Instance.LaunchTime = aws.Time(time.Now().Add(-10 * time.Second))
+	fresh.Health.IOErrorResumes = 2
+	fresh.Health.IOErrorSince = time.Now().Add(-5 * time.Second)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{fresh.ID: fresh})
+
+	is := svc.buildInstanceStatus(fresh, false)
+	assert.Equal(t, "impaired", *is.InstanceStatus.Status)
+}
+
 func TestDescribeInstanceStatus_IncludeAllSurfacesStopped(t *testing.T) {
 	owner := "111122223333"
 	stopped := runningVM("i-stop", owner)

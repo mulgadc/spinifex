@@ -1183,8 +1183,8 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 	kvKey := accountID + "." + policyName
 
 	if _, err := ValidatePolicyDocument(*input.PolicyDocument); err != nil {
-		slog.Debug("CreatePolicy: invalid policy document", "policyName", policyName, "err", err)
-		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
+			"policy %q: %w", policyName, err)
 	}
 
 	path := aws.StringValue(input.Path)
@@ -1524,7 +1524,8 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
 	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
+			"policy %q on user %q: %w", policyName, userName, err)
 	}
 
 	user, err := s.getUser(ctx, accountID, userName)
@@ -2110,13 +2111,16 @@ func validateConditionValues(i int, op, key string, values ConditionValue) error
 }
 
 // supportedVariableList renders the substitutable keys for an error message,
-// read from the evaluator's registry so the advice cannot go stale.
+// read from the evaluator's registry so the advice cannot go stale. The keys are
+// copied into the rendered form rather than rewritten in place, since the
+// registry owns nothing the caller may modify.
 func supportedVariableList() string {
 	keys := iampolicy.SubstitutableKeys()
-	for i, key := range keys {
-		keys[i] = iampolicy.VariablePrefix + key + "}"
+	refs := make([]string, 0, len(keys))
+	for _, key := range keys {
+		refs = append(refs, iampolicy.VariablePrefix+key+"}")
 	}
-	return strings.Join(keys, ", ")
+	return strings.Join(refs, ", ")
 }
 
 // validatePolicyVariables rejects a ${...} reference the evaluator can never
@@ -2124,18 +2128,16 @@ func supportedVariableList() string {
 // Allow and everything it named on a Deny, so the policy would be stored meaning
 // something other than what it reads as.
 func validatePolicyVariables(i int, field, value string) error {
-	key, unsupported := iampolicy.UnsupportedVariable(value)
-	if !unsupported {
+	switch key, fault := iampolicy.UnresolvableVariable(value); fault {
+	case iampolicy.VariableUnterminated:
+		return fmt.Errorf("statement %d: %s: %q has an unterminated policy variable reference: "+
+			"%q is missing its closing brace", i, field, value, iampolicy.VariablePrefix+key)
+	case iampolicy.VariableUnknownKey:
+		return fmt.Errorf("statement %d: %s: %q references policy variable %q, which no request supplies; "+
+			"the supported variables are %s", i, field, value, key, supportedVariableList())
+	default:
 		return nil
 	}
-	// An unterminated reference reports the text after "${", which runs to the
-	// end of the value because it never found a closing brace.
-	if open := iampolicy.VariablePrefix + key; strings.HasSuffix(value, open) {
-		return fmt.Errorf("statement %d: %s: %q has an unterminated policy variable reference: "+
-			"%q is missing its closing brace", i, field, value, open)
-	}
-	return fmt.Errorf("statement %d: %s: %q references policy variable %q, which no request supplies; "+
-		"the supported variables are %s", i, field, value, key, supportedVariableList())
 }
 
 // summaryQuotaDefaults holds the static SummaryMap entries returned by

@@ -26,7 +26,7 @@ func writeNodeState(t *testing.T, m *JetStreamManager, nodeID string, vms map[st
 	if err := m.WriteNodeMarker(nodeID); err != nil {
 		return err
 	}
-	m.WriteRunningSet(nodeID, vms)
+	m.WriteRunningSet(nodeID, "", vms)
 	return nil
 }
 

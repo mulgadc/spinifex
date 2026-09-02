@@ -34,7 +34,7 @@ type runningSetState struct {
 // source of truth for the node's own instances, so a failure here leaves the
 // cluster's view stale rather than losing anything, and is logged rather than
 // returned. The next state change repeats whatever did not land.
-func (m *JetStreamManager) WriteRunningSet(nodeID string, vms map[string]*vm.VM) {
+func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm.VM) {
 	if m.records == nil {
 		return
 	}
@@ -60,6 +60,7 @@ func (m *JetStreamManager) WriteRunningSet(nodeID string, vms map[string]*vm.VM)
 		// so nothing lists it and nothing retires it.
 		record := instance.Record()
 		record.Status.LastNode = nodeID
+		record.Status.AZ = az
 
 		sum, err := recordDigest(record)
 		if err != nil {

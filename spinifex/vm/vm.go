@@ -108,9 +108,8 @@ type VM struct {
 	LastNode string `json:"last_node,omitempty"`
 
 	// AZ is the availability zone of the node that last ran this instance,
-	// stamped by that node from its own config in WriteRunningSet. It is
-	// placement fact reported by the owning node, not something an operator
-	// requests.
+	// stamped by that node from its own config. Placement observed by the
+	// owner, not something an operator requests.
 	AZ string `json:"az,omitempty"`
 
 	// Metadata server address (e.g., "127.0.0.1:12345") for EC2 metadata service

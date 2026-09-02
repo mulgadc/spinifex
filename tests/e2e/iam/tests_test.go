@@ -16,6 +16,14 @@ import "testing"
 // remains boots guest VMs and self-bootstraps its own roles/profiles/VPCs
 // under collision-safe namespaces.
 
+// TestIAMAuthorization exercises identity-policy enforcement against the live
+// stack: resource-scoped grants, a Deny and a revocation taking effect on the
+// next request, role-session scoping, and the aws:SourceIp condition. Zero-VM —
+// its resources are IAM principals and EC2 key pairs.
+func TestIAMAuthorization(t *testing.T) {
+	runIAMAuthorization(t, requireIAMFixture(t))
+}
+
 // TestIAMInstanceProfileAssociation exercises the EC2 IAM instance-profile
 // association lifecycle (associate/replace/disassociate, RunInstances
 // --iam-instance-profile, auto-disassociate on terminate). It boots its own

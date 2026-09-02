@@ -47,7 +47,7 @@ func WithFanoutTimeout(d time.Duration) DescribeOption {
 // Callers that must not act on a partial view at all (the quota reconcile)
 // use DescribeInstancesForReconcile.
 func DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string, opts ...DescribeOption) (*ec2.DescribeInstancesOutput, error) {
-	reservations, _, firstClient4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, accountID, opts...)
+	reservations, _, firstClient4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, nil, accountID, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -61,14 +61,23 @@ func DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, n
 // DescribeInstancesChecked is the customer-facing variant served by the
 // gateway's DescribeInstances action. On top of DescribeInstances' aggregation,
 // it asserts InvalidInstanceID.NotFound for any explicitly named instance ID
-// absent from the result — but only when the sweep is provably complete
-// (every expected node answered, both KV buckets succeeded). A partial sweep
-// stays silent, the same as DescribeInstances: a node timing out during the
-// fan-out must never turn into a false NotFound for an instance that actually
-// exists on that node. A --filters-only query (no explicit IDs) is never
-// affected and keeps returning an empty list with no error.
-func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string, opts ...DescribeOption) (*ec2.DescribeInstancesOutput, error) {
-	reservations, complete, firstClient4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, accountID, opts...)
+// absent from the result — but only when the sweep is provably complete. A
+// partial sweep stays silent, the same as DescribeInstances: a node timing
+// out during the fan-out must never turn into a false NotFound for an
+// instance that actually exists on that node. A --filters-only query (no
+// explicit IDs) is never affected and keeps returning an empty list with no
+// error.
+//
+// nodeIDs is the configured cluster node set. When non-empty, completeness
+// for the InstanceIds assertion is judged by responder identity — the
+// configured nodes whose frames actually decoded — rather than by
+// expectedNodes, and the fan-out collects to its full deadline rather than
+// exiting once data arrives, since absence cannot be proven from a prefix of
+// the replies. An empty or unset nodeIDs falls back to expectedNodes, which a
+// caller that does not supply one leaves at 0 — never complete, so the
+// assertion is never made.
+func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, nodeIDs []string, accountID string, opts ...DescribeOption) (*ec2.DescribeInstancesOutput, error) {
+	reservations, complete, firstClient4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, nodeIDs, accountID, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -103,17 +112,22 @@ func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesI
 // sweep reads the instance record space instead of this; the retype gate and the
 // volume delete guard are what still call it.
 func DescribeInstancesForReconcile(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (reservations []*ec2.Reservation, complete bool, err error) {
-	reservations, complete, _, err = gatherInstances(ctx, input, natsConn, expectedNodes, accountID)
+	reservations, complete, _, err = gatherInstances(ctx, input, natsConn, expectedNodes, nil, accountID)
 	return reservations, complete, err
 }
 
 // gatherInstances runs the running-instance fan-out plus the stopped/terminated
-// KV bucket queries and aggregates every reservation. complete reports whether
-// the sweep saw a success frame from all expectedNodes without timing out and
-// both bucket queries succeeded — the precondition reconcile needs before it may
-// lower a counter. firstClient4xx carries the first deterministic 4xx for the
-// lenient caller to surface when nothing was collected.
-func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string, opts ...DescribeOption) (reservations []*ec2.Reservation, complete bool, firstClient4xx string, err error) {
+// KV bucket queries and aggregates every reservation. firstClient4xx carries
+// the first deterministic 4xx for the lenient caller to surface when nothing
+// was collected.
+//
+// With nodeIDs empty, complete is judged the historical way: a success frame
+// from all expectedNodes, without timing out. With nodeIDs set, complete is
+// judged by responder identity instead — see DescribeInstancesChecked — and an
+// explicit-ID request collects to its deadline under CollectUntilDeadline; a
+// request with no explicit IDs stays on CollectServeData regardless, since
+// nothing there is being proved.
+func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, nodeIDs []string, accountID string, opts ...DescribeOption) (reservations []*ec2.Reservation, complete bool, firstClient4xx string, err error) {
 	cfg := describeConfig{fanoutTimeout: defaultDescribeFanoutTimeout}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -125,24 +139,40 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 		return nil, false, "", fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstances", jsonData,
-		utils.GatherOpts{Timeout: cfg.fanoutTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
+	identity := len(nodeIDs) > 0
+	gatherOpts := utils.GatherOpts{Timeout: cfg.fanoutTimeout, AccountID: accountID}
+	if identity {
+		gatherOpts.ExpectedResponders = len(nodeIDs)
+		if len(input.InstanceIds) > 0 {
+			// Only the path that could assert absence pays for the full
+			// deadline; a filters-only listing may still exit early.
+			gatherOpts.Mode = utils.CollectUntilDeadline
+		}
+	} else {
+		gatherOpts.ExpectedNodes = expectedNodes
+	}
+
+	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstances", jsonData, gatherOpts)
 	if err != nil {
 		return nil, false, "", err
 	}
 
 	var allReservations []*ec2.Reservation
-	for _, frame := range frames {
-		var nodeOutput ec2.DescribeInstancesOutput
-		if json.Unmarshal(frame, &nodeOutput) == nil && nodeOutput.Reservations != nil {
-			allReservations = append(allReservations, nodeOutput.Reservations...)
+	var fanoutComplete bool
+	if identity {
+		allReservations, fanoutComplete = judgeIdentityCompleteness(ctx, frames, sum, nodeIDs)
+	} else {
+		for _, frame := range frames {
+			var nodeOutput ec2.DescribeInstancesOutput
+			if json.Unmarshal(frame.Data, &nodeOutput) == nil && nodeOutput.Reservations != nil {
+				allReservations = append(allReservations, nodeOutput.Reservations...)
+			}
 		}
+		// The fan-out is complete only when every expected node answered with a
+		// success frame and the deadline was not hit; an error frame or a missing
+		// node leaves the view partial.
+		fanoutComplete = expectedNodes > 0 && !sum.TimedOut && sum.Successes >= expectedNodes
 	}
-
-	// The fan-out is complete only when every expected node answered with a
-	// success frame and the deadline was not hit; an error frame or a missing
-	// node leaves the view partial.
-	fanoutComplete := expectedNodes > 0 && !sum.TimedOut && sum.Successes >= expectedNodes
 
 	// Both topics use queue groups (single responder each); query in parallel.
 	var kvMu sync.Mutex
@@ -165,6 +195,57 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 
 	slog.InfoContext(ctx, "DescribeInstances: Aggregated response", "total_reservations", len(allReservations))
 	return allReservations, fanoutComplete && bucketsOK, sum.FirstClient4xx, nil
+}
+
+// judgeIdentityCompleteness decodes every frame and builds ValidResponders —
+// the configured nodes whose payload actually decoded as DescribeInstancesOutput.
+// A node with nil Reservations still decoded, so it is a valid responder, not
+// an invalid one; only a failed decode withholds a node from the set.
+// Completeness requires ValidResponders to cover nodeIDs and fails closed on
+// any ambiguity: a frame with no node ID, a node that answered as both a
+// success and an error, or a node whose repeated frames disagreed.
+func judgeIdentityCompleteness(ctx context.Context, frames []utils.Frame, sum utils.Summary, nodeIDs []string) (reservations []*ec2.Reservation, complete bool) {
+	validResponders := map[string]bool{}
+	for _, frame := range frames {
+		var nodeOutput ec2.DescribeInstancesOutput
+		if json.Unmarshal(frame.Data, &nodeOutput) != nil {
+			if frame.NodeID != "" {
+				slog.WarnContext(ctx, "DescribeInstances: frame did not decode as DescribeInstancesOutput", "node", frame.NodeID)
+			}
+			continue
+		}
+		if frame.NodeID != "" {
+			validResponders[frame.NodeID] = true
+		}
+		reservations = append(reservations, nodeOutput.Reservations...)
+	}
+
+	ambiguous := sum.Unidentified > 0 || len(sum.ConflictNodes) > 0 || sum.CapHit
+	var bothSets []string
+	for node := range sum.SuccessResponders {
+		if sum.ErrorResponders[node] {
+			ambiguous = true
+			bothSets = append(bothSets, node)
+		}
+	}
+
+	var missing, erroring []string
+	for _, id := range nodeIDs {
+		if !validResponders[id] {
+			missing = append(missing, id)
+		}
+		if sum.ErrorResponders[id] {
+			erroring = append(erroring, id)
+		}
+	}
+
+	complete = len(nodeIDs) > 0 && len(missing) == 0 && !ambiguous
+	if !complete {
+		slog.InfoContext(ctx, "DescribeInstances: fan-out incomplete",
+			"missing_nodes", missing, "erroring_nodes", erroring, "conflict_nodes", len(sum.ConflictNodes),
+			"unidentified_frames", sum.Unidentified, "nodes_answering_as_both", bothSets, "cap_hit", sum.CapHit)
+	}
+	return reservations, complete
 }
 
 // EnrichInstanceProfileIDs resolves IamInstanceProfile.Id for every instance

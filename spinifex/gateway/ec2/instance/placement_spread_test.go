@@ -258,7 +258,7 @@ func TestDistributeInstancesSpread_PartialSuccessMeetsMinCount(t *testing.T) {
 }
 
 func TestDistributeInstancesSpread_BelowMinCountRollsBackAndReleases(t *testing.T) {
-	t.Parallel()
+	// Not parallel: noopTerminateRetrySleep swaps a package-level variable.
 	_, nc := startTestNATSServer(t)
 	noopTerminateRetrySleep(t)
 
@@ -308,7 +308,7 @@ func TestDistributeInstancesSpread_PropagatesClientError(t *testing.T) {
 }
 
 func TestDistributeInstancesSpread_FinalizeFailureRollsBack(t *testing.T) {
-	t.Parallel()
+	// Not parallel: noopTerminateRetrySleep swaps a package-level variable.
 	_, nc := startTestNATSServer(t)
 	noopTerminateRetrySleep(t)
 

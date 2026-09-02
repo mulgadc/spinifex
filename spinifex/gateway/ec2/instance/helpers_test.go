@@ -17,6 +17,10 @@ func startTestNATSServer(t *testing.T) (*server.Server, *nats.Conn) {
 
 // noopTerminateRetrySleep replaces the terminate NoResponders backoff with a
 // no-op for the duration of the test, so retry paths do not burn real seconds.
+//
+// It swaps a package-level variable that production code reads, so a caller
+// must not be parallel: two of them racing is a real data race and not merely
+// an ordering problem.
 func noopTerminateRetrySleep(t *testing.T) {
 	t.Helper()
 	prev := terminateRetrySleep

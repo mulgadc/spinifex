@@ -1,4 +1,4 @@
-package vpcd
+package vpcd_test
 
 import (
 	"os"
@@ -6,6 +6,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/vpcd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +19,7 @@ func writeInstanceState(t *testing.T, dataDir string, vms map[string]*vm.VM) {
 }
 
 func TestLocalVMStateReader_MissingFileIsAMiss(t *testing.T) {
-	r := newLocalVMStateReader(t.TempDir())
+	r := vpcd.NewLocalVMStateReaderForTest(t.TempDir(), nil)
 	v, err := r.LocalVM("i-absent")
 	require.NoError(t, err)
 	assert.Nil(t, v)
@@ -28,7 +29,7 @@ func TestLocalVMStateReader_ResolvesAKnownInstance(t *testing.T) {
 	dataDir := t.TempDir()
 	writeInstanceState(t, dataDir, map[string]*vm.VM{"i-a": {ID: "i-a", InstanceType: "t3.micro"}})
 
-	r := newLocalVMStateReader(dataDir)
+	r := vpcd.NewLocalVMStateReaderForTest(dataDir, nil)
 	v, err := r.LocalVM("i-a")
 	require.NoError(t, err)
 	require.NotNil(t, v)
@@ -40,11 +41,10 @@ func TestLocalVMStateReader_CachesParseUntilFileChanges(t *testing.T) {
 	writeInstanceState(t, dataDir, map[string]*vm.VM{"i-a": {ID: "i-a"}})
 
 	parses := 0
-	r := newLocalVMStateReader(dataDir)
-	r.readState = func(path string) (*daemon.LocalState, error) {
+	r := vpcd.NewLocalVMStateReaderForTest(dataDir, func(path string) (*daemon.LocalState, error) {
 		parses++
 		return daemon.ReadLocalState(path)
-	}
+	})
 
 	_, err := r.LocalVM("i-a")
 	require.NoError(t, err)
@@ -66,7 +66,7 @@ func TestLocalVMStateReader_CorruptFileDoesNotServeStaleCache(t *testing.T) {
 	dataDir := t.TempDir()
 	writeInstanceState(t, dataDir, map[string]*vm.VM{"i-a": {ID: "i-a"}})
 
-	r := newLocalVMStateReader(dataDir)
+	r := vpcd.NewLocalVMStateReaderForTest(dataDir, nil)
 	v, err := r.LocalVM("i-a")
 	require.NoError(t, err)
 	require.NotNil(t, v, "warm the cache with a good parse")

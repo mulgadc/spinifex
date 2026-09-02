@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
@@ -663,5 +664,128 @@ func TestHandleShutdownDrain(t *testing.T) {
 		assert.Equal(t, "drain", last.Phase)
 		assert.Equal(t, vmCount, last.Total)
 		assert.Equal(t, 0, last.Remaining, "final progress should report zero remaining")
+	})
+}
+
+// stubEBSUnmount answers the daemon's ebs.<node>.unmount subject with a fixed
+// response, standing in for viperblockd. Returns the volumes it was asked to
+// unmount once the subscription has been drained.
+func stubEBSUnmount(t *testing.T, d *Daemon, resp types.EBSUnMountResponse) func() []string {
+	t.Helper()
+	var (
+		mu      sync.Mutex
+		volumes []string
+	)
+	sub, err := d.natsConn.Subscribe("ebs."+d.node+".unmount", func(msg *nats.Msg) {
+		var req types.EBSRequest
+		require.NoError(t, json.Unmarshal(msg.Data, &req))
+		mu.Lock()
+		volumes = append(volumes, req.Name)
+		mu.Unlock()
+		reply := resp
+		reply.Volume = req.Name
+		data, marshalErr := json.Marshal(reply)
+		require.NoError(t, marshalErr)
+		require.NoError(t, msg.Respond(data))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, d.natsConn.Flush())
+
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), volumes...)
+	}
+}
+
+// drainRunningInstance is a guest in the state DRAIN finds it in: running, with
+// a boot volume attached, and drain-stopped rather than operator-stopped.
+func drainRunningInstance(id, volume string) *vm.VM {
+	instance := &vm.VM{ID: id, Status: vm.StateRunning, AccountID: "111122223333"}
+	instance.EBSRequests.Requests = []types.EBSRequest{
+		{Name: volume, VolType: types.VolumeTypeGP3, Boot: true},
+	}
+	return instance
+}
+
+// TestHandleShutdownDrain_SealFailure drives DRAIN end to end over NATS against
+// a fault-injected block store whose seal never completes — the stalled blob
+// node that destroyed two guests on upgrade. The phase must fail rather than
+// ACK success, so the coordinator refuses to advance to STORAGE and stop
+// viperblock over an unsealed block map.
+func TestHandleShutdownDrain_SealFailure(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	t.Run("stalled blob node fails the phase", func(t *testing.T) {
+		daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
+		require.NoError(t, daemon.jsManager.InitClusterStateBucket())
+		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
+
+		unmounted := stubEBSUnmount(t, daemon, types.EBSUnMountResponse{
+			Mounted: true,
+			Error:   "seal volume to predastore: transfer stalled: idle timeout",
+		})
+		daemon.vmMgr.Insert(drainRunningInstance("i-drain-seal-fail", "vol-drain-seal-fail"))
+
+		subject := "spinifex.cluster.shutdown.drain.sealfail"
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownDrain))
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		payload, err := json.Marshal(ShutdownRequest{Phase: "drain"})
+		require.NoError(t, err)
+
+		reply, err := daemon.natsConn.Request(subject, payload, 60*time.Second)
+		require.NoError(t, err)
+
+		var ack ShutdownACK
+		require.NoError(t, json.Unmarshal(reply.Data, &ack))
+		assert.Equal(t, "drain", ack.Phase)
+		require.NotEmpty(t, ack.Error,
+			"DRAIN must ACK with an error when a volume seal failed")
+		assert.Contains(t, ack.Error, "vol-drain-seal-fail",
+			"the ACK must name the volume the operator has to fix")
+		assert.Equal(t, []string{"vol-drain-seal-fail"}, unmounted(),
+			"the seal must have been attempted")
+
+		marker, err := daemon.jsManager.ReadShutdownMarker(daemon.node)
+		require.NoError(t, err)
+		assert.False(t, marker,
+			"a failed DRAIN must not record the node as cleanly shut down")
+	})
+
+	t.Run("healthy blob node completes the phase", func(t *testing.T) {
+		daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
+		require.NoError(t, daemon.jsManager.InitClusterStateBucket())
+		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
+
+		unmounted := stubEBSUnmount(t, daemon, types.EBSUnMountResponse{})
+		instance := drainRunningInstance("i-drain-seal-ok", "vol-drain-seal-ok")
+		daemon.vmMgr.Insert(instance)
+
+		subject := "spinifex.cluster.shutdown.drain.sealok"
+		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownDrain))
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		payload, err := json.Marshal(ShutdownRequest{Phase: "drain"})
+		require.NoError(t, err)
+
+		reply, err := daemon.natsConn.Request(subject, payload, 60*time.Second)
+		require.NoError(t, err)
+
+		var ack ShutdownACK
+		require.NoError(t, json.Unmarshal(reply.Data, &ack))
+		assert.Equal(t, "drain", ack.Phase)
+		assert.Empty(t, ack.Error, "a sealed volume must not fail DRAIN")
+		assert.Equal(t, []string{"vol-drain-seal-ok"}, unmounted())
+		assert.Equal(t, vm.StateStopped, daemon.vmMgr.Status(instance))
+
+		marker, err := daemon.jsManager.ReadShutdownMarker(daemon.node)
+		require.NoError(t, err)
+		assert.True(t, marker)
 	})
 }

@@ -21,42 +21,49 @@ const pidFileRemovalTimeout = 20 * time.Second
 
 // Stop transitions a running instance to stopped: graceful QMP shutdown, volume
 // unmount, tap teardown, resource deallocation. Migrates to the "stopped" KV
-// bucket and fires OnInstanceDown. Returns ErrInstanceNotFound or ErrInvalidTransition.
+// bucket and fires OnInstanceDown. Returns ErrInstanceNotFound,
+// ErrInvalidTransition, or ErrVolumeSealFailed once the stop has completed.
 func (m *Manager) Stop(id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
 		return ErrInstanceNotFound
 	}
 
-	migrated, err := m.stopOne(instance)
-	if err != nil {
-		return err
+	migrated, stopErr := m.stopOne(instance)
+	// A failed seal still ran the whole sequence, so the ownership hand-off
+	// below must still happen; the error is reported after it.
+	if stopErr != nil && !errors.Is(stopErr, ErrVolumeSealFailed) {
+		return stopErr
 	}
 	if !migrated {
-		return nil
+		return stopErr
 	}
 
 	if err := m.writeRunningState(); err != nil {
 		slog.Error("Failed to persist state after stop, re-adding to local map for consistency",
 			"instanceId", instance.ID, "err", err)
 		m.InsertIfAbsent(instance)
-		return nil
+		return stopErr
 	}
 	slog.Info("Released instance ownership to KV",
 		"instanceId", instance.ID, "state", string(StateStopped), "lastNode", m.deps.NodeID)
-	return nil
+	return stopErr
 }
 
 // stopOne runs the stop sequence shared by Stop and StopAll:
 // Stopping → stopCleanup → Stopped → migrate to "stopped" KV → OnInstanceDown.
-// Returns (true, nil) when migration removed the instance (caller must persist).
-// Returns (false, nil) on KV failure or slot reclaim; (false, err) on precheck failure.
+// The bool reports whether migration removed the instance (caller must persist).
+//
+// A failed volume seal (ErrVolumeSealFailed) does not abort the sequence —
+// QEMU is already down, so the remaining steps must still run — but it is
+// returned so the caller can refuse to advance. A precheck failure returns
+// ErrInvalidTransition with nothing torn down.
 func (m *Manager) stopOne(instance *VM) (bool, error) {
 	if err := m.transitionWithPrecheck(instance, StateStopping); err != nil {
 		return false, err
 	}
 
-	m.stopCleanup(instance)
+	sealErr := m.stopCleanup(instance)
 
 	m.UpdateState(instance.ID, func(v *VM) { v.LastNode = m.deps.NodeID })
 
@@ -69,7 +76,7 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 		// map at StateStopped so Restore relaunches it on the next boot. Do
 		// not migrate to the operator-stopped shared bucket or fire
 		// OnInstanceDown; QEMU is already down and resources released.
-		return false, nil
+		return false, sealErr
 	}
 
 	if !m.MigrateStoppedToSharedKV(instance) {
@@ -79,23 +86,30 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 		// VM). Either way, do not fire OnInstanceDown — firing it would
 		// unsubscribe the per-id NATS subscriptions of the reclaimed
 		// instance.
-		return false, nil
+		return false, sealErr
 	}
 
 	if m.deps.Hooks.OnInstanceDown != nil {
 		m.deps.Hooks.OnInstanceDown(instance.ID)
 	}
-	return true, nil
+	return true, sealErr
 }
 
 // StopAll fans stopOne across every VM for the coordinated shutdown DRAIN phase.
 // Runs one goroutine per VM; per-VM errors are logged but do not abort the fan-out.
 // AWS resources (ENI, public IP, placement group) are not released on stop.
+//
+// Volume seal failures are aggregated and returned so DRAIN fails: the caller
+// must not let the storage layer stop underneath a block map that never sealed.
 func (m *Manager) StopAll() error {
 	snapshot := m.Snapshot()
 	if len(snapshot) == 0 {
 		return nil
 	}
+	var (
+		mu       sync.Mutex
+		sealErrs []error
+	)
 	var wg sync.WaitGroup
 	for _, instance := range snapshot {
 		wg.Add(1)
@@ -108,15 +122,20 @@ func (m *Manager) StopAll() error {
 					return
 				}
 				slog.Error("StopAll: stopOne failed", "instanceId", v.ID, "err", err)
+				if errors.Is(err, ErrVolumeSealFailed) {
+					mu.Lock()
+					sealErrs = append(sealErrs, err)
+					mu.Unlock()
+				}
 			}
 		}(instance)
 	}
 	wg.Wait()
 	if err := m.writeRunningState(); err != nil {
 		slog.Error("StopAll: failed to persist running state after fan-out", "err", err)
-		return err
+		sealErrs = append(sealErrs, err)
 	}
-	return nil
+	return errors.Join(sealErrs...)
 }
 
 // Terminate transitions an instance to terminated: graceful shutdown, volume +
@@ -224,7 +243,10 @@ func (m *Manager) MarkRecoveryFailed(instance *VM, reason string) {
 		"instanceId", instance.ID, "reason", reason)
 
 	m.goroutineWg.Go(func() {
-		m.stopCleanup(instance)
+		if err := m.stopCleanup(instance); err != nil {
+			slog.Error("Volume seal failed during recovery cleanup; volume left unsealed for operator action",
+				"instanceId", instance.ID, "err", err)
+		}
 		m.Inspect(instance, func(v *VM) { v.LastNode = m.deps.NodeID })
 		if err := m.writeRunningState(); err != nil {
 			slog.Error("Failed to persist state after recovery failure",
@@ -379,9 +401,9 @@ func (m *Manager) stampOutstandingTeardownFailed(instance *VM) {
 // stopCleanup performs the per-instance teardown shared by Stop and the
 // initial section of Terminate: graceful QMP shutdown, PID-file wait,
 // volume unmount, tap teardown (main + extra ENI + mgmt), resource
-// deallocation. Per-step errors are logged and tolerated.
-func (m *Manager) stopCleanup(instance *VM) {
-	m.shutdownAndUnmount(instance)
+// deallocation. Every step runs; only a failed volume seal is returned.
+func (m *Manager) stopCleanup(instance *VM) error {
+	sealErr := m.shutdownAndUnmount(instance)
 	m.cleanupTapDevices(instance)
 	if m.deps.InstanceCleaner != nil {
 		if err := m.deps.InstanceCleaner.ReleaseGPU(instance); err != nil {
@@ -397,13 +419,18 @@ func (m *Manager) stopCleanup(instance *VM) {
 	if instance.CapacityReservationId != "" {
 		m.UpdateState(instance.ID, func(v *VM) { v.CapacityReservationId = "" })
 	}
+
+	return sealErr
 }
 
 // terminateCleanup is stopCleanup plus the AWS-resource cleanup that
 // only applies on terminate: volume deletion, public IP release, ENI
 // deletion, placement-group removal.
 func (m *Manager) terminateCleanup(instance *VM) {
-	m.shutdownAndUnmount(instance)
+	// Terminate deletes the volumes next, so an unsealed block map loses
+	// nothing a caller can still ask for. Tolerated to keep terminate
+	// idempotent; only stop and DRAIN treat a failed seal as fatal.
+	_ = m.shutdownAndUnmount(instance)
 	m.markTeardown(instance, TeardownQEMU, TeardownDone)
 
 	if m.deps.InstanceCleaner != nil {
@@ -457,8 +484,12 @@ func (m *Manager) terminateCleanup(instance *VM) {
 
 // shutdownAndUnmount asks QEMU to power down via QMP, waits for the PID
 // file to disappear (force-killing on timeout), then unmounts every
-// attached volume. Each step tolerates failure of the previous one.
-func (m *Manager) shutdownAndUnmount(instance *VM) {
+// attached volume. Each step runs regardless of the one before it.
+//
+// Returns ErrVolumeSealFailed when the unmount did not seal the block map:
+// that is the one step whose failure means data loss. QMP, PID-file, fw_cfg
+// and telemetry cleanup stay best-effort and are logged only.
+func (m *Manager) shutdownAndUnmount(instance *VM) error {
 	if instance.QMPClient != nil {
 		if _, err := sendQMPCommand(context.Background(), instance.QMPClient, qmp.QMPCommand{Execute: "system_powerdown"}, instance.ID); err != nil {
 			slog.Warn("QMP system_powerdown failed (VM may already be stopped)",
@@ -484,9 +515,11 @@ func (m *Manager) shutdownAndUnmount(instance *VM) {
 		}
 	}
 
+	var sealErr error
 	if m.deps.VolumeMounter != nil {
 		if err := m.deps.VolumeMounter.Unmount(context.Background(), instance); err != nil {
 			slog.Error("Volume unmount failed", "id", instance.ID, "err", err)
+			sealErr = fmt.Errorf("%w for instance %s: %w", ErrVolumeSealFailed, instance.ID, err)
 		}
 	}
 
@@ -497,6 +530,8 @@ func (m *Manager) shutdownAndUnmount(instance *VM) {
 	}
 
 	removeTelemetryArtifacts(instance)
+
+	return sealErr
 }
 
 // cleanupTapDevices removes the primary VPC tap, every extra ENI tap, and

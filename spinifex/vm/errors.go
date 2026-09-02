@@ -11,6 +11,11 @@ var ErrInstanceNotFound = errors.New("instance not found")
 // transition (e.g. Stop on an already-stopped instance).
 var ErrInvalidTransition = errors.New("invalid state transition")
 
+// ErrVolumeSealFailed wraps a failed volume unmount during teardown: the
+// block map was not sealed to the object store. Fatal to the DRAIN phase,
+// because stopping viperblock next is what tears the volume's state.
+var ErrVolumeSealFailed = errors.New("volume seal failed")
+
 // ErrAttachmentLimitExceeded is returned by AttachVolume when the
 // instance has no free /dev/sd[f-p] slot to assign.
 var ErrAttachmentLimitExceeded = errors.New("attachment limit exceeded")

@@ -18,8 +18,9 @@ type VolumeMounter interface {
 	// Mount mounts every attached volume in v.EBSRequests.Requests, recording
 	// the resolved NBDURI back onto each request entry.
 	Mount(ctx context.Context, v *VM) error
-	// Unmount sends ebs.unmount for each attached volume. Errors are logged
-	// per volume and aggregated; partial failure is tolerated.
+	// Unmount sends ebs.unmount for each attached volume, which drives the
+	// synchronous block-map seal. Every volume is attempted; the seal
+	// failures are aggregated and returned, and mean the data is not durable.
 	Unmount(ctx context.Context, v *VM) error
 
 	// MountOne sends ebs.mount for a single request and writes the resolved

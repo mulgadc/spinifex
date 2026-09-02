@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -526,6 +527,46 @@ func ingressRuleIDReferencing(t *testing.T, svc *VPCServiceImpl, sgID, srcSG str
 	}
 	t.Fatalf("no ingress rule on %s referencing %s", sgID, srcSG)
 	return ""
+}
+
+// TestDeleteSecurityGroup_DependencyViolationNamesENI pins that the refusal
+// identifies the attached ENI. A bare code forces the blocking id to be
+// recovered by cross-referencing the whole ENI table after the fact.
+func TestDeleteSecurityGroup_DependencyViolationNamesENI(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
+	sgID := createTestSG(t, svc, vpcID, "attached-sg")
+	eniID := createAutoENI(t, svc, subnetID, "i-holder", []string{sgID}, time.Hour)
+
+	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
+		GroupId: aws.String(sgID),
+	}, testAccountID)
+	require.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorDependencyViolation, code)
+	assert.ErrorContains(t, err, eniID, "the refusal must name the blocking ENI")
+}
+
+// TestDeleteSecurityGroup_DependencyViolationNamesReferencingSG pins the same
+// for the SourceSG case: the group holding the rule is named, not just the code.
+func TestDeleteSecurityGroup_DependencyViolationNamesReferencingSG(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	targetSG := createTestSG(t, svc, vpcID, "referenced-sg")
+	holderSG := createTestSG(t, svc, vpcID, "holder-sg")
+
+	authorizeIngressFromSG(t, svc, holderSG, targetSG)
+
+	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
+		GroupId: aws.String(targetSG),
+	}, testAccountID)
+	require.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorDependencyViolation, code)
+	assert.ErrorContains(t, err, holderSG, "the refusal must name the referencing security group")
 }
 
 // TestRevokeSecurityGroupIngress_ByRuleID_BreaksMutualReferenceTeardown

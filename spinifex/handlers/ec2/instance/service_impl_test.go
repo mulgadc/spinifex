@@ -1811,8 +1811,8 @@ func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 
 	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"vol-user-001"}, vd.calls, "only DeleteOnTermination=true volumes deleted")
-	assert.Equal(t, []string{"vol-user-001"}, vd.deleted)
+	assert.Equal(t, []string{"vol-user-001"}, vd.deleted, "only DeleteOnTermination=true volumes deleted")
+	assert.Equal(t, []string{"vol-keep-001"}, vd.detached, "terminate implies detach even for a volume that survives it")
 }
 
 // TestTerminateStoppedInstance_StampsTeardownVolumesDone locks the
@@ -1887,6 +1887,51 @@ func TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted(t *testing.
 	assert.Empty(t, vd.deleted, "a DeleteOnTermination=false volume must never be deleted")
 	require.NotNil(t, store.WroteTerminated[id])
 	assert.Equal(t, string(vm.TeardownDone), store.WroteTerminated[id].Teardown[vm.TeardownVolumes])
+}
+
+// TestTerminateStoppedInstance_NonDoTDataVolumeDetachedNotDeleted covers the
+// non-Boot half. Stop's Unmount clears a data volume's attachment only when the
+// seal succeeded, so a volume whose seal failed is still in-use and pointing at
+// an instance that is about to stop existing. Skipping the detach here stranded
+// it with no owner left to release it.
+func TestTerminateStoppedInstance_NonDoTDataVolumeDetachedNotDeleted(t *testing.T) {
+	id := "i-nondot-data"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-data-nondot", DeleteOnTermination: false},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"vol-data-nondot"}, vd.detached,
+		"a data volume left attached by a failed seal must still be detached on terminate")
+	assert.Empty(t, vd.deleted, "a DeleteOnTermination=false volume must never be deleted")
+}
+
+// TestTerminateStoppedInstance_DetachOfAlreadyGoneVolumeIsNotAFailure pins the
+// idempotent half: a volume whose metadata doc is gone has already reached the
+// state the detach was asking for, so it must not stamp the teardown failed and
+// keep the instance record alive for the leak reaper.
+func TestTerminateStoppedInstance_DetachOfAlreadyGoneVolumeIsNotAFailure(t *testing.T) {
+	id := "i-nondot-gone"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-data-gone", DeleteOnTermination: false},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	require.NotNil(t, store.WroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownDone), store.WroteTerminated[id].Teardown[vm.TeardownVolumes],
+		"a volume that is already gone is the detach's goal, not a teardown failure")
 }
 
 func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {

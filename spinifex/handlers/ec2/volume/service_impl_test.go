@@ -1786,6 +1786,46 @@ func TestDetachVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
 	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
 }
 
+// failingDeleteProvider makes the provider's delete fail while leaving every
+// other operation intact, which is the shape of a blob node that is down.
+type failingDeleteProvider struct {
+	ebsprovider.EBSProvider
+
+	err error
+}
+
+func (p *failingDeleteProvider) DeleteVolume(context.Context, ebsprovider.DeleteVolumeRequest) error {
+	return p.err
+}
+
+// TestDeleteVolume_ProviderFailureCarriesItsCause pins that a provider delete
+// failure keeps its cause on the way out. The terminate reaper retries this
+// every two minutes and logs whatever it is handed, so a bare ServerInternal
+// makes a persistent fault indistinguishable from a transient one.
+func TestDeleteVolume_ProviderFailureCarriesItsCause(t *testing.T) {
+	kv := setupTestVolumeKV(t)
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = kv
+
+	volumeID := "vol-provider-down"
+	createVolumeInStoreWithMeta(t, svc, store, volumeID, ebsmetadata.Volume{
+		VolumeID: volumeID, CapacityGiB: 10, State: "available",
+	})
+	svc.SetEBSProvider(&failingDeleteProvider{
+		EBSProvider: svc.provider,
+		err:         errors.New("dial node 6: quic dial 10.10.8.5:6660: timeout"),
+	})
+
+	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, "")
+	require.Error(t, err)
+
+	assert.Equal(t, awserrors.ErrorServerInternal, awserrors.ValidErrorCodeFromError(err),
+		"the code stays ServerInternal so callers classify it unchanged")
+	assert.Contains(t, err.Error(), "dial node 6",
+		"an operator reading the reaper log must learn why the delete keeps failing")
+}
+
 // TestDeleteVolumeOnTerminate_SurfacesDeleteFailure verifies a DeleteVolume
 // failure downstream of the attachment clear is returned, not swallowed — the
 // caller (deleteInstanceVolumes / instanceCleanerAdapter.DeleteVolumes) relies

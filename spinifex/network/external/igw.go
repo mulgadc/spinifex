@@ -157,7 +157,13 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 	}
 
 	// The gateway switch port on the shared switch is the per-VPC attach marker.
-	if _, err := m.ovn.GetLogicalSwitchPort(ctx, switchGWPortName); err == nil {
+	if existing, err := m.ovn.GetLogicalSwitchPort(ctx, switchGWPortName); err == nil {
+		// Converge rather than early-return: a VPC attached before EIPs were
+		// advertised carries no nat-addresses, and nothing else recreates this
+		// port, so its EIPs would stay invisible to the physical network.
+		if err := m.ensureNATAdvertisement(ctx, existing); err != nil {
+			return err
+		}
 		// OVN state survives reboots but host routes do not: re-run the routed
 		// leg so reconcile's replayed attach re-ensures ingress + SNAT.
 		if m.natMode == policy.NATModeRouted {
@@ -200,10 +206,7 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 
 	// nat-addresses is only honoured on a router-type port; OVN silently ignores
 	// it on the localnet, which leaves EIPs unadvertised on the physical network.
-	gwPortOpts := map[string]string{"router-port": gwPortName}
-	if m.gatewayOwnsNAT() {
-		gwPortOpts["nat-addresses"] = "router"
-	}
+	gwPortOpts := map[string]string{"router-port": gwPortName, natAdvertiseOption: "router"}
 	if err := m.ovn.CreateLogicalSwitchPort(ctx, extSwitchName, &nbdb.LogicalSwitchPort{
 		Name:      switchGWPortName,
 		Type:      "router",
@@ -372,6 +375,35 @@ func (m *igwManager) gatewayLRPIP(ctx context.Context, vpcID string) string {
 	return ""
 }
 
+// natAdvertiseOption asks ovn-northd to publish the router's NAT external
+// addresses on this port, which is what makes ovn-controller send a gratuitous
+// ARP for an EIP.
+//
+// Needed in every NAT mode, not only the centralised ones. For a distributed
+// dnat_and_snat northd scopes each entry with is_chassis_resident(<vif port>),
+// so the GARP leaves from the chassis running the instance rather than the
+// gateway — which is exactly right, and only happens if this is set.
+const natAdvertiseOption = "nat-addresses"
+
+// ensureNATAdvertisement adds the NAT advertisement option to a gateway switch
+// port that predates it. Without it nothing announces an EIP when it moves, so
+// any host on the segment keeps resolving it to the previous holder's MAC until
+// its ARP cache ages out — a recycled EIP is unreachable for that whole window.
+func (m *igwManager) ensureNATAdvertisement(ctx context.Context, port *nbdb.LogicalSwitchPort) error {
+	if port == nil || port.Options[natAdvertiseOption] == "router" {
+		return nil
+	}
+	if port.Options == nil {
+		port.Options = map[string]string{}
+	}
+	port.Options[natAdvertiseOption] = "router"
+	if err := m.ovn.UpdateLogicalSwitchPort(ctx, port); err != nil {
+		return fmt.Errorf("set %s on %s: %w", natAdvertiseOption, port.Name, err)
+	}
+	slog.Info("external: enabled EIP advertisement on gateway port", "port", port.Name)
+	return nil
+}
+
 // ensureSharedExternal idempotently creates the singleton shared external switch
 // and its single localnet port. NAT advertisement lives on the per-VPC gateway
 // port, not here — OVN ignores nat-addresses on a localnet port.
@@ -387,12 +419,12 @@ func (m *igwManager) ensureSharedExternal(ctx context.Context, switchName, portN
 	// advertisement moved to the gateway port still carry a stale nat-addresses
 	// here, and it must not survive an upgrade.
 	if existing, err := m.ovn.GetLogicalSwitchPort(ctx, portName); err == nil {
-		if _, stale := existing.Options["nat-addresses"]; !stale {
+		if _, stale := existing.Options[natAdvertiseOption]; !stale {
 			return nil
 		}
-		delete(existing.Options, "nat-addresses")
+		delete(existing.Options, natAdvertiseOption)
 		if err := m.ovn.UpdateLogicalSwitchPort(ctx, existing); err != nil {
-			return fmt.Errorf("clear stale nat-addresses on %s: %w", portName, err)
+			return fmt.Errorf("clear stale %s on %s: %w", natAdvertiseOption, portName, err)
 		}
 		slog.Info("external: cleared stale nat-addresses from localnet port", "port", portName)
 		return nil

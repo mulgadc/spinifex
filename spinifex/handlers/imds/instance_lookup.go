@@ -9,12 +9,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	"github.com/nats-io/nats.go"
+	"github.com/mulgadc/spinifex/spinifex/daemon"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 )
 
-// imdsLookupRetries bounds transient-gather retries for IMDS instance lookups so
-// a momentary NATS gather timeout under load does not starve the guest bootstrap.
+// imdsLookupRetries bounds transient-gather retries for the record-space
+// fallback so a momentary JetStream hiccup does not starve guest bootstrap.
 const imdsLookupRetries = 3
 
 // retryBackoff sleeps a short increasing delay between IMDS lookup attempts,
@@ -46,86 +48,118 @@ func retryGather[T any](ctx context.Context, label, instanceID string, fn func()
 	return out, err
 }
 
-// natsInstanceLookup resolves instance-only metadata fields via DescribeInstances fan-out.
-type natsInstanceLookup struct {
-	nc            *nats.Conn
-	expectedNodes int
+// recordLoader is the shared instance record space accessor the fallback
+// path needs. Satisfied by *daemon.JetStreamManager; narrowed to an interface
+// so the fallback can be exercised without a live JetStream connection.
+type recordLoader interface {
+	LoadInstanceRecord(instanceID string) (*vm.InstanceRecord, error)
 }
 
-var _ instanceLookup = (*natsInstanceLookup)(nil)
+// localInstanceLookup resolves instance-only metadata fields local-first: a
+// guest is only ever served by the node it runs on, so the node's own on-disk
+// VM state is the authoritative, instant answer. It falls back to a direct
+// read of the shared instance record space and never fans out over NATS.
+type localInstanceLookup struct {
+	dataDir string
+	records recordLoader // nil-safe: fallback is skipped without it
+}
 
-func (l *natsInstanceLookup) describe(ctx context.Context, accountID, instanceID string) (*instanceFacts, error) {
-	out, err := retryGather(ctx, "describe instance", instanceID, func() (*ec2.DescribeInstancesOutput, error) {
-		return gateway_ec2_instance.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-			InstanceIds: []*string{aws.String(instanceID)},
-		}, l.nc, l.expectedNodes, accountID)
+var _ instanceLookup = (*localInstanceLookup)(nil)
+
+func (l *localInstanceLookup) describe(ctx context.Context, accountID, instanceID string) (*instanceFacts, error) {
+	v, err := l.localVM(instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("read local instance state: %w", err)
+	}
+	if v == nil {
+		v, err = l.recordVM(ctx, instanceID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if v == nil || !instanceVisible(accountID, v) {
+		return nil, nil // not present, or not visible to the caller
+	}
+	return instanceFactsFromVM(v), nil
+}
+
+// localVM reads the instance straight off this node's on-disk VM state.
+// Returns (nil, nil) if the file is absent or the instance is not on it.
+func (l *localInstanceLookup) localVM(instanceID string) (*vm.VM, error) {
+	state, err := daemon.ReadLocalState(daemon.LocalStatePath(l.dataDir))
+	if err != nil || state == nil {
+		return nil, err
+	}
+	return state.VMS[instanceID], nil
+}
+
+// recordVM falls back to the shared instance record space for an instance not
+// (yet, or no longer) on this node. Returns (nil, nil) on a genuine miss.
+func (l *localInstanceLookup) recordVM(ctx context.Context, instanceID string) (*vm.VM, error) {
+	if l.records == nil {
+		return nil, nil
+	}
+	record, err := retryGather(ctx, "load instance record", instanceID, func() (*vm.InstanceRecord, error) {
+		return l.records.LoadInstanceRecord(instanceID)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("describe instance %s: %w", instanceID, err)
+		return nil, fmt.Errorf("load instance record %s: %w", instanceID, err)
 	}
+	if record == nil {
+		return nil, nil
+	}
+	return vm.VMFromRecord(record), nil
+}
 
-	res, inst := firstReservationInstance(out)
-	if inst == nil {
-		return nil, nil // terminating or not yet visible; treat as miss
+// instanceVisible replicates the per-node DescribeInstances filtering this
+// path bypasses by not going through the daemon's NATS handler: account
+// ownership, plus the platform-managed (LB/EKS) hide rule.
+func instanceVisible(accountID string, v *vm.VM) bool {
+	if !handlers_ec2_instance.IsInstanceVisible(accountID, v.AccountID) {
+		return false
 	}
+	if v.ManagedBy != "" && accountID != utils.GlobalAccountID {
+		return false
+	}
+	return true
+}
+
+// instanceFactsFromVM projects the write-once spec fields IMDS serves. Returns
+// nil if the instance has no observed instance/reservation yet (mid-launch).
+func instanceFactsFromVM(v *vm.VM) *instanceFacts {
+	if v.Instance == nil || v.Reservation == nil {
+		return nil
+	}
+	inst := v.Instance
 
 	facts := &instanceFacts{
-		instanceType:   aws.StringValue(inst.InstanceType),
-		imageID:        aws.StringValue(inst.ImageId),
-		keyName:        aws.StringValue(inst.KeyName),
-		architecture:   aws.StringValue(inst.Architecture),
-		amiLaunchIndex: aws.Int64Value(inst.AmiLaunchIndex),
-		reservationID:  aws.StringValue(res.ReservationId),
-		lifecycleType:  aws.StringValue(inst.InstanceLifecycle),
-		pendingTime:    aws.TimeValue(inst.LaunchTime),
-	}
-	if inst.IamInstanceProfile != nil {
-		facts.iamInstanceProfileArn = aws.StringValue(inst.IamInstanceProfile.Arn)
+		instanceType:          v.InstanceType,
+		imageID:               aws.StringValue(inst.ImageId),
+		keyName:               aws.StringValue(inst.KeyName),
+		architecture:          aws.StringValue(inst.Architecture),
+		amiLaunchIndex:        aws.Int64Value(inst.AmiLaunchIndex),
+		reservationID:         aws.StringValue(v.Reservation.ReservationId),
+		iamInstanceProfileArn: v.IamInstanceProfileArn,
+		lifecycleType:         v.InstanceLifecycle,
+		pendingTime:           aws.TimeValue(inst.LaunchTime),
+		userData:              decodeUserData(v.RunInstancesInput),
 	}
 	if inst.MetadataOptions != nil {
 		facts.httpTokens = aws.StringValue(inst.MetadataOptions.HttpTokens)
 	}
-
-	facts.userData = l.userData(ctx, accountID, instanceID)
-	return facts, nil
+	return facts
 }
 
-// userData fetches and decodes the instance's base64 user-data, returning nil on miss or error.
-func (l *natsInstanceLookup) userData(ctx context.Context, accountID, instanceID string) []byte {
-	attr, err := retryGather(ctx, "describe instance attribute", instanceID, func() (*ec2.DescribeInstanceAttributeOutput, error) {
-		return gateway_ec2_instance.DescribeInstanceAttribute(ctx, &ec2.DescribeInstanceAttributeInput{
-			InstanceId: aws.String(instanceID),
-			Attribute:  aws.String("userData"),
-		}, l.nc, l.expectedNodes, accountID)
-	})
-	if err != nil || attr == nil || attr.UserData == nil || attr.UserData.Value == nil {
+// decodeUserData extracts and decodes the launch-time base64 user-data,
+// returning nil on absence or a decode error.
+func decodeUserData(input *ec2.RunInstancesInput) []byte {
+	if input == nil || input.UserData == nil {
 		return nil
 	}
-	decoded, err := base64.StdEncoding.DecodeString(aws.StringValue(attr.UserData.Value))
+	decoded, err := base64.StdEncoding.DecodeString(aws.StringValue(input.UserData))
 	if err != nil {
-		slog.WarnContext(ctx, "IMDS: failed to decode instance user-data", "instance_id", instanceID, "err", err)
+		slog.Warn("IMDS: failed to decode instance user-data", "err", err)
 		return nil
 	}
 	return decoded
-}
-
-// firstReservationInstance returns the first instance in a DescribeInstances
-// response along with its owning reservation, or (nil, nil) when none. The
-// reservation is always non-nil when the instance is, since an instance is only
-// returned from a non-nil reservation that contains it.
-func firstReservationInstance(out *ec2.DescribeInstancesOutput) (*ec2.Reservation, *ec2.Instance) {
-	if out == nil {
-		return nil, nil
-	}
-	for _, res := range out.Reservations {
-		if res == nil {
-			continue
-		}
-		for _, inst := range res.Instances {
-			if inst != nil {
-				return res, inst
-			}
-		}
-	}
-	return nil, nil
 }

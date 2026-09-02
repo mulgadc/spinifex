@@ -117,6 +117,9 @@ type Config struct {
 	OVNSBAddr string
 	// BaseDir is the base directory for PID files and state.
 	BaseDir string
+	// DataDir is this node's data directory, holding its on-disk VM state.
+	// IMDS reads it directly for a local-first instance metadata lookup.
+	DataDir string
 	// Debug enables debug logging.
 	Debug bool
 	// ExternalMode is "pool", "nat" (routed, outbound-only), or "" (disabled).
@@ -539,7 +542,7 @@ func launchService(cfg *Config) error {
 		handlers_imds.NewNATSSTSAssumer(nc),
 		handlers_imds.NewNATSProfileLookup(nc),
 		handlers_imds.NewNATSPublicKeyLookup(nc),
-		max(len(chassisNames), 1),
+		cfg.DataDir,
 		listTaps,
 		cfg.NorthstarBaseDomain,
 		cfg.NorthstarInternalDomain,

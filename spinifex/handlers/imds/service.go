@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/mulgadc/spinifex/spinifex/daemon"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/nats-io/nats.go"
@@ -84,11 +83,13 @@ type IMDSServiceImpl struct {
 // non-empty, each per-tap responder also serves the VPC DNS shim on
 // 169.254.169.253:53, relaying to northstar's unprivileged wildcard listener.
 // caCertPath is the deployment CA served at /spinifex/ca.pem; empty 404s it.
-// dataDir is this node's DataDir, used to read its on-disk VM state for the
-// local-first instance lookup; the record-space fallback degrades to
-// local-only misses if the JetStream bucket cannot be opened.
+// localState and records back the local-first instance lookup: localState
+// reads this node's own VM state, records falls back to the shared instance
+// record space for an instance that has moved off this node. Either may be
+// nil, degrading that source to a miss rather than failing IMDS to start —
+// the caller (vpcd) owns their construction and availability.
 // ctx bounds the bucket opens only; each served request carries its own.
-func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, dataDir string, listTaps listTapsFunc, baseDomain, internalDomain, caCertPath string, resolverIPs []string) (*IMDSServiceImpl, error) {
+func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState localStateReader, records recordLoader, listTaps listTapsFunc, baseDomain, internalDomain, caCertPath string, resolverIPs []string) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -135,25 +136,13 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 		vpcKV = nil
 	}
 
-	// Best-effort: the local on-disk VM state already answers a local hit
-	// without this, and it only backs the record-space fallback for an
-	// instance that has moved off this node.
-	var records recordLoader
-	if jsm, err := daemon.NewJetStreamManager(natsConn, 1); err != nil {
-		slog.Warn("IMDS: JetStream manager unavailable, instance lookup will not fall back off this node", "err", err)
-	} else if err := jsm.InitKVBucket(); err != nil {
-		slog.Warn("IMDS: instance-state bucket unavailable, instance lookup will not fall back off this node", "err", err)
-	} else {
-		records = jsm
-	}
-
 	svc := &IMDSServiceImpl{
 		resolver: &metadataResolver{
 			eniKV:    eniKV,
 			sgKV:     sgKV,
 			subnetKV: subnetKV,
 			vpcKV:    vpcKV,
-			lookup:   &localInstanceLookup{dataDir: dataDir, records: records},
+			lookup:   &localInstanceLookup{local: localState, records: records},
 		},
 		tokens:         newTokenStore(),
 		v1Allow:        newV1AllowCache(),

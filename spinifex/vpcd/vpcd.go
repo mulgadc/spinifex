@@ -536,13 +536,17 @@ func launchService(cfg *Config) error {
 		}
 		return live, nil
 	}
+	// vpcd is the composition root for both planes IMDS straddles: it wires the
+	// on-disk VM state reader and the shared record space, so handlers/imds
+	// itself never needs to import the compute plane beyond vm.VM.
 	imdsSvc, err := handlers_imds.NewIMDSServiceImpl(
 		ctx,
 		nc,
 		handlers_imds.NewNATSSTSAssumer(nc),
 		handlers_imds.NewNATSProfileLookup(nc),
 		handlers_imds.NewNATSPublicKeyLookup(nc),
-		cfg.DataDir,
+		newLocalVMStateReader(cfg.DataDir),
+		newInstanceRecordLoader(nc),
 		listTaps,
 		cfg.NorthstarBaseDomain,
 		cfg.NorthstarInternalDomain,

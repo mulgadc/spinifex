@@ -1,3 +1,6 @@
+//test:in-package — these tests drive the package's own setupTestEIP fixture and
+//read svc.natsConn to assert the NAT messages AssociateAddress publishes.
+
 package handlers_ec2_eip
 
 import (

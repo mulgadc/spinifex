@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       cells:
-        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-19 tofu matrix, 20 baremetal, 21-22 ISO, 23 predastore throughput, 24 predastore fault injection"
+        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-3, 8-10, 17-19 tofu permutation matrix, 20 baremetal, 21-22 ISO, 23 predastore throughput, 24 predastore fault injection, 25-27 service suites (eks, ecs, rds)"
         required: false
 
 permissions:
@@ -35,23 +35,26 @@ jobs:
       max-parallel: 3
       matrix:
         include:
-          - { cell: 1,  install: binary, topo: single,     net: dhcp,   host: debian-13,    arch: x86_64, runner: ci-single, extra: "" }
-          - { cell: 2,  install: binary, topo: single,     net: static, host: ubuntu-26.04, arch: x86_64, runner: ci-single, extra: "" }
-          - { cell: 3,  install: binary, topo: single,     net: dhcp,   host: ubuntu-26.04, arch: x86_64, runner: ci-single, extra: "" }
-          - { cell: 8,  install: binary, topo: real-multi, net: dhcp,   host: debian-13,    arch: x86_64, runner: ci-multi,  extra: "" }
-          - { cell: 9,  install: binary, topo: real-multi, net: static, host: ubuntu-26.04, arch: x86_64, runner: ci-multi,  extra: "" }
-          - { cell: 10, install: binary, topo: real-multi, net: dhcp,   host: ubuntu-26.04, arch: x86_64, runner: ci-multi,  extra: "" }
-          - { cell: 17, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-pseudo, extra: "tofu-examples" }
-          - { cell: 18, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "reboot-single" }
-          - { cell: 19, install: binary, topo: single,     net: nat,    host: debian-13,    arch: x86_64, runner: ci-single, extra: "nat-single" }
+          - { cell: 1,  install: binary, topo: single,     net: dhcp,   host: debian-13,    arch: x86_64, runner: ci-single, extra: "", suite: "" }
+          - { cell: 2,  install: binary, topo: single,     net: static, host: ubuntu-26.04, arch: x86_64, runner: ci-single, extra: "", suite: "" }
+          - { cell: 3,  install: binary, topo: single,     net: dhcp,   host: ubuntu-26.04, arch: x86_64, runner: ci-single, extra: "", suite: "" }
+          - { cell: 8,  install: binary, topo: real-multi, net: dhcp,   host: debian-13,    arch: x86_64, runner: ci-multi,  extra: "", suite: "" }
+          - { cell: 9,  install: binary, topo: real-multi, net: static, host: ubuntu-26.04, arch: x86_64, runner: ci-multi,  extra: "", suite: "" }
+          - { cell: 10, install: binary, topo: real-multi, net: dhcp,   host: ubuntu-26.04, arch: x86_64, runner: ci-multi,  extra: "", suite: "" }
+          - { cell: 17, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-pseudo, extra: "tofu-examples", suite: "" }
+          - { cell: 18, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "reboot-single", suite: "" }
+          - { cell: 19, install: binary, topo: single,     net: nat,    host: debian-13,    arch: x86_64, runner: ci-single, extra: "nat-single", suite: "" }
+          - { cell: 25, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "eks", suite: "eks" }
+          - { cell: 26, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "ecs", suite: "ecs" }
+          - { cell: 27, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "rds", suite: "rds" }
 
     runs-on: [ self-hosted, "${{ matrix.runner }}" ]
-    timeout-minutes: ${{ matrix.extra == 'tofu-examples' && 45 || 35 }}
+    timeout-minutes: 45
     env:
       TOFU_LOG: /tmp/e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}
       # Job-level env wins over the workflow-level default above, so telemetry
-      # from this cell carries ci.cell/ci.matrix. Nine cells run under one
+      # from this cell carries ci.cell/ci.matrix. Twelve cells run under one
       # run id and every cell names its hosts node1/node2/node3, so without
       # this every cell's telemetry collapses into one unattributable bucket.
       SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=${{ matrix.cell }},ci.matrix=${{ matrix.topo }}/${{ matrix.net }}/${{ matrix.host }}
@@ -101,7 +104,7 @@ jobs:
         with:
           path: spinifex
 
-      # Nine cells share one run id and every cell names its hosts
+      # Twelve cells share one run id and every cell names its hosts
       # node1/node2/node3, so ci.cell above separates them and ci.job_id here
       # links each cell's telemetry to the job log that produced it. Runs
       # before Bootstrap bakes SPINIFEX_OTEL_ATTRS into the VM's telemetry.env.
@@ -114,11 +117,16 @@ jobs:
       - name: Build Install Artifacts
         if: steps.gate.outputs.selected == 'true'
         working-directory: mulga/scripts/tofu-cluster
+        env:
+          MATRIX_SUITE: ${{ matrix.suite }}
         run: |
+          # The script's default set is the nightly baseline. A service cell
+          # runs one suite outside it, and asks for that binary by name.
           ./build-install-artifacts.sh "${GIT_BRANCH}" \
             "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
             "${RUNNER_TEMP}/setup.sh" \
-            "${RUNNER_TEMP}/spinifex-tests.tar"
+            "${RUNNER_TEMP}/spinifex-tests.tar" \
+            --extra-suites "${MATRIX_SUITE}"
 
       - name: Provision VMs
         if: steps.gate.outputs.selected == 'true'
@@ -250,6 +258,180 @@ jobs:
                rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
                if [ \$rc -ne 0 ]; then echo \"\$SUITE: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; FAIL=1; fi; \
              done; exit \$FAIL"
+
+      # Cells 25-27 only. Resolved once here rather than in each step below,
+      # which would repeat the same three lines five times.
+      - name: Resolve VM SSH details
+        id: vm
+        if: steps.gate.outputs.selected == 'true' && matrix.suite != ''
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set -euo pipefail
+          INVENTORY=$(tofu output -json inventory)
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          echo "wan_ip=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')" >> "$GITHUB_OUTPUT"
+          echo "ssh_key=${SSH_KEY/#\~/$HOME}" >> "$GITHUB_OUTPUT"
+
+      # The eks suite's CreateCluster boots a control-plane VM from the eks-node
+      # AMI, so that AMI must be in the VM's image store before the suite runs.
+      # build-system-image.sh customizes with libguestfs (an isolated userspace
+      # appliance touching no host block device), so it is safe on the shared
+      # runner. The build needs source + network (runner only) and the import
+      # needs predastore/NATS (VM only), hence the split.
+      - name: Build eks-node AMI (libguestfs, runner)
+        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'eks'
+        working-directory: spinifex
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
+          # Debian/Ubuntu ship /boot/vmlinuz-* mode 0600; the libguestfs
+          # appliance needs to read a host kernel. direct backend = no libvirt.
+          export LIBGUESTFS_BACKEND=direct
+          sudo chmod 0644 /boot/vmlinuz-* || true
+          make build-eks-node-image
+
+      - name: Import eks-node AMI on VM
+        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'eks'
+        run: |
+          set -euo pipefail
+          eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
+            spinifex/scripts/images/eks-node/manifest.conf)"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          scp "${SSH_OPTS[@]}" \
+            /tmp/eks-node-image-build/eks-node-alpine.raw \
+            "$VM":/tmp/eks-node-alpine.raw
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "spx admin images import --file /tmp/eks-node-alpine.raw \
+               --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null 2>&1
+
+      # The eks data-plane subtest (TestEKS/KubectlGetNodes) drives the full
+      # `aws eks get-token` -> kubectl -> apiserver -> token-webhook -> gateway
+      # broker -> STS verify path. The e2e binaries run ON the VM, so kubectl
+      # must be on the VM's PATH or harness.NewKubectl skips the subtest and the
+      # cell reports green having never exercised the data plane. Pinned to the
+      # k3s server version (setup.sh K3S_VERSION) and checksum-verified.
+      - name: Install kubectl on VM
+        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'eks'
+        run: |
+          set -euo pipefail
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          ssh "${SSH_OPTS[@]}" tf-user@${{ steps.vm.outputs.wan_ip }} 'bash -s' <<'EOF'
+          set -euo pipefail
+          KVER=v1.32.5
+          case "$(uname -m)" in
+            x86_64)  ARCH=amd64 ;;
+            aarch64) ARCH=arm64 ;;
+            *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+          esac
+          cd /tmp
+          curl -fsSLO "https://dl.k8s.io/release/${KVER}/bin/linux/${ARCH}/kubectl"
+          curl -fsSLO "https://dl.k8s.io/release/${KVER}/bin/linux/${ARCH}/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c -
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
+          EOF
+
+      # RegisterContainerInstance boots the container instance from the ecs-node
+      # AMI, and resolveECSNodeAMI matches on the managed-by tag rather than the
+      # name, so the tag is not optional. The image directory is named for
+      # IMAGE_NAME in the manifest (ecs-agent), not for the make target.
+      - name: Build ecs-node AMI (libguestfs, runner)
+        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'ecs'
+        working-directory: spinifex
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
+          export LIBGUESTFS_BACKEND=direct
+          sudo chmod 0644 /boot/vmlinuz-* || true
+          make build-ecs-node-image
+
+      - name: Import ecs-node AMI on VM
+        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'ecs'
+        run: |
+          set -euo pipefail
+          eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
+            spinifex/scripts/images/ecs-agent/manifest.conf)"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          scp "${SSH_OPTS[@]}" \
+            /tmp/ecs-agent-image-build/ecs-agent-alpine.raw \
+            "$VM":/tmp/ecs-agent-alpine.raw
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "spx admin images import --file /tmp/ecs-agent-alpine.raw \
+               --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null 2>&1
+
+      # CreateDBInstance boots the DB VM from an RDS AMI, so both engines' images
+      # must be in the store before the suite runs. The suite's psql and mariadb
+      # clients need no step here: they run inside a client VM that installs them
+      # from its own user-data, because a private-only endpoint is unreachable
+      # from the runner and from the cluster host alike.
+      - name: Build RDS AMIs (libguestfs, runner)
+        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'rds'
+        working-directory: spinifex
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
+          export LIBGUESTFS_BACKEND=direct
+          sudo chmod 0644 /boot/vmlinuz-* || true
+          for IMAGE in rds-postgres rds-mariadb; do
+            make "build-${IMAGE}-image"
+          done
+
+      - name: Import RDS AMIs on VM
+        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'rds'
+        run: |
+          set -euo pipefail
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          for IMAGE in rds-postgres rds-mariadb; do
+            eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
+              "spinifex/scripts/images/${IMAGE}/manifest.conf")"
+            # SYSTEM_TAG carries four tags, not one: managed-by marks it a system
+            # image, engine/engine-version are what an EngineVersion request
+            # resolves against, and the contract tag gates the data-volume format
+            # grant. --tag is repeatable, so expand rather than pass the whole
+            # string as a single value.
+            TAG_ARGS=""
+            for tag in ${SYSTEM_TAG}; do TAG_ARGS="${TAG_ARGS} --tag ${tag}"; done
+            scp "${SSH_OPTS[@]}" \
+              "/tmp/${IMAGE}-image-build/${IMAGE}-alpine.raw" \
+              "$VM":"/tmp/${IMAGE}-alpine.raw"
+            ssh "${SSH_OPTS[@]}" "$VM" \
+              "spx admin images import --file /tmp/${IMAGE}-alpine.raw \
+                 --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
+                 --boot-mode bios --ami-name ${AMI_NAME}${TAG_ARGS}" >/dev/null 2>&1
+          done
+
+      - name: Run Service Suite E2E
+        if: steps.gate.outputs.selected == 'true' && matrix.suite != ''
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          set -euo pipefail
+          # Same guard as the permutation steps, against the full single-node
+          # set: a cell naming a suite this topology cannot fully exercise fails
+          # here rather than skipping half its assertions.
+          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
+          e2e_suites_assert_subset "e2e-nightly cell-${{ matrix.cell }}" "${SUITE}" "${E2E_SUITES_SINGLE}"
+
+          ssh -tt -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
+            tf-user@${{ steps.vm.outputs.wan_ip }} \
+            "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/e2e-tests/_bin; \
+             echo \"::group::suite ${SUITE}\"; \
+             date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-${SUITE}.start'; \
+             GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+               ARTIFACT_DIR='${ARTIFACT_DIR}' \
+               ./${SUITE}.test -test.v -test.timeout=30m \
+               2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log'; \
+             rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
+             if [ \$rc -ne 0 ]; then echo \"${SUITE}: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; fi; \
+             exit \$rc"
 
       - name: Import RDS PostgreSQL AMI
         if: steps.gate.outputs.selected == 'true' && matrix.extra == 'tofu-examples'

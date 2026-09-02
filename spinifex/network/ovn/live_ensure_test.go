@@ -113,7 +113,7 @@ func TestReplaceACLs_IdempotentNoChurn(t *testing.T) {
 	}
 }
 
-func aclUUIDs(t *testing.T, ctx context.Context, cli *ovn.LiveClient, pgName string) map[string]struct{} {
+func aclUUIDs(t *testing.T, ctx context.Context, cli ovn.Client, pgName string) map[string]struct{} {
 	t.Helper()
 	pg, err := cli.GetPortGroup(ctx, pgName)
 	if err != nil {

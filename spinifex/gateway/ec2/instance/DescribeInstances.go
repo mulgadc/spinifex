@@ -147,6 +147,7 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 			// Only the path that could assert absence pays for the full
 			// deadline; a filters-only listing may still exit early.
 			gatherOpts.Mode = utils.CollectUntilDeadline
+			gatherOpts.Settled = allRequestedInstancesFound(input.InstanceIds)
 		}
 	} else {
 		gatherOpts.ExpectedNodes = expectedNodes
@@ -197,6 +198,41 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 	return allReservations, fanoutComplete && bucketsOK, sum.FirstClient4xx, nil
 }
 
+// allRequestedInstancesFound builds a Gather settle predicate that ends the
+// fan-out once every requested instance id has appeared in some frame. Absence
+// still costs the full deadline, and an instance the caller cannot see is
+// filtered out of every frame, so it takes the absence path too — the two
+// NotFound answers stay indistinguishable in time.
+func allRequestedInstancesFound(instanceIDs []*string) func([]utils.Frame, utils.Summary) bool {
+	wanted := map[string]bool{}
+	for _, id := range instanceIDs {
+		if id != nil {
+			wanted[*id] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+
+	consumed := 0
+	return func(frames []utils.Frame, _ utils.Summary) bool {
+		for ; consumed < len(frames); consumed++ {
+			var out ec2.DescribeInstancesOutput
+			if json.Unmarshal(frames[consumed].Data, &out) != nil {
+				continue
+			}
+			for _, res := range out.Reservations {
+				for _, inst := range res.Instances {
+					if inst != nil && inst.InstanceId != nil {
+						delete(wanted, *inst.InstanceId)
+					}
+				}
+			}
+		}
+		return len(wanted) == 0
+	}
+}
+
 // judgeIdentityCompleteness decodes every frame and builds ValidResponders —
 // the configured nodes whose payload actually decoded as DescribeInstancesOutput.
 // A node with nil Reservations still decoded, so it is a valid responder, not
@@ -240,7 +276,9 @@ func judgeIdentityCompleteness(ctx context.Context, frames []utils.Frame, sum ut
 	}
 
 	complete = len(nodeIDs) > 0 && len(missing) == 0 && !ambiguous
-	if !complete {
+	// A settled early exit leaves nodes unheard by design, so the shortfall is
+	// the caller's own doing and says nothing about cluster health.
+	if !complete && !sum.SettledEarly {
 		slog.InfoContext(ctx, "DescribeInstances: fan-out incomplete",
 			"missing_nodes", missing, "erroring_nodes", erroring, "conflict_nodes", len(sum.ConflictNodes),
 			"unidentified_frames", sum.Unidentified, "nodes_answering_as_both", bothSets, "cap_hit", sum.CapHit)

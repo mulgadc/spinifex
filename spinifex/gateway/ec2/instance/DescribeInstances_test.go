@@ -652,3 +652,61 @@ func TestEnrichInstanceProfileIDs_NoOpInputs(t *testing.T) {
 	assert.Nil(t, noProfile.Reservations[0].Instances[0].IamInstanceProfile,
 		"instance with no profile is untouched")
 }
+
+// frameWithInstances builds one daemon reply carrying the given instance IDs.
+func frameWithInstances(t *testing.T, nodeID string, instanceIDs ...string) utils.Frame {
+	t.Helper()
+	instances := make([]*ec2.Instance, 0, len(instanceIDs))
+	for _, id := range instanceIDs {
+		instances = append(instances, &ec2.Instance{InstanceId: aws.String(id)})
+	}
+	data, err := json.Marshal(ec2.DescribeInstancesOutput{
+		Reservations: []*ec2.Reservation{{Instances: instances}},
+	})
+	require.NoError(t, err)
+	return utils.Frame{NodeID: nodeID, Data: data}
+}
+
+func TestAllRequestedInstancesFound_SettlesOnlyWhenEveryIDIsSeen(t *testing.T) {
+	t.Parallel()
+	settled := allRequestedInstancesFound([]*string{aws.String("i-a"), aws.String("i-b")})
+	require.NotNil(t, settled)
+
+	frames := []utils.Frame{frameWithInstances(t, "node-1", "i-a")}
+	assert.False(t, settled(frames, utils.Summary{}), "one of two ids found is not settled")
+
+	frames = append(frames, frameWithInstances(t, "node-2", "i-b"))
+	assert.True(t, settled(frames, utils.Summary{}), "both ids found, nothing left to prove")
+}
+
+// An id that no node holds must never settle, so absence keeps paying the full
+// deadline — that is the whole reason CollectUntilDeadline exists.
+func TestAllRequestedInstancesFound_AbsentIDNeverSettles(t *testing.T) {
+	t.Parallel()
+	settled := allRequestedInstancesFound([]*string{aws.String("i-missing")})
+	require.NotNil(t, settled)
+
+	frames := []utils.Frame{
+		frameWithInstances(t, "node-1", "i-other"),
+		frameWithInstances(t, "node-2", "i-another"),
+	}
+	assert.False(t, settled(frames, utils.Summary{}))
+}
+
+func TestAllRequestedInstancesFound_UndecodableFrameDoesNotSettle(t *testing.T) {
+	t.Parallel()
+	settled := allRequestedInstancesFound([]*string{aws.String("i-a")})
+	require.NotNil(t, settled)
+
+	frames := []utils.Frame{{NodeID: "node-1", Data: []byte("not json")}}
+	assert.False(t, settled(frames, utils.Summary{}))
+
+	frames = append(frames, frameWithInstances(t, "node-2", "i-a"))
+	assert.True(t, settled(frames, utils.Summary{}), "a later decodable frame still settles")
+}
+
+func TestAllRequestedInstancesFound_NoIDsYieldsNoPredicate(t *testing.T) {
+	t.Parallel()
+	assert.Nil(t, allRequestedInstancesFound(nil))
+	assert.Nil(t, allRequestedInstancesFound([]*string{nil}))
+}

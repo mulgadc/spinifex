@@ -20,11 +20,6 @@ import (
 // in particular, or when the identifier cannot be resolved at gate time.
 const anyResource = "*"
 
-// A nodegroup ARN ends in a UUID the gate cannot see without a describe round
-// trip, and (cluster, name) already identifies the nodegroup here. The literal
-// "*" is a value, so it matches the AWS-documented spelling without widening.
-const anyDiscriminator = "*"
-
 // Where an action's resource is named. Path parameters come from the route
 // regex; body sources are read from the same JSON the handler unmarshals.
 type resourceSource uint8
@@ -227,7 +222,10 @@ func nodegroupARN(region, accountID, cluster, nodegroup string) string {
 	if region == "" || accountID == "" || cluster == "" || nodegroup == "" {
 		return anyResource
 	}
-	return arn.FormatEKSNodegroup(region, accountID, cluster, nodegroup, anyDiscriminator)
+	// The nodegroup ARN's trailing segment is derived from these same
+	// identifiers at create time, so this is the ARN on the record, exactly.
+	return arn.FormatEKSNodegroup(region, accountID, cluster, nodegroup,
+		arn.EKSNodegroupDiscriminator(accountID, cluster, nodegroup))
 }
 
 func addonARN(region, accountID, cluster, addon string) string {
@@ -246,8 +244,8 @@ func accessEntryARN(region, accountID, cluster, principalARN string) string {
 
 // tagARN re-anchors the caller-supplied resource ARN on gw.Region and the
 // caller's account, because the tag handler ignores those segments and operates
-// in the caller's own account bucket. A nodegroup's UUID is dropped for the
-// same reason: the handler keys off (cluster, nodegroup) alone.
+// in the caller's own account bucket. A nodegroup's discriminator is re-derived
+// for the same reason: the handler keys off (cluster, nodegroup) alone.
 func tagARN(region, accountID, resourceARN string) string {
 	kind, resource, ok := splitEKSARN(resourceARN)
 	if !ok || region == "" || accountID == "" {

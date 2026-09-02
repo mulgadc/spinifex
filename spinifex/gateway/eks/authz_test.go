@@ -3,6 +3,7 @@ package gateway_eks_test
 import (
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/stretchr/testify/assert"
@@ -19,6 +20,13 @@ func resolveARNs(t *testing.T, action string, params []string, body string) []st
 	resources, err := gateway_eks.ResourceARNs(action, authzRegion, authzAccountID, params, []byte(body))
 	require.NoError(t, err)
 	return resources
+}
+
+// The nodegroup ARN the create path persists for the same identifiers. Spelled
+// through the shared builders so the test cannot pass by agreeing with itself.
+func nodegroupARN(cluster, name string) string {
+	return arn.FormatEKSNodegroup(authzRegion, authzAccountID, cluster, name,
+		arn.EKSNodegroupDiscriminator(authzAccountID, cluster, name))
 }
 
 // One assertion per resource class: the ARN handed to the evaluator must name
@@ -43,7 +51,7 @@ func TestResourceARNsFidelity(t *testing.T) {
 		{
 			action: "DeleteNodegroup",
 			params: []string{"prod", "workers"},
-			want:   []string{"arn:aws:eks:ap-southeast-2:123456789012:nodegroup/prod/workers/*"},
+			want:   []string{nodegroupARN("prod", "workers")},
 		},
 		{
 			action: "CreateNodegroup",
@@ -51,7 +59,7 @@ func TestResourceARNsFidelity(t *testing.T) {
 			body:   `{"nodegroupName":"workers"}`,
 			want: []string{
 				"arn:aws:eks:ap-southeast-2:123456789012:cluster/prod",
-				"arn:aws:eks:ap-southeast-2:123456789012:nodegroup/prod/workers/*",
+				nodegroupARN("prod", "workers"),
 			},
 		},
 		{
@@ -133,9 +141,9 @@ func TestResourceARNsTagARNIsReanchored(t *testing.T) {
 			want:        []string{"arn:aws:eks:ap-southeast-2:123456789012:cluster/prod"},
 		},
 		{
-			name:        "nodegroup uuid is dropped, as the handler drops it",
+			name:        "nodegroup discriminator is re-derived, as the handler ignores it",
 			resourceARN: "arn:aws:eks:ap-southeast-2:123456789012:nodegroup/prod/workers/8ac0f0b1",
-			want:        []string{"arn:aws:eks:ap-southeast-2:123456789012:nodegroup/prod/workers/*"},
+			want:        []string{nodegroupARN("prod", "workers")},
 		},
 		{
 			name:        "addon",

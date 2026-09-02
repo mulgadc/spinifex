@@ -59,14 +59,14 @@ func (d *Daemon) handleStorageConfig(msg *nats.Msg) string {
 	data, err := os.ReadFile(predastorePath)
 	if err != nil {
 		slog.Debug("handleStorageConfig: failed to read predastore config", "path", predastorePath, "err", err)
-		respondWithError(msg, "InternalError")
+		respondWithError(d.node, msg, "InternalError")
 		return outcomeError
 	}
 
 	var cfg predastoreTOML
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		slog.Error("handleStorageConfig: failed to parse predastore config", "err", err)
-		respondWithError(msg, "InternalError")
+		respondWithError(d.node, msg, "InternalError")
 		return outcomeError
 	}
 
@@ -111,6 +111,6 @@ func (d *Daemon) handleStorageConfig(msg *nats.Msg) string {
 		resp.Buckets = []types.StorageBucket{}
 	}
 
-	respondWithJSON(msg, resp)
+	respondWithJSON(d.node, msg, resp)
 	return outcomeSuccess
 }

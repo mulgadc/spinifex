@@ -30,7 +30,7 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) string {
 	instanceType := aws.StringValue(input.InstanceType)
 	it := d.resourceMgr.instanceTypes[instanceType]
 	if it == nil || instancetypes.IsGPUType(it) {
-		respondWithError(msg, awserrors.ErrorInvalidInstanceType)
+		respondWithError(d.node, msg, awserrors.ErrorInvalidInstanceType)
 		return outcomeError
 	}
 
@@ -58,7 +58,7 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) string {
 	}
 
 	if err := d.resourceMgr.CreateReservation(rec); err != nil {
-		respondWithServiceError(msg, err)
+		respondWithServiceError(d.node, msg, err)
 		return outcomeError
 	}
 
@@ -71,11 +71,11 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) string {
 		slog.Error("Failed to subscribe reservation launch subject, rolling back reservation",
 			"crId", rec.ID, "err", err)
 		d.resourceMgr.CancelReservation(rec.ID, accountID)
-		respondWithError(msg, awserrors.ErrorServerInternal)
+		respondWithError(d.node, msg, awserrors.ErrorServerInternal)
 		return outcomeError
 	}
 
-	respondWithJSON(msg, rec.toAWSCapacityReservation())
+	respondWithJSON(d.node, msg, rec.toAWSCapacityReservation())
 	return outcomeSuccess
 }
 
@@ -89,7 +89,7 @@ func (d *Daemon) handleEC2DescribeCapacityReservations(msg *nats.Msg) string {
 	for _, rec := range d.resourceMgr.ListReservations(accountID) {
 		out.CapacityReservations = append(out.CapacityReservations, rec.toAWSCapacityReservation())
 	}
-	respondWithJSON(msg, out)
+	respondWithJSON(d.node, msg, out)
 	return outcomeSuccess
 }
 
@@ -112,7 +112,7 @@ func (d *Daemon) handleEC2CancelCapacityReservation(msg *nats.Msg) string {
 		// hits no responder → InvalidCapacityReservationId.NotFound at the gateway.
 		d.unsubscribeReservationLaunch(aws.StringValue(input.CapacityReservationId))
 	}
-	respondWithJSON(msg, &ec2.CancelCapacityReservationOutput{Return: aws.Bool(found)})
+	respondWithJSON(d.node, msg, &ec2.CancelCapacityReservationOutput{Return: aws.Bool(found)})
 	return outcomeSuccess
 }
 

@@ -384,7 +384,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 	daemon := createTestDaemon(t, natsURL)
 
 	// Subscribe to DescribeInstanceTypes (no queue group for fan-out)
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceTypes", asMsgHandler(handleNATSRequest(daemon.instanceService.DescribeInstanceTypes)))
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceTypes", asMsgHandler(handleNATSRequest(daemon.node, daemon.instanceService.DescribeInstanceTypes)))
 	require.NoError(t, err, "Failed to subscribe to ec2.DescribeInstanceTypes")
 	defer sub.Unsubscribe()
 
@@ -4573,4 +4573,39 @@ func TestConfigureEBSProvider_ViperblockdInjectsSameInstanceEverywhere(t *testin
 	assert.Same(t, d.ebsProvider, d.imageService.EBSProvider())
 	assert.Same(t, d.ebsProvider, d.snapshotService.EBSProvider())
 	assert.Same(t, d.ebsProvider, d.volumeService.EBSProvider())
+}
+
+// TestNodeIDNamespace_Agrees pins the one node ID namespace the identity-mode
+// fan-out depends on: the X-Node-ID reply header, config.ClusterConfig.Nodes'
+// keys, daemon.Heartbeat.Node (via NodeDiscoverResponse, which carries the
+// same value), and vm.VM.LastNode's source (vm.Deps.NodeID) must all be the
+// same identifier. If any of these diverged, responder-set coverage would
+// silently never match a configured node, and every fan-out would read as
+// permanently incomplete.
+func TestNodeIDNamespace_Agrees(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+
+	// config.ClusterConfig.Nodes' key for this node must be the node's own ID.
+	_, present := daemon.clusterConfig.Nodes[daemon.node]
+	require.True(t, present, "clusterConfig.Nodes must be keyed by this node's own ID")
+
+	// vm.Deps.NodeID (the source of vm.VM.LastNode) must be the same ID.
+	deps := daemon.buildVMManagerDeps()
+	assert.Equal(t, daemon.node, deps.NodeID)
+
+	// The X-Node-ID reply header, and NodeDiscoverResponse.Node (the source
+	// fed into daemon.Heartbeat.Node elsewhere), must both be the same ID too.
+	sub, err := daemon.natsConn.Subscribe("test.nodediscover", asMsgHandler(daemon.handleNodeDiscover))
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	reply, err := daemon.natsConn.Request("test.nodediscover", nil, 5*time.Second)
+	require.NoError(t, err)
+
+	assert.Equal(t, daemon.node, reply.Header.Get(utils.NodeIDHeader),
+		"the reply header must carry the same node ID as everything else")
+
+	var resp types.NodeDiscoverResponse
+	require.NoError(t, json.Unmarshal(reply.Data, &resp))
+	assert.Equal(t, daemon.node, resp.Node)
 }

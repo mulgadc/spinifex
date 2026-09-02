@@ -78,7 +78,7 @@ func (d *Daemon) handleEC2GetPasswordData(msg *nats.Msg) {
 	}
 
 	if input.InstanceId == nil {
-		respondWithError(msg, awserrors.ErrorMissingParameter)
+		respondWithError(d.node, msg, awserrors.ErrorMissingParameter)
 		return
 	}
 
@@ -87,12 +87,12 @@ func (d *Daemon) handleEC2GetPasswordData(msg *nats.Msg) {
 	// Find the instance on this node
 	instance, exists := d.vmMgr.Get(instanceID)
 	if !exists {
-		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+		respondWithError(d.node, msg, awserrors.ErrorInvalidInstanceIDNotFound)
 		return
 	}
 
 	// Verify the caller owns this instance
-	if !checkInstanceOwnership(msg, instanceID, instance.AccountID) {
+	if !checkInstanceOwnership(d.node, msg, instanceID, instance.AccountID) {
 		return
 	}
 
@@ -121,7 +121,7 @@ func (d *Daemon) handleEC2GetPasswordData(msg *nats.Msg) {
 	// worth retrying. A non-RSA launch key never will, so name that case instead
 	// of returning the same empty string for a condition that cannot resolve.
 	if passwordData == "" && d.launchKeyCannotEncrypt(instance) {
-		respondWithError(msg, awserrors.ErrorInvalidKeyPairType)
+		respondWithError(d.node, msg, awserrors.ErrorInvalidKeyPairType)
 		return
 	}
 
@@ -136,7 +136,7 @@ func (d *Daemon) handleEC2GetPasswordData(msg *nats.Msg) {
 		Timestamp:    &modTime,
 	}
 
-	respondWithJSON(msg, output)
+	respondWithJSON(d.node, msg, output)
 	// Log the ciphertext length only; the payload itself is never logged.
 	slog.Info("handleEC2GetPasswordData completed", "instance_id", instanceID, "password_data_bytes", len(passwordData))
 }

@@ -17,7 +17,7 @@ import (
 // the lifecycle is always spot for this command.
 func (d *Daemon) handleSetSpotLineage(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand) string {
 	if command.SpotLineageData == nil {
-		return respondErrorOutcome(msg, awserrors.ErrorMissingParameter)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorMissingParameter)
 	}
 
 	found, err := d.vmMgr.UpdateAndPersist(command.ID, func(v *vm.VM) bool {
@@ -26,10 +26,10 @@ func (d *Daemon) handleSetSpotLineage(ctx context.Context, msg *nats.Msg, comman
 		return true
 	})
 	if err != nil {
-		return respondServiceErrorOutcome(msg, err)
+		return respondServiceErrorOutcome(d.node, msg, err)
 	}
 	if !found {
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidInstanceIDNotFound)
 	}
 
 	if err := msg.Respond([]byte(`{}`)); err != nil {

@@ -101,7 +101,7 @@ func (d *Daemon) startOchreVector() {
 	d.ochreAppliance = appliance
 	d.mu.Unlock()
 	if err := d.registerNatsSubs([]natsSub{
-		{handlers_ochrevector.SubjectTeardownAppliance, handleNATSRequest(d.handleOchreApplianceTeardown), "spinifex-workers"},
+		{handlers_ochrevector.SubjectTeardownAppliance, handleNATSRequest(d.node, d.handleOchreApplianceTeardown), "spinifex-workers"},
 	}); err != nil {
 		slog.Error("Ochre vector store: failed to register appliance teardown subject", "err", err)
 	}
@@ -154,14 +154,14 @@ func (d *Daemon) startOchreVector() {
 	// table-driven mechanism subscribeAll itself uses, so a queue-group
 	// registration here is indistinguishable from one made at boot.
 	subs := []natsSub{
-		{handlers_ochrevector.SubjectCreateIndex, handleNATSRequest(vectorService.CreateIndex), "spinifex-workers"},
-		{handlers_ochrevector.SubjectDeleteIndex, handleNATSRequest(vectorService.DeleteIndex), "spinifex-workers"},
-		{handlers_ochrevector.SubjectListIndexes, handleNATSRequest(vectorService.ListIndexes), "spinifex-workers"},
-		{handlers_ochrevector.SubjectIngest, handleNATSRequest(vectorService.Ingest), "spinifex-workers"},
-		{handlers_ochrevector.SubjectDescribeJob, handleNATSRequest(vectorService.DescribeJob), "spinifex-workers"},
-		{handlers_ochrevector.SubjectQuery, handleNATSRequest(vectorService.Query), "spinifex-workers"},
-		{handlers_ochrevector.SubjectListJobs, handleNATSRequest(vectorService.ListJobs), "spinifex-workers"},
-		{handlers_ochrevector.SubjectStopJob, handleNATSRequest(vectorService.StopJob), "spinifex-workers"},
+		{handlers_ochrevector.SubjectCreateIndex, handleNATSRequest(d.node, vectorService.CreateIndex), "spinifex-workers"},
+		{handlers_ochrevector.SubjectDeleteIndex, handleNATSRequest(d.node, vectorService.DeleteIndex), "spinifex-workers"},
+		{handlers_ochrevector.SubjectListIndexes, handleNATSRequest(d.node, vectorService.ListIndexes), "spinifex-workers"},
+		{handlers_ochrevector.SubjectIngest, handleNATSRequest(d.node, vectorService.Ingest), "spinifex-workers"},
+		{handlers_ochrevector.SubjectDescribeJob, handleNATSRequest(d.node, vectorService.DescribeJob), "spinifex-workers"},
+		{handlers_ochrevector.SubjectQuery, handleNATSRequest(d.node, vectorService.Query), "spinifex-workers"},
+		{handlers_ochrevector.SubjectListJobs, handleNATSRequest(d.node, vectorService.ListJobs), "spinifex-workers"},
+		{handlers_ochrevector.SubjectStopJob, handleNATSRequest(d.node, vectorService.StopJob), "spinifex-workers"},
 	}
 
 	// backup/restore need RegrantAccount alongside EnsureAccount, which is
@@ -174,8 +174,8 @@ func (d *Daemon) startOchreVector() {
 		d.ochreBackupService = backupSvc
 		d.mu.Unlock()
 		subs = append(subs,
-			natsSub{handlers_ochrevector.SubjectBackupAccount, handleNATSRequest(backupSvc.Backup), "spinifex-workers"},
-			natsSub{handlers_ochrevector.SubjectRestoreAccount, handleNATSRequest(backupSvc.Restore), "spinifex-workers"},
+			natsSub{handlers_ochrevector.SubjectBackupAccount, handleNATSRequest(d.node, backupSvc.Backup), "spinifex-workers"},
+			natsSub{handlers_ochrevector.SubjectRestoreAccount, handleNATSRequest(d.node, backupSvc.Restore), "spinifex-workers"},
 		)
 	} else {
 		slog.Warn("Ochre vector store: backend does not support account backup/restore; subjects not registered")

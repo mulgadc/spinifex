@@ -198,7 +198,7 @@ func broadcastForAssociation(ctx context.Context, natsConn *nats.Conn, subject s
 	// Non-owners reply JSON null (a success frame that unmarshals to nil).
 	for _, f := range frames {
 		var assoc *ec2.IamInstanceProfileAssociation
-		if json.Unmarshal(f, &assoc) == nil && assoc != nil {
+		if json.Unmarshal(f.Data, &assoc) == nil && assoc != nil {
 			return assoc, nil
 		}
 	}
@@ -229,7 +229,7 @@ func broadcastDescribeAssociations(ctx context.Context, natsConn *nats.Conn, inp
 	var associations []*ec2.IamInstanceProfileAssociation
 	for _, f := range frames {
 		var resp ec2.DescribeIamInstanceProfileAssociationsOutput
-		if json.Unmarshal(f, &resp) == nil {
+		if json.Unmarshal(f.Data, &resp) == nil {
 			associations = append(associations, resp.IamInstanceProfileAssociations...)
 		}
 	}

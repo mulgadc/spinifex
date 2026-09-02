@@ -42,7 +42,7 @@ func collectCensus(ctx context.Context, natsConn *nats.Conn, expectedNodes int, 
 	var census []nodeCensus
 	for _, frame := range frames {
 		var status types.NodeStatusResponse
-		if err := json.Unmarshal(frame, &status); err != nil {
+		if err := json.Unmarshal(frame.Data, &status); err != nil {
 			slog.DebugContext(ctx, "collectCensus: failed to unmarshal response", "err", err)
 			continue
 		}

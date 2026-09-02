@@ -90,7 +90,7 @@ func TestStopStartPreservesWritesOnSameNode(t *testing.T) {
 	inst := harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	if !harness.TryGuestSSHReady(host, port, "ubuntu", tgt.KeyPath, 5*time.Minute) {
-		t.Fatalf("guest did not come back after a same-node restart")
+		t.Fatalf("guest did not come back after a same-node restart%s", consoleTail(fix, instanceID))
 	}
 	tgt = harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: tgt.KeyPath}
 
@@ -170,7 +170,7 @@ func TestCrossNodeStartAfterFailedSealIsRefused(t *testing.T) {
 	if !harness.TryGuestSSHReady(host, port, "ubuntu", tgt.KeyPath, 5*time.Minute) {
 		t.Errorf("the cross-node start was allowed and the guest never came back: its root volume was "+
 			"loaded from a stale backend checkpoint while %s held the current one.\n"+
-			"The start should have been refused.", hostNode.Name)
+			"The start should have been refused.%s", hostNode.Name, consoleTail(fix, instanceID))
 		return
 	}
 	tgt = harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: tgt.KeyPath}
@@ -339,6 +339,25 @@ func errOrOK(err error) string {
 		return "success"
 	}
 	return err.Error()
+}
+
+// consoleTail returns the guest's serial console for a restart that never
+// answered SSH, formatted to append to a failure message. Whether the kernel
+// booted and stalled or never got that far is only visible here, and the log is
+// gone once the fixture terminates the instance.
+func consoleTail(fix *Fixture, instanceID string) string {
+	console, err := harness.InstanceConsole(fix.AWS, instanceID)
+	if err != nil {
+		return fmt.Sprintf("\nconsole unavailable: %v", err)
+	}
+	if strings.TrimSpace(console) == "" {
+		return "\nconsole was empty, so the guest produced no serial output at all"
+	}
+	const tailBytes = 4096
+	if len(console) > tailBytes {
+		console = console[len(console)-tailBytes:]
+	}
+	return "\nguest console (last " + fmt.Sprint(len(console)) + " bytes):\n" + console
 }
 
 // deviceGeometry reports what the guest kernel thinks the device is, for a

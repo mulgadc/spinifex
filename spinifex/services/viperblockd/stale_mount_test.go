@@ -1,5 +1,8 @@
 package viperblockd
 
+//test:in-package — mountEntryIsStale and releaseStaleMount are unexported, and
+//exporting them would widen the package API for a test rather than for a caller.
+
 import (
 	"os"
 	"path/filepath"

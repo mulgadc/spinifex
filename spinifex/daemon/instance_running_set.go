@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/vm"
 )
@@ -27,16 +28,27 @@ type runningSetState struct {
 	digest    map[string]uint64
 }
 
+// RunningSetResult counts what one reconcile actually did. A healthy node that
+// has published everything scores zero across the board, which is what makes it
+// usable as a repair signal rather than as traffic.
+type RunningSetResult struct {
+	Written int // records published, whether new, changed or retried after a failure
+	Retired int // instances released from the digest, whether deleted or handed over
+	Failed  int // records this pass could not publish or settle
+}
+
 // WriteRunningSet reconciles this node's running instances onto the
 // per-resource key space.
 //
 // Best-effort, like the marker write it follows: the local state file is the
 // source of truth for the node's own instances, so a failure here leaves the
 // cluster's view stale rather than losing anything, and is logged rather than
-// returned. The next state change repeats whatever did not land.
-func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm.VM) {
+// returned. Whatever did not land is repeated by the next state change or by
+// the repair sweep, whichever comes first.
+func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm.VM) RunningSetResult {
+	var result RunningSetResult
 	if m.records == nil {
-		return
+		return result
 	}
 
 	m.running.mu.Lock()
@@ -46,7 +58,8 @@ func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm
 		if err := m.seedRunningSet(nodeID); err != nil {
 			slog.Warn("Could not read the existing instance records; the next state write retries",
 				"node", nodeID, "err", err)
-			return
+			result.Failed++
+			return result
 		}
 	}
 
@@ -65,6 +78,7 @@ func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm
 		sum, err := recordDigest(record)
 		if err != nil {
 			slog.Error("Could not encode an instance record", "instanceId", id, "err", err)
+			result.Failed++
 			continue
 		}
 		if current, ok := m.running.digest[id]; ok && current == sum {
@@ -77,9 +91,11 @@ func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm
 		if err := m.records.Replace(context.Background(), instanceRecordKey(id), record); err != nil {
 			slog.Error("Could not write an instance record", "instanceId", id, "err", err)
 			delete(m.running.digest, id)
+			result.Failed++
 			continue
 		}
 		m.running.digest[id] = sum
+		result.Written++
 	}
 
 	for id := range m.running.digest {
@@ -88,8 +104,12 @@ func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm
 		}
 		if m.retireRecord(nodeID, id) {
 			delete(m.running.digest, id)
+			result.Retired++
+			continue
 		}
+		result.Failed++
 	}
+	return result
 }
 
 // retireRecord drops the record of an instance that has left nodeID's running
@@ -158,8 +178,18 @@ func (m *JetStreamManager) seedRunningSet(nodeID string) error {
 // recordDigest identifies a record by its wire form, so a state change that
 // leaves an instance untouched does not become a KV write. encoding/json sorts
 // map keys, so the same record always encodes to the same bytes.
+//
+// LastQMPSuccess is held out of it. It advances on every successful poll, so
+// digesting it would make every running instance look changed once a minute and
+// turn the repair sweep into permanent write traffic. Nothing reads it back —
+// impairment is judged from QMPConsecutiveFailures and ImpairedSince, and node
+// liveness from the heartbeat store — so holding it out costs no reader
+// anything and keeps publication on the cadence it had before the sweep existed.
 func recordDigest(record *vm.InstanceRecord) (uint64, error) {
-	data, err := json.Marshal(record)
+	stable := *record
+	stable.Status.Health.LastQMPSuccess = time.Time{}
+
+	data, err := json.Marshal(&stable)
 	if err != nil {
 		return 0, err
 	}

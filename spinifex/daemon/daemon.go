@@ -259,6 +259,10 @@ type Daemon struct {
 	// stateRevision: incremented on each successful WriteState.
 	stateRevision atomic.Uint64
 
+	// recordRepairInterval: overrides recordRepairInterval, for tests that must
+	// observe a sweep without waiting a minute. Zero uses the real bound.
+	recordRepairInterval time.Duration
+
 	// kvSyncFailures: best-effort JetStream KV sync failures since start.
 	kvSyncFailures atomic.Int64
 	// lastKVSyncAt: unix-nano timestamp of the last successful KV sync.
@@ -2043,6 +2047,7 @@ func (d *Daemon) startCluster() error {
 	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.handleSystemLaunchInstance, d.node)
 
 	d.startHeartbeat()
+	d.startRecordRepair()
 	d.vmMgr.StartPendingWatchdog(d.ctx)
 
 	// Reality→desired GC backstop (ADR-0003 §3): finish teardown interrupted by

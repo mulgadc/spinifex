@@ -271,6 +271,30 @@ func (b *Bucket) Watch(ctx context.Context, filter string) (jetstream.KeyWatcher
 	return w, nil
 }
 
+// WatchFrom returns a watcher over the keys matching filter that resumes
+// from revision: it replays every value at or after revision, followed by
+// the end-of-replay marker, before turning into an ordinary live feed. It
+// takes no UpdatesOnly, unlike Watch, because the whole point is to replay
+// what a Snapshot's high-water mark missed — a caller rebuilding a cache
+// from a snapshot uses this to close that window without a buffering fence.
+func (b *Bucket) WatchFrom(ctx context.Context, filter string, revision uint64) (jetstream.KeyWatcher, error) {
+	var w jetstream.KeyWatcher
+	// Wrapped inside the closure, so a bucket that could not be opened at all
+	// reports the configured reason rather than a watch failure on top of it.
+	err := b.withKV(ctx, func(kv jetstream.KeyValue) error {
+		var err error
+		w, err = kv.Watch(ctx, filter, jetstream.ResumeFromRevision(revision))
+		if err != nil {
+			return fmt.Errorf("kvstore: watch %s %s: %w", b.cfg.Name, filter, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
 // open picks the kvutil helper matching the configured TTL and replica count.
 func (b *Bucket) open(ctx context.Context) (jetstream.KeyValue, error) {
 	switch {

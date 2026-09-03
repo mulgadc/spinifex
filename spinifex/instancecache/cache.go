@@ -6,17 +6,16 @@
 // Entries are immutable. An update replaces a map entry's pointer; nothing
 // mutates a *vm.VM in place, and a caller must not either.
 //
-// The watch and the resync are fenced against each other through
-// kvstore.Store.Snapshot's highWater mark: a watcher is opened and its events
-// buffered before the snapshot is taken, so nothing that happened during the
-// snapshot is lost or double-applied once the buffer is drained against the
-// snapshot's high-water revision. A periodic resync does not open a second
-// subscription — it tees the existing live watcher's events into a side
-// buffer while continuing to apply them to the live map directly, so a
-// resync that then fails has cost nothing: the live map already has
-// everything the failed candidate would have had. Only a watcher that
-// actually dies is replaced, and its successor takes over under the same
-// fencing before the old one is stopped and joined.
+// The watch and a snapshot are fenced against each other by sequencing, not
+// buffering: every sync — initial, periodic, or a dead watcher's replacement
+// — takes a Snapshot first, then opens a new watcher that resumes from just
+// past the snapshot's high-water mark and replays onto a private candidate
+// map until it catches up. Only once that candidate is complete does it
+// become the live map, at the same moment the new watcher becomes the active
+// one; the old watcher, if there was one, is stopped and joined only after.
+// Because the candidate is a map nobody else can see until that swap, a
+// failed sync costs nothing: the live map and the previously active watcher
+// were never touched.
 //
 // A record that will not decode never removes an entry: the cache only ever
 // removes a key because the record space said it is gone, never because one
@@ -42,21 +41,14 @@ import (
 
 // Defaults for Config.
 const (
-	// DefaultResyncInterval is the periodic tee-based resync cadence: the
-	// completeness backstop for a delete or TTL expiry the watch missed.
+	// DefaultResyncInterval is the periodic resync cadence: the completeness
+	// backstop for a delete or TTL expiry the watch missed.
 	DefaultResyncInterval = 30 * time.Second
-
-	// DefaultMaxBufferedEvents bounds the side buffer a sync fences events
-	// through. Overflowing it fails the sync rather than dropping events
-	// silently, so it must stay well above a burst like a 50-instance launch.
-	DefaultMaxBufferedEvents = 10000
 
 	// DefaultRetryInterval is how long a failed sync waits before trying
 	// again, so an unreachable bucket is retried without spinning.
 	DefaultRetryInterval = 5 * time.Second
 )
-
-var errBufferOverflow = errors.New("instancecache: sync buffer overflow")
 
 // Config configures the KV bucket a Cache watches and its clocks. Bucket and
 // Prefix are supplied by the caller so this package never has to know the
@@ -72,37 +64,17 @@ type Config struct {
 	// its record key with Prefix trimmed.
 	Prefix string
 
-	ResyncInterval    time.Duration
-	MaxBufferedEvents int
-	RetryInterval     time.Duration
+	ResyncInterval time.Duration
+	RetryInterval  time.Duration
 }
 
-// watchMode governs what a liveWatcher's drain goroutine does with an
-// incoming event.
-type watchMode int
-
-const (
-	// modeBuffer queues events without applying them: a watcher that has not
-	// yet gone live, either the very first one or a replacement mid-handoff.
-	modeBuffer watchMode = iota
-	// modeLive applies events directly and buffers nothing.
-	modeLive
-	// modeTee applies events directly and also queues them, for a periodic
-	// resync borrowing the live watcher's events without diverting them.
-	modeTee
-)
-
-// liveWatcher is one KeyWatcher plus the goroutine draining it, and the
-// buffering state a sync uses to fence its events against a snapshot.
+// liveWatcher is one KeyWatcher plus the context that owns it and the
+// goroutine draining it once it is live.
 type liveWatcher struct {
 	kw     jetstream.KeyWatcher
+	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
-
-	mu     sync.Mutex
-	mode   watchMode
-	buf    []jetstream.KeyValueEntry
-	bufErr error
 }
 
 // Cache is the informer: a live map of instance ID to *vm.VM, an account
@@ -113,9 +85,8 @@ type Cache struct {
 	prefix string
 	filter string
 
-	resyncInterval    time.Duration
-	maxBufferedEvents int
-	retryInterval     time.Duration
+	resyncInterval time.Duration
+	retryInterval  time.Duration
 
 	mu      sync.RWMutex
 	entries map[string]*vm.VM
@@ -130,11 +101,6 @@ type Cache struct {
 	degraded    atomic.Bool  // true from a failed sync until the next one succeeds
 
 	metrics *cacheMetrics
-
-	// postSnapshotHook, when set, runs after Snapshot returns and before the
-	// buffer is read. Nil in production; a test seam for landing an event
-	// deterministically inside the fence's danger window.
-	postSnapshotHook func()
 }
 
 // New returns a Cache over the bucket cfg describes. Call Run to start it;
@@ -144,24 +110,19 @@ func New(js jetstream.JetStream, cfg Config) *Cache {
 	if resync <= 0 {
 		resync = DefaultResyncInterval
 	}
-	maxBuf := cfg.MaxBufferedEvents
-	if maxBuf <= 0 {
-		maxBuf = DefaultMaxBufferedEvents
-	}
 	retry := cfg.RetryInterval
 	if retry <= 0 {
 		retry = DefaultRetryInterval
 	}
 	c := &Cache{
-		store:             kvstore.New[vm.InstanceRecord](js, cfg.Bucket),
-		prefix:            cfg.Prefix,
-		filter:            cfg.Prefix + "*",
-		resyncInterval:    resync,
-		maxBufferedEvents: maxBuf,
-		retryInterval:     retry,
-		entries:           map[string]*vm.VM{},
-		index:             map[string]map[string]struct{}{},
-		watcherLost:       make(chan struct{}, 1),
+		store:          kvstore.New[vm.InstanceRecord](js, cfg.Bucket),
+		prefix:         cfg.Prefix,
+		filter:         cfg.Prefix + "*",
+		resyncInterval: resync,
+		retryInterval:  retry,
+		entries:        map[string]*vm.VM{},
+		index:          map[string]map[string]struct{}{},
+		watcherLost:    make(chan struct{}, 1),
 	}
 	c.metrics = newCacheMetrics(c)
 	return c
@@ -306,44 +267,34 @@ func (c *Cache) sleep(ctx context.Context) bool {
 	}
 }
 
-// openWatcher opens a new watcher in modeBuffer and starts draining it. A nil
-// return means the bucket could not be watched this attempt.
-func (c *Cache) openWatcher(ctx context.Context) *liveWatcher {
-	watchCtx, cancel := context.WithCancel(ctx)
-	kw, err := c.store.Watch(watchCtx, c.filter)
-	if err != nil {
-		cancel()
-		slog.WarnContext(ctx, "instancecache: watch unavailable, retrying", "err", err)
-		return nil
-	}
-	lw := &liveWatcher{kw: kw, cancel: cancel, done: make(chan struct{})}
-	go c.drain(watchCtx, lw)
-	return lw
+// syncFailed records a failed sync attempt: the metric, the degraded flag,
+// and a warning log, shared by every sync path so a failure looks the same
+// regardless of which one hit it.
+func (c *Cache) syncFailed(ctx context.Context, err error) {
+	c.metrics.resyncFailed()
+	c.degraded.Store(true)
+	slog.WarnContext(ctx, "instancecache: sync failed", "err", err)
 }
 
-// discardWatcher tears a failed candidate's watcher down: cancel, stop and
-// join, so a repeatedly failing sync leaks neither a subscription nor a
-// buffer.
-func (c *Cache) discardWatcher(lw *liveWatcher) {
-	lw.cancel()
-	_ = lw.kw.Stop()
-	<-lw.done
-}
-
-// drain forwards one watcher's events to handleEntry until its channel
-// closes or ctx ends. A channel that closes while ctx is still live means the
-// connection dropped out from under it, which is the signal Run replaces the
-// watcher on; a channel that closes because ctx was cancelled is an
-// intentional teardown and reports nothing.
-func (c *Cache) drain(ctx context.Context, lw *liveWatcher) {
+// drain applies every event lw's watcher delivers, live, once the sync that
+// installed lw has already caught it up: a channel that closes while lw's
+// context is still live means the connection dropped out from under it,
+// which is the signal Run replaces the watcher on; a channel that closes
+// because the context was cancelled is an intentional teardown and reports
+// nothing. An event delivered after lw has been superseded as the active
+// watcher is dropped rather than applied: the watcher that replaced it is
+// independently live-subscribed and already covers it, so nothing is lost,
+// and this keeps it true that only the active watcher ever writes to the
+// live map.
+func (c *Cache) drain(lw *liveWatcher) {
 	defer close(lw.done)
 	for {
 		select {
-		case <-ctx.Done():
+		case <-lw.ctx.Done():
 			return
 		case entry, ok := <-lw.kw.Updates():
 			if !ok {
-				if ctx.Err() == nil {
+				if lw.ctx.Err() == nil && c.getActive() == lw {
 					select {
 					case c.watcherLost <- struct{}{}:
 					default:
@@ -352,33 +303,13 @@ func (c *Cache) drain(ctx context.Context, lw *liveWatcher) {
 				return
 			}
 			if entry == nil {
-				// UpdatesOnly should not emit the end-of-replay marker, but a
-				// nil entry carries no operation to apply either way.
 				continue
 			}
-			c.handleEntry(lw, entry)
-		}
-	}
-}
-
-// handleEntry buffers entry when lw's mode says to, and applies it live when
-// lw's mode says to. The two are independent so a tee does both.
-func (c *Cache) handleEntry(lw *liveWatcher, entry jetstream.KeyValueEntry) {
-	lw.mu.Lock()
-	mode := lw.mode
-	if mode == modeBuffer || mode == modeTee {
-		if lw.bufErr == nil {
-			if len(lw.buf) >= c.maxBufferedEvents {
-				lw.bufErr = errBufferOverflow
-			} else {
-				lw.buf = append(lw.buf, entry)
+			if c.getActive() != lw {
+				continue
 			}
+			c.applyLive(entry)
 		}
-	}
-	lw.mu.Unlock()
-
-	if mode == modeLive || mode == modeTee {
-		c.applyLive(entry)
 	}
 }
 
@@ -417,9 +348,6 @@ func (c *Cache) snapshotCandidate(ctx context.Context) (map[string]*vm.VM, map[s
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	if c.postSnapshotHook != nil {
-		c.postSnapshotHook()
-	}
 	entries := make(map[string]*vm.VM, len(items))
 	index := make(map[string]map[string]struct{})
 	for i := range items {
@@ -429,144 +357,129 @@ func (c *Cache) snapshotCandidate(ctx context.Context) (map[string]*vm.VM, map[s
 	return entries, index, highWater, nil
 }
 
-// drainBuffered applies every buffered event whose revision is newer than
-// highWater onto entries/index, which is the fence: anything at or before
-// highWater is already reflected in the snapshot that produced entries.
-func (c *Cache) drainBuffered(entries map[string]*vm.VM, index map[string]map[string]struct{},
-	buf []jetstream.KeyValueEntry, highWater uint64) {
-	for _, entry := range buf {
-		if entry.Revision() <= highWater {
-			continue
-		}
-		c.apply(entries, index, entry)
-	}
-}
-
-// goLive ends a watcher's buffered phase: further events apply directly, and
-// anything already queued during the handoff is applied now, live, rather
-// than silently kept or dropped.
-func (c *Cache) goLive(lw *liveWatcher) {
-	lw.mu.Lock()
-	leftover := lw.buf
-	lw.buf = nil
-	lw.bufErr = nil
-	lw.mode = modeLive
-	lw.mu.Unlock()
-	for _, entry := range leftover {
-		c.applyLive(entry)
-	}
-}
-
-// freshSync opens a new watcher, buffers its events, and fences a snapshot
-// against them per the same algorithm every sync uses. It retries against
-// ctx's retry interval until it succeeds or ctx ends. On success the new
-// watcher is live and the map holds the freshly built candidate; on ctx
-// ending it returns nil having left nothing behind.
-func (c *Cache) freshSync(ctx context.Context) *liveWatcher {
+// replay applies every event kw delivers onto entries/index until the
+// end-of-replay marker (nil) arrives: the candidate then reflects everything
+// between the snapshot's high-water mark and the moment it caught up, which
+// is the whole fence — no buffer, no mode, just sequencing.
+func (c *Cache) replay(ctx context.Context, kw jetstream.KeyWatcher, entries map[string]*vm.VM, index map[string]map[string]struct{}) error {
 	for {
-		lw := c.openWatcher(ctx)
-		if lw == nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case entry, ok := <-kw.Updates():
+			if !ok {
+				return errors.New("instancecache: watcher closed before catching up")
+			}
+			if entry == nil {
+				return nil
+			}
+			c.apply(entries, index, entry)
+		}
+	}
+}
+
+// syncOnce runs the whole build algorithm once: snapshot the record space,
+// open a watcher that resumes from just past the snapshot's high-water mark,
+// and replay onto the candidate until it catches up. It touches neither the
+// live map nor the active watcher — installSync does that, and only once an
+// attempt fully succeeds, so a failed attempt has cost nothing.
+func (c *Cache) syncOnce(ctx context.Context) (*liveWatcher, map[string]*vm.VM, map[string]map[string]struct{}, error) {
+	entries, index, hw, err := c.snapshotCandidate(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	watchCtx, cancel := context.WithCancel(ctx)
+	kw, err := c.store.WatchFrom(watchCtx, c.filter, hw+1)
+	if err != nil {
+		cancel()
+		return nil, nil, nil, err
+	}
+
+	if err := c.replay(watchCtx, kw, entries, index); err != nil {
+		cancel()
+		_ = kw.Stop()
+		return nil, nil, nil, err
+	}
+
+	return &liveWatcher{kw: kw, ctx: watchCtx, cancel: cancel, done: make(chan struct{})}, entries, index, nil
+}
+
+// installSync swaps entries/index in as the live map and lw in as the active
+// watcher together, starts lw's live-apply goroutine, then stops and joins
+// oldLw. In that order, so there is never a moment where two watchers both
+// apply to the live map: oldLw, while it was still active, only ever applied
+// to the map installSync is now replacing, and it stops being active in the
+// same step that replacement happens.
+func (c *Cache) installSync(lw *liveWatcher, entries map[string]*vm.VM, index map[string]map[string]struct{}, oldLw *liveWatcher) {
+	c.mu.Lock()
+	c.entries, c.index = entries, index
+	c.ready = true
+	c.mu.Unlock()
+	c.setActive(lw)
+	go c.drain(lw)
+
+	if oldLw != nil {
+		oldLw.cancel()
+		_ = oldLw.kw.Stop()
+		<-oldLw.done
+	}
+}
+
+// resyncUntilSuccess retries syncOnce against the retry interval until it
+// succeeds or ctx ends, installing the result over oldLw. Used by the
+// initial sync and watcher replacement, which both must block until a live
+// watcher exists again; a periodic resync tries only once per tick instead.
+func (c *Cache) resyncUntilSuccess(ctx context.Context, oldLw *liveWatcher) *liveWatcher {
+	for {
+		lw, entries, index, err := c.syncOnce(ctx)
+		if err != nil {
+			c.syncFailed(ctx, err)
 			if !c.sleep(ctx) {
 				return nil
 			}
 			continue
 		}
-
-		entries, index, hw, err := c.snapshotCandidate(ctx)
-		if err == nil {
-			lw.mu.Lock()
-			buf, bufErr := lw.buf, lw.bufErr
-			lw.mu.Unlock()
-			if bufErr == nil {
-				c.drainBuffered(entries, index, buf, hw)
-				c.mu.Lock()
-				c.entries, c.index = entries, index
-				c.ready = true
-				c.mu.Unlock()
-				c.goLive(lw)
-				return lw
-			}
-			err = bufErr
-		}
-
-		c.metrics.resyncFailed()
-		c.degraded.Store(true)
-		slog.WarnContext(ctx, "instancecache: sync failed, retrying", "err", err)
-		c.discardWatcher(lw)
-		if !c.sleep(ctx) {
-			return nil
-		}
+		c.installSync(lw, entries, index, oldLw)
+		c.markResynced()
+		return lw
 	}
 }
 
-// initialSync is freshSync plus making the result the active watcher and
-// recording the first successful resync.
+// initialSync is resyncUntilSuccess with no old watcher to fence against,
+// plus making the result the active watcher and recording the first
+// successful resync.
 func (c *Cache) initialSync(ctx context.Context) *liveWatcher {
-	lw := c.freshSync(ctx)
-	if lw == nil {
-		return nil
-	}
-	c.setActive(lw)
-	c.markResynced()
-	return lw
+	return c.resyncUntilSuccess(ctx, nil)
 }
 
-// periodicResync tees the live watcher rather than opening a second
-// subscription: events keep applying to the live map throughout, and a
-// snapshot-fenced candidate is built off to the side and swapped in only on
-// success. A failure costs nothing but a discarded candidate, because the
-// tee already applied everything to the live map in real time.
+// periodicResync tries the build algorithm once per tick. The active watcher
+// keeps applying to the live map for the whole attempt, since installSync is
+// the only thing that ever changes what "the live map" is, so a failure
+// costs nothing but a discarded candidate; the next tick tries again rather
+// than retrying in a loop here.
 func (c *Cache) periodicResync(ctx context.Context) {
-	lw := c.getActive()
-	if lw == nil {
+	oldLw := c.getActive()
+	if oldLw == nil {
 		return
 	}
-
-	lw.mu.Lock()
-	lw.mode = modeTee
-	lw.buf = nil
-	lw.bufErr = nil
-	lw.mu.Unlock()
-
-	entries, index, hw, err := c.snapshotCandidate(ctx)
-	if err == nil {
-		lw.mu.Lock()
-		buf, bufErr := lw.buf, lw.bufErr
-		lw.mu.Unlock()
-		if bufErr == nil {
-			c.drainBuffered(entries, index, buf, hw)
-			c.mu.Lock()
-			c.entries, c.index = entries, index
-			c.mu.Unlock()
-			c.markResynced()
-		} else {
-			err = bufErr
-		}
-	}
+	lw, entries, index, err := c.syncOnce(ctx)
 	if err != nil {
-		c.metrics.resyncFailed()
-		c.degraded.Store(true)
-		slog.WarnContext(ctx, "instancecache: periodic resync failed, serving previous contents", "err", err)
+		c.syncFailed(ctx, err)
+		return
 	}
-	c.goLive(lw)
+	c.installSync(lw, entries, index, oldLw)
+	c.markResynced()
 }
 
 // replaceWatcher retires a dead watcher and installs a fresh one under the
-// same fencing. The old watcher is stopped and joined before the new one is
-// allowed to go live, so there is never a moment where two watchers both
-// apply to the map.
+// same build algorithm, retrying against the retry interval until it
+// succeeds or ctx ends.
 func (c *Cache) replaceWatcher(ctx context.Context, oldLw *liveWatcher) {
-	oldLw.cancel()
-	_ = oldLw.kw.Stop()
-	<-oldLw.done
-
-	lw := c.freshSync(ctx)
-	if lw == nil {
-		return
+	lw := c.resyncUntilSuccess(ctx, oldLw)
+	if lw != nil {
+		c.metrics.watchReconnected()
 	}
-	c.setActive(lw)
-	c.metrics.watchReconnected()
-	c.markResynced()
 }
 
 // indexKeyFor is the account index's bucket for v's owner: Global for an

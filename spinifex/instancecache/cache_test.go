@@ -1,7 +1,7 @@
-// internal mode, buffer and subscription state directly (there is no
-// exported surface for "one live watcher" or "buffer returned to its
-// starting size"), and the account-index defence-in-depth test deliberately
-// mis-files a record by writing straight into the unexported maps.
+// internal watcher and lifecycle state directly (there is no exported
+// surface for "one live watcher" or "the candidate before install"), and the
+// account-index defence-in-depth test deliberately mis-files a record by
+// writing straight into the unexported maps.
 //
 //test:in-package — the fencing and lifecycle tests assert on the watcher's
 package instancecache
@@ -122,36 +122,6 @@ func waitForListLen(t *testing.T, c *Cache, accountID string, n int) []*vm.VM {
 	return list
 }
 
-// fakeEntry is a minimal jetstream.KeyValueEntry for exercising the fencing
-// logic directly, without a real watcher's timing involved.
-type fakeEntry struct {
-	key   string
-	value []byte
-	rev   uint64
-	op    jetstream.KeyValueOp
-}
-
-func (f fakeEntry) Bucket() string                  { return "test" }
-func (f fakeEntry) Key() string                     { return f.key }
-func (f fakeEntry) Value() []byte                   { return f.value }
-func (f fakeEntry) Revision() uint64                { return f.rev }
-func (f fakeEntry) Created() time.Time              { return time.Time{} }
-func (f fakeEntry) Delta() uint64                   { return 0 }
-func (f fakeEntry) Operation() jetstream.KeyValueOp { return f.op }
-
-var _ jetstream.KeyValueEntry = fakeEntry{}
-
-func putEntry(t *testing.T, id string, rec *vm.InstanceRecord, rev uint64) fakeEntry {
-	t.Helper()
-	data, err := json.Marshal(rec)
-	require.NoError(t, err)
-	return fakeEntry{key: testPrefix + id, value: data, rev: rev, op: jetstream.KeyValuePut}
-}
-
-func deleteEntry(id string, rev uint64) fakeEntry {
-	return fakeEntry{key: testPrefix + id, rev: rev, op: jetstream.KeyValueDelete}
-}
-
 // Process-wide manual metric reader, installed once per test binary so the
 // resync-failure and decode-failure counters can be observed. Cumulative for
 // the life of the binary, so tests read a before/after delta.
@@ -245,42 +215,23 @@ func TestPeriodicResync_RemovesEntryTheWatchNeverToldItAbout(t *testing.T) {
 	require.Equal(t, "i-real", list[0].ID)
 }
 
-func TestFreshSync_LeaksNothingOnRepeatedFailure(t *testing.T) {
+func TestSync_LeaksNothingOnRepeatedSnapshotFailure(t *testing.T) {
 	c, kv, conn := newTestCache(t)
 	putGarbage(t, kv, "i-bad")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	baseline := conn.nc.NumSubscriptions()
+	go c.Run(ctx)
 
+	// The initial sync's snapshot fails on the garbage record every retry, so
+	// the replay watcher is never opened: nothing persists to leak. Snapshot
+	// itself briefly opens and closes its own probe watcher on every attempt,
+	// so the assertion is that the count always settles back to baseline,
+	// not that it never blips.
 	for range 10 {
-		lw := c.openWatcher(ctx)
-		require.NotNil(t, lw)
-		_, _, _, err := c.snapshotCandidate(ctx)
-		require.Error(t, err)
-		c.discardWatcher(lw)
-		require.Equal(t, baseline, conn.nc.NumSubscriptions())
+		time.Sleep(20 * time.Millisecond)
+		waitFor(t, time.Second, func() bool { return conn.nc.NumSubscriptions() == baseline })
 	}
-	require.False(t, c.Ready())
-}
-
-func TestFreshSync_BufferOverflowFailsSync(t *testing.T) {
-	c, _, conn := newTestCache(t, func(cfg *Config) { cfg.MaxBufferedEvents = 1 })
-	ctx := context.Background()
-	baseline := conn.nc.NumSubscriptions()
-
-	lw := c.openWatcher(ctx)
-	require.NotNil(t, lw)
-
-	c.handleEntry(lw, putEntry(t, "i-1", testRecord("i-1", acctA, vm.StateRunning), 1))
-	c.handleEntry(lw, putEntry(t, "i-2", testRecord("i-2", acctA, vm.StateRunning), 2))
-
-	lw.mu.Lock()
-	bufErr := lw.bufErr
-	lw.mu.Unlock()
-	require.ErrorIs(t, bufErr, errBufferOverflow)
-
-	c.discardWatcher(lw)
-	require.Equal(t, baseline, conn.nc.NumSubscriptions())
 	require.False(t, c.Ready())
 }
 
@@ -397,77 +348,125 @@ func TestList_NotReadyBeforeFirstSync(t *testing.T) {
 	require.Empty(t, list)
 }
 
-// --- Fencing, the D2a algorithm --------------------------------------------
+// --- Fencing: replay closes the snapshot-to-watch window --------------------
+//
+// Each test lands a write in the exact window the fence has to cover: after
+// Snapshot has already read the record space, before the new watcher (which
+// resumes from the snapshot's high-water mark) is opened. There is no
+// buffering machinery to race against any more, so the write happens as an
+// ordinary step between two ordinary calls.
 
-func TestFence_BufferedEventAtOrBelowHighWaterDiscarded(t *testing.T) {
-	c, _, _ := newTestCache(t)
-	entries := map[string]*vm.VM{}
-	index := map[string]map[string]struct{}{}
-	putInto(entries, index, "i-x", vm.VMFromRecord(testRecord("i-x", acctA, vm.StateRunning)))
-
-	buf := []jetstream.KeyValueEntry{putEntry(t, "i-x", testRecord("i-x", acctA, vm.StateStopped), 5)}
-	c.drainBuffered(entries, index, buf, 5)
-
-	require.Equal(t, vm.StateRunning, entries["i-x"].Status,
-		"a buffered event at highWater must not overwrite what the snapshot already reflects")
-}
-
-func TestFence_PutAboveHighWaterIsPresentAfterwards(t *testing.T) {
-	c, _, _ := newTestCache(t)
-	entries := map[string]*vm.VM{}
-	index := map[string]map[string]struct{}{}
-
-	buf := []jetstream.KeyValueEntry{putEntry(t, "i-y", testRecord("i-y", acctA, vm.StateRunning), 6)}
-	c.drainBuffered(entries, index, buf, 5)
-
-	v, ok := entries["i-y"]
-	require.True(t, ok)
-	require.Equal(t, vm.StateRunning, v.Status)
-	require.Contains(t, index[acctA], "i-y")
-}
-
-func TestFence_DeleteAboveHighWaterIsAbsentAfterwards(t *testing.T) {
-	c, _, _ := newTestCache(t)
-	entries := map[string]*vm.VM{}
-	index := map[string]map[string]struct{}{}
-	putInto(entries, index, "i-z", vm.VMFromRecord(testRecord("i-z", acctA, vm.StateRunning)))
-
-	buf := []jetstream.KeyValueEntry{deleteEntry("i-z", 6)}
-	c.drainBuffered(entries, index, buf, 5)
-
-	_, ok := entries["i-z"]
-	require.False(t, ok, "a delete above highWater must remove the snapshot's stale copy")
-	require.NotContains(t, index[acctA], "i-z")
-}
-
-func TestFreshSync_NotReadyUntilBufferDrained(t *testing.T) {
+func TestFence_PutDuringInitialSnapshot_SurvivesInstall(t *testing.T) {
 	c, kv, _ := newTestCache(t)
-	putRecord(t, kv, "i-1", testRecord("i-1", acctA, vm.StateRunning))
-	ctx := context.Background()
+	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
 
-	lw := c.openWatcher(ctx)
-	require.NotNil(t, lw)
-	require.False(t, c.Ready(), "opening the watcher alone must not mark the cache ready")
+	entries, index, hw, err := c.snapshotCandidate(context.Background())
+	require.NoError(t, err)
+
+	putRecord(t, kv, "i-new", testRecord("i-new", acctA, vm.StateRunning))
+
+	watchCtx := t.Context()
+	kw, err := c.store.WatchFrom(watchCtx, c.filter, hw+1)
+	require.NoError(t, err)
+	defer func() { _ = kw.Stop() }()
+
+	require.NoError(t, c.replay(watchCtx, kw, entries, index))
+
+	require.Len(t, entries, 2)
+	require.Contains(t, entries, "i-seed")
+	require.Contains(t, entries, "i-new",
+		"a put landing after the snapshot but before the watcher opened must be replayed")
+}
+
+func TestFence_DeleteDuringInitialSnapshot_RemovedFromInstall(t *testing.T) {
+	c, kv, _ := newTestCache(t)
+	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
+	putRecord(t, kv, "i-doomed", testRecord("i-doomed", acctA, vm.StateRunning))
+
+	entries, index, hw, err := c.snapshotCandidate(context.Background())
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+
+	require.NoError(t, kv.Delete(context.Background(), testPrefix+"i-doomed"))
+
+	watchCtx := t.Context()
+	kw, err := c.store.WatchFrom(watchCtx, c.filter, hw+1)
+	require.NoError(t, err)
+	defer func() { _ = kw.Stop() }()
+
+	require.NoError(t, c.replay(watchCtx, kw, entries, index))
+
+	require.Len(t, entries, 1)
+	require.Contains(t, entries, "i-seed")
+	require.NotContains(t, entries, "i-doomed",
+		"a delete landing after the snapshot but before the watcher opened must not survive as the snapshot's stale copy")
+	require.NotContains(t, index[acctA], "i-doomed")
+}
+
+func TestFence_PutDuringPeriodicResync_SurvivesInstall(t *testing.T) {
+	c, kv, _ := newTestCache(t)
+	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
+
+	ctx := t.Context()
+	go c.Run(ctx)
+	waitForReady(t, c)
+	waitForListLen(t, c, acctA, 1)
+
+	oldLw := c.getActive()
+	require.NotNil(t, oldLw)
 
 	entries, index, hw, err := c.snapshotCandidate(ctx)
 	require.NoError(t, err)
-	require.False(t, c.Ready(), "taking the snapshot alone must not mark the cache ready")
 
-	lw.mu.Lock()
-	buf, bufErr := lw.buf, lw.bufErr
-	lw.mu.Unlock()
-	require.NoError(t, bufErr)
-	c.drainBuffered(entries, index, buf, hw)
-	require.False(t, c.Ready(), "draining the buffer into a candidate must not itself mark ready")
+	putRecord(t, kv, "i-new", testRecord("i-new", acctA, vm.StateRunning))
 
-	c.mu.Lock()
-	c.entries, c.index = entries, index
-	c.ready = true
-	c.mu.Unlock()
-	require.True(t, c.Ready())
+	watchCtx, cancel := context.WithCancel(ctx)
+	kw, err := c.store.WatchFrom(watchCtx, c.filter, hw+1)
+	require.NoError(t, err)
+	require.NoError(t, c.replay(watchCtx, kw, entries, index))
 
-	c.discardWatcher(lw)
+	lw := &liveWatcher{kw: kw, ctx: watchCtx, cancel: cancel, done: make(chan struct{})}
+	c.installSync(lw, entries, index, oldLw)
+
+	list, ready := c.List(ctx, acctA)
+	require.True(t, ready)
+	require.ElementsMatch(t, []string{"i-seed", "i-new"}, idsOf(list),
+		"a put landing after a periodic resync's snapshot but before the new watcher opened must be replayed")
 }
+
+func TestFence_DeleteDuringPeriodicResync_RemovedFromInstall(t *testing.T) {
+	c, kv, _ := newTestCache(t)
+	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
+	putRecord(t, kv, "i-doomed", testRecord("i-doomed", acctA, vm.StateRunning))
+
+	ctx := t.Context()
+	go c.Run(ctx)
+	waitForReady(t, c)
+	waitForListLen(t, c, acctA, 2)
+
+	oldLw := c.getActive()
+	require.NotNil(t, oldLw)
+
+	entries, index, hw, err := c.snapshotCandidate(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, kv.Delete(context.Background(), testPrefix+"i-doomed"))
+
+	watchCtx, cancel := context.WithCancel(ctx)
+	kw, err := c.store.WatchFrom(watchCtx, c.filter, hw+1)
+	require.NoError(t, err)
+	require.NoError(t, c.replay(watchCtx, kw, entries, index))
+
+	lw := &liveWatcher{kw: kw, ctx: watchCtx, cancel: cancel, done: make(chan struct{})}
+	c.installSync(lw, entries, index, oldLw)
+
+	list, ready := c.List(ctx, acctA)
+	require.True(t, ready)
+	require.Equal(t, []string{"i-seed"}, idsOf(list),
+		"a delete landing after a periodic resync's snapshot but before the new watcher opened must not be overwritten by the snapshot's stale copy")
+}
+
+// --- Lifecycle ---------------------------------------------------------------
 
 func TestPeriodicResync_FailureLeavesLiveWatcherAndMapServing(t *testing.T) {
 	c, kv, conn := newTestCache(t)
@@ -488,7 +487,7 @@ func TestPeriodicResync_FailureLeavesLiveWatcherAndMapServing(t *testing.T) {
 		require.Len(t, list, 1)
 		require.Equal(t, "i-1", list[0].ID)
 		require.Equal(t, baseline, conn.nc.NumSubscriptions(),
-			"a periodic resync tees the live watcher rather than opening a new one")
+			"a failed periodic resync must not leave a stray subscription behind")
 	}
 }
 
@@ -536,50 +535,7 @@ func TestPeriodicResync_FailureLosesNothing(t *testing.T) {
 	})
 }
 
-func TestPeriodicResync_OverflowLosesNothing(t *testing.T) {
-	c, kv, _ := newTestCache(t, func(cfg *Config) { cfg.MaxBufferedEvents = 2 })
-	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
-
-	ctx := t.Context()
-	go c.Run(ctx)
-	waitForReady(t, c)
-	waitForListLen(t, c, acctA, 1)
-
-	lw := c.getActive()
-	require.NotNil(t, lw)
-	lw.mu.Lock()
-	lw.mode = modeTee
-	lw.buf = nil
-	lw.bufErr = nil
-	lw.mu.Unlock()
-
-	// Three events against a cap of two: the third overflows the buffer, but
-	// the tee still applies every one of them to the live map directly.
-	for i := range 3 {
-		id := fmt.Sprintf("i-x%d", i)
-		c.handleEntry(lw, putEntry(t, id, testRecord(id, acctA, vm.StateRunning), uint64(100+i)))
-	}
-	lw.mu.Lock()
-	bufErr := lw.bufErr
-	lw.mu.Unlock()
-	require.ErrorIs(t, bufErr, errBufferOverflow)
-
-	_, _, _, err := c.snapshotCandidate(ctx)
-	require.NoError(t, err)
-	// The candidate is discarded on overflow; goLive resets the watcher for
-	// normal live service without installing it.
-	c.goLive(lw)
-
-	list, ready := c.List(ctx, acctA)
-	require.True(t, ready)
-	ids := idsOf(list)
-	require.Contains(t, ids, "i-seed")
-	for i := range 3 {
-		require.Contains(t, ids, fmt.Sprintf("i-x%d", i))
-	}
-}
-
-func TestPeriodicResync_TwentyConsecutiveSuccessesOneWatcher(t *testing.T) {
+func TestPeriodicResync_TwentyConsecutiveSuccessesOneWatcherEach(t *testing.T) {
 	c, kv, conn := newTestCache(t)
 	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
 
@@ -588,44 +544,23 @@ func TestPeriodicResync_TwentyConsecutiveSuccessesOneWatcher(t *testing.T) {
 	waitForReady(t, c)
 	waitForListLen(t, c, acctA, 1)
 
-	initial := c.getActive()
 	baseline := conn.nc.NumSubscriptions()
 
+	// Each periodic resync opens a fresh watcher and retires the last one, so
+	// the subscription count stays flat even though the watcher identity
+	// changes every time.
+	prev := c.getActive()
 	for range 20 {
 		c.periodicResync(ctx)
 		require.Equal(t, baseline, conn.nc.NumSubscriptions())
-		require.Same(t, initial, c.getActive(), "the subscription must be the same one throughout")
+		cur := c.getActive()
+		require.NotSame(t, prev, cur, "each successful periodic resync installs a new watcher")
+		prev = cur
 	}
 
-	// Land an update precisely during a swap: after the snapshot is taken but
-	// before the candidate is installed and the watcher goes back live.
-	lw := c.getActive()
-	lw.mu.Lock()
-	lw.mode = modeTee
-	lw.buf = nil
-	lw.bufErr = nil
-	lw.mu.Unlock()
-
-	entries, index, hw, err := c.snapshotCandidate(ctx)
-	require.NoError(t, err)
-
-	updated := putEntry(t, "i-seed", testRecord("i-seed", acctA, vm.StateStopped), hw+1)
-	c.handleEntry(lw, updated)
-
-	lw.mu.Lock()
-	buf, bufErr := lw.buf, lw.bufErr
-	lw.mu.Unlock()
-	require.NoError(t, bufErr)
-	c.drainBuffered(entries, index, buf, hw)
-
-	c.mu.Lock()
-	c.entries, c.index = entries, index
-	c.mu.Unlock()
-	c.goLive(lw)
-
-	list, _ := c.List(ctx, acctA)
-	require.Len(t, list, 1, "the update must appear exactly once")
-	require.Equal(t, vm.StateStopped, list[0].Status)
+	list, ready := c.List(ctx, acctA)
+	require.True(t, ready)
+	require.Equal(t, []string{"i-seed"}, idsOf(list))
 }
 
 func TestReplaceWatcher_OldStoppedAndJoinedBeforeNewGoesLive(t *testing.T) {
@@ -667,101 +602,6 @@ func TestReplaceWatcher_OldStoppedAndJoinedBeforeNewGoesLive(t *testing.T) {
 
 	putRecord(t, kv, "i-2", testRecord("i-2", acctA, vm.StateRunning))
 	waitForListLen(t, c, acctA, 2)
-}
-
-// The four tests below drive the real freshSync/periodicResync code paths
-// end to end, landing a write via postSnapshotHook in the exact window D2a
-// exists to cover: after Snapshot has already read the record space, before
-// the buffer it fences against is drained. They call drainBuffered nowhere
-// themselves; unlike the direct-call fence tests above, they fail if the
-// watcher is not already buffering by the time the snapshot completes. A
-// short sleep inside the hook gives the already-open, already-subscribed
-// watcher time to receive and process the write before the sync continues,
-// so the event deterministically lands inside the window rather than racing
-// to land there.
-
-func TestFence_PutDuringInitialSnapshot_SurvivesInstall(t *testing.T) {
-	c, kv, _ := newTestCache(t)
-	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
-
-	c.postSnapshotHook = func() {
-		putRecord(t, kv, "i-new", testRecord("i-new", acctA, vm.StateRunning))
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	lw := c.freshSync(context.Background())
-	require.NotNil(t, lw)
-	t.Cleanup(func() { c.discardWatcher(lw) })
-
-	list, ready := c.List(context.Background(), acctA)
-	require.True(t, ready)
-	require.ElementsMatch(t, []string{"i-seed", "i-new"}, idsOf(list),
-		"a put landing during the initial snapshot must survive into the installed candidate")
-}
-
-func TestFence_DeleteDuringInitialSnapshot_RemovedFromInstall(t *testing.T) {
-	c, kv, _ := newTestCache(t)
-	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
-	putRecord(t, kv, "i-doomed", testRecord("i-doomed", acctA, vm.StateRunning))
-
-	c.postSnapshotHook = func() {
-		require.NoError(t, kv.Delete(context.Background(), testPrefix+"i-doomed"))
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	lw := c.freshSync(context.Background())
-	require.NotNil(t, lw)
-	t.Cleanup(func() { c.discardWatcher(lw) })
-
-	list, ready := c.List(context.Background(), acctA)
-	require.True(t, ready)
-	require.Equal(t, []string{"i-seed"}, idsOf(list),
-		"a delete landing during the initial snapshot must not be overwritten by the snapshot's stale copy")
-}
-
-func TestFence_PutDuringPeriodicResync_SurvivesInstall(t *testing.T) {
-	c, kv, _ := newTestCache(t)
-	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
-
-	ctx := t.Context()
-	go c.Run(ctx)
-	waitForReady(t, c)
-	waitForListLen(t, c, acctA, 1)
-
-	c.postSnapshotHook = func() {
-		putRecord(t, kv, "i-new", testRecord("i-new", acctA, vm.StateRunning))
-		time.Sleep(100 * time.Millisecond)
-	}
-	c.periodicResync(ctx)
-	c.postSnapshotHook = nil
-
-	list, ready := c.List(ctx, acctA)
-	require.True(t, ready)
-	require.ElementsMatch(t, []string{"i-seed", "i-new"}, idsOf(list),
-		"a put landing during a periodic resync's snapshot must survive into the installed candidate")
-}
-
-func TestFence_DeleteDuringPeriodicResync_RemovedFromInstall(t *testing.T) {
-	c, kv, _ := newTestCache(t)
-	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
-	putRecord(t, kv, "i-doomed", testRecord("i-doomed", acctA, vm.StateRunning))
-
-	ctx := t.Context()
-	go c.Run(ctx)
-	waitForReady(t, c)
-	waitForListLen(t, c, acctA, 2)
-
-	c.postSnapshotHook = func() {
-		require.NoError(t, kv.Delete(context.Background(), testPrefix+"i-doomed"))
-		time.Sleep(100 * time.Millisecond)
-	}
-	c.periodicResync(ctx)
-	c.postSnapshotHook = nil
-
-	list, ready := c.List(ctx, acctA)
-	require.True(t, ready)
-	require.Equal(t, []string{"i-seed"}, idsOf(list),
-		"a delete landing during a periodic resync's snapshot must not be overwritten by the snapshot's stale copy")
 }
 
 // --- The account index ------------------------------------------------------

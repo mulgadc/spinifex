@@ -104,6 +104,11 @@ type GatewayConfig struct {
 	RootCAs       *x509.CertPool
 	ExpectedNodes int    // Number of expected spinifex nodes for multi-node operations
 	Region        string // Region this gateway is running in
+	// NodeIDs is the configured cluster node set — the keys of
+	// config.ClusterConfig.Nodes — used to judge a fan-out's completeness by
+	// responder identity rather than by count. Distinct from ExpectedNodes,
+	// which stays a count for the callers that only want one.
+	NodeIDs []string
 	// The last discovered node count and when it was discovered, so the
 	// discovery fan-out runs once per activeNodesTTL rather than once per
 	// request that needs to know how many nodes to wait for.
@@ -992,7 +997,7 @@ func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 	nodesSeen := make(map[string]bool)
 	for _, frame := range frames {
 		var response types.NodeDiscoverResponse
-		if err := json.Unmarshal(frame, &response); err != nil {
+		if err := json.Unmarshal(frame.Data, &response); err != nil {
 			slog.DebugContext(ctx, "DiscoverActiveNodes: Failed to unmarshal response", "err", err)
 			continue
 		}

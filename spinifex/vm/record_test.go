@@ -213,6 +213,7 @@ func populatedVM() *vm.VM {
 		Reservation:                     &ec2.Reservation{ReservationId: aws.String("r-1")},
 		Health:                          vm.InstanceHealthState{CrashCount: 2, LastCrashReason: "oom"},
 		LastNode:                        "node-1",
+		AZ:                              "us-east-1a",
 		MetadataServerAddress:           "127.0.0.1:12345",
 		ENIId:                           "eni-1",
 		ENIMac:                          "aa:bb:cc:dd:ee:01",

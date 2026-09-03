@@ -29,7 +29,7 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 	var allInstanceTypes []*ec2.InstanceTypeInfo
 	for _, frame := range frames {
 		var nodeOutput ec2.DescribeInstanceTypesOutput
-		if json.Unmarshal(frame, &nodeOutput) == nil {
+		if json.Unmarshal(frame.Data, &nodeOutput) == nil {
 			allInstanceTypes = append(allInstanceTypes, nodeOutput.InstanceTypes...)
 		}
 	}

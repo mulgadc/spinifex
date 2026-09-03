@@ -76,7 +76,7 @@ func (r *instanceReaper) Stage() Stage { return StageCompute }
 func (r *instanceReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
 	// Checked: a partial answer here would read as "no instances left" and let
 	// storage deletion start while a guest still holds a volume.
-	out, err := gateway_ec2_instance.DescribeInstancesChecked(ctx, &ec2.DescribeInstancesInput{}, r.nc, r.expectedNodes, accountID)
+	out, err := gateway_ec2_instance.DescribeInstancesChecked(ctx, &ec2.DescribeInstancesInput{}, r.nc, r.expectedNodes, nil, accountID)
 	if err != nil {
 		return nil, err
 	}

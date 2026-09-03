@@ -260,7 +260,6 @@ func TestDistributeInstancesSpread_PartialSuccessMeetsMinCount(t *testing.T) {
 func TestDistributeInstancesSpread_BelowMinCountRollsBackAndReleases(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	noopTerminateRetrySleep(t)
 
 	h := mockSpreadCluster(t, nc,
 		map[string]int{"node-1": 2, "node-2": 2},
@@ -310,7 +309,6 @@ func TestDistributeInstancesSpread_PropagatesClientError(t *testing.T) {
 func TestDistributeInstancesSpread_FinalizeFailureRollsBack(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	noopTerminateRetrySleep(t)
 
 	h := mockSpreadCluster(t, nc,
 		map[string]int{"node-1": 2, "node-2": 2},

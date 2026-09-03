@@ -46,11 +46,24 @@ func endOpSpan(span trace.Span, err error) {
 	span.End()
 }
 
-// respondWithError sends an error payload for the given error code on the NATS message.
-func respondWithError(msg *nats.Msg, errCode string) {
-	if err := msg.Respond(utils.GenerateErrorPayload(errCode)); err != nil {
+// respondNATSMsg sends data as the reply to msg via RespondMsg rather than
+// Respond, so the reply can carry the X-Node-ID header identifying which
+// daemon answered. nodeID "" (an unconfigured caller) omits the header rather
+// than sending an empty one, which downstream fan-outs already treat as absent.
+func respondNATSMsg(nodeID string, msg *nats.Msg, data []byte) {
+	reply := nats.NewMsg("")
+	reply.Data = data
+	if nodeID != "" {
+		reply.Header.Set(utils.NodeIDHeader, nodeID)
+	}
+	if err := msg.RespondMsg(reply); err != nil {
 		slog.Error("Failed to respond to NATS request", "err", err)
 	}
+}
+
+// respondWithError sends an error payload for the given error code on the NATS message.
+func respondWithError(nodeID string, msg *nats.Msg, errCode string) {
+	respondNATSMsg(nodeID, msg, utils.GenerateErrorPayload(errCode))
 }
 
 // respondWithServiceError sends the sanitized error code AND the handler's
@@ -59,46 +72,43 @@ func respondWithError(msg *nats.Msg, errCode string) {
 // specific refusal ("only PRIVATE_CA certificates can be force-renewed") into
 // an opaque ServerInternal, leaving the reason visible only in the daemon log.
 // Mirrors utils.ServeNATSRequestCtx, which has always preserved the message.
-func respondWithServiceError(msg *nats.Msg, err error) {
+func respondWithServiceError(nodeID string, msg *nats.Msg, err error) {
 	payload := utils.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), err.Error())
-	if respErr := msg.Respond(payload); respErr != nil {
-		slog.Error("Failed to respond to NATS request", "err", respErr)
-	}
+	respondNATSMsg(nodeID, msg, payload)
 }
 
 // respondErrorOutcome answers with errCode and reports the outcome that code
 // implies, so a handler classifies its failure by the code it already chose
 // rather than by a second judgement that could disagree with it.
-func respondErrorOutcome(msg *nats.Msg, errCode string) string {
-	respondWithError(msg, errCode)
+func respondErrorOutcome(nodeID string, msg *nats.Msg, errCode string) string {
+	respondWithError(nodeID, msg, errCode)
 	return outcomeForCode(errCode)
 }
 
 // respondServiceErrorOutcome is respondErrorOutcome for an error value.
-func respondServiceErrorOutcome(msg *nats.Msg, err error) string {
-	respondWithServiceError(msg, err)
+func respondServiceErrorOutcome(nodeID string, msg *nats.Msg, err error) string {
+	respondWithServiceError(nodeID, msg, err)
 	return outcomeForError(err)
 }
 
 // respondWithJSON marshals data to JSON and sends it as a NATS response.
 // On marshal failure it responds with an internal server error.
-func respondWithJSON(msg *nats.Msg, data any) {
+func respondWithJSON(nodeID string, msg *nats.Msg, data any) {
 	jsonResponse, err := json.Marshal(data)
 	if err != nil {
 		slog.Error("Failed to marshal response", "type", fmt.Sprintf("%T", data), "err", err)
-		respondWithError(msg, awserrors.ErrorServerInternal)
+		respondWithError(nodeID, msg, awserrors.ErrorServerInternal)
 		return
 	}
-	if err := msg.Respond(jsonResponse); err != nil {
-		slog.Error("Failed to respond to NATS request", "err", err)
-	}
+	respondNATSMsg(nodeID, msg, jsonResponse)
 }
 
 // handleNATSRequest returns the nats.MsgHandler for the common unmarshal → service →
 // marshal → respond pattern. Per message the handler opens a consumer span joining the
 // producer's trace, extracts the account ID from the NATS message header, and passes
-// both to the service function.
-func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string) (*O, error)) natsHandler {
+// both to the service function. nodeID is stamped on every reply path — including the
+// unmarshal-failure branch — so a fan-out can attribute this daemon's frame by identity.
+func handleNATSRequest[I any, O any](nodeID string, serviceFn func(context.Context, *I, string) (*O, error)) natsHandler {
 	return func(msg *nats.Msg) string {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
@@ -110,9 +120,7 @@ func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string)
 		input := new(I)
 		if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 			utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
-			if err := msg.Respond(errResp); err != nil {
-				slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
-			}
+			respondNATSMsg(nodeID, msg, errResp)
 			// A payload the daemon cannot parse is the caller's mistake, not a
 			// fault of its own.
 			return outcomeClientError
@@ -124,10 +132,10 @@ func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string)
 			// that says whether the daemon or its caller was at fault.
 			logHandlerError(ctx, "handleNATSRequest: service call failed", msg.Subject, err)
 			utils.MarkSpanError(span, err)
-			respondWithServiceError(msg, err)
+			respondWithServiceError(nodeID, msg, err)
 			return outcomeForError(err)
 		}
-		respondWithJSON(msg, output)
+		respondWithJSON(nodeID, msg, output)
 		return outcomeSuccess
 	}
 }
@@ -136,7 +144,7 @@ func handleNATSRequest[I any, O any](serviceFn func(context.Context, *I, string)
 // also need the caller's IAM principal ARN (X-Principal-ARN header) — e.g. EKS
 // CreateCluster, which mints the bootstrap-creator-admin AccessEntry for the
 // caller.
-func handleNATSRequestWithPrincipal[I any, O any](serviceFn func(context.Context, *I, string, string) (*O, error)) natsHandler {
+func handleNATSRequestWithPrincipal[I any, O any](nodeID string, serviceFn func(context.Context, *I, string, string) (*O, error)) natsHandler {
 	return func(msg *nats.Msg) string {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
@@ -146,19 +154,17 @@ func handleNATSRequestWithPrincipal[I any, O any](serviceFn func(context.Context
 		input := new(I)
 		if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 			utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
-			if err := msg.Respond(errResp); err != nil {
-				slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
-			}
+			respondNATSMsg(nodeID, msg, errResp)
 			return outcomeClientError
 		}
 		output, err := serviceFn(ctx, input, accountID, principalARN)
 		if err != nil {
 			logHandlerError(ctx, "handleNATSRequestWithPrincipal: service call failed", msg.Subject, err)
 			utils.MarkSpanError(span, err)
-			respondWithServiceError(msg, err)
+			respondWithServiceError(nodeID, msg, err)
 			return outcomeForError(err)
 		}
-		respondWithJSON(msg, output)
+		respondWithJSON(nodeID, msg, output)
 		return outcomeSuccess
 	}
 }
@@ -188,7 +194,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 	if err := json.Unmarshal(msg.Data, &command); err != nil {
 		slog.ErrorContext(ctx, "Error unmarshaling EC2 instance command", "err", err)
 		utils.MarkSpanError(span, err)
-		respondWithError(msg, awserrors.ErrorServerInternal)
+		respondWithError(d.node, msg, awserrors.ErrorServerInternal)
 		return "unknown", outcomeError
 	}
 
@@ -199,11 +205,11 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 	instance, ok := d.vmMgr.Get(command.ID)
 	if !ok {
 		slog.WarnContext(ctx, "Instance is not running on this node", "id", command.ID)
-		return name, respondErrorOutcome(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+		return name, respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidInstanceIDNotFound)
 	}
 
 	// Verify the caller owns this instance
-	if !checkInstanceOwnership(msg, command.ID, instance.AccountID) {
+	if !checkInstanceOwnership(d.node, msg, command.ID, instance.AccountID) {
 		return name, outcomeClientError
 	}
 
@@ -245,7 +251,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		endOpSpan(opSpan, err)
 		if err != nil {
 			utils.MarkSpanError(span, err)
-			return name, respondServiceErrorOutcome(msg, err)
+			return name, respondServiceErrorOutcome(d.node, msg, err)
 		}
 		if err := msg.Respond(fmt.Appendf(nil, `{"status":"running","instanceId":"%s"}`, instance.ID)); err != nil {
 			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
@@ -257,7 +263,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		endOpSpan(opSpan, err)
 		if err != nil {
 			utils.MarkSpanError(span, err)
-			return name, respondServiceErrorOutcome(msg, err)
+			return name, respondServiceErrorOutcome(d.node, msg, err)
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {
 			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
@@ -273,7 +279,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		endOpSpan(opSpan, err)
 		if err != nil {
 			utils.MarkSpanError(span, err)
-			return name, respondServiceErrorOutcome(msg, err)
+			return name, respondServiceErrorOutcome(d.node, msg, err)
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {
 			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
@@ -281,7 +287,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		return name, outcomeSuccess
 	default:
 		slog.WarnContext(ctx, "Unhandled EC2 instance command", "id", command.ID, "attributes", command.Attributes)
-		return name, respondErrorOutcome(msg, awserrors.ErrorServerInternal)
+		return name, respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
 	}
 }
 
@@ -345,7 +351,7 @@ func (d *Daemon) handleHealthCheck(msg *nats.Msg) string {
 		Uptime:     int64(time.Since(d.startTime).Seconds()),
 	}
 
-	respondWithJSON(msg, response)
+	respondWithJSON(d.node, msg, response)
 	slog.Debug("Health check responded", "node", d.node, "epoch", d.clusterConfig.Epoch)
 	return outcomeSuccess
 }
@@ -357,7 +363,7 @@ func (d *Daemon) handleNodeDiscover(msg *nats.Msg) string {
 		Node: d.node,
 	}
 
-	respondWithJSON(msg, response)
+	respondWithJSON(d.node, msg, response)
 	slog.Debug("Node discovery responded", "node", d.node)
 	return outcomeSuccess
 }
@@ -439,7 +445,7 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) string {
 	}
 	wg.Wait()
 
-	respondWithJSON(msg, resp)
+	respondWithJSON(d.node, msg, resp)
 	return outcomeSuccess
 }
 
@@ -627,7 +633,7 @@ func (d *Daemon) handleNodeVMs(msg *nats.Msg) string {
 		VMs:  vms,
 	}
 
-	respondWithJSON(msg, resp)
+	respondWithJSON(d.node, msg, resp)
 	return outcomeSuccess
 }
 

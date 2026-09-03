@@ -117,6 +117,9 @@ type Config struct {
 	OVNSBAddr string
 	// BaseDir is the base directory for PID files and state.
 	BaseDir string
+	// DataDir is this node's data directory, holding its on-disk VM state.
+	// IMDS reads it directly for a local-first instance metadata lookup.
+	DataDir string
 	// Debug enables debug logging.
 	Debug bool
 	// ExternalMode is "pool", "nat" (routed, outbound-only), or "" (disabled).
@@ -533,13 +536,17 @@ func launchService(cfg *Config) error {
 		}
 		return live, nil
 	}
+	// vpcd is the composition root for both planes IMDS straddles: it wires the
+	// on-disk VM state reader and the shared record space, so handlers/imds
+	// itself never needs to import the compute plane beyond vm.VM.
 	imdsSvc, err := handlers_imds.NewIMDSServiceImpl(
 		ctx,
 		nc,
 		handlers_imds.NewNATSSTSAssumer(nc),
 		handlers_imds.NewNATSProfileLookup(nc),
 		handlers_imds.NewNATSPublicKeyLookup(nc),
-		max(len(chassisNames), 1),
+		newLocalVMStateReader(cfg.DataDir),
+		newInstanceRecordLoader(nc),
 		listTaps,
 		cfg.NorthstarBaseDomain,
 		cfg.NorthstarInternalDomain,

@@ -16,6 +16,7 @@ import (
 )
 
 const localNode = "node-1"
+const localAZ = "us-east-1a"
 
 func runningVM(id, instanceType string) *vm.VM {
 	return &vm.VM{ID: id, InstanceType: instanceType, Status: vm.StateRunning, LastNode: localNode}
@@ -35,7 +36,7 @@ func runningSet(vms ...*vm.VM) map[string]*vm.VM {
 func writeRunningSet(t *testing.T, m *daemon.JetStreamManager, vms ...*vm.VM) {
 	t.Helper()
 	require.NoError(t, m.WriteNodeMarker(localNode))
-	m.WriteRunningSet(localNode, runningSet(vms...))
+	m.WriteRunningSet(localNode, localAZ, runningSet(vms...))
 }
 
 // recordRevision reads the revision of a record straight from the bucket, so a
@@ -162,12 +163,13 @@ func TestWriteRunningSet_StampsOwnership(t *testing.T) {
 	unowned := &vm.VM{ID: "i-1", InstanceType: "t3.nano", Status: vm.StateRunning}
 
 	require.NoError(t, m.WriteNodeMarker(localNode))
-	m.WriteRunningSet(localNode, runningSet(unowned))
+	m.WriteRunningSet(localNode, localAZ, runningSet(unowned))
 
 	record, err := m.LoadInstanceRecord("i-1")
 	require.NoError(t, err)
 	require.NotNil(t, record)
 	assert.Equal(t, localNode, record.Status.LastNode)
+	assert.Equal(t, localAZ, record.Status.AZ, "the node's own AZ must reach the record")
 }
 
 func TestWriteRunningSet_RetiresAMemberThatLeft(t *testing.T) {

@@ -113,7 +113,6 @@ func TestTerminateInstances_NilInstanceIdSkipped(t *testing.T) {
 
 func TestTerminateInstances_NATSRequestFails(t *testing.T) {
 	_, nc := startTestNATSServer(t)
-	noopTerminateRetrySleep(t)
 
 	instanceID := "i-nosubscriber"
 
@@ -130,7 +129,6 @@ func TestTerminateInstances_NATSRequestFails(t *testing.T) {
 
 func TestTerminateInstances_MixedSuccessAndFailure(t *testing.T) {
 	_, nc := startTestNATSServer(t)
-	noopTerminateRetrySleep(t)
 
 	goodID := "i-good"
 	badID := "i-bad"
@@ -178,7 +176,6 @@ func TestTerminateInstances_VerifiesQMPAttributes(t *testing.T) {
 
 func TestTerminateInstances_StoppedInstanceFallback(t *testing.T) {
 	_, nc := startTestNATSServer(t)
-	noopTerminateRetrySleep(t)
 
 	instanceID := "i-stopped-term"
 
@@ -210,7 +207,6 @@ func TestTerminateInstances_StoppedInstanceFallback(t *testing.T) {
 
 func TestTerminateInstances_MixedRunningAndStopped(t *testing.T) {
 	_, nc := startTestNATSServer(t)
-	noopTerminateRetrySleep(t)
 
 	runningID := "i-running-mix"
 	stoppedID := "i-stopped-mix"

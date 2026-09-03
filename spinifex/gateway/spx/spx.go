@@ -55,7 +55,7 @@ func GetNodes(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetNodesO
 	nodes := make([]types.NodeStatusResponse, 0, len(frames))
 	for _, frame := range frames {
 		var node types.NodeStatusResponse
-		if json.Unmarshal(frame, &node) == nil {
+		if json.Unmarshal(frame.Data, &node) == nil {
 			nodes = append(nodes, node)
 		}
 	}
@@ -94,7 +94,7 @@ func GetVMs(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetVMsOutpu
 	allVMs := make([]VMInfoWithNode, 0)
 	for _, frame := range frames {
 		var nodeResp types.NodeVMsResponse
-		if json.Unmarshal(frame, &nodeResp) != nil {
+		if json.Unmarshal(frame.Data, &nodeResp) != nil {
 			continue
 		}
 		for _, vm := range nodeResp.VMs {

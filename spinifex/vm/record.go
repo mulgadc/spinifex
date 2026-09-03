@@ -59,6 +59,11 @@ type InstanceStatus struct {
 	// CASes to take ownership. Ownership is carried here rather than in the key.
 	LastNode string `json:"last_node,omitempty"`
 
+	// AZ is LastNode's own availability zone, stamped alongside it. Placement
+	// is observed by the node running the instance, so it lives in status
+	// rather than spec.
+	AZ string `json:"az,omitempty"`
+
 	MetadataServerAddress string `json:"metadata_server_address,omitempty"`
 
 	ENIId     string     `json:"eni_id,omitempty"`
@@ -124,6 +129,7 @@ func (v *VM) Record() *InstanceRecord {
 			Reservation:                     v.Reservation,
 			Health:                          v.Health,
 			LastNode:                        v.LastNode,
+			AZ:                              v.AZ,
 			MetadataServerAddress:           v.MetadataServerAddress,
 			ENIId:                           v.ENIId,
 			ENIMac:                          v.ENIMac,
@@ -178,6 +184,7 @@ func VMFromRecord(r *InstanceRecord) *VM {
 		Reservation:                     r.Status.Reservation,
 		Health:                          r.Status.Health,
 		LastNode:                        r.Status.LastNode,
+		AZ:                              r.Status.AZ,
 		MetadataServerAddress:           r.Status.MetadataServerAddress,
 		ENIId:                           r.Status.ENIId,
 		ENIMac:                          r.Status.ENIMac,

@@ -26,7 +26,7 @@ func (d *Daemon) handleEC2GetConsoleOutput(msg *nats.Msg) {
 	}
 
 	if input.InstanceId == nil {
-		respondWithError(msg, awserrors.ErrorMissingParameter)
+		respondWithError(d.node, msg, awserrors.ErrorMissingParameter)
 		return
 	}
 
@@ -35,12 +35,12 @@ func (d *Daemon) handleEC2GetConsoleOutput(msg *nats.Msg) {
 	// Find the instance on this node
 	instance, exists := d.vmMgr.Get(instanceID)
 	if !exists {
-		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+		respondWithError(d.node, msg, awserrors.ErrorInvalidInstanceIDNotFound)
 		return
 	}
 
 	// Verify the caller owns this instance
-	if !checkInstanceOwnership(msg, instanceID, instance.AccountID) {
+	if !checkInstanceOwnership(d.node, msg, instanceID, instance.AccountID) {
 		return
 	}
 
@@ -84,6 +84,6 @@ func (d *Daemon) handleEC2GetConsoleOutput(msg *nats.Msg) {
 		Timestamp:  &modTime,
 	}
 
-	respondWithJSON(msg, output)
+	respondWithJSON(d.node, msg, output)
 	slog.Info("handleEC2GetConsoleOutput completed", "instance_id", instanceID, "output_bytes", len(outputData))
 }

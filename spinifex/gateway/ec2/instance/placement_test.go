@@ -267,7 +267,6 @@ func TestAggregateResults_PartialSuccessMeetsMinCount(t *testing.T) {
 
 func TestAggregateResults_PartialFailureBelowMinCount(t *testing.T) {
 	_, nc := startTestNATSServer(t)
-	noopTerminateRetrySleep(t)
 
 	results := []nodeLaunchResult{
 		{
@@ -340,7 +339,6 @@ func TestAggregateResults_TimeoutSurfacedNotMasked(t *testing.T) {
 // without erroring) keeps the generic capacity code.
 func TestAggregateResults_ShortWithoutNodeErrors(t *testing.T) {
 	_, nc := startTestNATSServer(t)
-	noopTerminateRetrySleep(t)
 	results := []nodeLaunchResult{
 		{
 			NodeID: "node-1",

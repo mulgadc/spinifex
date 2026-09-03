@@ -57,6 +57,19 @@ func TestWriteLocalState_MkdirParent(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestWriteLocalState_GroupReadable pins the mode. vpcd serves IMDS and reads
+// this file as a different user in the shared spinifex group, so an owner-only
+// mode denies every local lookup and each guest boot falls back to the record
+// space -- where a miss is served as "this instance has no key pair".
+func TestWriteLocalState_GroupReadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "instance-state.json")
+	require.NoError(t, writeLocalState(path, map[string]*vm.VM{}))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+}
+
 func TestWriteLocalState_NoTmpLeftBehind(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "instance-state.json")

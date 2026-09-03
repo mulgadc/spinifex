@@ -9,7 +9,6 @@ import (
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -80,13 +79,13 @@ func putSnapBlocks(t *testing.T, store *objectstore.MemoryObjectStore, snapID st
 // VolumeID back at an admin-imported AMI's ID.
 func putSnapMetadata(t *testing.T, store *objectstore.MemoryObjectStore, snapID, volumeID string) {
 	t.Helper()
-	cfg := &handlers_ec2_snapshot.SnapshotConfig{
+	require.NoError(t, ebsmetadata.NewStore(store, testRemoveBucket).PutSnapshot(t.Context(), ebsmetadata.Snapshot{
 		SnapshotID: snapID,
 		VolumeID:   volumeID,
 		VolumeSize: 8,
 		State:      "completed",
-	}
-	require.NoError(t, handlers_ec2_snapshot.WriteSnapshotConfig(store, testRemoveBucket, snapID, cfg))
+		OwnerID:    testRemoveAccountID,
+	}))
 }
 
 // putVolume registers a volume document carrying the given SnapshotID.

@@ -2,7 +2,6 @@ package handlers_ec2_image
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,8 +16,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -319,16 +318,8 @@ func TestPutSnapshotMetadata(t *testing.T) {
 	err := svc.putSnapshotMetadata(context.Background(), "snap-abc123", "vol-xyz789", 10, testAccountID)
 	require.NoError(t, err)
 
-	// Verify the metadata was written correctly
-	result, err := store.GetObject(context.Background(), &awss3.GetObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String("snap-abc123/metadata.json"),
-	})
-	require.NoError(t, err)
-	defer result.Body.Close()
-
-	var cfg handlers_ec2_snapshot.SnapshotConfig
-	err = json.NewDecoder(result.Body).Decode(&cfg)
+	// The document must land under the owning account's prefix.
+	cfg, err := ebsmetadata.NewStore(store, testBucket).GetSnapshot(context.Background(), testAccountID, "snap-abc123")
 	require.NoError(t, err)
 	assert.Equal(t, "snap-abc123", cfg.SnapshotID)
 	assert.Equal(t, "vol-xyz789", cfg.VolumeID)
@@ -595,10 +586,7 @@ func TestDeregisterImage_DoesNotTouchSnapshot(t *testing.T) {
 	require.NoError(t, err)
 
 	// Snapshot metadata still present
-	_, snapErr := store.GetObject(context.Background(), &awss3.GetObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String(snapID + "/metadata.json"),
-	})
+	_, snapErr := ebsmetadata.NewStore(store, testBucket).GetSnapshot(context.Background(), testAccountID, snapID)
 	require.NoError(t, snapErr)
 }
 
@@ -1151,28 +1139,32 @@ func TestDescribeImages_FilterNoFilters(t *testing.T) {
 
 // --- RegisterImage tests ---
 
-// putTestSnapshotConfig writes a SnapshotConfig at {snapshotID}/metadata.json,
+// putTestSnapshotConfig writes a snapshot document under its owning account,
 // matching the layout that the snapshot service uses.
 func putTestSnapshotConfig(t *testing.T, store *objectstore.MemoryObjectStore, snapshotID string, sizeGiB int64, ownerID string) {
 	t.Helper()
-	cfg := handlers_ec2_snapshot.SnapshotConfig{
+	putTestSnapshotDoc(t, store, ebsmetadata.Snapshot{
 		SnapshotID: snapshotID,
 		VolumeID:   "vol-source-" + snapshotID,
 		VolumeSize: sizeGiB,
 		State:      "completed",
 		Progress:   "100%",
 		OwnerID:    ownerID,
-	}
-	data, err := json.Marshal(cfg)
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket:      aws.String(testBucket),
-		Key:         aws.String(snapshotID + "/metadata.json"),
-		Body:        strings.NewReader(string(data)),
-		ContentType: aws.String("application/json"),
 	})
+}
+
+// putTestSnapshotDoc writes one snapshot document through the metadata store.
+func putTestSnapshotDoc(t *testing.T, store *objectstore.MemoryObjectStore, snapshot ebsmetadata.Snapshot) {
+	t.Helper()
+	require.NoError(t, ebsmetadata.NewStore(store, testBucket).PutSnapshot(context.Background(), snapshot))
+}
+
+// readTestSnapshotDoc reads a snapshot document from the account that owns it.
+func readTestSnapshotDoc(t *testing.T, store *objectstore.MemoryObjectStore, accountID, snapshotID string) ebsmetadata.Snapshot {
+	t.Helper()
+	snapshot, err := ebsmetadata.NewStore(store, testBucket).GetSnapshot(context.Background(), accountID, snapshotID)
 	require.NoError(t, err)
+	return snapshot
 }
 
 func validRegisterImageServiceInput(snapshotID string) *ec2.RegisterImageInput {
@@ -1235,6 +1227,8 @@ func TestRegisterImage_SnapshotNotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
 }
 
+// A snapshot outside the caller's prefix is not found rather than refused, so
+// the endpoint does not confirm another account's snapshot IDs.
 func TestRegisterImage_CrossAccountSnapshot(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
@@ -1242,23 +1236,23 @@ func TestRegisterImage_CrossAccountSnapshot(t *testing.T) {
 
 	_, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-other01"), testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorUnauthorizedOperation, err.Error())
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
 }
 
-func TestRegisterImage_SystemSnapshotAllowed(t *testing.T) {
+// The system account is an ordinary account: it registers against its own
+// snapshot with no special path.
+func TestRegisterImage_SystemAccountSnapshot(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	// System-owned snapshot (non-account-ID owner) is launchable by anyone,
-	// matching how system AMIs work.
-	putTestSnapshotConfig(t, store, "snap-sys01", 8, "spinifex")
+	putTestSnapshotConfig(t, store, "snap-sys01", 8, utils.GlobalAccountID)
 
-	out, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-sys01"), testAccountID)
+	out, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-sys01"), utils.GlobalAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out.ImageId)
 
 	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
-	assert.Equal(t, testAccountID, meta.ImageOwnerAlias)
+	assert.Equal(t, utils.GlobalAccountID, meta.ImageOwnerAlias)
 }
 
 func TestRegisterImage_ArchitectureAndVirtualizationDefaults(t *testing.T) {
@@ -1523,12 +1517,14 @@ func readAMIConfigBytes(t *testing.T, store *objectstore.MemoryObjectStore, imag
 	return data
 }
 
-// readSnapshotConfigBytes returns the raw bytes of {snapshotID}/metadata.json.
-func readSnapshotConfigBytes(t *testing.T, store *objectstore.MemoryObjectStore, snapshotID string) []byte {
+// readSnapshotConfigBytes returns the raw bytes of the snapshot's document.
+func readSnapshotConfigBytes(t *testing.T, store *objectstore.MemoryObjectStore, accountID, snapshotID string) []byte {
 	t.Helper()
+	key, err := ebsmetadata.SnapshotKey(accountID, snapshotID)
+	require.NoError(t, err)
 	result, err := store.GetObject(context.Background(), &awss3.GetObjectInput{
 		Bucket: aws.String(testBucket),
-		Key:    aws.String(snapshotID + "/metadata.json"),
+		Key:    aws.String(key),
 	})
 	require.NoError(t, err)
 	defer result.Body.Close()
@@ -1568,23 +1564,17 @@ func putTestAMIConfigWithSnapshot(t *testing.T, store *objectstore.MemoryObjectS
 // end-to-end.
 func seedCopyableAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner, snapshotID, volumeID string, sizeGiB int64) {
 	t.Helper()
-	cfg := handlers_ec2_snapshot.SnapshotConfig{
+	// A system AMI's owner is an alias rather than an account, and its snapshot
+	// is keyed under the global account. Mirror the service's derivation.
+	snapOwner, _ := snapshotAccountForAMI(ebsmetadata.AMI{ImageOwnerAlias: owner})
+	putTestSnapshotDoc(t, store, ebsmetadata.Snapshot{
 		SnapshotID: snapshotID,
 		VolumeID:   volumeID,
 		VolumeSize: sizeGiB,
 		State:      "completed",
 		Progress:   "100%",
-		OwnerID:    owner,
-	}
-	data, err := json.Marshal(cfg)
-	require.NoError(t, err)
-	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket:      aws.String(testBucket),
-		Key:         aws.String(snapshotID + "/metadata.json"),
-		Body:        strings.NewReader(string(data)),
-		ContentType: aws.String("application/json"),
+		OwnerID:    snapOwner,
 	})
-	require.NoError(t, err)
 
 	putTestAMIConfigWithSnapshot(t, store, imageID, name, owner, snapshotID, ebsmetadata.AMI{
 		VolumeSizeGiB: uint64(sizeGiB),
@@ -1608,7 +1598,7 @@ func TestCopyImage_HappyPath(t *testing.T) {
 	// Capture the source config bytes before the copy so we can prove the
 	// source wasn't mutated (not just that name still resolves).
 	srcBefore := readAMIConfigBytes(t, store, "ami-src001")
-	srcSnapBefore := readSnapshotConfigBytes(t, store, "snap-src001")
+	srcSnapBefore := readSnapshotConfigBytes(t, store, testAccountID, "snap-src001")
 
 	out, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-src001", "copy-of-source"), testAccountID)
 	require.NoError(t, err)
@@ -1630,7 +1620,7 @@ func TestCopyImage_HappyPath(t *testing.T) {
 	// Source AMI config and source snapshot metadata must be byte-identical.
 	assert.Equal(t, srcBefore, readAMIConfigBytes(t, store, "ami-src001"),
 		"source AMI config was mutated by CopyImage")
-	assert.Equal(t, srcSnapBefore, readSnapshotConfigBytes(t, store, "snap-src001"),
+	assert.Equal(t, srcSnapBefore, readSnapshotConfigBytes(t, store, testAccountID, "snap-src001"),
 		"source snapshot metadata was mutated by CopyImage")
 }
 
@@ -1638,19 +1628,10 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
 	// Seed snapshot for the source AMI.
-	_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
-		Bucket: aws.String(testBucket),
-		Key:    aws.String("snap-arm001/metadata.json"),
-		Body: strings.NewReader(func() string {
-			b, _ := json.Marshal(handlers_ec2_snapshot.SnapshotConfig{
-				SnapshotID: "snap-arm001", VolumeID: "vol-arm", VolumeSize: 32,
-				State: "completed", Progress: "100%", OwnerID: testAccountID,
-			})
-			return string(b)
-		}()),
-		ContentType: aws.String("application/json"),
+	putTestSnapshotDoc(t, store, ebsmetadata.Snapshot{
+		SnapshotID: "snap-arm001", VolumeID: "vol-arm", VolumeSize: 32,
+		State: "completed", Progress: "100%", OwnerID: testAccountID,
 	})
-	require.NoError(t, err)
 
 	// Source AMI with non-default fields that must propagate.
 	putTestAMIConfigWithSnapshot(t, store, "ami-arm001", "arm-source", testAccountID, "snap-arm001", ebsmetadata.AMI{
@@ -1683,8 +1664,7 @@ func TestCopyImage_NewSnapshotSharesSourceVolumeID(t *testing.T) {
 
 	seedCopyableAMI(t, store, "ami-shareblocks", "shareblocks", testAccountID, "snap-orig", "vol-shared", 16)
 
-	srcSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, testBucket, "snap-orig")
-	require.NoError(t, err)
+	srcSnap := readTestSnapshotDoc(t, store, testAccountID, "snap-orig")
 
 	out, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-shareblocks", "shared-copy"), testAccountID)
 	require.NoError(t, err)
@@ -1693,8 +1673,7 @@ func TestCopyImage_NewSnapshotSharesSourceVolumeID(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, "snap-orig", newMeta.SnapshotID)
 
-	newSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, testBucket, newMeta.SnapshotID)
-	require.NoError(t, err)
+	newSnap := readTestSnapshotDoc(t, store, testAccountID, newMeta.SnapshotID)
 	// Compare against the source snapshot, not hard-coded literals — proves
 	// the new snap truly inherits the source's VolumeID rather than happening
 	// to match a test fixture value.
@@ -1750,8 +1729,7 @@ func TestCopyImage_BundledSystemAMINoStandaloneSnap(t *testing.T) {
 	// snap-ami-bundled01 viperblock reference.
 	require.NotEqual(t, "snap-ami-bundled01", newMeta.SnapshotID,
 		"copy must mint a new user-owned snap id, not borrow the source's")
-	newSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, testBucket, newMeta.SnapshotID)
-	require.NoError(t, err)
+	newSnap := readTestSnapshotDoc(t, store, testAccountID, newMeta.SnapshotID)
 	assert.Equal(t, "ami-bundled01", newSnap.VolumeID,
 		"bundled fallback must point the new snap at the source AMI's prefix")
 	assert.Equal(t, int64(8), newSnap.VolumeSize)
@@ -1764,7 +1742,7 @@ func TestCopyImage_CrossAccountHidesExistence(t *testing.T) {
 	seedCopyableAMI(t, store, "ami-other001", "other-acct", "000000000002", "snap-other001", "vol-other", 8)
 
 	srcBefore := readAMIConfigBytes(t, store, "ami-other001")
-	srcSnapBefore := readSnapshotConfigBytes(t, store, "snap-other001")
+	srcSnapBefore := readSnapshotConfigBytes(t, store, "000000000002", "snap-other001")
 
 	_, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-other001", "stolen-copy"), testAccountID)
 	require.Error(t, err)
@@ -1773,7 +1751,7 @@ func TestCopyImage_CrossAccountHidesExistence(t *testing.T) {
 	// Rejection must not touch the source AMI config or its snapshot metadata.
 	assert.Equal(t, srcBefore, readAMIConfigBytes(t, store, "ami-other001"),
 		"source AMI config altered after rejected cross-account copy")
-	assert.Equal(t, srcSnapBefore, readSnapshotConfigBytes(t, store, "snap-other001"),
+	assert.Equal(t, srcSnapBefore, readSnapshotConfigBytes(t, store, "000000000002", "snap-other001"),
 		"source snapshot metadata altered after rejected cross-account copy")
 }
 

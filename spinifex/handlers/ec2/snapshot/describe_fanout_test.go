@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/stretchr/testify/assert"
@@ -55,13 +56,13 @@ func seedSnapshots(t *testing.T, store objectstore.ObjectStore, n int) *handlers
 	t.Helper()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
 	svc := handlers_ec2_snapshot.NewSnapshotServiceImplWithStore(cfg, store, nil)
+	metadata := ebsmetadata.NewStore(store, "test-bucket")
 	for i := range n {
 		id := "snap-fanout" + string(rune('a'+i%26)) + string(rune('a'+i/26))
-		require.NoError(t, handlers_ec2_snapshot.WriteSnapshotConfig(store, "test-bucket", id,
-			&handlers_ec2_snapshot.SnapshotConfig{
-				SnapshotID: id, VolumeID: "vol-fanout", State: "completed",
-				OwnerID: fanoutAccountID, StartTime: time.Now(),
-			}))
+		require.NoError(t, metadata.PutSnapshot(context.Background(), ebsmetadata.Snapshot{
+			SnapshotID: id, VolumeID: "vol-fanout", State: "completed",
+			OwnerID: fanoutAccountID, StartTime: time.Now(),
+		}))
 	}
 	return svc
 }

@@ -726,23 +726,16 @@ func newTestVolumeServiceWithStore(az string, store *objectstore.MemoryObjectSto
 	return svc
 }
 
-// putTestSnapshotMetadata writes snapshot metadata in the store, matching the
-// spinifex snapshot service format.
+// putTestSnapshotMetadata writes the snapshot's control-plane document under
+// the account that owns it.
 func putTestSnapshotMetadata(t *testing.T, store *objectstore.MemoryObjectStore, snapshotID, ownerID string, sizeGiB int64) {
 	t.Helper()
-	snapData, err := json.Marshal(snapshotMetadata{
+	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutSnapshot(context.Background(), ebsmetadata.Snapshot{
+		SnapshotID: snapshotID,
 		VolumeID:   "vol-source",
 		VolumeSize: sizeGiB,
 		OwnerID:    ownerID,
-	})
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(snapshotID + "/metadata.json"),
-		Body:   strings.NewReader(string(snapData)),
-	})
-	require.NoError(t, err)
+	}))
 }
 
 func TestCreateVolume_FromSnapshot_PassesValidation(t *testing.T) {
@@ -838,9 +831,11 @@ func TestCreateVolume_FromSnapshot_CorruptMetadata(t *testing.T) {
 	snapshotID := "snap-corrupt"
 
 	// Put invalid JSON as snapshot metadata
-	_, err := store.PutObject(context.Background(), &s3.PutObjectInput{
+	key, err := ebsmetadata.SnapshotKey(testVolAccountID, snapshotID)
+	require.NoError(t, err)
+	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(snapshotID + "/metadata.json"),
+		Key:    aws.String(key),
 		Body:   strings.NewReader("not valid json{{{"),
 	})
 	require.NoError(t, err)
@@ -883,11 +878,18 @@ func TestCreateVolume_FromSnapshot_OtherAccountDenied(t *testing.T) {
 // A snapshot recording no owner fails closed. An empty caller is refused
 // earlier still, at the boundary, before the snapshot is ever read.
 func TestCreateVolume_FromSnapshot_EmptyOwnerDenied(t *testing.T) {
+	// An untenanted snapshot document cannot be written, so it cannot exist:
+	// the state this used to guard against is unreachable rather than denied.
+	store := objectstore.NewMemoryObjectStore()
+	require.Error(t, ebsmetadata.NewStore(store, "test-bucket").PutSnapshot(context.Background(), ebsmetadata.Snapshot{
+		SnapshotID: "snap-untenanted", VolumeID: "vol-source", VolumeSize: 50,
+	}))
+
 	tests := []struct {
 		accountID string
 		wantErr   string
 	}{
-		{accountID: testVolAccountID, wantErr: awserrors.ErrorInvalidSnapshotNotFound},
+		{accountID: "000000000002", wantErr: awserrors.ErrorInvalidSnapshotNotFound},
 		{accountID: "", wantErr: awserrors.ErrorAuthFailure},
 	}
 
@@ -896,8 +898,8 @@ func TestCreateVolume_FromSnapshot_EmptyOwnerDenied(t *testing.T) {
 			store := objectstore.NewMemoryObjectStore()
 			svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-			snapshotID := "snap-legacy"
-			putTestSnapshotMetadata(t, store, snapshotID, "", 50)
+			snapshotID := "snap-owned"
+			putTestSnapshotMetadata(t, store, snapshotID, testVolAccountID, 50)
 
 			_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 				AvailabilityZone: aws.String("ap-southeast-2a"),

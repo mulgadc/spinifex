@@ -66,6 +66,25 @@ type VolumeModification struct {
 	EndTime            time.Time `json:"end_time,omitzero"`
 }
 
+// Snapshot is the control-plane record used for EC2 snapshot operations. It
+// deliberately excludes viperblock's own half of the snapshot prefix — the
+// block checkpoint and config.json — which stays at the bucket root.
+type Snapshot struct {
+	SchemaVersion    uint16            `json:"schema_version"`
+	SnapshotID       string            `json:"snapshot_id"`
+	VolumeID         string            `json:"volume_id"`
+	VolumeSize       int64             `json:"volume_size"`
+	State            string            `json:"state"`
+	Progress         string            `json:"progress"`
+	StartTime        time.Time         `json:"start_time"`
+	Description      string            `json:"description"`
+	Encrypted        bool              `json:"encrypted"`
+	OwnerID          string            `json:"owner_id"`
+	AvailabilityZone string            `json:"availability_zone"`
+	Tags             map[string]string `json:"tags,omitempty"`
+	ProviderHandle   string            `json:"provider_handle,omitempty"`
+}
+
 // AMI is the control-plane record used for EC2 image operations.
 type AMI struct {
 	SchemaVersion   uint16            `json:"schema_version"`
@@ -139,6 +158,22 @@ func UnmarshalVolume(data []byte) (Volume, error) {
 		return Volume{}, fmt.Errorf("%w: unsupported volume metadata schema version %d", ErrCorruptDocument, volume.SchemaVersion)
 	}
 	return volume, nil
+}
+
+func MarshalSnapshot(snapshot Snapshot) ([]byte, error) {
+	snapshot.SchemaVersion = SchemaVersion
+	return json.Marshal(snapshot)
+}
+
+func UnmarshalSnapshot(data []byte) (Snapshot, error) {
+	var snapshot Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return Snapshot{}, fmt.Errorf("%w: %w", ErrCorruptDocument, err)
+	}
+	if snapshot.SchemaVersion != SchemaVersion {
+		return Snapshot{}, fmt.Errorf("%w: unsupported snapshot metadata schema version %d", ErrCorruptDocument, snapshot.SchemaVersion)
+	}
+	return snapshot, nil
 }
 
 func MarshalAMI(ami AMI) ([]byte, error) {

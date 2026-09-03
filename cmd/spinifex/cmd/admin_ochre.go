@@ -20,10 +20,10 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/gateway/bedrock/hfhub"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -633,7 +633,7 @@ func buildWeightsImage(srcDir, imagePath string, contentBytes int64) error {
 // metadata.json sitting alongside them, so without this the endpoint launcher
 // cannot see the snapshot at all and fails with InvalidSnapshot.NotFound.
 func registerWeightsSnapshot(store objectstore.ObjectStore, bucket, snapshotID, volumeID string, volumeSize uint64, az string, encrypted bool) error {
-	cfg := &handlers_ec2_snapshot.SnapshotConfig{
+	cfg := ebsmetadata.Snapshot{
 		SnapshotID: snapshotID,
 		VolumeID:   volumeID,
 		// GiB, not bytes: CreateVolume compares this against a requested Size
@@ -647,7 +647,7 @@ func registerWeightsSnapshot(store objectstore.ObjectStore, bucket, snapshotID, 
 		OwnerID:          utils.GlobalAccountID,
 		AvailabilityZone: az,
 	}
-	if err := handlers_ec2_snapshot.WriteSnapshotConfig(store, bucket, snapshotID, cfg); err != nil {
+	if err := ebsmetadata.NewStore(store, bucket).PutSnapshot(context.Background(), cfg); err != nil {
 		return fmt.Errorf("register snapshot metadata: %w", err)
 	}
 	return nil
@@ -805,13 +805,14 @@ func materializeWeightsVolume(ctx context.Context, provider ebsprovider.EBSProvi
 }
 
 // newWeightsSnapshotChecker is the real weightsSnapshotChecker: it reads the
-// EC2 control plane's metadata.json for snapshotID from the node's
-// predastore bucket -- the same record registerWeightsSnapshot writes at
-// stage time -- and treats a missing object as gone. Any other read failure
-// is a real error, not a signal to guess the snapshot's existence.
+// EC2 control plane's snapshot document for snapshotID under the global
+// account -- the same record registerWeightsSnapshot writes at stage time --
+// and treats a missing object as gone. Any other read failure is a real
+// error, not a signal to guess the snapshot's existence.
 func newWeightsSnapshotChecker(store objectstore.ObjectStore, bucket string) weightsSnapshotChecker {
+	metadata := ebsmetadata.NewStore(store, bucket)
 	return func(ctx context.Context, snapshotID string) (bool, error) {
-		if _, err := handlers_ec2_snapshot.ReadSnapshotConfig(ctx, store, bucket, snapshotID); err != nil {
+		if _, err := metadata.GetSnapshot(ctx, utils.GlobalAccountID, snapshotID); err != nil {
 			if objectstore.IsNoSuchKeyError(err) {
 				return false, nil
 			}

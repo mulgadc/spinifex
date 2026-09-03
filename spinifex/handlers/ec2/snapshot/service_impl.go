@@ -1,7 +1,6 @@
 package handlers_ec2_snapshot
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -71,22 +70,6 @@ func (s *SnapshotServiceImpl) MetadataStore() *ebsmetadata.Store {
 	return s.metadata
 }
 
-// SnapshotConfig represents snapshot metadata stored in S3.
-type SnapshotConfig struct {
-	SnapshotID       string            `json:"snapshot_id"`
-	VolumeID         string            `json:"volume_id"`
-	VolumeSize       int64             `json:"volume_size"`
-	State            string            `json:"state"`
-	Progress         string            `json:"progress"`
-	StartTime        time.Time         `json:"start_time"`
-	Description      string            `json:"description"`
-	Encrypted        bool              `json:"encrypted"`
-	OwnerID          string            `json:"owner_id"`
-	AvailabilityZone string            `json:"availability_zone"`
-	Tags             map[string]string `json:"tags"`
-	ProviderHandle   string            `json:"provider_handle,omitempty"`
-}
-
 // NewSnapshotServiceImplWithNATS creates a snapshot service with JetStream KV for volume-snapshot tracking.
 func NewSnapshotServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn *nats.Conn) (*SnapshotServiceImpl, jetstream.KeyValue, error) {
 	store := objectstore.NewS3ObjectStoreFromConfig(
@@ -135,73 +118,21 @@ func NewSnapshotServiceImplWithStore(cfg *config.Config, store objectstore.Objec
 	return svc
 }
 
-// GetSnapshotKey uses metadata.json to avoid colliding with viperblock's
-// config.json (which stores SnapshotState: block map, source volume, etc).
-func GetSnapshotKey(snapshotID string) string {
-	return fmt.Sprintf("%s/metadata.json", snapshotID)
-}
-
-// ErrCorruptSnapshotMetadata lets callers distinguish a missing snapshot from
-// one whose metadata.json can't be parsed.
-var ErrCorruptSnapshotMetadata = errors.New("corrupt snapshot metadata")
-
-// ReadSnapshotConfig reads {snapshotID}/metadata.json. Object-store errors are
-// returned unchanged; callers map NoSuchKey to their preferred AWS error.
-// Decode failures wrap ErrCorruptSnapshotMetadata. ctx carries the caller's
-// deadline: a describe that has already given up must not keep the object
-// store busy on its behalf.
-func ReadSnapshotConfig(ctx context.Context, store objectstore.ObjectStore, bucket, snapshotID string) (*SnapshotConfig, error) {
-	key := GetSnapshotKey(snapshotID)
-	result, err := store.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer result.Body.Close()
-
-	var cfg SnapshotConfig
-	if err := json.NewDecoder(result.Body).Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrCorruptSnapshotMetadata, err)
-	}
-	return &cfg, nil
-}
-
-// WriteSnapshotConfig writes the SnapshotConfig to {snapshotID}/metadata.json.
-func WriteSnapshotConfig(store objectstore.ObjectStore, bucket, snapshotID string, cfg *SnapshotConfig) error {
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket:      aws.String(bucket),
-		Key:         aws.String(GetSnapshotKey(snapshotID)),
-		Body:        bytes.NewReader(data),
-		ContentType: aws.String("application/json"),
-	})
-	return err
-}
-
-// getSnapshotConfig translates NoSuchKey to InvalidSnapshot.NotFound.
-func (s *SnapshotServiceImpl) getSnapshotConfig(ctx context.Context, snapshotID string) (*SnapshotConfig, error) {
-	cfg, err := ReadSnapshotConfig(ctx, s.store, s.config.Predastore.Bucket, snapshotID)
+// getSnapshotConfig reads the caller's own snapshot document. A snapshot
+// outside the caller's prefix is absent, so ownership needs no second check.
+func (s *SnapshotServiceImpl) getSnapshotConfig(ctx context.Context, accountID, snapshotID string) (ebsmetadata.Snapshot, error) {
+	cfg, err := s.metadata.GetSnapshot(ctx, accountID, snapshotID)
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
-			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+			return ebsmetadata.Snapshot{}, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 		}
-		return nil, err
+		return ebsmetadata.Snapshot{}, err
 	}
 	return cfg, nil
 }
 
-// putSnapshotConfig stores snapshot config to S3.
-func (s *SnapshotServiceImpl) putSnapshotConfig(snapshotID string, cfg *SnapshotConfig) error {
-	return WriteSnapshotConfig(s.store, s.config.Predastore.Bucket, snapshotID, cfg)
-}
-
-// snapshotConfigToEC2 converts a SnapshotConfig to an EC2 Snapshot response object.
-func snapshotConfigToEC2(cfg *SnapshotConfig) *ec2.Snapshot {
+// snapshotConfigToEC2 converts a snapshot document to an EC2 response object.
+func snapshotConfigToEC2(cfg ebsmetadata.Snapshot) *ec2.Snapshot {
 	snapshot := &ec2.Snapshot{
 		SnapshotId:  aws.String(cfg.SnapshotID),
 		VolumeId:    aws.String(cfg.VolumeID),
@@ -260,7 +191,7 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	now := time.Now()
-	snapshotCfg := &SnapshotConfig{
+	snapshotCfg := ebsmetadata.Snapshot{
 		SnapshotID: snapshotID, VolumeID: volumeID,
 		VolumeSize: safecast.Uint64ToInt64(volume.CapacityGiB),
 		State:      string(created.State), Progress: "100%", StartTime: now,
@@ -283,7 +214,7 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 		_ = s.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, Handle: created.Handle})
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if err := s.putSnapshotConfig(snapshotID, snapshotCfg); err != nil {
+	if err := s.metadata.PutSnapshot(ctx, snapshotCfg); err != nil {
 		slog.ErrorContext(ctx, "CreateSnapshot failed to write config", "snapshotId", snapshotID, "err", err)
 		_ = s.removeSnapshotRefForCleanup(ctx, volumeID, snapshotID)
 		_ = s.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, Handle: created.Handle})
@@ -507,70 +438,36 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	_, commonPrefixes, err := objectstore.ListAll(ctx, s.store, &s3.ListObjectsV2Input{
-		Bucket:    aws.String(s.config.Predastore.Bucket),
-		Prefix:    aws.String("snap-"),
-		Delimiter: aws.String("/"),
-	})
+	// The caller's prefix is the isolation and the whole answer: no other
+	// account's document is read, so none has to be filtered out afterwards.
+	// Named ids are matched against this listing rather than fetched directly —
+	// the listing already costs what the account owns.
+	var configs []ebsmetadata.Snapshot
+	if strict {
+		configs, err = s.metadata.ListSnapshotsStrict(ctx, accountID)
+	} else {
+		configs, err = s.metadata.ListSnapshots(ctx, accountID)
+	}
 	if err != nil {
-		slog.ErrorContext(ctx, "DescribeSnapshots failed to list objects", "err", err)
+		slog.ErrorContext(ctx, "DescribeSnapshots failed to list snapshot documents", "accountID", accountID, "err", err)
+		if strict {
+			return nil, fmt.Errorf("describe snapshots for %s: %w", accountID, err)
+		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Extract snapshot-id filter values for early prefix skipping to avoid
-	// unnecessary S3 GetObject calls on non-matching snapshots.
-	var snapshotIDFilterValues []string
-	if parsedFilters != nil {
-		snapshotIDFilterValues = parsedFilters["snapshot-id"]
-	}
-
-	var wanted []string
-	for _, prefix := range commonPrefixes {
-		if prefix == nil || prefix.Prefix == nil {
-			continue
-		}
-
-		snapshotID := strings.TrimSuffix(*prefix.Prefix, "/")
-
-		if len(snapshotIDFilter) > 0 && !snapshotIDFilter[snapshotID] {
-			continue
-		}
-
-		// Early skip: if snapshot-id filter is set, check the prefix against
-		// filter values before fetching config from S3.
-		if len(snapshotIDFilterValues) > 0 {
-			if !filterutil.MatchesAny(snapshotIDFilterValues, snapshotID) {
-				continue
-			}
-		}
-
-		wanted = append(wanted, snapshotID)
-	}
-
-	configs, readErrs := s.readSnapshotConfigs(ctx, wanted)
-
-	// Every read fails once the caller's deadline passes, and reporting that as
-	// an empty list would read as "this account has no snapshots".
+	// Every read fails once the caller's deadline passes, and a tolerant listing
+	// reports that as an empty list, which reads as "this account has no
+	// snapshots".
 	if err := ctx.Err(); err != nil {
 		slog.WarnContext(ctx, "DescribeSnapshots gave up reading metadata",
-			"requested", len(wanted), "read", len(configs), "err", err)
+			"read", len(configs), "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	var snapshots []*ec2.Snapshot
-	for _, snapshotID := range wanted {
-		cfg, ok := configs[snapshotID]
-		if !ok {
-			slog.WarnContext(ctx, "DescribeSnapshots failed to get config",
-				"snapshotId", snapshotID, "err", readErrs[snapshotID])
-			if strict {
-				return nil, fmt.Errorf("describe snapshot %s metadata: %w", snapshotID, readErrs[snapshotID])
-			}
-			continue
-		}
-
-		// Filter by account: only return snapshots owned by the caller
-		if accountID != "" && cfg.OwnerID != accountID {
+	for _, cfg := range configs {
+		if len(snapshotIDFilter) > 0 && !snapshotIDFilter[cfg.SnapshotID] {
 			continue
 		}
 
@@ -604,48 +501,8 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 	}, nil
 }
 
-// describeSnapshotFanout bounds how many metadata reads a single describe has
-// in flight. A describe used to read every snapshot's metadata.json one after
-// the other, so its latency was the sum of them all and a single slow object
-// made the whole listing miss its caller's deadline. The bound keeps a large
-// account from turning one describe into a burst against the object store.
-const describeSnapshotFanout = 16
-
-// readSnapshotConfigs fetches metadata for each snapshot concurrently. It
-// returns what it could read plus the error for each one it could not, so the
-// caller decides whether an unreadable snapshot is fatal or simply skipped.
-func (s *SnapshotServiceImpl) readSnapshotConfigs(
-	ctx context.Context, ids []string,
-) (map[string]*SnapshotConfig, map[string]error) {
-	configs := make(map[string]*SnapshotConfig, len(ids))
-	readErrs := make(map[string]error)
-	if len(ids) == 0 {
-		return configs, readErrs
-	}
-
-	var mu sync.Mutex
-	sem := make(chan struct{}, describeSnapshotFanout)
-	var wg sync.WaitGroup
-	for _, id := range ids {
-		sem <- struct{}{}
-		wg.Go(func() {
-			defer func() { <-sem }()
-			cfg, err := s.getSnapshotConfig(ctx, id)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				readErrs[id] = err
-				return
-			}
-			configs[id] = cfg
-		})
-	}
-	wg.Wait()
-	return configs, readErrs
-}
-
-// snapshotMatchesFilters checks whether a SnapshotConfig satisfies all parsed filters.
-func snapshotMatchesFilters(cfg *SnapshotConfig, filters map[string][]string) bool {
+// snapshotMatchesFilters checks whether a snapshot document satisfies all parsed filters.
+func snapshotMatchesFilters(cfg ebsmetadata.Snapshot, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
 			continue
@@ -703,13 +560,14 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 
 	slog.InfoContext(ctx, "DeleteSnapshot request", "snapshotId", snapshotID, "accountID", accountID)
 
-	cfg, err := s.getSnapshotConfig(ctx, snapshotID)
+	cfg, err := s.getSnapshotConfig(ctx, accountID, snapshotID)
 	if err != nil {
 		slog.ErrorContext(ctx, "DeleteSnapshot snapshot not found", "snapshotId", snapshotID, "err", err)
 		return nil, err
 	}
 
-	// Verify ownership: caller must own the snapshot
+	// The read was scoped to the caller's prefix, so the document is theirs by
+	// construction. The comparison stays as an assertion.
 	if accountID != "" && cfg.OwnerID != accountID {
 		slog.WarnContext(ctx, "DeleteSnapshot: account does not own snapshot", "snapshotId", snapshotID, "accountID", accountID, "ownerID", cfg.OwnerID)
 		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
@@ -755,6 +613,15 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 		}
 	}
 
+	// The document no longer sits inside the swept prefix, so it has to go
+	// explicitly, and last: a crash with it still present leaves a snapshot that
+	// DescribeSnapshots shows and DeleteSnapshot can retry, rather than chunks
+	// nothing enumerates.
+	if err := s.metadata.DeleteSnapshot(ctx, accountID, snapshotID); err != nil {
+		slog.ErrorContext(ctx, "DeleteSnapshot failed to delete metadata document", "snapshotId", snapshotID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	// Remove from KV after S3 cleanup. Failure is logged but not fatal —
 	// a phantom entry safely blocks volume deletion rather than allowing it.
 	if err := s.removeSnapshotRefForCleanup(ctx, cfg.VolumeID, snapshotID); err != nil {
@@ -779,12 +646,13 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 
 	slog.InfoContext(ctx, "CopySnapshot request", "sourceSnapshotId", sourceSnapshotID, "accountID", accountID)
 
-	sourceCfg, err := s.getSnapshotConfig(ctx, sourceSnapshotID)
+	sourceCfg, err := s.getSnapshotConfig(ctx, accountID, sourceSnapshotID)
 	if err != nil {
 		slog.ErrorContext(ctx, "CopySnapshot source snapshot not found", "snapshotId", sourceSnapshotID, "err", err)
 		return nil, err
 	}
 
+	// Assertion: the read was already scoped to the caller's prefix.
 	if accountID != "" && sourceCfg.OwnerID != accountID {
 		slog.WarnContext(ctx, "CopySnapshot: account does not own source snapshot", "snapshotId", sourceSnapshotID, "accountID", accountID, "ownerID", sourceCfg.OwnerID)
 		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
@@ -811,7 +679,7 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 	}
 
 	now := time.Now()
-	snapshotCfg := &SnapshotConfig{
+	snapshotCfg := ebsmetadata.Snapshot{
 		SnapshotID: newSnapshotID, VolumeID: sourceCfg.VolumeID,
 		VolumeSize: sourceCfg.VolumeSize,
 		State:      string(copied.State), Progress: "100%", StartTime: now,
@@ -835,7 +703,7 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 		_ = s.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: newSnapshotID, Handle: copied.Handle})
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if err := s.putSnapshotConfig(newSnapshotID, snapshotCfg); err != nil {
+	if err := s.metadata.PutSnapshot(ctx, snapshotCfg); err != nil {
 		_ = s.removeSnapshotRefForCleanup(ctx, sourceCfg.VolumeID, newSnapshotID)
 		_ = s.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: newSnapshotID, Handle: copied.Handle})
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -1010,30 +878,26 @@ func (s *SnapshotServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accou
 	return s.mirrorSnapshotTags(input.Resources, accountID, utils.RemoveTagsMut(input))
 }
 
-// mirrorSnapshotTags read-modify-writes SnapshotConfig.Tags for each snap- id.
-// metadata.json lives at a global ID-keyed path, so the mutation is gated on
-// the caller owning the snapshot (OwnerID match); mismatch or absence no-ops.
+// mirrorSnapshotTags read-modify-writes the snapshot document's Tags for each
+// snap- id. The document is read under the caller's own prefix, so a snapshot
+// they do not own is simply absent and no-ops.
 func (s *SnapshotServiceImpl) mirrorSnapshotTags(resources []*string, accountID string, mut func(map[string]string)) error {
 	for _, res := range resources {
 		if res == nil || !strings.HasPrefix(*res, "snap-") {
 			continue
 		}
-		cfg, err := ReadSnapshotConfig(context.Background(), s.store, s.config.Predastore.Bucket, *res)
+		cfg, err := s.metadata.GetSnapshot(context.Background(), accountID, *res)
 		if err != nil {
 			if objectstore.IsNoSuchKeyError(err) {
 				continue
 			}
 			return err
 		}
-		if cfg.OwnerID != accountID {
-			slog.Debug("mirrorSnapshotTags: skipping snapshot not owned by caller", "snapshotId", *res)
-			continue
-		}
 		if cfg.Tags == nil {
 			cfg.Tags = map[string]string{}
 		}
 		mut(cfg.Tags)
-		if err := s.putSnapshotConfig(*res, cfg); err != nil {
+		if err := s.metadata.PutSnapshot(context.Background(), cfg); err != nil {
 			return err
 		}
 	}

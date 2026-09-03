@@ -35,7 +35,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/hostdns"
@@ -733,7 +732,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 // DescribeSnapshots call cannot resolve it. The volume ID matches ami.ImageID:
 // admin.ImportImage creates the volume under the AMI's own ID.
 func registerImportedAMISnapshot(store objectstore.ObjectStore, bucket string, ami ebsmetadata.AMI, az string, encrypted bool) error {
-	cfg := &handlers_ec2_snapshot.SnapshotConfig{
+	cfg := ebsmetadata.Snapshot{
 		SnapshotID:       ami.SnapshotID,
 		VolumeID:         ami.ImageID,
 		VolumeSize:       safecast.Uint64ToInt64(ami.VolumeSizeGiB),
@@ -745,7 +744,7 @@ func registerImportedAMISnapshot(store objectstore.ObjectStore, bucket string, a
 		OwnerID:          utils.GlobalAccountID,
 		AvailabilityZone: az,
 	}
-	if err := handlers_ec2_snapshot.WriteSnapshotConfig(store, bucket, ami.SnapshotID, cfg); err != nil {
+	if err := ebsmetadata.NewStore(store, bucket).PutSnapshot(context.Background(), cfg); err != nil {
 		return fmt.Errorf("register snapshot metadata: %w", err)
 	}
 	return nil

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -147,17 +145,11 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 
 	if input.SnapshotId != nil && *input.SnapshotId != "" {
 		snapshotID = *input.SnapshotId
-		snapMeta, err := s.getSnapshotMetadata(ctx, snapshotID)
+		// The ownership check is the key: a snapshot outside the caller's prefix
+		// is not found, so the endpoint never confirms another account's IDs.
+		snapMeta, err := s.metadata.GetSnapshot(ctx, accountID, snapshotID)
 		if err != nil {
 			slog.ErrorContext(ctx, "CreateVolume: snapshot not found", "snapshotId", snapshotID, "err", err)
-			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
-		}
-		// Not-found rather than access-denied so the endpoint does not confirm
-		// another account's snapshot IDs. An unset owner_id (pre-ownership
-		// snapshot) fails closed.
-		if snapMeta.OwnerID == "" || snapMeta.OwnerID != accountID {
-			slog.WarnContext(ctx, "CreateVolume: account does not own snapshot",
-				"snapshotId", snapshotID, "accountID", accountID, "ownerID", snapMeta.OwnerID)
 			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 		}
 		sourceVolumeName = snapMeta.VolumeID
@@ -1117,43 +1109,6 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 	slog.InfoContext(ctx, "DeleteVolume completed", "volumeId", volumeID)
 
 	return &ec2.DeleteVolumeOutput{}, nil
-}
-
-// snapshotMetadata holds the subset of snapshot metadata needed by CreateVolume.
-// Matches the JSON written by the snapshot service's SnapshotConfig.
-type snapshotMetadata struct {
-	VolumeID   string `json:"volume_id"`
-	VolumeSize int64  `json:"volume_size"`
-	OwnerID    string `json:"owner_id"`
-}
-
-// getSnapshotMetadata reads snapshot metadata.json from S3 for CreateVolume.
-func (s *VolumeServiceImpl) getSnapshotMetadata(ctx context.Context, snapshotID string) (*snapshotMetadata, error) {
-	key := snapshotID + "/metadata.json"
-
-	getResult, err := s.store.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		if objectstore.IsNoSuchKeyError(err) {
-			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
-		}
-		return nil, fmt.Errorf("failed to get snapshot metadata: %w", err)
-	}
-	defer getResult.Body.Close()
-
-	body, err := io.ReadAll(getResult.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read snapshot metadata: %w", err)
-	}
-
-	var meta snapshotMetadata
-	if err := json.Unmarshal(body, &meta); err != nil {
-		return nil, fmt.Errorf("failed to decode snapshot metadata: %w", err)
-	}
-
-	return &meta, nil
 }
 
 // checkVolumeHasNoSnapshots checks if a volume has dependent snapshots

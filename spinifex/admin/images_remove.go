@@ -12,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
@@ -128,35 +127,23 @@ func PreviewRemoveSystemImage(store objectstore.ObjectStore, bucket, imageID str
 func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (Dependents, error) {
 	var deps Dependents
 
-	prefixes, err := listCommonPrefixes(store, bucket)
-	if err != nil {
-		return Dependents{}, fmt.Errorf("list bucket prefixes: %w", err)
-	}
-
 	// Pass 1: collect derived snaps (CopyImage of this AMI writes a snap whose
-	// VolumeID points back at the source AMI ID).
+	// VolumeID points back at the source AMI ID). Whole-cluster: a copy made by
+	// any account still pins this AMI's blocks.
+	snapDocs, err := ebsmetadata.NewStore(store, bucket).ListAllSnapshots(context.Background())
+	if err != nil {
+		return Dependents{}, fmt.Errorf("list ebsmetadata snapshots: %w", err)
+	}
 	derived := map[string]bool{}
-	for _, p := range prefixes {
-		if !strings.HasPrefix(p, "snap-") {
+	for _, cfg := range snapDocs {
+		// Skip the viperblock-internal snap for this AMI — it has no document
+		// (it was written by viperblock.CreateSnapshot, not the EC2 service).
+		if cfg.SnapshotID == SnapPrefix(imageID) {
 			continue
-		}
-		snapID := strings.TrimSuffix(p, "/")
-		// Skip the viperblock-internal snap prefix for this AMI — it has no
-		// metadata.json (it was written by viperblock.CreateSnapshot, not by
-		// the EC2 snapshot service).
-		if snapID == SnapPrefix(imageID) {
-			continue
-		}
-		cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, bucket, snapID)
-		if err != nil {
-			if objectstore.IsNoSuchKeyError(err) || errors.Is(err, handlers_ec2_snapshot.ErrCorruptSnapshotMetadata) {
-				continue
-			}
-			return Dependents{}, fmt.Errorf("read snapshot %s: %w", snapID, err)
 		}
 		if cfg.VolumeID == imageID {
-			derived[snapID] = true
-			deps.Snapshots = append(deps.Snapshots, snapID)
+			derived[cfg.SnapshotID] = true
+			deps.Snapshots = append(deps.Snapshots, cfg.SnapshotID)
 		}
 	}
 
@@ -294,38 +281,6 @@ func (e *DependentError) Error() string {
 // tooling can read an AMI without an ImageServiceImpl, which carries NATS.
 func readAMI(store objectstore.ObjectStore, bucket, imageID string) (ebsmetadata.AMI, error) {
 	return ebsmetadata.NewStore(store, bucket).GetAMI(context.Background(), imageID)
-}
-
-// listCommonPrefixes returns the top-level "directory" prefixes in the bucket
-// (e.g. "ami-xxx/", "vol-yyy/", "snap-zzz/"), exhausting any pagination.
-func listCommonPrefixes(store objectstore.ObjectStore, bucket string) ([]string, error) {
-	seen := map[string]bool{}
-	var token *string
-	for {
-		out, err := store.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
-			Bucket:            aws.String(bucket),
-			Delimiter:         aws.String("/"),
-			ContinuationToken: token,
-		})
-		if err != nil {
-			return nil, err
-		}
-		for _, cp := range out.CommonPrefixes {
-			if cp.Prefix == nil {
-				continue
-			}
-			seen[*cp.Prefix] = true
-		}
-		if !aws.BoolValue(out.IsTruncated) {
-			break
-		}
-		token = out.NextContinuationToken
-	}
-	prefixes := make([]string, 0, len(seen))
-	for p := range seen {
-		prefixes = append(prefixes, p)
-	}
-	return prefixes, nil
 }
 
 // sumPrefix returns (object count, total bytes) for every object under prefix.

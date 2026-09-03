@@ -129,3 +129,59 @@ func TestRepairInstanceRecords_HealthyNodeWritesNothing(t *testing.T) {
 	assert.Equal(t, before, recordRevisionInPackage(t, m, "i-1"),
 		"a sweep over an already-published set must not write")
 }
+
+// The QMP collector advances LastQMPSuccess on its own cadence, so digesting it
+// made every running instance look changed once a minute and turned the sweep
+// into permanent cluster-wide write traffic. Caught on env19, not here.
+func TestRepairInstanceRecords_LivenessStampAloneDoesNotWrite(t *testing.T) {
+	t.Parallel()
+	m := newRecordManagerInPackage(t)
+	require.NoError(t, m.WriteNodeMarker("node-1"))
+
+	instance := &vm.VM{ID: "i-1", InstanceType: "t3.nano", Status: vm.StateRunning, LastNode: "node-1"}
+	instance.Health.LastQMPSuccess = time.Now()
+
+	d := &Daemon{
+		ctx: context.Background(), node: "node-1",
+		config: &config.Config{AZ: "us-east-1a"}, jsManager: m, vmMgr: vm.NewManager(),
+	}
+	d.vmMgr.Insert(instance)
+	d.repairInstanceRecords()
+	before := recordRevisionInPackage(t, m, "i-1")
+
+	for i := range 3 {
+		d.vmMgr.UpdateState("i-1", func(v *vm.VM) {
+			v.Health.LastQMPSuccess = time.Now().Add(time.Duration(i+1) * time.Minute)
+		})
+		d.repairInstanceRecords()
+	}
+
+	assert.Equal(t, before, recordRevisionInPackage(t, m, "i-1"),
+		"a moving liveness stamp is not a state change and must not be republished")
+}
+
+// The exclusion must be narrow: an impairment is a real transition and has to
+// reach the record space, or a describe cannot see it.
+func TestRepairInstanceRecords_RealHealthChangeStillWrites(t *testing.T) {
+	t.Parallel()
+	m := newRecordManagerInPackage(t)
+	require.NoError(t, m.WriteNodeMarker("node-1"))
+
+	instance := &vm.VM{ID: "i-1", InstanceType: "t3.nano", Status: vm.StateRunning, LastNode: "node-1"}
+	d := &Daemon{
+		ctx: context.Background(), node: "node-1",
+		config: &config.Config{AZ: "us-east-1a"}, jsManager: m, vmMgr: vm.NewManager(),
+	}
+	d.vmMgr.Insert(instance)
+	d.repairInstanceRecords()
+	before := recordRevisionInPackage(t, m, "i-1")
+
+	d.vmMgr.UpdateState("i-1", func(v *vm.VM) {
+		v.Health.QMPConsecutiveFailures = 3
+		v.Health.ImpairedSince = time.Now()
+	})
+	d.repairInstanceRecords()
+
+	assert.Greater(t, recordRevisionInPackage(t, m, "i-1"), before,
+		"an impairment must still be published")
+}

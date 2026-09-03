@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/vm"
 )
@@ -177,8 +178,18 @@ func (m *JetStreamManager) seedRunningSet(nodeID string) error {
 // recordDigest identifies a record by its wire form, so a state change that
 // leaves an instance untouched does not become a KV write. encoding/json sorts
 // map keys, so the same record always encodes to the same bytes.
+//
+// LastQMPSuccess is held out of it. It advances on every successful poll, so
+// digesting it would make every running instance look changed once a minute and
+// turn the repair sweep into permanent write traffic. Nothing reads it back —
+// impairment is judged from QMPConsecutiveFailures and ImpairedSince, and node
+// liveness from the heartbeat store — so holding it out costs no reader
+// anything and keeps publication on the cadence it had before the sweep existed.
 func recordDigest(record *vm.InstanceRecord) (uint64, error) {
-	data, err := json.Marshal(record)
+	stable := *record
+	stable.Status.Health.LastQMPSuccess = time.Time{}
+
+	data, err := json.Marshal(&stable)
 	if err != nil {
 		return 0, err
 	}

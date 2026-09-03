@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -17,13 +18,13 @@ func startTestNATSServer(t *testing.T) (*server.Server, *nats.Conn) {
 	return testutil.StartTestNATS(t)
 }
 
-// noopTerminateRetrySleep replaces the terminate NoResponders backoff with a
-// no-op for the duration of the test, so retry paths do not burn real seconds.
-func noopTerminateRetrySleep(t *testing.T) {
-	t.Helper()
-	prev := terminateRetrySleep
+// TestMain neuters the terminate NoResponders backoff for the whole binary, so
+// retry paths do not burn real seconds. Installed once rather than swapped per
+// test: the seam is a package global and the tests that need it run in
+// parallel, so their restores raced each other.
+func TestMain(m *testing.M) {
 	terminateRetrySleep = func(time.Duration) {}
-	t.Cleanup(func() { terminateRetrySleep = prev })
+	os.Exit(m.Run())
 }
 
 // subscribeAsNode replies on subject as nodeID, carrying the X-Node-ID header

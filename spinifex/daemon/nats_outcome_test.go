@@ -145,6 +145,12 @@ func TestHandleNATSRequestReportsOutcome(t *testing.T) {
 			_, err = nc.Request(tc.subject, reqData, 5*time.Second)
 			require.NoError(t, err)
 
+			// The handler records after it replies, so poll rather than assume the
+			// point has landed by the time the reply arrives.
+			require.Eventually(t, func() bool {
+				return len(requestOutcomesFor(t, tc.subject)) > 0
+			}, 5*time.Second, 20*time.Millisecond, "the handler must record its point")
+
 			assert.Equal(t, []string{tc.want}, requestOutcomesFor(t, tc.subject))
 		})
 	}
@@ -172,6 +178,12 @@ func TestHandleNATSRequestReportsOutcomeForBadPayload(t *testing.T) {
 
 	_, err = nc.Request(subject, []byte("{not json"), 5*time.Second)
 	require.NoError(t, err)
+
+	// The handler records after it replies, so poll rather than assume the point
+	// has landed by the time the reply arrives.
+	require.Eventually(t, func() bool {
+		return len(requestOutcomesFor(t, subject)) > 0
+	}, 5*time.Second, 20*time.Millisecond, "the handler must record its point")
 
 	assert.Equal(t, []string{outcomeClientError}, requestOutcomesFor(t, subject))
 }

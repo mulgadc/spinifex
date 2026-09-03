@@ -23,29 +23,35 @@ const actionAttrKey = "rpc.method"
 // IDs — those belong in the accompanying log line.
 const leakKindAttrKey = "resource.kind"
 
-// fenceOutcomeAttrKey names what a node did after losing a volume lease.
-// The four FenceOutcome constants below are the whole domain, and none carries
-// a volume or node identity: those belong in the log line beside the metric.
+// fenceOutcomeAttrKey names what a node did after losing a volume lease. The
+// FenceOutcome values below are the whole domain, and none carries a volume or
+// node identity: those belong in the log line beside the metric.
 const fenceOutcomeAttrKey = "outcome"
 
-// FenceOutcomeTaken means another node held the lease, so this one gave up its
-// export. The clearest signal in the set: somewhere a volume changed hands.
-const FenceOutcomeTaken = "taken"
+// FenceOutcome is what a node did after losing a volume lease.
+type FenceOutcome string
 
-// FenceOutcomeExpired means the entry was gone or unreadable with no successor.
-// The node could not show it was the only writer, which is fenced on the same
-// terms — a node that cannot prove ownership must not keep writing.
-const FenceOutcomeExpired = "expired"
+const (
+	// FenceOutcomeTaken means another node held the lease, so this one gave up
+	// its export. The clearest signal in the set: a volume changed hands.
+	FenceOutcomeTaken FenceOutcome = "taken"
 
-// FenceOutcomeStalled means renewal could not be confirmed for long enough that
-// the server TTL was about to admit another owner. This is the self-fence, and
-// a rising rate is a NATS problem showing up as guest restarts.
-const FenceOutcomeStalled = "stalled"
+	// FenceOutcomeExpired means the entry was gone or unreadable with no
+	// successor. The node could not show it was the only writer, which is
+	// fenced on the same terms.
+	FenceOutcomeExpired FenceOutcome = "expired"
 
-// FenceOutcomeKillFailed means the export could not be torn down: nbdkit did
-// not exit. Nothing downstream is safe after this — the volume is neither
-// fenced nor released — so it is the one value here that is a page.
-const FenceOutcomeKillFailed = "kill_failed"
+	// FenceOutcomeStalled means renewal could not be confirmed for long enough
+	// that the server TTL was about to admit another owner. This is the
+	// self-fence, and a rising rate is a NATS problem showing up as guest
+	// restarts.
+	FenceOutcomeStalled FenceOutcome = "stalled"
+
+	// FenceOutcomeKillFailed means the export could not be torn down: nbdkit
+	// did not exit. Nothing downstream is safe after this -- the volume is
+	// neither fenced nor released -- so it is the one value here that is a page.
+	FenceOutcomeKillFailed FenceOutcome = "kill_failed"
+)
 
 var (
 	instrumentsOnce sync.Once
@@ -127,7 +133,7 @@ func RecordResourceLeak(ctx context.Context, kind string) {
 // else now owns, which is a correctness action with an availability cost and is
 // worth paging on. FenceOutcomeKillFailed is the urgent one: the guest was not
 // stopped, so the protection did not happen.
-func RecordVolumeFence(ctx context.Context, outcome string) {
+func RecordVolumeFence(ctx context.Context, outcome FenceOutcome) {
 	fenceOnce.Do(func() {
 		var err error
 		fenceCounter, err = otel.Meter(meterName).Int64Counter("mulga.volume.fence",
@@ -139,7 +145,7 @@ func RecordVolumeFence(ctx context.Context, outcome string) {
 	})
 	if fenceCounter != nil {
 		fenceCounter.Add(ctx, 1, metric.WithAttributeSet(
-			attribute.NewSet(attribute.String(fenceOutcomeAttrKey, outcome))))
+			attribute.NewSet(attribute.String(fenceOutcomeAttrKey, string(outcome)))))
 	}
 }
 

@@ -57,6 +57,10 @@ e2e_suite_timeout() {
     # rds serialises its DB VMs behind a 4 GiB semaphore, so its wall clock is
     # set by how long it waits for the budget, not by how long a test runs.
     rds) echo "50m" ;;
+    # diskperf runs two 16 GiB fio profiles per repetition, each on a volume it
+    # creates first. One pass is ~20 minutes on the bare-metal cell and a
+    # baseline capture at SPINIFEX_DISKPERF_REPS=3 is three times that.
+    diskperf) echo "180m" ;;
     *) echo "30m" ;;
   esac
 }

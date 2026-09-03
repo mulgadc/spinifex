@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       cells:
-        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-3, 8-10, 17-19 tofu permutation matrix, 20 baremetal, 21-22 ISO, 23 predastore throughput, 24 predastore fault injection, 25-27 service suites (eks, ecs, rds)"
+        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-3, 8-10, 17-19 tofu permutation matrix, 20 baremetal, 21-22 ISO, 23 predastore throughput, 24 predastore fault injection, 25-27 service suites (eks, ecs, rds), 28 guest disk performance"
         required: false
 
 permissions:
@@ -627,6 +627,34 @@ jobs:
       # above, matrix.cell) for free — cell-20 needs its own attrs string.
       # There's no matrix leg here, just the one fixed baremetal cell.
       otel-attrs: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=20,ci.matrix=baremetal/pxe/real-hw
+    secrets: inherit
+
+  # The guest disk-performance gate. Same bare-metal node as cell 20 and
+  # therefore queued behind it by the shared concurrency group, which is the
+  # point: perf numbers off a cell still running other suites are noise, and
+  # the availability assertions measure host responsiveness under a single
+  # tenant's load, which a co-tenant correctness suite would confound.
+  #
+  # It reimages the cluster first, like every other caller of that workflow, so
+  # it is a fresh node rather than whatever cell-20 left behind.
+  diskperf:
+    name: cell-28 (baremetal/diskperf)
+    needs: baremetal
+    if: >-
+      always() && (
+        github.event_name == 'schedule' ||
+        inputs.cells == '' ||
+        contains(format(',{0},', inputs.cells), ',28,')
+      )
+    permissions:
+      contents: read
+      statuses: write
+    uses: ./.github/workflows/e2e-baremetal.yml
+    with:
+      ref: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+      cell: "28"
+      suites: diskperf
+      otel-attrs: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=28,ci.matrix=baremetal/pxe/diskperf
     secrets: inherit
 
   # ISO cells. Unlike 1-19 these need no tofu: the harnesses run QEMU directly

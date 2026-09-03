@@ -163,9 +163,13 @@ test-build-scripts:
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
 # default `go test ./spinifex/...`. Runs with mocked AWS clients — no
 # infrastructure required, safe to run in CI without a cluster.
+#
+# diskperf/ is here for the same reason: its baseline comparison and probe
+# accounting decide whether the disk-performance gate passes, and that
+# arithmetic has to be covered off-cluster or the gate is trusted untested.
 test-harness:
 	@echo -e "\n....Running e2e harness unit tests...."
-	$(_Q)LOG_IGNORE=1 go test -tags=e2e -timeout 60s ./tests/e2e/harness/... $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test -tags=e2e -timeout 60s ./tests/e2e/harness/... ./tests/e2e/diskperf/... $(_RACEQ)
 
 # In-process integration tier: the real gateway router against embedded NATS
 # JetStream, with only the daemon-side NATS subjects stubbed.

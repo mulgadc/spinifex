@@ -334,6 +334,7 @@ func TestPeriodicResync_UndecodableRecordMarksDegraded(t *testing.T) {
 	c.periodicResync(ctx)
 
 	require.Equal(t, before+1, counterSum(t, "mulga.instancecache.resync_failures"))
+	require.True(t, c.Degraded(), "a failed resync must mark the cache degraded")
 
 	list, ready := c.List(ctx, acctA)
 	require.True(t, ready)
@@ -343,6 +344,27 @@ func TestPeriodicResync_UndecodableRecordMarksDegraded(t *testing.T) {
 	afterAge, hadAge2 := c.resyncAge()
 	require.True(t, hadAge2)
 	require.GreaterOrEqual(t, afterAge, beforeAge, "a failed resync must not refresh the last-successful-resync mark")
+}
+
+func TestDegraded_ClearedByNextSuccessfulResync(t *testing.T) {
+	c, kv, _ := newTestCache(t)
+	putRecord(t, kv, "i-1", testRecord("i-1", acctA, vm.StateRunning))
+
+	ctx := t.Context()
+	go c.Run(ctx)
+	waitForReady(t, c)
+	waitForListLen(t, c, acctA, 1)
+	require.False(t, c.Degraded(), "a cache that has never failed a sync must not report degraded")
+
+	putGarbage(t, kv, "i-bad")
+	time.Sleep(50 * time.Millisecond)
+	c.periodicResync(ctx)
+	require.True(t, c.Degraded())
+
+	require.NoError(t, kv.Delete(context.Background(), testPrefix+"i-bad"))
+	time.Sleep(50 * time.Millisecond)
+	c.periodicResync(ctx)
+	require.False(t, c.Degraded(), "the next successful resync must clear degraded")
 }
 
 func TestWatch_UndecodableUpdateLeavesExistingEntry(t *testing.T) {
@@ -645,6 +667,101 @@ func TestReplaceWatcher_OldStoppedAndJoinedBeforeNewGoesLive(t *testing.T) {
 
 	putRecord(t, kv, "i-2", testRecord("i-2", acctA, vm.StateRunning))
 	waitForListLen(t, c, acctA, 2)
+}
+
+// The four tests below drive the real freshSync/periodicResync code paths
+// end to end, landing a write via postSnapshotHook in the exact window D2a
+// exists to cover: after Snapshot has already read the record space, before
+// the buffer it fences against is drained. They call drainBuffered nowhere
+// themselves; unlike the direct-call fence tests above, they fail if the
+// watcher is not already buffering by the time the snapshot completes. A
+// short sleep inside the hook gives the already-open, already-subscribed
+// watcher time to receive and process the write before the sync continues,
+// so the event deterministically lands inside the window rather than racing
+// to land there.
+
+func TestFence_PutDuringInitialSnapshot_SurvivesInstall(t *testing.T) {
+	c, kv, _ := newTestCache(t)
+	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
+
+	c.postSnapshotHook = func() {
+		putRecord(t, kv, "i-new", testRecord("i-new", acctA, vm.StateRunning))
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	lw := c.freshSync(context.Background())
+	require.NotNil(t, lw)
+	t.Cleanup(func() { c.discardWatcher(lw) })
+
+	list, ready := c.List(context.Background(), acctA)
+	require.True(t, ready)
+	require.ElementsMatch(t, []string{"i-seed", "i-new"}, idsOf(list),
+		"a put landing during the initial snapshot must survive into the installed candidate")
+}
+
+func TestFence_DeleteDuringInitialSnapshot_RemovedFromInstall(t *testing.T) {
+	c, kv, _ := newTestCache(t)
+	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
+	putRecord(t, kv, "i-doomed", testRecord("i-doomed", acctA, vm.StateRunning))
+
+	c.postSnapshotHook = func() {
+		require.NoError(t, kv.Delete(context.Background(), testPrefix+"i-doomed"))
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	lw := c.freshSync(context.Background())
+	require.NotNil(t, lw)
+	t.Cleanup(func() { c.discardWatcher(lw) })
+
+	list, ready := c.List(context.Background(), acctA)
+	require.True(t, ready)
+	require.Equal(t, []string{"i-seed"}, idsOf(list),
+		"a delete landing during the initial snapshot must not be overwritten by the snapshot's stale copy")
+}
+
+func TestFence_PutDuringPeriodicResync_SurvivesInstall(t *testing.T) {
+	c, kv, _ := newTestCache(t)
+	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
+
+	ctx := t.Context()
+	go c.Run(ctx)
+	waitForReady(t, c)
+	waitForListLen(t, c, acctA, 1)
+
+	c.postSnapshotHook = func() {
+		putRecord(t, kv, "i-new", testRecord("i-new", acctA, vm.StateRunning))
+		time.Sleep(100 * time.Millisecond)
+	}
+	c.periodicResync(ctx)
+	c.postSnapshotHook = nil
+
+	list, ready := c.List(ctx, acctA)
+	require.True(t, ready)
+	require.ElementsMatch(t, []string{"i-seed", "i-new"}, idsOf(list),
+		"a put landing during a periodic resync's snapshot must survive into the installed candidate")
+}
+
+func TestFence_DeleteDuringPeriodicResync_RemovedFromInstall(t *testing.T) {
+	c, kv, _ := newTestCache(t)
+	putRecord(t, kv, "i-seed", testRecord("i-seed", acctA, vm.StateRunning))
+	putRecord(t, kv, "i-doomed", testRecord("i-doomed", acctA, vm.StateRunning))
+
+	ctx := t.Context()
+	go c.Run(ctx)
+	waitForReady(t, c)
+	waitForListLen(t, c, acctA, 2)
+
+	c.postSnapshotHook = func() {
+		require.NoError(t, kv.Delete(context.Background(), testPrefix+"i-doomed"))
+		time.Sleep(100 * time.Millisecond)
+	}
+	c.periodicResync(ctx)
+	c.postSnapshotHook = nil
+
+	list, ready := c.List(ctx, acctA)
+	require.True(t, ready)
+	require.Equal(t, []string{"i-seed"}, idsOf(list),
+		"a delete landing during a periodic resync's snapshot must not be overwritten by the snapshot's stale copy")
 }
 
 // --- The account index ------------------------------------------------------

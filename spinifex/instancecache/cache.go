@@ -127,8 +127,14 @@ type Cache struct {
 
 	watcherLost chan struct{}
 	lastResync  atomic.Int64 // unix nanos of the last successful sync, 0 = never
+	degraded    atomic.Bool  // true from a failed sync until the next one succeeds
 
 	metrics *cacheMetrics
+
+	// postSnapshotHook, when set, runs after Snapshot returns and before the
+	// buffer is read. Nil in production; a test seam for landing an event
+	// deterministically inside the fence's danger window.
+	postSnapshotHook func()
 }
 
 // New returns a Cache over the bucket cfg describes. Call Run to start it;
@@ -201,6 +207,14 @@ func (c *Cache) Ready() bool {
 	return c.ready
 }
 
+// Degraded reports whether the most recent sync attempt (initial, periodic,
+// or watcher-replacement) failed. The cache keeps serving its last-known
+// contents regardless, but a cache that has been degraded for a while cannot
+// be trusted about absence. Not consulted by List or Get in this phase.
+func (c *Cache) Degraded() bool {
+	return c.degraded.Load()
+}
+
 // List returns the cached instances visible to accountID and whether the
 // cache is ready to be believed about absence. IsInstanceVisibleToCaller is
 // applied after the index lookup as defence in depth: the index is a
@@ -256,6 +270,7 @@ func (c *Cache) setActive(lw *liveWatcher) {
 
 func (c *Cache) markResynced() {
 	c.lastResync.Store(time.Now().UnixNano())
+	c.degraded.Store(false)
 }
 
 // resyncAge reports how long ago the last successful sync completed. ok is
@@ -385,7 +400,7 @@ func (c *Cache) apply(entries map[string]*vm.VM, index map[string]map[string]str
 	default:
 		var rec vm.InstanceRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			c.metrics.decodeFailure(entry.Key())
+			c.metrics.decodeFailure()
 			slog.Warn("instancecache: undecodable record, keeping previous value",
 				"key", entry.Key(), "err", err)
 			return
@@ -401,6 +416,9 @@ func (c *Cache) snapshotCandidate(ctx context.Context) (map[string]*vm.VM, map[s
 	items, highWater, err := c.store.Snapshot(ctx, c.filter)
 	if err != nil {
 		return nil, nil, 0, err
+	}
+	if c.postSnapshotHook != nil {
+		c.postSnapshotHook()
 	}
 	entries := make(map[string]*vm.VM, len(items))
 	index := make(map[string]map[string]struct{})
@@ -472,6 +490,7 @@ func (c *Cache) freshSync(ctx context.Context) *liveWatcher {
 		}
 
 		c.metrics.resyncFailed()
+		c.degraded.Store(true)
 		slog.WarnContext(ctx, "instancecache: sync failed, retrying", "err", err)
 		c.discardWatcher(lw)
 		if !c.sleep(ctx) {
@@ -526,6 +545,7 @@ func (c *Cache) periodicResync(ctx context.Context) {
 	}
 	if err != nil {
 		c.metrics.resyncFailed()
+		c.degraded.Store(true)
 		slog.WarnContext(ctx, "instancecache: periodic resync failed, serving previous contents", "err", err)
 	}
 	c.goLive(lw)

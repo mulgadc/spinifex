@@ -42,7 +42,7 @@ func newCacheMetrics(c *Cache) *cacheMetrics {
 		otel.Handle(err)
 	}
 	m.decodeFailures, err = meter.Int64Counter("mulga.instancecache.decode_failures",
-		metric.WithDescription("Count of instance records that failed to decode, by key."),
+		metric.WithDescription("Count of instance records that failed to decode. The offending key is logged, not attributed, to bound cardinality."),
 		metric.WithUnit("{failure}"))
 	if err != nil {
 		otel.Handle(err)
@@ -89,11 +89,10 @@ func (m *cacheMetrics) watchReconnected() {
 	m.watchReconnects.Add(context.Background(), 1)
 }
 
-func (m *cacheMetrics) decodeFailure(key string) {
+func (m *cacheMetrics) decodeFailure() {
 	if m.decodeFailures == nil {
-		slog.Warn("instancecache: decode failure counter unavailable", "key", key)
+		slog.Warn("instancecache: decode failure counter unavailable")
 		return
 	}
-	m.decodeFailures.Add(context.Background(), 1, metric.WithAttributeSet(
-		attribute.NewSet(attribute.String("key", key))))
+	m.decodeFailures.Add(context.Background(), 1)
 }

@@ -72,11 +72,11 @@ func TestCreateVolume_Provider_FromSnapshotSendsSourceVolumeID(t *testing.T) {
 	provider := newSnapshotSourceProvider()
 	svc.SetEBSProvider(provider)
 
-	writeSnapshotMetadata(t, store, "snap-src", "vol-origin", "acct-1", 8)
+	writeSnapshotMetadata(t, store, "snap-src", "vol-origin", "000000000001", 8)
 
 	created, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		Size: aws.Int64(8), AvailabilityZone: aws.String(providerTestAZ), SnapshotId: aws.String("snap-src"),
-	}, "acct-1")
+	}, "000000000001")
 	require.NoError(t, err)
 	require.NotNil(t, created)
 
@@ -96,7 +96,7 @@ func TestCreateVolume_Provider_WithoutSnapshotSendsNoSource(t *testing.T) {
 
 	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		Size: aws.Int64(8), AvailabilityZone: aws.String(providerTestAZ),
-	}, "acct-1")
+	}, "000000000001")
 	require.NoError(t, err)
 
 	assert.Empty(t, provider.lastRequest.SourceSnapshotID)
@@ -150,7 +150,7 @@ func TestDescribeVolumes_Provider_SeesInstanceRootVolume(t *testing.T) {
 		sourceVolumeID: "vol-origin",
 	}, nil, nil, nil)
 
-	instance := &vm.VM{AccountID: "acct-1"}
+	instance := &vm.VM{AccountID: "000000000001"}
 	volumeInfos, err := instanceSvc.GenerateVolumes(context.Background(), &ec2.RunInstancesInput{
 		ImageId: aws.String("ami-1"),
 	}, instance)
@@ -161,7 +161,7 @@ func TestDescribeVolumes_Provider_SeesInstanceRootVolume(t *testing.T) {
 	volumeSvc := NewVolumeServiceImplWithStore(cfg, store, nil)
 	volumeSvc.SetEBSProvider(provider)
 
-	out, err := volumeSvc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, "acct-1")
+	out, err := volumeSvc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, "000000000001")
 	require.NoError(t, err)
 	require.Len(t, out.Volumes, 1, "the instance root volume must be visible to DescribeVolumes")
 

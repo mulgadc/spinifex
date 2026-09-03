@@ -235,11 +235,10 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// A volume predating tenancy records no owner. Refusing it would strand
-	// every pre-tenancy volume as unsnapshottable, so an absent TenantID stays
-	// open to any caller; a recorded one must match.
+	// The read is already scoped to the caller's prefix, so a returned document
+	// is the caller's by construction. The comparison stays as an assertion.
 	volume, err := s.metadata.GetVolume(ctx, accountID, volumeID)
-	if err != nil || (accountID != "" && volume.TenantID != "" && volume.TenantID != accountID) {
+	if err != nil || (accountID != "" && volume.TenantID != accountID) {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}
 	if volume.CapacityGiB == 0 {
@@ -571,7 +570,7 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 		}
 
 		// Filter by account: only return snapshots owned by the caller
-		if accountID != "" && cfg.OwnerID != "" && cfg.OwnerID != accountID {
+		if accountID != "" && cfg.OwnerID != accountID {
 			continue
 		}
 
@@ -711,7 +710,7 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 	}
 
 	// Verify ownership: caller must own the snapshot
-	if accountID != "" && cfg.OwnerID != "" && cfg.OwnerID != accountID {
+	if accountID != "" && cfg.OwnerID != accountID {
 		slog.WarnContext(ctx, "DeleteSnapshot: account does not own snapshot", "snapshotId", snapshotID, "accountID", accountID, "ownerID", cfg.OwnerID)
 		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
 	}
@@ -786,7 +785,7 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 		return nil, err
 	}
 
-	if accountID != "" && sourceCfg.OwnerID != "" && sourceCfg.OwnerID != accountID {
+	if accountID != "" && sourceCfg.OwnerID != accountID {
 		slog.WarnContext(ctx, "CopySnapshot: account does not own source snapshot", "snapshotId", sourceSnapshotID, "accountID", accountID, "ownerID", sourceCfg.OwnerID)
 		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
 	}

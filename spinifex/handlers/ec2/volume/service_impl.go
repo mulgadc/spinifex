@@ -120,6 +120,12 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	// The owning account is a key segment, so an untenanted volume has nowhere
+	// to be written. Refuse at the boundary rather than in the key builder.
+	if accountID == "" {
+		return nil, errors.New(awserrors.ErrorAuthFailure)
+	}
+
 	// Validate volume type: only gp3 supported (or empty defaults to gp3)
 	if input.VolumeType != nil && *input.VolumeType != "" && *input.VolumeType != types.VolumeTypeGP3 {
 		return nil, errors.New(awserrors.ErrorUnknownVolumeType)

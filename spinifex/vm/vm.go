@@ -113,8 +113,8 @@ type VM struct {
 	// Health tracks crash detection and auto-restart state
 	Health InstanceHealthState `json:"health"`
 
-	// AccountID is the AWS account that owns this instance. Empty for legacy
-	// resources visible only to the root account.
+	// AccountID is the AWS account that owns this instance, and is the account
+	// its volume documents are keyed under.
 	AccountID string `json:"account_id,omitempty"`
 
 	// VPC networking: ENI attached to this instance (set by RunInstances when VPC mode is active)

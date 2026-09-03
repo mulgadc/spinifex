@@ -26,10 +26,10 @@ func TestVolumeVisibleTo(t *testing.T) {
 			expected:        false,
 		},
 		{
-			name:            "untenanted volume visible to root",
+			name:            "untenanted volume hidden from root",
 			tenantID:        "",
 			callerAccountID: utils.GlobalAccountID,
-			expected:        true,
+			expected:        false,
 		},
 		{
 			name:            "untenanted volume hidden from non-root tenant",

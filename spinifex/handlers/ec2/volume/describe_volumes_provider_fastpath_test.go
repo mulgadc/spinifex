@@ -21,10 +21,10 @@ func TestDescribeVolumes_Provider_FastPath_SingleID(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	ctx := context.Background()
 
-	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "000000000001")
 	require.NoError(t, err)
 
-	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "000000000001")
 	require.NoError(t, err)
 	require.Len(t, out.Volumes, 1)
 	assert.Equal(t, aws.StringValue(vol.VolumeId), aws.StringValue(out.Volumes[0].VolumeId))
@@ -40,10 +40,10 @@ func TestDescribeVolumes_Provider_FastPath_CrossTenantIsNotFound(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	ctx := context.Background()
 
-	otherTenantVol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-2")
+	otherTenantVol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "000000000002")
 	require.NoError(t, err)
 
-	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{otherTenantVol.VolumeId}}, "acct-1")
+	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{otherTenantVol.VolumeId}}, "000000000001")
 	require.Error(t, err)
 	assert.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
 	assert.Nil(t, out)
@@ -56,7 +56,7 @@ func TestDescribeVolumes_Provider_FastPath_UnknownIDIsNotFound(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	ctx := context.Background()
 
-	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{aws.String("vol-doesnotexist0")}}, "acct-1")
+	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{aws.String("vol-doesnotexist0")}}, "000000000001")
 	require.Error(t, err)
 	assert.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
 	assert.Nil(t, out)
@@ -70,14 +70,14 @@ func TestDescribeVolumes_Provider_FastPath_FiltersApply(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	ctx := context.Background()
 
-	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "000000000001")
 	require.NoError(t, err)
 
 	t.Run("matching filter keeps the volume", func(t *testing.T) {
 		out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 			VolumeIds: []*string{vol.VolumeId},
 			Filters:   []*ec2.Filter{{Name: aws.String("size"), Values: []*string{aws.String("8")}}},
-		}, "acct-1")
+		}, "000000000001")
 		require.NoError(t, err)
 		require.Len(t, out.Volumes, 1)
 	})
@@ -86,7 +86,7 @@ func TestDescribeVolumes_Provider_FastPath_FiltersApply(t *testing.T) {
 		out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 			VolumeIds: []*string{vol.VolumeId},
 			Filters:   []*ec2.Filter{{Name: aws.String("size"), Values: []*string{aws.String("16")}}},
-		}, "acct-1")
+		}, "000000000001")
 		require.NoError(t, err)
 		assert.Empty(t, out.Volumes)
 	})
@@ -99,12 +99,12 @@ func TestDescribeVolumes_Provider_FastPath_MultipleIDs(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	ctx := context.Background()
 
-	volA, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	volA, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "000000000001")
 	require.NoError(t, err)
-	volB, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(16), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	volB, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(16), AvailabilityZone: aws.String("ap-southeast-2a")}, "000000000001")
 	require.NoError(t, err)
 
-	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{volA.VolumeId, volB.VolumeId}}, "acct-1")
+	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{volA.VolumeId, volB.VolumeId}}, "000000000001")
 	require.NoError(t, err)
 	require.Len(t, out.Volumes, 2)
 
@@ -123,12 +123,12 @@ func TestDescribeVolumes_Provider_NoIDs_StillEnumerates(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	ctx := context.Background()
 
-	volA, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	volA, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "000000000001")
 	require.NoError(t, err)
-	_, err = svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(16), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-2")
+	_, err = svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(16), AvailabilityZone: aws.String("ap-southeast-2a")}, "000000000002")
 	require.NoError(t, err)
 
-	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, "acct-1")
+	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, "000000000001")
 	require.NoError(t, err)
 	require.Len(t, out.Volumes, 1)
 	assert.Equal(t, aws.StringValue(volA.VolumeId), aws.StringValue(out.Volumes[0].VolumeId))

@@ -29,7 +29,7 @@ func TestGetVolumeMetadata_Provider_ResolvesProviderCreatedVolume(t *testing.T) 
 	volumeID := "vol-provider00001"
 	require.NoError(t, svc.metadata.PutVolume(context.Background(), ebsmetadata.Volume{
 		VolumeID:         volumeID,
-		TenantID:         "acct-provider",
+		TenantID:         "000000000012",
 		CapacityGiB:      8,
 		State:            "available",
 		CreatedAt:        time.Now(),
@@ -39,10 +39,10 @@ func TestGetVolumeMetadata_Provider_ResolvesProviderCreatedVolume(t *testing.T) 
 		Encrypted:        true,
 	}))
 
-	meta, err := svc.GetVolumeMetadata("acct-provider", volumeID)
+	meta, err := svc.GetVolumeMetadata("000000000012", volumeID)
 	require.NoError(t, err, "a provider-created volume must resolve without a legacy config.json")
 	assert.Equal(t, volumeID, meta.VolumeID)
-	assert.Equal(t, "acct-provider", meta.TenantID)
+	assert.Equal(t, "000000000012", meta.TenantID)
 	assert.Equal(t, "available", meta.State)
 	assert.Equal(t, "ap-southeast-2a", meta.AvailabilityZone)
 	assert.Equal(t, uint64(8), meta.CapacityGiB)
@@ -56,13 +56,13 @@ func TestGetVolumeMetadata_Provider_ReflectsAttachmentState(t *testing.T) {
 
 	volumeID := "vol-provider00002"
 	require.NoError(t, svc.metadata.PutVolume(context.Background(), ebsmetadata.Volume{
-		VolumeID: volumeID, TenantID: "acct-provider", CapacityGiB: 1,
+		VolumeID: volumeID, TenantID: "000000000012", CapacityGiB: 1,
 		State: "available", AvailabilityZone: "ap-southeast-2a", VolumeType: "gp3",
 	}))
 
-	require.NoError(t, svc.UpdateVolumeState("acct-provider", volumeID, "in-use", "i-0123456789abcdef0", "/dev/sdf"))
+	require.NoError(t, svc.UpdateVolumeState("000000000012", volumeID, "in-use", "i-0123456789abcdef0", "/dev/sdf"))
 
-	meta, err := svc.GetVolumeMetadata("acct-provider", volumeID)
+	meta, err := svc.GetVolumeMetadata("000000000012", volumeID)
 	require.NoError(t, err)
 	assert.Equal(t, "in-use", meta.State)
 	assert.Equal(t, "i-0123456789abcdef0", meta.AttachedInstance)

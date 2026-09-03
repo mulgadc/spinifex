@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // SchemaVersion is the document's field generation, and moves independently of
@@ -89,15 +91,28 @@ type AMI struct {
 // one account's prefix cannot reach another account's document. accountID comes
 // from the document's own TenantID, never from the caller.
 func VolumeKey(accountID, volumeID string) (string, error) {
-	if !validSegment(accountID) {
-		return "", fmt.Errorf("invalid EBS metadata account ID %q", accountID)
-	}
-	return key("volumes/"+accountID, volumeID)
+	return partitionedKey("volumes", accountID, volumeID)
+}
+
+// SnapshotKey keys a snapshot document under its owning account, taken from the
+// document's own OwnerID rather than from the caller.
+func SnapshotKey(accountID, snapshotID string) (string, error) {
+	return partitionedKey("snapshots", accountID, snapshotID)
 }
 
 // AMIKey is unpartitioned: an AMI's owner is an alias rather than an account,
 // and system images are visible to every account.
 func AMIKey(imageID string) (string, error) { return key("amis", imageID) }
+
+// partitionedKey refuses an owning account that is not an account ID, so an
+// untenanted document cannot be written, cannot exist, and never has to be
+// read. A transposed (id, account) pair fails here too.
+func partitionedKey(kind, accountID, id string) (string, error) {
+	if !utils.IsAccountID(accountID) {
+		return "", fmt.Errorf("invalid EBS metadata account ID %q", accountID)
+	}
+	return key(kind+"/"+accountID, id)
+}
 
 func key(kind, id string) (string, error) {
 	if !validSegment(id) {

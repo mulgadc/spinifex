@@ -32,11 +32,8 @@ func checkInstanceOwnership(msg *nats.Msg, instanceID, ownerAccountID string) bo
 	return true
 }
 
-// volumeVisibleTo reports whether callerAccountID may access a volume.
-// Empty tenantID is root-only to prevent untenanted volumes from leaking.
+// volumeVisibleTo reports whether callerAccountID may access a volume. An
+// untenanted volume cannot be written, so an empty tenantID matches no caller.
 func volumeVisibleTo(tenantID, callerAccountID string) bool {
-	if tenantID == "" {
-		return callerAccountID == utils.GlobalAccountID
-	}
-	return callerAccountID == tenantID
+	return tenantID != "" && callerAccountID == tenantID
 }

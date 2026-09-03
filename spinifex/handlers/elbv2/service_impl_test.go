@@ -2661,6 +2661,45 @@ func TestUpdateStoredConfig_MissingTargetGroup(t *testing.T) {
 
 // --- Attribute tests ---
 
+// TestDefaultTargetGroupAttributes_CoversTerraformKeys guards the full
+// TargetGroupAttribute key set from the ELBv2 API reference. A missing key
+// fails the whole ModifyTargetGroupAttributes call with ValidationError.
+func TestDefaultTargetGroupAttributes_CoversTerraformKeys(t *testing.T) {
+	t.Parallel()
+	attrs := DefaultTargetGroupAttributes()
+
+	expected := map[string]string{
+		"deregistration_delay.timeout_seconds":                                           "300",
+		"stickiness.enabled":                                                             "false",
+		"stickiness.type":                                                                "lb_cookie",
+		"stickiness.lb_cookie.duration_seconds":                                          "86400",
+		"stickiness.app_cookie.cookie_name":                                              "",
+		"stickiness.app_cookie.duration_seconds":                                         "86400",
+		"load_balancing.cross_zone.enabled":                                              "use_load_balancer_configuration",
+		"load_balancing.algorithm.type":                                                  "round_robin",
+		"load_balancing.algorithm.anomaly_mitigation":                                    "off",
+		"slow_start.duration_seconds":                                                    "0",
+		"lambda.multi_value_headers.enabled":                                             "false",
+		"target_group_health.dns_failover.minimum_healthy_targets.count":                 "1",
+		"target_group_health.dns_failover.minimum_healthy_targets.percentage":            "off",
+		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.count":      "1",
+		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.percentage": "off",
+		"proxy_protocol_v2.enabled":                                                      "false",
+		"deregistration_delay.connection_termination.enabled":                            "false",
+		"preserve_client_ip.enabled":                                                     "false",
+		"target_health_state.unhealthy.connection_termination.enabled":                   "true",
+		"target_health_state.unhealthy.draining_interval_seconds":                        "0",
+		"target_failover.on_deregistration":                                              "no_rebalance",
+		"target_failover.on_unhealthy":                                                   "no_rebalance",
+	}
+
+	for k, v := range expected {
+		got, ok := attrs[k]
+		assert.True(t, ok, "target group default attributes missing key %q — terraform will hit ValidationError", k)
+		assert.Equal(t, v, got, "target group default value mismatch for key %s", k)
+	}
+}
+
 func TestDescribeTargetGroupAttributes_Defaults(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
@@ -2746,6 +2785,10 @@ func TestDefaultLoadBalancerAttributes_ALBCoversTerraformKeys(t *testing.T) {
 		"connection_logs.s3.enabled":                               "false",
 		"connection_logs.s3.bucket":                                "",
 		"connection_logs.s3.prefix":                                "",
+		"health_check_logs.s3.enabled":                             "false",
+		"health_check_logs.s3.bucket":                              "",
+		"health_check_logs.s3.prefix":                              "",
+		"ipv6.deny_all_igw_traffic":                                "false",
 		"idle_timeout.timeout_seconds":                             "60",
 		"client_keep_alive.seconds":                                "3600",
 		"routing.http.desync_mitigation_mode":                      "defensive",
@@ -2773,14 +2816,15 @@ func TestDefaultLoadBalancerAttributes_NLBCoversExpectedKeys(t *testing.T) {
 	attrs := DefaultLoadBalancerAttributes(LoadBalancerTypeNetwork)
 
 	expected := map[string]string{
-		"deletion_protection.enabled":       "false",
-		"load_balancing.cross_zone.enabled": "false",
-		"access_logs.s3.enabled":            "false",
-		"access_logs.s3.bucket":             "",
-		"access_logs.s3.prefix":             "",
-		"dns_record.client_routing_policy":  "any_availability_zone",
-		"ipv6.deny_all_igw_traffic":         "false",
-		"zonal_shift.config.enabled":        "false",
+		"deletion_protection.enabled":            "false",
+		"load_balancing.cross_zone.enabled":      "false",
+		"access_logs.s3.enabled":                 "false",
+		"access_logs.s3.bucket":                  "",
+		"access_logs.s3.prefix":                  "",
+		"dns_record.client_routing_policy":       "any_availability_zone",
+		"ipv6.deny_all_igw_traffic":              "false",
+		"zonal_shift.config.enabled":             "false",
+		"secondary_ips.auto_assigned.per_subnet": "0",
 	}
 
 	for k, v := range expected {
@@ -2812,6 +2856,9 @@ func TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey(t *testing.T) {
 		LoadBalancerArn: arn,
 		Attributes: []*elbv2.LoadBalancerAttribute{
 			{Key: aws.String("connection_logs.s3.enabled"), Value: aws.String("false")},
+			{Key: aws.String("health_check_logs.s3.enabled"), Value: aws.String("false")},
+			{Key: aws.String("health_check_logs.s3.bucket"), Value: aws.String("")},
+			{Key: aws.String("health_check_logs.s3.prefix"), Value: aws.String("")},
 			{Key: aws.String("routing.http.desync_mitigation_mode"), Value: aws.String("defensive")},
 			{Key: aws.String("waf.fail_open.enabled"), Value: aws.String("false")},
 			{Key: aws.String("zonal_shift.config.enabled"), Value: aws.String("false")},

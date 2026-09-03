@@ -178,6 +178,12 @@ type Config struct {
 	// select the production defaults.
 	loadStateRetryAttempts  int
 	loadStateRetryBaseDelay time.Duration
+	recoveryAttempts        int
+	recoveryBackoff         time.Duration
+
+	// procRoot is where process scans look. Empty means /proc; tests point it
+	// at a fabricated directory.
+	procRoot string
 
 	// sealVolume overrides how a detached volume is sealed to predastore.
 	// Nil means sealVolumeVB, the real seal. Tests that need a seal to FAIL
@@ -258,6 +264,28 @@ func (cfg *Config) loadStateRetryPolicy() (int, time.Duration) {
 		baseDelay = defaultLoadStateRetryBaseDelay
 	}
 	return attempts, baseDelay
+}
+
+// recoveryBuildPolicy is how hard recovery tries to build a survivor's VB.
+// Zero values select the production defaults.
+func (cfg *Config) recoveryBuildPolicy() (int, time.Duration) {
+	attempts := cfg.recoveryAttempts
+	if attempts <= 0 {
+		attempts = defaultRecoveryAttempts
+	}
+	backoff := cfg.recoveryBackoff
+	if backoff <= 0 {
+		backoff = defaultRecoveryBackoff
+	}
+	return attempts, backoff
+}
+
+// procScanRoot is the directory process scans walk, defaulting to /proc.
+func (cfg *Config) procScanRoot() string {
+	if cfg.procRoot == "" {
+		return "/proc"
+	}
+	return cfg.procRoot
 }
 
 type Service struct {

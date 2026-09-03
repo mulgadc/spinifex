@@ -68,6 +68,9 @@ type EBSUnMountResponse struct {
 	// after a request that timed out client-side but completed server-side).
 	// The caller treats this as a successful, idempotent seal.
 	NotFound bool `json:"NotFound"`
+	// Reaped signals the handler found and killed an export for this volume
+	// that had no registry entry, which is a leak whatever left it behind.
+	Reaped bool `json:"Reaped,omitempty"`
 }
 
 type EBSSyncRequest struct {

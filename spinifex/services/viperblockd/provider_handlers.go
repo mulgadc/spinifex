@@ -1687,10 +1687,17 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 	}
 
 	if matchIdx < 0 {
+		// No registry entry, but the export can still be live: recovery gives
+		// up on a survivor it could not adopt, and nothing else ever reaps it.
+		// Unmount is the point the volume is going away, so an nbdkit this
+		// daemon owns for this volume is a leak whatever left it behind.
+		reaped := reapUnregisteredNbdkit(ctx, cfg, volumeName)
+
 		ebsResponse = types.EBSUnMountResponse{
 			Volume:   volumeName,
 			Error:    fmt.Sprintf("Volume %s not found", volumeName),
 			NotFound: true,
+			Reaped:   reaped,
 		}
 	}
 

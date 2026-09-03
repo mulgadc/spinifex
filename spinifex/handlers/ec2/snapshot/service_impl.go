@@ -645,6 +645,10 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	// A key the sweep could not delete has to keep the document alive. The
+	// listing no longer enumerates snap- prefixes, so deleting the document over
+	// surviving chunks strands them where nothing can see or reclaim them.
+	var sweepErr error
 	for _, obj := range objects {
 		if obj == nil || obj.Key == nil {
 			continue
@@ -654,8 +658,14 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 			Key:    obj.Key,
 		})
 		if err != nil {
-			slog.WarnContext(ctx, "DeleteSnapshot failed to delete object", "key", *obj.Key, "err", err)
+			slog.ErrorContext(ctx, "DeleteSnapshot failed to delete object", "key", *obj.Key, "err", err)
+			sweepErr = errors.Join(sweepErr, err)
 		}
+	}
+	if sweepErr != nil {
+		slog.ErrorContext(ctx, "DeleteSnapshot leaving the document in place after an incomplete sweep",
+			"snapshotId", snapshotID, "err", sweepErr)
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// The document no longer sits inside the swept prefix, so it has to go

@@ -31,9 +31,3 @@ func checkInstanceOwnership(msg *nats.Msg, instanceID, ownerAccountID string) bo
 	}
 	return true
 }
-
-// volumeVisibleTo reports whether callerAccountID may access a volume. An
-// untenanted volume cannot be written, so an empty tenantID matches no caller.
-func volumeVisibleTo(tenantID, callerAccountID string) bool {
-	return tenantID != "" && callerAccountID == tenantID
-}

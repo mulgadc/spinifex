@@ -129,8 +129,10 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 
 	// Pass 1: collect derived snaps (CopyImage of this AMI writes a snap whose
 	// VolumeID points back at the source AMI ID). Whole-cluster: a copy made by
-	// any account still pins this AMI's blocks.
-	snapDocs, err := ebsmetadata.NewStore(store, bucket).ListAllSnapshots(context.Background())
+	// any account still pins this AMI's blocks. Strict: this answer gates
+	// deleting those blocks, and a document that failed to read is not evidence
+	// that no copy depends on them.
+	snapDocs, err := ebsmetadata.NewStore(store, bucket).ListAllSnapshotsStrict(context.Background())
 	if err != nil {
 		return Dependents{}, fmt.Errorf("list ebsmetadata snapshots: %w", err)
 	}
@@ -157,8 +159,9 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 	// Pass 2: volumes whose SnapshotID matches. The ebsmetadata documents are
 	// the whole fleet — a volume with blocks but no document does not exist as
 	// far as the control plane is concerned — and they carry SnapshotID
-	// already, so no second read per volume is needed.
-	volDocs, err := ebsmetadata.NewStore(store, bucket).ListAllVolumes(context.Background())
+	// already, so no second read per volume is needed. Strict for the same
+	// reason as pass 1.
+	volDocs, err := ebsmetadata.NewStore(store, bucket).ListAllVolumesStrict(context.Background())
 	if err != nil {
 		return Dependents{}, fmt.Errorf("list ebsmetadata volumes: %w", err)
 	}

@@ -133,15 +133,12 @@ func partitionedKey(kind, accountID, id string) (string, error) {
 	return key(kind+"/"+accountID, id)
 }
 
+// key rejects an ID that would escape or rename its own path segment.
 func key(kind, id string) (string, error) {
-	if !validSegment(id) {
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, "/\\") {
 		return "", fmt.Errorf("invalid EBS metadata ID %q", id)
 	}
 	return "spinifex/ebsmetadata/v2/" + kind + "/" + id + ".json", nil
-}
-
-func validSegment(s string) bool {
-	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, "/\\")
 }
 
 func MarshalVolume(volume Volume) ([]byte, error) {

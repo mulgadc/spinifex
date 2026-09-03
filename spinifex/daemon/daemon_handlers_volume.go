@@ -50,7 +50,10 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 		return respondErrorOutcome(msg, awserrors.ErrorInvalidVolumeNotFound)
 	}
 
-	if !volumeVisibleTo(volMeta.TenantID, callerAccountID) {
+	// The read was keyed on the caller's account, so the document is theirs by
+	// construction and an empty caller never got this far. The comparison stays
+	// as an assertion.
+	if volMeta.TenantID != callerAccountID {
 		slog.WarnContext(ctx, "AttachVolume: account does not own volume",
 			"volumeId", volumeID,
 			"callerAccount", callerAccountID,

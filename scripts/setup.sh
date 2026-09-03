@@ -371,7 +371,16 @@ table inet spinifex_filter {
         # here. Without this, cloud-init, instance-role credentials and all
         # guest DNS break. The ports exist only while instances run, so this
         # matches the prefix rather than an enumerated list.
-        iifname "ime-*" accept
+        #
+        # Scoped to the two link-local endpoints and their ports, not a blanket
+        # accept: the OVS demux delivers any guest packet to 169.254.169.254/.253
+        # onto an ime-* port regardless of L4 port, so `iifname "ime-*" accept`
+        # would expose every wildcard-bound host service (sshd, the AWS gateway,
+        # northstar, the UI) to any tenant. IMDS is HTTP on .254:80; VPC DNS is
+        # 53 on .253. Everything else on these ports falls through to policy drop.
+        iifname "ime-*" ip daddr 169.254.169.254 tcp dport 80 accept
+        iifname "ime-*" ip daddr 169.254.169.253 udp dport 53 accept
+        iifname "ime-*" ip daddr 169.254.169.253 tcp dport 53 accept
 
         # PMTUD is not optional under a Geneve overlay.
         icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } accept

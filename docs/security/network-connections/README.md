@@ -102,6 +102,7 @@ behavior in other words.
 | 5300 | northstar | DNS (UDP + TCP) | Cluster | Forward target for every node's per-instance DNS shim, dialled cross-node. Binds the wildcard by design. | None — restrict by firewall |
 | 6660 | predastore (blob node) | QUIC / UDP | Cluster | Erasure-coded object shard transport between hosts. Multi-node clusters only — see *Predastore ports* below. | TLS 1.3, server certificate verified against the cluster CA |
 | 7660 | predastore (meta node) | QUIC / UDP | Cluster | Raft consensus over global state — buckets and the object index — between hosts. Multi-node clusters only. | TLS 1.3, server certificate verified against the cluster CA |
+| 8660 | predastore (admin) | HTTP | Cluster | `/healthz` and `/readyz`. Readiness names the blob peers a gate cannot reach, so it must not face the WAN. Binds the host's cluster `bind_addr`, never the wildcard. | None — unauthenticated by design; restrict by firewall |
 | 6641 | OVN Northbound DB (client) | OVSDB/TCP | Cluster | Logical network topology consumed by vpcd. Binds `127.0.0.1` plus the node's lan-plane address (`--lan-addr`), never the wildcard address. On a node with no separate lan plane that address is the public one, and a host firewall is the only remaining control. | Cluster network only; TLS planned |
 | 6642 | OVN Southbound DB (client) | OVSDB/TCP | Cluster | Chassis / port / MAC binding state. Binds `127.0.0.1` plus the node's lan-plane address (`--lan-addr`), never the wildcard address. On a node with no separate lan plane that address is the public one, and a host firewall is the only remaining control. | Cluster network only; TLS planned |
 | 6643 | OVN Northbound DB (RAFT) | OVSDB/TCP | Cluster | NB database RAFT replication between the 3 quorum nodes | Cluster network only; TLS planned |
@@ -207,7 +208,7 @@ table inet spinifex_filter {
 
     # Cluster, from peer nodes only. Replace with your nodes' lan-plane
     # addresses — a CIDR does not generalise to nodes on different subnets.
-    ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644 } accept
+    ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
     ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } udp dport { 5300, 6660, 7660 } accept
 
     # Encap, from peer chassis only. Replace with your nodes' vpc-plane

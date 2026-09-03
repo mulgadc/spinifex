@@ -412,8 +412,10 @@ table inet spinifex_filter {
         # than an interface or a CIDR. 4432 stays here rather than joining the
         # public rule above: outside formation it is the daemon cluster manager,
         # whose /health and /local/* routes report node topology, service
-        # inventory and running instances to anyone who asks.
-        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644 } accept
+        # inventory and running instances to anyone who asks. 8660 is
+        # predastore's unauthenticated /healthz and /readyz, which name the
+        # peers a gate cannot reach, so it belongs here for the same reason.
+        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
         ip saddr $spinifex_peers udp dport { 5300, 6660, 7660 } accept
 
         # Encap plane, peer-scoped: Geneve, IKE, NAT-T and ESP. Geneve is a

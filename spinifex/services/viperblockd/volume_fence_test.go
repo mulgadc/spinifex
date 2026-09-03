@@ -174,15 +174,6 @@ func TestVolumeFence_AlreadyUnmountedIsNotAnError(t *testing.T) {
 	cfg.fenceVolume(t.Context(), "vol-fencenotmounted", "node-b", "taken")
 }
 
-// TestVolumeFencedSubject_IsNodeAddressed pins the routing. A fenced guest is on
-// the node that lost the volume, so a subject without the node in it would reach
-// daemons with nothing to stop and, on a queue group, miss the one that has.
-func TestVolumeFencedSubject_IsNodeAddressed(t *testing.T) {
-	assert.Equal(t, "ebs.bottlebrush.fenced", VolumeFencedSubject("bottlebrush"))
-	assert.Equal(t, "ebs.fenced", VolumeFencedSubject(""),
-		"a single-node daemon has no node name, and still has to hear its own fences")
-}
-
 // TestUnmountVolume_RefusesToSealUnderALiveWriter is the unmount side of the
 // same ordering. The seal rewrites the directory nbdkit writes, so a kill that
 // did not take makes it a concurrent write to that directory — and the seal

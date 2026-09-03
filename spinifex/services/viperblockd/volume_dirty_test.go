@@ -6,6 +6,7 @@ package viperblockd
 import (
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -256,7 +257,7 @@ func TestVolumeDirty_ListReportsTheHolder(t *testing.T) {
 	dirty := newTestDirty(t, natsURL, "node-a")
 	require.NoError(t, dirty.mark(t.Context(), "vol-dirtylisted", 1, "seal volume: predastore unreachable"))
 
-	unsealed, err := ListUnsealedVolumes(t.Context(), nc)
+	unsealed, err := vbwire.ListUnsealedVolumes(t.Context(), nc)
 	require.NoError(t, err)
 	require.Len(t, unsealed, 1)
 	assert.Equal(t, "vol-dirtylisted", unsealed[0].VolumeID)

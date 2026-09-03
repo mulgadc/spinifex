@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
+	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -20,7 +20,7 @@ func (d *Daemon) handleVolumeFenced(msg *nats.Msg) string {
 	ctx, span := utils.StartConsumerSpan(msg)
 	defer span.End()
 
-	var event viperblockd.VolumeFencedEvent
+	var event vbwire.VolumeFencedEvent
 	if err := json.Unmarshal(msg.Data, &event); err != nil {
 		slog.ErrorContext(ctx, "volume fenced: bad event", "err", err)
 		return outcomeError

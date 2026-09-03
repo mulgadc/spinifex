@@ -9,37 +9,10 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
-
-// volumeDirtyBucket names the volumes whose writes are not confirmed to have
-// reached the backend, so the node holding them is still known after that node
-// is gone.
-//
-// Deliberately no TTL. The volume lease answers "who is writing this right now"
-// and expires with its holder; this answers "whose copy is ahead of the
-// backend", which has to outlive the holder to be worth anything.
-//
-// It is a placement input, not a gate. Instance start already prefers the node
-// that last ran the instance and falls back after a window, and refusing the
-// fallback here would trade a rare data-loss risk for a volume that cannot run
-// anywhere.
-const volumeDirtyBucket = "VIPERBLOCK_VOLUME_DIRTY"
-
-// volumeDirtyRecord is what a node publishes about writes the backend may not
-// have. Reason says how it got that way, so an operator reading a takeover
-// warning does not have to correlate journals across nodes.
-//
-// Generation is the lease revision the writer held. It orders two nodes' claims
-// on one volume, which is the whole reason a returning node cannot quietly
-// overwrite or clear a marker that has moved on without it.
-type volumeDirtyRecord struct {
-	Owner      string    `json:"owner"`
-	Generation uint64    `json:"generation"`
-	Since      time.Time `json:"since"`
-	Reason     string    `json:"reason"`
-}
 
 // errDirtyMarkerSuperseded reports a write refused because the marker names a
 // later generation. The caller holds a lease it no longer owns.
@@ -60,7 +33,7 @@ func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string) (*volumeDi
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
 	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:      volumeDirtyBucket,
+		Bucket:      vbwire.DirtyBucket,
 		Description: "volumes whose last seal failed, keyed by volume, naming the node holding the current copy",
 		History:     1,
 	})
@@ -81,7 +54,7 @@ func (d *volumeDirty) mark(ctx context.Context, volumeName string, generation ui
 	if !volumeLeaseKeyPattern.MatchString(volumeName) {
 		return fmt.Errorf("volume name %q cannot be a dirty key", volumeName)
 	}
-	payload, err := json.Marshal(volumeDirtyRecord{
+	payload, err := json.Marshal(vbwire.DirtyRecord{
 		Owner:      d.owner,
 		Generation: generation,
 		Since:      time.Now().UTC(),
@@ -102,7 +75,7 @@ func (d *volumeDirty) mark(ctx context.Context, volumeName string, generation ui
 		return fmt.Errorf("read dirty mark on %s: %w", volumeName, err)
 	}
 
-	var current volumeDirtyRecord
+	var current vbwire.DirtyRecord
 	if err := json.Unmarshal(entry.Value(), &current); err == nil && current.Generation > generation {
 		return fmt.Errorf("%w: %s holds generation %d, this node has %d",
 			errDirtyMarkerSuperseded, current.Owner, current.Generation, generation)
@@ -132,7 +105,7 @@ func (d *volumeDirty) clear(ctx context.Context, volumeName string, generation u
 		return fmt.Errorf("read dirty mark on %s: %w", volumeName, err)
 	}
 
-	var current volumeDirtyRecord
+	var current vbwire.DirtyRecord
 	if err := json.Unmarshal(entry.Value(), &current); err != nil {
 		return fmt.Errorf("unreadable dirty mark on %s: %w", volumeName, err)
 	}
@@ -163,18 +136,18 @@ func (d *volumeDirty) purge(ctx context.Context, volumeName string) error {
 // holder returns the record for volumeName and whether one exists. An entry
 // that cannot be read is reported as absent: refusing every mount because the
 // bucket is unreadable would convert a degraded cluster into a stopped one.
-func (d *volumeDirty) holder(ctx context.Context, volumeName string) (volumeDirtyRecord, bool) {
+func (d *volumeDirty) holder(ctx context.Context, volumeName string) (vbwire.DirtyRecord, bool) {
 	entry, err := d.kv.Get(ctx, volumeName)
 	if err != nil {
 		if !errors.Is(err, jetstream.ErrKeyNotFound) {
 			slog.Warn("volume dirty: could not read marker", "volume", volumeName, "err", err)
 		}
-		return volumeDirtyRecord{}, false
+		return vbwire.DirtyRecord{}, false
 	}
-	var record volumeDirtyRecord
+	var record vbwire.DirtyRecord
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
 		slog.Warn("volume dirty: unreadable marker", "volume", volumeName, "err", err)
-		return volumeDirtyRecord{}, false
+		return vbwire.DirtyRecord{}, false
 	}
 	return record, true
 }
@@ -262,70 +235,4 @@ func (cfg *Config) reportVolumeTakeover(ctx context.Context, volumeName string, 
 	reason := fmt.Sprintf("took over from %s, which held unsealed writes since %s (%s)",
 		record.Owner, record.Since.Format(time.RFC3339), record.Reason)
 	return true, cfg.markVolumeDirty(ctx, volumeName, generation, reason)
-}
-
-// UnsealedVolume reports a volume whose writes are not confirmed to have
-// reached the backend, and which node holds them.
-type UnsealedVolume struct {
-	VolumeID string
-	Owner    string
-	Since    time.Time
-	Reason   string
-}
-
-// bindDirtyBucket opens the dirty bucket read-only for an operator tool. It does
-// not create the bucket: a cluster where no volume has ever been opened has no
-// bucket, and reporting that as an error would read as a fault.
-func bindDirtyBucket(ctx context.Context, nc *nats.Conn) (jetstream.KeyValue, error) {
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
-	}
-	kv, err := js.KeyValue(ctx, volumeDirtyBucket)
-	if errors.Is(err, jetstream.ErrBucketNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("volume dirty bucket: %w", err)
-	}
-	return kv, nil
-}
-
-// ListUnsealedVolumes reports every volume a node holds writes for that the
-// backend may not have.
-//
-// Starting one elsewhere is allowed and preferred over an instance that cannot
-// run, but it opens from the last checkpoint that did reach the backend. This
-// is the list of volumes where that trade would cost something.
-func ListUnsealedVolumes(ctx context.Context, nc *nats.Conn) ([]UnsealedVolume, error) {
-	kv, err := bindDirtyBucket(ctx, nc)
-	if err != nil || kv == nil {
-		return nil, err
-	}
-	keys, err := kv.Keys(ctx)
-	if errors.Is(err, jetstream.ErrNoKeysFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("list unsealed volumes: %w", err)
-	}
-
-	unsealed := make([]UnsealedVolume, 0, len(keys))
-	for _, key := range keys {
-		entry, err := kv.Get(ctx, key)
-		if err != nil {
-			continue
-		}
-		var record volumeDirtyRecord
-		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			// Something holds writes for this volume even if the record cannot
-			// be read, so report it rather than hide it.
-			unsealed = append(unsealed, UnsealedVolume{VolumeID: key, Reason: "marker is unreadable"})
-			continue
-		}
-		unsealed = append(unsealed, UnsealedVolume{
-			VolumeID: key, Owner: record.Owner, Since: record.Since, Reason: record.Reason,
-		})
-	}
-	return unsealed, nil
 }

@@ -40,7 +40,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/hostdns"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
+	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -3685,7 +3685,7 @@ func runVolumesUnsealedCmd(_ *cobra.Command, _ []string) {
 	}
 	defer nc.Close()
 
-	unsealed, err := viperblockd.ListUnsealedVolumes(context.Background(), nc)
+	unsealed, err := vbwire.ListUnsealedVolumes(context.Background(), nc)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Could not read the unsealed volumes:", err)
 		os.Exit(1)

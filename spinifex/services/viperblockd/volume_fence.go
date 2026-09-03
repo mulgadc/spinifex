@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -29,26 +30,6 @@ import (
 // for an uninterruptible sleep in the storage path; short enough that a fence
 // that will never complete is reported rather than waited on.
 const fenceKillTimeout = 30 * time.Second
-
-// VolumeFencedSubject is where a fenced volume is announced so the daemon on
-// this node can stop the guest that was using it. Node-addressed: the guest is
-// local, and every other node's daemon has nothing to do about it.
-func VolumeFencedSubject(node string) string {
-	if node == "" {
-		return "ebs.fenced"
-	}
-	return "ebs." + node + ".fenced"
-}
-
-// VolumeFencedEvent announces that this node tore down a volume's export
-// because the lease moved. Winner is who holds it now, for the operator reading
-// the guest's stop reason.
-type VolumeFencedEvent struct {
-	Volume string `json:"volume"`
-	Node   string `json:"node"`
-	Winner string `json:"winner"`
-	Reason string `json:"reason"`
-}
 
 // onVolumeLeaseLost fences a volume this node can no longer show it owns.
 // Called from the renewal goroutine's failure path, on its own goroutine:
@@ -94,7 +75,7 @@ func (cfg *Config) onVolumeLeaseLost(ctx context.Context, volumeName string, kin
 // Deliberately does not seal. This node's copy is the stale one, and sealing it
 // would publish an older state over the winner's. For the same reason the dirty
 // marker is left alone — the winner has taken it over and it now names them.
-func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner, outcome string) {
+func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string, outcome otelsetup.FenceOutcome) {
 	cfg.mu.Lock()
 	var matched MountedVolume
 	found := false
@@ -171,7 +152,7 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 	if cfg.nc == nil {
 		return
 	}
-	event := VolumeFencedEvent{
+	event := vbwire.VolumeFencedEvent{
 		Volume: volumeName,
 		Node:   cfg.leaseOwner(),
 		Winner: winner,
@@ -182,7 +163,7 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 		slog.ErrorContext(ctx, "fence: marshal fenced event", "volume", volumeName, "err", err)
 		return
 	}
-	subject := VolumeFencedSubject(cfg.NodeName)
+	subject := vbwire.VolumeFencedSubject(cfg.NodeName)
 	if err := cfg.nc.Publish(subject, payload); err != nil {
 		slog.ErrorContext(ctx, "fence: could not announce the fenced volume, the guest will be left with dead I/O",
 			"volume", volumeName, "subject", subject, "err", err)

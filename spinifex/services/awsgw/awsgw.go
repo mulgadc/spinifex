@@ -30,6 +30,7 @@ import (
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/instancecache"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -569,6 +570,15 @@ func launchService(config *config.ClusterConfig) error {
 	// snapshot to KV and is itself a no-op when the RPM dimension is
 	// disabled.
 	go gw.Quota.RunBedrockRPMSync(janitorCtx, js, len(config.Nodes))
+
+	// Instance cache: a read-only informer over the live instance record space,
+	// started now so it is warm well before anything reads it. Nothing consults
+	// it yet; the describe path still serves from the fan-out and KV.
+	instanceCache := instancecache.New(js, instancecache.Config{
+		Bucket: kvstore.Config{Name: daemon.InstanceStateBucket, History: 1, Replicas: len(config.Nodes)},
+		Prefix: daemon.InstanceRecordPrefix,
+	})
+	go instanceCache.Run(janitorCtx)
 
 	handler := gw.SetupRoutes()
 

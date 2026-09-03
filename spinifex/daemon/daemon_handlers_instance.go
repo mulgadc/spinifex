@@ -188,11 +188,17 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 		slog.Error("Failed to respond to NATS request", "err", err)
 	}
 
+	// Spanned separately from the launch: this is the work that would move
+	// onto the response path if the respond were gated on the local write.
+	_, recordSpan := otel.Tracer(daemonTracerName).Start(ctx, "ec2.RecordRunInstances",
+		trace.WithAttributes(attribute.Int("instance.count", len(instances))))
 	for _, instance := range instances {
 		d.vmMgr.Insert(instance)
 	}
-	if err := d.WriteState(); err != nil {
-		slog.Error("handleEC2RunInstances failed to write initial state", "err", err)
+	writeErr := d.WriteState()
+	endOpSpan(recordSpan, writeErr)
+	if writeErr != nil {
+		slog.Error("handleEC2RunInstances failed to write initial state", "err", writeErr)
 	}
 	slog.Info("Instances added to state with pending status", "count", len(instances))
 

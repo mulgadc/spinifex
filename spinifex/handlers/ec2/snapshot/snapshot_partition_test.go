@@ -234,6 +234,38 @@ func TestDeleteSnapshot_BlockedByACloneInAnotherAccount(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, err.Error())
 }
 
+// The irreversible case. The teardown reaper lists with OwnerIds set to the
+// account being removed and deletes everything it gets back, so a listing that
+// reached past that account once destroyed every other account's snapshots.
+// This walks the reaper's exact shape rather than asserting the input again.
+func TestAccountTeardown_LeavesAnotherAccountsSnapshotsAlone(t *testing.T) {
+	ctx := context.Background()
+	svc, store := setupTestSnapshotService(t)
+	createTestVolumeForAccount(t, svc, store, "vol-doomed", 8, testAccountID)
+	createTestVolumeForAccount(t, svc, store, "vol-bystander", 8, otherAccountID)
+
+	doomed, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-doomed")}, testAccountID)
+	require.NoError(t, err)
+	bystander, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-bystander")}, otherAccountID)
+	require.NoError(t, err)
+
+	listed, err := svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{
+		OwnerIds: []*string{aws.String(testAccountID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, listed.Snapshots, 1)
+	assert.Equal(t, aws.StringValue(doomed.SnapshotId), aws.StringValue(listed.Snapshots[0].SnapshotId))
+
+	for _, snapshot := range listed.Snapshots {
+		_, err := svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: snapshot.SnapshotId}, testAccountID)
+		require.NoError(t, err)
+	}
+
+	survived, err := svc.metadata.GetSnapshot(ctx, otherAccountID, aws.StringValue(bystander.SnapshotId))
+	require.NoError(t, err, "tearing down one account must not delete another account's snapshot")
+	assert.Equal(t, otherAccountID, survived.OwnerID)
+}
+
 // An untenanted caller is refused at the boundary, with the client-facing
 // answer the boundary owns. Asserting that nothing was read is what stops the
 // guard being deleted later as redundant with the key builder, whose rejection

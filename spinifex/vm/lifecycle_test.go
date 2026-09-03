@@ -1469,21 +1469,22 @@ func TestResumeAfterIOErrorRetriesEveryHeartbeatAtFirst(t *testing.T) {
 		"spending the budget is what DescribeInstanceStatus reports as impaired")
 }
 
-// Past the budget the guest is reported impaired and retries slow down — but
-// they never stop. QEMU holds the failed request for as long as the guest
-// exists, so a backend that returns late must still be able to resume it.
-func TestResumeAfterIOErrorSlowsButNeverStops(t *testing.T) {
+// Past the budget the guest is reported impaired, and the retries keep running
+// at heartbeat rate. They used to drop to one per ten heartbeats, which meant a
+// guest could sit paused for five minutes after its backend had come back --
+// an outage of our own making, to save one replayed I/O per thirty seconds.
+func TestResumeAfterIOErrorKeepsRetryingPastTheBudget(t *testing.T) {
 	m, instance, count := pausedGuest(t)
 
-	const beyond = qmpMaxIOErrorResumes + 3*qmpIOErrorRetryEvery
+	const beyond = qmpMaxIOErrorResumes + 3*qmpIOErrorLogEvery
 	for range beyond {
 		m.resumeAfterIOError(t.Context(), instance)
 	}
 
-	assert.Equal(t, qmpMaxIOErrorResumes+3, count("cont"),
-		"one attempt per qmpIOErrorRetryEvery heartbeats once the budget is spent")
+	assert.Equal(t, beyond, count("cont"),
+		"every heartbeat must re-submit the held request, however long the outage has run")
 	assert.Equal(t, beyond, instance.Health.IOErrorResumes,
-		"the count keeps rising, so the cadence stays anchored to it")
+		"the count keeps rising, so the impaired report stays anchored to it")
 }
 
 // A guest that resumes must start from zero, or a second unrelated outage

@@ -898,10 +898,11 @@ const (
 	// a stopping one: QEMU holds the failed request for as long as the guest
 	// exists, so there is always something to recover.
 	qmpMaxIOErrorResumes = 10
-	// qmpIOErrorRetryEvery is the heartbeat count between cont attempts after
-	// that. Each one re-submits the held request, so a backend still down pays
-	// a failed I/O every five minutes rather than every thirty seconds.
-	qmpIOErrorRetryEvery = 10
+	// qmpIOErrorLogEvery is the heartbeat count between log lines once the
+	// instance is impaired. Only the logging slows: a retry costs one replayed
+	// I/O, and a guest that waited minutes to find out its backend had returned
+	// was paying far more for it than the retry ever saved.
+	qmpIOErrorLogEvery = 10
 )
 
 // qmpHeartbeat polls query-status every qmpHeartbeatInterval. A dead process
@@ -973,12 +974,11 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 // paused. cont replays the failed I/O rather than discarding it, so a backend
 // that has come back leaves the guest with nothing to notice but latency.
 //
-// Retries never stop, they slow down. After qmpMaxIOErrorResumes the instance
-// is reported impaired and cont drops to one attempt per qmpIOErrorRetryEvery
-// heartbeats. Giving up entirely would be the wrong shape: the held request
-// stays held, so a backend that comes back an hour later can still be resumed
-// with nothing lost, and a guest that could have recovered would instead sit
-// paused because a five-minute timer had expired.
+// Retries run at heartbeat rate for as long as the guest exists. After
+// qmpMaxIOErrorResumes the instance is reported impaired and the log line is
+// throttled, but the attempts are not: a cont costs one replayed I/O, so
+// retrying a backend that is still down is nearly free, while a guest still
+// paused minutes after its backend returned is an outage of our own making.
 func (m *Manager) resumeAfterIOError(ctx context.Context, instance *VM) {
 	var attempt int
 	m.UpdateState(instance.ID, func(v *VM) {
@@ -996,15 +996,12 @@ func (m *Manager) resumeAfterIOError(ctx context.Context, instance *VM) {
 		slog.Error("Guest still paused on I/O error; reporting impaired and slowing retries",
 			"instance", instance.ID, "attempts", attempt)
 	}
-	// Past the threshold only every nth heartbeat retries, and only those log.
-	// A paused guest is polled for as long as it exists, so logging each one
-	// would bury the transition that matters in copies of itself.
-	if attempt > qmpMaxIOErrorResumes && attempt%qmpIOErrorRetryEvery != 0 {
-		return
+	// A paused guest is polled for as long as it exists, so logging every
+	// attempt would bury the transition that matters in copies of itself.
+	if attempt <= qmpMaxIOErrorResumes || attempt%qmpIOErrorLogEvery == 0 {
+		slog.Warn("Guest paused on a backend I/O error, resuming",
+			"instance", instance.ID, "attempt", attempt)
 	}
-
-	slog.Warn("Guest paused on a backend I/O error, resuming",
-		"instance", instance.ID, "attempt", attempt)
 	if _, err := sendQMPCommandWithTimeout(ctx, instance.QMPClient,
 		qmp.QMPCommand{Execute: "cont"}, instance.ID, qmpCommandTimeout); err != nil {
 		slog.Error("Failed to resume guest after I/O error", "instance", instance.ID, "err", err)

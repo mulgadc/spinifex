@@ -19,6 +19,7 @@ type cacheMetrics struct {
 	resyncFailures  metric.Int64Counter
 	watchReconnects metric.Int64Counter
 	decodeFailures  metric.Int64Counter
+	replayEvents    metric.Int64Counter
 }
 
 // newCacheMetrics registers c's instruments against the global meter
@@ -38,6 +39,12 @@ func newCacheMetrics(c *Cache) *cacheMetrics {
 	m.watchReconnects, err = meter.Int64Counter("mulga.instancecache.watch_reconnects",
 		metric.WithDescription("Count of times the KV watch was replaced after dying."),
 		metric.WithUnit("{reconnect}"))
+	if err != nil {
+		otel.Handle(err)
+	}
+	m.replayEvents, err = meter.Int64Counter("mulga.instancecache.replay_events",
+		metric.WithDescription("Count of records the snapshot missed and the resumed watch replayed before the cache went live."),
+		metric.WithUnit("{record}"))
 	if err != nil {
 		otel.Handle(err)
 	}
@@ -87,6 +94,16 @@ func (m *cacheMetrics) watchReconnected() {
 		return
 	}
 	m.watchReconnects.Add(context.Background(), 1)
+}
+
+// replayApplied records how many records the resumed watch had to replay.
+// A zero count is recorded too: it is the difference between a quiet cluster
+// and an instrument that never fired.
+func (m *cacheMetrics) replayApplied(n int) {
+	if m.replayEvents == nil {
+		return
+	}
+	m.replayEvents.Add(context.Background(), int64(n))
 }
 
 func (m *cacheMetrics) decodeFailure() {

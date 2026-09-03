@@ -368,19 +368,21 @@ func (c *Cache) snapshotCandidate(ctx context.Context) (map[string]*vm.VM, map[s
 // end-of-replay marker (nil) arrives: the candidate then reflects everything
 // between the snapshot's high-water mark and the moment it caught up, which
 // is the whole fence — no buffer, no mode, just sequencing.
-func (c *Cache) replay(ctx context.Context, kw jetstream.KeyWatcher, entries map[string]*vm.VM, index map[string]map[string]struct{}) error {
+func (c *Cache) replay(ctx context.Context, kw jetstream.KeyWatcher, entries map[string]*vm.VM, index map[string]map[string]struct{}) (int, error) {
+	applied := 0
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return applied, ctx.Err()
 		case entry, ok := <-kw.Updates():
 			if !ok {
-				return errors.New("instancecache: watcher closed before catching up")
+				return applied, errors.New("instancecache: watcher closed before catching up")
 			}
 			if entry == nil {
-				return nil
+				return applied, nil
 			}
 			c.apply(entries, index, entry)
+			applied++
 		}
 	}
 }
@@ -406,11 +408,15 @@ func (c *Cache) syncOnce(ctx context.Context) (*liveWatcher, map[string]*vm.VM, 
 		return nil, nil, nil, err
 	}
 
-	if err := c.replay(watchCtx, kw, entries, index); err != nil {
+	replayed, err := c.replay(watchCtx, kw, entries, index)
+	if err != nil {
 		cancel()
 		_ = kw.Stop()
 		return nil, nil, nil, err
 	}
+	c.metrics.replayApplied(replayed)
+	slog.Debug("instancecache: sync caught up", "snapshot_entries", len(entries),
+		"high_water", hw, "replayed", replayed)
 
 	return &liveWatcher{kw: kw, ctx: watchCtx, cancel: cancel, done: make(chan struct{})}, entries, index, nil
 }

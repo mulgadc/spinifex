@@ -138,6 +138,13 @@ type ConfigSettings struct {
 	// PoolDNSServers are the host-detected upstream DNS servers northstar forwards
 	// recursive queries to, rendered into northstar.toml's [recursion] nameservers.
 	PoolDNSServers []string
+
+	// ResolverAllowFrom are the clients allowed to recurse, rendered into
+	// northstar.toml's [upstream].allow_recursion_from. Cluster node addresses:
+	// nodes resolve through northstar directly, and vpcd's per-tap guest DNS
+	// shim relays guest queries from a node address, so this covers both.
+	// Everyone else gets authoritative answers only.
+	ResolverAllowFrom []string
 }
 
 // PoolData is one [[network.external_pools]] block rendered into spinifex.toml.

@@ -56,7 +56,7 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 	// The sweep is node-local GC with no caller account, so each volume's own
 	// document supplies the account its key is under. Listing documents rather
 	// than IDs is what makes that available without a second read.
-	volumes, err := r.svc.metadata.ListVolumes(ctx)
+	volumes, err := r.svc.metadata.ListAllVolumes(ctx)
 	if err != nil {
 		return 0, err
 	}

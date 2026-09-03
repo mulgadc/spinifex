@@ -320,16 +320,14 @@ func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.Desc
 		return &ec2.DescribeVolumesOutput{Volumes: volumes}, nil
 	}
 
-	// Slow path: no specific IDs requested, enumerate the bucket.
-	metadata, err := s.metadata.ListVolumes(ctx)
+	// Slow path: no specific IDs requested, list the caller's prefix. No other
+	// account's document is read, so none has to be filtered out here.
+	metadata, err := s.metadata.ListVolumes(ctx, accountID)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	volumes := make([]*ec2.Volume, 0, len(metadata))
 	for _, meta := range metadata {
-		if meta.TenantID != accountID {
-			continue
-		}
 		volume := metadataVolumeToEC2(meta)
 		if len(parsedFilters) == 0 || volumeMatchesFilters(volume, parsedFilters) {
 			volumes = append(volumes, volume)
@@ -486,27 +484,19 @@ func volumeStatusMatchesFilters(item *ec2.VolumeStatusItem, filters map[string][
 // static: the control plane has no per-volume health signal to report, so
 // every known volume reports ok.
 func (s *VolumeServiceImpl) describeVolumeStatus(ctx context.Context, input *ec2.DescribeVolumeStatusInput, accountID string, parsedFilters map[string][]string) (*ec2.DescribeVolumeStatusOutput, error) {
-	metas, err := s.metadata.ListVolumes(ctx)
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	byID := make(map[string]ebsmetadata.Volume, len(metas))
-	for _, meta := range metas {
-		byID[meta.VolumeID] = meta
-	}
-
 	var statusItems []*ec2.VolumeStatusItem
 
+	// Fast path: specific volume IDs requested. Fetch each document directly
+	// rather than listing the prefix to answer for a handful of volumes.
 	if len(input.VolumeIds) > 0 {
-		for _, vid := range input.VolumeIds {
-			if vid == nil {
-				continue
+		for _, r := range s.fetchVolumeMetasByIDs(ctx, input.VolumeIds, accountID) {
+			if r.err != nil {
+				return nil, r.err
 			}
-			meta, ok := byID[*vid]
-			if !ok || meta.TenantID != accountID {
-				return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+			if r.absent {
+				continue // nil VolumeIds entry
 			}
-			item := metadataVolumeStatusItem(meta)
+			item := metadataVolumeStatusItem(r.meta)
 			if len(parsedFilters) > 0 && !volumeStatusMatchesFilters(item, parsedFilters) {
 				continue
 			}
@@ -516,10 +506,11 @@ func (s *VolumeServiceImpl) describeVolumeStatus(ctx context.Context, input *ec2
 		return &ec2.DescribeVolumeStatusOutput{VolumeStatuses: statusItems}, nil
 	}
 
+	metas, err := s.metadata.ListVolumes(ctx, accountID)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 	for _, meta := range metas {
-		if meta.TenantID != accountID {
-			continue
-		}
 		item := metadataVolumeStatusItem(meta)
 		if len(parsedFilters) > 0 && !volumeStatusMatchesFilters(item, parsedFilters) {
 			continue
@@ -697,7 +688,7 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 		return &ec2.DescribeVolumesModificationsOutput{VolumesModifications: modifications}, nil
 	}
 
-	metas, err := s.metadata.ListVolumes(ctx)
+	metas, err := s.metadata.ListVolumes(ctx, accountID)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -708,9 +699,6 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 	}
 
 	for _, meta := range metas {
-		if meta.TenantID != accountID {
-			continue
-		}
 		if len(volumeIDFilterValues) > 0 && !filterutil.MatchesAny(volumeIDFilterValues, meta.VolumeID) {
 			continue
 		}
@@ -771,15 +759,41 @@ type volumeFetchResult struct {
 }
 
 // fetchVolumesByIDs fetches each requested volume's ebsmetadata document
-// directly via GetVolume, instead of enumerating every volume in the bucket
-// via ListVolumes. A missing document or a cross-tenant volume both surface as
-// InvalidVolume.NotFound; any other store error surfaces as ErrorServerInternal.
+// directly via GetVolume, instead of listing the account's prefix.
 func (s *VolumeServiceImpl) fetchVolumesByIDs(ctx context.Context, volumeIDs []*string, accountID string) []volumeFetchResult {
-	results := make([]volumeFetchResult, len(volumeIDs))
+	metas := s.fetchVolumeMetasByIDs(ctx, volumeIDs, accountID)
+	results := make([]volumeFetchResult, len(metas))
+	for i, r := range metas {
+		switch {
+		case r.err != nil:
+			results[i] = volumeFetchResult{err: r.err}
+		case r.absent:
+		default:
+			results[i] = volumeFetchResult{volume: metadataVolumeToEC2(r.meta)}
+		}
+	}
+	return results
+}
+
+// volumeMetaResult bundles a per-ID document lookup. absent marks a nil entry
+// in the requested IDs, which is neither a document nor an error.
+type volumeMetaResult struct {
+	meta   ebsmetadata.Volume
+	absent bool
+	err    error
+}
+
+// fetchVolumeMetasByIDs reads each requested volume's document in parallel,
+// returning results positionally aligned with volumeIDs. A missing document or
+// a cross-tenant volume both surface as InvalidVolume.NotFound; any other store
+// error surfaces as ErrorServerInternal.
+func (s *VolumeServiceImpl) fetchVolumeMetasByIDs(ctx context.Context, volumeIDs []*string, accountID string) []volumeMetaResult {
+	results := make([]volumeMetaResult, len(volumeIDs))
 	var wg sync.WaitGroup
 
 	for i, id := range volumeIDs {
 		if id == nil {
+			results[i] = volumeMetaResult{absent: true}
 			continue
 		}
 		wg.Add(1)
@@ -788,17 +802,19 @@ func (s *VolumeServiceImpl) fetchVolumesByIDs(ctx context.Context, volumeIDs []*
 			meta, err := s.metadata.GetVolume(ctx, accountID, volID)
 			if err != nil {
 				if objectstore.IsNoSuchKeyError(err) {
-					results[idx] = volumeFetchResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
+					results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
 				} else {
-					results[idx] = volumeFetchResult{err: errors.New(awserrors.ErrorServerInternal)}
+					results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorServerInternal)}
 				}
 				return
 			}
+			// The read was scoped to the caller's prefix, so the document is
+			// theirs by construction. The comparison stays as an assertion.
 			if meta.TenantID != accountID {
-				results[idx] = volumeFetchResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
+				results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
 				return
 			}
-			results[idx] = volumeFetchResult{volume: metadataVolumeToEC2(meta)}
+			results[idx] = volumeMetaResult{meta: meta}
 		}(i, *id)
 	}
 

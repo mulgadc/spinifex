@@ -536,9 +536,14 @@ func snapshotMatchesFilters(cfg ebsmetadata.Snapshot, filters map[string][]strin
 // snapshot. A clone records its source in its ebsmetadata document; missing one
 // here would let a delete strip the chunks a live clone still reads.
 func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapshotID string) (bool, error) {
+	// Whole-cluster, and not scoping this to the snapshot's own account is the
+	// point: launching from a system AMI writes a root volume owned by the
+	// launching tenant whose SnapshotID is the system snapshot, so a clone
+	// routinely lives outside the snapshot owner's prefix.
+	//
 	// Strict: a volume that failed to read is not evidence that no clone reads
 	// the snapshot's chunks, and this answer gates deleting them.
-	volumes, err := s.metadata.ListVolumesStrict(ctx)
+	volumes, err := s.metadata.ListAllVolumesStrict(ctx)
 	if err != nil {
 		return false, fmt.Errorf("snapshotInUseByVolumes: failed to list volumes: %w", err)
 	}

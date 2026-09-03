@@ -81,9 +81,9 @@ func BenchmarkDescribeVolumes_Provider_ListAndFilter(b *testing.B) {
 			defer silenceLogs(b)()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				metadata, err := svc.metadata.ListVolumes(ctx)
+				metadata, err := svc.metadata.ListAllVolumes(ctx)
 				if err != nil {
-					b.Fatalf("ListVolumes: %v", err)
+					b.Fatalf("ListAllVolumes: %v", err)
 				}
 				var found *ec2.Volume
 				for _, meta := range metadata {

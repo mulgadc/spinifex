@@ -144,3 +144,27 @@ func TestDescribeSnapshots_TouchesNoOtherAccountsPrefix(t *testing.T) {
 	assert.False(t, objects.TouchedPrefix("spinifex/ebsmetadata/v2/snapshots/"+otherAccountID+"/"),
 		"a describe must not read or list another account's prefix: %v %v", objects.ListPrefixes(), objects.Gets())
 }
+
+// The dependency check must stay whole-cluster. Launching from a system AMI
+// writes a root volume owned by the launching tenant whose SnapshotID is the
+// system snapshot, so a clone routinely lives outside the snapshot owner's
+// prefix. Scope the check and the delete strips chunks a live tenant volume
+// still reads.
+func TestDeleteSnapshot_BlockedByACloneInAnotherAccount(t *testing.T) {
+	ctx := context.Background()
+	svc, store := setupTestSnapshotService(t)
+	createTestVolumeForAccount(t, svc, store, "vol-system", 8, utils.GlobalAccountID)
+
+	snap, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-system")}, utils.GlobalAccountID)
+	require.NoError(t, err)
+
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID:   "vol-tenant-root",
+		TenantID:   otherAccountID,
+		SnapshotID: aws.StringValue(snap.SnapshotId),
+	})
+
+	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: snap.SnapshotId}, utils.GlobalAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, err.Error())
+}

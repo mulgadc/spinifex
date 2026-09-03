@@ -65,28 +65,48 @@ func (s *Store) DeleteVolume(ctx context.Context, accountID, volumeID string) er
 	return err
 }
 
-// ListVolumes returns every ebsmetadata volume document, skipping any it
-// cannot read or decode. One unreadable document must not make every volume in
-// the cluster invisible, so the tolerance is deliberate and each skip is logged.
-func (s *Store) ListVolumes(ctx context.Context) ([]Volume, error) {
-	if s == nil || s.objects == nil {
-		return nil, errors.New("metadata store is not configured")
-	}
-	return s.listVolumeDocuments(ctx, true)
+// ListVolumes returns one account's volume documents, skipping any it cannot
+// read or decode. The prefix is the isolation: no other account's document is
+// read, so none has to be filtered out afterwards. One unreadable document must
+// not make every volume invisible, so the tolerance is deliberate and logged.
+func (s *Store) ListVolumes(ctx context.Context, accountID string) ([]Volume, error) {
+	return s.listVolumeDocuments(ctx, accountID, true)
 }
 
 // ListVolumesStrict is ListVolumes without the tolerance. It is for callers
 // whose answer would be wrong rather than merely partial: a volume that failed
 // to read is not evidence that no volume holds the resource being checked.
-func (s *Store) ListVolumesStrict(ctx context.Context) ([]Volume, error) {
+func (s *Store) ListVolumesStrict(ctx context.Context, accountID string) ([]Volume, error) {
+	return s.listVolumeDocuments(ctx, accountID, false)
+}
+
+// ListAllVolumes lists across every account. Whole-cluster by intent: the name
+// is deliberately not ListVolumes so no caller gets this reach by leaving a
+// call site untouched.
+func (s *Store) ListAllVolumes(ctx context.Context) ([]Volume, error) {
 	if s == nil || s.objects == nil {
 		return nil, errors.New("metadata store is not configured")
 	}
-	return s.listVolumeDocuments(ctx, false)
+	return listDocuments(ctx, s, volumePrefix, "volume", UnmarshalVolume, true)
 }
 
-func (s *Store) listVolumeDocuments(ctx context.Context, skipCorrupt bool) ([]Volume, error) {
-	return listDocuments(ctx, s, volumePrefix, "volume", UnmarshalVolume, skipCorrupt)
+// ListAllVolumesStrict is ListAllVolumes without the tolerance.
+func (s *Store) ListAllVolumesStrict(ctx context.Context) ([]Volume, error) {
+	if s == nil || s.objects == nil {
+		return nil, errors.New("metadata store is not configured")
+	}
+	return listDocuments(ctx, s, volumePrefix, "volume", UnmarshalVolume, false)
+}
+
+func (s *Store) listVolumeDocuments(ctx context.Context, accountID string, skipCorrupt bool) ([]Volume, error) {
+	if s == nil || s.objects == nil {
+		return nil, errors.New("metadata store is not configured")
+	}
+	prefix, err := accountPrefix(volumePrefix, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return listDocuments(ctx, s, prefix, "volume", UnmarshalVolume, skipCorrupt)
 }
 
 // PutSnapshot takes no account: like PutVolume, the key segment is the
@@ -162,20 +182,20 @@ func (s *Store) listSnapshotDocuments(ctx context.Context, accountID string, ski
 	if s == nil || s.objects == nil {
 		return nil, errors.New("metadata store is not configured")
 	}
-	prefix, err := snapshotAccountPrefix(accountID)
+	prefix, err := accountPrefix(snapshotPrefix, accountID)
 	if err != nil {
 		return nil, err
 	}
 	return listDocuments(ctx, s, prefix, "snapshot", UnmarshalSnapshot, skipCorrupt)
 }
 
-// snapshotAccountPrefix rejects the same accounts SnapshotKey does, so a
-// listing cannot widen to the whole tree by being handed an empty account.
-func snapshotAccountPrefix(accountID string) (string, error) {
+// accountPrefix rejects the same accounts the key builders do, so a listing
+// cannot widen to the whole tree by being handed an empty account.
+func accountPrefix(kindPrefix, accountID string) (string, error) {
 	if !utils.IsAccountID(accountID) {
 		return "", fmt.Errorf("invalid EBS metadata account ID %q", accountID)
 	}
-	return snapshotPrefix + accountID + "/", nil
+	return kindPrefix + accountID + "/", nil
 }
 
 // ListAMIs returns every AMI document, skipping any it cannot decode. One

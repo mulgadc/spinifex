@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -44,12 +45,12 @@ func TestStoreRoundTripsVolumeAndAMI(t *testing.T) {
 
 func TestListVolumes_Empty(t *testing.T) {
 	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
-	volumes, err := store.ListVolumes(context.Background())
+	volumes, err := store.ListVolumes(context.Background(), "000000000001")
 	require.NoError(t, err)
 	assert.Empty(t, volumes)
 }
 
-func TestListVolumes_ReturnsAllStoredVolumes(t *testing.T) {
+func TestListAllVolumes_ReturnsEveryAccountsVolumes(t *testing.T) {
 	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
 	ctx := context.Background()
 
@@ -62,7 +63,7 @@ func TestListVolumes_ReturnsAllStoredVolumes(t *testing.T) {
 		require.NoError(t, store.PutVolume(ctx, v))
 	}
 
-	got, err := store.ListVolumes(ctx)
+	got, err := store.ListAllVolumes(ctx)
 	require.NoError(t, err)
 	require.Len(t, got, len(want))
 
@@ -100,7 +101,7 @@ func corruptVolumeStore(t *testing.T) (*Store, context.Context) {
 func TestListVolumes_SkipsCorruptObject(t *testing.T) {
 	store, ctx := corruptVolumeStore(t)
 
-	volumes, err := store.ListVolumes(ctx)
+	volumes, err := store.ListVolumes(ctx, "000000000001")
 	require.NoError(t, err)
 	require.Len(t, volumes, 1, "the readable volume must still be listed")
 	assert.Equal(t, "vol-good", volumes[0].VolumeID)
@@ -111,7 +112,7 @@ func TestListVolumes_SkipsCorruptObject(t *testing.T) {
 func TestListVolumesStrict_CorruptObjectReturnsError(t *testing.T) {
 	store, ctx := corruptVolumeStore(t)
 
-	_, err := store.ListVolumesStrict(ctx)
+	_, err := store.ListVolumesStrict(ctx, "000000000001")
 	require.Error(t, err)
 }
 
@@ -131,12 +132,12 @@ func TestListVolumes_SkipsUnreadableObject(t *testing.T) {
 	failing := &getFailsStore{ObjectStore: objects, failKey: key}
 	broken := NewStore(failing, "control-plane")
 
-	volumes, err := broken.ListVolumes(ctx)
+	volumes, err := broken.ListVolumes(ctx, "000000000001")
 	require.NoError(t, err, "an unreadable document must not fail the whole listing")
 	require.Len(t, volumes, 1)
 	assert.Equal(t, "vol-good", volumes[0].VolumeID)
 
-	_, err = broken.ListVolumesStrict(ctx)
+	_, err = broken.ListVolumesStrict(ctx, "000000000001")
 	require.Error(t, err, "the strict listing must still report the failure")
 }
 
@@ -159,13 +160,107 @@ func (s *getFailsStore) GetObject(ctx context.Context, in *s3.GetObjectInput) (*
 // Store method: a zero-value *Store (no ObjectStore wired up) must error
 // instead of panicking on a nil dereference.
 func TestListVolumes_NotConfigured(t *testing.T) {
-	var store *Store
-	_, err := store.ListVolumes(context.Background())
-	require.Error(t, err)
+	ctx := context.Background()
+	for _, store := range []*Store{nil, {}} {
+		for name, list := range map[string]func() ([]Volume, error){
+			"ListVolumes":          func() ([]Volume, error) { return store.ListVolumes(ctx, "000000000001") },
+			"ListVolumesStrict":    func() ([]Volume, error) { return store.ListVolumesStrict(ctx, "000000000001") },
+			"ListAllVolumes":       func() ([]Volume, error) { return store.ListAllVolumes(ctx) },
+			"ListAllVolumesStrict": func() ([]Volume, error) { return store.ListAllVolumesStrict(ctx) },
+		} {
+			_, err := list()
+			require.Error(t, err, name)
+		}
+	}
+}
 
-	empty := &Store{}
-	_, err = empty.ListVolumes(context.Background())
-	require.Error(t, err)
+// The account prefix is the isolation, so a listing must return one account's
+// documents without reading another's.
+func TestListVolumes_ScopedToOneAccount(t *testing.T) {
+	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
+	ctx := context.Background()
+	for _, volume := range []Volume{
+		{VolumeID: "vol-a1", TenantID: "000000000001"},
+		{VolumeID: "vol-a2", TenantID: "000000000001"},
+		{VolumeID: "vol-b1", TenantID: "000000000002"},
+	} {
+		require.NoError(t, store.PutVolume(ctx, volume))
+	}
+
+	got, err := store.ListVolumes(ctx, "000000000001")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vol-a1", "vol-a2"}, volumeIDs(got))
+
+	got, err = store.ListVolumes(ctx, "000000000002")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vol-b1"}, volumeIDs(got))
+}
+
+// The two verbs must partition and list the same way: a key builder that wrote
+// one shape and listed another would show up here and nowhere else.
+func TestListAllVolumes_IsTheUnionOfEveryAccount(t *testing.T) {
+	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
+	ctx := context.Background()
+	for _, volume := range []Volume{
+		{VolumeID: "vol-a1", TenantID: "000000000001"},
+		{VolumeID: "vol-b1", TenantID: "000000000002"},
+		{VolumeID: "vol-b2", TenantID: "000000000002"},
+	} {
+		require.NoError(t, store.PutVolume(ctx, volume))
+	}
+
+	all, err := store.ListAllVolumes(ctx)
+	require.NoError(t, err)
+
+	var union []Volume
+	for _, account := range []string{"000000000001", "000000000002"} {
+		scoped, err := store.ListVolumes(ctx, account)
+		require.NoError(t, err)
+		union = append(union, scoped...)
+	}
+	assert.Equal(t, volumeIDs(all), volumeIDs(union))
+}
+
+// An empty account must not widen a listing to every account's documents.
+func TestListVolumes_RefusesANonAccountPrefix(t *testing.T) {
+	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
+	ctx := context.Background()
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-a1", TenantID: "000000000001"}))
+
+	for _, account := range []string{"", "not-an-account", "vol-a1"} {
+		_, err := store.ListVolumes(ctx, account)
+		require.Error(t, err, "account %q must not list", account)
+		_, err = store.ListVolumesStrict(ctx, account)
+		require.Error(t, err, "account %q must not list strictly", account)
+	}
+}
+
+// The whole-cluster verbs keep the tolerant/strict split the scoped ones have.
+func TestListAllVolumesStrict_FailsOnACorruptDocument(t *testing.T) {
+	objects := objectstore.NewMemoryObjectStore()
+	store := NewStore(objects, "control-plane")
+	ctx := context.Background()
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-a1", TenantID: "000000000001"}))
+
+	key, err := VolumeKey("000000000002", "vol-corrupt")
+	require.NoError(t, err)
+	writeRaw(t, objects, key, []byte("{not json"))
+
+	tolerant, err := store.ListAllVolumes(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vol-a1"}, volumeIDs(tolerant))
+
+	_, err = store.ListAllVolumesStrict(ctx)
+	require.ErrorIs(t, err, ErrCorruptDocument)
+}
+
+func volumeIDs(volumes []Volume) []string {
+	ids := make([]string, 0, len(volumes))
+	for _, volume := range volumes {
+		ids = append(ids, volume.VolumeID)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // TestListAMIs_Empty mirrors TestListVolumes_Empty: an AMI-less store lists
@@ -177,7 +272,7 @@ func TestListAMIs_Empty(t *testing.T) {
 	assert.Empty(t, amis)
 }
 
-// TestListAMIs_ReturnsAllStoredAMIs mirrors TestListVolumes_ReturnsAllStoredVolumes.
+// TestListAMIs_ReturnsAllStoredAMIs mirrors TestListAllVolumes_ReturnsEveryAccountsVolumes.
 func TestListAMIs_ReturnsAllStoredAMIs(t *testing.T) {
 	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
 	ctx := context.Background()
@@ -310,7 +405,7 @@ func TestListVolumes_FetchesDocumentsConcurrently(t *testing.T) {
 	measured := NewStore(slow, "control-plane")
 
 	start := time.Now()
-	volumes, err := measured.ListVolumes(ctx)
+	volumes, err := measured.ListVolumes(ctx, "000000000001")
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
@@ -347,7 +442,7 @@ func TestListVolumes_ConcurrentFetchPreservesListingOrder(t *testing.T) {
 
 	fixed := NewStore(&fixedOrderStore{ObjectStore: objects, keys: keys}, "control-plane")
 	for range 5 {
-		volumes, err := fixed.ListVolumes(ctx)
+		volumes, err := fixed.ListVolumes(ctx, "000000000001")
 		require.NoError(t, err)
 		got := make([]string, 0, len(volumes))
 		for _, v := range volumes {
@@ -437,7 +532,7 @@ func TestListVolumes_BoundsOneSlowDocument(t *testing.T) {
 	hanging := NewStore(&hangingGetStore{ObjectStore: objects, hangKey: key}, "control-plane")
 
 	start := time.Now()
-	volumes, err := hanging.ListVolumes(ctx)
+	volumes, err := hanging.ListVolumes(ctx, "000000000001")
 	elapsed := time.Since(start)
 
 	require.NoError(t, err, "one slow document must not fail the whole listing")
@@ -445,7 +540,7 @@ func TestListVolumes_BoundsOneSlowDocument(t *testing.T) {
 	assert.Equal(t, "vol-good", volumes[0].VolumeID)
 	assert.Less(t, elapsed, time.Second, "the listing must not wait on the slow document indefinitely")
 
-	_, err = hanging.ListVolumesStrict(ctx)
+	_, err = hanging.ListVolumesStrict(ctx, "000000000001")
 	require.Error(t, err, "the strict listing must still report the document it could not read")
 }
 
@@ -478,7 +573,7 @@ func TestListVolumesFollowsEveryPage(t *testing.T) {
 			if strict {
 				list = paged.ListVolumesStrict
 			}
-			volumes, err := list(ctx)
+			volumes, err := list(ctx, "000000000001")
 			require.NoError(t, err)
 
 			got := make([]string, 0, len(volumes))
@@ -504,11 +599,11 @@ func TestListVolumesRefusesTruncationItCannotFollow(t *testing.T) {
 
 	broken := NewStore(&truncatedNoTokenStore{ObjectStore: objects, keys: []string{key}}, "control-plane")
 
-	_, err = broken.ListVolumes(ctx)
+	_, err = broken.ListVolumes(ctx, "000000000001")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "continuation token")
 
-	_, err = broken.ListVolumesStrict(ctx)
+	_, err = broken.ListVolumesStrict(ctx, "000000000001")
 	require.Error(t, err)
 }
 

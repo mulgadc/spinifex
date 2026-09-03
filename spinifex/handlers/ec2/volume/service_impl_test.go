@@ -1616,7 +1616,7 @@ func TestUpdateVolumeState_PreservesProviderConfig(t *testing.T) {
 
 // --- Group 6: whole-cluster volume listing tests ---
 
-func TestListVolumes_FiltersCorrectly(t *testing.T) {
+func TestListAllVolumes_FiltersCorrectly(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
@@ -1636,7 +1636,7 @@ func TestListVolumes_FiltersCorrectly(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	volumes, err := svc.metadata.ListVolumes(context.Background())
+	volumes, err := svc.metadata.ListAllVolumes(context.Background())
 	require.NoError(t, err)
 
 	// Should only contain vol-abc and vol-def (not efi/cloudinit/ami/snap)
@@ -1649,16 +1649,16 @@ func TestListVolumes_FiltersCorrectly(t *testing.T) {
 	assert.True(t, idSet["vol-def"])
 }
 
-func TestListVolumes_EmptyBucket(t *testing.T) {
+func TestListAllVolumes_EmptyBucket(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	volumes, err := svc.metadata.ListVolumes(context.Background())
+	volumes, err := svc.metadata.ListAllVolumes(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, volumes)
 }
 
-func TestListVolumes_SingleDocument(t *testing.T) {
+func TestListAllVolumes_SingleDocument(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
@@ -1667,7 +1667,7 @@ func TestListVolumes_SingleDocument(t *testing.T) {
 		VolumeID: "vol-only", CapacityGiB: 10, State: "available",
 	})
 
-	volumes, err := svc.metadata.ListVolumes(context.Background())
+	volumes, err := svc.metadata.ListAllVolumes(context.Background())
 	require.NoError(t, err)
 	require.Len(t, volumes, 1)
 	assert.Equal(t, "vol-only", volumes[0].VolumeID)

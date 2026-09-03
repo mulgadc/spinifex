@@ -158,7 +158,7 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 	// the whole fleet — a volume with blocks but no document does not exist as
 	// far as the control plane is concerned — and they carry SnapshotID
 	// already, so no second read per volume is needed.
-	volDocs, err := ebsmetadata.NewStore(store, bucket).ListVolumes(context.Background())
+	volDocs, err := ebsmetadata.NewStore(store, bucket).ListAllVolumes(context.Background())
 	if err != nil {
 		return Dependents{}, fmt.Errorf("list ebsmetadata volumes: %w", err)
 	}

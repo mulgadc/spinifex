@@ -1,7 +1,26 @@
 name: E2E Bare-Metal
 
 on:
+  # Mirrors the suite selection of workflow_call so a baseline capture can be
+  # driven by hand. A dispatch run sees only the inputs declared here, so
+  # omitting these would silently fall back to the correctness set.
   workflow_dispatch:
+    inputs:
+      suites:
+        description: "Space-separated e2e suites to run on the node. Default is the correctness set; a performance run names its own so its numbers come off an otherwise idle cell"
+        required: false
+        type: string
+        default: "single cert lb"
+      suite-env:
+        description: "Extra environment for the suite invocation, e.g. SPINIFEX_DISKPERF_REPS=3"
+        required: false
+        type: string
+        default: ""
+      cell:
+        description: "Nightly cell number this run reports as. Names the artifact bundle and the ES dimension, so two callers of this workflow stay distinguishable in the sink"
+        required: false
+        type: string
+        default: "20"
   workflow_call:
     inputs:
       ref:

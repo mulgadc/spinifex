@@ -101,6 +101,13 @@ type Cache struct {
 	degraded    atomic.Bool  // true from a failed sync until the next one succeeds
 
 	metrics *cacheMetrics
+
+	// postSnapshotHook, when set, runs inside syncOnce after snapshotCandidate
+	// returns and before the resuming watcher is opened. Nil in production; a
+	// test seam for landing a write deterministically inside the window a
+	// resuming watcher has to close, which nothing else can reach because it
+	// is internal to syncOnce.
+	postSnapshotHook func()
 }
 
 // New returns a Cache over the bucket cfg describes. Call Run to start it;
@@ -387,6 +394,9 @@ func (c *Cache) syncOnce(ctx context.Context) (*liveWatcher, map[string]*vm.VM, 
 	entries, index, hw, err := c.snapshotCandidate(ctx)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	if c.postSnapshotHook != nil {
+		c.postSnapshotHook()
 	}
 
 	watchCtx, cancel := context.WithCancel(ctx)

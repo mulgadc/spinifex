@@ -1183,8 +1183,8 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 	kvKey := accountID + "." + policyName
 
 	if _, err := ValidatePolicyDocument(*input.PolicyDocument); err != nil {
-		slog.Debug("CreatePolicy: invalid policy document", "policyName", policyName, "err", err)
-		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
+			"policy %q: %w", policyName, err)
 	}
 
 	path := aws.StringValue(input.Path)
@@ -1524,7 +1524,8 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
 	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
+			"policy %q on user %q: %w", policyName, userName, err)
 	}
 
 	user, err := s.getUser(ctx, accountID, userName)
@@ -2059,6 +2060,11 @@ func validateStatementRestrictions(i int, stmt Statement) error {
 	if len(stmt.NotResource) > 0 {
 		return fmt.Errorf("statement %d: NotResource blocks are not supported in this release; use Resource with an explicit list instead", i)
 	}
+	for _, resource := range stmt.Resource {
+		if err := validatePolicyVariables(i, "Resource", resource); err != nil {
+			return err
+		}
+	}
 	for op, keys := range stmt.Condition {
 		for key, values := range keys {
 			if !iampolicy.SupportedCondition(op, key) {
@@ -2080,6 +2086,13 @@ func validateConditionValues(i int, op, key string, values ConditionValue) error
 		return fmt.Errorf("statement %d: Condition operator %q on key %q has no value", i, op, key)
 	}
 	for _, v := range values {
+		// Only the string operators expand variables; a reference in a Bool or
+		// IpAddress value is already rejected as unparseable below.
+		if op == iampolicy.OpStringEquals || op == iampolicy.OpStringLike {
+			if err := validatePolicyVariables(i, fmt.Sprintf("Condition %s on key %q", op, key), v); err != nil {
+				return err
+			}
+		}
 		switch op {
 		case iampolicy.OpIPAddress:
 			if _, prefixErr := netip.ParsePrefix(v); prefixErr != nil {
@@ -2095,6 +2108,36 @@ func validateConditionValues(i int, op, key string, values ConditionValue) error
 		}
 	}
 	return nil
+}
+
+// supportedVariableList renders the substitutable keys for an error message,
+// read from the evaluator's registry so the advice cannot go stale. The keys are
+// copied into the rendered form rather than rewritten in place, since the
+// registry owns nothing the caller may modify.
+func supportedVariableList() string {
+	keys := iampolicy.SubstitutableKeys()
+	refs := make([]string, 0, len(keys))
+	for _, key := range keys {
+		refs = append(refs, iampolicy.VariablePrefix+key+"}")
+	}
+	return strings.Join(refs, ", ")
+}
+
+// validatePolicyVariables rejects a ${...} reference the evaluator can never
+// resolve, naming the field it sits in. Such a pattern selects nothing on an
+// Allow and everything it named on a Deny, so the policy would be stored meaning
+// something other than what it reads as.
+func validatePolicyVariables(i int, field, value string) error {
+	switch key, fault := iampolicy.UnresolvableVariable(value); fault {
+	case iampolicy.VariableUnterminated:
+		return fmt.Errorf("statement %d: %s: %q has an unterminated policy variable reference: "+
+			"%q is missing its closing brace", i, field, value, iampolicy.VariablePrefix+key)
+	case iampolicy.VariableUnknownKey:
+		return fmt.Errorf("statement %d: %s: %q references policy variable %q, which no request supplies; "+
+			"the supported variables are %s", i, field, value, key, supportedVariableList())
+	default:
+		return nil
+	}
 }
 
 // summaryQuotaDefaults holds the static SummaryMap entries returned by

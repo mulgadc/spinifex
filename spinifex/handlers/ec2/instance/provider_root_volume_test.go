@@ -120,7 +120,7 @@ func TestPrepareRootVolume_Provider_WritesMetadataDocument(t *testing.T) {
 		"vol-root", testRootVolumeBytes, 0, instance, true)
 	require.NoError(t, err)
 
-	doc, err := ebsmetadata.NewStore(store, testRootBucket).GetVolume(context.Background(), "vol-root")
+	doc, err := ebsmetadata.NewStore(store, testRootBucket).GetVolume(context.Background(), testRootAccount, "vol-root")
 	require.NoError(t, err, "the root volume must have an ebsmetadata document")
 
 	assert.Equal(t, "vol-root", doc.VolumeID)
@@ -154,7 +154,7 @@ func TestPrepareRootVolume_Provider_HonoursRequestedIOPS(t *testing.T) {
 		"vol-root", testRootVolumeBytes, 5000, &vm.VM{AccountID: testRootAccount}, true)
 	require.NoError(t, err)
 
-	doc, err := ebsmetadata.NewStore(store, testRootBucket).GetVolume(context.Background(), "vol-root")
+	doc, err := ebsmetadata.NewStore(store, testRootBucket).GetVolume(context.Background(), testRootAccount, "vol-root")
 	require.NoError(t, err)
 	assert.Equal(t, 5000, doc.IOPS)
 }
@@ -184,7 +184,7 @@ func TestPrepareRootVolume_Provider_RollbackOnMetadataWriteFailure(t *testing.T)
 	seedProviderSnapshot(t, provider, "vol-origin", "snap-source")
 	store := &failingPutObjectStore{
 		ObjectStore: objectstore.NewMemoryObjectStore(),
-		failPrefix:  "spinifex/ebsmetadata/v1/volumes/",
+		failPrefix:  "spinifex/ebsmetadata/v2/volumes/",
 	}
 	svc := providerRootVolumeService(t, provider, rootVolumeAMILoader(), store)
 

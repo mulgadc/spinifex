@@ -47,6 +47,9 @@ func (gw *GatewayConfig) ecrOperationAuthorization(next http.Handler) http.Handl
 			return
 		}
 
+		// Hoisted: the keys depend on the request and the principal, neither of
+		// which changes across requirements.
+		keys := requestConditionKeys(r, principal)
 		for _, req := range op.Requirements {
 			resource, err := ecrResourceARN(gw.Region, principal.accountID, req.Scope, op)
 			if err != nil {
@@ -54,8 +57,7 @@ func (gw *GatewayConfig) ecrOperationAuthorization(next http.Handler) http.Handl
 				return
 			}
 			if err := gw.evaluatePrincipalPolicyResources(
-				principal, policy.IAMAction("ecr", req.Action), []string{resource},
-				requestConditionKeys(r, principal),
+				principal, policy.IAMAction("ecr", req.Action), []string{resource}, keys,
 			); err != nil {
 				if err.Error() == awserrors.ErrorInternalError {
 					// IAM/STS/NATS dependency failure: fail closed, never dispatch.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path"
 	"strings"
 	"testing"
 
@@ -45,9 +46,17 @@ func setupTestSnapshotService(t *testing.T) (*SnapshotServiceImpl, *objectstore.
 // a snapshot copies, the document is what the control plane resolves.
 func createTestVolume(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
 	t.Helper()
+	createTestVolumeForAccount(t, svc, store, volumeID, sizeGiB, testAccountID)
+}
+
+// createTestVolumeForAccount is createTestVolume for a volume owned by an
+// account other than the default one.
+func createTestVolumeForAccount(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int, accountID string) {
+	t.Helper()
 	seedProviderVolume(t, svc, volumeID, sizeGiB)
 	seedVolumeDocument(t, store, ebsmetadata.Volume{
 		VolumeID:         volumeID,
+		TenantID:         accountID,
 		CapacityGiB:      uint64(sizeGiB),
 		AvailabilityZone: "us-east-1a",
 	})
@@ -56,7 +65,22 @@ func createTestVolume(t *testing.T, svc *SnapshotServiceImpl, store *objectstore
 // seedVolumeDocument writes the control-plane document for a volume.
 func seedVolumeDocument(t *testing.T, store objectstore.ObjectStore, volume ebsmetadata.Volume) {
 	t.Helper()
+	// The owning account is a key segment, so a fixture that does not care
+	// which account owns it still has to have one.
+	if volume.TenantID == "" {
+		volume.TenantID = testAccountID
+	}
 	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutVolume(context.Background(), volume))
+}
+
+// seedSnapshotDocument writes the control-plane document for a snapshot,
+// keyed under its own OwnerID.
+func seedSnapshotDocument(t *testing.T, store objectstore.ObjectStore, snapshot ebsmetadata.Snapshot) {
+	t.Helper()
+	if snapshot.OwnerID == "" {
+		snapshot.OwnerID = testAccountID
+	}
+	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutSnapshot(context.Background(), snapshot))
 }
 
 // seedProviderVolume gives the service's provider a volume to snapshot. A
@@ -232,9 +256,11 @@ func TestDescribeSnapshots(t *testing.T) {
 
 func TestDescribeSnapshotsStrict_RejectsPartialMetadataResults(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
-	_, err := store.PutObject(t.Context(), &s3.PutObjectInput{
+	key, err := ebsmetadata.SnapshotKey(testAccountID, "snap-corrupt")
+	require.NoError(t, err)
+	_, err = store.PutObject(t.Context(), &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(GetSnapshotKey("snap-corrupt")),
+		Key:    aws.String(key),
 		Body:   strings.NewReader("not-json"),
 	})
 	require.NoError(t, err)
@@ -248,7 +274,7 @@ func TestDescribeSnapshotsStrict_RejectsPartialMetadataResults(t *testing.T) {
 	// absence, so its internal lookup surfaces the metadata failure.
 	_, err = svc.DescribeSnapshotsStrict(t.Context(), &ec2.DescribeSnapshotsInput{}, testAccountID)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrCorruptSnapshotMetadata)
+	assert.ErrorIs(t, err, ebsmetadata.ErrCorruptDocument)
 }
 
 // TestDescribeSnapshots_ByID tests listing specific snapshots by ID.
@@ -310,22 +336,21 @@ func TestDescribeSnapshots_Empty(t *testing.T) {
 }
 
 // TestDescribeSnapshots_ImportedAMISnapshotVisible locks that a snapshot
-// registered directly via WriteSnapshotConfig -- the way a provider-backed
-// AMI import registers its snapshot, without ever calling CreateSnapshot --
-// is still listed. Before that registration exists, ListObjectsV2 finds the
-// provider-written "snap-.../" prefix but getSnapshotConfig 404s on it, and
-// DescribeSnapshots silently skips it.
+// whose document is written directly -- the way a provider-backed AMI import
+// registers its snapshot, without ever calling CreateSnapshot -- is still
+// listed. Without that document the snapshot is not in the account's prefix
+// and DescribeSnapshots cannot see it at all.
 func TestDescribeSnapshots_ImportedAMISnapshotVisible(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
-	require.NoError(t, WriteSnapshotConfig(store, "test-bucket", "snap-ami-import01", &SnapshotConfig{
+	seedSnapshotDocument(t, store, ebsmetadata.Snapshot{
 		SnapshotID: "snap-ami-import01",
 		VolumeID:   "ami-import01",
 		VolumeSize: 8,
 		State:      "completed",
 		Progress:   "100%",
 		OwnerID:    testAccountID,
-	}))
+	})
 
 	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{}, testAccountID)
 	require.NoError(t, err)
@@ -339,6 +364,7 @@ func TestDescribeSnapshots_AccountScoping(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-1", 50)
+	createTestVolumeForAccount(t, svc, store, "vol-2", 50, otherAccountID)
 
 	// Account A creates a snapshot
 	snapA, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
@@ -346,9 +372,9 @@ func TestDescribeSnapshots_AccountScoping(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Account B creates a snapshot
+	// Account B creates a snapshot of its own volume
 	snapB, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
-		VolumeId: aws.String("vol-1"),
+		VolumeId: aws.String("vol-2"),
 	}, otherAccountID)
 	require.NoError(t, err)
 
@@ -403,7 +429,9 @@ func TestDeleteSnapshot(t *testing.T) {
 	assert.Empty(t, result.Snapshots)
 }
 
-// TestDeleteSnapshot_WrongAccount tests that account B cannot delete account A's snapshot.
+// TestDeleteSnapshot_WrongAccount tests that account B cannot delete account
+// A's snapshot. It is not found rather than refused: the caller's prefix is
+// the read, so the endpoint never confirms another account's snapshot IDs.
 func TestDeleteSnapshot_WrongAccount(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
@@ -418,7 +446,7 @@ func TestDeleteSnapshot_WrongAccount(t *testing.T) {
 		SnapshotId: snap.SnapshotId,
 	}, otherAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorUnauthorizedOperation)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotNotFound)
 
 	// Verify snapshot still exists
 	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
@@ -524,12 +552,13 @@ func TestCopySnapshot_WrongAccount(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Snapshots, 1)
 
-	// Account B tries to copy account A's snapshot — should fail
+	// Account B tries to copy account A's snapshot — not found, not refused:
+	// the source is read under the caller's own prefix.
 	_, err = svc.CopySnapshot(context.Background(), &ec2.CopySnapshotInput{
 		SourceSnapshotId: result.Snapshots[0].SnapshotId,
 	}, otherAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorUnauthorizedOperation)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotNotFound)
 }
 
 // TestCopySnapshot_NotFound tests copying a non-existent snapshot.
@@ -750,20 +779,15 @@ func TestCreateSnapshot_CrossAccountVolumeRejected(t *testing.T) {
 	assert.Equal(t, testAccountID, *result.OwnerId)
 }
 
-// TestCreateSnapshot_PrePhase4VolumeAllowed tests that volumes without TenantID (pre-phase4) are allowed.
-func TestCreateSnapshot_PrePhase4VolumeAllowed(t *testing.T) {
-	svc, store := setupTestSnapshotService(t)
+// A volume with no owning account cannot be keyed, so the untenanted volume
+// any caller used to be able to snapshot is not a state the store can hold.
+func TestCreateSnapshot_UntenantedVolumeIsUnwritable(t *testing.T) {
+	_, store := setupTestSnapshotService(t)
 
-	// Create a volume with no TenantID (pre-phase4)
-	volumeID := "vol-legacy"
-	createTestVolume(t, svc, store, volumeID, 50)
-
-	// Any account can snapshot — backward compatibility
-	result, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
-		VolumeId: aws.String(volumeID),
-	}, otherAccountID)
-	require.NoError(t, err)
-	assert.Equal(t, otherAccountID, *result.OwnerId)
+	err := ebsmetadata.NewStore(store, "test-bucket").PutVolume(context.Background(), ebsmetadata.Volume{
+		VolumeID: "vol-untenanted", CapacityGiB: 50, AvailabilityZone: "us-east-1a",
+	})
+	require.Error(t, err)
 }
 
 // --- DescribeSnapshots filter tests ---
@@ -998,7 +1022,7 @@ func TestCreateDeleteSnapshot_UsesInjectedProvider(t *testing.T) {
 	snapshot, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-provider")}, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, snapshot)
-	cfgStored, err := svc.getSnapshotConfig(context.Background(), aws.StringValue(snapshot.SnapshotId))
+	cfgStored, err := svc.getSnapshotConfig(context.Background(), testAccountID, aws.StringValue(snapshot.SnapshotId))
 	require.NoError(t, err)
 	assert.Equal(t, "memory://snapshot/"+aws.StringValue(snapshot.SnapshotId), cfgStored.ProviderHandle)
 	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{SnapshotId: snapshot.SnapshotId}, testAccountID)
@@ -1041,23 +1065,28 @@ func TestDeleteSnapshot_Provider_BlockedByCloneRecordedInMetadata(t *testing.T) 
 	assert.EqualError(t, err, awserrors.ErrorInvalidSnapshotInUse)
 
 	// Once the clone is gone the snapshot is deletable again.
-	require.NoError(t, svc.metadata.DeleteVolume(ctx, "vol-clone"))
+	require.NoError(t, svc.metadata.DeleteVolume(ctx, testAccountID, "vol-clone"))
 	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String(snapshotID)}, testAccountID)
 	require.NoError(t, err)
 }
 
-// snapshotMetadataFailingObjectStore fails PutObject for any snapshot
-// metadata.json write and records the last such key, so a test can recover
-// the randomly generated snapshot ID CreateSnapshot attempted to persist.
+// snapshotMetadataFailingObjectStore fails PutObject for any snapshot document
+// write and records the last such key, so a test can recover the randomly
+// generated snapshot ID CreateSnapshot attempted to persist.
 type snapshotMetadataFailingObjectStore struct {
 	objectstore.ObjectStore
 
 	attemptedKey string
 }
 
+// snapshotDocumentPrefix is where the store keys snapshot documents. Spelled
+// out here so the fake matches only those writes, not the volume document
+// CreateSnapshot reads through on the way.
+const snapshotDocumentPrefix = "spinifex/ebsmetadata/v2/snapshots/"
+
 func (s *snapshotMetadataFailingObjectStore) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
 	key := aws.StringValue(input.Key)
-	if strings.HasSuffix(key, "/metadata.json") {
+	if strings.HasPrefix(key, snapshotDocumentPrefix) {
 		s.attemptedKey = key
 		return nil, errors.New("simulated metadata write failure")
 	}
@@ -1089,7 +1118,7 @@ func TestCreateSnapshot_Provider_RollbackOnMetadataWriteFailure(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorServerInternal)
 	require.NotEmpty(t, store.attemptedKey, "the snapshot metadata write must have been attempted")
 
-	snapshotID := strings.TrimSuffix(store.attemptedKey, "/metadata.json")
+	snapshotID := strings.TrimSuffix(path.Base(store.attemptedKey), ".json")
 	_, err = provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-rollback"})
 	require.NoError(t, err, "the source volume must be unaffected by the snapshot rollback")
 
@@ -1152,7 +1181,7 @@ func TestCopySnapshot_Provider_CreatesBackendSnapshot(t *testing.T) {
 	require.True(t, ok, "the copy must exist in the provider, not only in the control plane")
 	assert.Equal(t, "vol-copysrc", got.SourceVolumeID)
 
-	stored, err := svc.getSnapshotConfig(context.Background(), newID)
+	stored, err := svc.getSnapshotConfig(context.Background(), testAccountID, newID)
 	require.NoError(t, err)
 	assert.Equal(t, "vol-copysrc", stored.VolumeID)
 	assert.Equal(t, "copied", stored.Description)
@@ -1194,7 +1223,7 @@ func TestCopySnapshot_Provider_InheritsSourceDescription(t *testing.T) {
 
 	out, err := svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{SourceSnapshotId: src.SnapshotId}, testAccountID)
 	require.NoError(t, err)
-	stored, err := svc.getSnapshotConfig(context.Background(), aws.StringValue(out.SnapshotId))
+	stored, err := svc.getSnapshotConfig(context.Background(), testAccountID, aws.StringValue(out.SnapshotId))
 	require.NoError(t, err)
 	assert.Equal(t, "original text", stored.Description)
 }
@@ -1229,7 +1258,7 @@ func TestCopySnapshot_Provider_ForeignSnapshotRefused(t *testing.T) {
 
 	_, err = svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{SourceSnapshotId: src.SnapshotId}, "999988887777")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorUnauthorizedOperation, err.Error())
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
 
 	_, ok := provider.Snapshot(aws.StringValue(src.SnapshotId))
 	require.True(t, ok, "the source must survive a refused copy")

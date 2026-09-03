@@ -384,7 +384,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 	daemon := createTestDaemon(t, natsURL)
 
 	// Subscribe to DescribeInstanceTypes (no queue group for fan-out)
-	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceTypes", asMsgHandler(handleNATSRequest(daemon.instanceService.DescribeInstanceTypes)))
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceTypes", asMsgHandler(handleNATSRequest(daemon.node, daemon.instanceService.DescribeInstanceTypes)))
 	require.NoError(t, err, "Failed to subscribe to ec2.DescribeInstanceTypes")
 	defer sub.Unsubscribe()
 
@@ -1595,7 +1595,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 	err = cleaner.DeleteVolumes(instance)
 	require.NoError(t, err, "the still-attached boot volume must be deleted, not rejected as VolumeInUse")
 
-	_, err = daemon.volumeService.GetVolumeMetadata(volumeID)
+	_, err = daemon.volumeService.GetVolumeMetadata(testAccountID, volumeID)
 	require.Error(t, err, "the volume must actually be deleted")
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
 }
@@ -1633,7 +1633,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
 	err := cleaner.DeleteVolumes(instance)
 	require.NoError(t, err)
 
-	meta, err := daemon.volumeService.GetVolumeMetadata(volumeID)
+	meta, err := daemon.volumeService.GetVolumeMetadata(testAccountID, volumeID)
 	require.NoError(t, err, "a DeleteOnTermination=false volume must survive terminate")
 	assert.Equal(t, "available", meta.State)
 	assert.Empty(t, meta.AttachedInstance, "terminate must still detach it")
@@ -1673,7 +1673,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDele
 	err := cleaner.DeleteVolumes(instance)
 	require.NoError(t, err)
 
-	meta, err := daemon.volumeService.GetVolumeMetadata(volumeID)
+	meta, err := daemon.volumeService.GetVolumeMetadata(testAccountID, volumeID)
 	require.NoError(t, err, "a DeleteOnTermination=false volume must survive terminate")
 	assert.Equal(t, "available", meta.State)
 	assert.Empty(t, meta.AttachedInstance, "terminate must still detach it")
@@ -1743,7 +1743,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 	_, err = reaper.Sweep(context.Background())
 	require.NoError(t, err)
 
-	_, err = daemon.volumeService.GetVolumeMetadata(volumeID)
+	_, err = daemon.volumeService.GetVolumeMetadata(testAccountID, volumeID)
 	require.Error(t, err, "the retried delete must actually remove the volume")
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
 
@@ -1804,7 +1804,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach(t *testing.T) {
 	_, err := reaper.Sweep(context.Background())
 	require.NoError(t, err)
 
-	meta, err := daemon.volumeService.GetVolumeMetadata(volumeID)
+	meta, err := daemon.volumeService.GetVolumeMetadata(testAccountID, volumeID)
 	require.NoError(t, err, "the volume must survive: DeleteOnTermination=false")
 	assert.Equal(t, "available", meta.State)
 	assert.Empty(t, meta.AttachedInstance, "the retry must clear the stale attachment")
@@ -1862,7 +1862,7 @@ func TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, reaped, "the wedged terminate must be force-completed")
 
-	meta, err := daemon.volumeService.GetVolumeMetadata(volumeID)
+	meta, err := daemon.volumeService.GetVolumeMetadata(testAccountID, volumeID)
 	require.NoError(t, err)
 	assert.Equal(t, "available", meta.State,
 		"the force-complete path must still detach a non-Boot DeleteOnTermination=false volume")
@@ -3396,15 +3396,21 @@ func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
 
 // recordingVolState records UpdateVolumeState calls so the bulk-unmount test can
 // assert which volumes transitioned to available.
+// accounts is recorded separately because the account is a key segment of the
+// document, not a label: an unmount that writes under anything but the
+// instance's own account leaves the volume stuck in-use, and the adapter only
+// logs the error.
 type recordingVolState struct {
-	mu    sync.Mutex
-	calls []string
+	mu       sync.Mutex
+	calls    []string
+	accounts []string
 }
 
-func (r *recordingVolState) UpdateVolumeState(volumeID, state, instanceID, attachmentDevice string) error {
+func (r *recordingVolState) UpdateVolumeState(accountID, volumeID, state, instanceID, attachmentDevice string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, volumeID+":"+state)
+	r.accounts = append(r.accounts, accountID)
 	return nil
 }
 
@@ -3412,6 +3418,12 @@ func (r *recordingVolState) snapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.calls...)
+}
+
+func (r *recordingVolState) accountsSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.accounts...)
 }
 
 var _ vm.VolumeStateUpdater = (*recordingVolState)(nil)
@@ -3482,7 +3494,8 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	inst := &vm.VM{
-		ID: "i-unmount-retry",
+		ID:        "i-unmount-retry",
+		AccountID: "000000000042",
 		EBSRequests: types.EBSRequests{
 			Requests: []types.EBSRequest{
 				{Name: "vol-boot-retry", Boot: true, EFI: false},
@@ -3497,6 +3510,8 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 		"a NotFound response (already-completed seal) must still flip a non-boot data volume to available")
 	assert.NotContains(t, calls, "vol-boot-retry:available",
 		"a boot volume must stay attached even when the seal retry reports NotFound")
+	assert.Equal(t, []string{"000000000042"}, volState.accountsSnapshot(),
+		"the state write must be keyed on the instance's own account, not its ID")
 }
 
 // TestUnmountResponseError covers the shared seal-result parser used by both the
@@ -4575,4 +4590,39 @@ func TestConfigureEBSProvider_ViperblockdInjectsSameInstanceEverywhere(t *testin
 	assert.Same(t, d.ebsProvider, d.imageService.EBSProvider())
 	assert.Same(t, d.ebsProvider, d.snapshotService.EBSProvider())
 	assert.Same(t, d.ebsProvider, d.volumeService.EBSProvider())
+}
+
+// TestNodeIDNamespace_Agrees pins the one node ID namespace the identity-mode
+// fan-out depends on: the X-Node-ID reply header, config.ClusterConfig.Nodes'
+// keys, daemon.Heartbeat.Node (via NodeDiscoverResponse, which carries the
+// same value), and vm.VM.LastNode's source (vm.Deps.NodeID) must all be the
+// same identifier. If any of these diverged, responder-set coverage would
+// silently never match a configured node, and every fan-out would read as
+// permanently incomplete.
+func TestNodeIDNamespace_Agrees(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+
+	// config.ClusterConfig.Nodes' key for this node must be the node's own ID.
+	_, present := daemon.clusterConfig.Nodes[daemon.node]
+	require.True(t, present, "clusterConfig.Nodes must be keyed by this node's own ID")
+
+	// vm.Deps.NodeID (the source of vm.VM.LastNode) must be the same ID.
+	deps := daemon.buildVMManagerDeps()
+	assert.Equal(t, daemon.node, deps.NodeID)
+
+	// The X-Node-ID reply header, and NodeDiscoverResponse.Node (the source
+	// fed into daemon.Heartbeat.Node elsewhere), must both be the same ID too.
+	sub, err := daemon.natsConn.Subscribe("test.nodediscover", asMsgHandler(daemon.handleNodeDiscover))
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	reply, err := daemon.natsConn.Request("test.nodediscover", nil, 5*time.Second)
+	require.NoError(t, err)
+
+	assert.Equal(t, daemon.node, reply.Header.Get(utils.NodeIDHeader),
+		"the reply header must carry the same node ID as everything else")
+
+	var resp types.NodeDiscoverResponse
+	require.NoError(t, json.Unmarshal(reply.Data, &resp))
+	assert.Equal(t, daemon.node, resp.Node)
 }

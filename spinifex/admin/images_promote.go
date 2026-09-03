@@ -32,13 +32,15 @@ type PromoteImageResult struct {
 }
 
 // PromoteSystemImage promotes an account-owned AMI to a system image by
-// rewriting its ImageOwnerAlias to SystemOwnerAlias. After the call the AMI
-// is immediately visible to all accounts via DescribeImages.
+// rewriting its ImageOwnerAlias to SystemOwnerAlias and re-keying its snapshot
+// document under the global account. After the call the AMI is immediately
+// visible to all accounts via DescribeImages.
 //
 // Guards:
 //   - ImageID must have "ami-" prefix
 //   - config.json must exist and parse cleanly
 //   - AMI must currently be account-owned; already-system AMIs are rejected
+//   - the snapshot document must be readable, so it can be re-keyed
 func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts PromoteImageOpts) (*PromoteImageResult, error) {
 	if !strings.HasPrefix(opts.ImageID, "ami-") {
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
@@ -62,15 +64,67 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 	}
 
 	prev := meta.ImageOwnerAlias
-	meta.ImageOwnerAlias = SystemOwnerAlias
+	metaStore := ebsmetadata.NewStore(store, bucket)
 
-	if err := ebsmetadata.NewStore(store, bucket).PutAMI(context.Background(), meta); err != nil {
+	// The snapshot document has to move before the alias is rewritten: readers
+	// derive its account from the alias, so a system alias over a tenant-keyed
+	// snapshot resolves to nothing.
+	snap, moveSnapshot, err := readPromotedSnapshot(metaStore, prev, meta.SnapshotID)
+	switch {
+	case err == nil:
+		// ok
+	case errors.Is(err, ebsmetadata.ErrCorruptDocument):
+		return nil, fmt.Errorf("%s references snapshot %s, whose document is corrupt and cannot be re-keyed; promotion not allowed",
+			opts.ImageID, meta.SnapshotID)
+	default:
+		slog.Error("PromoteSystemImage: read snapshot document", "imageId", opts.ImageID, "snapshotId", meta.SnapshotID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if moveSnapshot {
+		snap.OwnerID = utils.GlobalAccountID
+		if err := metaStore.PutSnapshot(context.Background(), snap); err != nil {
+			slog.Error("PromoteSystemImage: write snapshot document under the global account",
+				"imageId", opts.ImageID, "snapshotId", meta.SnapshotID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+
+	meta.ImageOwnerAlias = SystemOwnerAlias
+	if err := metaStore.PutAMI(context.Background(), meta); err != nil {
 		slog.Error("PromoteSystemImage: write AMI document", "imageId", opts.ImageID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.Info("PromoteSystemImage completed", "imageId", opts.ImageID, "previousOwner", prev, "newOwner", SystemOwnerAlias)
+	// Last, so every intermediate state resolves: until the alias is rewritten
+	// readers look under prev, and afterwards under the global account.
+	if moveSnapshot {
+		if err := metaStore.DeleteSnapshot(context.Background(), prev, meta.SnapshotID); err != nil {
+			slog.Error("PromoteSystemImage: delete the superseded snapshot document; the promoting account can still delete its blocks",
+				"imageId", opts.ImageID, "snapshotId", meta.SnapshotID, "previousOwner", prev, "err", err)
+		}
+	}
+
+	slog.Info("PromoteSystemImage completed", "imageId", opts.ImageID, "previousOwner", prev,
+		"newOwner", SystemOwnerAlias, "snapshotMoved", moveSnapshot)
 	return &PromoteImageResult{PreviousOwner: prev}, nil
+}
+
+// readPromotedSnapshot reads the document an AMI's snapshot is keyed under
+// before promotion. A bundled image has no snapshot of its own, which is not an
+// error: it already resolves under the global account by falling back.
+func readPromotedSnapshot(store *ebsmetadata.Store, owner, snapshotID string) (ebsmetadata.Snapshot, bool, error) {
+	if snapshotID == "" {
+		return ebsmetadata.Snapshot{}, false, nil
+	}
+	snap, err := store.GetSnapshot(context.Background(), owner, snapshotID)
+	switch {
+	case err == nil:
+		return snap, true, nil
+	case objectstore.IsNoSuchKeyError(err):
+		return ebsmetadata.Snapshot{}, false, nil
+	default:
+		return ebsmetadata.Snapshot{}, false, err
+	}
 }
 
 // GetAMIMetadata reads and returns the control-plane document for the given

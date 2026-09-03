@@ -22,6 +22,7 @@ import (
 var gatewayDoorKeys = []string{
 	iampolicy.KeySecureTransport,
 	iampolicy.KeyUsername,
+	iampolicy.KeyUserID,
 	iampolicy.KeyPrincipalAccount,
 	iampolicy.KeySourceIP,
 }
@@ -71,14 +72,21 @@ func emittedKeys(t *testing.T) map[string]string {
 			accountID:      "000000000001",
 			principalType:  principalTypeAssumedRole,
 			assumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/session",
+			assumedRoleID:  "AROASHAREDOPS:session",
 		},
 	}
 
+	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
 	union := make(map[string]string)
 	for name, principal := range principals {
 		r := httptest.NewRequest(http.MethodPost, "/?prefix=home/", nil)
 		r.TLS = &tls.ConnectionState{}
 		r.RemoteAddr = "10.4.1.9:52344"
+		// Resolved the way the middleware resolves it, so the gate cannot pass on
+		// a value only the test supplies.
+		userID, err := gw.principalUserID(principal)
+		require.NoError(t, err)
+		principal.userID = userID
 		for key := range requestConditionKeys(r, principal) {
 			union[key] = name
 		}
@@ -141,6 +149,55 @@ func TestValidatePolicyDocument_AcceptsExactlyTheSupportedConditions(t *testing.
 					"would be stored and then compare false forever", op, key)
 		}
 	}
+}
+
+// The variable half of the same question. A reference the write path accepts and
+// the evaluator cannot resolve is stored as a pattern that selects nothing on an
+// Allow and everything it names on a Deny; one it rejects that the evaluator does
+// resolve is a policy an operator cannot write.
+func TestValidatePolicyDocument_AcceptsExactlyTheSubstitutableVariables(t *testing.T) {
+	for _, key := range append(allConditionKeys, "aws:bogus") {
+		reference := iampolicy.VariablePrefix + key + "}"
+		_, unresolvable := iampolicy.UnsupportedVariable(reference)
+
+		for _, doc := range []string{
+			resourceDocument(t, "arn:aws:s3:::reports/"+reference+"/*"),
+			conditionDocument(t, iampolicy.OpStringLike, iampolicy.KeyS3Prefix, reference+"/*"),
+		} {
+			_, err := handlers_iam.ValidatePolicyDocument(doc)
+			if unresolvable {
+				assert.Error(t, err,
+					"the write path accepts %s, which the evaluator cannot resolve: the policy would "+
+						"be stored selecting nothing on an Allow and everything on a Deny", reference)
+				continue
+			}
+			assert.NoError(t, err,
+				"the evaluator resolves %s but the write path rejects it, so the policy cannot be "+
+					"written", reference)
+		}
+	}
+}
+
+// A malformed reference resolves nowhere and is rejected on every path.
+func TestValidatePolicyDocument_RejectsUnterminatedVariable(t *testing.T) {
+	_, err := handlers_iam.ValidatePolicyDocument(
+		resourceDocument(t, "arn:aws:s3:::reports/"+iampolicy.VariablePrefix+iampolicy.KeyUsername))
+	assert.ErrorContains(t, err, "unterminated policy variable reference")
+}
+
+func resourceDocument(t *testing.T, resource string) string {
+	t.Helper()
+
+	doc, err := json.Marshal(map[string]any{
+		"Version": "2012-10-17",
+		"Statement": []map[string]any{{
+			"Effect":   "Allow",
+			"Action":   []string{"s3:GetObject"},
+			"Resource": []string{resource},
+		}},
+	})
+	require.NoError(t, err, "marshalling the %q document", resource)
+	return string(doc)
 }
 
 func conditionDocument(t *testing.T, op, key, value string) string {

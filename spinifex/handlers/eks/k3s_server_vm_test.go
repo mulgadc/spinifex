@@ -440,6 +440,20 @@ func TestBuildK3sUserData_EgressSelectorDisabledWithKonnConfig(t *testing.T) {
 		"the EgressSelectorConfiguration file routes the cluster egress to the konn socket")
 }
 
+func TestEgressSelectorConfigYAML_TunnelsControlPlaneAndCluster(t *testing.T) {
+	cfg := egressSelectorConfigYAML()
+
+	// Admission webhooks and aggregated apiservers dial via `controlplane`; only
+	// kubelet exec/logs/portforward use `cluster`. Omitting controlplane leaves
+	// webhook dials direct, which cannot route from the CP VPC to the service CIDR.
+	assert.Contains(t, cfg, "  - name: controlplane",
+		"webhook dials use the controlplane egress and must ride the konnectivity tunnel")
+	assert.Contains(t, cfg, "  - name: cluster",
+		"kubelet exec/logs dials use the cluster egress")
+	assert.Equal(t, 2, strings.Count(cfg, "udsName: "+konnectivityUDSPath),
+		"both egress selections must terminate on the konnectivity socket")
+}
+
 func TestBuildK3sUserData_KonnectivityEnv(t *testing.T) {
 	in := validK3sInput()
 	in.PrivateEndpointIP = "10.32.100.4"

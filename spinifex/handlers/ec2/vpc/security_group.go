@@ -346,7 +346,12 @@ func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, gro
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if slices.Contains(eni.SecurityGroupIds, groupId) {
-			return errors.New(awserrors.ErrorDependencyViolation)
+			// Name the blocker in the refusal and in the logs: recovering it
+			// afterwards otherwise means cross-referencing the whole ENI table.
+			slog.WarnContext(ctx, "checkSGDependencies: SG still attached to ENI",
+				"groupId", groupId, "eniId", eni.NetworkInterfaceId, "accountID", accountID)
+			return awserrors.Errorf(awserrors.ErrorDependencyViolation,
+				"the security group has a dependent network interface %s that must be detached first", eni.NetworkInterfaceId)
 		}
 	}
 
@@ -373,16 +378,28 @@ func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, gro
 		}
 		for _, r := range other.IngressRules {
 			if r.SourceSG == groupId {
-				return errors.New(awserrors.ErrorDependencyViolation)
+				return sgReferencedByError(ctx, accountID, groupId, other.GroupId, "ingress")
 			}
 		}
 		for _, r := range other.EgressRules {
 			if r.SourceSG == groupId {
-				return errors.New(awserrors.ErrorDependencyViolation)
+				return sgReferencedByError(ctx, accountID, groupId, other.GroupId, "egress")
 			}
 		}
 	}
 	return nil
+}
+
+// sgReferencedByError logs and returns the DependencyViolation naming the SG
+// whose rule still references groupId, so the blocking id survives even when
+// the message does not reach the client.
+func sgReferencedByError(ctx context.Context, accountID, groupId, referencingGroupId, direction string) error {
+	slog.WarnContext(ctx, "checkSGDependencies: SG referenced by another SG's rule",
+		"groupId", groupId, "referencingGroupId", referencingGroupId,
+		"direction", direction, "accountID", accountID)
+	return awserrors.Errorf(awserrors.ErrorDependencyViolation,
+		"the security group is referenced by a %s rule on security group %s that must be revoked first",
+		direction, referencingGroupId)
 }
 
 // describeSecurityGroupsValidFilters defines the set of filter names accepted by DescribeSecurityGroups.

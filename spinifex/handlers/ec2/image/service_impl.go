@@ -372,14 +372,14 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	if params.IsRunning {
 		snapshotErr = s.snapshotRunningVolume(params.RootVolumeID, snapshotID, accountID)
 	} else {
-		snapshotErr = s.snapshotStoppedVolume(params.RootVolumeID, snapshotID)
+		snapshotErr = s.snapshotStoppedVolume(params.RootVolumeID, snapshotID, accountID)
 	}
 	if snapshotErr != nil {
 		return nil, snapshotErr
 	}
 
 	// Step 2: Read source volume config for size
-	volMeta, err := s.getVolumeMetadata(context.Background(), params.RootVolumeID)
+	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, params.RootVolumeID)
 	if err != nil {
 		slog.Error("CreateImageFromInstance: failed to read volume metadata", "volumeId", params.RootVolumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -449,7 +449,7 @@ func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID, accountID
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	volMeta, err := s.getVolumeMetadata(context.Background(), volumeID)
+	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, volumeID)
 	if err != nil {
 		slog.Error("snapshotRunningVolume: failed to read volume metadata", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
@@ -472,12 +472,12 @@ func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID, accountID
 // volume is stopped/detached, so nothing is buffered on a serving node.
 // viperblockd's handleCreateSnapshot prefers a live mounted engine over opening
 // a second one, so it handles the mounted case itself.
-func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID string) error {
+func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID, accountID string) error {
 	if s.config == nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	volMeta, err := s.getVolumeMetadata(context.Background(), volumeID)
+	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, volumeID)
 	if err != nil {
 		slog.Error("snapshotStoppedVolume: failed to read volume metadata", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
@@ -506,8 +506,8 @@ func (s *ImageServiceImpl) createSnapshot(ctx context.Context, volMeta ebsmetada
 
 // getVolumeMetadata reads a volume's control-plane document, remapping a
 // missing document to InvalidVolume.NotFound.
-func (s *ImageServiceImpl) getVolumeMetadata(ctx context.Context, volumeID string) (ebsmetadata.Volume, error) {
-	meta, err := s.metadata.GetVolume(ctx, volumeID)
+func (s *ImageServiceImpl) getVolumeMetadata(ctx context.Context, accountID, volumeID string) (ebsmetadata.Volume, error) {
+	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
 			return ebsmetadata.Volume{}, errors.New(awserrors.ErrorInvalidVolumeNotFound)
@@ -539,9 +539,21 @@ func (s *ImageServiceImpl) GetAMIConfig(ctx context.Context, imageID string) (eb
 	return s.metadata.GetAMI(ctx, imageID)
 }
 
+// snapshotAccountForAMI derives the account an AMI's snapshot document is keyed
+// under: an account-ID alias keys under itself, a system alias under the global
+// account. derived reports which, so the bundled-AMI fallback below cannot
+// drift from this predicate. An empty alias is a corrupt document rather than a
+// system image, so it derives nothing and the fallback cannot answer for it.
+func snapshotAccountForAMI(meta ebsmetadata.AMI) (accountID string, derived bool) {
+	if utils.IsAccountID(meta.ImageOwnerAlias) {
+		return meta.ImageOwnerAlias, false
+	}
+	return utils.GlobalAccountID, meta.ImageOwnerAlias != ""
+}
+
 // GetAMISourceVolumeID returns the volume whose blocks imageID's snapshot
-// references, read from the snapshot's metadata.json. Bundled system AMIs have
-// no standalone snapshot metadata; their snapshot is named after the AMI.
+// references, read from the snapshot's document. Bundled system AMIs have no
+// standalone snapshot metadata; their snapshot is named after the AMI.
 func (s *ImageServiceImpl) GetAMISourceVolumeID(ctx context.Context, imageID string) (string, error) {
 	meta, err := s.GetAMIConfig(ctx, imageID)
 	if err != nil {
@@ -555,14 +567,19 @@ func (s *ImageServiceImpl) GetAMISourceVolumeID(ctx context.Context, imageID str
 		return "", errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
 
-	snapCfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(ctx, s.store, s.bucketName, meta.SnapshotID)
+	// The snapshot is keyed under its own owner, which for a system AMI is the
+	// global account rather than the alias and rather than the caller. Falling
+	// back on the caller's miss would silently return an image ID where a
+	// volume ID belongs for an imported system AMI.
+	snapAccount, derived := snapshotAccountForAMI(meta)
+	snapCfg, err := s.metadata.GetSnapshot(ctx, snapAccount, meta.SnapshotID)
 	if err != nil {
-		if objectstore.IsNoSuchKeyError(err) && meta.ImageOwnerAlias != "" && !utils.IsAccountID(meta.ImageOwnerAlias) {
+		if objectstore.IsNoSuchKeyError(err) && derived {
 			slog.WarnContext(ctx, "GetAMISourceVolumeID: system AMI has no snapshot metadata document, falling back to imageID as volume ID",
 				"imageId", imageID, "snapshotId", meta.SnapshotID, "imageOwnerAlias", meta.ImageOwnerAlias)
 			return imageID, nil
 		}
-		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, handlers_ec2_snapshot.ErrCorruptSnapshotMetadata) {
+		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, ebsmetadata.ErrCorruptDocument) {
 			return "", errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 		}
 		slog.ErrorContext(ctx, "GetAMISourceVolumeID: failed to read snapshot metadata",
@@ -696,9 +713,10 @@ func (s *ImageServiceImpl) loadAMIForMutation(ctx context.Context, imageID, acco
 	return meta, nil
 }
 
-// putSnapshotMetadata stores snapshot metadata in S3 using the canonical SnapshotConfig type.
+// putSnapshotMetadata stores the snapshot's control-plane document under the
+// account that owns it.
 func (s *ImageServiceImpl) putSnapshotMetadata(ctx context.Context, snapshotID, volumeID string, volumeSizeGiB uint64, accountID string) error {
-	cfg := handlers_ec2_snapshot.SnapshotConfig{
+	return s.metadata.PutSnapshot(ctx, ebsmetadata.Snapshot{
 		SnapshotID: snapshotID,
 		VolumeID:   volumeID,
 		VolumeSize: safecast.Uint64ToInt64(volumeSizeGiB),
@@ -706,8 +724,7 @@ func (s *ImageServiceImpl) putSnapshotMetadata(ctx context.Context, snapshotID, 
 		Progress:   "100%",
 		StartTime:  time.Now(),
 		OwnerID:    accountID,
-	}
-	return handlers_ec2_snapshot.WriteSnapshotConfig(s.store, s.bucketName, snapshotID, &cfg)
+	})
 }
 
 // CopyImage clones an AMI same-region, metadata-only: the new snapshot shares the
@@ -742,17 +759,20 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 	if srcMeta.SnapshotID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
-	srcSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(ctx, s.store, s.bucketName, srcMeta.SnapshotID)
+	// Read the source snapshot under its own owner, not the caller's: a system
+	// AMI's snapshot is keyed under the global account.
+	srcSnapAccount, srcSnapDerived := snapshotAccountForAMI(srcMeta)
+	srcSnap, err := s.metadata.GetSnapshot(ctx, srcSnapAccount, srcMeta.SnapshotID)
 	if err != nil {
-		// Bundled system AMIs have no standalone snap-xxx/metadata.json; synthesize
-		// a minimal snap view using VolumeID = sourceImageID so CopyImage succeeds.
-		if objectstore.IsNoSuchKeyError(err) && srcMeta.ImageOwnerAlias != "" && !utils.IsAccountID(srcMeta.ImageOwnerAlias) {
-			srcSnap = &handlers_ec2_snapshot.SnapshotConfig{
+		// Bundled system AMIs have no standalone snapshot document; synthesize a
+		// minimal view using VolumeID = sourceImageID so CopyImage succeeds.
+		if objectstore.IsNoSuchKeyError(err) && srcSnapDerived {
+			srcSnap = ebsmetadata.Snapshot{
 				SnapshotID: srcMeta.SnapshotID,
 				VolumeID:   sourceImageID,
 				VolumeSize: safecast.Uint64ToInt64(srcMeta.VolumeSizeGiB),
 			}
-		} else if objectstore.IsNoSuchKeyError(err) || errors.Is(err, handlers_ec2_snapshot.ErrCorruptSnapshotMetadata) {
+		} else if objectstore.IsNoSuchKeyError(err) || errors.Is(err, ebsmetadata.ErrCorruptDocument) {
 			return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 		} else {
 			slog.ErrorContext(ctx, "CopyImage: failed to read source snapshot metadata",
@@ -816,11 +836,7 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 		slog.ErrorContext(ctx, "CopyImage: failed to write AMI config",
 			"amiId", newImageID, "orphanSnapshotId", newSnapshotID, "err", err)
 		// Best-effort rollback of the orphaned snapshot metadata.
-		snapKey := handlers_ec2_snapshot.GetSnapshotKey(newSnapshotID)
-		if _, delErr := s.store.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(s.bucketName),
-			Key:    aws.String(snapKey),
-		}); delErr != nil {
+		if delErr := s.metadata.DeleteSnapshot(ctx, accountID, newSnapshotID); delErr != nil {
 			slog.ErrorContext(ctx, "CopyImage: failed to roll back orphaned snapshot metadata",
 				"snapshotId", newSnapshotID, "err", delErr)
 		}
@@ -937,6 +953,13 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
+	// The snapshot is read under the caller's account, so an untenanted caller
+	// has no prefix to read from. Refuse at the boundary rather than in the key
+	// builder, where the rejection would surface as an internal error.
+	if accountID == "" {
+		return nil, errors.New(awserrors.ErrorAuthFailure)
+	}
+
 	name := *input.Name
 
 	rootBDM := pickRootSnapshotBDM(input.BlockDeviceMappings, input.RootDeviceName)
@@ -945,21 +968,17 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 	}
 	snapshotID := *rootBDM.Ebs.SnapshotId
 
-	snapCfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(ctx, s.store, s.bucketName, snapshotID)
+	// The snapshot arrives through a caller-supplied BlockDeviceMapping, not
+	// through an AMI, so there is no owner alias to derive from: it is read
+	// under the caller's own account and the key is the ownership check.
+	snapCfg, err := s.metadata.GetSnapshot(ctx, accountID, snapshotID)
 	if err != nil {
 		// Corrupt snapshot is surfaced as NotFound, same as CopyImage.
-		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, handlers_ec2_snapshot.ErrCorruptSnapshotMetadata) {
+		if objectstore.IsNoSuchKeyError(err) || errors.Is(err, ebsmetadata.ErrCorruptDocument) {
 			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 		}
 		slog.ErrorContext(ctx, "RegisterImage: failed to read snapshot metadata", "snapshotId", snapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Only the snapshot owner (or any caller for system snapshots) can register.
-	if utils.IsAccountID(snapCfg.OwnerID) && snapCfg.OwnerID != accountID {
-		slog.WarnContext(ctx, "RegisterImage: rejected cross-account snapshot",
-			"snapshotId", snapshotID, "snapshotOwner", snapCfg.OwnerID, "accountId", accountID)
-		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
 	}
 
 	snapSizeGiB := uint64(0)

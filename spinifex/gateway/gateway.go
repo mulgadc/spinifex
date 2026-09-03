@@ -30,6 +30,7 @@ import (
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
+	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
@@ -57,6 +58,9 @@ const (
 	ctxPrincipalType  contextKey = "sigv4.principalType"
 	ctxAssumedRoleARN contextKey = "sigv4.assumedRoleARN"
 	ctxAssumedRoleID  contextKey = "sigv4.assumedRoleID"
+	// ctxUserID carries aws:userid, resolved once by the SigV4 middleware so
+	// every policy check in a request evaluates the same value.
+	ctxUserID contextKey = "sigv4.userID"
 	// ctxUnderlyingRoleARN carries the IAM role ARN backing an assumed-role session.
 	// Policy enforcement resolves the role name from this, never from ctxIdentity
 	// (attacker-influenced RoleSessionName).
@@ -100,6 +104,11 @@ type GatewayConfig struct {
 	RootCAs       *x509.CertPool
 	ExpectedNodes int    // Number of expected spinifex nodes for multi-node operations
 	Region        string // Region this gateway is running in
+	// NodeIDs is the configured cluster node set — the keys of
+	// config.ClusterConfig.Nodes — used to judge a fan-out's completeness by
+	// responder identity rather than by count. Distinct from ExpectedNodes,
+	// which stays a count for the callers that only want one.
+	NodeIDs []string
 	// The last discovered node count and when it was discovered, so the
 	// discovery fan-out runs once per activeNodesTTL rather than once per
 	// request that needs to know how many nodes to wait for.
@@ -586,6 +595,7 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 		assumedRoleARN:    mustCtxString(r, ctxAssumedRoleARN),
 		assumedRoleID:     mustCtxString(r, ctxAssumedRoleID),
 		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
+		userID:            mustCtxString(r, ctxUserID),
 	}
 	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources,
 		requestConditionKeys(r, principal))
@@ -611,6 +621,11 @@ func requestConditionKeys(r *http.Request, principal principalContext) iampolicy
 	if principal.accountID != "" {
 		keys[iampolicy.KeyPrincipalAccount] = principal.accountID
 	}
+	// Resolved once where the principal was, so a per-check lookup cannot leave
+	// one check in a request evaluating against a different context than the next.
+	if principal.userID != "" {
+		keys[iampolicy.KeyUserID] = principal.userID
+	}
 	// Derived from the request rather than read from the context: the OCI
 	// registry chain never runs SigV4AuthMiddleware, so a context-carried
 	// address would be absent there and every aws:SourceIp condition inert.
@@ -618,6 +633,39 @@ func requestConditionKeys(r *http.Request, principal principalContext) iampolicy
 		keys[iampolicy.KeySourceIP] = ip
 	}
 	return keys
+}
+
+// principalUserID resolves aws:userid: an IAM user's unique ID, the role ID and
+// session name STS minted for a role session, or the account ID for root. Both
+// halves of a session's ID come from the resolved role, so unlike aws:username
+// it is not caller-chosen.
+//
+// A principal with no ID on record returns empty and the door omits the key. A
+// dependency fault returns InternalError instead: authorizing against a context
+// missing the key silently narrows an Allow and widens a Deny.
+func (gw *GatewayConfig) principalUserID(principal principalContext) (string, error) {
+	if principal.identity == "" || principal.accountID == "" {
+		return "", nil
+	}
+	userID, err := gateway_sts.ResolveCallerUserID(principal.accountID, principal.principalType,
+		principal.identity, principal.assumedRoleID, gw.IAMService)
+	switch {
+	case err == nil:
+		if userID == "" {
+			slog.Warn("aws:userid unavailable: principal record carries no user ID",
+				"accountID", principal.accountID, "identity", principal.identity,
+				"principalType", principal.principalType)
+		}
+		return userID, nil
+	case strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity):
+		slog.Warn("aws:userid unavailable: no such IAM user",
+			"accountID", principal.accountID, "user", principal.identity)
+		return "", nil
+	default:
+		slog.Error("aws:userid: IAM dependency fault, refusing to authorize on a degraded context",
+			"accountID", principal.accountID, "identity", principal.identity, "err", err)
+		return "", errors.New(awserrors.ErrorInternalError)
+	}
 }
 
 // mustCtxString reads a string context value, defaulting to "" for an absent
@@ -949,7 +997,7 @@ func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 	nodesSeen := make(map[string]bool)
 	for _, frame := range frames {
 		var response types.NodeDiscoverResponse
-		if err := json.Unmarshal(frame, &response); err != nil {
+		if err := json.Unmarshal(frame.Data, &response); err != nil {
 			slog.DebugContext(ctx, "DiscoverActiveNodes: Failed to unmarshal response", "err", err)
 			continue
 		}

@@ -61,7 +61,7 @@ func DescribeInstanceAttribute(ctx context.Context, input *ec2.DescribeInstanceA
 
 	if len(frames) > 0 {
 		var out ec2.DescribeInstanceAttributeOutput
-		if json.Unmarshal(frames[0], &out) == nil {
+		if json.Unmarshal(frames[0].Data, &out) == nil {
 			slog.InfoContext(ctx, "DescribeInstanceAttribute: Completed successfully",
 				"instance_id", *input.InstanceId, "responses", sum.Received)
 			return &out, nil

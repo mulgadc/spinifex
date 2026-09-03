@@ -365,7 +365,8 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
 	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
+			"policy %q on role %q: %w", policyName, roleName, err)
 	}
 
 	// An unchanged document writes nothing: converge loops re-assert the same

@@ -24,7 +24,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 	slog.InfoContext(ctx, "Attaching ENI to instance", "instanceId", command.ID)
 
 	if command.AttachENIData == nil || command.AttachENIData.NetworkInterfaceID == "" {
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidParameterValue)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidParameterValue)
 	}
 
 	eniID := command.AttachENIData.NetworkInterfaceID
@@ -32,20 +32,20 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 	accountID := utils.AccountIDFromMsg(msg)
 
 	if status := d.vmMgr.Status(instance); status != vm.StateRunning {
-		return respondErrorOutcome(msg, awserrors.ErrorIncorrectInstanceState)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorIncorrectInstanceState)
 	}
 
 	record, err := d.vpcService.GetENIRecord(accountID, eniID)
 	if err != nil {
-		return respondServiceErrorOutcome(msg, err)
+		return respondServiceErrorOutcome(d.node, msg, err)
 	}
 	if record.Status == "in-use" && record.InstanceId != instance.ID {
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidNetworkInterfaceInUse)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidNetworkInterfaceInUse)
 	}
 
 	attachmentID, err := d.vpcService.AttachENI(accountID, eniID, instance.ID, deviceIndex)
 	if err != nil {
-		return respondServiceErrorOutcome(msg, err)
+		return respondServiceErrorOutcome(d.node, msg, err)
 	}
 	if err := d.vpcService.UpdateENI(accountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
 		r.AttachmentStatus = "attaching"
@@ -69,7 +69,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 			r.HotPlugSlot = 0
 			r.LastAttachError = hotPlugErr.Error()
 		})
-		return respondErrorOutcome(msg, eniHotplugErrorCode(hotPlugErr))
+		return respondErrorOutcome(d.node, msg, eniHotplugErrorCode(hotPlugErr))
 	}
 
 	if err := d.vpcService.UpdateENI(accountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
@@ -89,7 +89,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 		"deviceIndex":  deviceIndex,
 	})
 
-	respondWithJSON(msg, ec2.AttachNetworkInterfaceOutput{
+	respondWithJSON(d.node, msg, ec2.AttachNetworkInterfaceOutput{
 		AttachmentId: aws.String(attachmentID),
 	})
 	return outcomeSuccess
@@ -102,7 +102,7 @@ func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg
 	slog.InfoContext(ctx, "Detaching ENI from instance", "instanceId", command.ID)
 
 	if command.DetachENIData == nil || command.DetachENIData.AttachmentID == "" {
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidParameterValue)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidParameterValue)
 	}
 
 	attachmentID := command.DetachENIData.AttachmentID
@@ -111,14 +111,14 @@ func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg
 
 	record, err := d.vpcService.FindENIByAttachment(accountID, attachmentID)
 	if err != nil {
-		return respondServiceErrorOutcome(msg, err)
+		return respondServiceErrorOutcome(d.node, msg, err)
 	}
 	if record.InstanceId != instance.ID {
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidAttachmentIDNotFound)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidAttachmentIDNotFound)
 	}
 
 	if status := d.vmMgr.Status(instance); status != vm.StateRunning {
-		return respondErrorOutcome(msg, awserrors.ErrorIncorrectInstanceState)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorIncorrectInstanceState)
 	}
 
 	if err := d.vpcService.UpdateENI(accountID, record.NetworkInterfaceId, func(r *handlers_ec2_vpc.ENIRecord) {
@@ -137,7 +137,7 @@ func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg
 		_ = d.vpcService.UpdateENI(accountID, record.NetworkInterfaceId, func(r *handlers_ec2_vpc.ENIRecord) {
 			r.DetachInFlight = false
 		})
-		return respondErrorOutcome(msg, eniHotplugErrorCode(err))
+		return respondErrorOutcome(d.node, msg, eniHotplugErrorCode(err))
 	}
 
 	if err := d.vpcService.DetachENI(ctx, accountID, record.NetworkInterfaceId); err != nil {
@@ -158,7 +158,7 @@ func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg
 		"attachmentId": attachmentID,
 	})
 
-	respondWithJSON(msg, ec2.DetachNetworkInterfaceOutput{})
+	respondWithJSON(d.node, msg, ec2.DetachNetworkInterfaceOutput{})
 	return outcomeSuccess
 }
 

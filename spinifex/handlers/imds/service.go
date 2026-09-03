@@ -83,8 +83,13 @@ type IMDSServiceImpl struct {
 // non-empty, each per-tap responder also serves the VPC DNS shim on
 // 169.254.169.253:53, relaying to northstar's unprivileged wildcard listener.
 // caCertPath is the deployment CA served at /spinifex/ca.pem; empty 404s it.
+// localState and records back the local-first instance lookup: localState
+// reads this node's own VM state, records falls back to the shared instance
+// record space for an instance that has moved off this node. Either may be
+// nil, degrading that source to a miss rather than failing IMDS to start —
+// the caller (vpcd) owns their construction and availability.
 // ctx bounds the bucket opens only; each served request carries its own.
-func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, listTaps listTapsFunc, baseDomain, internalDomain, caCertPath string, resolverIPs []string) (*IMDSServiceImpl, error) {
+func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState localStateReader, records recordLoader, listTaps listTapsFunc, baseDomain, internalDomain, caCertPath string, resolverIPs []string) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -137,7 +142,7 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 			sgKV:     sgKV,
 			subnetKV: subnetKV,
 			vpcKV:    vpcKV,
-			lookup:   &natsInstanceLookup{nc: natsConn, expectedNodes: expectedNodes},
+			lookup:   &localInstanceLookup{local: localState, records: records},
 		},
 		tokens:         newTokenStore(),
 		v1Allow:        newV1AllowCache(),

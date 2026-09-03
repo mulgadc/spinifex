@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -369,7 +370,51 @@ const (
 	maxScatterGatherResponseSize = 10 * 1024 * 1024
 	// maxScatterGatherUnboundedResponses caps responses when expectedNodes is 0.
 	maxScatterGatherUnboundedResponses = 256
+	// maxIdentityGatherFrames caps total frames an identity-mode fan-out
+	// (CollectUntilDeadline, or CollectServeData with ExpectedResponders set)
+	// will process, independent of cluster size, so a stray publisher or a
+	// hot restart loop cannot hold collection open for the full deadline.
+	maxIdentityGatherFrames = 4096
+	// maxIdentityGatherBytes caps total retained payload bytes for an
+	// identity-mode fan-out. Only the first payload per node is retained, so
+	// this bounds memory to roughly the cluster's healthy-case response size.
+	maxIdentityGatherBytes = 64 * 1024 * 1024
 )
+
+// NodeIDHeader is the NATS reply header key carrying the responding daemon
+// node's ID, set on every daemon reply so a fan-out can attribute a frame.
+const NodeIDHeader = "X-Node-ID"
+
+// NodeIDFromMsg extracts the responding node's ID from a NATS reply header, or "" if absent.
+func NodeIDFromMsg(msg *nats.Msg) string {
+	if msg == nil || msg.Header == nil {
+		return ""
+	}
+	return msg.Header.Get(NodeIDHeader)
+}
+
+// CollectionMode governs when a Gather fan-out stops waiting for replies.
+type CollectionMode int
+
+const (
+	// CollectServeData exits once its stop condition is met — ExpectedNodes
+	// frames, ExpectedResponders unique nodes, or StopOnFirst. The zero value,
+	// so every caller that does not opt in keeps today's exact behavior.
+	CollectServeData CollectionMode = iota
+	// CollectUntilDeadline collects for the full Timeout. A fan-out proving a
+	// negative (nobody has it) cannot be established from a prefix of the
+	// replies — the frame that would refute it is the one most likely to be
+	// late. GatherOpts.Settled is the one way out, for the case where the
+	// replies so far mean nothing is left to prove.
+	CollectUntilDeadline
+)
+
+// Frame is one daemon reply, tagged with the responding node's ID ("" when
+// the reply carried no node ID header, e.g. an older daemon).
+type Frame struct {
+	NodeID string
+	Data   []byte
+}
 
 // Summary is a local tally of a fan-out; it is never sent over the wire.
 type Summary struct {
@@ -378,27 +423,68 @@ type Summary struct {
 	ErrorCodes     map[string]int // AWS error code -> count across error frames
 	FirstClient4xx string         // first deterministic 4xx code seen, "" if none
 	TimedOut       bool           // deadline hit before the stop condition was met
+
+	// The rest are populated only in identity mode (ExpectedResponders set,
+	// or Mode == CollectUntilDeadline). They stay nil/zero for a caller that
+	// does not opt in, so that caller's behavior is unchanged by construction.
+	Responders        map[string]bool // node ID -> answered at all (success or error); terminates collection under CollectServeData
+	SuccessResponders map[string]bool // node ID -> answered with a decodable non-error frame
+	ErrorResponders   map[string]bool // node ID -> answered with an error envelope
+	ConflictNodes     map[string]bool // node ID -> replied more than once with payloads that disagree
+	Unidentified      int             // frames received with no node ID header
+	DuplicateFrames   int             // frames whose node had already answered; bytes dropped, identity kept
+	CapHit            bool            // the identity frame or byte cap ended collection early
+	SettledEarly      bool            // collection ended before the deadline with the answer settled, by Settled or by full responder coverage
 }
 
 // GatherOpts configures a Gather fan-out.
 type GatherOpts struct {
-	Timeout       time.Duration // hard deadline for the whole fan-out
-	ExpectedNodes int           // early-exit once this many frames arrive (0 = wait full Timeout)
-	StopOnFirst   bool          // return after the first non-error frame (first-wins)
-	AccountID     string        // sets X-Account-ID header when non-empty
+	Timeout            time.Duration  // hard deadline for the whole fan-out
+	ExpectedNodes      int            // early-exit once this many frames arrive (0 = wait full Timeout); mutually exclusive with ExpectedResponders
+	ExpectedResponders int            // identity mode: early-exit once this many distinct nodes have answered, under CollectServeData; mutually exclusive with ExpectedNodes
+	Mode               CollectionMode // CollectServeData (default) or CollectUntilDeadline
+	StopOnFirst        bool           // return after the first non-error frame (first-wins)
+	AccountID          string         // sets X-Account-ID header when non-empty
+
+	// Settled ends a CollectUntilDeadline fan-out early; it is ignored in every
+	// other mode. Consulted after each retained frame, it returns true once the
+	// replies already answer the question, so only a caller still trying to
+	// prove a negative pays the rest of the deadline.
+	Settled func(frames []Frame, sum Summary) bool
+
+	// ResponderGrace caps how long a CollectUntilDeadline fan-out keeps waiting
+	// after every ExpectedResponders node has answered. Zero keeps the full
+	// deadline. It exists because the only thing left to wait for at that point
+	// is a duplicate from a node already heard, and core NATS gives a request
+	// only to the subscribers present when it was published: an overlapping
+	// subscription replies alongside the first, and one that arrives later
+	// never receives the request at all, so waiting longer cannot find it.
+	ResponderGrace time.Duration
 }
 
 // Gather publishes payload to subject over a fresh inbox and collects reply
-// frames until ExpectedNodes answer, StopOnFirst yields a success, or Timeout
-// elapses. Error envelopes and oversized frames are dropped from frames but
-// counted in sum; returned frames are raw daemon replies for the caller to
-// decode and merge. It carries ctx's trace context onto the wire: it opens a
-// producer span for the fan-out and injects traceparent so every consumer joins
-// the same trace.
-func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames [][]byte, sum Summary, err error) {
+// frames until the stop condition for opts.Mode is met, or Timeout elapses.
+// Error envelopes and oversized frames are dropped from frames but counted in
+// sum; returned frames are raw daemon replies for the caller to decode and
+// merge, tagged with the responding node's ID when the reply carried one.
+//
+// With ExpectedResponders unset and Mode left at its zero value
+// (CollectServeData), Gather's behavior is unchanged from before identity
+// mode existed: the stop condition is ExpectedNodes frames (or the unbounded
+// cap), and Summary's identity fields stay nil/zero. Identity mode — set
+// either by ExpectedResponders or by CollectUntilDeadline — additionally
+// tracks per-node responder sets, retains only the first payload seen from
+// each node, and is bounded by its own frame and byte caps independent of
+// ExpectedNodes. It carries ctx's trace context onto the wire: it opens a
+// producer span for the fan-out and injects traceparent so every consumer
+// joins the same trace.
+func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte, opts GatherOpts) (frames []Frame, sum Summary, err error) {
 	sum.ErrorCodes = map[string]int{}
 	if conn == nil || !conn.IsConnected() {
 		return nil, sum, ErrClusterUnavailable
+	}
+	if opts.ExpectedNodes > 0 && opts.ExpectedResponders > 0 {
+		return nil, sum, fmt.Errorf("gather: ExpectedNodes and ExpectedResponders are mutually exclusive")
 	}
 
 	ctx, span := startProducerSpan(ctx, subject, opts.AccountID)
@@ -422,23 +508,63 @@ func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte
 		return nil, sum, fmt.Errorf("failed to publish request: %w", err)
 	}
 
+	identityMode := opts.ExpectedResponders > 0 || opts.Mode == CollectUntilDeadline
+	earlyExitOnResponders := opts.Mode == CollectServeData && opts.ExpectedResponders > 0
+
+	var seenHash map[string][32]byte
+	if identityMode {
+		sum.Responders = map[string]bool{}
+		sum.SuccessResponders = map[string]bool{}
+		sum.ErrorResponders = map[string]bool{}
+		sum.ConflictNodes = map[string]bool{}
+		seenHash = map[string][32]byte{}
+	}
+
 	maxResponses := maxScatterGatherUnboundedResponses
 	if opts.ExpectedNodes > 0 {
 		maxResponses = opts.ExpectedNodes
 	}
 
+	coverageGrace := opts.Mode == CollectUntilDeadline && opts.ResponderGrace > 0 && opts.ExpectedResponders > 0
+
+	var retainedBytes int
 	deadline := time.Now().Add(opts.Timeout)
-	for sum.Received < maxResponses {
-		remaining := time.Until(deadline)
+	var graceDeadline time.Time
+	for {
+		if earlyExitOnResponders {
+			if len(sum.Responders) >= opts.ExpectedResponders {
+				break
+			}
+		} else if !identityMode && sum.Received >= maxResponses {
+			break
+		}
+
+		// Once every expected node has answered, only a duplicate from a node
+		// already heard can still change the verdict, and core NATS delivers
+		// that on the same timescale as the first reply. So wait a grace window
+		// rather than the whole deadline. Armed once and never extended, so a
+		// node replying repeatedly cannot hold the fan-out open.
+		if coverageGrace && graceDeadline.IsZero() && len(sum.Responders) >= opts.ExpectedResponders {
+			graceDeadline = time.Now().Add(opts.ResponderGrace)
+		}
+
+		// Running out of the grace window is a settled exit, not a timeout: the
+		// nodes that were asked all answered.
+		effective, graceExpired := deadline, false
+		if !graceDeadline.IsZero() && graceDeadline.Before(deadline) {
+			effective, graceExpired = graceDeadline, true
+		}
+
+		remaining := time.Until(effective)
 		if remaining <= 0 {
-			sum.TimedOut = true
+			sum.TimedOut, sum.SettledEarly = !graceExpired, graceExpired
 			break
 		}
 
 		msg, nerr := sub.NextMsg(remaining)
 		if nerr != nil {
 			if errors.Is(nerr, nats.ErrTimeout) || errors.Is(nerr, nats.ErrNoResponders) {
-				sum.TimedOut = true
+				sum.TimedOut, sum.SettledEarly = !graceExpired, graceExpired
 				break
 			}
 			return frames, sum, fmt.Errorf("gather receive error on %s: %w", subject, nerr)
@@ -449,6 +575,34 @@ func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte
 		if len(msg.Data) > maxScatterGatherResponseSize {
 			slog.Warn("Gather: skipping oversized response", "subject", subject, "size", len(msg.Data))
 			continue
+		}
+
+		nodeID := NodeIDFromMsg(msg)
+
+		if identityMode {
+			if sum.Received > maxIdentityGatherFrames || retainedBytes > maxIdentityGatherBytes {
+				sum.CapHit = true
+				break
+			}
+
+			if nodeID == "" {
+				sum.Unidentified++
+			} else if prevHash, seen := seenHash[nodeID]; seen {
+				// A later frame from a node already seen: keep the identity and
+				// flag disagreement, but never let its bytes overwrite the first
+				// payload — there is no merge rule for two contradictory answers
+				// from one node, and inventing one would hide the fault.
+				sum.DuplicateFrames++
+				if sha256.Sum256(msg.Data) != prevHash {
+					sum.ConflictNodes[nodeID] = true
+				}
+				if _, verr := ValidateErrorPayload(msg.Data); verr != nil {
+					sum.ErrorResponders[nodeID] = true
+				} else {
+					sum.SuccessResponders[nodeID] = true
+				}
+				continue
+			}
 		}
 
 		responseError, verr := ValidateErrorPayload(msg.Data)
@@ -465,13 +619,28 @@ func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte
 				}
 			}
 			slog.Debug("Gather: skipping error response", "code", code, "subject", subject)
+			if identityMode && nodeID != "" {
+				sum.Responders[nodeID] = true
+				sum.ErrorResponders[nodeID] = true
+				seenHash[nodeID] = sha256.Sum256(msg.Data)
+			}
 			continue
 		}
 
 		sum.Successes++
-		frames = append(frames, msg.Data)
+		if identityMode && nodeID != "" {
+			sum.Responders[nodeID] = true
+			sum.SuccessResponders[nodeID] = true
+			seenHash[nodeID] = sha256.Sum256(msg.Data)
+			retainedBytes += len(msg.Data)
+		}
+		frames = append(frames, Frame{NodeID: nodeID, Data: msg.Data})
 		if opts.StopOnFirst {
 			return frames, sum, nil
+		}
+		if opts.Mode == CollectUntilDeadline && opts.Settled != nil && opts.Settled(frames, sum) {
+			sum.SettledEarly = true
+			break
 		}
 	}
 

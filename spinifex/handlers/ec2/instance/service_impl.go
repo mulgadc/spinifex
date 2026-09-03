@@ -1684,6 +1684,16 @@ func IsInstanceVisible(callerAccountID, ownerAccountID string) bool {
 	return callerAccountID == ownerAccountID
 }
 
+// IsInstanceVisibleToCaller combines account ownership with the
+// platform-managed hide rule: LB/EKS control-plane VMs are system-account-owned
+// and stay hidden from customer listings, visible only to the Global account.
+func IsInstanceVisibleToCaller(accountID string, v *vm.VM) bool {
+	if !IsInstanceVisible(accountID, v.AccountID) {
+		return false
+	}
+	return v.ManagedBy == "" || accountID == utils.GlobalAccountID
+}
+
 // instanceMatchesFilters checks whether a VM + its built ec2.Instance copy satisfy all parsed filters.
 func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]string) bool {
 	for name, values := range filters {
@@ -1776,14 +1786,7 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 	// Iterate under the manager lock to avoid races on Status, Instance, PublicIP, etc.
 	s.vmMgr.View(func(vms map[string]*vm.VM) {
 		for _, instance := range vms {
-			if !IsInstanceVisible(accountID, instance.AccountID) {
-				continue
-			}
-			// Platform-managed VMs (LB, EKS control plane) are system-account-owned
-			// and hidden from customer listings; only the system/Global account
-			// sees them. The EKS reconciler resolves its control-plane VM's state
-			// by running describe as the system account.
-			if instance.ManagedBy != "" && accountID != utils.GlobalAccountID {
+			if !IsInstanceVisibleToCaller(accountID, instance) {
 				continue
 			}
 			if len(instanceIDFilter) > 0 && !instanceIDFilter[instance.ID] {

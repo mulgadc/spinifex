@@ -8,29 +8,32 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // putSourceVolumeAMI registers an AMI document plus, when volumeID is set, the
-// snapshot metadata recording which volume the snapshot was taken from.
-func putSourceVolumeAMI(t *testing.T, svc *ImageServiceImpl, store *objectstore.MemoryObjectStore, ami ebsmetadata.AMI, volumeID string) {
+// snapshot document recording which volume the snapshot was taken from. The
+// document is keyed under the account the AMI's owner alias derives to, which
+// is what GetAMISourceVolumeID has to reproduce to find it.
+func putSourceVolumeAMI(t *testing.T, svc *ImageServiceImpl, ami ebsmetadata.AMI, volumeID string) {
 	t.Helper()
 	require.NoError(t, svc.MetadataStore().PutAMI(context.Background(), ami))
 	if volumeID == "" {
 		return
 	}
-	require.NoError(t, handlers_ec2_snapshot.WriteSnapshotConfig(store, testBucket, ami.SnapshotID,
-		&handlers_ec2_snapshot.SnapshotConfig{SnapshotID: ami.SnapshotID, VolumeID: volumeID}))
+	owner, _ := snapshotAccountForAMI(ami)
+	require.NoError(t, svc.MetadataStore().PutSnapshot(context.Background(), ebsmetadata.Snapshot{
+		SnapshotID: ami.SnapshotID, VolumeID: volumeID, OwnerID: owner,
+	}))
 }
 
 // TestGetAMISourceVolumeID_ReadsSnapshotMetadata locks the normal case: the
-// source volume comes from the snapshot's own metadata.json.
+// source volume comes from the snapshot's own document.
 func TestGetAMISourceVolumeID_ReadsSnapshotMetadata(t *testing.T) {
-	svc, store := setupProviderImageService(t)
-	putSourceVolumeAMI(t, svc, store, ebsmetadata.AMI{
+	svc, _ := setupProviderImageService(t)
+	putSourceVolumeAMI(t, svc, ebsmetadata.AMI{
 		ImageID: "ami-src01", SnapshotID: "snap-src01", ImageOwnerAlias: testAccountID,
 	}, "vol-origin")
 
@@ -42,8 +45,8 @@ func TestGetAMISourceVolumeID_ReadsSnapshotMetadata(t *testing.T) {
 // TestGetAMISourceVolumeID_BundledSystemAMI locks the fallback for bundled
 // system AMIs, whose snapshot is named after the AMI and carries no metadata.json.
 func TestGetAMISourceVolumeID_BundledSystemAMI(t *testing.T) {
-	svc, store := setupProviderImageService(t)
-	putSourceVolumeAMI(t, svc, store, ebsmetadata.AMI{
+	svc, _ := setupProviderImageService(t)
+	putSourceVolumeAMI(t, svc, ebsmetadata.AMI{
 		ImageID: "ami-sys01", SnapshotID: "snap-ami-sys01", ImageOwnerAlias: "system",
 	}, "")
 
@@ -57,8 +60,8 @@ func TestGetAMISourceVolumeID_BundledSystemAMI(t *testing.T) {
 // document, so a caller relying on it (e.g. a stale catalog import predating
 // this fix) must be able to spot it in the logs rather than launch silently.
 func TestGetAMISourceVolumeID_BundledSystemAMI_LogsFallbackWarning(t *testing.T) {
-	svc, store := setupProviderImageService(t)
-	putSourceVolumeAMI(t, svc, store, ebsmetadata.AMI{
+	svc, _ := setupProviderImageService(t)
+	putSourceVolumeAMI(t, svc, ebsmetadata.AMI{
 		ImageID: "ami-sys02", SnapshotID: "snap-ami-sys02", ImageOwnerAlias: "system",
 	}, "")
 
@@ -76,11 +79,49 @@ func TestGetAMISourceVolumeID_BundledSystemAMI_LogsFallbackWarning(t *testing.T)
 	assert.Contains(t, logs, "ami-sys02")
 }
 
+// TestGetAMISourceVolumeID_ImportedSystemAMI locks that a system AMI whose
+// snapshot document exists under the global account resolves through it rather
+// than taking the bundled fallback. The bundled path logs a warn; a wrongly
+// derived account here would silently return an image ID where a volume ID
+// belongs, and the launch would clone the wrong blocks.
+func TestGetAMISourceVolumeID_ImportedSystemAMI(t *testing.T) {
+	svc, _ := setupProviderImageService(t)
+	require.NoError(t, svc.MetadataStore().PutAMI(context.Background(), ebsmetadata.AMI{
+		ImageID: "ami-sysimp01", SnapshotID: "snap-sysimp01", ImageOwnerAlias: "system",
+	}))
+	// The owner is spelled out rather than derived, reproducing what
+	// registerImportedAMISnapshot writes. Deriving it here would let the
+	// fixture follow the read path and pin nothing.
+	require.NoError(t, svc.MetadataStore().PutSnapshot(context.Background(), ebsmetadata.Snapshot{
+		SnapshotID: "snap-sysimp01", VolumeID: "vol-imported", OwnerID: utils.GlobalAccountID,
+	}))
+
+	got, err := svc.GetAMISourceVolumeID(context.Background(), "ami-sysimp01")
+	require.NoError(t, err)
+	assert.Equal(t, "vol-imported", got, "an imported system AMI must resolve its recorded source volume, not fall back")
+}
+
+// TestGetAMISourceVolumeID_EmptyOwnerAliasDoesNotFallBack locks that an AMI with
+// no owner alias is treated as corrupt rather than as a system image. Deriving
+// it to the global account and letting the bundled fallback fire would return
+// the image ID where a volume ID belongs, and the launch would clone holes.
+func TestGetAMISourceVolumeID_EmptyOwnerAliasDoesNotFallBack(t *testing.T) {
+	svc, _ := setupProviderImageService(t)
+	putSourceVolumeAMI(t, svc, ebsmetadata.AMI{
+		ImageID: "ami-noalias", SnapshotID: "snap-noalias", ImageOwnerAlias: "",
+	}, "")
+
+	got, err := svc.GetAMISourceVolumeID(context.Background(), "ami-noalias")
+	require.Error(t, err)
+	assert.Empty(t, got, "a corrupt AMI must not resolve to its own image ID")
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
+}
+
 // TestGetAMISourceVolumeID_AccountAMIMissingSnapshotMetadata locks that the
 // bundled fallback does not apply to account-owned AMIs.
 func TestGetAMISourceVolumeID_AccountAMIMissingSnapshotMetadata(t *testing.T) {
-	svc, store := setupProviderImageService(t)
-	putSourceVolumeAMI(t, svc, store, ebsmetadata.AMI{
+	svc, _ := setupProviderImageService(t)
+	putSourceVolumeAMI(t, svc, ebsmetadata.AMI{
 		ImageID: "ami-acct01", SnapshotID: "snap-acct01", ImageOwnerAlias: testAccountID,
 	}, "")
 
@@ -92,8 +133,8 @@ func TestGetAMISourceVolumeID_AccountAMIMissingSnapshotMetadata(t *testing.T) {
 // TestGetAMISourceVolumeID_AMIWithoutSnapshot locks that an AMI carrying no
 // snapshot reference is reported as not found rather than resolving to "".
 func TestGetAMISourceVolumeID_AMIWithoutSnapshot(t *testing.T) {
-	svc, store := setupProviderImageService(t)
-	putSourceVolumeAMI(t, svc, store, ebsmetadata.AMI{
+	svc, _ := setupProviderImageService(t)
+	putSourceVolumeAMI(t, svc, ebsmetadata.AMI{
 		ImageID: "ami-nosnap", ImageOwnerAlias: testAccountID,
 	}, "")
 
@@ -114,12 +155,13 @@ func TestGetAMISourceVolumeID_UnknownAMI(t *testing.T) {
 // TestGetAMISourceVolumeID_EmptySnapshotSourceVolume locks that corrupt
 // snapshot metadata naming no source volume fails instead of returning "".
 func TestGetAMISourceVolumeID_EmptySnapshotSourceVolume(t *testing.T) {
-	svc, store := setupProviderImageService(t)
+	svc, _ := setupProviderImageService(t)
 	require.NoError(t, svc.MetadataStore().PutAMI(context.Background(), ebsmetadata.AMI{
 		ImageID: "ami-empty", SnapshotID: "snap-empty", ImageOwnerAlias: testAccountID,
 	}))
-	require.NoError(t, handlers_ec2_snapshot.WriteSnapshotConfig(store, testBucket, "snap-empty",
-		&handlers_ec2_snapshot.SnapshotConfig{SnapshotID: "snap-empty"}))
+	require.NoError(t, svc.MetadataStore().PutSnapshot(context.Background(), ebsmetadata.Snapshot{
+		SnapshotID: "snap-empty", OwnerID: testAccountID,
+	}))
 
 	_, err := svc.GetAMISourceVolumeID(context.Background(), "ami-empty")
 	require.Error(t, err)

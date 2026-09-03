@@ -99,6 +99,37 @@ func TestPutUserPolicy_MalformedDocument(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
 }
 
+// The rejection has to name the variable and the alternatives, or the operator
+// gets the same "policy document is malformed" they would get for a stray brace
+// and no way to tell a supported reference from an unsupported one. The document
+// here is syntactically perfect, so the code alone says nothing.
+func TestPutUserPolicy_UnresolvableVariableNamesTheCause(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "variable-user")
+
+	_, err := svc.PutUserPolicy(testAccountID, &iam.PutUserPolicyInput{
+		UserName:   aws.String("variable-user"),
+		PolicyName: aws.String("Inert"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:GetObject","Resource":"arn:aws:s3:::home/${aws:teamname}/*"}]}`),
+	})
+	require.Error(t, err)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "the error carries no registered AWS code, so it reaches the client as a 500")
+	assert.Equal(t, awserrors.ErrorIAMMalformedPolicyDocument, code)
+	assert.Contains(t, message, "aws:teamname", "the message does not name the offending variable")
+	assert.Contains(t, message, "${aws:username}", "the message does not name the variables that do resolve")
+
+	// The rejection is also a rejection: nothing was stored.
+	_, err = svc.GetUserPolicy(testAccountID, &iam.GetUserPolicyInput{
+		UserName:   aws.String("variable-user"),
+		PolicyName: aws.String("Inert"),
+	})
+	assert.Error(t, err)
+}
+
 func TestPutUserPolicy_OversizedDocument(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

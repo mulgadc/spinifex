@@ -15,10 +15,11 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -1094,7 +1095,7 @@ func TestRegisterWeightsSnapshot_WritesEC2ReadableMetadata(t *testing.T) {
 	require.NoError(t, registerWeightsSnapshot(store, bucket,
 		"snap-vol-abc", "vol-abc", 12*bytesPerGiB, "ap-southeast-2a", true))
 
-	cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, bucket, "snap-vol-abc")
+	cfg, err := ebsmetadata.NewStore(store, bucket).GetSnapshot(context.Background(), utils.GlobalAccountID, "snap-vol-abc")
 	require.NoError(t, err)
 	assert.Equal(t, "snap-vol-abc", cfg.SnapshotID)
 	assert.Equal(t, "vol-abc", cfg.VolumeID)
@@ -1111,7 +1112,7 @@ func TestRegisterWeightsSnapshot_UnencryptedVolume(t *testing.T) {
 	require.NoError(t, registerWeightsSnapshot(store, "predastore",
 		"snap-vol-plain", "vol-plain", bytesPerGiB, "ap-southeast-2a", false))
 
-	cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, "predastore", "snap-vol-plain")
+	cfg, err := ebsmetadata.NewStore(store, "predastore").GetSnapshot(context.Background(), utils.GlobalAccountID, "snap-vol-plain")
 	require.NoError(t, err)
 	assert.False(t, cfg.Encrypted)
 }

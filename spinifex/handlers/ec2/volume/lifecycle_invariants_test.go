@@ -61,7 +61,7 @@ func seedVolume(t *testing.T, svc *VolumeServiceImpl, volID, state, attachedInst
 // metadataKey is the object key the control-plane document for volumeID lives at.
 func metadataKey(t *testing.T, volumeID string) string {
 	t.Helper()
-	key, err := ebsmetadata.VolumeKey(volumeID)
+	key, err := ebsmetadata.VolumeKey(testVolAccountID, volumeID)
 	require.NoError(t, err)
 	return key
 }
@@ -109,7 +109,7 @@ func TestVolumeTagMirror_WritesOnlyControlPlaneDocument(t *testing.T) {
 	seedVolumeDocument(t, memoryStore, ebsmetadata.Volume{
 		VolumeID: volumeID, TenantID: testVolAccountID, CapacityGiB: 10, State: "available",
 	})
-	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-live0000000000", "/dev/nbd0"))
+	require.NoError(t, svc.UpdateVolumeState(testVolAccountID, volumeID, "in-use", "i-live0000000000", "/dev/nbd0"))
 	before := getStoredConfig(t, memoryStore, volumeID)
 	store := &recordingObjectStore{ObjectStore: memoryStore}
 	svc.store = store
@@ -191,7 +191,7 @@ func TestRLC5_VolumeGCMarksLeakedVolumeNeverDeletes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, marked, "ADR-0005 §3: the GC must surface exactly the leaked volume")
 
-	leaked, err := svc.GetVolumeMetadata("vol-leaked0000000")
+	leaked, err := svc.GetVolumeMetadata(testVolAccountID, "vol-leaked0000000")
 	require.NoErrorf(t, err, "ADR-0005 §3: the GC must NOT delete the leaked volume — it carries data; it may only mark + alarm")
 	assert.NotEmpty(t, leaked.Tags[orphanTagKey],
 		"ADR-0005 §3: a leaked volume must be marked orphaned")
@@ -200,7 +200,7 @@ func TestRLC5_VolumeGCMarksLeakedVolumeNeverDeletes(t *testing.T) {
 
 	// A volume attached to an instance NOT in the leaked set must be untouched —
 	// node-local detection never false-marks another node's live-instance volume.
-	live, err := svc.GetVolumeMetadata("vol-live000000000")
+	live, err := svc.GetVolumeMetadata(testVolAccountID, "vol-live000000000")
 	require.NoError(t, err)
 	assert.Empty(t, live.Tags[orphanTagKey],
 		"a volume on a live instance must never be marked orphaned")
@@ -209,6 +209,6 @@ func TestRLC5_VolumeGCMarksLeakedVolumeNeverDeletes(t *testing.T) {
 	marked, err = reaper.Sweep(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 0, marked, "an already-marked orphan must not be re-marked")
-	_, err = svc.GetVolumeMetadata("vol-leaked0000000")
+	_, err = svc.GetVolumeMetadata(testVolAccountID, "vol-leaked0000000")
 	require.NoError(t, err, "ADR-0005 §3: the volume must still exist after repeated sweeps")
 }

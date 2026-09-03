@@ -481,9 +481,10 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 		assert.Equal(t, alpha.AccountID, aws.StringValue(alphaSnaps.Snapshots[0].OwnerId),
 			"alpha snapshot OwnerId mismatch")
 
-		// DeleteSnapshot returns UnauthorizedOperation (not NotFound) across accounts.
-		harness.Step(t, "cross-account delete-snapshot blocked (UnauthorizedOperation)")
-		harness.ExpectError(t, "UnauthorizedOperation", func() error {
+		// Snapshot metadata is keyed by owning account, so a snapshot outside the
+		// caller's prefix is absent rather than forbidden.
+		harness.Step(t, "cross-account delete-snapshot blocked (InvalidSnapshot.NotFound)")
+		harness.ExpectError(t, "InvalidSnapshot.NotFound", func() error {
 			_, err := beta.Client.EC2.DeleteSnapshot(&ec2.DeleteSnapshotInput{
 				SnapshotId: aws.String(alphaSnap),
 			})

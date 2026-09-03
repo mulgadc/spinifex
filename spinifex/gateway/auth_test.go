@@ -18,6 +18,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	awsv1 "github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -39,7 +41,7 @@ const (
 
 // mockIAMService implements handlers_iam.IAMService for auth tests. It embeds
 // the interface so it satisfies the full contract; the SigV4 middleware drives
-// only LookupAccessKey and DecryptSecret, so those are the only methods wired.
+// LookupAccessKey, DecryptSecret and GetUser, so those are the methods wired.
 // Any other method nil-panics, surfacing an unexpected call.
 type mockIAMService struct {
 	handlers_iam.IAMService
@@ -51,6 +53,10 @@ type mockIAMService struct {
 	// every account is ACTIVE, which is what most tests here are asserting
 	// around rather than asserting about.
 	accounts map[string]*handlers_iam.Account
+
+	// getUserFn overrides the synthetic user record below, for a test that cares
+	// what aws:userid resolves to or that it fails to resolve at all.
+	getUserFn func(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error)
 }
 
 func (m *mockIAMService) LookupAccessKey(accessKeyID string) (*handlers_iam.AccessKey, error) {
@@ -70,6 +76,19 @@ func (m *mockIAMService) GetAccount(accountID string) (*handlers_iam.Account, er
 		return account, nil
 	}
 	return &handlers_iam.Account{AccountID: accountID, Status: handlers_iam.AccountStatusActive}, nil
+}
+
+// GetUser answers with a unique ID derived from the name, so aws:userid resolves
+// on the authorization path without every test defining a user record.
+func (m *mockIAMService) GetUser(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error) {
+	if m.getUserFn != nil {
+		return m.getUserFn(accountID, input)
+	}
+	name := awsv1.StringValue(input.UserName)
+	return &iam.GetUserOutput{User: &iam.User{
+		UserName: awsv1.String(name),
+		UserId:   awsv1.String("AIDA" + strings.ToUpper(name)),
+	}}, nil
 }
 
 // testMasterKey is a fixed 32-byte key for deterministic tests.
@@ -141,6 +160,69 @@ func setupTestApp(accessKey, secretKey string) http.Handler {
 	})
 
 	return r
+}
+
+// userIDApp signs requests for alice on a real account, so the middleware takes
+// the aws:userid branch that a user principal reaches in production.
+func userIDApp(t *testing.T, svc *mockIAMService) (http.Handler, *string) {
+	t.Helper()
+	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	require.NoError(t, err)
+	svc.masterKey = testMasterKey
+	svc.accessKeys = map[string]*handlers_iam.AccessKey{
+		testAccessKey: {
+			AccessKeyID:     testAccessKey,
+			SecretAccessKey: encryptedSecret,
+			UserName:        "alice",
+			AccountID:       "000000000001",
+			Status:          "Active",
+		},
+	}
+
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: svc}
+	seen := new(string)
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
+		*seen = mustCtxString(r, ctxUserID)
+		w.Write([]byte("OK"))
+	})
+	return r, seen
+}
+
+// aws:userid is resolved once, by the middleware, so every policy check in the
+// request evaluates the same value rather than re-reading the user record.
+func TestSigV4Auth_StashesUserID(t *testing.T) {
+	handler, seen := userIDApp(t, &mockIAMService{})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+
+	resp := doRequest(handler, req)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "AIDAALICE", *seen)
+}
+
+// An IAM fault must fail the request, not authorize it against a context missing
+// aws:userid: that silently narrows an Allow and widens a Deny to everything.
+func TestSigV4Auth_UserIDDependencyFaultFailsClosed(t *testing.T) {
+	handler, _ := userIDApp(t, &mockIAMService{
+		getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
+			return nil, errors.New("nats: no responders available for request")
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+
+	resp := doRequest(handler, req)
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), awserrors.ErrorInternalError)
 }
 
 func TestSigV4Auth_NoAuthorizationHeader(t *testing.T) {

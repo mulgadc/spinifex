@@ -18,9 +18,9 @@ SUITE_TAG   ?= $(notdir $(patsubst %/...,%,$(firstword $(PKG))))
 # BIN_DIR/<suite>.test so CI can ship binaries (not source + go toolchain) to
 # the remote VM.
 BIN_DIR      ?= $(CURDIR)/_bin
-SUITES_BUILD ?= cert lb eks ecs single iam ecr bedrock gpu natuplink multinode storagegrowth partialblock rds quota storagefault
+SUITES_BUILD ?= cert lb eks ecs single iam ecr bedrock gpu natuplink multinode storagegrowth partialblock rds quota diskperf storagefault
 
-.PHONY: e2e e2e-quota e2e-cert e2e-lb e2e-eks e2e-ecs e2e-single e2e-iam e2e-ecr e2e-bedrock e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-gpu e2e-natuplink e2e-storagegrowth e2e-partialblock e2e-rds e2e-storagefault e2e-all clean e2e-build
+.PHONY: e2e e2e-quota e2e-cert e2e-lb e2e-eks e2e-ecs e2e-single e2e-iam e2e-ecr e2e-bedrock e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-gpu e2e-natuplink e2e-storagegrowth e2e-partialblock e2e-diskperf e2e-rds e2e-storagefault e2e-all clean e2e-build
 
 RUN_FLAG = $(if $(RUN),-run '$(RUN)',)
 
@@ -57,9 +57,12 @@ e2e-gpu:        ; $(MAKE) e2e PKG=./gpu/...
 e2e-natuplink:  ; $(MAKE) e2e PKG=./natuplink/...
 e2e-storagegrowth: ; $(MAKE) e2e PKG=./storagegrowth/...
 e2e-partialblock:  ; $(MAKE) e2e PKG=./partialblock/...
-# The only suite with its own budget: one instance's `available` wait is 23
-# minutes, so a single wedged create eats most of a 30m package timeout before
-# the tests still running get to report.
+# Two 16 GiB fio profiles per repetition, each on a freshly created volume, so
+# a pass is ~20 minutes on the bare-metal cell. CI resolves the same budget
+# from e2e_suite_timeout in .github/scripts/suite-sets.sh.
+e2e-diskperf:      ; $(MAKE) e2e PKG=./diskperf/... TIMEOUT=180m
+# One instance's `available` wait is 23 minutes, so a single wedged create eats
+# most of a 30m package timeout before the tests still running get to report.
 e2e-rds:        ; $(MAKE) e2e PKG=./rds/... TIMEOUT=45m
 e2e-quota:      ; $(MAKE) e2e PKG=./quota/...
 # Freezes predastore, so its budget covers a deliberate outage plus the

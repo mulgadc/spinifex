@@ -331,7 +331,7 @@ func (m *Manager) markAttachedVolumesInUse(instance *VM) error {
 		if m.deps.VolumeStateUpdater == nil {
 			return errors.New("volume state updater not wired")
 		}
-		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(ebsReq.Name, "in-use", instance.ID, ebsReq.DeviceName); err != nil {
+		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(instance.AccountID, ebsReq.Name, "in-use", instance.ID, ebsReq.DeviceName); err != nil {
 			return fmt.Errorf("persist in-use state for volume %s: %w", ebsReq.Name, err)
 		}
 	}

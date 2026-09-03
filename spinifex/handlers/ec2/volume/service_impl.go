@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -120,6 +118,12 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	// The owning account is a key segment, so an untenanted volume has nowhere
+	// to be written. Refuse at the boundary rather than in the key builder.
+	if accountID == "" {
+		return nil, errors.New(awserrors.ErrorAuthFailure)
+	}
+
 	// Validate volume type: only gp3 supported (or empty defaults to gp3)
 	if input.VolumeType != nil && *input.VolumeType != "" && *input.VolumeType != types.VolumeTypeGP3 {
 		return nil, errors.New(awserrors.ErrorUnknownVolumeType)
@@ -141,17 +145,11 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 
 	if input.SnapshotId != nil && *input.SnapshotId != "" {
 		snapshotID = *input.SnapshotId
-		snapMeta, err := s.getSnapshotMetadata(ctx, snapshotID)
+		// The ownership check is the key: a snapshot outside the caller's prefix
+		// is not found, so the endpoint never confirms another account's IDs.
+		snapMeta, err := s.metadata.GetSnapshot(ctx, accountID, snapshotID)
 		if err != nil {
 			slog.ErrorContext(ctx, "CreateVolume: snapshot not found", "snapshotId", snapshotID, "err", err)
-			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
-		}
-		// Not-found rather than access-denied so the endpoint does not confirm
-		// another account's snapshot IDs. An unset owner_id (pre-ownership
-		// snapshot) fails closed.
-		if snapMeta.OwnerID == "" || snapMeta.OwnerID != accountID {
-			slog.WarnContext(ctx, "CreateVolume: account does not own snapshot",
-				"snapshotId", snapshotID, "accountID", accountID, "ownerID", snapMeta.OwnerID)
 			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 		}
 		sourceVolumeName = snapMeta.VolumeID
@@ -322,16 +320,14 @@ func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.Desc
 		return &ec2.DescribeVolumesOutput{Volumes: volumes}, nil
 	}
 
-	// Slow path: no specific IDs requested, enumerate the bucket.
-	metadata, err := s.metadata.ListVolumes(ctx)
+	// Slow path: no specific IDs requested, list the caller's prefix. No other
+	// account's document is read, so none has to be filtered out here.
+	metadata, err := s.metadata.ListVolumes(ctx, accountID)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	volumes := make([]*ec2.Volume, 0, len(metadata))
 	for _, meta := range metadata {
-		if meta.TenantID != accountID {
-			continue
-		}
 		volume := metadataVolumeToEC2(meta)
 		if len(parsedFilters) == 0 || volumeMatchesFilters(volume, parsedFilters) {
 			volumes = append(volumes, volume)
@@ -488,27 +484,19 @@ func volumeStatusMatchesFilters(item *ec2.VolumeStatusItem, filters map[string][
 // static: the control plane has no per-volume health signal to report, so
 // every known volume reports ok.
 func (s *VolumeServiceImpl) describeVolumeStatus(ctx context.Context, input *ec2.DescribeVolumeStatusInput, accountID string, parsedFilters map[string][]string) (*ec2.DescribeVolumeStatusOutput, error) {
-	metas, err := s.metadata.ListVolumes(ctx)
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	byID := make(map[string]ebsmetadata.Volume, len(metas))
-	for _, meta := range metas {
-		byID[meta.VolumeID] = meta
-	}
-
 	var statusItems []*ec2.VolumeStatusItem
 
+	// Fast path: specific volume IDs requested. Fetch each document directly
+	// rather than listing the prefix to answer for a handful of volumes.
 	if len(input.VolumeIds) > 0 {
-		for _, vid := range input.VolumeIds {
-			if vid == nil {
-				continue
+		for _, r := range s.fetchVolumeMetasByIDs(ctx, input.VolumeIds, accountID) {
+			if r.err != nil {
+				return nil, r.err
 			}
-			meta, ok := byID[*vid]
-			if !ok || meta.TenantID != accountID {
-				return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+			if r.absent {
+				continue // nil VolumeIds entry
 			}
-			item := metadataVolumeStatusItem(meta)
+			item := metadataVolumeStatusItem(r.meta)
 			if len(parsedFilters) > 0 && !volumeStatusMatchesFilters(item, parsedFilters) {
 				continue
 			}
@@ -518,10 +506,11 @@ func (s *VolumeServiceImpl) describeVolumeStatus(ctx context.Context, input *ec2
 		return &ec2.DescribeVolumeStatusOutput{VolumeStatuses: statusItems}, nil
 	}
 
+	metas, err := s.metadata.ListVolumes(ctx, accountID)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 	for _, meta := range metas {
-		if meta.TenantID != accountID {
-			continue
-		}
 		item := metadataVolumeStatusItem(meta)
 		if len(parsedFilters) > 0 && !volumeStatusMatchesFilters(item, parsedFilters) {
 			continue
@@ -699,7 +688,7 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 		return &ec2.DescribeVolumesModificationsOutput{VolumesModifications: modifications}, nil
 	}
 
-	metas, err := s.metadata.ListVolumes(ctx)
+	metas, err := s.metadata.ListVolumes(ctx, accountID)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -710,9 +699,6 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 	}
 
 	for _, meta := range metas {
-		if meta.TenantID != accountID {
-			continue
-		}
 		if len(volumeIDFilterValues) > 0 && !filterutil.MatchesAny(volumeIDFilterValues, meta.VolumeID) {
 			continue
 		}
@@ -751,7 +737,7 @@ func (s *VolumeServiceImpl) fetchVolumeModificationsByIDs(ctx context.Context, v
 		wg.Add(1)
 		go func(idx int, volID string) {
 			defer wg.Done()
-			meta, err := s.metadata.GetVolume(ctx, volID)
+			meta, err := s.metadata.GetVolume(ctx, accountID, volID)
 			if err != nil || meta.TenantID != accountID {
 				results[idx] = volumeModificationResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
 				return
@@ -764,20 +750,6 @@ func (s *VolumeServiceImpl) fetchVolumeModificationsByIDs(ctx context.Context, v
 	return results
 }
 
-// listAllVolumeIDs lists every volume ID the control plane knows about, taking
-// ebsmetadata as the index.
-func (s *VolumeServiceImpl) listAllVolumeIDs(ctx context.Context) ([]string, error) {
-	volumes, err := s.metadata.ListVolumes(ctx)
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	ids := make([]string, 0, len(volumes))
-	for _, v := range volumes {
-		ids = append(ids, v.VolumeID)
-	}
-	return ids, nil
-}
-
 // volumeFetchResult bundles a single volume-ID lookup result so the fast path
 // can preserve input ordering and surface per-ID errors after the parallel
 // fan-out, matching fetchVolumeModificationsByIDs.
@@ -787,34 +759,62 @@ type volumeFetchResult struct {
 }
 
 // fetchVolumesByIDs fetches each requested volume's ebsmetadata document
-// directly via GetVolume, instead of enumerating every volume in the bucket
-// via ListVolumes. A missing document or a cross-tenant volume both surface as
-// InvalidVolume.NotFound; any other store error surfaces as ErrorServerInternal.
+// directly via GetVolume, instead of listing the account's prefix.
 func (s *VolumeServiceImpl) fetchVolumesByIDs(ctx context.Context, volumeIDs []*string, accountID string) []volumeFetchResult {
-	results := make([]volumeFetchResult, len(volumeIDs))
+	metas := s.fetchVolumeMetasByIDs(ctx, volumeIDs, accountID)
+	results := make([]volumeFetchResult, len(metas))
+	for i, r := range metas {
+		switch {
+		case r.err != nil:
+			results[i] = volumeFetchResult{err: r.err}
+		case r.absent:
+		default:
+			results[i] = volumeFetchResult{volume: metadataVolumeToEC2(r.meta)}
+		}
+	}
+	return results
+}
+
+// volumeMetaResult bundles a per-ID document lookup. absent marks a nil entry
+// in the requested IDs, which is neither a document nor an error.
+type volumeMetaResult struct {
+	meta   ebsmetadata.Volume
+	absent bool
+	err    error
+}
+
+// fetchVolumeMetasByIDs reads each requested volume's document in parallel,
+// returning results positionally aligned with volumeIDs. A missing document or
+// a cross-tenant volume both surface as InvalidVolume.NotFound; any other store
+// error surfaces as ErrorServerInternal.
+func (s *VolumeServiceImpl) fetchVolumeMetasByIDs(ctx context.Context, volumeIDs []*string, accountID string) []volumeMetaResult {
+	results := make([]volumeMetaResult, len(volumeIDs))
 	var wg sync.WaitGroup
 
 	for i, id := range volumeIDs {
 		if id == nil {
+			results[i] = volumeMetaResult{absent: true}
 			continue
 		}
 		wg.Add(1)
 		go func(idx int, volID string) {
 			defer wg.Done()
-			meta, err := s.metadata.GetVolume(ctx, volID)
+			meta, err := s.metadata.GetVolume(ctx, accountID, volID)
 			if err != nil {
 				if objectstore.IsNoSuchKeyError(err) {
-					results[idx] = volumeFetchResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
+					results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
 				} else {
-					results[idx] = volumeFetchResult{err: errors.New(awserrors.ErrorServerInternal)}
+					results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorServerInternal)}
 				}
 				return
 			}
+			// The read was scoped to the caller's prefix, so the document is
+			// theirs by construction. The comparison stays as an assertion.
 			if meta.TenantID != accountID {
-				results[idx] = volumeFetchResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
+				results[idx] = volumeMetaResult{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
 				return
 			}
-			results[idx] = volumeFetchResult{volume: metadataVolumeToEC2(meta)}
+			results[idx] = volumeMetaResult{meta: meta}
 		}(i, *id)
 	}
 
@@ -869,15 +869,15 @@ func metadataVolumeToEC2(meta ebsmetadata.Volume) *ec2.Volume {
 
 // GetVolumeMetadata reads the control-plane document for a volume. It is the
 // ownership and attachment record the daemon validates attach/detach against.
-func (s *VolumeServiceImpl) GetVolumeMetadata(volumeID string) (ebsmetadata.Volume, error) {
-	return s.getVolumeMetadata(context.Background(), volumeID)
+func (s *VolumeServiceImpl) GetVolumeMetadata(accountID, volumeID string) (ebsmetadata.Volume, error) {
+	return s.getVolumeMetadata(context.Background(), accountID, volumeID)
 }
 
 // getVolumeMetadata is GetVolumeMetadata carrying the caller's context. A
 // missing document is remapped to InvalidVolume.NotFound so callers surface the
 // AWS error rather than a store error.
-func (s *VolumeServiceImpl) getVolumeMetadata(ctx context.Context, volumeID string) (ebsmetadata.Volume, error) {
-	meta, err := s.metadata.GetVolume(ctx, volumeID)
+func (s *VolumeServiceImpl) getVolumeMetadata(ctx context.Context, accountID, volumeID string) (ebsmetadata.Volume, error) {
+	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
 			slog.WarnContext(ctx, "volume metadata not found", "volumeId", volumeID)
@@ -890,9 +890,9 @@ func (s *VolumeServiceImpl) getVolumeMetadata(ctx context.Context, volumeID stri
 
 // UpdateVolumeState updates the control-plane-owned attachment state (state,
 // attachment, device) on the volume's ebsmetadata document.
-func (s *VolumeServiceImpl) UpdateVolumeState(volumeID, state, attachedInstance, deviceName string) error {
+func (s *VolumeServiceImpl) UpdateVolumeState(accountID, volumeID, state, attachedInstance, deviceName string) error {
 	ctx := context.Background()
-	meta, err := s.metadata.GetVolume(ctx, volumeID)
+	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil {
 		return fmt.Errorf("failed to get volume metadata: %w", err)
 	}
@@ -932,7 +932,7 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 		return nil, err
 	}
 
-	meta, err := s.metadata.GetVolume(ctx, volumeID)
+	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil || meta.TenantID != accountID {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}
@@ -1007,7 +1007,7 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 // is always a metadata-only clear, never a QMP call. Errors from either step
 // are returned, not swallowed.
 func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error {
-	if err := s.UpdateVolumeState(volumeID, "available", "", ""); err != nil {
+	if err := s.UpdateVolumeState(accountID, volumeID, "available", "", ""); err != nil {
 		// No metadata doc means the volume is already gone, per GetVolume's own
 		// contract, so absence here is success, not a teardown failure.
 		if objectstore.IsNoSuchKeyError(err) {
@@ -1025,8 +1025,8 @@ func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeI
 // available rather than deleting it. Metadata-only, no QMP — same rationale
 // as DeleteVolumeOnTerminate: there is no live QEMU to hot-unplug on either
 // terminate path.
-func (s *VolumeServiceImpl) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
-	if err := s.UpdateVolumeState(volumeID, "available", "", ""); err != nil {
+func (s *VolumeServiceImpl) DetachVolumeOnTerminate(_ context.Context, volumeID, accountID string) error {
+	if err := s.UpdateVolumeState(accountID, volumeID, "available", "", ""); err != nil {
 		// No metadata doc means the volume is already gone, per GetVolume's own
 		// contract, so absence here is success, not a teardown failure.
 		if objectstore.IsNoSuchKeyError(err) {
@@ -1052,7 +1052,7 @@ func (s *VolumeServiceImpl) ForceDetachVolume(ctx context.Context, input *ec2.De
 	}
 	volumeID := *input.VolumeId
 
-	meta, err := s.metadata.GetVolume(ctx, volumeID)
+	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}
@@ -1061,7 +1061,7 @@ func (s *VolumeServiceImpl) ForceDetachVolume(ctx context.Context, input *ec2.De
 	}
 
 	previous := meta.AttachedInstance
-	if err := s.UpdateVolumeState(volumeID, "available", "", ""); err != nil {
+	if err := s.UpdateVolumeState(accountID, volumeID, "available", "", ""); err != nil {
 		slog.ErrorContext(ctx, "ForceDetachVolume: failed to clear attachment", "volumeId", volumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -1090,7 +1090,7 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 	}
 
 	// AWS-faithful: an absent volume returns InvalidVolume.NotFound.
-	meta, err := s.metadata.GetVolume(ctx, volumeID)
+	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}
@@ -1120,50 +1120,13 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 		// it gets back, so a bare code makes a persistent fault unreadable.
 		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume %s: %v", volumeID, err)
 	}
-	if err := s.metadata.DeleteVolume(ctx, volumeID); err != nil {
+	if err := s.metadata.DeleteVolume(ctx, accountID, volumeID); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume metadata %s: %v", volumeID, err)
 	}
 
 	slog.InfoContext(ctx, "DeleteVolume completed", "volumeId", volumeID)
 
 	return &ec2.DeleteVolumeOutput{}, nil
-}
-
-// snapshotMetadata holds the subset of snapshot metadata needed by CreateVolume.
-// Matches the JSON written by the snapshot service's SnapshotConfig.
-type snapshotMetadata struct {
-	VolumeID   string `json:"volume_id"`
-	VolumeSize int64  `json:"volume_size"`
-	OwnerID    string `json:"owner_id"`
-}
-
-// getSnapshotMetadata reads snapshot metadata.json from S3 for CreateVolume.
-func (s *VolumeServiceImpl) getSnapshotMetadata(ctx context.Context, snapshotID string) (*snapshotMetadata, error) {
-	key := snapshotID + "/metadata.json"
-
-	getResult, err := s.store.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		if objectstore.IsNoSuchKeyError(err) {
-			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
-		}
-		return nil, fmt.Errorf("failed to get snapshot metadata: %w", err)
-	}
-	defer getResult.Body.Close()
-
-	body, err := io.ReadAll(getResult.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read snapshot metadata: %w", err)
-	}
-
-	var meta snapshotMetadata
-	if err := json.Unmarshal(body, &meta); err != nil {
-		return nil, fmt.Errorf("failed to decode snapshot metadata: %w", err)
-	}
-
-	return &meta, nil
 }
 
 // checkVolumeHasNoSnapshots checks if a volume has dependent snapshots
@@ -1239,7 +1202,7 @@ func (s *VolumeServiceImpl) mirrorVolumeTags(ctx context.Context, resources []*s
 
 // mirrorVolumeTagsOne read-modify-writes one ebsmetadata.Volume's Tags field.
 func (s *VolumeServiceImpl) mirrorVolumeTagsOne(ctx context.Context, volumeID, accountID string, mut func(map[string]string)) error {
-	meta, err := s.metadata.GetVolume(ctx, volumeID)
+	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
 			return nil

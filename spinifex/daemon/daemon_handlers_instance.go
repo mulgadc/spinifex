@@ -35,7 +35,7 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 	remove := command.Attributes.RemoveInstanceTags
 	data := command.InstanceTagsData
 	if data == nil || (!remove && len(data.Tags) == 0) {
-		return respondErrorOutcome(msg, awserrors.ErrorMissingParameter)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorMissingParameter)
 	}
 
 	var newTags []*ec2.Tag
@@ -48,14 +48,14 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 		newTags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
 	})
 	if missingRecord {
-		return respondErrorOutcome(msg, awserrors.ErrorServerInternal)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
 	}
 
 	accountID := utils.AccountIDFromMsg(msg)
 	if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID, handlers_ec2_instance.TagsToMap(newTags)); err != nil {
 		slog.ErrorContext(ctx, "SetInstanceTags: central tag store write failed",
 			"instanceId", instance.ID, "err", err)
-		return respondErrorOutcome(msg, awserrors.ErrorServerInternal)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
 	}
 
 	found, err := d.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
@@ -66,10 +66,10 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 		return true
 	})
 	if err != nil {
-		return respondServiceErrorOutcome(msg, err)
+		return respondServiceErrorOutcome(d.node, msg, err)
 	}
 	if !found {
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidInstanceIDNotFound)
 	}
 
 	if err := msg.Respond([]byte(`{}`)); err != nil {
@@ -85,7 +85,7 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 func (d *Daemon) handleSetInstanceMonitoring(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
 	data := command.InstanceMonitoringData
 	if data == nil {
-		return respondErrorOutcome(msg, awserrors.ErrorMissingParameter)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorMissingParameter)
 	}
 
 	found, err := d.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
@@ -99,10 +99,10 @@ func (d *Daemon) handleSetInstanceMonitoring(ctx context.Context, msg *nats.Msg,
 		return true
 	})
 	if err != nil {
-		return respondServiceErrorOutcome(msg, err)
+		return respondServiceErrorOutcome(d.node, msg, err)
 	}
 	if !found {
-		return respondErrorOutcome(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidInstanceIDNotFound)
 	}
 
 	// Off the manager lock: the refresh takes the VM's own ENI lock.
@@ -129,7 +129,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 	accountID := utils.AccountIDFromMsg(msg)
 	if accountID == "" {
 		slog.Error("handleEC2RunInstances: missing account ID in NATS header")
-		respondWithError(msg, awserrors.ErrorServerInternal)
+		respondWithError(d.node, msg, awserrors.ErrorServerInternal)
 		return outcomeError
 	}
 
@@ -150,7 +150,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 	if reservationID != "" {
 		if it, ok := d.resourceMgr.instanceTypes[aws.StringValue(input.InstanceType)]; ok {
 			if vErr := d.resourceMgr.ValidateReservationTarget(reservationID, accountID, it); vErr != nil {
-				respondWithServiceError(msg, vErr)
+				respondWithServiceError(d.node, msg, vErr)
 				return outcomeError
 			}
 		}
@@ -160,7 +160,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 	reservation, instances, instanceType, err := d.instanceService.PrepareRunInstances(ctx, input, accountID, reservationID)
 	endOpSpan(prepSpan, err)
 	if err != nil {
-		respondWithServiceError(msg, err)
+		respondWithServiceError(d.node, msg, err)
 		return outcomeError
 	}
 
@@ -174,7 +174,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 	jsonResponse, err := json.Marshal(reservation)
 	if err != nil {
 		slog.Error("handleEC2RunInstances failed to marshal reservation", "err", err)
-		respondWithError(msg, awserrors.ErrorServerInternal)
+		respondWithError(d.node, msg, awserrors.ErrorServerInternal)
 		for range instances {
 			if reservationID == "" {
 				d.resourceMgr.deallocate(instanceType)
@@ -256,7 +256,7 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) string {
 	if err := json.Unmarshal(msg.Data, &peek); err != nil || peek.InstanceID == "" {
 		// Can't determine target node — fall through to local start which will
 		// return the appropriate error (missing parameter / unmarshal failure).
-		return handleNATSRequest(d.instanceService.StartStoppedInstance)(msg)
+		return handleNATSRequest(d.node, d.instanceService.StartStoppedInstance)(msg)
 	}
 
 	lastNode := d.instanceService.StoppedInstanceNode(peek.InstanceID)
@@ -304,5 +304,5 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) string {
 		}
 	}
 
-	return handleNATSRequest(d.instanceService.StartStoppedInstance)(msg)
+	return handleNATSRequest(d.node, d.instanceService.StartStoppedInstance)(msg)
 }

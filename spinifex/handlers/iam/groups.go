@@ -422,7 +422,8 @@ func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPol
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
 	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
+			"policy %q on group %q: %w", policyName, groupName, err)
 	}
 
 	group, err := s.getGroup(ctx, accountID, groupName)

@@ -7,10 +7,13 @@ package gateway
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -26,6 +29,7 @@ func TestRequestConditionKeys_PopulatesAvailableKeys(t *testing.T) {
 		identity:      "alice",
 		accountID:     "000000000001",
 		principalType: principalTypeUser,
+		userID:        "AIDAALICE",
 	}
 
 	keys := requestConditionKeys(r, principal)
@@ -34,8 +38,113 @@ func TestRequestConditionKeys_PopulatesAvailableKeys(t *testing.T) {
 		iampolicy.KeySourceIP:         "10.4.1.9",
 		iampolicy.KeySecureTransport:  "true",
 		iampolicy.KeyUsername:         "alice",
+		iampolicy.KeyUserID:           "AIDAALICE",
 		iampolicy.KeyPrincipalAccount: "000000000001",
 	}, keys)
+}
+
+// A role session's aws:userid is the ID STS minted for it. Both halves come from
+// the resolved role, so unlike aws:username it can carry a decision.
+func TestRequestConditionKeys_UserIDForAssumedRole(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	keys := requestConditionKeys(r, principalContext{
+		identity:      "session",
+		accountID:     "000000000001",
+		principalType: principalTypeAssumedRole,
+		assumedRoleID: "AROASHAREDOPS:session",
+		userID:        "AROASHAREDOPS:session",
+	})
+
+	assert.Equal(t, "AROASHAREDOPS:session", keys[iampolicy.KeyUserID])
+	assert.NotContains(t, keys, iampolicy.KeyUsername)
+}
+
+// An ID the door could not resolve is omitted, not set empty: a policy naming it
+// then selects nothing on an Allow rather than selecting the empty-string path.
+func TestRequestConditionKeys_OmitsUnresolvableUserID(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	keys := requestConditionKeys(r, principalContext{
+		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
+	})
+	assert.NotContains(t, keys, iampolicy.KeyUserID)
+}
+
+// principalUserID resolves the ID once per request, at the point the principal
+// is resolved. A user with no record and a session minted before the ID was
+// recorded both yield an omitted key, not a failed request.
+func TestPrincipalUserID_ResolvesAndOmits(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
+
+	userID, err := gw.principalUserID(principalContext{
+		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "AIDAALICE", userID)
+
+	userID, err = gw.principalUserID(principalContext{
+		identity: "session", accountID: "000000000001", principalType: principalTypeAssumedRole,
+		assumedRoleID: "AROASHAREDOPS:session",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "AROASHAREDOPS:session", userID)
+
+	// Root's aws:userid is the account ID, matching what GetCallerIdentity
+	// reports for the same principal.
+	userID, err = gw.principalUserID(principalContext{
+		identity: "root", accountID: "000000000000", principalType: principalTypeUser,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "000000000000", userID)
+
+	missing := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{
+		getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
+			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		},
+	}}
+	userID, err = missing.principalUserID(principalContext{
+		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
+	})
+	require.NoError(t, err, "a deleted user omits the key rather than failing the request")
+	assert.Empty(t, userID)
+
+	// A record predating the field resolves to no ID, which omits the key.
+	legacy := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{
+		getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
+			return &iam.GetUserOutput{User: &iam.User{UserName: aws.String("alice")}}, nil
+		},
+	}}
+	userID, err = legacy.principalUserID(principalContext{
+		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, userID)
+
+	// A session minted before assumed_role_id was recorded takes the same arm.
+	userID, err = gw.principalUserID(principalContext{
+		identity: "session", accountID: "000000000001", principalType: principalTypeAssumedRole,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, userID)
+}
+
+// A dependency fault must not read as "the principal has no ID": the key would
+// be omitted, silently narrowing an Allow and widening a Deny to everything.
+func TestPrincipalUserID_DependencyFaultFailsClosed(t *testing.T) {
+	faulty := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{
+		getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
+			return nil, errors.New("nats: no responders available for request")
+		},
+	}}
+
+	userID, err := faulty.principalUserID(principalContext{
+		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
+	})
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
+	assert.Empty(t, userID)
 }
 
 // RoleSessionName is chosen by the caller of AssumeRole, so aws:username must

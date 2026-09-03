@@ -50,9 +50,10 @@ if ! git rev-parse --verify "$BASE_REF" &>/dev/null; then
 fi
 
 # e2e and integration suites share a package-level fixture built in
-# main_test.go, so their files cannot move individually.
+# main_test.go, so their files cannot move individually. export_test.go is the
+# remedy this check recommends, and it is in-package by definition.
 ADDED=$(git diff "$BASE_REF" HEAD --name-only --diff-filter=A -- '*_test.go' \
-    ':!tests/e2e/*' ':!tests/integration/*' || true)
+    ':!tests/e2e/*' ':!tests/integration/*' ':!*export_test.go' || true)
 
 if [[ -z "$ADDED" ]]; then
     [[ -z "$QUIET" ]] && echo "No new test files — skipping test package check."

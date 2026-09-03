@@ -206,7 +206,7 @@ func TestCreateVolume_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := newTestVolumeService(tt.az)
-			_, err := svc.CreateVolume(context.Background(), tt.input, "")
+			_, err := svc.CreateVolume(context.Background(), tt.input, testVolAccountID)
 			assert.Error(t, err)
 			assert.Equal(t, tt.wantErr, err.Error())
 		})
@@ -289,7 +289,7 @@ func TestCreateVolume_PassesValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := newTestVolumeService("ap-southeast-2a")
-			_, err := svc.CreateVolume(context.Background(), tt.input, "")
+			_, err := svc.CreateVolume(context.Background(), tt.input, testVolAccountID)
 			if err != nil {
 				assert.NotEqual(t, awserrors.ErrorInvalidParameterValue, err.Error())
 				assert.NotEqual(t, awserrors.ErrorInvalidAvailabilityZone, err.Error())
@@ -305,27 +305,27 @@ func TestCreateVolume_UsesInjectedProvider(t *testing.T) {
 	vol, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		Size:             aws.Int64(8),
 		AvailabilityZone: aws.String("ap-southeast-2a"),
-	}, "acct-1")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, vol)
 	require.NotEmpty(t, vol.VolumeId)
 
-	metadata, err := svc.metadata.GetVolume(context.Background(), aws.StringValue(vol.VolumeId))
+	metadata, err := svc.metadata.GetVolume(context.Background(), testVolAccountID, aws.StringValue(vol.VolumeId))
 	require.NoError(t, err)
-	assert.Equal(t, "acct-1", metadata.TenantID)
+	assert.Equal(t, testVolAccountID, metadata.TenantID)
 	assert.Equal(t, uint64(8), metadata.CapacityGiB)
 	assert.Equal(t, "memory://volume/"+aws.StringValue(vol.VolumeId), metadata.ProviderHandle)
-	described, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	described, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, testVolAccountID)
 	require.NoError(t, err)
 	require.Len(t, described.Volumes, 1)
 	assert.Equal(t, int64(8), aws.Int64Value(described.Volumes[0].Size))
-	require.NoError(t, svc.UpdateVolumeState(aws.StringValue(vol.VolumeId), "in-use", "i-123", "/dev/sda1"))
-	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: vol.VolumeId}, "acct-1")
+	require.NoError(t, svc.UpdateVolumeState(testVolAccountID, aws.StringValue(vol.VolumeId), "in-use", "i-123", "/dev/sda1"))
+	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: vol.VolumeId}, testVolAccountID)
 	assert.EqualError(t, err, awserrors.ErrorVolumeInUse)
-	require.NoError(t, svc.UpdateVolumeState(aws.StringValue(vol.VolumeId), "available", "", ""))
-	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: vol.VolumeId}, "acct-1")
+	require.NoError(t, svc.UpdateVolumeState(testVolAccountID, aws.StringValue(vol.VolumeId), "available", "", ""))
+	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: vol.VolumeId}, testVolAccountID)
 	require.NoError(t, err)
-	_, err = svc.metadata.GetVolume(context.Background(), aws.StringValue(vol.VolumeId))
+	_, err = svc.metadata.GetVolume(context.Background(), testVolAccountID, aws.StringValue(vol.VolumeId))
 	assert.Error(t, err)
 }
 
@@ -338,13 +338,13 @@ func TestDescribeVolumes_Provider_FilterAndTenantIsolation(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	ctx := context.Background()
 
-	volA, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	volA, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, testVolAccountID)
 	require.NoError(t, err)
-	_, err = svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(16), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-2")
+	_, err = svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(16), AvailabilityZone: aws.String("ap-southeast-2a")}, "000000000002")
 	require.NoError(t, err)
 
 	t.Run("tenant isolation", func(t *testing.T) {
-		out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, "acct-1")
+		out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, testVolAccountID)
 		require.NoError(t, err)
 		require.Len(t, out.Volumes, 1)
 		assert.Equal(t, aws.StringValue(volA.VolumeId), aws.StringValue(out.Volumes[0].VolumeId))
@@ -353,14 +353,14 @@ func TestDescribeVolumes_Provider_FilterAndTenantIsolation(t *testing.T) {
 	t.Run("filter match", func(t *testing.T) {
 		out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 			Filters: []*ec2.Filter{{Name: aws.String("size"), Values: []*string{aws.String("8")}}},
-		}, "acct-1")
+		}, testVolAccountID)
 		require.NoError(t, err)
 		require.Len(t, out.Volumes, 1)
 		assert.Equal(t, aws.StringValue(volA.VolumeId), aws.StringValue(out.Volumes[0].VolumeId))
 	})
 
 	t.Run("unknown volume id is InvalidVolume.NotFound", func(t *testing.T) {
-		_, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{aws.String("vol-does-not-exist")}}, "acct-1")
+		_, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{aws.String("vol-does-not-exist")}}, testVolAccountID)
 		require.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
 	})
 }
@@ -373,35 +373,35 @@ func TestModifyVolume_Provider(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{OnlineExpansion: true}))
 	ctx := context.Background()
 
-	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, testVolAccountID)
 	require.NoError(t, err)
 	volumeID := aws.StringValue(vol.VolumeId)
 
 	t.Run("grow succeeds", func(t *testing.T) {
-		out, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(16)}, "acct-1")
+		out, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(16)}, testVolAccountID)
 		require.NoError(t, err)
 		require.NotNil(t, out.VolumeModification)
 		assert.Equal(t, int64(8), aws.Int64Value(out.VolumeModification.OriginalSize))
 		assert.Equal(t, int64(16), aws.Int64Value(out.VolumeModification.TargetSize))
 
-		meta, err := svc.metadata.GetVolume(ctx, volumeID)
+		meta, err := svc.metadata.GetVolume(ctx, testVolAccountID, volumeID)
 		require.NoError(t, err)
 		assert.Equal(t, uint64(16), meta.CapacityGiB)
 	})
 
 	t.Run("shrink is rejected", func(t *testing.T) {
-		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(8)}, "acct-1")
+		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(8)}, testVolAccountID)
 		require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 	})
 
 	t.Run("in-use is rejected", func(t *testing.T) {
-		require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-123", "/dev/sda1"))
-		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(32)}, "acct-1")
+		require.NoError(t, svc.UpdateVolumeState(testVolAccountID, volumeID, "in-use", "i-123", "/dev/sda1"))
+		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(32)}, testVolAccountID)
 		require.EqualError(t, err, awserrors.ErrorIncorrectState)
 	})
 
 	t.Run("unknown volume id is InvalidVolume.NotFound", func(t *testing.T) {
-		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: aws.String("vol-does-not-exist"), Size: aws.Int64(32)}, "acct-1")
+		_, err := svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: aws.String("vol-does-not-exist"), Size: aws.Int64(32)}, testVolAccountID)
 		require.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
 	})
 }
@@ -416,14 +416,14 @@ func TestModifyVolume_Provider_PersistsAndDescribesModification(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{OnlineExpansion: true}))
 	ctx := context.Background()
 
-	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, testVolAccountID)
 	require.NoError(t, err)
 	volumeID := aws.StringValue(vol.VolumeId)
 
-	_, err = svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(16), Iops: aws.Int64(4000)}, "acct-1")
+	_, err = svc.ModifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: vol.VolumeId, Size: aws.Int64(16), Iops: aws.Int64(4000)}, testVolAccountID)
 	require.NoError(t, err)
 
-	meta, err := svc.metadata.GetVolume(ctx, volumeID)
+	meta, err := svc.metadata.GetVolume(ctx, testVolAccountID, volumeID)
 	require.NoError(t, err)
 	require.NotNil(t, meta.Modification, "ModifyVolume must persist the modification on the ebsmetadata.Volume document")
 	assert.Equal(t, int64(8), meta.Modification.OriginalSize)
@@ -433,7 +433,7 @@ func TestModifyVolume_Provider_PersistsAndDescribesModification(t *testing.T) {
 	t.Run("fast path", func(t *testing.T) {
 		out, err := svc.DescribeVolumesModifications(ctx, &ec2.DescribeVolumesModificationsInput{
 			VolumeIds: []*string{vol.VolumeId},
-		}, "acct-1")
+		}, testVolAccountID)
 		require.NoError(t, err)
 		require.Len(t, out.VolumesModifications, 1)
 		assert.Equal(t, volumeID, aws.StringValue(out.VolumesModifications[0].VolumeId))
@@ -441,18 +441,18 @@ func TestModifyVolume_Provider_PersistsAndDescribesModification(t *testing.T) {
 	})
 
 	t.Run("slow path", func(t *testing.T) {
-		out, err := svc.DescribeVolumesModifications(ctx, &ec2.DescribeVolumesModificationsInput{}, "acct-1")
+		out, err := svc.DescribeVolumesModifications(ctx, &ec2.DescribeVolumesModificationsInput{}, testVolAccountID)
 		require.NoError(t, err)
 		require.Len(t, out.VolumesModifications, 1)
 		assert.Equal(t, volumeID, aws.StringValue(out.VolumesModifications[0].VolumeId))
 	})
 
 	t.Run("unmodified volume has no modification record", func(t *testing.T) {
-		other, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+		other, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, testVolAccountID)
 		require.NoError(t, err)
 		out, err := svc.DescribeVolumesModifications(ctx, &ec2.DescribeVolumesModificationsInput{
 			VolumeIds: []*string{other.VolumeId},
-		}, "acct-1")
+		}, testVolAccountID)
 		require.NoError(t, err)
 		assert.Empty(t, out.VolumesModifications)
 	})
@@ -467,24 +467,24 @@ func TestDescribeVolumeStatus_Provider(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	ctx := context.Background()
 
-	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, testVolAccountID)
 	require.NoError(t, err)
 
 	t.Run("fast path", func(t *testing.T) {
-		out, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+		out, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{VolumeIds: []*string{vol.VolumeId}}, testVolAccountID)
 		require.NoError(t, err)
 		require.Len(t, out.VolumeStatuses, 1)
 		assert.Equal(t, aws.StringValue(vol.VolumeId), aws.StringValue(out.VolumeStatuses[0].VolumeId))
 	})
 
 	t.Run("slow path", func(t *testing.T) {
-		out, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{}, "acct-1")
+		out, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{}, testVolAccountID)
 		require.NoError(t, err)
 		require.Len(t, out.VolumeStatuses, 1)
 	})
 
 	t.Run("cross tenant is not found", func(t *testing.T) {
-		_, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{VolumeIds: []*string{vol.VolumeId}}, "acct-2")
+		_, err := svc.DescribeVolumeStatus(ctx, &ec2.DescribeVolumeStatusInput{VolumeIds: []*string{vol.VolumeId}}, "000000000002")
 		require.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
 	})
 }
@@ -498,11 +498,11 @@ func TestCreateVolume_Provider_EncryptedFollowsConfig(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	ctx := context.Background()
 
-	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, testVolAccountID)
 	require.NoError(t, err)
 	assert.False(t, aws.BoolValue(vol.Encrypted), "no encryption key file configured, so the volume must not report encrypted")
 
-	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, testVolAccountID)
 	require.NoError(t, err)
 	require.Len(t, described.Volumes, 1)
 	assert.False(t, aws.BoolValue(described.Volumes[0].Encrypted))
@@ -516,10 +516,10 @@ func TestVolumeLeakReaper_Provider(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	ctx := context.Background()
 
-	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, testVolAccountID)
 	require.NoError(t, err)
 	volumeID := aws.StringValue(vol.VolumeId)
-	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-gone0000000000", "/dev/sda1"))
+	require.NoError(t, svc.UpdateVolumeState(testVolAccountID, volumeID, "in-use", "i-gone0000000000", "/dev/sda1"))
 
 	reaper := svc.NewVolumeLeakReaper(func() (map[string]bool, error) {
 		return map[string]bool{"i-gone0000000000": true}, nil
@@ -529,13 +529,13 @@ func TestVolumeLeakReaper_Provider(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, marked)
 
-	meta, err := svc.metadata.GetVolume(ctx, volumeID)
+	meta, err := svc.metadata.GetVolume(ctx, testVolAccountID, volumeID)
 	require.NoError(t, err)
 	assert.NotEmpty(t, meta.Tags[orphanTagKey], "the reaper must mark the provider-managed volume orphaned in ebsmetadata")
 	assert.Equal(t, "available", meta.State, "the reaper must reconcile the stale attachment")
 	assert.Empty(t, meta.AttachedInstance)
 
-	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, testVolAccountID)
 	require.NoError(t, err)
 	require.Len(t, described.Volumes, 1)
 	assert.NotEmpty(t, filterutil.EC2TagsToMap(described.Volumes[0].Tags)[orphanTagKey],
@@ -556,15 +556,15 @@ func TestApplyRecordTags_Provider_VisibleViaDescribeVolumes(t *testing.T) {
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	ctx := context.Background()
 
-	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, "acct-1")
+	vol, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a")}, testVolAccountID)
 	require.NoError(t, err)
 
 	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
 		Resources: []*string{vol.VolumeId},
 		Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("control-plane")}},
-	}, "acct-1"))
+	}, testVolAccountID))
 
-	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, testVolAccountID)
 	require.NoError(t, err)
 	require.Len(t, described.Volumes, 1)
 	assert.Equal(t, "control-plane", filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"],
@@ -573,9 +573,9 @@ func TestApplyRecordTags_Provider_VisibleViaDescribeVolumes(t *testing.T) {
 	require.NoError(t, svc.RemoveRecordTags(&ec2.DeleteTagsInput{
 		Resources: []*string{vol.VolumeId},
 		Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("control-plane")}},
-	}, "acct-1"))
+	}, testVolAccountID))
 
-	described, err = svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+	described, err = svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, testVolAccountID)
 	require.NoError(t, err)
 	require.Len(t, described.Volumes, 1)
 	_, hasOwnerTag := filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"]
@@ -585,8 +585,8 @@ func TestApplyRecordTags_Provider_VisibleViaDescribeVolumes(t *testing.T) {
 		require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
 			Resources: []*string{vol.VolumeId},
 			Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("intruder")}},
-		}, "acct-2"))
-		described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, "acct-1")
+		}, "000000000002"))
+		described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, testVolAccountID)
 		require.NoError(t, err)
 		_, hasOwnerTag := filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"]
 		assert.False(t, hasOwnerTag, "a caller who does not own the volume must not be able to tag it")
@@ -596,7 +596,7 @@ func TestApplyRecordTags_Provider_VisibleViaDescribeVolumes(t *testing.T) {
 		require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
 			Resources: []*string{aws.String("vol-does-not-exist")},
 			Tags:      []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("control-plane")}},
-		}, "acct-1"))
+		}, testVolAccountID))
 	})
 }
 
@@ -625,7 +625,7 @@ func (s *prefixFailingObjectStore) PutObject(ctx context.Context, input *s3.PutO
 // provider has already allocated the volume, CreateVolume must delete the
 // just-created provider volume rather than orphan it.
 func TestCreateVolume_Provider_RollbackOnMetadataWriteFailure(t *testing.T) {
-	store := &prefixFailingObjectStore{ObjectStore: objectstore.NewMemoryObjectStore(), failPrefix: "spinifex/ebsmetadata/v1/volumes/"}
+	store := &prefixFailingObjectStore{ObjectStore: objectstore.NewMemoryObjectStore(), failPrefix: "spinifex/ebsmetadata/v2/volumes/"}
 	cfg := &config.Config{AZ: "ap-southeast-2a", Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
 	svc := NewVolumeServiceImplWithStore(cfg, store, nil)
 	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
@@ -633,7 +633,7 @@ func TestCreateVolume_Provider_RollbackOnMetadataWriteFailure(t *testing.T) {
 
 	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		Size: aws.Int64(8), AvailabilityZone: aws.String("ap-southeast-2a"),
-	}, "acct-1")
+	}, testVolAccountID)
 	require.EqualError(t, err, awserrors.ErrorServerInternal)
 	require.NotEmpty(t, store.attemptedKey, "the metadata write must have been attempted")
 
@@ -690,7 +690,7 @@ func TestDescribeVolumeStatus_NilInputDefaults(t *testing.T) {
 	// nil input is defaulted to empty, then hits the slow path which
 	// calls listAllVolumeIDs. With an empty MemoryObjectStore, no
 	// volumes are found and an empty result is returned.
-	output, err := svc.DescribeVolumeStatus(context.Background(), nil, "")
+	output, err := svc.DescribeVolumeStatus(context.Background(), nil, testVolAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, output.VolumeStatuses)
 }
@@ -703,7 +703,7 @@ func TestDescribeVolumeStatus_WithVolumeIDs(t *testing.T) {
 	// InvalidVolume.NotFound error is returned.
 	_, err := svc.DescribeVolumeStatus(context.Background(), &ec2.DescribeVolumeStatusInput{
 		VolumeIds: []*string{aws.String("vol-abc123")},
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }
@@ -726,23 +726,16 @@ func newTestVolumeServiceWithStore(az string, store *objectstore.MemoryObjectSto
 	return svc
 }
 
-// putTestSnapshotMetadata writes snapshot metadata in the store, matching the
-// spinifex snapshot service format.
+// putTestSnapshotMetadata writes the snapshot's control-plane document under
+// the account that owns it.
 func putTestSnapshotMetadata(t *testing.T, store *objectstore.MemoryObjectStore, snapshotID, ownerID string, sizeGiB int64) {
 	t.Helper()
-	snapData, err := json.Marshal(snapshotMetadata{
+	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutSnapshot(context.Background(), ebsmetadata.Snapshot{
+		SnapshotID: snapshotID,
 		VolumeID:   "vol-source",
 		VolumeSize: sizeGiB,
 		OwnerID:    ownerID,
-	})
-	require.NoError(t, err)
-
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(snapshotID + "/metadata.json"),
-		Body:   strings.NewReader(string(snapData)),
-	})
-	require.NoError(t, err)
+	}))
 }
 
 func TestCreateVolume_FromSnapshot_PassesValidation(t *testing.T) {
@@ -838,9 +831,11 @@ func TestCreateVolume_FromSnapshot_CorruptMetadata(t *testing.T) {
 	snapshotID := "snap-corrupt"
 
 	// Put invalid JSON as snapshot metadata
-	_, err := store.PutObject(context.Background(), &s3.PutObjectInput{
+	key, err := ebsmetadata.SnapshotKey(testVolAccountID, snapshotID)
+	require.NoError(t, err)
+	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(snapshotID + "/metadata.json"),
+		Key:    aws.String(key),
 		Body:   strings.NewReader("not valid json{{{"),
 	})
 	require.NoError(t, err)
@@ -880,23 +875,38 @@ func TestCreateVolume_FromSnapshot_OtherAccountDenied(t *testing.T) {
 	assertNoVolumeCreated(t, store)
 }
 
-// A snapshot written before owner_id was recorded fails closed, including for
-// a caller whose own account ID is empty.
+// A snapshot recording no owner fails closed. An empty caller is refused
+// earlier still, at the boundary, before the snapshot is ever read.
 func TestCreateVolume_FromSnapshot_EmptyOwnerDenied(t *testing.T) {
-	for _, accountID := range []string{testVolAccountID, ""} {
-		t.Run("caller="+accountID, func(t *testing.T) {
+	// An untenanted snapshot document cannot be written, so it cannot exist:
+	// the state this used to guard against is unreachable rather than denied.
+	store := objectstore.NewMemoryObjectStore()
+	require.Error(t, ebsmetadata.NewStore(store, "test-bucket").PutSnapshot(context.Background(), ebsmetadata.Snapshot{
+		SnapshotID: "snap-untenanted", VolumeID: "vol-source", VolumeSize: 50,
+	}))
+
+	tests := []struct {
+		accountID string
+		wantErr   string
+	}{
+		{accountID: "000000000002", wantErr: awserrors.ErrorInvalidSnapshotNotFound},
+		{accountID: "", wantErr: awserrors.ErrorAuthFailure},
+	}
+
+	for _, tt := range tests {
+		t.Run("caller="+tt.accountID, func(t *testing.T) {
 			store := objectstore.NewMemoryObjectStore()
 			svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-			snapshotID := "snap-legacy"
-			putTestSnapshotMetadata(t, store, snapshotID, "", 50)
+			snapshotID := "snap-owned"
+			putTestSnapshotMetadata(t, store, snapshotID, testVolAccountID, 50)
 
 			_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 				AvailabilityZone: aws.String("ap-southeast-2a"),
 				SnapshotId:       aws.String(snapshotID),
-			}, accountID)
+			}, tt.accountID)
 			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
+			assert.Equal(t, tt.wantErr, err.Error())
 			assertNoVolumeCreated(t, store)
 		})
 	}
@@ -942,7 +952,7 @@ func TestDeleteVolume_BlockedByKV(t *testing.T) {
 	// DeleteVolume should be blocked
 	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(volumeID),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorVolumeInUse)
 }
@@ -960,7 +970,7 @@ func TestDeleteVolume_AllowedByKV(t *testing.T) {
 	// No KV entry → delete allowed
 	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(volumeID),
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 }
 
@@ -975,7 +985,7 @@ func TestDeleteVolume_ErrorWhenKVNil(t *testing.T) {
 	// Should fail because snapshotKV is nil
 	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(volumeID),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorServerInternal)
 }
@@ -995,7 +1005,7 @@ func createVolumeInStoreWithMeta(t *testing.T, svc *VolumeServiceImpl, store *ob
 // cannot express: a corrupt document, or one predating a field.
 func putRawVolumeDocument(t *testing.T, store *objectstore.MemoryObjectStore, volumeID, body string) {
 	t.Helper()
-	key, err := ebsmetadata.VolumeKey(volumeID)
+	key, err := ebsmetadata.VolumeKey(testVolAccountID, volumeID)
 	require.NoError(t, err)
 	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
@@ -1011,7 +1021,7 @@ func putRawVolumeDocument(t *testing.T, store *objectstore.MemoryObjectStore, vo
 // DescribeVolumes does, so the read and the projection are covered together.
 func volumeByID(t *testing.T, svc *VolumeServiceImpl, volumeID string) *ec2.Volume {
 	t.Helper()
-	meta, err := svc.GetVolumeMetadata(volumeID)
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
 	require.NoError(t, err)
 	return metadataVolumeToEC2(meta)
 }
@@ -1110,7 +1120,7 @@ func TestGetVolumeByID_ThroughputOmitted_PreFieldVolume(t *testing.T) {
 
 	// Simulate a pre-field volume by writing a document with no throughput key.
 	putRawVolumeDocument(t, store, "vol-prefield",
-		`{"schema_version":1,"volume_id":"vol-prefield","capacity_gib":5,"state":"available","volume_type":"gp3","iops":3000}`)
+		`{"schema_version":2,"volume_id":"vol-prefield","tenant_id":"123456789012","capacity_gib":5,"state":"available","volume_type":"gp3","iops":3000}`)
 
 	vol := volumeByID(t, svc, "vol-prefield")
 
@@ -1132,7 +1142,7 @@ func TestGetVolumeByID_NotFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	_, err := svc.GetVolumeMetadata("vol-nonexistent")
+	_, err := svc.GetVolumeMetadata(testVolAccountID, "vol-nonexistent")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }
@@ -1148,7 +1158,7 @@ func TestDescribeVolumes_NilInput(t *testing.T) {
 		VolumeID: "vol-nil1", CapacityGiB: 10, State: "available",
 	})
 
-	output, err := svc.DescribeVolumes(context.Background(), nil, "")
+	output, err := svc.DescribeVolumes(context.Background(), nil, testVolAccountID)
 	require.NoError(t, err)
 	assert.Len(t, output.Volumes, 1)
 }
@@ -1157,7 +1167,7 @@ func TestDescribeVolumes_EmptyStore(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	output, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, "")
+	output, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, output.Volumes)
 }
@@ -1172,7 +1182,7 @@ func TestDescribeVolumes_SlowPath_MultipleVolumes(t *testing.T) {
 		})
 	}
 
-	output, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, "")
+	output, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Len(t, output.Volumes, 3)
 }
@@ -1189,7 +1199,7 @@ func TestDescribeVolumes_FastPath_SpecificIDs(t *testing.T) {
 
 	output, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		VolumeIds: []*string{aws.String("vol-x"), aws.String("vol-z")},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Len(t, output.Volumes, 2)
 
@@ -1212,7 +1222,7 @@ func TestDescribeVolumes_FastPath_MixedExistingAndMissing(t *testing.T) {
 	// AWS returns InvalidVolume.NotFound when any requested ID is missing
 	_, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		VolumeIds: []*string{aws.String("vol-exists"), aws.String("vol-ghost")},
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }
@@ -1227,7 +1237,7 @@ func TestDescribeVolumes_FastPath_NilVolumeID(t *testing.T) {
 
 	output, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		VolumeIds: []*string{nil, aws.String("vol-ok")},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Len(t, output.Volumes, 1)
 }
@@ -1374,7 +1384,7 @@ func TestModifyVolume_NilVolumeID(t *testing.T) {
 
 	_, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
 		VolumeId: nil,
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeIDMalformed, err.Error())
 }
@@ -1384,7 +1394,7 @@ func TestModifyVolume_EmptyVolumeID(t *testing.T) {
 
 	_, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
 		VolumeId: aws.String(""),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeIDMalformed, err.Error())
 }
@@ -1395,7 +1405,7 @@ func TestModifyVolume_VolumeNotFound(t *testing.T) {
 	_, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
 		VolumeId: aws.String("vol-nonexistent"),
 		Size:     aws.Int64(20),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }
@@ -1411,7 +1421,7 @@ func TestModifyVolume_ShrinkRejected(t *testing.T) {
 	_, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
 		VolumeId: aws.String("vol-shrink"),
 		Size:     aws.Int64(5),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
@@ -1427,7 +1437,7 @@ func TestModifyVolume_SameSizeRejected(t *testing.T) {
 	_, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
 		VolumeId: aws.String("vol-same"),
 		Size:     aws.Int64(10),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
@@ -1446,7 +1456,7 @@ func TestModifyVolume_AttachedInUse(t *testing.T) {
 	_, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
 		VolumeId: aws.String("vol-inuse"),
 		Size:     aws.Int64(20),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectState, err.Error())
 }
@@ -1466,7 +1476,7 @@ func TestModifyVolume_SuccessfulGrow(t *testing.T) {
 	output, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
 		VolumeId: aws.String("vol-grow"),
 		Size:     aws.Int64(20),
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 
 	mod := output.VolumeModification
@@ -1477,7 +1487,7 @@ func TestModifyVolume_SuccessfulGrow(t *testing.T) {
 	assert.Equal(t, int64(100), *mod.Progress)
 
 	// Verify persisted config
-	meta, err := svc.GetVolumeMetadata("vol-grow")
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, "vol-grow")
 	require.NoError(t, err)
 	assert.Equal(t, uint64(20), meta.CapacityGiB)
 }
@@ -1499,7 +1509,7 @@ func TestModifyVolume_ModifyTypeAndIOPS(t *testing.T) {
 		Size:       aws.Int64(20),
 		VolumeType: aws.String("io1"),
 		Iops:       aws.Int64(10000),
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 
 	mod := output.VolumeModification
@@ -1524,7 +1534,7 @@ func TestModifyVolume_AvailableWithAttachment(t *testing.T) {
 	output, err := svc.ModifyVolume(context.Background(), &ec2.ModifyVolumeInput{
 		VolumeId: aws.String("vol-stopinst"),
 		Size:     aws.Int64(20),
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(20), *output.VolumeModification.TargetSize)
 }
@@ -1539,10 +1549,10 @@ func TestUpdateVolumeState_AttachVolume(t *testing.T) {
 		VolumeID: "vol-attach", CapacityGiB: 10, State: "available",
 	})
 
-	err := svc.UpdateVolumeState("vol-attach", "in-use", "i-abc123", "/dev/nbd0")
+	err := svc.UpdateVolumeState(testVolAccountID, "vol-attach", "in-use", "i-abc123", "/dev/nbd0")
 	require.NoError(t, err)
 
-	meta, err := svc.GetVolumeMetadata("vol-attach")
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, "vol-attach")
 	require.NoError(t, err)
 	assert.Equal(t, "in-use", meta.State)
 	assert.Equal(t, "i-abc123", meta.AttachedInstance)
@@ -1562,10 +1572,10 @@ func TestUpdateVolumeState_DetachVolume(t *testing.T) {
 		DeviceName:       "/dev/nbd1",
 	})
 
-	err := svc.UpdateVolumeState("vol-detach2", "available", "", "")
+	err := svc.UpdateVolumeState(testVolAccountID, "vol-detach2", "available", "", "")
 	require.NoError(t, err)
 
-	meta, err := svc.GetVolumeMetadata("vol-detach2")
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, "vol-detach2")
 	require.NoError(t, err)
 	assert.Equal(t, "available", meta.State)
 	assert.Empty(t, meta.AttachedInstance)
@@ -1575,7 +1585,7 @@ func TestUpdateVolumeState_DetachVolume(t *testing.T) {
 func TestUpdateVolumeState_VolumeNotFound(t *testing.T) {
 	svc := newTestVolumeService("ap-southeast-2a")
 
-	err := svc.UpdateVolumeState("vol-missing", "available", "", "")
+	err := svc.UpdateVolumeState(testVolAccountID, "vol-missing", "available", "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to get volume metadata")
 }
@@ -1590,7 +1600,7 @@ func TestUpdateVolumeState_PreservesProviderConfig(t *testing.T) {
 	seedProviderConfig(t, store, "vol-vbstate")
 	before := getStoredConfig(t, store, "vol-vbstate")
 
-	err := svc.UpdateVolumeState("vol-vbstate", "in-use", "i-preserve", "/dev/nbd0")
+	err := svc.UpdateVolumeState(testVolAccountID, "vol-vbstate", "in-use", "i-preserve", "/dev/nbd0")
 	require.NoError(t, err)
 
 	// config.json belongs to the live VB, which rewrites it from its own state.
@@ -1598,15 +1608,15 @@ func TestUpdateVolumeState_PreservesProviderConfig(t *testing.T) {
 	assert.Equal(t, string(before), string(getStoredConfig(t, store, "vol-vbstate")),
 		"UpdateVolumeState must not rewrite provider-owned config.json")
 
-	readback, err := svc.GetVolumeMetadata("vol-vbstate")
+	readback, err := svc.GetVolumeMetadata(testVolAccountID, "vol-vbstate")
 	require.NoError(t, err)
 	assert.Equal(t, "in-use", readback.State)
 	assert.Equal(t, "i-preserve", readback.AttachedInstance)
 }
 
-// --- Group 6: listAllVolumeIDs tests ---
+// --- Group 6: whole-cluster volume listing tests ---
 
-func TestListAllVolumeIDs_FiltersCorrectly(t *testing.T) {
+func TestListAllVolumes_FiltersCorrectly(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
@@ -1626,29 +1636,29 @@ func TestListAllVolumeIDs_FiltersCorrectly(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	ids, err := svc.listAllVolumeIDs(context.Background())
+	volumes, err := svc.metadata.ListAllVolumes(context.Background())
 	require.NoError(t, err)
 
 	// Should only contain vol-abc and vol-def (not efi/cloudinit/ami/snap)
-	assert.Len(t, ids, 2)
+	assert.Len(t, volumes, 2)
 	idSet := map[string]bool{}
-	for _, id := range ids {
-		idSet[id] = true
+	for _, v := range volumes {
+		idSet[v.VolumeID] = true
 	}
 	assert.True(t, idSet["vol-abc"])
 	assert.True(t, idSet["vol-def"])
 }
 
-func TestListAllVolumeIDs_EmptyBucket(t *testing.T) {
+func TestListAllVolumes_EmptyBucket(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	ids, err := svc.listAllVolumeIDs(context.Background())
+	volumes, err := svc.metadata.ListAllVolumes(context.Background())
 	require.NoError(t, err)
-	assert.Empty(t, ids)
+	assert.Empty(t, volumes)
 }
 
-func TestListAllVolumeIDs_NilPrefix(t *testing.T) {
+func TestListAllVolumes_SingleDocument(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
@@ -1657,10 +1667,10 @@ func TestListAllVolumeIDs_NilPrefix(t *testing.T) {
 		VolumeID: "vol-only", CapacityGiB: 10, State: "available",
 	})
 
-	ids, err := svc.listAllVolumeIDs(context.Background())
+	volumes, err := svc.metadata.ListAllVolumes(context.Background())
 	require.NoError(t, err)
-	assert.Len(t, ids, 1)
-	assert.Equal(t, "vol-only", ids[0])
+	require.Len(t, volumes, 1)
+	assert.Equal(t, "vol-only", volumes[0].VolumeID)
 }
 
 // --- Group 7: DeleteVolume remaining tests ---
@@ -1680,7 +1690,7 @@ func TestDeleteVolume_VolumeInUse(t *testing.T) {
 
 	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
 		VolumeId: aws.String("vol-busy"),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorVolumeInUse, err.Error())
 }
@@ -1703,7 +1713,7 @@ func TestDeleteVolume_VolumeAttachedButAvailable(t *testing.T) {
 
 	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
 		VolumeId: aws.String("vol-attached"),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorVolumeInUse, err.Error())
 }
@@ -1724,7 +1734,7 @@ func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {
 
 	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
 		VolumeId: aws.String("vol-drift"),
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 }
 
@@ -1750,10 +1760,10 @@ func TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes(t *testing.T) {
 		AttachedInstance: "i-stopped",
 	})
 
-	err := svc.DeleteVolumeOnTerminate(context.Background(), volumeID, "")
+	err := svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID)
 	require.NoError(t, err, "terminate implies detach: a stale attachment must not block the terminate delete")
 
-	_, err = svc.GetVolumeMetadata(volumeID)
+	_, err = svc.GetVolumeMetadata(testVolAccountID, volumeID)
 	require.Error(t, err, "the volume must actually be deleted, not merely detached")
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
 }
@@ -1769,7 +1779,7 @@ func TestDeleteVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
 	svc.snapshotKV = kv
 
 	// No metadata doc is ever written for this volume ID.
-	err := svc.DeleteVolumeOnTerminate(context.Background(), "vol-already-gone", "")
+	err := svc.DeleteVolumeOnTerminate(context.Background(), "vol-already-gone", testVolAccountID)
 	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
 }
 
@@ -1782,7 +1792,7 @@ func TestDetachVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	svc.snapshotKV = kv
 
-	err := svc.DetachVolumeOnTerminate(context.Background(), "vol-already-gone", "")
+	err := svc.DetachVolumeOnTerminate(context.Background(), "vol-already-gone", testVolAccountID)
 	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
 }
 
@@ -1851,11 +1861,11 @@ func TestDeleteVolumeOnTerminate_SurfacesDeleteFailure(t *testing.T) {
 	_, err = kv.Put(t.Context(), volumeID, snapData)
 	require.NoError(t, err)
 
-	err = svc.DeleteVolumeOnTerminate(context.Background(), volumeID, "")
+	err = svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID)
 	require.Error(t, err, "a DeleteVolume failure must be surfaced, not swallowed")
 	assert.Contains(t, err.Error(), awserrors.ErrorVolumeInUse)
 
-	meta, getErr := svc.GetVolumeMetadata(volumeID)
+	meta, getErr := svc.GetVolumeMetadata(testVolAccountID, volumeID)
 	require.NoError(t, getErr, "the volume must still exist after a failed delete")
 	assert.Empty(t, meta.AttachedInstance, "the attachment clear runs before delete and is not rolled back on a later delete failure")
 }
@@ -1886,8 +1896,8 @@ func TestUpdateVolumeState_EmptyUnattachedNormalizesToAvailable(t *testing.T) {
 
 	// A detach writeback that clears the attachment without a state must not
 	// strand the volume with an empty State.
-	require.NoError(t, svc.UpdateVolumeState("vol-norm", "", "", ""))
-	meta, err := svc.GetVolumeMetadata("vol-norm")
+	require.NoError(t, svc.UpdateVolumeState(testVolAccountID, "vol-norm", "", "", ""))
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, "vol-norm")
 	require.NoError(t, err)
 	assert.Equal(t, "available", meta.State)
 	assert.Empty(t, meta.AttachedInstance)
@@ -1906,7 +1916,7 @@ func TestDescribeVolumeStatus_SlowPath_WithVolumes(t *testing.T) {
 		})
 	}
 
-	output, err := svc.DescribeVolumeStatus(context.Background(), nil, "")
+	output, err := svc.DescribeVolumeStatus(context.Background(), nil, testVolAccountID)
 	require.NoError(t, err)
 	assert.Len(t, output.VolumeStatuses, 2)
 
@@ -1930,7 +1940,7 @@ func TestDescribeVolumeStatus_FastPath_WithVolumes(t *testing.T) {
 
 	output, err := svc.DescribeVolumeStatus(context.Background(), &ec2.DescribeVolumeStatusInput{
 		VolumeIds: []*string{aws.String("vol-status1")},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	require.Len(t, output.VolumeStatuses, 1)
 	assert.Equal(t, "vol-status1", *output.VolumeStatuses[0].VolumeId)
@@ -1944,17 +1954,17 @@ func TestDescribeVolumes_FilterByStatus(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-avail", ebsmetadata.Volume{
-		VolumeID: "vol-avail", CapacityGiB: 10, State: "available", TenantID: "acct1",
+		VolumeID: "vol-avail", CapacityGiB: 10, State: "available", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-inuse", ebsmetadata.Volume{
-		VolumeID: "vol-inuse", CapacityGiB: 20, State: "in-use", TenantID: "acct1",
+		VolumeID: "vol-inuse", CapacityGiB: 20, State: "in-use", TenantID: "000000000001",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("status"), Values: []*string{aws.String("available")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 1)
 	assert.Equal(t, "vol-avail", *out.Volumes[0].VolumeId)
@@ -1965,17 +1975,17 @@ func TestDescribeVolumes_FilterByVolumeType(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-gp3", ebsmetadata.Volume{
-		VolumeID: "vol-gp3", CapacityGiB: 10, State: "available", VolumeType: "gp3", TenantID: "acct1",
+		VolumeID: "vol-gp3", CapacityGiB: 10, State: "available", VolumeType: "gp3", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-io1", ebsmetadata.Volume{
-		VolumeID: "vol-io1", CapacityGiB: 10, State: "available", VolumeType: "io1", TenantID: "acct1",
+		VolumeID: "vol-io1", CapacityGiB: 10, State: "available", VolumeType: "io1", TenantID: "000000000001",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("volume-type"), Values: []*string{aws.String("gp3")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 1)
 	assert.Equal(t, "vol-gp3", *out.Volumes[0].VolumeId)
@@ -1986,17 +1996,17 @@ func TestDescribeVolumes_FilterBySize(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-small", ebsmetadata.Volume{
-		VolumeID: "vol-small", CapacityGiB: 10, State: "available", TenantID: "acct1",
+		VolumeID: "vol-small", CapacityGiB: 10, State: "available", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-big", ebsmetadata.Volume{
-		VolumeID: "vol-big", CapacityGiB: 100, State: "available", TenantID: "acct1",
+		VolumeID: "vol-big", CapacityGiB: 100, State: "available", TenantID: "000000000001",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("size"), Values: []*string{aws.String("100")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 1)
 	assert.Equal(t, "vol-big", *out.Volumes[0].VolumeId)
@@ -2008,17 +2018,17 @@ func TestDescribeVolumes_FilterByAttachmentInstanceId(t *testing.T) {
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-att", ebsmetadata.Volume{
 		VolumeID: "vol-att", CapacityGiB: 10, State: "in-use",
-		AttachedInstance: "i-12345", DeviceName: "/dev/nbd0", TenantID: "acct1",
+		AttachedInstance: "i-12345", DeviceName: "/dev/nbd0", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-free", ebsmetadata.Volume{
-		VolumeID: "vol-free", CapacityGiB: 10, State: "available", TenantID: "acct1",
+		VolumeID: "vol-free", CapacityGiB: 10, State: "available", TenantID: "000000000001",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("attachment.instance-id"), Values: []*string{aws.String("i-12345")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 1)
 	assert.Equal(t, "vol-att", *out.Volumes[0].VolumeId)
@@ -2030,18 +2040,18 @@ func TestDescribeVolumes_FilterByAttachmentDevice(t *testing.T) {
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-nbd0", ebsmetadata.Volume{
 		VolumeID: "vol-nbd0", CapacityGiB: 10, State: "in-use",
-		AttachedInstance: "i-12345", DeviceName: "/dev/nbd0", TenantID: "acct1",
+		AttachedInstance: "i-12345", DeviceName: "/dev/nbd0", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-nbd1", ebsmetadata.Volume{
 		VolumeID: "vol-nbd1", CapacityGiB: 10, State: "in-use",
-		AttachedInstance: "i-12345", DeviceName: "/dev/nbd1", TenantID: "acct1",
+		AttachedInstance: "i-12345", DeviceName: "/dev/nbd1", TenantID: "000000000001",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("attachment.device"), Values: []*string{aws.String("/dev/nbd1")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 1)
 	assert.Equal(t, "vol-nbd1", *out.Volumes[0].VolumeId)
@@ -2053,18 +2063,18 @@ func TestDescribeVolumes_FilterByAZ(t *testing.T) {
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-az1", ebsmetadata.Volume{
 		VolumeID: "vol-az1", CapacityGiB: 10, State: "available",
-		AvailabilityZone: "ap-southeast-2a", TenantID: "acct1",
+		AvailabilityZone: "ap-southeast-2a", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-az2", ebsmetadata.Volume{
 		VolumeID: "vol-az2", CapacityGiB: 10, State: "available",
-		AvailabilityZone: "ap-southeast-2b", TenantID: "acct1",
+		AvailabilityZone: "ap-southeast-2b", TenantID: "000000000001",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("ap-southeast-2a")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 1)
 	assert.Equal(t, "vol-az1", *out.Volumes[0].VolumeId)
@@ -2075,21 +2085,21 @@ func TestDescribeVolumes_FilterMultipleValues_OR(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-avail", ebsmetadata.Volume{
-		VolumeID: "vol-avail", CapacityGiB: 10, State: "available", TenantID: "acct1",
+		VolumeID: "vol-avail", CapacityGiB: 10, State: "available", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-inuse", ebsmetadata.Volume{
 		VolumeID: "vol-inuse", CapacityGiB: 10, State: "in-use",
-		AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "acct1",
+		AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-del", ebsmetadata.Volume{
-		VolumeID: "vol-del", CapacityGiB: 10, State: "deleted", TenantID: "acct1",
+		VolumeID: "vol-del", CapacityGiB: 10, State: "deleted", TenantID: "000000000001",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("status"), Values: []*string{aws.String("available"), aws.String("in-use")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 2)
 }
@@ -2100,11 +2110,11 @@ func TestDescribeVolumes_FilterMultipleFilters_AND(t *testing.T) {
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-match", ebsmetadata.Volume{
 		VolumeID: "vol-match", CapacityGiB: 10, State: "available",
-		VolumeType: "gp3", TenantID: "acct1",
+		VolumeType: "gp3", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-nomatch", ebsmetadata.Volume{
 		VolumeID: "vol-nomatch", CapacityGiB: 10, State: "in-use",
-		VolumeType: "gp3", AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "acct1",
+		VolumeType: "gp3", AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "000000000001",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
@@ -2112,7 +2122,7 @@ func TestDescribeVolumes_FilterMultipleFilters_AND(t *testing.T) {
 			{Name: aws.String("status"), Values: []*string{aws.String("available")}},
 			{Name: aws.String("volume-type"), Values: []*string{aws.String("gp3")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 1)
 	assert.Equal(t, "vol-match", *out.Volumes[0].VolumeId)
@@ -2126,7 +2136,7 @@ func TestDescribeVolumes_FilterUnknownName_Error(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("bogus-filter"), Values: []*string{aws.String("val")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
@@ -2136,14 +2146,14 @@ func TestDescribeVolumes_FilterNoResults(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-one", ebsmetadata.Volume{
-		VolumeID: "vol-one", CapacityGiB: 10, State: "available", TenantID: "acct1",
+		VolumeID: "vol-one", CapacityGiB: 10, State: "available", TenantID: "000000000001",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("status"), Values: []*string{aws.String("deleted")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Empty(t, out.Volumes)
 }
@@ -2153,13 +2163,13 @@ func TestDescribeVolumes_FilterNoFilters(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-a", ebsmetadata.Volume{
-		VolumeID: "vol-a", CapacityGiB: 10, State: "available", TenantID: "acct1",
+		VolumeID: "vol-a", CapacityGiB: 10, State: "available", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-b", ebsmetadata.Volume{
-		VolumeID: "vol-b", CapacityGiB: 20, State: "available", TenantID: "acct1",
+		VolumeID: "vol-b", CapacityGiB: 20, State: "available", TenantID: "000000000001",
 	})
 
-	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, "acct1")
+	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 2)
 }
@@ -2170,18 +2180,18 @@ func TestDescribeVolumes_FilterWildcard(t *testing.T) {
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-az1", ebsmetadata.Volume{
 		VolumeID: "vol-az1", CapacityGiB: 10, State: "available",
-		AvailabilityZone: "ap-southeast-2a", TenantID: "acct1",
+		AvailabilityZone: "ap-southeast-2a", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-az2", ebsmetadata.Volume{
 		VolumeID: "vol-az2", CapacityGiB: 10, State: "available",
-		AvailabilityZone: "us-east-1a", TenantID: "acct1",
+		AvailabilityZone: "us-east-1a", TenantID: "000000000001",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("ap-*")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 1)
 	assert.Equal(t, "vol-az1", *out.Volumes[0].VolumeId)
@@ -2192,18 +2202,18 @@ func TestDescribeVolumes_FilterByTag(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-tagged", ebsmetadata.Volume{
-		VolumeID: "vol-tagged", CapacityGiB: 10, State: "available", TenantID: "acct1",
+		VolumeID: "vol-tagged", CapacityGiB: 10, State: "available", TenantID: "000000000001",
 		Tags: map[string]string{"Environment": "prod"},
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-untagged", ebsmetadata.Volume{
-		VolumeID: "vol-untagged", CapacityGiB: 10, State: "available", TenantID: "acct1",
+		VolumeID: "vol-untagged", CapacityGiB: 10, State: "available", TenantID: "000000000001",
 	})
 
 	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("tag:Environment"), Values: []*string{aws.String("prod")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 1)
 	assert.Equal(t, "vol-tagged", *out.Volumes[0].VolumeId)
@@ -2214,11 +2224,11 @@ func TestDescribeVolumes_FilterWithVolumeIds(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
 	createVolumeInStoreWithMeta(t, svc, store, "vol-a", ebsmetadata.Volume{
-		VolumeID: "vol-a", CapacityGiB: 10, State: "available", TenantID: "acct1",
+		VolumeID: "vol-a", CapacityGiB: 10, State: "available", TenantID: "000000000001",
 	})
 	createVolumeInStoreWithMeta(t, svc, store, "vol-b", ebsmetadata.Volume{
 		VolumeID: "vol-b", CapacityGiB: 10, State: "in-use",
-		AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "acct1",
+		AttachedInstance: "i-1", DeviceName: "/dev/nbd0", TenantID: "000000000001",
 	})
 
 	// Request both by ID but filter to only available
@@ -2227,7 +2237,7 @@ func TestDescribeVolumes_FilterWithVolumeIds(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("status"), Values: []*string{aws.String("available")}},
 		},
-	}, "acct1")
+	}, "000000000001")
 	require.NoError(t, err)
 	assert.Len(t, out.Volumes, 1)
 	assert.Equal(t, "vol-a", *out.Volumes[0].VolumeId)
@@ -2248,7 +2258,7 @@ func TestDescribeVolumeStatus_FilterByVolumeId(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("volume-id"), Values: []*string{aws.String("vol-vs1")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.VolumeStatuses, 1)
 	assert.Equal(t, "vol-vs1", *out.VolumeStatuses[0].VolumeId)
@@ -2267,7 +2277,7 @@ func TestDescribeVolumeStatus_FilterByStatus(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("volume-status.status"), Values: []*string{aws.String("ok")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.VolumeStatuses, 1)
 
@@ -2275,7 +2285,7 @@ func TestDescribeVolumeStatus_FilterByStatus(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("volume-status.status"), Values: []*string{aws.String("impaired")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.VolumeStatuses)
 }
@@ -2292,7 +2302,7 @@ func TestDescribeVolumeStatus_FilterByAZ(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("ap-southeast-2a")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.VolumeStatuses, 1)
 
@@ -2300,7 +2310,7 @@ func TestDescribeVolumeStatus_FilterByAZ(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("us-east-1a")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.VolumeStatuses)
 }
@@ -2323,7 +2333,7 @@ func TestDescribeVolumeStatus_FilterMultipleValues_OR(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("volume-id"), Values: []*string{aws.String("vol-vsor1"), aws.String("vol-vsor3")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.VolumeStatuses, 2)
 }
@@ -2342,7 +2352,7 @@ func TestDescribeVolumeStatus_FilterMultipleFilters_AND(t *testing.T) {
 			{Name: aws.String("volume-id"), Values: []*string{aws.String("vol-vsand")}},
 			{Name: aws.String("volume-status.status"), Values: []*string{aws.String("ok")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.VolumeStatuses, 1)
 
@@ -2352,7 +2362,7 @@ func TestDescribeVolumeStatus_FilterMultipleFilters_AND(t *testing.T) {
 			{Name: aws.String("volume-id"), Values: []*string{aws.String("vol-vsand")}},
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("us-east-1a")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.VolumeStatuses)
 }
@@ -2365,7 +2375,7 @@ func TestDescribeVolumeStatus_FilterUnknownName_Error(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("bogus-filter"), Values: []*string{aws.String("x")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	assert.Error(t, err)
 }
 
@@ -2381,7 +2391,7 @@ func TestDescribeVolumeStatus_FilterWildcard(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("volume-id"), Values: []*string{aws.String("vol-vswild*")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.VolumeStatuses, 1)
 }
@@ -2398,7 +2408,7 @@ func TestDescribeVolumeStatus_FilterNoResults(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("volume-id"), Values: []*string{aws.String("vol-nonexistent")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.VolumeStatuses)
 }
@@ -2420,7 +2430,7 @@ func TestDescribeVolumeStatus_FilterWithVolumeIds(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("ap-southeast-2a")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.VolumeStatuses, 1)
 	assert.Equal(t, "vol-vsf1", *out.VolumeStatuses[0].VolumeId)
@@ -2447,7 +2457,7 @@ func TestDescribeVolumesModifications_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	// Confirm Modification was persisted on cfg.
-	meta, err := svc.GetVolumeMetadata("vol-rt")
+	meta, err := svc.GetVolumeMetadata("111111111111", "vol-rt")
 	require.NoError(t, err)
 	require.NotNil(t, meta.Modification)
 	assert.Equal(t, int64(10), meta.Modification.OriginalSize)
@@ -2658,7 +2668,7 @@ func TestDescribeVolumesModifications_UnknownFilter(t *testing.T) {
 		Filters: []*ec2.Filter{
 			{Name: aws.String("not-a-real-filter"), Values: []*string{aws.String("x")}},
 		},
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }

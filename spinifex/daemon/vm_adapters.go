@@ -258,7 +258,7 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 		// Boot too. Only DetachVolume and terminate release a boot volume; flipping
 		// it available here while the instance restarts splits the state record.
 		if sealed && !ebsRequest.EFI && !ebsRequest.Boot && a.volState != nil {
-			if err := a.volState.UpdateVolumeState(ebsRequest.Name, "available", "", ""); err != nil {
+			if err := a.volState.UpdateVolumeState(instance.AccountID, ebsRequest.Name, "available", "", ""); err != nil {
 				slog.Error("Failed to update volume state to available after unmount",
 					"volumeId", ebsRequest.Name, "err", err)
 			}

@@ -1014,6 +1014,7 @@ var vpcdStartCmd = &cobra.Command{
 			OVNNBAddr:               nodeConfig.VPCD.OVNNBAddr,
 			OVNSBAddr:               nodeConfig.VPCD.OVNSBAddr,
 			BaseDir:                 nodeConfig.BaseDir,
+			DataDir:                 nodeConfig.DataDir,
 			Debug:                   false,
 			ExternalMode:            clusterConfig.Network.ExternalMode,
 			ExternalPools:           extPools,

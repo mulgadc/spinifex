@@ -952,6 +952,13 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
+	// The snapshot is read under the caller's account, so an untenanted caller
+	// has no prefix to read from. Refuse at the boundary rather than in the key
+	// builder, where the rejection would surface as an internal error.
+	if accountID == "" {
+		return nil, errors.New(awserrors.ErrorAuthFailure)
+	}
+
 	name := *input.Name
 
 	rootBDM := pickRootSnapshotBDM(input.BlockDeviceMappings, input.RootDeviceName)

@@ -156,6 +156,13 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	// The caller's account is a key segment, so an untenanted caller has no
+	// prefix to read or write under. Refuse at the boundary rather than in the
+	// key builder, where the rejection would surface as an internal error.
+	if accountID == "" {
+		return nil, errors.New(awserrors.ErrorAuthFailure)
+	}
+
 	volumeID := *input.VolumeId
 
 	slog.InfoContext(ctx, "CreateSnapshot request", "volumeId", volumeID)
@@ -169,7 +176,7 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 	// The read is already scoped to the caller's prefix, so a returned document
 	// is the caller's by construction. The comparison stays as an assertion.
 	volume, err := s.metadata.GetVolume(ctx, accountID, volumeID)
-	if err != nil || (accountID != "" && volume.TenantID != accountID) {
+	if err != nil || volume.TenantID != accountID {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}
 	if volume.CapacityGiB == 0 {
@@ -588,6 +595,12 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	// An untenanted caller has no prefix to delete under; refuse here rather
+	// than in the key builder.
+	if accountID == "" {
+		return nil, errors.New(awserrors.ErrorAuthFailure)
+	}
+
 	snapshotID := *input.SnapshotId
 
 	slog.InfoContext(ctx, "DeleteSnapshot request", "snapshotId", snapshotID, "accountID", accountID)
@@ -600,7 +613,7 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 
 	// The read was scoped to the caller's prefix, so the document is theirs by
 	// construction. The comparison stays as an assertion.
-	if accountID != "" && cfg.OwnerID != accountID {
+	if cfg.OwnerID != accountID {
 		slog.WarnContext(ctx, "DeleteSnapshot: account does not own snapshot", "snapshotId", snapshotID, "accountID", accountID, "ownerID", cfg.OwnerID)
 		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
 	}
@@ -674,6 +687,12 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	// The copy is written under the caller's account, so an untenanted caller
+	// has nowhere to put it; refuse here rather than in the key builder.
+	if accountID == "" {
+		return nil, errors.New(awserrors.ErrorAuthFailure)
+	}
+
 	sourceSnapshotID := *input.SourceSnapshotId
 
 	slog.InfoContext(ctx, "CopySnapshot request", "sourceSnapshotId", sourceSnapshotID, "accountID", accountID)
@@ -685,7 +704,7 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 	}
 
 	// Assertion: the read was already scoped to the caller's prefix.
-	if accountID != "" && sourceCfg.OwnerID != accountID {
+	if sourceCfg.OwnerID != accountID {
 		slog.WarnContext(ctx, "CopySnapshot: account does not own source snapshot", "snapshotId", sourceSnapshotID, "accountID", accountID, "ownerID", sourceCfg.OwnerID)
 		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
 	}

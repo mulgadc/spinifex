@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/testutil/recordingstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1237,6 +1238,20 @@ func TestRegisterImage_CrossAccountSnapshot(t *testing.T) {
 	_, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-other01"), testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
+}
+
+// An untenanted caller is refused at the boundary. Asserting that nothing was
+// read is what stops the guard being deleted later as redundant with the key
+// builder, whose rejection is an internal error rather than an AuthFailure.
+func TestRegisterImage_EmptyCallerAccountIsRefusedAtTheBoundary(t *testing.T) {
+	objects := recordingstore.New()
+	svc := NewImageServiceImplWithStore(objects, testBucket)
+
+	_, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-guard01"), "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAuthFailure, err.Error())
+	assert.Empty(t, objects.Gets(), "the guard must fire before any read")
+	assert.Empty(t, objects.ListPrefixes(), "the guard must fire before any listing")
 }
 
 // The system account is an ordinary account: it registers against its own

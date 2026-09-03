@@ -233,3 +233,42 @@ func TestDeleteSnapshot_BlockedByACloneInAnotherAccount(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, err.Error())
 }
+
+// An untenanted caller is refused at the boundary, with the client-facing
+// answer the boundary owns. Asserting that nothing was read is what stops the
+// guard being deleted later as redundant with the key builder, whose rejection
+// is an internal error rather than an AuthFailure.
+func TestSnapshot_EmptyCallerAccountIsRefusedAtTheBoundary(t *testing.T) {
+	ctx := context.Background()
+	objects := recordingstore.New()
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewSnapshotServiceImplWithStore(cfg, objects, nil)
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "CreateSnapshot", call: func() error {
+			_, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-1")}, "")
+			return err
+		}},
+		{name: "DeleteSnapshot", call: func() error {
+			_, err := svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String("snap-1")}, "")
+			return err
+		}},
+		{name: "CopySnapshot", call: func() error {
+			_, err := svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{SourceSnapshotId: aws.String("snap-1")}, "")
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objects.Reset()
+			err := tc.call()
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorAuthFailure, err.Error())
+			assert.Empty(t, objects.Gets(), "the guard must fire before any read")
+			assert.Empty(t, objects.ListPrefixes(), "the guard must fire before any listing")
+		})
+	}
+}

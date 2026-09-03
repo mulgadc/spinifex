@@ -1212,3 +1212,100 @@ func TestGather_Settled_IgnoredUnderCollectServeData(t *testing.T) {
 	assert.False(t, called, "Settled belongs to CollectUntilDeadline and must not run in serve-data mode")
 	assert.False(t, sum.SettledEarly)
 }
+
+// Once every expected node has answered, the only reply still outstanding is a
+// duplicate from a node already heard, which core NATS delivers alongside the
+// first. Waiting out the deadline for it buys nothing.
+func TestGather_ResponderGrace_EndsCollectionAfterFullCoverage(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.grace.covered", "node-a", []byte(`{"ok":true}`), 0)
+	subscribeAsNode(t, nc, "test.gather.grace.covered", "node-b", []byte(`{"ok":true}`), 0)
+
+	const budget = 2 * time.Second
+	start := time.Now()
+	_, sum, err := Gather(context.Background(), nc, "test.gather.grace.covered", []byte("{}"),
+		GatherOpts{
+			Timeout: budget, Mode: CollectUntilDeadline, ExpectedResponders: 2,
+			ResponderGrace: 150 * time.Millisecond,
+			Settled:        func([]Frame, Summary) bool { return false },
+		})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Len(t, sum.Responders, 2)
+	assert.Less(t, elapsed, budget/2, "full coverage plus grace must not wait out the deadline")
+	assert.True(t, sum.SettledEarly)
+	assert.False(t, sum.TimedOut, "hearing from everyone is not a timeout")
+}
+
+// The grace window only opens on full coverage. A missing node is exactly the
+// case absence proofs exist for, so it must still cost the whole deadline.
+func TestGather_ResponderGrace_PartialCoverageStillRunsToTheDeadline(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.grace.partial", "node-a", []byte(`{"ok":true}`), 0)
+
+	const budget = 400 * time.Millisecond
+	start := time.Now()
+	_, sum, err := Gather(context.Background(), nc, "test.gather.grace.partial", []byte("{}"),
+		GatherOpts{
+			Timeout: budget, Mode: CollectUntilDeadline, ExpectedResponders: 2,
+			ResponderGrace: 50 * time.Millisecond,
+			Settled:        func([]Frame, Summary) bool { return false },
+		})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Len(t, sum.Responders, 1)
+	assert.GreaterOrEqual(t, elapsed, budget-20*time.Millisecond)
+	assert.True(t, sum.TimedOut)
+	assert.False(t, sum.SettledEarly)
+}
+
+// The window is armed once and never extended, so a node replying over and
+// over cannot hold the fan-out open past it.
+func TestGather_ResponderGrace_ArmedOnceNotExtendedByRepeatReplies(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.grace.chatty", "node-a", []byte(`{"ok":true}`), 0)
+	// Extra subscriptions on the same node id keep frames trickling in past
+	// the grace window without ever adding a new responder.
+	for i := 1; i <= 6; i++ {
+		subscribeAsNode(t, nc, "test.gather.grace.chatty", "node-a", []byte(`{"ok":true}`),
+			time.Duration(i)*100*time.Millisecond)
+	}
+
+	const grace = 200 * time.Millisecond
+	start := time.Now()
+	_, sum, err := Gather(context.Background(), nc, "test.gather.grace.chatty", []byte("{}"),
+		GatherOpts{
+			Timeout: 3 * time.Second, Mode: CollectUntilDeadline, ExpectedResponders: 1,
+			ResponderGrace: grace,
+			Settled:        func([]Frame, Summary) bool { return false },
+		})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Len(t, sum.Responders, 1)
+	assert.Less(t, elapsed, grace*2, "repeat frames must not push the grace window out")
+	assert.True(t, sum.SettledEarly)
+}
+
+// Zero ResponderGrace is the pre-existing behaviour: collect to the deadline
+// even when every node has answered.
+func TestGather_ResponderGrace_ZeroKeepsTheFullDeadline(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	subscribeAsNode(t, nc, "test.gather.grace.zero", "node-a", []byte(`{"ok":true}`), 0)
+
+	const budget = 400 * time.Millisecond
+	start := time.Now()
+	_, sum, err := Gather(context.Background(), nc, "test.gather.grace.zero", []byte("{}"),
+		GatherOpts{
+			Timeout: budget, Mode: CollectUntilDeadline, ExpectedResponders: 1,
+			Settled: func([]Frame, Summary) bool { return false },
+		})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, elapsed, budget-20*time.Millisecond)
+	assert.True(t, sum.TimedOut)
+	assert.False(t, sum.SettledEarly)
+}

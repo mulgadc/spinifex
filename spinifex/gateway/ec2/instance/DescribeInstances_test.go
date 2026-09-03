@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -667,48 +668,89 @@ func frameWithInstances(t *testing.T, nodeID string, instanceIDs ...string) util
 	return utils.Frame{NodeID: nodeID, Data: data}
 }
 
-func TestAllRequestedInstancesFound_SettlesOnlyWhenEveryIDIsSeen(t *testing.T) {
+// reservationsWith builds the bucket-query shape the settler observes.
+func reservationsWith(instanceIDs ...string) []*ec2.Reservation {
+	instances := make([]*ec2.Instance, 0, len(instanceIDs))
+	for _, id := range instanceIDs {
+		instances = append(instances, &ec2.Instance{InstanceId: aws.String(id)})
+	}
+	return []*ec2.Reservation{{Instances: instances}}
+}
+
+func TestInstanceSettler_SettlesOnlyWhenEveryIDIsSeen(t *testing.T) {
 	t.Parallel()
-	settled := allRequestedInstancesFound([]*string{aws.String("i-a"), aws.String("i-b")})
-	require.NotNil(t, settled)
+	settler := newInstanceSettler([]*string{aws.String("i-a"), aws.String("i-b")})
 
 	frames := []utils.Frame{frameWithInstances(t, "node-1", "i-a")}
-	assert.False(t, settled(frames, utils.Summary{}), "one of two ids found is not settled")
+	assert.False(t, settler.settled(frames, utils.Summary{}), "one of two ids found is not settled")
 
 	frames = append(frames, frameWithInstances(t, "node-2", "i-b"))
-	assert.True(t, settled(frames, utils.Summary{}), "both ids found, nothing left to prove")
+	assert.True(t, settler.settled(frames, utils.Summary{}), "both ids found, nothing left to prove")
 }
 
 // An id that no node holds must never settle, so absence keeps paying the full
 // deadline — that is the whole reason CollectUntilDeadline exists.
-func TestAllRequestedInstancesFound_AbsentIDNeverSettles(t *testing.T) {
+func TestInstanceSettler_AbsentIDNeverSettles(t *testing.T) {
 	t.Parallel()
-	settled := allRequestedInstancesFound([]*string{aws.String("i-missing")})
-	require.NotNil(t, settled)
+	settler := newInstanceSettler([]*string{aws.String("i-missing")})
 
 	frames := []utils.Frame{
 		frameWithInstances(t, "node-1", "i-other"),
 		frameWithInstances(t, "node-2", "i-another"),
 	}
-	assert.False(t, settled(frames, utils.Summary{}))
+	assert.False(t, settler.settled(frames, utils.Summary{}))
 }
 
-func TestAllRequestedInstancesFound_UndecodableFrameDoesNotSettle(t *testing.T) {
+func TestInstanceSettler_UndecodableFrameDoesNotSettle(t *testing.T) {
 	t.Parallel()
-	settled := allRequestedInstancesFound([]*string{aws.String("i-a")})
-	require.NotNil(t, settled)
+	settler := newInstanceSettler([]*string{aws.String("i-a")})
 
 	frames := []utils.Frame{{NodeID: "node-1", Data: []byte("not json")}}
-	assert.False(t, settled(frames, utils.Summary{}))
+	assert.False(t, settler.settled(frames, utils.Summary{}))
 
 	frames = append(frames, frameWithInstances(t, "node-2", "i-a"))
-	assert.True(t, settled(frames, utils.Summary{}), "a later decodable frame still settles")
+	assert.True(t, settler.settled(frames, utils.Summary{}), "a later decodable frame still settles")
 }
 
-func TestAllRequestedInstancesFound_NoIDsYieldsNoPredicate(t *testing.T) {
+// A stopped or terminated instance never appears in a fan-out frame, so the
+// bucket queries have to be able to settle the collection on their own.
+func TestInstanceSettler_BucketHitAloneSettles(t *testing.T) {
 	t.Parallel()
-	assert.Nil(t, allRequestedInstancesFound(nil))
-	assert.Nil(t, allRequestedInstancesFound([]*string{nil}))
+	settler := newInstanceSettler([]*string{aws.String("i-stopped")})
+
+	frames := []utils.Frame{frameWithInstances(t, "node-1", "i-running")}
+	assert.False(t, settler.settled(frames, utils.Summary{}))
+
+	settler.observe(reservationsWith("i-stopped"))
+	assert.True(t, settler.settled(frames, utils.Summary{}), "the bucket answered, so nothing is outstanding")
+}
+
+func TestInstanceSettler_NoIDsSettlesImmediately(t *testing.T) {
+	t.Parallel()
+	assert.True(t, newInstanceSettler(nil).settled(nil, utils.Summary{}))
+	assert.True(t, newInstanceSettler([]*string{nil}).settled(nil, utils.Summary{}))
+}
+
+// observe races settled in production: the bucket goroutines write while Gather
+// reads. Run under -race to make the lock earn its place.
+func TestInstanceSettler_ConcurrentObserveAndSettled(t *testing.T) {
+	t.Parallel()
+	settler := newInstanceSettler([]*string{aws.String("i-a"), aws.String("i-b")})
+	frames := []utils.Frame{frameWithInstances(t, "node-1", "i-a")}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		settler.observe(reservationsWith("i-b"))
+	}()
+	go func() {
+		defer wg.Done()
+		settler.settled(frames, utils.Summary{})
+	}()
+	wg.Wait()
+
+	assert.True(t, settler.settled(frames, utils.Summary{}))
 }
 
 func TestAcquireAbsenceProofSlot_ThrottlesPastTheLimitAndRecovers(t *testing.T) {

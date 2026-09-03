@@ -23,9 +23,9 @@ import (
 const maxConcurrentAbsenceProofs = 64
 
 // absenceProofSlots is the budget for describes that cannot settle early. A
-// caller describing its own instances settles in milliseconds and barely
-// touches it; only a describe naming an id the caller cannot see holds a slot
-// for the whole deadline, and issuing those is free for the caller.
+// healthy cluster answers from every node and releases its slot in
+// milliseconds; slots only pile up when a node has gone quiet, which is
+// exactly when a caller could otherwise pin the gateway with free requests.
 var absenceProofSlots = make(chan struct{}, maxConcurrentAbsenceProofs)
 
 // acquireAbsenceProofSlot takes a slot without blocking, returning a release
@@ -45,6 +45,11 @@ func acquireAbsenceProofSlot() (release func(), ok bool) {
 // defaultDescribeFanoutTimeout is the hard deadline the describe fan-out waits
 // for node replies before treating the sweep as incomplete.
 const defaultDescribeFanoutTimeout = 3 * time.Second
+
+// describeResponderGrace is how long the fan-out keeps listening after every
+// configured node has answered. Sized well above the sub-millisecond spread
+// between node replies, so a loaded node still lands inside it.
+const describeResponderGrace = 150 * time.Millisecond
 
 // describeConfig holds the tunable knobs of the describe fan-out.
 type describeConfig struct {
@@ -164,6 +169,29 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 		return nil, false, "", fmt.Errorf("failed to marshal input: %w", err)
 	}
 
+	// The buckets run alongside the fan-out rather than after it, so a stopped
+	// or terminated instance can settle the collection too. Queried on queue
+	// groups, so one responder each.
+	var kvMu sync.Mutex
+	var kvWg sync.WaitGroup
+	bucketsOK := true
+	var bucketReservations []*ec2.Reservation
+	settler := newInstanceSettler(input.InstanceIds)
+	for _, topic := range []string{"ec2.DescribeStoppedInstances", "ec2.DescribeTerminatedInstances"} {
+		kvWg.Add(1)
+		go func(topic string) {
+			defer kvWg.Done()
+			reservations, ok := queryInstanceBucket(ctx, natsConn, topic, jsonData, accountID)
+			settler.observe(reservations)
+			kvMu.Lock()
+			defer kvMu.Unlock()
+			if !ok {
+				bucketsOK = false
+			}
+			bucketReservations = append(bucketReservations, reservations...)
+		}(topic)
+	}
+
 	identity := len(nodeIDs) > 0
 	gatherOpts := utils.GatherOpts{Timeout: cfg.fanoutTimeout, AccountID: accountID}
 	if identity {
@@ -171,16 +199,19 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 		if len(input.InstanceIds) > 0 {
 			release, ok := acquireAbsenceProofSlot()
 			if !ok {
+				kvWg.Wait()
 				slog.WarnContext(ctx, "DescribeInstances: absence proof budget exhausted, throttling",
 					"limit", maxConcurrentAbsenceProofs)
 				return nil, false, "", errors.New(awserrors.ErrorRequestLimitExceeded)
 			}
 			defer release()
 
-			// Only the path that could assert absence pays for the full
-			// deadline; a filters-only listing may still exit early.
+			// Only the path that could assert absence collects past the point
+			// where every node has answered; a filters-only listing may still
+			// exit on the first frames.
 			gatherOpts.Mode = utils.CollectUntilDeadline
-			gatherOpts.Settled = allRequestedInstancesFound(input.InstanceIds)
+			gatherOpts.ResponderGrace = describeResponderGrace
+			gatherOpts.Settled = settler.settled
 		}
 	} else {
 		gatherOpts.ExpectedNodes = expectedNodes
@@ -188,6 +219,7 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 
 	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstances", jsonData, gatherOpts)
 	if err != nil {
+		kvWg.Wait()
 		return nil, false, "", err
 	}
 
@@ -208,61 +240,74 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 		fanoutComplete = expectedNodes > 0 && !sum.TimedOut && sum.Successes >= expectedNodes
 	}
 
-	// Both topics use queue groups (single responder each); query in parallel.
-	var kvMu sync.Mutex
-	var kvWg sync.WaitGroup
-	bucketsOK := true
-	for _, topic := range []string{"ec2.DescribeStoppedInstances", "ec2.DescribeTerminatedInstances"} {
-		kvWg.Add(1)
-		go func(topic string) {
-			defer kvWg.Done()
-			reservations, ok := queryInstanceBucket(ctx, natsConn, topic, jsonData, accountID)
-			kvMu.Lock()
-			defer kvMu.Unlock()
-			if !ok {
-				bucketsOK = false
-			}
-			allReservations = append(allReservations, reservations...)
-		}(topic)
-	}
 	kvWg.Wait()
+	allReservations = append(allReservations, bucketReservations...)
 
 	slog.InfoContext(ctx, "DescribeInstances: Aggregated response", "total_reservations", len(allReservations))
 	return allReservations, fanoutComplete && bucketsOK, sum.FirstClient4xx, nil
 }
 
-// allRequestedInstancesFound builds a Gather settle predicate that ends the
-// fan-out once every requested instance id has appeared in some frame. Absence
-// still costs the full deadline, and an instance the caller cannot see is
-// filtered out of every frame, so it takes the absence path too — the two
-// NotFound answers stay indistinguishable in time.
-func allRequestedInstancesFound(instanceIDs []*string) func([]utils.Frame, utils.Summary) bool {
+// instanceSettler tracks which of the requested instance ids have turned up,
+// across both the running-instance fan-out and the stopped and terminated
+// bucket queries that run alongside it. Once none are outstanding there is
+// nothing left to prove and collection can stop without waiting out the
+// responder grace window.
+//
+// A bucket answer is only consulted when the next fan-out frame arrives, so it
+// shortens the wait only when it lands first. Absence collects past this point,
+// and an instance the caller cannot see is filtered out of every source, so it
+// takes the absence path too — the two NotFound answers stay indistinguishable
+// in time.
+type instanceSettler struct {
+	mu       sync.Mutex
+	wanted   map[string]bool
+	consumed int
+}
+
+func newInstanceSettler(instanceIDs []*string) *instanceSettler {
 	wanted := map[string]bool{}
 	for _, id := range instanceIDs {
 		if id != nil {
 			wanted[*id] = true
 		}
 	}
-	if len(wanted) == 0 {
-		return nil
-	}
+	return &instanceSettler{wanted: wanted}
+}
 
-	consumed := 0
-	return func(frames []utils.Frame, _ utils.Summary) bool {
-		for ; consumed < len(frames); consumed++ {
-			var out ec2.DescribeInstancesOutput
-			if json.Unmarshal(frames[consumed].Data, &out) != nil {
-				continue
-			}
-			for _, res := range out.Reservations {
-				for _, inst := range res.Instances {
-					if inst != nil && inst.InstanceId != nil {
-						delete(wanted, *inst.InstanceId)
-					}
-				}
+// observe records ids found outside the fan-out. Safe to call concurrently
+// with settled, which is what the bucket goroutines do.
+func (s *instanceSettler) observe(reservations []*ec2.Reservation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forget(reservations)
+}
+
+// settled is the Gather predicate. It decodes only the frames it has not seen
+// before, so a large fan-out does not re-decode its whole backlog per frame.
+func (s *instanceSettler) settled(frames []utils.Frame, _ utils.Summary) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for ; s.consumed < len(frames); s.consumed++ {
+		var out ec2.DescribeInstancesOutput
+		if json.Unmarshal(frames[s.consumed].Data, &out) != nil {
+			continue
+		}
+		s.forget(out.Reservations)
+	}
+	return len(s.wanted) == 0
+}
+
+// forget drops every id present in reservations. Caller holds the lock.
+func (s *instanceSettler) forget(reservations []*ec2.Reservation) {
+	for _, res := range reservations {
+		if res == nil {
+			continue
+		}
+		for _, inst := range res.Instances {
+			if inst != nil && inst.InstanceId != nil {
+				delete(s.wanted, *inst.InstanceId)
 			}
 		}
-		return len(wanted) == 0
 	}
 }
 

@@ -434,7 +434,7 @@ type Summary struct {
 	Unidentified      int             // frames received with no node ID header
 	DuplicateFrames   int             // frames whose node had already answered; bytes dropped, identity kept
 	CapHit            bool            // the identity frame or byte cap ended collection early
-	SettledEarly      bool            // GatherOpts.Settled ended collection before the deadline
+	SettledEarly      bool            // collection ended before the deadline with the answer settled, by Settled or by full responder coverage
 }
 
 // GatherOpts configures a Gather fan-out.
@@ -451,6 +451,15 @@ type GatherOpts struct {
 	// replies already answer the question, so only a caller still trying to
 	// prove a negative pays the rest of the deadline.
 	Settled func(frames []Frame, sum Summary) bool
+
+	// ResponderGrace caps how long a CollectUntilDeadline fan-out keeps waiting
+	// after every ExpectedResponders node has answered. Zero keeps the full
+	// deadline. It exists because the only thing left to wait for at that point
+	// is a duplicate from a node already heard, and core NATS gives a request
+	// only to the subscribers present when it was published: an overlapping
+	// subscription replies alongside the first, and one that arrives later
+	// never receives the request at all, so waiting longer cannot find it.
+	ResponderGrace time.Duration
 }
 
 // Gather publishes payload to subject over a fresh inbox and collects reply
@@ -516,8 +525,11 @@ func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte
 		maxResponses = opts.ExpectedNodes
 	}
 
+	coverageGrace := opts.Mode == CollectUntilDeadline && opts.ResponderGrace > 0 && opts.ExpectedResponders > 0
+
 	var retainedBytes int
 	deadline := time.Now().Add(opts.Timeout)
+	var graceDeadline time.Time
 	for {
 		if earlyExitOnResponders {
 			if len(sum.Responders) >= opts.ExpectedResponders {
@@ -527,16 +539,32 @@ func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte
 			break
 		}
 
-		remaining := time.Until(deadline)
+		// Once every expected node has answered, only a duplicate from a node
+		// already heard can still change the verdict, and core NATS delivers
+		// that on the same timescale as the first reply. So wait a grace window
+		// rather than the whole deadline. Armed once and never extended, so a
+		// node replying repeatedly cannot hold the fan-out open.
+		if coverageGrace && graceDeadline.IsZero() && len(sum.Responders) >= opts.ExpectedResponders {
+			graceDeadline = time.Now().Add(opts.ResponderGrace)
+		}
+
+		// Running out of the grace window is a settled exit, not a timeout: the
+		// nodes that were asked all answered.
+		effective, graceExpired := deadline, false
+		if !graceDeadline.IsZero() && graceDeadline.Before(deadline) {
+			effective, graceExpired = graceDeadline, true
+		}
+
+		remaining := time.Until(effective)
 		if remaining <= 0 {
-			sum.TimedOut = true
+			sum.TimedOut, sum.SettledEarly = !graceExpired, graceExpired
 			break
 		}
 
 		msg, nerr := sub.NextMsg(remaining)
 		if nerr != nil {
 			if errors.Is(nerr, nats.ErrTimeout) || errors.Is(nerr, nats.ErrNoResponders) {
-				sum.TimedOut = true
+				sum.TimedOut, sum.SettledEarly = !graceExpired, graceExpired
 				break
 			}
 			return frames, sum, fmt.Errorf("gather receive error on %s: %w", subject, nerr)

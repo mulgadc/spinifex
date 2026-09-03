@@ -1827,7 +1827,7 @@ func TestDeleteVolume_ProviderFailureCarriesItsCause(t *testing.T) {
 		err:         errors.New("dial node 6: quic dial 10.10.8.5:6660: timeout"),
 	})
 
-	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, "")
+	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, testVolAccountID)
 	require.Error(t, err)
 
 	assert.Equal(t, awserrors.ErrorServerInternal, awserrors.ValidErrorCodeFromError(err),

@@ -367,6 +367,9 @@ func EnsureKeyPair(t *testing.T, fx *Fixture) (string, string) {
 		if err := os.WriteFile(pemPath, []byte(aws.StringValue(out.KeyMaterial)), 0o600); err != nil {
 			return "", nil, fmt.Errorf("write pem %s: %w", pemPath, err)
 		}
+		if err := assertOneKeyPair(fx, name); err != nil {
+			return "", nil, err
+		}
 		fx.tagRunResources(aws.StringValue(out.KeyPairId))
 		return aws.StringValue(out.KeyName), func() error {
 			_, derr := fx.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(name)})
@@ -380,6 +383,33 @@ func EnsureKeyPair(t *testing.T, fx *Fixture) (string, string) {
 		t.Fatalf("EnsureKeyPair: %v", err)
 	}
 	return id, pemPath
+}
+
+// assertOneKeyPair fails when the cluster holds more than one key pair under
+// name, which it should not be able to.
+//
+// A create that lands twice leaves two pairs with one name and different
+// material. RunInstances then resolves the name to one of them while we hold
+// the private key of the other, and the only symptom is every guest in the run
+// rejecting the key at the SSH gate five minutes later, once per guest. Cheap
+// to check here, and it names the cause outright.
+func assertOneKeyPair(fx *Fixture, name string) error {
+	out, err := fx.EC2.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{
+		KeyNames: []*string{aws.String(name)},
+	})
+	if err != nil {
+		return fmt.Errorf("DescribeKeyPairs %s: %w", name, err)
+	}
+	if len(out.KeyPairs) == 1 {
+		return nil
+	}
+
+	got := make([]string, 0, len(out.KeyPairs))
+	for _, kp := range out.KeyPairs {
+		got = append(got, fmt.Sprintf("%s/%s", aws.StringValue(kp.KeyPairId), aws.StringValue(kp.KeyFingerprint)))
+	}
+	return fmt.Errorf("key pair %s resolves to %d pairs (%s); a launch cannot be told which one it got",
+		name, len(out.KeyPairs), strings.Join(got, " "))
 }
 
 // ----------------------------------------------------------------------------

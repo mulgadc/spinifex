@@ -4,6 +4,7 @@ package harness
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -32,6 +33,10 @@ type fakeEC2 struct {
 	// the concurrent-callers test deterministically.
 	holdCreate chan struct{}
 
+	// keyPairsForName is how many pairs DescribeKeyPairs reports for a name.
+	// Zero means one, which is the only healthy answer.
+	keyPairsForName atomic.Int64
+
 	// Volume teardown state. volState is what DescribeVolumes reports;
 	// DetachVolume flips it to "available", modelling a node that releases the
 	// volume once the attachment is forced off. deleteVolumeErr, when set, is
@@ -41,6 +46,22 @@ type fakeEC2 struct {
 	detachVolume    atomic.Int64
 	deleteVolume    atomic.Int64
 	deleteVolumeErr error
+}
+
+func (f *fakeEC2) DescribeKeyPairs(in *ec2.DescribeKeyPairsInput) (*ec2.DescribeKeyPairsOutput, error) {
+	n := int(f.keyPairsForName.Load())
+	if n == 0 {
+		n = 1
+	}
+	out := &ec2.DescribeKeyPairsOutput{}
+	for i := range n {
+		out.KeyPairs = append(out.KeyPairs, &ec2.KeyPairInfo{
+			KeyName:        in.KeyNames[0],
+			KeyPairId:      aws.String(fmt.Sprintf("key-%d", i)),
+			KeyFingerprint: aws.String(fmt.Sprintf("fingerprint-%d", i)),
+		})
+	}
+	return out, nil
 }
 
 func (f *fakeEC2) CreateVolume(*ec2.CreateVolumeInput) (*ec2.Volume, error) {
@@ -419,4 +440,27 @@ func _ensureCompileCheck(t *testing.T, fx *Fixture) {
 	_ = EnsureVolume(t, fx, "ap-southeast-2a", 10)
 	_ = EnsureSnapshot(t, fx, SnapshotSpec{VolumeID: "vol-0"})
 	_ = EnsureNATGateway(t, fx, "subnet-0", "")
+}
+
+// TestAssertOneKeyPair_RejectsADuplicateName is the five-minute-per-guest
+// failure made immediate. Two pairs under one name means RunInstances picks one
+// and we hold the private key of the other, and the only other evidence is
+// every guest in the run refusing the key at the SSH gate.
+func TestAssertOneKeyPair_RejectsADuplicateName(t *testing.T) {
+	fx, ec2c := newFakeFixture(t)
+
+	if err := assertOneKeyPair(fx, "e2e-key-abc"); err != nil {
+		t.Fatalf("one pair under the name must be accepted: %v", err)
+	}
+
+	ec2c.keyPairsForName.Store(2)
+	err := assertOneKeyPair(fx, "e2e-key-abc")
+	if err == nil {
+		t.Fatal("two pairs under one name must fail: a launch cannot be told which one it got")
+	}
+	for _, want := range []string{"e2e-key-abc", "2 pairs", "fingerprint-0", "fingerprint-1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
 }

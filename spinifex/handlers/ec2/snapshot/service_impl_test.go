@@ -45,9 +45,17 @@ func setupTestSnapshotService(t *testing.T) (*SnapshotServiceImpl, *objectstore.
 // a snapshot copies, the document is what the control plane resolves.
 func createTestVolume(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
 	t.Helper()
+	createTestVolumeForAccount(t, svc, store, volumeID, sizeGiB, testAccountID)
+}
+
+// createTestVolumeForAccount is createTestVolume for a volume owned by an
+// account other than the default one.
+func createTestVolumeForAccount(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int, accountID string) {
+	t.Helper()
 	seedProviderVolume(t, svc, volumeID, sizeGiB)
 	seedVolumeDocument(t, store, ebsmetadata.Volume{
 		VolumeID:         volumeID,
+		TenantID:         accountID,
 		CapacityGiB:      uint64(sizeGiB),
 		AvailabilityZone: "us-east-1a",
 	})
@@ -56,6 +64,11 @@ func createTestVolume(t *testing.T, svc *SnapshotServiceImpl, store *objectstore
 // seedVolumeDocument writes the control-plane document for a volume.
 func seedVolumeDocument(t *testing.T, store objectstore.ObjectStore, volume ebsmetadata.Volume) {
 	t.Helper()
+	// The owning account is a key segment, so a fixture that does not care
+	// which account owns it still has to have one.
+	if volume.TenantID == "" {
+		volume.TenantID = testAccountID
+	}
 	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutVolume(context.Background(), volume))
 }
 
@@ -339,6 +352,7 @@ func TestDescribeSnapshots_AccountScoping(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 
 	createTestVolume(t, svc, store, "vol-1", 50)
+	createTestVolumeForAccount(t, svc, store, "vol-2", 50, otherAccountID)
 
 	// Account A creates a snapshot
 	snapA, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
@@ -346,9 +360,9 @@ func TestDescribeSnapshots_AccountScoping(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Account B creates a snapshot
+	// Account B creates a snapshot of its own volume
 	snapB, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
-		VolumeId: aws.String("vol-1"),
+		VolumeId: aws.String("vol-2"),
 	}, otherAccountID)
 	require.NoError(t, err)
 
@@ -750,20 +764,15 @@ func TestCreateSnapshot_CrossAccountVolumeRejected(t *testing.T) {
 	assert.Equal(t, testAccountID, *result.OwnerId)
 }
 
-// TestCreateSnapshot_PrePhase4VolumeAllowed tests that volumes without TenantID (pre-phase4) are allowed.
-func TestCreateSnapshot_PrePhase4VolumeAllowed(t *testing.T) {
-	svc, store := setupTestSnapshotService(t)
+// A volume with no owning account cannot be keyed, so the untenanted volume
+// any caller used to be able to snapshot is not a state the store can hold.
+func TestCreateSnapshot_UntenantedVolumeIsUnwritable(t *testing.T) {
+	_, store := setupTestSnapshotService(t)
 
-	// Create a volume with no TenantID (pre-phase4)
-	volumeID := "vol-legacy"
-	createTestVolume(t, svc, store, volumeID, 50)
-
-	// Any account can snapshot — backward compatibility
-	result, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
-		VolumeId: aws.String(volumeID),
-	}, otherAccountID)
-	require.NoError(t, err)
-	assert.Equal(t, otherAccountID, *result.OwnerId)
+	err := ebsmetadata.NewStore(store, "test-bucket").PutVolume(context.Background(), ebsmetadata.Volume{
+		VolumeID: "vol-untenanted", CapacityGiB: 50, AvailabilityZone: "us-east-1a",
+	})
+	require.Error(t, err)
 }
 
 // --- DescribeSnapshots filter tests ---
@@ -1041,7 +1050,7 @@ func TestDeleteSnapshot_Provider_BlockedByCloneRecordedInMetadata(t *testing.T) 
 	assert.EqualError(t, err, awserrors.ErrorInvalidSnapshotInUse)
 
 	// Once the clone is gone the snapshot is deletable again.
-	require.NoError(t, svc.metadata.DeleteVolume(ctx, "vol-clone"))
+	require.NoError(t, svc.metadata.DeleteVolume(ctx, testAccountID, "vol-clone"))
 	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String(snapshotID)}, testAccountID)
 	require.NoError(t, err)
 }

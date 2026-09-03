@@ -77,7 +77,7 @@ func TestGetVolumeMetadata_Provider_ResolvesProviderCreatedVolume(t *testing.T) 
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-provider001", 10)
 
-	meta, err := svc.getVolumeMetadata(context.Background(), doc.VolumeID)
+	meta, err := svc.getVolumeMetadata(context.Background(), testAccountID, doc.VolumeID)
 	require.NoError(t, err, "a provider-created volume with no config.json must resolve")
 	assert.Equal(t, doc.VolumeID, meta.VolumeID)
 	assert.Equal(t, testAccountID, meta.TenantID)
@@ -91,7 +91,7 @@ func TestGetVolumeMetadata_Provider_ResolvesProviderCreatedVolume(t *testing.T) 
 func TestGetVolumeMetadata_Provider_UnknownVolumeIsNotFound(t *testing.T) {
 	svc, _, _ := setupProviderSnapshotImageService(t)
 
-	_, err := svc.getVolumeMetadata(context.Background(), "vol-does-not-exist")
+	_, err := svc.getVolumeMetadata(context.Background(), testAccountID, "vol-does-not-exist")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }
@@ -104,7 +104,7 @@ func TestSnapshotStoppedVolume_Provider_CreatesThroughProvider(t *testing.T) {
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-stopped001", 8)
 
-	err := svc.snapshotStoppedVolume(doc.VolumeID, "snap-stopped001")
+	err := svc.snapshotStoppedVolume(doc.VolumeID, "snap-stopped001", testAccountID)
 	require.NoError(t, err, "the provider path must not fall through to the embedded engine against the closed Predastore port")
 
 	// CreateSnapshot is idempotent on (SnapshotID, VolumeID): re-issuing it

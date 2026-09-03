@@ -40,13 +40,16 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 		return respondErrorOutcome(msg, awserrors.ErrorIncorrectInstanceState)
 	}
 
-	volMeta, err := d.volumeService.GetVolumeMetadata(volumeID)
+	// The caller's account is a key segment, so it is needed before the read
+	// rather than after it.
+	callerAccountID := utils.AccountIDFromMsg(msg)
+
+	volMeta, err := d.volumeService.GetVolumeMetadata(callerAccountID, volumeID)
 	if err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: failed to get volume metadata", "volumeId", volumeID, "err", err)
 		return respondErrorOutcome(msg, awserrors.ErrorInvalidVolumeNotFound)
 	}
 
-	callerAccountID := utils.AccountIDFromMsg(msg)
 	if !volumeVisibleTo(volMeta.TenantID, callerAccountID) {
 		slog.WarnContext(ctx, "AttachVolume: account does not own volume",
 			"volumeId", volumeID,

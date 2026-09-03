@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-const SchemaVersion uint16 = 1
+// SchemaVersion is the document's field generation, and moves independently of
+// the key layout's v2 prefix. They start aligned on a fresh install and are not
+// promised to stay so: adding a field bumps this without re-keying anything.
+const SchemaVersion uint16 = 2
 
 // ErrCorruptDocument wraps decode and schema-version failures so callers can
 // tell a document that exists but cannot be read from one that is absent. The
@@ -82,14 +85,29 @@ type AMI struct {
 	State           string            `json:"state,omitempty"`
 }
 
-func VolumeKey(volumeID string) (string, error) { return key("volumes", volumeID) }
-func AMIKey(imageID string) (string, error)     { return key("amis", imageID) }
+// VolumeKey keys a volume document under its owning account, so a listing of
+// one account's prefix cannot reach another account's document. accountID comes
+// from the document's own TenantID, never from the caller.
+func VolumeKey(accountID, volumeID string) (string, error) {
+	if !validSegment(accountID) {
+		return "", fmt.Errorf("invalid EBS metadata account ID %q", accountID)
+	}
+	return key("volumes/"+accountID, volumeID)
+}
+
+// AMIKey is unpartitioned: an AMI's owner is an alias rather than an account,
+// and system images are visible to every account.
+func AMIKey(imageID string) (string, error) { return key("amis", imageID) }
 
 func key(kind, id string) (string, error) {
-	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, "/\\") {
+	if !validSegment(id) {
 		return "", fmt.Errorf("invalid EBS metadata ID %q", id)
 	}
-	return "spinifex/ebsmetadata/v1/" + kind + "/" + id + ".json", nil
+	return "spinifex/ebsmetadata/v2/" + kind + "/" + id + ".json", nil
+}
+
+func validSegment(s string) bool {
+	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, "/\\")
 }
 
 func MarshalVolume(volume Volume) ([]byte, error) {

@@ -64,6 +64,11 @@ func amiDocumentKey(t *testing.T, imageID string) string {
 // putVolumeDocument writes a volume's control-plane document.
 func putVolumeDocument(t *testing.T, store *objectstore.MemoryObjectStore, volume ebsmetadata.Volume) {
 	t.Helper()
+	// The owning account is a key segment, so a fixture that does not care
+	// which account owns it still has to have one.
+	if volume.TenantID == "" {
+		volume.TenantID = testAccountID
+	}
 	require.NoError(t, ebsmetadata.NewStore(store, testBucket).PutVolume(context.Background(), volume))
 }
 
@@ -275,7 +280,7 @@ func TestGetVolumeMetadata(t *testing.T) {
 
 	createTestVolumeConfig(t, store, "vol-abc123", 20)
 
-	meta, err := svc.getVolumeMetadata(context.Background(), "vol-abc123")
+	meta, err := svc.getVolumeMetadata(context.Background(), testAccountID, "vol-abc123")
 	require.NoError(t, err)
 	assert.Equal(t, uint64(20), meta.CapacityGiB)
 }
@@ -283,7 +288,7 @@ func TestGetVolumeMetadata(t *testing.T) {
 func TestGetVolumeMetadata_NotFound(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	_, err := svc.getVolumeMetadata(context.Background(), "vol-nonexistent")
+	_, err := svc.getVolumeMetadata(context.Background(), testAccountID, "vol-nonexistent")
 	require.Error(t, err)
 }
 
@@ -835,7 +840,7 @@ func TestGetAMIConfig_InvalidJSON(t *testing.T) {
 func TestGetVolumeMetadata_InvalidJSON(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	key, err := ebsmetadata.VolumeKey("vol-badjson")
+	key, err := ebsmetadata.VolumeKey(testAccountID, "vol-badjson")
 	require.NoError(t, err)
 	_, err = store.PutObject(context.Background(), &awss3.PutObjectInput{
 		Bucket: aws.String(testBucket),
@@ -844,7 +849,7 @@ func TestGetVolumeMetadata_InvalidJSON(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = svc.getVolumeMetadata(context.Background(), "vol-badjson")
+	_, err = svc.getVolumeMetadata(context.Background(), testAccountID, "vol-badjson")
 	assert.Error(t, err)
 }
 
@@ -2400,7 +2405,7 @@ func TestSnapshotStoppedVolume_VolumeConfigMissing(t *testing.T) {
 		store:      store,
 		bucketName: testBucket,
 	}
-	err := svc.snapshotStoppedVolume("vol-missing", "snap-s1")
+	err := svc.snapshotStoppedVolume("vol-missing", "snap-s1", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -2425,7 +2430,7 @@ func TestSnapshotStoppedVolume_BackendInitFails(t *testing.T) {
 	}
 	createTestVolumeConfig(t, store, "vol-stopped1", 10)
 
-	err := svc.snapshotStoppedVolume("vol-stopped1", "snap-s2")
+	err := svc.snapshotStoppedVolume("vol-stopped1", "snap-s2", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -2527,7 +2532,7 @@ func TestSnapshotStoppedVolume_EncryptionKeyLoadError(t *testing.T) {
 	}
 	createTestVolumeConfig(t, store, "vol-stopped-enckey", 10)
 
-	err := svc.snapshotStoppedVolume("vol-stopped-enckey", "snap-stop-enckey")
+	err := svc.snapshotStoppedVolume("vol-stopped-enckey", "snap-stop-enckey", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -2552,7 +2557,7 @@ func TestSnapshotStoppedVolume_LoadStateFails(t *testing.T) {
 	}
 	createTestVolumeConfig(t, store, "vol-stopped-lsf", 10)
 
-	err := svc.snapshotStoppedVolume("vol-stopped-lsf", "snap-stop-lsf")
+	err := svc.snapshotStoppedVolume("vol-stopped-lsf", "snap-stop-lsf", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }

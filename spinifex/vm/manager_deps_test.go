@@ -221,7 +221,7 @@ type volumeStateUpdate struct {
 	AttachmentDevice string
 }
 
-func (f *fakeVolumeStateUpdater) UpdateVolumeState(volumeID, state, instanceID, attachmentDevice string) error {
+func (f *fakeVolumeStateUpdater) UpdateVolumeState(_, volumeID, state, instanceID, attachmentDevice string) error {
 	update := volumeStateUpdate{
 		VolumeID:         volumeID,
 		State:            state,

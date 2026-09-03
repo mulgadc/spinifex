@@ -372,14 +372,14 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	if params.IsRunning {
 		snapshotErr = s.snapshotRunningVolume(params.RootVolumeID, snapshotID, accountID)
 	} else {
-		snapshotErr = s.snapshotStoppedVolume(params.RootVolumeID, snapshotID)
+		snapshotErr = s.snapshotStoppedVolume(params.RootVolumeID, snapshotID, accountID)
 	}
 	if snapshotErr != nil {
 		return nil, snapshotErr
 	}
 
 	// Step 2: Read source volume config for size
-	volMeta, err := s.getVolumeMetadata(context.Background(), params.RootVolumeID)
+	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, params.RootVolumeID)
 	if err != nil {
 		slog.Error("CreateImageFromInstance: failed to read volume metadata", "volumeId", params.RootVolumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -449,7 +449,7 @@ func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID, accountID
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	volMeta, err := s.getVolumeMetadata(context.Background(), volumeID)
+	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, volumeID)
 	if err != nil {
 		slog.Error("snapshotRunningVolume: failed to read volume metadata", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
@@ -472,12 +472,12 @@ func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID, accountID
 // volume is stopped/detached, so nothing is buffered on a serving node.
 // viperblockd's handleCreateSnapshot prefers a live mounted engine over opening
 // a second one, so it handles the mounted case itself.
-func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID string) error {
+func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID, accountID string) error {
 	if s.config == nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	volMeta, err := s.getVolumeMetadata(context.Background(), volumeID)
+	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, volumeID)
 	if err != nil {
 		slog.Error("snapshotStoppedVolume: failed to read volume metadata", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
@@ -506,8 +506,8 @@ func (s *ImageServiceImpl) createSnapshot(ctx context.Context, volMeta ebsmetada
 
 // getVolumeMetadata reads a volume's control-plane document, remapping a
 // missing document to InvalidVolume.NotFound.
-func (s *ImageServiceImpl) getVolumeMetadata(ctx context.Context, volumeID string) (ebsmetadata.Volume, error) {
-	meta, err := s.metadata.GetVolume(ctx, volumeID)
+func (s *ImageServiceImpl) getVolumeMetadata(ctx context.Context, accountID, volumeID string) (ebsmetadata.Volume, error) {
+	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
 			return ebsmetadata.Volume{}, errors.New(awserrors.ErrorInvalidVolumeNotFound)

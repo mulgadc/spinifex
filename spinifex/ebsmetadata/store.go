@@ -26,8 +26,11 @@ func NewStore(objects objectstore.ObjectStore, bucket string) *Store {
 	return &Store{objects: objects, bucket: bucket}
 }
 
+// PutVolume takes no account: the key segment is the document's own TenantID.
+// An account passed alongside a document that already carries one is how the
+// two come to disagree.
 func (s *Store) PutVolume(ctx context.Context, volume Volume) error {
-	key, err := VolumeKey(volume.VolumeID)
+	key, err := VolumeKey(volume.TenantID, volume.VolumeID)
 	if err != nil {
 		return err
 	}
@@ -40,8 +43,8 @@ func (s *Store) PutVolume(ctx context.Context, volume Volume) error {
 
 // GetVolume returns the volume's ebsmetadata document. A volume with no
 // document does not exist as far as the control plane is concerned.
-func (s *Store) GetVolume(ctx context.Context, volumeID string) (Volume, error) {
-	key, err := VolumeKey(volumeID)
+func (s *Store) GetVolume(ctx context.Context, accountID, volumeID string) (Volume, error) {
+	key, err := VolumeKey(accountID, volumeID)
 	if err != nil {
 		return Volume{}, err
 	}
@@ -52,8 +55,8 @@ func (s *Store) GetVolume(ctx context.Context, volumeID string) (Volume, error) 
 	return UnmarshalVolume(data)
 }
 
-func (s *Store) DeleteVolume(ctx context.Context, volumeID string) error {
-	key, err := VolumeKey(volumeID)
+func (s *Store) DeleteVolume(ctx context.Context, accountID, volumeID string) error {
+	key, err := VolumeKey(accountID, volumeID)
 	if err != nil {
 		return err
 	}
@@ -111,8 +114,8 @@ func (s *Store) listAMIDocuments(ctx context.Context, skipCorrupt bool) ([]AMI, 
 
 // Prefixes the metadata documents live under, one per document kind.
 const (
-	volumePrefix = "spinifex/ebsmetadata/v1/volumes/"
-	amiPrefix    = "spinifex/ebsmetadata/v1/amis/"
+	volumePrefix = "spinifex/ebsmetadata/v2/volumes/"
+	amiPrefix    = "spinifex/ebsmetadata/v2/amis/"
 )
 
 // listFetchConcurrency bounds the object fetches a single listing may have in

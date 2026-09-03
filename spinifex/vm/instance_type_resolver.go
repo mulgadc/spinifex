@@ -35,5 +35,5 @@ type ResourceController interface {
 // VolumeStateUpdater is the narrow slice of the volume service the manager
 // touches: marking boot volumes "in-use" once a VM is confirmed running.
 type VolumeStateUpdater interface {
-	UpdateVolumeState(volumeID, state, instanceID, attachmentDevice string) error
+	UpdateVolumeState(accountID, volumeID, state, instanceID, attachmentDevice string) error
 }

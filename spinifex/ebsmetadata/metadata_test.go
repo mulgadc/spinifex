@@ -57,10 +57,25 @@ func TestMetadataRejectsUnknownSchemaVersion(t *testing.T) {
 
 func TestMetadataKeysRejectPathTraversal(t *testing.T) {
 	for _, id := range []string{"", "..", "../escape", "a/b", "a\\b"} {
-		_, err := VolumeKey(id)
+		_, err := VolumeKey("acct-1", id)
 		require.Error(t, err, "ID %q must not escape metadata prefix", id)
+
+		_, err = VolumeKey(id, "vol-1")
+		require.Error(t, err, "account %q must not escape metadata prefix", id)
 	}
 	key, err := AMIKey("ami-1")
 	require.NoError(t, err)
-	assert.Equal(t, "spinifex/ebsmetadata/v1/amis/ami-1.json", key)
+	assert.Equal(t, "spinifex/ebsmetadata/v2/amis/ami-1.json", key)
+}
+
+// The owning account is a key segment, which is what lets a listing of one
+// account's prefix answer without reading another account's documents.
+func TestVolumeKeyPartitionsByOwningAccount(t *testing.T) {
+	key, err := VolumeKey("000000000001", "vol-1")
+	require.NoError(t, err)
+	assert.Equal(t, "spinifex/ebsmetadata/v2/volumes/000000000001/vol-1.json", key)
+
+	other, err := VolumeKey("000000000002", "vol-1")
+	require.NoError(t, err)
+	assert.NotEqual(t, key, other, "the same volume ID under two accounts must be two keys")
 }

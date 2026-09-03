@@ -24,7 +24,7 @@ func TestStoreRoundTripsVolumeAndAMI(t *testing.T) {
 
 	volume := Volume{VolumeID: "vol-1", TenantID: "acct-1", CapacityGiB: 10, State: "available", ProviderHandle: "opaque"}
 	require.NoError(t, store.PutVolume(context.Background(), volume))
-	gotVolume, err := store.GetVolume(context.Background(), volume.VolumeID)
+	gotVolume, err := store.GetVolume(context.Background(), volume.TenantID, volume.VolumeID)
 	require.NoError(t, err)
 	assert.Equal(t, volume.VolumeID, gotVolume.VolumeID)
 	assert.Equal(t, volume.ProviderHandle, gotVolume.ProviderHandle)
@@ -38,7 +38,7 @@ func TestStoreRoundTripsVolumeAndAMI(t *testing.T) {
 	assert.Equal(t, ami.SnapshotID, gotAMI.SnapshotID)
 	assert.Equal(t, SchemaVersion, gotAMI.SchemaVersion)
 
-	require.NoError(t, store.DeleteVolume(context.Background(), volume.VolumeID))
+	require.NoError(t, store.DeleteVolume(context.Background(), volume.TenantID, volume.VolumeID))
 	require.NoError(t, store.DeleteAMI(context.Background(), ami.ImageID))
 }
 
@@ -83,9 +83,9 @@ func corruptVolumeStore(t *testing.T) (*Store, context.Context) {
 	store := NewStore(objects, "control-plane")
 	ctx := context.Background()
 
-	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-good", CapacityGiB: 1}))
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-good", TenantID: "acct-1", CapacityGiB: 1}))
 
-	key, err := VolumeKey("vol-corrupt")
+	key, err := VolumeKey("acct-1", "vol-corrupt")
 	require.NoError(t, err)
 	_, err = objects.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String("control-plane"), Key: aws.String(key), Body: bytes.NewReader([]byte("not json")),
@@ -123,10 +123,10 @@ func TestListVolumes_SkipsUnreadableObject(t *testing.T) {
 	store := NewStore(objects, "control-plane")
 	ctx := context.Background()
 
-	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-good", CapacityGiB: 1}))
-	key, err := VolumeKey("vol-unreadable")
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-good", TenantID: "acct-1", CapacityGiB: 1}))
+	key, err := VolumeKey("acct-1", "vol-unreadable")
 	require.NoError(t, err)
-	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-unreadable", CapacityGiB: 1}))
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-unreadable", TenantID: "acct-1", CapacityGiB: 1}))
 
 	failing := &getFailsStore{ObjectStore: objects, failKey: key}
 	broken := NewStore(failing, "control-plane")
@@ -220,7 +220,7 @@ func TestListAMIs_NotConfigured(t *testing.T) {
 // concerned, reported as the object store's not-found rather than a zero value.
 func TestGetVolume_MissingDocumentIsNotFound(t *testing.T) {
 	store := NewStore(objectstore.NewMemoryObjectStore(), "control-plane")
-	_, err := store.GetVolume(context.Background(), "vol-missing")
+	_, err := store.GetVolume(context.Background(), "acct-1", "vol-missing")
 	require.Error(t, err)
 	assert.True(t, objectstore.IsNoSuchKeyError(err))
 }
@@ -241,14 +241,14 @@ func TestGet_CorruptDocumentIsDistinguishable(t *testing.T) {
 	store := NewStore(objects, "control-plane")
 	ctx := context.Background()
 
-	volKey, err := VolumeKey("vol-corrupt")
+	volKey, err := VolumeKey("acct-1", "vol-corrupt")
 	require.NoError(t, err)
 	writeRaw(t, objects, volKey, []byte("{not json"))
 	amiKey, err := AMIKey("ami-corrupt")
 	require.NoError(t, err)
 	writeRaw(t, objects, amiKey, []byte("{not json"))
 
-	_, err = store.GetVolume(ctx, "vol-corrupt")
+	_, err = store.GetVolume(ctx, "acct-1", "vol-corrupt")
 	require.ErrorIs(t, err, ErrCorruptDocument)
 	assert.False(t, objectstore.IsNoSuchKeyError(err), "corrupt must not read as absent")
 
@@ -339,7 +339,7 @@ func TestListVolumes_ConcurrentFetchPreservesListingOrder(t *testing.T) {
 	for i := range documents {
 		id := fmt.Sprintf("vol-%02d", i)
 		require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: id, TenantID: "acct-1", CapacityGiB: 1}))
-		key, err := VolumeKey(id)
+		key, err := VolumeKey("acct-1", id)
 		require.NoError(t, err)
 		want = append(want, id)
 		keys = append(keys, key)
@@ -429,9 +429,9 @@ func TestListVolumes_BoundsOneSlowDocument(t *testing.T) {
 	store := NewStore(objects, "control-plane")
 	ctx := context.Background()
 
-	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-good", CapacityGiB: 1}))
-	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-slow", CapacityGiB: 1}))
-	key, err := VolumeKey("vol-slow")
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-good", TenantID: "acct-1", CapacityGiB: 1}))
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-slow", TenantID: "acct-1", CapacityGiB: 1}))
+	key, err := VolumeKey("acct-1", "vol-slow")
 	require.NoError(t, err)
 
 	hanging := NewStore(&hangingGetStore{ObjectStore: objects, hangKey: key}, "control-plane")
@@ -463,7 +463,7 @@ func TestListVolumesFollowsEveryPage(t *testing.T) {
 	for i := range documents {
 		id := fmt.Sprintf("vol-%02d", i)
 		require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: id, TenantID: "acct-1", CapacityGiB: 1}))
-		key, err := VolumeKey(id)
+		key, err := VolumeKey("acct-1", id)
 		require.NoError(t, err)
 		want = append(want, id)
 		keys = append(keys, key)
@@ -499,7 +499,7 @@ func TestListVolumesRefusesTruncationItCannotFollow(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-1", TenantID: "acct-1", CapacityGiB: 1}))
-	key, err := VolumeKey("vol-1")
+	key, err := VolumeKey("acct-1", "vol-1")
 	require.NoError(t, err)
 
 	broken := NewStore(&truncatedNoTokenStore{ObjectStore: objects, keys: []string{key}}, "control-plane")

@@ -45,7 +45,7 @@ func TestDeleteSnapshot_RemovesEveryObjectAcrossMultiplePages(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutVolume(context.Background(), ebsmetadata.Volume{
-		VolumeID: "vol-1", CapacityGiB: 10, AvailabilityZone: "us-east-1a",
+		VolumeID: "vol-1", TenantID: testAccountID, CapacityGiB: 10, AvailabilityZone: "us-east-1a",
 	}))
 
 	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{

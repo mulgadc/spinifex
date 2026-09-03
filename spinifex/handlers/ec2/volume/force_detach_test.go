@@ -29,7 +29,7 @@ func seedAttachedVolume(t *testing.T, svc *VolumeServiceImpl, volumeID, accountI
 		VolumeID: volumeID, TenantID: accountID, CapacityGiB: 1,
 		State: "available", AvailabilityZone: "ap-southeast-2a", VolumeType: "gp3",
 	}))
-	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", instanceID, "/dev/sdf"))
+	require.NoError(t, svc.UpdateVolumeState(accountID, volumeID, "in-use", instanceID, "/dev/sdf"))
 }
 
 // This is the escape from the deadlock teardown exists to break: a volume
@@ -49,7 +49,7 @@ func TestForceDetachVolumeClearsTheAttachment(t *testing.T) {
 	assert.Equal(t, "i-stuck0000000000", aws.StringValue(attachment.InstanceId))
 	assert.Equal(t, "detached", aws.StringValue(attachment.State))
 
-	meta, err := svc.GetVolumeMetadata("vol-forcedetach1")
+	meta, err := svc.GetVolumeMetadata("acct-tenant", "vol-forcedetach1")
 	require.NoError(t, err)
 	assert.Equal(t, "available", meta.State)
 	assert.Empty(t, meta.AttachedInstance)
@@ -71,7 +71,7 @@ func TestForceDetachVolumeRefusesAnotherAccountsVolume(t *testing.T) {
 	// a volume id exists in someone else's account.
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 
-	meta, err := svc.GetVolumeMetadata("vol-forcedetach2")
+	meta, err := svc.GetVolumeMetadata("acct-owner", "vol-forcedetach2")
 	require.NoError(t, err)
 	assert.Equal(t, "i-stuck0000000000", meta.AttachedInstance)
 }

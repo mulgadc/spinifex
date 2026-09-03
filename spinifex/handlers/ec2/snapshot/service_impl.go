@@ -238,7 +238,7 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 	// A volume predating tenancy records no owner. Refusing it would strand
 	// every pre-tenancy volume as unsnapshottable, so an absent TenantID stays
 	// open to any caller; a recorded one must match.
-	volume, err := s.metadata.GetVolume(ctx, volumeID)
+	volume, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil || (accountID != "" && volume.TenantID != "" && volume.TenantID != accountID) {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}

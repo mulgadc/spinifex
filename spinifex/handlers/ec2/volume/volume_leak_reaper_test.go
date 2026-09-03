@@ -28,7 +28,7 @@ func TestVolumeLeakReaper_ReconcilesAttachmentNeverDeletesData(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, marked)
 
-	meta, err := svc.GetVolumeMetadata("vol-leaked-reconcile")
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, "vol-leaked-reconcile")
 	require.NoError(t, err, "the reaper must never delete the volume, only mark + reconcile it")
 	assert.NotEmpty(t, meta.Tags[orphanTagKey], "the volume must still be marked orphaned")
 	assert.Equal(t, "available", meta.State,
@@ -62,7 +62,7 @@ func TestVolumeLeakReaper_LiveOwnerAttachmentUntouched(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, marked)
 
-	meta, err := svc.GetVolumeMetadata("vol-live-reconcile")
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, "vol-live-reconcile")
 	require.NoError(t, err)
 	assert.Equal(t, "in-use", meta.State, "a live-owner volume's attachment must never be reconciled")
 	assert.Equal(t, "i-running00000000", meta.AttachedInstance)

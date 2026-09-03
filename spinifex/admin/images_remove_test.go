@@ -94,6 +94,7 @@ func putVolume(t *testing.T, store *objectstore.MemoryObjectStore, volID, snapsh
 	t.Helper()
 	require.NoError(t, ebsmetadata.NewStore(store, testRemoveBucket).PutVolume(t.Context(), ebsmetadata.Volume{
 		VolumeID:    volID,
+		TenantID:    testRemoveAccountID,
 		SnapshotID:  snapshotID,
 		CapacityGiB: 8,
 	}))
@@ -268,7 +269,7 @@ func TestRemoveSystemImage_Force_OverridesDependents(t *testing.T) {
 	metadata := ebsmetadata.NewStore(store, testRemoveBucket)
 	_, err = metadata.GetAMI(t.Context(), id)
 	require.Error(t, err)
-	_, err = metadata.GetVolume(t.Context(), "vol-orphan")
+	_, err = metadata.GetVolume(t.Context(), testRemoveAccountID, "vol-orphan")
 	require.NoError(t, err)
 }
 

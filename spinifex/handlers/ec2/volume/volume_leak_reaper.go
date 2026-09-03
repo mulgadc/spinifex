@@ -53,23 +53,23 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	ids, err := r.svc.listAllVolumeIDs(ctx)
+	// The sweep is node-local GC with no caller account, so each volume's own
+	// document supplies the account its key is under. Listing documents rather
+	// than IDs is what makes that available without a second read.
+	volumes, err := r.svc.metadata.ListVolumes(ctx)
 	if err != nil {
 		return 0, err
 	}
 
 	marked := 0
-	for _, id := range ids {
+	for _, meta := range volumes {
 		select {
 		case <-ctx.Done():
 			return marked, ctx.Err()
 		default:
 		}
 
-		meta, err := r.svc.metadata.GetVolume(ctx, id)
-		if err != nil {
-			continue
-		}
+		id := meta.VolumeID
 		attachedInstance, tags, sizeGiB := meta.AttachedInstance, meta.Tags, meta.CapacityGiB
 
 		if attachedInstance == "" || !leaked[attachedInstance] {
@@ -79,7 +79,7 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 			continue // already surfaced; idempotent
 		}
 
-		if err := r.svc.markVolumeOrphaned(ctx, id, tags, attachedInstance); err != nil {
+		if err := r.svc.markVolumeOrphaned(ctx, meta.TenantID, id, tags, attachedInstance); err != nil {
 			slog.Error("volume-leak: failed to mark orphaned volume", "volumeId", id, "err", err)
 			continue
 		}
@@ -92,7 +92,7 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 		// owning instance is definitively terminated (this node's leaked
 		// set), so nothing still claims the volume; clearing the stale
 		// attachment lets an operator DeleteVolume it after seeing the alarm.
-		if err := r.svc.UpdateVolumeState(id, "available", "", ""); err != nil {
+		if err := r.svc.UpdateVolumeState(meta.TenantID, id, "available", "", ""); err != nil {
 			slog.Error("volume-leak: failed to reconcile orphaned volume attachment", "volumeId", id, "err", err)
 		}
 		marked++
@@ -103,14 +103,14 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 // markVolumeOrphaned tags the volume as orphaned. tags is the volume's
 // current, already-authoritative tag set; the volume's data and state remain
 // untouched.
-func (s *VolumeServiceImpl) markVolumeOrphaned(ctx context.Context, volumeID string, tags map[string]string, attachedInstance string) error {
+func (s *VolumeServiceImpl) markVolumeOrphaned(ctx context.Context, accountID, volumeID string, tags map[string]string, attachedInstance string) error {
 	if tags == nil {
 		tags = make(map[string]string)
 	}
 	tags[orphanTagKey] = time.Now().UTC().Format(time.RFC3339)
 	tags[orphanInstanceTagKey] = attachedInstance
 
-	meta, err := s.metadata.GetVolume(ctx, volumeID)
+	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil {
 		return err
 	}

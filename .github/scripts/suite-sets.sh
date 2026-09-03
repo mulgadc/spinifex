@@ -53,6 +53,12 @@ E2E_SUITES_MULTI_RE="$(printf '%s' "${E2E_SUITES_MULTI}" | tr ' ' '|')"
 # nightly in their own dedicated cell, because each needs a guest AMI built
 # first and a service failure should not mask whether a host OS boots. These
 # are subsets, and e2e_suites_assert_subset below enforces that.
+#
+# storagefault has a dedicated cell for the same reason turned around: it
+# SIGSTOPs a cluster-wide service, so putting it in a permutation cell would
+# make every suite sharing that environment report the outage as its own
+# failure. Its cell is single-node, which is RS(1,0); the RS(2,1) shard-floor
+# and cross-node takeover assertions are covered by the PR gate's multi run.
 E2E_SUITES_NIGHTLY_SINGLE="single cert iam"
 E2E_SUITES_NIGHTLY_MULTI="multinode cert lb"
 

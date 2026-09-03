@@ -24,7 +24,7 @@ func TestGPUPassthrough(t *testing.T) {
 	harness.Phase(t, "GPU — Passthrough: launch, device visibility, driver access with %s", fix.GPUInstanceType)
 
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
-	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness, fix.ArtifactDir(t))
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 	harness.AuthorizeSSHIngress(t, fix.AWS, vpc.SGID)
 
 	instanceID := launchGPUInstance(t, fix, vpc.SubnetID, []string{vpc.SGID}, keyName)
@@ -72,7 +72,7 @@ func TestGPUPassthrough_Release(t *testing.T) {
 	harness.Phase(t, "GPU — Release: GPU returns to pool after termination")
 
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
-	keyName, _ := harness.EnsureKeyPair(t, fix.Harness, fix.ArtifactDir(t))
+	keyName, _ := harness.EnsureKeyPair(t, fix.Harness)
 	sgIDs := []*string{aws.String(vpc.SGID)}
 
 	harness.Step(t, "launching first GPU instance")

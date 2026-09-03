@@ -4,7 +4,7 @@ package harness
 
 import (
 	"errors"
-	"path/filepath"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -122,20 +122,43 @@ func newFakeFixture(t *testing.T) (*Fixture, *fakeEC2) {
 }
 
 // TestEnsureKeyPair_FirstCallCreates verifies first invocation calls
-// CreateKeyPair once and writes PEM to the artifact dir.
+// CreateKeyPair once and writes the PEM where it says it did.
 func TestEnsureKeyPair_FirstCallCreates(t *testing.T) {
 	fx, ec2c := newFakeFixture(t)
-	dir := t.TempDir()
 
-	name, pemPath := EnsureKeyPair(t, fx, dir)
+	name, pemPath := EnsureKeyPair(t, fx)
 	if name == "" {
 		t.Fatalf("EnsureKeyPair returned empty name")
 	}
 	if got := ec2c.createKeyPair.Load(); got != 1 {
 		t.Fatalf("CreateKeyPair calls = %d, want 1", got)
 	}
-	if filepath.Dir(pemPath) != dir {
-		t.Fatalf("pemPath dir = %s, want %s", filepath.Dir(pemPath), dir)
+	if _, err := os.Stat(pemPath); err != nil {
+		t.Fatalf("pemPath %s: %v", pemPath, err)
+	}
+}
+
+// TestEnsureKeyPair_PEMOutlivesAPassingTest is the regression. The private key
+// used to be written into the caller's per-test artifact directory, which is
+// removed when that test passes. Every later test then received a path to a
+// file that no longer existed while the key pair was still registered, so its
+// guest was launched against a public key nothing held the other half of and
+// SSH could never succeed.
+func TestEnsureKeyPair_PEMOutlivesAPassingTest(t *testing.T) {
+	fx, _ := newFakeFixture(t)
+
+	var firstPath string
+	t.Run("passes", func(it *testing.T) {
+		_ = ArtifactDir(it, &Env{ArtifactDir: it.TempDir()})
+		_, firstPath = EnsureKeyPair(it, fx)
+	})
+
+	_, secondPath := EnsureKeyPair(t, fx)
+	if secondPath != firstPath {
+		t.Fatalf("second call returned %s, want the path the PEM was written to (%s)", secondPath, firstPath)
+	}
+	if _, err := os.Stat(secondPath); err != nil {
+		t.Fatalf("private key vanished when the first test passed: %v", err)
 	}
 }
 
@@ -143,10 +166,9 @@ func TestEnsureKeyPair_FirstCallCreates(t *testing.T) {
 // return the cached name without re-calling CreateKeyPair.
 func TestEnsureKeyPair_SecondCallCached(t *testing.T) {
 	fx, ec2c := newFakeFixture(t)
-	dir := t.TempDir()
 
-	first, _ := EnsureKeyPair(t, fx, dir)
-	second, _ := EnsureKeyPair(t, fx, dir)
+	first, _ := EnsureKeyPair(t, fx)
+	second, _ := EnsureKeyPair(t, fx)
 	if first != second {
 		t.Fatalf("second call returned %q, want cached %q", second, first)
 	}
@@ -160,7 +182,6 @@ func TestEnsureKeyPair_SecondCallCached(t *testing.T) {
 func TestEnsureKeyPair_ConcurrentCallers(t *testing.T) {
 	fx, ec2c := newFakeFixture(t)
 	ec2c.holdCreate = make(chan struct{})
-	dir := t.TempDir()
 
 	const N = 10
 	var wg sync.WaitGroup
@@ -171,7 +192,7 @@ func TestEnsureKeyPair_ConcurrentCallers(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			started <- struct{}{}
-			n, _ := EnsureKeyPair(t, fx, dir)
+			n, _ := EnsureKeyPair(t, fx)
 			names[i] = n
 		}(i)
 	}
@@ -342,11 +363,10 @@ func TestEnsureKeyPair_CleanupRunsOnce(t *testing.T) {
 	t.Run("inner", func(it *testing.T) {
 		var fx *Fixture
 		fx, ec2c = newFakeFixture(it)
-		dir := it.TempDir()
 
-		EnsureKeyPair(it, fx, dir)
-		EnsureKeyPair(it, fx, dir)
-		EnsureKeyPair(it, fx, dir)
+		EnsureKeyPair(it, fx)
+		EnsureKeyPair(it, fx)
+		EnsureKeyPair(it, fx)
 	})
 
 	if got := ec2c.deleteKeyPair.Load(); got != 1 {
@@ -390,7 +410,7 @@ func TestPollUntil_TimeoutWrapsLastErr(t *testing.T) {
 //
 //nolint:unused,deadcode // exists only to fail compile when an Ensure* signature drifts
 func _ensureCompileCheck(t *testing.T, fx *Fixture) {
-	_, _ = EnsureKeyPair(t, fx, "/tmp")
+	_, _ = EnsureKeyPair(t, fx)
 	_ = EnsureAMI(t, fx, AMISource{Existing: "ami-0"})
 	_ = EnsureDefaultVPC(t, fx)
 	_ = EnsureSubnet(t, fx, "vpc-0", "10.0.0.0/24", "ap-southeast-2a")

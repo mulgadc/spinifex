@@ -390,7 +390,7 @@ func ensureWorkloadInstance(t *testing.T, fix *Fixture) (instanceID string, tgt 
 	t.Helper()
 	instType, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
 	ami := harness.DiscoverUbuntuAMI(t, fix.Harness, arch)
-	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness, fix.ArtifactDir(t))
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
 	harness.AuthorizeSSHIngress(t, fix.AWS, vpc.SGID)
 

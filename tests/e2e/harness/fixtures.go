@@ -67,6 +67,10 @@ type Fixture struct {
 	cleanups map[string]struct{}
 	sf       singleflight.Group
 
+	// keyDir holds private keys for the process. Created on first use and
+	// removed with the key pair it belongs to.
+	keyDir string
+
 	// processCleanups holds teardown callbacks for process-mode fixtures.
 	// Close() runs them LIFO. Unused (and untouched) when parent != nil.
 	//
@@ -319,14 +323,40 @@ func randHex(nBytes int) (string, error) {
 // EnsureKeyPair
 // ----------------------------------------------------------------------------
 
-// EnsureKeyPair creates (or returns the cached) named EC2 key pair. The PEM
-// is written to artifactsDir/<name>.pem with 0600. Returns (keyName, pemPath).
-func EnsureKeyPair(t *testing.T, fx *Fixture, artifactsDir string) (string, string) {
+// keyPairDir returns the process-scoped directory private keys are written
+// to, creating it on first use.
+//
+// Deliberately not a caller-supplied directory. The key pair lives as long as
+// the fixture, so a private key kept anywhere shorter-lived goes missing while
+// the registered public key is still being launched against.
+func (f *Fixture) keyPairDir() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.keyDir != "" {
+		return f.keyDir, nil
+	}
+	dir, err := os.MkdirTemp("", "spinifex-e2e-keys-")
+	if err != nil {
+		return "", fmt.Errorf("private key dir: %w", err)
+	}
+	f.keyDir = dir
+	return dir, nil
+}
+
+// EnsureKeyPair creates (or returns the cached) named EC2 key pair. The PEM is
+// written with 0600 into a directory owned by the fixture, and both are
+// removed together. Returns (keyName, pemPath).
+func EnsureKeyPair(t *testing.T, fx *Fixture) (string, string) {
 	t.Helper()
 	name := fx.resourceName("e2e-key")
 	key := "keypair:" + name
 
-	pemPath := filepath.Join(artifactsDir, name+".pem")
+	dir, err := fx.keyPairDir()
+	if err != nil {
+		t.Fatalf("EnsureKeyPair: %v", err)
+	}
+	pemPath := filepath.Join(dir, name+".pem")
+
 	id, err := fx.ensureOnce(t, key, func() (string, func() error, error) {
 		out, err := fx.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{
 			KeyName: aws.String(name),
@@ -334,15 +364,15 @@ func EnsureKeyPair(t *testing.T, fx *Fixture, artifactsDir string) (string, stri
 		if err != nil {
 			return "", nil, fmt.Errorf("CreateKeyPair %s: %w", name, err)
 		}
-		if err := os.MkdirAll(artifactsDir, 0o750); err != nil {
-			return "", nil, fmt.Errorf("mkdir %s: %w", artifactsDir, err)
-		}
 		if err := os.WriteFile(pemPath, []byte(aws.StringValue(out.KeyMaterial)), 0o600); err != nil {
 			return "", nil, fmt.Errorf("write pem %s: %w", pemPath, err)
 		}
 		fx.tagRunResources(aws.StringValue(out.KeyPairId))
 		return aws.StringValue(out.KeyName), func() error {
 			_, derr := fx.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(name)})
+			if rerr := os.RemoveAll(dir); rerr != nil && derr == nil {
+				derr = rerr
+			}
 			return derr
 		}, nil
 	})

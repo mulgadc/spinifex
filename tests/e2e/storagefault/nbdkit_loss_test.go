@@ -58,7 +58,18 @@ func TestGuestSurvivesNbdkitLoss(t *testing.T) {
 			before := harness.GuestDiskSet(t, tgt)
 			harness.AttachVolumeWait(t, fix.AWS, volID, instanceID, faultDevice)
 			dev := harness.WaitForNewGuestDisk(t, tgt, before, 90*time.Second)
-			t.Cleanup(func() { harness.DetachVolumeWait(t, fix.AWS, volID) })
+
+			// relaunchedSocket names an nbdkit the killed variant put back by
+			// hand. Reaped here rather than on its own cleanup so it happens
+			// after the detach: it is the server behind an attached disk, and
+			// killing it first leaves the detach fighting a pinned blockdev.
+			var relaunchedSocket string
+			t.Cleanup(func() {
+				harness.DetachVolumeWait(t, fix.AWS, volID)
+				if relaunchedSocket != "" {
+					reapRelaunchedNbdkit(t, fix, *hostNode, relaunchedSocket)
+				}
+			})
 
 			prepareWorkloadFilesystem(t, tgt, dev)
 			quiesceWorkload(t, tgt)
@@ -93,6 +104,7 @@ func TestGuestSurvivesNbdkitLoss(t *testing.T) {
 			if tc.kill {
 				harness.Step(t, "relaunching nbdkit on %s, then waiting %s", killed.socket, recoverySettle)
 				relaunchNbdkit(t, fix, *hostNode, volID, killed)
+				relaunchedSocket = killed.socket
 			} else {
 				harness.Step(t, "thawing nbdkit and waiting %s", recoverySettle)
 				thawNbdkit(t, fix, *hostNode, pid)

@@ -240,35 +240,37 @@ func killNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string, pi
 	return killedNbdkit{cmdline: cmdline, socket: socket, envFile: envFile}
 }
 
-// reapRelaunchedNbdkit kills the relaunched server when the test ends. setsid
-// detaches it from the SSH session that started it, and viperblockd never
-// learned it exists, so nothing else will ever reap it.
+// reapRelaunchedNbdkit kills the relaunched server. setsid detaches it from
+// the SSH session that started it, and viperblockd never learned it exists, so
+// nothing else will ever reap it.
+//
+// Call this only once the volume is detached. It is the server behind an
+// attached disk, so killing it first leaves QEMU holding the blockdev node and
+// the platform's own detach then fails with "Node ... is in use".
 //
 // The PID is resolved from the socket path rather than the volume id: a
 // legitimate viperblockd nbdkit for the same volume must not be killed, and
 // only this one is bound to this path.
 func reapRelaunchedNbdkit(t *testing.T, f *Fixture, node harness.Node, socket string) {
 	t.Helper()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		out, err := f.SSH.Run(ctx, node,
-			fmt.Sprintf("sudo pgrep -a nbdkit | grep -F -- %q | awk '{print $1}'", socket))
-		if err != nil {
-			t.Logf("could not look up relaunched nbdkit on %s: %v", node.Name, err)
-			return
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	out, err := f.SSH.Run(ctx, node,
+		fmt.Sprintf("sudo pgrep -a nbdkit | grep -F -- %q | awk '{print $1}'", socket))
+	if err != nil {
+		t.Logf("could not look up relaunched nbdkit on %s: %v", node.Name, err)
+		return
+	}
+	for _, pid := range strings.Fields(string(out)) {
+		if _, err := f.SSH.Run(ctx, node, fmt.Sprintf("sudo kill %s", pid)); err != nil {
+			t.Logf("could not stop relaunched nbdkit %s on %s: %v", pid, node.Name, err)
+			continue
 		}
-		for _, pid := range strings.Fields(string(out)) {
-			if _, err := f.SSH.Run(ctx, node, fmt.Sprintf("sudo kill %s", pid)); err != nil {
-				t.Logf("could not stop relaunched nbdkit %s on %s: %v", pid, node.Name, err)
-				continue
-			}
-			t.Logf("stopped relaunched nbdkit %s on %s", pid, node.Name)
-		}
-		if _, err := f.SSH.Run(ctx, node, fmt.Sprintf("sudo rm -f %s", socket)); err != nil {
-			t.Logf("could not remove %s on %s: %v", socket, node.Name, err)
-		}
-	})
+		t.Logf("stopped relaunched nbdkit %s on %s", pid, node.Name)
+	}
+	if _, err := f.SSH.Run(ctx, node, fmt.Sprintf("sudo rm -f %s", socket)); err != nil {
+		t.Logf("could not remove %s on %s: %v", socket, node.Name, err)
+	}
 }
 
 // relaunchNbdkit puts the volume's NBD server back on the same socket path,
@@ -318,7 +320,6 @@ func relaunchNbdkit(t *testing.T, f *Fixture, node harness.Node, volumeID string
 	for time.Now().Before(deadline) {
 		if _, err := f.SSH.Run(ctx, node, ready); err == nil {
 			t.Logf("relaunched nbdkit for %s on %s, socket %s is back", volumeID, node.Name, k.socket)
-			reapRelaunchedNbdkit(t, f, node, k.socket)
 			return
 		}
 		time.Sleep(2 * time.Second)

@@ -320,7 +320,7 @@ func phaseInstanceEgress(t *testing.T, fix *fixture, def harness.VPCInfo) egress
 
 	instType, arch := harness.DiscoverNanoInstanceType(t, fix.harness)
 	amiID := harness.DiscoverUbuntuAMI(t, fix.harness, arch)
-	keyName, _ := harness.EnsureKeyPair(t, fix.harness, fix.artifacts)
+	keyName, _ := harness.EnsureKeyPair(t, fix.harness)
 	harness.Detail(t, "type", instType, "ami", amiID, "key", keyName)
 
 	harness.Step(t, "run-instances (default subnet, egress-probe user-data)")

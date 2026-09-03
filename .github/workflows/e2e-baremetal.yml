@@ -109,6 +109,10 @@ jobs:
           ssh-keygen -y -f "${RUNNER_TEMP}/bm-ci" > "${RUNNER_TEMP}/bm-ci.pub"
 
       - name: Build Artifacts
+        env:
+          # The node runs pre-built binaries, so a suite absent here cannot be
+          # selected later. Same list as the run step for that reason.
+          BM_SUITES: ${{ inputs.suites || 'single cert lb' }}
         run: |
           mulga/scripts/baremetal/bm-build-artifacts.sh \
             "$GITHUB_WORKSPACE" \

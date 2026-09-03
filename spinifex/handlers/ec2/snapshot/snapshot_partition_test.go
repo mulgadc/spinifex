@@ -145,6 +145,71 @@ func TestDescribeSnapshots_TouchesNoOtherAccountsPrefix(t *testing.T) {
 		"a describe must not read or list another account's prefix: %v %v", objects.ListPrefixes(), objects.Gets())
 }
 
+// OwnerIds used to be read by nobody: the account-teardown reaper set it and
+// the describe ignored it, so the parameter promised a scoping it never
+// applied. Under the account prefix the answer is structural.
+func TestDescribeSnapshots_HonoursOwnerIds(t *testing.T) {
+	ctx := context.Background()
+	svc, store := setupTestSnapshotService(t)
+	createTestVolume(t, svc, store, "vol-owner", 8)
+
+	snap, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-owner")}, testAccountID)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name     string
+		ownerIDs []*string
+		want     int
+	}{
+		{name: "unset", want: 1},
+		{name: "self", ownerIDs: []*string{aws.String("self")}, want: 1},
+		{name: "own account ID", ownerIDs: []*string{aws.String(testAccountID)}, want: 1},
+		{name: "another account", ownerIDs: []*string{aws.String(otherAccountID)}},
+		{name: "another account and self", ownerIDs: []*string{aws.String(otherAccountID), aws.String("self")}, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listed, err := svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{OwnerIds: tc.ownerIDs}, testAccountID)
+			require.NoError(t, err)
+			require.Len(t, listed.Snapshots, tc.want)
+			if tc.want > 0 {
+				assert.Equal(t, aws.StringValue(snap.SnapshotId), aws.StringValue(listed.Snapshots[0].SnapshotId))
+			}
+		})
+	}
+
+	// Naming an id the owner filter excludes is the same answer as naming one
+	// that does not exist.
+	_, err = svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{
+		SnapshotIds: []*string{snap.SnapshotId},
+		OwnerIds:    []*string{aws.String(otherAccountID)},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
+}
+
+// An account the caller's prefix cannot contain is answered without a read at
+// all, rather than by listing and filtering afterwards.
+func TestDescribeSnapshots_ForeignOwnerIDReadsNothing(t *testing.T) {
+	ctx := context.Background()
+	objects := recordingstore.New()
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewSnapshotServiceImplWithStore(cfg, objects, nil)
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+
+	require.NoError(t, svc.metadata.PutSnapshot(ctx,
+		ebsmetadata.Snapshot{SnapshotID: "snap-mine", VolumeID: "vol-1", OwnerID: testAccountID, State: "completed"}))
+
+	objects.Reset()
+	listed, err := svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{
+		OwnerIds: []*string{aws.String(otherAccountID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, listed.Snapshots)
+
+	assert.Empty(t, objects.ListPrefixes(), "an owner the prefix cannot contain needs no listing")
+	assert.Empty(t, objects.Gets(), "an owner the prefix cannot contain needs no read")
+}
+
 // The dependency check must stay whole-cluster. Launching from a system AMI
 // writes a root volume owned by the launching tenant whose SnapshotID is the
 // system snapshot, so a clone routinely lives outside the snapshot owner's

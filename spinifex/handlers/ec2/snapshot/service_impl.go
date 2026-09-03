@@ -442,18 +442,24 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 	// account's document is read, so none has to be filtered out afterwards.
 	// Named ids are matched against this listing rather than fetched directly —
 	// the listing already costs what the account owns.
+	//
+	// OwnerIds names either the caller, which the prefix already is, or another
+	// account, whose snapshots cannot be under it — so that case is empty without
+	// a read, and the tail below still reports a named id as not found.
 	var configs []ebsmetadata.Snapshot
-	if strict {
-		configs, err = s.metadata.ListSnapshotsStrict(ctx, accountID)
-	} else {
-		configs, err = s.metadata.ListSnapshots(ctx, accountID)
-	}
-	if err != nil {
-		slog.ErrorContext(ctx, "DescribeSnapshots failed to list snapshot documents", "accountID", accountID, "err", err)
+	if ownerIDsIncludeCaller(input.OwnerIds, accountID) {
 		if strict {
-			return nil, fmt.Errorf("describe snapshots for %s: %w", accountID, err)
+			configs, err = s.metadata.ListSnapshotsStrict(ctx, accountID)
+		} else {
+			configs, err = s.metadata.ListSnapshots(ctx, accountID)
 		}
-		return nil, errors.New(awserrors.ErrorServerInternal)
+		if err != nil {
+			slog.ErrorContext(ctx, "DescribeSnapshots failed to list snapshot documents", "accountID", accountID, "err", err)
+			if strict {
+				return nil, fmt.Errorf("describe snapshots for %s: %w", accountID, err)
+			}
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 	}
 
 	// Every read fails once the caller's deadline passes, and a tolerant listing
@@ -499,6 +505,27 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 	return &ec2.DescribeSnapshotsOutput{
 		Snapshots: snapshots,
 	}, nil
+}
+
+// ownerIDsIncludeCaller reports whether an OwnerIds request parameter selects
+// the account whose prefix is being listed. "self" and the caller's own account
+// ID both name that prefix; any other value names an account the caller's
+// prefix cannot contain.
+func ownerIDsIncludeCaller(ownerIDs []*string, accountID string) bool {
+	if len(ownerIDs) == 0 {
+		return true
+	}
+
+	for _, owner := range ownerIDs {
+		if owner == nil {
+			continue
+		}
+		if *owner == "self" || *owner == accountID {
+			return true
+		}
+	}
+
+	return false
 }
 
 // snapshotMatchesFilters checks whether a snapshot document satisfies all parsed filters.

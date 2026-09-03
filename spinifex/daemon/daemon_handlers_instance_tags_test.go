@@ -153,7 +153,7 @@ func TestHandleSetInstanceTags_CrossAccountRejected(t *testing.T) {
 
 // RunInstances with instance-scoped TagSpecifications projects the launch tags
 // into the central tag store, so describe-tags sees them from birth. The write
-// happens after the reservation reply, hence the Eventually.
+// is best-effort, so the assertion tolerates it landing slightly late.
 func TestHandleEC2RunInstances_LaunchTagsWriteCentralStore(t *testing.T) {
 	daemon, memStore := createFullTestDaemonWithStore(t, sharedNATSURL)
 	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-launchtags")

@@ -184,12 +184,9 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 		}
 		return outcomeError
 	}
-	if err := msg.Respond(jsonResponse); err != nil {
-		slog.Error("Failed to respond to NATS request", "err", err)
-	}
-
-	// Spanned separately from the launch: this is the work that would move
-	// onto the response path if the respond were gated on the local write.
+	// Record before responding: a caller that holds an instance ID must be
+	// able to find it. IMDS reads this node's on-disk state, so a guest can
+	// query it the moment the reservation reaches the customer.
 	_, recordSpan := otel.Tracer(daemonTracerName).Start(ctx, "ec2.RecordRunInstances",
 		trace.WithAttributes(attribute.Int("instance.count", len(instances))))
 	for _, instance := range instances {
@@ -198,13 +195,30 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 	writeErr := d.WriteState()
 	endOpSpan(recordSpan, writeErr)
 	if writeErr != nil {
+		// The local file is the source of truth this node restores from, so a
+		// launch it does not record is a launch nothing can recover. Fail the
+		// request and undo, rather than run instances the caller was told
+		// failed.
 		slog.Error("handleEC2RunInstances failed to write initial state", "err", writeErr)
+		for _, instance := range instances {
+			// DeleteIf, so a slot another path has already reclaimed is left
+			// alone. The failed write means the file never gained these
+			// entries, so removing them returns memory and disk to agreement.
+			d.vmMgr.DeleteIf(instance.ID, instance)
+			if reservationID == "" {
+				d.resourceMgr.deallocate(instanceType)
+			} else {
+				d.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
+		}
+		respondWithError(d.node, msg, awserrors.ErrorServerInternal)
+		return outcomeError
 	}
 	slog.Info("Instances added to state with pending status", "count", len(instances))
 
 	// Project launch tags into the central tag store so describe-tags agrees
-	// with the record from birth. Best-effort: the reservation is already
-	// returned, so a failed write is logged rather than failing the launch.
+	// with the record from birth. Best-effort: a failed write is logged rather
+	// than failing the launch.
 	for _, instance := range instances {
 		if instance.Instance == nil || len(instance.Instance.Tags) == 0 {
 			continue
@@ -216,8 +230,9 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 		}
 	}
 
-	// Subscribe per-instance NATS topics so terminate/stop reach this daemon
-	// while volumes prepare. LaunchInstance replaces these on success.
+	// Subscribe per-instance NATS topics before responding, so a terminate or
+	// stop issued the instant the caller has the ID reaches this daemon rather
+	// than finding no responder. LaunchInstance replaces these on success.
 	d.mu.Lock()
 	for _, instance := range instances {
 		sub, subErr := d.natsConn.Subscribe(fmt.Sprintf("ec2.cmd.%s", instance.ID), d.handleEC2Events)
@@ -228,6 +243,10 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 		}
 	}
 	d.mu.Unlock()
+
+	if err := msg.Respond(jsonResponse); err != nil {
+		slog.Error("Failed to respond to NATS request", "err", err)
+	}
 
 	_, launchSpan := otel.Tracer(daemonTracerName).Start(ctx, "ec2.LaunchRunInstances",
 		trace.WithAttributes(attribute.Int("instance.count", len(instances))))

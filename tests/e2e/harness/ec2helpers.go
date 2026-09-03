@@ -264,11 +264,25 @@ func AttachVolumeWait(t *testing.T, c *AWSClient, volID, instanceID, device stri
 // DetachVolumeWait detaches volID and blocks until it reaches "available".
 func DetachVolumeWait(t *testing.T, c *AWSClient, volID string) {
 	t.Helper()
-	_, err := c.EC2.DetachVolume(&ec2.DetachVolumeInput{VolumeId: aws.String(volID)})
-	if err != nil {
-		t.Fatalf("detach-volume %s: %v", volID, err)
+	// A volume that is already on its way to available is the outcome asked
+	// for, not a failure. Teardown runs this after a terminate that releases
+	// the volume itself, so refusing an already-released volume fails a test
+	// whose assertions all passed.
+	if _, err := c.EC2.DetachVolume(&ec2.DetachVolumeInput{VolumeId: aws.String(volID)}); err != nil {
+		if !isIncorrectVolumeState(err) {
+			t.Fatalf("detach-volume %s: %v", volID, err)
+		}
+		t.Logf("detach-volume %s: already released, waiting for available", volID)
 	}
 	WaitForVolumeState(t, c, volID, "available", WithPoll(500*time.Millisecond))
+}
+
+// isIncorrectVolumeState reports whether err is the refusal a detach gets for a
+// volume that is not attached. It is the answer for one already released, and
+// for one still mid-detach, both of which are what a teardown wanted.
+func isIncorrectVolumeState(err error) bool {
+	var aerr awserr.Error
+	return asErr(err, &aerr) && aerr.Code() == "IncorrectState"
 }
 
 // RegisterVolumeTeardown force-detaches then deletes volID at test end. It does

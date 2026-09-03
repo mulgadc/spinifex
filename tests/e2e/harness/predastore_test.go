@@ -4,10 +4,13 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go/aws/awserr"
 )
 
 // readyzStub serves one canned /readyz response.
@@ -67,5 +70,20 @@ func TestPredastoreReadyFailures_UnreadyWithNoChecksIsAnError(t *testing.T) {
 func TestPredastoreReadyFailures_NoListenerIsAnError(t *testing.T) {
 	if _, err := predastoreReadyFailures(context.Background(), "http://127.0.0.1:1/readyz"); err == nil {
 		t.Error("a host with no admin listener must report an error, not readiness")
+	}
+}
+
+// TestIsIncorrectVolumeState covers the one refusal teardown tolerates. A
+// volume already on its way to available is the outcome the detach wanted, and
+// failing on it fails a test whose assertions all passed.
+func TestIsIncorrectVolumeState(t *testing.T) {
+	if !isIncorrectVolumeState(awserr.New("IncorrectState", "not attached", nil)) {
+		t.Error("a volume that is not attached must read as already released")
+	}
+	if isIncorrectVolumeState(awserr.New("VolumeInUse", "attached elsewhere", nil)) {
+		t.Error("VolumeInUse is a real failure and must not be swallowed")
+	}
+	if isIncorrectVolumeState(errors.New("connection refused")) {
+		t.Error("a non-AWS error must not read as already released")
 	}
 }

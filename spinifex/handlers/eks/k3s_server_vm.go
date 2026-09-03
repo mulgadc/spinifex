@@ -87,9 +87,9 @@ const (
 	k3sConfigPath = "/etc/rancher/k3s/config.yaml"
 
 	// k3sEgressSelectorConfigPath is the EgressSelectorConfiguration the apiserver
-	// loads via --egress-selector-config-file. It points the `cluster` egress at the
-	// konnectivity-server UDS, so apiserver→pod/kubelet traffic (exec/logs/webhooks)
-	// rides the agent-initiated reverse tunnel instead of a direct (unroutable) IP.
+	// loads via --egress-selector-config-file. It points the `controlplane` and
+	// `cluster` egress at the konnectivity-server UDS, so apiserver→pod/kubelet
+	// traffic rides the agent-initiated reverse tunnel, not a direct IP.
 	k3sEgressSelectorConfigPath = "/etc/rancher/k3s/egress-selector-config.yaml"
 
 	// konnectivityUDSPath is the unix socket the konnectivity-server listens on for
@@ -469,20 +469,28 @@ func k3sServerJoinURL(ip string) string {
 }
 
 // egressSelectorConfigYAML renders the EgressSelectorConfiguration that wires the
-// apiserver `cluster` egress to the konnectivity-server UDS. v1beta1 is the schema
+// apiserver egress to the konnectivity-server UDS. v1beta1 is the schema
 // k3s/kube-apiserver accept for --egress-selector-config-file.
 func egressSelectorConfigYAML() string {
-	return strings.Join([]string{
+	lines := []string{
 		"apiVersion: apiserver.k8s.io/v1beta1",
 		"kind: EgressSelectorConfiguration",
 		"egressSelections:",
-		"  - name: cluster",
-		"    connection:",
-		"      proxyProtocol: GRPC",
-		"      transport:",
-		"        uds:",
-		"          udsName: " + konnectivityUDSPath,
-	}, "\n")
+	}
+	// controlplane carries admission-webhook and aggregated-apiserver dials;
+	// cluster carries kubelet exec/logs/portforward. Both must ride the tunnel:
+	// an undefined selection falls back to a direct, unroutable dial from the CP.
+	for _, name := range []string{"controlplane", "cluster"} {
+		lines = append(lines,
+			"  - name: "+name,
+			"    connection:",
+			"      proxyProtocol: GRPC",
+			"      transport:",
+			"        uds:",
+			"          udsName: "+konnectivityUDSPath,
+		)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // dedupeNonEmpty returns the input with empty strings dropped and duplicates

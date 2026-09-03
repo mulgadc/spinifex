@@ -3396,15 +3396,21 @@ func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
 
 // recordingVolState records UpdateVolumeState calls so the bulk-unmount test can
 // assert which volumes transitioned to available.
+// accounts is recorded separately because the account is a key segment of the
+// document, not a label: an unmount that writes under anything but the
+// instance's own account leaves the volume stuck in-use, and the adapter only
+// logs the error.
 type recordingVolState struct {
-	mu    sync.Mutex
-	calls []string
+	mu       sync.Mutex
+	calls    []string
+	accounts []string
 }
 
-func (r *recordingVolState) UpdateVolumeState(_, volumeID, state, instanceID, attachmentDevice string) error {
+func (r *recordingVolState) UpdateVolumeState(accountID, volumeID, state, instanceID, attachmentDevice string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, volumeID+":"+state)
+	r.accounts = append(r.accounts, accountID)
 	return nil
 }
 
@@ -3412,6 +3418,12 @@ func (r *recordingVolState) snapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.calls...)
+}
+
+func (r *recordingVolState) accountsSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.accounts...)
 }
 
 var _ vm.VolumeStateUpdater = (*recordingVolState)(nil)
@@ -3482,7 +3494,8 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	inst := &vm.VM{
-		ID: "i-unmount-retry",
+		ID:        "i-unmount-retry",
+		AccountID: "000000000042",
 		EBSRequests: types.EBSRequests{
 			Requests: []types.EBSRequest{
 				{Name: "vol-boot-retry", Boot: true, EFI: false},
@@ -3497,6 +3510,8 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 		"a NotFound response (already-completed seal) must still flip a non-boot data volume to available")
 	assert.NotContains(t, calls, "vol-boot-retry:available",
 		"a boot volume must stay attached even when the seal retry reports NotFound")
+	assert.Equal(t, []string{"000000000042"}, volState.accountsSnapshot(),
+		"the state write must be keyed on the instance's own account, not its ID")
 }
 
 // TestUnmountResponseError covers the shared seal-result parser used by both the

@@ -1,3 +1,7 @@
+// These tests reuse fakeVolumeStateUpdater, newMockQMPClient and qmpRecorder,
+// all package-internal.
+//
+//test:in-package
 package vm
 
 import (

@@ -101,8 +101,47 @@ func TestDeleteSnapshot_DocumentDeleteFailureSurfaces(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
+// A chunk the sweep could not delete has to keep the document alive. The
+// listing no longer enumerates snap- prefixes, so deleting the document over
+// surviving chunks strands them where no API can see or reclaim them, and the
+// delete cannot be retried to finish.
+func TestDeleteSnapshot_ChunkSweepFailureRetainsDocument(t *testing.T) {
+	ctx := context.Background()
+	objects := &deleteFailingStore{MemoryObjectStore: objectstore.NewMemoryObjectStore()}
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewSnapshotServiceImplWithStore(cfg, objects, nil)
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	createTestVolume(t, svc, objects.MemoryObjectStore, "vol-sweepfail", 8)
+
+	snap, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-sweepfail")}, testAccountID)
+	require.NoError(t, err)
+	snapshotID := aws.StringValue(snap.SnapshotId)
+
+	// A block chunk under the swept prefix, which is viperblock's half of the
+	// snapshot and the thing the document must not outlive.
+	_, err = objects.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"), Key: aws.String(snapshotID + "/chunk-0"),
+		Body: strings.NewReader("blocks"),
+	})
+	require.NoError(t, err)
+	objects.failPrefix = snapshotID + "/"
+
+	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: snap.SnapshotId}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+
+	_, err = svc.metadata.GetSnapshot(ctx, testAccountID, snapshotID)
+	require.NoError(t, err, "an incomplete sweep must leave the document so the delete can be retried")
+
+	listed, err := svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, listed.Snapshots, 1, "the snapshot must stay visible while its chunks survive")
+	assert.Equal(t, snapshotID, aws.StringValue(listed.Snapshots[0].SnapshotId))
+}
+
 // deleteFailingStore fails DeleteObject for keys under failPrefix, leaving
-// every other operation intact.
+// every other operation intact. failPrefix is settable after construction so a
+// test can target a generated snapshot ID.
 type deleteFailingStore struct {
 	*objectstore.MemoryObjectStore
 

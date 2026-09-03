@@ -44,9 +44,9 @@ func stateWriteMetrics() stateWriteInstruments {
 		if err != nil {
 			otel.Handle(err)
 		}
-		stateWriteInst.vms, err = meter.Int64Counter("mulga.daemon.state_write.vms.sum",
-			metric.WithDescription("Summed instance count seen by each state write. Divide by ops for the mean set size."),
-			metric.WithUnit("{instance}"))
+		stateWriteInst.vms, err = meter.Int64Counter("mulga.daemon.state_write.records.sum",
+			metric.WithDescription("Summed records each write actually handled: the whole set for store=local, only the changed ones for store=kv. Divide by ops for the mean."),
+			metric.WithUnit("{record}"))
 		if err != nil {
 			otel.Handle(err)
 		}
@@ -54,9 +54,10 @@ func stateWriteMetrics() stateWriteInstruments {
 	return stateWriteInst
 }
 
-// recordStateWrite reports one write of store ("local" or "kv") over vmCount
-// instances. Every recorder tolerates a nil instrument.
-func recordStateWrite(store string, vmCount int, d time.Duration) {
+// recordStateWrite reports one write of store ("local" or "kv") over records,
+// which is the whole set locally but only the changed ones in KV. Every
+// recorder tolerates a nil instrument.
+func recordStateWrite(store string, records int, d time.Duration) {
 	inst := stateWriteMetrics()
 	set := metric.WithAttributeSet(attribute.NewSet(attribute.String("store", store)))
 	ctx := context.Background()
@@ -68,6 +69,6 @@ func recordStateWrite(store string, vmCount int, d time.Duration) {
 		inst.duration.Add(ctx, d.Seconds(), set)
 	}
 	if inst.vms != nil {
-		inst.vms.Add(ctx, int64(vmCount), set)
+		inst.vms.Add(ctx, int64(records), set)
 	}
 }

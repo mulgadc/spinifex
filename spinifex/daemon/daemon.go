@@ -2625,8 +2625,11 @@ func (d *Daemon) persistState(nodeID string, vms map[string]*vm.VM) error {
 	if d.jsManager != nil {
 		kvStart := time.Now()
 		d.jsManager.WriteNodeMarkerBestEffort(nodeID, kvSyncTimeout)
-		d.jsManager.WriteRunningSet(nodeID, d.config.AZ, vms)
-		recordStateWrite("kv", len(vms), time.Since(kvStart))
+		res := d.jsManager.WriteRunningSet(nodeID, d.config.AZ, vms)
+		// The digest guard means only changed records are written, so the KV
+		// write's cost tracks that count, not the whole set the local write
+		// rewrites.
+		recordStateWrite("kv", res.Written+res.Retired, time.Since(kvStart))
 	}
 
 	if localErr != nil {

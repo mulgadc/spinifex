@@ -8,9 +8,14 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-const SchemaVersion uint16 = 1
+// SchemaVersion is the document's field generation, and moves independently of
+// the key layout's v2 prefix. They start aligned on a fresh install and are not
+// promised to stay so: adding a field bumps this without re-keying anything.
+const SchemaVersion uint16 = 2
 
 // ErrCorruptDocument wraps decode and schema-version failures so callers can
 // tell a document that exists but cannot be read from one that is absent. The
@@ -61,6 +66,25 @@ type VolumeModification struct {
 	EndTime            time.Time `json:"end_time,omitzero"`
 }
 
+// Snapshot is the control-plane record used for EC2 snapshot operations. It
+// deliberately excludes viperblock's own half of the snapshot prefix — the
+// block checkpoint and config.json — which stays at the bucket root.
+type Snapshot struct {
+	SchemaVersion    uint16            `json:"schema_version"`
+	SnapshotID       string            `json:"snapshot_id"`
+	VolumeID         string            `json:"volume_id"`
+	VolumeSize       int64             `json:"volume_size"`
+	State            string            `json:"state"`
+	Progress         string            `json:"progress"`
+	StartTime        time.Time         `json:"start_time"`
+	Description      string            `json:"description"`
+	Encrypted        bool              `json:"encrypted"`
+	OwnerID          string            `json:"owner_id"`
+	AvailabilityZone string            `json:"availability_zone"`
+	Tags             map[string]string `json:"tags,omitempty"`
+	ProviderHandle   string            `json:"provider_handle,omitempty"`
+}
+
 // AMI is the control-plane record used for EC2 image operations.
 type AMI struct {
 	SchemaVersion   uint16            `json:"schema_version"`
@@ -82,14 +106,39 @@ type AMI struct {
 	State           string            `json:"state,omitempty"`
 }
 
-func VolumeKey(volumeID string) (string, error) { return key("volumes", volumeID) }
-func AMIKey(imageID string) (string, error)     { return key("amis", imageID) }
+// VolumeKey keys a volume document under its owning account, so a listing of
+// one account's prefix cannot reach another account's document. accountID comes
+// from the document's own TenantID, never from the caller.
+func VolumeKey(accountID, volumeID string) (string, error) {
+	return partitionedKey("volumes", accountID, volumeID)
+}
 
+// SnapshotKey keys a snapshot document under its owning account, taken from the
+// document's own OwnerID rather than from the caller.
+func SnapshotKey(accountID, snapshotID string) (string, error) {
+	return partitionedKey("snapshots", accountID, snapshotID)
+}
+
+// AMIKey is unpartitioned: an AMI's owner is an alias rather than an account,
+// and system images are visible to every account.
+func AMIKey(imageID string) (string, error) { return key("amis", imageID) }
+
+// partitionedKey refuses an owning account that is not an account ID, so an
+// untenanted document cannot be written, cannot exist, and never has to be
+// read. A transposed (id, account) pair fails here too.
+func partitionedKey(kind, accountID, id string) (string, error) {
+	if !utils.IsAccountID(accountID) {
+		return "", fmt.Errorf("invalid EBS metadata account ID %q", accountID)
+	}
+	return key(kind+"/"+accountID, id)
+}
+
+// key rejects an ID that would escape or rename its own path segment.
 func key(kind, id string) (string, error) {
 	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, "/\\") {
 		return "", fmt.Errorf("invalid EBS metadata ID %q", id)
 	}
-	return "spinifex/ebsmetadata/v1/" + kind + "/" + id + ".json", nil
+	return "spinifex/ebsmetadata/v2/" + kind + "/" + id + ".json", nil
 }
 
 func MarshalVolume(volume Volume) ([]byte, error) {
@@ -106,6 +155,22 @@ func UnmarshalVolume(data []byte) (Volume, error) {
 		return Volume{}, fmt.Errorf("%w: unsupported volume metadata schema version %d", ErrCorruptDocument, volume.SchemaVersion)
 	}
 	return volume, nil
+}
+
+func MarshalSnapshot(snapshot Snapshot) ([]byte, error) {
+	snapshot.SchemaVersion = SchemaVersion
+	return json.Marshal(snapshot)
+}
+
+func UnmarshalSnapshot(data []byte) (Snapshot, error) {
+	var snapshot Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return Snapshot{}, fmt.Errorf("%w: %w", ErrCorruptDocument, err)
+	}
+	if snapshot.SchemaVersion != SchemaVersion {
+		return Snapshot{}, fmt.Errorf("%w: unsupported snapshot metadata schema version %d", ErrCorruptDocument, snapshot.SchemaVersion)
+	}
+	return snapshot, nil
 }
 
 func MarshalAMI(ami AMI) ([]byte, error) {

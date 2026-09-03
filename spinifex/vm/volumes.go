@@ -187,7 +187,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		m.rollbackHotAttach(ctx, instance, ebsRequest, nodeName, iothreadID)
 		return "", errors.New("volume state updater not wired")
 	}
-	if err := m.deps.VolumeStateUpdater.UpdateVolumeState(volumeID, "in-use", instance.ID, device); err != nil {
+	if err := m.deps.VolumeStateUpdater.UpdateVolumeState(instance.AccountID, volumeID, "in-use", instance.ID, device); err != nil {
 		m.rollbackHotAttach(ctx, instance, ebsRequest, nodeName, iothreadID)
 		return "", fmt.Errorf("persist in-use state for volume %s: %w", volumeID, err)
 	}
@@ -210,7 +210,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		slog.ErrorContext(ctx, "AttachVolume: QMP device_add failed, rolling back blockdev",
 			"volumeId", volumeID, "err", err)
 		if m.rollbackHotAttach(ctx, instance, ebsRequest, nodeName, iothreadID) {
-			if stateErr := m.deps.VolumeStateUpdater.UpdateVolumeState(volumeID, "available", "", ""); stateErr != nil {
+			if stateErr := m.deps.VolumeStateUpdater.UpdateVolumeState(instance.AccountID, volumeID, "available", "", ""); stateErr != nil {
 				slog.ErrorContext(ctx, "AttachVolume: failed to restore available state after rollback",
 					"volumeId", volumeID, "err", stateErr)
 			}
@@ -441,7 +441,7 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 	})
 
 	if m.deps.VolumeStateUpdater != nil {
-		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(volumeID, "available", "", ""); err != nil {
+		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(instance.AccountID, volumeID, "available", "", ""); err != nil {
 			slog.ErrorContext(ctx, "DetachVolume: failed to update volume metadata",
 				"volumeId", volumeID, "err", err)
 		}

@@ -27,7 +27,7 @@ func TestVolumeRecordTagsMirror(t *testing.T) {
 		},
 	}, testVolAccountID))
 
-	meta, err := svc.GetVolumeMetadata("vol-tagmirror0001")
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, "vol-tagmirror0001")
 	require.NoError(t, err)
 	assert.Equal(t, "yes", meta.Tags["keep"])
 	assert.Equal(t, "v", meta.Tags["drop"])
@@ -41,7 +41,7 @@ func TestVolumeRecordTagsMirror(t *testing.T) {
 		},
 	}, testVolAccountID))
 
-	meta, err = svc.GetVolumeMetadata("vol-tagmirror0001")
+	meta, err = svc.GetVolumeMetadata(testVolAccountID, "vol-tagmirror0001")
 	require.NoError(t, err)
 	assert.Equal(t, "yes", meta.Tags["keep"])
 	_, ok := meta.Tags["drop"]
@@ -94,7 +94,7 @@ func TestApplyRecordTags_SurvivesStaleConfigRewrite(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	meta, err := svc.GetVolumeMetadata(volumeID)
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
 	require.NoError(t, err)
 	assert.Equal(t, "retain", meta.Tags["sweep"])
 
@@ -126,7 +126,7 @@ func TestApplyRecordTags_MergesWithExistingTags(t *testing.T) {
 		Tags:      []*ec2.Tag{{Key: aws.String("added-later"), Value: aws.String("yes")}},
 	}, testVolAccountID))
 
-	meta, err := svc.GetVolumeMetadata(volumeID)
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{
 		"created-with": "volume",
@@ -151,7 +151,7 @@ func TestRemoveRecordTags_LastTagLeavesEmptySet(t *testing.T) {
 		Tags:      []*ec2.Tag{{Key: aws.String("legacy"), Value: aws.String("tag")}},
 	}, testVolAccountID))
 
-	meta, err := svc.GetVolumeMetadata(volumeID)
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
 	require.NoError(t, err)
 	assert.Empty(t, meta.Tags, "the deleted tag must not come back from anywhere")
 }
@@ -167,7 +167,7 @@ func TestVolumeRecordTagsMirror_CrossTenantNoMutation(t *testing.T) {
 		Tags:      []*ec2.Tag{{Key: aws.String("evil"), Value: aws.String("1")}},
 	}, "999999999999"))
 
-	meta, err := svc.GetVolumeMetadata("vol-tenantguard01")
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, "vol-tenantguard01")
 	require.NoError(t, err)
 	assert.Empty(t, meta.Tags)
 }

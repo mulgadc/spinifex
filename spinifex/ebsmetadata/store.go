@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Store persists Spinifex-owned metadata documents in the existing object
@@ -26,8 +27,11 @@ func NewStore(objects objectstore.ObjectStore, bucket string) *Store {
 	return &Store{objects: objects, bucket: bucket}
 }
 
+// PutVolume takes no account: the key segment is the document's own TenantID.
+// An account passed alongside a document that already carries one is how the
+// two come to disagree.
 func (s *Store) PutVolume(ctx context.Context, volume Volume) error {
-	key, err := VolumeKey(volume.VolumeID)
+	key, err := VolumeKey(volume.TenantID, volume.VolumeID)
 	if err != nil {
 		return err
 	}
@@ -40,8 +44,8 @@ func (s *Store) PutVolume(ctx context.Context, volume Volume) error {
 
 // GetVolume returns the volume's ebsmetadata document. A volume with no
 // document does not exist as far as the control plane is concerned.
-func (s *Store) GetVolume(ctx context.Context, volumeID string) (Volume, error) {
-	key, err := VolumeKey(volumeID)
+func (s *Store) GetVolume(ctx context.Context, accountID, volumeID string) (Volume, error) {
+	key, err := VolumeKey(accountID, volumeID)
 	if err != nil {
 		return Volume{}, err
 	}
@@ -52,8 +56,8 @@ func (s *Store) GetVolume(ctx context.Context, volumeID string) (Volume, error) 
 	return UnmarshalVolume(data)
 }
 
-func (s *Store) DeleteVolume(ctx context.Context, volumeID string) error {
-	key, err := VolumeKey(volumeID)
+func (s *Store) DeleteVolume(ctx context.Context, accountID, volumeID string) error {
+	key, err := VolumeKey(accountID, volumeID)
 	if err != nil {
 		return err
 	}
@@ -61,28 +65,137 @@ func (s *Store) DeleteVolume(ctx context.Context, volumeID string) error {
 	return err
 }
 
-// ListVolumes returns every ebsmetadata volume document, skipping any it
-// cannot read or decode. One unreadable document must not make every volume in
-// the cluster invisible, so the tolerance is deliberate and each skip is logged.
-func (s *Store) ListVolumes(ctx context.Context) ([]Volume, error) {
-	if s == nil || s.objects == nil {
-		return nil, errors.New("metadata store is not configured")
-	}
-	return s.listVolumeDocuments(ctx, true)
+// ListVolumes returns one account's volume documents, skipping any it cannot
+// read or decode. The prefix is the isolation: no other account's document is
+// read, so none has to be filtered out afterwards. One unreadable document must
+// not make every volume invisible, so the tolerance is deliberate and logged.
+func (s *Store) ListVolumes(ctx context.Context, accountID string) ([]Volume, error) {
+	return s.listVolumeDocuments(ctx, accountID, true)
 }
 
 // ListVolumesStrict is ListVolumes without the tolerance. It is for callers
 // whose answer would be wrong rather than merely partial: a volume that failed
 // to read is not evidence that no volume holds the resource being checked.
-func (s *Store) ListVolumesStrict(ctx context.Context) ([]Volume, error) {
+func (s *Store) ListVolumesStrict(ctx context.Context, accountID string) ([]Volume, error) {
+	return s.listVolumeDocuments(ctx, accountID, false)
+}
+
+// ListAllVolumes lists across every account. Whole-cluster by intent: the name
+// is deliberately not ListVolumes so no caller gets this reach by leaving a
+// call site untouched.
+func (s *Store) ListAllVolumes(ctx context.Context) ([]Volume, error) {
 	if s == nil || s.objects == nil {
 		return nil, errors.New("metadata store is not configured")
 	}
-	return s.listVolumeDocuments(ctx, false)
+	return listDocuments(ctx, s, volumePrefix, "volume", UnmarshalVolume, true)
 }
 
-func (s *Store) listVolumeDocuments(ctx context.Context, skipCorrupt bool) ([]Volume, error) {
-	return listDocuments(ctx, s, volumePrefix, "volume", UnmarshalVolume, skipCorrupt)
+// ListAllVolumesStrict is ListAllVolumes without the tolerance.
+func (s *Store) ListAllVolumesStrict(ctx context.Context) ([]Volume, error) {
+	if s == nil || s.objects == nil {
+		return nil, errors.New("metadata store is not configured")
+	}
+	return listDocuments(ctx, s, volumePrefix, "volume", UnmarshalVolume, false)
+}
+
+func (s *Store) listVolumeDocuments(ctx context.Context, accountID string, skipCorrupt bool) ([]Volume, error) {
+	if s == nil || s.objects == nil {
+		return nil, errors.New("metadata store is not configured")
+	}
+	prefix, err := accountPrefix(volumePrefix, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return listDocuments(ctx, s, prefix, "volume", UnmarshalVolume, skipCorrupt)
+}
+
+// PutSnapshot takes no account: like PutVolume, the key segment is the
+// document's own OwnerID.
+func (s *Store) PutSnapshot(ctx context.Context, snapshot Snapshot) error {
+	key, err := SnapshotKey(snapshot.OwnerID, snapshot.SnapshotID)
+	if err != nil {
+		return err
+	}
+	data, err := MarshalSnapshot(snapshot)
+	if err != nil {
+		return fmt.Errorf("marshal snapshot metadata: %w", err)
+	}
+	return s.put(ctx, key, data)
+}
+
+// GetSnapshot returns the snapshot's ebsmetadata document. A snapshot outside
+// accountID's prefix is not found rather than denied: the key is the ownership
+// check.
+func (s *Store) GetSnapshot(ctx context.Context, accountID, snapshotID string) (Snapshot, error) {
+	key, err := SnapshotKey(accountID, snapshotID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	data, err := s.get(ctx, key)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return UnmarshalSnapshot(data)
+}
+
+func (s *Store) DeleteSnapshot(ctx context.Context, accountID, snapshotID string) error {
+	key, err := SnapshotKey(accountID, snapshotID)
+	if err != nil {
+		return err
+	}
+	_, err = s.objects.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
+	return err
+}
+
+// ListSnapshots returns one account's snapshot documents, skipping any it
+// cannot read or decode. The prefix is the isolation: no other account's
+// document is read, so none has to be filtered out afterwards.
+func (s *Store) ListSnapshots(ctx context.Context, accountID string) ([]Snapshot, error) {
+	return s.listSnapshotDocuments(ctx, accountID, true)
+}
+
+// ListSnapshotsStrict is ListSnapshots without the tolerance, for callers whose
+// answer would be wrong rather than merely partial.
+func (s *Store) ListSnapshotsStrict(ctx context.Context, accountID string) ([]Snapshot, error) {
+	return s.listSnapshotDocuments(ctx, accountID, false)
+}
+
+// ListAllSnapshots lists across every account. Whole-cluster by intent: the
+// name is deliberately not ListSnapshots so no caller gets this reach by
+// leaving a call site untouched.
+func (s *Store) ListAllSnapshots(ctx context.Context) ([]Snapshot, error) {
+	if s == nil || s.objects == nil {
+		return nil, errors.New("metadata store is not configured")
+	}
+	return listDocuments(ctx, s, snapshotPrefix, "snapshot", UnmarshalSnapshot, true)
+}
+
+// ListAllSnapshotsStrict is ListAllSnapshots without the tolerance.
+func (s *Store) ListAllSnapshotsStrict(ctx context.Context) ([]Snapshot, error) {
+	if s == nil || s.objects == nil {
+		return nil, errors.New("metadata store is not configured")
+	}
+	return listDocuments(ctx, s, snapshotPrefix, "snapshot", UnmarshalSnapshot, false)
+}
+
+func (s *Store) listSnapshotDocuments(ctx context.Context, accountID string, skipCorrupt bool) ([]Snapshot, error) {
+	if s == nil || s.objects == nil {
+		return nil, errors.New("metadata store is not configured")
+	}
+	prefix, err := accountPrefix(snapshotPrefix, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return listDocuments(ctx, s, prefix, "snapshot", UnmarshalSnapshot, skipCorrupt)
+}
+
+// accountPrefix rejects the same accounts the key builders do, so a listing
+// cannot widen to the whole tree by being handed an empty account.
+func accountPrefix(kindPrefix, accountID string) (string, error) {
+	if !utils.IsAccountID(accountID) {
+		return "", fmt.Errorf("invalid EBS metadata account ID %q", accountID)
+	}
+	return kindPrefix + accountID + "/", nil
 }
 
 // ListAMIs returns every AMI document, skipping any it cannot decode. One
@@ -111,8 +224,9 @@ func (s *Store) listAMIDocuments(ctx context.Context, skipCorrupt bool) ([]AMI, 
 
 // Prefixes the metadata documents live under, one per document kind.
 const (
-	volumePrefix = "spinifex/ebsmetadata/v1/volumes/"
-	amiPrefix    = "spinifex/ebsmetadata/v1/amis/"
+	volumePrefix   = "spinifex/ebsmetadata/v2/volumes/"
+	snapshotPrefix = "spinifex/ebsmetadata/v2/snapshots/"
+	amiPrefix      = "spinifex/ebsmetadata/v2/amis/"
 )
 
 // listFetchConcurrency bounds the object fetches a single listing may have in

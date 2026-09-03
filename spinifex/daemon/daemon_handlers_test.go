@@ -97,6 +97,11 @@ func wireTestEBSProvider(daemon *Daemon, store objectstore.ObjectStore) {
 // here rather than writing storage state the control plane never reads.
 func seedVolumeDocument(t *testing.T, store objectstore.ObjectStore, volume ebsmetadata.Volume) {
 	t.Helper()
+	// The owning account is a key segment, so a fixture that does not care
+	// which account owns it still has to have one.
+	if volume.TenantID == "" {
+		volume.TenantID = testAccountID
+	}
 	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutVolume(t.Context(), volume))
 }
 
@@ -2658,7 +2663,7 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 		Size:     aws.Int64(20),
 	}
 	reqData, _ := json.Marshal(input)
-	reply, err := daemon.natsConn.Request("ec2.ModifyVolume", reqData, 5*time.Second)
+	reply, err := natsRequest(daemon.natsConn, "ec2.ModifyVolume", reqData, 5*time.Second)
 	require.NoError(t, err)
 
 	var output ec2.ModifyVolumeOutput

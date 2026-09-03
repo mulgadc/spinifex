@@ -7,7 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,7 +26,7 @@ func TestImage(t *testing.T) {
 	ec2Cli := gw.EC2Client(t)
 
 	const snapshotID = "snap-integration-test-image"
-	require.NoError(t, handlers_ec2_snapshot.WriteSnapshotConfig(store, testImageBucket, snapshotID, &handlers_ec2_snapshot.SnapshotConfig{
+	require.NoError(t, ebsmetadata.NewStore(store, testImageBucket).PutSnapshot(t.Context(), ebsmetadata.Snapshot{
 		SnapshotID: snapshotID,
 		VolumeID:   "vol-integration-test-image",
 		VolumeSize: 8,

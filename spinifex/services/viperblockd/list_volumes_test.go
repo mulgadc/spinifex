@@ -33,7 +33,7 @@ func TestListVolumePrefixes_SkipsWhatIsNotAVolume(t *testing.T) {
 	putListObject(t, store, "ami-dd7f063caded1ff82/config.json")
 	putListObject(t, store, "snap-ami-dd7f063caded1ff82/config.json")
 	putListObject(t, store, "keys/cluster.key")
-	putListObject(t, store, "spinifex/ebsmetadata/v1/volumes/vol-0123456789abc.json")
+	putListObject(t, store, "spinifex/ebsmetadata/v2/volumes/000000000001/vol-0123456789abc.json")
 
 	ids, err := listVolumePrefixes(t.Context(), store, listTestBucket)
 	require.NoError(t, err)

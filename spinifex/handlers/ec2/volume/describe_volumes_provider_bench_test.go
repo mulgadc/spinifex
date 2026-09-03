@@ -50,14 +50,14 @@ func BenchmarkDescribeVolumes_Provider_SingleID(b *testing.B) {
 		b.Run(fmt.Sprintf("volumes=%d", n), func(b *testing.B) {
 			svc := newTestVolumeService("ap-southeast-2a")
 			svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
-			targetID := seedProviderVolumes(b, svc, n, "acct-bench")
+			targetID := seedProviderVolumes(b, svc, n, "000000000013")
 			ctx := context.Background()
 			input := &ec2.DescribeVolumesInput{VolumeIds: []*string{aws.String(targetID)}}
 
 			defer silenceLogs(b)()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := svc.DescribeVolumes(ctx, input, "acct-bench"); err != nil {
+				if _, err := svc.DescribeVolumes(ctx, input, "000000000013"); err != nil {
 					b.Fatalf("DescribeVolumes: %v", err)
 				}
 			}
@@ -75,19 +75,19 @@ func BenchmarkDescribeVolumes_Provider_ListAndFilter(b *testing.B) {
 		b.Run(fmt.Sprintf("volumes=%d", n), func(b *testing.B) {
 			svc := newTestVolumeService("ap-southeast-2a")
 			svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
-			targetID := seedProviderVolumes(b, svc, n, "acct-bench")
+			targetID := seedProviderVolumes(b, svc, n, "000000000013")
 			ctx := context.Background()
 
 			defer silenceLogs(b)()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				metadata, err := svc.metadata.ListVolumes(ctx)
+				metadata, err := svc.metadata.ListAllVolumes(ctx)
 				if err != nil {
-					b.Fatalf("ListVolumes: %v", err)
+					b.Fatalf("ListAllVolumes: %v", err)
 				}
 				var found *ec2.Volume
 				for _, meta := range metadata {
-					if meta.TenantID != "acct-bench" || meta.VolumeID != targetID {
+					if meta.TenantID != "000000000013" || meta.VolumeID != targetID {
 						continue
 					}
 					found = metadataVolumeToEC2(meta)

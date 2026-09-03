@@ -44,7 +44,7 @@ func documentVolume(t *testing.T, metadata *ebsmetadata.Store, volumeID string) 
 // so a test can plant one the store cannot decode.
 func putRawVolumeDocument(t *testing.T, store objectstore.ObjectStore, volumeID string, body []byte) {
 	t.Helper()
-	key, err := ebsmetadata.VolumeKey(volumeID)
+	key, err := ebsmetadata.VolumeKey("123456789012", volumeID)
 	require.NoError(t, err)
 	_, err = store.PutObject(t.Context(), &s3.PutObjectInput{
 		Bucket: aws.String(orphanTestBucket),

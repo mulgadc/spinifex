@@ -26,6 +26,11 @@ func startTestNATS(t *testing.T) *nats.Conn {
 // exist as far as the control plane is concerned.
 func seedVolumeDocument(t *testing.T, store objectstore.ObjectStore, volume ebsmetadata.Volume) {
 	t.Helper()
+	// The owning account is a key segment, so a fixture that does not care
+	// which account owns it still has to have one.
+	if volume.TenantID == "" {
+		volume.TenantID = testVolAccountID
+	}
 	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutVolume(context.Background(), volume))
 }
 

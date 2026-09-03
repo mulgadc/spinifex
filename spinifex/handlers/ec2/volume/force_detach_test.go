@@ -29,7 +29,7 @@ func seedAttachedVolume(t *testing.T, svc *VolumeServiceImpl, volumeID, accountI
 		VolumeID: volumeID, TenantID: accountID, CapacityGiB: 1,
 		State: "available", AvailabilityZone: "ap-southeast-2a", VolumeType: "gp3",
 	}))
-	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", instanceID, "/dev/sdf"))
+	require.NoError(t, svc.UpdateVolumeState(accountID, volumeID, "in-use", instanceID, "/dev/sdf"))
 }
 
 // This is the escape from the deadlock teardown exists to break: a volume
@@ -37,11 +37,11 @@ func seedAttachedVolume(t *testing.T, svc *VolumeServiceImpl, volumeID, accountI
 // the attachment is cleared without the guest's cooperation.
 func TestForceDetachVolumeClearsTheAttachment(t *testing.T) {
 	svc := newForceDetachService(t)
-	seedAttachedVolume(t, svc, "vol-forcedetach1", "acct-tenant", "i-stuck0000000000")
+	seedAttachedVolume(t, svc, "vol-forcedetach1", "000000000011", "i-stuck0000000000")
 
 	attachment, err := svc.ForceDetachVolume(context.Background(), &ec2.DetachVolumeInput{
 		VolumeId: aws.String("vol-forcedetach1"), Force: aws.Bool(true),
-	}, "acct-tenant")
+	}, "000000000011")
 	require.NoError(t, err)
 
 	// The previous instance is reported back: it is the only record of what
@@ -49,7 +49,7 @@ func TestForceDetachVolumeClearsTheAttachment(t *testing.T) {
 	assert.Equal(t, "i-stuck0000000000", aws.StringValue(attachment.InstanceId))
 	assert.Equal(t, "detached", aws.StringValue(attachment.State))
 
-	meta, err := svc.GetVolumeMetadata("vol-forcedetach1")
+	meta, err := svc.GetVolumeMetadata("000000000011", "vol-forcedetach1")
 	require.NoError(t, err)
 	assert.Equal(t, "available", meta.State)
 	assert.Empty(t, meta.AttachedInstance)
@@ -60,18 +60,18 @@ func TestForceDetachVolumeClearsTheAttachment(t *testing.T) {
 // guard; it may never reach a volume belonging to another tenant.
 func TestForceDetachVolumeRefusesAnotherAccountsVolume(t *testing.T) {
 	svc := newForceDetachService(t)
-	seedAttachedVolume(t, svc, "vol-forcedetach2", "acct-owner", "i-stuck0000000000")
+	seedAttachedVolume(t, svc, "vol-forcedetach2", "000000000014", "i-stuck0000000000")
 
 	_, err := svc.ForceDetachVolume(context.Background(), &ec2.DetachVolumeInput{
 		VolumeId: aws.String("vol-forcedetach2"),
-	}, "acct-intruder")
+	}, "000000000015")
 
 	require.Error(t, err)
 	// The same answer an absent volume gives, so this cannot be used to prove
 	// a volume id exists in someone else's account.
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 
-	meta, err := svc.GetVolumeMetadata("vol-forcedetach2")
+	meta, err := svc.GetVolumeMetadata("000000000014", "vol-forcedetach2")
 	require.NoError(t, err)
 	assert.Equal(t, "i-stuck0000000000", meta.AttachedInstance)
 }
@@ -80,7 +80,7 @@ func TestForceDetachVolumeRejectsBadInput(t *testing.T) {
 	svc := newForceDetachService(t)
 
 	for _, input := range []*ec2.DetachVolumeInput{nil, {}, {VolumeId: aws.String("")}} {
-		_, err := svc.ForceDetachVolume(context.Background(), input, "acct-tenant")
+		_, err := svc.ForceDetachVolume(context.Background(), input, "000000000011")
 		require.Error(t, err)
 		assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 	}
@@ -91,7 +91,7 @@ func TestForceDetachVolumeReportsAMissingVolume(t *testing.T) {
 
 	_, err := svc.ForceDetachVolume(context.Background(), &ec2.DetachVolumeInput{
 		VolumeId: aws.String("vol-doesnotexist"),
-	}, "acct-tenant")
+	}, "000000000011")
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
@@ -102,13 +102,13 @@ func TestForceDetachVolumeReportsAMissingVolume(t *testing.T) {
 func TestForceDetachVolumeOnAnUnattachedVolume(t *testing.T) {
 	svc := newForceDetachService(t)
 	require.NoError(t, svc.metadata.PutVolume(context.Background(), ebsmetadata.Volume{
-		VolumeID: "vol-forcedetach3", TenantID: "acct-tenant", CapacityGiB: 1,
+		VolumeID: "vol-forcedetach3", TenantID: "000000000011", CapacityGiB: 1,
 		State: "available", AvailabilityZone: "ap-southeast-2a", VolumeType: "gp3",
 	}))
 
 	attachment, err := svc.ForceDetachVolume(context.Background(), &ec2.DetachVolumeInput{
 		VolumeId: aws.String("vol-forcedetach3"),
-	}, "acct-tenant")
+	}, "000000000011")
 	require.NoError(t, err)
 
 	assert.Empty(t, aws.StringValue(attachment.InstanceId))

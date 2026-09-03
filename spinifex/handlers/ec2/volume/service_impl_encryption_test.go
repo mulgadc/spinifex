@@ -26,7 +26,7 @@ func TestGetVolumeMetadata_CorruptJSON(t *testing.T) {
 	const volumeID = "vol-bad-json"
 	putRawVolumeDocument(t, store, volumeID, "not valid json {{{")
 
-	_, err := svc.GetVolumeMetadata(volumeID)
+	_, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ebsmetadata.ErrCorruptDocument)
 }
@@ -61,11 +61,11 @@ func TestCreateVolume_EncryptionKeyLoadError(t *testing.T) {
 	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
 		Size:             aws.Int64(1),
 		AvailabilityZone: aws.String("ap-southeast-2a"),
-	}, "")
+	}, testVolAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 
-	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, "")
+	out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{}, testVolAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.Volumes, "a failed create must not leave a volume behind")
 }

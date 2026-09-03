@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
@@ -29,7 +28,7 @@ func TestRegisterImportedAMISnapshot_WritesEC2ReadableMetadata(t *testing.T) {
 
 	require.NoError(t, registerImportedAMISnapshot(store, bucket, ami, "ap-southeast-2a", true))
 
-	cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, bucket, "snap-ami-import01")
+	cfg, err := ebsmetadata.NewStore(store, bucket).GetSnapshot(context.Background(), utils.GlobalAccountID, "snap-ami-import01")
 	require.NoError(t, err)
 	assert.Equal(t, "snap-ami-import01", cfg.SnapshotID)
 	assert.Equal(t, "ami-import01", cfg.VolumeID, "the import path creates the volume under the AMI's own ID")
@@ -50,7 +49,7 @@ func TestRegisterImportedAMISnapshot_UnencryptedVolume(t *testing.T) {
 
 	require.NoError(t, registerImportedAMISnapshot(store, "predastore", ami, "ap-southeast-2a", false))
 
-	cfg, err := handlers_ec2_snapshot.ReadSnapshotConfig(context.Background(), store, "predastore", "snap-ami-plain01")
+	cfg, err := ebsmetadata.NewStore(store, "predastore").GetSnapshot(context.Background(), utils.GlobalAccountID, "snap-ami-plain01")
 	require.NoError(t, err)
 	assert.False(t, cfg.Encrypted)
 }

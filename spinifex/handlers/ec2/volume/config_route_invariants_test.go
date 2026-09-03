@@ -26,13 +26,13 @@ func TestUpdateVolumeState_WritesDocumentNotConfig(t *testing.T) {
 	})
 	before := getStoredConfig(t, store, volumeID)
 
-	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-abc", "/dev/nbd0"))
+	require.NoError(t, svc.UpdateVolumeState(testVolAccountID, volumeID, "in-use", "i-abc", "/dev/nbd0"))
 
 	after := getStoredConfig(t, store, volumeID)
 	assert.Equal(t, string(before), string(after),
 		"UpdateVolumeState must not write config.json; the live VB owns it")
 
-	meta, err := svc.GetVolumeMetadata(volumeID)
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
 	require.NoError(t, err)
 	assert.Equal(t, "in-use", meta.State)
 	assert.Equal(t, "i-abc", meta.AttachedInstance)
@@ -55,13 +55,13 @@ func TestUpdateVolumeState_EncryptedConfigUntouched(t *testing.T) {
 	})
 	before := getStoredConfig(t, store, volumeID)
 
-	require.NoError(t, svc.UpdateVolumeState(volumeID, "in-use", "i-enc", "/dev/nbd0"))
+	require.NoError(t, svc.UpdateVolumeState(testVolAccountID, volumeID, "in-use", "i-enc", "/dev/nbd0"))
 
 	after := getStoredConfig(t, store, volumeID)
 	assert.Equal(t, string(before), string(after),
 		"UpdateVolumeState must not rewrite the sealed config.json (AES-GCM nonce reuse)")
 
-	meta, err := svc.GetVolumeMetadata(volumeID)
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
 	require.NoError(t, err)
 	assert.Equal(t, "in-use", meta.State)
 }
@@ -82,7 +82,7 @@ func TestGetVolumeMetadata_DocumentBeatsConfig(t *testing.T) {
 		State: "in-use", AttachedInstance: "i-overlay", DeviceName: "/dev/nbd0",
 	})
 
-	meta, err := svc.GetVolumeMetadata(volumeID)
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
 	require.NoError(t, err)
 	assert.Equal(t, "in-use", meta.State,
 		"the ebsmetadata document must override any State in config.json")
@@ -101,7 +101,7 @@ func TestGetVolumeMetadata_ConfigAloneIsNotAVolume(t *testing.T) {
 	volumeID := "vol-config-only"
 	seedProviderConfig(t, store, volumeID)
 
-	_, err := svc.GetVolumeMetadata(volumeID)
+	_, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "InvalidVolume.NotFound")
 }

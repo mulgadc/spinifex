@@ -540,14 +540,15 @@ func (s *ImageServiceImpl) GetAMIConfig(ctx context.Context, imageID string) (eb
 }
 
 // snapshotAccountForAMI derives the account an AMI's snapshot document is keyed
-// under. An AMI's owner field is ImageOwnerAlias, which is an account ID for a
-// tenant image and a free-form alias for a system one. derived reports which,
-// so the bundled-AMI fallback below cannot drift from this predicate.
+// under: an account-ID alias keys under itself, a system alias under the global
+// account. derived reports which, so the bundled-AMI fallback below cannot
+// drift from this predicate. An empty alias is a corrupt document rather than a
+// system image, so it derives nothing and the fallback cannot answer for it.
 func snapshotAccountForAMI(meta ebsmetadata.AMI) (accountID string, derived bool) {
 	if utils.IsAccountID(meta.ImageOwnerAlias) {
 		return meta.ImageOwnerAlias, false
 	}
-	return utils.GlobalAccountID, true
+	return utils.GlobalAccountID, meta.ImageOwnerAlias != ""
 }
 
 // GetAMISourceVolumeID returns the volume whose blocks imageID's snapshot

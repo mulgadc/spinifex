@@ -8,6 +8,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -85,13 +86,35 @@ func TestGetAMISourceVolumeID_BundledSystemAMI_LogsFallbackWarning(t *testing.T)
 // belongs, and the launch would clone the wrong blocks.
 func TestGetAMISourceVolumeID_ImportedSystemAMI(t *testing.T) {
 	svc, _ := setupProviderImageService(t)
-	putSourceVolumeAMI(t, svc, ebsmetadata.AMI{
+	require.NoError(t, svc.MetadataStore().PutAMI(context.Background(), ebsmetadata.AMI{
 		ImageID: "ami-sysimp01", SnapshotID: "snap-sysimp01", ImageOwnerAlias: "system",
-	}, "vol-imported")
+	}))
+	// The owner is spelled out rather than derived, reproducing what
+	// registerImportedAMISnapshot writes. Deriving it here would let the
+	// fixture follow the read path and pin nothing.
+	require.NoError(t, svc.MetadataStore().PutSnapshot(context.Background(), ebsmetadata.Snapshot{
+		SnapshotID: "snap-sysimp01", VolumeID: "vol-imported", OwnerID: utils.GlobalAccountID,
+	}))
 
 	got, err := svc.GetAMISourceVolumeID(context.Background(), "ami-sysimp01")
 	require.NoError(t, err)
 	assert.Equal(t, "vol-imported", got, "an imported system AMI must resolve its recorded source volume, not fall back")
+}
+
+// TestGetAMISourceVolumeID_EmptyOwnerAliasDoesNotFallBack locks that an AMI with
+// no owner alias is treated as corrupt rather than as a system image. Deriving
+// it to the global account and letting the bundled fallback fire would return
+// the image ID where a volume ID belongs, and the launch would clone holes.
+func TestGetAMISourceVolumeID_EmptyOwnerAliasDoesNotFallBack(t *testing.T) {
+	svc, _ := setupProviderImageService(t)
+	putSourceVolumeAMI(t, svc, ebsmetadata.AMI{
+		ImageID: "ami-noalias", SnapshotID: "snap-noalias", ImageOwnerAlias: "",
+	}, "")
+
+	got, err := svc.GetAMISourceVolumeID(context.Background(), "ami-noalias")
+	require.Error(t, err)
+	assert.Empty(t, got, "a corrupt AMI must not resolve to its own image ID")
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotNotFound, err.Error())
 }
 
 // TestGetAMISourceVolumeID_AccountAMIMissingSnapshotMetadata locks that the

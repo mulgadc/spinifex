@@ -214,15 +214,20 @@ type fakeVolumeStateUpdater struct {
 	onUpdate func(volumeStateUpdate)
 }
 
+// AccountID is recorded because it is the account segment of the document's
+// key: a call that passes anything but the instance's own account writes to a
+// key that does not exist, and nothing else in the suite would catch it.
 type volumeStateUpdate struct {
+	AccountID        string
 	VolumeID         string
 	State            string
 	InstanceID       string
 	AttachmentDevice string
 }
 
-func (f *fakeVolumeStateUpdater) UpdateVolumeState(_, volumeID, state, instanceID, attachmentDevice string) error {
+func (f *fakeVolumeStateUpdater) UpdateVolumeState(accountID, volumeID, state, instanceID, attachmentDevice string) error {
 	update := volumeStateUpdate{
+		AccountID:        accountID,
 		VolumeID:         volumeID,
 		State:            state,
 		InstanceID:       instanceID,

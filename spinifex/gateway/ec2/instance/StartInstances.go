@@ -141,8 +141,8 @@ func startStoppedInstance(ctx context.Context, natsConn *nats.Conn, instanceID, 
 
 // startRefusalError rebuilds the daemon's error, keeping the message it sent.
 // Reconstructing from the code alone renders the generic ErrorLookup text
-// instead, which turns "bottlebrush holds this volume" into boilerplate about
-// attaching volumes and leaves the operator without the one fact they need.
+// instead, which replaces the name of the node holding the volume with
+// boilerplate about attaching volumes -- the one fact the operator needed.
 func startRefusalError(responseError ec2.ResponseError) error {
 	var code, message string
 	if responseError.Code != nil {

@@ -25,7 +25,7 @@ func TestVolumeHeldElsewhere_NamesTheHolder(t *testing.T) {
 		{
 			name: "live holder, refused by the lease",
 			err: errors.New("failed to mount volume: volume is leased by another owner: " +
-				"held by bottlebrush since 2026-09-02T17:04:39Z"),
+				"held by node-b since 2026-09-02T17:04:39Z"),
 		},
 	}
 
@@ -37,7 +37,7 @@ func TestVolumeHeldElsewhere_NamesTheHolder(t *testing.T) {
 			code := awserrors.ValidErrorCodeFromError(got)
 			assert.NotEqual(t, awserrors.ErrorServerInternal, code,
 				"ServerInternal reads as a transient fault and invites a retry that cannot succeed")
-			assert.Contains(t, got.Error(), "bottlebrush", "the caller has to learn where the data is")
+			assert.Contains(t, got.Error(), "node-b", "the caller has to learn where the data is")
 		})
 	}
 }
@@ -53,5 +53,5 @@ func TestVolumeHeldElsewhere_IgnoresUnrelatedFailures(t *testing.T) {
 	// A volume whose writes are merely unsealed is opened with a warning rather
 	// than refused, so this text is not an exclusion and must not become one.
 	assert.NoError(t, volumeHeldElsewhereError(errors.New(
-		"took over from bottlebrush, which held unsealed writes since 2026-09-02T17:04:39Z")))
+		"took over from node-b, which held unsealed writes since 2026-09-02T17:04:39Z")))
 }

@@ -17,8 +17,6 @@ import (
 	"time"
 	"uuid"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mulgadc/bluebottle/pkg/auth"
@@ -32,6 +30,7 @@ import (
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
+	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
@@ -59,6 +58,9 @@ const (
 	ctxPrincipalType  contextKey = "sigv4.principalType"
 	ctxAssumedRoleARN contextKey = "sigv4.assumedRoleARN"
 	ctxAssumedRoleID  contextKey = "sigv4.assumedRoleID"
+	// ctxUserID carries aws:userid, resolved once by the SigV4 middleware so
+	// every policy check in a request evaluates the same value.
+	ctxUserID contextKey = "sigv4.userID"
 	// ctxUnderlyingRoleARN carries the IAM role ARN backing an assumed-role session.
 	// Policy enforcement resolves the role name from this, never from ctxIdentity
 	// (attacker-influenced RoleSessionName).
@@ -588,9 +590,10 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 		assumedRoleARN:    mustCtxString(r, ctxAssumedRoleARN),
 		assumedRoleID:     mustCtxString(r, ctxAssumedRoleID),
 		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
+		userID:            mustCtxString(r, ctxUserID),
 	}
 	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources,
-		gw.requestConditionKeys(r, principal))
+		requestConditionKeys(r, principal))
 }
 
 // requestConditionKeys resolves the IAM condition context keys available on the
@@ -600,7 +603,7 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 // Every key is omitted rather than set empty when unknown: an empty value reads
 // as a real value that matches nothing, and on a Deny that silently widens
 // access instead of narrowing it.
-func (gw *GatewayConfig) requestConditionKeys(r *http.Request, principal principalContext) iampolicy.ConditionKeys {
+func requestConditionKeys(r *http.Request, principal principalContext) iampolicy.ConditionKeys {
 	keys := iampolicy.ConditionKeys{
 		iampolicy.KeySecureTransport: strconv.FormatBool(r.TLS != nil),
 	}
@@ -613,8 +616,10 @@ func (gw *GatewayConfig) requestConditionKeys(r *http.Request, principal princip
 	if principal.accountID != "" {
 		keys[iampolicy.KeyPrincipalAccount] = principal.accountID
 	}
-	if userID := gw.principalUserID(principal); userID != "" {
-		keys[iampolicy.KeyUserID] = userID
+	// Resolved once where the principal was, so a per-check lookup cannot leave
+	// one check in a request evaluating against a different context than the next.
+	if principal.userID != "" {
+		keys[iampolicy.KeyUserID] = principal.userID
 	}
 	// Derived from the request rather than read from the context: the OCI
 	// registry chain never runs SigV4AuthMiddleware, so a context-carried
@@ -625,29 +630,36 @@ func (gw *GatewayConfig) requestConditionKeys(r *http.Request, principal princip
 	return keys
 }
 
-// principalUserID resolves aws:userid: an IAM user's unique ID, or the role ID
-// and session name STS minted for a role session. Both halves of a session's ID
-// come from the resolved role, so unlike aws:username it is not caller-chosen.
+// principalUserID resolves aws:userid: an IAM user's unique ID, the role ID and
+// session name STS minted for a role session, or the account ID for root. Both
+// halves of a session's ID come from the resolved role, so unlike aws:username
+// it is not caller-chosen.
 //
-// An unresolvable ID returns empty and the caller omits the key.
-func (gw *GatewayConfig) principalUserID(principal principalContext) string {
-	switch principal.principalType {
-	case principalTypeAssumedRole:
-		return principal.assumedRoleID
-	case principalTypeUser:
-		if gw.IAMService == nil || principal.identity == "" || principal.accountID == "" {
-			return ""
+// A principal with no ID on record returns empty and the door omits the key. A
+// dependency fault returns InternalError instead: authorizing against a context
+// missing the key silently narrows an Allow and widens a Deny.
+func (gw *GatewayConfig) principalUserID(principal principalContext) (string, error) {
+	if principal.identity == "" || principal.accountID == "" {
+		return "", nil
+	}
+	userID, err := gateway_sts.ResolveCallerUserID(principal.accountID, principal.principalType,
+		principal.identity, principal.assumedRoleID, gw.IAMService)
+	switch {
+	case err == nil:
+		if userID == "" {
+			slog.Warn("aws:userid unavailable: principal record carries no user ID",
+				"accountID", principal.accountID, "identity", principal.identity,
+				"principalType", principal.principalType)
 		}
-		out, err := gw.IAMService.GetUser(principal.accountID,
-			&iam.GetUserInput{UserName: aws.String(principal.identity)})
-		if err != nil || out == nil || out.User == nil {
-			slog.Warn("aws:userid unavailable: IAM user lookup failed",
-				"accountID", principal.accountID, "user", principal.identity, "err", err)
-			return ""
-		}
-		return aws.StringValue(out.User.UserId)
+		return userID, nil
+	case strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity):
+		slog.Warn("aws:userid unavailable: no such IAM user",
+			"accountID", principal.accountID, "user", principal.identity)
+		return "", nil
 	default:
-		return ""
+		slog.Error("aws:userid: IAM dependency fault, refusing to authorize on a degraded context",
+			"accountID", principal.accountID, "identity", principal.identity, "err", err)
+		return "", errors.New(awserrors.ErrorInternalError)
 	}
 }
 

@@ -163,6 +163,15 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
+			// Resolved here, once, rather than per policy check: a fault must fail
+			// the request rather than authorize it against a context missing the key.
+			userID, err := gw.principalUserID(principal)
+			if err != nil {
+				gw.writeSigV4Error(w, r, err.Error())
+				return
+			}
+			principal.userID = userID
+
 			// Parse rewound the body; re-read it for query-arg parsing, then rewind
 			// again for the downstream handler.
 			body, err := io.ReadAll(r.Body)
@@ -190,6 +199,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			}
 			if principal.underlyingRoleARN != "" {
 				ctx = context.WithValue(ctx, ctxUnderlyingRoleARN, principal.underlyingRoleARN)
+			}
+			if principal.userID != "" {
+				ctx = context.WithValue(ctx, ctxUserID, principal.userID)
 			}
 
 			// Parse once; dispatchers reuse via ctxQueryArgs. On error the
@@ -267,6 +279,9 @@ type principalContext struct {
 	assumedRoleARN    string
 	assumedRoleID     string
 	underlyingRoleARN string
+	// userID is aws:userid, resolved where the principal is so the value cannot
+	// differ between two policy checks in the same request.
+	userID string
 }
 
 // resolveLongLivedAKID handles the AKIA path: IAM lookup, status check, secret decrypt.

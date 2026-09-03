@@ -76,13 +76,18 @@ func emittedKeys(t *testing.T) map[string]string {
 		},
 	}
 
-	gw := keysGateway()
+	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
 	union := make(map[string]string)
 	for name, principal := range principals {
 		r := httptest.NewRequest(http.MethodPost, "/?prefix=home/", nil)
 		r.TLS = &tls.ConnectionState{}
 		r.RemoteAddr = "10.4.1.9:52344"
-		for key := range gw.requestConditionKeys(r, principal) {
+		// Resolved the way the middleware resolves it, so the gate cannot pass on
+		// a value only the test supplies.
+		userID, err := gw.principalUserID(principal)
+		require.NoError(t, err)
+		principal.userID = userID
+		for key := range requestConditionKeys(r, principal) {
 			union[key] = name
 		}
 	}

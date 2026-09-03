@@ -345,6 +345,21 @@ export const albAttributeSpecs: AttributeSpec[] = [
     label: "Connection logs: S3 prefix",
     type: "text",
   },
+  {
+    key: "health_check_logs.s3.enabled",
+    label: "Health check logs: enabled",
+    type: "bool",
+  },
+  {
+    key: "health_check_logs.s3.bucket",
+    label: "Health check logs: S3 bucket",
+    type: "text",
+  },
+  {
+    key: "health_check_logs.s3.prefix",
+    label: "Health check logs: S3 prefix",
+    type: "text",
+  },
 ]
 
 // Spec: DefaultTargetGroupAttributes. Keys must match

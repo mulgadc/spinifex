@@ -366,6 +366,10 @@ var (
 		"connection_logs.s3.enabled":                               "false",
 		"connection_logs.s3.bucket":                                "",
 		"connection_logs.s3.prefix":                                "",
+		"health_check_logs.s3.enabled":                             "false",
+		"health_check_logs.s3.bucket":                              "",
+		"health_check_logs.s3.prefix":                              "",
+		"ipv6.deny_all_igw_traffic":                                "false",
 		"idle_timeout.timeout_seconds":                             "60",
 		"client_keep_alive.seconds":                                "3600",
 		"routing.http.desync_mitigation_mode":                      "defensive",
@@ -380,27 +384,43 @@ var (
 	}
 
 	nlbAttributeDefaults = map[string]string{
-		"deletion_protection.enabled":       "false",
-		"load_balancing.cross_zone.enabled": "false",
-		"access_logs.s3.enabled":            "false",
-		"access_logs.s3.bucket":             "",
-		"access_logs.s3.prefix":             "",
-		"dns_record.client_routing_policy":  "any_availability_zone",
-		"ipv6.deny_all_igw_traffic":         "false",
-		"zonal_shift.config.enabled":        "false",
+		"deletion_protection.enabled":            "false",
+		"load_balancing.cross_zone.enabled":      "false",
+		"access_logs.s3.enabled":                 "false",
+		"access_logs.s3.bucket":                  "",
+		"access_logs.s3.prefix":                  "",
+		"dns_record.client_routing_policy":       "any_availability_zone",
+		"ipv6.deny_all_igw_traffic":              "false",
+		"zonal_shift.config.enabled":             "false",
+		"secondary_ips.auto_assigned.per_subnet": "0",
 	}
 
 	targetGroupAttributeDefaults = map[string]string{
-		"deregistration_delay.timeout_seconds":  "300",
-		"stickiness.enabled":                    "false",
-		"stickiness.type":                       "lb_cookie",
-		"stickiness.lb_cookie.duration_seconds": "86400",
-		"load_balancing.cross_zone.enabled":     "use_load_balancer_configuration",
-		"load_balancing.algorithm.type":         "round_robin",
-		"slow_start.duration_seconds":           "0",
-		// NLB target-group default. The AWS Load Balancer Controller always
-		// writes this on NLB target groups (e.g. ingress-nginx); without it as a
-		// known key the modify is rejected and LBC loops on the Service forever.
-		"proxy_protocol_v2.enabled": "false",
+		"deregistration_delay.timeout_seconds":                                           "300",
+		"stickiness.enabled":                                                             "false",
+		"stickiness.type":                                                                "lb_cookie",
+		"stickiness.lb_cookie.duration_seconds":                                          "86400",
+		"load_balancing.cross_zone.enabled":                                              "use_load_balancer_configuration",
+		"load_balancing.algorithm.type":                                                  "round_robin",
+		"slow_start.duration_seconds":                                                    "0",
+		"load_balancing.algorithm.anomaly_mitigation":                                    "off",
+		"stickiness.app_cookie.cookie_name":                                              "",
+		"stickiness.app_cookie.duration_seconds":                                         "86400",
+		"lambda.multi_value_headers.enabled":                                             "false",
+		"target_group_health.dns_failover.minimum_healthy_targets.count":                 "1",
+		"target_group_health.dns_failover.minimum_healthy_targets.percentage":            "off",
+		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.count":      "1",
+		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.percentage": "off",
+		// NLB target-group defaults. The AWS Load Balancer Controller always
+		// writes these on NLB target groups (e.g. ingress-nginx); without them as
+		// known keys the modify is rejected and LBC loops on the Service forever.
+		"proxy_protocol_v2.enabled":                                    "false",
+		"deregistration_delay.connection_termination.enabled":          "false",
+		"preserve_client_ip.enabled":                                   "false",
+		"target_health_state.unhealthy.connection_termination.enabled": "true",
+		"target_health_state.unhealthy.draining_interval_seconds":      "0",
+		// GWLB-only; AWS requires both to hold the same value.
+		"target_failover.on_deregistration": "no_rebalance",
+		"target_failover.on_unhealthy":      "no_rebalance",
 	}
 )

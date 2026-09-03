@@ -27,16 +27,27 @@ type runningSetState struct {
 	digest    map[string]uint64
 }
 
+// RunningSetResult counts what one reconcile actually did. A healthy node that
+// has published everything scores zero across the board, which is what makes it
+// usable as a repair signal rather than as traffic.
+type RunningSetResult struct {
+	Written int // records published, whether new, changed or retried after a failure
+	Retired int // instances released from the digest, whether deleted or handed over
+	Failed  int // records this pass could not publish or settle
+}
+
 // WriteRunningSet reconciles this node's running instances onto the
 // per-resource key space.
 //
 // Best-effort, like the marker write it follows: the local state file is the
 // source of truth for the node's own instances, so a failure here leaves the
 // cluster's view stale rather than losing anything, and is logged rather than
-// returned. The next state change repeats whatever did not land.
-func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm.VM) {
+// returned. Whatever did not land is repeated by the next state change or by
+// the repair sweep, whichever comes first.
+func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm.VM) RunningSetResult {
+	var result RunningSetResult
 	if m.records == nil {
-		return
+		return result
 	}
 
 	m.running.mu.Lock()
@@ -46,7 +57,8 @@ func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm
 		if err := m.seedRunningSet(nodeID); err != nil {
 			slog.Warn("Could not read the existing instance records; the next state write retries",
 				"node", nodeID, "err", err)
-			return
+			result.Failed++
+			return result
 		}
 	}
 
@@ -65,6 +77,7 @@ func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm
 		sum, err := recordDigest(record)
 		if err != nil {
 			slog.Error("Could not encode an instance record", "instanceId", id, "err", err)
+			result.Failed++
 			continue
 		}
 		if current, ok := m.running.digest[id]; ok && current == sum {
@@ -77,9 +90,11 @@ func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm
 		if err := m.records.Replace(context.Background(), instanceRecordKey(id), record); err != nil {
 			slog.Error("Could not write an instance record", "instanceId", id, "err", err)
 			delete(m.running.digest, id)
+			result.Failed++
 			continue
 		}
 		m.running.digest[id] = sum
+		result.Written++
 	}
 
 	for id := range m.running.digest {
@@ -88,8 +103,12 @@ func (m *JetStreamManager) WriteRunningSet(nodeID, az string, vms map[string]*vm
 		}
 		if m.retireRecord(nodeID, id) {
 			delete(m.running.digest, id)
+			result.Retired++
+			continue
 		}
+		result.Failed++
 	}
+	return result
 }
 
 // retireRecord drops the record of an instance that has left nodeID's running

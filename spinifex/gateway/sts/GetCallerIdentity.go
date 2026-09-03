@@ -35,14 +35,28 @@ func GetCallerIdentity(
 	iamSvc handlers_iam.IAMService,
 	stsSvc handlers_sts.STSService,
 ) (*sts.GetCallerIdentityOutput, error) {
-	userID, err := resolveCallerUserID(accountID, callerPrincipalType, identity, assumedRoleID, iamSvc)
+	userID, err := ResolveCallerUserID(accountID, callerPrincipalType, identity, assumedRoleID, iamSvc)
 	if err != nil {
 		return nil, err
+	}
+	if userID == "" {
+		if callerPrincipalType == PrincipalTypeAssumedRole {
+			// Session vanished between auth and dispatch (expired record); surface as
+			// InvalidClientTokenId rather than a 500.
+			slog.Warn("GetCallerIdentity: assumed-role session vanished between auth and dispatch")
+			return nil, errors.New(awserrors.ErrorInvalidClientTokenId)
+		}
+		slog.Error("GetCallerIdentity: IAM GetUser returned empty UserId", "user", identity)
+		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	return stsSvc.GetCallerIdentity(accountID, callerARN, userID, input)
 }
 
-func resolveCallerUserID(
+// ResolveCallerUserID resolves the UserId of an authenticated principal, which
+// is also aws:userid at the authorization door. An error is a dependency fault;
+// a principal with no ID to report returns empty, which each caller reads on its
+// own terms.
+func ResolveCallerUserID(
 	accountID, callerPrincipalType, identity, assumedRoleID string,
 	iamSvc handlers_iam.IAMService,
 ) (string, error) {
@@ -55,28 +69,21 @@ func resolveCallerUserID(
 			return accountID, nil
 		}
 		if iamSvc == nil {
-			slog.Error("GetCallerIdentity: IAM service not initialized")
+			slog.Error("ResolveCallerUserID: IAM service not initialized")
 			return "", errors.New(awserrors.ErrorInternalError)
 		}
 		out, err := iamSvc.GetUser(accountID, &iam.GetUserInput{UserName: aws.String(identity)})
 		if err != nil {
 			return "", err
 		}
-		if out == nil || out.User == nil || aws.StringValue(out.User.UserId) == "" {
-			slog.Error("GetCallerIdentity: IAM GetUser returned empty UserId", "user", identity)
-			return "", errors.New(awserrors.ErrorInternalError)
+		if out == nil || out.User == nil {
+			return "", nil
 		}
 		return aws.StringValue(out.User.UserId), nil
 	case PrincipalTypeAssumedRole:
-		if assumedRoleID == "" {
-			// Session vanished between auth and dispatch (expired record); surface as
-			// InvalidClientTokenId rather than a 500.
-			slog.Warn("GetCallerIdentity: assumed-role session vanished between auth and dispatch")
-			return "", errors.New(awserrors.ErrorInvalidClientTokenId)
-		}
 		return assumedRoleID, nil
 	default:
-		slog.Error("GetCallerIdentity: unknown principal type", "principalType", callerPrincipalType)
+		slog.Error("ResolveCallerUserID: unknown principal type", "principalType", callerPrincipalType)
 		return "", errors.New(awserrors.ErrorInternalError)
 	}
 }

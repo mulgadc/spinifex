@@ -22,6 +22,7 @@ import (
 var gatewayDoorKeys = []string{
 	iampolicy.KeySecureTransport,
 	iampolicy.KeyUsername,
+	iampolicy.KeyUserID,
 	iampolicy.KeyPrincipalAccount,
 	iampolicy.KeySourceIP,
 }
@@ -71,14 +72,21 @@ func emittedKeys(t *testing.T) map[string]string {
 			accountID:      "000000000001",
 			principalType:  principalTypeAssumedRole,
 			assumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/session",
+			assumedRoleID:  "AROASHAREDOPS:session",
 		},
 	}
 
+	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
 	union := make(map[string]string)
 	for name, principal := range principals {
 		r := httptest.NewRequest(http.MethodPost, "/?prefix=home/", nil)
 		r.TLS = &tls.ConnectionState{}
 		r.RemoteAddr = "10.4.1.9:52344"
+		// Resolved the way the middleware resolves it, so the gate cannot pass on
+		// a value only the test supplies.
+		userID, err := gw.principalUserID(principal)
+		require.NoError(t, err)
+		principal.userID = userID
 		for key := range requestConditionKeys(r, principal) {
 			union[key] = name
 		}

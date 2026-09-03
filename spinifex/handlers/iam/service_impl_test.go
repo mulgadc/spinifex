@@ -1871,14 +1871,14 @@ func TestValidatePolicyDocument_RejectsUnresolvableVariables(t *testing.T) {
 		stmt    string
 		wantErr string
 	}{
-		{"userid in a resource", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:userid}/*"`,
-			`references policy variable "aws:userid"`},
-		{"userid in a StringEquals value",
-			`"Action":"s3:*","Resource":"*","Condition":{"StringEquals":{"aws:username":"${aws:userid}"}}`,
-			`references policy variable "aws:userid"`},
-		{"userid in a StringLike value",
-			`"Action":"s3:*","Resource":"*","Condition":{"StringLike":{"s3:prefix":"${aws:userid}/*"}}`,
-			`references policy variable "aws:userid"`},
+		{"MFA in a resource", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:MultiFactorAuthPresent}/*"`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"MFA in a StringEquals value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringEquals":{"aws:username":"${aws:MultiFactorAuthPresent}"}}`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"MFA in a StringLike value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringLike":{"s3:prefix":"${aws:MultiFactorAuthPresent}/*"}}`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
 		{"unknown key", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:bogus}/*"`,
 			`references policy variable "aws:bogus"`},
 		{"condition key that is not substitutable",
@@ -1889,8 +1889,8 @@ func TestValidatePolicyDocument_RejectsUnresolvableVariables(t *testing.T) {
 		{"empty reference", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${}/*"`,
 			"references policy variable"},
 		{"second resource carries it",
-			`"Action":"s3:*","Resource":["arn:aws:s3:::a/*","arn:aws:s3:::${aws:userid}/*"]`,
-			`references policy variable "aws:userid"`},
+			`"Action":"s3:*","Resource":["arn:aws:s3:::a/*","arn:aws:s3:::${aws:bogus}/*"]`,
+			`references policy variable "aws:bogus"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

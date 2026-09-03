@@ -135,6 +135,7 @@ func (gw *GatewayConfig) resolveECRLongLivedPrincipal(claims *gateway_ecrauth.Cl
 		identity:      identity,
 		accountID:     ak.AccountID,
 		principalType: principalTypeUser,
+		userID:        aws.StringValue(userOut.User.UserId),
 	}, nil
 }
 
@@ -195,6 +196,7 @@ func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Clai
 			identity:      identity,
 			accountID:     cred.AccountID,
 			principalType: principalTypeUser,
+			userID:        aws.StringValue(userOut.User.UserId),
 		}, nil
 	}
 
@@ -240,6 +242,7 @@ func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Clai
 		assumedRoleARN:    cred.AssumedRoleARN,
 		assumedRoleID:     cred.AssumedRoleID,
 		underlyingRoleARN: cred.UnderlyingRoleARN,
+		userID:            cred.AssumedRoleID,
 	}, nil
 }
 

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,6 +138,7 @@ func seedECRTestUser(iamSvc *ecrMockIAMService, accountID, userName, akid string
 	}
 	iamSvc.users[accountID+"|"+userName] = &iam.User{
 		UserName: aws.String(userName),
+		UserId:   aws.String("AIDA" + strings.ToUpper(userName)),
 		Arn:      aws.String("arn:aws:iam::" + accountID + ":user/" + userName),
 	}
 	iamSvc.accounts[accountID] = &handlers_iam.Account{AccountID: accountID, Status: handlers_iam.AccountStatusActive}
@@ -156,7 +158,8 @@ func TestResolveECRPrincipal_LongLivedUser(t *testing.T) {
 
 	got, err := gw.resolveECRPrincipal(claims)
 	require.NoError(t, err)
-	assert.Equal(t, principalContext{identity: "dev", accountID: ecrPrincipalTestAccount, principalType: principalTypeUser}, got)
+	assert.Equal(t, principalContext{identity: "dev", accountID: ecrPrincipalTestAccount,
+		principalType: principalTypeUser, userID: "AIDADEV"}, got)
 }
 
 func TestResolveECRPrincipal_GlobalRoot(t *testing.T) {
@@ -275,6 +278,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 func seedECRSessionUser(iamSvc *ecrMockIAMService, stsSvc *ecrMockSTSService, accountID, userName, asid string, expiresAt time.Time) {
 	iamSvc.users[accountID+"|"+userName] = &iam.User{
 		UserName: aws.String(userName),
+		UserId:   aws.String("AIDA" + strings.ToUpper(userName)),
 		Arn:      aws.String("arn:aws:iam::" + accountID + ":user/" + userName),
 	}
 	iamSvc.accounts[accountID] = &handlers_iam.Account{AccountID: accountID, Status: handlers_iam.AccountStatusActive}
@@ -302,7 +306,8 @@ func TestResolveECRPrincipal_SessionToken_User(t *testing.T) {
 
 	got, err := gw.resolveECRPrincipal(claims)
 	require.NoError(t, err)
-	assert.Equal(t, principalContext{identity: "dev", accountID: ecrPrincipalTestAccount, principalType: principalTypeUser}, got)
+	assert.Equal(t, principalContext{identity: "dev", accountID: ecrPrincipalTestAccount,
+		principalType: principalTypeUser, userID: "AIDADEV"}, got)
 }
 
 func TestResolveECRPrincipal_SessionToken_Expired(t *testing.T) {

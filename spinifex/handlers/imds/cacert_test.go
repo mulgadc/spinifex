@@ -22,7 +22,8 @@ func newCATestService(t *testing.T, pem string) (http.Handler, string) {
 	if pem != "" {
 		require.NoError(t, os.WriteFile(path, []byte(pem), 0o600))
 	}
-	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	// A resolvable instance, because the meta-data listing now 500s without one.
+	svc, _ := newTestService(&fakeResolver{eni: testENI(), inst: &instanceFacts{}}, &fakeIAM{}, &fakeAssumer{})
 	svc.caCert = newCACertCache(path)
 	return withTapENI(svc.httpHandler(), testENI()), path
 }

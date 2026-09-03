@@ -260,6 +260,10 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 // mid-listing and falls back to DataSourceNone: public-hostname/public-ipv4 only
 // with a public IP, public-keys/ only with a key pair, iam/ only with an instance
 // profile — each omission matching real EC2, like the macs/ subtree in macKeys.
+//
+// Every omission is therefore a positive claim about the instance, which is why
+// this 500s rather than shortening the listing when it cannot resolve one: a
+// shorter listing is indistinguishable from a smaller instance and is believed.
 func (s *IMDSServiceImpl) serveMetaDataRoot(ctx context.Context, w http.ResponseWriter, eni *eniFacts) {
 	keys := []string{
 		"ami-id", "ami-launch-index", "hostname", "instance-id",
@@ -270,17 +274,27 @@ func (s *IMDSServiceImpl) serveMetaDataRoot(ctx context.Context, w http.Response
 	if eni.publicIP != "" {
 		keys = append(keys, "public-hostname", "public-ipv4")
 	}
-	// Resolve the instance once: public-keys/ is listed only with a key pair, iam/
-	// only with a resolvable instance profile. A backend error counts as absent so
-	// the listing never advertises a child whose leaf would 404 and break the crawl.
-	if inst, err := s.resolver.resolveInstance(ctx, eni); err == nil && inst != nil {
-		if inst.keyName != "" {
-			keys = append(keys, "public-keys/")
-		}
-		if inst.iamInstanceProfileArn != "" {
-			if p, err := s.iam.ResolveInstanceProfile(ctx, eni.iamAccountID(), inst.iamInstanceProfileArn); err == nil && p != nil {
-				keys = append(keys, "iam/")
-			}
+	// An unresolvable instance withholds the whole listing rather than shortening
+	// it: omitting public-keys/ reads to cloud-init as "this instance has no key
+	// pair", and the guest boots keyless with nothing anywhere calling it an error.
+	inst, err := s.resolver.resolveInstance(ctx, eni)
+	if err != nil || inst == nil {
+		slog.ErrorContext(ctx, "IMDS: withholding meta-data listing, instance did not resolve",
+			"instance_id", eni.instanceID, "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if inst.keyName != "" {
+		keys = append(keys, "public-keys/")
+	}
+	if inst.iamInstanceProfileArn != "" {
+		p, err := s.iam.ResolveInstanceProfile(ctx, eni.iamAccountID(), inst.iamInstanceProfileArn)
+		switch {
+		case err != nil:
+			slog.ErrorContext(ctx, "IMDS: instance profile resolution failed, withholding iam/ from the listing",
+				"instance_id", eni.instanceID, "profile", inst.iamInstanceProfileArn, "err", err)
+		case p != nil:
+			keys = append(keys, "iam/")
 		}
 	}
 	sort.Strings(keys)

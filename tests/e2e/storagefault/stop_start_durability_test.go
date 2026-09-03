@@ -178,12 +178,50 @@ func TestCrossNodeStartAfterFailedSealTakesOverLoudly(t *testing.T) {
 	}
 	tgt = harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: tgt.KeyPath}
 
+	// Reading the pattern needs sudo, which the checkpoint may predate. Losing it
+	// is the same accepted rollback, but only once cloud-init is ruled out: a guest
+	// that found no datasource is the keyless-boot bug, not a storage outcome.
+	if !guestSudoReady(tgt) {
+		ds := guestDatasource(tgt)
+		if strings.Contains(ds, "DataSourceNone") || ds == "" {
+			t.Errorf("the guest came back unable to sudo and cloud-init found no datasource, so this "+
+				"is IMDS failing to answer, not the checkpoint rolling back: %q%s", ds,
+				consoleTail(fix, instanceID))
+			return
+		}
+		harness.Step(t, "the pattern cannot be read: the root filesystem opened from a checkpoint "+
+			"predating cloud-init's sudoers drop-in, the same documented cost as the pattern "+
+			"changing. cloud-init did find its datasource (%s), so metadata was served.", ds)
+		return
+	}
+
 	if got := readPattern(t, tgt, dev); got == want {
 		harness.Step(t, "the pattern also survived the takeover: %s had sealed enough of it", hostNode.Name)
 	} else {
 		harness.Step(t, "the pattern changed across the takeover (was %s, now %s), which is the "+
 			"documented cost of starting from the backend checkpoint", want, got)
 	}
+}
+
+// guestSudoReady reports whether the guest can still sudo without a password.
+// A volume opened from the backend checkpoint may predate cloud-init writing
+// /etc/sudoers.d/90-cloud-init-users, which no read of the device can tell apart.
+func guestSudoReady(tgt harness.SSHTarget) bool {
+	_, err := harness.GuestExecTimeout(tgt, "sudo -n true", 60*time.Second)
+	return err == nil
+}
+
+// guestDatasource returns what cloud-init recorded for this boot. result.json is
+// the file that names the datasource and is world-readable; status --long is the
+// fallback. This is the discriminator between a rollback and IMDS never answering.
+func guestDatasource(tgt harness.SSHTarget) string {
+	out, err := harness.GuestExecTimeout(tgt,
+		"cat /run/cloud-init/result.json 2>/dev/null; cloud-init status --long 2>/dev/null",
+		60*time.Second)
+	if err != nil {
+		return ""
+	}
+	return strings.Join(strings.Fields(out), " ")
 }
 
 // assertTakeoverLogged fails unless the node that opened the volume said so.

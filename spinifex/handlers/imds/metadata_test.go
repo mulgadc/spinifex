@@ -572,6 +572,43 @@ func TestHTTP_DirectoryListingNoPublicIP(t *testing.T) {
 	assert.Contains(t, body, "public-keys/")
 }
 
+// An instance that does not resolve withholds the listing entirely. Shortening it
+// instead would drop public-keys/, which cloud-init reads as "no key pair" — it
+// writes no authorized_keys, and the guest boots keyless with nothing logged.
+func TestHTTP_DirectoryListingUnresolvedInstanceIs500(t *testing.T) {
+	for name, res := range map[string]*fakeResolver{
+		"backend error": {eni: testENI(), instErr: errors.New("jetstream: context deadline exceeded")},
+		"not found":     {eni: testENI(), inst: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+			h := withTapENI(svc.httpHandler(), testENI())
+			token := issueToken(t, h)
+			rec := get(t, h, pathMetaDataRoot, token)
+			assert.Equal(t, http.StatusInternalServerError, rec.Code,
+				"an unresolved instance must not be served as a shorter listing")
+			assert.NotContains(t, rec.Body.String(), "ami-id")
+		})
+	}
+}
+
+// A resolvable instance whose profile lookup fails still serves the listing, minus
+// iam/. The key pair is the field a guest cannot recover from losing; a missing
+// role surfaces through the credentials leaf, which reports the miss on its own.
+func TestHTTP_DirectoryListingProfileErrorKeepsTheListing(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{
+		keyName:               "e2e-key",
+		iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile",
+	}}
+	svc, _ := newTestService(res, &fakeIAM{profileErr: errors.New("iam unavailable")}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	rec := get(t, h, pathMetaDataRoot, token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "public-keys/")
+	assert.NotContains(t, rec.Body.String(), "iam/")
+}
+
 // An instance launched without a key pair omits public-keys/, whose leaf would 404.
 func TestHTTP_DirectoryListingNoKeyPair(t *testing.T) {
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}}

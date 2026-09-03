@@ -38,3 +38,25 @@ secret_key = "{{.NorthstarSecretKey}}"
 # Forwarders for non-authoritative (recursive) queries. Empty => REFUSED.
 [upstream]
 nameservers = [{{range $i, $s := .PoolDNSServers}}{{if $i}}, {{end}}"{{$s}}:53"{{end}}]
+
+# Who may have a query forwarded to those nameservers. Authoritative answers are
+# never gated by this — a public authoritative server must answer everyone.
+#
+# allow_recursion = true serves recursion to ANY client, including the whole
+# internet, because :53 above is bound to the node's public address. Do not set
+# it on a node reachable from the internet. An open resolver is found by scanners
+# within hours and is then used as a DDoS reflector, which gets the node's whole
+# address range blocklisted — an outage for every tenant on it, and slow to undo.
+# It is here for an isolated or lab deployment where the DNS port is not exposed.
+#
+# Trusted clients do not need it. List them in allow_recursion_from instead,
+# which is unaffected by allow_recursion and is how the cluster resolves:
+#   - Cluster nodes resolve through northstar (resolv.conf points at the node's
+#     own advertised address, so the query arrives from that public IP over lo,
+#     not from 127.0.0.1).
+#   - EC2 instances reach vpcd's per-tap DNS shim on 169.254.169.253, which
+#     relays to northstar's :5300 from a node address — so listing the nodes
+#     covers every guest, and guest addresses never appear here.
+# Loopback is always allowed and does not need listing.
+allow_recursion = false
+allow_recursion_from = [{{range $i, $s := .ResolverAllowFrom}}{{if $i}}, {{end}}"{{$s}}"{{end}}]

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/mulgadc/northstar/pkg/backend"
+	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/formation"
@@ -1357,4 +1360,59 @@ func TestJoinRetryable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The rendered resolver must refuse the internet and still serve the cluster.
+// Both halves matter: an open resolver is the bug, and a resolver that refuses
+// its own nodes silently stops internal names resolving.
+func TestGenerateAndWriteConfigs_NorthstarRecursionIsClosedButServesTheCluster(t *testing.T) {
+	dirs, err := createConfigSubdirs(t.TempDir())
+	require.NoError(t, err)
+	nsPath := filepath.Join(dirs.Northstar, "northstar.toml")
+
+	settings := multinodeNorthstarSettings(nsPath)
+	settings.BindIP = "10.2.0.2"
+	settings.AdvertiseIP = "72.52.77.228"
+	settings.RemoteNodes = []admin.RemoteNode{
+		{Name: "node2", Host: "72.52.77.229", NorthstarConfigPath: nsPath},
+		{Name: "node3", Host: "72.52.77.230:4432", NorthstarConfigPath: nsPath},
+	}
+
+	require.NoError(t, generateAndWriteConfigs(dirs, filepath.Join(t.TempDir(), "spinifex.toml"), settings, true))
+
+	raw, err := os.ReadFile(nsPath)
+	require.NoError(t, err)
+	rendered := string(raw)
+
+	assert.Contains(t, rendered, "allow_recursion = false",
+		"a node bound to a public address must not be an open resolver")
+
+	// The node's own advertised address: resolv.conf points there, so the query
+	// arrives from it over lo rather than from 127.0.0.1.
+	assert.Contains(t, rendered, `"72.52.77.228"`)
+	assert.Contains(t, rendered, `"10.2.0.2"`)
+	// Peers, with any port stripped.
+	assert.Contains(t, rendered, `"72.52.77.229"`)
+	assert.Contains(t, rendered, `"72.52.77.230"`)
+	assert.NotContains(t, rendered, "72.52.77.230:4432")
+
+	// It must parse as the config northstar will actually load.
+	cfg, err := nsconfig.LoadServerConfig(nsPath)
+	require.NoError(t, err)
+	assert.False(t, cfg.Upstream.AllowRecursion)
+
+	prefixes, err := cfg.Upstream.ParseAllowRecursionFrom()
+	require.NoError(t, err)
+	policy := backend.NewRecursionPolicy(cfg.Upstream.AllowRecursion, prefixes)
+
+	// The cluster resolves.
+	assert.True(t, policy.Allows(netip.MustParseAddr("72.52.77.228")), "node must resolve through itself")
+	assert.True(t, policy.Allows(netip.MustParseAddr("72.52.77.229")), "peer node must resolve")
+	assert.True(t, policy.Allows(netip.MustParseAddr("127.0.0.1")), "loopback is always allowed")
+	// Guests reach northstar via vpcd's shim, which relays from a node address,
+	// so a guest query is seen as one of the addresses asserted above.
+
+	// The internet does not.
+	assert.False(t, policy.Allows(netip.MustParseAddr("198.51.100.7")))
+	assert.False(t, policy.Allows(netip.MustParseAddr("8.8.8.8")))
 }

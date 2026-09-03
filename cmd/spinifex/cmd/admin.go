@@ -2844,9 +2844,44 @@ func northstarFromFormation(creds *formation.SharedCredentials, dirs configDirs)
 	}, filepath.Join(dirs.Northstar, "northstar.toml")
 }
 
+// resolverAllowFrom returns the addresses permitted to recurse against this
+// node's northstar: every cluster node, on whichever address its peers dial.
+//
+// Guests are covered without appearing here. vpcd's per-tap DNS shim relays
+// guest queries to a node's :5300 from a node address, so trusting the nodes
+// trusts every guest behind them, and no guest CIDR is needed.
+func resolverAllowFrom(settings admin.ConfigSettings) []string {
+	seen := make(map[string]bool)
+	var addrs []string
+	add := func(ip string) {
+		ip = strings.TrimSpace(ip)
+		if ip == "" || ip == "0.0.0.0" || seen[ip] {
+			return
+		}
+		seen[ip] = true
+		addrs = append(addrs, ip)
+	}
+
+	// Both local addresses: a node resolving through its own advertised address
+	// is seen arriving from that address over lo, not from 127.0.0.1.
+	add(settings.AdvertiseIP)
+	add(settings.BindIP)
+	add(settings.ClusterBindIP)
+	for _, peer := range settings.RemoteNodes {
+		host := peer.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		add(host)
+	}
+	return addrs
+}
+
 // generateAndWriteConfigs renders the standard config files (spinifex.toml,
 // awsgw.toml, nats.conf, and optionally predastore.toml) from templates.
 func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings admin.ConfigSettings, skipPredastore bool) error {
+	settings.ResolverAllowFrom = resolverAllowFrom(settings)
+
 	// A one-sided pair must disable Northstar wholesale. Rendering only the
 	// public stanza or only the secret file advertises a resolver that cannot run.
 	northstarEnabled := settings.NorthstarAccessKey != "" && settings.NorthstarSecretKey != ""

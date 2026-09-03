@@ -17,6 +17,8 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mulgadc/bluebottle/pkg/auth"
@@ -588,7 +590,7 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
 	}
 	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources,
-		requestConditionKeys(r, principal))
+		gw.requestConditionKeys(r, principal))
 }
 
 // requestConditionKeys resolves the IAM condition context keys available on the
@@ -598,7 +600,7 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 // Every key is omitted rather than set empty when unknown: an empty value reads
 // as a real value that matches nothing, and on a Deny that silently widens
 // access instead of narrowing it.
-func requestConditionKeys(r *http.Request, principal principalContext) iampolicy.ConditionKeys {
+func (gw *GatewayConfig) requestConditionKeys(r *http.Request, principal principalContext) iampolicy.ConditionKeys {
 	keys := iampolicy.ConditionKeys{
 		iampolicy.KeySecureTransport: strconv.FormatBool(r.TLS != nil),
 	}
@@ -611,6 +613,9 @@ func requestConditionKeys(r *http.Request, principal principalContext) iampolicy
 	if principal.accountID != "" {
 		keys[iampolicy.KeyPrincipalAccount] = principal.accountID
 	}
+	if userID := gw.principalUserID(principal); userID != "" {
+		keys[iampolicy.KeyUserID] = userID
+	}
 	// Derived from the request rather than read from the context: the OCI
 	// registry chain never runs SigV4AuthMiddleware, so a context-carried
 	// address would be absent there and every aws:SourceIp condition inert.
@@ -618,6 +623,32 @@ func requestConditionKeys(r *http.Request, principal principalContext) iampolicy
 		keys[iampolicy.KeySourceIP] = ip
 	}
 	return keys
+}
+
+// principalUserID resolves aws:userid: an IAM user's unique ID, or the role ID
+// and session name STS minted for a role session. Both halves of a session's ID
+// come from the resolved role, so unlike aws:username it is not caller-chosen.
+//
+// An unresolvable ID returns empty and the caller omits the key.
+func (gw *GatewayConfig) principalUserID(principal principalContext) string {
+	switch principal.principalType {
+	case principalTypeAssumedRole:
+		return principal.assumedRoleID
+	case principalTypeUser:
+		if gw.IAMService == nil || principal.identity == "" || principal.accountID == "" {
+			return ""
+		}
+		out, err := gw.IAMService.GetUser(principal.accountID,
+			&iam.GetUserInput{UserName: aws.String(principal.identity)})
+		if err != nil || out == nil || out.User == nil {
+			slog.Warn("aws:userid unavailable: IAM user lookup failed",
+				"accountID", principal.accountID, "user", principal.identity, "err", err)
+			return ""
+		}
+		return aws.StringValue(out.User.UserId)
+	default:
+		return ""
+	}
 }
 
 // mustCtxString reads a string context value, defaulting to "" for an absent

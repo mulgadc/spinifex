@@ -112,14 +112,14 @@ func TestPutUserPolicy_UnresolvableVariableNamesTheCause(t *testing.T) {
 		UserName:   aws.String("variable-user"),
 		PolicyName: aws.String("Inert"),
 		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
-		 "Action":"s3:GetObject","Resource":"arn:aws:s3:::home/${aws:userid}/*"}]}`),
+		 "Action":"s3:GetObject","Resource":"arn:aws:s3:::home/${aws:teamname}/*"}]}`),
 	})
 	require.Error(t, err)
 
 	code, message, ok := awserrors.ResolveErrorDetail(err)
 	require.True(t, ok, "the error carries no registered AWS code, so it reaches the client as a 500")
 	assert.Equal(t, awserrors.ErrorIAMMalformedPolicyDocument, code)
-	assert.Contains(t, message, "aws:userid", "the message does not name the offending variable")
+	assert.Contains(t, message, "aws:teamname", "the message does not name the offending variable")
 	assert.Contains(t, message, "${aws:username}", "the message does not name the variables that do resolve")
 
 	// The rejection is also a rejection: nothing was stored.

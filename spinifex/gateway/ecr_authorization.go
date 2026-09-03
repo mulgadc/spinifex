@@ -55,7 +55,7 @@ func (gw *GatewayConfig) ecrOperationAuthorization(next http.Handler) http.Handl
 			}
 			if err := gw.evaluatePrincipalPolicyResources(
 				principal, policy.IAMAction("ecr", req.Action), []string{resource},
-				requestConditionKeys(r, principal),
+				gw.requestConditionKeys(r, principal),
 			); err != nil {
 				if err.Error() == awserrors.ErrorInternalError {
 					// IAM/STS/NATS dependency failure: fail closed, never dispatch.

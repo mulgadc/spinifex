@@ -22,6 +22,7 @@ import (
 var gatewayDoorKeys = []string{
 	iampolicy.KeySecureTransport,
 	iampolicy.KeyUsername,
+	iampolicy.KeyUserID,
 	iampolicy.KeyPrincipalAccount,
 	iampolicy.KeySourceIP,
 }
@@ -71,15 +72,17 @@ func emittedKeys(t *testing.T) map[string]string {
 			accountID:      "000000000001",
 			principalType:  principalTypeAssumedRole,
 			assumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/session",
+			assumedRoleID:  "AROASHAREDOPS:session",
 		},
 	}
 
+	gw := keysGateway()
 	union := make(map[string]string)
 	for name, principal := range principals {
 		r := httptest.NewRequest(http.MethodPost, "/?prefix=home/", nil)
 		r.TLS = &tls.ConnectionState{}
 		r.RemoteAddr = "10.4.1.9:52344"
-		for key := range requestConditionKeys(r, principal) {
+		for key := range gw.requestConditionKeys(r, principal) {
 			union[key] = name
 		}
 	}

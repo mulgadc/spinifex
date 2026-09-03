@@ -7,10 +7,12 @@ package gateway
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -18,7 +20,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// keysGateway resolves aws:userid from the mock's synthetic user records; every
+// other key comes from the request and the principal.
+func keysGateway() *GatewayConfig {
+	return &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
+}
+
 func TestRequestConditionKeys_PopulatesAvailableKeys(t *testing.T) {
+	gw := keysGateway()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.TLS = &tls.ConnectionState{}
 	r.RemoteAddr = "10.4.1.9:52344"
@@ -28,20 +37,61 @@ func TestRequestConditionKeys_PopulatesAvailableKeys(t *testing.T) {
 		principalType: principalTypeUser,
 	}
 
-	keys := requestConditionKeys(r, principal)
+	keys := gw.requestConditionKeys(r, principal)
 
 	assert.Equal(t, iampolicy.ConditionKeys{
 		iampolicy.KeySourceIP:         "10.4.1.9",
 		iampolicy.KeySecureTransport:  "true",
 		iampolicy.KeyUsername:         "alice",
+		iampolicy.KeyUserID:           "AIDAALICE",
 		iampolicy.KeyPrincipalAccount: "000000000001",
 	}, keys)
+}
+
+// A role session's aws:userid is the ID STS minted for it. Both halves come from
+// the resolved role, so unlike aws:username it can carry a decision.
+func TestRequestConditionKeys_UserIDForAssumedRole(t *testing.T) {
+	gw := keysGateway()
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	keys := gw.requestConditionKeys(r, principalContext{
+		identity:      "session",
+		accountID:     "000000000001",
+		principalType: principalTypeAssumedRole,
+		assumedRoleID: "AROASHAREDOPS:session",
+	})
+
+	assert.Equal(t, "AROASHAREDOPS:session", keys[iampolicy.KeyUserID])
+	assert.NotContains(t, keys, iampolicy.KeyUsername)
+}
+
+// An ID this door cannot resolve is omitted, not set empty: a policy naming it
+// then selects nothing on an Allow rather than selecting the empty-string path.
+func TestRequestConditionKeys_OmitsUnresolvableUserID(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	failing := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{
+		getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
+			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		},
+	}}
+	keys := failing.requestConditionKeys(r, principalContext{
+		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
+	})
+	assert.NotContains(t, keys, iampolicy.KeyUserID)
+
+	// A role session minted before the ID was recorded takes the same arm.
+	keys = keysGateway().requestConditionKeys(r, principalContext{
+		identity: "session", accountID: "000000000001", principalType: principalTypeAssumedRole,
+	})
+	assert.NotContains(t, keys, iampolicy.KeyUserID)
 }
 
 // RoleSessionName is chosen by the caller of AssumeRole, so aws:username must
 // stay absent for a role session — otherwise anyone permitted to assume the
 // role satisfies an aws:username condition just by naming their session.
 func TestRequestConditionKeys_OmitsUsernameForAssumedRole(t *testing.T) {
+	gw := keysGateway()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	principal := principalContext{
 		identity:       "alice",
@@ -50,7 +100,7 @@ func TestRequestConditionKeys_OmitsUsernameForAssumedRole(t *testing.T) {
 		assumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/alice",
 	}
 
-	keys := requestConditionKeys(r, principal)
+	keys := gw.requestConditionKeys(r, principal)
 
 	assert.NotContains(t, keys, iampolicy.KeyUsername)
 	assert.Equal(t, "000000000001", keys[iampolicy.KeyPrincipalAccount])
@@ -59,8 +109,9 @@ func TestRequestConditionKeys_OmitsUsernameForAssumedRole(t *testing.T) {
 // s3:prefix has no meaning on the AWS API path, so a policy conditioned on it
 // must not fire here even though the same document works at predastore's door.
 func TestRequestConditionKeys_OmitsS3Prefix(t *testing.T) {
+	gw := keysGateway()
 	r := httptest.NewRequest(http.MethodPost, "/?prefix=home/", nil)
-	keys := requestConditionKeys(r, principalContext{
+	keys := gw.requestConditionKeys(r, principalContext{
 		identity:      "alice",
 		principalType: principalTypeUser,
 	})
@@ -72,9 +123,10 @@ func TestRequestConditionKeys_OmitsS3Prefix(t *testing.T) {
 // An empty value would compare as a real value that matches nothing, which on a
 // Deny widens access instead of narrowing it. Absent is the only safe reading.
 func TestRequestConditionKeys_OmitsEmptyValues(t *testing.T) {
+	gw := keysGateway()
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.RemoteAddr = ""
-	keys := requestConditionKeys(r, principalContext{principalType: principalTypeUser})
+	keys := gw.requestConditionKeys(r, principalContext{principalType: principalTypeUser})
 
 	assert.NotContains(t, keys, iampolicy.KeySourceIP)
 	assert.NotContains(t, keys, iampolicy.KeyUsername)
@@ -85,10 +137,11 @@ func TestRequestConditionKeys_OmitsEmptyValues(t *testing.T) {
 // must come from the request itself or every aws:SourceIp condition is inert
 // on that door while working on the AWS API door.
 func TestRequestConditionKeys_SourceIPWithoutAuthMiddleware(t *testing.T) {
+	gw := keysGateway()
 	r := httptest.NewRequest(http.MethodPost, "/v2/app/blobs/uploads/", nil)
 	r.RemoteAddr = "10.4.1.9:52344"
 
-	keys := requestConditionKeys(r, principalContext{
+	keys := gw.requestConditionKeys(r, principalContext{
 		identity:      "alice",
 		principalType: principalTypeUser,
 	})

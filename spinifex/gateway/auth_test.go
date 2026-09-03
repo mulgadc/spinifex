@@ -18,6 +18,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	awsv1 "github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -51,6 +53,10 @@ type mockIAMService struct {
 	// every account is ACTIVE, which is what most tests here are asserting
 	// around rather than asserting about.
 	accounts map[string]*handlers_iam.Account
+
+	// getUserFn overrides the synthetic user record below, for a test that cares
+	// what aws:userid resolves to or that it fails to resolve at all.
+	getUserFn func(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error)
 }
 
 func (m *mockIAMService) LookupAccessKey(accessKeyID string) (*handlers_iam.AccessKey, error) {
@@ -70,6 +76,19 @@ func (m *mockIAMService) GetAccount(accountID string) (*handlers_iam.Account, er
 		return account, nil
 	}
 	return &handlers_iam.Account{AccountID: accountID, Status: handlers_iam.AccountStatusActive}, nil
+}
+
+// GetUser answers with a unique ID derived from the name, so aws:userid resolves
+// on the authorization path without every test defining a user record.
+func (m *mockIAMService) GetUser(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error) {
+	if m.getUserFn != nil {
+		return m.getUserFn(accountID, input)
+	}
+	name := awsv1.StringValue(input.UserName)
+	return &iam.GetUserOutput{User: &iam.User{
+		UserName: awsv1.String(name),
+		UserId:   awsv1.String("AIDA" + strings.ToUpper(name)),
+	}}, nil
 }
 
 // testMasterKey is a fixed 32-byte key for deterministic tests.

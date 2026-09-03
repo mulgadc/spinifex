@@ -54,11 +54,15 @@ E2E_SUITES_MULTI_RE="$(printf '%s' "${E2E_SUITES_MULTI}" | tr ' ' '|')"
 # first and a service failure should not mask whether a host OS boots. These
 # are subsets, and e2e_suites_assert_subset below enforces that.
 #
-# storagefault has a dedicated cell for the same reason turned around: it
-# SIGSTOPs a cluster-wide service, so putting it in a permutation cell would
-# make every suite sharing that environment report the outage as its own
-# failure. Its cell is single-node, which is RS(1,0); the RS(2,1) shard-floor
-# and cross-node takeover assertions are covered by the PR gate's multi run.
+# storagefault has a dedicated cell for two reasons. It SIGSTOPs a cluster-wide
+# service, so in a permutation cell every suite sharing that environment would
+# report the outage as its own failure. And a full pass is ~63 minutes, nearly
+# all of it deliberate waiting, which is too long to add to the PR gate — where
+# it has never run, since the gate's default suite list does not name it.
+#
+# Its cell is three-node: the RS(2,1) shard floor and the cross-node takeover
+# after a failed seal do not exist on one node, and they are the assertions
+# worth a nightly.
 E2E_SUITES_NIGHTLY_SINGLE="single cert iam"
 E2E_SUITES_NIGHTLY_MULTI="multinode cert lb"
 
@@ -76,6 +80,10 @@ e2e_suite_timeout() {
     # creates first. One pass is ~20 minutes on the bare-metal cell and a
     # baseline capture at SPINIFEX_DISKPERF_REPS=3 is three times that.
     diskperf) echo "180m" ;;
+    # storagefault is mostly deliberate waiting: one test alone holds predastore
+    # SIGSTOPped for seven minutes to prove a guest survives it. A full pass on
+    # dev-prod is ~63 minutes, so the 30m default truncated it mid-suite.
+    storagefault) echo "90m" ;;
     *) echo "30m" ;;
   esac
 }

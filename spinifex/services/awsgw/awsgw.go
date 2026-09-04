@@ -613,6 +613,10 @@ func launchService(config *config.ClusterConfig) error {
 	// warm cache it never consults rather than a nil check scattered through
 	// the describe path.
 	gw.DescribeCache = instanceCache
+	// Shares instanceCache's own resync cadence, so "unresolved for one
+	// resync" in shadow classification matches what the cache can actually
+	// be expected to have caught up on by then.
+	gw.DescribeShadow = gateway_ec2_instance.NewShadowComparator(instancecache.DefaultResyncInterval)
 
 	handler := gw.SetupRoutes()
 

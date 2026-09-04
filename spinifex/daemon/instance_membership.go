@@ -14,13 +14,13 @@ import "github.com/mulgadc/spinifex/spinifex/vm"
 // Status alone will not do. A node's DRAIN sequence also leaves an instance in
 // StateStopped, and restore relaunches those rather than listing them.
 // DesiredState is what separates the two, and this is the same test
-// classifyRestoredInstances already makes.
+// classifyRestoredInstances already makes. The rule itself lives in vm.
+// OperatorStopped so the record-shaped and VM-shaped callers share it.
 func operatorStopped(record *vm.InstanceRecord) bool {
 	if record == nil {
 		return false
 	}
-	return record.Status.Status == vm.StateStopped &&
-		record.Spec.DesiredState == vm.DesiredStopped
+	return vm.OperatorStopped(record.Status.Status, record.Spec.DesiredState)
 }
 
 // runsOn reports whether a record belongs to nodeID's running set: everything

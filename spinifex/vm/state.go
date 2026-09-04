@@ -66,3 +66,24 @@ func IsValidTransition(current, target InstanceState) bool {
 	}
 	return slices.Contains(allowed, target)
 }
+
+// OperatorStopped reports whether status and desired together mean an
+// instance is stopped because someone asked for it, as opposed to a node's
+// drain sequence leaving it in StateStopped pending relaunch. Status alone
+// will not do; DesiredState is what tells the two apart.
+//
+// This is the one rule both the record-shaped (InstanceRecord) and VM-shaped
+// (VM) callers reach, so it is decided here once rather than duplicated per
+// shape.
+func OperatorStopped(status InstanceState, desired DesiredState) bool {
+	return status == StateStopped && desired == DesiredStopped
+}
+
+// OperatorStopped reports whether v is stopped because someone asked for it.
+// See the package-level OperatorStopped for the underlying rule.
+func (v *VM) OperatorStopped() bool {
+	if v == nil {
+		return false
+	}
+	return OperatorStopped(v.Status, v.DesiredState)
+}

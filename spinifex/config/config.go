@@ -134,6 +134,14 @@ type AWSGWConfig struct {
 
 	Debug         bool `json:"Debug" mapstructure:"debug"`
 	ExpectedNodes int  `json:"ExpectedNodes" mapstructure:"expected_nodes"` // TODO: Replace with root cluster config
+
+	// DescribeSource selects what DescribeInstances answers from: "fanout"
+	// (default, today's node fan-out plus KV buckets), "shadow" (fan-out
+	// serves, cache answers alongside for comparison), or "cache" (the
+	// instance cache serves directly). Read once at startup like every other
+	// gateway setting — there is no reload path. An empty or unrecognised
+	// value resolves to "fanout" rather than failing the gateway to start.
+	DescribeSource string `json:"DescribeSource" mapstructure:"describe_source"`
 }
 
 type ViperblockConfig struct {

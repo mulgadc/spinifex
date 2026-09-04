@@ -17,6 +17,7 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mulgadc/bluebottle/pkg/auth"
@@ -93,6 +94,20 @@ const (
 	principalTypeRoot        = "root"
 )
 
+// Values GatewayConfig.DescribeSource resolves to. DescribeSourceFanout is
+// today's behaviour and the default; an absent or unrecognised configured
+// value falls back to it rather than failing the gateway to start.
+const (
+	DescribeSourceFanout = "fanout"
+	DescribeSourceShadow = "shadow"
+	DescribeSourceCache  = "cache"
+)
+
+// describeShadowTimeout bounds one shadow comparison. It runs detached from
+// the request it shadows (which may already have finished), so it needs its
+// own deadline rather than inheriting one that could already be cancelled.
+const describeShadowTimeout = 5 * time.Second
+
 type GatewayConfig struct {
 	Debug          bool       `json:"debug"`
 	DisableLogging bool       `json:"disable_logging"`
@@ -136,6 +151,22 @@ type GatewayConfig struct {
 	// stopped answering, which would otherwise drop out of the answer entirely.
 	// Zero value keeps the pre-existing fan-out-only behaviour.
 	InstanceStatus gateway_ec2_instance.StatusSynthesis
+	// DescribeSource selects what DescribeInstances answers from. Resolved
+	// once at startup (see config.AWSGWConfig.DescribeSource) to one of the
+	// DescribeSource* constants below; never re-read after that, matching
+	// every other gateway setting and the fact that Reload is a no-op.
+	DescribeSource string
+	// DescribeCache is the cache-served describe path DescribeSource=cache
+	// and DescribeSource=shadow read from. Nil means no cache is wired, so a
+	// gateway built without one behaves exactly as it did before this
+	// existed.
+	DescribeCache gateway_ec2_instance.CacheReader
+	// DescribeShadow runs the cache path alongside an already-served
+	// fan-out answer when DescribeSource is "shadow", comparing and logging
+	// divergences without ever altering what was served. Nil disables
+	// shadow mode regardless of DescribeSource, matching a gateway built
+	// without DescribeCache.
+	DescribeShadow *gateway_ec2_instance.ShadowComparator
 	IAMService     handlers_iam.IAMService
 	// BucketStore reaps a tenant's S3 buckets during account teardown. It
 	// signs with the config service credential, which predastore already
@@ -1037,6 +1068,31 @@ func (gw *GatewayConfig) rememberActiveNodes(count int) {
 	defer gw.activeNodesMu.Unlock()
 	gw.activeNodesCount = count
 	gw.activeNodesAt = time.Now()
+}
+
+// runDescribeShadow starts a detached shadow comparison for a just-served
+// DescribeInstances answer when DescribeSource is "shadow". It is a no-op
+// under every other source, and under shadow itself when no cache or
+// comparator is wired, so the cache path never runs unless shadow mode is
+// explicitly configured with both.
+//
+// out is snapshotted synchronously, before this returns: it keeps being
+// mutated in place after the handler returns (marshalEC2Response normalizes
+// nil slices on it), so nothing crossing into the goroutine may hold a
+// reference into it. The goroutine itself runs on a context detached from
+// the request — which may finish, cancelling its own context, before the
+// comparison does — with its own bounded deadline.
+func (gw *GatewayConfig) runDescribeShadow(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, out *ec2.DescribeInstancesOutput) {
+	if gw.DescribeSource != DescribeSourceShadow || gw.DescribeShadow == nil || gw.DescribeCache == nil {
+		return
+	}
+
+	snap := gateway_ec2_instance.SnapshotDescribeOutput(out)
+	shadowCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), describeShadowTimeout)
+	go func() {
+		defer cancel()
+		gw.DescribeShadow.Run(shadowCtx, gw.DescribeCache, gw.InstanceStatus.Liveness, input, accountID, gw.AZ, snap)
+	}()
 }
 
 // recordResolvedAction renames the current span to service.action, tags it

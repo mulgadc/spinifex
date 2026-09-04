@@ -9,9 +9,9 @@ import (
 )
 
 // IMDSProvider fetches instance-role credentials from IMDS via the AWS SDK's
-// EC2 IMDS client and ec2rolecreds provider, cached with aws.CredentialsCache
-// (which refetches once the real expiry passes; ec2rolecreds also caps
-// Expires to at most an hour out). Safe for concurrent use.
+// EC2 IMDS client and ec2rolecreds provider, cached with aws.CredentialsCache,
+// which refetches once the real expiry passes. A failed refresh is an error
+// here, not an extended expiry. Safe for concurrent use.
 type IMDSProvider struct {
 	cache *aws.CredentialsCache
 }

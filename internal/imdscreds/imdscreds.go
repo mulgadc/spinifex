@@ -53,9 +53,35 @@ func Fetch(client *http.Client, base string) (Credentials, error) {
 // client's default HTTP client.
 func NewProvider(client *http.Client, base string) aws.CredentialsProvider {
 	imdsClient := NewClient(client, base)
-	return ec2rolecreds.New(func(o *ec2rolecreds.Options) {
+	return noExtendOnFailure{provider: ec2rolecreds.New(func(o *ec2rolecreds.Options) {
 		o.Client = imdsClient
-	})
+	})}
+}
+
+// noExtendOnFailure forwards everything ec2rolecreds offers except
+// HandleFailToRefresh, which answers a failed refresh by returning the same
+// expired key with a fresh Expires so a caller never learns the refresh failed.
+type noExtendOnFailure struct {
+	provider *ec2rolecreds.Provider
+}
+
+// aws.CredentialsCache picks its strategies by asserting on the provider's
+// dynamic type, so hiding the method is what disarms it — returning an
+// interface from NewProvider is not enough.
+var (
+	_ aws.CredentialsProvider                     = noExtendOnFailure{}
+	_ aws.AdjustExpiresByCredentialsCacheStrategy = noExtendOnFailure{}
+)
+
+func (p noExtendOnFailure) Retrieve(ctx context.Context) (aws.Credentials, error) {
+	return p.provider.Retrieve(ctx)
+}
+
+// AdjustExpiresBy is forwarded deliberately. It only fires when the cache is
+// built with an ExpiryWindow, which no caller does today, but dropping it
+// silently would change that caller's behaviour without them touching this.
+func (p noExtendOnFailure) AdjustExpiresBy(creds aws.Credentials, dur time.Duration) (aws.Credentials, error) {
+	return p.provider.AdjustExpiresBy(creds, dur)
 }
 
 // NewClient builds an SDK IMDS client against base, an IMDS root URL such as

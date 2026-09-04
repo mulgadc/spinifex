@@ -173,8 +173,7 @@ func HotplugEBSBus(port int) string {
 //
 // werror/rerror mirror the boot drive's on-error policy (see Drive.Werror):
 // a data volume has no -drive-backed BlockBackend to carry it, so the qdev
-// device itself sets werror=report,rerror=report to report backend ENOSPC to
-// the guest instead of letting QEMU's default werror=enospc pause the VM.
+// device itself sets werror=stop,rerror=stop.
 func VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus string) []string {
 	return []string{
 		fmt.Sprintf("id=%s", VolumeDeviceID(volumeID)),
@@ -182,8 +181,8 @@ func VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus string) []string {
 		fmt.Sprintf("iothread=%s", iothreadID),
 		fmt.Sprintf("serial=%s", VolumeSerial(volumeID)),
 		fmt.Sprintf("bus=%s", bus),
-		"werror=report",
-		"rerror=report",
+		"werror=stop",
+		"rerror=stop",
 	}
 }
 
@@ -205,10 +204,15 @@ func VolumeBlkDeviceQMPArgs(volumeID, nodeName, iothreadID, bus string) map[stri
 		"iothread": iothreadID,
 		"serial":   VolumeSerial(volumeID),
 		"bus":      bus,
-		"werror":   "report",
-		"rerror":   "report",
+		"werror":   "stop",
+		"rerror":   "stop",
 	}
 }
+
+// NBDReconnectDelaySeconds is how long an NBD disconnect pauses requests before
+// they start failing. It covers a storage process restarting on the same socket;
+// past it the error surfaces and werror=stop pauses the VM instead.
+const NBDReconnectDelaySeconds = 30
 
 // NBDServerOpts holds the server.* fields QEMU's nbd blockdev driver needs,
 // broken out of a parsed NBD URI (see utils.ParseNBDURI) so both the QMP
@@ -244,6 +248,6 @@ func (o NBDServerOpts) CommandLineArgs() []string {
 // which only creates a BlockBackend with an auto-generated node-name).
 func VolumeBlockdev(nodeName string, server NBDServerOpts) Blockdev {
 	opts := append([]string{"driver=nbd", fmt.Sprintf("node-name=%s", nodeName)}, server.CommandLineArgs()...)
-	opts = append(opts, "export=")
+	opts = append(opts, "export=", fmt.Sprintf("reconnect-delay=%d", NBDReconnectDelaySeconds))
 	return Blockdev{Value: strings.Join(opts, ",")}
 }

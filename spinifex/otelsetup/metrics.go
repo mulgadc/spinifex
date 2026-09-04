@@ -23,6 +23,36 @@ const actionAttrKey = "rpc.method"
 // IDs — those belong in the accompanying log line.
 const leakKindAttrKey = "resource.kind"
 
+// fenceOutcomeAttrKey names what a node did after losing a volume lease. The
+// FenceOutcome values below are the whole domain, and none carries a volume or
+// node identity: those belong in the log line beside the metric.
+const fenceOutcomeAttrKey = "outcome"
+
+// FenceOutcome is what a node did after losing a volume lease.
+type FenceOutcome string
+
+const (
+	// FenceOutcomeTaken means another node held the lease, so this one gave up
+	// its export. The clearest signal in the set: a volume changed hands.
+	FenceOutcomeTaken FenceOutcome = "taken"
+
+	// FenceOutcomeExpired means the entry was gone or unreadable with no
+	// successor. The node could not show it was the only writer, which is
+	// fenced on the same terms.
+	FenceOutcomeExpired FenceOutcome = "expired"
+
+	// FenceOutcomeStalled means renewal could not be confirmed for long enough
+	// that the server TTL was about to admit another owner. This is the
+	// self-fence, and a rising rate is a NATS problem showing up as guest
+	// restarts.
+	FenceOutcomeStalled FenceOutcome = "stalled"
+
+	// FenceOutcomeKillFailed means the export could not be torn down: nbdkit
+	// did not exit. Nothing downstream is safe after this -- the volume is
+	// neither fenced nor released -- so it is the one value here that is a page.
+	FenceOutcomeKillFailed FenceOutcome = "kill_failed"
+)
+
 var (
 	instrumentsOnce sync.Once
 	requestCounter  metric.Int64Counter
@@ -30,6 +60,11 @@ var (
 
 	leakOnce    sync.Once
 	leakCounter metric.Int64Counter
+
+	fenceOnce       sync.Once
+	fenceCounter    metric.Int64Counter
+	takeoverOnce    sync.Once
+	takeoverCounter metric.Int64Counter
 )
 
 // requestInstruments lazily creates the shared request instruments. The
@@ -88,5 +123,49 @@ func RecordResourceLeak(ctx context.Context, kind string) {
 	if leakCounter != nil {
 		leakCounter.Add(ctx, 1, metric.WithAttributeSet(
 			attribute.NewSet(attribute.String(leakKindAttrKey, kind))))
+	}
+}
+
+// RecordVolumeFence counts one volume whose lease this node stopped holding
+// while an engine was open on it. outcome is one of the FenceOutcome constants.
+//
+// Any non-zero rate means guests are being stopped to protect a volume somebody
+// else now owns, which is a correctness action with an availability cost and is
+// worth paging on. FenceOutcomeKillFailed is the urgent one: the guest was not
+// stopped, so the protection did not happen.
+func RecordVolumeFence(ctx context.Context, outcome FenceOutcome) {
+	fenceOnce.Do(func() {
+		var err error
+		fenceCounter, err = otel.Meter(meterName).Int64Counter("mulga.volume.fence",
+			metric.WithDescription("Count of volume leases lost while an engine was open, by what the node did next."),
+			metric.WithUnit("{volume}"))
+		if err != nil {
+			otel.Handle(err)
+		}
+	})
+	if fenceCounter != nil {
+		fenceCounter.Add(ctx, 1, metric.WithAttributeSet(
+			attribute.NewSet(attribute.String(fenceOutcomeAttrKey, string(outcome)))))
+	}
+}
+
+// RecordVolumeTakeover counts one volume opened from the backend checkpoint
+// while another node held writes the backend never received.
+//
+// This is the deliberate trade the placement design makes — an instance that
+// runs with an older copy beats one that runs nowhere — so it is not an error.
+// It is the only quantity that says how often that trade is being paid.
+func RecordVolumeTakeover(ctx context.Context) {
+	takeoverOnce.Do(func() {
+		var err error
+		takeoverCounter, err = otel.Meter(meterName).Int64Counter("mulga.volume.takeover",
+			metric.WithDescription("Count of volumes opened from the backend while another node held unsealed writes."),
+			metric.WithUnit("{volume}"))
+		if err != nil {
+			otel.Handle(err)
+		}
+	})
+	if takeoverCounter != nil {
+		takeoverCounter.Add(ctx, 1)
 	}
 }

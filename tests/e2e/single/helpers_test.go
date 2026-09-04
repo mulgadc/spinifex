@@ -42,7 +42,7 @@ func needAMI(t *testing.T, fix *Fixture) string {
 // needKeyPair returns the memoized primary EC2 key pair name + PEM path.
 func needKeyPair(t *testing.T, fix *Fixture) (name, pemPath string) {
 	t.Helper()
-	return harness.EnsureKeyPair(t, fix.Harness, fix.TmpDir)
+	return harness.EnsureKeyPair(t, fix.Harness)
 }
 
 // customAMIName is the well-known AMI name used by CreateImage tests.

@@ -67,6 +67,10 @@ type Fixture struct {
 	cleanups map[string]struct{}
 	sf       singleflight.Group
 
+	// keyDir holds private keys for the process. Created on first use and
+	// removed with the key pair it belongs to.
+	keyDir string
+
 	// processCleanups holds teardown callbacks for process-mode fixtures.
 	// Close() runs them LIFO. Unused (and untouched) when parent != nil.
 	//
@@ -319,14 +323,40 @@ func randHex(nBytes int) (string, error) {
 // EnsureKeyPair
 // ----------------------------------------------------------------------------
 
-// EnsureKeyPair creates (or returns the cached) named EC2 key pair. The PEM
-// is written to artifactsDir/<name>.pem with 0600. Returns (keyName, pemPath).
-func EnsureKeyPair(t *testing.T, fx *Fixture, artifactsDir string) (string, string) {
+// keyPairDir returns the process-scoped directory private keys are written
+// to, creating it on first use.
+//
+// Deliberately not a caller-supplied directory. The key pair lives as long as
+// the fixture, so a private key kept anywhere shorter-lived goes missing while
+// the registered public key is still being launched against.
+func (f *Fixture) keyPairDir() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.keyDir != "" {
+		return f.keyDir, nil
+	}
+	dir, err := os.MkdirTemp("", "spinifex-e2e-keys-")
+	if err != nil {
+		return "", fmt.Errorf("private key dir: %w", err)
+	}
+	f.keyDir = dir
+	return dir, nil
+}
+
+// EnsureKeyPair creates (or returns the cached) named EC2 key pair. The PEM is
+// written with 0600 into a directory owned by the fixture, and both are
+// removed together. Returns (keyName, pemPath).
+func EnsureKeyPair(t *testing.T, fx *Fixture) (string, string) {
 	t.Helper()
 	name := fx.resourceName("e2e-key")
 	key := "keypair:" + name
 
-	pemPath := filepath.Join(artifactsDir, name+".pem")
+	dir, err := fx.keyPairDir()
+	if err != nil {
+		t.Fatalf("EnsureKeyPair: %v", err)
+	}
+	pemPath := filepath.Join(dir, name+".pem")
+
 	id, err := fx.ensureOnce(t, key, func() (string, func() error, error) {
 		out, err := fx.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{
 			KeyName: aws.String(name),
@@ -334,15 +364,18 @@ func EnsureKeyPair(t *testing.T, fx *Fixture, artifactsDir string) (string, stri
 		if err != nil {
 			return "", nil, fmt.Errorf("CreateKeyPair %s: %w", name, err)
 		}
-		if err := os.MkdirAll(artifactsDir, 0o750); err != nil {
-			return "", nil, fmt.Errorf("mkdir %s: %w", artifactsDir, err)
-		}
 		if err := os.WriteFile(pemPath, []byte(aws.StringValue(out.KeyMaterial)), 0o600); err != nil {
 			return "", nil, fmt.Errorf("write pem %s: %w", pemPath, err)
+		}
+		if err := assertOneKeyPair(fx, name); err != nil {
+			return "", nil, err
 		}
 		fx.tagRunResources(aws.StringValue(out.KeyPairId))
 		return aws.StringValue(out.KeyName), func() error {
 			_, derr := fx.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(name)})
+			if rerr := os.RemoveAll(dir); rerr != nil && derr == nil {
+				derr = rerr
+			}
 			return derr
 		}, nil
 	})
@@ -350,6 +383,33 @@ func EnsureKeyPair(t *testing.T, fx *Fixture, artifactsDir string) (string, stri
 		t.Fatalf("EnsureKeyPair: %v", err)
 	}
 	return id, pemPath
+}
+
+// assertOneKeyPair fails when the cluster holds more than one key pair under
+// name, which it should not be able to.
+//
+// A create that lands twice leaves two pairs with one name and different
+// material. RunInstances then resolves the name to one of them while we hold
+// the private key of the other, and the only symptom is every guest in the run
+// rejecting the key at the SSH gate five minutes later, once per guest. Cheap
+// to check here, and it names the cause outright.
+func assertOneKeyPair(fx *Fixture, name string) error {
+	out, err := fx.EC2.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{
+		KeyNames: []*string{aws.String(name)},
+	})
+	if err != nil {
+		return fmt.Errorf("DescribeKeyPairs %s: %w", name, err)
+	}
+	if len(out.KeyPairs) == 1 {
+		return nil
+	}
+
+	got := make([]string, 0, len(out.KeyPairs))
+	for _, kp := range out.KeyPairs {
+		got = append(got, fmt.Sprintf("%s/%s", aws.StringValue(kp.KeyPairId), aws.StringValue(kp.KeyFingerprint)))
+	}
+	return fmt.Errorf("key pair %s resolves to %d pairs (%s); a launch cannot be told which one it got",
+		name, len(out.KeyPairs), strings.Join(got, " "))
 }
 
 // ----------------------------------------------------------------------------
@@ -606,6 +666,10 @@ func EnsureSG(t *testing.T, fx *Fixture, vpcID, namePrefix string) string {
 // ----------------------------------------------------------------------------
 
 // InstanceSpec captures the inputs to RunInstances. UserData is optional.
+//
+// Scope names a group of callers that must not share a guest. It reaches the
+// memo key and nothing else, so two identical specs with different scopes get
+// an instance each — what a test needs when it damages the guest on purpose.
 type InstanceSpec struct {
 	AMIID        string
 	InstanceType string
@@ -613,6 +677,7 @@ type InstanceSpec struct {
 	SubnetID     string
 	SGID         string
 	UserData     string
+	Scope        string
 }
 
 // EnsureInstance launches a single instance matching spec, polls to
@@ -627,8 +692,8 @@ func EnsureInstance(t *testing.T, fx *Fixture, spec InstanceSpec) string {
 		sum := sha256.Sum256([]byte(spec.UserData))
 		udHash = hex.EncodeToString(sum[:8])
 	}
-	key := fmt.Sprintf("instance:%s:%s:%s:%s:%s:%s",
-		spec.AMIID, spec.InstanceType, spec.KeyName, spec.SubnetID, spec.SGID, udHash)
+	key := fmt.Sprintf("instance:%s:%s:%s:%s:%s:%s:%s",
+		spec.AMIID, spec.InstanceType, spec.KeyName, spec.SubnetID, spec.SGID, udHash, spec.Scope)
 	id, err := fx.ensureOnce(t, key, func() (string, func() error, error) {
 		input := &ec2.RunInstancesInput{
 			ImageId:      aws.String(spec.AMIID),

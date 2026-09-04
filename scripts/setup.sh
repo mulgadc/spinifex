@@ -371,7 +371,16 @@ table inet spinifex_filter {
         # here. Without this, cloud-init, instance-role credentials and all
         # guest DNS break. The ports exist only while instances run, so this
         # matches the prefix rather than an enumerated list.
-        iifname "ime-*" accept
+        #
+        # Scoped to the two link-local endpoints and their ports, not a blanket
+        # accept: the OVS demux delivers any guest packet to 169.254.169.254/.253
+        # onto an ime-* port regardless of L4 port, so `iifname "ime-*" accept`
+        # would expose every wildcard-bound host service (sshd, the AWS gateway,
+        # northstar, the UI) to any tenant. IMDS is HTTP on .254:80; VPC DNS is
+        # 53 on .253. Everything else on these ports falls through to policy drop.
+        iifname "ime-*" ip daddr 169.254.169.254 tcp dport 80 accept
+        iifname "ime-*" ip daddr 169.254.169.253 udp dport 53 accept
+        iifname "ime-*" ip daddr 169.254.169.253 tcp dport 53 accept
 
         # PMTUD is not optional under a Geneve overlay.
         icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } accept
@@ -412,8 +421,10 @@ table inet spinifex_filter {
         # than an interface or a CIDR. 4432 stays here rather than joining the
         # public rule above: outside formation it is the daemon cluster manager,
         # whose /health and /local/* routes report node topology, service
-        # inventory and running instances to anyone who asks.
-        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644 } accept
+        # inventory and running instances to anyone who asks. 8660 is
+        # predastore's unauthenticated /healthz and /readyz, which name the
+        # peers a gate cannot reach, so it belongs here for the same reason.
+        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
         ip saddr $spinifex_peers udp dport { 5300, 6660, 7660 } accept
 
         # Encap plane, peer-scoped: Geneve, IKE, NAT-T and ESP. Geneve is a

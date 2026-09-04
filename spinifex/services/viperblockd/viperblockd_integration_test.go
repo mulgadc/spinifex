@@ -94,6 +94,10 @@ func setupTestConfig(t *testing.T, natsURL string) *Config {
 		Debug:          true,
 		MountedVolumes: []MountedVolume{},
 		NodeName:       "test-node",
+		// One shot: the production retry exists for a JetStream still catching
+		// up at daemon start, and every test that fails construction does so
+		// deliberately and permanently.
+		recoveryAttempts: 1,
 	}
 	installTestVolumeLeases(t, cfg, natsURL)
 

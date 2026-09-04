@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -127,7 +128,7 @@ func TestBuildDrives(t *testing.T) {
 			},
 			cpuCount: 4,
 			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "report", Rerror: "report"},
+				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
 			},
 			wantIOThreads: []IOThread{{ID: "ioth-os"}},
 			wantDevices: []Device{
@@ -168,10 +169,10 @@ func TestBuildDrives(t *testing.T) {
 			cpuCount:      2,
 			wantIOThreads: []IOThread{{ID: "ioth-vol-data-a"}},
 			wantBlockdevs: []Blockdev{
-				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export="},
+				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
 			},
 			wantDevices: []Device{
-				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=report,rerror=report"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{3},
 		},
@@ -183,10 +184,10 @@ func TestBuildDrives(t *testing.T) {
 			cpuCount:      2,
 			wantIOThreads: []IOThread{{ID: "ioth-vol-data-b"}},
 			wantBlockdevs: []Blockdev{
-				{Value: "driver=nbd,node-name=nbd-vol-data-b,server.type=unix,server.path=/tmp/data-b.sock,export="},
+				{Value: "driver=nbd,node-name=nbd-vol-data-b,server.type=unix,server.path=/tmp/data-b.sock,export=,reconnect-delay=30"},
 			},
 			wantDevices: []Device{
-				{Value: "virtio-blk-pci,id=vdisk-vol-data-b,drive=nbd-vol-data-b,iothread=ioth-vol-data-b,serial=voldatab,bus=hotplug-ebs1,werror=report,rerror=report"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-b,drive=nbd-vol-data-b,iothread=ioth-vol-data-b,serial=voldatab,bus=hotplug-ebs1,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{1},
 		},
@@ -202,12 +203,12 @@ func TestBuildDrives(t *testing.T) {
 				{ID: "ioth-vol-data-d"},
 			},
 			wantBlockdevs: []Blockdev{
-				{Value: "driver=nbd,node-name=nbd-vol-data-c,server.type=unix,server.path=/tmp/data-c.sock,export="},
-				{Value: "driver=nbd,node-name=nbd-vol-data-d,server.type=unix,server.path=/tmp/data-d.sock,export="},
+				{Value: "driver=nbd,node-name=nbd-vol-data-c,server.type=unix,server.path=/tmp/data-c.sock,export=,reconnect-delay=30"},
+				{Value: "driver=nbd,node-name=nbd-vol-data-d,server.type=unix,server.path=/tmp/data-d.sock,export=,reconnect-delay=30"},
 			},
 			wantDevices: []Device{
-				{Value: "virtio-blk-pci,id=vdisk-vol-data-c,drive=nbd-vol-data-c,iothread=ioth-vol-data-c,serial=voldatac,bus=hotplug-ebs1,werror=report,rerror=report"},
-				{Value: "virtio-blk-pci,id=vdisk-vol-data-d,drive=nbd-vol-data-d,iothread=ioth-vol-data-d,serial=voldatad,bus=hotplug-ebs2,werror=report,rerror=report"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-c,drive=nbd-vol-data-c,iothread=ioth-vol-data-c,serial=voldatac,bus=hotplug-ebs1,werror=stop,rerror=stop"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-d,drive=nbd-vol-data-d,iothread=ioth-vol-data-d,serial=voldatad,bus=hotplug-ebs2,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{1, 2},
 		},
@@ -227,7 +228,7 @@ func TestBuildDrives(t *testing.T) {
 			wantErr:  "no free EBS hot-plug port for volume vol-overflow",
 		},
 		{
-			name: "mixed boot + EFI + data: boot and EFI stay byte-identical to the legacy shape",
+			name: "mixed boot + EFI + data: boot and EFI keep the legacy -drive shape",
 			requests: []types.EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
@@ -235,7 +236,7 @@ func TestBuildDrives(t *testing.T) {
 			},
 			cpuCount: 4,
 			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "report", Rerror: "report"},
+				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
 				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
 			},
 			wantIOThreads: []IOThread{
@@ -243,11 +244,11 @@ func TestBuildDrives(t *testing.T) {
 				{ID: "ioth-vol-data-a"},
 			},
 			wantBlockdevs: []Blockdev{
-				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export="},
+				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
 			},
 			wantDevices: []Device{
 				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=4,bootindex=1"},
-				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=report,rerror=report"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{0, 0, 3},
 		},
@@ -1378,4 +1379,126 @@ func TestNewQMPClientWithHandshake_RetriesTransientConnect(t *testing.T) {
 	require.NoError(t, err, "dial must retry past the refused window")
 	require.NotNil(t, client)
 	_ = client.Conn.Close()
+}
+
+// startRecordingQMPListener is startWorkingQMPListener with a tally: it counts
+// the commands it was asked to execute, which is how a test says how many times
+// the manager tried to resume a paused guest.
+func startRecordingQMPListener(t *testing.T) (string, func(string) int) {
+	t.Helper()
+	sockPath := filepath.Join(t.TempDir(), "qmp.sock")
+	ln, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
+
+	var mu sync.Mutex
+	seen := map[string]int{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer func() { _ = c.Close() }()
+				greeting := `{"QMP":{"version":{"qemu":{"major":8,"minor":0}},"capabilities":[]}}` + "\n"
+				if _, err := c.Write([]byte(greeting)); err != nil {
+					return
+				}
+				dec := json.NewDecoder(c)
+				for {
+					var cmd struct {
+						Execute string `json:"execute"`
+					}
+					if err := dec.Decode(&cmd); err != nil {
+						return
+					}
+					mu.Lock()
+					seen[cmd.Execute]++
+					mu.Unlock()
+					if _, err := c.Write([]byte(`{"return":{}}` + "\n")); err != nil {
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+	})
+
+	return sockPath, func(execute string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return seen[execute]
+	}
+}
+
+// pausedGuest wires a manager holding one running VM whose QMP monitor answers,
+// which is the state a werror=stop pause leaves behind.
+func pausedGuest(t *testing.T) (*Manager, *VM, func(string) int) {
+	t.Helper()
+	sockPath, count := startRecordingQMPListener(t)
+	client, err := qmp.NewQMPClient(sockPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Conn.Close() })
+
+	instance := &VM{ID: "i-paused", Status: StateRunning, QMPClient: client}
+	m := NewManager()
+	m.Insert(instance)
+
+	return m, instance, count
+}
+
+// The first attempts run at heartbeat rate, because a backend that comes back
+// quickly should return the guest quickly.
+func TestResumeAfterIOErrorRetriesEveryHeartbeatAtFirst(t *testing.T) {
+	m, instance, count := pausedGuest(t)
+
+	for range qmpMaxIOErrorResumes {
+		m.resumeAfterIOError(t.Context(), instance)
+	}
+
+	assert.Equal(t, qmpMaxIOErrorResumes, count("cont"),
+		"every heartbeat inside the budget must re-submit the held request")
+	assert.Equal(t, qmpMaxIOErrorResumes, instance.Health.IOErrorResumes)
+	assert.False(t, instance.Health.IOErrorSince.IsZero(), "the first pause must be stamped")
+	assert.False(t, instance.Health.ImpairedSince.IsZero(),
+		"spending the budget is what DescribeInstanceStatus reports as impaired")
+}
+
+// Past the budget the guest is reported impaired, and the retries keep running
+// at heartbeat rate. They used to drop to one per ten heartbeats, which meant a
+// guest could sit paused for five minutes after its backend had come back --
+// an outage of our own making, to save one replayed I/O per thirty seconds.
+func TestResumeAfterIOErrorKeepsRetryingPastTheBudget(t *testing.T) {
+	m, instance, count := pausedGuest(t)
+
+	const beyond = qmpMaxIOErrorResumes + 3*qmpIOErrorLogEvery
+	for range beyond {
+		m.resumeAfterIOError(t.Context(), instance)
+	}
+
+	assert.Equal(t, beyond, count("cont"),
+		"every heartbeat must re-submit the held request, however long the outage has run")
+	assert.Equal(t, beyond, instance.Health.IOErrorResumes,
+		"the count keeps rising, so the impaired report stays anchored to it")
+}
+
+// A guest that resumes must start from zero, or a second unrelated outage
+// inherits a spent budget and is written off on its first heartbeat.
+func TestQMPSuccessClearsTheIOErrorBudget(t *testing.T) {
+	m, instance, _ := pausedGuest(t)
+
+	for range qmpMaxIOErrorResumes + 1 {
+		m.resumeAfterIOError(t.Context(), instance)
+	}
+	require.NotZero(t, instance.Health.IOErrorResumes)
+
+	m.recordQMPSuccess(instance)
+
+	assert.Zero(t, instance.Health.IOErrorResumes)
+	assert.True(t, instance.Health.IOErrorSince.IsZero())
 }

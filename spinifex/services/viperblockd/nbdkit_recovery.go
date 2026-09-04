@@ -16,8 +16,10 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
 )
 
@@ -125,13 +127,42 @@ func corroborateNbdkit(cfg *Config, disc discoveredNbdkit) bool {
 	return err == nil && info.Mode()&os.ModeSocket != 0
 }
 
+// defaultRecoveryAttempts is how many times recovery tries to build a
+// survivor's VB before giving up on it, and defaultRecoveryBackoff is the
+// pause between those attempts.
+//
+// Recovery runs at daemon start, when JetStream is routinely still catching up
+// and a KV claim can time out on its own default. One shot there orphans a
+// running guest's data path for the life of the process, which is a far worse
+// outcome than waiting a few seconds.
+const (
+	defaultRecoveryAttempts = 4
+	defaultRecoveryBackoff  = 3 * time.Second
+)
+
 // rebuildMountedVolume re-derives disc's NBD URI, builds its daemon-side VB
 // (cfg.buildVB, mountVolume's construction) and registers the same
 // config/owner subscriptions a fresh mount would. Never touches the process.
 func rebuildMountedVolume(ctx context.Context, cfg *Config, nc *nats.Conn, disc discoveredNbdkit) (MountedVolume, error) {
-	vb, _, lease, err := cfg.buildVB(ctx, disc.Volume)
-	if err != nil {
-		return MountedVolume{}, fmt.Errorf("construct VB: %w", err)
+	attempts, backoff := cfg.recoveryBuildPolicy()
+	var vb *viperblock.VB
+	var lease *volumeLease
+	var err error
+	for attempt := 1; ; attempt++ {
+		vb, _, lease, err = cfg.buildVB(ctx, disc.Volume)
+		if err == nil {
+			break
+		}
+		if attempt >= attempts {
+			return MountedVolume{}, fmt.Errorf("construct VB after %d attempts: %w", attempt, err)
+		}
+		slog.WarnContext(ctx, "recovery: could not build VB for a surviving nbdkit, retrying",
+			"pid", disc.PID, "volume", disc.Volume, "attempt", attempt, "err", err)
+		select {
+		case <-ctx.Done():
+			return MountedVolume{}, fmt.Errorf("construct VB: %w", ctx.Err())
+		case <-time.After(backoff):
+		}
 	}
 
 	var nbdURI string
@@ -205,6 +236,9 @@ type reapReason string
 const (
 	reapReasonUnadoptable reapReason = "unadoptable"
 	reapReasonDuplicate   reapReason = "duplicate"
+	// reapReasonUnregistered is an export still serving a volume the registry
+	// has no entry for, found when that volume is unmounted.
+	reapReasonUnregistered reapReason = "unregistered"
 )
 
 // reapOrphanedNbdkit decides whether disc -- a corroborated nbdkit process
@@ -213,35 +247,36 @@ const (
 // only ever signalled once a scan of every other process on the host finds no
 // reference to its NBD endpoint. A referencing process, or a scan that could
 // not complete, both leave it running: the caller gets a loud log either way.
-func reapOrphanedNbdkit(procRoot string, disc discoveredNbdkit, reason reapReason) {
+// Reports whether disc was signalled.
+func reapOrphanedNbdkit(procRoot string, disc discoveredNbdkit, reason reapReason) bool {
 	if hidden, herr := procHidepidInvisible(procRoot); hidden {
 		slog.Warn("recovery: proc mount hides other users' process entries; a live referencer could be invisible to this scan, leaving unclaimed nbdkit running",
 			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "err", herr)
-		return
+		return false
 	}
 
 	referencingPID, referenced, err := endpointReferencer(procRoot, disc)
 	if err != nil {
 		slog.Warn("recovery: could not scan for processes using an unclaimed nbdkit's endpoint, leaving it running",
 			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "err", err)
-		return
+		return false
 	}
 	if referenced {
 		slog.Error("recovery: unclaimed nbdkit process is still referenced by a live process; left running deliberately, needs operator attention",
 			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "referencing_pid", referencingPID)
-		return
+		return false
 	}
 
 	proc, err := os.FindProcess(disc.PID)
 	if err != nil {
 		slog.Error("recovery: failed to locate unclaimed nbdkit process to reap",
 			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "err", err)
-		return
+		return false
 	}
 	if err := proc.Signal(syscall.SIGTERM); err != nil {
 		slog.Error("recovery: failed to signal unclaimed nbdkit process",
 			"pid", disc.PID, "volume", disc.Volume, "reason", reason, "err", err)
-		return
+		return false
 	}
 
 	if disc.Socket != "" {
@@ -253,6 +288,7 @@ func reapOrphanedNbdkit(procRoot string, disc discoveredNbdkit, reason reapReaso
 
 	slog.Info("recovery: reaped unclaimed nbdkit process with no live referencer",
 		"pid", disc.PID, "volume", disc.Volume, "reason", reason)
+	return true
 }
 
 // procHidepidInvisible reports whether procRoot's mount hides another uid's
@@ -357,4 +393,31 @@ func cmdlineReferencesEndpoint(cmdline []byte, disc discoveredNbdkit) bool {
 		}
 	}
 	return false
+}
+
+// reapUnregisteredNbdkit reaps any nbdkit this daemon owns for volumeName that
+// is not in cfg.MountedVolumes, and reports whether it reaped one.
+//
+// The registry can be missing an entry for a live export: recovery gives up on
+// a survivor whose VB it could not build, and nothing reaps it afterwards, so
+// it outlives the guest and holds its socket and volume open. Unmount is the
+// point the volume is going away, so anything still serving it here is a leak.
+//
+// Only corroborated processes are considered -- our plugin, our base dir, that
+// exact volume -- and the reap itself still declines anything a live process
+// references, because the guest's disk may not be torn down yet.
+func reapUnregisteredNbdkit(ctx context.Context, cfg *Config, volumeName string) bool {
+	procRoot := cfg.procScanRoot()
+	var reaped bool
+	for _, disc := range scanNbdkitProcs(procRoot) {
+		if disc.Volume != volumeName || !corroborateNbdkit(cfg, disc) {
+			continue
+		}
+		slog.WarnContext(ctx, "ebs.unmount: found an nbdkit serving this volume with no registry entry",
+			"volume", volumeName, "pid", disc.PID, "socket", disc.Socket)
+		if reapOrphanedNbdkit(procRoot, disc, reapReasonUnregistered) {
+			reaped = true
+		}
+	}
+	return reaped
 }

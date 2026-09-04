@@ -568,7 +568,7 @@ func ensureImagePullInstance(t *testing.T, fix *Fixture, launch func(ami, instTy
 	t.Helper()
 	instType, arch := imagePullInstanceType(t, fix)
 	ami := harness.DiscoverUbuntuAMI(t, fix.Harness, arch)
-	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness, fix.ArtifactDir(t))
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 
 	vpcID := harness.CreateVPC(t, fix.AWS, imagePullVPCCIDR)
 	t.Cleanup(func() { harness.DeleteVPC(t, fix.AWS, vpcID) })

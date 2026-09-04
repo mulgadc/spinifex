@@ -166,11 +166,12 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 		Execute: "blockdev-add",
 		Arguments: map[string]any{
-			"node-name": nodeName,
-			"driver":    "nbd",
-			"server":    serverArg,
-			"export":    "",
-			"read-only": false,
+			"node-name":       nodeName,
+			"driver":          "nbd",
+			"server":          serverArg,
+			"export":          "",
+			"read-only":       false,
+			"reconnect-delay": NBDReconnectDelaySeconds,
 		},
 	}, instance.ID); err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: QMP blockdev-add failed", "volumeId", volumeID, "err", err)

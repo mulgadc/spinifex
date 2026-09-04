@@ -28,10 +28,19 @@
 # that runs identically on either, and because a quota left switched on would
 # cap every suite sharing the environment — so it must be proved to restore
 # itself wherever it runs, not only on one node.
-E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota"
+# storagefault runs last in both lists and belongs to both topologies, for
+# different reasons. On one node it is RS(1,0), so freezing the only predastore
+# is a total outage and the guest-survival assertion is unambiguous. On three it
+# is RS(2,1) with degraded writes on, so two must be frozen to break the shard
+# floor — and only there is a cross-node restart possible at all, which is the
+# case that takes a volume over from a node holding writes the backend never
+# received. It is last because it SIGSTOPs a cluster-wide
+# service: anything sharing the environment would see the same outage and report
+# a failure that says nothing about itself.
+E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota storagefault"
 
 # Suites runnable against a multi-node environment.
-E2E_SUITES_MULTI="multinode lb cert quota"
+E2E_SUITES_MULTI="multinode lb cert quota storagefault"
 
 # grep -xE alternation form, for narrowing a requested set to the eligible one.
 E2E_SUITES_SINGLE_RE="$(printf '%s' "${E2E_SUITES_SINGLE}" | tr ' ' '|')"
@@ -44,6 +53,16 @@ E2E_SUITES_MULTI_RE="$(printf '%s' "${E2E_SUITES_MULTI}" | tr ' ' '|')"
 # nightly in their own dedicated cell, because each needs a guest AMI built
 # first and a service failure should not mask whether a host OS boots. These
 # are subsets, and e2e_suites_assert_subset below enforces that.
+#
+# storagefault has a dedicated cell for two reasons. It SIGSTOPs a cluster-wide
+# service, so in a permutation cell every suite sharing that environment would
+# report the outage as its own failure. And a full pass is ~63 minutes, nearly
+# all of it deliberate waiting, which is too long to add to the PR gate — where
+# it has never run, since the gate's default suite list does not name it.
+#
+# Its cell is three-node: the RS(2,1) shard floor and the cross-node takeover
+# after a failed seal do not exist on one node, and they are the assertions
+# worth a nightly.
 E2E_SUITES_NIGHTLY_SINGLE="single cert iam"
 E2E_SUITES_NIGHTLY_MULTI="multinode cert lb"
 
@@ -61,6 +80,10 @@ e2e_suite_timeout() {
     # creates first. One pass is ~20 minutes on the bare-metal cell and a
     # baseline capture at SPINIFEX_DISKPERF_REPS=3 is three times that.
     diskperf) echo "180m" ;;
+    # storagefault is mostly deliberate waiting: one test alone holds predastore
+    # SIGSTOPped for seven minutes to prove a guest survives it. A full pass on
+    # dev-prod is ~63 minutes, so the 30m default truncated it mid-suite.
+    storagefault) echo "90m" ;;
     *) echo "30m" ;;
   esac
 }

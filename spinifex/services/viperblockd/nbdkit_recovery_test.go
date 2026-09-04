@@ -7,6 +7,7 @@ package viperblockd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -680,4 +681,169 @@ func TestRecoverMountedVolumes_UnadoptableReapedAcrossRestarts(t *testing.T) {
 		"a reaped orphan must not be rediscovered or re-logged on a later restart")
 	_, ok = findMountedVolume(cfg, volumeName)
 	assert.False(t, ok)
+}
+
+// --- adoption failures must not orphan a live export ---
+
+// TestRebuildMountedVolume_RetriesATransientBuildFailure pins the retry.
+// Recovery runs at daemon start, where a JetStream still catching up fails the
+// lease claim on its own 5s default. Giving up on the first error orphaned the
+// export for the life of the process, and the -efi volume -- always adopted
+// after the boot volume -- was the one that hit the window.
+func TestRebuildMountedVolume_RetriesATransientBuildFailure(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	cfg.recoveryAttempts = 3
+	cfg.recoveryBackoff = time.Millisecond
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	var calls int
+	build := fileBackedConstructVB(t)
+	cfg.constructVB = func(ctx context.Context, volumeName string) (*viperblock.VB, int, error) {
+		calls++
+		if calls < 3 {
+			return nil, 0, errors.New("context deadline exceeded")
+		}
+		return build(ctx, volumeName)
+	}
+
+	disc := discoveredNbdkit{PID: 4243, Volume: "vol-transient001-efi", Socket: filepath.Join(t.TempDir(), "efi.sock")}
+	mv, err := rebuildMountedVolume(context.Background(), cfg, nc, disc)
+	require.NoError(t, err, "a build that succeeds on the third attempt must be adopted, not abandoned")
+	assert.Equal(t, 3, calls, "every attempt up to the first success should have been made")
+	assert.Equal(t, disc.Volume, mv.Name)
+}
+
+// TestRebuildMountedVolume_GivesUpAfterTheLastAttempt keeps the retry bounded,
+// so a genuinely unbuildable volume still reaches the reap path.
+func TestRebuildMountedVolume_GivesUpAfterTheLastAttempt(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	cfg.recoveryAttempts = 2
+	cfg.recoveryBackoff = time.Millisecond
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	var calls int
+	cfg.constructVB = func(context.Context, string) (*viperblock.VB, int, error) {
+		calls++
+		return nil, 0, errors.New("permanently broken")
+	}
+
+	disc := discoveredNbdkit{PID: 4244, Volume: "vol-permafail001", Socket: filepath.Join(t.TempDir(), "x.sock")}
+	_, err := rebuildMountedVolume(context.Background(), cfg, nc, disc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "after 2 attempts")
+	assert.Equal(t, 2, calls, "the retry must be bounded by the configured attempts")
+}
+
+// --- unmount reaping an export the registry never claimed ---
+
+// unregisteredFixture stages the leak this exists for: a live, corroborated
+// nbdkit for volumeName that cfg.MountedVolumes has no entry for, as recovery
+// leaves behind when it cannot build the volume's VB.
+func unregisteredFixture(t *testing.T, volumeName string) (*Config, int, string) {
+	t.Helper()
+	pid := spawnLongRunningProcess(t)
+	socket := filepath.Join(t.TempDir(), volumeName+".sock")
+	listenUnix(t, socket)
+
+	procRoot := t.TempDir()
+	writeProcFixture(t, procRoot, pid, "nbdkit", nbdkitArgv(t.TempDir(), socket, 0, volumeName))
+
+	cfg := &Config{procRoot: procRoot}
+	cfg.BaseDir = discoveredBaseDir(t, procRoot, volumeName)
+	return cfg, pid, socket
+}
+
+// discoveredBaseDir reads back the base dir the fixture's argv encodes, so the
+// Config agrees with it and corroboration passes.
+func discoveredBaseDir(t *testing.T, procRoot, volumeName string) string {
+	t.Helper()
+	for _, disc := range scanNbdkitProcs(procRoot) {
+		if disc.Volume == volumeName {
+			return disc.BaseDir
+		}
+	}
+	t.Fatalf("fixture nbdkit for %s was not discoverable", volumeName)
+	return ""
+}
+
+// TestReapUnregisteredNbdkit_ReapsAnExportTheRegistryNeverClaimed is the leak
+// itself: the EFI volume's nbdkit outlives its guest because recovery could
+// not adopt it, and unmount is the last point anything knows it should die.
+func TestReapUnregisteredNbdkit_ReapsAnExportTheRegistryNeverClaimed(t *testing.T) {
+	const volumeName = "vol-unreg0001-efi"
+	cfg, pid, socket := unregisteredFixture(t, volumeName)
+
+	logs := captureLogs(t)
+	assert.True(t, reapUnregisteredNbdkit(context.Background(), cfg, volumeName),
+		"an export serving a volume with no registry entry must be reported as reaped")
+
+	require.Eventually(t, func() bool { return !utils.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
+		"the unregistered export must be signalled and exit")
+	_, err := os.Stat(socket)
+	assert.True(t, os.IsNotExist(err), "the reaped export's socket file must be removed")
+	assert.Contains(t, logs.String(), "no registry entry")
+	assert.Contains(t, logs.String(), "reason=unregistered")
+}
+
+// TestReapUnregisteredNbdkit_LeavesAnotherVolumeAlone guards the obvious way
+// this could destroy a running guest: unmounting one volume must not touch the
+// export for any other, however similar the name.
+func TestReapUnregisteredNbdkit_LeavesAnotherVolumeAlone(t *testing.T) {
+	const volumeName = "vol-unreg0002-efi"
+	cfg, pid, socket := unregisteredFixture(t, volumeName)
+
+	assert.False(t, reapUnregisteredNbdkit(context.Background(), cfg, "vol-unreg0002"),
+		"the boot volume's unmount must not claim to have reaped the EFI volume's export")
+	assert.True(t, utils.ProcessAlive(pid), "an export for a different volume must be left running")
+	_, err := os.Stat(socket)
+	assert.NoError(t, err, "an export for a different volume must keep its socket")
+}
+
+// TestReapUnregisteredNbdkit_LeavesAForeignExportAlone proves the daemon only
+// reaps its own: another daemon's export for the same volume name is not ours
+// to signal, so corroboration must reject it on the base dir alone.
+func TestReapUnregisteredNbdkit_LeavesAForeignExportAlone(t *testing.T) {
+	const volumeName = "vol-unreg0003-efi"
+	cfg, pid, socket := unregisteredFixture(t, volumeName)
+	cfg.BaseDir = filepath.Join(t.TempDir(), "someone-elses-data-dir")
+
+	assert.False(t, reapUnregisteredNbdkit(context.Background(), cfg, volumeName),
+		"an export for a different data dir belongs to a different daemon")
+	assert.True(t, utils.ProcessAlive(pid), "a foreign export must be left running")
+	_, err := os.Stat(socket)
+	assert.NoError(t, err, "a foreign export must keep its socket")
+}
+
+// TestReapUnregisteredNbdkit_LeavesAReferencedExportAlone is the safety rule
+// carried over from recovery's reap: at unmount the guest's blockdev may not
+// be torn down yet, and killing the server underneath it strands QEMU.
+func TestReapUnregisteredNbdkit_LeavesAReferencedExportAlone(t *testing.T) {
+	const volumeName = "vol-unreg0004-efi"
+	cfg, pid, socket := unregisteredFixture(t, volumeName)
+	writeReferencerFixture(t, cfg.procRoot, 919191, "driver=nbd,server.path="+socket)
+
+	logs := captureLogs(t)
+	assert.False(t, reapUnregisteredNbdkit(context.Background(), cfg, volumeName),
+		"an export something still references must not be reported as reaped")
+	assert.True(t, utils.ProcessAlive(pid), "an export a live process references must be left running")
+	assert.Contains(t, logs.String(), "still referenced by a live process")
+}
+
+// TestUnmountVolume_ReapsAnUnregisteredExport is the wiring: unmount is the
+// only event that names the volume after its guest is gone, so it is where the
+// leaked export has to be caught. NotFound stays true -- there is still no
+// registry entry to seal -- and Reaped tells the caller it was not a no-op.
+func TestUnmountVolume_ReapsAnUnregisteredExport(t *testing.T) {
+	const volumeName = "vol-unreg0005-efi"
+	cfg, pid, _ := unregisteredFixture(t, volumeName)
+	cfg.MountedVolumes = []MountedVolume{}
+
+	resp, err := unmountVolume(context.Background(), cfg, volumeName)
+	require.Error(t, err, "the volume is genuinely not mounted here, reaped or not")
+	assert.True(t, resp.NotFound, "an unregistered volume has no entry to seal")
+	assert.True(t, resp.Reaped, "the export the unmount reaped must be reported")
+	require.Eventually(t, func() bool { return !utils.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
+		"unmount must leave no nbdkit serving the volume it just removed")
 }

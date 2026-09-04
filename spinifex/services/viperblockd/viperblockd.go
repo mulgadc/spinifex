@@ -110,6 +110,17 @@ type MountedVolume struct {
 	// export is up and given back when this entry leaves cfg.MountedVolumes.
 	Lease *volumeLease
 }
+
+// leaseGeneration is the epoch this export writes under, or 0 for a mount that
+// predates the lease store. Zero never matches a real marker, so a clear that
+// falls back to it declines rather than removing somebody else's.
+func (v MountedVolume) leaseGeneration() uint64 {
+	if v.Lease == nil {
+		return 0
+	}
+	return v.Lease.generation
+}
+
 type Config struct {
 	ConfigPath     string
 	PluginPath     string
@@ -167,6 +178,12 @@ type Config struct {
 	// select the production defaults.
 	loadStateRetryAttempts  int
 	loadStateRetryBaseDelay time.Duration
+	recoveryAttempts        int
+	recoveryBackoff         time.Duration
+
+	// procRoot is where process scans look. Empty means /proc; tests point it
+	// at a fabricated directory.
+	procRoot string
 
 	// sealVolume overrides how a detached volume is sealed to predastore.
 	// Nil means sealVolumeVB, the real seal. Tests that need a seal to FAIL
@@ -185,6 +202,16 @@ type Config struct {
 	// open. Nil means exclusion cannot be established, and every engine open
 	// refuses rather than proceeding blind.
 	leases *volumeLeases
+
+	// dirty names the node holding a volume's only current copy after a failed
+	// seal. The lease covers a live holder and expires with it; this covers a
+	// dead one and does not expire.
+	dirty *volumeDirty
+
+	// nc announces a fenced volume to this node's daemon. Held here because the
+	// fence runs from a lease-renewal goroutine, which has no handler's
+	// connection to borrow. Nil in tests that never fence.
+	nc *nats.Conn
 
 	// ready is closed once every subscription is registered on the server.
 	// Nil in production; tests set it to wait for the real event instead of
@@ -237,6 +264,28 @@ func (cfg *Config) loadStateRetryPolicy() (int, time.Duration) {
 		baseDelay = defaultLoadStateRetryBaseDelay
 	}
 	return attempts, baseDelay
+}
+
+// recoveryBuildPolicy is how hard recovery tries to build a survivor's VB.
+// Zero values select the production defaults.
+func (cfg *Config) recoveryBuildPolicy() (int, time.Duration) {
+	attempts := cfg.recoveryAttempts
+	if attempts <= 0 {
+		attempts = defaultRecoveryAttempts
+	}
+	backoff := cfg.recoveryBackoff
+	if backoff <= 0 {
+		backoff = defaultRecoveryBackoff
+	}
+	return attempts, backoff
+}
+
+// procScanRoot is the directory process scans walk, defaulting to /proc.
+func (cfg *Config) procScanRoot() string {
+	if cfg.procRoot == "" {
+		return "/proc"
+	}
+	return cfg.procRoot
 }
 
 type Service struct {
@@ -657,7 +706,8 @@ func launchService(cfg *Config) (err error) {
 	if err != nil {
 		return fmt.Errorf("volume leases: %w", err)
 	}
-	cfg.leases = leases
+	cfg.leases = cfg.bindLeaseFence(leases)
+	cfg.nc = nc
 
 	// Rebuild MountedVolumes from any nbdkit processes that survived a
 	// restart before the daemon accepts a single request, so a handler can

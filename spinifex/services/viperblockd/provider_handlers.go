@@ -67,7 +67,18 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		if err != nil {
 			return fmt.Errorf("volume leases: %w", err)
 		}
-		cfg.leases = leases
+		cfg.leases = cfg.bindLeaseFence(leases)
+	}
+	cfg.nc = nc
+
+	// Same reasoning as the lease store: a mount that cannot consult the dirty
+	// marker cannot tell a stale cross-node start from a routine one.
+	if cfg.dirty == nil {
+		dirty, err := newVolumeDirty(context.Background(), nc, cfg.leaseOwner())
+		if err != nil {
+			return fmt.Errorf("volume dirty markers: %w", err)
+		}
+		cfg.dirty = dirty
 	}
 
 	subs := []struct {
@@ -858,6 +869,10 @@ func handleDeleteVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *na
 		}
 	}
 
+	// The volume is gone, so a marker pinning it to this node pins nothing.
+	// Left behind it would outlive every copy of the data it describes.
+	cfg.purgeVolumeDirty(ctx, req.VolumeID)
+
 	slog.Info("ebs.provider.volume.delete: deleted", "volume", req.VolumeID)
 	respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned()})
 }
@@ -1324,14 +1339,24 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 	// ebs.mount subject is the route production actually takes: a retried
 	// attach racing a fresh one would otherwise start two real exports.
 	if mv, ok := findMountedVolume(cfg, volumeName); ok {
-		// Access mode is fixed when nbdkit starts, so a remount asking for the
-		// other mode cannot be answered with the running export.
-		if mv.ReadOnly != readOnly {
-			err := fmt.Errorf("volume %s is already mounted read_only=%t on this node", volumeName, mv.ReadOnly)
-			return types.EBSMountResponse{Error: err.Error()}, err
+		// An entry whose socket is gone describes an export that no longer
+		// exists, and returning its URI makes the volume unstartable forever:
+		// every caller waits for a socket nothing will create. Dropping it and
+		// mounting again is safe because an absent socket cannot be serving.
+		if stale, why := mountEntryIsStale(mv); stale {
+			slog.WarnContext(ctx, "ebs.mount: dropping stale mount entry and remounting",
+				"volume", volumeName, "uri", mv.NBDURI, "reason", why)
+			releaseStaleMount(ctx, cfg, volumeName)
+		} else {
+			// Access mode is fixed when nbdkit starts, so a remount asking for
+			// the other mode cannot be answered with the running export.
+			if mv.ReadOnly != readOnly {
+				err := fmt.Errorf("volume %s is already mounted read_only=%t on this node", volumeName, mv.ReadOnly)
+				return types.EBSMountResponse{Error: err.Error()}, err
+			}
+			slog.InfoContext(ctx, "ebs.mount: already mounted, returning existing export", "volume", volumeName, "uri", mv.NBDURI)
+			return types.EBSMountResponse{URI: mv.NBDURI, Mounted: true}, nil
 		}
-		slog.InfoContext(ctx, "ebs.mount: already mounted, returning existing export", "volume", volumeName, "uri", mv.NBDURI)
-		return types.EBSMountResponse{URI: mv.NBDURI, Mounted: true}, nil
 	}
 
 	// Clear any receipt left by a previous mount before anything else can
@@ -1588,8 +1613,15 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 			matched.VB.Detach()
 		}
 
-		if err := utils.KillProcess(matched.PID); err != nil {
-			slog.ErrorContext(ctx, "Failed to kill nbdkit process", "pid", matched.PID, "err", err)
+		// The seal below rewrites the directory nbdkit writes, so a kill that
+		// did not take makes it a concurrent write to that directory. Fail the
+		// unmount instead: the entry stays mounted and a retry re-attempts
+		// both, which is what a failed seal already does.
+		if err := utils.ForceKillProcess(matched.PID, fenceKillTimeout); err != nil {
+			slog.ErrorContext(ctx, "ebs.unmount: nbdkit did not exit, refusing to seal underneath a live writer",
+				"volume", matched.Name, "pid", matched.PID, "err", err)
+			ebsResponse.Error = fmt.Sprintf("kill nbdkit for %s: %v", matched.Name, err)
+			return ebsResponse, errors.New(ebsResponse.Error)
 		}
 
 		// nbdkit is now dead, so no process writes the shared BaseDir: seal
@@ -1604,13 +1636,18 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 			if err := cfg.seal(ctx, matched.Name); err != nil {
 				slog.ErrorContext(ctx, "ebs.unmount: failed to seal volume to predastore", "volume", matched.Name, "err", err)
 				ebsResponse.Error = fmt.Sprintf("seal volume: %v", err)
+				// The un-uploaded writes are now this node's alone, and the
+				// lease saying so dies with the node. Record it durably.
+				cfg.markVolumeDirtyAfterFailedSeal(ctx, matched.Name, matched.leaseGeneration(), err.Error())
 			} else {
 				slog.InfoContext(ctx, "ebs.unmount: volume sealed to predastore", "volume", matched.Name)
+				cfg.clearVolumeDirty(ctx, matched.Name, matched.leaseGeneration())
 			}
 		} else if consumeSealReceipt(cfg.BaseDir, matched.Name) {
 			// Healthy path: the plugin sealed to predastore and removed
 			// its local state itself, leaving this receipt as proof.
 			slog.InfoContext(ctx, "ebs.unmount: volume already sealed by nbdkit plugin", "volume", matched.Name)
+			cfg.clearVolumeDirty(ctx, matched.Name, matched.leaseGeneration())
 		} else {
 			// A durable volume reached unmount with no local WAL and no
 			// seal receipt: this node never held its state, so there is
@@ -1650,10 +1687,17 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 	}
 
 	if matchIdx < 0 {
+		// No registry entry, but the export can still be live: recovery gives
+		// up on a survivor it could not adopt, and nothing else ever reaps it.
+		// Unmount is the point the volume is going away, so an nbdkit this
+		// daemon owns for this volume is a leak whatever left it behind.
+		reaped := reapUnregisteredNbdkit(ctx, cfg, volumeName)
+
 		ebsResponse = types.EBSUnMountResponse{
 			Volume:   volumeName,
 			Error:    fmt.Sprintf("Volume %s not found", volumeName),
 			NotFound: true,
+			Reaped:   reaped,
 		}
 	}
 
@@ -1772,4 +1816,65 @@ func handleUnpublishVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 
 	slog.Info("ebs.provider.volume.unpublish: unpublished", "volume", req.VolumeID, "node", cfg.NodeName)
 	respondProvider(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()})
+}
+
+// mountEntryIsStale reports whether a MountedVolume describes an export that is
+// no longer running, and why.
+//
+// Only positive evidence of death counts. The entry guards against a second
+// nbdkit for one volume, so treating a live export as stale would create the
+// double-writer hazard it exists to prevent — an absent socket or a dead pid
+// are the two conditions under which no export can be serving.
+func mountEntryIsStale(mv MountedVolume) (bool, string) {
+	if mv.Socket != "" {
+		if _, err := os.Stat(mv.Socket); errors.Is(err, os.ErrNotExist) {
+			return true, "socket is gone"
+		}
+	}
+	if mv.PID > 0 && !utils.ProcessAlive(mv.PID) {
+		return true, "nbdkit process is gone"
+	}
+	return false, ""
+}
+
+// releaseStaleMount drops a dead export's entry and everything it held, so the
+// remount that follows starts from the same state a clean unmount would leave.
+func releaseStaleMount(ctx context.Context, cfg *Config, volumeName string) {
+	cfg.mu.Lock()
+	var matched MountedVolume
+	found := false
+	for i, volume := range cfg.MountedVolumes {
+		if volume.Name == volumeName {
+			matched, found = volume, true
+			cfg.MountedVolumes = append(cfg.MountedVolumes[:i], cfg.MountedVolumes[i+1:]...)
+			break
+		}
+	}
+	cfg.mu.Unlock()
+	if !found {
+		return
+	}
+
+	if matched.ConfigSub != nil {
+		if err := matched.ConfigSub.Unsubscribe(); err != nil {
+			slog.ErrorContext(ctx, "stale mount: unsubscribe config topic", "volume", volumeName, "err", err)
+		}
+	}
+	for _, sub := range matched.OwnerSubs {
+		if sub == nil {
+			continue
+		}
+		if err := sub.Unsubscribe(); err != nil {
+			slog.ErrorContext(ctx, "stale mount: unsubscribe owner topic", "volume", volumeName, "err", err)
+		}
+	}
+	if matched.VB != nil {
+		matched.VB.Detach()
+	}
+	if matched.Socket != "" {
+		if err := os.Remove(matched.Socket); err != nil && !os.IsNotExist(err) {
+			slog.ErrorContext(ctx, "stale mount: remove socket", "volume", volumeName, "socket", matched.Socket, "err", err)
+		}
+	}
+	cfg.releaseVolumeLease(ctx, matched.Lease)
 }

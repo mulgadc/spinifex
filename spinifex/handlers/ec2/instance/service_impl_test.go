@@ -1811,8 +1811,8 @@ func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 
 	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"vol-user-001"}, vd.calls, "only DeleteOnTermination=true volumes deleted")
-	assert.Equal(t, []string{"vol-user-001"}, vd.deleted)
+	assert.Equal(t, []string{"vol-user-001"}, vd.deleted, "only DeleteOnTermination=true volumes deleted")
+	assert.Equal(t, []string{"vol-keep-001"}, vd.detached, "terminate implies detach even for a volume that survives it")
 }
 
 // TestTerminateStoppedInstance_StampsTeardownVolumesDone locks the
@@ -1887,6 +1887,51 @@ func TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted(t *testing.
 	assert.Empty(t, vd.deleted, "a DeleteOnTermination=false volume must never be deleted")
 	require.NotNil(t, store.WroteTerminated[id])
 	assert.Equal(t, string(vm.TeardownDone), store.WroteTerminated[id].Teardown[vm.TeardownVolumes])
+}
+
+// TestTerminateStoppedInstance_NonDoTDataVolumeDetachedNotDeleted covers the
+// non-Boot half. Stop's Unmount clears a data volume's attachment only when the
+// seal succeeded, so a volume whose seal failed is still in-use and pointing at
+// an instance that is about to stop existing. Skipping the detach here stranded
+// it with no owner left to release it.
+func TestTerminateStoppedInstance_NonDoTDataVolumeDetachedNotDeleted(t *testing.T) {
+	id := "i-nondot-data"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-data-nondot", DeleteOnTermination: false},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"vol-data-nondot"}, vd.detached,
+		"a data volume left attached by a failed seal must still be detached on terminate")
+	assert.Empty(t, vd.deleted, "a DeleteOnTermination=false volume must never be deleted")
+}
+
+// TestTerminateStoppedInstance_DetachOfAlreadyGoneVolumeIsNotAFailure pins the
+// idempotent half: a volume whose metadata doc is gone has already reached the
+// state the detach was asking for, so it must not stamp the teardown failed and
+// keep the instance record alive for the leak reaper.
+func TestTerminateStoppedInstance_DetachOfAlreadyGoneVolumeIsNotAFailure(t *testing.T) {
+	id := "i-nondot-gone"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-data-gone", DeleteOnTermination: false},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	require.NotNil(t, store.WroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownDone), store.WroteTerminated[id].Teardown[vm.TeardownVolumes],
+		"a volume that is already gone is the detach's goal, not a teardown failure")
 }
 
 func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {
@@ -3965,6 +4010,58 @@ func TestBuildInstanceStatus_NeverSurfacesNonAWSName(t *testing.T) {
 		assert.True(t, valid[*is.InstanceState.Name],
 			"buildInstanceStatus(%s) surfaced non-AWS name %q", state, *is.InstanceState.Name)
 	}
+}
+
+// A guest werror=stop has paused on a backend I/O error is unreachable, and the
+// cause is ours rather than the guest's. Before this it reported ok/passed on
+// both checks, because QMP stays perfectly responsive while the guest is held —
+// so the one state a customer most needs to see was the one that looked fine.
+func TestBuildInstanceStatus_IOErrorPauseIsImpaired(t *testing.T) {
+	owner := "111122223333"
+	paused := runningVM("i-io", owner)
+	paused.Health.IOErrorResumes = 1
+	paused.Health.IOErrorSince = time.Now().Add(-45 * time.Second)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{paused.ID: paused})
+
+	is := svc.buildInstanceStatus(paused, false)
+	assert.Equal(t, "impaired", *is.InstanceStatus.Status)
+	assert.Equal(t, "failed", *is.InstanceStatus.Details[0].Status)
+	assert.Equal(t, "impaired", *is.SystemStatus.Status,
+		"a backend I/O error is an infrastructure fault, so the system check must fail too")
+	require.NotNil(t, is.InstanceStatus.Details[0].ImpairedSince)
+	assert.Equal(t, paused.Health.IOErrorSince, *is.InstanceStatus.Details[0].ImpairedSince,
+		"impairedSince must be when the guest first paused, not when it was escalated")
+}
+
+// The counter is cleared by the first poll that sees the guest running, so
+// clearing it must take the instance back to ok on both checks. An impairment
+// that outlives the fault is as misleading as one that never appears.
+func TestBuildInstanceStatus_ResumedGuestClearsImpairment(t *testing.T) {
+	owner := "111122223333"
+	resumed := runningVM("i-io-ok", owner)
+	resumed.Instance.LaunchTime = aws.Time(time.Now().Add(-time.Hour))
+	resumed.Health.IOErrorResumes = 0
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{resumed.ID: resumed})
+
+	is := svc.buildInstanceStatus(resumed, false)
+	assert.Equal(t, "ok", *is.InstanceStatus.Status)
+	assert.Equal(t, "ok", *is.SystemStatus.Status)
+	assert.Nil(t, is.InstanceStatus.Details[0].ImpairedSince)
+}
+
+// A guest that pauses inside the launch grace window is impaired, not
+// initializing: the grace period exists to hide a guest that has not booted
+// yet, and one held on a failed write is not that.
+func TestBuildInstanceStatus_IOErrorBeatsLaunchGrace(t *testing.T) {
+	owner := "111122223333"
+	fresh := runningVM("i-io-new", owner)
+	fresh.Instance.LaunchTime = aws.Time(time.Now().Add(-10 * time.Second))
+	fresh.Health.IOErrorResumes = 2
+	fresh.Health.IOErrorSince = time.Now().Add(-5 * time.Second)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{fresh.ID: fresh})
+
+	is := svc.buildInstanceStatus(fresh, false)
+	assert.Equal(t, "impaired", *is.InstanceStatus.Status)
 }
 
 func TestDescribeInstanceStatus_IncludeAllSurfacesStopped(t *testing.T) {

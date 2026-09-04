@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/external"
@@ -38,12 +39,19 @@ var (
 	guestPortDatapathInterval = 5 * time.Second
 )
 
+// How many guest ports may wait for convergence at once. Bounded because each
+// miss nudges a recompute, and an unbounded fan-out would nudge once per port.
+var guestPortDatapathConcurrency = 8
+
 // After this many recompute misses with a binding still down, the readiness loops
 // check SB connectivity and, if the local ovn-controller is not "connected",
 // escalate once to sb-cluster-state-reset. A recompute re-evaluates flows from the
 // controller's current SB view, so it is a no-op against a stale-SB wedge — the
 // reset re-syncs that view. Package var so tests can shrink it.
 var sbResetEscalateAfter = 3
+
+// Minimum gap between two sb-cluster-state-resets. Package var so tests shrink it.
+var sbResetMinInterval = 2 * time.Minute
 
 // Backoff applied to a guest port that burned its convergence deadline. Doubles
 // per consecutive failure from the base and holds at the cap. Package vars so
@@ -601,6 +609,14 @@ func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, gwIP, eip
 // Returns true when a reset was issued (caller stops escalating); false when the SB
 // is connected (recompute is the right tool) or the probe failed (retry next miss).
 func (r *reconciler) escalateSBReset(ctx context.Context, logKV ...any) bool {
+	r.sbResetMu.Lock()
+	defer r.sbResetMu.Unlock()
+	// One reset re-syncs the SB view for every port, so a second one moments
+	// later answers a question the first already answered.
+	if time.Since(r.sbResetLast) < sbResetMinInterval {
+		return true
+	}
+
 	status, err := r.gwClaim.SBConnectionState(ctx)
 	if err != nil {
 		slog.Warn("reconcile/apply: SB connection-status probe failed during escalation", append(logKV, "err", err)...)
@@ -614,6 +630,7 @@ func (r *reconciler) escalateSBReset(ctx context.Context, logKV ...any) bool {
 	if err := r.gwClaim.ResetSBClusterState(ctx); err != nil {
 		slog.Warn("reconcile/apply: sb-cluster-state-reset failed", append(logKV, "err", err)...)
 	}
+	r.sbResetLast = time.Now()
 	return true
 }
 
@@ -672,13 +689,36 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 // whose port has not converged (e.g. just after a host reboot) stays dark while
 // every other signal is green.
 func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ ActualState, res *passResult) {
-	for _, spec := range r.floatingIPSpecs(intent) {
+	specs := r.floatingIPSpecs(intent)
+
+	// The DNAT rows go in first and in order: AddEIP mutates NB and is the cheap
+	// half, so serialising it costs nothing and keeps NB writes single-threaded.
+	for _, spec := range specs {
 		if err := r.nat.AddEIP(ctx, spec); err != nil {
 			slog.Error("reconcile/apply: AddEIP failed", "external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP, "err", err)
 			res.fail(classEIP, spec.ExternalIP, err)
 		}
-		r.ensureGuestPortDatapath(ctx, spec)
 	}
+
+	// The convergence waits run together. Each one can burn the full
+	// guestPortDatapathTimeout, so serialising them made every port wait out
+	// every port ahead of it: a guest whose neighbours are gone was dark for
+	// N x 45s before its own probe even started.
+	sem := make(chan struct{}, guestPortDatapathConcurrency)
+	var wg sync.WaitGroup
+	for _, spec := range specs {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			r.ensureGuestPortDatapath(ctx, spec)
+		})
+	}
+	wg.Wait()
 }
 
 // floatingIPSpecs is every dnat_and_snat the datapath must carry: user EIPs

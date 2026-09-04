@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -66,7 +67,13 @@ func ForceKillProcess(pid int, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
+	// A process that has already exited is the outcome asked for, not a failure.
+	// Callers use this to establish that a writer is gone, and one that died on
+	// its own is as gone as one this killed.
 	if err := process.Signal(syscall.SIGKILL); err != nil {
+		if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
 		return err
 	}
 	return WaitForProcessExit(pid, timeout)

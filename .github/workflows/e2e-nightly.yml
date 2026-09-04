@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       cells:
-        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-3, 8-10, 17-19 tofu permutation matrix, 20 baremetal, 21-22 ISO, 23 predastore throughput, 24 predastore fault injection, 25-27 service suites (eks, ecs, rds), 28 guest disk performance"
+        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-3, 8-10, 17-19 tofu permutation matrix, 20 baremetal, 21-22 ISO, 23 predastore throughput, 24 predastore fault injection, 25-27 service suites (eks, ecs, rds), 28 guest disk performance, 29 storage fault injection"
         required: false
 
 permissions:
@@ -47,9 +47,10 @@ jobs:
           - { cell: 25, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "eks", suite: "eks" }
           - { cell: 26, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "ecs", suite: "ecs" }
           - { cell: 27, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "rds", suite: "rds" }
+          - { cell: 29, install: binary, topo: real-multi, net: static, host: debian-13,    arch: x86_64, runner: ci-multi,  extra: "", suite: "storagefault", timeout_minutes: 100 }
 
     runs-on: [ self-hosted, "${{ matrix.runner }}" ]
-    timeout-minutes: 50
+    timeout-minutes: ${{ matrix.timeout_minutes || 50 }}
     env:
       TOFU_LOG: /tmp/e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}
@@ -174,7 +175,7 @@ jobs:
             --test-tar "${RUNNER_TEMP}/spinifex-tests.tar"
 
       - name: Run Single Node E2E
-        if: steps.gate.outputs.selected == 'true' && matrix.topo == 'single' && matrix.extra == ''
+        if: steps.gate.outputs.selected == 'true' && matrix.topo == 'single' && matrix.extra == '' && matrix.suite == ''
         working-directory: mulga/scripts/tofu-cluster
         run: |
           set -euo pipefail
@@ -224,7 +225,7 @@ jobs:
              if [ \$rc -ne 0 ]; then echo 'natuplink: FAILED' >> '${ARTIFACT_DIR}/suite-status.txt'; fi; exit \$rc"
 
       - name: Run Multi Node E2E
-        if: steps.gate.outputs.selected == 'true' && matrix.topo == 'real-multi'
+        if: steps.gate.outputs.selected == 'true' && matrix.topo == 'real-multi' && matrix.suite == ''
         working-directory: mulga/scripts/tofu-cluster
         run: |
           set -euo pipefail
@@ -259,11 +260,11 @@ jobs:
                if [ \$rc -ne 0 ]; then echo \"\$SUITE: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; FAIL=1; fi; \
              done; exit \$FAIL"
 
-      # Cells 25-27 only. Resolved once here rather than in each step below,
-      # which would repeat the same three lines five times.
+      # The dedicated suite cells only. Resolved once here rather than in each
+      # step below, which would repeat the same three lines five times.
       - name: Resolve VM SSH details
         id: vm
-        if: steps.gate.outputs.selected == 'true' && matrix.suite != ''
+        if: steps.gate.outputs.selected == 'true' && matrix.suite != '' && matrix.topo == 'single'
         working-directory: mulga/scripts/tofu-cluster
         run: |
           set -euo pipefail
@@ -407,7 +408,7 @@ jobs:
           done
 
       - name: Run Service Suite E2E
-        if: steps.gate.outputs.selected == 'true' && matrix.suite != ''
+        if: steps.gate.outputs.selected == 'true' && matrix.suite != '' && matrix.topo == 'single'
         env:
           SUITE: ${{ matrix.suite }}
         run: |
@@ -425,6 +426,46 @@ jobs:
              echo \"::group::suite ${SUITE}\"; \
              date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-${SUITE}.start'; \
              GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+               ARTIFACT_DIR='${ARTIFACT_DIR}' \
+               ./${SUITE}.test -test.v -test.timeout=${TMO} \
+               2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log'; \
+             rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
+             if [ \$rc -ne 0 ]; then echo \"${SUITE}: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; fi; \
+             exit \$rc"
+
+      # The multi-node twin of the step above. Separate rather than merged
+      # because the suite needs every node's address to reach the whole cluster,
+      # which the single-node path has no way to supply.
+      - name: Run Multi Suite E2E
+        if: steps.gate.outputs.selected == 'true' && matrix.suite != '' && matrix.topo == 'real-multi'
+        working-directory: mulga/scripts/tofu-cluster
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          set -euo pipefail
+          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
+          e2e_suites_assert_subset "e2e-nightly cell-${{ matrix.cell }}" "${SUITE}" "${E2E_SUITES_MULTI}"
+          TMO="$(e2e_suite_timeout "${SUITE}")"
+
+          INVENTORY=$(tofu output -json inventory)
+          NODE1_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+
+          NODES_CSV=""
+          NODE_COUNT=$(echo "$INVENTORY" | jq '.nodes | length')
+          for i in $(seq 0 $((NODE_COUNT - 1))); do
+            ip=$(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip")
+            NODES_CSV="${NODES_CSV:+$NODES_CSV,}$ip"
+          done
+
+          ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${NODE1_IP} \
+            "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/e2e-tests/_bin; \
+             echo \"::group::suite ${SUITE}\"; \
+             date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-${SUITE}.start'; \
+             GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=multinode \
+               SPINIFEX_NODES='${NODES_CSV}' SPINIFEX_NODE_IPS='${NODES_CSV}' \
+               SPINIFEX_SSH_USER=tf-user SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
                ARTIFACT_DIR='${ARTIFACT_DIR}' \
                ./${SUITE}.test -test.v -test.timeout=${TMO} \
                2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log'; \

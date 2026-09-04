@@ -69,6 +69,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/preflight"
+	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -1265,6 +1266,9 @@ func (d *Daemon) subscribeAll() error {
 		// here, so the reconcile request flows daemon-ward.
 		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},
 		natsSub{dhcp.TopicOwnerCheck, d.handleDHCPOwnerCheck, "spinifex-workers"},
+		// Node-addressed with no queue group: the fenced guest is on this host,
+		// so a worker on another node would find nothing to stop.
+		natsSub{vbwire.VolumeFencedSubject(d.node), d.handleVolumeFenced, ""},
 	)
 
 	return d.registerNatsSubs(subs)

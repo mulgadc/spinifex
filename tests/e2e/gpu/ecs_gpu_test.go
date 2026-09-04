@@ -97,14 +97,13 @@ func discoverECSGPUNodeAMI(c *harness.AWSClient, vendor string) (amiID, reason s
 // in for asserting on the nvidia-smi table text directly.
 func TestECSGPUTaskExposure(t *testing.T) {
 	fx := requireECSGPUFixture(t)
-	artifacts := harness.ArtifactDir(t, fx.Env)
 
 	harness.Phase(t, "Ensuring ecsInstanceRole instance profile")
 	ensureECSGPUInstanceProfile(t, fx.AWS)
 
 	vpc := harness.EnsureDefaultVPC(t, fx.Harness)
 	harness.AuthorizeSSHIngress(t, fx.AWS, vpc.SGID)
-	keyName, _ := harness.EnsureKeyPair(t, fx.Harness, artifacts)
+	keyName, _ := harness.EnsureKeyPair(t, fx.Harness)
 
 	clusterName := fmt.Sprintf("%s-%d", ecsGPUClusterPfx, time.Now().Unix())
 	harness.Phase(t, "Creating ECS cluster %q", clusterName)

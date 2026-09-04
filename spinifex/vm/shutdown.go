@@ -490,6 +490,32 @@ func (m *Manager) terminateCleanup(instance *VM) {
 // that is the one step whose failure means data loss. QMP, PID-file, fw_cfg
 // and telemetry cleanup stay best-effort and are logged only.
 func (m *Manager) shutdownAndUnmount(instance *VM) error {
+	m.shutdownQEMU(instance)
+
+	var sealErr error
+	if m.deps.VolumeMounter != nil {
+		if err := m.deps.VolumeMounter.Unmount(context.Background(), instance); err != nil {
+			slog.Error("Volume unmount failed", "id", instance.ID, "err", err)
+			sealErr = fmt.Errorf("%w for instance %s: %w", ErrVolumeSealFailed, instance.ID, err)
+		}
+	}
+
+	for _, fw := range instance.Config.FwCfg {
+		if err := os.Remove(fw.File); err != nil && !os.IsNotExist(err) {
+			slog.Warn("Failed to remove fw_cfg temp file", "file", fw.File, "id", instance.ID, "err", err)
+		}
+	}
+
+	removeTelemetryArtifacts(instance)
+
+	return sealErr
+}
+
+// shutdownQEMU takes the guest process down and nothing else. Separated from
+// shutdownAndUnmount for the fence path, which must stop the guest without
+// unmounting: a fenced node's volumes belong to another node now, and an
+// unmount would seal this node's stale copy over theirs.
+func (m *Manager) shutdownQEMU(instance *VM) {
 	if instance.QMPClient != nil {
 		if _, err := sendQMPCommand(context.Background(), instance.QMPClient, qmp.QMPCommand{Execute: "system_powerdown"}, instance.ID); err != nil {
 			slog.Warn("QMP system_powerdown failed (VM may already be stopped)",
@@ -514,24 +540,6 @@ func (m *Manager) shutdownAndUnmount(instance *VM) error {
 			}
 		}
 	}
-
-	var sealErr error
-	if m.deps.VolumeMounter != nil {
-		if err := m.deps.VolumeMounter.Unmount(context.Background(), instance); err != nil {
-			slog.Error("Volume unmount failed", "id", instance.ID, "err", err)
-			sealErr = fmt.Errorf("%w for instance %s: %w", ErrVolumeSealFailed, instance.ID, err)
-		}
-	}
-
-	for _, fw := range instance.Config.FwCfg {
-		if err := os.Remove(fw.File); err != nil && !os.IsNotExist(err) {
-			slog.Warn("Failed to remove fw_cfg temp file", "file", fw.File, "id", instance.ID, "err", err)
-		}
-	}
-
-	removeTelemetryArtifacts(instance)
-
-	return sealErr
 }
 
 // cleanupTapDevices removes the primary VPC tap, every extra ENI tap, and

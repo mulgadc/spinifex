@@ -111,7 +111,7 @@ func RDSClientVMIn(t *testing.T, c *AWSClient, fx *Fixture, env *Env, p RDSClien
 	// The suite-level artifact root, not the calling test's subdirectory: the key
 	// outlives the test that first asked for the VM, and ArtifactDir prunes a
 	// passing test's directory — taking the PEM the next caller needs with it.
-	keyName, keyPath := EnsureKeyPair(t, fx, env.ArtifactDir)
+	keyName, keyPath := EnsureKeyPair(t, fx)
 
 	instanceID := EnsureInstance(t, fx, InstanceSpec{
 		AMIID:        ami,

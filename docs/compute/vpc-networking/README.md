@@ -795,6 +795,103 @@ aws ec2 run-instances --image-id $AMI --instance-type t3.small \
 
 Rule changes take effect immediately — no instance restart needed.
 
+## The Instance-to-Host Plane (Metadata and VPC DNS)
+
+Security groups govern traffic **between instances** and **to the outside**. There
+is a third path they do not touch, and it is the one most easily left exposed:
+traffic from an instance to the **host it runs on**.
+
+Every instance reaches two link-local addresses served by the hypervisor:
+
+| Address | Service | Port |
+| --- | --- | --- |
+| `169.254.169.254` | Instance metadata (IMDS) — cloud-init, instance-role credentials | TCP 80 |
+| `169.254.169.253` | VPC DNS resolver | UDP/TCP 53 |
+
+These are not guest addresses and not OVN routed. Each instance's tap has a
+capture rule on the hypervisor that intercepts any packet addressed to `.254` or
+`.253` and delivers it to a per-ENI internal port in the host network namespace
+(named `ime-*`). That interception is **by destination address only — it does not
+match the port.** A packet to `169.254.169.254:22` is delivered to the host just
+as readily as one to `169.254.169.254:80`.
+
+That matters because host services — SSH, the AWS gateway on 9999, the console on
+3000, the DNS server — bind the wildcard address, so they also answer on these
+link-local addresses. Without a control on the `ime-*` path, an instance can
+reach every one of them, with none of the source scoping that protects the same
+services on the network. A resolver query sent straight to the host's DNS port
+this way also bypasses the per-instance DNS rate limit.
+
+### This plane is invisible to a network firewall
+
+The critical point for anyone securing a deployment: **this traffic never crosses
+the physical NIC.** It is intra-host, on the OVS bridge between the instance's tap
+and the `ime-*` port. A cloud security group, an upstream firewall, `ufw`, or any
+rule written against the WAN interface is not in this path and cannot filter it.
+The only place to enforce it is on the `ime-*` interface in the host itself.
+
+### How it is protected
+
+Spinifex's host firewall carries a rule that scopes the `ime-*` path to exactly
+the two legitimate endpoints and ports — IMDS on `.254:80`, DNS on `.253:53` —
+and drops everything else. Whether you have that rule depends entirely on whether
+the host firewall is on:
+
+| Install path | Host firewall | This plane |
+| --- | --- | --- |
+| **From the ISO** | on | protected |
+| **Binary installer** (`curl \| bash`) or `setup.sh` | **off** | **exposed** |
+| **Binary installer with `--firewall=on`** | on | protected |
+
+The ISO ships the firewall armed, so ISO deployments are protected out of the box.
+**The binary installer ships it off** — deliberately, because it runs on servers
+that may already have services the installer knows nothing about, and a
+default-deny policy could cut them off. The consequence is that a binary install
+left at its default has this plane wide open, and so does every host service on
+the WAN besides.
+
+If you install any way other than the ISO, turn the host firewall on. At install
+time:
+
+```bash
+curl -fsSL https://install.mulgadc.com | bash -s -- --firewall=on
+# or, from a source checkout:
+sudo /usr/local/share/spinifex/setup.sh --firewall=on
+```
+
+or afterwards, in `/etc/spinifex/spinifex.toml`, followed by a daemon restart:
+
+```toml
+[network]
+firewall_enabled = true
+```
+
+Before enabling it, check what else the machine is serving — anything listening
+outside the public port group stops accepting new connections. See
+[Firewall and Cluster Membership](/docs/install-multi-node#firewall-and-cluster-membership)
+for the full port policy and the cluster-formation steps.
+
+### Verifying it
+
+On the hypervisor, the `ime-*` accept should be scoped, not blanket:
+
+```bash
+sudo nft list chain inet spinifex_filter input | grep ime
+# Expect three rules naming 169.254.169.254 tcp dport 80 and 169.254.169.253
+# udp/tcp dport 53 — not a bare `iifname "ime-*" accept`.
+```
+
+From an instance, the two service ports work and nothing else does:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://169.254.169.254/latest/meta-data/   # 401 (IMDSv2)
+dig +short @169.254.169.253 example.com A                                            # resolves
+nc -vz 169.254.169.254 22                                                            # must fail
+```
+
+A missing `spinifex_filter` table means the host firewall is off and this plane
+is unprotected regardless of the rule above.
+
 ## Elastic IPs
 
 Elastic IPs are static public IPs that persist across instance stop/start cycles. Unlike auto-assigned public IPs (which change on stop/start), an Elastic IP stays with your instance.

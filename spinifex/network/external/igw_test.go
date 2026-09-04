@@ -100,10 +100,13 @@ func TestAttachIGW_Distributed_LinkLocalLRP(t *testing.T) {
 	_, hasNat := localnet.Options["nat-addresses"]
 	assert.False(t, hasNat, "nat-addresses is never valid on a localnet port")
 
+	// Distributed mode needs this too. northd scopes each NAT entry with
+	// is_chassis_resident(<vif port>), so the GARP leaves the chassis running
+	// the instance — and without it nothing announces an EIP when it moves.
 	gwPort, err := m.GetLogicalSwitchPort(ctx, topology.GatewaySwitchPort("vpc-1"))
 	require.NoError(t, err)
-	_, hasGwNat := gwPort.Options["nat-addresses"]
-	assert.False(t, hasGwNat, "distributed mode must NOT set nat-addresses")
+	assert.Equal(t, "router", gwPort.Options["nat-addresses"],
+		"an unadvertised EIP keeps resolving to the previous holder's MAC until the ARP cache ages out")
 
 	// Gateway LRP exists with link-local network.
 	lrp, err := m.GetLogicalRouterPort(ctx, topology.GatewayRouterPort("vpc-1"))
@@ -193,6 +196,39 @@ func TestAttachIGW_ClearsStaleLocalnetNATAddresses(t *testing.T) {
 	_, hasNat := localnet.Options["nat-addresses"]
 	assert.False(t, hasNat, "stale nat-addresses must be cleared from the localnet port")
 	assert.Equal(t, "external", localnet.Options["network_name"], "converge must not drop network_name")
+}
+
+// TestAttachIGW_ConvergesNATAdvertisementOnAnAttachedVPC covers the upgrade
+// path, which is the only path that matters on a running cluster. A VPC
+// attached before EIPs were advertised takes the already-attached early return,
+// and nothing else ever rewrites this port — so without a converge its EIPs
+// stay unannounced for the life of the VPC.
+func TestAttachIGW_ConvergesNATAdvertisementOnAnAttachedVPC(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+
+	extSwitchName := topology.ExternalSwitchShared()
+	gwPortName := topology.GatewaySwitchPort("vpc-1")
+	_, _, err := m.EnsureLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: extSwitchName})
+	require.NoError(t, err)
+	require.NoError(t, m.CreateLogicalSwitchPort(ctx, extSwitchName, &nbdb.LogicalSwitchPort{
+		Name:      gwPortName,
+		Type:      "router",
+		Addresses: []string{"router"},
+		Options:   map[string]string{"router-port": topology.GatewayRouterPort("vpc-1")},
+	}))
+
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, []string{"chassis-a"})
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+
+	gwPort, err := m.GetLogicalSwitchPort(ctx, gwPortName)
+	require.NoError(t, err)
+	assert.Equal(t, "router", gwPort.Options["nat-addresses"],
+		"an already-attached VPC must gain EIP advertisement, not keep silence")
+	assert.Equal(t, topology.GatewayRouterPort("vpc-1"), gwPort.Options["router-port"],
+		"converge must not drop router-port")
 }
 
 // The LRP address is written once at attach, so a lease re-issued on a new IP

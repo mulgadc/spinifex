@@ -57,6 +57,11 @@ func MarshalLocalState(vms map[string]*vm.VM) ([]byte, error) {
 	return data, nil
 }
 
+// LocalStateFileMode is the mode of the on-disk instance state file. The daemon
+// writes it and vpcd reads it to serve IMDS; they run as different users in the
+// shared spinifex group, so owner-only would deny every IMDS local lookup.
+const LocalStateFileMode = 0o640
+
 // WriteLocalStateBytes atomically writes pre-marshalled state JSON to path.
 func WriteLocalStateBytes(path string, data []byte) error {
 	dir := filepath.Dir(path)
@@ -65,9 +70,17 @@ func WriteLocalStateBytes(path string, data []byte) error {
 	}
 
 	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, LocalStateFileMode)
 	if err != nil {
 		return fmt.Errorf("open tmp %s: %w", tmp, err)
+	}
+
+	// Explicitly, because OpenFile's mode is masked by the umask the service
+	// happens to inherit, and a 0600 here silently costs IMDS its local lookup.
+	if err := f.Chmod(LocalStateFileMode); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("chmod tmp %s: %w", tmp, err)
 	}
 
 	if _, err := f.Write(data); err != nil {

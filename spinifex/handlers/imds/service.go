@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/iam"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -111,13 +112,21 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 		return nil, fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	eniKV, err := js.KeyValue(ctx, kvBucketENIs)
+	// Every bucket below is retried for the same window before its policy
+	// applies. vpcd starts alongside NATS, so a bucket that is merely not ready
+	// yet must not decide how this node serves metadata for its whole lifetime.
+	openBucket := func(name string) (jetstream.KeyValue, error) {
+		return kvstore.OpenWithRetry(ctx, name, kvstore.DefaultOpenWindow,
+			func(ctx context.Context) (jetstream.KeyValue, error) { return js.KeyValue(ctx, name) })
+	}
+
+	eniKV, err := openBucket(kvBucketENIs)
 	if err != nil {
 		return nil, fmt.Errorf("open %s bucket: %w", kvBucketENIs, err)
 	}
 
 	// Open SG bucket best-effort; IMDS starts fine without it, degrading to raw IDs.
-	sgKV, err := js.KeyValue(ctx, kvBucketSecurityGroups)
+	sgKV, err := openBucket(kvBucketSecurityGroups)
 	if err != nil {
 		slog.Warn("IMDS: security-group bucket unavailable, /security-groups will serve IDs", "bucket", kvBucketSecurityGroups, "err", err)
 		sgKV = nil
@@ -125,12 +134,12 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 
 	// Open subnet/VPC buckets best-effort; the network-interfaces CIDR leaves 404
 	// (and drop from the listing) when a bucket is unavailable, IMDS still starts.
-	subnetKV, err := js.KeyValue(ctx, kvBucketSubnets)
+	subnetKV, err := openBucket(kvBucketSubnets)
 	if err != nil {
 		slog.Warn("IMDS: subnet bucket unavailable, network-interfaces subnet CIDR will 404", "bucket", kvBucketSubnets, "err", err)
 		subnetKV = nil
 	}
-	vpcKV, err := js.KeyValue(ctx, kvBucketVPCs)
+	vpcKV, err := openBucket(kvBucketVPCs)
 	if err != nil {
 		slog.Warn("IMDS: vpc bucket unavailable, network-interfaces VPC CIDR will 404", "bucket", kvBucketVPCs, "err", err)
 		vpcKV = nil

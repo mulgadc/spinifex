@@ -1,12 +1,14 @@
 package vpcd
 
 import (
-	"log/slog"
+	"context"
+	"fmt"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/daemon"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 )
@@ -79,18 +81,19 @@ type recordLoader interface {
 	LoadInstanceRecord(instanceID string) (*vm.InstanceRecord, error)
 }
 
-// newInstanceRecordLoader opens the shared instance record space best-effort:
-// IMDS still serves local hits without it, and it only backs the fallback for
-// an instance that has moved off this node. Returns nil on any failure.
-func newInstanceRecordLoader(nc *nats.Conn) recordLoader {
+// newInstanceRecordLoader opens the shared instance record space, retrying while
+// JetStream comes up. Failing here is fatal by design: without it an instance
+// this node does not hold locally resolves to nothing, and IMDS serves that as
+// "no such instance" — a guest that boots with no key and no error anywhere.
+func newInstanceRecordLoader(ctx context.Context, nc *nats.Conn) (recordLoader, error) {
 	jsm, err := daemon.NewJetStreamManager(nc, 1)
 	if err != nil {
-		slog.Warn("vpcd: JetStream manager unavailable, IMDS instance lookup will not fall back off this node", "err", err)
-		return nil
+		return nil, fmt.Errorf("jetstream manager: %w", err)
 	}
-	if err := jsm.InitKVBucket(); err != nil {
-		slog.Warn("vpcd: instance-state bucket unavailable, IMDS instance lookup will not fall back off this node", "err", err)
-		return nil
+	if _, err := kvstore.OpenWithRetry(ctx, daemon.InstanceStateBucket, kvstore.DefaultOpenWindow,
+		func(context.Context) (struct{}, error) { return struct{}{}, jsm.InitKVBucket() },
+	); err != nil {
+		return nil, err
 	}
-	return jsm
+	return jsm, nil
 }

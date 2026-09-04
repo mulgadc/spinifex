@@ -1116,10 +1116,12 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: meta.ProviderHandle,
 	}); err != nil {
 		slog.ErrorContext(ctx, "DeleteVolume: provider deletion failed", "volumeId", volumeID, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
+		// The terminate reaper retries this every two minutes and logs whatever
+		// it gets back, so a bare code makes a persistent fault unreadable.
+		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume %s: %v", volumeID, err)
 	}
 	if err := s.metadata.DeleteVolume(ctx, accountID, volumeID); err != nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
+		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume metadata %s: %v", volumeID, err)
 	}
 
 	slog.InfoContext(ctx, "DeleteVolume completed", "volumeId", volumeID)

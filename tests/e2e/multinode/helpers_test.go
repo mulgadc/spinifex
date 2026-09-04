@@ -42,7 +42,7 @@ func needAMI(t *testing.T, fix *Fixture, arch string) string {
 // pruned by t.Cleanup as soon as whichever test first calls this one passes.
 func needKeyPair(t *testing.T, fix *Fixture) (name, pemPath string) {
 	t.Helper()
-	return harness.EnsureKeyPair(t, fix.Harness, fix.TmpDir)
+	return harness.EnsureKeyPair(t, fix.Harness)
 }
 
 // Package-scoped trio. Whichever Test* runs first triggers the launch; every other caller of needInstanceTrio reuses the same IDs.

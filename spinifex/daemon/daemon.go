@@ -2613,7 +2613,9 @@ func (d *Daemon) persistState(nodeID string, vms map[string]*vm.VM) error {
 	// the local failure. Revision only advances when the local write (the
 	// source of truth Revision() describes) actually landed.
 	path := d.localStatePath()
+	localStart := time.Now()
 	localErr := WriteLocalStateBytes(path, localData)
+	recordStateWrite("local", len(vms), time.Since(localStart))
 	if localErr != nil {
 		slog.Error("Local state write failed", "path", path, "error", localErr)
 	} else {
@@ -2625,8 +2627,13 @@ func (d *Daemon) persistState(nodeID string, vms map[string]*vm.VM) error {
 	// a set that has not been written yet. vms is the caller's snapshot and
 	// cannot change underneath either write.
 	if d.jsManager != nil {
+		kvStart := time.Now()
 		d.jsManager.WriteNodeMarkerBestEffort(nodeID, kvSyncTimeout)
-		d.jsManager.WriteRunningSet(nodeID, d.config.AZ, vms)
+		res := d.jsManager.WriteRunningSet(nodeID, d.config.AZ, vms)
+		// The digest guard means only changed records are written, so the KV
+		// write's cost tracks that count, not the whole set the local write
+		// rewrites.
+		recordStateWrite("kv", res.Written+res.Retired, time.Since(kvStart))
 	}
 
 	if localErr != nil {

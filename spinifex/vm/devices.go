@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -91,6 +92,109 @@ func NetDevice(machineType, netdev, mac string, queues, mtu int) Device {
 		}
 	}
 	return Device{Value: b.String()}
+}
+
+// Blk IOThread pool sizing. One IOThread per virtio-blk device services every
+// virtqueue on it, so a guest with several queues still funnels through a
+// single host thread. QEMU 9.0+ can map queues across a pool instead.
+//
+// The pool is deliberately much smaller than the vCPU count. Red Hat's RHEL 9.4
+// measurements used 4 IOThreads against 192 vCPUs and 96 queues, and OpenShift
+// Virtualization documents 4 as the starting point with 8-16 reserved for very
+// fast local storage — which an NBD export backed by object storage is not.
+const (
+	// BlkIOThreadsPerVCPU divides the vCPU count. The threshold lands at 4
+	// vCPUs, matching the guest size below which neither source expects the
+	// feature to do anything.
+	BlkIOThreadsPerVCPU = 2
+
+	// MaxBlkIOThreads caps the pool. These are real host threads charged to
+	// the node, and a per-device pool multiplies by the volume count.
+	MaxBlkIOThreads = 4
+)
+
+// BlkIOThreadPoolSize returns how many IOThreads to create for one virtio-blk
+// device on a guest with vcpus processors: vcpus/2, clamped to 1..4. A result
+// of 1 reproduces the single-IOThread command line exactly.
+func BlkIOThreadPoolSize(vcpus int) int {
+	n := vcpus / BlkIOThreadsPerVCPU
+	if n < 1 {
+		return 1
+	}
+	if n > MaxBlkIOThreads {
+		return MaxBlkIOThreads
+	}
+	return n
+}
+
+// BlkIOThreadID names the i'th IOThread in a device's pool. The single-thread
+// case keeps the original unsuffixed name so an existing guest's command line
+// is unchanged.
+func BlkIOThreadID(base string, i, poolSize int) string {
+	if poolSize <= 1 {
+		return base
+	}
+	return fmt.Sprintf("%s-%d", base, i)
+}
+
+// iothreadVQMapping is one entry of virtio-blk's iothread-vq-mapping list.
+// Marshalled rather than concatenated: the property is a QAPI struct list and
+// the value has to be valid JSON, so hand-built strings are a silent-corruption
+// risk for no gain.
+type iothreadVQMapping struct {
+	IOThread string `json:"iothread"`
+	VQs      []int  `json:"vqs"`
+}
+
+// blkDeviceJSON is the -device value for a virtio-blk device carrying an
+// iothread-vq-mapping. QEMU accepts a JSON object as one argv value, which is
+// the only command-line form that can express a nested list.
+type blkDeviceJSON struct {
+	Driver    string              `json:"driver"`
+	Drive     string              `json:"drive"`
+	NumQueues int                 `json:"num-queues,omitempty"`
+	BootIndex int                 `json:"bootindex,omitempty"`
+	Mapping   []iothreadVQMapping `json:"iothread-vq-mapping"`
+}
+
+// BlkDeviceMapped returns a virtio-blk -device that spreads its virtqueues
+// across a pool of poolSize IOThreads, round-robin. Falls back to BlkDevice's
+// scalar iothread= form when poolSize <= 1, so the common small-guest case is
+// byte-for-byte what it was before this existed.
+//
+// Every queue is mapped exactly once and the scalar iothread= property is
+// absent: QEMU treats the two as alternative assignments and rejects both.
+func BlkDeviceMapped(machineType, drive, iothreadBase string, queues, bootIdx, poolSize int) (Device, error) {
+	if poolSize <= 1 || queues <= 1 || IsMMIO(machineType) {
+		return BlkDevice(machineType, drive, iothreadBase, queues, bootIdx), nil
+	}
+	if poolSize > queues {
+		poolSize = queues
+	}
+
+	vqs := make([][]int, poolSize)
+	for q := range queues {
+		vqs[q%poolSize] = append(vqs[q%poolSize], q)
+	}
+	mapping := make([]iothreadVQMapping, 0, poolSize)
+	for i := range vqs {
+		mapping = append(mapping, iothreadVQMapping{
+			IOThread: BlkIOThreadID(iothreadBase, i, poolSize),
+			VQs:      vqs[i],
+		})
+	}
+
+	b, err := json.Marshal(blkDeviceJSON{
+		Driver:    "virtio-blk-pci",
+		Drive:     drive,
+		NumQueues: queues,
+		BootIndex: bootIdx,
+		Mapping:   mapping,
+	})
+	if err != nil {
+		return Device{}, fmt.Errorf("marshal virtio-blk iothread-vq-mapping: %w", err)
+	}
+	return Device{Value: string(b)}, nil
 }
 
 // BlkDevice returns the appropriate QEMU virtio-blk device string for

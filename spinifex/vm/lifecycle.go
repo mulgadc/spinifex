@@ -1380,9 +1380,18 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 				ReconnectDelay: NBDReconnectDelaySeconds,
 			}
 
-			iothreadID := "ioth-os"
-			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})
-			cfg.Devices = append(cfg.Devices, BlkDevice(machineType, drive.ID, iothreadID, cpuCount, 1))
+			// The boot disk's virtqueues are spread across a pool rather than
+			// all served by one host thread. A pool of 1 emits exactly the
+			// command line this used to, which is every guest below 4 vCPUs.
+			pool := BlkIOThreadPoolSize(cpuCount)
+			for i := range pool {
+				cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: BlkIOThreadID("ioth-os", i, pool)})
+			}
+			dev, err := BlkDeviceMapped(machineType, drive.ID, "ioth-os", cpuCount, 1, pool)
+			if err != nil {
+				return driveConfig{}, fmt.Errorf("boot volume %s: %w", v.Name, err)
+			}
+			cfg.Devices = append(cfg.Devices, dev)
 			cfg.Drives = append(cfg.Drives, drive)
 
 		case v.EFI:

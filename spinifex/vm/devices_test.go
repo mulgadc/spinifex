@@ -1,6 +1,8 @@
 package vm
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -200,4 +202,102 @@ func TestNetDevice_MMIO_NoQueueSizes(t *testing.T) {
 	assert.NotContains(t, d.Value, "rx_queue_size")
 	assert.NotContains(t, d.Value, "mq=on")
 	assert.Contains(t, d.Value, "host_mtu=1442")
+}
+
+func TestBlkIOThreadPoolSize(t *testing.T) {
+	// The threshold sits at 4 vCPUs and the ceiling at 4 threads, matching the
+	// only configurations Red Hat's two write-ups actually recommend.
+	for _, tc := range []struct{ vcpus, want int }{
+		{1, 1}, {2, 1}, {3, 1}, {4, 2}, {6, 3}, {8, 4}, {16, 4}, {192, 4},
+	} {
+		if got := BlkIOThreadPoolSize(tc.vcpus); got != tc.want {
+			t.Errorf("BlkIOThreadPoolSize(%d) = %d, want %d", tc.vcpus, got, tc.want)
+		}
+	}
+}
+
+func TestBlkIOThreadID(t *testing.T) {
+	// A pool of one keeps the unsuffixed name, so an existing guest's command
+	// line does not change when this code lands.
+	if got := BlkIOThreadID("ioth-os", 0, 1); got != "ioth-os" {
+		t.Errorf("pool of 1 = %q, want ioth-os", got)
+	}
+	if got := BlkIOThreadID("ioth-os", 1, 2); got != "ioth-os-1" {
+		t.Errorf("pool of 2 index 1 = %q, want ioth-os-1", got)
+	}
+}
+
+func TestBlkDeviceMapped_SingleThreadUnchanged(t *testing.T) {
+	// Byte-for-byte identical to the scalar form: this is the path every guest
+	// below 4 vCPUs takes, so a difference here is a silent behaviour change.
+	want := BlkDevice("q35", "os", "ioth-os", 2, 1)
+	for _, pool := range []int{0, 1} {
+		got, err := BlkDeviceMapped("q35", "os", "ioth-os", 2, 1, pool)
+		if err != nil {
+			t.Fatalf("pool %d: %v", pool, err)
+		}
+		if got.Value != want.Value {
+			t.Errorf("pool %d = %q, want %q", pool, got.Value, want.Value)
+		}
+	}
+}
+
+func TestBlkDeviceMapped_MMIOFallsBack(t *testing.T) {
+	// microvm has no PCI bus, so the JSON form names a driver it cannot use.
+	got, err := BlkDeviceMapped("microvm", "os", "ioth-os", 4, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got.Value, "virtio-blk-device") {
+		t.Errorf("MMIO = %q, want the virtio-blk-device form", got.Value)
+	}
+}
+
+func TestBlkDeviceMapped_EveryQueueMappedOnce(t *testing.T) {
+	for _, tc := range []struct{ queues, pool int }{{4, 2}, {4, 4}, {8, 4}, {2, 4}, {3, 2}} {
+		got, err := BlkDeviceMapped("q35", "os", "ioth-os", tc.queues, 1, tc.pool)
+		if err != nil {
+			t.Fatalf("queues=%d pool=%d: %v", tc.queues, tc.pool, err)
+		}
+		var dev struct {
+			Driver    string `json:"driver"`
+			NumQueues int    `json:"num-queues"`
+			IOThread  string `json:"iothread"`
+			Mapping   []struct {
+				IOThread string `json:"iothread"`
+				VQs      []int  `json:"vqs"`
+			} `json:"iothread-vq-mapping"`
+		}
+		if err := json.Unmarshal([]byte(got.Value), &dev); err != nil {
+			t.Fatalf("queues=%d pool=%d: not valid JSON: %v (%s)", tc.queues, tc.pool, err, got.Value)
+		}
+		// The scalar property and the mapping are alternative assignments;
+		// QEMU rejects a device carrying both.
+		if dev.IOThread != "" {
+			t.Errorf("queues=%d pool=%d: scalar iothread= present alongside the mapping", tc.queues, tc.pool)
+		}
+		if dev.NumQueues != tc.queues {
+			t.Errorf("queues=%d pool=%d: num-queues=%d", tc.queues, tc.pool, dev.NumQueues)
+		}
+		seen := map[int]int{}
+		for _, m := range dev.Mapping {
+			for _, q := range m.VQs {
+				seen[q]++
+			}
+		}
+		for q := 0; q < tc.queues; q++ {
+			if seen[q] != 1 {
+				t.Errorf("queues=%d pool=%d: vq %d mapped %d times, want exactly 1 (%s)",
+					tc.queues, tc.pool, q, seen[q], got.Value)
+			}
+		}
+		if len(seen) != tc.queues {
+			t.Errorf("queues=%d pool=%d: %d distinct queues mapped", tc.queues, tc.pool, len(seen))
+		}
+		// A pool larger than the queue count would declare IOThread objects
+		// that no mapping entry references, which QEMU rejects.
+		if want := min(tc.pool, tc.queues); len(dev.Mapping) != want {
+			t.Errorf("queues=%d pool=%d: %d mapping entries, want %d", tc.queues, tc.pool, len(dev.Mapping), want)
+		}
+	}
 }

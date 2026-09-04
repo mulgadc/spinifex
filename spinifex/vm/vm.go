@@ -383,6 +383,13 @@ type FwCfgEntry struct {
 func (cfg *Config) Execute() (*exec.Cmd, error) {
 	args := []string{}
 
+	// debug-threads=on makes QEMU name its threads after what they do, so a
+	// host-side `pidstat -t` can tell an IOThread from a vCPU thread. Without it
+	// every row reads qemu-system-x86 and per-thread profiling is guesswork.
+	if cfg.Name != "" {
+		args = append(args, "-name", fmt.Sprintf("guest=%s,debug-threads=on", cfg.Name))
+	}
+
 	if cfg.PIDFile != "" {
 		args = append(args, "-pidfile", cfg.PIDFile)
 	}

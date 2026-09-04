@@ -93,6 +93,15 @@ const (
 	principalTypeRoot        = "root"
 )
 
+// Values GatewayConfig.DescribeSource resolves to. DescribeSourceFanout is
+// today's behaviour and the default; an absent or unrecognised configured
+// value falls back to it rather than failing the gateway to start.
+const (
+	DescribeSourceFanout = "fanout"
+	DescribeSourceShadow = "shadow"
+	DescribeSourceCache  = "cache"
+)
+
 type GatewayConfig struct {
 	Debug          bool       `json:"debug"`
 	DisableLogging bool       `json:"disable_logging"`
@@ -136,7 +145,17 @@ type GatewayConfig struct {
 	// stopped answering, which would otherwise drop out of the answer entirely.
 	// Zero value keeps the pre-existing fan-out-only behaviour.
 	InstanceStatus gateway_ec2_instance.StatusSynthesis
-	IAMService     handlers_iam.IAMService
+	// DescribeSource selects what DescribeInstances answers from. Resolved
+	// once at startup (see config.AWSGWConfig.DescribeSource) to one of the
+	// DescribeSource* constants below; never re-read after that, matching
+	// every other gateway setting and the fact that Reload is a no-op.
+	DescribeSource string
+	// DescribeCache is the cache-served describe path DescribeSource=cache
+	// and DescribeSource=shadow read from. Nil means no cache is wired, so a
+	// gateway built without one behaves exactly as it did before this
+	// existed.
+	DescribeCache gateway_ec2_instance.CacheReader
+	IAMService    handlers_iam.IAMService
 	// BucketStore reaps a tenant's S3 buckets during account teardown. It
 	// signs with the config service credential, which predastore already
 	// trusts to reach any bucket, so this grants enumeration, not access.

@@ -1,9 +1,11 @@
 package gateway_ec2_instance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -562,6 +564,47 @@ func mustMarshalDescribeOutput(t *testing.T, out *ec2.DescribeInstancesOutput) [
 	data, err := json.Marshal(out)
 	require.NoError(t, err)
 	return data
+}
+
+// captureLogs redirects the default slog logger into a buffer for the
+// duration of a test. Not run under t.Parallel(): slog.Default() is a
+// package global, and this test needs it undisturbed by other tests' output.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// An unattributable responder (a frame with no node ID header) makes identity
+// completeness permanently unsatisfiable — the missing/present-node judgement
+// this whole mode exists for never gets an answer once responder identity is
+// untrustworthy. Without a log there is no way to tell that failure mode
+// apart from a well-behaved sweep after the fact, so the log line is the
+// contract under test.
+func TestDescribeInstancesChecked_Identity_UnidentifiedFrameLogsWarning(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+	subscribeEmptyInstanceBuckets(t, nc)
+	logs := captureLogs(t)
+
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1",
+		mustMarshalDescribeOutput(t, &ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}}))
+	// node-2 answers, but with no X-Node-ID header — unattributable.
+	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		_ = msg.Respond(mustMarshalDescribeOutput(t, &ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}}))
+	})
+	require.NoError(t, err)
+
+	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
+	_, err = DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
+		WithFanoutTimeout(300*time.Millisecond))
+	require.NoError(t, err, "an unidentified frame suppresses NotFound, it does not error the request")
+
+	out := logs.String()
+	assert.Contains(t, out, "no node ID header")
+	assert.Contains(t, out, "unidentified_frames=1")
 }
 
 func TestDescribeInstances_ClosedConnection(t *testing.T) {

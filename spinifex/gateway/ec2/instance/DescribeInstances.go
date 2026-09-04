@@ -334,6 +334,15 @@ func judgeIdentityCompleteness(ctx context.Context, frames []utils.Frame, sum ut
 		reservations = append(reservations, nodeOutput.Reservations...)
 	}
 
+	// An unattributable responder makes completeness permanently unsatisfiable
+	// for identity mode: it can never be resolved to a missing node, so every
+	// sweep it touches stays incomplete forever, which silently suppresses
+	// every absence 404 while looking like a healthy conservative answer.
+	if sum.Unidentified > 0 {
+		slog.WarnContext(ctx, "DescribeInstances: fan-out received frames with no node ID header",
+			"unidentified_frames", sum.Unidentified)
+	}
+
 	ambiguous := sum.Unidentified > 0 || len(sum.ConflictNodes) > 0 || sum.CapHit
 	var bothSets []string
 	for node := range sum.SuccessResponders {

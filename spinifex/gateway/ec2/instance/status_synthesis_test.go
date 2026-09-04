@@ -60,8 +60,20 @@ func statusByID(out *ec2.DescribeInstanceStatusOutput) map[string]*ec2.InstanceS
 	return byID
 }
 
-// answerWith subscribes a single node that returns the given statuses.
-func answerWith(t *testing.T, nc *nats.Conn, statuses ...*ec2.InstanceStatus) {
+// answerWith subscribes as nodeID and replies with the given statuses,
+// carrying the X-Node-ID header a real daemon reply sets, so the fan-out's
+// responder-identity path is what these tests actually exercise.
+func answerWith(t *testing.T, nc *nats.Conn, nodeID string, statuses ...*ec2.InstanceStatus) {
+	t.Helper()
+	data, err := json.Marshal(&ec2.DescribeInstanceStatusOutput{InstanceStatuses: statuses})
+	require.NoError(t, err)
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceStatus", nodeID, data)
+}
+
+// answerAnonymously subscribes without a node ID header, as an older daemon
+// or a frame that could not be attributed would, to exercise the
+// identity-loss fallback deliberately rather than by accident.
+func answerAnonymously(t *testing.T, nc *nats.Conn, statuses ...*ec2.InstanceStatus) {
 	t.Helper()
 	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
 		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{InstanceStatuses: statuses})
@@ -74,7 +86,7 @@ func answerWith(t *testing.T, nc *nats.Conn, statuses ...*ec2.InstanceStatus) {
 func TestSynthesis_StaleNodeInstanceReportsImpaired(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	answerWith(t, nc, runningStatus("i-live", "az-a"))
+	answerWith(t, nc, "node-a", runningStatus("i-live", "az-a"))
 
 	synth := StatusSynthesis{
 		Records: fakeRecords{ready: true, vms: []*vm.VM{
@@ -109,7 +121,7 @@ func TestSynthesis_LiveFrameWinsUnchanged(t *testing.T) {
 	// reconstruct. Synthesis must not overwrite it.
 	nodeFrame := runningStatus("i-001", "az-a")
 	nodeFrame.SystemStatus.Status = aws.String("impaired")
-	answerWith(t, nc, nodeFrame)
+	answerWith(t, nc, "node-a", nodeFrame)
 
 	synth := StatusSynthesis{
 		Records:  fakeRecords{ready: true, vms: []*vm.VM{cachedVM("i-001", "node-a", "az-a", vm.StateRunning)}},
@@ -124,12 +136,15 @@ func TestSynthesis_LiveFrameWinsUnchanged(t *testing.T) {
 		"the node's own frame must be used unchanged")
 }
 
-// A live node that did not report an instance excluded it deliberately.
-// Synthesising over that would override the only party that can see it.
+// node-a answered this fan-out successfully and chose not to report i-gone.
+// That is this request's own answer: the success-responder guard skips it
+// regardless of what its heartbeat says. See
+// TestSynthesis_SuccessResponderOmissionNotBackfilledEvenWhenStale for the
+// same guard exercised with a stale heartbeat instead of a live one.
 func TestSynthesis_LiveNodeSilenceIsNotBackfilled(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	answerWith(t, nc, runningStatus("i-001", "az-a"))
+	answerWith(t, nc, "node-a", runningStatus("i-001", "az-a"))
 
 	synth := StatusSynthesis{
 		Records: fakeRecords{ready: true, vms: []*vm.VM{
@@ -141,7 +156,7 @@ func TestSynthesis_LiveNodeSilenceIsNotBackfilled(t *testing.T) {
 
 	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, synthAccount, "az-a", synth)
 	require.NoError(t, err)
-	require.Len(t, out.InstanceStatuses, 1, "a live node's omission is its own answer")
+	require.Len(t, out.InstanceStatuses, 1, "the answering node's own omission is its own answer")
 }
 
 // An unreadable heartbeat store degrades only the synthesised frames to
@@ -153,7 +168,7 @@ func TestSynthesis_UnknownLivenessDegradesOnlySynthesised(t *testing.T) {
 
 	nodeFrame := runningStatus("i-live", "az-a")
 	nodeFrame.SystemStatus.Status = aws.String("impaired")
-	answerWith(t, nc, nodeFrame)
+	answerWith(t, nc, "node-a", nodeFrame)
 
 	synth := StatusSynthesis{
 		Records: fakeRecords{ready: true, vms: []*vm.VM{
@@ -180,7 +195,7 @@ func TestSynthesis_UnknownLivenessDegradesOnlySynthesised(t *testing.T) {
 func TestSynthesis_StoppedOnStaleNodeStaysOutAndNotApplicable(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	answerWith(t, nc)
+	answerWith(t, nc, "node-active")
 
 	records := fakeRecords{ready: true, vms: []*vm.VM{
 		cachedVM("i-stopped", "node-dead", "az-a", vm.StateStopped),
@@ -205,7 +220,7 @@ func TestSynthesis_StoppedOnStaleNodeStaysOutAndNotApplicable(t *testing.T) {
 func TestSynthesis_HonoursInstanceIDFilter(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	answerWith(t, nc)
+	answerWith(t, nc, "node-active")
 
 	synth := StatusSynthesis{
 		Records: fakeRecords{ready: true, vms: []*vm.VM{
@@ -227,7 +242,7 @@ func TestSynthesis_HonoursInstanceIDFilter(t *testing.T) {
 func TestSynthesis_ColdCacheContributesNothing(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	answerWith(t, nc)
+	answerWith(t, nc, "node-active")
 
 	synth := StatusSynthesis{
 		Records:  fakeRecords{ready: false, vms: []*vm.VM{cachedVM("i-orphan", "node-dead", "az-a", vm.StateRunning)}},
@@ -350,7 +365,7 @@ func TestSynthesis_ErrorResponderInstancesAreSynthesised(t *testing.T) {
 func TestSynthesis_UnidentifiedFrameFallsBackToHeartbeatOnly(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	answerWith(t, nc, runningStatus("i-live", "az-a"))
+	answerAnonymously(t, nc, runningStatus("i-live", "az-a"))
 
 	synth := StatusSynthesis{
 		Records: fakeRecords{ready: true, vms: []*vm.VM{

@@ -2881,7 +2881,9 @@ func (s *InstanceServiceImpl) hostUnderMemoryPressure() bool {
 	return false
 }
 
-func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM, systemImpaired bool) *ec2.InstanceStatus {
+// az is passed rather than read from config because a cache-backed caller
+// projects a record owned by another node, whose AZ is on the record.
+func buildInstanceStatus(v *vm.VM, systemImpaired bool, az string) *ec2.InstanceStatus {
 	state := &ec2.InstanceState{}
 	if info, ok := vm.EC2APIState(v.Status); ok {
 		state.SetCode(info.Code)
@@ -2914,7 +2916,7 @@ func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM, systemImpaired bool)
 	}
 
 	return &ec2.InstanceStatus{
-		AvailabilityZone: aws.String(s.config.AZ),
+		AvailabilityZone: aws.String(az),
 		InstanceId:       aws.String(v.ID),
 		InstanceState:    state,
 		InstanceStatus: &ec2.InstanceStatusSummary{
@@ -3025,43 +3027,21 @@ func instanceStatusMatchesFilters(v *vm.VM, is *ec2.InstanceStatus, filters map[
 func (s *InstanceServiceImpl) DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, accountID string) (*ec2.DescribeInstanceStatusOutput, error) {
 	slog.InfoContext(ctx, "Processing DescribeInstanceStatus request from this node", "accountID", accountID)
 
-	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
+	selection, err := ParseStatusSelection(input, accountID)
 	if err != nil {
 		return nil, err
 	}
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, DescribeInstanceStatusValidFilters)
-	if err != nil {
-		slog.WarnContext(ctx, "DescribeInstanceStatus: invalid filter", "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
-	includedStates := describeInstanceStatusRunningOnly
-	if aws.BoolValue(input.IncludeAllInstances) {
-		includedStates = describeInstanceStatusAllIncluded
-	}
-
 	// SystemStatus is node-wide: evaluate host memory pressure once per request
 	// rather than per instance.
-	systemImpaired := s.hostUnderMemoryPressure()
+	opts := StatusOptions{SystemImpaired: s.hostUnderMemoryPressure(), AZ: s.config.AZ}
 
 	var statuses []*ec2.InstanceStatus
 	s.vmMgr.View(func(vms map[string]*vm.VM) {
 		for _, v := range vms {
-			if !IsInstanceVisible(accountID, v.AccountID) {
-				continue
+			if is := selection.StatusFor(v, opts); is != nil {
+				statuses = append(statuses, is)
 			}
-			if len(instanceIDFilter) > 0 && !instanceIDFilter[v.ID] {
-				continue
-			}
-			if !includedStates[v.Status] {
-				continue
-			}
-			is := s.buildInstanceStatus(v, systemImpaired)
-			if len(parsedFilters) > 0 && !instanceStatusMatchesFilters(v, is, parsedFilters) {
-				continue
-			}
-			statuses = append(statuses, is)
 		}
 	})
 

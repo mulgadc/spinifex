@@ -38,10 +38,22 @@ type StatusSynthesis struct {
 	Liveness nodeLiveness
 }
 
+// fanoutResponders carries the DescribeInstanceStatus fan-out's own responder
+// identity, so synthesis can tell a node that answered and omitted an
+// instance from a node that never answered at all.
+type fanoutResponders struct {
+	// SuccessResponders lists nodes that answered with a decodable
+	// non-error frame, i.e. actually ran their own selection logic.
+	SuccessResponders map[string]bool
+	// Unidentified is the count of frames received with no node ID header.
+	// Above zero, responder identity cannot be trusted for this fan-out.
+	Unidentified int
+}
+
 // synthesize returns status frames for cached instances that no live frame
 // covered and whose owning node is not answering. It is a backfill, never a
 // second opinion: an instance a node reported on is not touched.
-func (s StatusSynthesis) synthesize(ctx context.Context, input *ec2.DescribeInstanceStatusInput, accountID string, covered map[string]bool) []*ec2.InstanceStatus {
+func (s StatusSynthesis) synthesize(ctx context.Context, input *ec2.DescribeInstanceStatusInput, accountID string, covered map[string]bool, responders fanoutResponders) []*ec2.InstanceStatus {
 	if s.Records == nil {
 		return nil
 	}
@@ -66,13 +78,20 @@ func (s StatusSynthesis) synthesize(ctx context.Context, input *ec2.DescribeInst
 			continue
 		}
 
-		// A live node that did not report this instance excluded it on purpose.
-		// Synthesising over that would override the only party that can see it.
 		state := instancecache.NodeUnknown
 		if s.Liveness != nil {
 			state = s.Liveness.State(ctx, v.LastNode)
 		}
-		if state == instancecache.NodeLive {
+
+		if responders.Unidentified > 0 {
+			// Frames could not be attributed to nodes this fan-out, so the
+			// responder set is not trustworthy: fall back to heartbeat age.
+			if state == instancecache.NodeLive {
+				continue
+			}
+		} else if responders.SuccessResponders[v.LastNode] {
+			// The owning node answered this fan-out and chose not to report
+			// this instance — that exclusion is deliberate, not silence.
 			continue
 		}
 

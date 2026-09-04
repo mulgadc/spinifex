@@ -36,7 +36,7 @@ func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStat
 	}
 
 	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstanceStatus", jsonData,
-		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
+		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedResponders: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,8 @@ func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStat
 	// health, which no cached record can reconstruct. The covered set is what
 	// guarantees that; appending last is defence in depth, since dedupStatuses
 	// is first-writer-wins and would keep the live frame regardless.
-	if synth := synthesis.synthesize(ctx, input, accountID, coveredInstanceIDs(allStatuses)); len(synth) > 0 {
+	responders := fanoutResponders{SuccessResponders: sum.SuccessResponders, Unidentified: sum.Unidentified}
+	if synth := synthesis.synthesize(ctx, input, accountID, coveredInstanceIDs(allStatuses), responders); len(synth) > 0 {
 		allStatuses = append(allStatuses, synth...)
 	}
 

@@ -5,12 +5,14 @@ package gateway_ec2_instance
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/instancecache"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -253,8 +255,116 @@ func TestSynthesis_SkipsCoveredInstances(t *testing.T) {
 	}
 
 	got := synth.synthesize(context.Background(), &ec2.DescribeInstanceStatusInput{}, synthAccount,
-		map[string]bool{"i-covered": true})
+		map[string]bool{"i-covered": true}, fanoutResponders{})
 
 	require.Len(t, got, 1, "an instance a node answered for must not be synthesised at all")
 	require.Equal(t, "i-uncovered", aws.StringValue(got[0].InstanceId))
+}
+
+// A node that never answers this fan-out at all, but whose heartbeat has not
+// yet gone stale, must not make its instances vanish. This is the regression
+// the responder-set fix exists for: heartbeat age alone cannot tell "excluded
+// on purpose" from "didn't answer this request".
+func TestSynthesis_SilentButLiveNodeShowsInsufficientData(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	live, err := json.Marshal(&ec2.DescribeInstanceStatusOutput{
+		InstanceStatuses: []*ec2.InstanceStatus{runningStatus("i-live", "az-a")},
+	})
+	require.NoError(t, err)
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceStatus", "node-live", live)
+	// node-silent never subscribes: it is expected but does not answer.
+
+	synth := StatusSynthesis{
+		Records: fakeRecords{ready: true, vms: []*vm.VM{
+			cachedVM("i-live", "node-live", "az-a", vm.StateRunning),
+			cachedVM("i-orphan", "node-silent", "az-a", vm.StateRunning),
+		}},
+		Liveness: fakeLiveness{states: map[string]instancecache.NodeState{
+			"node-live":   instancecache.NodeLive,
+			"node-silent": instancecache.NodeLive,
+		}},
+	}
+
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 2, synthAccount, "az-a", synth)
+	require.NoError(t, err)
+
+	byID := statusByID(out)
+	require.Len(t, byID, 2, "a silent-but-live node's instance must not disappear")
+	require.Equal(t, "insufficient-data", aws.StringValue(byID["i-orphan"].SystemStatus.Status))
+}
+
+// A node that answered the fan-out successfully and chose not to report an
+// instance is respected even when its heartbeat reads stale: the omission is
+// this request's own answer, not a symptom for heartbeat age to reinterpret.
+func TestSynthesis_SuccessResponderOmissionNotBackfilledEvenWhenStale(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	data, err := json.Marshal(&ec2.DescribeInstanceStatusOutput{
+		InstanceStatuses: []*ec2.InstanceStatus{runningStatus("i-present", "az-a")},
+	})
+	require.NoError(t, err)
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceStatus", "node-a", data)
+
+	synth := StatusSynthesis{
+		Records: fakeRecords{ready: true, vms: []*vm.VM{
+			cachedVM("i-present", "node-a", "az-a", vm.StateRunning),
+			cachedVM("i-gone", "node-a", "az-a", vm.StateRunning),
+		}},
+		Liveness: fakeLiveness{states: map[string]instancecache.NodeState{"node-a": instancecache.NodeStale}},
+	}
+
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, synthAccount, "az-a", synth)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1, "the answering node's own omission must survive even a stale heartbeat")
+	require.Equal(t, "i-present", aws.StringValue(out.InstanceStatuses[0].InstanceId))
+}
+
+// A node that answered with an error envelope did not run its own selection
+// logic, so its omission is not deliberate: its instances are synthesised.
+func TestSynthesis_ErrorResponderInstancesAreSynthesised(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceStatus", "node-a", utils.GenerateErrorPayload("InvalidParameterValue"))
+
+	synth := StatusSynthesis{
+		Records: fakeRecords{ready: true, vms: []*vm.VM{
+			cachedVM("i-orphan", "node-a", "az-a", vm.StateRunning),
+		}},
+		Liveness: fakeLiveness{states: map[string]instancecache.NodeState{"node-a": instancecache.NodeLive}},
+	}
+
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, synthAccount, "az-a", synth)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1, "an error envelope is not a deliberate omission")
+	require.Equal(t, "i-orphan", aws.StringValue(out.InstanceStatuses[0].InstanceId))
+	require.Equal(t, "insufficient-data", aws.StringValue(out.InstanceStatuses[0].SystemStatus.Status))
+}
+
+// When any frame cannot be attributed to a node, the responder set for the
+// whole fan-out is untrustworthy, so synthesis falls back to the pre-fix
+// heartbeat-only rule: a live node's silence is treated as deliberate again.
+func TestSynthesis_UnidentifiedFrameFallsBackToHeartbeatOnly(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	answerWith(t, nc, runningStatus("i-live", "az-a"))
+
+	synth := StatusSynthesis{
+		Records: fakeRecords{ready: true, vms: []*vm.VM{
+			cachedVM("i-live", "node-live", "az-a", vm.StateRunning),
+			cachedVM("i-orphan", "node-silent", "az-a", vm.StateRunning),
+		}},
+		Liveness: fakeLiveness{states: map[string]instancecache.NodeState{
+			"node-live":   instancecache.NodeLive,
+			"node-silent": instancecache.NodeLive,
+		}},
+	}
+
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, synthAccount, "az-a", synth)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1,
+		"without responder identity, a live node's instance is skipped by the fallback rule")
 }

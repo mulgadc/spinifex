@@ -112,7 +112,10 @@ jobs:
     # inputs.suites.
     if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-iam') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-ecs') || contains(github.event.inputs.suites, 'e2e-storagegrowth') || contains(github.event.inputs.suites, 'e2e-partialblock') || contains(github.event.inputs.suites, 'e2e-rds')
     needs: plan
-    runs-on: [self-hosted, ci-single]
+    # Repo variable overrides; unset keeps the existing systemd runners, so
+    # moving this job to another pool and rolling it back are both a variable
+    # flip rather than a PR. JSON array, e.g. ["self-hosted","spinifex-hosted"].
+    runs-on: ${{ fromJSON(vars.E2E_SINGLE_RUNNER || '["self-hosted","ci-single"]') }}
     timeout-minutes: ${{ fromJSON(needs.plan.outputs.single_timeout) }}
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
@@ -634,7 +637,8 @@ jobs:
     # unprovisioned when none of them are asked for.
     if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-multinode') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-cert')
     needs: plan
-    runs-on: [self-hosted, ci-multi]
+    # See E2E_SINGLE_RUNNER above.
+    runs-on: ${{ fromJSON(vars.E2E_MULTI_RUNNER || '["self-hosted","ci-multi"]') }}
     timeout-minutes: ${{ fromJSON(needs.plan.outputs.multi_timeout) }}
     env:
       TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
@@ -1140,7 +1144,9 @@ jobs:
     name: ES CI Run Summary
     needs: [e2e_single, e2e_multi]
     if: always()
-    runs-on: [self-hosted, ci-single]
+    # Its own variable: this job is tofu-free and guest-free, so it is the
+    # cheapest job to point at a new pool first.
+    runs-on: ${{ fromJSON(vars.E2E_SUMMARY_RUNNER || '["self-hosted","ci-single"]') }}
     timeout-minutes: 5
     permissions:
       actions: read

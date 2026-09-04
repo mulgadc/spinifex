@@ -342,10 +342,13 @@ install_firewall() {
 # tables and reinstalls them only when the service starts, so anything that
 # flushes the whole ruleset breaks elastic IPs silently until the next restart.
 #
-# INPUT only. nftables runs every table registered on a hook and any drop is
-# final, so a forward-hook policy here could not be rescued by vpcd's ACCEPTs in
-# the other table. OUTPUT is untouched: the IMDS reply path egresses under
-# per-tap policy routing.
+# INPUT is policy drop. The forward chain is policy ACCEPT and drops only a few
+# named egress ports: nftables runs every table registered on a hook and a drop
+# is final, so a forward-hook *policy drop* could not be rescued by vpcd's
+# ACCEPTs in the other table — but a policy-accept chain that drops a specific
+# port only silences that port and leaves every other forwarded packet for the
+# other table to accept as before. OUTPUT is untouched: the IMDS reply path
+# egresses under per-tap policy routing.
 
 include "/etc/spinifex/firewall/local.nft"
 include "/etc/spinifex/firewall/open-ports.nft"
@@ -437,8 +440,23 @@ table inet spinifex_filter {
         ip saddr $spinifex_encap_peers meta l4proto esp accept
 
         # Rate-limited so a scan cannot fill the journal. This is the only way
-        # to tell a policy gap from an application fault after the fact.
-        limit rate 5/minute burst 10 packets log prefix "spinifex-fw drop: " level info
+        # to tell a policy gap from an application fault after the fact. The
+        # ceiling is generous: operators ship these logs to an external system,
+        # so dropping detail here costs more than a few extra journal lines.
+        limit rate 10/second burst 20 packets log prefix "spinifex-fw drop: " level info
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+
+        # AWS blocks outbound SMTP by default so a compromised guest cannot turn
+        # a fresh account into a spam relay; match that out of the box. Only
+        # public destinations are blocked — mail to private ranges (an in-VPC or
+        # on-prem relay) still flows. Operators who run mail infrastructure can
+        # remove this by clearing the port set. Logged rate-limited for abuse
+        # triage, then dropped unconditionally.
+        ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } tcp dport { 25, 465, 587 } limit rate 10/minute burst 5 packets log prefix "spinifex-fw smtp-egress: " level info
+        ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } tcp dport { 25, 465, 587 } drop
     }
 }
 RULES

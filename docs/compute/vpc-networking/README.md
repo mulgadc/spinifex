@@ -892,6 +892,41 @@ nc -vz 169.254.169.254 22                                                       
 A missing `spinifex_filter` table means the host firewall is off and this plane
 is unprotected regardless of the rule above.
 
+## Default outbound restrictions
+
+Like AWS, Spinifex blocks outbound SMTP from instances by default. A fresh
+account whose instance is compromised is a favourite tool for spam, so
+connections to the mail submission ports are dropped at the hypervisor before
+they reach the wire:
+
+| Port | Protocol | Purpose |
+| --- | --- | --- |
+| 25 | TCP | SMTP relay |
+| 465 | TCP | SMTP over implicit TLS |
+| 587 | TCP | SMTP submission |
+
+The block applies only to **public** destinations. Mail to private ranges
+(`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, link-local) is untouched, so an
+in-VPC or on-prem relay still works. It is enforced in the host firewall's
+`forward` chain, so — like every other host-firewall rule — it is only in force
+when the host firewall is on (see the table above).
+
+**Operators who run legitimate mail infrastructure can lift it.** The rule lives
+in the generated `inet spinifex_filter` `forward` chain. Removing the two
+`tcp dport { 25, 465, 587 }` rules from the policy template (`scripts/setup.sh`)
+and re-running `setup.sh` clears the block cluster-wide. There is no per-instance
+exception today; that, and moving the enforcement point into vpcd so it travels
+with the VPC rather than the host, are tracked in the egress-abuse-controls plan.
+
+Verify from an instance — the submission ports must fail, ordinary egress must
+not:
+
+```bash
+nc -vz smtp.example.com 25    # must fail (blocked by default)
+nc -vz smtp.example.com 587   # must fail (blocked by default)
+nc -vz example.com 443        # must succeed
+```
+
 ## Elastic IPs
 
 Elastic IPs are static public IPs that persist across instance stop/start cycles. Unlike auto-assigned public IPs (which change on stop/start), an Elastic IP stays with your instance.

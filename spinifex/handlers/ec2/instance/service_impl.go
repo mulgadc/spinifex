@@ -1894,79 +1894,17 @@ func (s *InstanceServiceImpl) DescribeTerminatedInstances(ctx context.Context, i
 	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, 48, "terminated", "DescribeTerminatedInstances")
 }
 
+// describeInstancesFromKV fetches instances from a KV-backed source (stopped
+// or terminated) and hands them to the shared projection. It exists only to
+// supply what the projection cannot read off the request: the list itself and
+// this node's AZ.
 func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string) (*ec2.DescribeInstancesOutput, error) {
-	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
-	if err != nil {
-		return nil, err
-	}
-
-	parsedFilters, filterErr := filterutil.ParseFilters(input.Filters, DescribeInstancesValidFilters)
-	if filterErr != nil {
-		slog.WarnContext(ctx, opName+": invalid filter", "err", filterErr)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
 	instances, err := listFn()
 	if err != nil {
 		slog.ErrorContext(ctx, opName+": failed to list instances", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-
-	reservationMap := make(map[string]*ec2.Reservation)
-
-	for _, instance := range instances {
-		if !IsInstanceVisible(accountID, instance.AccountID) {
-			continue
-		}
-		if len(instanceIDFilter) > 0 && !instanceIDFilter[instance.ID] {
-			continue
-		}
-		if instance.Reservation == nil || instance.Instance == nil {
-			slog.WarnContext(ctx, opName+": skipping instance with nil Reservation/Instance (data integrity issue)",
-				"instanceId", instance.ID)
-			continue
-		}
-
-		resID := ""
-		if instance.Reservation.ReservationId != nil {
-			resID = *instance.Reservation.ReservationId
-		}
-
-		if _, exists := reservationMap[resID]; !exists {
-			reservation := &ec2.Reservation{}
-			reservation.SetReservationId(resID)
-			if instance.Reservation.OwnerId != nil {
-				reservation.SetOwnerId(*instance.Reservation.OwnerId)
-			}
-			reservation.Instances = []*ec2.Instance{}
-			reservationMap[resID] = reservation
-		}
-
-		// Reuse the shared projection so stopped/terminated instances carry the
-		// same fields as the running path. Runtime network and the capacity
-		// reservation are released on stop, so IncludeRuntimeNetwork stays false;
-		// Placement and Spot lineage survive and are projected. The caller's
-		// fallback labels the state when a stored status has no EC2 mapping.
-		projected, _ := ProjectInstance(instance, InstanceProjection{
-			AZ:                s.config.AZ,
-			FallbackStateCode: fallbackCode,
-			FallbackStateName: fallbackName,
-		})
-
-		if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, projected, parsedFilters) {
-			continue
-		}
-
-		reservationMap[resID].Instances = append(reservationMap[resID].Instances, projected)
-	}
-
-	reservations := make([]*ec2.Reservation, 0, len(reservationMap))
-	for _, reservation := range reservationMap {
-		reservations = append(reservations, reservation)
-	}
-
-	slog.InfoContext(ctx, opName+" completed", "count", len(reservations))
-	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+	return ProjectInstanceList(ctx, input, accountID, instances, s.config.AZ, fallbackCode, fallbackName, opName)
 }
 
 // ModifyInstanceAttribute applies a single attribute change. SourceDestCheck=true

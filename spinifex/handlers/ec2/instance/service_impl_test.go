@@ -1090,6 +1090,59 @@ func TestDescribeStoppedInstances_HappyPath(t *testing.T) {
 	assert.Equal(t, "i-stop1", *out.Reservations[0].Instances[0].InstanceId)
 }
 
+// A stopped ManagedBy instance (EKS control-plane, LB) must not leak into a
+// customer's stopped-instance listing, the same as it already does not leak
+// into the running one. Before this, describeInstancesFromKV used the
+// account-only IsInstanceVisible and let it through.
+func TestDescribeStoppedInstances_HidesManagedSystemVMFromCustomer(t *testing.T) {
+	owner := "111122223333"
+	store := &vmmock.StateStore{
+		Stopped: map[string]*vm.VM{
+			"i-ekscp": {
+				ID:        "i-ekscp",
+				AccountID: owner,
+				ManagedBy: tags.ManagedByEKS,
+				Reservation: &ec2.Reservation{
+					ReservationId: aws.String("r-ekscp"),
+					OwnerId:       aws.String(owner),
+				},
+				Instance: &ec2.Instance{InstanceId: aws.String("i-ekscp")},
+			},
+		},
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
+
+	out, err := svc.DescribeStoppedInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations, "managed system VM must not appear in customer's stopped listing")
+}
+
+// A stopped ManagedBy instance owned by the Global account (LB/EKS
+// control-plane VMs are system-account-owned) stays visible to the Global
+// caller — the ManagedBy hide rule only excludes other accounts.
+func TestDescribeStoppedInstances_RootSeesManagedSystemVM(t *testing.T) {
+	store := &vmmock.StateStore{
+		Stopped: map[string]*vm.VM{
+			"i-lb": {
+				ID:        "i-lb",
+				AccountID: utils.GlobalAccountID,
+				ManagedBy: tags.ManagedByELBv2,
+				Reservation: &ec2.Reservation{
+					ReservationId: aws.String("r-lb"),
+					OwnerId:       aws.String(utils.GlobalAccountID),
+				},
+				Instance: &ec2.Instance{InstanceId: aws.String("i-lb")},
+			},
+		},
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
+
+	out, err := svc.DescribeStoppedInstances(context.Background(), &ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1, "root still sees the managed system VM")
+	assert.Equal(t, "i-lb", *out.Reservations[0].Instances[0].InstanceId)
+}
+
 func TestDescribeTerminatedInstances_NilStore(t *testing.T) {
 	svc := &InstanceServiceImpl{}
 	_, err := svc.DescribeTerminatedInstances(context.Background(), &ec2.DescribeInstancesInput{}, "")

@@ -267,13 +267,31 @@ func TestDescribeInstances_EarlyExitWithExpectedNodes(t *testing.T) {
 func subscribeEmptyInstanceBuckets(t *testing.T, nc *nats.Conn) {
 	t.Helper()
 	for _, topic := range []string{"ec2.DescribeStoppedInstances", "ec2.DescribeTerminatedInstances"} {
-		_, err := nc.Subscribe(topic, func(msg *nats.Msg) {
-			data, _ := json.Marshal(&ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}})
-			msg.Respond(data)
-		})
-		require.NoError(t, err)
+		subscribeOKInstanceBucket(t, nc, topic)
 	}
 	nc.Flush()
+}
+
+// subscribeOKInstanceBucket answers one bucket topic with an empty, successful
+// result.
+func subscribeOKInstanceBucket(t *testing.T, nc *nats.Conn, topic string) {
+	t.Helper()
+	_, err := nc.Subscribe(topic, func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}})
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+}
+
+// subscribeFailingInstanceBucket answers one bucket topic with an error
+// envelope, so queryInstanceBucket's ok return is false without paying its
+// 3s request timeout.
+func subscribeFailingInstanceBucket(t *testing.T, nc *nats.Conn, topic string) {
+	t.Helper()
+	_, err := nc.Subscribe(topic, func(msg *nats.Msg) {
+		msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInternalError))
+	})
+	require.NoError(t, err)
 }
 
 // TestDescribeInstancesChecked_ExplicitIDNotFound_CompleteSweep covers the
@@ -391,8 +409,10 @@ func TestDescribeInstancesChecked_FilterOnlyNoMatch_ReturnsEmptyNotNotFound(t *t
 // TestDescribeInstancesChecked_ExplicitIDNotFound_NodeTimeout verifies the
 // subtle third criterion: a node timing out during the fan-out must not
 // produce a false NotFound. Only one of two expected nodes answers, so the
-// sweep is provably incomplete and the naive found-set check must be
-// suppressed.
+// sweep is provably incomplete — and since the ID was explicitly named, the
+// answer is a retryable ServiceUnavailable rather than a silent empty 200:
+// an incomplete sweep cannot prove absence, so it must not be reported as if
+// it had.
 func TestDescribeInstancesChecked_ExplicitIDNotFound_NodeTimeout(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
@@ -411,16 +431,17 @@ func TestDescribeInstancesChecked_ExplicitIDNotFound_NodeTimeout(t *testing.T) {
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 2, nil, "123456789012",
 		WithFanoutTimeout(300*time.Millisecond))
 
-	require.NoError(t, err, "an incomplete sweep must never assert a false NotFound")
-	require.NotNil(t, output)
-	assert.Empty(t, output.Reservations)
+	require.Error(t, err, "an incomplete sweep must never assert a false NotFound, but must not stay silent either")
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
+	assert.False(t, awserrors.IsTerminal(err), "the partiality signal must be retryable, not terminal")
+	assert.Nil(t, output)
 }
 
 // --- Identity-mode completeness (nodeIDs set) ---
 
 // A missing configured node suppresses NotFound even though the requested ID
-// never showed up in what did arrive: the sweep is provably incomplete, so
-// silence is the only safe answer.
+// never showed up in what did arrive: the sweep is provably incomplete, so a
+// retryable error is the only safe answer for a named ID.
 func TestDescribeInstancesChecked_Identity_MissingNodeSuppressesNotFound(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
@@ -439,11 +460,9 @@ func TestDescribeInstancesChecked_Identity_MissingNodeSuppressesNotFound(t *test
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
 		WithFanoutTimeout(300*time.Millisecond))
 
-	// The sweep stays lenient on a partial view — node-1's reservations are
-	// still returned — it is only the NotFound assertion that a missing node
-	// must suppress.
-	require.NoError(t, err, "a node missing from the configured set must never assert a false NotFound")
-	require.NotNil(t, output)
+	require.Error(t, err, "a node missing from the configured set must never assert a false NotFound")
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
+	assert.Nil(t, output)
 }
 
 // The positive counterpart: every configured node answers, so the sweep is
@@ -473,7 +492,8 @@ func TestDescribeInstancesChecked_Identity_AllNodesAnswer_NotFoundAsserted(t *te
 
 // A node that answers with a decodable error envelope (a 5xx from that node)
 // never becomes a valid responder, so it counts the same as a missing node —
-// the sweep stays incomplete and NotFound is suppressed.
+// the sweep stays incomplete and NotFound is suppressed in favour of a
+// retryable error.
 func TestDescribeInstancesChecked_Identity_ErroringNodeSuppressesNotFound(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
@@ -488,15 +508,16 @@ func TestDescribeInstancesChecked_Identity_ErroringNodeSuppressesNotFound(t *tes
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
 		WithFanoutTimeout(300*time.Millisecond))
 
-	require.NoError(t, err, "an erroring node must suppress NotFound, not be treated as an empty-handed valid responder")
-	require.NotNil(t, output)
-	assert.Empty(t, output.Reservations)
+	require.Error(t, err, "an erroring node must suppress NotFound, not be treated as an empty-handed valid responder")
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
+	assert.Nil(t, output)
 }
 
 // A payload that is neither a valid error envelope nor a decodable
 // DescribeInstancesOutput (a malformed reply) leaves its node out of
 // ValidResponders, so the sweep is incomplete and NotFound is suppressed —
-// the same as a node that never answered at all.
+// the same as a node that never answered at all — in favour of a retryable
+// error.
 func TestDescribeInstancesChecked_Identity_UndecodablePayloadSuppressesNotFound(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
@@ -510,9 +531,9 @@ func TestDescribeInstancesChecked_Identity_UndecodablePayloadSuppressesNotFound(
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
 		WithFanoutTimeout(300*time.Millisecond))
 
-	require.NoError(t, err)
-	require.NotNil(t, output)
-	assert.Empty(t, output.Reservations)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
+	assert.Nil(t, output)
 }
 
 // A node with nil Reservations still decoded successfully, so it is a valid
@@ -552,9 +573,9 @@ func TestDescribeInstancesChecked_Identity_EmptyNodeIDsFallsBackAndStaysSuppress
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, nil, "123456789012",
 		WithFanoutTimeout(300*time.Millisecond))
 
-	require.NoError(t, err)
-	require.NotNil(t, output)
-	assert.Empty(t, output.Reservations)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
+	assert.Nil(t, output)
 }
 
 // mustMarshalDescribeOutput is a t.Helper wrapper so the identity-mode tests
@@ -600,7 +621,8 @@ func TestDescribeInstancesChecked_Identity_UnidentifiedFrameLogsWarning(t *testi
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
 	_, err = DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
 		WithFanoutTimeout(300*time.Millisecond))
-	require.NoError(t, err, "an unidentified frame suppresses NotFound, it does not error the request")
+	require.Error(t, err, "an unidentified frame suppresses NotFound, but a named ID still needs a retryable answer")
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
 
 	out := logs.String()
 	assert.Contains(t, out, "no node ID header")
@@ -847,4 +869,217 @@ func TestAcquireAbsenceProofSlot_DoesNotBlockWhenExhausted(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("acquireAbsenceProofSlot blocked; it must refuse immediately so the backlog cannot grow")
 	}
+}
+
+// --- Task 2: the partiality signal ---
+
+// A --filters-only query never asserts absence, complete sweep or not: a
+// partial listing is a legitimate answer to a listing question. Only one of
+// two expected nodes answers, so the sweep is incomplete, and the call must
+// still return the partial data with no error.
+func TestDescribeInstancesChecked_FilterOnlyIncompleteSweep_StaysPartialNoError(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeEmptyInstanceBuckets(t, nc)
+
+	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{
+			Reservations: []*ec2.Reservation{{
+				ReservationId: aws.String("r-partial"),
+				Instances:     []*ec2.Instance{{InstanceId: aws.String("i-partial")}},
+			}},
+		})
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	nc.Flush()
+
+	input := &ec2.DescribeInstancesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("tag:env"), Values: []*string{aws.String("prod")}}},
+	}
+	output, err := DescribeInstancesChecked(context.Background(), input, nc, 2, nil, "123456789012",
+		WithFanoutTimeout(300*time.Millisecond))
+
+	require.NoError(t, err, "a filters-only query must never assert absence, complete or not")
+	require.NotNil(t, output)
+	assert.Len(t, output.Reservations, 1)
+}
+
+// --- Task 1: separated bucket vetoes ---
+
+// A stopped-bucket failure alone must veto completeness even though the
+// fan-out and the terminated bucket both succeed, and it must be
+// distinguishable — via a dedicated failure on that source — from a
+// terminated-bucket failure below.
+func TestDescribeInstancesForReconcile_StoppedBucketFailure_Incomplete(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeFailingInstanceBucket(t, nc, "ec2.DescribeStoppedInstances")
+	subscribeOKInstanceBucket(t, nc, "ec2.DescribeTerminatedInstances")
+	nc.Flush()
+
+	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}})
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	nc.Flush()
+
+	input := &ec2.DescribeInstancesInput{}
+	_, complete, err := DescribeInstancesForReconcile(context.Background(), input, nc, 1, "123456789012")
+
+	require.NoError(t, err)
+	assert.False(t, complete, "a failed stopped-bucket query alone must veto completeness")
+}
+
+// The terminated-bucket mirror of the test above: this source failing, with
+// the stopped bucket and the fan-out both succeeding, must independently veto
+// completeness the same way.
+func TestDescribeInstancesForReconcile_TerminatedBucketFailure_Incomplete(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeOKInstanceBucket(t, nc, "ec2.DescribeStoppedInstances")
+	subscribeFailingInstanceBucket(t, nc, "ec2.DescribeTerminatedInstances")
+	nc.Flush()
+
+	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}})
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	nc.Flush()
+
+	input := &ec2.DescribeInstancesInput{}
+	_, complete, err := DescribeInstancesForReconcile(context.Background(), input, nc, 1, "123456789012")
+
+	require.NoError(t, err)
+	assert.False(t, complete, "a failed terminated-bucket query alone must veto completeness")
+}
+
+// The positive control for the two tests above: with both buckets and the
+// fan-out all succeeding, the sweep is complete. Without this, a mutation
+// that always reports incomplete would pass both failure tests undetected.
+func TestDescribeInstancesForReconcile_BothBucketsOK_Complete(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeEmptyInstanceBuckets(t, nc)
+
+	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}})
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	nc.Flush()
+
+	input := &ec2.DescribeInstancesInput{}
+	_, complete, err := DescribeInstancesForReconcile(context.Background(), input, nc, 1, "123456789012")
+
+	require.NoError(t, err)
+	assert.True(t, complete)
+}
+
+// A stopped-bucket failure alone, surfaced through the customer-facing
+// variant with a named ID that is genuinely absent from the fan-out, must
+// suppress the 404 in favour of the new retryable signal — never a silent
+// empty 200 and never a false NotFound.
+func TestDescribeInstancesChecked_StoppedBucketFailure_SuppressesNotFound(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeFailingInstanceBucket(t, nc, "ec2.DescribeStoppedInstances")
+	subscribeOKInstanceBucket(t, nc, "ec2.DescribeTerminatedInstances")
+	nc.Flush()
+
+	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}})
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	nc.Flush()
+
+	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
+	output, err := DescribeInstancesChecked(context.Background(), input, nc, 1, nil, "123456789012")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
+	assert.Nil(t, output)
+}
+
+// The terminated-bucket mirror of the test above.
+func TestDescribeInstancesChecked_TerminatedBucketFailure_SuppressesNotFound(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeOKInstanceBucket(t, nc, "ec2.DescribeStoppedInstances")
+	subscribeFailingInstanceBucket(t, nc, "ec2.DescribeTerminatedInstances")
+	nc.Flush()
+
+	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}})
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	nc.Flush()
+
+	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
+	output, err := DescribeInstancesChecked(context.Background(), input, nc, 1, nil, "123456789012")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
+	assert.Nil(t, output)
+}
+
+// --- Untouched paths that must survive this stage unchanged ---
+
+// The forwarded node-4xx path takes precedence over the new partiality
+// signal: when a node reports a deterministic 4xx and nothing else was
+// collected, that code is returned as-is, even for an explicit-ID request
+// that would otherwise reach the retryable-error branch.
+func TestDescribeInstancesChecked_ForwardedNodeClientError_TakesPrecedence(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeEmptyInstanceBuckets(t, nc)
+
+	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInvalidParameterValue))
+	})
+	require.NoError(t, err)
+	nc.Flush()
+
+	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
+	output, err := DescribeInstancesChecked(context.Background(), input, nc, 1, nil, "123456789012")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error(),
+		"a forwarded node 4xx must not be swallowed by the new retryable-error branch")
+	assert.Nil(t, output)
+}
+
+// The absence-proof semaphore still throttles the full DescribeInstancesChecked
+// path, not just the acquireAbsenceProofSlot primitive: with every slot held,
+// an explicit-ID identity-mode call returns RequestLimitExceeded rather than
+// blocking or falling through to the new partiality signal.
+func TestDescribeInstancesChecked_AbsenceProofThrottle_RequestLimitExceeded(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+	subscribeEmptyInstanceBuckets(t, nc)
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1",
+		mustMarshalDescribeOutput(t, &ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}}))
+
+	releases := make([]func(), 0, maxConcurrentAbsenceProofs)
+	t.Cleanup(func() {
+		for _, release := range releases {
+			release()
+		}
+	})
+	for range maxConcurrentAbsenceProofs {
+		release, ok := acquireAbsenceProofSlot()
+		require.True(t, ok)
+		releases = append(releases, release)
+	}
+
+	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
+	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1"}, "123456789012",
+		WithFanoutTimeout(300*time.Millisecond))
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorRequestLimitExceeded, err.Error())
+	assert.Nil(t, output)
 }

@@ -1028,6 +1028,8 @@ var vpcdStartCmd = &cobra.Command{
 			NATExemptCIDRs:          clusterConfig.Network.NATExemptCIDRs,
 			IPSecEnabled:            clusterConfig.Network.IPSecEnabled,
 			UnderlayMTU:             clusterConfig.Network.UnderlayMTU,
+			BlockedWANPorts:         clusterConfig.Network.ResolvedBlockedWANPorts(),
+			EgressBlockExemptVPCs:   clusterConfig.Network.EgressBlockExemptVPCs,
 		})
 		if err != nil {
 			return fmt.Errorf("create vpcd service: %w", err)

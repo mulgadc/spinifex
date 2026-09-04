@@ -32,15 +32,30 @@ type SecurityGroupManager interface {
 	DeleteSG(ctx context.Context, groupID string) error
 }
 
+// EgressPolicy is the platform egress-abuse policy applied to every guest port
+// group regardless of the tenant's security groups. The zero value blocks
+// nothing.
+type EgressPolicy struct {
+	// BlockedWANPorts are TCP destination ports dropped to public destinations
+	// (AWS-parity outbound SMTP block). Empty disables the block.
+	BlockedWANPorts []int
+	// ExemptVPCs are VPC IDs the block is not applied to — the operator
+	// workaround for a tenant with a legitimate need until per-account
+	// exceptions exist.
+	ExemptVPCs map[string]bool
+}
+
 type sgManager struct {
-	ovn ovn.Client
+	ovn    ovn.Client
+	egress EgressPolicy
 }
 
 var _ SecurityGroupManager = (*sgManager)(nil)
 
 // NewSecurityGroupManager constructs a SecurityGroupManager backed by client.
-func NewSecurityGroupManager(client ovn.Client) SecurityGroupManager {
-	return &sgManager{ovn: client}
+// egress carries the platform WAN egress block applied to every guest.
+func NewSecurityGroupManager(client ovn.Client, egress EgressPolicy) SecurityGroupManager {
+	return &sgManager{ovn: client, egress: egress}
 }
 
 func (m *sgManager) EnsureSG(ctx context.Context, sg SGSpec) error {
@@ -68,6 +83,13 @@ func (m *sgManager) applyACLs(ctx context.Context, sg SGSpec) error {
 		return fmt.Errorf("build ACLs for %s: %w", pg, err)
 	}
 	specs := append(InfrastructureACLs(pg), ruleSpecs...)
+	// Platform WAN egress block: applied to every guest unless its VPC is
+	// exempted, at a priority a tenant SG allow cannot override.
+	if !m.egress.ExemptVPCs[sg.VPCID] {
+		if block, ok := BlockedWANEgressACL(pg, m.egress.BlockedWANPorts); ok {
+			specs = append(specs, block)
+		}
+	}
 	if err := m.ovn.ReplaceACLs(ctx, pg, specs); err != nil {
 		return fmt.Errorf("replace ACLs on %s: %w", pg, err)
 	}

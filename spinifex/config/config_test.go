@@ -1115,3 +1115,16 @@ cache_size_mb = -1
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cache_size_mb")
 }
+
+func TestResolvedBlockedWANPorts(t *testing.T) {
+	// Key absent (nil) → AWS-parity default.
+	assert.Equal(t, DefaultBlockedWANPorts, NetworkConfig{}.ResolvedBlockedWANPorts())
+
+	// Explicit empty list → disabled.
+	empty := []int{}
+	assert.Empty(t, NetworkConfig{BlockedPortsWAN: &empty}.ResolvedBlockedWANPorts())
+
+	// Explicit list → verbatim.
+	custom := []int{25, 2525}
+	assert.Equal(t, custom, NetworkConfig{BlockedPortsWAN: &custom}.ResolvedBlockedWANPorts())
+}

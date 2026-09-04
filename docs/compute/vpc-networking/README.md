@@ -795,6 +795,46 @@ aws ec2 run-instances --image-id $AMI --instance-type t3.small \
 
 Rule changes take effect immediately — no instance restart needed.
 
+## Platform Default Egress Restrictions (Outbound SMTP)
+
+Like AWS, Spinifex blocks outbound SMTP from instances **by default** so a
+compromised guest cannot turn a fresh account into a spam relay. Connections to
+the mail ports are dropped at the OVS datapath before they reach the wire:
+
+| Port | Protocol | Purpose |
+| --- | --- | --- |
+| 25 | TCP | SMTP relay |
+| 465 | TCP | SMTP over implicit TLS |
+| 587 | TCP | SMTP submission |
+
+This is a **platform default, not a security-group rule**. It is enforced as an
+OVN egress ACL on every guest's port group at a priority **above** tenant SG
+allows, so a tenant **cannot** open these ports by adding a security-group rule —
+matching AWS, where lifting the block is an operator action, not a tenant one.
+Only **public** destinations are blocked; mail to private ranges (`10/8`,
+`172.16/12`, `192.168/16`, `100.64/10`, link-local) is exempt, so an in-VPC or
+on-prem relay still works. Dropped attempts are logged for abuse triage.
+
+It sits alongside the security-group ACLs and the host firewall (the `nft`
+policy that scopes the node's own ports) as a third datapath control — this one
+applies to guest egress specifically.
+
+**Operator controls** (cluster-wide, in `spinifex.toml`):
+
+```toml
+[network]
+# Omit for the default [25, 465, 587]; set [] to disable entirely.
+blocked_ports_wan = [25, 465, 587]
+
+# Workaround to let a specific tenant/VPC send mail, until per-account
+# exceptions exist: list the VPC IDs to exempt from the block.
+egress_block_exempt_vpcs = ["vpc-0abc123..."]
+```
+
+Changing either value takes effect on the next vpcd reconcile (within the drift
+interval) without restarting instances. Exempting a VPC removes the block for
+**all** guests in that VPC, so scope it narrowly.
+
 ## The Instance-to-Host Plane (Metadata and VPC DNS)
 
 Security groups govern traffic **between instances** and **to the outside**. There

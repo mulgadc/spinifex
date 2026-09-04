@@ -210,3 +210,31 @@ func TestRuleACLSpecs_PriorityAndAction(t *testing.T) {
 		assert.Equal(t, "allow-related", specs[1].Action)
 	}
 }
+
+func TestBlockedWANEgressACL_MatchAndPriority(t *testing.T) {
+	spec, ok := BlockedWANEgressACL("sg_test", []int{25, 465, 587})
+	assert.True(t, ok)
+	assert.Equal(t, "from-lport", spec.Direction)
+	assert.Equal(t, "drop", spec.Action)
+	assert.True(t, spec.Log)
+	assert.Equal(t, denyACLSeverity, spec.Severity)
+	assert.Equal(t, "sg_test-block-wan-egress", spec.Name)
+	assert.Contains(t, spec.Match, "inport == @sg_test")
+	assert.Contains(t, spec.Match, "tcp.dst == {25, 465, 587}")
+	assert.Contains(t, spec.Match, "ip4.dst != {10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16}")
+}
+
+// TestBlockedWANEgressACL_Priority pins the band: above tenant allows so a
+// tenant SG cannot open the port, below DHCP so lease traffic is untouched.
+func TestBlockedWANEgressACL_Priority(t *testing.T) {
+	spec, _ := BlockedWANEgressACL("sg_test", []int{25})
+	assert.Greater(t, spec.Priority, ACLPriorityTenantAllow)
+	assert.Less(t, spec.Priority, ACLPriorityAllowDHCP)
+}
+
+func TestBlockedWANEgressACL_EmptyDisables(t *testing.T) {
+	_, ok := BlockedWANEgressACL("sg_test", nil)
+	assert.False(t, ok)
+	_, ok = BlockedWANEgressACL("sg_test", []int{})
+	assert.False(t, ok)
+}

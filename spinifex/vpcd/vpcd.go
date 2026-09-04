@@ -161,6 +161,12 @@ type Config struct {
 	// UnderlayMTU is the fabric MTU between nodes; the advertised guest MTU is
 	// derived from it.
 	UnderlayMTU int
+	// BlockedWANPorts are TCP destination ports dropped for guest egress to
+	// public destinations (AWS-parity outbound-SMTP block). Empty disables it.
+	BlockedWANPorts []int
+	// EgressBlockExemptVPCs are VPC IDs the WAN egress block skips — the
+	// operator workaround for a tenant with a legitimate need.
+	EgressBlockExemptVPCs []string
 }
 
 // Service implements the Spinifex service interface for vpcd.
@@ -496,7 +502,14 @@ func launchService(cfg *Config) error {
 
 	igwPool, publicPool := selectExternalPools(cfg.ExternalMode, cfg.ExternalPools)
 
-	sgMgr := policy.NewSecurityGroupManager(liveClient)
+	egressPolicy := policy.EgressPolicy{BlockedWANPorts: cfg.BlockedWANPorts}
+	if len(cfg.EgressBlockExemptVPCs) > 0 {
+		egressPolicy.ExemptVPCs = make(map[string]bool, len(cfg.EgressBlockExemptVPCs))
+		for _, id := range cfg.EgressBlockExemptVPCs {
+			egressPolicy.ExemptVPCs[id] = true
+		}
+	}
+	sgMgr := policy.NewSecurityGroupManager(liveClient, egressPolicy)
 	natOpts := []policy.Option{
 		policy.WithFlowsBarrier(flowsBarrier),
 		policy.WithNeighFlusher(neighFlusher(wanBridge)),

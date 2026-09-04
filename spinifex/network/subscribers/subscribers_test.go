@@ -29,7 +29,7 @@ func newTestSubscriber(t *testing.T) (*Subscriber, *mock.Client) {
 	_ = m.Connect(context.Background())
 
 	topo := topology.NewLiveManager(m)
-	sg := policy.NewSecurityGroupManager(m)
+	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
 	nat, err := policy.NewNATManager(m, policy.NATModeDistributed)
 	if err != nil {
 		t.Fatalf("NewNATManager: %v", err)
@@ -66,7 +66,7 @@ func TestNew_RejectsMissingDeps(t *testing.T) {
 		name string
 		cfg  Config
 	}{
-		{"no topology", Config{SG: policy.NewSecurityGroupManager(mock.New())}},
+		{"no topology", Config{SG: policy.NewSecurityGroupManager(mock.New(), policy.EgressPolicy{})}},
 		{"no sg", Config{Topology: topology.NewLiveManager(mock.New())}},
 	}
 	for _, c := range cases {
@@ -607,7 +607,7 @@ func newTestSubscriberWithMAC(t *testing.T, mac MACBindingFlusher) (*Subscriber,
 	_ = m.Connect(context.Background())
 
 	topo := topology.NewLiveManager(m)
-	sg := policy.NewSecurityGroupManager(m)
+	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
 	nat, err := policy.NewNATManager(m, policy.NATModeDistributed)
 	if err != nil {
 		t.Fatalf("NewNATManager: %v", err)

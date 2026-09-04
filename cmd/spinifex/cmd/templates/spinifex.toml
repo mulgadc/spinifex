@@ -14,6 +14,13 @@ internal_suffix = "spinifex.internal"
 
 [network]
 ipsec_enabled = {{.IPSecEnabled}}
+# Outbound TCP ports blocked for guest egress to public destinations, like AWS's
+# default outbound-SMTP block. Omit the key for the default [25, 465, 587]; set
+# [] to disable. Private destinations are always exempt.
+# blocked_ports_wan = [25, 465, 587]
+# VPC IDs exempted from the block — the operator workaround for a tenant that
+# legitimately needs to send mail, until per-account exceptions exist.
+# egress_block_exempt_vpcs = ["vpc-..."]
 {{- if .ExternalMode}}
 external_mode = "{{.ExternalMode}}"
 {{- range .Pools}}

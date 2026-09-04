@@ -84,6 +84,30 @@ type NetworkConfig struct {
 	// NATExemptCIDRs are extra destinations that skip routed-mode SNAT (added
 	// to the transit /24 in the spinifex_nat_exempt set). nat mode only.
 	NATExemptCIDRs []string `mapstructure:"nat_exempt_cidrs"`
+	// BlockedPortsWAN are TCP destination ports blocked for guest egress to
+	// public destinations, like AWS's default outbound-SMTP block. Three-state:
+	// nil (key absent) uses DefaultBlockedWANPorts; an empty list disables the
+	// block; a list sets it. Private destinations are always exempt. See
+	// ResolvedBlockedWANPorts.
+	BlockedPortsWAN *[]int `mapstructure:"blocked_ports_wan"`
+	// EgressBlockExemptVPCs are VPC IDs exempted from the WAN egress block — the
+	// operator workaround for a tenant with a legitimate need until per-account
+	// exceptions exist.
+	EgressBlockExemptVPCs []string `mapstructure:"egress_block_exempt_vpcs"`
+}
+
+// DefaultBlockedWANPorts mirrors AWS's out-of-the-box outbound mail block:
+// SMTP (25), SMTPS (465) and submission (587).
+var DefaultBlockedWANPorts = []int{25, 465, 587}
+
+// ResolvedBlockedWANPorts returns the configured WAN egress block ports: the
+// AWS-parity default when the key is absent (nil), an empty slice when it is
+// explicitly set to [] (disabled), or the configured list.
+func (c NetworkConfig) ResolvedBlockedWANPorts() []int {
+	if c.BlockedPortsWAN == nil {
+		return DefaultBlockedWANPorts
+	}
+	return *c.BlockedPortsWAN
 }
 
 // BootstrapConfig holds the default VPC infrastructure IDs written by admin init.

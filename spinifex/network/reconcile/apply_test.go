@@ -21,7 +21,7 @@ import (
 func newTestReconciler(t *testing.T) (*reconciler, *mock.Client) {
 	t.Helper()
 	m := mock.New()
-	sg := policy.NewSecurityGroupManager(m)
+	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
 	nat, err := policy.NewNATManager(m, policy.NATModeDistributed)
 	if err != nil {
 		t.Fatalf("NewNATManager: %v", err)
@@ -291,7 +291,7 @@ func TestReconcile_ApplyOnlyKeepsOrphanLSP(t *testing.T) {
 
 func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
 	m := mock.New()
-	sg := policy.NewSecurityGroupManager(m)
+	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
 	nat, _ := policy.NewNATManager(m, policy.NATModeDistributed)
 	routes := policy.NewRouteManager(m)
 	igw, _ := external.NewIGWManager(external.IGWManagerConfig{
@@ -356,7 +356,7 @@ func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
 func TestReconcile_GatewayClaimChecksChassisRedirectPort(t *testing.T) {
 	withFastClaimBounds(t)
 	m := mock.New()
-	sg := policy.NewSecurityGroupManager(m)
+	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
 	nat, _ := policy.NewNATManager(m, policy.NATModeDistributed)
 	routes := policy.NewRouteManager(m)
 	igw, _ := external.NewIGWManager(external.IGWManagerConfig{
@@ -406,7 +406,7 @@ func TestReconcile_GatewayClaimChecksChassisRedirectPort(t *testing.T) {
 
 func TestReconcile_IGWAttachWhenTopologyMissing(t *testing.T) {
 	m := mock.New()
-	sg := policy.NewSecurityGroupManager(m)
+	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
 	nat, _ := policy.NewNATManager(m, policy.NATModeDistributed)
 	routes := policy.NewRouteManager(m)
 	igw, _ := external.NewIGWManager(external.IGWManagerConfig{

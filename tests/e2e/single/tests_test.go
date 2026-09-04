@@ -56,6 +56,13 @@ func TestVPCEgressPaths(t *testing.T) {
 	runVPCEgressPaths(t, requireSingleNodeFixture(t))
 }
 
+// TestWANEgressSMTPBlock boots one public guest and asserts the platform
+// egress ACL drops outbound SMTP (25/465/587) to a public destination while
+// ordinary WAN egress still works — the AWS-parity default block.
+func TestWANEgressSMTPBlock(t *testing.T) {
+	runWANEgressSMTPBlock(t, requireSingleNodeFixture(t))
+}
+
 func TestInstanceClusterStats(t *testing.T) {
 	runInstanceClusterStats(t, requireSingleNodeFixture(t))
 }

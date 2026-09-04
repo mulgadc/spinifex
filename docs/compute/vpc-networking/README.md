@@ -795,6 +795,71 @@ aws ec2 run-instances --image-id $AMI --instance-type t3.small \
 
 Rule changes take effect immediately — no instance restart needed.
 
+## Platform Default Egress Restrictions (Outbound SMTP)
+
+Like AWS, Spinifex blocks outbound SMTP from instances **by default** so a
+compromised guest cannot turn a fresh account into a spam relay. Connections to
+the mail ports are dropped at the OVS datapath before they reach the wire:
+
+| Port | Protocol | Purpose |
+| --- | --- | --- |
+| 25 | TCP | SMTP relay |
+| 465 | TCP | SMTP over implicit TLS |
+| 587 | TCP | SMTP submission |
+
+This is a **platform default, not a security-group rule**. It is enforced as an
+OVN egress ACL on every guest's port group at a priority **above** tenant SG
+allows, so a tenant **cannot** open these ports by adding a security-group rule —
+matching AWS, where lifting the block is an operator action, not a tenant one.
+Only **public** destinations are blocked; mail to private ranges (`10/8`,
+`172.16/12`, `192.168/16`, `100.64/10`, link-local) is exempt, so an in-VPC or
+on-prem relay still works. Dropped attempts are logged for abuse triage.
+
+It sits alongside the security-group ACLs and the host firewall (the `nft`
+policy that scopes the node's own ports) as a third datapath control — this one
+applies to guest egress specifically.
+
+**Operator controls** (cluster-wide, in `spinifex.toml`):
+
+```toml
+[network]
+# Omit for the default [25, 465, 587]; set [] to disable entirely.
+blocked_ports_wan = [25, 465, 587]
+
+# Workaround to let a specific tenant/VPC send mail, until per-account
+# exceptions exist: list the VPC IDs to exempt from the block.
+egress_block_exempt_vpcs = ["vpc-0abc123..."]
+```
+
+Exempting a VPC removes the block for **all** guests in that VPC, so scope it
+narrowly. Add every VPC ID you want exempt to the one list —
+`egress_block_exempt_vpcs = ["vpc-a", "vpc-b", ...]`; the match is by VPC ID, so
+one entry covers every security group in that VPC.
+
+### Multi-node clusters — keep the value identical on every node, and restart vpcd
+
+`[network]` is a cluster-wide *setting*, but it physically lives in each node's
+own `spinifex.toml`, and there is no live distribution of it. Two properties of
+the current implementation make the operator responsible for consistency:
+
+- **One node writes the ACLs.** SG reconcile runs on a single CAS-elected vpcd
+  leader, which programs the shared OVN northbound DB. Whichever node holds the
+  lease is the one whose `blocked_ports_wan` / `egress_block_exempt_vpcs` is in
+  force. Leadership moves on restart or crash, so if the node configs disagree,
+  the effective policy **changes when the leader changes** and the drift pass
+  flaps the ACLs between the two states. Edit the value **identically on every
+  node**.
+- **It is read at vpcd startup, not hot-reloaded.** The policy is built once when
+  vpcd starts; editing the TOML does nothing until vpcd restarts. Deploy the
+  config change to all nodes and restart vpcd cluster-wide (take the target down
+  and confirm no `spx` process survives — a selective single-service restart is
+  not reliable on the shared binary).
+
+This is the current implementation and is deliberately minimal. A future revision
+will move the exemption into shared cluster state (so a single edit propagates
+and cannot drift between nodes) and make it a per-account control rather than a
+per-VPC operator edit; until then, the two rules above are load-bearing.
+
 ## The Instance-to-Host Plane (Metadata and VPC DNS)
 
 Security groups govern traffic **between instances** and **to the outside**. There

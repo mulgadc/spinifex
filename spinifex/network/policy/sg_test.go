@@ -22,7 +22,7 @@ func newSGMockWithPG(t *testing.T, sgID string) (*mock.Client, string) {
 func TestSGManager_EnsureSG_AppliesInfraPlusTenantACLs(t *testing.T) {
 	ctx := context.Background()
 	m, pg := newSGMockWithPG(t, "sg-web")
-	sg := NewSecurityGroupManager(m)
+	sg := NewSecurityGroupManager(m, EgressPolicy{})
 
 	spec := SGSpec{
 		GroupID: "sg-web",
@@ -46,7 +46,7 @@ func TestSGManager_EnsureSG_AppliesInfraPlusTenantACLs(t *testing.T) {
 func TestSGManager_UpdateSG_ReplacesACLSet(t *testing.T) {
 	ctx := context.Background()
 	m, pg := newSGMockWithPG(t, "sg-web")
-	sg := NewSecurityGroupManager(m)
+	sg := NewSecurityGroupManager(m, EgressPolicy{})
 
 	require.NoError(t, sg.EnsureSG(ctx, SGSpec{
 		GroupID:      "sg-web",
@@ -70,7 +70,7 @@ func TestSGManager_UpdateSG_ReplacesACLSet(t *testing.T) {
 func TestSGManager_DeleteSG_ClearsACLsKeepsPortGroup(t *testing.T) {
 	ctx := context.Background()
 	m, pg := newSGMockWithPG(t, "sg-web")
-	sg := NewSecurityGroupManager(m)
+	sg := NewSecurityGroupManager(m, EgressPolicy{})
 
 	require.NoError(t, sg.EnsureSG(ctx, SGSpec{
 		GroupID:      "sg-web",
@@ -88,7 +88,7 @@ func TestSGManager_DeleteSG_ClearsACLsKeepsPortGroup(t *testing.T) {
 func TestSGManager_EnsureSG_MissingPortGroup_ReturnsError(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
-	sg := NewSecurityGroupManager(m)
+	sg := NewSecurityGroupManager(m, EgressPolicy{})
 
 	err := sg.EnsureSG(ctx, SGSpec{GroupID: "sg-missing"})
 	require.Error(t, err)
@@ -100,7 +100,7 @@ func TestSGManager_EnsureSG_MissingPortGroup_ReturnsError(t *testing.T) {
 func TestSGManager_UpdateSG_AtomicReplace(t *testing.T) {
 	ctx := context.Background()
 	m, pg := newSGMockWithPG(t, "sg-web")
-	sg := NewSecurityGroupManager(m)
+	sg := NewSecurityGroupManager(m, EgressPolicy{})
 
 	require.NoError(t, sg.EnsureSG(ctx, SGSpec{
 		GroupID:      "sg-web",
@@ -116,10 +116,56 @@ func TestSGManager_UpdateSG_AtomicReplace(t *testing.T) {
 	assert.NotEmpty(t, m.PortGroups[pg].ACLs, "PG ACLs must never be empty after UpdateSG")
 }
 
+func hasACLNamed(m *mock.Client, name string) bool {
+	for _, a := range m.ACLs {
+		if a.Name != nil && *a.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSGManager_EnsureSG_AppliesWANEgressBlock(t *testing.T) {
+	ctx := context.Background()
+	m, pg := newSGMockWithPG(t, "sg-web")
+	sg := NewSecurityGroupManager(m, EgressPolicy{BlockedWANPorts: []int{25, 465, 587}})
+
+	require.NoError(t, sg.EnsureSG(ctx, SGSpec{
+		GroupID: "sg-web", VPCID: "vpc-1",
+		EgressRules: []Rule{{IPProtocol: "-1", CIDR: "0.0.0.0/0"}},
+	}))
+	// 6 infra + 1 tenant egress + 1 WAN block = 8.
+	assert.Len(t, m.PortGroups[pg].ACLs, 8)
+	assert.True(t, hasACLNamed(m, pg+"-block-wan-egress"))
+}
+
+func TestSGManager_EnsureSG_NoBlockWhenPolicyEmpty(t *testing.T) {
+	ctx := context.Background()
+	m, pg := newSGMockWithPG(t, "sg-web")
+	sg := NewSecurityGroupManager(m, EgressPolicy{})
+
+	require.NoError(t, sg.EnsureSG(ctx, SGSpec{GroupID: "sg-web", VPCID: "vpc-1"}))
+	assert.Len(t, m.PortGroups[pg].ACLs, 6) // infra only
+	assert.False(t, hasACLNamed(m, pg+"-block-wan-egress"))
+}
+
+func TestSGManager_EnsureSG_ExemptVPCOmitsBlock(t *testing.T) {
+	ctx := context.Background()
+	m, pg := newSGMockWithPG(t, "sg-web")
+	sg := NewSecurityGroupManager(m, EgressPolicy{
+		BlockedWANPorts: []int{25},
+		ExemptVPCs:      map[string]bool{"vpc-exempt": true},
+	})
+
+	require.NoError(t, sg.EnsureSG(ctx, SGSpec{GroupID: "sg-web", VPCID: "vpc-exempt"}))
+	assert.Len(t, m.PortGroups[pg].ACLs, 6) // infra only, block skipped
+	assert.False(t, hasACLNamed(m, pg+"-block-wan-egress"))
+}
+
 func TestSGManager_EnsureSG_Idempotent(t *testing.T) {
 	ctx := context.Background()
 	m, pg := newSGMockWithPG(t, "sg-web")
-	sg := NewSecurityGroupManager(m)
+	sg := NewSecurityGroupManager(m, EgressPolicy{})
 
 	spec := SGSpec{
 		GroupID:      "sg-web",

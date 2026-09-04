@@ -46,7 +46,7 @@ func newLiveReconciler(t *testing.T) (*reconciler, ovn.Client) {
 	}
 	t.Cleanup(cli.Close)
 
-	sg := policy.NewSecurityGroupManager(cli)
+	sg := policy.NewSecurityGroupManager(cli, policy.EgressPolicy{})
 	nat, err := policy.NewNATManager(cli, policy.NATModeDistributed)
 	if err != nil {
 		t.Fatalf("NewNATManager: %v", err)

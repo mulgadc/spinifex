@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
@@ -17,6 +18,11 @@ const (
 	// doesn't drop DHCPDISCOVER against the 900 default-deny. AWS users
 	// can't write a 255.255.255.255 rule.
 	ACLPriorityAllowDHCP = 1050
+
+	// ACLPriorityPlatformEgressBlock: platform WAN egress block (AWS-parity
+	// outbound SMTP). Above tenant allows so a tenant SG cannot open it, below
+	// DHCP so lease traffic is untouched. Not tenant-writable.
+	ACLPriorityPlatformEgressBlock = 1049
 
 	// ACLPriorityTenantAllow: tenant ingress/egress allows. Not logged.
 	ACLPriorityTenantAllow = 1000
@@ -59,6 +65,42 @@ func InfrastructureACLs(portGroupName string) []ovn.ACLSpec {
 		arpEgressACL(portGroupName),
 		arpIngressACL(portGroupName),
 	}
+}
+
+// wanEgressBlockPrivateDsts are the destinations the WAN egress block exempts,
+// so intra-VPC and on-prem traffic (e.g. a private mail relay) is never dropped
+// — only public destinations are blocked.
+var wanEgressBlockPrivateDsts = []string{
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
+}
+
+// BlockedWANEgressACL drops guest egress to the given TCP destination ports for
+// public destinations only — matching AWS, which blocks outbound SMTP out of the
+// box so a compromised guest cannot become a spam relay. Logged for abuse
+// triage. Returns ok=false when ports is empty, so a caller can skip it.
+func BlockedWANEgressACL(portGroupName string, ports []int) (ovn.ACLSpec, bool) {
+	if len(ports) == 0 {
+		return ovn.ACLSpec{}, false
+	}
+	portStrs := make([]string, len(ports))
+	for i, p := range ports {
+		portStrs[i] = strconv.Itoa(p)
+	}
+	match := fmt.Sprintf(
+		"inport == @%s && ip4 && ip4.dst != {%s} && tcp && tcp.dst == {%s}",
+		portGroupName,
+		strings.Join(wanEgressBlockPrivateDsts, ", "),
+		strings.Join(portStrs, ", "),
+	)
+	return ovn.ACLSpec{
+		Direction: "from-lport",
+		Priority:  ACLPriorityPlatformEgressBlock,
+		Match:     match,
+		Action:    "drop",
+		Name:      portGroupName + "-block-wan-egress",
+		Log:       true,
+		Severity:  denyACLSeverity,
+	}, true
 }
 
 // RuleACLSpecs builds priority-1000 allow ACLs with "allow-related" action.

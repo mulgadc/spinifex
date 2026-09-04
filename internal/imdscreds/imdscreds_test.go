@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
 // imdsStub serves the IMDSv2 token + role + credentials endpoints under the
@@ -114,5 +116,19 @@ func TestFetch_BadExpirationErrors(t *testing.T) {
 	}, false)
 	if _, err := Fetch(srv.Client(), srv.URL+"/latest"); err == nil {
 		t.Fatal("expected error on unparseable Expiration")
+	}
+}
+
+// The provider must not carry ec2rolecreds' extend-on-failure strategy.
+// aws.CredentialsCache selects it by asserting on the dynamic type, so this
+// assertion is the property that keeps a failed refresh an error.
+func TestNewProvider_WithholdsExtendOnFailure(t *testing.T) {
+	p := NewProvider(nil, "http://169.254.169.254/latest")
+
+	if _, ok := p.(aws.HandleFailRefreshCredentialsCacheStrategy); ok {
+		t.Error("provider implements HandleFailRefreshCredentialsCacheStrategy, so a failed refresh will silently extend a dead credential's expiry")
+	}
+	if _, ok := p.(aws.AdjustExpiresByCredentialsCacheStrategy); !ok {
+		t.Error("provider dropped AdjustExpiresBy, which a caller using an ExpiryWindow relies on")
 	}
 }

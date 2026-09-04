@@ -88,6 +88,63 @@ func TestRetrieve_RefetchesWhenExpired(t *testing.T) {
 	}
 }
 
+// imdsStubFailAfterFirst serves creds on the first credential request and 500s
+// on every one after it, so a test can drive a refresh that fails against a
+// credential the cache has already stored.
+func imdsStubFailAfterFirst(t *testing.T, creds map[string]string) *httptest.Server {
+	t.Helper()
+	var hits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/latest/api/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Aws-Ec2-Metadata-Token-Ttl-Seconds", "21600")
+		_, _ = w.Write([]byte("v2-token"))
+	})
+	mux.HandleFunc("/latest/meta-data/iam/security-credentials/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/latest/meta-data/iam/security-credentials/" {
+			_, _ = w.Write([]byte("node-role"))
+			return
+		}
+		if hits.Add(1) > 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(creds)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A refresh that fails must surface as an error. Left to itself the SDK's
+// ec2rolecreds implements HandleFailToRefresh, which hands back the same dead
+// key with Expires pushed 5-15 minutes out, so the agent would sign requests
+// with a credential the control plane has already rejected — indefinitely,
+// since every subsequent refresh fails the same way.
+func TestRetrieve_FailedRefreshDoesNotExtendExpiry(t *testing.T) {
+	srv := imdsStubFailAfterFirst(t, map[string]string{
+		"Code":            "Success",
+		"AccessKeyId":     "AKIA",
+		"SecretAccessKey": "secret",
+		"Token":           "session",
+		// Already expired, so the next Retrieve must go back to IMDS.
+		"Expiration": time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+	})
+
+	p := NewIMDSProvider(srv.Client(), srv.URL+"/latest")
+	first, err := p.Retrieve(context.Background())
+	if err != nil {
+		t.Fatalf("first Retrieve: %v", err)
+	}
+
+	got, err := p.Retrieve(context.Background())
+	if err == nil {
+		t.Fatalf("refresh failure was reported as success: %+v", got)
+	}
+	if got.Expiration.After(first.Expiration) {
+		t.Errorf("expiry extended on refresh failure: %v -> %v", first.Expiration, got.Expiration)
+	}
+}
+
 func TestRetrieve_CancelledContext(t *testing.T) {
 	srv := imdsStub(t, nil, map[string]string{"Code": "Success", "AccessKeyId": "A", "SecretAccessKey": "B"})
 	p := NewIMDSProvider(srv.Client(), srv.URL+"/latest")

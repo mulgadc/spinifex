@@ -210,7 +210,7 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_instance.DescribeInstanceTypes(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"DescribeInstanceStatus": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceStatusInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceStatus(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, gw.AZ)
+		return gateway_ec2_instance.DescribeInstanceStatus(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, gw.AZ, gw.InstanceStatus)
 	}),
 	"GetConsoleOutput": ec2Handler(func(ctx context.Context, input *ec2.GetConsoleOutputInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.GetConsoleOutput(ctx, input, gw.NATSConn, accountID)

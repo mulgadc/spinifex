@@ -1894,17 +1894,24 @@ func (s *InstanceServiceImpl) DescribeTerminatedInstances(ctx context.Context, i
 	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, 48, "terminated", "DescribeTerminatedInstances")
 }
 
-// describeInstancesFromKV fetches instances from a KV-backed source (stopped
-// or terminated) and hands them to the shared projection. It exists only to
-// supply what the projection cannot read off the request: the list itself and
-// this node's AZ.
+// describeInstancesFromKV validates the request, fetches instances from a
+// KV-backed source (stopped or terminated), and hands them to the shared
+// projection. Validation runs before the fetch: a malformed request is a
+// deterministic client error that must not be masked by a list source that
+// happens to be down.
 func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string) (*ec2.DescribeInstancesOutput, error) {
+	sel, err := ParseInstanceListSelection(ctx, input, accountID, opName)
+	if err != nil {
+		return nil, err
+	}
+
 	instances, err := listFn()
 	if err != nil {
 		slog.ErrorContext(ctx, opName+": failed to list instances", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return ProjectInstanceList(ctx, input, accountID, instances, s.config.AZ, fallbackCode, fallbackName, opName)
+
+	return sel.Reservations(ctx, instances, s.config.AZ, fallbackCode, fallbackName), nil
 }
 
 // ModifyInstanceAttribute applies a single attribute change. SourceDestCheck=true

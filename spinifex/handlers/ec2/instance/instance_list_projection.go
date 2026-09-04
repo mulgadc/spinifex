@@ -11,42 +11,60 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/vm"
 )
 
-// ProjectInstanceList turns a DescribeInstances-shaped request and an
-// already-collected instance list into grouped reservations. It is the
-// KV/cache counterpart of DescribeInstances' vmMgr.View loop — same
-// visibility rule (IsInstanceVisibleToCaller), same per-instance projection
-// via ProjectInstance, same filter application via instanceMatchesFilters —
-// applied to a []*vm.VM instead of the in-memory running map, so a caller
-// outside this package (a gateway-side cache) can call it directly with no
-// InstanceServiceImpl receiver and no s.config.AZ read.
+// InstanceListSelection is a parsed DescribeInstances-shaped request against
+// an already-collected instance list: which instances the caller asked about
+// and the field filters to apply, parsed once per request. It is the KV/cache
+// counterpart of status_selection.go's StatusSelection.
+type InstanceListSelection struct {
+	accountID   string
+	instanceIDs map[string]bool
+	filters     map[string][]string
+	opName      string
+}
+
+// ParseInstanceListSelection validates input and resolves the selection. Its
+// errors are deterministic client errors (malformed ID, unknown filter), so a
+// caller must parse before fetching the instance list: a request that can
+// never succeed must not depend on the list source being reachable to fail.
+func ParseInstanceListSelection(ctx context.Context, input *ec2.DescribeInstancesInput, accountID, opName string) (InstanceListSelection, error) {
+	instanceIDs, err := ParseInstanceIDFilter(input.InstanceIds)
+	if err != nil {
+		return InstanceListSelection{}, err
+	}
+
+	filters, err := filterutil.ParseFilters(input.Filters, DescribeInstancesValidFilters)
+	if err != nil {
+		slog.WarnContext(ctx, opName+": invalid filter", "err", err)
+		return InstanceListSelection{}, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	return InstanceListSelection{accountID: accountID, instanceIDs: instanceIDs, filters: filters, opName: opName}, nil
+}
+
+// Reservations projects instances into grouped ec2.Reservations: same
+// visibility rule as the running path (IsInstanceVisibleToCaller), same
+// per-instance projection via ProjectInstance, same filter application via
+// instanceMatchesFilters — applied to a []*vm.VM instead of the in-memory
+// running map, so a caller outside this package (a gateway-side cache) can
+// call it directly with no InstanceServiceImpl receiver and no s.config.AZ
+// read.
 //
 // fallbackCode/fallbackName label an instance whose stored status has no EC2
 // mapping. Runtime network and the capacity reservation are excluded
 // (IncludeRuntimeNetwork stays false): both are released on stop, so neither
 // a stopped nor a terminated instance has them to project.
-func ProjectInstanceList(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, instances []*vm.VM, az string, fallbackCode int64, fallbackName, opName string) (*ec2.DescribeInstancesOutput, error) {
-	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
-	if err != nil {
-		return nil, err
-	}
-
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, DescribeInstancesValidFilters)
-	if err != nil {
-		slog.WarnContext(ctx, opName+": invalid filter", "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
+func (sel InstanceListSelection) Reservations(ctx context.Context, instances []*vm.VM, az string, fallbackCode int64, fallbackName string) *ec2.DescribeInstancesOutput {
 	reservationMap := make(map[string]*ec2.Reservation)
 
 	for _, instance := range instances {
-		if !IsInstanceVisibleToCaller(accountID, instance) {
+		if !IsInstanceVisibleToCaller(sel.accountID, instance) {
 			continue
 		}
-		if len(instanceIDFilter) > 0 && !instanceIDFilter[instance.ID] {
+		if len(sel.instanceIDs) > 0 && !sel.instanceIDs[instance.ID] {
 			continue
 		}
 		if instance.Reservation == nil || instance.Instance == nil {
-			slog.WarnContext(ctx, opName+": skipping instance with nil Reservation/Instance (data integrity issue)",
+			slog.WarnContext(ctx, sel.opName+": skipping instance with nil Reservation/Instance (data integrity issue)",
 				"instanceId", instance.ID)
 			continue
 		}
@@ -72,7 +90,7 @@ func ProjectInstanceList(ctx context.Context, input *ec2.DescribeInstancesInput,
 			FallbackStateName: fallbackName,
 		})
 
-		if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, projected, parsedFilters) {
+		if len(sel.filters) > 0 && !instanceMatchesFilters(instance, projected, sel.filters) {
 			continue
 		}
 
@@ -84,6 +102,6 @@ func ProjectInstanceList(ctx context.Context, input *ec2.DescribeInstancesInput,
 		reservations = append(reservations, reservation)
 	}
 
-	slog.InfoContext(ctx, opName+" completed", "count", len(reservations))
-	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+	slog.InfoContext(ctx, sel.opName+" completed", "count", len(reservations))
+	return &ec2.DescribeInstancesOutput{Reservations: reservations}
 }

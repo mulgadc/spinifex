@@ -1067,6 +1067,22 @@ func TestDescribeStoppedInstances_NilStore(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
+// An invalid filter is a deterministic client error and must win over a
+// failing list source: validation runs before the KV fetch, so a request
+// that can never succeed does not depend on the store being reachable to
+// fail with the right error.
+func TestDescribeStoppedInstances_InvalidFilterBeatsListError(t *testing.T) {
+	store := &vmmock.StateStore{ListStoppedErr: errors.New("kv unavailable")}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
+
+	input := &ec2.DescribeInstancesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("bogus-filter"), Values: []*string{aws.String("x")}}},
+	}
+	_, err := svc.DescribeStoppedInstances(context.Background(), input, utils.GlobalAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+}
+
 func TestDescribeStoppedInstances_HappyPath(t *testing.T) {
 	owner := utils.GlobalAccountID
 	store := &vmmock.StateStore{

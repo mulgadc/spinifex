@@ -831,9 +831,34 @@ blocked_ports_wan = [25, 465, 587]
 egress_block_exempt_vpcs = ["vpc-0abc123..."]
 ```
 
-Changing either value takes effect on the next vpcd reconcile (within the drift
-interval) without restarting instances. Exempting a VPC removes the block for
-**all** guests in that VPC, so scope it narrowly.
+Exempting a VPC removes the block for **all** guests in that VPC, so scope it
+narrowly. Add every VPC ID you want exempt to the one list —
+`egress_block_exempt_vpcs = ["vpc-a", "vpc-b", ...]`; the match is by VPC ID, so
+one entry covers every security group in that VPC.
+
+### Multi-node clusters — keep the value identical on every node, and restart vpcd
+
+`[network]` is a cluster-wide *setting*, but it physically lives in each node's
+own `spinifex.toml`, and there is no live distribution of it. Two properties of
+the current implementation make the operator responsible for consistency:
+
+- **One node writes the ACLs.** SG reconcile runs on a single CAS-elected vpcd
+  leader, which programs the shared OVN northbound DB. Whichever node holds the
+  lease is the one whose `blocked_ports_wan` / `egress_block_exempt_vpcs` is in
+  force. Leadership moves on restart or crash, so if the node configs disagree,
+  the effective policy **changes when the leader changes** and the drift pass
+  flaps the ACLs between the two states. Edit the value **identically on every
+  node**.
+- **It is read at vpcd startup, not hot-reloaded.** The policy is built once when
+  vpcd starts; editing the TOML does nothing until vpcd restarts. Deploy the
+  config change to all nodes and restart vpcd cluster-wide (take the target down
+  and confirm no `spx` process survives — a selective single-service restart is
+  not reliable on the shared binary).
+
+This is the current implementation and is deliberately minimal. A future revision
+will move the exemption into shared cluster state (so a single edit propagates
+and cannot drift between nodes) and make it a per-account control rather than a
+per-VPC operator edit; until then, the two rules above are load-bearing.
 
 ## The Instance-to-Host Plane (Metadata and VPC DNS)
 

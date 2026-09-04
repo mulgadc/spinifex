@@ -24,7 +24,7 @@ const (
 // also augments from the stopped-instance KV bucket. The aggregator propagates
 // the first deterministic 4xx only when no data was collected, matching
 // DescribeInstances.
-func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, natsConn *nats.Conn, expectedNodes int, accountID, az string) (*ec2.DescribeInstanceStatusOutput, error) {
+func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, natsConn *nats.Conn, expectedNodes int, accountID, az string, synthesis StatusSynthesis) (*ec2.DescribeInstanceStatusOutput, error) {
 	if input == nil {
 		input = &ec2.DescribeInstanceStatusInput{}
 	}
@@ -36,7 +36,7 @@ func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStat
 	}
 
 	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstanceStatus", jsonData,
-		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
+		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedResponders: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +53,15 @@ func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStat
 		if stopped := queryStoppedInstancesForStatus(ctx, natsConn, input, accountID, az); len(stopped) > 0 {
 			allStatuses = append(allStatuses, stopped...)
 		}
+	}
+
+	// A frame an answering node returned must win: it carries that host's own
+	// health, which no cached record can reconstruct. The covered set is what
+	// guarantees that; appending last is defence in depth, since dedupStatuses
+	// is first-writer-wins and would keep the live frame regardless.
+	responders := fanoutResponders{SuccessResponders: sum.SuccessResponders, Unidentified: sum.Unidentified}
+	if synth := synthesis.synthesize(ctx, input, accountID, coveredInstanceIDs(allStatuses), responders); len(synth) > 0 {
+		allStatuses = append(allStatuses, synth...)
 	}
 
 	finalStatuses := dedupStatuses(allStatuses)

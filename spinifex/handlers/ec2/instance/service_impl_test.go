@@ -3983,7 +3983,7 @@ func TestBuildInstanceStatus_ErrorStateProjectsToStopped(t *testing.T) {
 	errored.Status = vm.StateError
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{errored.ID: errored})
 
-	is := svc.buildInstanceStatus(errored, false)
+	is := buildInstanceStatus(errored, false, svc.config.AZ)
 	require.NotNil(t, is.InstanceState)
 	assert.Equal(t, "stopped", *is.InstanceState.Name)
 	assert.Equal(t, int64(80), *is.InstanceState.Code)
@@ -4005,7 +4005,7 @@ func TestBuildInstanceStatus_NeverSurfacesNonAWSName(t *testing.T) {
 		v.Status = state
 		svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
 
-		is := svc.buildInstanceStatus(v, false)
+		is := buildInstanceStatus(v, false, svc.config.AZ)
 		require.NotNil(t, is.InstanceState)
 		assert.True(t, valid[*is.InstanceState.Name],
 			"buildInstanceStatus(%s) surfaced non-AWS name %q", state, *is.InstanceState.Name)
@@ -4023,7 +4023,7 @@ func TestBuildInstanceStatus_IOErrorPauseIsImpaired(t *testing.T) {
 	paused.Health.IOErrorSince = time.Now().Add(-45 * time.Second)
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{paused.ID: paused})
 
-	is := svc.buildInstanceStatus(paused, false)
+	is := buildInstanceStatus(paused, false, svc.config.AZ)
 	assert.Equal(t, "impaired", *is.InstanceStatus.Status)
 	assert.Equal(t, "failed", *is.InstanceStatus.Details[0].Status)
 	assert.Equal(t, "impaired", *is.SystemStatus.Status,
@@ -4043,7 +4043,7 @@ func TestBuildInstanceStatus_ResumedGuestClearsImpairment(t *testing.T) {
 	resumed.Health.IOErrorResumes = 0
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{resumed.ID: resumed})
 
-	is := svc.buildInstanceStatus(resumed, false)
+	is := buildInstanceStatus(resumed, false, svc.config.AZ)
 	assert.Equal(t, "ok", *is.InstanceStatus.Status)
 	assert.Equal(t, "ok", *is.SystemStatus.Status)
 	assert.Nil(t, is.InstanceStatus.Details[0].ImpairedSince)
@@ -4060,7 +4060,7 @@ func TestBuildInstanceStatus_IOErrorBeatsLaunchGrace(t *testing.T) {
 	fresh.Health.IOErrorSince = time.Now().Add(-5 * time.Second)
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{fresh.ID: fresh})
 
-	is := svc.buildInstanceStatus(fresh, false)
+	is := buildInstanceStatus(fresh, false, svc.config.AZ)
 	assert.Equal(t, "impaired", *is.InstanceStatus.Status)
 }
 

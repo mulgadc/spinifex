@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
@@ -572,13 +573,22 @@ func launchService(config *config.ClusterConfig) error {
 	go gw.Quota.RunBedrockRPMSync(janitorCtx, js, len(config.Nodes))
 
 	// Instance cache: a read-only informer over the live instance record space,
-	// started now so it is warm well before anything reads it. Nothing consults
-	// it yet; the describe path still serves from the fan-out and KV.
+	// started now so it is warm well before anything reads it. The describe
+	// path still serves from the fan-out and KV; only status synthesis reads it.
 	instanceCache := instancecache.New(js, instancecache.Config{
 		Bucket: kvstore.Config{Name: daemon.InstanceStateBucket, History: 1, Replicas: len(config.Nodes)},
 		Prefix: daemon.InstanceRecordPrefix,
 	})
 	go instanceCache.Run(janitorCtx)
+
+	// Without this a node that stops answering takes its instances out of
+	// DescribeInstanceStatus entirely, so a dead host reads as no host.
+	gw.InstanceStatus = gateway_ec2_instance.StatusSynthesis{
+		Records: instanceCache,
+		Liveness: instancecache.NewLiveness(js, kvstore.Config{
+			Name: daemon.ClusterStateBucket, History: 1, Replicas: len(config.Nodes),
+		}),
+	}
 
 	handler := gw.SetupRoutes()
 

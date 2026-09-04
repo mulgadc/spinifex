@@ -27,6 +27,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
@@ -131,7 +132,11 @@ type GatewayConfig struct {
 	// falls back to the per-account <acct>.dkr.ecr.<region>.<suffix> name.
 	RegistryHost string
 	AZ           string // Availability zone this gateway is running in
-	IAMService   handlers_iam.IAMService
+	// InstanceStatus backfills DescribeInstanceStatus for instances whose node
+	// stopped answering, which would otherwise drop out of the answer entirely.
+	// Zero value keeps the pre-existing fan-out-only behaviour.
+	InstanceStatus gateway_ec2_instance.StatusSynthesis
+	IAMService     handlers_iam.IAMService
 	// BucketStore reaps a tenant's S3 buckets during account teardown. It
 	// signs with the config service credential, which predastore already
 	// trusts to reach any bucket, so this grants enumeration, not access.

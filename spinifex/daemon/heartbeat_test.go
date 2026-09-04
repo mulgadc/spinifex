@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/instancecache"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -146,4 +147,15 @@ func TestHeartbeatKVContract(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, loaded)
 	assert.Equal(t, h, loaded)
+}
+
+// The gateway judges node staleness as a multiple of this interval, and holds
+// its own copy because it cannot import this package. Lengthening the publish
+// cadence without moving that copy would flap every instance to impaired.
+func TestHeartbeatIntervalMatchesLivenessCopy(t *testing.T) {
+	if heartbeatInterval != instancecache.HeartbeatInterval {
+		t.Fatalf("heartbeat publish interval %v != instancecache.HeartbeatInterval %v; "+
+			"the gateway's staleness threshold is derived from its copy, so the two must move together",
+			heartbeatInterval, instancecache.HeartbeatInterval)
+	}
 }

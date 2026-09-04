@@ -45,17 +45,12 @@ func TestDescribeInstanceStatus_SingleNode(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{
-			InstanceStatuses: []*ec2.InstanceStatus{
-				runningStatus("i-001", "us-east-1a"),
-				runningStatus("i-002", "us-east-1a"),
-			},
-		})
-	})
-	require.NoError(t, err)
+	answerWith(t, nc, "node-a",
+		runningStatus("i-001", "us-east-1a"),
+		runningStatus("i-002", "us-east-1a"),
+	)
 
-	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, "123456789012", "us-east-1a")
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, "123456789012", "us-east-1a", StatusSynthesis{})
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 2)
 }
@@ -65,29 +60,19 @@ func TestDescribeInstanceStatus_TwoNodesDedup(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	// First node returns i-001 (running)
-	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{
-			InstanceStatuses: []*ec2.InstanceStatus{runningStatus("i-001", "us-east-1a")},
-		})
-	})
-	require.NoError(t, err)
+	answerWith(t, nc, "node-a", runningStatus("i-001", "us-east-1a"))
 
 	// Second node also reports i-001 — should dedup
 	nc2, err := nats.Connect(nc.ConnectedUrl())
 	require.NoError(t, err)
 	defer nc2.Close()
 
-	_, err = nc2.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{
-			InstanceStatuses: []*ec2.InstanceStatus{runningStatus("i-001", "us-east-1a")},
-		})
-	})
-	require.NoError(t, err)
+	answerWith(t, nc2, "node-b", runningStatus("i-001", "us-east-1a"))
 
 	require.NoError(t, nc.Flush())
 	require.NoError(t, nc2.Flush())
 
-	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 2, "123456789012", "us-east-1a")
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 2, "123456789012", "us-east-1a", StatusSynthesis{})
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "i-001", *out.InstanceStatuses[0].InstanceId)
@@ -98,26 +83,18 @@ func TestDescribeInstanceStatus_OneNodeErrorOthersData(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	// Node 1: data
-	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{
-			InstanceStatuses: []*ec2.InstanceStatus{runningStatus("i-good", "az-a")},
-		})
-	})
-	require.NoError(t, err)
+	answerWith(t, nc, "node-a", runningStatus("i-good", "az-a"))
 
 	// Node 2: error
 	nc2, err := nats.Connect(nc.ConnectedUrl())
 	require.NoError(t, err)
 	defer nc2.Close()
-	_, err = nc2.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		require.NoError(t, msg.Respond(utils.GenerateErrorPayload("InvalidParameterValue")))
-	})
-	require.NoError(t, err)
+	subscribeAsNode(t, nc2, "ec2.DescribeInstanceStatus", "node-b", utils.GenerateErrorPayload("InvalidParameterValue"))
 
 	require.NoError(t, nc.Flush())
 	require.NoError(t, nc2.Flush())
 
-	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 2, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 2, "123456789012", "az-a", StatusSynthesis{})
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "i-good", *out.InstanceStatuses[0].InstanceId)
@@ -127,12 +104,9 @@ func TestDescribeInstanceStatus_AllNodesError(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		require.NoError(t, msg.Respond(utils.GenerateErrorPayload("InvalidParameterValue")))
-	})
-	require.NoError(t, err)
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceStatus", "node-a", utils.GenerateErrorPayload("InvalidParameterValue"))
 
-	_, err = DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, "123456789012", "az-a")
+	_, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, "123456789012", "az-a", StatusSynthesis{})
 	require.Error(t, err)
 	assert.Equal(t, "InvalidParameterValue", err.Error())
 }
@@ -141,7 +115,7 @@ func TestDescribeInstanceStatus_AllNodesTimeoutReturnsEmpty(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 0, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 0, "123456789012", "az-a", StatusSynthesis{})
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Empty(t, out.InstanceStatuses)
@@ -152,15 +126,10 @@ func TestDescribeInstanceStatus_IncludeAllAddsStoppedAsNotApplicable(t *testing.
 	_, nc := startTestNATSServer(t)
 
 	// Fan-out responder: a running instance
-	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{
-			InstanceStatuses: []*ec2.InstanceStatus{runningStatus("i-running", "az-a")},
-		})
-	})
-	require.NoError(t, err)
+	answerWith(t, nc, "node-a", runningStatus("i-running", "az-a"))
 
 	// Stopped KV responder
-	_, err = nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
+	_, err := nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
 		respondJSON(t, msg, &ec2.DescribeInstancesOutput{
 			Reservations: []*ec2.Reservation{{
 				ReservationId: aws.String("r-stop"),
@@ -174,7 +143,7 @@ func TestDescribeInstanceStatus_IncludeAllAddsStoppedAsNotApplicable(t *testing.
 	require.NoError(t, err)
 
 	input := &ec2.DescribeInstanceStatusInput{IncludeAllInstances: aws.Bool(true)}
-	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a", StatusSynthesis{})
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 2)
 
@@ -202,15 +171,10 @@ func TestDescribeInstanceStatus_RunningWinsOverStoppedDuringRace(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	// Fan-out: i-001 is running
-	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{
-			InstanceStatuses: []*ec2.InstanceStatus{runningStatus("i-001", "az-a")},
-		})
-	})
-	require.NoError(t, err)
+	answerWith(t, nc, "node-a", runningStatus("i-001", "az-a"))
 
 	// Stopped KV also has i-001 (race: stop transition hasn't fully cleared the KV)
-	_, err = nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
+	_, err := nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
 		respondJSON(t, msg, &ec2.DescribeInstancesOutput{
 			Reservations: []*ec2.Reservation{{
 				ReservationId: aws.String("r-1"),
@@ -224,7 +188,7 @@ func TestDescribeInstanceStatus_RunningWinsOverStoppedDuringRace(t *testing.T) {
 	require.NoError(t, err)
 
 	input := &ec2.DescribeInstanceStatusInput{IncludeAllInstances: aws.Bool(true)}
-	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a", StatusSynthesis{})
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "running", *out.InstanceStatuses[0].InstanceState.Name)
@@ -235,12 +199,9 @@ func TestDescribeInstanceStatus_NilInput(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{})
-	})
-	require.NoError(t, err)
+	answerWith(t, nc, "node-a")
 
-	out, err := DescribeInstanceStatus(context.Background(), nil, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), nil, nc, 1, "123456789012", "az-a", StatusSynthesis{})
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Empty(t, out.InstanceStatuses)
@@ -254,7 +215,7 @@ func TestDescribeInstanceStatus_ClosedConnection(t *testing.T) {
 	require.NoError(t, err)
 	closed.Close()
 
-	_, err = DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, closed, 1, "123456789012", "az-a")
+	_, err = DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, closed, 1, "123456789012", "az-a", StatusSynthesis{})
 	require.Error(t, err)
 }
 
@@ -289,14 +250,11 @@ func TestDescribeInstanceStatus_IncludeAllProjectsInputForStoppedHandler(t *test
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{})
-	})
-	require.NoError(t, err)
+	answerWith(t, nc, "node-a")
 
 	var capturedReq ec2.DescribeInstancesInput
 	var unmarshalErr error
-	_, err = nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
+	_, err := nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
 		dec := json.NewDecoder(bytes.NewReader(msg.Data))
 		dec.DisallowUnknownFields()
 		unmarshalErr = dec.Decode(&capturedReq)
@@ -315,7 +273,7 @@ func TestDescribeInstanceStatus_IncludeAllProjectsInputForStoppedHandler(t *test
 		IncludeAllInstances: aws.Bool(true),
 		InstanceIds:         []*string{aws.String("i-stop")},
 	}
-	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a", StatusSynthesis{})
 	require.NoError(t, err)
 	require.NoError(t, unmarshalErr, "projected input must decode cleanly under DisallowUnknownFields")
 	require.Len(t, out.InstanceStatuses, 1)
@@ -422,12 +380,9 @@ func TestDescribeInstanceStatus_IncludeAllWithAZFilterMatches(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{})
-	})
-	require.NoError(t, err)
+	answerWith(t, nc, "node-a")
 
-	_, err = nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
+	_, err := nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
 		respondJSON(t, msg, &ec2.DescribeInstancesOutput{
 			Reservations: []*ec2.Reservation{{Instances: []*ec2.Instance{{
 				InstanceId: aws.String("i-stop"),
@@ -443,7 +398,7 @@ func TestDescribeInstanceStatus_IncludeAllWithAZFilterMatches(t *testing.T) {
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("az-a")}},
 		},
 	}
-	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a", StatusSynthesis{})
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "i-stop", *out.InstanceStatuses[0].InstanceId)
@@ -453,12 +408,9 @@ func TestDescribeInstanceStatus_IncludeAllWithAZFilterMisses(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
-		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{})
-	})
-	require.NoError(t, err)
+	answerWith(t, nc, "node-a")
 
-	_, err = nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
+	_, err := nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
 		respondJSON(t, msg, &ec2.DescribeInstancesOutput{
 			Reservations: []*ec2.Reservation{{Instances: []*ec2.Instance{{
 				InstanceId: aws.String("i-stop"),
@@ -474,7 +426,7 @@ func TestDescribeInstanceStatus_IncludeAllWithAZFilterMisses(t *testing.T) {
 			{Name: aws.String("availability-zone"), Values: []*string{aws.String("az-other")}},
 		},
 	}
-	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a")
+	out, err := DescribeInstanceStatus(context.Background(), input, nc, 1, "123456789012", "az-a", StatusSynthesis{})
 	require.NoError(t, err)
 	assert.Empty(t, out.InstanceStatuses)
 }

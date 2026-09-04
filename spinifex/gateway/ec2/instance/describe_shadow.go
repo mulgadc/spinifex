@@ -240,30 +240,49 @@ const describeShadowResyncInterval = instancecache.DefaultResyncInterval
 // write race sit unflagged for far longer than it ever needs to.
 const describeShadowLiveMismatchGraceDivisor = 6
 
+// describeShadowLiveNodePersistenceMargin cushions instancecache.NodeStaleAfter
+// so a presence divergence on a still-live node is never judged persistent
+// before liveness could plausibly have called the node stale and handed the
+// divergence to DivergenceExpectedFix instead.
+const describeShadowLiveNodePersistenceMargin = 5 * time.Second
+
+// describeShadowLiveNodePersistenceDeadline is the default deadline a
+// presence divergence gets while its owning node still reports live, before
+// being judged persistent instead of expected_propagation. Derived from
+// instancecache.NodeStaleAfter so a change to liveness's own staleness
+// window cannot silently leave this shorter; see
+// TestLiveNodePersistenceDeadlineNeverBeatsLiveness.
+const describeShadowLiveNodePersistenceDeadline = instancecache.NodeStaleAfter + describeShadowLiveNodePersistenceMargin
+
 // ShadowComparator runs the cache-served describe path alongside an
 // already-served fan-out answer, purely to compare and log; it never
 // returns anything a caller could serve. One instance is shared for the
 // gateway's lifetime so its divergence tracker persists across requests,
 // which persistence classification depends on.
 type ShadowComparator struct {
-	tracker        *divergenceTracker
-	resyncInterval time.Duration
-	slots          chan struct{}
+	tracker          *divergenceTracker
+	resyncInterval   time.Duration
+	liveNodeDeadline time.Duration
+	slots            chan struct{}
 }
 
 // NewShadowComparator builds a comparator that treats a divergence as
 // persistent once it has been continuously observed for resyncInterval — the
 // cache's own resync cadence, so "unresolved for one resync" matches what
 // the cache can actually be expected to have caught up on. A non-positive
-// value falls back to instancecache.DefaultResyncInterval.
+// value falls back to instancecache.DefaultResyncInterval. A presence
+// divergence on a still-live node instead uses
+// describeShadowLiveNodePersistenceDeadline, since liveness needs longer
+// than one resync to call that node stale.
 func NewShadowComparator(resyncInterval time.Duration) *ShadowComparator {
 	if resyncInterval <= 0 {
 		resyncInterval = describeShadowResyncInterval
 	}
 	return &ShadowComparator{
-		tracker:        newDivergenceTracker(),
-		resyncInterval: resyncInterval,
-		slots:          make(chan struct{}, maxConcurrentShadowRuns),
+		tracker:          newDivergenceTracker(),
+		resyncInterval:   resyncInterval,
+		liveNodeDeadline: describeShadowLiveNodePersistenceDeadline,
+		slots:            make(chan struct{}, maxConcurrentShadowRuns),
 	}
 }
 
@@ -402,9 +421,11 @@ func (s *ShadowComparator) evalFanoutOnly(ctx context.Context, cache CacheReader
 }
 
 // evalCacheOnly classifies an instance the cache path served that the
-// fan-out did not. The owning node not answering the fan-out is exactly what
-// this cache path exists to paper over; anything else is a propagation
-// candidate.
+// fan-out did not. A node reported anything but live already resolves to
+// DivergenceExpectedFix above; a node still reporting live has not yet had
+// the chance to be called stale, so it keeps its longer liveNodeDeadline
+// rather than the ordinary resync-based one — otherwise a node that dies
+// gets promoted to persistent before liveness could ever explain it.
 func (s *ShadowComparator) evalCacheOnly(ctx context.Context, cache CacheReader, liveness nodeLiveness, accountID, id string, now time.Time) (divergence, *divergenceKey) {
 	v, err := cache.Get(ctx, id)
 	if err == nil && v != nil {
@@ -422,8 +443,12 @@ func (s *ShadowComparator) evalCacheOnly(ctx context.Context, cache CacheReader,
 	if v != nil {
 		state = liveState(ctx, liveness, v.LastNode)
 	}
+	deadline := s.resyncInterval
+	if state == instancecache.NodeLive {
+		deadline = s.liveNodeDeadline
+	}
 	class := DivergenceExpectedPropagation
-	if age >= s.resyncInterval {
+	if age >= deadline {
 		class = DivergencePersistent
 	}
 	return divergence{AccountID: accountID, InstanceID: id, Field: "presence",

@@ -259,12 +259,45 @@ func TestShadowComparator_Run_UnresolvedPastResyncInterval_BecomesPersistent(t *
 		"a divergence still present after outliving the resync interval must escalate to persistent")
 }
 
-// A cache-only divergence still present after outliving the resync interval
-// escalates to persistent the same as a fanout-only one. Uses a live owning
-// node so the first branch inside evalCacheOnly (expected_fix) does not
-// short-circuit before the persistence check is reached.
+// getMissCache mirrors fakeCache for List (so an entry still shows up in a
+// cache-only diff) but Get always misses, modelling a lookup racing an
+// eviction between the two calls — the one way evalCacheOnly's expected_fix
+// short-circuit can be bypassed without a live node.
+type getMissCache struct {
+	fakeCache
+}
+
+func (*getMissCache) Get(context.Context, string) (*vm.VM, error) { return nil, nil }
+
+// A cache-only divergence with no resolvable node state (Get misses, so
+// liveness never enters the picture) still escalates to persistent after
+// outliving the resync interval, the same as a fanout-only one.
 func TestShadowComparator_Run_CacheOnly_UnresolvedPastResyncInterval_BecomesPersistent(t *testing.T) {
 	comparator := gateway_ec2_instance.NewShadowComparator(5 * time.Millisecond)
+	v := cacheVM("i-cacheonly", cacheTestAccount, vm.StateRunning, vm.DesiredRunning)
+	cache := &getMissCache{fakeCache{ready: true, byID: map[string]*vm.VM{"i-cacheonly": v}}}
+	input := shadowInput()
+
+	firstLogs := captureShadowLogs(t)
+	comparator.Run(context.Background(), cache, nil, input, cacheTestAccount, shadowAZ, gateway_ec2_instance.Snapshot{})
+	assert.Contains(t, firstLogs.String(), "class=expected_propagation",
+		"first sighting of a cache-only divergence must start as a propagation candidate")
+
+	time.Sleep(20 * time.Millisecond)
+
+	secondLogs := captureShadowLogs(t)
+	comparator.Run(context.Background(), cache, nil, input, cacheTestAccount, shadowAZ, gateway_ec2_instance.Snapshot{})
+	assert.Contains(t, secondLogs.String(), "class=persistent",
+		"a cache-only divergence still present after outliving the resync interval must escalate to persistent")
+}
+
+// The case env19 nearly hit: a cache-only presence divergence on a node
+// liveness still reports live, observed past the (short) resync interval
+// but still inside the (much longer) staleness window, must not become
+// persistent — liveness has not yet had the chance to call the node stale
+// and hand this to expected_fix.
+func TestShadowComparator_Run_CacheOnly_LiveNodePastResyncInsideStaleness_NotPersistent(t *testing.T) {
+	comparator := gateway_ec2_instance.NewShadowComparatorForTest(5*time.Millisecond, 50*time.Millisecond, 32)
 	v := cacheVM("i-cacheonly", cacheTestAccount, vm.StateRunning, vm.DesiredRunning)
 	v.LastNode = "node-1"
 	cache := &fakeCache{ready: true, byID: map[string]*vm.VM{"i-cacheonly": v}}
@@ -273,15 +306,28 @@ func TestShadowComparator_Run_CacheOnly_UnresolvedPastResyncInterval_BecomesPers
 
 	firstLogs := captureShadowLogs(t)
 	comparator.Run(context.Background(), cache, liveness, input, cacheTestAccount, shadowAZ, gateway_ec2_instance.Snapshot{})
-	assert.Contains(t, firstLogs.String(), "class=expected_propagation",
-		"first sighting of a cache-only divergence with a live node must start as a propagation candidate")
+	assert.Contains(t, firstLogs.String(), "class=expected_propagation")
 
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // past the 5ms resync interval, still inside the 50ms staleness window
 
 	secondLogs := captureShadowLogs(t)
 	comparator.Run(context.Background(), cache, liveness, input, cacheTestAccount, shadowAZ, gateway_ec2_instance.Snapshot{})
-	assert.Contains(t, secondLogs.String(), "class=persistent",
-		"a cache-only divergence still present after outliving the resync interval must escalate to persistent")
+	out := secondLogs.String()
+	assert.Contains(t, out, "class=expected_propagation",
+		"a live node's cache-only divergence past the resync interval must not become persistent before its staleness window elapses")
+	assert.NotContains(t, out, "class=persistent")
+}
+
+// Guards the constant that bounds live-node persistence promotion so it can
+// never fall below instancecache.NodeStaleAfter again — the same drift
+// concern daemon/heartbeat_test.go guards for the heartbeat interval copy.
+func TestLiveNodePersistenceDeadlineNeverBeatsLiveness(t *testing.T) {
+	deadline := gateway_ec2_instance.LiveNodePersistenceDeadlineForTest()
+	if deadline < instancecache.NodeStaleAfter {
+		t.Fatalf("live-node persistence deadline %v is shorter than instancecache.NodeStaleAfter %v; "+
+			"a divergence could be judged persistent before liveness ever gets to call the node stale",
+			deadline, instancecache.NodeStaleAfter)
+	}
 }
 
 // A field-value mismatch still present after outliving the resync interval
@@ -369,7 +415,7 @@ func TestShadowComparator_Run_ConcurrencyBudgetExhausted_Skips(t *testing.T) {
 		acquired:  make(chan struct{}),
 		release:   release,
 	}
-	comparator := gateway_ec2_instance.NewShadowComparatorForTest(time.Minute, 1)
+	comparator := gateway_ec2_instance.NewShadowComparatorForTest(time.Minute, 0, 1)
 
 	done := make(chan struct{})
 	go func() {

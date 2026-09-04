@@ -40,8 +40,8 @@ const (
 	// path correctly hides — the deliberate visibility fix, working.
 	DivergenceExpectedVisibilityTightening DivergenceClass = "expected_visibility_tightening"
 	// DivergenceUnexplained has no structural account for it: the two
-	// disagree with no node event, or disagree on a field value while the
-	// owning node is live and answering. Blocks the flip.
+	// disagree with no node event, or a live-node field mismatch is still
+	// present after its (short) propagation grace. Blocks the flip.
 	DivergenceUnexplained DivergenceClass = "unexplained"
 	// DivergencePersistent is a divergence whose "fine" verdict depended on
 	// convergence (DivergenceExpectedPropagation) that is still present
@@ -137,6 +137,8 @@ func diffSnapshots(fanoutSnap, cacheSnap Snapshot) rawDiff {
 // never issues the whole-account listing that lets a resolved key be pruned
 // by scope. It is a backstop, not the normal path: the normal path prunes a
 // key the moment a shadow run rechecks its scope and finds it settled.
+// Deliberately untested: exercising eviction means driving 8192+ entries, a
+// memory backstop rather than a correctness path this mode is judged on.
 const maxTrackedDivergences = 8192
 
 // divergenceKey identifies one tracked divergence: an instance, and which
@@ -229,6 +231,14 @@ const maxConcurrentShadowRuns = 32
 // reclassifies it as DivergencePersistent. Callers wiring a real cache
 // should pass its actual resync interval instead; see NewShadowComparator.
 const describeShadowResyncInterval = instancecache.DefaultResyncInterval
+
+// describeShadowLiveMismatchGraceDivisor shrinks the resync interval into
+// the grace a field mismatch gets on a live, answering node: the KV write
+// behind a cache update follows the node's own change over a watch that
+// delivers in milliseconds, so a live node should converge in a small
+// fraction of one resync cycle. A full interval would let an ordinary
+// write race sit unflagged for far longer than it ever needs to.
+const describeShadowLiveMismatchGraceDivisor = 6
 
 // ShadowComparator runs the cache-served describe path alongside an
 // already-served fan-out answer, purely to compare and log; it never
@@ -421,9 +431,13 @@ func (s *ShadowComparator) evalCacheOnly(ctx context.Context, cache CacheReader,
 }
 
 // evalMismatch classifies an instance both sides served with a differing
-// state. A live, answering owning node leaves no node event to explain the
-// disagreement, so it is unexplained immediately rather than given a
-// propagation grace period; anything else is a propagation candidate.
+// state. The KV write behind a cache update follows the node's own state
+// change, so even a live, answering node has an ordinary propagation
+// window — it just gets a shorter grace than a not-live one, since the
+// watch behind it delivers in milliseconds. A live-node mismatch that
+// outlives its grace is unexplained rather than persistent: it should have
+// converged well inside one resync, so surviving says something is wrong,
+// not just slow.
 func (s *ShadowComparator) evalMismatch(ctx context.Context, cache CacheReader, liveness nodeLiveness, accountID, id, fanoutValue, cacheValue string, now time.Time) (divergence, *divergenceKey) {
 	v, err := cache.Get(ctx, id)
 	state := instancecache.NodeUnknown
@@ -431,17 +445,19 @@ func (s *ShadowComparator) evalMismatch(ctx context.Context, cache CacheReader, 
 		state = liveState(ctx, liveness, v.LastNode)
 	}
 
-	if state == instancecache.NodeLive {
-		return divergence{AccountID: accountID, InstanceID: id, Field: "state",
-			FanoutValue: fanoutValue, CacheValue: cacheValue,
-			Class: DivergenceUnexplained, NodeState: state}, nil
-	}
-
 	key := divergenceKey{accountID, id, "state"}
 	age := s.tracker.observe(key, now)
+
+	deadline := s.resyncInterval
+	survivorClass := DivergencePersistent
+	if state == instancecache.NodeLive {
+		deadline = s.resyncInterval / describeShadowLiveMismatchGraceDivisor
+		survivorClass = DivergenceUnexplained
+	}
+
 	class := DivergenceExpectedPropagation
-	if age >= s.resyncInterval {
-		class = DivergencePersistent
+	if age >= deadline {
+		class = survivorClass
 	}
 	return divergence{AccountID: accountID, InstanceID: id, Field: "state",
 		FanoutValue: fanoutValue, CacheValue: cacheValue, Class: class, NodeState: state, Age: age}, &key

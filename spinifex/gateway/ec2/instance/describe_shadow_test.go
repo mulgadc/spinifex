@@ -184,21 +184,39 @@ func TestShadowComparator_Run_ExpectedVisibilityTightening(t *testing.T) {
 }
 
 // A field-value mismatch on an instance both sides serve, while the owning
-// node is live and answering, has no node event to explain it: unexplained,
-// and blocks the flip.
-func TestShadowComparator_Run_Unexplained_LiveNodeFieldMismatch(t *testing.T) {
-	logs := captureShadowLogs(t)
+// node is live and answering, is an ordinary KV-write race on first
+// observation: the node updates before the KV write that the cache's watch
+// picks up, so it starts as a propagation candidate and does not block. If
+// it survives its (short) grace with the node still live, that race story
+// no longer holds, and it becomes unexplained rather than persistent — it
+// should have converged well inside one resync, so surviving means
+// something is actually wrong.
+func TestShadowComparator_Run_LiveNodeFieldMismatch_PropagatesThenUnexplained(t *testing.T) {
+	comparator := gateway_ec2_instance.NewShadowComparator(30 * time.Millisecond)
 	v := cacheVM("i-both", cacheTestAccount, vm.StateRunning, vm.DesiredRunning)
 	v.LastNode = "node-1"
 	cache := &fakeCache{ready: true, byID: map[string]*vm.VM{"i-both": v}}
 	liveness := &fakeLiveness{states: map[string]instancecache.NodeState{"node-1": instancecache.NodeLive}}
-	comparator := gateway_ec2_instance.NewShadowComparator(time.Minute)
+	input := shadowInput()
+	fanoutSnap := gateway_ec2_instance.Snapshot{"i-both": "stopping"}
 
-	comparator.Run(context.Background(), cache, liveness, shadowInput(), cacheTestAccount, shadowAZ, gateway_ec2_instance.Snapshot{"i-both": "stopping"})
+	firstLogs := captureShadowLogs(t)
+	comparator.Run(context.Background(), cache, liveness, input, cacheTestAccount, shadowAZ, fanoutSnap)
+	out := firstLogs.String()
+	assert.Contains(t, out, "class=expected_propagation",
+		"a live-node mismatch on first observation is an ordinary KV-write race, not immediately unexplained")
+	assert.Contains(t, out, "level=INFO", "a first-observation propagation candidate must not block the flip")
+	assert.NotContains(t, out, "class=unexplained")
 
-	out := logs.String()
-	assert.Contains(t, out, "class=unexplained")
+	time.Sleep(20 * time.Millisecond) // outlive the short live-node grace
+
+	secondLogs := captureShadowLogs(t)
+	comparator.Run(context.Background(), cache, liveness, input, cacheTestAccount, shadowAZ, fanoutSnap)
+	out = secondLogs.String()
+	assert.Contains(t, out, "class=unexplained",
+		"a live-node mismatch surviving its grace should have converged inside one resync; unexplained, not persistent")
 	assert.Contains(t, out, "level=WARN")
+	assert.NotContains(t, out, "class=persistent")
 }
 
 // The same field mismatch, but the owning node is not confirmed live, has a

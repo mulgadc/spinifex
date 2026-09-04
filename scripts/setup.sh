@@ -400,21 +400,24 @@ table inet spinifex_filter {
         # gateway, never NATS, so no cluster port needs to face the guests.
         # 443 has no listener yet and is held for the nginx TLS edge, so the
         # rollout does not need a firewall change on every node.
-        tcp dport { 443, 3000, 8443, 9999 } accept
+        # nfproto ipv4: these accepts carry no source scope, so without a family
+        # qualifier they would also serve on any global IPv6 a node autoconfigures
+        # from an upstream RA. The scoped rules are v4-only via `ip saddr` already.
+        meta nfproto ipv4 tcp dport { 443, 3000, 8443, 9999 } accept
 
         # Transiently open to any source, for cluster formation. A node dialling
         # in to join is not a peer yet, so the peer-scoped rule below cannot let
         # it in; `spx admin init` opens the formation port here for the length of
         # the formation window and closes it again afterwards. Normally holds
         # only the sentinel, which no packet can match.
-        tcp dport $spinifex_open_ports accept
+        meta nfproto ipv4 tcp dport $spinifex_open_ports accept
 
         # 53 is open on every node, deliberately: northstar serves public
         # authoritative DNS and binds its advertise address. A node running no
         # public zone answers here too, which is the accepted cost of not
         # templating the policy per node.
-        tcp dport 53 accept
-        udp dport 53 accept
+        meta nfproto ipv4 tcp dport 53 accept
+        meta nfproto ipv4 udp dport 53 accept
 
         # Cluster plane, peer-scoped. On a single-NIC node the planes collapse
         # onto the public address, which is why these are peer addresses rather

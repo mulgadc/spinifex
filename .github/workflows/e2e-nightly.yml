@@ -1225,7 +1225,10 @@ jobs:
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',24,') )
     runs-on: [self-hosted, ci-single]
-    timeout-minutes: 30
+    # The thirteen scenarios run serially and are ~35 minutes of work on their
+    # own, measured from the per-scenario predastore matrix, before checkout
+    # and build. 30 could not have passed whatever the disk did.
+    timeout-minutes: 75
     env:
       # Freezes a follower. STRESS_HOST=leader is a known failure: a gate keeps
       # the frozen node first in its meta read order and pays the full client

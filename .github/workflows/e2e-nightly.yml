@@ -16,6 +16,14 @@ permissions:
   # context exposes the id itself.
   actions: read
 
+# Every cell builds its cluster on the same five hypervisors, so two runs in
+# flight at once compete for their disks and their libvirt guests. Queue the
+# second rather than cancelling it: a dispatch is usually a verification run
+# and discarding it loses the result someone is waiting on.
+concurrency:
+  group: e2e-nightly
+  cancel-in-progress: false
+
 # Scheduled runs are loaded from the default branch (main), so the schedule
 # trigger must stay in sync on main for cron to fire.
 env:

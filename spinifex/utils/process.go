@@ -79,6 +79,25 @@ func ForceKillProcess(pid int, timeout time.Duration) error {
 	return WaitForProcessExit(pid, timeout)
 }
 
+// TerminateProcess SIGTERMs a process and waits up to grace for it to exit,
+// reporting whether it did. It never escalates: callers that must establish
+// the process is gone follow it with ForceKillProcess, which is where the
+// SIGKILL and the exit confirmation belong.
+func TerminateProcess(pid int, grace time.Duration) bool {
+	if pid <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// Already gone is the outcome asked for, so report it as one.
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		return errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH)
+	}
+	return WaitForProcessExit(pid, grace) == nil
+}
+
 // killProcessPollInterval and killProcessGracePeriod drive KillProcess's
 // liveness poll: check every pollInterval instead of blocking for the full
 // gracePeriod, so a process that dies quickly is detected almost immediately.

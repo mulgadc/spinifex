@@ -27,28 +27,46 @@ env:
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 
 jobs:
+  # The matrix is built here rather than filtered inside each cell. A job whose
+  # steps all skip still reports success, so gating steps made a one-cell
+  # dispatch look like a green nineteen-job suite. A cell that was not selected
+  # now produces no job at all.
+  select:
+    runs-on: ubuntu-26.04
+    outputs:
+      cells: ${{ steps.pick.outputs.cells }}
+      any: ${{ steps.pick.outputs.any }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/e2e-cells.json
+          sparse-checkout-cone-mode: false
+      - id: pick
+        env:
+          CELLS: ${{ github.event_name == 'workflow_dispatch' && inputs.cells || '' }}
+        run: |
+          if [ -z "$CELLS" ]; then
+            sel=$(jq -c . .github/e2e-cells.json)
+          else
+            sel=$(jq -c --arg c "$CELLS" \
+              '[.[] | . as $e | select(($c | split(",")) | index($e.cell|tostring))]' \
+              .github/e2e-cells.json)
+          fi
+          echo "cells=$sel" >> "$GITHUB_OUTPUT"
+          [ "$(jq 'length' <<<"$sel")" -gt 0 ] && any=true || any=false
+          echo "any=$any" >> "$GITHUB_OUTPUT"
+          echo "selected: $(jq -c '[.[].cell]' <<<"$sel")"
+
   matrix:
     name: "cell-${{ matrix.cell }} (${{ matrix.topo }}/${{ matrix.net }}/${{
       matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
+    needs: select
+    if: needs.select.outputs.any == 'true'
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
-        include:
-          - { cell: 1,  install: binary, topo: single,     net: dhcp,   host: debian-13,    arch: x86_64, runner: ci-single, extra: "", suite: "" }
-          - { cell: 2,  install: binary, topo: single,     net: static, host: ubuntu-26.04, arch: x86_64, runner: ci-single, extra: "", suite: "" }
-          - { cell: 3,  install: binary, topo: single,     net: dhcp,   host: ubuntu-26.04, arch: x86_64, runner: ci-single, extra: "", suite: "" }
-          - { cell: 8,  install: binary, topo: real-multi, net: dhcp,   host: debian-13,    arch: x86_64, runner: ci-multi,  extra: "", suite: "" }
-          - { cell: 9,  install: binary, topo: real-multi, net: static, host: ubuntu-26.04, arch: x86_64, runner: ci-multi,  extra: "", suite: "" }
-          - { cell: 10, install: binary, topo: real-multi, net: dhcp,   host: ubuntu-26.04, arch: x86_64, runner: ci-multi,  extra: "", suite: "" }
-          - { cell: 17, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-pseudo, extra: "tofu-examples", suite: "" }
-          - { cell: 18, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "reboot-single", suite: "" }
-          - { cell: 19, install: binary, topo: single,     net: nat,    host: debian-13,    arch: x86_64, runner: ci-single, extra: "nat-single", suite: "" }
-          - { cell: 25, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "eks", suite: "eks" }
-          - { cell: 26, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "ecs", suite: "ecs" }
-          - { cell: 27, install: binary, topo: single,     net: static, host: debian-13,    arch: x86_64, runner: ci-single, extra: "rds", suite: "rds" }
-          - { cell: 29, install: binary, topo: real-multi, net: static, host: debian-13,    arch: x86_64, runner: ci-multi,  extra: "", suite: "storagefault", timeout_minutes: 100 }
-
+        include: ${{ fromJSON(needs.select.outputs.cells) }}
     runs-on: [ self-hosted, "${{ matrix.runner }}" ]
     timeout-minutes: ${{ matrix.timeout_minutes || 50 }}
     env:
@@ -61,31 +79,13 @@ jobs:
       SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=${{ matrix.cell }},ci.matrix=${{ matrix.topo }}/${{ matrix.net }}/${{ matrix.host }}
 
     steps:
-      # blank or scheduled run = full matrix.
-      # Input must be comma-separated with no whitespace (e.g. '1,2,17', not '1, 2').
-      - name: Gate on Dispatch Input
-        id: gate
-        env:
-          CELL: ${{ matrix.cell }}
-          CELLS: ${{ github.event_name == 'workflow_dispatch' && inputs.cells || '' }}
-        run: |
-          if [ -z "$CELLS" ] || [[ ",${CELLS}," == *",${CELL},"* ]]; then
-            echo "selected=true" >> "$GITHUB_OUTPUT"
-            echo "cell ${CELL} selected"
-          else
-            echo "selected=false" >> "$GITHUB_OUTPUT"
-            echo "cell ${CELL} not in '${CELLS}' — subsequent steps will skip"
-          fi
-
       - name: Clean Workspace
-        if: steps.gate.outputs.selected == 'true'
         run: |
           sudo umount -R -l /var/cache/spinifex-iso-builder/rootfs 2>/dev/null || true
           if [ ! -c /dev/null ]; then sudo rm -f /dev/null; sudo mknod -m 666 /dev/null c 1 3; fi
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
-        if: steps.gate.outputs.selected == 'true'
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
@@ -93,7 +93,6 @@ jobs:
           repositories: mulga
 
       - uses: actions/checkout@v7
-        if: steps.gate.outputs.selected == 'true'
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
@@ -101,7 +100,6 @@ jobs:
           path: mulga
 
       - uses: actions/checkout@v7
-        if: steps.gate.outputs.selected == 'true'
         with:
           path: spinifex
 
@@ -110,13 +108,11 @@ jobs:
       # links each cell's telemetry to the job log that produced it. Runs
       # before Bootstrap bakes SPINIFEX_OTEL_ATTRS into the VM's telemetry.env.
       - name: Resolve CI job id
-        if: steps.gate.outputs.selected == 'true'
         uses: ./spinifex/.github/actions/otel-job-id
         with:
           job-name: "cell-${{ matrix.cell }} (${{ matrix.topo }}/${{ matrix.net }}/${{ matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
 
       - name: Build Install Artifacts
-        if: steps.gate.outputs.selected == 'true'
         working-directory: mulga/scripts/tofu-cluster
         env:
           MATRIX_SUITE: ${{ matrix.suite }}
@@ -130,7 +126,6 @@ jobs:
             --extra-suites "${MATRIX_SUITE}"
 
       - name: Provision VMs
-        if: steps.gate.outputs.selected == 'true'
         working-directory: mulga/scripts/tofu-cluster
         env:
           MATRIX_HOST: ${{ matrix.host }}
@@ -152,7 +147,6 @@ jobs:
           tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1
 
       - name: Bootstrap via Binary Install
-        if: steps.gate.outputs.selected == 'true'
         working-directory: mulga/scripts/tofu-cluster
         env:
           MATRIX_NET: ${{ matrix.net }}
@@ -175,7 +169,7 @@ jobs:
             --test-tar "${RUNNER_TEMP}/spinifex-tests.tar"
 
       - name: Run Single Node E2E
-        if: steps.gate.outputs.selected == 'true' && matrix.topo == 'single' && matrix.extra == '' && matrix.suite == ''
+        if: matrix.topo == 'single' && matrix.extra == '' && matrix.suite == ''
         working-directory: mulga/scripts/tofu-cluster
         run: |
           set -euo pipefail
@@ -203,7 +197,7 @@ jobs:
              done; exit \$FAIL"
 
       - name: Run NAT Uplink E2E
-        if: steps.gate.outputs.selected == 'true' && matrix.extra == 'nat-single'
+        if: matrix.extra == 'nat-single'
         working-directory: mulga/scripts/tofu-cluster
         # Skips cleanly (exit 0) when the tested branch predates the natuplink
         # suite so scheduled runs against dev stay green until the merge lands.
@@ -225,7 +219,7 @@ jobs:
              if [ \$rc -ne 0 ]; then echo 'natuplink: FAILED' >> '${ARTIFACT_DIR}/suite-status.txt'; fi; exit \$rc"
 
       - name: Run Multi Node E2E
-        if: steps.gate.outputs.selected == 'true' && matrix.topo == 'real-multi' && matrix.suite == ''
+        if: matrix.topo == 'real-multi' && matrix.suite == ''
         working-directory: mulga/scripts/tofu-cluster
         run: |
           set -euo pipefail
@@ -264,7 +258,7 @@ jobs:
       # step below, which would repeat the same three lines five times.
       - name: Resolve VM SSH details
         id: vm
-        if: steps.gate.outputs.selected == 'true' && matrix.suite != '' && matrix.topo == 'single'
+        if: matrix.suite != '' && matrix.topo == 'single'
         working-directory: mulga/scripts/tofu-cluster
         run: |
           set -euo pipefail
@@ -280,7 +274,7 @@ jobs:
       # runner. The build needs source + network (runner only) and the import
       # needs predastore/NATS (VM only), hence the split.
       - name: Build eks-node AMI (libguestfs, runner)
-        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'eks'
+        if: matrix.suite == 'eks'
         working-directory: spinifex
         run: |
           set -euo pipefail
@@ -291,7 +285,7 @@ jobs:
           make build-eks-node-image
 
       - name: Import eks-node AMI on VM
-        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'eks'
+        if: matrix.suite == 'eks'
         run: |
           set -euo pipefail
           eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
@@ -313,7 +307,7 @@ jobs:
       # cell reports green having never exercised the data plane. Pinned to the
       # k3s server version (setup.sh K3S_VERSION) and checksum-verified.
       - name: Install kubectl on VM
-        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'eks'
+        if: matrix.suite == 'eks'
         run: |
           set -euo pipefail
           SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
@@ -338,7 +332,7 @@ jobs:
       # name, so the tag is not optional. The image directory is named for
       # IMAGE_NAME in the manifest (ecs-agent), not for the make target.
       - name: Build ecs-node AMI (libguestfs, runner)
-        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'ecs'
+        if: matrix.suite == 'ecs'
         working-directory: spinifex
         run: |
           set -euo pipefail
@@ -349,7 +343,7 @@ jobs:
           make build-ecs-node-image
 
       - name: Import ecs-node AMI on VM
-        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'ecs'
+        if: matrix.suite == 'ecs'
         run: |
           set -euo pipefail
           eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
@@ -370,7 +364,7 @@ jobs:
       # from its own user-data, because a private-only endpoint is unreachable
       # from the runner and from the cluster host alike.
       - name: Build RDS AMIs (libguestfs, runner)
-        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'rds'
+        if: matrix.suite == 'rds'
         working-directory: spinifex
         run: |
           set -euo pipefail
@@ -383,7 +377,7 @@ jobs:
           done
 
       - name: Import RDS AMIs on VM
-        if: steps.gate.outputs.selected == 'true' && matrix.suite == 'rds'
+        if: matrix.suite == 'rds'
         run: |
           set -euo pipefail
           SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
@@ -408,7 +402,7 @@ jobs:
           done
 
       - name: Run Service Suite E2E
-        if: steps.gate.outputs.selected == 'true' && matrix.suite != '' && matrix.topo == 'single'
+        if: matrix.suite != '' && matrix.topo == 'single'
         env:
           SUITE: ${{ matrix.suite }}
         run: |
@@ -437,7 +431,7 @@ jobs:
       # because the suite needs every node's address to reach the whole cluster,
       # which the single-node path has no way to supply.
       - name: Run Multi Suite E2E
-        if: steps.gate.outputs.selected == 'true' && matrix.suite != '' && matrix.topo == 'real-multi'
+        if: matrix.suite != '' && matrix.topo == 'real-multi'
         working-directory: mulga/scripts/tofu-cluster
         env:
           SUITE: ${{ matrix.suite }}
@@ -474,7 +468,7 @@ jobs:
              exit \$rc"
 
       - name: Import RDS PostgreSQL AMI
-        if: steps.gate.outputs.selected == 'true' && matrix.extra == 'tofu-examples'
+        if: matrix.extra == 'tofu-examples'
         working-directory: mulga/scripts/tofu-cluster
         run: |
           set -euo pipefail
@@ -486,7 +480,7 @@ jobs:
             "spx admin images import --name spinifex-rds-postgres"
 
       - name: Run Tofu Workbooks
-        if: steps.gate.outputs.selected == 'true' && matrix.extra == 'tofu-examples'
+        if: matrix.extra == 'tofu-examples'
         working-directory: mulga/scripts/tofu-cluster
         # The driver emits go test -v markers per workbook; teeing to
         # test-tofu.log feeds the same go-junit-report -> e2e-analyze -> upload
@@ -507,7 +501,7 @@ jobs:
           exit $rc
 
       - name: Run Reboot Resilience E2E
-        if: steps.gate.outputs.selected == 'true' && matrix.extra == 'reboot-single'
+        if: matrix.extra == 'reboot-single'
         working-directory: mulga/scripts/tofu-cluster
         # reboot.test runs from the runner (NOT via ssh-and-run) so it survives the
         # systemctl-reboot-induced ssh disconnect mid-run.
@@ -543,7 +537,7 @@ jobs:
           exit $rc
 
       - name: Collect e2e artifacts
-        if: always() && steps.gate.outputs.selected == 'true'
+        if: always()
         working-directory: mulga/scripts/tofu-cluster
         run: |
           set +e
@@ -579,13 +573,13 @@ jobs:
           echo "collected: $(ls "${ARTIFACT_DIR}" 2>/dev/null | wc -l) entries"
 
       - name: Install go-junit-report
-        if: always() && steps.gate.outputs.selected == 'true'
+        if: always()
         run: |
           go install github.com/jstemmer/go-junit-report/v2@latest
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       - name: Convert test logs to JUnit XML
-        if: always() && steps.gate.outputs.selected == 'true'
+        if: always()
         run: |
           shopt -s nullglob
           for LOG in "${ARTIFACT_DIR}"/test-*.log; do
@@ -596,7 +590,7 @@ jobs:
       # Tolerated on failure: the sink being unreachable must not turn a
       # green test run red.
       - name: Ship test results to Elasticsearch
-        if: always() && steps.gate.outputs.selected == 'true'
+        if: always()
         continue-on-error: true
         uses: ./spinifex/.github/actions/junit-to-es
         with:
@@ -604,7 +598,7 @@ jobs:
           cell: ${{ matrix.cell }}
 
       - name: Analyze e2e failures
-        if: always() && steps.gate.outputs.selected == 'true'
+        if: always()
         uses: ./spinifex/.github/actions/e2e-analyze
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
@@ -612,7 +606,7 @@ jobs:
           title: "E2E failure analysis (cell ${{ matrix.cell }})"
 
       - uses: actions/upload-artifact@v7
-        if: always() && steps.gate.outputs.selected == 'true'
+        if: always()
         with:
           name: e2e-artifacts-cell-${{ matrix.cell }}-${{ github.run_id }}
           path: ${{ env.ARTIFACT_DIR }}
@@ -623,7 +617,7 @@ jobs:
       # deselected never checked out or ran tofu init, so destroying would fail
       # on missing plugins and report the cell red for correctly doing nothing.
       - name: Teardown
-        if: always() && steps.gate.outputs.selected == 'true'
+        if: always()
         working-directory: mulga/scripts/tofu-cluster
         env:
           MATRIX_HOST: ${{ matrix.host }}
@@ -640,7 +634,7 @@ jobs:
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 
       - name: Upload tofu log
-        if: always() && steps.gate.outputs.selected == 'true'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: tofu-log-cell-${{ matrix.cell }}-${{ github.run_id }}

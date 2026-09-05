@@ -1,0 +1,146 @@
+[
+  {
+    "cell": 1,
+    "install": "binary",
+    "topo": "single",
+    "net": "dhcp",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "",
+    "suite": ""
+  },
+  {
+    "cell": 2,
+    "install": "binary",
+    "topo": "single",
+    "net": "static",
+    "host": "ubuntu-26.04",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "",
+    "suite": ""
+  },
+  {
+    "cell": 3,
+    "install": "binary",
+    "topo": "single",
+    "net": "dhcp",
+    "host": "ubuntu-26.04",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "",
+    "suite": ""
+  },
+  {
+    "cell": 8,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "dhcp",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "",
+    "suite": ""
+  },
+  {
+    "cell": 9,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "static",
+    "host": "ubuntu-26.04",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "",
+    "suite": ""
+  },
+  {
+    "cell": 10,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "dhcp",
+    "host": "ubuntu-26.04",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "",
+    "suite": ""
+  },
+  {
+    "cell": 17,
+    "install": "binary",
+    "topo": "single",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-pseudo",
+    "extra": "tofu-examples",
+    "suite": ""
+  },
+  {
+    "cell": 18,
+    "install": "binary",
+    "topo": "single",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "reboot-single",
+    "suite": ""
+  },
+  {
+    "cell": 19,
+    "install": "binary",
+    "topo": "single",
+    "net": "nat",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "nat-single",
+    "suite": ""
+  },
+  {
+    "cell": 25,
+    "install": "binary",
+    "topo": "single",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "eks",
+    "suite": "eks"
+  },
+  {
+    "cell": 26,
+    "install": "binary",
+    "topo": "single",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "ecs",
+    "suite": "ecs"
+  },
+  {
+    "cell": 27,
+    "install": "binary",
+    "topo": "single",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "rds",
+    "suite": "rds"
+  },
+  {
+    "cell": 29,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "",
+    "suite": "storagefault",
+    "timeout_minutes": 100
+  }
+]

@@ -363,11 +363,19 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 			harness.Step(t, "8e-5b %s denies carry no ethertype qualifier", targetPG)
 			rows := portGroupACLs(t, targetPG)
 
+			// Match the default-denies by their priorities, not by "any drop".
+			// The platform egress block is also a drop and is legitimately
+			// ip4-scoped, so bucketing every drop by direction lets it stand in
+			// for the rule this is about and fail on its qualifier.
+			denyPriority := map[string]int{
+				"to-lport":   aclPriorityDefaultDenyIngress,
+				"from-lport": aclPriorityDefaultDenyEgress,
+			}
 			denies := map[string]aclRow{}
 			arps := map[string]aclRow{}
 			for _, r := range rows {
 				switch {
-				case r.Action == "drop":
+				case r.Action == "drop" && r.Priority == denyPriority[r.Direction]:
 					denies[r.Direction] = r
 				case strings.Contains(r.Match, "arp"):
 					arps[r.Direction] = r
@@ -625,6 +633,14 @@ func runSGEInstance(t *testing.T, fix *Fixture, subnetID, sgID, userData string)
 }
 
 // aclRow is one NB ACL as OVN holds it, read back rather than rebuilt.
+// The two default-deny priorities, mirroring policy.ACLPriorityDefaultDeny*.
+// Duplicated rather than imported so this suite reads what OVN holds without
+// depending on the package that put it there.
+const (
+	aclPriorityDefaultDenyIngress = 900
+	aclPriorityDefaultDenyEgress  = 800
+)
+
 type aclRow struct {
 	Priority  int
 	Direction string

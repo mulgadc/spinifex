@@ -364,11 +364,22 @@ func EnsureKeyPair(t *testing.T, fx *Fixture) (string, string) {
 		if err != nil {
 			return "", nil, fmt.Errorf("CreateKeyPair %s: %w", name, err)
 		}
+		// Past this point the pair exists on the cluster but no cleanup is
+		// registered yet, so anything that fails has to remove it. A pair left
+		// behind fails every later caller with InvalidKeyPair.Duplicate, which
+		// reads as a different bug in a test that never ran.
+		abandon := func(cause error) (string, func() error, error) {
+			_, derr := fx.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(name)})
+			if derr != nil {
+				return "", nil, fmt.Errorf("%w (and could not remove the pair it created: %v)", cause, derr)
+			}
+			return "", nil, cause
+		}
 		if err := os.WriteFile(pemPath, []byte(aws.StringValue(out.KeyMaterial)), 0o600); err != nil {
-			return "", nil, fmt.Errorf("write pem %s: %w", pemPath, err)
+			return abandon(fmt.Errorf("write pem %s: %w", pemPath, err))
 		}
 		if err := assertOneKeyPair(fx, name); err != nil {
-			return "", nil, err
+			return abandon(err)
 		}
 		fx.tagRunResources(aws.StringValue(out.KeyPairId))
 		return aws.StringValue(out.KeyName), func() error {
@@ -385,6 +396,13 @@ func EnsureKeyPair(t *testing.T, fx *Fixture) (string, string) {
 	return id, pemPath
 }
 
+// How long a just-created key pair is given to become visible to a describe,
+// and how often that is retried.
+const (
+	keyPairVisibleWithin = 30 * time.Second
+	keyPairVisiblePoll   = 500 * time.Millisecond
+)
+
 // assertOneKeyPair fails when the cluster holds more than one key pair under
 // name, which it should not be able to.
 //
@@ -394,14 +412,34 @@ func EnsureKeyPair(t *testing.T, fx *Fixture) (string, string) {
 // rejecting the key at the SSH gate five minutes later, once per guest. Cheap
 // to check here, and it names the cause outright.
 func assertOneKeyPair(fx *Fixture, name string) error {
-	out, err := fx.EC2.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{
-		KeyNames: []*string{aws.String(name)},
-	})
-	if err != nil {
-		return fmt.Errorf("DescribeKeyPairs %s: %w", name, err)
-	}
-	if len(out.KeyPairs) == 1 {
-		return nil
+	// The create this follows has already succeeded, so nothing here can
+	// legitimately see zero. On a multi-node cluster the describe can land on a
+	// node that has not caught up yet, which is a propagation window rather
+	// than a result. Two is the answer this exists to catch, and two is
+	// reported the moment it is seen.
+	var out *ec2.DescribeKeyPairsOutput
+	deadline := time.Now().Add(keyPairVisibleWithin)
+	for {
+		var err error
+		out, err = fx.EC2.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{
+			KeyNames: []*string{aws.String(name)},
+		})
+		switch {
+		case err == nil && len(out.KeyPairs) == 1:
+			return nil
+		case err == nil && len(out.KeyPairs) > 1:
+			// The defect. Report it without waiting.
+		case err != nil && !ErrorCodeIs(err, "InvalidKeyPair.NotFound"):
+			return fmt.Errorf("DescribeKeyPairs %s: %w", name, err)
+		default:
+			// Not visible yet, or reported as absent.
+			if time.Now().Before(deadline) {
+				time.Sleep(keyPairVisiblePoll)
+				continue
+			}
+			return fmt.Errorf("key pair %s was created but is still not visible after %s", name, keyPairVisibleWithin)
+		}
+		break
 	}
 
 	got := make([]string, 0, len(out.KeyPairs))

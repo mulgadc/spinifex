@@ -2832,6 +2832,22 @@ func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count
 // admission never advertises more instances than there are GPU slots to
 // back them.
 func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo, count int) int {
+	n, _ := rm.admitLocked(instanceType, count)
+	return n
+}
+
+// admit is admitLocked under the read lock.
+func (rm *ResourceManager) admit(instanceType *ec2.InstanceTypeInfo, count int) (int, string) {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	return rm.admitLocked(instanceType, count)
+}
+
+// admitLocked returns the admission count and which gate bound it. A refusal
+// that names its gate is the difference between "the node is full" and "the
+// host is short of free memory right now", which have different fixes and are
+// otherwise indistinguishable from InsufficientInstanceCapacity.
+func (rm *ResourceManager) admitLocked(instanceType *ec2.InstanceTypeInfo, count int) (int, string) {
 	instanceTypeName := ""
 	if instanceType.InstanceType != nil {
 		instanceTypeName = *instanceType.InstanceType
@@ -2846,7 +2862,7 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 		}
 	}
 
-	n := canAllocateCount(
+	budget := canAllocateCount(
 		rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
 		rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
 		instanceTypeVCPUs(instanceType),
@@ -2854,7 +2870,11 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 		count,
 		availGPU, requiresGPU,
 	)
-	return rm.liveMemGate(n, instanceType)
+	n := rm.liveMemGate(budget, instanceType)
+	if n < budget {
+		return n, "live-memory"
+	}
+	return n, "budget"
 }
 
 // liveMemGate clamps n by current MemAvailable, catching overcommit that the
@@ -2970,7 +2990,8 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 	defer rm.subsMu.Unlock()
 
 	for typeName, typeInfo := range rm.instanceTypes {
-		canFit := rm.canAllocate(typeInfo, 1) >= 1
+		fits, gate := rm.admit(typeInfo, 1)
+		canFit := fits >= 1
 
 		subjectRoot := "ec2.RunInstances"
 		handler := rm.handler
@@ -3002,7 +3023,7 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 				slog.Error("Failed to unsubscribe from instance type topic", "topic", queueTopic, "err", err)
 			}
 			delete(rm.instanceSubs, queueTopic)
-			slog.Info("Unsubscribed from instance type (capacity full)", "topic", queueTopic)
+			slog.Info("Unsubscribed from instance type (capacity full)", "topic", queueTopic, "gate", gate)
 		}
 
 		if rm.nodeID != "" {

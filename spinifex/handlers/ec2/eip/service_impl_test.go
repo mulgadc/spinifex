@@ -776,3 +776,38 @@ func TestEIP_PublishNATEvent_PortNameHasPortPrefix(t *testing.T) {
 	assert.Equal(t, "10.0.0.5", got.LogicalIP)
 	assert.Equal(t, "198.51.100.10", got.ExternalIP)
 }
+
+// TestEIP_DisassociateByENI_ClearsEveryEIPOnTheInterface pins that teardown
+// drains all of an ENI's EIPs. Stopping at the first left the rest marked
+// associated to an interface being deleted, with their host routes installed
+// and nothing remaining that could find them.
+func TestEIP_DisassociateByENI_ClearsEveryEIPOnTheInterface(t *testing.T) {
+	svc, _, _ := setupTestEIP(t)
+
+	var allocIDs []string
+	for range 3 {
+		out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+		require.NoError(t, err)
+		allocIDs = append(allocIDs, *out.AllocationId)
+		associateToENI(t, svc, *out.AllocationId, "eni-shared")
+	}
+
+	found, err := svc.DisassociateByENI(t.Context(), testAccountID, "eni-shared")
+	require.NoError(t, err)
+	assert.True(t, found)
+
+	for _, allocID := range allocIDs {
+		entry, err := svc.eipKV.Get(t.Context(), testAccountID+"."+allocID)
+		require.NoError(t, err)
+		var record EIPRecord
+		require.NoError(t, json.Unmarshal(entry.Value(), &record))
+		assert.Equal(t, "allocated", record.State, "%s still associated", allocID)
+		assert.Empty(t, record.ENIId, "%s still names the ENI", allocID)
+		assert.Empty(t, record.AssociationId, "%s kept its association", allocID)
+	}
+
+	// One pass drains them all, so the retry teardown always makes finds none.
+	found, err = svc.DisassociateByENI(t.Context(), testAccountID, "eni-shared")
+	require.NoError(t, err)
+	assert.False(t, found)
+}

@@ -34,6 +34,11 @@ import (
 // persists and the byte units the ebsprovider wire contract uses.
 const bytesPerGiB = 1024 * 1024 * 1024
 
+// pluginSealGrace bounds the wait for an nbdkit that is already sealing to
+// finish and exit. The plugin bounds its own drain at 20s, so this only has to
+// cover that plus writing the receipt.
+const pluginSealGrace = 25 * time.Second
+
 // providerObjectStoreFactory builds the objectstore.ObjectStore DeleteVolume
 // and DeleteSnapshot use to remove S3 object prefixes. Tests override this to
 // inject objectstore.NewMemoryObjectStore(), keeping the unit tests free of
@@ -1612,6 +1617,12 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 		if matched.VB != nil {
 			matched.VB.Detach()
 		}
+
+		// Removing the guest device starts the plugin's own Close, which
+		// drains to the backend and leaves a receipt. SIGKILLing into that
+		// discards the drain and leaves the WAL for the fallback seal below to
+		// replay, which costs far more than the caller's deadline allows.
+		utils.TerminateProcess(matched.PID, pluginSealGrace)
 
 		// The seal below rewrites the directory nbdkit writes, so a kill that
 		// did not take makes it a concurrent write to that directory. Fail the

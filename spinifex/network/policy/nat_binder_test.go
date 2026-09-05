@@ -136,6 +136,43 @@ func TestNATManager_DeleteEIP_Routed_UnbindsHostEIP(t *testing.T) {
 	assert.Equal(t, []string{"192.168.1.200"}, b.unbinds)
 }
 
+// An absent dnat_and_snat row is not a reassignment: nobody owns the address,
+// so the orphaned host plumbing is precisely what the delete has to remove.
+// Returning early on it left the /32 route and proxy-ARP entry behind, which
+// is what a disassociate looked like from the host.
+func TestNATManager_DeleteEIP_Routed_UnbindsWhenRowAlreadyGone(t *testing.T) {
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	seedGatewayPortIP(t, m, "vpc-1", "100.127.0.10", nil)
+	b := &recordedBinder{}
+	mgr, err := NewNATManager(m, NATModeRouted, WithHostEIPBinder(b.hooks()))
+	require.NoError(t, err)
+
+	// No AddEIP: the row never existed, standing in for one already removed.
+	require.NoError(t, mgr.DeleteEIP(context.Background(), "vpc-1", "192.168.1.200", "10.0.1.5", "eni-1"))
+	assert.Equal(t, []string{"192.168.1.200"}, b.unbinds)
+}
+
+// The reassignment cases keep their early return: a different owner holds the
+// address, and its host plumbing must survive a late delete for the old one.
+func TestNATManager_DeleteEIP_Routed_ReassignedRowKeepsHostPlumbing(t *testing.T) {
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	seedGatewayPortIP(t, m, "vpc-1", "100.127.0.10", nil)
+	b := &recordedBinder{}
+	mgr, err := NewNATManager(m, NATModeRouted, WithHostEIPBinder(b.hooks()))
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.AddEIP(context.Background(), EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "192.168.1.200", LogicalIP: "10.0.1.9",
+	}))
+	b.unbinds = nil
+
+	// Stale delete naming the previous logical IP.
+	require.NoError(t, mgr.DeleteEIP(context.Background(), "vpc-1", "192.168.1.200", "10.0.1.5", ""))
+	assert.Empty(t, b.unbinds, "a reassigned EIP must keep its host plumbing")
+}
+
 func TestNATManager_AddEIP_NonRoutedNeverBinds(t *testing.T) {
 	for _, mode := range []NATMode{NATModeDistributed, NATModeCentralized} {
 		m := mock.New()

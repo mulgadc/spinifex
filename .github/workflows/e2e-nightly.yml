@@ -1219,7 +1219,10 @@ jobs:
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',24,') )
     runs-on: [self-hosted, ci-single]
-    timeout-minutes: 30
+    # The thirteen scenarios run serially and are ~35 minutes of work on their
+    # own, measured from the per-scenario predastore matrix, before checkout
+    # and build. 30 could not have passed whatever the disk did.
+    timeout-minutes: 75
     env:
       # Freezes a follower. STRESS_HOST=leader is a known failure: a gate keeps
       # the frozen node first in its meta read order and pays the full client
@@ -1232,12 +1235,20 @@ jobs:
       - name: Clean Workspace
         run: sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
+      # STRESS_WORK_ROOT is set as well as TMPDIR because the harness ignores
+      # TMPDIR for the scenarios that need the most disk: large-object and
+      # multipart-upload default to $HOME/.cache/predastore-e2e, on the theory
+      # that TMPDIR is commonly tmpfs. Here it is a 938G nvme, so pointing them
+      # at it is both correct and the only path with room.
       - name: Configure work directories
         run: |
           E2E_ROOT=/mnt/nvme/e2e
-          mkdir -p "$E2E_ROOT/work" 2>/dev/null ||
-            { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
+          for d in work stress-work; do
+            mkdir -p "$E2E_ROOT/$d" 2>/dev/null ||
+              { sudo mkdir -p "$E2E_ROOT/$d" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/$d"; }
+          done
           echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
+          echo "STRESS_WORK_ROOT=$E2E_ROOT/stress-work" >> "$GITHUB_ENV"
           echo "STRESS_RESULTS_ROOT=$E2E_ROOT/predastore-stress-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
 
       - name: Checkout Spinifex
@@ -1265,15 +1276,25 @@ jobs:
       - name: Preflight
         run: |
           set -euo pipefail
-          mkdir -p "$TMPDIR"
-          find "$TMPDIR" -maxdepth 1 -name 'predastore-e2e-stress.*' \
-               -type d -mtime +0 -exec rm -rf {} + 2>/dev/null || true
-          df -h "$TMPDIR"
-          avail_gb=$(df -BG --output=avail "$TMPDIR" | tail -1 | tr -dc '0-9')
-          if [ "$avail_gb" -lt 10 ]; then
-            echo "::error::$TMPDIR has ${avail_gb} GiB free; the run needs headroom above predastore's 5% watermark."
-            exit 1
-          fi
+          mkdir -p "$TMPDIR" "$STRESS_WORK_ROOT"
+          for d in "$TMPDIR" "$STRESS_WORK_ROOT" "$HOME/.cache/predastore-e2e"; do
+            [ -d "$d" ] || continue
+            find "$d" -maxdepth 1 -name 'predastore-e2e-stress.*' \
+                 -type d -mtime +0 -exec rm -rf {} + 2>/dev/null || true
+          done
+          # Both paths, because they can be different filesystems and the one
+          # holding the large objects is not the one TMPDIR names. large-object
+          # needs 2GiB and 4GiB sharded with parity, multipart 1GiBx8.
+          rc=0
+          for d in "$TMPDIR" "$STRESS_WORK_ROOT"; do
+            df -h "$d"
+            avail_gb=$(df -BG --output=avail "$d" | tail -1 | tr -dc '0-9')
+            if [ "$avail_gb" -lt 40 ]; then
+              echo "::error::$d has ${avail_gb} GiB free; the run needs headroom above predastore's 5% watermark and room for the 1GiBx8 multipart case."
+              rc=1
+            fi
+          done
+          exit "$rc"
 
       # Leftovers from a run killed before its cleanup trap: a surviving node
       # holds its ports and fails this run somewhere unrelated.

@@ -129,7 +129,8 @@
     "arch": "x86_64",
     "runner": "ci-single",
     "extra": "rds",
-    "suite": "rds"
+    "suite": "rds",
+    "timeout_minutes": 75
   },
   {
     "cell": 29,

@@ -51,11 +51,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          sparse-checkout: .github/e2e-cells.json
+          sparse-checkout: |
+            .github/e2e-cells.json
+            .github/scripts/suite-sets.sh
           sparse-checkout-cone-mode: false
       - id: pick
         env:
           CELLS: ${{ github.event_name == 'workflow_dispatch' && inputs.cells || '' }}
+          # Provision, install and teardown around the suite. Measured at ~6
+          # minutes single-node and ~10 multi-node, so this is the floor the
+          # job budget must carry on top of the suite's own.
+          SETUP_ALLOWANCE_MIN: 10
         run: |
           if [ -z "$CELLS" ]; then
             sel=$(jq -c . .github/e2e-cells.json)
@@ -68,6 +74,24 @@ jobs:
           [ "$(jq 'length' <<<"$sel")" -gt 0 ] && any=true || any=false
           echo "any=$any" >> "$GITHUB_OUTPUT"
           echo "selected: $(jq -c '[.[].cell]' <<<"$sel")"
+
+          # The inner timeout must always fire before the outer one. go test
+          # reports where it stopped and the suite's own failure; a job timeout
+          # reports only "The operation was canceled". cell-27 ran a 50m rds
+          # suite inside a 50m job and could never finish either way.
+          . .github/scripts/suite-sets.sh
+          # Cells with no suite are filtered in jq, not with an empty-field test:
+          # tab is IFS whitespace, so read collapses a run of them and an empty
+          # middle column silently shifts every later one left.
+          bad=0
+          while IFS=$'\t' read -r cell suite budget; do
+            want="$(e2e_suite_timeout "$suite")"; want="${want%m}"
+            if [ "$budget" -lt $((want + SETUP_ALLOWANCE_MIN)) ]; then
+              echo "::error::cell-$cell gives suite '$suite' ${want}m inside a ${budget}m job. Raise timeout_minutes in .github/e2e-cells.json to at least $((want + SETUP_ALLOWANCE_MIN)), or lower the suite budget in suite-sets.sh." >&2
+              bad=1
+            fi
+          done < <(jq -r '.[]|select((.suite//"")!="")|[.cell,.suite,(.timeout_minutes//50)]|@tsv' <<<"$sel")
+          [ "$bad" -eq 0 ]
 
   matrix:
     name: "cell-${{ matrix.cell }} (${{ matrix.topo }}/${{ matrix.net }}/${{

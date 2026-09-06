@@ -181,6 +181,22 @@ jobs:
             "${RUNNER_TEMP}/spinifex-tests.tar" \
             --extra-suites "${MATRIX_SUITE}"
 
+      # Eight runner names map onto three hypervisors, so cells that never share
+      # a runner still share a host. Nothing measured that, which left "the host
+      # was loaded" as an unfalsifiable explanation for every timeout. Sampled
+      # either side of the cell so the next occurrence can be correlated.
+      - name: Sample hypervisor load (before)
+        if: always()
+        run: |
+          mkdir -p "${ARTIFACT_DIR}"
+          {
+            echo "=== before: $(date -u +%Y-%m-%dT%H:%M:%SZ) runner=${RUNNER_NAME} host=$(hostname) ==="
+            echo "loadavg: $(cat /proc/loadavg)"
+            grep -E '^(MemTotal|MemAvailable|SwapFree):' /proc/meminfo || true
+            echo "cpu(steal is field 8): $(grep '^cpu ' /proc/stat || true)"
+            echo "running qemu: $(pgrep -c qemu-system-x86 || echo 0)"
+          } >> "${ARTIFACT_DIR}/hypervisor-load.txt"
+
       - name: Provision VMs
         working-directory: mulga/scripts/tofu-cluster
         env:
@@ -593,6 +609,18 @@ jobs:
           rc=${PIPESTATUS[0]}
           if [ $rc -ne 0 ]; then echo "reboot: FAILED" >> "${ARTIFACT_DIR}/suite-status.txt"; fi
           exit $rc
+
+      - name: Sample hypervisor load (after)
+        if: always()
+        run: |
+          mkdir -p "${ARTIFACT_DIR}"
+          {
+            echo "=== after: $(date -u +%Y-%m-%dT%H:%M:%SZ) runner=${RUNNER_NAME} host=$(hostname) ==="
+            echo "loadavg: $(cat /proc/loadavg)"
+            grep -E '^(MemTotal|MemAvailable|SwapFree):' /proc/meminfo || true
+            echo "cpu(steal is field 8): $(grep '^cpu ' /proc/stat || true)"
+            echo "running qemu: $(pgrep -c qemu-system-x86 || echo 0)"
+          } >> "${ARTIFACT_DIR}/hypervisor-load.txt"
 
       - name: Collect e2e artifacts
         if: always()

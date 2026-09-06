@@ -61,6 +61,14 @@ EKS_ACCOUNT_ID=000000000001
 EKS_CLUSTER_NAME=demo3
 EOF
 
+# Pressure fixtures: the agent reads these instead of /proc so the load and
+# memavail fields are deterministic here.
+LOADAVG_FILE="${WORK}/loadavg"
+MEMINFO_FILE="${WORK}/meminfo"
+echo "7.25 6.10 5.00 3/512 9001" > "${LOADAVG_FILE}"
+printf 'MemTotal:        4193768 kB\nMemAvailable:     262144 kB\n' > "${MEMINFO_FILE}"
+export LOADAVG_FILE MEMINFO_FILE
+
 FAILS=0
 fail() { echo "FAIL: $*"; FAILS=$((FAILS + 1)); }
 pass() { echo "ok: $*"; }
@@ -105,7 +113,7 @@ run_agent
 P=$(cat "${WORK}/payload.json")
 case "${P}" in *'"healthz":"fail"'*) pass "unhealthy: healthz fail" ;; *) fail "unhealthy: healthz wrong: ${P}" ;; esac
 case "${P}" in *'"nodegroup_ready":{}'*) pass "unhealthy: nodegroup_ready empty (no kubectl node query on a failing apiserver)" ;; *) fail "unhealthy: nodegroup_ready wrong: ${P}" ;; esac
-case "${P}" in *'"reason":"readyz:[etcd poststarthook/start-service-ip-repair-controllers]; etcd:unreachable; disk:ok"'*) pass "unhealthy: reason names failing subchecks + etcd + disk" ;; *) fail "unhealthy: reason wrong: ${P}" ;; esac
+case "${P}" in *'"reason":"readyz:[etcd poststarthook/start-service-ip-repair-controllers]; etcd:unreachable; disk:ok; load:7.25; memavail:262144k"'*) pass "unhealthy: reason names failing subchecks + etcd + disk + pressure" ;; *) fail "unhealthy: reason wrong: ${P}" ;; esac
 case "${P}" in *'"reason":"'*'"'*'"'*) : ;; esac
 C=$(cat "${WORK}/console.out")
 case "${C}" in *'mulga-eks CP unhealthy'*) pass "unhealthy: console banner emitted" ;; *) fail "unhealthy: console banner missing: ${C}" ;; esac
@@ -120,6 +128,19 @@ export HEALTHZ_BODY READYZ_BODY ETCD_BODY DF_AVAIL_KB
 run_agent
 P=$(cat "${WORK}/payload.json")
 case "${P}" in *'etcd:ok; disk:low:1024k'*) pass "disk-low: reason flags low etcd disk" ;; *) fail "disk-low: reason wrong: ${P}" ;; esac
+
+# --- Case 4: readyz itself never answers -> unreachable, not "none" ---
+# A wedged apiserver returns an empty body; reporting that as "none" reads as
+# "no subcheck failed", which is the opposite of what happened.
+HEALTHZ_BODY=fail
+READYZ_BODY=
+ETCD_BODY=error
+DF_AVAIL_KB=9000000
+export HEALTHZ_BODY READYZ_BODY ETCD_BODY DF_AVAIL_KB
+run_agent
+P=$(cat "${WORK}/payload.json")
+case "${P}" in *'readyz:[unreachable]'*) pass "wedged: empty readyz reads unreachable, not none" ;; *) fail "wedged: reason wrong: ${P}" ;; esac
+case "${P}" in *'load:7.25; memavail:262144k'*) pass "wedged: pressure captured alongside" ;; *) fail "wedged: pressure missing: ${P}" ;; esac
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all mulga-eks-state-report cases"

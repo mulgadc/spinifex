@@ -42,13 +42,19 @@ DISK_MIN_KB=${DISK_MIN_KB:-262144}
 
 # diagnose emits a compact, JSON-safe reason for an unhealthy apiserver by
 # reading the ground truth only reachable from inside the guest: the failing
-# /readyz subchecks, isolated etcd reachability, and the etcd-disk free space.
+# /readyz subchecks, etcd reachability, etcd-disk free space, and host pressure.
 diagnose() {
     # apiserver prints "[+]name ok" for passing subchecks and "[-]name failed"
-    # for failing ones; collect the failing names (etcd, poststarthook/*, ...).
-    failed=$(kubectl get --raw='/readyz?verbose' 2>/dev/null \
-        | awk '/^\[-\]/{sub(/^\[-\]/,""); sub(/[[:space:]].*$/,""); printf "%s%s", sep, $0; sep=" "}')
-    [ -n "${failed}" ] || failed=none
+    # for failing ones. An empty body means the probe never answered, which is a
+    # different fault from "every subcheck passed" and must not read the same.
+    readyz=$(kubectl get --raw='/readyz?verbose' 2>/dev/null)
+    if [ -z "${readyz}" ]; then
+        failed=unreachable
+    else
+        failed=$(printf '%s\n' "${readyz}" \
+            | awk '/^\[-\]/{sub(/^\[-\]/,""); sub(/[[:space:]].*$/,""); printf "%s%s", sep, $0; sep=" "}')
+        [ -n "${failed}" ] || failed=none
+    fi
 
     if kubectl get --raw='/healthz/etcd' 2>/dev/null | grep -q '^ok$'; then
         etcd=ok
@@ -63,7 +69,15 @@ diagnose() {
         disk=ok
     fi
 
-    printf 'readyz:[%s]; etcd:%s; disk:%s' "${failed}" "${etcd}" "${disk}"
+    # etcd stalls under CPU or memory pressure long before it faults on its own,
+    # so an unhealthy CP reporting disk:ok is uninterpretable without these two.
+    load=$(awk '{print $1}' "${LOADAVG_FILE:-/proc/loadavg}" 2>/dev/null)
+    memavail_kb=$(awk '/^MemAvailable:/{print $2}' "${MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null)
+    [ -n "${load}" ] || load=unknown
+    [ -n "${memavail_kb}" ] || memavail_kb=unknown
+
+    printf 'readyz:[%s]; etcd:%s; disk:%s; load:%s; memavail:%sk' \
+        "${failed}" "${etcd}" "${disk}" "${load}" "${memavail_kb}"
 }
 
 publish_report() {

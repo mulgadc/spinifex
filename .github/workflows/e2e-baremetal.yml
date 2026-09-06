@@ -192,7 +192,15 @@ jobs:
       - name: Generate JUnit report
         if: always()
         run: |
-          LOG="${ARTIFACT_DIR}/test-baremetal.log"
+          # suite-output.log, not test-baremetal.log. The harness streams the
+          # full suite output to the first and a grep-filtered summary to its
+          # stdout, and that filter anchors --- PASS at column 0, so every
+          # indented subtest result is dropped. Parsed from the filtered log,
+          # go-junit-report saw a === RUN with no result and emitted
+          # <error message="No test result found"> — 17 of 39 testcases on a
+          # green cell-28, 93 of 120 on cell-20.
+          LOG="${ARTIFACT_DIR}/suite-output.log"
+          [ -s "$LOG" ] || LOG="${ARTIFACT_DIR}/test-baremetal.log"
           [ -f "$LOG" ] || exit 0
           go-junit-report -in "$LOG" -out "${ARTIFACT_DIR}/junit-baremetal.xml" || true
 

@@ -29,7 +29,9 @@ concurrency:
   cancel-in-progress: false
 
 # Scheduled runs are loaded from the default branch (main), so the schedule
-# trigger must stay in sync on main for cron to fire.
+# trigger must stay in sync on main for cron to fire — and so must the
+# concurrency block above. main currently has none, which is why the nightly
+# cron runs ungrouped and a dispatch on any branch can land on top of it.
 env:
   GIT_BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
   UBUNTU_GOLD_IMAGE: /mnt/disk1/gold-images/spinifex-image-builder-ubuntu-26.04.qcow2

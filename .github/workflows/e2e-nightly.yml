@@ -676,6 +676,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # The XML on its own, so the roll-up can read every cell's counts without
+      # pulling nineteen journals it has no use for.
+      - name: Upload junit only
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-cell-${{ matrix.cell }}-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
       # Gated like every other step, not just always(): a cell the dispatch
       # deselected never checked out or ran tofu init, so destroying would fail
       # on missing plugins and report the cell red for correctly doing nothing.
@@ -1406,3 +1417,30 @@ jobs:
         run: |
           pkill -KILL -f '/bin/s3d -config' || true
           rm -rf "$STRESS_RESULTS_ROOT"
+
+  # Reading a nightly meant opening every cell job, and the Actions UI does not
+  # separate a cell that failed from one cancelled out from under it. needs:
+  # every cell so this runs last; always() so a red run is the one it describes.
+  summary:
+    name: run summary
+    needs: [select, matrix, baremetal, diskperf, iso-single, iso-multi, performance, stress]
+    if: always()
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts/e2e-run-summary.py
+          sparse-checkout-cone-mode: false
+
+      - name: Collect junit
+        uses: actions/download-artifact@v7
+        with:
+          pattern: junit-cell-*-${{ github.run_id }}
+          path: junit
+        continue-on-error: true
+
+      - name: Write run summary
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JUNIT_ROOT: junit
+        run: python3 .github/scripts/e2e-run-summary.py

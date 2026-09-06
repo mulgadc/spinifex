@@ -22,14 +22,25 @@ import (
 func main() {
 	cfg := loadConfig(defaultEnvFile)
 
-	agent, err := New(cfg)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Retried rather than fatal: construction resolves the IMDS credential chain,
+	// so a metadata service that is not answering yet would otherwise end the
+	// process with the engine still down and nothing left to bring it back.
+	var agent *Agent
+	err := retry(ctx, "startup", func(context.Context) error {
+		var err error
+		agent, err = New(cfg)
+		return err
+	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
 		slog.Error("rds-agent: startup failed", "err", err)
 		os.Exit(1)
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	// A shutdown signal cancels whatever boot retry loop was running; that is a
 	// clean stop, not a failure.

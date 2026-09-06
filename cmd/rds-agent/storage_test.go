@@ -15,8 +15,10 @@ import (
 // is that the command reaches it rather than what it does to a filesystem.
 type fakeStorage struct {
 	grown   bool
+	synced  bool
 	message string
 	err     error
+	syncErr error
 }
 
 var _ storageOps = (*fakeStorage)(nil)
@@ -24,6 +26,11 @@ var _ storageOps = (*fakeStorage)(nil)
 func (f *fakeStorage) GrowFilesystem(context.Context) (string, error) {
 	f.grown = true
 	return f.message, f.err
+}
+
+func (f *fakeStorage) SyncDataMount(context.Context) error {
+	f.synced = true
+	return f.syncErr
 }
 
 // runLog records what a grow shelled out to, in order, so the test asserts on
@@ -225,5 +232,27 @@ func TestCommandRegistry_GrowFilesystemReachesTheGuestStorage(t *testing.T) {
 	}
 	if reply.Status != handlers_rds.CommandStatusSucceeded || reply.Message != storage.message {
 		t.Errorf("reply = %+v, want succeeded carrying what the grow reported", reply)
+	}
+}
+
+func TestSyncDataMount_FlushesTheMountItWasGiven(t *testing.T) {
+	g := &guestStorage{dataMount: t.TempDir()}
+
+	if err := g.SyncDataMount(context.Background()); err != nil {
+		t.Fatalf("SyncDataMount: %v", err)
+	}
+}
+
+// The control plane snapshots on the strength of this reply, so a mount that is
+// not there has to be an error rather than a flush of nothing.
+func TestSyncDataMount_FailsWhenTheMountIsNotThere(t *testing.T) {
+	g := &guestStorage{dataMount: filepath.Join(t.TempDir(), "absent")}
+
+	err := g.SyncDataMount(context.Background())
+	if err == nil {
+		t.Fatal("SyncDataMount succeeded on a mount that does not exist")
+	}
+	if !strings.Contains(err.Error(), "absent") {
+		t.Errorf("error = %v, want the mount it could not open", err)
 	}
 }

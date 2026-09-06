@@ -22,8 +22,13 @@ export AGENT_ENV="${CASE}/agent.env"
 export handoff_timeout=0
 
 EEND_STATUS=
+# A file rather than a variable: the mirror pipes tail into a while loop, which
+# POSIX sh runs in a subshell, so an assignment there would not survive it.
+CONSOLE="${CASE}/console"
+: >"${CONSOLE}"
 ebegin() { :; }
-einfo() { :; }
+einfo() { printf '%s\n' "$*" >>"${CONSOLE}"; }
+eerror() { printf '%s\n' "$*" >>"${CONSOLE}"; }
 eend() { EEND_STATUS=$1; }
 
 start_pre
@@ -42,6 +47,22 @@ fi
 # wrong engine would bootstrap instead of refusing.
 if [ "${RDS_ENGINE:-}" != "mariadb" ]; then
     echo "FAIL: start_pre did not export RDS_ENGINE from agent.env" >&2
+    exit 1
+fi
+
+# A start that fails is the one case OpenRC runs no start_post for, so without
+# this the console carries nothing but "died" and the reason is lost with the
+# guest.
+export output_log="${CASE}/agent.log"
+printf 'rds-agent: startup failed err="build IMDS signer: no credentials"\n' >"${output_log}"
+: >"${CONSOLE}"
+default_start() { return 1; }
+if start; then
+    echo "FAIL: start reported success when the agent died" >&2
+    exit 1
+fi
+if ! grep -q "build IMDS signer" "${CONSOLE}"; then
+    echo "FAIL: a failed start did not mirror the agent log to the console" >&2
     exit 1
 fi
 

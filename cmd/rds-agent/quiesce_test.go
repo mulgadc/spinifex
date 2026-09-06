@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -129,6 +130,50 @@ func TestCommandRegistry_QuiesceCarriesTheLabelAndDeadline(t *testing.T) {
 	}
 	if engine.label != "orders-db-pre-upgrade" || engine.hold != 6*time.Minute {
 		t.Errorf("engine got %q/%s, want the command's label and deadline", engine.label, engine.hold)
+	}
+}
+
+// The engine's own hold settles only the files it owns. Everything else on that
+// volume — the parameter file the platform writes beside the datadir — is dirty
+// page cache until this, and a snapshot of it restores an engine that will not
+// start.
+func TestCommandRegistry_QuiesceFlushesTheDataMount(t *testing.T) {
+	storage := &fakeStorage{}
+	reply := newCommander(nil, newCommandRegistry(&fakeEngine{}, storage), 0).execute(context.Background(),
+		quiesceCommand("cmd-5a", "360"))
+
+	if reply.Status != handlers_rds.CommandStatusSucceeded {
+		t.Fatalf("reply = %+v, want succeeded", reply)
+	}
+	if !storage.synced {
+		t.Error("the data mount was not flushed, so the snapshot may not hold what the guest wrote")
+	}
+}
+
+// A snapshot taken after a flush that did not happen is the failure this whole
+// path exists to prevent, so it is reported rather than swallowed. The hold is
+// left on the engine: it expires on its own deadline.
+func TestCommandRegistry_QuiesceFailsWhenTheDataMountCannotBeFlushed(t *testing.T) {
+	storage := &fakeStorage{syncErr: errors.New("input/output error")}
+	reply := newCommander(nil, newCommandRegistry(&fakeEngine{}, storage), 0).execute(context.Background(),
+		quiesceCommand("cmd-5b", "360"))
+
+	if reply.Status != handlers_rds.CommandStatusFailed {
+		t.Fatalf("reply = %+v, want failed", reply)
+	}
+	if !strings.Contains(reply.Message, "input/output error") {
+		t.Errorf("reply message = %q, want the flush error", reply.Message)
+	}
+}
+
+func quiesceCommand(id, deadline string) handlers_rds.Command {
+	return handlers_rds.Command{
+		CommandID: id,
+		Type:      handlers_rds.CommandQuiesce,
+		Parameters: []handlers_rds.Parameter{
+			{Name: handlers_rds.CommandParamQuiesceLabel, Value: "orders-db-pre-upgrade"},
+			{Name: handlers_rds.CommandParamQuiesceDeadlineSeconds, Value: deadline},
+		},
 	}
 }
 

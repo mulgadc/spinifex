@@ -1267,6 +1267,42 @@ if run_ok "restore-scope-setup"; then
     fi
 fi
 
+# --- Case 14: a half-written include hook is repaired, not appended after ---
+# postgresql.conf is the one file rds-init puts on the data volume without the
+# engine's knowledge, so a torn tail is the one corruption no WAL replay repairs:
+# the guard does not match an unterminated hook, and appending after it leaves an
+# open quote the postmaster stops on.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+write_parameters
+if run_ok "torn-hook-setup"; then
+    # The shape a snapshot of an unflushed append restores: the hook cut short.
+    sed "s/^include_dir = 'conf.d'$/include_dir = 'conf/" "${PGDATA}/postgresql.conf" \
+        >"${PGDATA}/postgresql.conf.torn"
+    mv -f "${PGDATA}/postgresql.conf.torn" "${PGDATA}/postgresql.conf"
+    write_handoff attach '' appdb
+    write_parameters
+    if run_ok "torn-hook"; then
+        grep -q "^include_dir = 'conf.d'$" "${PGDATA}/postgresql.conf" \
+            && pass "torn-hook: the hook is back" || fail "torn-hook: no usable hook"
+        grep -c "^include_dir = 'conf" "${PGDATA}/postgresql.conf" | grep -qx 1 \
+            && pass "torn-hook: the torn line is gone rather than appended after" \
+            || fail "torn-hook: the torn line survived beside the new one"
+    fi
+fi
+
+# --- Case 14a: the hook is written whole or not at all ---
+# Appended in place, a snapshot could catch it half-written; renamed over, the
+# file a restore reads is either the old one or the complete new one.
+reset_state
+write_handoff initialize 's3cr3t' appdb
+write_parameters
+if run_ok "hook-atomic"; then
+    [ -e "${PGDATA}/.postgresql.conf.new" ] \
+        && fail "hook-atomic: the temp file was left behind" \
+        || pass "hook-atomic: no temp file survives the install"
+fi
+
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all rds-init cases"
     exit 0

@@ -579,6 +579,33 @@ EOF
     mv -f "${_tmp}" "${PGDATA}/conf.d/90-rds-init.conf"
 }
 
+# postgresql.conf is on the data volume, so the hook is asserted every boot
+# rather than only at initdb — a restored volume may predate it.
+#
+# Rewritten and renamed rather than appended to. It is the only file rds-init
+# puts on that volume without the engine's knowledge, so a torn tail is the one
+# corruption the engine cannot repair from its own WAL: the postmaster stops on
+# a syntax error and the instance never comes up.
+install_include_hook() {
+    _conf="${PGDATA}/postgresql.conf"
+    _tmp="${PGDATA}/.postgresql.conf.new"
+
+    if grep -q "^include_dir = 'conf.d'" "${_conf}" 2>/dev/null; then
+        return 0
+    fi
+    # Any half-written hook this script left behind goes rather than being kept:
+    # the guard above does not match one, so appending after its unterminated
+    # quote would stop the postmaster on a file it could not have started from.
+    grep -v "^include_dir = 'conf" "${_conf}" 2>/dev/null >"${_tmp}" || :
+    printf "\n# Managed by rds-init: parameter-group values (10-) then platform settings (90-).\ninclude_dir = 'conf.d'\n" \
+        >>"${_tmp}"
+
+    chown "${PG_USER}:${PG_USER}" "${_tmp}"
+    chmod 0600 "${_tmp}"
+    mv -f "${_tmp}" "${_conf}" ||
+        fail "the include hook could not be installed into ${_conf}"
+}
+
 # Everything refreshed on every boot: the include hook, the client
 # authentication rules, the resolved parameters, the serving cert, the TLS
 # enforcement those parameters ask for and the platform's own connectivity
@@ -588,12 +615,7 @@ install_runtime_config() {
     install -d -m 1775 -o "${PG_USER}" -g "${PG_USER}" "${SOCKET_DIR}"
     install -d -m 0755 -o "${PG_USER}" -g "${PG_USER}" "${LOG_DIR}"
 
-    # postgresql.conf is on the data volume, so the hook is asserted every boot
-    # rather than only at initdb — a restored volume may predate it.
-    if ! grep -q "^include_dir = 'conf.d'" "${PGDATA}/postgresql.conf"; then
-        printf "\n# Managed by rds-init: parameter-group values (10-) then platform settings (90-).\ninclude_dir = 'conf.d'\n" \
-            >> "${PGDATA}/postgresql.conf"
-    fi
+    install_include_hook
 
     write_pg_hba
     install_parameters

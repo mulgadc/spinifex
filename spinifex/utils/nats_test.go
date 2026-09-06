@@ -1309,3 +1309,52 @@ func TestGather_ResponderGrace_ZeroKeepsTheFullDeadline(t *testing.T) {
 	assert.True(t, sum.TimedOut)
 	assert.False(t, sum.SettledEarly)
 }
+
+// A teardown published into the gap where vpcd has unsubscribed but its
+// replacement has not yet subscribed must be retried, not dropped: the address
+// is released while its host route still delivers to the guest that held it.
+func TestPublishNATEvent_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
+	ns := startTestNATSServer(t)
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+
+	// Subscribe only after the first attempt would have found nobody home.
+	got := make(chan string, 1)
+	time.AfterFunc(deleteNATRetryDelay/2, func() {
+		_, serr := nc.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+			var evt natEvent
+			_ = json.Unmarshal(msg.Data, &evt)
+			got <- evt.ExternalIP
+			_ = msg.Respond([]byte(`{"success":true}`))
+		})
+		assert.NoError(t, serr)
+	})
+
+	PublishNATEvent(nc, "vpc.delete-nat", "vpc-a", "192.168.0.73", "172.31.0.4", "port-eni-a", "")
+
+	select {
+	case eip := <-got:
+		assert.Equal(t, "192.168.0.73", eip)
+	case <-time.After(5 * time.Second):
+		t.Fatal("vpc.delete-nat was never delivered")
+	}
+}
+
+// The retry is bounded: with nothing ever subscribing it gives up rather than
+// blocking the API call that issued the disassociate.
+func TestPublishNATEvent_DeleteGivesUpWithNoSubscriber(t *testing.T) {
+	ns := startTestNATSServer(t)
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+
+	start := time.Now()
+	PublishNATEvent(nc, "vpc.delete-nat", "vpc-a", "192.168.0.73", "172.31.0.4", "port-eni-a", "")
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, deleteNATTimeout,
+		"no-responders must fail fast rather than burn the reply timeout")
+}

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
@@ -517,12 +519,20 @@ func (m *natManager) pruneHostEIPs(live LiveEIPs) error {
 	if err != nil {
 		return fmt.Errorf("list host EIP bindings for prune: %w", err)
 	}
+	kept := make([]string, 0, len(bound))
 	for _, eip := range bound {
 		if _, wanted := live.ExternalIPs[eip]; wanted {
+			kept = append(kept, eip)
 			continue
 		}
 		m.releaseHostEIP(eip, "host binding for an external IP absent from intent")
 		slog.Info("policy: pruned stale host EIP ingress", "external_ip", eip)
+	}
+	// The keep decision was silent, so a route that outlived its address could not
+	// be told from one the sweep never saw. Both sides are logged now.
+	if len(bound) > 0 {
+		slog.Info("policy: host EIP prune considered bindings",
+			"bound", bound, "kept", kept, "wanted", slices.Sorted(maps.Keys(live.ExternalIPs)))
 	}
 	return nil
 }

@@ -391,6 +391,11 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 	// Deleting on a pair that recycled identically would tear down the new owner's
 	// rule and ARP entry; the stamped logical port is the discriminator that
 	// survives identical-pair reuse.
+	//
+	// A row that is simply absent is not a reassignment. Nobody owns the IP, so
+	// the OVN delete has nothing to do but the host plumbing below is orphaned
+	// and is exactly what needs removing.
+	rowGone := false
 	if logicalIP != "" || portName != "" {
 		existing, err := m.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", externalIP)
 		switch {
@@ -398,7 +403,7 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 			slog.Warn("policy: DeleteEIP ownership lookup failed, proceeding with delete",
 				"external_ip", externalIP, "logical_ip", logicalIP, "err", err)
 		case existing == nil:
-			return nil
+			rowGone = true
 		case logicalIP != "" && existing.LogicalIP != logicalIP:
 			slog.Info("policy: DeleteEIP skip — external IP reassigned to a different logical IP (stale delete)",
 				"external_ip", externalIP, "stale_logical_ip", logicalIP, "current_logical_ip", existing.LogicalIP)
@@ -411,9 +416,11 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 			return nil
 		}
 	}
-	if err := m.ovn.DeleteNATByExternalIP(ctx, router, "dnat_and_snat", externalIP); err != nil {
-		if !errors.Is(err, ovn.ErrNATNotFound) {
-			return fmt.Errorf("delete dnat_and_snat %s on %s: %w", externalIP, router, err)
+	if !rowGone {
+		if err := m.ovn.DeleteNATByExternalIP(ctx, router, "dnat_and_snat", externalIP); err != nil {
+			if !errors.Is(err, ovn.ErrNATNotFound) {
+				return fmt.Errorf("delete dnat_and_snat %s on %s: %w", externalIP, router, err)
+			}
 		}
 	}
 	// Flush host ARP for the released IP so the next owner isn't shadowed. Best-effort.

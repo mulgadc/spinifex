@@ -337,50 +337,64 @@ func (s *EIPServiceImpl) DisassociateByENI(ctx context.Context, accountID, eniID
 	if eniID == "" {
 		return false, nil
 	}
-	record, key, revision, err := s.findByENI(ctx, accountID, eniID)
+	matches, err := s.findByENI(ctx, accountID, eniID)
 	if err != nil {
 		return false, err
 	}
-	if record == nil {
+	if len(matches) == 0 {
 		return false, nil
 	}
 
-	// The MAC comes off the record rather than a fresh ENI lookup: this runs as
-	// part of tearing that ENI down, so the interface may already be gone.
-	s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIp, record.PrivateIp, eniID, record.MacAddress)
+	for _, m := range matches {
+		record := m.record
 
-	publicIP, allocationID := record.PublicIp, record.AllocationId
-	clearAssociation(record)
+		// The MAC comes off the record rather than a fresh ENI lookup: this runs
+		// as part of tearing that ENI down, so the interface may already be gone.
+		s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIp, record.PrivateIp, eniID, record.MacAddress)
 
-	data, err := json.Marshal(record)
-	if err != nil {
-		return false, fmt.Errorf("marshal EIP record: %w", err)
+		publicIP, allocationID := record.PublicIp, record.AllocationId
+		clearAssociation(record)
+
+		data, err := json.Marshal(record)
+		if err != nil {
+			return false, fmt.Errorf("marshal EIP record: %w", err)
+		}
+		if _, err := s.eipKV.Update(ctx, m.key, data, m.revision); err != nil {
+			return false, errors.New(awserrors.ErrorServerInternal)
+		}
+
+		slog.InfoContext(ctx, "DisassociateByENI completed",
+			"eniId", eniID, "publicIp", publicIP, "allocationId", allocationID, "accountID", accountID)
 	}
-	if _, err := s.eipKV.Update(ctx, key, data, revision); err != nil {
-		return false, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	slog.InfoContext(ctx, "DisassociateByENI completed",
-		"eniId", eniID, "publicIp", publicIP, "allocationId", allocationID, "accountID", accountID)
 	return true, nil
 }
 
-// findByENI returns the associated EIP record holding eniID, or a nil record
-// when the account has none. Unlike findByAssociationID an absent match is not
-// an error: teardown asks this of every ENI, and most carry no EIP.
-func (s *EIPServiceImpl) findByENI(ctx context.Context, accountID, eniID string) (*EIPRecord, string, uint64, error) {
+// eipMatch is a decoded EIP record with the CAS handle needed to write it back.
+type eipMatch struct {
+	record   *EIPRecord
+	key      string
+	revision uint64
+}
+
+// findByENI returns every associated EIP record holding eniID, empty when the
+// account has none. Unlike findByAssociationID an absent match is not an error:
+// teardown asks this of every ENI, and most carry no EIP. All matches are
+// returned, not the first: an ENI can hold more than one EIP, and stopping at
+// one strands the rest associated to an interface that is being deleted.
+func (s *EIPServiceImpl) findByENI(ctx context.Context, accountID, eniID string) ([]eipMatch, error) {
 	prefix := accountID + "."
 	keys, err := s.eipKV.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, "", 0, nil
+			return nil, nil
 		}
-		return nil, "", 0, errors.New(awserrors.ErrorServerInternal)
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	var matches []eipMatch
 	for _, k := range keys {
 		if err := ctx.Err(); err != nil {
-			return nil, "", 0, err
+			return nil, err
 		}
 		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
@@ -393,7 +407,7 @@ func (s *EIPServiceImpl) findByENI(ctx context.Context, accountID, eniID string)
 			// An unreadable record must not read as "this ENI has no EIP":
 			// the caller deletes the interface on that answer, and the
 			// association would be stranded with nothing left to find it.
-			return nil, "", 0, fmt.Errorf("eipKV.Get(%s): %w", k, err)
+			return nil, fmt.Errorf("eipKV.Get(%s): %w", k, err)
 		}
 		var record EIPRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
@@ -401,10 +415,10 @@ func (s *EIPServiceImpl) findByENI(ctx context.Context, accountID, eniID string)
 			continue
 		}
 		if record.ENIId == eniID {
-			return &record, k, entry.Revision(), nil
+			matches = append(matches, eipMatch{record: &record, key: k, revision: entry.Revision()})
 		}
 	}
-	return nil, "", 0, nil
+	return matches, nil
 }
 
 // describeAddressesValidFilters defines the set of filter names accepted by DescribeAddresses.

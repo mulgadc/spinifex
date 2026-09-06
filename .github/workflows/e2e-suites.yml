@@ -43,6 +43,14 @@ on:
         required: false
         default: ""
 
+# Shared with e2e-nightly.yml, e2e-suites.yml and e2e-ddil.yml: every one of
+# them provisions on the same runner pools and the same hypervisors, so two in
+# flight compete for their disks and their libvirt guests. Queued rather than
+# cancelled — a run in progress is someone's result, not a stale one.
+concurrency:
+  group: e2e-hypervisors
+  cancel-in-progress: false
+
 permissions:
   contents: read
   # actions: read lets the otel-job-id action look up a provision job's numeric
@@ -182,7 +190,7 @@ jobs:
           quiet_run "tofu workspace select"    "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
           quiet_run "tofu destroy (pre-clean)" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false || true
           quiet_run "scrub-env (pre-clean)"    "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}" || true
-          quiet_run "tofu apply"               "$TOFU_LOG" tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          retry_run "tofu apply"               "$TOFU_LOG" tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           ok "VM provisioned"
 
       - name: Bootstrap via Binary Install
@@ -518,7 +526,7 @@ jobs:
           find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
           quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
           quiet_run "telemetry flush"       "$TOFU_LOG" timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" || true
-          quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          retry_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
           ok "teardown complete"
 
@@ -629,7 +637,7 @@ jobs:
           quiet_run "tofu workspace select"    "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
           quiet_run "tofu destroy (pre-clean)" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false || true
           quiet_run "scrub-env (pre-clean)"    "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}" || true
-          quiet_run "tofu apply"               "$TOFU_LOG" tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          retry_run "tofu apply"               "$TOFU_LOG" tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           ok "3-node cluster provisioned"
 
       - name: Bootstrap via Binary Install
@@ -903,7 +911,7 @@ jobs:
           find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
           quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
           quiet_run "telemetry flush"       "$TOFU_LOG" timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" || true
-          quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          retry_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
           ok "teardown complete"
 

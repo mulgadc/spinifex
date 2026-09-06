@@ -61,3 +61,37 @@ quiet_run() {
     return "$rc"
   fi
 }
+
+# Connection-layer failures from the libvirt tofu provider. The socket drops
+# when a hypervisor is carrying several environments at once, which is the
+# steady state here. A resource that failed to build says something else.
+CI_LIBVIRT_TRANSIENT='Unable to Connect to Libvirt|error connecting to libvirt|procedure interrupted|Cannot recv data|Cannot write data|End of file while reading data'
+
+# retry_run LABEL LOG_FILE -- CMD ARGS …
+# quiet_run with a bounded retry, taken only when that attempt's own output
+# names a libvirt connection failure. Every other failure is reported on the
+# first attempt, so a real bug never becomes a slow flake.
+retry_run() {
+  local label="$1" log="$2"; shift 2
+  local _attempts="${CI_RETRY_ATTEMPTS:-3}" _delay="${CI_RETRY_DELAY:-30}" _i _rc=1 _mark
+  for ((_i = 1; _i <= _attempts; _i++)); do
+    _mark=$(wc -c < "$log" 2>/dev/null || echo 0)
+    # rc must be read inside the else: an `if` whose condition fails and has no
+    # else exits 0, so reading $? after `fi` reports success for a failed run.
+    if "$@" >> "$log" 2>&1; then
+      if [[ $_i -gt 1 ]]; then ok "$label (libvirt recovered on attempt $_i)"; else ok "$label"; fi
+      return 0
+    else
+      _rc=$?
+    fi
+    tail -c "+$((_mark + 1))" "$log" | grep -Eq "$CI_LIBVIRT_TRANSIENT" || break
+    [[ $_i -eq $_attempts ]] && break
+    warn "$label: libvirt connection dropped (attempt $_i/$_attempts), retrying in ${_delay}s"
+    sleep "$_delay"
+  done
+  bad "$label (rc=$_rc) — last 80 lines of $(basename "$log"):"
+  group_open "tail $(basename "$log")"
+  tail -n 80 "$log"
+  group_close
+  return "$_rc"
+}

@@ -20,8 +20,12 @@ permissions:
 # flight at once compete for their disks and their libvirt guests. Queue the
 # second rather than cancelling it: a dispatch is usually a verification run
 # and discarding it loses the result someone is waiting on.
+#
+# The group is shared with e2e.yml, e2e-suites.yml and e2e-ddil.yml, which draw
+# on the same runner pools. A per-workflow group let a push-triggered E2E land
+# on top of a nightly cell and take libvirt down under both.
 concurrency:
-  group: e2e-nightly
+  group: e2e-hypervisors
   cancel-in-progress: false
 
 # Scheduled runs are loaded from the default branch (main), so the schedule
@@ -148,11 +152,13 @@ jobs:
             ubuntu-*) TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE}" ;;
           esac
 
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
           tofu init -input=false >> "$TOFU_LOG" 2>&1
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1 || true
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
-          tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1
+          # shellcheck disable=SC2086
+          retry_run "tofu apply" "$TOFU_LOG" tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false
 
       - name: Bootstrap via Binary Install
         working-directory: mulga/scripts/tofu-cluster
@@ -568,6 +574,11 @@ jobs:
               > "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null
             ssh "${SSH_OPTS[@]}" tf-user@${IP} 'sudo journalctl -u openvswitch-ipsec.service --no-pager --output=short-iso --since "60 min ago"' \
               > "${ARTIFACT_DIR}/openvswitch-ipsec-node${idx}.log" 2>/dev/null
+            # The unit filter above drops kernel and OOM messages, which are
+            # exactly what explains one node behaving unlike its siblings.
+            # Gzipped on the far side; the whole journal is far larger.
+            ssh "${SSH_OPTS[@]}" tf-user@${IP} 'sudo journalctl --no-pager --output=short-iso --since "90 min ago" | gzip -6' \
+              > "${ARTIFACT_DIR}/full-journal-node${idx}.log.gz" 2>/dev/null
             # ovn-controller and ovs-vswitchd log to files, never to journald:
             # without these a cross-chassis black-hole cannot be attributed to
             # IPsec versus SB port binding.
@@ -636,9 +647,11 @@ jobs:
           case "$MATRIX_HOST" in
             ubuntu-*) TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE}" ;;
           esac
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
-          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1
+          # shellcheck disable=SC2086
+          retry_run "tofu destroy" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 
       - name: Upload tofu log
@@ -885,6 +898,22 @@ jobs:
           EXT_PREFIX_LEN=$EXT_PREFIX_LEN
           EOF
           ./test/test-workload.sh --env /tmp/cell21.env --benchmark
+
+      # The node's own journal, which nothing else preserves: the serial log
+      # stops at login and the harness owns the only node there is. Pulled
+      # before teardown and never fatal, so a passing night keeps it too.
+      - name: Collect node journal
+        if: always() && steps.smoke.outputs.node_ip != ''
+        env:
+          NODE_IP: ${{ steps.smoke.outputs.node_ip }}
+        run: |
+          mkdir -p /tmp/cell21-artifacts-$GITHUB_RUN_ID
+          timeout 180 ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+            -i "$HOME/.ssh/spinifex-key" "spinifex@${NODE_IP}" \
+            'sudo journalctl -b --no-pager --output=short-iso | gzip -6' \
+            > "/tmp/cell21-artifacts-$GITHUB_RUN_ID/node-journal.log.gz" ||
+            echo "::warning::could not pull the node journal from ${NODE_IP}"
 
       - name: Collect logs
         if: always()

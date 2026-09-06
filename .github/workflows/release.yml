@@ -148,6 +148,13 @@ jobs:
   verify:
     needs: release
     runs-on: [ self-hosted, ci-single ]
+    # Shared with the e2e workflows: this job provisions on the same runner
+    # pools and the same hypervisors, so two in flight compete for their disks
+    # and their libvirt guests. Job-level, so the build jobs are not queued
+    # behind a nightly that has nothing to do with them.
+    concurrency:
+      group: e2e-hypervisors
+      cancel-in-progress: false
     timeout-minutes: 25
     env:
       TOFU_LOG: /tmp/release-verify-${{ github.run_id }}.log

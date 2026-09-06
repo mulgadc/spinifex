@@ -4,8 +4,11 @@ package harness
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -64,15 +67,80 @@ func (k *Kubectl) Run(timeout time.Duration, args ...string) (string, error) {
 
 // AuthDiagnostics reproduces the credential exchange behind a failing call
 // without mutating anything. `Unauthorized` on its own says only that the
-// apiserver refused the request; the verbose read-only probe says whether an
-// Authorization header was sent at all, which separates a rejected token from
-// a credential the exec plugin never produced.
+// apiserver refused the request, and the two explanations — a token it rejected
+// versus one the exec plugin never produced — need different fixes.
+//
+// It probes an authenticated path rather than `/version`, which is anonymously
+// readable and so returns 200 under either explanation, and it invokes the
+// credential plugin directly so a plugin that failed is named rather than
+// inferred from a missing header.
 func (k *Kubectl) AuthDiagnostics(timeout time.Duration) string {
-	out, err := k.Run(timeout, "--v=8", "get", "--raw", "/version")
+	var b strings.Builder
+
+	b.WriteString("=== kubectl auth whoami ===\n")
+	out, err := k.Run(timeout, "auth", "whoami")
+	b.WriteString(out)
 	if err != nil {
-		return out + "\nprobe error: " + err.Error()
+		b.WriteString("\nerror: " + err.Error() + "\n")
 	}
-	return out
+
+	// kube-system is not anonymously readable, so a 200 here proves a credential
+	// was both produced and accepted.
+	b.WriteString("\n=== GET /api/v1/namespaces/kube-system ===\n")
+	out, err = k.Run(timeout, "--v=8", "get", "--raw", "/api/v1/namespaces/kube-system")
+	b.WriteString(out)
+	if err != nil {
+		b.WriteString("\nerror: " + err.Error() + "\n")
+	}
+
+	b.WriteString("\n=== credential plugin, invoked directly ===\n")
+	b.WriteString(k.execPluginProbe(timeout))
+	return b.String()
+}
+
+// execPluginProbe runs the kubeconfig's own exec credential plugin and reports
+// whether it produced a token. The token itself is never printed — CI logs are
+// retained for weeks and it is a live cluster credential.
+func (k *Kubectl) execPluginProbe(timeout time.Duration) string {
+	spec, err := k.Run(timeout, "config", "view", "--raw", "-o",
+		"jsonpath={.users[0].user.exec.command}{range .users[0].user.exec.args[*]} {@}{end}")
+	if err != nil {
+		return "could not read exec block from kubeconfig: " + err.Error() + "\n" + spec
+	}
+	argv := strings.Fields(strings.TrimSpace(spec))
+	if len(argv) == 0 {
+		return "kubeconfig user has no exec credential plugin\n"
+	}
+
+	bin, err := exec.LookPath(argv[0])
+	if err != nil {
+		return "exec plugin " + argv[0] + " not on PATH: " + err.Error() + "\n"
+	}
+	cmd := exec.Command(bin, argv[1:]...) //nolint:gosec // argv comes from the kubeconfig this test wrote
+	cmd.Env = append(os.Environ(), k.AWSEnv...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "argv: %s\n", strings.Join(argv, " "))
+	runErr := runWithTimeout(cmd, timeout)
+	fmt.Fprintf(&b, "exit: %v\n", runErr)
+	fmt.Fprintf(&b, "stderr: %s\n", strings.TrimSpace(stderr.String()))
+
+	var cred struct {
+		Status struct {
+			Token               string `json:"token"`
+			ExpirationTimestamp string `json:"expirationTimestamp"`
+		} `json:"status"`
+	}
+	if jsonErr := json.Unmarshal(stdout.Bytes(), &cred); jsonErr != nil {
+		fmt.Fprintf(&b, "stdout did not parse as an ExecCredential: %v (%d bytes)\n",
+			jsonErr, stdout.Len())
+		return b.String()
+	}
+	fmt.Fprintf(&b, "token produced: %t (%d chars), expires: %q\n",
+		cred.Status.Token != "", len(cred.Status.Token), cred.Status.ExpirationTimestamp)
+	return b.String()
 }
 
 type timeoutError struct{}

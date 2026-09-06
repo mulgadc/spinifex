@@ -578,6 +578,14 @@ func phaseEIPIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egre
 	}, 2*time.Minute, 3*time.Second)
 	assertDNATExempt(t, eip)
 
+	// EC2 releases an instance's auto-assigned public IPv4 when an EIP is
+	// associated: "that public IPv4 address is released back into Amazon's pool
+	// ... You cannot reuse the public IPv4 address previously associated".
+	harness.Step(t, "associating the EIP released the auto-assigned %s", probe.publicIP)
+	harness.EventuallyErr(t, func() error {
+		return eipHostPlumbingGone(probe.publicIP)
+	}, 2*time.Minute, 3*time.Second)
+
 	harness.Step(t, "open SG for SSH from anywhere, TCP handshake to EIP %s:22", eip)
 	perms := []*ec2.IpPermission{{
 		IpProtocol: aws.String("tcp"), FromPort: aws.Int64(22), ToPort: aws.Int64(22),
@@ -619,8 +627,11 @@ func phaseEIPIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egre
 		return eipHostPlumbingGone(eip)
 	}, 2*time.Minute, 3*time.Second)
 
-	harness.Step(t, "auto-assigned public IP %s still plumbed after EIP teardown", probe.publicIP)
-	require.NoError(t, eipHostPlumbing(probe.publicIP, gwIP))
+	// The auto-assigned address went back to the pool at associate time, so
+	// disassociating leaves the instance with no public delivery at all. It does
+	// not come back — matching EC2, where a stop/start is what issues a new one.
+	harness.Step(t, "no public delivery remains after the EIP teardown")
+	require.NoError(t, eipHostPlumbingGone(probe.publicIP))
 }
 
 // eipHostPlumbing returns nil when the full Tier 2 host state for eip is in

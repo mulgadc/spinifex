@@ -8,7 +8,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(load-balancers)/describe-load-balancers/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(elbv2LoadBalancersQueryOptions)
+    await context.queryClient.query({
+      ...elbv2LoadBalancersQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

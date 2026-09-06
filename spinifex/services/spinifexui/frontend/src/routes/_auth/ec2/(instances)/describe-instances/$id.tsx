@@ -46,11 +46,20 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     const [instanceData] = await Promise.all([
-      context.queryClient.ensureQueryData(ec2InstanceQueryOptions(params.id)),
-      context.queryClient.ensureQueryData(ec2InstanceTypesQueryOptions),
+      context.queryClient.query({
+        ...ec2InstanceQueryOptions(params.id),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2InstanceTypesQueryOptions,
+        staleTime: "static",
+      }),
     ])
     const imageId = instanceData.Reservations?.[0]?.Instances?.[0]?.ImageId
-    await context.queryClient.ensureQueryData(ec2ImageQueryOptions(imageId))
+    await context.queryClient.query({
+      ...ec2ImageQueryOptions(imageId),
+      staleTime: "static",
+    })
     return instanceData
   },
   head: ({ loaderData }) => ({

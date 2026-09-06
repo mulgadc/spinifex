@@ -11,8 +11,14 @@ export const Route = createFileRoute("/_auth/bedrock/(playground)/playground/")(
   {
     loader: async ({ context }) => {
       await Promise.all([
-        context.queryClient.ensureQueryData(foundationModelsQueryOptions),
-        context.queryClient.ensureQueryData(guardrailsQueryOptions),
+        context.queryClient.query({
+          ...foundationModelsQueryOptions,
+          staleTime: "static",
+        }),
+        context.queryClient.query({
+          ...guardrailsQueryOptions,
+          staleTime: "static",
+        }),
       ])
     },
     head: () => ({

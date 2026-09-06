@@ -18,12 +18,30 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(rdsEngineVersionsQueryOptions),
-      context.queryClient.ensureQueryData(rdsSubnetGroupsQueryOptions),
-      context.queryClient.ensureQueryData(rdsParameterGroupsQueryOptions),
-      context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
-      context.queryClient.ensureQueryData(ec2VpcsQueryOptions),
-      context.queryClient.ensureQueryData(ec2ImagesQueryOptions),
+      context.queryClient.query({
+        ...rdsEngineVersionsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...rdsSubnetGroupsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...rdsParameterGroupsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2SecurityGroupsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2VpcsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2ImagesQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: () => ({

@@ -13,15 +13,18 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(
-        eksClusterQueryOptions(params.clusterName),
-      ),
-      context.queryClient.ensureQueryData(
-        eksNodegroupsQueryOptions(params.clusterName),
-      ),
-      context.queryClient.ensureQueryData(
-        eksAccessEntriesQueryOptions(params.clusterName),
-      ),
+      context.queryClient.query({
+        ...eksClusterQueryOptions(params.clusterName),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...eksNodegroupsQueryOptions(params.clusterName),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...eksAccessEntriesQueryOptions(params.clusterName),
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

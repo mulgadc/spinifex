@@ -16,12 +16,21 @@ export const Route = createFileRoute(
     // The tags query keys off the ARN, which only the describe knows, so it is
     // warmed after the snapshot rather than alongside it.
     const [snapshot] = await Promise.all([
-      context.queryClient.ensureQueryData(rdsDBSnapshotQueryOptions(id)),
-      context.queryClient.ensureQueryData(rdsSnapshotEventsQueryOptions(id)),
+      context.queryClient.query({
+        ...rdsDBSnapshotQueryOptions(id),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...rdsSnapshotEventsQueryOptions(id),
+        staleTime: "static",
+      }),
     ])
     const arn = snapshot.DBSnapshots?.[0]?.DBSnapshotArn ?? ""
     if (arn !== "") {
-      await context.queryClient.ensureQueryData(rdsTagsQueryOptions(arn))
+      await context.queryClient.query({
+        ...rdsTagsQueryOptions(arn),
+        staleTime: "static",
+      })
     }
   },
   head: ({ params }) => ({

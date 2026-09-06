@@ -12,7 +12,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(placement-groups)/describe-placement-groups/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2PlacementGroupsQueryOptions)
+    await context.queryClient.query({
+      ...ec2PlacementGroupsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

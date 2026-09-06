@@ -18,15 +18,28 @@ export const Route = createFileRoute(
     // The tags query keys off the ARN, which only the describe knows, so it is
     // warmed after the instance rather than alongside it.
     const [instance] = await Promise.all([
-      context.queryClient.ensureQueryData(rdsDBInstanceQueryOptions(id)),
-      context.queryClient.ensureQueryData(rdsEventsQueryOptions(id)),
-      context.queryClient.ensureQueryData(
-        rdsInstanceDBSnapshotsQueryOptions(id),
-      ),
-      context.queryClient.ensureQueryData(rdsAutomatedBackupsQueryOptions(id)),
+      context.queryClient.query({
+        ...rdsDBInstanceQueryOptions(id),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...rdsEventsQueryOptions(id),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...rdsInstanceDBSnapshotsQueryOptions(id),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...rdsAutomatedBackupsQueryOptions(id),
+        staleTime: "static",
+      }),
     ])
     const arn = instance.DBInstances?.[0]?.DBInstanceArn ?? ""
-    await context.queryClient.ensureQueryData(rdsTagsQueryOptions(arn))
+    await context.queryClient.query({
+      ...rdsTagsQueryOptions(arn),
+      staleTime: "static",
+    })
   },
   head: ({ params }) => ({
     meta: [

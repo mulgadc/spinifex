@@ -26,10 +26,14 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(
-        iamInstanceProfileQueryOptions(params.instanceProfileName),
-      ),
-      context.queryClient.ensureQueryData(iamRolesQueryOptions),
+      context.queryClient.query({
+        ...iamInstanceProfileQueryOptions(params.instanceProfileName),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...iamRolesQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

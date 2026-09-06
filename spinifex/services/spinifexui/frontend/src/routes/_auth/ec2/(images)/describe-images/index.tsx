@@ -10,7 +10,10 @@ import { ec2ImagesQueryOptions } from "@/queries/ec2"
 
 export const Route = createFileRoute("/_auth/ec2/(images)/describe-images/")({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2ImagesQueryOptions)
+    await context.queryClient.query({
+      ...ec2ImagesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

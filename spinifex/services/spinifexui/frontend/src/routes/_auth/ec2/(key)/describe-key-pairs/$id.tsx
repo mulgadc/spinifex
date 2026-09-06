@@ -17,9 +17,10 @@ import { ec2KeyPairQueryOptions } from "@/queries/ec2"
 export const Route = createFileRoute("/_auth/ec2/(key)/describe-key-pairs/$id")(
   {
     loader: async ({ context, params }) =>
-      await context.queryClient.ensureQueryData(
-        ec2KeyPairQueryOptions(params.id),
-      ),
+      await context.queryClient.query({
+        ...ec2KeyPairQueryOptions(params.id),
+        staleTime: "static",
+      }),
     head: ({ loaderData }) => ({
       meta: [
         {

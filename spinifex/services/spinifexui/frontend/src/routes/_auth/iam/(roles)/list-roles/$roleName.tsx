@@ -28,19 +28,26 @@ export const Route = createFileRoute("/_auth/iam/(roles)/list-roles/$roleName")(
   {
     loader: async ({ context, params }) => {
       await Promise.all([
-        context.queryClient.ensureQueryData(
-          iamRoleQueryOptions(params.roleName),
-        ),
-        context.queryClient.ensureQueryData(
-          iamAttachedRolePoliciesQueryOptions(params.roleName),
-        ),
-        context.queryClient.ensureQueryData(
-          iamInstanceProfilesForRoleQueryOptions(params.roleName),
-        ),
-        context.queryClient.ensureQueryData(iamPoliciesQueryOptions),
-        context.queryClient.ensureQueryData(
-          iamRolePoliciesQueryOptions(params.roleName),
-        ),
+        context.queryClient.query({
+          ...iamRoleQueryOptions(params.roleName),
+          staleTime: "static",
+        }),
+        context.queryClient.query({
+          ...iamAttachedRolePoliciesQueryOptions(params.roleName),
+          staleTime: "static",
+        }),
+        context.queryClient.query({
+          ...iamInstanceProfilesForRoleQueryOptions(params.roleName),
+          staleTime: "static",
+        }),
+        context.queryClient.query({
+          ...iamPoliciesQueryOptions,
+          staleTime: "static",
+        }),
+        context.queryClient.query({
+          ...iamRolePoliciesQueryOptions(params.roleName),
+          staleTime: "static",
+        }),
       ])
     },
     head: ({ params }) => ({

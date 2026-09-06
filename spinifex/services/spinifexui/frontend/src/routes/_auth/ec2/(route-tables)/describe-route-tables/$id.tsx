@@ -51,10 +51,22 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(ec2RouteTableQueryOptions(params.id)),
-      context.queryClient.ensureQueryData(ec2InternetGatewaysQueryOptions),
-      context.queryClient.ensureQueryData(ec2NatGatewaysQueryOptions),
-      context.queryClient.ensureQueryData(ec2SubnetsQueryOptions),
+      context.queryClient.query({
+        ...ec2RouteTableQueryOptions(params.id),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2InternetGatewaysQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2NatGatewaysQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2SubnetsQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

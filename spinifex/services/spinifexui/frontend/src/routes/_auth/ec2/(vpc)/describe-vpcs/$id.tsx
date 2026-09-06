@@ -19,8 +19,14 @@ import { ec2SubnetsQueryOptions, ec2VpcQueryOptions } from "@/queries/ec2"
 export const Route = createFileRoute("/_auth/ec2/(vpc)/describe-vpcs/$id")({
   loader: async ({ context, params }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(ec2VpcQueryOptions(params.id)),
-      context.queryClient.ensureQueryData(ec2SubnetsQueryOptions),
+      context.queryClient.query({
+        ...ec2VpcQueryOptions(params.id),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2SubnetsQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

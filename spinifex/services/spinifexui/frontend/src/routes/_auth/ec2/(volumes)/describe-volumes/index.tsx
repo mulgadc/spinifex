@@ -10,7 +10,10 @@ import { ec2VolumesQueryOptions } from "@/queries/ec2"
 
 export const Route = createFileRoute("/_auth/ec2/(volumes)/describe-volumes/")({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2VolumesQueryOptions)
+    await context.queryClient.query({
+      ...ec2VolumesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

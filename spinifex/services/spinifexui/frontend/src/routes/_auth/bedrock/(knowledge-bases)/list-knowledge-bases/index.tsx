@@ -8,7 +8,10 @@ export const Route = createFileRoute(
   "/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(knowledgeBasesQueryOptions)
+    await context.queryClient.query({
+      ...knowledgeBasesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [{ title: "Knowledge Bases | Ochre | Mulga" }],

@@ -8,7 +8,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(target-groups)/describe-target-groups/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(elbv2TargetGroupsQueryOptions)
+    await context.queryClient.query({
+      ...elbv2TargetGroupsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

@@ -31,7 +31,7 @@ describe("createQueryClient stale-credential recovery", () => {
     const err = awsError("InvalidClientTokenId")
 
     await expect(
-      client.fetchQuery({
+      client.query({
         queryKey: ["probe"],
         queryFn: async () => {
           throw err
@@ -50,7 +50,7 @@ describe("createQueryClient stale-credential recovery", () => {
     const err = awsError("AccessDenied")
 
     await expect(
-      client.fetchQuery({
+      client.query({
         queryKey: ["probe"],
         queryFn: async () => {
           throw err

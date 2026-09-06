@@ -12,7 +12,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(launch-templates)/describe-launch-templates/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2LaunchTemplatesQueryOptions)
+    await context.queryClient.query({
+      ...ec2LaunchTemplatesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

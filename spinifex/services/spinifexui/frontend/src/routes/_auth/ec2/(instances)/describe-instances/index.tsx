@@ -12,7 +12,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(instances)/describe-instances/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2InstancesQueryOptions)
+    await context.queryClient.query({
+      ...ec2InstancesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

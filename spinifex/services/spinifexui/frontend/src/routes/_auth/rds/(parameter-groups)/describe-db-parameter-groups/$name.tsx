@@ -18,14 +18,23 @@ export const Route = createFileRoute(
     // warmed after the group rather than alongside it. A default group has no
     // stored record for tags to live on, so it is skipped entirely.
     const [group] = await Promise.all([
-      context.queryClient.ensureQueryData(rdsParameterGroupQueryOptions(name)),
-      context.queryClient.ensureQueryData(rdsParametersQueryOptions(name)),
+      context.queryClient.query({
+        ...rdsParameterGroupQueryOptions(name),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...rdsParametersQueryOptions(name),
+        staleTime: "static",
+      }),
     ])
     const arn = isDefaultParameterGroupName(name)
       ? ""
       : (group.DBParameterGroups?.[0]?.DBParameterGroupArn ?? "")
     if (arn !== "") {
-      await context.queryClient.ensureQueryData(rdsTagsQueryOptions(arn))
+      await context.queryClient.query({
+        ...rdsTagsQueryOptions(arn),
+        staleTime: "static",
+      })
     }
   },
   head: ({ params }) => ({

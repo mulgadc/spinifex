@@ -13,7 +13,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(nat-gateways)/describe-nat-gateways/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2NatGatewaysQueryOptions)
+    await context.queryClient.query({
+      ...ec2NatGatewaysQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

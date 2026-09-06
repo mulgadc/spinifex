@@ -11,7 +11,10 @@ export const Route = createFileRoute(
   "/_auth/iam/(instance-profiles)/list-instance-profiles/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(iamInstanceProfilesQueryOptions)
+    await context.queryClient.query({
+      ...iamInstanceProfilesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [{ title: "Instance Profiles | IAM | Mulga" }],

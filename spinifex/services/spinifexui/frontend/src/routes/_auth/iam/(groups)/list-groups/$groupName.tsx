@@ -33,17 +33,26 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(
-        iamGroupQueryOptions(params.groupName),
-      ),
-      context.queryClient.ensureQueryData(
-        iamAttachedGroupPoliciesQueryOptions(params.groupName),
-      ),
-      context.queryClient.ensureQueryData(iamPoliciesQueryOptions),
-      context.queryClient.ensureQueryData(iamUsersQueryOptions),
-      context.queryClient.ensureQueryData(
-        iamGroupPoliciesQueryOptions(params.groupName),
-      ),
+      context.queryClient.query({
+        ...iamGroupQueryOptions(params.groupName),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...iamAttachedGroupPoliciesQueryOptions(params.groupName),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...iamPoliciesQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...iamUsersQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...iamGroupPoliciesQueryOptions(params.groupName),
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

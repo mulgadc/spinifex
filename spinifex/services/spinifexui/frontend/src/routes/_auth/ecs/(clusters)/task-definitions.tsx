@@ -6,7 +6,10 @@ import { TaskDefinitionsPage } from "./-components/task-definitions-page"
 
 export const Route = createFileRoute("/_auth/ecs/(clusters)/task-definitions")({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ecsTaskDefinitionsQueryOptions)
+    await context.queryClient.query({
+      ...ecsTaskDefinitionsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [{ title: "Task Definitions | ECS | Mulga" }],

@@ -24,14 +24,16 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     const policyArn = decodeURIComponent(params.policyArn)
-    const policyData = await context.queryClient.ensureQueryData(
-      iamPolicyQueryOptions(policyArn),
-    )
+    const policyData = await context.queryClient.query({
+      ...iamPolicyQueryOptions(policyArn),
+      staleTime: "static",
+    })
     const versionId = policyData.Policy?.DefaultVersionId
     if (versionId) {
-      await context.queryClient.ensureQueryData(
-        iamPolicyVersionQueryOptions(policyArn, versionId),
-      )
+      await context.queryClient.query({
+        ...iamPolicyVersionQueryOptions(policyArn, versionId),
+        staleTime: "static",
+      })
     }
     return policyData
   },

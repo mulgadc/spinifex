@@ -10,9 +10,10 @@ export const Route = createFileRoute(
   "/_auth/bedrock/(guardrails)/list-guardrails/$guardrailId/edit",
 )({
   loader: async ({ context, params }) => {
-    await context.queryClient.ensureQueryData(
-      guardrailQueryOptions(params.guardrailId),
-    )
+    await context.queryClient.query({
+      ...guardrailQueryOptions(params.guardrailId),
+      staleTime: "static",
+    })
   },
   head: ({ params }) => ({
     meta: [{ title: `Edit ${params.guardrailId} | Guardrail | Mulga` }],

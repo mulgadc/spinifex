@@ -13,7 +13,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(route-tables)/describe-route-tables/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2RouteTablesQueryOptions)
+    await context.queryClient.query({
+      ...ec2RouteTablesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

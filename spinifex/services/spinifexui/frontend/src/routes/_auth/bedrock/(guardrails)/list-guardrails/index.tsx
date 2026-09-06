@@ -8,7 +8,10 @@ export const Route = createFileRoute(
   "/_auth/bedrock/(guardrails)/list-guardrails/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(guardrailsQueryOptions)
+    await context.queryClient.query({
+      ...guardrailsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [{ title: "Guardrails | Ochre | Mulga" }],

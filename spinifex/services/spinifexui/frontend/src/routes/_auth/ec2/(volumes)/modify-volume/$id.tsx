@@ -15,7 +15,10 @@ import { type ModifyVolumeFormData, modifyVolumeSchema } from "@/types/ec2"
 
 export const Route = createFileRoute("/_auth/ec2/(volumes)/modify-volume/$id")({
   loader: async ({ context, params }) => {
-    await context.queryClient.ensureQueryData(ec2VolumeQueryOptions(params.id))
+    await context.queryClient.query({
+      ...ec2VolumeQueryOptions(params.id),
+      staleTime: "static",
+    })
   },
   head: ({ params }) => ({
     meta: [

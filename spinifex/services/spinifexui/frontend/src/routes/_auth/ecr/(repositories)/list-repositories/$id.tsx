@@ -14,13 +14,18 @@ export const Route = createFileRoute(
   loader: async ({ context, params }) => {
     const name = decodeURIComponent(params.id)
     await Promise.all([
-      context.queryClient.ensureQueryData(ecrRepositoriesQueryOptions),
-      context.queryClient.ensureQueryData(
-        ecrRepositoryImagesQueryOptions(name),
-      ),
-      context.queryClient.ensureQueryData(
-        ecrRepositoryPolicyQueryOptions(name),
-      ),
+      context.queryClient.query({
+        ...ecrRepositoriesQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ecrRepositoryImagesQueryOptions(name),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ecrRepositoryPolicyQueryOptions(name),
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

@@ -39,7 +39,10 @@ const searchSchema = z.object({
 export const Route = createFileRoute("/_auth/ec2/(snapshots)/create-snapshot")({
   validateSearch: searchSchema,
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2VolumesQueryOptions)
+    await context.queryClient.query({
+      ...ec2VolumesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

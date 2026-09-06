@@ -12,7 +12,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(internet-gateways)/describe-internet-gateways/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2InternetGatewaysQueryOptions)
+    await context.queryClient.query({
+      ...ec2InternetGatewaysQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

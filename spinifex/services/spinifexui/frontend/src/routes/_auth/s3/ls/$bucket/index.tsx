@@ -14,9 +14,10 @@ import { UploadButton } from "@/routes/_auth/s3/-components/upload-button"
 
 export const Route = createFileRoute("/_auth/s3/ls/$bucket/")({
   loader: async ({ context, params }) => {
-    await context.queryClient.ensureQueryData(
-      s3BucketObjectsQueryOptions(params.bucket),
-    )
+    await context.queryClient.query({
+      ...s3BucketObjectsQueryOptions(params.bucket),
+      staleTime: "static",
+    })
   },
   head: ({ params }) => ({
     meta: [

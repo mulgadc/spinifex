@@ -37,7 +37,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(security-groups)/create-security-group",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2VpcsQueryOptions)
+    await context.queryClient.query({
+      ...ec2VpcsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

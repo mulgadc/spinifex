@@ -8,7 +8,10 @@ export const Route = createFileRoute(
   "/_auth/rds/(parameter-groups)/create-db-parameter-group",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(rdsEngineVersionsQueryOptions)
+    await context.queryClient.query({
+      ...rdsEngineVersionsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

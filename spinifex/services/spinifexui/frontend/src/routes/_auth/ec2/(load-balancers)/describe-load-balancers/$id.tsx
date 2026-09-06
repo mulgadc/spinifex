@@ -17,14 +17,30 @@ export const Route = createFileRoute(
   loader: async ({ context, params }) => {
     const arn = decodeURIComponent(params.id)
     await Promise.all([
-      context.queryClient.ensureQueryData(elbv2LoadBalancerQueryOptions(arn)),
-      context.queryClient.ensureQueryData(elbv2ListenersQueryOptions(arn)),
-      context.queryClient.ensureQueryData(
-        elbv2LoadBalancerAttributesQueryOptions(arn),
-      ),
-      context.queryClient.ensureQueryData(elbv2TagsQueryOptions([arn])),
-      context.queryClient.ensureQueryData(elbv2TargetGroupsQueryOptions),
-      context.queryClient.ensureQueryData(ec2SubnetsQueryOptions),
+      context.queryClient.query({
+        ...elbv2LoadBalancerQueryOptions(arn),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...elbv2ListenersQueryOptions(arn),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...elbv2LoadBalancerAttributesQueryOptions(arn),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...elbv2TagsQueryOptions([arn]),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...elbv2TargetGroupsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2SubnetsQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

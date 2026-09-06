@@ -9,12 +9,14 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(
-        ecsServicesQueryOptions(params.clusterName),
-      ),
-      context.queryClient.ensureQueryData(
-        ecsTasksQueryOptions(params.clusterName),
-      ),
+      context.queryClient.query({
+        ...ecsServicesQueryOptions(params.clusterName),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ecsTasksQueryOptions(params.clusterName),
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

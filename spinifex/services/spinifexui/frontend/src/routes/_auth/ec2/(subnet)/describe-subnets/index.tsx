@@ -11,7 +11,10 @@ import { ec2SubnetsQueryOptions } from "@/queries/ec2"
 
 export const Route = createFileRoute("/_auth/ec2/(subnet)/describe-subnets/")({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2SubnetsQueryOptions)
+    await context.queryClient.query({
+      ...ec2SubnetsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

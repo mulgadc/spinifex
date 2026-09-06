@@ -9,7 +9,10 @@ import { iamPoliciesQueryOptions } from "@/queries/iam"
 
 export const Route = createFileRoute("/_auth/iam/(policies)/list-policies/")({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(iamPoliciesQueryOptions)
+    await context.queryClient.query({
+      ...iamPoliciesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [{ title: "Policies | IAM | Mulga" }],

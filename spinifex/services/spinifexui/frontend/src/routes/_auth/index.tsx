@@ -43,15 +43,42 @@ const MAX_ITEMS = 5
 export const Route = createFileRoute("/_auth/")({
   loader: async ({ context }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(ec2InstancesQueryOptions),
-      context.queryClient.ensureQueryData(ec2VolumesQueryOptions),
-      context.queryClient.ensureQueryData(ec2VpcsQueryOptions),
-      context.queryClient.ensureQueryData(ec2KeyPairsQueryOptions),
-      context.queryClient.ensureQueryData(s3BucketsQueryOptions),
-      context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
-      context.queryClient.ensureQueryData(ec2NatGatewaysQueryOptions),
-      context.queryClient.ensureQueryData(ec2AddressesQueryOptions),
-      context.queryClient.ensureQueryData(ec2InternetGatewaysQueryOptions),
+      context.queryClient.query({
+        ...ec2InstancesQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2VolumesQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2VpcsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2KeyPairsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...s3BucketsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2SecurityGroupsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2NatGatewaysQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2AddressesQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2InternetGatewaysQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: () => ({

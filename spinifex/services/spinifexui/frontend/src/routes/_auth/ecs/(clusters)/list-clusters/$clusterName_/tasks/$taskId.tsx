@@ -8,9 +8,10 @@ export const Route = createFileRoute(
   "/_auth/ecs/(clusters)/list-clusters/$clusterName_/tasks/$taskId",
 )({
   loader: async ({ context, params }) => {
-    await context.queryClient.ensureQueryData(
-      ecsTasksQueryOptions(params.clusterName),
-    )
+    await context.queryClient.query({
+      ...ecsTasksQueryOptions(params.clusterName),
+      staleTime: "static",
+    })
   },
   head: ({ params }) => ({
     meta: [{ title: `${params.taskId} | ECS | Mulga` }],

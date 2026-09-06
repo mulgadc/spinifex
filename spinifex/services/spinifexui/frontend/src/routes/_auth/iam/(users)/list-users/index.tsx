@@ -9,7 +9,10 @@ import { iamUsersQueryOptions } from "@/queries/iam"
 
 export const Route = createFileRoute("/_auth/iam/(users)/list-users/")({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(iamUsersQueryOptions)
+    await context.queryClient.query({
+      ...iamUsersQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [{ title: "Users | IAM | Mulga" }],

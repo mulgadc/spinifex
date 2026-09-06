@@ -294,20 +294,20 @@ describe("ELBv2 cross-slice flow (mocked SDK)", () => {
     })
 
     // Step 5: describe queries should reflect all the writes
-    const lbs = await qc.fetchQuery(elbv2LoadBalancersQueryOptions)
+    const lbs = await qc.query(elbv2LoadBalancersQueryOptions)
     expect(lbs.LoadBalancers).toHaveLength(1)
     expect(lbs.LoadBalancers?.[0]?.LoadBalancerArn).toBe(lbArn)
 
-    const tgs = await qc.fetchQuery(elbv2TargetGroupsQueryOptions)
+    const tgs = await qc.query(elbv2TargetGroupsQueryOptions)
     expect(tgs.TargetGroups).toHaveLength(1)
 
-    const listeners = await qc.fetchQuery(elbv2ListenersQueryOptions(lbArn))
+    const listeners = await qc.query(elbv2ListenersQueryOptions(lbArn))
     expect(listeners.Listeners).toHaveLength(1)
     expect(listeners.Listeners?.[0]?.DefaultActions?.[0]?.TargetGroupArn).toBe(
       tgArn,
     )
 
-    const health = await qc.fetchQuery(elbv2TargetHealthQueryOptions(tgArn))
+    const health = await qc.query(elbv2TargetHealthQueryOptions(tgArn))
     expect(health.TargetHealthDescriptions).toHaveLength(2)
     expect(health.TargetHealthDescriptions?.[0]?.TargetHealth?.State).toBe(
       "healthy",

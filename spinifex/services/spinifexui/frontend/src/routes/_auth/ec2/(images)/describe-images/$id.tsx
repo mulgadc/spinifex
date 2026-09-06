@@ -32,9 +32,10 @@ const SYSTEM_OWNER_ID = "000000000000"
 export const Route = createFileRoute("/_auth/ec2/(images)/describe-images/$id")(
   {
     loader: async ({ context, params }) =>
-      await context.queryClient.ensureQueryData(
-        ec2ImageQueryOptions(params.id),
-      ),
+      await context.queryClient.query({
+        ...ec2ImageQueryOptions(params.id),
+        staleTime: "static",
+      }),
     head: ({ loaderData }) => ({
       meta: [
         {

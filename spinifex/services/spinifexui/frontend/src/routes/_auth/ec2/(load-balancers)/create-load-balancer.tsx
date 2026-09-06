@@ -18,12 +18,30 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(ec2VpcsQueryOptions),
-      context.queryClient.ensureQueryData(ec2SubnetsQueryOptions),
-      context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
-      context.queryClient.ensureQueryData(elbv2TargetGroupsQueryOptions),
-      context.queryClient.ensureQueryData(acmCertificatesQueryOptions),
-      context.queryClient.ensureQueryData(elbv2SslPoliciesQueryOptions),
+      context.queryClient.query({
+        ...ec2VpcsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2SubnetsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2SecurityGroupsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...elbv2TargetGroupsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...acmCertificatesQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...elbv2SslPoliciesQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: () => ({

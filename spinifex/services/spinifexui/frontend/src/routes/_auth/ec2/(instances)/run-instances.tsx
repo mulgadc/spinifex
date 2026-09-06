@@ -25,14 +25,38 @@ export const Route = createFileRoute("/_auth/ec2/(instances)/run-instances")({
   validateSearch: searchSchema,
   loader: async ({ context }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(ec2ImagesQueryOptions),
-      context.queryClient.ensureQueryData(ec2KeyPairsQueryOptions),
-      context.queryClient.ensureQueryData(ec2InstanceTypesQueryOptions),
-      context.queryClient.ensureQueryData(ec2SubnetsQueryOptions),
-      context.queryClient.ensureQueryData(ec2PlacementGroupsQueryOptions),
-      context.queryClient.ensureQueryData(ec2VpcsQueryOptions),
-      context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
-      context.queryClient.ensureQueryData(ec2LaunchTemplatesQueryOptions),
+      context.queryClient.query({
+        ...ec2ImagesQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2KeyPairsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2InstanceTypesQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2SubnetsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2PlacementGroupsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2VpcsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2SecurityGroupsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2LaunchTemplatesQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: () => ({

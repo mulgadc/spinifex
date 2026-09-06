@@ -12,7 +12,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(elastic-ips)/describe-addresses/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2AddressesQueryOptions)
+    await context.queryClient.query({
+      ...ec2AddressesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

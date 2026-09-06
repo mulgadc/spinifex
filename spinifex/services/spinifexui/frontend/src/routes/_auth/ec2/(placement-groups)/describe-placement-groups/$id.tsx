@@ -22,10 +22,14 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(
-        ec2PlacementGroupQueryOptions(params.id),
-      ),
-      context.queryClient.ensureQueryData(ec2InstancesQueryOptions),
+      context.queryClient.query({
+        ...ec2PlacementGroupQueryOptions(params.id),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2InstancesQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

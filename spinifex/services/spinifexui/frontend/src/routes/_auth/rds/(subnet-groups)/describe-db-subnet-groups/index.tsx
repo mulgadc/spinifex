@@ -8,7 +8,10 @@ export const Route = createFileRoute(
   "/_auth/rds/(subnet-groups)/describe-db-subnet-groups/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(rdsSubnetGroupsQueryOptions)
+    await context.queryClient.query({
+      ...rdsSubnetGroupsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

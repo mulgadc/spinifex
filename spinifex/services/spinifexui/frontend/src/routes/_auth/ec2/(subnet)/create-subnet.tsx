@@ -36,8 +36,14 @@ import { type CreateSubnetFormData, createSubnetSchema } from "@/types/ec2"
 export const Route = createFileRoute("/_auth/ec2/(subnet)/create-subnet")({
   loader: async ({ context }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(ec2VpcsQueryOptions),
-      context.queryClient.ensureQueryData(ec2AvailabilityZonesQueryOptions),
+      context.queryClient.query({
+        ...ec2VpcsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2AvailabilityZonesQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: () => ({

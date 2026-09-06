@@ -8,7 +8,10 @@ export const Route = createFileRoute(
   "/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/create",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(foundationModelsQueryOptions)
+    await context.queryClient.query({
+      ...foundationModelsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [{ title: "Create Knowledge Base | Ochre | Mulga" }],

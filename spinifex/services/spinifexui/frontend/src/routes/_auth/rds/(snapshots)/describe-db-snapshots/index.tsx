@@ -8,7 +8,10 @@ export const Route = createFileRoute(
   "/_auth/rds/(snapshots)/describe-db-snapshots/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(rdsDBSnapshotsQueryOptions)
+    await context.queryClient.query({
+      ...rdsDBSnapshotsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

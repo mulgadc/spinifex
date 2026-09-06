@@ -9,7 +9,10 @@ import { iamGroupsQueryOptions } from "@/queries/iam"
 
 export const Route = createFileRoute("/_auth/iam/(groups)/list-groups/")({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(iamGroupsQueryOptions)
+    await context.queryClient.query({
+      ...iamGroupsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [{ title: "Groups | IAM | Mulga" }],

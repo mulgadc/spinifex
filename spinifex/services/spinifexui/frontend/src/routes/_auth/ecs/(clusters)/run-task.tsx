@@ -17,9 +17,18 @@ export const Route = createFileRoute("/_auth/ecs/(clusters)/run-task")({
   validateSearch: searchSchema,
   loader: async ({ context }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(ecsTaskDefinitionsQueryOptions),
-      context.queryClient.ensureQueryData(ec2SubnetsQueryOptions),
-      context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
+      context.queryClient.query({
+        ...ecsTaskDefinitionsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2SubnetsQueryOptions,
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2SecurityGroupsQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: () => ({

@@ -1,0 +1,1 @@
+import{It as e,_t as t}from"./cluster-config-Bjqk93qS.js";import{_a as n}from"./awsClient-DzGEPkSc.js";var r=e(n,`AmazonBedrockFrontendService`,`BedrockRuntimeClient`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

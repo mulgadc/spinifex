@@ -10,7 +10,10 @@ import { s3BucketsQueryOptions } from "@/queries/s3"
 
 export const Route = createFileRoute("/_auth/s3/ls/")({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(s3BucketsQueryOptions)
+    await context.queryClient.query({
+      ...s3BucketsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

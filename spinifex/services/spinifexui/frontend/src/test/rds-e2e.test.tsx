@@ -517,7 +517,7 @@ function renderHarness(qc: QueryClient) {
 }
 
 async function statusOf(qc: QueryClient): Promise<string | undefined> {
-  const data = await qc.fetchQuery(rdsDBInstanceQueryOptions("orders-db"))
+  const data = await qc.query(rdsDBInstanceQueryOptions("orders-db"))
   return data.DBInstances?.[0]?.DBInstanceStatus
 }
 
@@ -532,7 +532,7 @@ describe("RDS cross-slice flow (mocked SDK)", () => {
 
     await result.current.create.mutateAsync(CREATE_FORM)
 
-    const listed = await qc.fetchQuery(rdsDBInstancesQueryOptions)
+    const listed = await qc.query(rdsDBInstancesQueryOptions)
     expect(listed.DBInstances).toHaveLength(1)
     expect(listed.DBInstances?.[0]?.DBInstanceStatus).toBe("creating")
     expect(listed.DBInstances?.[0]?.Endpoint?.Port).toBe(5432)
@@ -556,15 +556,13 @@ describe("RDS cross-slice flow (mocked SDK)", () => {
       applyImmediately: true,
     })
 
-    const modifying = await qc.fetchQuery(
-      rdsDBInstanceQueryOptions("orders-db"),
-    )
+    const modifying = await qc.query(rdsDBInstanceQueryOptions("orders-db"))
     expect(modifying.DBInstances?.[0]?.DBInstanceStatus).toBe("modifying")
     expect(
       modifying.DBInstances?.[0]?.PendingModifiedValues?.AllocatedStorage,
     ).toBe(40)
 
-    const settled = await qc.fetchQuery(rdsDBInstanceQueryOptions("orders-db"))
+    const settled = await qc.query(rdsDBInstanceQueryOptions("orders-db"))
     expect(settled.DBInstances?.[0]?.DBInstanceStatus).toBe("available")
     expect(settled.DBInstances?.[0]?.AllocatedStorage).toBe(40)
     expect(settled.DBInstances?.[0]?.DBInstanceClass).toBe("db.t3.small")
@@ -580,7 +578,7 @@ describe("RDS cross-slice flow (mocked SDK)", () => {
       identifier: "orders-db-final-20260817-1432",
       sourceIdentifier: "orders-db",
     })
-    const remaining = await qc.fetchQuery(rdsDBInstancesQueryOptions)
+    const remaining = await qc.query(rdsDBInstancesQueryOptions)
     expect(remaining.DBInstances).toHaveLength(0)
   })
 
@@ -669,9 +667,9 @@ const RESTORE_FORM = {
 // The poll the conditional refetchInterval drives, run by hand until the
 // snapshot settles.
 async function settledSnapshot(qc: QueryClient, identifier: string) {
-  await qc.fetchQuery(rdsDBSnapshotQueryOptions(identifier))
-  await qc.fetchQuery(rdsDBSnapshotQueryOptions(identifier))
-  return await qc.fetchQuery(rdsDBSnapshotQueryOptions(identifier))
+  await qc.query(rdsDBSnapshotQueryOptions(identifier))
+  await qc.query(rdsDBSnapshotQueryOptions(identifier))
+  return await qc.query(rdsDBSnapshotQueryOptions(identifier))
 }
 
 describe("RDS snapshot flow (mocked SDK)", () => {
@@ -697,7 +695,7 @@ describe("RDS snapshot flow (mocked SDK)", () => {
       tags: [],
     })
 
-    const listed = await qc.fetchQuery(rdsDBSnapshotsQueryOptions)
+    const listed = await qc.query(rdsDBSnapshotsQueryOptions)
     expect(listed.DBSnapshots?.[0]?.Status).toBe("creating")
     expect(listed.DBSnapshots?.[0]?.Engine).toBe("postgres")
 
@@ -713,7 +711,7 @@ describe("RDS snapshot flow (mocked SDK)", () => {
       dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
     })
 
-    const restored = await qc.fetchQuery(
+    const restored = await qc.query(
       rdsDBInstanceQueryOptions("orders-db-restored"),
     )
     // The engine, the master user and the port come from the snapshot; only
@@ -753,11 +751,9 @@ describe("RDS snapshot flow (mocked SDK)", () => {
       tags: [],
     })
 
-    const mine = await qc.fetchQuery(
-      rdsInstanceDBSnapshotsQueryOptions("orders-db"),
-    )
+    const mine = await qc.query(rdsInstanceDBSnapshotsQueryOptions("orders-db"))
     expect(mine.DBSnapshots).toHaveLength(1)
-    const others = await qc.fetchQuery(
+    const others = await qc.query(
       rdsInstanceDBSnapshotsQueryOptions("billing-db"),
     )
     expect(others.DBSnapshots).toHaveLength(0)

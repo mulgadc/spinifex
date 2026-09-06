@@ -26,7 +26,10 @@ import { type CreateVolumeFormData, createVolumeSchema } from "@/types/ec2"
 
 export const Route = createFileRoute("/_auth/ec2/(volumes)/create-volume")({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2AvailabilityZonesQueryOptions)
+    await context.queryClient.query({
+      ...ec2AvailabilityZonesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

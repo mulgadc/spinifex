@@ -19,7 +19,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(subnet)/describe-subnets/$id",
 )({
   loader: async ({ context, params }) => {
-    await context.queryClient.ensureQueryData(ec2SubnetQueryOptions(params.id))
+    await context.queryClient.query({
+      ...ec2SubnetQueryOptions(params.id),
+      staleTime: "static",
+    })
   },
   head: ({ params }) => ({
     meta: [

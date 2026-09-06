@@ -37,22 +37,30 @@ export const Route = createFileRoute("/_auth/iam/(users)/list-users/$userName")(
   {
     loader: async ({ context, params }) => {
       await Promise.all([
-        context.queryClient.ensureQueryData(
-          iamUserQueryOptions(params.userName),
-        ),
-        context.queryClient.ensureQueryData(
-          iamAccessKeysQueryOptions(params.userName),
-        ),
-        context.queryClient.ensureQueryData(
-          iamAttachedUserPoliciesQueryOptions(params.userName),
-        ),
-        context.queryClient.ensureQueryData(iamPoliciesQueryOptions),
-        context.queryClient.ensureQueryData(
-          iamGroupsForUserQueryOptions(params.userName),
-        ),
-        context.queryClient.ensureQueryData(
-          iamUserPoliciesQueryOptions(params.userName),
-        ),
+        context.queryClient.query({
+          ...iamUserQueryOptions(params.userName),
+          staleTime: "static",
+        }),
+        context.queryClient.query({
+          ...iamAccessKeysQueryOptions(params.userName),
+          staleTime: "static",
+        }),
+        context.queryClient.query({
+          ...iamAttachedUserPoliciesQueryOptions(params.userName),
+          staleTime: "static",
+        }),
+        context.queryClient.query({
+          ...iamPoliciesQueryOptions,
+          staleTime: "static",
+        }),
+        context.queryClient.query({
+          ...iamGroupsForUserQueryOptions(params.userName),
+          staleTime: "static",
+        }),
+        context.queryClient.query({
+          ...iamUserPoliciesQueryOptions(params.userName),
+          staleTime: "static",
+        }),
       ])
     },
     head: ({ params }) => ({

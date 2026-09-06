@@ -12,12 +12,14 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(
-        guardrailQueryOptions(params.guardrailId),
-      ),
-      context.queryClient.ensureQueryData(
-        guardrailVersionsQueryOptions(params.guardrailId),
-      ),
+      context.queryClient.query({
+        ...guardrailQueryOptions(params.guardrailId),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...guardrailVersionsQueryOptions(params.guardrailId),
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

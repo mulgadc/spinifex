@@ -12,12 +12,14 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(
-        knowledgeBaseQueryOptions(params.knowledgeBaseId),
-      ),
-      context.queryClient.ensureQueryData(
-        dataSourcesQueryOptions(params.knowledgeBaseId),
-      ),
+      context.queryClient.query({
+        ...knowledgeBaseQueryOptions(params.knowledgeBaseId),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...dataSourcesQueryOptions(params.knowledgeBaseId),
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

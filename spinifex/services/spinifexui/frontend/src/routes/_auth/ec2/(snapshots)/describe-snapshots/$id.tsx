@@ -38,8 +38,14 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(ec2SnapshotQueryOptions(params.id)),
-      context.queryClient.ensureQueryData(ec2RegionsQueryOptions),
+      context.queryClient.query({
+        ...ec2SnapshotQueryOptions(params.id),
+        staleTime: "static",
+      }),
+      context.queryClient.query({
+        ...ec2RegionsQueryOptions,
+        staleTime: "static",
+      }),
     ])
   },
   head: ({ params }) => ({

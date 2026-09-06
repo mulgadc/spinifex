@@ -8,7 +8,10 @@ export const Route = createFileRoute(
   "/_auth/ecr/(repositories)/list-repositories/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ecrRepositoriesQueryOptions)
+    await context.queryClient.query({
+      ...ecrRepositoriesQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

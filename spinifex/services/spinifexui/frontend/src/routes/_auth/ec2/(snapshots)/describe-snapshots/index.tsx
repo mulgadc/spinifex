@@ -12,7 +12,10 @@ export const Route = createFileRoute(
   "/_auth/ec2/(snapshots)/describe-snapshots/",
 )({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(ec2SnapshotsQueryOptions)
+    await context.queryClient.query({
+      ...ec2SnapshotsQueryOptions,
+      staleTime: "static",
+    })
   },
   head: () => ({
     meta: [

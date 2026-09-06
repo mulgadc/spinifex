@@ -30,6 +30,8 @@ ebegin() { :; }
 einfo() { printf '%s\n' "$*" >>"${CONSOLE}"; }
 eerror() { printf '%s\n' "$*" >>"${CONSOLE}"; }
 eend() { EEND_STATUS=$1; }
+SYNCED=
+sync() { SYNCED=1; }
 
 start_pre
 start_post
@@ -47,6 +49,14 @@ fi
 # wrong engine would bootstrap instead of refusing.
 if [ "${RDS_ENGINE:-}" != "postgres" ]; then
     echo "FAIL: start_pre did not export RDS_ENGINE from agent.env" >&2
+    exit 1
+fi
+
+# cloud-init writes agent.env once and never again, so the copy the next boot
+# reads is whatever reached the disk. A reboot is a reset with no guest
+# shutdown, and an unflushed agent.env leaves the agent with no gateway URL.
+if [ "${SYNCED}" != "1" ]; then
+    echo "FAIL: the handoff wait did not flush the config cloud-init wrote" >&2
     exit 1
 fi
 

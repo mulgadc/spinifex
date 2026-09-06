@@ -87,5 +87,11 @@ start_post() {
         sleep 1
         _waited=$((_waited + 1))
     done
+
+    # A handoff means the agent read agent.env, which cloud-init wrote seconds
+    # ago and only into page cache. A reboot is a QMP reset with no guest
+    # shutdown, so anything not yet written back is gone and the next boot has
+    # no gateway URL to reach the control plane with.
+    sync
     eend 0
 }

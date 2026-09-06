@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -152,4 +153,13 @@ func TestDetachVolume_WithoutForceStillReportsTheMissingInstance(t *testing.T) {
 	}, nc, "000000000001")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+// The gateway's deadline must outlast the daemon's, or a detach that is still
+// working is reported to the caller as ServerInternal. The daemon spends up to
+// 180s sealing and then up to 180s on the QMP unplug chain.
+func TestDetachVolume_DeadlineOutlastsTheDaemonBudget(t *testing.T) {
+	const daemonBudget = 180*time.Second + 3*time.Minute
+	assert.Greater(t, detachRequestTimeout, daemonBudget,
+		"detachRequestTimeout must exceed the daemon's seal plus unplug budget")
 }

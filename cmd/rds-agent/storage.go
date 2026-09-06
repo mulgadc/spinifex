@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // The in-guest half of a storage grow: the control plane has already grown the
@@ -17,6 +19,9 @@ type storageOps interface {
 	// Extends the filesystem at the data mount onto its whole device, and
 	// reports what it did for the command reply.
 	GrowFilesystem(ctx context.Context) (string, error)
+	// Flushes every dirty page on the data mount to its device. A backup hold
+	// settles the engine's own files and nothing else on that filesystem.
+	SyncDataMount(ctx context.Context) error
 }
 
 // Tool names rather than paths: the image installs them from
@@ -48,6 +53,23 @@ func newGuestStorage(cfg config, run commandRunner) *guestStorage {
 		mountsFile: cfg.MountsFile,
 		sysBlock:   cfg.SysBlock,
 	}
+}
+
+// syncfs rather than fsync: the whole filesystem, not one file. Config the
+// engine never opens lives on this volume too, and a snapshot that catches it
+// half-written leaves a restored instance the engine cannot start from.
+func (g *guestStorage) SyncDataMount(ctx context.Context) error {
+	f, err := os.Open(g.dataMount)
+	if err != nil {
+		return fmt.Errorf("open the data mount %s to flush it: %w", g.dataMount, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if err := unix.Syncfs(int(f.Fd())); err != nil {
+		return fmt.Errorf("flush the data mount %s: %w", g.dataMount, err)
+	}
+	slog.InfoContext(ctx, "rds-agent: data mount flushed for backup", "dataMount", g.dataMount)
+	return nil
 }
 
 // The device and filesystem behind the data mount, resolved from the kernel's

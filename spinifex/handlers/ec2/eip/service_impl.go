@@ -790,12 +790,21 @@ func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
 // publishNATEvent publishes a NAT lifecycle event to NATS for vpcd (fire-and-forget).
 // PortName must use topology.Port(eniID) to match the OVN logical switch port name;
 // a mismatch causes OVN to never program the DNAT flow.
+// vpc.delete-nat goes through the shared helper so an undelivered teardown is
+// retried across a vpcd restart and reported when it still fails. vpc.add-nat
+// stays fire-and-forget here: the shared helper blocks it on the flows barrier,
+// and associating an address must not inherit that latency.
 func (s *EIPServiceImpl) publishNATEvent(topic, vpcID, externalIP, logicalIP, eniID, mac string) {
+	portName := topology.Port(eniID)
+	if topic == "vpc.delete-nat" {
+		utils.PublishNATEvent(s.natsConn, topic, vpcID, externalIP, logicalIP, portName, mac)
+		return
+	}
 	utils.PublishEvent(s.natsConn, topic, natEvent{
 		VpcId:      vpcID,
 		ExternalIP: externalIP,
 		LogicalIP:  logicalIP,
-		PortName:   topology.Port(eniID),
+		PortName:   portName,
 		MAC:        mac,
 	})
 }

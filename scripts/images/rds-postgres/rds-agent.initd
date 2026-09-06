@@ -40,6 +40,28 @@ start_pre() {
     fi
 }
 
+# The agent's log is inside a guest nothing can reach, so anything that is not
+# mirrored here is lost. Used by both the failed start and the handoff timeout.
+mirror_agent_log() {
+    if [ -s "${output_log}" ]; then
+        einfo "last ${handoff_tail} lines of ${output_log}:"
+        tail -n "${handoff_tail}" "${output_log}" 2>/dev/null | while IFS= read -r _line; do
+            einfo "  [rds-agent] ${_line}"
+        done
+    else
+        einfo "${output_log} is empty — the agent produced no output at all"
+    fi
+}
+
+# OpenRC skips start_post when the start itself fails, which is the one case
+# with no diagnostic at all: the console reports only that the process died.
+start() {
+    default_start && return 0
+    eerror "rds-agent exited during start"
+    mirror_agent_log
+    return 1
+}
+
 start_post() {
     # Resolve this after start_pre loads agent.env so custom handoff directories
     # are shared by the agent, this wait, and rds-init.
@@ -53,18 +75,10 @@ start_post() {
     while [ ! -f "${HANDOFF_ENV}" ]; do
         if [ "${_waited}" -ge "${handoff_timeout}" ]; then
             eend 1 "no bootstrap handoff after ${handoff_timeout}s"
-            # Mirror the agent's own tail onto the console. The log lives inside a
-            # guest nothing can reach when this fails — an unreachable gateway is
-            # the usual cause — so the host-side console capture is the only way
-            # the dial error survives, and without it the failure reads as silence.
-            if [ -s "${output_log}" ]; then
-                einfo "last ${handoff_tail} lines of ${output_log}:"
-                tail -n "${handoff_tail}" "${output_log}" 2>/dev/null | while IFS= read -r _line; do
-                    einfo "  [rds-agent] ${_line}"
-                done
-            else
-                einfo "${output_log} is empty — the agent produced no output at all"
-            fi
+            # An unreachable gateway is the usual cause, and the host-side console
+            # capture is the only way that dial error survives — without it the
+            # failure reads as silence.
+            mirror_agent_log
             # The agent keeps retrying, so it is left running: rds-init fails on
             # the missing handoff and the engine stays down, which is what the
             # control plane observes.
@@ -73,5 +87,11 @@ start_post() {
         sleep 1
         _waited=$((_waited + 1))
     done
+
+    # A handoff means the agent read agent.env, which cloud-init wrote seconds
+    # ago and only into page cache. A reboot is a QMP reset with no guest
+    # shutdown, so anything not yet written back is gone and the next boot has
+    # no gateway URL to reach the control plane with.
+    sync
     eend 0
 }

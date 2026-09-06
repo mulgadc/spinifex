@@ -38,6 +38,11 @@ type instanceCommander interface {
 // only be changed through the stopped-instance path.
 var ErrInstanceNotOnNode = errors.New("rds: no node is holding this DB VM")
 
+// The owning node refused the command because the VM is not in a state for it.
+// A stop gets this when something else is already stopping the VM, which is
+// where the stop was going, so only the fleet view settles it.
+var ErrInstanceStateRefused = errors.New("rds: the DB VM is not in a state for this command")
+
 // How long a VM stop, start or reboot may take before the command is treated as
 // lost. A stop drains and seals the data volume, which is the long pole.
 const instanceCommandTimeout = 90 * time.Second
@@ -159,8 +164,10 @@ func (s *Service) stopInstanceVM(ctx context.Context, accountID, instanceID stri
 	err := s.deps.Instances.StopInstance(ctx, instanceID)
 	// A command no node answered usually means the VM is already down, which is
 	// where the stop was going anyway; a command a node accepted says nothing
-	// about the VM yet. Both are settled by the same fleet-wide wait.
-	if err != nil && !errors.Is(err, ErrInstanceNotOnNode) {
+	// about the VM yet. A refused one means another driver — the reconciler
+	// resuming this same stop — got there first, which is also where it was
+	// going. All three are settled by the same fleet-wide wait.
+	if err != nil && !errors.Is(err, ErrInstanceNotOnNode) && !errors.Is(err, ErrInstanceStateRefused) {
 		return err
 	}
 	return s.waitForVMStopped(ctx, accountID, instanceID)
@@ -432,6 +439,9 @@ func (c *natsInstanceCommander) send(ctx context.Context, instanceID string, att
 	if errors.Is(err, nats.ErrNoResponders) ||
 		strings.Contains(err.Error(), awserrors.ErrorInvalidInstanceIDNotFound) {
 		return fmt.Errorf("%w: %s", ErrInstanceNotOnNode, instanceID)
+	}
+	if strings.Contains(err.Error(), awserrors.ErrorIncorrectInstanceState) {
+		return fmt.Errorf("%w: %s", ErrInstanceStateRefused, instanceID)
 	}
 	return err
 }

@@ -20,12 +20,18 @@ permissions:
 # flight at once compete for their disks and their libvirt guests. Queue the
 # second rather than cancelling it: a dispatch is usually a verification run
 # and discarding it loses the result someone is waiting on.
+#
+# The group is shared with e2e.yml, e2e-suites.yml and e2e-ddil.yml, which draw
+# on the same runner pools. A per-workflow group let a push-triggered E2E land
+# on top of a nightly cell and take libvirt down under both.
 concurrency:
-  group: e2e-nightly
+  group: e2e-hypervisors
   cancel-in-progress: false
 
 # Scheduled runs are loaded from the default branch (main), so the schedule
-# trigger must stay in sync on main for cron to fire.
+# trigger must stay in sync on main for cron to fire — and so must the
+# concurrency block above. main currently has none, which is why the nightly
+# cron runs ungrouped and a dispatch on any branch can land on top of it.
 env:
   GIT_BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
   UBUNTU_GOLD_IMAGE: /mnt/disk1/gold-images/spinifex-image-builder-ubuntu-26.04.qcow2
@@ -47,11 +53,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          sparse-checkout: .github/e2e-cells.json
+          sparse-checkout: |
+            .github/e2e-cells.json
+            .github/scripts/suite-sets.sh
           sparse-checkout-cone-mode: false
       - id: pick
         env:
           CELLS: ${{ github.event_name == 'workflow_dispatch' && inputs.cells || '' }}
+          # Provision, install and teardown around the suite. Measured at ~6
+          # minutes single-node and ~10 multi-node, so this is the floor the
+          # job budget must carry on top of the suite's own.
+          SETUP_ALLOWANCE_MIN: 10
         run: |
           if [ -z "$CELLS" ]; then
             sel=$(jq -c . .github/e2e-cells.json)
@@ -64,6 +76,44 @@ jobs:
           [ "$(jq 'length' <<<"$sel")" -gt 0 ] && any=true || any=false
           echo "any=$any" >> "$GITHUB_OUTPUT"
           echo "selected: $(jq -c '[.[].cell]' <<<"$sel")"
+
+          # The inner timeout must always fire before the outer one. go test
+          # reports where it stopped and the suite's own failure; a job timeout
+          # reports only "The operation was canceled". cell-27 ran a 50m rds
+          # suite inside a 50m job and could never finish either way.
+          . .github/scripts/suite-sets.sh
+          # Cells with no suite are filtered in jq, not with an empty-field test:
+          # tab is IFS whitespace, so read collapses a run of them and an empty
+          # middle column silently shifts every later one left.
+          bad=0
+          while IFS=$'\t' read -r cell suite budget; do
+            want="$(e2e_suite_timeout "$suite")"; want="${want%m}"
+            if [ "$budget" -lt $((want + SETUP_ALLOWANCE_MIN)) ]; then
+              echo "::error::cell-$cell gives suite '$suite' ${want}m inside a ${budget}m job. Raise timeout_minutes in .github/e2e-cells.json to at least $((want + SETUP_ALLOWANCE_MIN)), or lower the suite budget in suite-sets.sh." >&2
+              bad=1
+            fi
+          done < <(jq -r '.[]|select((.suite//"")!="")|[.cell,.suite,(.timeout_minutes//50)]|@tsv' <<<"$sel")
+
+          # A permutation cell names no suite and runs the nightly subset for its
+          # topology, so its bound is the longest of those. max() and not sum():
+          # whichever suite hangs must panic on its own timeout first, and a sum
+          # would demand a budget the set has never come close to using.
+          while IFS=$'\t' read -r cell topo budget; do
+            case "$topo" in
+              *multi) set -- ${E2E_SUITES_NIGHTLY_MULTI} ;;
+              *)      set -- ${E2E_SUITES_NIGHTLY_SINGLE} ;;
+            esac
+            want=0
+            for suite in "$@"; do
+              t="$(e2e_suite_timeout "$suite")"; t="${t%m}"
+              [ "$t" -gt "$want" ] && want="$t"
+            done
+            if [ "$budget" -lt $((want + SETUP_ALLOWANCE_MIN)) ]; then
+              echo "::error::cell-$cell runs the $topo nightly subset, whose longest suite asks ${want}m, inside a ${budget}m job. Raise timeout_minutes in .github/e2e-cells.json to at least $((want + SETUP_ALLOWANCE_MIN))." >&2
+              bad=1
+            fi
+          done < <(jq -r '.[]|select((.suite//"")=="")|[.cell,.topo,(.timeout_minutes//50)]|@tsv' <<<"$sel")
+          [ "$bad" -eq 0 ]
 
   matrix:
     name: "cell-${{ matrix.cell }} (${{ matrix.topo }}/${{ matrix.net }}/${{
@@ -133,6 +183,22 @@ jobs:
             "${RUNNER_TEMP}/spinifex-tests.tar" \
             --extra-suites "${MATRIX_SUITE}"
 
+      # Eight runner names map onto three hypervisors, so cells that never share
+      # a runner still share a host. Nothing measured that, which left "the host
+      # was loaded" as an unfalsifiable explanation for every timeout. Sampled
+      # either side of the cell so the next occurrence can be correlated.
+      - name: Sample hypervisor load (before)
+        if: always()
+        run: |
+          mkdir -p "${ARTIFACT_DIR}"
+          {
+            echo "=== before: $(date -u +%Y-%m-%dT%H:%M:%SZ) runner=${RUNNER_NAME} host=$(hostname) ==="
+            echo "loadavg: $(cat /proc/loadavg)"
+            grep -E '^(MemTotal|MemAvailable|SwapFree):' /proc/meminfo || true
+            echo "cpu(steal is field 8): $(grep '^cpu ' /proc/stat || true)"
+            echo "running qemu: $(pgrep -c qemu-system-x86 || echo 0)"
+          } >> "${ARTIFACT_DIR}/hypervisor-load.txt"
+
       - name: Provision VMs
         working-directory: mulga/scripts/tofu-cluster
         env:
@@ -148,11 +214,13 @@ jobs:
             ubuntu-*) TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE}" ;;
           esac
 
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
           tofu init -input=false >> "$TOFU_LOG" 2>&1
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1 || true
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
-          tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1
+          # shellcheck disable=SC2086
+          retry_run "tofu apply" "$TOFU_LOG" tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false
 
       - name: Bootstrap via Binary Install
         working-directory: mulga/scripts/tofu-cluster
@@ -544,6 +612,18 @@ jobs:
           if [ $rc -ne 0 ]; then echo "reboot: FAILED" >> "${ARTIFACT_DIR}/suite-status.txt"; fi
           exit $rc
 
+      - name: Sample hypervisor load (after)
+        if: always()
+        run: |
+          mkdir -p "${ARTIFACT_DIR}"
+          {
+            echo "=== after: $(date -u +%Y-%m-%dT%H:%M:%SZ) runner=${RUNNER_NAME} host=$(hostname) ==="
+            echo "loadavg: $(cat /proc/loadavg)"
+            grep -E '^(MemTotal|MemAvailable|SwapFree):' /proc/meminfo || true
+            echo "cpu(steal is field 8): $(grep '^cpu ' /proc/stat || true)"
+            echo "running qemu: $(pgrep -c qemu-system-x86 || echo 0)"
+          } >> "${ARTIFACT_DIR}/hypervisor-load.txt"
+
       - name: Collect e2e artifacts
         if: always()
         working-directory: mulga/scripts/tofu-cluster
@@ -568,6 +648,11 @@ jobs:
               > "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null
             ssh "${SSH_OPTS[@]}" tf-user@${IP} 'sudo journalctl -u openvswitch-ipsec.service --no-pager --output=short-iso --since "60 min ago"' \
               > "${ARTIFACT_DIR}/openvswitch-ipsec-node${idx}.log" 2>/dev/null
+            # The unit filter above drops kernel and OOM messages, which are
+            # exactly what explains one node behaving unlike its siblings.
+            # Gzipped on the far side; the whole journal is far larger.
+            ssh "${SSH_OPTS[@]}" tf-user@${IP} 'sudo journalctl --no-pager --output=short-iso --since "90 min ago" | gzip -6' \
+              > "${ARTIFACT_DIR}/full-journal-node${idx}.log.gz" 2>/dev/null
             # ovn-controller and ovs-vswitchd log to files, never to journald:
             # without these a cross-chassis black-hole cannot be attributed to
             # IPsec versus SB port binding.
@@ -621,6 +706,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # The XML on its own, so the roll-up can read every cell's counts without
+      # pulling nineteen journals it has no use for.
+      - name: Upload junit only
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-cell-${{ matrix.cell }}-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
       # Gated like every other step, not just always(): a cell the dispatch
       # deselected never checked out or ran tofu init, so destroying would fail
       # on missing plugins and report the cell red for correctly doing nothing.
@@ -636,9 +732,11 @@ jobs:
           case "$MATRIX_HOST" in
             ubuntu-*) TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE}" ;;
           esac
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
-          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1
+          # shellcheck disable=SC2086
+          retry_run "tofu destroy" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 
       - name: Upload tofu log
@@ -684,7 +782,7 @@ jobs:
     name: cell-28 (baremetal/diskperf)
     needs: baremetal
     if: >-
-      always() && (
+      !cancelled() && (
         github.event_name == 'schedule' ||
         inputs.cells == '' ||
         contains(format(',{0},', inputs.cells), ',28,')
@@ -886,6 +984,22 @@ jobs:
           EOF
           ./test/test-workload.sh --env /tmp/cell21.env --benchmark
 
+      # The node's own journal, which nothing else preserves: the serial log
+      # stops at login and the harness owns the only node there is. Pulled
+      # before teardown and never fatal, so a passing night keeps it too.
+      - name: Collect node journal
+        if: always() && steps.smoke.outputs.node_ip != ''
+        env:
+          NODE_IP: ${{ steps.smoke.outputs.node_ip }}
+        run: |
+          mkdir -p /tmp/cell21-artifacts-$GITHUB_RUN_ID
+          timeout 180 ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+            -i "$HOME/.ssh/spinifex-key" "spinifex@${NODE_IP}" \
+            'sudo journalctl -b --no-pager --output=short-iso | gzip -6' \
+            > "/tmp/cell21-artifacts-$GITHUB_RUN_ID/node-journal.log.gz" ||
+            echo "::warning::could not pull the node journal from ${NODE_IP}"
+
       - name: Collect logs
         if: always()
         run: |
@@ -949,7 +1063,7 @@ jobs:
     # them together would need 32 GiB on one box.
     needs: [iso-single]
     if: >-
-      always() && (
+      !cancelled() && (
       github.event_name == 'schedule' ||
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',22,') )
@@ -1104,13 +1218,14 @@ jobs:
   # bottlebrush, so "a different label" would not have separated them. needs: on
   # a matrix job waits for every leg, so this starts on a quiet machine.
   #
-  # always() because a failed cell must not silently skip the benchmark and
-  # leave a green-looking night with no number in it.
+  # !cancelled() rather than always(): a failed cell must not silently skip the
+  # benchmark and leave a green-looking night with no number in it, but always()
+  # also overrides cancellation and keeps the run starting jobs after a cancel.
   performance:
     name: cell-23 (predastore/throughput)
     needs: [matrix, baremetal, iso-single, iso-multi]
     if: >-
-      always() && (
+      !cancelled() && (
       github.event_name == 'schedule' ||
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',23,') )
@@ -1222,7 +1337,7 @@ jobs:
     name: cell-24 (predastore/fault-injection)
     needs: [matrix, baremetal, iso-single, iso-multi, performance]
     if: >-
-      always() && (
+      !cancelled() && (
       github.event_name == 'schedule' ||
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',24,') )
@@ -1332,3 +1447,30 @@ jobs:
         run: |
           pkill -KILL -f '/bin/s3d -config' || true
           rm -rf "$STRESS_RESULTS_ROOT"
+
+  # Reading a nightly meant opening every cell job, and the Actions UI does not
+  # separate a cell that failed from one cancelled out from under it. needs:
+  # every cell so this runs last; always() so a red run is the one it describes.
+  summary:
+    name: run summary
+    needs: [select, matrix, baremetal, diskperf, iso-single, iso-multi, performance, stress]
+    if: always()
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts/e2e-run-summary.py
+          sparse-checkout-cone-mode: false
+
+      - name: Collect junit
+        uses: actions/download-artifact@v7
+        with:
+          pattern: junit-cell-*-${{ github.run_id }}
+          path: junit
+        continue-on-error: true
+
+      - name: Write run summary
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JUNIT_ROOT: junit
+        run: python3 .github/scripts/e2e-run-summary.py

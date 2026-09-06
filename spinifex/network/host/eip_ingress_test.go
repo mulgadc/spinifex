@@ -195,3 +195,34 @@ func TestRemoveEIPIngress_MissingStateNotError(t *testing.T) {
 		t.Fatalf("missing state must not be an error, got: %v", err)
 	}
 }
+
+// iptables -S renders the two ingress accepts one per direction, so both -s and
+// -d carry the EIP and the same address must be reported once. Rules without
+// the comment belong to other subsystems and are not ours to sweep.
+func TestListEIPIngress(t *testing.T) {
+	r := newStubRunner()
+	r.expect("iptables -t filter -S FORWARD", []byte(strings.Join([]string{
+		"-P FORWARD DROP",
+		"-A FORWARD -i spx-nat-host -s 192.168.0.53/32 -m comment --comment spinifex-eip-ingress -j ACCEPT",
+		"-A FORWARD -o spx-nat-host -d 192.168.0.53/32 -m comment --comment spinifex-eip-ingress -j ACCEPT",
+		"-A FORWARD -o spx-nat-host -d 192.168.0.52/32 -m comment --comment spinifex-eip-ingress -j ACCEPT",
+		"-A FORWARD -s 10.0.0.0/8 -j ACCEPT",
+	}, "\n")), nil)
+
+	got, err := ListEIPIngress(context.Background(), r)
+	if err != nil {
+		t.Fatalf("ListEIPIngress: %v", err)
+	}
+	want := []string{"192.168.0.53", "192.168.0.52"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("ListEIPIngress = %v, want %v", got, want)
+	}
+}
+
+func TestListEIPIngress_ErrorSurfaces(t *testing.T) {
+	r := newStubRunner()
+	r.expect("iptables -t filter -S FORWARD", []byte("permission denied"), fmt.Errorf("exit 4"))
+	if _, err := ListEIPIngress(context.Background(), r); err == nil {
+		t.Fatal("expected an error when the inventory cannot be read")
+	}
+}

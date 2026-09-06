@@ -688,22 +688,67 @@ func AddNAT(nc *nats.Conn, vpcID, externalIP, logicalIP, portName, mac string) e
 	}, addNATTimeout)
 }
 
-// PublishNATEvent sends a NAT lifecycle event. vpc.add-nat uses request-reply (prevents ARP races);
-// vpc.delete-nat is fire-and-forget. Use AddNAT directly when failure must trigger a rollback.
+// deleteNATTimeout bounds the vpc.delete-nat request-reply. The handler deletes
+// the OVN row and unbinds host plumbing, each under its own 10 s context, so the
+// ceiling is above both. It is a ceiling and not a cost: the reply normally lands
+// in milliseconds.
+const deleteNATTimeout = 15 * time.Second
+
+// A teardown published while vpcd is restarting has no subscriber and is dropped
+// on the floor, leaving a /32 host route delivering a released address to the
+// guest that used to hold it. The gap is short — a restart resubscribes in a few
+// hundred milliseconds — so a small bounded retry closes it. Only ErrNoResponders
+// is retried, and that returns immediately, so the added latency is bounded by
+// the delay and paid only when nothing is listening.
+const (
+	deleteNATRetries    = 3
+	deleteNATRetryDelay = 500 * time.Millisecond
+)
+
+// PublishNATEvent sends a NAT lifecycle event. Both topics use request-reply:
+// vpc.add-nat to prevent ARP races, vpc.delete-nat so an undelivered teardown is
+// reported rather than lost. Neither is fatal to the caller — the reconciler's
+// orphan sweep is the backstop. Use AddNAT directly when failure must trigger a
+// rollback.
 func PublishNATEvent(nc *nats.Conn, topic, vpcID, externalIP, logicalIP, portName, mac string) {
 	evt := natEvent{
 		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,
 		PortName: portName, MAC: mac,
 	}
 
-	if topic == "vpc.add-nat" {
+	switch topic {
+	case "vpc.add-nat":
 		if err := RequestEvent(nc, topic, evt, addNATTimeout); err != nil {
 			slog.Warn("PublishNATEvent: failed to add NAT rule — OVN dnat_and_snat rule not created; restart vpcd or re-associate EIP to recover",
 				"topic", topic, "externalIP", externalIP, "logicalIP", logicalIP, "err", err)
 		}
-		return
+	case "vpc.delete-nat":
+		if err := deleteNAT(nc, evt); err != nil {
+			slog.Error("PublishNATEvent: failed to delete NAT rule — the host route and proxy-ARP for this address may still deliver to its old guest; the reconciler's orphan sweep is the remaining repair",
+				"topic", topic, "externalIP", externalIP, "logicalIP", logicalIP, "err", err)
+		}
+	default:
+		PublishEvent(nc, topic, evt)
 	}
-	PublishEvent(nc, topic, evt)
+}
+
+// deleteNAT requests the teardown, retrying only while nothing is subscribed.
+func deleteNAT(nc *nats.Conn, evt natEvent) error {
+	var err error
+	for attempt := range deleteNATRetries {
+		if attempt > 0 {
+			time.Sleep(deleteNATRetryDelay)
+		}
+		if err = RequestEvent(nc, "vpc.delete-nat", evt, deleteNATTimeout); err == nil {
+			return nil
+		}
+		if !errors.Is(err, nats.ErrNoResponders) {
+			return err
+		}
+		slog.Warn("vpc.delete-nat has no subscriber; retrying",
+			"externalIP", evt.ExternalIP, "attempt", attempt+1, "attempts", deleteNATRetries)
+	}
+	return err
 }
 
 // RequestEvent marshals event as JSON and sends a synchronous NATS request, blocking until the subscriber acks.

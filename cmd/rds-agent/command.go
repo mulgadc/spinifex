@@ -50,7 +50,13 @@ func newCommandRegistry(engine engineOps, storage storageOps) commandRegistry {
 			if err != nil {
 				return "", err
 			}
-			return "", engine.Quiesce(ctx, params[handlers_rds.CommandParamQuiesceLabel], hold)
+			if err := engine.Quiesce(ctx, params[handlers_rds.CommandParamQuiesceLabel], hold); err != nil {
+				return "", err
+			}
+			// After the hold, so what is flushed is the engine's checkpointed
+			// state. Its own files are not the risk — those it repairs from the
+			// WAL — but the parameter file beside them it never opens.
+			return "", storage.SyncDataMount(ctx)
 		},
 		handlers_rds.CommandUnquiesce: func(ctx context.Context, cmd handlers_rds.Command) (string, error) {
 			return "", engine.Unquiesce(ctx)

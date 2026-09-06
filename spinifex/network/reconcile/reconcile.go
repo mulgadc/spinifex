@@ -32,9 +32,12 @@ type Reconciler interface {
 	// Reconcile returns a scan failure as-is, and wraps ErrPassIncomplete when
 	// the scan succeeded but some resources did not converge.
 	Reconcile(ctx context.Context, intent IntentState) error
-	// ReconcileApplyOnly skips orphan-pruning. Startup uses this to avoid
-	// racing peer subscribers that haven't processed in-flight create events
-	// yet; legitimate orphans are pruned on the next drift tick.
+	// ReconcileApplyOnly skips the port-group and ENI-port orphan sweeps, which
+	// startup uses to avoid racing peer subscribers that haven't processed
+	// in-flight create events yet; those orphans are pruned on the next drift
+	// tick. The EIP sweep still runs: it re-reads intent immediately before
+	// deciding and abandons the sweep if that read fails, and a stale row there
+	// is a released public address still delivering traffic.
 	ReconcileApplyOnly(ctx context.Context, intent IntentState) error
 }
 
@@ -270,7 +273,13 @@ func (r *reconciler) ReconcileApplyOnly(ctx context.Context, intent IntentState)
 	return r.reconcile(ctx, intent, false)
 }
 
-func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrphans bool) error {
+// reconcile applies intent. pruneTopology gates the port-group and ENI-port
+// sweeps only; the EIP sweep runs on every pass, including startup. Startup is
+// the pass that follows the window where a KV watch (UpdatesOnly) and a
+// fire-and-forget vpc.delete-nat both miss a change, so it is exactly the pass
+// that must repair one — and skipping it leaves a released public address still
+// delivering to a guest until the resync.
+func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneTopology bool) error {
 	actual, err := scanActual(ctx, r.ovn)
 	if err != nil {
 		return fmt.Errorf("scan actual OVN state: %w", err)
@@ -278,7 +287,7 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 
 	slog.Info("reconcile: starting",
 		"local_az", r.localAZ,
-		"prune_orphans", pruneOrphans,
+		"prune_topology", pruneTopology,
 		"intent_vpcs", len(intent.VPCs),
 		"intent_subnets", len(intent.Subnets),
 		"intent_ports", len(intent.Ports),
@@ -293,13 +302,11 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 	res := &passResult{}
 	r.applyVPCs(ctx, intent, actual, res)
 	r.applySubnets(ctx, intent, actual, res)
-	r.applySGs(ctx, intent, actual, pruneOrphans, res)
-	r.applyPorts(ctx, intent, actual, pruneOrphans, res)
+	r.applySGs(ctx, intent, actual, pruneTopology, res)
+	r.applyPorts(ctx, intent, actual, pruneTopology, res)
 	r.applyIGWs(ctx, intent, actual, res)
 	r.applyEIPs(ctx, intent, actual, res)
-	if pruneOrphans {
-		r.pruneOrphanEIPs(ctx, intent, res)
-	}
+	r.pruneOrphanEIPs(ctx, intent, res)
 	r.applyNATGWs(ctx, intent, actual, res)
 	r.applyIGWRoutes(ctx, intent, actual, res)
 	r.applyNATGWRoutes(ctx, intent, actual, res)

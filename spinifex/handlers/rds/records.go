@@ -476,6 +476,10 @@ type AgentState struct {
 	EngineHealth  EngineHealth `json:"engineHealth,omitempty"`
 	Message       string       `json:"message,omitempty"`
 	RegisteredAt  *time.Time   `json:"registeredAt,omitempty"`
+	// When the agent process now reporting registered. Unlike RegisteredAt it
+	// moves on every agent start, so it is what proves a restart happened
+	// rather than that the VM was already up.
+	StartedAt *time.Time `json:"startedAt,omitempty"`
 	// The last *persisted* beat. Beats in between are held in leader memory, so
 	// this trails the truth by up to the persist floor.
 	LastSeen *time.Time `json:"lastSeen,omitempty"`

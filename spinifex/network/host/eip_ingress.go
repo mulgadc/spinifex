@@ -129,6 +129,37 @@ func EnsureEIPIngress(ctx context.Context, r Runner, eip, gwLrpIP, poolGateway, 
 	return nil
 }
 
+// ListEIPIngress returns the EIPs this host currently plumbs, read back from
+// the FORWARD rules EnsureEIPIngress stamps with its own comment. The OVN NAT
+// row is not a record of host state — it can be deleted by a path that never
+// touches the route — so the sweep needs the host's own inventory.
+func ListEIPIngress(ctx context.Context, r Runner) ([]string, error) {
+	out, err := r.Run(ctx, "iptables", "-t", "filter", "-S", "FORWARD")
+	if err != nil {
+		return nil, fmt.Errorf("list FORWARD rules: %s: %w", string(out), err)
+	}
+	seen := make(map[string]struct{})
+	eips := make([]string, 0, 4)
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if !strings.Contains(line, "--comment "+eipIngressComment) {
+			continue
+		}
+		fields := strings.Fields(line)
+		for i := 0; i < len(fields)-1; i++ {
+			if fields[i] != "-s" && fields[i] != "-d" {
+				continue
+			}
+			eip := strings.TrimSuffix(fields[i+1], "/32")
+			if _, dup := seen[eip]; dup {
+				continue
+			}
+			seen[eip] = struct{}{}
+			eips = append(eips, eip)
+		}
+	}
+	return eips, nil
+}
+
 // RemoveEIPIngress tears down the host state for an EIP on disassociate or
 // release. Missing pieces are not errors (idempotent teardown); the proxy
 // neighbor is removed from whatever uplink currently faces the pool.

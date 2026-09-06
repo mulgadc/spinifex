@@ -91,9 +91,12 @@ type SuiteReport struct {
 	Label     string // short name, e.g. "single"
 	Total     int
 	FailCount int
-	Root      *Failure    // nil if no failures
-	Cascades  []Failure   // everything else that failed in this suite
-	Buckets   [][]Failure // failures grouped by signature (root's bucket first)
+	// Unresolved counts testcases go-junit-report could not find an outcome
+	// for. They are not failures and the suite can be green with hundreds.
+	Unresolved int
+	Root       *Failure    // nil if no failures
+	Cascades   []Failure   // everything else that failed in this suite
+	Buckets    [][]Failure // failures grouped by signature (root's bucket first)
 	// EndedAt is go-junit-report's <testsuite timestamp>, which records when
 	// the XML was produced — i.e. when the suite finished, not when it began.
 	EndedAt time.Time
@@ -366,7 +369,7 @@ func computeLeafSet(cases []junitTC) map[string]bool {
 func computeRolledUpSet(cases []junitTC) map[string]bool {
 	rolledUp := make(map[string]bool, len(cases))
 	for _, tc := range cases {
-		if tc.Failure == nil && tc.Error == nil {
+		if tc.Failure == nil && !isRealError(tc.Error) {
 			continue
 		}
 		// Mark every ancestor: the failure belongs to the deepest case that
@@ -410,6 +413,18 @@ func parseStartTime(s string) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+// noResultMessage is go-junit-report's marker for a testcase it saw start and
+// never saw finish. On cell-20 it accounted for 93 of the 120 testcases and 24
+// of the 25 reported failures, none of which had failed.
+const noResultMessage = "No test result found"
+
+// isRealError separates a genuine <error> from the parser's no-result marker.
+// A parent must not be treated as rolled up by a child whose outcome is merely
+// unknown, or the parent's own failure is dropped along with it.
+func isRealError(e *junitFailure) bool {
+	return e != nil && strings.TrimSpace(e.Message) != noResultMessage
 }
 
 // suiteLabel turns "junit-single.xml" into "single".
@@ -457,6 +472,17 @@ func ParseFile(path string, data []byte) (SuiteReport, error) {
 			case tc.Failure != nil:
 				body = tc.Failure.Body
 			case tc.Error != nil:
+				// go-junit-report emits this when a `=== RUN` line has no
+				// matching result line. It means the outcome is unknown, not
+				// that the test errored, and it attaches the test's own log
+				// output — which then reads as an assertion.
+				if !isRealError(tc.Error) {
+					rep.Unresolved++
+					if leaf {
+						cumul += tc.Time
+					}
+					continue
+				}
 				body = tc.Error.Body
 			default:
 				if leaf {
@@ -553,6 +579,18 @@ func ParseFile(path string, data []byte) (SuiteReport, error) {
 }
 
 // Render writes the markdown report.
+// writeUnresolved names the testcases whose outcome the parser could not read.
+// Worth surfacing because a suite that leaves most of its subtests unresolved
+// is reporting on far less than its test count suggests.
+func writeUnresolved(b *strings.Builder, s SuiteReport) {
+	if s.Unresolved == 0 {
+		return
+	}
+	fmt.Fprintf(b, "ℹ️ %d of %d testcases have no result line in the log, so `go-junit-report` "+
+		"could not read their outcome. Not failures — but this suite reports on %d tests, not %d.\n\n",
+		s.Unresolved, s.Total, s.Total-s.Unresolved, s.Total)
+}
+
 func Render(r Report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## %s\n\n", r.Title)
@@ -579,9 +617,11 @@ func Render(r Report) string {
 	for _, s := range r.Suites {
 		if s.FailCount == 0 {
 			fmt.Fprintf(&b, "### Suite `%s`: ✅ pass (%d tests)\n\n", s.Label, s.Total)
+			writeUnresolved(&b, s)
 			continue
 		}
 		fmt.Fprintf(&b, "### Suite `%s`: %d failed, 1 root cause likely\n\n", s.Label, s.FailCount)
+		writeUnresolved(&b, s)
 
 		if s.Root != nil {
 			// XML order is completion order, so "earliest" only means earliest

@@ -88,3 +88,34 @@ func (r *countingServingRecorder) RecordServingParameters(context.Context) error
 	r.calls++
 	return nil
 }
+
+// A restart is not finished until a healthy beat lands, so the two cadence
+// rules that shorten it are worth pinning: report at once rather than after a
+// full interval, and keep reporting quickly while the engine has never served.
+func TestHeartbeater_ReportsPromptlyUntilTheEngineHasServed(t *testing.T) {
+	code := 2
+	probe := newPostgresProbe(testProbeConfig(), func(context.Context, string, ...string) (int, string, error) {
+		return code, "", nil
+	})
+	cp := newFakeControlPlane()
+	h := newHeartbeater(cp, probe, nil, 0)
+
+	if got := h.nextInterval(); got != startupHeartbeatInterval {
+		t.Errorf("interval before the engine has served = %s, want %s", got, startupHeartbeatInterval)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go h.Run(ctx)
+	waitFor(t, func() bool { return len(cp.snapshotStates()) > 0 }, "the first heartbeat")
+	cancel()
+
+	if states := cp.snapshotStates(); states[0].health != handlers_rds.EngineHealthStarting {
+		t.Errorf("first beat health = %q, want %q", states[0].health, handlers_rds.EngineHealthStarting)
+	}
+
+	code = 0
+	h.beat(context.Background())
+	if got := h.nextInterval(); got != h.interval {
+		t.Errorf("interval after the engine served = %s, want the control plane's %s", got, h.interval)
+	}
+}

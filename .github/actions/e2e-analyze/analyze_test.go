@@ -174,6 +174,55 @@ func TestParseFile_SkipsEmptyParentFailure(t *testing.T) {
 	}
 }
 
+// go-junit-report emits <error message="No test result found"> for a `=== RUN`
+// with no matching result line, and attaches the test's own log output. On a
+// baremetal cell that was 93 of 120 testcases and 24 of 25 reported failures,
+// none of which had failed: "ALB internal: 20/20 successful" read as an error.
+func TestParseFile_NoResultFoundIsNotAFailure(t *testing.T) {
+	xml := []byte(`<?xml version="1.0"?>
+<testsuites><testsuite name="" tests="3" failures="1" errors="2">
+  <testcase name="TestLB/Internal_ALB" time="0.0"><error message="No test result found"><![CDATA[
+    lb_test.go:88: ALB internal: 20/20 successful, 2 unique
+]]></error></testcase>
+  <testcase name="TestLB/Internal_NLB" time="0.0"><error message="No test result found"></error></testcase>
+  <testcase name="TestX/RealFailure" time="0.5"><failure message="Failed"><![CDATA[
+    foo_test.go:10:
+        Messages: real assertion message
+]]></failure></testcase>
+</testsuite></testsuites>`)
+	sr, err := ParseFile("junit-x.xml", xml)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if sr.FailCount != 1 {
+		t.Fatalf("FailCount = %d, want 1 (no-result entries are not failures)", sr.FailCount)
+	}
+	if sr.Unresolved != 2 {
+		t.Fatalf("Unresolved = %d, want 2", sr.Unresolved)
+	}
+	if sr.Root == nil || sr.Root.Name != "TestX/RealFailure" {
+		t.Fatalf("expected the real failure as root, got %+v", sr.Root)
+	}
+}
+
+// An <error> that is not the parser's no-result marker is a genuine error and
+// must still be reported.
+func TestParseFile_KeepsARealError(t *testing.T) {
+	xml := []byte(`<?xml version="1.0"?>
+<testsuites><testsuite name="" tests="1" failures="0" errors="1">
+  <testcase name="TestX" time="0.5"><error message="panic"><![CDATA[
+    foo_test.go:10: panic: runtime error: index out of range
+]]></error></testcase>
+</testsuite></testsuites>`)
+	sr, err := ParseFile("junit-x.xml", xml)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if sr.FailCount != 1 || sr.Unresolved != 0 {
+		t.Fatalf("FailCount = %d, Unresolved = %d, want 1 and 0", sr.FailCount, sr.Unresolved)
+	}
+}
+
 func TestParseFile_SkipsParentRolledUpBySubtests(t *testing.T) {
 	// A parent that logs during cleanup gets a non-empty body, and a t.Log like
 	// "DB instance … is gone" — which passing tests emit too — reads exactly

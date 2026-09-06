@@ -523,6 +523,32 @@ func TestRegisterDBInstance_NewVMResetsRegisteredAt(t *testing.T) {
 	assert.True(t, second.Agent.RegisteredAt.After(*first.Agent.RegisteredAt))
 }
 
+// The register that follows a reboot must not let the pre-reboot verdict stand
+// on a freshly stamped LastSeen: that combination reads as a healthy engine and
+// is what returned an instance to available while PostgreSQL was still starting.
+func TestRegisterDBInstance_DiscardsThePreviousProcessEngineHealth(t *testing.T) {
+	t.Parallel()
+	svc := newTestService(t)
+	rec := defaultRecord()
+	rec.Agent.InstanceID = testInstance
+	rec.Agent.EngineHealth = EngineHealthHealthy
+	rec.Agent.Message = "serving"
+	seedInstance(t, svc, rec)
+
+	before := time.Now().UTC()
+	_, err := svc.RegisterDBInstance(context.Background(),
+		&RegisterDBInstanceInput{DBInstanceIdentifier: testDBID, InstanceID: testInstance}, testAccountID)
+	require.NoError(t, err)
+
+	stored, _ := readRecord(t, svc)
+	assert.Equal(t, EngineHealthStarting, stored.Agent.EngineHealth,
+		"a fresh agent has not probed the engine, so it reports nothing about it yet")
+	assert.Empty(t, stored.Agent.Message)
+	require.NotNil(t, stored.Agent.StartedAt)
+	assert.False(t, stored.Agent.StartedAt.Before(before),
+		"StartedAt must move on every agent start, unlike RegisteredAt")
+}
+
 func TestRegisterDBInstance_UnknownInstance(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t)

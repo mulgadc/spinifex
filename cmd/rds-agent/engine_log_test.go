@@ -148,7 +148,7 @@ func TestEngineLogTail(t *testing.T) {
 		},
 		{
 			name:        "drops a line the byte cap cut in half",
-			body:        strings.Repeat("x", mariadbErrorLogTailBytes) + "\nlast\n",
+			body:        strings.Repeat("x", engineErrorLogTailBytes) + "\nlast\n",
 			want:        "last",
 			wantMissing: "x",
 		},
@@ -207,5 +207,56 @@ func TestWithEngineLogTailLeavesReasonAloneWithoutALog(t *testing.T) {
 	const reason = "engine is not answering on its socket yet"
 	if got := withEngineLogTail(reason, ""); got != reason {
 		t.Errorf("withEngineLogTail() = %q, want the reason unchanged", got)
+	}
+}
+
+const postgresConfD = "../../scripts/images/rds-postgres/postgresql.confd"
+
+// "engine did not respond" is where a postmaster that refused a setting lands,
+// and it is the same message as an engine that never got as far as trying. Only
+// the server's own log separates them, and the guest has no other way out.
+func TestPostgresProbe_QuotesTheEngineLogWhenTheEngineIsAbsent(t *testing.T) {
+	log := writeEngineLog(t, strings.Join([]string{
+		`2026-09-06 10:20:33 UTC [712] LOG:  starting PostgreSQL 18.0`,
+		`2026-09-06 10:20:33 UTC [712] FATAL:  could not map anonymous shared memory`,
+		"",
+	}, "\n"))
+
+	state, message := postgresProbeState("/run/postgresql", log,
+		func(context.Context, string, ...string) (int, string, error) { return 2, "", nil })(t.Context(), 5432)
+
+	if state != engineAbsent {
+		t.Errorf("state = %v, want absent", state)
+	}
+	if !strings.Contains(message, "could not map anonymous shared memory") {
+		t.Errorf("message = %q, want the postmaster's own refusal quoted", message)
+	}
+}
+
+func TestPostgresProbe_SurvivesAnAbsentEngineLog(t *testing.T) {
+	state, message := postgresProbeState("/run/postgresql", filepath.Join(t.TempDir(), "nope.log"),
+		func(context.Context, string, ...string) (int, string, error) { return 2, "", nil })(t.Context(), 5432)
+
+	if state != engineAbsent {
+		t.Errorf("state = %v, want absent", state)
+	}
+	if message != "engine did not respond on /run/postgresql:5432" {
+		t.Errorf("message = %q, want the bare reason when there is no log to quote", message)
+	}
+}
+
+// The layout names a path the image has to be directing the postmaster to, or
+// the tail above quotes nothing on the one failure it exists for.
+func TestPostgresErrorLogPathMatchesTheImage(t *testing.T) {
+	raw, err := os.ReadFile(postgresConfD)
+	if err != nil {
+		t.Fatalf("read postgresql.confd: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^logfile="(.*)"$`).FindStringSubmatch(string(raw))
+	if m == nil {
+		t.Fatal("postgresql.confd has no logfile assignment")
+	}
+	if got := engineLayouts[enginePostgres].errorLog; got != m[1] {
+		t.Errorf("layout errorLog = %q, but the image sets logfile = %q", got, m[1])
 	}
 }

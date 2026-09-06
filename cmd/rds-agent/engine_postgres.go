@@ -47,10 +47,10 @@ const postgresProbeBinary = "pg_isready"
 // enforcement rule — libpq reads a host beginning with / as a socket directory,
 // and the generated `local ... peer` line covers it.
 func newPostgresProbe(cfg config, run probeRunner) *engineProbe {
-	return newEngineProbe(cfg.EnginePort, postgresProbeState(cfg.SocketDir, run))
+	return newEngineProbe(cfg.EnginePort, postgresProbeState(cfg.SocketDir, cfg.EngineErrorLog, run))
 }
 
-func postgresProbeState(host string, run probeRunner) probeStateFn {
+func postgresProbeState(host, errorLog string, run probeRunner) probeStateFn {
 	return func(ctx context.Context, port int64) (engineState, string) {
 		portArg := strconv.FormatInt(port, 10)
 		code, _, err := run(ctx, postgresProbeBinary, "-h", host, "-p", portArg, "-q")
@@ -63,9 +63,14 @@ func postgresProbeState(host string, run probeRunner) probeStateFn {
 		case code == 0:
 			return engineServing, ""
 		case code == 1:
-			return engineRecovering, "engine is rejecting connections (startup or recovery)"
+			return engineRecovering, withEngineLogTail(
+				"engine is rejecting connections (startup or recovery)", errorLog)
 		default:
-			return engineAbsent, fmt.Sprintf("engine did not respond on %s:%s", host, portArg)
+			// A postmaster that refused a setting never opens the socket, so this is
+			// the state a bad parameter lands in. The reason for it is only in the
+			// server's own log, and it reaches the customer through StatusInfos.
+			return engineAbsent, withEngineLogTail(
+				fmt.Sprintf("engine did not respond on %s:%s", host, portArg), errorLog)
 		}
 	}
 }

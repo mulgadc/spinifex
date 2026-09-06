@@ -45,7 +45,10 @@ type fakeInstanceCommander struct {
 	// stopNotOnNode is the same for a stop, which then has to confirm the VM is
 	// really down rather than assume it.
 	stopNotOnNode bool
-	err           error
+	// stopRefused models the node answering that the VM is not in a state to be
+	// stopped, which is what the loser of two concurrent stops is told.
+	stopRefused bool
+	err         error
 	// The VM state an accepted stop takes down. Nil models a node that accepts
 	// the command and never lands it.
 	vm *fakeInstanceState
@@ -57,6 +60,9 @@ func (f *fakeInstanceCommander) StopInstance(_ context.Context, instanceID strin
 	f.calls = append(f.calls, "stop:"+instanceID)
 	if f.stopNotOnNode {
 		return ErrInstanceNotOnNode
+	}
+	if f.stopRefused {
+		return ErrInstanceStateRefused
 	}
 	if f.err != nil {
 		return f.err
@@ -443,6 +449,43 @@ func TestStopDBInstance_FailsWhenNoNodeAnsweredButTheVMIsStillRunning(t *testing
 	assert.Contains(t, rec.FailureReason, `"running", not stopped`)
 }
 
+// Two things drive a stop: the caller and the reconciler resuming one whose
+// caller it assumes has died. The loser is told the VM is not in a state to be
+// stopped — which is the state the stop was heading for — so reporting that to
+// the customer fails a stop that in fact happened.
+func TestStopDBInstance_SucceedsWhenAnotherDriverAlreadyStoppedTheVM(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	h.cmdr.stopRefused = true
+	h.vmState.state = "stopped"
+	seedInstance(t, h.svc, availableRecord())
+
+	out, err := h.svc.StopDBInstance(t.Context(),
+		&rds.StopDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
+	require.NoError(t, err)
+
+	assert.Equal(t, string(StatusStopped), aws.StringValue(out.DBInstance.DBInstanceStatus))
+	assert.Equal(t, StatusStopped, h.record(t).Status)
+}
+
+// The refusal still says nothing about the VM. A node that refuses the command
+// while the VM keeps running must not be read as the stop having landed.
+func TestStopDBInstance_FailsWhenARefusedCommandLeavesTheVMRunning(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	h.cmdr.stopRefused = true
+	h.vmState.state = instanceStateRunning
+	seedInstance(t, h.svc, availableRecord())
+
+	_, err := h.svc.StopDBInstance(t.Context(),
+		&rds.StopDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
+	require.Error(t, err)
+
+	rec := h.record(t)
+	assert.Equal(t, StatusFailed, rec.Status)
+	assert.Contains(t, rec.FailureReason, `"running", not stopped`)
+}
+
 // The same unanswered command is the normal shape of a VM that is genuinely
 // down, and that stop has to converge rather than fail.
 func TestStopDBInstance_CompletesWhenTheFleetConfirmsTheVMIsDown(t *testing.T) {
@@ -511,6 +554,25 @@ func TestReconciler_DoesNotCallAStillRunningVMStopped(t *testing.T) {
 
 	// Left stopping so the next pass retries; the bound is what ends it.
 	assert.Equal(t, StatusStopping, h.record(t).Status)
+}
+
+// The caller the pass assumed had died is alive and already stopping the VM, so
+// the reconciler's own command is refused. Retrying that until the bound would
+// fail an instance whose stop is landing.
+func TestReconciler_ResumesAStopTheLiveCallerIsAlreadyDriving(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	h.cmdr.stopRefused = true
+	h.vmState.state = "stopped"
+	rec := availableRecord()
+	rec.Status = StatusStopping
+	started := time.Now().UTC()
+	rec.TransitionStartedAt = &started
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+
+	assert.Equal(t, StatusStopped, h.record(t).Status)
 }
 
 // The data volume, the customer ENI and the DNS record are all retained,
@@ -753,6 +815,25 @@ func TestReconciler_MarksFailedWhenARestartOverrunsItsBound(t *testing.T) {
 	rec := h.record(t)
 	assert.Equal(t, StatusFailed, rec.Status)
 	assert.Contains(t, rec.FailureReason, "did not report healthy")
+}
+
+// The bound says only that the engine never came back. What the agent last
+// reported says why, and a restart is the case where it is a parameter the
+// engine refused — which the customer has to change to get the instance back.
+func TestReconciler_CarriesTheAgentsReasonIntoAFailedRestart(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	started := time.Now().UTC().Add(-2 * transitionTimeout)
+	rec := restartingRecord(StatusRebooting, started, started.Add(-time.Minute))
+	rec.Agent.Message = `engine did not respond on /run/postgresql:5432; the engine's log ends: ` +
+		`FATAL: invalid value for parameter "max_connections"`
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+
+	stored := h.record(t)
+	assert.Equal(t, StatusFailed, stored.Status)
+	assert.Contains(t, stored.FailureReason, `invalid value for parameter "max_connections"`)
 }
 
 // What the next start recovers is the engine's own guarantee. Telling a MariaDB

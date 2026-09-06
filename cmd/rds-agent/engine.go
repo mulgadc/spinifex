@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -107,6 +108,10 @@ var engineLayouts = map[string]engineLayout{
 		service:   "postgresql",
 		dataMount: "/var/lib/postgresql",
 		port:      5432,
+		// logfile in the image's /etc/conf.d/postgresql. The postmaster states
+		// which setting it refused there and nowhere else — the console shows only
+		// that pg_ctl could not start it, on a guest with no SSH.
+		errorLog:  "/var/log/postgresql/postmaster.log",
 		newProbe:  newPostgresProbe,
 		newEngine: newPostgresEngineFromCatalog,
 	},
@@ -129,6 +134,61 @@ var engineLayouts = map[string]engineLayout{
 		newProbe:  newMariaDBProbe,
 		newEngine: newMariaDBEngineFromCatalog,
 	},
+}
+
+// How much of the engine's error log a probe reason carries. The server names
+// what it refused on in its last few lines, and the reason reaches a customer
+// through StatusInfos, so this quotes the tail rather than the whole file.
+const (
+	engineErrorLogTailBytes = 4096
+	engineErrorLogTailLines = 4
+)
+
+// Appends the last few lines of the engine's error log to reason. An unset path,
+// an unreadable file or an empty one leaves reason alone: the probe's own
+// statement is still true, and a guessed cause would be worse than none.
+func withEngineLogTail(reason, path string) string {
+	tail := engineLogTail(path)
+	if tail == "" {
+		return reason
+	}
+	return reason + "; the engine's log ends: " + tail
+}
+
+func engineLogTail(path string) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	offset := max(info.Size()-engineErrorLogTailBytes, 0)
+	buf := make([]byte, info.Size()-offset)
+	if _, err := f.ReadAt(buf, offset); err != nil {
+		return ""
+	}
+
+	lines := strings.Split(string(buf), "\n")
+	// A read that started mid-file almost certainly started mid-line, and half a
+	// line is more misleading than one fewer.
+	if offset > 0 && len(lines) > 0 {
+		lines = lines[1:]
+	}
+	kept := make([]string, 0, engineErrorLogTailLines)
+	for i := len(lines) - 1; i >= 0 && len(kept) < engineErrorLogTailLines; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			kept = append(kept, line)
+		}
+	}
+	slices.Reverse(kept)
+	return strings.Join(kept, " | ")
 }
 
 // Builds the health probe the image's engine supplies.

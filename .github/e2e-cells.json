@@ -130,7 +130,7 @@
     "runner": "ci-single",
     "extra": "rds",
     "suite": "rds",
-    "timeout_minutes": 75
+    "timeout_minutes": 100
   },
   {
     "cell": 29,

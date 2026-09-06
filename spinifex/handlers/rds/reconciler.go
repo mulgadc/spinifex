@@ -466,13 +466,20 @@ func (r *Reconciler) reconcileCreating(ctx context.Context, kv jetstream.KeyValu
 	}
 	timeout := r.svc.bootstrapTimeout()
 	if time.Since(rec.CreatedAt) > timeout {
-		reason := fmt.Sprintf("the database engine did not report healthy within %s of creation", timeout)
-		if rec.Agent.Message != "" {
-			reason += ": " + rec.Agent.Message
-		}
-		return r.transition(ctx, kv, rev, rec, StatusFailed, reason)
+		return r.transition(ctx, kv, rev, rec, StatusFailed, withAgentReason(rec,
+			fmt.Sprintf("the database engine did not report healthy within %s of creation", timeout)))
 	}
 	return nil
+}
+
+// The bound says only that the engine never arrived. The agent's last message
+// says why — a postmaster's own refusal, quoted out of a guest with no other
+// way to report one — and it is the half a customer can act on.
+func withAgentReason(rec *DBInstanceRecord, reason string) string {
+	if rec.Agent.Message == "" {
+		return reason
+	}
+	return reason + ": " + rec.Agent.Message
 }
 
 // Reboot and start both end the same way: the engine comes back and says so.
@@ -498,8 +505,8 @@ func (r *Reconciler) reconcileRestarting(ctx context.Context, kv jetstream.KeyVa
 		return r.transition(ctx, kv, rev, rec, StatusAvailable, "")
 	}
 	if time.Since(started) > transitionTimeout {
-		return r.transition(ctx, kv, rev, rec, StatusFailed,
-			fmt.Sprintf("the database engine did not report healthy within %s of %s", transitionTimeout, rec.Status))
+		return r.transition(ctx, kv, rev, rec, StatusFailed, withAgentReason(rec,
+			fmt.Sprintf("the database engine did not report healthy within %s of %s", transitionTimeout, rec.Status)))
 	}
 	return nil
 }
@@ -557,8 +564,8 @@ func (r *Reconciler) reconcileModifying(ctx context.Context, kv jetstream.KeyVal
 	}
 	if !healthy {
 		if overrun {
-			return r.transition(ctx, kv, rev, rec, StatusFailed,
-				fmt.Sprintf("the database engine did not report healthy within %s of the modification", transitionTimeout))
+			return r.transition(ctx, kv, rev, rec, StatusFailed, withAgentReason(rec,
+				fmt.Sprintf("the database engine did not report healthy within %s of the modification", transitionTimeout)))
 		}
 		return nil
 	}
@@ -588,7 +595,10 @@ func (r *Reconciler) reconcileStopping(ctx context.Context, kv jetstream.KeyValu
 		return errors.New("rds reconciler: no instance command path configured")
 	}
 	err := r.svc.deps.Instances.StopInstance(ctx, rec.InstanceID)
-	if errors.Is(err, ErrInstanceNotOnNode) {
+	// Refused is the mirror of not-held: the caller this pass assumed had died is
+	// alive and already stopping the VM. Neither says where the VM got to, so both
+	// hand the answer to the fleet rather than treating the command as the truth.
+	if errors.Is(err, ErrInstanceNotOnNode) || errors.Is(err, ErrInstanceStateRefused) {
 		err = r.svc.confirmVMStopped(ctx, accountID, rec.InstanceID)
 	}
 	if err == nil {

@@ -73,11 +73,12 @@ E2E_SUITES_NIGHTLY_MULTI="multinode cert lb"
 #   e2e_suite_timeout <suite>
 e2e_suite_timeout() {
   case "$1" in
-    # rds serialises its DB VMs behind a 4 GiB semaphore, so its wall clock is
-    # set by how long it waits for the budget, not by how long a test runs. That
-    # makes it the suite most sensitive to what else the hypervisor is doing: the
-    # same pass ran 45m beside four cells and overran 50m beside nine.
-    rds) echo "60m" ;;
+    # rds serialises its DB VMs behind a 3 GiB semaphore, so its wall clock is
+    # what the queue costs, not what the tests do: single tests logged 11m, 22m
+    # and 26m waiting for budget. 17 tests at that concurrency is over an hour
+    # before anything goes wrong, and the first pass to run deep into the suite
+    # still had three left at 60m.
+    rds) echo "90m" ;;
     # diskperf runs two 16 GiB fio profiles per repetition, each on a volume it
     # creates first. One pass is ~20 minutes on the bare-metal cell and a
     # baseline capture at SPINIFEX_DISKPERF_REPS=3 is three times that.

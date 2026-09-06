@@ -684,7 +684,7 @@ jobs:
     name: cell-28 (baremetal/diskperf)
     needs: baremetal
     if: >-
-      always() && (
+      !cancelled() && (
         github.event_name == 'schedule' ||
         inputs.cells == '' ||
         contains(format(',{0},', inputs.cells), ',28,')
@@ -949,7 +949,7 @@ jobs:
     # them together would need 32 GiB on one box.
     needs: [iso-single]
     if: >-
-      always() && (
+      !cancelled() && (
       github.event_name == 'schedule' ||
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',22,') )
@@ -1104,13 +1104,14 @@ jobs:
   # bottlebrush, so "a different label" would not have separated them. needs: on
   # a matrix job waits for every leg, so this starts on a quiet machine.
   #
-  # always() because a failed cell must not silently skip the benchmark and
-  # leave a green-looking night with no number in it.
+  # !cancelled() rather than always(): a failed cell must not silently skip the
+  # benchmark and leave a green-looking night with no number in it, but always()
+  # also overrides cancellation and keeps the run starting jobs after a cancel.
   performance:
     name: cell-23 (predastore/throughput)
     needs: [matrix, baremetal, iso-single, iso-multi]
     if: >-
-      always() && (
+      !cancelled() && (
       github.event_name == 'schedule' ||
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',23,') )
@@ -1222,7 +1223,7 @@ jobs:
     name: cell-24 (predastore/fault-injection)
     needs: [matrix, baremetal, iso-single, iso-multi, performance]
     if: >-
-      always() && (
+      !cancelled() && (
       github.event_name == 'schedule' ||
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',24,') )

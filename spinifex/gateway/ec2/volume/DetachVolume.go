@@ -17,6 +17,12 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// detachRequestTimeout must outlast the daemon's own detach budget, which is
+// the 180s ebs.unmount seal followed by the 180s QMP unplug chain. At 30s the
+// gateway returned ServerInternal on every detach whose seal replayed a WAL,
+// while that detach went on to succeed.
+const detachRequestTimeout = 7 * time.Minute
+
 // ValidateDetachVolumeInput validates the input parameters for DetachVolume.
 func ValidateDetachVolumeInput(input *ec2.DetachVolumeInput) error {
 	if input == nil {
@@ -92,7 +98,7 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
 	utils.InjectTraceContext(ctx, reqMsg.Header)
-	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
+	msg, err := natsConn.RequestMsg(reqMsg, detachRequestTimeout)
 	if err != nil {
 		slog.ErrorContext(ctx, "DetachVolume: NATS request failed", "instanceId", instanceID, "volumeId", volumeID, "err", err)
 		if errors.Is(err, nats.ErrNoResponders) {

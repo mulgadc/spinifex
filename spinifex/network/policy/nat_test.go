@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -531,6 +532,76 @@ func TestNATManager_PruneOrphanEIPs_ReleasedAddressUnbindsHost(t *testing.T) {
 	assert.Equal(t, 1, pruned)
 	assert.Nil(t, findNAT(m, "dnat_and_snat", "10.0.1.10"), "released address row must be pruned")
 	assert.Contains(t, unbound, "192.168.0.43", "host /32 route for a released address must be unbound")
+}
+
+// The NAT row is not the record of host plumbing. AddEIP's predecessor scrub
+// deletes the row for the address it replaces, so a sweep that only walks rows
+// cannot see the route that address left behind — the host's own inventory can.
+func TestNATManager_PruneOrphanEIPs_SweepsHostBindingWithNoRow(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-live")
+	var unbound []string
+	nm, err := NewNATManager(m, NATModeRouted, WithHostEIPBinder(HostEIPBinder{
+		Bind:   func(EIPSpec, string) error { return nil },
+		Unbind: func(ip string) error { unbound = append(unbound, ip); return nil },
+		List:   func() ([]string, error) { return []string{"192.168.0.52", "192.168.0.53"}, nil },
+	}))
+	require.NoError(t, err)
+
+	pruned, err := nm.PruneOrphanEIPs(ctx, LiveEIPs{
+		Ports:       map[string]struct{}{"port-eni-live": {}},
+		ExternalIPs: map[string]struct{}{"192.168.0.52": {}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, pruned, "no row existed to prune")
+	assert.Equal(t, []string{"192.168.0.53"}, unbound,
+		"only the binding intent no longer asks for must be swept")
+}
+
+// A failed inventory must fail the pass rather than read as a clean sweep:
+// an empty list is indistinguishable from "nothing is plumbed".
+func TestNATManager_PruneOrphanEIPs_HostInventoryErrorSurfaces(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	nm, err := NewNATManager(m, NATModeRouted, WithHostEIPBinder(HostEIPBinder{
+		Bind:   func(EIPSpec, string) error { return nil },
+		Unbind: func(string) error { return nil },
+		List:   func() ([]string, error) { return nil, errors.New("iptables unavailable") },
+	}))
+	require.NoError(t, err)
+
+	_, err = nm.PruneOrphanEIPs(ctx, LiveEIPs{})
+	require.Error(t, err)
+}
+
+// Replacing the address on a private IP drops the predecessor's row, so the
+// unbind has to happen here — after this returns there is nothing left to find
+// the stranded route by.
+func TestNATManager_AddEIP_ReleasesReplacedAddressHostState(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	seedGatewayPortIP(t, m, "vpc-1", "100.127.0.10", nil)
+	var unbound []string
+	nm, err := NewNATManager(m, NATModeRouted, WithHostEIPBinder(HostEIPBinder{
+		Bind:   func(EIPSpec, string) error { return nil },
+		Unbind: func(ip string) error { unbound = append(unbound, ip); return nil },
+	}))
+	require.NoError(t, err)
+
+	base := EIPSpec{VPCID: "vpc-1", LogicalIP: "10.0.1.10", PortName: "port-eni-a", MAC: "02:00:00:00:00:01"}
+	auto := base
+	auto.ExternalIP = "192.168.0.52"
+	require.NoError(t, nm.AddEIP(ctx, auto))
+
+	user := base
+	user.ExternalIP = "192.168.0.53"
+	require.NoError(t, nm.AddEIP(ctx, user))
+
+	assert.Equal(t, []string{"192.168.0.52"}, unbound,
+		"the replaced address must lose its host plumbing when its row is scrubbed")
+	assert.NotNil(t, findNAT(m, "dnat_and_snat", "10.0.1.10"), "the new EIP row must be installed")
 }
 
 func TestNATManager_DeleteEIP_IdempotentOnMissing(t *testing.T) {

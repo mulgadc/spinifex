@@ -135,10 +135,13 @@ func WithNeighPrimer(p NeighPrimer) Option {
 // HostEIPBinder plumbs routed-mode host state for an EIP: the /32 route into
 // OVN via the gateway LRP and proxy-ARP on the uplink. Bind fires on every
 // AddEIP (fresh and idempotent) so reconcile re-ensures host state after
-// reboot; Unbind fires on DeleteEIP.
+// reboot; Unbind fires on DeleteEIP. List reads back what is plumbed now, so a
+// prune can find bindings whose NAT row has already gone; leaving it nil skips
+// the host sweep.
 type HostEIPBinder struct {
 	Bind   func(eip EIPSpec, gwLrpIP string) error
 	Unbind func(externalIP string) error
+	List   func() ([]string, error)
 }
 
 // WithHostEIPBinder injects the routed-mode host plumbing hooks fired on EIP
@@ -300,10 +303,22 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	// Scrub any predecessor row sharing this private IP under a different external
 	// IP: dnat_and_snat is 1:1 per private IP, and a stale row's SNAT half (keyed on
 	// logical_ip) blackholes the new EIP. Router-scoped — private IPs repeat per VPC.
+	// Read it first: dropping the row unnoticed strands the predecessor's host
+	// route and proxy-ARP, and no later sweep can find them without the row.
+	predecessor, err := m.ovn.FindNATByLogicalIP(ctx, router, "dnat_and_snat", eip.LogicalIP)
+	if err != nil {
+		slog.Warn("policy: predecessor NAT lookup failed before AddEIP",
+			"logical_ip", eip.LogicalIP, "err", err)
+	}
 	if err := m.ovn.DeleteNAT(ctx, router, "dnat_and_snat", eip.LogicalIP); err != nil &&
 		!errors.Is(err, ovn.ErrNATNotFound) {
 		slog.Warn("policy: stale logical-IP NAT cleanup failed before AddEIP",
 			"logical_ip", eip.LogicalIP, "err", err)
+	} else if predecessor != nil && predecessor.ExternalIP != eip.ExternalIP {
+		m.releaseHostEIP(predecessor.ExternalIP, "external IP replaced on the same private IP")
+		slog.Info("policy: released predecessor host EIP before AddEIP",
+			"old_external_ip", predecessor.ExternalIP, "new_external_ip", eip.ExternalIP,
+			"logical_ip", eip.LogicalIP)
 	}
 
 	if err := m.ovn.AddNAT(ctx, router, natRule); err != nil {
@@ -480,23 +495,53 @@ func (m *natManager) PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, e
 			continue
 		}
 		pruned += removed
-		// Flush host ARP so the freed external IP is not shadowed by the dead
-		// owner's MAC, and tear down routed-mode host plumbing. Best-effort, and
-		// run even when the row had already gone: that is the state a crash
+		// Runs even when the row had already gone: that is the state a crash
 		// between the OVN delete and the unbind leaves behind.
-		if err := m.neigh(n.ExternalIP); err != nil {
-			slog.Warn("policy: orphan EIP prune neighbour flush failed", "external_ip", n.ExternalIP, "err", err)
-		}
-		if m.mode == NATModeRouted && m.hostBinder != nil {
-			if err := m.hostBinder.Unbind(n.ExternalIP); err != nil {
-				slog.Warn("policy: orphan EIP prune host unbind failed", "external_ip", n.ExternalIP, "err", err)
-			}
-		}
+		m.releaseHostEIP(n.ExternalIP, reason)
 		slog.Info("policy: pruned stale dnat_and_snat",
 			"reason", reason, "external_ip", n.ExternalIP, "logical_ip", n.LogicalIP,
 			"logical_port", port, "rows_removed", removed)
 	}
-	return pruned, nil
+	return pruned, m.pruneHostEIPs(live)
+}
+
+// pruneHostEIPs removes host plumbing for every external IP intent no longer
+// asks for. The NAT row is not the record of that plumbing — AddEIP's
+// predecessor scrub, a lost teardown or a crash mid-delete each leave a route
+// and its proxy-ARP behind with no row left to find them by.
+func (m *natManager) pruneHostEIPs(live LiveEIPs) error {
+	if m.mode != NATModeRouted || m.hostBinder == nil || m.hostBinder.List == nil {
+		return nil
+	}
+	bound, err := m.hostBinder.List()
+	if err != nil {
+		return fmt.Errorf("list host EIP bindings for prune: %w", err)
+	}
+	for _, eip := range bound {
+		if _, wanted := live.ExternalIPs[eip]; wanted {
+			continue
+		}
+		m.releaseHostEIP(eip, "host binding for an external IP absent from intent")
+		slog.Info("policy: pruned stale host EIP ingress", "external_ip", eip)
+	}
+	return nil
+}
+
+// releaseHostEIP tears down the host state an external IP no longer warrants:
+// the ARP entry that would shadow a recycled address, and the routed-mode /32
+// route and proxy-ARP. Best-effort — a failure is a leak the next pass sweeps.
+func (m *natManager) releaseHostEIP(externalIP, reason string) {
+	if err := m.neigh(externalIP); err != nil {
+		slog.Warn("policy: host EIP neighbour flush failed",
+			"external_ip", externalIP, "reason", reason, "err", err)
+	}
+	if m.mode != NATModeRouted || m.hostBinder == nil {
+		return
+	}
+	if err := m.hostBinder.Unbind(externalIP); err != nil {
+		slog.Warn("policy: host EIP unbind failed",
+			"external_ip", externalIP, "reason", reason, "err", err)
+	}
 }
 
 func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {

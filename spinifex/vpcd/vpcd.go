@@ -967,6 +967,11 @@ func hostEIPBinder(pool *external.ExternalPoolConfig) policy.HostEIPBinder {
 			defer cancel()
 			return host.RemoveEIPIngress(ctx, runner, externalIP, gateway, uplinkHint)
 		},
+		List: func() ([]string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return host.ListEIPIngress(ctx, runner)
+		},
 	}
 }
 

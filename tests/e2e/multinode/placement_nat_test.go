@@ -445,6 +445,7 @@ func spreadSetupPrivateTrio(t *testing.T, fix *Fixture, b spreadBastion) spreadP
 	}
 
 	privIPs := make([]string, 0, len(privIDs))
+	eniIDs := make([]string, 0, len(privIDs))
 	for _, id := range privIDs {
 		out, err := c.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
 			InstanceIds: []*string{aws.String(id)},
@@ -452,11 +453,27 @@ func spreadSetupPrivateTrio(t *testing.T, fix *Fixture, b spreadBastion) spreadP
 		require.NoError(t, err, "describe-instances private")
 		require.NotEmpty(t, out.Reservations, "no Reservations for %s", id)
 		require.NotEmpty(t, out.Reservations[0].Instances, "no Instances for %s", id)
-		ip := aws.StringValue(out.Reservations[0].Instances[0].PrivateIpAddress)
+		inst := out.Reservations[0].Instances[0]
+		ip := aws.StringValue(inst.PrivateIpAddress)
 		require.NotEmptyf(t, ip, "%s has no PrivateIpAddress", id)
 		privIPs = append(privIPs, ip)
+		eni := ""
+		if len(inst.NetworkInterfaces) > 0 {
+			eni = aws.StringValue(inst.NetworkInterfaces[0].NetworkInterfaceId)
+		}
+		eniIDs = append(eniIDs, eni)
 	}
 	harness.Detail(t, "private_ips", privIPs)
+
+	// The failure this phase is most likely to hit is a guest that never answers
+	// SSH, and the NAT/EIP dump says nothing about one. Registered before the
+	// wait so it fires on the guest that failed, and covers all three so a
+	// working guest is available as the control.
+	t.Cleanup(func() {
+		if t.Failed() {
+			dumpSpreadGuestDiag(t, fix, privIDs, privIPs, eniIDs, hostingNodes)
+		}
+	})
 
 	harness.Step(t, "wait for private SSH via bastion (x%d)", len(privIPs))
 	for i, privIP := range privIPs {
@@ -779,6 +796,67 @@ func waitForNATGatewayStateBest(c *harness.AWSClient, id, target string, timeout
 // dumpPlacementNATDiag fans out datapath probes (ARP, xfrm, OVS/OVN state) to every
 // cluster node on failure and writes results under t's artifact dir. Best-effort:
 // SSH errors are logged but never re-fail the test.
+// dumpSpreadGuestDiag captures, for every spread guest, the evidence needed to
+// tell "the guest never booted" from "the guest booted and its port never
+// bound": its console, its logical switch port in NB and its port binding in SB,
+// and the OVS interface backing its tap on the node it landed on.
+func dumpSpreadGuestDiag(t *testing.T, fix *Fixture, ids, ips, enis, nodes []string) {
+	t.Helper()
+	if fix.Env == nil || fix.Cluster == nil || len(fix.Cluster.Nodes) == 0 {
+		t.Logf("dumpSpreadGuestDiag: no env or cluster nodes; skipping")
+		return
+	}
+	artifactDir := fix.ArtifactDir(t)
+	ssh := harness.NewPeerSSH()
+
+	for i, id := range ids {
+		ip, eni, node := at(ips, i), at(enis, i), at(nodes, i)
+		t.Logf("dumpSpreadGuestDiag: guest %s ip=%s eni=%s node=%s", id, ip, eni, node)
+
+		console, err := harness.InstanceConsole(fix.AWS, id)
+		if err != nil {
+			console = fmt.Sprintf("(get-console-output failed: %v)", err)
+		} else if console == "" {
+			console = "(console empty — the guest may never have started)"
+		}
+		harness.DumpFile(t, artifactDir, fmt.Sprintf("guest-%s-console.log", id), []byte(console))
+
+		port := "port-" + eni
+		probes := []struct{ name, cmd string }{
+			{"nb-lsp", fmt.Sprintf("sudo ovn-nbctl --no-leader-only list logical_switch_port %s 2>&1 || true", port)},
+			{"sb-port-binding", fmt.Sprintf("sudo ovn-sbctl --no-leader-only find port_binding logical_port=%s 2>&1 || true", port)},
+			{"ovs-interface", fmt.Sprintf("sudo ovs-vsctl --columns=name,ofport,external_ids,link_state find interface external_ids:iface-id=%s 2>&1 || true", port)},
+			{"ovs-ports", "sudo ovs-vsctl list-ports br-int 2>&1 || true"},
+			{"tap-link", fmt.Sprintf("ip -d link show | grep -A2 %s 2>&1 || true", eni)},
+		}
+
+		// Every node, not just the hosting one: a port bound on the wrong chassis
+		// is exactly the failure a hosting-node-only dump cannot show.
+		for _, n := range fix.Cluster.Nodes {
+			for _, p := range probes {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				out, rerr := ssh.Run(ctx, n.Addr, p.cmd)
+				cancel()
+				header := fmt.Sprintf("# guest=%s eni=%s expected_node=%s host=%s cmd=%s\n",
+					id, eni, node, n.Addr, p.cmd)
+				if rerr != nil {
+					header += fmt.Sprintf("# (ssh error: %v)\n", rerr)
+				}
+				name := fmt.Sprintf("guest-%s-%s-%s.log", id, n.Name, p.name)
+				harness.DumpFile(t, artifactDir, name, append([]byte(header), out...))
+			}
+		}
+	}
+}
+
+// at reads s[i] tolerantly: a diagnostic must not panic on a short slice.
+func at(s []string, i int) string {
+	if i < len(s) {
+		return s[i]
+	}
+	return ""
+}
+
 func dumpPlacementNATDiag(t *testing.T, fix *Fixture, bastionPubIP, bastionID string) {
 	t.Helper()
 	if fix.Env == nil {

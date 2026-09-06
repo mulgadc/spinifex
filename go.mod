@@ -4,11 +4,11 @@ go 1.27.0
 
 require (
 	github.com/aws/aws-sdk-go v1.55.8
-	github.com/aws/aws-sdk-go-v2 v1.44.0
+	github.com/aws/aws-sdk-go-v2 v1.45.1
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20
-	github.com/aws/aws-sdk-go-v2/config v1.32.40
-	github.com/aws/aws-sdk-go-v2/credentials v1.19.39
-	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.40
+	github.com/aws/aws-sdk-go-v2/config v1.33.2
+	github.com/aws/aws-sdk-go-v2/credentials v1.20.2
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.19.1
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -25,7 +25,7 @@ require (
 	github.com/mulgadc/northstar v1.18.1-0.20260903173023-a0e741e2831f
 	github.com/mulgadc/predastore v1.18.1-0.20260831064140-ff6a1dc42441
 	github.com/mulgadc/viperblock v1.18.0
-	github.com/nats-io/nats-server/v2 v2.14.5
+	github.com/nats-io/nats-server/v2 v2.14.6
 	github.com/nats-io/nats.go v1.53.1
 	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/ovn-kubernetes/libovsdb v0.8.1
@@ -42,7 +42,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.46.0
 	go.uber.org/goleak v1.3.1-0.20260602155401-5f791e3ef83b
 	go.yaml.in/yaml/v3 v3.0.5
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/time v0.15.0
@@ -59,18 +59,18 @@ require (
 	github.com/antithesishq/antithesis-sdk-go v0.7.2-default-no-op // indirect
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.40 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.40 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.41 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.1 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.1 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.10.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.40 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.41 // indirect
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.108.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/signin v1.6.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sso v1.34.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.39.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sts v1.46.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/signin v1.8.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.36.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.41.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.48.0 // indirect
 	github.com/aws/smithy-go v1.28.1 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect

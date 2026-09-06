@@ -729,9 +729,9 @@ func launchService(cfg *Config) error {
 		return fmt.Errorf("construct reconciler: %w", err)
 	}
 
-	// Startup reconcile (leader-gated, apply-only). Orphan pruning is skipped because intent may be stale:
-	// a peer's vpc.create-sg could be mid-flight and a prune would sweep those port groups as orphans.
-	// Drift loop uses full Reconcile.
+	// Startup reconcile (leader-gated, apply-only). Topology pruning is skipped because intent may be
+	// stale: a peer's vpc.create-sg could be mid-flight and a prune would sweep those port groups as
+	// orphans. The EIP sweep still runs — see ReconcileApplyOnly. Drift loop uses full Reconcile.
 	// startupErr seeds the drift loop's backoff so a resource the bootstrap pass
 	// could not converge is retried on the short requeue, not a full interval.
 	var startupErr error

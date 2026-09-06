@@ -488,7 +488,10 @@ func TestNATManager_PruneOrphanEIPs(t *testing.T) {
 		ExternalIDs: map[string]string{"spinifex:logical_port": "port-eni-gone"},
 	}))
 
-	live := map[string]struct{}{"port-eni-live": {}}
+	live := LiveEIPs{
+		Ports:       map[string]struct{}{"port-eni-live": {}},
+		ExternalIPs: map[string]struct{}{"192.168.1.10": {}},
+	}
 	pruned, err := nm.PruneOrphanEIPs(ctx, live)
 	require.NoError(t, err)
 	assert.Equal(t, 1, pruned, "exactly the stamped orphan dnat_and_snat must be pruned")
@@ -498,6 +501,36 @@ func TestNATManager_PruneOrphanEIPs(t *testing.T) {
 	assert.NotNil(t, findNAT(m, "dnat_and_snat", "172.31.0.9"), "unstamped legacy row must survive")
 	assert.NotNil(t, findNAT(m, "snat", "172.31.0.0/24"), "snat row must survive the dnat_and_snat prune")
 	assert.Contains(t, flushed, "192.168.1.11", "orphan external IP ARP must be flushed on prune")
+}
+
+// A released address whose ENI is still running fails only the external-IP test.
+// The row and, in routed mode, the host /32 route must both go — this is the state
+// a lost vpc.delete-nat leaves after a disassociate.
+func TestNATManager_PruneOrphanEIPs_ReleasedAddressUnbindsHost(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-live")
+	var unbound []string
+	nm, err := NewNATManager(m, NATModeRouted, WithHostEIPBinder(HostEIPBinder{
+		Bind:   func(EIPSpec, string) error { return nil },
+		Unbind: func(ip string) error { unbound = append(unbound, ip); return nil },
+	}))
+	require.NoError(t, err)
+
+	require.NoError(t, m.AddNAT(ctx, topology.VPCRouter("vpc-live"), &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "192.168.0.43", LogicalIP: "10.0.1.10",
+		ExternalIDs: map[string]string{"spinifex:logical_port": "port-eni-live"},
+	}))
+
+	// The ENI is live; only the address is gone from intent.
+	pruned, err := nm.PruneOrphanEIPs(ctx, LiveEIPs{
+		Ports:       map[string]struct{}{"port-eni-live": {}},
+		ExternalIPs: map[string]struct{}{},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, pruned)
+	assert.Nil(t, findNAT(m, "dnat_and_snat", "10.0.1.10"), "released address row must be pruned")
+	assert.Contains(t, unbound, "192.168.0.43", "host /32 route for a released address must be unbound")
 }
 
 func TestNATManager_DeleteEIP_IdempotentOnMissing(t *testing.T) {

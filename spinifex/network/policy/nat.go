@@ -35,6 +35,14 @@ type NATGWSpec struct {
 	SubnetCIDR   string
 }
 
+// LiveEIPs is what a prune pass treats as current: the owning ENI port names
+// intent still carries, and the external IPs intent still asks for. A
+// dnat_and_snat row failing either test is stale and gets swept.
+type LiveEIPs struct {
+	Ports       map[string]struct{}
+	ExternalIPs map[string]struct{}
+}
+
 // NATManager owns NAT-rule lifecycle. Mode is fixed at construction.
 type NATManager interface {
 	// AddEIP installs a dnat_and_snat rule, cleaning stale rules for the
@@ -49,12 +57,12 @@ type NATManager interface {
 	// identically. Idempotent.
 	DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP, portName string) error
 
-	// PruneOrphanEIPs deletes every dnat_and_snat row whose stamped
-	// spinifex:logical_port owning ENI is absent from livePorts (the set of live
-	// intent port names), flushing the host ARP entry and unbinding routed-mode
+	// PruneOrphanEIPs deletes every dnat_and_snat row that live no longer
+	// accounts for — its owning ENI is gone, or its external IP is one intent no
+	// longer asks for — flushing the host ARP entry and unbinding routed-mode
 	// host state for each. Rows with no stamped logical port are left untouched
 	// (owner undeterminable). Returns the number of rows removed.
-	PruneOrphanEIPs(ctx context.Context, livePorts map[string]struct{}) (int, error)
+	PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, error)
 
 	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
 	AddNATGateway(ctx context.Context, gw NATGWSpec) error
@@ -437,7 +445,7 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 	return nil
 }
 
-func (m *natManager) PruneOrphanEIPs(ctx context.Context, livePorts map[string]struct{}) (int, error) {
+func (m *natManager) PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, error) {
 	nats, err := m.ovn.ListNATs(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("list NATs for orphan EIP prune: %w", err)
@@ -454,8 +462,16 @@ func (m *natManager) PruneOrphanEIPs(ctx context.Context, livePorts map[string]s
 		if port == "" {
 			continue
 		}
-		if _, live := livePorts[port]; live {
+		_, portLive := live.Ports[port]
+		_, ipWanted := live.ExternalIPs[n.ExternalIP]
+		if portLive && ipWanted {
 			continue
+		}
+		// A disassociate leaves the ENI running, so the owner test alone never
+		// fires and a lost vpc.delete-nat leaks the row and its host /32 route.
+		reason := "owning ENI absent from intent"
+		if portLive {
+			reason = "external IP no longer in intent"
 		}
 		removed, derr := m.ovn.DeleteAllNATsByExternalIP(ctx, "dnat_and_snat", n.ExternalIP)
 		if derr != nil {
@@ -463,12 +479,11 @@ func (m *natManager) PruneOrphanEIPs(ctx context.Context, livePorts map[string]s
 				"external_ip", n.ExternalIP, "logical_port", port, "err", derr)
 			continue
 		}
-		if removed == 0 {
-			continue
-		}
 		pruned += removed
 		// Flush host ARP so the freed external IP is not shadowed by the dead
-		// owner's MAC, and tear down routed-mode host plumbing. Best-effort.
+		// owner's MAC, and tear down routed-mode host plumbing. Best-effort, and
+		// run even when the row had already gone: that is the state a crash
+		// between the OVN delete and the unbind leaves behind.
 		if err := m.neigh(n.ExternalIP); err != nil {
 			slog.Warn("policy: orphan EIP prune neighbour flush failed", "external_ip", n.ExternalIP, "err", err)
 		}
@@ -477,8 +492,9 @@ func (m *natManager) PruneOrphanEIPs(ctx context.Context, livePorts map[string]s
 				slog.Warn("policy: orphan EIP prune host unbind failed", "external_ip", n.ExternalIP, "err", err)
 			}
 		}
-		slog.Info("policy: pruned orphan dnat_and_snat — owning ENI absent from intent",
-			"external_ip", n.ExternalIP, "logical_ip", n.LogicalIP, "logical_port", port)
+		slog.Info("policy: pruned stale dnat_and_snat",
+			"reason", reason, "external_ip", n.ExternalIP, "logical_ip", n.LogicalIP,
+			"logical_port", port, "rows_removed", removed)
 	}
 	return pruned, nil
 }

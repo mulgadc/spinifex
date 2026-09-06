@@ -251,6 +251,33 @@ func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
 	}
 }
 
+// The EIP sweep is not gated with the topology sweeps. Startup follows the one
+// window where a KV watch and a fire-and-forget vpc.delete-nat both miss a
+// teardown, so an apply-only pass that skipped it would leave a released public
+// address delivering to a guest until the resync.
+func TestReconcile_ApplyOnlyStillPrunesReleasedEIP(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	router := topology.VPCRouter("vpc-a")
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: router}); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+	if err := m.AddNAT(ctx, router, &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "192.168.0.43", LogicalIP: "10.0.1.10",
+		ExternalIDs: map[string]string{"spinifex:logical_port": topology.Port("eni-a")},
+	}); err != nil {
+		t.Fatalf("AddNAT released: %v", err)
+	}
+
+	if err := rec.ReconcileApplyOnly(ctx, freshIntent(t)); err != nil {
+		t.Fatalf("ReconcileApplyOnly: %v", err)
+	}
+	if findNATByExternal(m, "dnat_and_snat", "192.168.0.43") != nil {
+		t.Errorf("startup pass left a dnat_and_snat for an address absent from intent")
+	}
+}
+
 // ReconcileApplyOnly must not prune orphan ENI LSPs on startup (in-flight ports
 // before subscribers converge); full Reconcile must prune them.
 func TestReconcile_ApplyOnlyKeepsOrphanLSP(t *testing.T) {
@@ -753,6 +780,9 @@ func TestReconcile_PruneOrphanEIPs_SweepsAbsentOwners(t *testing.T) {
 	}
 
 	intent := freshIntent(t) // Ports has eni-a only
+	live := intent.Ports["eni-a"]
+	live.PublicIP = netip.MustParseAddr("192.168.1.10")
+	intent.Ports["eni-a"] = live
 	r.pruneOrphanEIPs(ctx, intent, &passResult{})
 
 	if findNATByExternal(m, "dnat_and_snat", "192.168.1.10") == nil {
@@ -760,6 +790,37 @@ func TestReconcile_PruneOrphanEIPs_SweepsAbsentOwners(t *testing.T) {
 	}
 	if findNATByExternal(m, "dnat_and_snat", "192.168.1.11") != nil {
 		t.Errorf("orphan EIP row must be pruned")
+	}
+}
+
+// A disassociate releases the address and leaves the ENI running, so the owning
+// port stays live and an owner-keyed prune never fires. When vpc.delete-nat is
+// lost — publishing into the window where vpcd is restarting drops it, since the
+// topic is fire-and-forget core NATS — the row and its host /32 route to a
+// released public IP survive. Intent no longer carries the address, so the prune
+// must sweep it on the external-IP test alone.
+func TestReconcile_PruneOrphanEIPs_SweepsReleasedAddressOnLivePort(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	router := topology.VPCRouter("vpc-a")
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: router}); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+	// eni-a is still running; only its EIP was disassociated.
+	if err := m.AddNAT(ctx, router, &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "192.168.0.43", LogicalIP: "10.0.1.10",
+		ExternalIDs: map[string]string{"spinifex:logical_port": topology.Port("eni-a")},
+	}); err != nil {
+		t.Fatalf("AddNAT released: %v", err)
+	}
+
+	// freshIntent's eni-a carries no PublicIP and EIPs is empty — the state after
+	// a successful DisassociateAddress.
+	r.pruneOrphanEIPs(ctx, freshIntent(t), &passResult{})
+
+	if findNATByExternal(m, "dnat_and_snat", "192.168.0.43") != nil {
+		t.Errorf("dnat_and_snat for a released address must be pruned even though its ENI is live")
 	}
 }
 
@@ -800,6 +861,7 @@ func TestReconcile_PruneOrphanEIPs_SparesMidPassLaunch(t *testing.T) {
 		fresh.Ports["eni-fresh"] = topology.PortSpec{
 			PortID: "eni-fresh", SubnetID: "subnet-a", VPCID: "vpc-a",
 			PrivateIP: netip.MustParseAddr("10.0.1.20"),
+			PublicIP:  netip.MustParseAddr("192.168.1.20"),
 		}
 		return fresh, nil
 	}

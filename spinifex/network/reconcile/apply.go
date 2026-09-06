@@ -753,12 +753,18 @@ func (r *reconciler) floatingIPSpecs(intent IntentState) []policy.EIPSpec {
 	return specs
 }
 
-// pruneOrphanEIPs sweeps dnat_and_snat rows whose stamped owning ENI is gone from
-// intent. vpc.delete-nat is fire-and-forget and can be lost, leaking rows across
-// dead VPCs; NATManager.PruneOrphanEIPs deletes any row whose spinifex:logical_port
-// is absent from the live-port set. The live set is keyed the same way
-// floatingIPSpecs derives PortName (topology.Port(p.PortID) for auto-assigned ports,
-// e.PortName for user EIPs), so a currently-live auto-assigned EIP is never pruned.
+// pruneOrphanEIPs sweeps dnat_and_snat rows intent no longer accounts for.
+// vpc.delete-nat is fire-and-forget and can be lost, so a row survives its own
+// teardown in two shapes: the whole ENI went away (VPC torn down, instance
+// terminated), or the ENI is still running and only the address was released.
+// The owner set catches the first; the external-IP set catches the second, which
+// a live-port test alone can never see — a disassociate is exactly the case where
+// the port stays live. AddEIP is the sole writer of dnat_and_snat, so
+// floatingIPSpecs is the complete set of addresses that may legitimately hold one.
+//
+// Ports are keyed the same way floatingIPSpecs derives PortName
+// (topology.Port(p.PortID) for auto-assigned ports, e.PortName for user EIPs), so a
+// currently-live auto-assigned EIP is never pruned.
 //
 // PruneOrphanEIPs lists OVN NAT rows live, but the intent handed to a prune pass is
 // snapshotted at the start of the pass and the apply phase can block for tens of
@@ -766,19 +772,21 @@ func (r *reconciler) floatingIPSpecs(intent IntentState) []policy.EIPSpec {
 // live dnat_and_snat row — created synchronously at launch — that the stale snapshot
 // does not carry, so matching live rows against the snapshot alone sweeps the fresh
 // row and blackholes the guest's public IP. Re-read intent (when a loader is wired)
-// and union its ports into the live set so a mid-pass launch counts as live; skip the
-// prune entirely if the re-read fails rather than risk a false sweep against a snapshot
-// known to be stale.
+// and union it in so a mid-pass launch counts as live; skip the prune entirely if the
+// re-read fails rather than risk a false sweep against a snapshot known to be stale.
 func (r *reconciler) pruneOrphanEIPs(ctx context.Context, intent IntentState, res *passResult) {
-	live := make(map[string]struct{}, len(intent.Ports)+len(intent.EIPs))
-	addLivePorts(live, intent)
+	live := policy.LiveEIPs{
+		Ports:       make(map[string]struct{}, len(intent.Ports)+len(intent.EIPs)),
+		ExternalIPs: make(map[string]struct{}, len(intent.Ports)+len(intent.EIPs)),
+	}
+	r.addLive(live, intent)
 	fresh, err := r.reloadForPrune(ctx)
 	if err != nil {
 		slog.Warn("reconcile/apply: fresh intent re-read failed; skipping orphan EIP prune", "err", err)
 		res.fail(classEIP, "orphan-prune", err)
 		return
 	}
-	addLivePorts(live, fresh)
+	r.addLive(live, fresh)
 	if pruned, err := r.nat.PruneOrphanEIPs(ctx, live); err != nil {
 		slog.Warn("reconcile/apply: orphan EIP prune failed", "err", err)
 		res.fail(classEIP, "orphan-prune", err)
@@ -787,18 +795,22 @@ func (r *reconciler) pruneOrphanEIPs(ctx context.Context, intent IntentState, re
 	}
 }
 
-// addLivePorts adds intent's owning-port names — auto-assigned/ELB ports keyed as
-// topology.Port(portID), user EIP ports by their stamped PortName — to live. Keyed
-// identically to floatingIPSpecs and the dnat_and_snat spinifex:logical_port stamp so
-// the orphan prune matches a live row to its owner.
-func addLivePorts(live map[string]struct{}, intent IntentState) {
+// addLive unions intent into the prune's live set: every owning-port name —
+// auto-assigned/ELB ports keyed as topology.Port(portID), user EIP ports by their
+// stamped PortName — and every external IP floatingIPSpecs would install. Keyed
+// identically to the dnat_and_snat spinifex:logical_port stamp so the prune matches
+// a live row to its owner.
+func (r *reconciler) addLive(live policy.LiveEIPs, intent IntentState) {
 	for portID := range intent.Ports {
-		live[topology.Port(portID)] = struct{}{}
+		live.Ports[topology.Port(portID)] = struct{}{}
 	}
 	for _, e := range intent.EIPs {
 		if e.PortName != "" {
-			live[e.PortName] = struct{}{}
+			live.Ports[e.PortName] = struct{}{}
 		}
+	}
+	for _, spec := range r.floatingIPSpecs(intent) {
+		live.ExternalIPs[spec.ExternalIP] = struct{}{}
 	}
 }
 

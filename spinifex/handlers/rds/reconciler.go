@@ -487,6 +487,13 @@ func (r *Reconciler) reconcileRestarting(ctx context.Context, kv jetstream.KeyVa
 	if err != nil {
 		return err
 	}
+	// A beat can land between the transition starting and the VM actually going
+	// down, and the engine it reports on is the one being replaced. The agent
+	// process registering again is the event that separates the two; a record
+	// written before agents reported it carries none, and keeps the old rule.
+	if agentStarted := rec.Agent.StartedAt; healthy && agentStarted != nil && !agentStarted.After(started) {
+		healthy = false
+	}
 	if healthy {
 		return r.transition(ctx, kv, rev, rec, StatusAvailable, "")
 	}

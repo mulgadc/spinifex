@@ -190,6 +190,14 @@ func (s *Service) RegisterDBInstance(ctx context.Context, input *RegisterDBInsta
 	if input.EngineVersion != "" {
 		rec.Agent.EngineVersion = input.EngineVersion
 	}
+	// A register is a fresh agent process that has not probed the engine yet, so
+	// the previous process's verdict stops standing in for one. Carrying it
+	// forward is what let a rebooting instance read healthy on a stamped LastSeen
+	// while the engine was still starting up.
+	started := now
+	rec.Agent.StartedAt = &started
+	rec.Agent.EngineHealth = EngineHealthStarting
+	rec.Agent.Message = ""
 	rec.Agent.LastSeen = &now
 	rec.UpdatedAt = now
 

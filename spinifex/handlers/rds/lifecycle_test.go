@@ -714,6 +714,31 @@ func TestReconciler_IgnoresAHeartbeatPredatingTheRestart(t *testing.T) {
 	assert.Equal(t, StatusRebooting, h.record(t).Status)
 }
 
+// The engine is stopped before the VM is rebooted, so a beat can still land in
+// between and report the engine that is on its way out. Only the agent process
+// registering again proves the restart happened.
+func TestReconciler_IgnoresAHeartbeatFromTheAgentTheRestartReplaces(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	now := time.Now().UTC()
+	started := now.Add(-time.Minute)
+	rec := restartingRecord(StatusRebooting, started, now)
+	predecessor := started.Add(-time.Hour)
+	rec.Agent.StartedAt = &predecessor
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	assert.Equal(t, StatusRebooting, h.record(t).Status)
+
+	restarted := started.Add(time.Second)
+	rec = h.record(t)
+	rec.Agent.StartedAt = &restarted
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	assert.Equal(t, StatusAvailable, h.record(t).Status)
+}
+
 // A restart that never comes back has to end somewhere: the customer sees a
 // broken instance either way, and failed is the state they can act on.
 func TestReconciler_MarksFailedWhenARestartOverrunsItsBound(t *testing.T) {

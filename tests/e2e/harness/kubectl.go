@@ -62,6 +62,19 @@ func (k *Kubectl) Run(timeout time.Duration, args ...string) (string, error) {
 	}
 }
 
+// AuthDiagnostics reproduces the credential exchange behind a failing call
+// without mutating anything. `Unauthorized` on its own says only that the
+// apiserver refused the request; the verbose read-only probe says whether an
+// Authorization header was sent at all, which separates a rejected token from
+// a credential the exec plugin never produced.
+func (k *Kubectl) AuthDiagnostics(timeout time.Duration) string {
+	out, err := k.Run(timeout, "--v=8", "get", "--raw", "/version")
+	if err != nil {
+		return out + "\nprobe error: " + err.Error()
+	}
+	return out
+}
+
 type timeoutError struct{}
 
 func (*timeoutError) Error() string { return "kubectl timed out" }

@@ -516,6 +516,12 @@ func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts 
 	const caConfigMap = "irsa-pod-gateway-ca"
 	out, err := kc.Run(30*time.Second, "create", "configmap", caConfigMap,
 		"-n", "default", "--from-file=ca.pem="+caPath)
+	if err != nil {
+		// This is the first kubectl of the subtest, so it lands before the pod
+		// dumps below are registered and would otherwise fail with no evidence.
+		harness.DumpFile(t, artifacts, "gateway-ca-configmap-auth.txt",
+			[]byte(kc.AuthDiagnostics(30*time.Second)))
+	}
 	require.NoErrorf(t, err, "create gateway-ca configmap:\n%s", out)
 	t.Cleanup(func() {
 		_, _ = kc.Run(30*time.Second, "delete", "configmap", caConfigMap, "-n", "default", "--ignore-not-found")

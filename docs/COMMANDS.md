@@ -6,40 +6,74 @@ Platform management commands not exposed via the AWS gateway API. These are CLI-
 
 ### Service Management
 
-Service lifecycle commands for starting, stopping, and checking status of all Spinifex cluster services. Each service subcommand supports `start`, `stop`, and `status` operations.
+Services run under systemd. Units live in `spinifex/build/systemd/`, installed by `scripts/setup.sh` on install and reconciled by `spx admin upgrade`.
 
-| Command | Flags | Description |
-|---------|-------|-------------|
-| `spx service predastore start` | `--port` (default: 8443, the host's S3 gate port), `--host` (default: 0.0.0.0, the address the host's sockets bind), `--base-path` (directory holding the service pid file), `--config-path` (required), `--tls-cert` (required), `--tls-key` (required), `--encryption-key-file` (required), `--host-id` (required; names a `[[host]]` in the predastore config) | Creates predastore service instance with S3-compatible storage backend → starts service, serving that host's nodes and the S3 gate among them until the process is signalled. When `--config`/`SPINIFEX_CONFIG_PATH` points at a cluster spinifex.toml, `--host`/`--port`/`--host-id` default to that node's `[nodes.<node>.predastore]` section instead of the flag defaults above; an explicit flag or `SPINIFEX_PREDASTORE_*` env var still overrides it. `host_id` absent from spinifex.toml resolves to 0, which names no host and is rejected. |
-| `spx service predastore stop` | — | Stops the predastore service |
-| `spx service predastore status` | — | Reports predastore service status |
-| `spx service viperblock start` | `--s3-host` (default: 0.0.0.0:8443), `--s3-bucket` (default: predastore), `--s3-region` (default: ap-southeast-2), `--plugin-path` (default `/opt/spinifex/lib/nbdkit-viperblock-plugin.so`; overridable via `SPINIFEX_VIPERBLOCK_PLUGIN_PATH` in `/etc/spinifex/systemd.env`), `--encryption-key-file` (32-byte AES-256 master key for at-rest encryption; empty disables it), `--debug` | Loads cluster config → connects to NATS and Predastore → starts viperblock block storage service with NBD plugin |
-| `spx service viperblock stop` | — | Stops the viperblock service |
-| `spx service viperblock status` | — | Reports viperblock service status |
-| `spx service nats start` | `--port` (default: 4222), `--host` (default: 0.0.0.0), `--debug`, `--data-dir`, `--jetstream` | Starts embedded NATS server with optional JetStream |
-| `spx service nats stop` | — | Stops the NATS service |
-| `spx service nats status` | — | Reports NATS service status |
-| `spx service spinifex start` | `--wal-dir` | Loads cluster config → starts spinifex daemon (VM orchestration, NATS subscriptions, health endpoint) |
-| `spx service spinifex stop` | — | Stops the spinifex daemon service |
-| `spx service spinifex status` | — | Reports spinifex daemon service status |
-| `spx service awsgw start` | `--host` (default: 0.0.0.0:9999), `--tls-cert`, `--tls-key`, `--debug` | Loads cluster config → starts AWS-compatible gateway with SigV4 auth, IAM policy enforcement, TLS |
-| `spx service awsgw stop` | — | Stops the AWS gateway service |
-| `spx service awsgw status` | — | Reports AWS gateway service status |
-| `spx service spinifex-ui start` | `--port` (default: 3000), `--host` (default: 0.0.0.0), `--tls-cert`, `--tls-key` | Starts embedded web UI server serving the React frontend. Aliases: `ui`, `spinifexui` |
-| `spx service spinifex-ui stop` | — | Stops the spinifex-ui service |
-| `spx service spinifex-ui status` | — | Reports spinifex-ui service status |
-| `spx service vpcd start` | — | Loads cluster config → starts VPC daemon (subscribes to `vpc.*` NATS events, translates to OVN logical switches/ports/routers) |
-| `spx service vpcd stop` | — | Stops the vpcd service |
-| `spx service vpcd status` | — | Reports vpcd service status |
-| `spx service northstar start` | `--northstar-config` (overrides `nodes.<node>.northstar.config_path`) | Loads cluster config → reads `northstar.toml` → starts the northstar DNS server (authoritative for internal `*.spx3.net`, recursive via upstream forwarders), syncing zones from its S3 bucket. Guests resolve via `169.254.169.253`, served by vpcd's per-tap DNS shim which forwards to northstar |
-| `spx service northstar stop` | — | Stops the northstar service |
-| `spx service northstar status` | — | Reports northstar service status |
-| `spx service qemunbd start` | `--debug` | Starts the qcow2/`qemu-nbd` EBS provider behind `natsserve`. It answers the same `ebs.provider.v1.*` subjects as viperblockd, so **only one of the two may point at a given NATS cluster** — running both is a configuration error, not a failover pair |
-| `spx service qemunbd stop` | — | Stops the qemunbd service |
-| `spx service qemunbd status` | — | Reports qemunbd service status |
-| `spx service qmp-collector start` | — | Starts the guest-metrics collector (polls per-VM telemetry QMP sockets + tap counters, publishes CloudWatch-shaped series to NATS `metrics.ec2.*`) |
-| `spx service qmp-collector stop` | — | Stops the qmp-collector service |
-| `spx service qmp-collector status` | — | Reports qmp-collector service status |
+#### Units
+
+Every service is `PartOf=spinifex.target` and ordered by its own `After=`/`Wants=`.
+
+| Unit | ExecStart | Description |
+|------|-----------|-------------|
+| `spinifex.target` | — | The whole stack: every service below plus the watchdog timer, openvswitch and ovn-controller |
+| `spinifex-nats.service` | `spx service nats start` | NATS message bus with JetStream. Config at `/etc/spinifex/nats/nats.conf`; dependants block on `wait-for-nats.sh` as an `ExecStartPre` |
+| `spinifex-predastore.service` | `spx service predastore start` | S3-compatible object storage, serving that host's nodes and the S3 gate among them |
+| `spinifex-northstar.service` | `spx service northstar start` | Authoritative DNS for `*.spx3.net`, recursive via upstream forwarders, syncing zones from its S3 bucket |
+| `spinifex-viperblock.service` | `spx service viperblock start` | Block storage with the NBD plugin. `KillMode=process`: nbdkit serving a guest survives a restart of this unit |
+| `spinifex-daemon.service` | `spx service spinifex start` | VM orchestration, NATS subscriptions, health endpoint. `KillMode=process`: guest QEMU survives a restart and the new daemon reattaches. `SIGHUP` reloads config |
+| `spinifex-awsgw.service` | `spx service awsgw start` | AWS-compatible gateway: SigV4 auth, IAM policy enforcement, TLS. Also serves the Private Admin API |
+| `spinifex-vpcd.service` | `spx service vpcd start` | VPC daemon: translates `vpc.*` NATS events to OVN logical switches, ports and routers |
+| `spinifex-ui.service` | `spx service spinifex-ui start` | Web UI serving the React frontend |
+| `spinifex-qmp-collector.service` | `spx service qmp-collector start` | Polls per-VM telemetry QMP sockets and tap counters, publishes to NATS `metrics.ec2.*` |
+| `spinifex-shutdown.service` | `/bin/true`; the work is its `ExecStop` | Runs `spx admin node drain --local --unless-restarting`. `After=` every service, so it stops first and drains guests while the stack is still up |
+| `spinifex-nats-watchdog.service` / `.timer` | `nats-js-watchdog.sh` | JetStream liveness probe every 30s. `try-restart`s NATS when JetStream stops accepting writes while the process stays alive — what `Restart=on-failure` cannot catch |
+| `spinifex-firewall.service` | `spinifex-firewall-apply` | Oneshot nftables input policy, `WantedBy=sysinit.target` rather than the target. No `ExecStop`: remove it with `nft delete table inet spinifex_filter` |
+| `regenerate-ssh-host-keys.service` | `ssh-keygen -A` | Oneshot for AMI-built nodes, conditional on the host key being absent |
+
+#### Operations
+
+| Command | Description |
+|---------|-------------|
+| `sudo systemctl start spinifex.target` | Starts the stack in dependency order |
+| `sudo systemctl stop spinifex.target` | Stops the stack, draining guests first via `spinifex-shutdown.service` |
+| `sudo systemctl restart spinifex.target` | Restarts the stack. Does **not** drain: QEMU and nbdkit survive on `KillMode=process` and the daemon reattaches |
+| `sudo systemctl restart spinifex-daemon` | Restarts one service. Required after a binary swap — services keep executing the replaced inode until they restart (`spx admin preflight` reports this) |
+| `systemctl status 'spinifex-*'` | Per-service state, PID, memory and recent log lines |
+| `journalctl -u spinifex-daemon -f` | Follows one service; `-u 'spinifex-*'` follows all |
+| `sudo systemctl kill -s HUP spinifex-daemon` | Reloads daemon config without a restart |
+| `sudo systemctl edit spinifex-daemon` | Drop-in override. Preferred over editing the installed unit, which `spx admin upgrade` then reports as operator-modified and refuses to touch |
+
+A cluster-wide stop is `spx admin cluster shutdown`, not a `systemctl` loop across nodes — it sequences GATE → DRAIN → STORAGE → PERSIST → INFRA with a per-phase ACK from every node.
+
+#### Service configuration
+
+Under systemd the services take no flags: each unit supplies `Environment=` entries, and the flags below are reachable as their `SPINIFEX_*` equivalents. Precedence is flag, then env var, then the node's `spinifex.toml` section, then the default. Environment files are `/etc/spinifex/telemetry.env` (all services), `/etc/spinifex/systemd.env` (viperblock's plugin path) and `/etc/spinifex/host.env` (the daemon's `SPINIFEX_RESERVED_MEM_GB`).
+
+| Service | Flag | Environment variable | Default / notes |
+|---------|------|----------------------|-----------------|
+| predastore | `--port` | `SPINIFEX_PREDASTORE_PORT` | 8443, the host's S3 gate port |
+| predastore | `--host` | `SPINIFEX_PREDASTORE_HOST` | 0.0.0.0, the address the host's sockets bind |
+| predastore | `--base-path` | `SPINIFEX_PREDASTORE_BASE_PATH` | Directory holding the service pid file; the unit sets `SPINIFEX_BASE_DIR` |
+| predastore | `--config-path` | `SPINIFEX_PREDASTORE_CONFIG_PATH` | Required |
+| predastore | `--tls-cert` / `--tls-key` | `SPINIFEX_PREDASTORE_TLS_CERT` / `_TLS_KEY` | Required |
+| predastore | `--encryption-key-file` | `SPINIFEX_PREDASTORE_ENCRYPTION_KEY_FILE` | Required |
+| predastore | `--host-id` | `SPINIFEX_PREDASTORE_HOST_ID` | Required; names a `[[host]]` in the predastore config. When `SPINIFEX_CONFIG_PATH` points at a cluster spinifex.toml, host/port/host-id default to that node's `[nodes.<node>.predastore]` section rather than the defaults above. `host_id` absent from spinifex.toml resolves to 0, which names no host and is rejected |
+| viperblock | `--s3-host` | `SPINIFEX_VIPERBLOCK_S3_HOST` | 0.0.0.0:8443 |
+| viperblock | `--s3-bucket` | `SPINIFEX_VIPERBLOCK_S3_BUCKET` | predastore |
+| viperblock | `--s3-region` | `SPINIFEX_VIPERBLOCK_S3_REGION` | ap-southeast-2 |
+| viperblock | `--plugin-path` | `SPINIFEX_VIPERBLOCK_PLUGIN_PATH` | `/opt/spinifex/lib/nbdkit-viperblock-plugin.so`; set in `/etc/spinifex/systemd.env` |
+| viperblock | `--encryption-key-file` | `SPINIFEX_VIPERBLOCK_ENCRYPTION_KEY_FILE` | 32-byte AES-256 master key for at-rest encryption; empty disables it |
+| viperblock | `--debug` | `SPINIFEX_VIPERBLOCK_DEBUG` | |
+| nats | `--port` / `--host` / `--debug` | `SPINIFEX_NATS_PORT` / `SPINIFEX_NATS_HOST` / `SPINIFEX_NATS_DEBUG` | 4222 / 0.0.0.0 |
+| nats | `--data-dir` / `--jetstream` | `SPINIFEX_NATS_DATA_DIR` / `SPINIFEX_NATS_JETSTREAM` | The unit sets neither: it points `SPINIFEX_CONFIG_PATH` at `nats.conf`, which carries both |
+| spinifex (daemon) | `--wal-dir` | `SPINIFEX_WAL_DIR` | The unit sets it alongside `SPINIFEX_BASE_DIR` |
+| awsgw | `--host` | `SPINIFEX_AWSGW_HOST` | 0.0.0.0:9999 |
+| awsgw | `--tls-cert` / `--tls-key` | `SPINIFEX_AWSGW_TLS_CERT` / `_TLS_KEY` | `/etc/spinifex/server.pem` and `server.key` |
+| awsgw | `--debug` | `SPINIFEX_AWSGW_DEBUG` | |
+| spinifex-ui | `--port` / `--host` | `SPINIFEX_UI_PORT` / `SPINIFEX_UI_HOST` | 3000 / 0.0.0.0. Command aliases: `ui`, `spinifexui` |
+| spinifex-ui | `--tls-cert` / `--tls-key` | `SPINIFEX_UI_TLS_CERT` / `SPINIFEX_UI_TLS_KEY` | `/etc/spinifex/server.pem` and `server.key` |
+| spinifex-ui | `--base-dir` | `SPINIFEX_UI_BASE_DIR` | `/var/lib/spinifex/spinifex-ui/` |
+| northstar | `--northstar-config` | `SPINIFEX_NORTHSTAR_CONFIG` | Overrides `nodes.<node>.northstar.config_path` |
+
 
 ### Cluster Inspection
 

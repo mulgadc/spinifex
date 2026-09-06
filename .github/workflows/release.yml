@@ -181,6 +181,13 @@ jobs:
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
+      # Only the shared shell helpers: this job builds nothing from source, but
+      # it drives the same libvirt provider the e2e cells retry around.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+          path: spinifex
+
       - name: Download Release Assets
         uses: actions/download-artifact@v8
         with:
@@ -190,11 +197,12 @@ jobs:
       - name: Provision VM
         working-directory: mulga/scripts/tofu-cluster
         run: |
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
           tofu init -input=false >> "$TOFU_LOG" 2>&1
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1 || true
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
-          tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
+          retry_run "tofu apply" "$TOFU_LOG" tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
 
       - name: Bootstrap via Binary Install
         working-directory: mulga/scripts/tofu-cluster
@@ -207,8 +215,9 @@ jobs:
         if: always()
         working-directory: mulga/scripts/tofu-cluster
         run: |
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
-          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
+          retry_run "tofu destroy" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 
   baremetal:

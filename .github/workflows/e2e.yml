@@ -49,6 +49,57 @@ env:
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 
 jobs:
+  # The inner timeout must fire before the outer one. `go test` reports where it
+  # stopped and the suite's own failure; a job cancelled on timeout reports only
+  # "The operation was canceled" and takes the artifacts with it.
+  #
+  # A job budget cannot be a literal here because the suite set is a dispatch
+  # input: storagefault asks for 90m and diskperf for 180m, both eligible on one
+  # node, so any fixed number is either wrong for them or wasteful for everyone
+  # else. Resolving it from suite-sets.sh keeps the one source of truth and
+  # leaves the default push set at exactly the 60m it has always had.
+  plan:
+    name: Resolve Job Budgets
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      single_timeout: ${{ steps.budgets.outputs.single_timeout }}
+      multi_timeout: ${{ steps.budgets.outputs.multi_timeout }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: spinifex
+          sparse-checkout: .github/scripts
+
+      - name: Resolve Budgets
+        id: budgets
+        env:
+          # Provision, install and teardown around the suites, plus the headroom
+          # a multi-suite job needs for whatever ran before the one that hangs.
+          SETUP_ALLOWANCE_MIN: 15
+          # What the job has always had. Kept as a floor so resolving the budget
+          # can only ever raise it, never quietly shorten an existing run.
+          FLOOR_MIN: 60
+        run: |
+          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
+          # Only max() is a sound bound: the suites share one job, so a sum would
+          # demand hours for a set that has never taken them. Max is what makes
+          # the hanging suite panic on its own timeout first, which is the point.
+          budget() {
+            local want="${FLOOR_MIN}" s t
+            for s in $(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -xE "$1"); do
+              t="$(e2e_suite_timeout "${s}")"
+              t=$(( ${t%m} + SETUP_ALLOWANCE_MIN ))
+              [ "${t}" -gt "${want}" ] && want="${t}"
+            done
+            echo "${want}"
+          }
+          single=$(budget "${E2E_SUITES_SINGLE_RE}")
+          multi=$(budget "${E2E_SUITES_MULTI_RE}")
+          echo "single_timeout=${single}" >> "$GITHUB_OUTPUT"
+          echo "multi_timeout=${multi}" >> "$GITHUB_OUTPUT"
+          echo "suites='${SUITES}' -> single ${single}m, multi ${multi}m"
+
   e2e_single:
     name: Single-Node E2E
     # The dispatch check gates on exactly the suites this job's Run step
@@ -60,8 +111,9 @@ jobs:
     # tear down. Push triggers keep running via the null-check on
     # inputs.suites.
     if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-iam') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-ecs') || contains(github.event.inputs.suites, 'e2e-storagegrowth') || contains(github.event.inputs.suites, 'e2e-partialblock') || contains(github.event.inputs.suites, 'e2e-rds')
+    needs: plan
     runs-on: [self-hosted, ci-single]
-    timeout-minutes: 60
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.single_timeout) }}
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}
@@ -562,8 +614,9 @@ jobs:
     # provisions the 3-node env when requested on its own, and the env stays
     # unprovisioned when none of them are asked for.
     if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-multinode') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-cert')
+    needs: plan
     runs-on: [self-hosted, ci-multi]
-    timeout-minutes: 60
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.multi_timeout) }}
     env:
       TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-multi-artifacts-${{ github.run_id }}

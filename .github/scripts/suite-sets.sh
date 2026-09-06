@@ -74,8 +74,10 @@ E2E_SUITES_NIGHTLY_MULTI="multinode cert lb"
 e2e_suite_timeout() {
   case "$1" in
     # rds serialises its DB VMs behind a 4 GiB semaphore, so its wall clock is
-    # set by how long it waits for the budget, not by how long a test runs.
-    rds) echo "50m" ;;
+    # set by how long it waits for the budget, not by how long a test runs. That
+    # makes it the suite most sensitive to what else the hypervisor is doing: the
+    # same pass ran 45m beside four cells and overran 50m beside nine.
+    rds) echo "60m" ;;
     # diskperf runs two 16 GiB fio profiles per repetition, each on a volume it
     # creates first. One pass is ~20 minutes on the bare-metal cell and a
     # baseline capture at SPINIFEX_DISKPERF_REPS=3 is three times that.
@@ -86,6 +88,20 @@ e2e_suite_timeout() {
     storagefault) echo "90m" ;;
     *) echo "30m" ;;
   esac
+}
+
+# One matrix leg per suite, carrying the job budget that suite needs. The outer
+# timeout must always be later than the `go test` one inside it: go test reports
+# where it stopped, a cancelled job reports only "The operation was canceled".
+#   e2e_suite_matrix <suite-list> <floor-minutes> [allowance-minutes]
+e2e_suite_matrix() {
+  local list="$1" floor="$2" allowance="${3:-15}" suite budget
+  for suite in ${list}; do
+    budget="$(e2e_suite_timeout "${suite}")"
+    budget=$((${budget%m} + allowance))
+    if [ "${budget}" -lt "${floor}" ]; then budget="${floor}"; fi
+    printf '%s\t%s\n' "${suite}" "${budget}"
+  done | jq -cRs 'split("\n")|map(select(length>0)|split("\t")|{suite:.[0],timeout:(.[1]|tonumber)})'
 }
 
 # Fail loudly when a narrowed list names a suite its topology cannot run. This

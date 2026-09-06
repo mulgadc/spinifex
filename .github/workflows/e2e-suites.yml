@@ -151,10 +151,9 @@ jobs:
           LIST="${REQUESTED:-${E2E_SUITES_SINGLE}}"
           e2e_suites_assert_subset "single_suites" "${LIST}" "${E2E_SUITES_SINGLE}"
           echo "list=${LIST}" >> "$GITHUB_OUTPUT"
-          # Unquoted on purpose: the space-separated list must word-split into
-          # one JSON element per suite.
-          # shellcheck disable=SC2086
-          JSON=$(printf '%s\n' ${LIST} | jq -R . | jq -cs .)
+          # 45 is the floor this job has always had, so resolving each leg's
+          # budget can only raise it — storagefault and rds ask for more.
+          JSON=$(e2e_suite_matrix "${LIST}" 45)
           echo "matrix=${JSON}" >> "$GITHUB_OUTPUT"
 
       - name: Reclaim docker build cache
@@ -319,14 +318,16 @@ jobs:
           retention-days: 14
 
   single_suite:
-    name: Single env · suite
+    name: Single env · ${{ matrix.suite }}
     needs: single_provision
     runs-on: [self-hosted, ci-single]
-    timeout-minutes: 45
+    # Per leg, from suite-sets.sh: one number for every suite would have to be
+    # storagefault's, and every other leg would then hang for 105 minutes.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
-        suite: ${{ fromJSON(needs.single_provision.outputs.matrix) }}
+        include: ${{ fromJSON(needs.single_provision.outputs.matrix) }}
     env:
       WAN_IP: ${{ needs.single_provision.outputs.wan_ip }}
       SSH_KEY: ${{ needs.single_provision.outputs.ssh_key }}
@@ -679,10 +680,9 @@ jobs:
           LIST="${REQUESTED:-${E2E_SUITES_MULTI}}"
           e2e_suites_assert_subset "multi_suites" "${LIST}" "${E2E_SUITES_MULTI}"
           echo "list=${LIST}" >> "$GITHUB_OUTPUT"
-          # Unquoted on purpose: the space-separated list must word-split into
-          # one JSON element per suite.
-          # shellcheck disable=SC2086
-          JSON=$(printf '%s\n' ${LIST} | jq -R . | jq -cs .)
+          # 60 is the floor this job has always had; multi-node legs carry a
+          # heavier setup than single-node ones, which is why it is higher.
+          JSON=$(e2e_suite_matrix "${LIST}" 60)
           echo "matrix=${JSON}" >> "$GITHUB_OUTPUT"
 
       - name: Build multinode binaries on runner
@@ -732,14 +732,15 @@ jobs:
           retention-days: 14
 
   multi_suite:
-    name: Multi env · suite
+    name: Multi env · ${{ matrix.suite }}
     needs: multi_provision
     runs-on: [self-hosted, ci-multi]
-    timeout-minutes: 60
+    # See the note on single_suite: the budget is the suite's, not the job's.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
-        suite: ${{ fromJSON(needs.multi_provision.outputs.matrix) }}
+        include: ${{ fromJSON(needs.multi_provision.outputs.matrix) }}
     env:
       NODE1_IP: ${{ needs.multi_provision.outputs.node1_ip }}
       SSH_KEY: ${{ needs.multi_provision.outputs.ssh_key }}

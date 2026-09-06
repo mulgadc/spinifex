@@ -90,10 +90,26 @@ func (h *heartbeater) beat(ctx context.Context) {
 	h.setInterval(time.Duration(out.HeartbeatIntervalSeconds) * time.Second)
 }
 
+// How often a not-yet-serving engine is reported. The control plane owns the
+// steady-state cadence, but while the engine has never answered it is actively
+// waiting on this instance — a restart is not finished until a healthy beat
+// lands — and a full interval of silence there is pure added downtime.
+const startupHeartbeatInterval = 5 * time.Second
+
+func (h *heartbeater) nextInterval() time.Duration {
+	if h.probe != nil && !h.probe.seenHealthy && startupHeartbeatInterval < h.interval {
+		return startupHeartbeatInterval
+	}
+	return h.interval
+}
+
 // A timer rather than a ticker, so a cadence change takes effect on the next
-// beat, not at a restart.
+// beat, not at a restart. The first beat is not waited for: a just-registered
+// agent has told the control plane nothing about the engine yet, and holding
+// that back for an interval makes every restart look longer than it was.
 func (h *heartbeater) Run(ctx context.Context) {
-	timer := time.NewTimer(h.interval)
+	h.beat(ctx)
+	timer := time.NewTimer(h.nextInterval())
 	defer timer.Stop()
 	for {
 		select {
@@ -101,7 +117,7 @@ func (h *heartbeater) Run(ctx context.Context) {
 			return
 		case <-timer.C:
 			h.beat(ctx)
-			timer.Reset(h.interval)
+			timer.Reset(h.nextInterval())
 		}
 	}
 }

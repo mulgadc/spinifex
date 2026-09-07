@@ -1,0 +1,39 @@
+[Unit]
+Description=Mulga EKS control-plane telemetry (OpenTelemetry Collector)
+Documentation=https://opentelemetry.io/docs/collector/
+After=network-online.target k3s.service
+Wants=network-online.target
+# No sink configured means no collector. A condition that is not met leaves the
+# unit inactive and says so, where a missing endpoint would otherwise be a
+# restart loop against an exporter that can never resolve.
+ConditionPathExists=/etc/spinifex-eks/otelcol.env
+
+[Service]
+Type=simple
+# EKS_OTLP_ENDPOINT lives here; EKS_CLUSTER_NAME comes from the first-boot env
+# the rest of the node services already read, so the cluster tag matches what
+# the state report publishes.
+EnvironmentFile=/etc/spinifex-eks/otelcol.env
+EnvironmentFile=-/etc/spinifex-eks/first-boot.env
+ExecStart=/usr/local/bin/otelcol-contrib --config=/etc/spinifex-eks/otelcol-config.yaml
+Restart=on-failure
+RestartSec=10
+
+# The control plane owns this guest. Three tiers, each below the next:
+# memory_limiter sheds data, GOMEMLIMIT makes the Go GC work harder, MemoryMax
+# is a backstop that should never fire. On a 4 GB node an agent that competes
+# with etcd for memory causes the outage it was installed to explain.
+Environment=GOMEMLIMIT=96MiB
+MemoryHigh=128M
+MemoryMax=192M
+CPUQuota=20%
+Nice=10
+IOSchedulingClass=idle
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

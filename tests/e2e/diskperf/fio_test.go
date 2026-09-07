@@ -109,14 +109,103 @@ func TestMedianDoesNotMutateInput(t *testing.T) {
 func TestJobCommandCoversTheWholeWorkingSet(t *testing.T) {
 	for _, j := range gateJobs {
 		cmd := j.command("vdc", "/tmp/out.json")
-		for _, want := range []string{"--direct=1", "--filename=/dev/vdc", "--offset_increment=", "--output-format=json"} {
+		for _, want := range []string{"--filename=/dev/vdc", "--offset_increment=", "--output-format=json"} {
 			if !strings.Contains(cmd, want) {
 				t.Errorf("job %q command is missing %q:\n%s", j.Name, want, cmd)
 			}
 		}
+		if j.SizeMiB > 0 {
+			continue
+		}
+		if !strings.Contains(cmd, "--direct=1") {
+			t.Errorf("job %q is a throughput profile and must bypass the page cache:\n%s", j.Name, cmd)
+		}
 		if j.workingSetGiB() != j.SizeGiB*j.NumJobs {
 			t.Errorf("job %q working set %d does not match %d jobs x %d GiB", j.Name, j.workingSetGiB(), j.NumJobs, j.SizeGiB)
 		}
+	}
+}
+
+// A durability job measures the wrong thing under direct=1 or libaio: the point
+// is the cost of making a buffered write durable, which is what etcd pays per
+// raft entry. Guards the combination rather than the flag.
+func TestFdatasyncJobIsBufferedAndSynchronous(t *testing.T) {
+	var found int
+	for _, j := range gateJobs {
+		if j.Fdatasync == 0 {
+			cmd := j.command("vdc", "/tmp/out.json")
+			if strings.Contains(cmd, "--fdatasync=") {
+				t.Errorf("job %q carries fdatasync without asking for it:\n%s", j.Name, cmd)
+			}
+			continue
+		}
+		found++
+		cmd := j.command("vdc", "/tmp/out.json")
+		for _, want := range []string{"--fdatasync=1", "--ioengine=psync", "--lat_percentiles=1"} {
+			if !strings.Contains(cmd, want) {
+				t.Errorf("job %q is missing %q:\n%s", j.Name, want, cmd)
+			}
+		}
+		if strings.Contains(cmd, "--direct=1") {
+			t.Errorf("job %q uses direct=1, which bypasses the cache the fdatasync exists to flush:\n%s", j.Name, cmd)
+		}
+		if j.IODepth != 1 {
+			t.Errorf("job %q runs at qd%d: a queue hides the per-commit latency being measured", j.Name, j.IODepth)
+		}
+	}
+	if found == 0 {
+		t.Error("no fdatasync job in the profile set — durability latency is unmeasured")
+	}
+}
+
+// The sync distribution is reported apart from the write stream, so a job that
+// parses only write clat records the time to reach the page cache and calls it
+// durability.
+func TestParseFioReadsTheSyncStream(t *testing.T) {
+	const withSync = `{"fio version":"fio-3.36","jobs":[{"jobname":"syncwrite-4k",
+	 "write":{"io_bytes":67108864,"bw_bytes":1000,"iops":250,"clat_ns":{"max":900,"mean":400,"percentile":{"99.900000":800}}},
+	 "sync":{"total_ios":16384,"lat_ns":{"max":41000000,"mean":5100000,"percentile":{"99.900000":38000000}}}}]}`
+
+	res, err := parseFio("syncwrite-4k", withSync)
+	if err != nil {
+		t.Fatalf("parseFio: %v", err)
+	}
+	if got := res.Aggregate.Sync.TotalIOs; got != 16384 {
+		t.Errorf("sync total_ios = %d, want 16384", got)
+	}
+	if got := res.Aggregate.Sync.p999Ms(); got != 38 {
+		t.Errorf("sync p99.9 = %.1fms, want 38.0", got)
+	}
+	if got := res.Aggregate.Sync.maxMs(); got != 41 {
+		t.Errorf("sync max = %.1fms, want 41.0", got)
+	}
+}
+
+// An fdatasync result must be gated on the sync distribution. Judging it on
+// write IOPS would pass a disk that buffers everything and commits slowly,
+// which is the exact disk etcd cannot run on.
+func TestMetricsForGatesTheSyncDistribution(t *testing.T) {
+	agg := fioJob{
+		Name:  "syncwrite-4k",
+		Write: fioStream{IOBytes: 67108864, IOPS: 250},
+		Sync:  fioSync{TotalIOs: 16384, Lat: fioClat{Percentile: map[string]int64{p999Key: 38000000}}},
+	}
+	ms := metricsFor(jobSpec{Name: "syncwrite-4k", Fdatasync: 1}, agg, BaselineJob{SyncP999Ms: 10})
+
+	var got *metric
+	for i := range ms {
+		if ms[i].Name == "fdatasync_p99_9_ms" {
+			got = &ms[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("no fdatasync metric produced from a job with %d syncs", agg.Sync.TotalIOs)
+	}
+	if got.HigherIsBetter {
+		t.Error("fdatasync latency was scored as higher-is-better")
+	}
+	if v, _ := got.judge(); v != verdictFail {
+		t.Errorf("38ms against a 10ms baseline judged %v, want fail", v)
 	}
 }
 

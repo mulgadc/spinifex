@@ -41,8 +41,16 @@ type jobSpec struct {
 	// SizeGiB is per job. NumJobs jobs each take their own SizeGiB slice of the
 	// device via offset_increment, so the working set is NumJobs*SizeGiB.
 	SizeGiB int
+	// SizeMiB overrides SizeGiB when non-zero, for jobs whose per-op cost makes
+	// a GiB-scale working set take hours rather than minutes.
+	SizeMiB int
 	NumJobs int
 	IODepth int
+
+	// Fdatasync, when non-zero, issues fdatasync every N writes and switches the
+	// job to buffered psync. Durability latency is only meaningful through the
+	// page cache: direct=1 and libaio measure the wrong thing.
+	Fdatasync int
 
 	// Budget bounds the guest-side invocation. Exceeding it is an availability
 	// failure, not a slow result: the workload did not complete.
@@ -77,11 +85,43 @@ var gateJobs = []jobSpec{
 		IODepth:   32,
 		Budget:    45 * time.Minute,
 	},
+	// Durability latency, not throughput. etcd commits every raft entry with an
+	// fdatasync at queue depth 1 and stalls on that latency long before it runs
+	// short of bandwidth, which the two profiles above cannot see.
+	{
+		Name:      "syncwrite-4k",
+		RW:        "write",
+		BlockSize: "4k",
+		SizeMiB:   64,
+		NumJobs:   1,
+		IODepth:   1,
+		Fdatasync: 1,
+		Budget:    20 * time.Minute,
+	},
 }
 
 // workingSetGiB is the span of the device the job touches, and so the minimum
-// volume size it needs.
-func (j jobSpec) workingSetGiB() int { return j.SizeGiB * j.NumJobs }
+// volume size it needs. A sub-GiB job rounds to zero: the volume headroom the
+// caller adds already covers it.
+func (j jobSpec) workingSetGiB() int {
+	if j.SizeMiB > 0 {
+		return j.SizeMiB * j.NumJobs / 1024
+	}
+	return j.SizeGiB * j.NumJobs
+}
+
+// size renders the per-job size as an fio --size value.
+func (j jobSpec) size() string {
+	if j.SizeMiB > 0 {
+		return fmt.Sprintf("%dM", j.SizeMiB)
+	}
+	return fmt.Sprintf("%dG", j.SizeGiB)
+}
+
+// shape describes the job for a progress line, since the size unit varies.
+func (j jobSpec) shape() string {
+	return fmt.Sprintf("%d jobs x %s %s %s at qd%d", j.NumJobs, j.size(), j.BlockSize, j.RW, j.IODepth)
+}
 
 // command renders the fio invocation. The target is a raw device with
 // direct=1, so the guest page cache and any filesystem are out of the path;
@@ -94,15 +134,24 @@ func (j jobSpec) command(dev, outPath string) string {
 		"--filename=/dev/" + dev,
 		"--rw=" + j.RW,
 		"--bs=" + j.BlockSize,
-		fmt.Sprintf("--size=%dG", j.SizeGiB),
-		fmt.Sprintf("--offset_increment=%dG", j.SizeGiB),
+		"--size=" + j.size(),
+		fmt.Sprintf("--offset_increment=%s", j.size()),
 		fmt.Sprintf("--numjobs=%d", j.NumJobs),
 		fmt.Sprintf("--iodepth=%d", j.IODepth),
-		"--ioengine=libaio",
-		"--direct=1",
 		"--group_reporting",
 		"--output-format=json",
 		"--output=" + outPath,
+	}
+	if j.Fdatasync > 0 {
+		// lat_percentiles is what makes fio emit the sync-latency distribution;
+		// without it the run reports a mean and the tail is lost, and the tail
+		// is what a consensus datastore actually stalls on.
+		args = append(args,
+			fmt.Sprintf("--fdatasync=%d", j.Fdatasync),
+			"--ioengine=psync",
+			"--lat_percentiles=1")
+	} else {
+		args = append(args, "--ioengine=libaio", "--direct=1")
 	}
 	if j.RW == "randrw" {
 		args = append(args, fmt.Sprintf("--rwmixread=%d", j.MixRead))
@@ -120,7 +169,26 @@ type fioJob struct {
 	Name  string    `json:"jobname"`
 	Read  fioStream `json:"read"`
 	Write fioStream `json:"write"`
+	// Sync is the fdatasync distribution, which fio reports separately from the
+	// write stream: write clat is the time to reach the page cache, and the
+	// sync is what makes it durable. For a fdatasync job this is the result.
+	Sync fioSync `json:"sync"`
 }
+
+// fioSync is fio's sync section. It reports total latency (lat_ns), not the
+// completion latency the queued streams report, so it carries its own field.
+type fioSync struct {
+	TotalIOs int64   `json:"total_ios"`
+	Lat      fioClat `json:"lat_ns"`
+}
+
+// p999Ms returns the p99.9 fdatasync latency in milliseconds.
+func (s fioSync) p999Ms() float64 {
+	return float64(s.Lat.Percentile[p999Key]) / 1e6
+}
+
+// maxMs returns the worst fdatasync latency in milliseconds.
+func (s fioSync) maxMs() float64 { return float64(s.Lat.Max) / 1e6 }
 
 type fioStream struct {
 	IOBytes int64   `json:"io_bytes"`

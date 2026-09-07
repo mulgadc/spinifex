@@ -103,6 +103,12 @@ import-eks-node-image: ## Build + register the eks-node AMI (requires a running 
 publish-eks-node-image: ## Build + publish the eks-node AMI to Cloudflare R2 (needs R2_ENDPOINT + AWS_* env)
 	./scripts/publish-system-image.sh scripts/images/eks-node/manifest.conf --build
 
+# The Ubuntu/systemd EKS image, as opposed to build-eks-node-image's Alpine one.
+# Composition lives in mkosi-build.sh's image_profiles table, so the image name
+# is the whole interface here.
+build-eks-node-mkosi-image: ## Build the Ubuntu mkosi EKS node image (server+agent; role at first boot)
+	./scripts/mkosi-build.sh --image spinifex-eks-node
+
 build-ecs-node-image: ## Build the spinifex-ecs-node AMI (Alpine + containerd + ecs-agent; IMPORT=1 to register)
 	$(MAKE) build-system-image IMAGE=ecs-agent
 

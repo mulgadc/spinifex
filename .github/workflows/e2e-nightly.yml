@@ -183,11 +183,10 @@ jobs:
             "${RUNNER_TEMP}/spinifex-tests.tar" \
             --extra-suites "${MATRIX_SUITE}"
 
-      # Eight runner names map onto three hypervisors, so cells that never share
-      # a runner still share a host. Nothing measured that, which left "the host
-      # was loaded" as an unfalsifiable explanation for every timeout. Sampled
-      # either side of the cell so the next occurrence can be correlated.
-      - name: Sample hypervisor load (before)
+      # Every runner agent runs on one host, while their nodes sit on several, so
+      # this samples the runner's host and not the node's hypervisor. Kept for
+      # runner-side contention; the node's own capacity is sampled after.
+      - name: Sample runner-host load (before)
         if: always()
         run: |
           mkdir -p "${ARTIFACT_DIR}"
@@ -612,7 +611,7 @@ jobs:
           if [ $rc -ne 0 ]; then echo "reboot: FAILED" >> "${ARTIFACT_DIR}/suite-status.txt"; fi
           exit $rc
 
-      - name: Sample hypervisor load (after)
+      - name: Sample runner-host load (after)
         if: always()
         run: |
           mkdir -p "${ARTIFACT_DIR}"
@@ -623,6 +622,32 @@ jobs:
             echo "cpu(steal is field 8): $(grep '^cpu ' /proc/stat || true)"
             echo "running qemu: $(pgrep -c qemu-system-x86 || echo 0)"
           } >> "${ARTIFACT_DIR}/hypervisor-load.txt"
+
+      # The node, not the runner's host, is what the guests are scheduled on, so
+      # its load is the figure that explains a starved guest. Never fails the
+      # cell: a node already gone is the case this is trying to describe.
+      - name: Sample node load (after)
+        if: always()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set +e
+          mkdir -p "${ARTIFACT_DIR}"
+          INVENTORY=$(tofu output -json inventory 2>/dev/null)
+          NODE1_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip' 2>/dev/null)
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path' 2>/dev/null)
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          [ -n "$NODE1_IP" ] && [ "$NODE1_IP" != "null" ] || exit 0
+          [ -n "$SSH_KEY" ] && [ "$SSH_KEY" != "null" ] || exit 0
+          {
+            echo "=== node after: $(date -u +%Y-%m-%dT%H:%M:%SZ) ip=${NODE1_IP} ==="
+            ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=10 \
+              -i "$SSH_KEY" "tf-user@${NODE1_IP}" \
+              'echo "host: $(hostname)"; echo "loadavg: $(cat /proc/loadavg)";
+               grep -E "^(MemTotal|MemAvailable|SwapFree):" /proc/meminfo;
+               echo "cpu(steal is field 8): $(grep "^cpu " /proc/stat)";
+               echo "running qemu: $(pgrep -c qemu-system-x86 || echo 0)"' 2>&1
+          } >> "${ARTIFACT_DIR}/node-load.txt"
+          exit 0
 
       - name: Collect e2e artifacts
         if: always()

@@ -42,13 +42,19 @@ DISK_MIN_KB=${DISK_MIN_KB:-262144}
 
 # diagnose emits a compact, JSON-safe reason for an unhealthy apiserver by
 # reading the ground truth only reachable from inside the guest: the failing
-# /readyz subchecks, isolated etcd reachability, and the etcd-disk free space.
+# /readyz subchecks, etcd reachability, etcd-disk free space, and host pressure.
 diagnose() {
     # apiserver prints "[+]name ok" for passing subchecks and "[-]name failed"
-    # for failing ones; collect the failing names (etcd, poststarthook/*, ...).
-    failed=$(kubectl get --raw='/readyz?verbose' 2>/dev/null \
-        | awk '/^\[-\]/{sub(/^\[-\]/,""); sub(/[[:space:]].*$/,""); printf "%s%s", sep, $0; sep=" "}')
-    [ -n "${failed}" ] || failed=none
+    # for failing ones. An empty body means the probe never answered, which is a
+    # different fault from "every subcheck passed" and must not read the same.
+    readyz=$(kubectl get --raw='/readyz?verbose' 2>/dev/null)
+    if [ -z "${readyz}" ]; then
+        failed=unreachable
+    else
+        failed=$(printf '%s\n' "${readyz}" \
+            | awk '/^\[-\]/{sub(/^\[-\]/,""); sub(/[[:space:]].*$/,""); printf "%s%s", sep, $0; sep=" "}')
+        [ -n "${failed}" ] || failed=none
+    fi
 
     if kubectl get --raw='/healthz/etcd' 2>/dev/null | grep -q '^ok$'; then
         etcd=ok
@@ -63,7 +69,51 @@ diagnose() {
         disk=ok
     fi
 
-    printf 'readyz:[%s]; etcd:%s; disk:%s' "${failed}" "${etcd}" "${disk}"
+    # etcd stalls under CPU or memory pressure long before it faults on its own,
+    # so an unhealthy CP reporting disk:ok is uninterpretable without these two.
+    load=$(awk '{print $1}' "${LOADAVG_FILE:-/proc/loadavg}" 2>/dev/null)
+    memavail_kb=$(awk '/^MemAvailable:/{print $2}' "${MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null)
+    [ -n "${load}" ] || load=unknown
+    [ -n "${memavail_kb}" ] || memavail_kb=unknown
+
+    printf 'readyz:[%s]; etcd:%s; disk:%s; fsync:%sms; load:%s; memavail:%sk' \
+        "${failed}" "${etcd}" "${disk}" "$(etcd_fsync_ms)" "${load}" "${memavail_kb}"
+}
+
+# etcd_fsync_ms prints the mean WAL fsync in milliseconds, or "nometrics" when
+# etcd served none, or "warmup" when it has not done enough to average.
+#
+# disk:ok in diagnose() is free space, which says nothing about how long a write
+# takes. etcd stalls on fsync latency long before it runs out of room, and this
+# guest's disk is an EBS volume served by viperblock, so a fsync here is a
+# network round trip. Healthy is single-digit milliseconds.
+#
+# Mean rather than a percentile: the histogram's _sum and _count are two greps,
+# where a bucket percentile is an interpolation this script has no business
+# doing, and a stall shows as an order of magnitude rather than a tail.
+etcd_fsync_ms() {
+    # `|| metrics=` is load-bearing under set -e: a scrape against a port
+    # nothing answers exits non-zero, and a bare assignment would abort the
+    # caller — dropping the diagnosis exactly when it is wanted.
+    metrics=$(curl -fsS --max-time 2 "${ETCD_METRICS_URL:-http://127.0.0.1:2381/metrics}" 2>/dev/null) || metrics=
+    # "etcd served nothing" and "etcd has not done enough work yet" have
+    # different fixes — the first is a missing endpoint, the second is a guest
+    # that just booted — so they must not read the same. Collapsing both to one
+    # word is the mistake readyz:[none] made.
+    if [ -z "${metrics}" ]; then
+        echo nometrics
+        return
+    fi
+    # A minimum sample count, not just a non-zero one. A mean over the handful
+    # of fsyncs a just-started etcd has done is a number with no meaning, and
+    # reporting it invites the same mistake as judging a throughput floor on a
+    # 297-byte object.
+    fsync=$(printf '%s\n' "${metrics}" | awk -v min="${FSYNC_MIN_COUNT:-100}" '
+        /^etcd_disk_wal_fsync_duration_seconds_sum/ {sum=$2}
+        /^etcd_disk_wal_fsync_duration_seconds_count/ {count=$2}
+        END {if (count >= min) printf "%.1f", (sum / count) * 1000}')
+    [ -n "${fsync}" ] || fsync=warmup
+    echo "${fsync}"
 }
 
 publish_report() {
@@ -100,12 +150,27 @@ publish_report() {
             echo "=== end mulga-eks CP diag ==="
         } > "${CONSOLE:-/dev/console}" 2>&1 || true
     fi
+    # fsync goes out on every report, healthy or not. A figure that only appears
+    # once the control plane is already failing has no baseline to be read
+    # against, which is the same gap a passing cell that uploads no journal
+    # leaves. Emitted as a bare JSON number, or omitted entirely when unknown so
+    # a missing sample is never mistaken for a fast one.
+    fsync_field=
+    fsync_ms=$(etcd_fsync_ms)
+    # Tested for being a number rather than against the sentinel words: this
+    # emits a bare JSON value, so anything non-numeric reaching it produces a
+    # payload the daemon cannot parse at all. A new sentinel must not be able
+    # to break the report by being added.
+    case "${fsync_ms}" in
+        '' | *[!0-9.]*) : ;;
+        *) fsync_field=$(printf '"fsync_ms":%s,' "${fsync_ms}") ;;
+    esac
     if [ -n "${reason}" ]; then
-        payload=$(printf '{"healthz":"%s","node_count":%s,"nodegroup_ready":%s,"reason":"%s","ts":%s}' \
-            "${health}" "${node_count}" "${nodegroup_ready}" "${reason}" "$(date +%s)")
+        payload=$(printf '{"healthz":"%s","node_count":%s,"nodegroup_ready":%s,%s"reason":"%s","ts":%s}' \
+            "${health}" "${node_count}" "${nodegroup_ready}" "${fsync_field}" "${reason}" "$(date +%s)")
     else
-        payload=$(printf '{"healthz":"%s","node_count":%s,"nodegroup_ready":%s,"ts":%s}' \
-            "${health}" "${node_count}" "${nodegroup_ready}" "$(date +%s)")
+        payload=$(printf '{"healthz":"%s","node_count":%s,"nodegroup_ready":%s,%s"ts":%s}' \
+            "${health}" "${node_count}" "${nodegroup_ready}" "${fsync_field}" "$(date +%s)")
     fi
     printf '%s' "${payload}" | eks-gateway-publish -channel state 2>&1 \
         | logger -t mulga-eks-state-report

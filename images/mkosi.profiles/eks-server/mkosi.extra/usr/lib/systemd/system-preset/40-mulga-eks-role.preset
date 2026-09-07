@@ -16,6 +16,11 @@
 enable eks-node-role.service
 enable mulga-eks-etcd-snapshot-daily.timer
 enable mulga-eks-etcd-snapshot-15min.timer
+# Unconditional like the timers, and for the same reason: it self-guards. Its
+# ConditionPathExists means a guest with no sink configured never starts it, so
+# there is no role for the selector to decide. An agent that is given a sink
+# still reports host metrics; only the etcd scrape goes unanswered.
+enable mulga-eks-otelcol.service
 
 disable k3s.service
 disable k3s-agent.service

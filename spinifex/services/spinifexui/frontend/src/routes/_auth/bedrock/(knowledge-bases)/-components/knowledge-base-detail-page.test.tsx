@@ -117,12 +117,13 @@ describe("KnowledgeBaseDetailPage", () => {
 
   it("deletes the knowledge base and navigates back on confirm", async () => {
     mockSend.mockResolvedValueOnce({})
+    const user = userEvent.setup()
     renderSeeded([], KNOWLEDGE_BASE)
 
-    screen.getByRole("button", { name: "Delete" }).click()
+    await user.click(screen.getByRole("button", { name: "Delete" }))
     await screen.findByText("Delete Knowledge Base")
     const deleteButtons = screen.getAllByRole("button", { name: "Delete" })
-    deleteButtons.at(-1)?.click()
+    await user.click(deleteButtons.at(-1)!)
 
     await waitFor(() => {
       expect(mockSend).toHaveBeenCalled()

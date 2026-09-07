@@ -4,6 +4,7 @@ import type {
 } from "@aws-sdk/client-bedrock"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
@@ -174,12 +175,13 @@ describe("GuardrailDetailPage", () => {
 
   it("deletes the guardrail and navigates back on confirm", async () => {
     mockBedrockSend.mockResolvedValueOnce({})
+    const user = userEvent.setup()
     renderSeeded(GUARDRAIL)
 
-    screen.getByRole("button", { name: "Delete" }).click()
+    await user.click(screen.getByRole("button", { name: "Delete" }))
     await screen.findByText("Delete Guardrail")
     const deleteButtons = screen.getAllByRole("button", { name: "Delete" })
-    deleteButtons.at(-1)?.click()
+    await user.click(deleteButtons.at(-1)!)
 
     await waitFor(() => {
       expect(mockBedrockSend).toHaveBeenCalled()
@@ -197,9 +199,10 @@ describe("GuardrailDetailPage", () => {
 
   it("creates a new version for the guardrail", async () => {
     mockBedrockSend.mockResolvedValueOnce({ version: "2" })
+    const user = userEvent.setup()
     renderSeeded(GUARDRAIL)
 
-    screen.getByRole("button", { name: "Create version" }).click()
+    await user.click(screen.getByRole("button", { name: "Create version" }))
 
     await waitFor(() => {
       expect(mockBedrockSend).toHaveBeenCalled()

@@ -9,9 +9,9 @@ import {
 } from "@/test/elbv2-integration"
 
 vi.mock("@/lib/awsClient", () => ({
-  getEksClient: () => ({ send: vi.fn() }),
-  getEc2Client: () => ({ send: vi.fn() }),
-  getIamClient: () => ({ send: vi.fn() }),
+  getEksClient: () => ({ send: vi.fn().mockResolvedValue({}) }),
+  getEc2Client: () => ({ send: vi.fn().mockResolvedValue({}) }),
+  getIamClient: () => ({ send: vi.fn().mockResolvedValue({}) }),
 }))
 
 import { NodegroupsTab } from "./nodegroups-tab"

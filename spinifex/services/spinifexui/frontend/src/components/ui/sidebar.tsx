@@ -561,7 +561,7 @@ export function SidebarMenuButton({
       },
       props,
     ),
-    render: tooltip ? TooltipTrigger : render,
+    render: tooltip ? <TooltipTrigger /> : render,
     state: {
       slot: "sidebar-menu-button",
       sidebar: "menu-button",

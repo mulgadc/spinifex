@@ -79,14 +79,16 @@ describe("CreateDBSubnetGroupPage", () => {
 
   // resolveGroupSubnets refuses a group spanning two VPCs, so the second VPC
   // has to go out of reach rather than stay selectable and fail at submit.
-  it("puts the other VPCs out of reach once a subnet is chosen", () => {
+  it("puts the other VPCs out of reach once a subnet is chosen", async () => {
     renderWithClient(<CreateDBSubnetGroupPage />, seed())
     expect(subnetCheckbox("subnet-b1")).toBeEnabled()
 
     fireEvent.click(subnetCheckbox("subnet-a1"))
 
+    await waitFor(() => {
+      expect(subnetCheckbox("subnet-b1")).toBeDisabled()
+    })
     expect(subnetCheckbox("subnet-a2")).toBeEnabled()
-    expect(subnetCheckbox("subnet-b1")).toBeDisabled()
     expect(screen.getByText(/must span one VPC/)).toBeInTheDocument()
   })
 

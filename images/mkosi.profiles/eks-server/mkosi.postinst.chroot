@@ -103,7 +103,11 @@ if ! sha256sum -c /tmp/otelcol.sha256; then
     echo "[eks-server] otelcol-contrib checksum mismatch" >&2
     exit 1
 fi
-tar -xzf "/tmp/${OTELCOL_TAR}" -C /usr/local/bin otelcol-contrib
+# --no-same-owner: the archive records upstream's build uid, which does not
+# exist here, and restoring it fails outright rather than degrading. Extracted
+# as root instead, which is what owns the rest of /usr/local/bin.
+tar -xzf "/tmp/${OTELCOL_TAR}" --no-same-owner -C /usr/local/bin otelcol-contrib
+chown root:root /usr/local/bin/otelcol-contrib
 chmod 0755 /usr/local/bin/otelcol-contrib
 rm -f /tmp/otelcol-checksums.txt /tmp/otelcol.sha256 "/tmp/${OTELCOL_TAR}"
 

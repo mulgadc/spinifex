@@ -72,9 +72,10 @@ jobs:
       BM_ISO_CACHE: /var/cache/spinifex-iso-builder
       BM_CELL: ${{ inputs.cell || '20' }}
       ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-${{ inputs.cell || '20' }}-${{ github.run_id }}
-      # Caller-supplied (workflow_call input); empty for a manual
-      # workflow_dispatch run, which bm-bootstrap.sh treats as "no attrs".
-      SPINIFEX_OTEL_ATTRS: ${{ inputs.otel-attrs }}
+      # Caller-supplied on workflow_call. A dispatch run has no such input, and
+      # leaving it empty cost this cell its ci.run_id: its telemetry reached the
+      # sink but could not be found by run, only by guessing a time window.
+      SPINIFEX_OTEL_ATTRS: ${{ inputs.otel-attrs || format('ci.run_id={0},ci.workflow={1},ci.cell={2},ci.matrix=baremetal/pxe/real-hw', github.run_id, github.workflow, inputs.cell || '20') }}
     steps:
       - name: Clean Workspace
         run: |

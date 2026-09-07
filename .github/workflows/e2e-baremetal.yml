@@ -163,13 +163,14 @@ jobs:
       # runner has and the PXE-booted node does not; bm-bootstrap.sh imports it.
       - name: Build eks-node AMI (libguestfs, runner)
         if: contains(inputs.suites, 'eks')
-        working-directory: spinifex
         run: |
           set -euo pipefail
           # direct backend = no libvirt. Set here rather than in the script:
           # it has to be in the environment the build itself runs in.
           export LIBGUESTFS_BACKEND=direct
-          "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ensure-libguestfs.sh"
+          # spinifex is the workspace root here, unlike the nightly where it is
+          # checked out into a subdirectory.
+          "${GITHUB_WORKSPACE}/.github/scripts/ensure-libguestfs.sh"
           make build-eks-node-image
 
       - name: Run Bare-Metal E2E
@@ -184,7 +185,7 @@ jobs:
           # Empty unless the eks build above ran, and bm-bootstrap.sh skips the
           # import when unset, so the other suites are unaffected.
           BM_EKS_IMAGE: ${{ contains(inputs.suites, 'eks') && '/tmp/eks-node-image-build/eks-node-alpine.raw' || '' }}
-          BM_EKS_MANIFEST: ${{ contains(inputs.suites, 'eks') && format('{0}/spinifex/scripts/images/eks-node/manifest.conf', github.workspace) || '' }}
+          BM_EKS_MANIFEST: ${{ contains(inputs.suites, 'eks') && format('{0}/scripts/images/eks-node/manifest.conf', github.workspace) || '' }}
         run: |
           mkdir -p "${ARTIFACT_DIR}"
           set -o pipefail

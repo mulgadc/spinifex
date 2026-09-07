@@ -472,25 +472,25 @@ func k3sServerJoinURL(ip string) string {
 // apiserver egress to the konnectivity-server UDS. v1beta1 is the schema
 // k3s/kube-apiserver accept for --egress-selector-config-file.
 func egressSelectorConfigYAML() string {
-	lines := []string{
+	// controlplane also carries the authentication token-webhook dial, which
+	// targets 127.0.0.1 on this node. Tunnelled, it reaches a random agent where
+	// nothing listens, and every bearer-token request fails closed with 401.
+	return strings.Join([]string{
 		"apiVersion: apiserver.k8s.io/v1beta1",
 		"kind: EgressSelectorConfiguration",
 		"egressSelections:",
-	}
-	// controlplane carries admission-webhook and aggregated-apiserver dials;
-	// cluster carries kubelet exec/logs/portforward. Both must ride the tunnel:
-	// an undefined selection falls back to a direct, unroutable dial from the CP.
-	for _, name := range []string{"controlplane", "cluster"} {
-		lines = append(lines,
-			"  - name: "+name,
-			"    connection:",
-			"      proxyProtocol: GRPC",
-			"      transport:",
-			"        uds:",
-			"          udsName: "+konnectivityUDSPath,
-		)
-	}
-	return strings.Join(lines, "\n")
+		"  - name: controlplane",
+		"    connection:",
+		"      proxyProtocol: Direct",
+		// cluster carries kubelet exec/logs/portforward, which must ride the
+		// tunnel: a direct dial to a node's kubelet is unroutable from the CP.
+		"  - name: cluster",
+		"    connection:",
+		"      proxyProtocol: GRPC",
+		"      transport:",
+		"        uds:",
+		"          udsName: " + konnectivityUDSPath,
+	}, "\n")
 }
 
 // dedupeNonEmpty returns the input with empty strings dropped and duplicates

@@ -427,6 +427,7 @@ func buildProviderVBConfig(cfg *Config, volumeID string, volumeSizeBytes uint64,
 		MasterKey:         cfg.masterKey,
 		EncryptionEnabled: cfg.masterKey != nil,
 		GCEnabled:         cfg.GCEnabled,
+		WALBaseDir:        cfg.WALBaseDir,
 	}
 	if sourceSnapshotID != "" {
 		vbconfig.SnapshotID = sourceSnapshotID
@@ -1457,6 +1458,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		CacheSize:         nbdCacheSize,
 		ShardWAL:          cfg.ShardWAL,
 		GCEnabled:         cfg.GCEnabled,
+		WALBaseDir:        cfg.WALBaseDir,
 		EncryptionKeyFile: cfg.EncryptionKeyFile,
 		ReadOnly:          readOnly,
 		Threads:           cfg.Threads,

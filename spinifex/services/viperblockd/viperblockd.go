@@ -163,6 +163,11 @@ type Config struct {
 	// Default false, matching ShardWAL.
 	GCEnabled bool
 
+	// WALBaseDir puts every volume's WAL under this directory instead of
+	// BaseDir, so a WAL fsync is not queued behind the node's other IO.
+	// Empty keeps the WAL under BaseDir.
+	WALBaseDir string
+
 	// EncryptionKeyFile is the path to the shared AES-256 master key for at-rest
 	// encryption. Empty → cleartext mode (legacy).
 	EncryptionKeyFile string
@@ -372,6 +377,7 @@ func volumeVBConfig(cfg *Config, volumeName string) (viperblock.VB, s3.S3Config)
 		VolumeName:        volumeName,
 		VolumeSize:        1, // Recalculated on LoadState.
 		BaseDir:           cfg.BaseDir,
+		WALBaseDir:        cfg.WALBaseDir,
 		VolumeConfig:      viperblock.VolumeConfig{},
 		MasterKey:         cfg.masterKey,
 		EncryptionEnabled: cfg.masterKey != nil,

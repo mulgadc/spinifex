@@ -534,12 +534,34 @@ func (r *ClusterReconciler) terminalErr() error {
 // report would be the old tick again under another name.
 func (r *ClusterReconciler) storeReport(report *ServerStateReport) {
 	prev := r.latest.Swap(report)
+	r.logFsyncTransition(prev, report)
 	if prev != nil && sameHealth(prev, report) {
 		return
 	}
 	select {
 	case r.wake <- struct{}{}:
 	default:
+	}
+}
+
+// logFsyncTransition reports the control plane's datastore crossing the slow
+// threshold, and recovering from it. Deliberately NOT part of observe(): a slow
+// fsync is a reason the apiserver may be about to struggle, not evidence it has,
+// and gating cluster health on it would fail working clusters on a slow disk.
+//
+// Latched on the transition rather than logged per report, because the control
+// plane publishes on its own timer and a line every interval is how a real
+// signal gets tuned out.
+func (r *ClusterReconciler) logFsyncTransition(prev, report *ServerStateReport) {
+	if report.SlowFsync() && (prev == nil || !prev.SlowFsync()) {
+		slog.Warn("ClusterReconciler: etcd fsync is slow on the control plane",
+			"cluster", r.clusterName, "fsync_ms", *report.FsyncMs, "threshold_ms", slowFsyncMs,
+			"healthz", report.Healthz)
+		return
+	}
+	if prev != nil && prev.SlowFsync() && !report.SlowFsync() && report.FsyncMs != nil {
+		slog.Info("ClusterReconciler: etcd fsync recovered on the control plane",
+			"cluster", r.clusterName, "fsync_ms", *report.FsyncMs, "threshold_ms", slowFsyncMs)
 	}
 }
 

@@ -76,27 +76,39 @@ diagnose() {
     [ -n "${load}" ] || load=unknown
     [ -n "${memavail_kb}" ] || memavail_kb=unknown
 
-    # disk:ok is free space, which says nothing about how long a write takes.
-    # etcd stalls on fsync latency long before it runs out of room, and this
-    # guest's disk is an EBS volume served by viperblock, so a fsync here is a
-    # network round trip. Mean rather than a percentile: the histogram's _sum
-    # and _count are two greps, where a bucket percentile is an interpolation
-    # this script has no business doing. Healthy is single-digit milliseconds.
-    fsync_ms=unknown
+    printf 'readyz:[%s]; etcd:%s; disk:%s; fsync:%sms; load:%s; memavail:%sk' \
+        "${failed}" "${etcd}" "${disk}" "$(etcd_fsync_ms)" "${load}" "${memavail_kb}"
+}
+
+# etcd_fsync_ms prints the mean WAL fsync in milliseconds, or "unknown".
+#
+# disk:ok in diagnose() is free space, which says nothing about how long a write
+# takes. etcd stalls on fsync latency long before it runs out of room, and this
+# guest's disk is an EBS volume served by viperblock, so a fsync here is a
+# network round trip. Healthy is single-digit milliseconds.
+#
+# Mean rather than a percentile: the histogram's _sum and _count are two greps,
+# where a bucket percentile is an interpolation this script has no business
+# doing, and a stall shows as an order of magnitude rather than a tail.
+etcd_fsync_ms() {
     # `|| metrics=` is load-bearing under set -e: a scrape against a port
     # nothing answers exits non-zero, and a bare assignment would abort the
-    # whole diagnosis — dropping the reason field exactly when it is needed.
+    # caller — dropping the diagnosis exactly when it is wanted.
     metrics=$(curl -fsS --max-time 2 "${ETCD_METRICS_URL:-http://127.0.0.1:2381/metrics}" 2>/dev/null) || metrics=
-    if [ -n "${metrics}" ]; then
-        fsync_ms=$(printf '%s\n' "${metrics}" | awk '
-            /^etcd_disk_wal_fsync_duration_seconds_sum/ {sum=$2}
-            /^etcd_disk_wal_fsync_duration_seconds_count/ {count=$2}
-            END {if (count > 0) printf "%.1f", (sum / count) * 1000}')
-        [ -n "${fsync_ms}" ] || fsync_ms=unknown
+    if [ -z "${metrics}" ]; then
+        echo unknown
+        return
     fi
-
-    printf 'readyz:[%s]; etcd:%s; disk:%s; fsync:%sms; load:%s; memavail:%sk' \
-        "${failed}" "${etcd}" "${disk}" "${fsync_ms}" "${load}" "${memavail_kb}"
+    # A minimum sample count, not just a non-zero one. A mean over the handful
+    # of fsyncs a just-started etcd has done is a number with no meaning, and
+    # reporting it invites the same mistake as judging a throughput floor on a
+    # 297-byte object.
+    fsync=$(printf '%s\n' "${metrics}" | awk -v min="${FSYNC_MIN_COUNT:-100}" '
+        /^etcd_disk_wal_fsync_duration_seconds_sum/ {sum=$2}
+        /^etcd_disk_wal_fsync_duration_seconds_count/ {count=$2}
+        END {if (count >= min) printf "%.1f", (sum / count) * 1000}')
+    [ -n "${fsync}" ] || fsync=unknown
+    echo "${fsync}"
 }
 
 publish_report() {
@@ -133,12 +145,22 @@ publish_report() {
             echo "=== end mulga-eks CP diag ==="
         } > "${CONSOLE:-/dev/console}" 2>&1 || true
     fi
+    # fsync goes out on every report, healthy or not. A figure that only appears
+    # once the control plane is already failing has no baseline to be read
+    # against, which is the same gap a passing cell that uploads no journal
+    # leaves. Emitted as a bare JSON number, or omitted entirely when unknown so
+    # a missing sample is never mistaken for a fast one.
+    fsync_field=
+    fsync_ms=$(etcd_fsync_ms)
+    if [ "${fsync_ms}" != "unknown" ]; then
+        fsync_field=$(printf '"fsync_ms":%s,' "${fsync_ms}")
+    fi
     if [ -n "${reason}" ]; then
-        payload=$(printf '{"healthz":"%s","node_count":%s,"nodegroup_ready":%s,"reason":"%s","ts":%s}' \
-            "${health}" "${node_count}" "${nodegroup_ready}" "${reason}" "$(date +%s)")
+        payload=$(printf '{"healthz":"%s","node_count":%s,"nodegroup_ready":%s,%s"reason":"%s","ts":%s}' \
+            "${health}" "${node_count}" "${nodegroup_ready}" "${fsync_field}" "${reason}" "$(date +%s)")
     else
-        payload=$(printf '{"healthz":"%s","node_count":%s,"nodegroup_ready":%s,"ts":%s}' \
-            "${health}" "${node_count}" "${nodegroup_ready}" "$(date +%s)")
+        payload=$(printf '{"healthz":"%s","node_count":%s,"nodegroup_ready":%s,%s"ts":%s}' \
+            "${health}" "${node_count}" "${nodegroup_ready}" "${fsync_field}" "$(date +%s)")
     fi
     printf '%s' "${payload}" | eks-gateway-publish -channel state 2>&1 \
         | logger -t mulga-eks-state-report

@@ -32,6 +32,25 @@ type ServerStateReport struct {
 	// be gated on its OWN workers rather than the cluster-wide total. Nil from an
 	// older AMI that predates per-nodegroup reporting.
 	NodegroupReady map[string]int `json:"nodegroup_ready,omitempty"`
+	// FsyncMs is the guest's mean etcd WAL fsync in milliseconds, reported on
+	// every state report rather than only unhealthy ones so a stalled control
+	// plane has a healthy baseline to be read against. Nil when the guest had
+	// too few fsyncs to average, when etcd served no metrics, or from an older
+	// AMI that predates the field — none of which is the same as "fast".
+	FsyncMs *float64 `json:"fsync_ms,omitempty"`
+}
+
+// slowFsyncMs is the mean WAL fsync above which the control plane's disk is
+// reported as the suspect regardless of whether the apiserver still answers.
+// etcd's own guidance puts a healthy p99 in single-digit milliseconds; a *mean*
+// this high means the datastore is being served slowly enough that an apiserver
+// timeout is a consequence rather than a cause.
+const slowFsyncMs = 25.0
+
+// SlowFsync reports whether the guest's mean etcd fsync is high enough to
+// explain control-plane trouble on its own. False when no sample was taken.
+func (s ServerStateReport) SlowFsync() bool {
+	return s.FsyncMs != nil && *s.FsyncMs >= slowFsyncMs
 }
 
 // Healthy reports whether the apiserver was serving at publish time.

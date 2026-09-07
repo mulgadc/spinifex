@@ -178,8 +178,38 @@ export ETCD_METRICS_BODY
 run_agent
 P=$(cat "${WORK}/payload.json")
 case "${P}" in *'fsync:unknownms'*) pass "fsync: zero count reads unknown, not a division error" ;; *) fail "fsync: zero-count wrong: ${P}" ;; esac
+
+# --- Case 8: too few fsyncs to mean anything -> unknown, not a fast reading ---
+# 3 fsyncs on a just-started etcd averages to a number with no meaning. Same
+# mistake as judging a throughput floor on a 297-byte object.
+ETCD_METRICS_BODY=$(printf 'etcd_disk_wal_fsync_duration_seconds_sum 0.012\netcd_disk_wal_fsync_duration_seconds_count 3\n')
+export ETCD_METRICS_BODY
+run_agent
+P=$(cat "${WORK}/payload.json")
+case "${P}" in *'fsync:unknownms'*) pass "fsync: a sample below the minimum count reads unknown" ;; *) fail "fsync: min-count wrong: ${P}" ;; esac
+
+# --- Case 9: fsync is published on a HEALTHY report, not only a failing one ---
+# A figure that appears only once the CP is already failing has no baseline to
+# be read against.
+HEALTHZ_BODY=ok
+NODES_BODY=$(printf 'ip-1 Ready <none> 1d v1.32.5\n')
+NODES_LABELED_BODY=$(printf 'ip-1 Ready <none> 1d v1.32.5 ng-a\n')
+ETCD_METRICS_BODY=$(printf 'etcd_disk_wal_fsync_duration_seconds_sum 4.2\netcd_disk_wal_fsync_duration_seconds_count 700\n')
+export HEALTHZ_BODY NODES_BODY NODES_LABELED_BODY ETCD_METRICS_BODY
+run_agent
+P=$(cat "${WORK}/payload.json")
+case "${P}" in *'"healthz":"ok"'*) pass "healthy-fsync: report is healthy" ;; *) fail "healthy-fsync: not healthy: ${P}" ;; esac
+case "${P}" in *'"fsync_ms":6.0'*) pass "healthy-fsync: fsync published on a healthy report" ;; *) fail "healthy-fsync: fsync missing: ${P}" ;; esac
+case "${P}" in *'"reason"'*) fail "healthy-fsync: healthy report must carry no reason: ${P}" ;; *) pass "healthy-fsync: no reason on a healthy report" ;; esac
+
+# --- Case 10: an unknown fsync is omitted, never emitted as a fast number ---
 ETCD_METRICS_BODY=
 export ETCD_METRICS_BODY
+run_agent
+P=$(cat "${WORK}/payload.json")
+case "${P}" in *'"fsync_ms"'*) fail "omitted: unknown fsync must not appear in the payload: ${P}" ;; *) pass "omitted: unknown fsync is absent, not reported as fast" ;; esac
+# The payload must still be valid JSON with the field gone.
+case "${P}" in *'"nodegroup_ready":{"ng-a":1},"ts":'*) pass "omitted: payload stays well-formed without the field" ;; *) fail "omitted: payload malformed: ${P}" ;; esac
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all mulga-eks-state-report cases"

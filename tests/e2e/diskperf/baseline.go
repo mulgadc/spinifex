@@ -43,6 +43,7 @@ type BaselineJob struct {
 	WriteIOPS   float64 `json:"write_iops"`
 	ReadP999Ms  float64 `json:"read_p99_9_ms"`
 	WriteP999Ms float64 `json:"write_p99_9_ms"`
+	SyncP999Ms  float64 `json:"fdatasync_p99_9_ms"`
 }
 
 func loadBaseline() (Baseline, error) {
@@ -125,6 +126,9 @@ func metricsFor(job jobSpec, agg fioJob, base BaselineJob) []metric {
 			metric{Name: "read_iops", Got: agg.Read.IOPS, Want: base.ReadIOPS, HigherIsBetter: true},
 			metric{Name: "read_p99_9_ms", Got: agg.Read.p999Ms(), Want: base.ReadP999Ms},
 		)
+	}
+	if agg.Sync.TotalIOs > 0 {
+		ms = append(ms, metric{Name: "fdatasync_p99_9_ms", Got: agg.Sync.p999Ms(), Want: base.SyncP999Ms})
 	}
 	return ms
 }

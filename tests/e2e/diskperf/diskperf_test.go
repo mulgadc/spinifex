@@ -85,8 +85,7 @@ func runJob(t *testing.T, fix *Fixture, job jobSpec, base BaselineJob, instanceI
 	var results []runResult
 	var probes []probeReport
 	for rep := 1; rep <= reps; rep++ {
-		harness.Step(t, "rep %d/%d: %d jobs x %d GiB %s %s at qd%d on a fresh %d GiB volume",
-			rep, reps, job.NumJobs, job.SizeGiB, job.BlockSize, job.RW, job.IODepth, sizeGiB)
+		harness.Step(t, "rep %d/%d: %s on a fresh %d GiB volume", rep, reps, job.shape(), sizeGiB)
 
 		volID := createVolume(t, fix, az, sizeGiB)
 		before := harness.GuestDiskSet(t, tgt)
@@ -206,6 +205,10 @@ func aggregate(t *testing.T, job jobSpec, base BaselineJob, results []runResult,
 		"write_p99_9":  agg.Write.p999Ms(),
 		"read_max_ms":  agg.Read.maxMs(),
 		"write_max_ms": agg.Write.maxMs(),
+		// Zero for the throughput profiles, which issue no fdatasync.
+		"fdatasync_ios":    agg.Sync.TotalIOs,
+		"fdatasync_p99_9":  agg.Sync.p999Ms(),
+		"fdatasync_max_ms": agg.Sync.maxMs(),
 		// The availability evidence belongs in the same record as the numbers.
 		// A throughput figure taken from a run that left the host unreachable
 		// is not a throughput figure worth keeping.
@@ -252,12 +255,15 @@ func medianAggregate(results []runResult) fioJob {
 	out.Write.Clat.Percentile = map[string]int64{p999Key: int64(pick(func(j fioJob) float64 { return float64(j.Write.Clat.Percentile[p999Key]) }))}
 	out.Read.Clat.Max = int64(pick(func(j fioJob) float64 { return float64(j.Read.Clat.Max) }))
 	out.Write.Clat.Max = int64(pick(func(j fioJob) float64 { return float64(j.Write.Clat.Max) }))
+	out.Sync.Lat.Percentile = map[string]int64{p999Key: int64(pick(func(j fioJob) float64 { return float64(j.Sync.Lat.Percentile[p999Key]) }))}
+	out.Sync.Lat.Max = int64(pick(func(j fioJob) float64 { return float64(j.Sync.Lat.Max) }))
 
 	// Carry the byte counts so metricsFor can still tell which streams the job
 	// actually exercised.
 	for _, r := range results {
 		out.Read.IOBytes += r.Aggregate.Read.IOBytes
 		out.Write.IOBytes += r.Aggregate.Write.IOBytes
+		out.Sync.TotalIOs += r.Aggregate.Sync.TotalIOs
 	}
 	return out
 }

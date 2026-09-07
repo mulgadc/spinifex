@@ -76,8 +76,27 @@ diagnose() {
     [ -n "${load}" ] || load=unknown
     [ -n "${memavail_kb}" ] || memavail_kb=unknown
 
-    printf 'readyz:[%s]; etcd:%s; disk:%s; load:%s; memavail:%sk' \
-        "${failed}" "${etcd}" "${disk}" "${load}" "${memavail_kb}"
+    # disk:ok is free space, which says nothing about how long a write takes.
+    # etcd stalls on fsync latency long before it runs out of room, and this
+    # guest's disk is an EBS volume served by viperblock, so a fsync here is a
+    # network round trip. Mean rather than a percentile: the histogram's _sum
+    # and _count are two greps, where a bucket percentile is an interpolation
+    # this script has no business doing. Healthy is single-digit milliseconds.
+    fsync_ms=unknown
+    # `|| metrics=` is load-bearing under set -e: a scrape against a port
+    # nothing answers exits non-zero, and a bare assignment would abort the
+    # whole diagnosis — dropping the reason field exactly when it is needed.
+    metrics=$(curl -fsS --max-time 2 "${ETCD_METRICS_URL:-http://127.0.0.1:2381/metrics}" 2>/dev/null) || metrics=
+    if [ -n "${metrics}" ]; then
+        fsync_ms=$(printf '%s\n' "${metrics}" | awk '
+            /^etcd_disk_wal_fsync_duration_seconds_sum/ {sum=$2}
+            /^etcd_disk_wal_fsync_duration_seconds_count/ {count=$2}
+            END {if (count > 0) printf "%.1f", (sum / count) * 1000}')
+        [ -n "${fsync_ms}" ] || fsync_ms=unknown
+    fi
+
+    printf 'readyz:[%s]; etcd:%s; disk:%s; fsync:%sms; load:%s; memavail:%sk' \
+        "${failed}" "${etcd}" "${disk}" "${fsync_ms}" "${load}" "${memavail_kb}"
 }
 
 publish_report() {

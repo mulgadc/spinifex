@@ -49,6 +49,15 @@ cat > "${STUBBIN}/logger" <<'EOF'
 :
 EOF
 
+# curl stub: serves the etcd /metrics scrape. Empty ETCD_METRICS_BODY exits
+# non-zero like a real -fsS against a port nothing is listening on, which is the
+# case the fsync field has to survive.
+cat > "${STUBBIN}/curl" <<'EOF'
+#!/bin/sh
+[ -n "${ETCD_METRICS_BODY:-}" ] || exit 7
+printf '%s\n' "${ETCD_METRICS_BODY}"
+EOF
+
 chmod +x "${STUBBIN}"/*
 PATH="${STUBBIN}:${PATH}"
 export PATH
@@ -113,7 +122,7 @@ run_agent
 P=$(cat "${WORK}/payload.json")
 case "${P}" in *'"healthz":"fail"'*) pass "unhealthy: healthz fail" ;; *) fail "unhealthy: healthz wrong: ${P}" ;; esac
 case "${P}" in *'"nodegroup_ready":{}'*) pass "unhealthy: nodegroup_ready empty (no kubectl node query on a failing apiserver)" ;; *) fail "unhealthy: nodegroup_ready wrong: ${P}" ;; esac
-case "${P}" in *'"reason":"readyz:[etcd poststarthook/start-service-ip-repair-controllers]; etcd:unreachable; disk:ok; load:7.25; memavail:262144k"'*) pass "unhealthy: reason names failing subchecks + etcd + disk + pressure" ;; *) fail "unhealthy: reason wrong: ${P}" ;; esac
+case "${P}" in *'"reason":"readyz:[etcd poststarthook/start-service-ip-repair-controllers]; etcd:unreachable; disk:ok; fsync:unknownms; load:7.25; memavail:262144k"'*) pass "unhealthy: reason names failing subchecks + etcd + disk + fsync + pressure" ;; *) fail "unhealthy: reason wrong: ${P}" ;; esac
 case "${P}" in *'"reason":"'*'"'*'"'*) : ;; esac
 C=$(cat "${WORK}/console.out")
 case "${C}" in *'mulga-eks CP unhealthy'*) pass "unhealthy: console banner emitted" ;; *) fail "unhealthy: console banner missing: ${C}" ;; esac
@@ -141,6 +150,36 @@ run_agent
 P=$(cat "${WORK}/payload.json")
 case "${P}" in *'readyz:[unreachable]'*) pass "wedged: empty readyz reads unreachable, not none" ;; *) fail "wedged: reason wrong: ${P}" ;; esac
 case "${P}" in *'load:7.25; memavail:262144k'*) pass "wedged: pressure captured alongside" ;; *) fail "wedged: pressure missing: ${P}" ;; esac
+
+# --- Case 5: etcd serves its metrics -> fsync mean reported in ms ---
+# The case the field exists for: memory and free space both fine, so a slow
+# fsync is the only remaining reading. 4.2s over 700 fsyncs is 6.0ms.
+HEALTHZ_BODY=fail
+READYZ_BODY=
+ETCD_BODY=error
+DF_AVAIL_KB=9000000
+ETCD_METRICS_BODY=$(printf 'etcd_disk_wal_fsync_duration_seconds_sum 4.2\netcd_disk_wal_fsync_duration_seconds_count 700\n')
+export HEALTHZ_BODY READYZ_BODY ETCD_BODY DF_AVAIL_KB ETCD_METRICS_BODY
+run_agent
+P=$(cat "${WORK}/payload.json")
+case "${P}" in *'fsync:6.0ms'*) pass "fsync: mean derived from histogram sum/count" ;; *) fail "fsync: wrong: ${P}" ;; esac
+
+# --- Case 6: a stalled disk is legible against the healthy case above ---
+# 63s over 700 fsyncs is 90ms — fifteen times case 5 on the same shape of input.
+ETCD_METRICS_BODY=$(printf 'etcd_disk_wal_fsync_duration_seconds_sum 63\netcd_disk_wal_fsync_duration_seconds_count 700\n')
+export ETCD_METRICS_BODY
+run_agent
+P=$(cat "${WORK}/payload.json")
+case "${P}" in *'fsync:90.0ms'*) pass "fsync: a stalled disk reads far above a healthy one" ;; *) fail "fsync: stall wrong: ${P}" ;; esac
+
+# --- Case 7: no fsyncs recorded yet -> unknown, never a divide by zero ---
+ETCD_METRICS_BODY=$(printf 'etcd_disk_wal_fsync_duration_seconds_sum 0\netcd_disk_wal_fsync_duration_seconds_count 0\n')
+export ETCD_METRICS_BODY
+run_agent
+P=$(cat "${WORK}/payload.json")
+case "${P}" in *'fsync:unknownms'*) pass "fsync: zero count reads unknown, not a division error" ;; *) fail "fsync: zero-count wrong: ${P}" ;; esac
+ETCD_METRICS_BODY=
+export ETCD_METRICS_BODY
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all mulga-eks-state-report cases"

@@ -1,0 +1,121 @@
+# Control-plane telemetry for the EKS server guest.
+#
+# k3s already serves embedded-etcd metrics on 127.0.0.1:2381 — the daemon sets
+# etcd-expose-metrics in the k3s config it writes as cloud-init user-data. Until
+# this collector existed nothing read them, so an etcd stall was only ever
+# visible as "etcd:unreachable" in the state report, which cannot separate a
+# slow disk from a dead one. etcd_disk_wal_fsync_duration_seconds is the metric
+# that does.
+#
+# The endpoint comes from /etc/spinifex-eks/otelcol.env, written when the guest
+# is told where the sink is. The unit will not start without that file, so an
+# image with no sink configured runs no collector rather than a failing one.
+
+receivers:
+  # Embedded etcd. Its fsync and commit histograms are the whole point of this
+  # file; the rest of the k3s metrics come along at no extra scrape cost.
+  prometheus/etcd:
+    config:
+      scrape_configs:
+        - job_name: etcd
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["127.0.0.1:2381"]
+
+  # Guest-side pressure. The state report already carries loadavg and
+  # MemAvailable as scalars, which is enough to rule starvation in or out at one
+  # instant and useless for seeing it build.
+  hostmetrics:
+    collection_interval: 15s
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.utilization:
+            enabled: true
+          system.cpu.logical.count:
+            enabled: true
+      load:
+      memory:
+        metrics:
+          system.memory.utilization:
+            enabled: true
+      disk:
+      filesystem:
+        exclude_mount_points:
+          match_type: regexp
+          mount_points:
+            - "/proc/*"
+            - "/sys/*"
+            - "/run/*"
+            - "/var/lib/kubelet/*"
+        exclude_fs_types:
+          match_type: strict
+          fs_types:
+            - tmpfs
+            - devtmpfs
+            - overlay
+            - squashfs
+            - proc
+            - sysfs
+            - cgroup
+            - cgroup2
+      network:
+      paging:
+
+processors:
+  resourcedetection/system:
+    detectors: ["system"]
+    system:
+      hostname_sources: ["os"]
+
+  # apm-server routes non-APM-agent OTLP metrics into
+  # metrics-apm.app.<service.name>-default, so an unset service.name puts etcd
+  # and host metrics in the shared "unknown" bucket with everything else.
+  resource/etcd:
+    attributes:
+      - key: service.name
+        value: "eks-etcd"
+        action: upsert
+      - key: eks.cluster
+        value: "${env:EKS_CLUSTER_NAME}"
+        action: upsert
+
+  resource/system:
+    attributes:
+      - key: service.name
+        value: "eks-control-plane"
+        action: upsert
+      - key: eks.cluster
+        value: "${env:EKS_CLUSTER_NAME}"
+        action: upsert
+
+  # Sheds data under memory pressure rather than queueing without bound when the
+  # sink is unreachable. Must be FIRST in every pipeline: it only applies
+  # backpressure to not-yet-processed data. Budgeted well under the unit's
+  # MemoryMax so it fires before the kernel does — this guest is 4 GB and the
+  # control plane is what matters on it.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 64
+    spike_limit_mib: 16
+
+  batch:
+    send_batch_size: 1024
+    timeout: 2s
+
+exporters:
+  otlp:
+    endpoint: "${env:EKS_OTLP_ENDPOINT}"
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics/etcd:
+      receivers: [prometheus/etcd]
+      processors: [memory_limiter, resourcedetection/system, resource/etcd, batch]
+      exporters: [otlp]
+    metrics:
+      receivers: [hostmetrics]
+      processors: [memory_limiter, resourcedetection/system, resource/system, batch]
+      exporters: [otlp]

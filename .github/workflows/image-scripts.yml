@@ -37,3 +37,39 @@ jobs:
 
       - name: Run image script tests + shellcheck
         run: make test-images
+
+  # The mkosi EKS image is what customers run, and until now nothing built it:
+  # the composition existed in mkosi-build.sh but had no caller, so a change
+  # that broke it was only found by hand. Cell-25 still boots the Alpine image,
+  # so this is the only gate the Ubuntu one has.
+  #
+  # Self-hosted because the build needs Docker and several GB of disk, matching
+  # publish-system-ami.yml. Its own concurrency group, not e2e-hypervisors: the
+  # build provisions no libvirt guest, and sharing that group would queue image
+  # builds behind whole nightlies.
+  eks_mkosi_image:
+    name: Build mkosi EKS image
+    runs-on: [self-hosted, ci-single]
+    concurrency:
+      group: eks-mkosi-image-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      # The profile binaries (eks-token-webhook, eks-gateway-publish, ...) are
+      # built on the host, not in the builder container, so Go is needed here
+      # even though the toolchain image carries mkosi itself.
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: "go.mod"
+          # Self-hosted: the module + build cache already persists on local
+          # disk, and cache-save would re-upload hundreds of MB for nothing.
+          cache: false
+
+      # stage_profile_binaries() sets GOWORK=off, so the sub-repo resolves its
+      # own go.mod and the sibling monorepo checkouts are not needed here.
+      - name: Build the image
+        run: make build-eks-node-mkosi-image

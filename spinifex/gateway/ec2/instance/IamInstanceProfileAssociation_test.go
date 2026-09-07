@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
@@ -31,14 +32,13 @@ const (
 	testProfileIDOther   = "AIPAEXAMPLE0000000002"
 )
 
-// fakeIAMService embeds the IAMService interface so it satisfies the contract
-// without hand-writing every method. The EC2 IAM-profile gateway code only
-// touches ResolveInstanceProfile; any other method nil-panics, surfacing an
-// unexpected call rather than masking it with a zero value.
+// fakeIAMService implements profile and canonical role lookups.
+// Other methods nil-panic to surface unexpected calls.
 type fakeIAMService struct {
 	handlers_iam.IAMService
 
-	resolveFn func(accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error)
+	resolveFn   func(accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error)
+	canonicalFn func(accountID string, kind arn.IAMResourceType, name string) (string, error)
 }
 
 func (f *fakeIAMService) ResolveInstanceProfile(accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
@@ -46,6 +46,16 @@ func (f *fakeIAMService) ResolveInstanceProfile(accountID, nameOrARN string) (*h
 		return f.resolveFn(accountID, nameOrARN)
 	}
 	return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+}
+
+func (f *fakeIAMService) CanonicalResourceARN(accountID string, kind arn.IAMResourceType, name string) (string, error) {
+	if f.canonicalFn != nil {
+		return f.canonicalFn(accountID, kind, name)
+	}
+	if accountID == testGwAccountID && kind == arn.IAMRole && name == "app-role" {
+		return testRoleARNApp, nil
+	}
+	return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
 }
 
 var _ handlers_iam.IAMService = (*fakeIAMService)(nil)
@@ -681,4 +691,59 @@ func TestAssociationIDFormat(t *testing.T) {
 		"GenerateResourceID must preserve the AWS-style hyphen between prefix and suffix")
 	suffix := strings.TrimPrefix(id, "iip-assoc-")
 	assert.NotEmpty(t, suffix, "association ID must carry a non-empty random suffix")
+}
+
+func TestResolveAndAuthorizeProfile_CanonicalRoleARN(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"/", "/team/", "/team/services/"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			storedARN := "arn:aws:iam::111122223333:role" + path + "app-role"
+			svc := &fakeIAMService{
+				resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+					return profileWithRole(), nil
+				},
+				canonicalFn: func(accountID string, kind arn.IAMResourceType, name string) (string, error) {
+					require.Equal(t, testGwAccountID, accountID)
+					require.Equal(t, arn.IAMRole, kind)
+					require.Equal(t, "app-role", name)
+					return storedARN, nil
+				},
+			}
+			var checkedARN string
+			_, err := resolveAndAuthorizeProfile(
+				&ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
+				svc, testGwAccountID, func(roleARN string) error {
+					checkedARN = roleARN
+					return nil
+				})
+			require.NoError(t, err)
+			require.Equal(t, storedARN, checkedARN)
+		})
+	}
+}
+
+func TestResolveAndAuthorizeProfile_CanonicalLookupError(t *testing.T) {
+	t.Parallel()
+	for _, lookupErr := range []error{errors.New(awserrors.ErrorIAMNoSuchEntity), nats.ErrTimeout} {
+		t.Run(lookupErr.Error(), func(t *testing.T) {
+			t.Parallel()
+			svc := &fakeIAMService{
+				resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+					return profileWithRole(), nil
+				},
+				canonicalFn: func(string, arn.IAMResourceType, string) (string, error) {
+					return "", lookupErr
+				},
+			}
+			profile, err := resolveAndAuthorizeProfile(
+				&ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
+				svc, testGwAccountID, func(string) error {
+					t.Fatal("PassRole must not run when the role lookup fails")
+					return nil
+				})
+			require.ErrorIs(t, err, lookupErr)
+			require.Nil(t, profile)
+		})
+	}
 }

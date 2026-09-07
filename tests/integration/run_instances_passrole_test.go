@@ -33,27 +33,30 @@ func prPolicyWithPassRole(targetRoleARN string) string {
 	]}`, targetRoleARN)
 }
 
-// TestRunInstances_DeniedWithoutPassRole proves RunInstances enforces
-// iam:PassRole (resolveAndAuthorizeInstanceProfile ->
-// resolveAndAuthorizeProfile in gateway/ec2/instance/RunInstances.go /
-// IamInstanceProfileAssociation.go) against the role inside a supplied
-// instance profile: a caller granted ec2:RunInstances but not iam:PassRole on
-// the target role is denied, and the identical session is allowed once the
-// role grants that specific PassRole. Isolating PassRole as the sole variable
-// (ec2:RunInstances is granted throughout) proves the denial is genuinely
-// gated on the missing PassRole grant rather than some other authz gap.
+// TestRunInstances_DeniedWithoutPassRole exercises stored role paths with real IAM
+// policy evaluation: missing grants and explicit denies reject the request,
+// while an allow naming the stored role ARN permits dispatch.
 func TestRunInstances_DeniedWithoutPassRole(t *testing.T) {
+	for _, path := range []string{"/", "/team/", "/team/services/"} {
+		t.Run(path, func(t *testing.T) {
+			testInstanceProfilePassRole(t, path)
+		})
+	}
+}
+
+func testInstanceProfilePassRole(t *testing.T, path string) {
+	t.Helper()
 	gw := StartGateway(t)
 	iamCli := gw.IAMClient(t)
 
-	targetRoleARN := iamRoleARN(gw.AccountID, prTargetRole)
-
 	// The role backing the instance profile the caller wants to attach.
-	_, err := iamCli.CreateRole(&iam.CreateRoleInput{
+	targetRole, err := iamCli.CreateRole(&iam.CreateRoleInput{
 		RoleName:                 aws.String(prTargetRole),
+		Path:                     aws.String(path),
 		AssumeRolePolicyDocument: aws.String(iamTrustPolicyEC2Standard),
 	})
 	require.NoError(t, err, "create-role (target)")
+	targetRoleARN := aws.StringValue(targetRole.Role.Arn)
 
 	_, err = iamCli.CreateInstanceProfile(&iam.CreateInstanceProfileInput{
 		InstanceProfileName: aws.String(prTargetProfile),
@@ -112,6 +115,33 @@ func TestRunInstances_DeniedWithoutPassRole(t *testing.T) {
 	// is needed for this call to resolve promptly.
 	_, err = sessionCli.EC2.RunInstances(runInput)
 	requireAWSErrorCode(t, err, "AccessDenied")
+
+	// An explicit path-scoped deny must override an otherwise unrestricted grant.
+	denyPolicy, err := iamCli.CreatePolicy(&iam.CreatePolicyInput{
+		PolicyName: aws.String("pr-deny-path"),
+		PolicyDocument: aws.String(fmt.Sprintf(`{"Version":"2012-10-17","Statement":[
+			{"Effect":"Allow","Action":"*","Resource":"*"},
+			{"Effect":"Deny","Action":"iam:PassRole","Resource":"arn:aws:iam::%s:role%s*"}
+		]}`, gw.AccountID, path)),
+	})
+	require.NoError(t, err)
+	_, err = iamCli.AttachRolePolicy(&iam.AttachRolePolicyInput{
+		RoleName:  callerRoleOut.Role.RoleName,
+		PolicyArn: denyPolicy.Policy.Arn,
+	})
+	require.NoError(t, err)
+	_, err = sessionCli.EC2.RunInstances(runInput)
+	requireAWSErrorCode(t, err, "AccessDenied")
+	_, err = sessionCli.EC2.AssociateIamInstanceProfile(&ec2.AssociateIamInstanceProfileInput{
+		InstanceId:         aws.String("i-0123456789abcdef0"),
+		IamInstanceProfile: runInput.IamInstanceProfile,
+	})
+	requireAWSErrorCode(t, err, "AccessDenied")
+	_, err = iamCli.DetachRolePolicy(&iam.DetachRolePolicyInput{
+		RoleName:  callerRoleOut.Role.RoleName,
+		PolicyArn: denyPolicy.Policy.Arn,
+	})
+	require.NoError(t, err)
 
 	// Grant iam:PassRole scoped to the exact target role ARN; the identical
 	// session must now be allowed through to a real launch.

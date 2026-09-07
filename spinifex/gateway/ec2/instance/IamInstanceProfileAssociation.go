@@ -41,7 +41,10 @@ func resolveAndAuthorizeProfile(spec *ec2.IamInstanceProfileSpecification, iamSv
 		return nil, err
 	}
 	if profile.RoleName != "" && passRoleCheck != nil {
-		roleARN := arn.FormatIAMPath(arn.IAMRole, profile.AccountID, "/", profile.RoleName)
+		roleARN, err := iamSvc.CanonicalResourceARN(profile.AccountID, arn.IAMRole, profile.RoleName)
+		if err != nil {
+			return nil, err
+		}
 		if err := passRoleCheck(roleARN); err != nil {
 			return nil, err
 		}

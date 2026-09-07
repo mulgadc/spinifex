@@ -1,3 +1,7 @@
+//test:in-package: drives the package's shared daemon fixtures and reads
+// unexported state (vmMgr, resourceMgr, localStatePath) to prove a failed
+// launch leaves nothing behind.
+
 package daemon
 
 import (

@@ -1,3 +1,5 @@
+//test:in-package: asserts on buildArgs, the unexported nbdkit argv builder.
+
 package nbd
 
 import (

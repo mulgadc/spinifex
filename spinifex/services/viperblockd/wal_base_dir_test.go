@@ -1,3 +1,6 @@
+//test:in-package: asserts on volumeVBConfig, the unexported per-volume VB
+// config builder.
+
 package viperblockd
 
 import (

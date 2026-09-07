@@ -1,0 +1,20 @@
+name: Documentation
+description: Something in the docs is wrong, missing or unclear.
+labels: ["documentation"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Where
+      description: Link to the page, or the path to the file in this repository.
+      placeholder: https://docs.mulgadc.com/..., or README.md
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong
+      description: What is inaccurate, missing or confusing, and what it should say instead.
+    validations:
+      required: true

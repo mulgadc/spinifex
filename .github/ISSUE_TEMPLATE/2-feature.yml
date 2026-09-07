@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest something new.
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - EC2 / instances
+        - EBS / volumes
+        - S3 / object store
+        - VPC / networking
+        - IAM / authentication
+        - EKS
+        - API gateway
+        - Web UI
+        - CLI / daemon
+        - Observability / telemetry
+        - Build / CI / packaging
+        - Documentation
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see?
+      description: What you are trying to do, and what stops you today.
+    validations:
+      required: true

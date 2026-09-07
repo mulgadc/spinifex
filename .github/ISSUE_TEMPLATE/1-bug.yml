@@ -1,0 +1,59 @@
+name: Bug report
+description: Something is not working as it should.
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - EC2 / instances
+        - EBS / volumes
+        - S3 / object store
+        - VPC / networking
+        - IAM / authentication
+        - EKS
+        - API gateway
+        - Web UI
+        - CLI / daemon
+        - Observability / telemetry
+        - Build / CI / packaging
+        - Documentation
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Spinifex version
+      description: Output of `spinifex --version`, or the commit SHA you are on.
+      placeholder: v1.0.0, or commit abc1234
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, what you expected instead, and how to reproduce it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and output
+      description: Relevant log lines, error messages or command output.
+      render: shell
+
+  - type: textarea
+    id: platform
+    attributes:
+      label: Platform
+      description: Where you are running it, and how you deployed it.
+      placeholder: |
+        OS: Debian 13
+        Kernel: 6.12
+        Arch: amd64
+        Deployment: single node, systemd

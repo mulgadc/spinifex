@@ -24,7 +24,7 @@ require (
 	github.com/mulgadc/bluebottle v1.18.1-0.20260903003911-3d26c3a8def8
 	github.com/mulgadc/northstar v1.18.1-0.20260903173023-a0e741e2831f
 	github.com/mulgadc/predastore v1.18.1-0.20260831064140-ff6a1dc42441
-	github.com/mulgadc/viperblock v1.18.0
+	github.com/mulgadc/viperblock v1.18.1-0.20260907114759-0c199a0880ad
 	github.com/nats-io/nats-server/v2 v2.14.6
 	github.com/nats-io/nats.go v1.53.1
 	github.com/opencontainers/runtime-spec v1.3.0
@@ -63,10 +63,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.1 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.10.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.11.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.41 // indirect
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.108.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.110.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.8.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.36.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.41.0 // indirect

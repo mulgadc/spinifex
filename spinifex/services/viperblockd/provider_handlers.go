@@ -1259,6 +1259,7 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 		VolumeName: volumeName,
 		VolumeSize: 1, // Workaround, calculated on LoadState()
 		BaseDir:    cfg.BaseDir,
+		WALBaseDir: cfg.WALBaseDir,
 		Cache: viperblock.Cache{
 			Config: viperblock.CacheConfig{
 				Size: defaultCache,

@@ -564,6 +564,8 @@ github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19 h1:bAdDl/
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19/go.mod h1:KaUzbLxv4CeSxh6ZCl9B4m7CuFenS8kUEaDs+f/DQr4=
 github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.10.0 h1:U8/A0RRBaEspzH1uul3JHLbypXwEGUkRkvoT9f0ATcM=
 github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.10.0/go.mod h1:UELStX5KwtJNtQxa+UuF8dc3z4UYc40e8yHYJSozNwY=
+github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.11.1 h1:s67hBfG5t9rn1NCvDuB4E3QIep3UFhHPtaIqFDjV3N8=
+github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.11.1/go.mod h1:FpvjBMXtSNMLPmDJsWwcY5cRnqJlpS2y1R6n4pvzs4k=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.9.23/go.mod h1:9uPh+Hrz2Vn6oMnQYiUi/zbh3ovbnQk19YKINkQny44=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.11.2/go.mod h1:Ru7vg1iQ7cR4i7SZ/JTLYN9kaXtbL69UdgG0OQWQxW0=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.12.15/go.mod h1:SwFBy2vjtA0vZbjjaFtfN045boopadnoVPhu4Fv66vY=
@@ -571,8 +573,12 @@ github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.1 h1:RmmWQPREQ
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.1/go.mod h1:0A3W4F+68ZnNk5XcNL/e9HFMwnP8RlEicFfy6eOEDyw=
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.41 h1:Q9DIKDuJix/oJnQxFpQ26L0EwVa/YNo4k2kbktrjQjE=
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.41/go.mod h1:x+TuqkOIG1SZS0+yN54sExGA9ZpjhPO6vPdYnpTFX1M=
+github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.1 h1:ZMbtPZZQRca+3+XYQne9PBvRiYpHZlNJJOZfE9WNfT0=
+github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.1/go.mod h1:YAGWQdCYlVCoqrzvfv3RLxO6zKwti7gsAULOGWPLYv4=
 github.com/aws/aws-sdk-go-v2/service/s3 v1.108.0 h1:Yp+x5PKXEmoqHsgP/pAkBy5Tyq1UlXAzM0OInh0vxWw=
 github.com/aws/aws-sdk-go-v2/service/s3 v1.108.0/go.mod h1:locV6DtXyp7Xzr2BG6jtsbeBi3YAWJ/CY4xUThYmIwQ=
+github.com/aws/aws-sdk-go-v2/service/s3 v1.110.0 h1:He8vaTTqAAJrux/KdpjFXNWueLJZyKqE49QEXoqAu4I=
+github.com/aws/aws-sdk-go-v2/service/s3 v1.110.0/go.mod h1:CUr46sCpGAg/rHaclRyhJX0LJAmH73uWSJPPSaMUrSk=
 github.com/aws/aws-sdk-go-v2/service/signin v1.8.0 h1:bSvKIoLuRGFqGwASgeCQncCJDi9YKKBDEmCEZzOX1uU=
 github.com/aws/aws-sdk-go-v2/service/signin v1.8.0/go.mod h1:9IqUlsJDbUPcg6cgx3WEzXdjrbWzLDQrak0aaSqlTcI=
 github.com/aws/aws-sdk-go-v2/service/sso v1.12.3/go.mod h1:jtLIhd+V+lft6ktxpItycqHqiVXrPIRjWIsFIlzMriw=
@@ -1335,6 +1341,10 @@ github.com/mulgadc/predastore v1.18.1-0.20260831064140-ff6a1dc42441 h1:5t+iuKpnR
 github.com/mulgadc/predastore v1.18.1-0.20260831064140-ff6a1dc42441/go.mod h1:ioGP2kHWYpW/opboAqlqQ5C2Jv+a1/z4txtenw7K7Ws=
 github.com/mulgadc/viperblock v1.18.0 h1:u6yu5lPfZ+RSmfzlg1OXI3whlRBnGp8t685xUzzxlns=
 github.com/mulgadc/viperblock v1.18.0/go.mod h1:OjqMFZba0TJl9zcW2oKmz2/MrApIxRIFNcafiv5vTkM=
+github.com/mulgadc/viperblock v1.18.1-0.20260907113913-8215aa76e262 h1:EzQREEFyuiqh3jqjTOCvNh0Bw0RJ3wDfFaoXJzv1lSc=
+github.com/mulgadc/viperblock v1.18.1-0.20260907113913-8215aa76e262/go.mod h1:zsXuTpChwa4CQ12aOs2hF43ptZs9CHy4CQDR5Rmk6SY=
+github.com/mulgadc/viperblock v1.18.1-0.20260907114759-0c199a0880ad h1:KpljxDC8gMx1CvyZ93lvCUN3yGEIzudwhENCC5rTA74=
+github.com/mulgadc/viperblock v1.18.1-0.20260907114759-0c199a0880ad/go.mod h1:zsXuTpChwa4CQ12aOs2hF43ptZs9CHy4CQDR5Rmk6SY=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/mwitkow/go-conntrack v0.0.0-20161129095857-cc309e4a2223/go.mod h1:qRWi+5nqEBWmkhHvq77mSJWrCKwh8bxhgT7d/eI7P4U=

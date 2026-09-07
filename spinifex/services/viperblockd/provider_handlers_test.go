@@ -716,12 +716,13 @@ func TestProviderErrorConstructors(t *testing.T) {
 // AvailabilityZone) staying out of VolumeMetadata, and the SnapshotID/
 // SourceVolumeName fields only being set when a source snapshot is given.
 func TestBuildProviderVBConfig(t *testing.T) {
-	cfg := &Config{BaseDir: "/tmp/vb-base", GCEnabled: true}
+	cfg := &Config{BaseDir: "/tmp/vb-base", WALBaseDir: "/wal", GCEnabled: true}
 
 	vbconfig := buildProviderVBConfig(cfg, "vol-1", 8<<30, "", "")
 	assert.Equal(t, "vol-1", vbconfig.VolumeName)
 	assert.Equal(t, uint64(8<<30), vbconfig.VolumeSize)
 	assert.Equal(t, "/tmp/vb-base", vbconfig.BaseDir)
+	assert.Equal(t, "/wal", vbconfig.WALBaseDir)
 	assert.True(t, vbconfig.GCEnabled)
 	assert.Empty(t, vbconfig.VolumeConfig.VolumeMetadata.TenantID, "control-plane facts must not be set here")
 	assert.Empty(t, vbconfig.SnapshotID)

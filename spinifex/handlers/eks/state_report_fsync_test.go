@@ -1,3 +1,7 @@
+// newStateReconcilerHarness, storeReport, latest, observe and the slowFsyncMs
+// threshold. Exporting any of them would widen the package API for tests alone.
+//
+//test:in-package — asserts on the reconciler's unexported plumbing:
 package handlers_eks
 
 import (
@@ -68,6 +72,23 @@ func TestClusterReconciler_LogFsyncTransitionIsLatched(t *testing.T) {
 
 	r.storeReport(recovered)
 	assert.False(t, r.latest.Load().SlowFsync(), "recovery clears it")
+}
+
+// The baseline case. A healthy cluster logs no health lines at all, so the very
+// first usable sample is the only chance to record what normal looks like — a
+// green cell-25 previously left nothing to compare a later slow run against.
+func TestClusterReconciler_FirstKnownSampleIsTheBaseline(t *testing.T) {
+	r, _, _ := newStateReconcilerHarness(t)
+
+	// A guest whose etcd has not warmed up yet reports no sample at all.
+	r.storeReport(fsyncReport("ok", nil))
+	assert.Nil(t, r.latest.Load().FsyncMs, "warming etcd carries no sample")
+
+	// Then the first real one arrives, healthy and well under the threshold.
+	r.storeReport(fsyncReport("ok", ptrFloat(6.0)))
+	got := r.latest.Load()
+	assert.NotNil(t, got.FsyncMs, "the baseline sample is recorded")
+	assert.False(t, got.SlowFsync(), "and it is a healthy one")
 }
 
 // A report with no sample must not be read as a recovery from a slow one, or a

@@ -80,7 +80,8 @@ diagnose() {
         "${failed}" "${etcd}" "${disk}" "$(etcd_fsync_ms)" "${load}" "${memavail_kb}"
 }
 
-# etcd_fsync_ms prints the mean WAL fsync in milliseconds, or "unknown".
+# etcd_fsync_ms prints the mean WAL fsync in milliseconds, or "nometrics" when
+# etcd served none, or "warmup" when it has not done enough to average.
 #
 # disk:ok in diagnose() is free space, which says nothing about how long a write
 # takes. etcd stalls on fsync latency long before it runs out of room, and this
@@ -95,8 +96,12 @@ etcd_fsync_ms() {
     # nothing answers exits non-zero, and a bare assignment would abort the
     # caller — dropping the diagnosis exactly when it is wanted.
     metrics=$(curl -fsS --max-time 2 "${ETCD_METRICS_URL:-http://127.0.0.1:2381/metrics}" 2>/dev/null) || metrics=
+    # "etcd served nothing" and "etcd has not done enough work yet" have
+    # different fixes — the first is a missing endpoint, the second is a guest
+    # that just booted — so they must not read the same. Collapsing both to one
+    # word is the mistake readyz:[none] made.
     if [ -z "${metrics}" ]; then
-        echo unknown
+        echo nometrics
         return
     fi
     # A minimum sample count, not just a non-zero one. A mean over the handful
@@ -107,7 +112,7 @@ etcd_fsync_ms() {
         /^etcd_disk_wal_fsync_duration_seconds_sum/ {sum=$2}
         /^etcd_disk_wal_fsync_duration_seconds_count/ {count=$2}
         END {if (count >= min) printf "%.1f", (sum / count) * 1000}')
-    [ -n "${fsync}" ] || fsync=unknown
+    [ -n "${fsync}" ] || fsync=warmup
     echo "${fsync}"
 }
 
@@ -152,9 +157,14 @@ publish_report() {
     # a missing sample is never mistaken for a fast one.
     fsync_field=
     fsync_ms=$(etcd_fsync_ms)
-    if [ "${fsync_ms}" != "unknown" ]; then
-        fsync_field=$(printf '"fsync_ms":%s,' "${fsync_ms}")
-    fi
+    # Tested for being a number rather than against the sentinel words: this
+    # emits a bare JSON value, so anything non-numeric reaching it produces a
+    # payload the daemon cannot parse at all. A new sentinel must not be able
+    # to break the report by being added.
+    case "${fsync_ms}" in
+        '' | *[!0-9.]*) : ;;
+        *) fsync_field=$(printf '"fsync_ms":%s,' "${fsync_ms}") ;;
+    esac
     if [ -n "${reason}" ]; then
         payload=$(printf '{"healthz":"%s","node_count":%s,"nodegroup_ready":%s,%s"reason":"%s","ts":%s}' \
             "${health}" "${node_count}" "${nodegroup_ready}" "${fsync_field}" "${reason}" "$(date +%s)")

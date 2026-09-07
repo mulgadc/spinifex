@@ -553,6 +553,14 @@ func (r *ClusterReconciler) storeReport(report *ServerStateReport) {
 // plane publishes on its own timer and a line every interval is how a real
 // signal gets tuned out.
 func (r *ClusterReconciler) logFsyncTransition(prev, report *ServerStateReport) {
+	// The baseline line. A healthy cluster logs no health lines at all, so
+	// without this the figure reaches the daemon on every report and is never
+	// seen — and a slow reading on some later run has nothing to be compared
+	// against. Fires once, when etcd has finally done enough work to average.
+	if report.FsyncMs != nil && (prev == nil || prev.FsyncMs == nil) {
+		slog.Info("ClusterReconciler: etcd fsync baseline",
+			"cluster", r.clusterName, "fsync_ms", *report.FsyncMs, "threshold_ms", slowFsyncMs)
+	}
 	if report.SlowFsync() && (prev == nil || !prev.SlowFsync()) {
 		slog.Warn("ClusterReconciler: etcd fsync is slow on the control plane",
 			"cluster", r.clusterName, "fsync_ms", *report.FsyncMs, "threshold_ms", slowFsyncMs,

@@ -122,7 +122,7 @@ run_agent
 P=$(cat "${WORK}/payload.json")
 case "${P}" in *'"healthz":"fail"'*) pass "unhealthy: healthz fail" ;; *) fail "unhealthy: healthz wrong: ${P}" ;; esac
 case "${P}" in *'"nodegroup_ready":{}'*) pass "unhealthy: nodegroup_ready empty (no kubectl node query on a failing apiserver)" ;; *) fail "unhealthy: nodegroup_ready wrong: ${P}" ;; esac
-case "${P}" in *'"reason":"readyz:[etcd poststarthook/start-service-ip-repair-controllers]; etcd:unreachable; disk:ok; fsync:unknownms; load:7.25; memavail:262144k"'*) pass "unhealthy: reason names failing subchecks + etcd + disk + fsync + pressure" ;; *) fail "unhealthy: reason wrong: ${P}" ;; esac
+case "${P}" in *'"reason":"readyz:[etcd poststarthook/start-service-ip-repair-controllers]; etcd:unreachable; disk:ok; fsync:nometricsms; load:7.25; memavail:262144k"'*) pass "unhealthy: reason names failing subchecks + etcd + disk + fsync + pressure" ;; *) fail "unhealthy: reason wrong: ${P}" ;; esac
 case "${P}" in *'"reason":"'*'"'*'"'*) : ;; esac
 C=$(cat "${WORK}/console.out")
 case "${C}" in *'mulga-eks CP unhealthy'*) pass "unhealthy: console banner emitted" ;; *) fail "unhealthy: console banner missing: ${C}" ;; esac
@@ -177,7 +177,7 @@ ETCD_METRICS_BODY=$(printf 'etcd_disk_wal_fsync_duration_seconds_sum 0\netcd_dis
 export ETCD_METRICS_BODY
 run_agent
 P=$(cat "${WORK}/payload.json")
-case "${P}" in *'fsync:unknownms'*) pass "fsync: zero count reads unknown, not a division error" ;; *) fail "fsync: zero-count wrong: ${P}" ;; esac
+case "${P}" in *'fsync:warmupms'*) pass "fsync: zero count reads warmup, not a division error" ;; *) fail "fsync: zero-count wrong: ${P}" ;; esac
 
 # --- Case 8: too few fsyncs to mean anything -> unknown, not a fast reading ---
 # 3 fsyncs on a just-started etcd averages to a number with no meaning. Same
@@ -186,7 +186,7 @@ ETCD_METRICS_BODY=$(printf 'etcd_disk_wal_fsync_duration_seconds_sum 0.012\netcd
 export ETCD_METRICS_BODY
 run_agent
 P=$(cat "${WORK}/payload.json")
-case "${P}" in *'fsync:unknownms'*) pass "fsync: a sample below the minimum count reads unknown" ;; *) fail "fsync: min-count wrong: ${P}" ;; esac
+case "${P}" in *'fsync:warmupms'*) pass "fsync: a sample below the minimum count reads warmup" ;; *) fail "fsync: min-count wrong: ${P}" ;; esac
 
 # --- Case 9: fsync is published on a HEALTHY report, not only a failing one ---
 # A figure that appears only once the CP is already failing has no baseline to
@@ -210,6 +210,23 @@ P=$(cat "${WORK}/payload.json")
 case "${P}" in *'"fsync_ms"'*) fail "omitted: unknown fsync must not appear in the payload: ${P}" ;; *) pass "omitted: unknown fsync is absent, not reported as fast" ;; esac
 # The payload must still be valid JSON with the field gone.
 case "${P}" in *'"nodegroup_ready":{"ng-a":1},"ts":'*) pass "omitted: payload stays well-formed without the field" ;; *) fail "omitted: payload malformed: ${P}" ;; esac
+
+# --- Case 11: no metrics endpoint reads differently from a warming etcd ---
+# Both leave the payload field out, but they have different fixes — a missing
+# endpoint against a guest that only just booted — so the reason must separate
+# them. This is the readyz:[none] mistake, not repeated.
+HEALTHZ_BODY=fail
+READYZ_BODY=
+ETCD_BODY=error
+ETCD_METRICS_BODY=
+export HEALTHZ_BODY READYZ_BODY ETCD_BODY ETCD_METRICS_BODY
+run_agent
+P=$(cat "${WORK}/payload.json")
+case "${P}" in *'fsync:nometricsms'*) pass "nometrics: an unreachable scrape is distinct from a warming etcd" ;; *) fail "nometrics: wrong: ${P}" ;; esac
+
+# A sentinel must never reach the payload as a bare JSON value. The guard is
+# numeric, so a new sentinel cannot silently produce unparseable output.
+case "${P}" in *'"fsync_ms":nometrics'*) fail "nometrics: sentinel leaked into the payload as a number: ${P}" ;; *) pass "nometrics: sentinel kept out of the JSON value" ;; esac
 
 if [ "${FAILS}" -eq 0 ]; then
     echo "PASS: all mulga-eks-state-report cases"

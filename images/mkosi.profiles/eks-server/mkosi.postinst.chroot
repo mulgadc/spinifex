@@ -85,9 +85,11 @@ OTELCOL_VERSION="0.115.1"
 OTELCOL_URL_BASE="https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTELCOL_VERSION}"
 OTELCOL_TAR="otelcol-contrib_${OTELCOL_VERSION}_linux_amd64.tar.gz"
 
+# The checksums file is named for the release repo and the distribution, with
+# no version in it — unlike the tarball beside it, which carries the version.
 echo "[eks-server] fetching otelcol-contrib checksums ${OTELCOL_VERSION}"
 curl -fsSL -o /tmp/otelcol-checksums.txt \
-    "${OTELCOL_URL_BASE}/otelcol-contrib_${OTELCOL_VERSION}_checksums.txt"
+    "${OTELCOL_URL_BASE}/opentelemetry-collector-releases_otelcol-contrib_checksums.txt"
 OTELCOL_SHA256=$(awk -v f="${OTELCOL_TAR}" '$2 == f {print $1; exit}' /tmp/otelcol-checksums.txt)
 if [[ -z "${OTELCOL_SHA256}" ]]; then
     echo "[eks-server] could not parse ${OTELCOL_TAR} sha256 from upstream checksums" >&2

@@ -105,7 +105,7 @@
     "net": "static",
     "host": "debian-13",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nvme",
     "extra": "eks",
     "suite": "eks"
   },

@@ -118,6 +118,14 @@ token = "{{.NatsToken}}"
 [nodes.{{.Node}}.viperblock]
 shardwal = false
 gc_enabled = true
+#
+# wal_base_dir: put every volume's WAL under this directory instead of the
+# node's base_dir. A WAL fsync shares the device queue with predastore, the
+# chunk cache and every other volume on the node, so a busy node lengthens the
+# fsync tail that a datastore guest measures as its commit latency. Pointing
+# this at its own device keeps that traffic out of the WAL's queue. Unset
+# keeps the WAL under base_dir.
+#wal_base_dir = "/var/lib/spinifex-wal"
 {{- if .EncryptionKeyFile}}
 encryption_key_file = "{{.EncryptionKeyFile}}"
 {{- end}}

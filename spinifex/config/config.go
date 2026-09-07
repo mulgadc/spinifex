@@ -173,6 +173,12 @@ type ViperblockConfig struct {
 	// volume service. Default false when nil so existing deployments keep
 	// today's behavior until explicitly opted in.
 	GCEnabled *bool `json:"GCEnabled" mapstructure:"gc_enabled"`
+
+	// WALBaseDir puts every volume's WAL under this directory instead of the
+	// node's base_dir. A WAL fsync shares the device queue with everything
+	// else on the node, so giving it its own device keeps neighbouring IO out
+	// of its tail. Empty keeps the WAL under base_dir.
+	WALBaseDir string `json:"WALBaseDir" mapstructure:"wal_base_dir"`
 }
 
 // EBS provider selectors. Viperblockd routes EBS calls to the viperblockd

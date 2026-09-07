@@ -30,6 +30,7 @@ type NBDKitConfig struct {
 	AccessKey  string `json:"access_key"`
 	SecretKey  string `json:"secret_key"`
 	BaseDir    string `json:"base_dir"`
+	WALBaseDir string `json:"wal_base_dir"`
 	Host       string `json:"host"`
 	CacheSize  int    `json:"cache_size"`
 	ShardWAL   bool   `json:"shardwal"` // Enable sharded WAL (default false)
@@ -124,6 +125,10 @@ func (cfg *NBDKitConfig) buildArgs() ([]string, error) {
 		fmt.Sprintf("shardwal=%t", cfg.ShardWAL),
 		fmt.Sprintf("gc_enabled=%t", cfg.GCEnabled),
 	}
+	if cfg.WALBaseDir != "" {
+		pluginArgs = append(pluginArgs, fmt.Sprintf("wal_base_dir=%s", cfg.WALBaseDir))
+	}
+
 	// Only forward the key when configured; an empty value would explicitly
 	// set the plugin to cleartext and override its ENCRYPTION_KEY_FILE fallback.
 	if cfg.EncryptionKeyFile != "" {

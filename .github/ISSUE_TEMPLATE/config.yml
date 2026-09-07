@@ -3,6 +3,3 @@ contact_links:
   - name: Documentation
     url: https://docs.mulgadc.com
     about: Guides, configuration reference and API compatibility notes.
-  - name: Report a security vulnerability
-    url: https://github.com/mulgadc/spinifex/security/advisories/new
-    about: Report privately. Please do not open a public issue for a vulnerability.

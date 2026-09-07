@@ -7,7 +7,7 @@ Please do not open a public issue for a security vulnerability.
 Report it privately, either way works:
 
 - [Open a private security advisory](https://github.com/mulgadc/spinifex/security/advisories/new) on this repository.
-- Email <hello@mulgadc.com>.
+- Email <security@mulgadc.com>.
 
 Please include enough for us to reproduce it: the version or commit, the configuration involved, and the steps that trigger it. If you have a proof of concept, include that too.
 

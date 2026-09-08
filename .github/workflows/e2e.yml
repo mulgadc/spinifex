@@ -238,6 +238,17 @@ jobs:
             sudo tee -a /etc/hosts < network/hosts >/dev/null
             echo "added $(grep -c '^[0-9]' network/hosts) entries to /etc/hosts"
           fi
+          # Pinned rather than StrictHostKeyChecking=no: these hops reach the
+          # hypervisors themselves, so an unverified key is the one place in
+          # this job where accepting anything would matter.
+          if ssh-keygen -F banksia >/dev/null 2>&1; then
+            echo "hypervisor host keys already known"
+          else
+            install -d -m 700 ~/.ssh
+            cat network/known_hosts >> ~/.ssh/known_hosts
+            chmod 600 ~/.ssh/known_hosts
+            echo "pinned $(grep -c '^[a-z]' network/known_hosts) host keys"
+          fi
 
       - name: Provision VM
         working-directory: mulga/scripts/tofu-cluster
@@ -770,6 +781,17 @@ jobs:
           else
             sudo tee -a /etc/hosts < network/hosts >/dev/null
             echo "added $(grep -c '^[0-9]' network/hosts) entries to /etc/hosts"
+          fi
+          # Pinned rather than StrictHostKeyChecking=no: these hops reach the
+          # hypervisors themselves, so an unverified key is the one place in
+          # this job where accepting anything would matter.
+          if ssh-keygen -F banksia >/dev/null 2>&1; then
+            echo "hypervisor host keys already known"
+          else
+            install -d -m 700 ~/.ssh
+            cat network/known_hosts >> ~/.ssh/known_hosts
+            chmod 600 ~/.ssh/known_hosts
+            echo "pinned $(grep -c '^[a-z]' network/known_hosts) host keys"
           fi
 
       - name: Provision VMs

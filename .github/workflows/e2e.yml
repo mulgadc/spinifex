@@ -194,6 +194,15 @@ jobs:
         with:
           job-name: Single-Node E2E
 
+      # An ephemeral runner is minted per job, so both Go caches start empty and
+      # the whole dependency graph is rebuilt. A persistent runner has no
+      # SPINIFEX_S3_ENDPOINT in its environment and skips this entirely.
+      - name: Restore Go build cache
+        uses: ./spinifex/.github/actions/go-cache
+        with:
+          mode: restore
+          s3-uri: ${{ vars.CI_GO_CACHE_S3 }}
+
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
         run: |
@@ -386,6 +395,16 @@ jobs:
         run: |
           go install github.com/jstemmer/go-junit-report/v2@latest
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      # After the last Go build, not at the end: the tests that follow add
+      # nothing to either cache. Not on cancellation — a cancelled job should
+      # stop, not spend minutes uploading.
+      - name: Save Go build cache
+        if: success() || failure()
+        uses: ./spinifex/.github/actions/go-cache
+        with:
+          mode: save
+          s3-uri: ${{ vars.CI_GO_CACHE_S3 }}
 
       - name: Ship test binaries to VM
         run: |
@@ -693,6 +712,15 @@ jobs:
         with:
           job-name: Multi-Node E2E
 
+      # An ephemeral runner is minted per job, so both Go caches start empty and
+      # the whole dependency graph is rebuilt. A persistent runner has no
+      # SPINIFEX_S3_ENDPOINT in its environment and skips this entirely.
+      - name: Restore Go build cache
+        uses: ./spinifex/.github/actions/go-cache
+        with:
+          mode: restore
+          s3-uri: ${{ vars.CI_GO_CACHE_S3 }}
+
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
         run: |
@@ -772,6 +800,16 @@ jobs:
         run: |
           go install github.com/jstemmer/go-junit-report/v2@latest
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      # After the last Go build, not at the end: the tests that follow add
+      # nothing to either cache. Not on cancellation — a cancelled job should
+      # stop, not spend minutes uploading.
+      - name: Save Go build cache
+        if: success() || failure()
+        uses: ./spinifex/.github/actions/go-cache
+        with:
+          mode: save
+          s3-uri: ${{ vars.CI_GO_CACHE_S3 }}
 
       - name: Ship test binaries to node1
         run: |

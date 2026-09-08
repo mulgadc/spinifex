@@ -24,6 +24,12 @@ inputs:
       environment as SPINIFEX_S3_ENDPOINT, which expressions cannot read, so it is
       resolved in the shell below. A persistent runner has neither and no-ops.
     required: true
+  region:
+    description: >-
+      Predastore rejects a SigV4 header signed for another region, and a runner
+      VM has no region configured, so it cannot be left to the CLI default.
+    required: false
+    default: ap-southeast-2
   workdir:
     description: Directory to resolve the Go toolchain from, so GOTOOLCHAIN=auto reports the version the build will use.
     required: false
@@ -67,7 +73,7 @@ runs:
           mkdir -p "$dir"
           # Restore is best effort by design: a miss is a cold build, not a
           # failure, and the first run on a new bucket is always a miss.
-          if aws --endpoint-url "${{ steps.locate.outputs.endpoint }}" \
+          if aws --endpoint-url "${{ steps.locate.outputs.endpoint }}" --region "${{ inputs.region }}" \
                s3 cp "${{ inputs.s3-uri }}/${name}.tar.zst" - 2>/dev/null \
                | tar -x --zstd -C "$dir"; then
             echo ">> restored ${name} ($(du -sh "$dir" | cut -f1))"
@@ -103,7 +109,7 @@ runs:
 
           echo ">> saving ${name}: ${before} -> ${after} files ($(du -sh "$dir" | cut -f1))"
           if tar -c --zstd -C "$dir" . \
-             | aws --endpoint-url "${{ steps.locate.outputs.endpoint }}" \
+             | aws --endpoint-url "${{ steps.locate.outputs.endpoint }}" --region "${{ inputs.region }}" \
                  s3 cp - "${{ inputs.s3-uri }}/${name}.tar.zst"; then
             echo ">> saved ${name}"
           else

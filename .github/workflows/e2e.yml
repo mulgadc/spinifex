@@ -225,6 +225,20 @@ jobs:
             "${RUNNER_TEMP}/spinifex-tests.tar" \
             --skip-e2e-build
 
+      # The libvirt provider dials the hypervisors by bare hostname. A pool VM
+      # sits inside a VPC and cannot resolve them; a LAN runner already can, so
+      # this is self-gating on the lookup rather than on the runner's labels.
+      - name: Map hypervisor names
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set -euo pipefail
+          if getent hosts banksia >/dev/null; then
+            echo "hypervisor names already resolve"
+          else
+            sudo tee -a /etc/hosts < network/hosts >/dev/null
+            echo "added $(grep -c '^[0-9]' network/hosts) entries to /etc/hosts"
+          fi
+
       - name: Provision VM
         working-directory: mulga/scripts/tofu-cluster
         run: |
@@ -743,6 +757,20 @@ jobs:
             "${RUNNER_TEMP}/setup.sh" \
             "${RUNNER_TEMP}/spinifex-tests.tar" \
             --skip-e2e-build
+
+      # The libvirt provider dials the hypervisors by bare hostname. A pool VM
+      # sits inside a VPC and cannot resolve them; a LAN runner already can, so
+      # this is self-gating on the lookup rather than on the runner's labels.
+      - name: Map hypervisor names
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set -euo pipefail
+          if getent hosts banksia >/dev/null; then
+            echo "hypervisor names already resolve"
+          else
+            sudo tee -a /etc/hosts < network/hosts >/dev/null
+            echo "added $(grep -c '^[0-9]' network/hosts) entries to /etc/hosts"
+          fi
 
       - name: Provision VMs
         working-directory: mulga/scripts/tofu-cluster

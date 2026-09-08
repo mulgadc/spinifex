@@ -197,16 +197,6 @@ jobs:
         with:
           job-name: Single-Node E2E
 
-      # TEMPORARY: chasing a SIGTERM that kills the pool VM's runner mid-build,
-      # five to six minutes after launch. Drop once the cause is known.
-      - name: Guest boot diagnostics
-        run: |
-          uptime
-          cloud-init status --long || true
-          sudo tail -60 /var/log/cloud-init.log || true
-          sudo systemctl list-jobs --no-pager || true
-          systemctl list-timers --all --no-pager || true
-
       # An ephemeral runner is minted per job, so both Go caches start empty and
       # the whole dependency graph is rebuilt. A persistent runner has no
       # SPINIFEX_S3_ENDPOINT in its environment and skips this entirely.

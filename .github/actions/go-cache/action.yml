@@ -30,6 +30,13 @@ inputs:
       VM has no region configured, so it cannot be left to the CLI default.
     required: false
     default: ap-southeast-2
+  ca-bundle:
+    description: >-
+      Predastore presents a per-env self-signed cert. AWS CLI v2 ships its own
+      trust store and ignores the system one, so update-ca-certificates on the
+      runner is not enough — the CA has to be named. Skipped when absent.
+    required: false
+    default: /usr/local/share/ca-certificates/spinifex-env.crt
   workdir:
     description: Directory to resolve the Go toolchain from, so GOTOOLCHAIN=auto reports the version the build will use.
     required: false
@@ -68,17 +75,21 @@ runs:
       shell: bash
       run: |
         set -uo pipefail
+        [ -r "${{ inputs.ca-bundle }}" ] && export AWS_CA_BUNDLE="${{ inputs.ca-bundle }}"
         for pair in "gomod:${{ steps.locate.outputs.gomodcache }}" "gobuild:${{ steps.locate.outputs.gocache }}"; do
           name="${pair%%:*}"; dir="${pair#*:}"
           mkdir -p "$dir"
           # Restore is best effort by design: a miss is a cold build, not a
-          # failure, and the first run on a new bucket is always a miss.
+          # failure, and the first run on a new bucket is always a miss. The
+          # CLI's stderr is echoed so a misconfigured endpoint, region or CA
+          # does not read as an empty cache.
           if aws --endpoint-url "${{ steps.locate.outputs.endpoint }}" --region "${{ inputs.region }}" \
-               s3 cp "${{ inputs.s3-uri }}/${name}.tar.zst" - 2>/dev/null \
+               s3 cp "${{ inputs.s3-uri }}/${name}.tar.zst" - 2>"${RUNNER_TEMP}/gocache-${name}.err" \
                | tar -x --zstd -C "$dir"; then
             echo ">> restored ${name} ($(du -sh "$dir" | cut -f1))"
           else
             echo ">> no ${name} cache — cold build"
+            sed 's/^/   /' "${RUNNER_TEMP}/gocache-${name}.err" || true
           fi
           find "$dir" -type f 2>/dev/null | wc -l > "${RUNNER_TEMP}/gocache-count-${name}"
         done
@@ -88,6 +99,7 @@ runs:
       shell: bash
       run: |
         set -uo pipefail
+        [ -r "${{ inputs.ca-bundle }}" ] && export AWS_CA_BUNDLE="${{ inputs.ca-bundle }}"
         for pair in "gomod:${{ steps.locate.outputs.gomodcache }}" "gobuild:${{ steps.locate.outputs.gocache }}"; do
           name="${pair%%:*}"; dir="${pair#*:}"
           [ -d "$dir" ] || continue

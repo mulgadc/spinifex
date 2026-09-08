@@ -21,10 +21,10 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.73
-	github.com/mulgadc/bluebottle v1.18.1-0.20260903003911-3d26c3a8def8
-	github.com/mulgadc/northstar v1.18.1-0.20260903173023-a0e741e2831f
-	github.com/mulgadc/predastore v1.18.1-0.20260831064140-ff6a1dc42441
-	github.com/mulgadc/viperblock v1.18.1-0.20260907114759-0c199a0880ad
+	github.com/mulgadc/bluebottle v1.19.0
+	github.com/mulgadc/northstar v1.19.0
+	github.com/mulgadc/predastore v1.19.0
+	github.com/mulgadc/viperblock v1.19.0
 	github.com/nats-io/nats-server/v2 v2.14.6
 	github.com/nats-io/nats.go v1.53.1
 	github.com/opencontainers/runtime-spec v1.3.0
@@ -75,7 +75,7 @@ require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/boltdb/bolt v1.3.1 // indirect
-	github.com/buraksezer/consistent v1.0.0 // indirect
+	github.com/buraksezer/consistent v1.1.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cenkalti/hub v1.0.2 // indirect
 	github.com/cenkalti/rpc2 v1.0.5 // indirect
@@ -170,7 +170,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
-	github.com/quic-go/quic-go v0.61.0 // indirect
+	github.com/quic-go/quic-go v0.62.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect

@@ -1,0 +1,324 @@
+name: Predastore 3-Node Performance
+
+on:
+  workflow_dispatch:
+    inputs:
+      perf_preset:
+        description: "Warp workload preset: smoke (30s) or compare (2m)"
+        required: false
+        default: compare
+        type: choice
+        options:
+          - smoke
+          - compare
+
+# Shared with e2e.yml and e2e-nightly.yml: this job provisions on the same
+# hypervisors they do, so a run in flight there and here would compete for
+# disks and libvirt guests. Queued, not cancelled, same as those workflows.
+concurrency:
+  group: e2e-hypervisors
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GIT_BRANCH: ${{ github.ref_name }}
+  SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
+
+jobs:
+  perf_3node:
+    name: Predastore Throughput (3-node)
+    # ci-multi is a systemd runner on the LAN, not the ephemeral pool. A pool
+    # VM sits behind the geneve overlay at MTU 1408, which would put the
+    # runner's own network path inside the thing being measured.
+    runs-on: [self-hosted, ci-multi]
+    timeout-minutes: 90
+    env:
+      TOFU_LOG: /tmp/e2e-tofu-perf3node-${{ github.run_id }}.log
+      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=perf-3node
+    steps:
+      - name: Reap Orphan Procs
+        run: |
+          set +e
+          UID_SELF=$(id -u)
+          WS="${GITHUB_WORKSPACE}"
+          reap() {
+            local sig="$1"
+            for pid in $(pgrep -u "$UID_SELF" -x tofu) $(pgrep -u "$UID_SELF" -x terraform); do
+              cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+              case "$cwd" in
+                "$WS"|"$WS"/*) echo "reap $sig pid=$pid cwd=$cwd"; kill "-$sig" "$pid" 2>/dev/null ;;
+              esac
+            done
+          }
+          reap TERM
+          sleep 3
+          reap KILL
+          find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
+          true
+
+      - name: Clean Workspace
+        run: |
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      # ci-multi and ci-single resolve to the same physical host, so the
+      # nvme path cell-23 uses for its throughput run is already there.
+      # Pointing TMPDIR at it keeps warp's payloads off a small /tmp tmpfs.
+      - name: Configure work directories
+        run: |
+          E2E_ROOT=/mnt/nvme/e2e
+          mkdir -p "$E2E_ROOT/work" 2>/dev/null ||
+            { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
+          echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
+          echo "PERF_RESULTS_ROOT=$E2E_ROOT/predastore-perf-3node-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga
+
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/mulga
+          token: ${{ steps.app-token.outputs.token }}
+          sparse-checkout: scripts/tofu-cluster
+          path: mulga
+
+      - uses: actions/checkout@v7
+        with:
+          path: spinifex
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: spinifex/go.mod
+          cache: false
+
+      - name: Re-enable Go toolchain auto-download
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      # Same-named branch when one exists, dev otherwise. Matches how the
+      # e2e path picks siblings, so this measures the same predastore
+      # commit a cross-repo change would be built and tested against.
+      - name: Resolve sibling refs
+        id: siblings
+        env:
+          BRANCH: ${{ env.GIT_BRANCH }}
+        run: bash .github/resolve-sibling-refs.sh
+        working-directory: spinifex
+
+      - uses: actions/checkout@v7
+        id: predastore
+        with:
+          repository: mulgadc/predastore
+          ref: ${{ steps.siblings.outputs.predastore }}
+          path: predastore
+
+      - name: Build Install Artifacts
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          ./build-install-artifacts.sh "${GIT_BRANCH}" \
+            "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
+            "${RUNNER_TEMP}/setup.sh" \
+            "${RUNNER_TEMP}/spinifex-tests.tar" \
+            --skip-e2e-build
+
+      # The libvirt provider dials the hypervisors by bare hostname. A pool VM
+      # sits inside a VPC and cannot resolve them; a LAN runner already can, so
+      # this is self-gating on the lookup rather than on the runner's labels.
+      - name: Map hypervisor names
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set -euo pipefail
+          if getent hosts banksia >/dev/null; then
+            echo "hypervisor names already resolve"
+          else
+            sudo tee -a /etc/hosts < network/hosts >/dev/null
+            echo "added $(grep -c '^[0-9]' network/hosts) entries to /etc/hosts"
+          fi
+          # Pinned rather than StrictHostKeyChecking=no: these hops reach the
+          # hypervisors themselves, so an unverified key is the one place in
+          # this job where accepting anything would matter.
+          if ssh-keygen -F banksia >/dev/null 2>&1; then
+            echo "hypervisor host keys already known"
+          else
+            install -d -m 700 ~/.ssh
+            cat network/known_hosts >> ~/.ssh/known_hosts
+            chmod 600 ~/.ssh/known_hosts
+            echo "pinned $(grep -c '^[a-z]' network/known_hosts) host keys"
+          fi
+
+      - name: Provision VMs
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          export TF_VAR_git_branch="${GIT_BRANCH}"
+          quiet_run "tofu init"                "$TOFU_LOG" tofu init -input=false
+          quiet_run "tofu workspace select"    "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          quiet_run "tofu destroy (pre-clean)" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false || true
+          quiet_run "scrub-env (pre-clean)"    "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}" || true
+          retry_run "tofu apply"               "$TOFU_LOG" tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          ok "3-node cluster provisioned"
+
+      - name: Bootstrap via Binary Install
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          SPX_EXTERNAL_POOL="${SPINIFEX_CI_POOL}" \
+          ./bootstrap-install.sh "${SPINIFEX_CI_ENV}" \
+            "${RUNNER_TEMP}/setup.sh" \
+            "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
+            --test-tar "${RUNNER_TEMP}/spinifex-tests.tar"
+
+      - name: Resolve cluster SSH details
+        id: cluster
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          INVENTORY=$(tofu output -json inventory)
+          NODE1_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          NODE_COUNT=$(echo "$INVENTORY" | jq '.nodes | length')
+          NODES_CSV=""
+          for i in $(seq 0 $((NODE_COUNT - 1))); do
+            ip=$(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip")
+            if [ -z "$NODES_CSV" ]; then NODES_CSV="$ip"; else NODES_CSV="$NODES_CSV,$ip"; fi
+          done
+          echo "node1_ip=${NODE1_IP}" >> "$GITHUB_OUTPUT"
+          echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
+          echo "nodes_csv=${NODES_CSV}" >> "$GITHUB_OUTPUT"
+
+      # PERF_EXTERNAL_HOSTS wants host:port, and the gate listens on 8443 on
+      # every node. run-info.txt from this run is then comparable with the
+      # nightly's loopback one, since the harness itself never changes.
+      - name: Resolve PERF_EXTERNAL_HOSTS
+        id: perf_hosts
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra NODE_LIST <<< "${{ steps.cluster.outputs.nodes_csv }}"
+          HOSTS=""
+          for ip in "${NODE_LIST[@]}"; do
+            [ -z "$ip" ] && continue
+            if [ -z "$HOSTS" ]; then HOSTS="$ip:8443"; else HOSTS="$HOSTS,$ip:8443"; fi
+          done
+          echo "hosts=${HOSTS}" >> "$GITHUB_OUTPUT"
+
+      # A slow bootstrap should fail here, legibly, rather than inside warp
+      # with a wall of connection-refused errors. Bounded at 5 minutes per
+      # gate so a genuinely dead node still fails the job in finite time.
+      - name: Wait for gates to answer on :8443
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra GATES <<< "${{ steps.perf_hosts.outputs.hosts }}"
+          for gate in "${GATES[@]}"; do
+            echo "waiting for https://$gate"
+            up=0
+            for i in $(seq 1 60); do
+              if curl -k -sS --max-time 5 -o /dev/null "https://$gate/"; then
+                up=1
+                break
+              fi
+              sleep 5
+            done
+            [ "$up" -eq 1 ] || { echo "::error::gate $gate never answered HTTPS on :8443"; exit 1; }
+            echo "gate $gate is up"
+          done
+
+      # The benchmark works in $TMPDIR and predastore refuses writes below a 5%
+      # free-space watermark, so this asserts the same headroom cell-23 does.
+      # tmpfs is rejected outright: that would measure RAM, not the gates.
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR"
+          fstype=$(df --output=fstype "$TMPDIR" | tail -1 | tr -d ' ')
+          case "$fstype" in
+            tmpfs|ramfs)
+              echo "::error::$TMPDIR is $fstype — a storage benchmark there measures RAM"
+              exit 1 ;;
+          esac
+          find "$TMPDIR" -maxdepth 1 -name 'predastore-e2e-performance.*' \
+               -type d -mtime +0 -exec rm -rf {} + 2>/dev/null || true
+          df -h "$TMPDIR"
+          avail_gb=$(df -BG --output=avail "$TMPDIR" | tail -1 | tr -dc '0-9')
+          pct_used=$(df --output=pcent "$TMPDIR" | tail -1 | tr -dc '0-9')
+          if [ "$pct_used" -ge 90 ] || [ "$avail_gb" -lt 20 ]; then
+            echo "::error::$TMPDIR ($fstype) is ${pct_used}% full with ${avail_gb} GiB free."
+            echo "::error::The benchmark needs headroom above predastore's 5% watermark."
+            exit 1
+          fi
+
+      - name: Install warp
+        working-directory: predastore
+        run: make warp-install
+
+      # PERF_EXTERNAL_HOSTS skips profile selection, port offsetting, and
+      # cluster start/stop, and measures these three gates directly. Same
+      # workloads and analysis as the nightly loopback run, so the numbers
+      # from the two are directly comparable.
+      - name: Run 3-node throughput benchmark
+        working-directory: predastore
+        env:
+          PERF_EXTERNAL_HOSTS: ${{ steps.perf_hosts.outputs.hosts }}
+          PERF_CONFIGS: spinifex-3node
+          PERF_PRESET: ${{ inputs.perf_preset }}
+          PERF_EXTERNAL_SHA: ${{ steps.predastore.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PERF_RESULTS_ROOT"
+          make e2e-performance 2>&1 | tee "$PERF_RESULTS_ROOT/e2e-performance.log"
+
+      # Report-only, matching cell-23: the baseline comparison and any
+      # regression gate are future work once run-to-run spread is known from
+      # real bare-metal runs.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: predastore-perf-3node-${{ github.run_id }}
+          path: ${{ env.PERF_RESULTS_ROOT }}
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Clean up results
+        if: always()
+        run: rm -rf "${PERF_RESULTS_ROOT}"
+
+      - name: Teardown
+        if: always()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set +e
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          UID_SELF=$(id -u)
+          WS="${GITHUB_WORKSPACE}"
+          reap() {
+            local sig="$1"
+            for pid in $(pgrep -u "$UID_SELF" -x tofu) $(pgrep -u "$UID_SELF" -x terraform); do
+              cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+              case "$cwd" in
+                "$WS"|"$WS"/*) kill "-$sig" "$pid" 2>/dev/null ;;
+              esac
+            done
+          }
+          reap TERM
+          sleep 2
+          reap KILL
+          find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
+          quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          quiet_run "telemetry flush"       "$TOFU_LOG" timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" || true
+          retry_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
+          ok "teardown complete"
+
+      - name: Upload tofu log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tofu-log-perf3node-${{ github.run_id }}
+          path: ${{ env.TOFU_LOG }}
+          if-no-files-found: ignore
+          retention-days: 14

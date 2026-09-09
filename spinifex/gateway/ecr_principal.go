@@ -8,10 +8,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 )
 
 // An ECR registry token is a signed pointer to an IAM/STS record, not a
@@ -65,7 +65,7 @@ func isECRDependencyFailure(err error) bool {
 // record is gone (invalid, 401); anything else is a dependency failure (503),
 // since it says nothing about whether the identity is still valid.
 func classifyIAMLookupErr(err error, what string) error {
-	if strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity) {
+	if awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity) {
 		return ecrInvalidPrincipal("%s not found: %w", what, err)
 	}
 	return ecrDependencyFailure("%s lookup failed: %w", what, err)
@@ -139,15 +139,16 @@ func (gw *GatewayConfig) resolveECRLongLivedPrincipal(claims *gateway_ecrauth.Cl
 	}, nil
 }
 
-// resolveECRSessionPrincipal rehydrates an ASIA (STS session) claim. A
-// GetSessionToken user session resolves like resolveECRLongLivedPrincipal's
-// user branch; an assumed-role session additionally re-resolves the
-// underlying role and rejects the session if the role was deleted and
-// recreated (its RoleID changed) even though the role name and ARN are
-// unchanged.
+// resolveECRSessionPrincipal rehydrates an ASIA (STS session) claim. Both a
+// GetSessionToken user session and an assumed-role session are re-resolved
+// against their principal's live IAM record and rejected if it was deleted, or
+// recreated under the same name with a different immutable ID.
 func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Claims) (principalContext, error) {
 	if gw.STSService == nil {
 		return principalContext{}, ecrDependencyFailure("STS service not available")
+	}
+	if gw.IAMService == nil {
+		return principalContext{}, ecrDependencyFailure("IAM service not available")
 	}
 
 	cred, err := gw.STSService.LookupSessionCredential(claims.AccessKeyID)
@@ -168,23 +169,24 @@ func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Clai
 		return principalContext{}, err
 	}
 
-	if gw.IAMService == nil {
-		return principalContext{}, ecrDependencyFailure("IAM service not available")
+	// One read of the live principal, shared by both branches: it both rejects a
+	// session whose principal was deleted or recreated under the same name and
+	// supplies the resolved record the branches below would otherwise re-read.
+	live, err := gw.STSService.VerifySessionPrincipal(cred)
+	if err != nil {
+		if handlers_sts.IsSessionPrincipalVerdict(err) {
+			return principalContext{}, ecrInvalidPrincipal("session principal is no longer valid: %w", err)
+		}
+		return principalContext{}, ecrDependencyFailure("session principal check failed: %w", err)
 	}
 
 	if cred.PrincipalType == principalTypeUser {
 		// GetSessionToken: the session resolves to the same user identity as a
 		// long-lived key, so it is authorized as that user.
-		userOut, err := gw.IAMService.GetUser(cred.AccountID, &iam.GetUserInput{UserName: aws.String(cred.SessionName)})
-		if err != nil {
-			return principalContext{}, classifyIAMLookupErr(err, "user")
-		}
-		identity := aws.StringValue(userOut.User.UserName)
-
 		if claims.PrincipalType != principalTypeUser {
 			return principalContext{}, ecrInvalidPrincipal("principalType claim %q does not match resolved session", claims.PrincipalType)
 		}
-		canonicalARN, err := buildCallerARN(cred.AccountID, identity, principalTypeUser, "")
+		canonicalARN, err := buildCallerARN(cred.AccountID, cred.SessionName, principalTypeUser, "")
 		if err != nil {
 			return principalContext{}, ecrInvalidPrincipal("cannot build canonical ARN: %w", err)
 		}
@@ -193,10 +195,10 @@ func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Clai
 		}
 
 		return principalContext{
-			identity:      identity,
+			identity:      cred.SessionName,
 			accountID:     cred.AccountID,
 			principalType: principalTypeUser,
-			userID:        aws.StringValue(userOut.User.UserId),
+			userID:        live.UserID,
 		}, nil
 	}
 
@@ -204,27 +206,6 @@ func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Clai
 	// field — both mean "assumed-role" (mirrors resolveSessionAKID).
 	if claims.PrincipalType != principalTypeAssumedRole {
 		return principalContext{}, ecrInvalidPrincipal("principalType claim %q does not match resolved session", claims.PrincipalType)
-	}
-
-	// Resolve by the session's underlying role, never by SessionName — the
-	// caller controls RoleSessionName at AssumeRole time, so trusting it here
-	// would let an attacker rename their way into another role's ARN shape.
-	roleAcct, roleName, perr := auth.ParseRoleARN(cred.UnderlyingRoleARN)
-	if perr != nil || roleAcct != cred.AccountID {
-		return principalContext{}, ecrInvalidPrincipal("session underlying role ARN is unresolvable or cross-account: %w", perr)
-	}
-	roleOut, err := gw.IAMService.GetRole(cred.AccountID, &iam.GetRoleInput{RoleName: aws.String(roleName)})
-	if err != nil {
-		return principalContext{}, classifyIAMLookupErr(err, "role")
-	}
-	currentRoleARN := aws.StringValue(roleOut.Role.Arn)
-	currentRoleID := aws.StringValue(roleOut.Role.RoleId)
-	if currentRoleARN != cred.UnderlyingRoleARN {
-		return principalContext{}, ecrInvalidPrincipal("role ARN has changed since the session was minted")
-	}
-	if cred.RoleID != "" && currentRoleID != cred.RoleID {
-		// The role name was deleted and recreated: same ARN, different identity.
-		return principalContext{}, ecrInvalidPrincipal("role was replaced since the session was minted")
 	}
 
 	canonicalARN, err := buildCallerARN(cred.AccountID, cred.SessionName, principalTypeAssumedRole, cred.AssumedRoleARN)

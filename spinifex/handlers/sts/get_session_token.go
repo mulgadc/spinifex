@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
@@ -58,7 +59,25 @@ func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, caller
 		duration = clampGetSessionTokenDuration(*input.DurationSeconds)
 	}
 
-	cred, plainSecret, plainToken, err := s.mintSession(ctx, userEnvelope(callerAccountID, callerUserName), duration)
+	// Resolved here rather than threaded from the gateway: the gateway's value is
+	// aws:userid, which reports the account ID for root. Both mint and verify read
+	// the record's own UserId, so the two ends compare like with like.
+	userOut, err := s.iamSvc.GetUser(callerAccountID, &iam.GetUserInput{UserName: aws.String(callerUserName)})
+	if err != nil || userOut == nil || userOut.User == nil {
+		slog.Error("GetSessionToken: cannot resolve caller user record",
+			"account_id", callerAccountID, "user_name", callerUserName, "err", err)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+	userID := aws.StringValue(userOut.User.UserId)
+	if userID == "" {
+		// Same fail-loud treatment as a caller missing an account or name: a session
+		// with no immutable ID cannot be verified against the live record later.
+		slog.Error("GetSessionToken: caller user record carries no UserId",
+			"account_id", callerAccountID, "user_name", callerUserName)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+
+	cred, plainSecret, plainToken, err := s.mintSession(ctx, userEnvelope(callerAccountID, callerUserName, userID), duration)
 	if err != nil {
 		return nil, err
 	}
@@ -94,10 +113,11 @@ func clampGetSessionTokenDuration(requested int64) int64 {
 
 // userEnvelope is the session envelope for a GetSessionToken user session:
 // PrincipalType "user", SessionName = the IAM user name, no assumed-role fields.
-func userEnvelope(accountID, userName string) sessionEnvelope {
+func userEnvelope(accountID, userName, userID string) sessionEnvelope {
 	return sessionEnvelope{
 		PrincipalType: principalTypeUser,
 		AccountID:     accountID,
 		SessionName:   userName,
+		UserID:        userID,
 	}
 }

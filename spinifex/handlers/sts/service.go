@@ -40,4 +40,10 @@ type STSService interface {
 	// VerifySessionToken constant-time-compares the wire token against the stored HMAC.
 	// Keeping the HMAC inside STSService prevents the master key from crossing the gateway surface.
 	VerifySessionToken(cred *SessionCredential, wireToken string) bool
+
+	// VerifySessionPrincipal re-resolves the principal a session was minted for and
+	// returns its live IAM record. Fails closed with ErrSessionPrincipalGone,
+	// ErrSessionPrincipalReplaced or ErrSessionPrincipalLegacy; any other error is a
+	// dependency fault.
+	VerifySessionPrincipal(cred *SessionCredential) (*SessionPrincipal, error)
 }

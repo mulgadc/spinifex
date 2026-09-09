@@ -47,14 +47,20 @@ type SessionCredential struct {
 	// for backward compatibility with in-flight records minted before this field existed.
 	PrincipalType string `json:"principal_type,omitempty"`
 
-	AssumedRoleARN    string    `json:"assumed_role_arn"`
-	UnderlyingRoleARN string    `json:"underlying_role_arn"`
-	RoleID            string    `json:"role_id"`
-	AssumedRoleID     string    `json:"assumed_role_id"`
-	SessionName       string    `json:"session_name"`
-	SourceIdentity    string    `json:"source_identity,omitempty"`
-	ExpiresAt         time.Time `json:"expires_at"`
-	CreatedAt         time.Time `json:"created_at"`
+	AssumedRoleARN    string `json:"assumed_role_arn"`
+	UnderlyingRoleARN string `json:"underlying_role_arn"`
+	RoleID            string `json:"role_id"`
+	AssumedRoleID     string `json:"assumed_role_id"`
+	SessionName       string `json:"session_name"`
+
+	// UserID is the immutable IAM UserId a "user" session was minted for, the
+	// counterpart of RoleID. Empty on role sessions and on records minted before
+	// the field existed; VerifySessionPrincipal rejects the latter.
+	UserID string `json:"user_id,omitempty"`
+
+	SourceIdentity string    `json:"source_identity,omitempty"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // initSessionCredentialsBucket opens (or creates) the session-credentials KV bucket.

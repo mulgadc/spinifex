@@ -17,6 +17,11 @@ on:
         options:
           - smoke
           - compare
+      cluster_ref:
+        description: "Git ref to build the cluster from, e.g. v1.18.0. Empty uses this branch."
+        required: false
+        default: ""
+        type: string
 
 # Shared with e2e.yml and e2e-nightly.yml: this job provisions on the same
 # hypervisors they do, so a run in flight there and here would compete for
@@ -124,10 +129,15 @@ jobs:
           ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
+      # The cluster's ref is a knob and the harness's is not. Measuring an old
+      # release with a new harness is the only way its number can be set beside
+      # a current one; rebuilding both would change the ruler and the thing.
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
+        env:
+          CLUSTER_REF: ${{ inputs.cluster_ref || 'v1.18.0' }}
         run: |
-          ./build-install-artifacts.sh "${GIT_BRANCH}" \
+          ./build-install-artifacts.sh "${CLUSTER_REF:-$GIT_BRANCH}" \
             "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
             "${RUNNER_TEMP}/setup.sh" \
             "${RUNNER_TEMP}/spinifex-tests.tar" \
@@ -280,7 +290,9 @@ jobs:
           PERF_EXTERNAL_HOSTS: ${{ steps.perf_hosts.outputs.hosts }}
           PERF_CONFIGS: spinifex-3node
           PERF_PRESET: ${{ inputs.perf_preset || 'compare' }}
-          PERF_EXTERNAL_SHA: ${{ steps.predastore.outputs.commit }}
+          # What is deployed, not what the harness was checked out at. With a
+          # cluster_ref those differ, and run-info.txt records the cluster.
+          PERF_EXTERNAL_SHA: ${{ inputs.cluster_ref || 'v1.18.0' }}
           SSH_KEY: ${{ steps.cluster.outputs.ssh_key }}
           SSH_USER: ${{ steps.cluster.outputs.ssh_user }}
           NODE1_IP: ${{ steps.cluster.outputs.node1_ip }}

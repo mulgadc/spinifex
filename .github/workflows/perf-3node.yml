@@ -188,6 +188,8 @@ jobs:
           NODE1_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
           SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
           SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          SSH_USER=$(echo "$INVENTORY" | jq -r '.ssh_user')
+          REGION=$(echo "$INVENTORY" | jq -r '.region')
           NODE_COUNT=$(echo "$INVENTORY" | jq '.nodes | length')
           NODES_CSV=""
           for i in $(seq 0 $((NODE_COUNT - 1))); do
@@ -196,6 +198,8 @@ jobs:
           done
           echo "node1_ip=${NODE1_IP}" >> "$GITHUB_OUTPUT"
           echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
+          echo "ssh_user=${SSH_USER}" >> "$GITHUB_OUTPUT"
+          echo "region=${REGION}" >> "$GITHUB_OUTPUT"
           echo "nodes_csv=${NODES_CSV}" >> "$GITHUB_OUTPUT"
 
       # PERF_EXTERNAL_HOSTS wants host:port, and the gate listens on 8443 on
@@ -266,6 +270,10 @@ jobs:
       # cluster start/stop, and measures these three gates directly. Same
       # workloads and analysis as the nightly loopback run, so the numbers
       # from the two are directly comparable.
+      #
+      # The cluster's credentials are read and used inside this one step, the
+      # way e2e-ddil.yml does it: a step-level env: block is echoed verbatim
+      # into the run log, and a shell variable is not.
       - name: Run 3-node throughput benchmark
         working-directory: predastore
         env:
@@ -273,10 +281,29 @@ jobs:
           PERF_CONFIGS: spinifex-3node
           PERF_PRESET: ${{ inputs.perf_preset || 'smoke' }}
           PERF_EXTERNAL_SHA: ${{ steps.predastore.outputs.commit }}
+          SSH_KEY: ${{ steps.cluster.outputs.ssh_key }}
+          SSH_USER: ${{ steps.cluster.outputs.ssh_user }}
+          NODE1_IP: ${{ steps.cluster.outputs.node1_ip }}
+          CLUSTER_REGION: ${{ steps.cluster.outputs.region }}
         run: |
           set -euo pipefail
+          # spx admin init mints a random pair at bootstrap and writes it to
+          # node1's ~/.aws/credentials. The benchmark's built-in key is the one
+          # the loopback configs trust, which this cluster has never heard of.
+          CREDS=$(ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "${SSH_USER}@${NODE1_IP}" 'cat ~/.aws/credentials')
+          PERF_ACCESS_KEY=$(echo "$CREDS" | awk -F '= *' '/^aws_access_key_id/ {print $2; exit}')
+          PERF_SECRET_KEY=$(echo "$CREDS" | awk -F '= *' '/^aws_secret_access_key/ {print $2; exit}')
+          if [ -z "$PERF_ACCESS_KEY" ] || [ -z "$PERF_SECRET_KEY" ]; then
+            echo "::error::could not read spinifex AWS credentials from ${NODE1_IP}"
+            exit 1
+          fi
+          echo "::add-mask::$PERF_SECRET_KEY"
           mkdir -p "$PERF_RESULTS_ROOT"
-          make e2e-performance 2>&1 | tee "$PERF_RESULTS_ROOT/e2e-performance.log"
+          PERF_ACCESS_KEY="$PERF_ACCESS_KEY" \
+          PERF_SECRET_KEY="$PERF_SECRET_KEY" \
+          PERF_REGION="$CLUSTER_REGION" \
+            make e2e-performance 2>&1 | tee "$PERF_RESULTS_ROOT/e2e-performance.log"
 
       # Report-only, matching cell-23: the baseline comparison and any
       # regression gate are future work once run-to-run spread is known from

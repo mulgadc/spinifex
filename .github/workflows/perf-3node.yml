@@ -1,6 +1,12 @@
 name: Predastore 3-Node Performance
 
+# GitHub only accepts workflow_dispatch for a workflow already on the default
+# branch, so the push trigger is how this one gets its first run before it is
+# merged. Remove the push trigger once it is on dev.
 on:
+  push:
+    branches:
+      - feat/perf-3node-benchmark
   workflow_dispatch:
     inputs:
       perf_preset:
@@ -265,7 +271,7 @@ jobs:
         env:
           PERF_EXTERNAL_HOSTS: ${{ steps.perf_hosts.outputs.hosts }}
           PERF_CONFIGS: spinifex-3node
-          PERF_PRESET: ${{ inputs.perf_preset }}
+          PERF_PRESET: ${{ inputs.perf_preset || 'smoke' }}
           PERF_EXTERNAL_SHA: ${{ steps.predastore.outputs.commit }}
         run: |
           set -euo pipefail

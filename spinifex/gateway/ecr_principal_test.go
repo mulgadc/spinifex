@@ -108,11 +108,17 @@ func (m *ecrMockIAMService) GetRolePolicies(accountID, roleName string) ([]handl
 }
 
 // ecrMockSTSService implements handlers_sts.STSService for ECR principal
-// rehydration tests. Only LookupSessionCredential is wired.
+// rehydration tests. Only LookupSessionCredential and VerifySessionPrincipal
+// are wired.
 type ecrMockSTSService struct {
 	handlers_sts.STSService
 
 	sessions map[string]*handlers_sts.SessionCredential
+
+	// principalErr is the continuity verdict (or dependency fault) the check
+	// returns. Detection itself is exercised against real IAM/STS services in
+	// handlers/sts; what these tests pin is how this door maps the answer.
+	principalErr error
 }
 
 func newECRMockSTSService() *ecrMockSTSService {
@@ -121,6 +127,21 @@ func newECRMockSTSService() *ecrMockSTSService {
 
 func (m *ecrMockSTSService) LookupSessionCredential(accessKeyID string) (*handlers_sts.SessionCredential, error) {
 	return m.sessions[accessKeyID], nil
+}
+
+func (m *ecrMockSTSService) VerifySessionPrincipal(cred *handlers_sts.SessionCredential) (*handlers_sts.SessionPrincipal, error) {
+	if m.principalErr != nil {
+		return nil, m.principalErr
+	}
+	if cred == nil {
+		return nil, errors.New("nil session credential")
+	}
+	return &handlers_sts.SessionPrincipal{
+		UserID:   cred.UserID,
+		RoleID:   cred.RoleID,
+		RoleName: cred.SessionName,
+		RoleARN:  cred.UnderlyingRoleARN,
+	}, nil
 }
 
 const (
@@ -287,6 +308,7 @@ func seedECRSessionUser(iamSvc *ecrMockIAMService, stsSvc *ecrMockSTSService, ac
 		AccountID:     accountID,
 		PrincipalType: principalTypeUser,
 		SessionName:   userName,
+		UserID:        "AIDA" + strings.ToUpper(userName),
 		ExpiresAt:     expiresAt,
 	}
 }
@@ -308,6 +330,39 @@ func TestResolveECRPrincipal_SessionToken_User(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, principalContext{identity: "dev", accountID: ecrPrincipalTestAccount,
 		principalType: principalTypeUser, userID: "AIDADEV"}, got)
+}
+
+// The user branch had no continuity check at all before: a GetSessionToken
+// session survived its user being deleted and recreated under the same name.
+func TestResolveECRPrincipal_SessionToken_User_StalePrincipalRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"user deleted", handlers_sts.ErrSessionPrincipalGone},
+		{"user recreated same name", handlers_sts.ErrSessionPrincipalReplaced},
+		{"legacy record with no immutable UserID", handlers_sts.ErrSessionPrincipalLegacy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			iamSvc := newECRMockIAMService()
+			stsSvc := newECRMockSTSService()
+			seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(time.Hour))
+			stsSvc.principalErr = tc.err
+			gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
+
+			claims := &gateway_ecrauth.Claims{
+				AccountID:     ecrPrincipalTestAccount,
+				PrincipalType: principalTypeUser,
+				AccessKeyID:   ecrPrincipalTestASID,
+			}
+			claims.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/dev"
+
+			_, err := gw.resolveECRPrincipal(claims)
+			require.Error(t, err)
+			assert.False(t, isECRDependencyFailure(err))
+		})
+	}
 }
 
 func TestResolveECRPrincipal_SessionToken_Expired(t *testing.T) {
@@ -417,26 +472,38 @@ func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
 		return c
 	}
 
-	t.Run("role deleted", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		stsSvc := newECRMockSTSService()
-		assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
-		delete(iamSvc.roles, ecrPrincipalTestAccount+"|deploy")
-		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-		_, err := gw.resolveECRPrincipal(baseClaims(assumedARN))
-		require.Error(t, err)
-		assert.False(t, isECRDependencyFailure(err))
+	// Every continuity verdict is client-visible (401 + re-auth challenge), never
+	// a 503: the identity really is invalid, and answering 503 would tell a
+	// client to retry a credential that will never work again.
+	t.Run("continuity verdicts are invalid-principal, not dependency failures", func(t *testing.T) {
+		verdicts := map[string]error{
+			"role deleted":                           handlers_sts.ErrSessionPrincipalGone,
+			"role replaced (RoleId changed)":         handlers_sts.ErrSessionPrincipalReplaced,
+			"legacy record with no immutable RoleID": handlers_sts.ErrSessionPrincipalLegacy,
+		}
+		for name, verdict := range verdicts {
+			t.Run(name, func(t *testing.T) {
+				iamSvc := newECRMockIAMService()
+				stsSvc := newECRMockSTSService()
+				assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
+				stsSvc.principalErr = verdict
+				gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
+				_, err := gw.resolveECRPrincipal(baseClaims(assumedARN))
+				require.Error(t, err)
+				assert.False(t, isECRDependencyFailure(err))
+			})
+		}
 	})
 
-	t.Run("role replaced (RoleId changed, ARN unchanged)", func(t *testing.T) {
+	t.Run("continuity check fault is a dependency failure", func(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		stsSvc := newECRMockSTSService()
 		assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
-		iamSvc.roles[ecrPrincipalTestAccount+"|deploy"].RoleId = aws.String("AROADIFFERENTROLE002")
+		stsSvc.principalErr = errors.New("nats: no responders")
 		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 		_, err := gw.resolveECRPrincipal(baseClaims(assumedARN))
 		require.Error(t, err)
-		assert.False(t, isECRDependencyFailure(err))
+		assert.True(t, isECRDependencyFailure(err))
 	})
 
 	t.Run("expired session", func(t *testing.T) {
@@ -462,16 +529,6 @@ func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
 		// underlying role — must be rejected even though PrincipalType matches.
 		claims.Subject = "arn:aws:sts::" + ecrPrincipalTestAccount + ":assumed-role/other-role/session-1"
 		_, err := gw.resolveECRPrincipal(claims)
-		require.Error(t, err)
-	})
-
-	t.Run("cross-account underlying role ARN rejected", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		stsSvc := newECRMockSTSService()
-		assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
-		stsSvc.sessions[ecrPrincipalTestASID].UnderlyingRoleARN = "arn:aws:iam::000000000099:role/deploy"
-		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-		_, err := gw.resolveECRPrincipal(baseClaims(assumedARN))
 		require.Error(t, err)
 	})
 

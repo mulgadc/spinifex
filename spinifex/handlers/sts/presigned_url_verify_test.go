@@ -44,8 +44,7 @@ func presignTestURL(t *testing.T, accessKeyID, secret, clusterName string, signe
 // CreateAccessKey path (returns the plaintext once).
 func seedAccessKey(t *testing.T, svc *STSServiceImpl, accountID, userName string) (akid, secret string) {
 	t.Helper()
-	_, err := svc.iamSvc.CreateUser(accountID, &iam.CreateUserInput{UserName: aws.String(userName)})
-	require.NoError(t, err)
+	seedUser(t, svc, accountID, userName)
 	out, err := svc.iamSvc.CreateAccessKey(accountID, &iam.CreateAccessKeyInput{UserName: aws.String(userName)})
 	require.NoError(t, err)
 	return aws.StringValue(out.AccessKey.AccessKeyId), aws.StringValue(out.AccessKey.SecretAccessKey)
@@ -105,6 +104,35 @@ func TestVerifyPresignedGetCallerIdentity_HappyPath_SessionCred(t *testing.T) {
 	assert.Equal(t, testCallerAccountID, got.AccountID)
 	assert.Equal(t, cluster, got.XK8sAwsID)
 	assert.Equal(t, principalTypeAssumedRolePresigned, got.PrincipalType)
+}
+
+// Before the continuity check the session branch performed no IAM lookup at
+// all, so a stale session left a working path to a cluster identity mapping
+// keyed on an ARN whose role no longer exists.
+func TestVerifyPresignedGetCallerIdentity_StaleSessionRejected(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "irsa-stale",
+		trustPolicyAllowingUser(testCallerARN()))
+
+	assumeOut, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess-stale"))
+	require.NoError(t, err)
+	akid := aws.StringValue(assumeOut.Credentials.AccessKeyId)
+	secret := aws.StringValue(assumeOut.Credentials.SecretAccessKey)
+
+	deleteRole(t, svc, testCallerAccountID, "irsa-stale")
+	createRoleInAccount(t, svc, testCallerAccountID, "irsa-stale", trustPolicyAllowingWildcard())
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "stale-cluster"
+	u := presignTestURL(t, akid, secret, cluster, signedAt, 900)
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+	assert.Nil(t, got)
 }
 
 // ----- Cross-cluster anti-replay (Q10 mandatory) --------------------------

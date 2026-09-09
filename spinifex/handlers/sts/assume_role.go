@@ -435,6 +435,11 @@ type sessionEnvelope struct {
 	SessionName    string
 	SourceIdentity string
 
+	// UserID is the immutable IAM UserId; set only on a user envelope, as RoleID
+	// is set only on a role one. Both are what a session is bound to, so a
+	// same-name replacement of the principal cannot inherit it.
+	UserID string
+
 	// Assumed-role-only; empty for a user (GetSessionToken) envelope.
 	AssumedRoleARN    string
 	UnderlyingRoleARN string
@@ -496,6 +501,7 @@ func (s *STSServiceImpl) mintSession(ctx context.Context, env sessionEnvelope, d
 			RoleID:            env.RoleID,
 			AssumedRoleID:     env.AssumedRoleID,
 			SessionName:       env.SessionName,
+			UserID:            env.UserID,
 			SourceIdentity:    env.SourceIdentity,
 			ExpiresAt:         expiresAt,
 			CreatedAt:         now,

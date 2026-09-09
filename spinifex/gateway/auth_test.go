@@ -1622,6 +1622,9 @@ type mockSTSService struct {
 	tokens    map[string]string // AKID → plaintext wire token for HMAC equivalence
 	lookupErr error
 	lookups   atomic.Int32 // counts LookupSessionCredential calls for negative-side-effect assertions
+
+	principalErr    error        // verdict or fault the continuity check returns
+	principalChecks atomic.Int32 // counts VerifySessionPrincipal calls, to pin its ordering
 }
 
 func (m *mockSTSService) LookupSessionCredential(accessKeyID string) (*handlers_sts.SessionCredential, error) {
@@ -1650,6 +1653,24 @@ func (m *mockSTSService) VerifySessionToken(cred *handlers_sts.SessionCredential
 		return false
 	}
 	return want == wireToken
+}
+
+// VerifySessionPrincipal defaults to "still the same principal"; principalErr
+// drives the rejection-verdict and dependency-fault branches.
+func (m *mockSTSService) VerifySessionPrincipal(cred *handlers_sts.SessionCredential) (*handlers_sts.SessionPrincipal, error) {
+	m.principalChecks.Add(1)
+	if m.principalErr != nil {
+		return nil, m.principalErr
+	}
+	if cred == nil {
+		return nil, errors.New("nil session credential")
+	}
+	return &handlers_sts.SessionPrincipal{
+		UserID:   cred.UserID,
+		RoleID:   cred.RoleID,
+		RoleName: cred.SessionName,
+		RoleARN:  cred.UnderlyingRoleARN,
+	}, nil
 }
 
 const (
@@ -1879,6 +1900,99 @@ func TestSigV4Auth_Session_AKIDNotInBucket(t *testing.T) {
 
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	assert.Contains(t, string(body), "InvalidClientTokenId")
+}
+
+// A session whose backing principal was deleted, or recreated under the same
+// name with a different immutable ID, must not authenticate. InvalidClientTokenId
+// rather than ExpiredToken: the credential itself has not expired.
+func TestSigV4Auth_Session_StalePrincipalRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"gone", handlers_sts.ErrSessionPrincipalGone},
+		{"replaced", handlers_sts.ErrSessionPrincipalReplaced},
+		{"legacy", handlers_sts.ErrSessionPrincipalLegacy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+			stsMock.principalErr = tc.err
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Host = "localhost:9999"
+			signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+
+			resp := doRequest(handler, req)
+			body, _ := io.ReadAll(resp.Body)
+
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			assert.Contains(t, string(body), awserrors.ErrorInvalidClientTokenId)
+		})
+	}
+}
+
+// A fault is not a verdict: an IAM outage must surface as InternalError so the
+// client retries rather than discarding a credential that is still good.
+func TestSigV4Auth_Session_PrincipalCheckFault_IsInternalError(t *testing.T) {
+	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+	stsMock.principalErr = errors.New("jetstream unavailable")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Contains(t, string(body), awserrors.ErrorInternalError)
+}
+
+// Ordering pin: the continuity check reads the IAM users and roles buckets, and
+// an AKID travels in the Authorization header in cleartext. It must stay behind
+// sig.Verify, so a bad signature is answered without the check running at all.
+func TestSigV4Auth_Session_StalePrincipal_BadSignatureWinsFirst(t *testing.T) {
+	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+	stsMock.principalErr = handlers_sts.ErrSessionPrincipalReplaced
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, testSessionAKID, "wrong-secret-key", testSessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Contains(t, string(body), awserrors.ErrorSignatureDoesNotMatch)
+	assert.Zero(t, stsMock.principalChecks.Load(),
+		"continuity check must not run before the signature verifies")
+}
+
+// The other half of the ordering pin: a good signature does reach the check.
+func TestSigV4Auth_Session_ValidSignature_RunsPrincipalCheck(t *testing.T) {
+	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+	assert.Equal(t, int32(1), stsMock.principalChecks.Load())
+}
+
+// A long-lived credential has no session record to check, so the door skips it.
+func TestSigV4Auth_LongLived_SkipsPrincipalCheck(t *testing.T) {
+	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+
+	doRequest(handler, req)
+	assert.Zero(t, stsMock.principalChecks.Load())
 }
 
 func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {

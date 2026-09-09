@@ -122,6 +122,16 @@ func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*Presign
 		if presignedTimeNow().After(cred.ExpiresAt) {
 			return nil, "", errors.New(awserrors.ErrorExpiredToken)
 		}
+		// Without this the session branch performs no IAM lookup at all, so even a
+		// deleted principal leaves a working path to its cluster identity mapping.
+		if _, err := s.VerifySessionPrincipal(cred); err != nil {
+			if IsSessionPrincipalVerdict(err) {
+				slog.Warn("VerifyPresignedGetCallerIdentity: session principal continuity check failed",
+					"akid", accessKeyID, "reason", err)
+				return nil, "", errors.New(awserrors.ErrorInvalidIdentityToken)
+			}
+			return nil, "", fmt.Errorf("verify session principal: %w", err)
+		}
 		secret, err := handlers_iam.DecryptSecret(cred.SecretEncrypted, s.masterKey)
 		if err != nil {
 			return nil, "", fmt.Errorf("decrypt session secret: %w", err)

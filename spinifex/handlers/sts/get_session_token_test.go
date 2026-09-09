@@ -18,6 +18,7 @@ import (
 
 func TestGetSessionToken_HappyPath_MintsUserSession(t *testing.T) {
 	svc, _ := newTestSetup(t)
+	userID := seedUser(t, svc, testCallerAccountID, testCallerUserName)
 
 	out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID,
 		&sts.GetSessionTokenInput{})
@@ -45,6 +46,9 @@ func TestGetSessionToken_HappyPath_MintsUserSession(t *testing.T) {
 	assert.Equal(t, principalTypeUser, stored.PrincipalType)
 	assert.Equal(t, testCallerUserName, stored.SessionName)
 	assert.Equal(t, testCallerAccountID, stored.AccountID)
+	// The name alone does not identify the principal: the immutable ID must be
+	// persisted, or a same-name replacement inherits the session.
+	assert.Equal(t, userID, stored.UserID)
 	assert.Empty(t, stored.AssumedRoleARN)
 	assert.Empty(t, stored.UnderlyingRoleARN)
 	assert.Empty(t, stored.RoleID)
@@ -66,6 +70,7 @@ func TestGetSessionToken_HappyPath_MintsUserSession(t *testing.T) {
 
 func TestGetSessionToken_NilInput_DefaultsToTwelveHours(t *testing.T) {
 	svc, _ := newTestSetup(t)
+	seedUser(t, svc, testCallerAccountID, testCallerUserName)
 
 	out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID, nil)
 	require.NoError(t, err)
@@ -76,6 +81,7 @@ func TestGetSessionToken_NilInput_DefaultsToTwelveHours(t *testing.T) {
 
 func TestGetSessionToken_DurationClamp(t *testing.T) {
 	svc, _ := newTestSetup(t)
+	seedUser(t, svc, testCallerAccountID, testCallerUserName)
 
 	cases := []struct {
 		name      string
@@ -150,6 +156,18 @@ func TestGetSessionToken_RejectsMissingUserName(t *testing.T) {
 	svc, _ := newTestSetup(t)
 
 	out, err := svc.GetSessionToken(testCallerAccountID, "", principalTypeUser, testCallerAccessKeyID, &sts.GetSessionTokenInput{})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
+	assert.Nil(t, out)
+}
+
+// A session that cannot be bound to an immutable ID is worse than no session:
+// it would be indistinguishable from a legacy record and rejected at first use.
+func TestGetSessionToken_UnresolvableCaller_FailsLoud(t *testing.T) {
+	svc, _ := newTestSetup(t)
+
+	out, err := svc.GetSessionToken(testCallerAccountID, "no-such-user", principalTypeUser, testCallerAccessKeyID,
+		&sts.GetSessionTokenInput{})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 	assert.Nil(t, out)

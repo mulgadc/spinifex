@@ -14,6 +14,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
@@ -163,6 +164,14 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
+			// Principal state, same class as the account check above and deferred for
+			// the same reason: a session name resolves to whichever principal holds it
+			// now, so it has to be checked against the ID the session was minted for.
+			if errCode := gw.checkSessionPrincipal(principal, sig.Credential.AccessKeyID, clientIP); errCode != "" {
+				gw.writeSigV4Error(w, r, errCode)
+				return
+			}
+
 			// Resolved here, once, rather than per policy check: a fault must fail
 			// the request rather than authorize it against a context missing the key.
 			userID, err := gw.principalUserID(principal)
@@ -282,6 +291,9 @@ type principalContext struct {
 	// userID is aws:userid, resolved where the principal is so the value cannot
 	// differ between two policy checks in the same request.
 	userID string
+	// sessionCred is the rehydrated STS record on the ASIA path, nil on the
+	// long-lived one. It carries the continuity check past sig.Verify.
+	sessionCred *handlers_sts.SessionCredential
 }
 
 // resolveLongLivedAKID handles the AKIA path: IAM lookup, status check, secret decrypt.
@@ -368,6 +380,7 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 			identity:      cred.SessionName,
 			accountID:     cred.AccountID,
 			principalType: principalTypeUser,
+			sessionCred:   cred,
 		}, ""
 	}
 
@@ -379,7 +392,44 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 		assumedRoleARN:    cred.AssumedRoleARN,
 		assumedRoleID:     cred.AssumedRoleID,
 		underlyingRoleARN: cred.UnderlyingRoleARN,
+		sessionCred:       cred,
 	}, ""
+}
+
+// checkSessionPrincipal re-verifies that a session's backing principal still
+// exists with the immutable ID the session was minted for, returning an AWS
+// error code to fail with or "" to proceed. A nil sessionCred (long-lived
+// credential) is a no-op.
+//
+// Deliberately not folded into resolveSessionAKID: that runs pre-signature
+// because it must produce the secret, whereas this reads the IAM users and
+// roles buckets. An AKID travels in cleartext, so running it there would let
+// anyone holding a copied one drive IAM reads with garbage signatures.
+func (gw *GatewayConfig) checkSessionPrincipal(principal principalContext, accessKeyID, clientIP string) string {
+	if principal.sessionCred == nil {
+		return ""
+	}
+	if gw.STSService == nil {
+		slog.Error("SigV4 auth: STS service not initialized", "accessKeyID", accessKeyID)
+		return awserrors.ErrorInternalError
+	}
+
+	if _, err := gw.STSService.VerifySessionPrincipal(principal.sessionCred); err != nil {
+		if !handlers_sts.IsSessionPrincipalVerdict(err) {
+			slog.Error("Session principal continuity check faulted, refusing to authorize",
+				"accessKeyID", accessKeyID, "err", err)
+			return awserrors.ErrorInternalError
+		}
+		// InvalidClientTokenId, not ExpiredToken: the credential has not expired,
+		// the principal behind it is no longer the one it was minted for.
+		slog.Warn("Auth failure: session principal continuity check failed",
+			"accessKeyID", accessKeyID, "sourceIP", clientIP,
+			"identity", principal.identity, "principalType", principal.principalType,
+			"reason", err)
+		gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("session-principal", accessKeyID))
+		return awserrors.ErrorInvalidClientTokenId
+	}
+	return ""
 }
 
 // writeSigV4Error writes an auth-failure error in the service-appropriate format.

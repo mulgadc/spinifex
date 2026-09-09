@@ -43,7 +43,10 @@ func ResolveRoleByARN(svc RoleGetter, roleARN string) (string, *iam.Role, error)
 	case errors.Is(err, auth.ErrRoleARNMismatch):
 		return "", nil, ErrRoleUnresolved
 	case err != nil:
-		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+		// Matched the same way the user side matches it, so a wrapped NoSuchEntity
+		// cannot read as a deleted role on one branch and a dependency fault on the
+		// other. Both directions fail closed; only the answer's shape differs.
+		if awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity) {
 			return "", nil, ErrRoleUnresolved
 		}
 		return "", nil, err

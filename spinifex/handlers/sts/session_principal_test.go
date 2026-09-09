@@ -1,3 +1,7 @@
+// behind the unexported STSServiceImpl.iamSvc, which the fault cases swap out,
+// and the credential fixtures set unexported principal-type constants.
+//
+//test:in-package — the verdicts are asserted against the real IAM backend
 package handlers_sts
 
 import (

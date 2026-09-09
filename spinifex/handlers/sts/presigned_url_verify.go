@@ -76,7 +76,7 @@ func (s *STSServiceImpl) VerifyPresignedGetCallerIdentity(presignedURL, expected
 		return nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 	}
 
-	principal, secret, err := s.resolvePrincipalForVerify(req.Credential.AccessKeyID)
+	principal, secret, sessionCred, err := s.resolvePrincipalForVerify(req.Credential.AccessKeyID)
 	if err != nil {
 		return nil, err
 	}
@@ -92,8 +92,40 @@ func (s *STSServiceImpl) VerifyPresignedGetCallerIdentity(presignedURL, expected
 		return nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 	}
 
+	// Deferred past req.Verify for the reason the SigV4 door defers it: the check
+	// reads the IAM users and roles buckets, and an AKID travels in cleartext, so
+	// running it earlier lets anyone holding a copy drive IAM reads unauthenticated.
+	if err := s.checkVerifySessionPrincipal(sessionCred, req.Credential.AccessKeyID); err != nil {
+		return nil, err
+	}
+
 	principal.XK8sAwsID = expectedClusterName
 	return principal, nil
+}
+
+// checkVerifySessionPrincipal maps a continuity verdict onto this door's
+// vocabulary. A nil cred is the long-lived path, which has no session to check.
+func (s *STSServiceImpl) checkVerifySessionPrincipal(cred *SessionCredential, accessKeyID string) error {
+	if cred == nil {
+		return nil
+	}
+
+	// Without this the session branch performs no IAM lookup at all, so even a
+	// deleted principal leaves a working path to its cluster identity mapping.
+	if _, err := s.VerifySessionPrincipal(cred); err != nil {
+		if IsSessionPrincipalVerdict(err) {
+			slog.Warn("VerifyPresignedGetCallerIdentity: session principal continuity check failed",
+				"akid", accessKeyID, "reason", err)
+			return errors.New(awserrors.ErrorInvalidIdentityToken)
+		}
+		// The NATS responder logs every verify failure at Debug, on the assumption
+		// that a rejection is the expected case. A fault is not, and would otherwise
+		// take the fleet down with nothing written at production log level.
+		slog.Error("VerifyPresignedGetCallerIdentity: session principal check faulted, refusing to authorize",
+			"akid", accessKeyID, "err", err)
+		return fmt.Errorf("verify session principal: %w", err)
+	}
+	return nil
 }
 
 // mapSigv4Err maps sigv4 sentinel errors onto AWS error codes. Time-window failures
@@ -109,57 +141,48 @@ func mapSigv4Err(err error) error {
 
 // resolvePrincipalForVerify resolves an access key to its plaintext secret and a
 // PresignedCallerIdentity skeleton. Branches on AKID prefix (session vs long-lived).
-func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*PresignedCallerIdentity, string, error) {
+// The session record comes back so the caller can check continuity past the signature.
+func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*PresignedCallerIdentity, string, *SessionCredential, error) {
 	switch {
 	case strings.HasPrefix(accessKeyID, SessionAccessKeyIDPrefix):
 		cred, err := s.LookupSessionCredential(accessKeyID)
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		if cred == nil {
-			return nil, "", errors.New(awserrors.ErrorInvalidIdentityToken)
+			return nil, "", nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 		}
 		if presignedTimeNow().After(cred.ExpiresAt) {
-			return nil, "", errors.New(awserrors.ErrorExpiredToken)
-		}
-		// Without this the session branch performs no IAM lookup at all, so even a
-		// deleted principal leaves a working path to its cluster identity mapping.
-		if _, err := s.VerifySessionPrincipal(cred); err != nil {
-			if IsSessionPrincipalVerdict(err) {
-				slog.Warn("VerifyPresignedGetCallerIdentity: session principal continuity check failed",
-					"akid", accessKeyID, "reason", err)
-				return nil, "", errors.New(awserrors.ErrorInvalidIdentityToken)
-			}
-			return nil, "", fmt.Errorf("verify session principal: %w", err)
+			return nil, "", nil, errors.New(awserrors.ErrorExpiredToken)
 		}
 		secret, err := handlers_iam.DecryptSecret(cred.SecretEncrypted, s.masterKey)
 		if err != nil {
-			return nil, "", fmt.Errorf("decrypt session secret: %w", err)
+			return nil, "", nil, fmt.Errorf("decrypt session secret: %w", err)
 		}
 		return &PresignedCallerIdentity{
 			AccountID:     cred.AccountID,
 			ARN:           cred.AssumedRoleARN,
 			UserID:        cred.AssumedRoleID,
 			PrincipalType: principalTypeAssumedRolePresigned,
-		}, secret, nil
+		}, secret, cred, nil
 	case strings.HasPrefix(accessKeyID, longLivedAccessKeyIDPrefix):
 		ak, err := s.iamSvc.LookupAccessKey(accessKeyID)
 		if err != nil {
-			if strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity) {
-				return nil, "", errors.New(awserrors.ErrorInvalidIdentityToken)
+			if awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity) {
+				return nil, "", nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 			}
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		if ak.Status != handlers_iam.AccessKeyStatusActive {
-			return nil, "", errors.New(awserrors.ErrorInvalidIdentityToken)
+			return nil, "", nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 		}
 		secret, err := s.iamSvc.DecryptSecret(ak.SecretAccessKey)
 		if err != nil {
-			return nil, "", fmt.Errorf("decrypt IAM secret: %w", err)
+			return nil, "", nil, fmt.Errorf("decrypt IAM secret: %w", err)
 		}
 		userOut, err := s.iamSvc.GetUser(ak.AccountID, &iam.GetUserInput{UserName: aws.String(ak.UserName)})
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		userARN := aws.StringValue(userOut.User.Arn)
 		userID := aws.StringValue(userOut.User.UserId)
@@ -171,9 +194,9 @@ func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*Presign
 			ARN:           userARN,
 			UserID:        userID,
 			PrincipalType: principalTypeUserPresigned,
-		}, secret, nil
+		}, secret, nil, nil
 	default:
-		return nil, "", errors.New(awserrors.ErrorInvalidIdentityToken)
+		return nil, "", nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 	}
 }
 

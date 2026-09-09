@@ -3,7 +3,6 @@ package handlers_sts
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -73,7 +72,7 @@ func (s *STSServiceImpl) verifySessionUser(cred *SessionCredential) (*SessionPri
 
 	out, err := s.iamSvc.GetUser(cred.AccountID, &iam.GetUserInput{UserName: aws.String(cred.SessionName)})
 	if err != nil {
-		if strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity) {
+		if awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity) {
 			return nil, ErrSessionPrincipalGone
 		}
 		return nil, fmt.Errorf("resolve session user: %w", err)

@@ -1,6 +1,7 @@
 package handlers_sts
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -133,6 +134,45 @@ func TestVerifyPresignedGetCallerIdentity_StaleSessionRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
 	assert.Nil(t, got)
+}
+
+// Ordering pin, the counterpart of the SigV4 door's: the continuity check reads
+// the IAM users and roles buckets, and a presigned URL carries its AKID in the
+// clear, so it must stay behind the signature. A faulting IAM backend makes the
+// check's presence observable — its error is distinct from a signature rejection.
+func TestVerifyPresignedGetCallerIdentity_BadSignature_SkipsPrincipalCheck(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "irsa-order",
+		trustPolicyAllowingUser(testCallerARN()))
+
+	assumeOut, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess-order"))
+	require.NoError(t, err)
+	akid := aws.StringValue(assumeOut.Credentials.AccessKeyId)
+	goodSecret := aws.StringValue(assumeOut.Credentials.SecretAccessKey)
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+	const cluster = "order-cluster"
+
+	boom := errors.New("jetstream unavailable")
+	svc.iamSvc = faultingIAMService{err: boom}
+
+	// Wrong secret: the signature must be rejected without the check ever running.
+	got, err := svc.VerifyPresignedGetCallerIdentity(
+		presignTestURL(t, akid, "wrong-secret-key", cluster, signedAt, 900), cluster)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+	assert.NotErrorIs(t, err, boom, "continuity check must not run before the signature verifies")
+
+	// The other half: a good signature does reach the check, and its fault is not
+	// laundered into a token rejection.
+	got, err = svc.VerifyPresignedGetCallerIdentity(
+		presignTestURL(t, akid, goodSecret, cluster, signedAt, 900), cluster)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, boom)
 }
 
 // ----- Cross-cluster anti-replay (Q10 mandatory) --------------------------

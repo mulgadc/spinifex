@@ -279,7 +279,7 @@ jobs:
         env:
           PERF_EXTERNAL_HOSTS: ${{ steps.perf_hosts.outputs.hosts }}
           PERF_CONFIGS: spinifex-3node
-          PERF_PRESET: ${{ inputs.perf_preset || 'smoke' }}
+          PERF_PRESET: ${{ inputs.perf_preset || 'compare' }}
           PERF_EXTERNAL_SHA: ${{ steps.predastore.outputs.commit }}
           SSH_KEY: ${{ steps.cluster.outputs.ssh_key }}
           SSH_USER: ${{ steps.cluster.outputs.ssh_user }}

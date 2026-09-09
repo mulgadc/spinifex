@@ -199,6 +199,21 @@ func TestVerifySessionPrincipal_CrossAccountRoleARN_Rejected(t *testing.T) {
 	assert.True(t, IsSessionPrincipalVerdict(err))
 }
 
+// A stored ARN that does not parse names no principal, so it is a verdict on
+// the session rather than a dependency fault. Answering InternalError here
+// would tell the client to retry a credential that can never resolve, and on
+// the SigV4 door that answer also skips the rate limiter.
+func TestVerifySessionPrincipal_MalformedRoleARN_Gone(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
+	cred := mintRoleSession(t, svc, testCallerAccountID, aws.StringValue(role.Arn), "session-1")
+	cred.UnderlyingRoleARN = "not-an-arn"
+
+	_, err := svc.VerifySessionPrincipal(cred)
+	assert.ErrorIs(t, err, ErrSessionPrincipalGone)
+	assert.True(t, IsSessionPrincipalVerdict(err))
+}
+
 // ----- Legacy records fail closed ----------------------------------------
 
 // Records minted before the immutable ID was persisted carry nothing to compare,

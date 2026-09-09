@@ -65,7 +65,7 @@ func isECRDependencyFailure(err error) bool {
 // record is gone (invalid, 401); anything else is a dependency failure (503),
 // since it says nothing about whether the identity is still valid.
 func classifyIAMLookupErr(err error, what string) error {
-	if strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity) {
+	if awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity) {
 		return ecrInvalidPrincipal("%s not found: %w", what, err)
 	}
 	return ecrDependencyFailure("%s lookup failed: %w", what, err)
@@ -183,12 +183,10 @@ func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Clai
 	if cred.PrincipalType == principalTypeUser {
 		// GetSessionToken: the session resolves to the same user identity as a
 		// long-lived key, so it is authorized as that user.
-		identity := cred.SessionName
-
 		if claims.PrincipalType != principalTypeUser {
 			return principalContext{}, ecrInvalidPrincipal("principalType claim %q does not match resolved session", claims.PrincipalType)
 		}
-		canonicalARN, err := buildCallerARN(cred.AccountID, identity, principalTypeUser, "")
+		canonicalARN, err := buildCallerARN(cred.AccountID, cred.SessionName, principalTypeUser, "")
 		if err != nil {
 			return principalContext{}, ecrInvalidPrincipal("cannot build canonical ARN: %w", err)
 		}
@@ -197,7 +195,7 @@ func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Clai
 		}
 
 		return principalContext{
-			identity:      identity,
+			identity:      cred.SessionName,
 			accountID:     cred.AccountID,
 			principalType: principalTypeUser,
 			userID:        live.UserID,

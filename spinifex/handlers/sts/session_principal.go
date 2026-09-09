@@ -98,7 +98,10 @@ func (s *STSServiceImpl) verifySessionRole(cred *SessionCredential) (*SessionPri
 
 	roleAccountID, role, err := ResolveRoleByARN(s.iamSvc, cred.UnderlyingRoleARN)
 	if err != nil {
-		if errors.Is(err, ErrRoleUnresolved) {
+		// A stored ARN that does not parse names no role, which is a verdict on the
+		// session rather than a fault: answering InternalError would tell a client
+		// to retry a credential that can never resolve.
+		if errors.Is(err, ErrRoleUnresolved) || awserrors.IsErrorCode(err, awserrors.ErrorValidationError) {
 			return nil, ErrSessionPrincipalGone
 		}
 		return nil, fmt.Errorf("resolve session role: %w", err)

@@ -133,15 +133,7 @@ func (m *ecrMockSTSService) VerifySessionPrincipal(cred *handlers_sts.SessionCre
 	if m.principalErr != nil {
 		return nil, m.principalErr
 	}
-	if cred == nil {
-		return nil, errors.New("nil session credential")
-	}
-	return &handlers_sts.SessionPrincipal{
-		UserID:   cred.UserID,
-		RoleID:   cred.RoleID,
-		RoleName: cred.SessionName,
-		RoleARN:  cred.UnderlyingRoleARN,
-	}, nil
+	return stubSessionPrincipal(cred)
 }
 
 const (

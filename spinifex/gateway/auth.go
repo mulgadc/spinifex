@@ -426,7 +426,12 @@ func (gw *GatewayConfig) checkSessionPrincipal(principal principalContext, acces
 			"accessKeyID", accessKeyID, "sourceIP", clientIP,
 			"identity", principal.identity, "principalType", principal.principalType,
 			"reason", err)
-		gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("session-principal", accessKeyID))
+		// Every legacy record fails at once on the deploy that ships this check, so
+		// counting them would lock out a shared egress address on distinct-attempt
+		// volume alone and answer "retry later" to a fleet that cannot act on it.
+		if !errors.Is(err, handlers_sts.ErrSessionPrincipalLegacy) {
+			gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("session-principal", accessKeyID))
+		}
 		return awserrors.ErrorInvalidClientTokenId
 	}
 	return ""

@@ -1662,13 +1662,25 @@ func (m *mockSTSService) VerifySessionPrincipal(cred *handlers_sts.SessionCreden
 	if m.principalErr != nil {
 		return nil, m.principalErr
 	}
+	return stubSessionPrincipal(cred)
+}
+
+// stubSessionPrincipal is the shared "principal unchanged" answer for both
+// package doubles. It derives RoleName from the underlying role ARN rather than
+// the session name, because that is what the real implementation returns: a
+// stub echoing SessionName would let a door read the wrong field and stay green.
+func stubSessionPrincipal(cred *handlers_sts.SessionCredential) (*handlers_sts.SessionPrincipal, error) {
 	if cred == nil {
 		return nil, errors.New("nil session credential")
+	}
+	roleName := cred.UnderlyingRoleARN
+	if idx := strings.LastIndex(roleName, "/"); idx >= 0 {
+		roleName = roleName[idx+1:]
 	}
 	return &handlers_sts.SessionPrincipal{
 		UserID:   cred.UserID,
 		RoleID:   cred.RoleID,
-		RoleName: cred.SessionName,
+		RoleName: roleName,
 		RoleARN:  cred.UnderlyingRoleARN,
 	}, nil
 }
@@ -1981,6 +1993,56 @@ func TestSigV4Auth_Session_ValidSignature_RunsPrincipalCheck(t *testing.T) {
 
 	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
 	assert.Equal(t, int32(1), stsMock.principalChecks.Load())
+}
+
+// The check runs past sig.Verify, so everything reaching it holds a real
+// secret. Gone and Replaced still count toward the lockout: an attacker
+// working through a dump of leaked session credentials looking for one whose
+// principal survives presents a distinct AKID each time. Legacy must not, and
+// that is not symmetry for its own sake — every record predating the field
+// fails on the deploy that ships this check, so a shared egress address would
+// cross maxFailures on distinct-attempt volume alone and be told to retry
+// later by a fleet that has nothing to retry with.
+func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		recorded bool
+	}{
+		{"gone", handlers_sts.ErrSessionPrincipalGone, true},
+		{"replaced", handlers_sts.ErrSessionPrincipalReplaced, true},
+		{"legacy", handlers_sts.ErrSessionPrincipalLegacy, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rl := NewAuthRateLimiter()
+			defer rl.Stop()
+			gw := &GatewayConfig{
+				DisableLogging: true,
+				RateLimiter:    rl,
+				STSService:     &mockSTSService{principalErr: tc.err},
+			}
+			principal := principalContext{
+				identity:      "test-session",
+				principalType: principalTypeAssumedRole,
+				sessionCred:   &handlers_sts.SessionCredential{AccessKeyID: testSessionAKID},
+			}
+
+			const ip = "10.15.8.11"
+			code := gw.checkSessionPrincipal(principal, testSessionAKID, ip)
+			require.Equal(t, awserrors.ErrorInvalidClientTokenId, code)
+
+			rl.mu.RLock()
+			defer rl.mu.RUnlock()
+			rec := rl.records[ip]
+			if !tc.recorded {
+				assert.Nil(t, rec, "a legacy verdict must not count toward the lockout")
+				return
+			}
+			require.NotNil(t, rec)
+			assert.Len(t, rec.failures, 1)
+		})
+	}
 }
 
 // A long-lived credential has no session record to check, so the door skips it.

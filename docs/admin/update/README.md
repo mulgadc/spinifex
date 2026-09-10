@@ -37,20 +37,6 @@ For operators who want to review migrations before they are applied, a manual up
 > [!WARNING]
 > **Swapping the `spx` binary alone is not an upgrade.** Systemd unit files (`KillMode`, `TimeoutStopSec`, drain ordering, and similar) are written once at install time and never re-asserted just because a new binary is in place — a node "upgraded" by replacing `/usr/local/bin/spx` directly keeps running whatever units it was first installed with, which can silently disagree with the new binary's behaviour. Re-running the installer always reinstalls units unconditionally, so it is unaffected. `spx admin upgrade` now reconciles units too, so it closes this gap for operators who update the binary by hand. See [Checking for Unit Drift](#checking-for-unit-drift).
 
-> [!WARNING]
-> **Object storage is exempt when upgrading from v1.15.0 or earlier to v1.16.0.** Predastore's configuration schema and on-disk layout changed with the object storage cutover in v1.16.0, and no migration converts an installation from before it. `spx admin upgrade` will not report anything pending for `predastore.toml`, and updating the binary over such an installation leaves Predastore unable to start. Those clusters have to be re-initialised from scratch, which discards their stored objects — export anything you need first. Upgrades between v1.16.0 and later releases are unaffected.
-
-> [!WARNING]
-> **AMI metadata is exempt when upgrading from v1.16.0 or earlier to the release carrying the EBS-provider decoupling.** AMI metadata moved to `ebsmetadata` documents, and the legacy path that read it from `ami-<id>/config.json` was removed rather than migrated. There is no prefix scan, no fallback and no backfill at daemon start, so an AMI imported before the change becomes invisible to the control plane afterwards: `describe-images --image-ids` answers `InvalidAMIID.NotFound` and launches fail with `AMI has no snapshot ID, cannot perform zero-copy clone`. As with object storage above, `spx admin upgrade` reports nothing pending, because the gap is in stored data rather than in a config file.
->
-> **Re-import affected AMIs after upgrading**, using [`spx admin images import`](/docs/spinifex-admin-cli), which writes metadata in the new location. If the source images are no longer available, the installation has to be re-initialised. Verify before you rely on it — an AMI is only healthy if it resolves by ID, not merely if it appears in the list:
->
-> ```bash
-> aws ec2 describe-images --image-ids <ami-id>
-> ```
->
-> This warning covers AMI metadata specifically, which is what has been observed. Check any other imported state you depend on before upgrading a cluster you cannot rebuild.
-
 ## Instructions
 
 ## Step 1. Re-run the Installer

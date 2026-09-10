@@ -93,10 +93,7 @@ sudo spx admin gpu enable
 
 - One `m8i.2xlarge` (`cpu1`) and one `g6.2xlarge` (`gpu`) instance provisioned and reachable — the `gpu` instance must land on the node with passthrough configured; see [Launching Instances](/docs/launching-instances) for the full provisioning workflow including VPC, key pair, and security group setup
 - ~20 GB free disk per instance for model weights
-- Python 3.14, `pip install vllm` (GPU instance) or the CPU wheel with
-  `--extra-index-url https://download.pytorch.org/whl/cpu` (CPU instance) —
-  vLLM 0.26.0 / PyTorch 2.11.0 on both, `torch+cu130` on the GPU instance,
-  `torch+cpu` on the CPU instance
+- Python 3.14, `pip install vllm` (GPU instance) or the CPU wheel with `--extra-index-url https://download.pytorch.org/whl/cpu` (CPU instance) — vLLM 0.26.0 / PyTorch 2.11.0 on both, `torch+cu130` on the GPU instance, `torch+cpu` on the CPU instance
 
 ## Instructions
 
@@ -129,16 +126,8 @@ VLLM_USE_FLASHINFER_SAMPLER=0 vllm serve ./Qwen2.5-7B-Instruct \
 Two environment-specific workarounds were needed on this cluster, worth recording for
 anyone reproducing this:
 
-- **cpu1**: vLLM's compiled extension (`vllm/_C.abi3.so`) shipped with an executable-stack
-  ELF flag (`GNU_STACK` = RWE) that this guest kernel refuses to `mprotect`
-  (`cannot enable executable stack as shared object requires: Invalid argument`),
-  crashing the server at import time. Fixed with `patchelf --clear-execstack
-  vllm/_C.abi3.so` — a one-time, host-local binary patch, not a vLLM or model issue.
-- **gpu**: this instance has no CUDA toolkit (`nvcc`) installed, only the driver/runtime —
-  fine for running pre-built PyTorch/CUDA kernels, but vLLM's default sampler
-  (FlashInfer) JIT-compiles a kernel on first use and fails without `nvcc`.
-  `VLLM_USE_FLASHINFER_SAMPLER=0` falls back to vLLM's native PyTorch sampler, which
-  needs no compilation step.
+- **cpu1**: vLLM's compiled extension (`vllm/_C.abi3.so`) shipped with an executable-stack ELF flag (`GNU_STACK` = RWE) that this guest kernel refuses to `mprotect` (`cannot enable executable stack as shared object requires: Invalid argument`), crashing the server at import time. Fixed with `patchelf --clear-execstack vllm/_C.abi3.so` — a one-time, host-local binary patch, not a vLLM or model issue.
+- **gpu**: this instance has no CUDA toolkit (`nvcc`) installed, only the driver/runtime — fine for running pre-built PyTorch/CUDA kernels, but vLLM's default sampler (FlashInfer) JIT-compiles a kernel on first use and fails without `nvcc`. `VLLM_USE_FLASHINFER_SAMPLER=0` falls back to vLLM's native PyTorch sampler, which needs no compilation step.
 
 ### 3. Confirm Intel AMX is executing for this workload
 

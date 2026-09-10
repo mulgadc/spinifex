@@ -314,14 +314,15 @@ On first load, your browser will show a TLS warning — Spinifex generates a sel
 
 1. Accept the warning to reach the login page (exact wording varies by browser — e.g. Chrome: *Advanced → Proceed to ...*, Firefox: *Advanced → Accept the Risk and Continue*).
 2. On the login page, click **Download Certificate** and save `spinifex-ca.pem` to your machine.
-3. Install the certificate as a **trusted root** on your workstation:
-
-   - **macOS:** open `spinifex-ca.pem` in Keychain Access → *System* keychain → set *Trust* to **Always Trust**.
-   - **Linux:** `sudo cp spinifex-ca.pem /usr/local/share/ca-certificates/spinifex-ca.crt && sudo update-ca-certificates`
-   - **Windows:** double-click the file → *Install Certificate* → *Local Machine* → *Trusted Root Certification Authorities*.
-   - **Browser-only (Firefox):** *Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import* and tick *Trust this CA to identify websites*.
-
+3. Install the certificate as a **trusted root** on your workstation, following the steps for your platform below.
 4. Restart your browser and reload `https://YOUR_NODE_IP:3000`. The padlock should now show a valid certificate.
+
+Step 3, by platform:
+
+- **macOS:** open `spinifex-ca.pem` in Keychain Access → *System* keychain → set *Trust* to **Always Trust**.
+- **Linux:** `sudo cp spinifex-ca.pem /usr/local/share/ca-certificates/spinifex-ca.crt && sudo update-ca-certificates`
+- **Windows:** double-click the file → *Install Certificate* → *Local Machine* → *Trusted Root Certification Authorities*.
+- **Browser-only (Firefox):** *Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import* and tick *Trust this CA to identify websites*.
 
 > **Why this is required:** the UI logs in by reading your AWS credentials through a trusted TLS channel. Browsers refuse to send credentials over an untrusted connection, so the certificate must be installed as trusted — temporary "Proceed anyway" exceptions won't work for login.
 

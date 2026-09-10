@@ -278,19 +278,11 @@ metrics are in the [benchmark repository](https://github.com/tomnewton-mulga/CIS
 
 ## What this architecture unlocks
 
-- **Cloud-to-edge placement:** run the same EC2, volume, S3 and Kubernetes patterns
-  at the site where latency, privacy, bandwidth or sovereignty requires it.
-- **Familiar operations:** keep AWS CLI profiles, Terraform/OpenTofu modules, SDKs,
-  CI/CD pipelines and deployment tooling rather than introducing a separate
-  edge-only platform.
-- **Local AI with shared data:** place GPU and AMX-capable CPU inference next to the
-  data source while keeping datasets and artifacts available to all instances through S3.
-- **A resilient foundation:** distribute control and storage services across three
-  physical Cisco nodes instead of concentrating the site on one server. Kubernetes
-  rescheduling and Raft-based storage both tolerate a single node loss without
-  operator intervention.
-- **A path back to cloud:** the same APIs at the edge and on AWS make workload
-  movement, burst strategies and consistent application packaging straightforward.
+- **Cloud-to-edge placement:** run the same EC2, volume, S3 and Kubernetes patterns at the site where latency, privacy, bandwidth or sovereignty requires it.
+- **Familiar operations:** keep AWS CLI profiles, Terraform/OpenTofu modules, SDKs, CI/CD pipelines and deployment tooling rather than introducing a separate edge-only platform.
+- **Local AI with shared data:** place GPU and AMX-capable CPU inference next to the data source while keeping datasets and artifacts available to all instances through S3.
+- **A resilient foundation:** distribute control and storage services across three physical Cisco nodes instead of concentrating the site on one server. Kubernetes rescheduling and Raft-based storage both tolerate a single node loss without operator intervention.
+- **A path back to cloud:** the same APIs at the edge and on AWS make workload movement, burst strategies and consistent application packaging straightforward.
 
 The raw measurements are evidence that the platform is functioning as designed; the
 larger outcome is a portable, resilient operating model for workloads that need cloud

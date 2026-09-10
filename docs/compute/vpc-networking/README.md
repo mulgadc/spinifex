@@ -842,18 +842,8 @@ one entry covers every security group in that VPC.
 own `spinifex.toml`, and there is no live distribution of it. Two properties of
 the current implementation make the operator responsible for consistency:
 
-- **One node writes the ACLs.** SG reconcile runs on a single CAS-elected vpcd
-  leader, which programs the shared OVN northbound DB. Whichever node holds the
-  lease is the one whose `blocked_ports_wan` / `egress_block_exempt_vpcs` is in
-  force. Leadership moves on restart or crash, so if the node configs disagree,
-  the effective policy **changes when the leader changes** and the drift pass
-  flaps the ACLs between the two states. Edit the value **identically on every
-  node**.
-- **It is read at vpcd startup, not hot-reloaded.** The policy is built once when
-  vpcd starts; editing the TOML does nothing until vpcd restarts. Deploy the
-  config change to all nodes and restart vpcd cluster-wide (take the target down
-  and confirm no `spx` process survives — a selective single-service restart is
-  not reliable on the shared binary).
+- **One node writes the ACLs.** SG reconcile runs on a single CAS-elected vpcd leader, which programs the shared OVN northbound DB. Whichever node holds the lease is the one whose `blocked_ports_wan` / `egress_block_exempt_vpcs` is in force. Leadership moves on restart or crash, so if the node configs disagree, the effective policy **changes when the leader changes** and the drift pass flaps the ACLs between the two states. Edit the value **identically on every node**.
+- **It is read at vpcd startup, not hot-reloaded.** The policy is built once when vpcd starts; editing the TOML does nothing until vpcd restarts. Deploy the config change to all nodes and restart vpcd cluster-wide (take the target down and confirm no `spx` process survives — a selective single-service restart is not reliable on the shared binary).
 
 This is the current implementation and is deliberately minimal. A future revision
 will move the exemption into shared cluster state (so a single edit propagates

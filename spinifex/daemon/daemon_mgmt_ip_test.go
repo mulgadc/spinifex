@@ -675,7 +675,7 @@ func TestCleanupMgmtNetwork_FlushesNeighForReleasedAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	plumber := &recordingPlumber{}
-	d := &Daemon{networkPlumber: plumber, mgmtIPAllocator: alloc}
+	d := &Daemon{networkPlumber: plumber, mgmtIPAllocator: alloc, mgmtBridgeIP: "10.15.8.1"}
 
 	newInstanceCleanerAdapter(d).CleanupMgmtNetwork(&vm.VM{ID: "i-abc", MgmtIP: "10.15.8.10"})
 
@@ -706,12 +706,26 @@ func TestCleanupMgmtNetwork_NoMgmtIPSkipsFlush(t *testing.T) {
 func TestInvalidateMgmtNeigh_UsesConfiguredBridge(t *testing.T) {
 	flushed, _ := captureNeighHooks(t)
 
-	d := &Daemon{config: &config.Config{}}
+	d := &Daemon{config: &config.Config{}, mgmtBridgeIP: "10.15.8.1"}
 	d.config.Daemon.MgmtBridge = "br-ctrl"
 	d.invalidateMgmtNeigh("i-abc", "10.15.8.10")
 
 	if len(*flushed) != 1 || (*flushed)[0].dev != "br-ctrl" {
 		t.Fatalf("flushed %+v, want one call on br-ctrl", *flushed)
+	}
+}
+
+// startLocal tolerates an absent bridge, and every persisted instance still
+// carries a mgmt IP. Flushing against a device that is not there would warn
+// about a blackhole that cannot happen, on every terminate.
+func TestInvalidateMgmtNeigh_NoBridgeIsNoOp(t *testing.T) {
+	flushed, _ := captureNeighHooks(t)
+
+	d := &Daemon{}
+	d.invalidateMgmtNeigh("i-abc", "10.15.8.10")
+
+	if len(*flushed) != 0 {
+		t.Errorf("flush calls = %d, want 0", len(*flushed))
 	}
 }
 

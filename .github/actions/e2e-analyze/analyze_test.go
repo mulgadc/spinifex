@@ -156,6 +156,31 @@ func TestExtractErrorLine_SkipsSuccessLoggedAfterTheFailure(t *testing.T) {
 	}
 }
 
+// "as expected" reads the same in an affirmation and in its negation, so an
+// unanchored pattern suppresses the assertion it was meant to outrank and
+// promotes a harness progress line in its place.
+func TestExtractErrorLine_KeepsNegatedExpectationAssertions(t *testing.T) {
+	body := `    isolation_test.go:60: waiting for the db instance to become available
+    isolation_test.go:80: rds-e2e-iso-a: management bridge 10.15.8.10:5432 was not refused as expected: got a connection`
+	got := extractErrorLine(body)
+	if !strings.Contains(got, "was not refused as expected") {
+		t.Errorf("extractErrorLine = %q, want the assertion at isolation_test.go:80", got)
+	}
+	if hint := extractFileHint(body); hint != "isolation_test.go:80" {
+		t.Errorf("extractFileHint = %q, want isolation_test.go:80", hint)
+	}
+}
+
+// Every candidate allowlisted leaves extractFileHint with nothing to return,
+// and unlike extractErrorLine it has no last-resort branch. A coarse pointer
+// beats sending the reader to no file at all.
+func TestExtractFileHint_FallsBackWhenEveryCandidateFiltered(t *testing.T) {
+	body := `    isolation_test.go:84: rds-e2e-iso-b: management bridge 10.15.8.11:5432 refused as expected`
+	if hint := extractFileHint(body); hint != "isolation_test.go:84" {
+		t.Errorf("extractFileHint = %q, want isolation_test.go:84", hint)
+	}
+}
+
 func TestExtractFileHint_PicksLastMatch(t *testing.T) {
 	body := "ec2helpers.go:50: setup\n    vpc_test.go:227: Eventually: condition not met"
 	got := extractFileHint(body)

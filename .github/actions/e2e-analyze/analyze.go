@@ -134,18 +134,16 @@ var cascadeMarkers = []string{
 	"Expected value not to be nil",
 }
 
-// nonFailurePatterns match content a test emits AFTER the assertion that failed:
-// t.Cleanup and harness diagnostics, and a t.Logf on a passing branch of a loop
-// whose earlier iteration called t.Errorf. Both are the LAST file:line lines in
-// the body, so extractErrorLine's keep-the-last rule picks them over the
-// assertion unless they are skipped. Go emits t.Logf and t.Errorf identically,
-// so nothing in the body distinguishes them — this is an anchored allowlist, not
-// a general rule, and a fragment loose enough to match an assertion would blank
-// out the one line the report exists to show.
+// nonFailurePatterns match content a test emits AFTER the assertion that failed
+// — t.Cleanup, harness diagnostics, or a t.Logf on a passing branch — which
+// extractErrorLine's keep-the-last rule would otherwise pick over the assertion.
+// Go emits t.Logf and t.Errorf identically, so anchor every entry: a fragment
+// loose enough to match an assertion blanks out the line the report exists to
+// show. `\bas expected\b` unanchored also matches "did not fail as expected".
 var nonFailurePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`^DB instance \S+ is gone$`),
 	regexp.MustCompile(`^db diagnostics \S+:`),
-	regexp.MustCompile(`\bas expected\b`),
+	regexp.MustCompile(`^\S+: management bridge \S+:\d+ refused as expected$`),
 }
 
 // isNonFailureLine reports whether a candidate error line was emitted after the
@@ -299,15 +297,23 @@ func extractFileHint(body string) string {
 	}
 	// Scanned line by line rather than across the body so a cleanup line's own
 	// file:line does not become the site the report points a reader at.
-	hint := ""
+	hint, filtered := "", ""
 	for _, raw := range strings.Split(body, "\n") {
 		l := strings.TrimSpace(raw)
-		if m := goFileLineRe.FindStringSubmatch(l); m != nil && isNonFailureLine(strings.TrimSpace(m[1])) {
+		all := fileHintRe.FindAllString(l, -1)
+		if len(all) == 0 {
 			continue
 		}
-		if all := fileHintRe.FindAllString(l, -1); len(all) > 0 {
-			hint = all[len(all)-1]
+		if m := goFileLineRe.FindStringSubmatch(l); m != nil && isNonFailureLine(strings.TrimSpace(m[1])) {
+			filtered = all[len(all)-1]
+			continue
 		}
+		hint = all[len(all)-1]
+	}
+	// A body whose only file:line was allowlisted still gets a pointer: coarse
+	// beats none, and extractErrorLine has the same last-resort shape.
+	if hint == "" {
+		return filtered
 	}
 	return hint
 }

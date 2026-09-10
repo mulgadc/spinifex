@@ -356,7 +356,9 @@ func (d *Daemon) mgmtBridgeName() string {
 // br-mgmt is one flat L2 segment and the address is re-handed within seconds
 // with a fresh MAC, so a surviving entry blackholes the next holder.
 func (d *Daemon) invalidateMgmtNeigh(instanceID, mgmtIP string) {
-	if mgmtIP == "" {
+	// mgmtBridgeIP is empty when startLocal found no bridge, so there is no
+	// neighbour table to hold a stale entry and `ip neigh` would only ENODEV.
+	if mgmtIP == "" || d.mgmtBridgeIP == "" {
 		return
 	}
 	bridge := d.mgmtBridgeName()

@@ -1335,10 +1335,7 @@ func (d *Daemon) startLocal() error {
 	}
 
 	// Detect management bridge for system instance control plane NICs.
-	mgmtBridge := "br-mgmt"
-	if d.config.Daemon.MgmtBridge != "" {
-		mgmtBridge = d.config.Daemon.MgmtBridge
-	}
+	mgmtBridge := d.mgmtBridgeName()
 	bridgeIP, bridgeErr := host.GetBridgeIPv4(mgmtBridge)
 	if bridgeErr != nil {
 		slog.Warn("Management bridge not detected, system instances will not get mgmt NIC", "bridge", mgmtBridge, "err", bridgeErr)

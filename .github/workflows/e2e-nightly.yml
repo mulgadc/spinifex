@@ -21,17 +21,17 @@ permissions:
 # second rather than cancelling it: a dispatch is usually a verification run
 # and discarding it loses the result someone is waiting on.
 #
-# The group is shared with e2e.yml, e2e-suites.yml and e2e-ddil.yml, which draw
-# on the same runner pools. A per-workflow group let a push-triggered E2E land
-# on top of a nightly cell and take libvirt down under both.
+# The group is shared with e2e-suites.yml and e2e-ddil.yml, which draw on the
+# same runner pools. e2e.yml is deliberately outside it: a single-cluster push
+# run is cheap enough to overlap, and grouping it stalled every push behind a
+# multi-hour nightly.
 concurrency:
   group: e2e-hypervisors
   cancel-in-progress: false
 
 # Scheduled runs are loaded from the default branch (main), so the schedule
 # trigger must stay in sync on main for cron to fire — and so must the
-# concurrency block above. main currently has none, which is why the nightly
-# cron runs ungrouped and a dispatch on any branch can land on top of it.
+# concurrency block above.
 env:
   GIT_BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
   UBUNTU_GOLD_IMAGE: /mnt/disk1/gold-images/spinifex-image-builder-ubuntu-26.04.qcow2
@@ -125,7 +125,7 @@ jobs:
       max-parallel: 3
       matrix:
         include: ${{ fromJSON(needs.select.outputs.cells) }}
-    runs-on: [ self-hosted, "${{ matrix.runner }}" ]
+    runs-on: [self-hosted, "${{ matrix.runner }}"]
     timeout-minutes: ${{ matrix.timeout_minutes || 50 }}
     env:
       TOFU_LOG: /tmp/e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}.log
@@ -1478,7 +1478,17 @@ jobs:
   # every cell so this runs last; always() so a red run is the one it describes.
   summary:
     name: run summary
-    needs: [select, matrix, baremetal, diskperf, iso-single, iso-multi, performance, stress]
+    needs:
+      [
+        select,
+        matrix,
+        baremetal,
+        diskperf,
+        iso-single,
+        iso-multi,
+        performance,
+        stress,
+      ]
     if: always()
     runs-on: ubuntu-26.04
     steps:

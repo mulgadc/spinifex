@@ -10,10 +10,11 @@ on:
         required: false
         default: ""
 
-# Shared with e2e-nightly.yml, e2e-suites.yml and e2e-ddil.yml: every one of
-# them provisions on the same runner pools and the same hypervisors, so two in
+# Shared with e2e-nightly.yml and e2e-suites.yml: every one of them provisions
+# many cells on the same runner pools and the same hypervisors, so two in
 # flight compete for their disks and their libvirt guests. Queued rather than
-# cancelled — a run in progress is someone's result, not a stale one.
+# cancelled — a run in progress is someone's result, not a stale one. e2e.yml
+# is outside the group: one cluster per run is cheap enough to overlap.
 concurrency:
   group: e2e-hypervisors
   cancel-in-progress: false

@@ -24,27 +24,15 @@ on:
         required: false
         default: ""
 
-# Shared with e2e-nightly.yml, e2e-suites.yml and e2e-ddil.yml: every one of
-# them provisions on the same runner pools and the same hypervisors, so two in
-# flight compete for their disks and their libvirt guests. Queued rather than
-# cancelled — a run in progress is someone's result, not a stale one.
-concurrency:
-  group: e2e-hypervisors
-  cancel-in-progress: false
-
 permissions:
   contents: read
   statuses: write
-  # actions: read lets the otel-job-id action look up a job's numeric id via
-  # the Actions API — github.job is only the YAML key, no context exposes it.
   actions: read
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
   SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-iam e2e-partialblock' }}
   TEST_RUN: ${{ inputs.test_run || '' }}
-  # OTLP export to the central Elastic sink (wattle). Repo variable overrides;
-  # empty string disables telemetry entirely.
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 

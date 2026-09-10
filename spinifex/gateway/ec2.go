@@ -150,6 +150,7 @@ var ec2Actions = map[string]ec2Action{
 			return out, err
 		}
 		gateway_ec2_instance.EnrichInstanceProfileIDs(out, gw.IAMService, accountID)
+		gw.runDescribeShadow(ctx, input, accountID, out)
 		return out, nil
 	}),
 	"RunInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {

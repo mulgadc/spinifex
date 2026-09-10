@@ -63,6 +63,20 @@ func TestRunsOn_TerminatedIsStillTheNodesToMigrate(t *testing.T) {
 	assert.True(t, daemon.RunsOn(membershipRecord(vm.StateTerminated, vm.DesiredRunning, "node-1"), "node-1"))
 }
 
+// The record-shaped and VM-shaped predicates are two callers of one rule, not
+// two rules. For the same underlying record they must never disagree.
+func TestOperatorStopped_RecordAndVMShapedAgree(t *testing.T) {
+	for _, status := range allInstanceStates {
+		for _, desired := range []vm.DesiredState{vm.DesiredRunning, vm.DesiredStopped} {
+			v := &vm.VM{ID: "i-1", Status: status, DesiredState: desired}
+			recordShaped := daemon.OperatorStopped(v.Record())
+			vmShaped := v.OperatorStopped()
+			assert.Equal(t, recordShaped, vmShaped, "status=%s desired=%q", status, desired)
+		}
+	}
+	assert.Equal(t, daemon.OperatorStopped(nil), (*vm.VM)(nil).OperatorStopped())
+}
+
 func TestRunsOn_AnotherNodesRecordIsNotOurs(t *testing.T) {
 	assert.False(t, daemon.RunsOn(membershipRecord(vm.StateRunning, vm.DesiredRunning, "node-2"), "node-1"))
 	assert.False(t, daemon.RunsOn(membershipRecord(vm.StateRunning, vm.DesiredRunning, ""), "node-1"))

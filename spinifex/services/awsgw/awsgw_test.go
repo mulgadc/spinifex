@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -175,6 +176,28 @@ func TestResolveSignupMaxAccounts(t *testing.T) {
 			parsed, err := loadAWSGWConfig(path)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, resolveSignupMaxAccounts(parsed.Signup))
+		})
+	}
+}
+
+// fanout is the default, and an absent or unrecognised configured value must
+// fall back to it rather than failing the gateway to start over a typo.
+func TestResolveDescribeSource(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "unset defaults to fanout", raw: "", want: gateway.DescribeSourceFanout},
+		{name: "explicit fanout", raw: gateway.DescribeSourceFanout, want: gateway.DescribeSourceFanout},
+		{name: "explicit shadow", raw: gateway.DescribeSourceShadow, want: gateway.DescribeSourceShadow},
+		{name: "explicit cache", raw: gateway.DescribeSourceCache, want: gateway.DescribeSourceCache},
+		{name: "unrecognised falls back to fanout", raw: "bogus", want: gateway.DescribeSourceFanout},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, resolveDescribeSource(tt.raw))
 		})
 	}
 }

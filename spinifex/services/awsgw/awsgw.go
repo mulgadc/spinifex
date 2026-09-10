@@ -132,6 +132,23 @@ func resolveSignupMaxAccounts(cfg signupConfig) int {
 	return *cfg.MaxAccounts
 }
 
+// resolveDescribeSource validates the configured describe_source, defaulting
+// an absent or unrecognised value to fanout — today's behaviour — rather than
+// failing the gateway to start over a config typo. Read once at startup;
+// there is no reload path.
+func resolveDescribeSource(raw string) string {
+	switch raw {
+	case "":
+		return gateway.DescribeSourceFanout
+	case gateway.DescribeSourceFanout, gateway.DescribeSourceShadow, gateway.DescribeSourceCache:
+		return raw
+	default:
+		slog.Warn("awsgw: unrecognised describe_source, falling back to fanout",
+			"value", raw, "fallback", gateway.DescribeSourceFanout)
+		return gateway.DescribeSourceFanout
+	}
+}
+
 // loadAWSGWConfig reads and parses awsgw.toml once, returning the [ratelimit] and
 // [quota] sections together. Both sections default to their zero value (a
 // disabled no-op) when absent, so a config without either block stays valid.
@@ -521,6 +538,7 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockAgentKB:          bedrockAgentKB,
 		BedrockAgentDataSources: bedrockAgentDataSources,
 		BedrockAgentVector:      bedrockAgentVector,
+		DescribeSource:          resolveDescribeSource(nodeConfig.AWSGW.DescribeSource),
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
@@ -589,6 +607,16 @@ func launchService(config *config.ClusterConfig) error {
 			Name: daemon.ClusterStateBucket, History: 1, Replicas: len(config.Nodes),
 		}),
 	}
+
+	// Wired unconditionally, same as InstanceStatus above: DescribeSource
+	// gates whether anything reads it, so a fanout-only gateway pays for a
+	// warm cache it never consults rather than a nil check scattered through
+	// the describe path.
+	gw.DescribeCache = instanceCache
+	// Shares instanceCache's own resync cadence, so "unresolved for one
+	// resync" in shadow classification matches what the cache can actually
+	// be expected to have caught up on by then.
+	gw.DescribeShadow = gateway_ec2_instance.NewShadowComparator(instancecache.DefaultResyncInterval)
 
 	handler := gw.SetupRoutes()
 

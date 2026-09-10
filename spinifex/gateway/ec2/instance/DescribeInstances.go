@@ -91,12 +91,15 @@ func DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, n
 // DescribeInstancesChecked is the customer-facing variant served by the
 // gateway's DescribeInstances action. On top of DescribeInstances' aggregation,
 // it asserts InvalidInstanceID.NotFound for any explicitly named instance ID
-// absent from the result — but only when the sweep is provably complete. A
-// partial sweep stays silent, the same as DescribeInstances: a node timing
+// absent from the result, when the sweep is provably complete. A node timing
 // out during the fan-out must never turn into a false NotFound for an
-// instance that actually exists on that node. A --filters-only query (no
-// explicit IDs) is never affected and keeps returning an empty list with no
-// error.
+// instance that actually exists on that node — so when the sweep is not
+// complete and a named ID is still missing, the answer is a retryable
+// ServiceUnavailable rather than a silent empty list: an incomplete sweep
+// cannot tell "does not exist" apart from "could not be asked", and a caller
+// naming a specific ID deserves that distinction, not silence. A
+// --filters-only query (no explicit IDs) is never affected and keeps
+// returning a possibly-partial list with no error either way.
 //
 // nodeIDs is the configured cluster node set. When non-empty, completeness
 // for the InstanceIds assertion is judged by responder identity — the
@@ -115,7 +118,7 @@ func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesI
 		return nil, errors.New(firstClient4xx)
 	}
 
-	if len(input.InstanceIds) > 0 && complete {
+	if len(input.InstanceIds) > 0 {
 		found := make(map[string]bool)
 		for _, res := range reservations {
 			for _, inst := range res.Instances {
@@ -125,9 +128,15 @@ func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesI
 			}
 		}
 		for _, id := range input.InstanceIds {
-			if id != nil && !found[*id] {
-				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			if id == nil || found[*id] {
+				continue
 			}
+			if !complete {
+				// A partial sweep cannot prove absence; tell the caller to
+				// retry rather than silently reporting the instance missing.
+				return nil, errors.New(awserrors.ErrorServiceUnavailable)
+			}
+			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		}
 	}
 
@@ -171,26 +180,28 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 
 	// The buckets run alongside the fan-out rather than after it, so a stopped
 	// or terminated instance can settle the collection too. Queried on queue
-	// groups, so one responder each.
+	// groups, so one responder each. Tracked in separate bools, not one shared
+	// flag, so a caller can tell which source vetoed completeness.
 	var kvMu sync.Mutex
 	var kvWg sync.WaitGroup
-	bucketsOK := true
+	stoppedOK := true
+	terminatedOK := true
 	var bucketReservations []*ec2.Reservation
 	settler := newInstanceSettler(input.InstanceIds)
-	for _, topic := range []string{"ec2.DescribeStoppedInstances", "ec2.DescribeTerminatedInstances"} {
-		kvWg.Add(1)
-		go func(topic string) {
-			defer kvWg.Done()
-			reservations, ok := queryInstanceBucket(ctx, natsConn, topic, jsonData, accountID)
-			settler.observe(reservations)
-			kvMu.Lock()
-			defer kvMu.Unlock()
-			if !ok {
-				bucketsOK = false
-			}
-			bucketReservations = append(bucketReservations, reservations...)
-		}(topic)
+	queryBucket := func(topic string, okOut *bool) {
+		defer kvWg.Done()
+		reservations, ok := queryInstanceBucket(ctx, natsConn, topic, jsonData, accountID)
+		settler.observe(reservations)
+		kvMu.Lock()
+		defer kvMu.Unlock()
+		if !ok {
+			*okOut = false
+		}
+		bucketReservations = append(bucketReservations, reservations...)
 	}
+	kvWg.Add(2)
+	go queryBucket("ec2.DescribeStoppedInstances", &stoppedOK)
+	go queryBucket("ec2.DescribeTerminatedInstances", &terminatedOK)
 
 	identity := len(nodeIDs) > 0
 	gatherOpts := utils.GatherOpts{Timeout: cfg.fanoutTimeout, AccountID: accountID}
@@ -244,7 +255,7 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 	allReservations = append(allReservations, bucketReservations...)
 
 	slog.InfoContext(ctx, "DescribeInstances: Aggregated response", "total_reservations", len(allReservations))
-	return allReservations, fanoutComplete && bucketsOK, sum.FirstClient4xx, nil
+	return allReservations, fanoutComplete && stoppedOK && terminatedOK, sum.FirstClient4xx, nil
 }
 
 // instanceSettler tracks which of the requested instance ids have turned up,
@@ -332,6 +343,15 @@ func judgeIdentityCompleteness(ctx context.Context, frames []utils.Frame, sum ut
 			validResponders[frame.NodeID] = true
 		}
 		reservations = append(reservations, nodeOutput.Reservations...)
+	}
+
+	// An unattributable responder makes completeness permanently unsatisfiable
+	// for identity mode: it can never be resolved to a missing node, so every
+	// sweep it touches stays incomplete forever, which silently suppresses
+	// every absence 404 while looking like a healthy conservative answer.
+	if sum.Unidentified > 0 {
+		slog.WarnContext(ctx, "DescribeInstances: fan-out received frames with no node ID header",
+			"unidentified_frames", sum.Unidentified)
 	}
 
 	ambiguous := sum.Unidentified > 0 || len(sum.ConflictNodes) > 0 || sum.CapHit

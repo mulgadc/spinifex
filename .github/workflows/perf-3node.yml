@@ -135,7 +135,7 @@ jobs:
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
         env:
-          CLUSTER_REF: ${{ inputs.cluster_ref || 'v1.18.0' }}
+          CLUSTER_REF: ${{ inputs.cluster_ref || 'fix/ranged-get-read-amplification' }}
         run: |
           ./build-install-artifacts.sh "${CLUSTER_REF:-$GIT_BRANCH}" \
             "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
@@ -248,6 +248,58 @@ jobs:
             echo "gate $gate is up"
           done
 
+      # Warp reads whole objects, so no workload here touches a ranged read and
+      # the throughput figures stay healthy while ranged GETs are broken. This
+      # probe is the only thing in CI that looks at them.
+      - name: Ranged GET probe
+        env:
+          GATE: ${{ steps.cluster.outputs.node1_ip }}
+          SSH_KEY: ${{ steps.cluster.outputs.ssh_key }}
+          SSH_USER: ${{ steps.cluster.outputs.ssh_user }}
+          NODE1_IP: ${{ steps.cluster.outputs.node1_ip }}
+          CLUSTER_REGION: ${{ steps.cluster.outputs.region }}
+        run: |
+          set -euo pipefail
+          CREDS=$(ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "${SSH_USER}@${NODE1_IP}" 'cat ~/.aws/credentials')
+          AK=$(echo "$CREDS" | awk -F '= *' '/^aws_access_key_id/ {print $2; exit}')
+          SK=$(echo "$CREDS" | awk -F '= *' '/^aws_secret_access_key/ {print $2; exit}')
+          echo "::add-mask::$SK"
+          B="ranged-probe-${GITHUB_RUN_ID}"
+          AWSX=(--region "$CLUSTER_REGION" --endpoint-url "https://${GATE}:8443" --no-verify-ssl)
+          export AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="$SK"
+          aws s3 mb "s3://$B" "${AWSX[@]}"
+          trap 'aws s3 rb "s3://$B" --force "${AWSX[@]}" >/dev/null 2>&1 || true' EXIT
+          # Two sizes: read amplification makes a boundary-crossing range cost
+          # the whole object, so the fault shows as time tracking object size.
+          for mb in 64 256; do
+            head -c $((mb*1024*1024)) /dev/urandom > "${TMPDIR}/probe-${mb}.bin"
+            aws s3 cp "${TMPDIR}/probe-${mb}.bin" "s3://$B/probe-${mb}.bin" --only-show-errors "${AWSX[@]}"
+            rm -f "${TMPDIR}/probe-${mb}.bin"
+          done
+          t() {
+            curl -sk --aws-sigv4 "aws:amz:${CLUSTER_REGION}:s3" -u "$AK:$SK" \
+              -H "Range: bytes=0-$1" -o /dev/null -w '%{time_total}' \
+              --url "https://${GATE}:8443/${B}/probe-${2}.bin"
+          }
+          # 4194304 is the last byte inside the first 4 MiB block; one more
+          # crosses into the second and leaves the single-shard fast path.
+          IN64=$(t 4194303 64);  OUT64=$(t 4194304 64)
+          IN256=$(t 4194303 256); OUT256=$(t 4194304 256)
+          printf '%-10s in-block=%ss  crossing=%ss\n' "64MiB" "$IN64" "$OUT64"
+          printf '%-10s in-block=%ss  crossing=%ss\n' "256MiB" "$IN256" "$OUT256"
+          # The 4x object-size ratio is the signal, and it is compared against
+          # the crossing reads alone so a slow runner cancels out of both sides.
+          awk -v a="$OUT64" -v b="$OUT256" 'BEGIN{
+            r = (a > 0) ? b/a : 0
+            printf "crossing-range cost ratio 256MiB/64MiB = %.2f (object size ratio is 4.00)\n", r
+            if (r > 2.0) {
+              print "::error::a boundary-crossing ranged GET scales with object size, so it is reading the whole object"
+              exit 1
+            }
+          }'
+          echo "ranged GET does not scale with object size"
+
       # The benchmark works in $TMPDIR and predastore refuses writes below a 5%
       # free-space watermark, so this asserts the same headroom cell-23 does.
       # tmpfs is rejected outright: that would measure RAM, not the gates.
@@ -292,7 +344,7 @@ jobs:
           PERF_PRESET: ${{ inputs.perf_preset || 'compare' }}
           # What is deployed, not what the harness was checked out at. With a
           # cluster_ref those differ, and run-info.txt records the cluster.
-          PERF_EXTERNAL_SHA: ${{ inputs.cluster_ref || 'v1.18.0' }}
+          PERF_EXTERNAL_SHA: ${{ inputs.cluster_ref || 'fix/ranged-get-read-amplification' }}
           SSH_KEY: ${{ steps.cluster.outputs.ssh_key }}
           SSH_USER: ${{ steps.cluster.outputs.ssh_user }}
           NODE1_IP: ${{ steps.cluster.outputs.node1_ip }}

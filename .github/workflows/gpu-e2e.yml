@@ -56,15 +56,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # OTLP export to the central Elastic sink (wattle is the sink itself — see
-  # Part A.2). Repo variable overrides; carried for correlation even though
-  # the GPU suite's own daemon-side spans are emitted by wattle's already-
-  # configured obs-agent, not by this job.
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
-  # ci.cell=gpu keeps this workflow's telemetry separable from the tofu-env
-  # workflows'. Nothing in this job bakes these attrs into a daemon (see the
-  # note above), so the label only takes effect once wattle's obs-agent is
-  # given them; there is deliberately no ci.job_id lookup for the same reason.
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=gpu
   WATTLE_SSH_HOST: ${{ vars.WATTLE_SSH_HOST || '192.168.1.13' }}
   WATTLE_SSH_USER: ${{ vars.WATTLE_SSH_USER || 'tf-user' }}
@@ -78,8 +70,6 @@ jobs:
     env:
       ARTIFACT_DIR: /tmp/spinifex-gpu-e2e-artifacts-${{ github.run_id }}
     steps:
-      # Manual-work mutex gate — see setup note 4 above. Checked BEFORE any
-      # SSH to wattle so a paused run touches the box zero times.
       - name: Manual-work mutex gate
         id: gate
         env:
@@ -122,8 +112,6 @@ jobs:
           echo "${{ secrets.WATTLE_SSH_KEY }}" > "${RUNNER_TEMP}/wattle-ci"
           echo "ssh_opts=-o StrictHostKeyChecking=no -o ConnectTimeout=10 -i ${RUNNER_TEMP}/wattle-ci" >> "$GITHUB_ENV"
 
-      # Healthcheck: confirm wattle's persistent AWS-compat control plane is
-      # actually up before spending time building/shipping the test binary.
       - name: Healthcheck — describe-regions
         if: steps.gate.outputs.paused != 'true'
         run: |
@@ -131,18 +119,6 @@ jobs:
           ssh ${{ env.ssh_opts }} "${WATTLE_SSH_USER}@${WATTLE_SSH_HOST}" \
             'AWS_PROFILE=spinifex aws ec2 describe-regions --output text'
 
-      # Ensure the base EC2 GPU AMI is present — the raw-EC2 GPU passthrough
-      # test is the always-on baseline, so CI self-provisions it rather than
-      # depending on a manual import. `--name` selects the catalog entry (pulls
-      # the prebuilt image from iso.mulgadc.com); `--ami-name` is REQUIRED to
-      # name the AMI ubuntu-26.04-nvidia-gpu-x86_64 — without it the import
-      # falls back to the generic ami-<distro>-<version>-<arch>, which the
-      # tests/e2e/gpu filter would never match. Idempotent — skipped once
-      # wattle's persistent loop-fs already has the named AMI (the 4.4G source
-      # qcow2 is cached in the images dir, so a re-import wouldn't re-download).
-      # `spx admin images import` writes local spinifex storage, so it needs
-      # the `spinifex` group active (sg); aws-CLI calls hit the gateway over
-      # HTTPS and don't.
       - name: Ensure base GPU AMI present (import-if-absent)
         if: steps.gate.outputs.paused != 'true'
         run: |
@@ -171,11 +147,6 @@ jobs:
           '
           ssh ${{ env.ssh_opts }} "${WATTLE_SSH_USER}@${WATTLE_SSH_HOST}" "$REMOTE"
 
-      # Preflight — the base GPU AMI is REQUIRED: the setup step above just
-      # ensured it, so a miss here means the import silently failed. Hard-fail
-      # rather than run a false-green all-skipped suite. ECS/EKS node AMIs are
-      # opt-in tiers (heavier — node AMIs + cluster spin-up); their tests
-      # self-skip when absent, so only warn.
       - name: Preflight — verify GPU AMIs
         if: steps.gate.outputs.paused != 'true'
         run: |
@@ -205,10 +176,6 @@ jobs:
           '
           ssh ${{ env.ssh_opts }} "${WATTLE_SSH_USER}@${WATTLE_SSH_HOST}" "$REMOTE"
 
-      # Same build command CI's other e2e workflows use to cross-compile a
-      # suite into a shippable binary (tests/e2e/Makefile e2e-build target,
-      # SUITES_BUILD scoped to just gpu). Building on the runner keeps go
-      # toolchain / module cache off wattle entirely.
       - name: Build GPU e2e test binary on runner
         if: steps.gate.outputs.paused != 'true'
         working-directory: tests/e2e
@@ -231,12 +198,6 @@ jobs:
           ssh ${{ env.ssh_opts }} "$VM" "mkdir -p \$HOME/spinifex-gpu-e2e-bin"
           scp ${{ env.ssh_opts }} tests/e2e/_bin/gpu.test "$VM":spinifex-gpu-e2e-bin/gpu.test
 
-      # Same invocation shape e2e.yml uses to run a pre-built suite binary
-      # (SPINIFEX_E2E=1 SPINIFEX_MODE=single, ./<suite>.test -test.v
-      # -test.timeout=NNm), plus SPINIFEX_WAN_IP: wattle's ~24 bridges make
-      # net.InterfaceAddrs() enumeration pick a co-tenant bridge instead of
-      # the advertised gateway, so the override is required here. The harness
-      # should prefer spinifex.toml's advertised bridge.
       - name: Run GPU e2e suite on wattle
         id: e2e
         if: steps.gate.outputs.paused != 'true'
@@ -287,8 +248,6 @@ jobs:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           title: "GPU E2E results"
 
-      # Tolerated on failure: the sink being unreachable must not turn a
-      # green test run red.
       - name: Ship test results to Elasticsearch
         if: always() && steps.gate.outputs.paused != 'true'
         continue-on-error: true
@@ -313,14 +272,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # Cleanup is NEVER a host teardown: it never runs setup-ovn.sh,
-      # dev-reset, or cluster-reset. It only reconciles EC2-API-level state —
-      # terminate any GPU-typed instance still pending/running (the Go
-      # suite's own t.Cleanup already does this on normal pass/fail exit;
-      # this is the backstop for a hard `-test.timeout` kill or a workflow
-      # cancellation, which skip deferred Go cleanups). Termination triggers
-      # gpuManager.Release() on wattle, returning the A1000 to the pool for
-      # the next queued run or manual test.
       - name: Cleanup — terminate leftover GPU instances, release GPU
         if: always() && steps.gate.outputs.paused != 'true'
         run: |

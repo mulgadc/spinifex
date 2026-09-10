@@ -54,16 +54,11 @@ concurrency:
 
 permissions:
   contents: read
-  # actions: read lets the otel-job-id action look up a provision job's numeric
-  # id via the Actions API — github.job is only the YAML key, no context
-  # exposes it.
   actions: read
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
   TEST_RUN: ${{ inputs.test_run || '' }}
-  # OTLP export to the central Elastic sink (wattle). Repo variable overrides;
-  # empty string disables telemetry entirely.
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 
@@ -82,12 +77,6 @@ jobs:
       matrix: ${{ steps.suites.outputs.matrix }}
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
-      # This job (not single_suite) is where "Bootstrap via Binary Install"
-      # bakes SPINIFEX_OTEL_ATTRS into the VM's telemetry.env, before the
-      # suite matrix even exists — single_suite's legs share this one
-      # already-booted VM, so daemon telemetry can't be scoped any finer
-      # than "single env" per suite leg. ci.cell=single distinguishes it
-      # from multi_provision's VMs within the same run id.
       SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=single
     steps:
       - name: Reap Orphan Procs

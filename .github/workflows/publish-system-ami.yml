@@ -60,7 +60,7 @@ concurrency:
 jobs:
   matrix:
     name: Resolve image matrix
-    runs-on: [ self-hosted, ci-single ]
+    runs-on: [self-hosted, ci-single]
     outputs:
       images: ${{ steps.gen.outputs.images }}
     steps:
@@ -84,7 +84,7 @@ jobs:
   publish:
     name: Build + publish ${{ matrix.name }}
     needs: matrix
-    runs-on: [ self-hosted, ci-single ]
+    runs-on: [self-hosted, ci-single]
     strategy:
       fail-fast: false
       # ci-single is one runner and each GPU build needs ~16G of scratch disk;
@@ -131,9 +131,7 @@ jobs:
         with:
           go-version-file: "spinifex/go.mod"
           # Self-hosted runner: the Go module + build cache already persists on
-          # local disk between runs. setup-go's cache-save ("Post Setup Go")
-          # otherwise re-uploads hundreds of MB to the Actions cache backend,
-          # taking longer than the build itself.
+          # local disk between runs.
           cache: false
 
       - name: Setup Go Workspace
@@ -160,7 +158,6 @@ jobs:
       - name: Build + publish ${{ matrix.name }} to R2
         working-directory: spinifex
         env:
-          # Map the repo's R2 secrets onto the names publish-system-image.sh reads.
           AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ secrets.CF_R2_ENDPOINT_URL }}

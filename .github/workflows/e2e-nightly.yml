@@ -11,9 +11,6 @@ on:
 
 permissions:
   contents: read
-  # actions: read lets the "Resolve CI job id" step below look up this job's
-  # numeric id via the Actions API — github.job is only the YAML key, no
-  # context exposes the id itself.
   actions: read
 
 # Every cell builds its cluster on the same five hypervisors, so two runs in
@@ -29,22 +26,13 @@ concurrency:
   group: e2e-hypervisors
   cancel-in-progress: false
 
-# Scheduled runs are loaded from the default branch (main), so the schedule
-# trigger must stay in sync on main for cron to fire — and so must the
-# concurrency block above.
 env:
   GIT_BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
   UBUNTU_GOLD_IMAGE: /mnt/disk1/gold-images/spinifex-image-builder-ubuntu-26.04.qcow2
-  # OTLP export to the central Elastic sink (wattle). Repo variable overrides;
-  # empty string disables telemetry entirely.
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 
 jobs:
-  # The matrix is built here rather than filtered inside each cell. A job whose
-  # steps all skip still reports success, so gating steps made a one-cell
-  # dispatch look like a green nineteen-job suite. A cell that was not selected
-  # now produces no job at all.
   select:
     runs-on: ubuntu-26.04
     outputs:
@@ -60,9 +48,6 @@ jobs:
       - id: pick
         env:
           CELLS: ${{ github.event_name == 'workflow_dispatch' && inputs.cells || '' }}
-          # Provision, install and teardown around the suite. Measured at ~6
-          # minutes single-node and ~10 multi-node, so this is the floor the
-          # job budget must carry on top of the suite's own.
           SETUP_ALLOWANCE_MIN: 10
         run: |
           if [ -z "$CELLS" ]; then
@@ -130,10 +115,6 @@ jobs:
     env:
       TOFU_LOG: /tmp/e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}
-      # Job-level env wins over the workflow-level default above, so telemetry
-      # from this cell carries ci.cell/ci.matrix. Twelve cells run under one
-      # run id and every cell names its hosts node1/node2/node3, so without
-      # this every cell's telemetry collapses into one unattributable bucket.
       SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=${{ matrix.cell }},ci.matrix=${{ matrix.topo }}/${{ matrix.net }}/${{ matrix.host }}
 
     steps:

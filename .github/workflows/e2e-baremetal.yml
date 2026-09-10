@@ -55,15 +55,12 @@ permissions:
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
-  # Same central ES/APM sink as the other four e2e workflows. Bare-metal had
-  # no default here before — this cell's telemetry never reached the sink at
-  # all (not just missing ci.cell), see bm-bootstrap.sh's telemetry.env step.
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
 
 jobs:
   e2e_baremetal:
     name: Bare-Metal Single-Node E2E
-    runs-on: [ self-hosted, ci-baremetal ]
+    runs-on: [self-hosted, ci-baremetal]
     timeout-minutes: 240
     concurrency:
       group: e2e-baremetal-cluster
@@ -72,9 +69,6 @@ jobs:
       BM_ISO_CACHE: /var/cache/spinifex-iso-builder
       BM_CELL: ${{ inputs.cell || '20' }}
       ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-${{ inputs.cell || '20' }}-${{ github.run_id }}
-      # Caller-supplied on workflow_call. A dispatch run has no such input, and
-      # leaving it empty cost this cell its ci.run_id: its telemetry reached the
-      # sink but could not be found by run, only by guessing a time window.
       SPINIFEX_OTEL_ATTRS: ${{ inputs.otel-attrs || format('ci.run_id={0},ci.workflow={1},ci.cell={2},ci.matrix=baremetal/pxe/real-hw', github.run_id, github.workflow, inputs.cell || '20') }}
     steps:
       - name: Clean Workspace
@@ -190,8 +184,6 @@ jobs:
         run: |
           mkdir -p "${ARTIFACT_DIR}"
           set -o pipefail
-          # Per-suite budgets are declared once in suite-sets.sh. The script
-          # applies one timeout to every suite in the list, so the widest wins.
           . "${GITHUB_WORKSPACE}/.github/scripts/suite-sets.sh"
           BM_TEST_TIMEOUT=""
           for suite in ${BM_SUITES}; do

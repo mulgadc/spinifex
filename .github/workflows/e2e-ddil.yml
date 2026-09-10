@@ -1,7 +1,5 @@
 name: E2E DDIL
 
-# This workflow is manually triggered while the DDIL scenarios are being
-# validated.
 on:
   workflow_dispatch:
     inputs:
@@ -21,27 +19,20 @@ concurrency:
 
 permissions:
   contents: read
-  # actions: read lets the otel-job-id action look up this job's numeric id via
-  # the Actions API — github.job is only the YAML key, no context exposes it.
   actions: read
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
-  # OTLP export to the central Elastic sink (wattle). Repo variable overrides;
-  # empty string disables telemetry entirely.
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 
 jobs:
   ddil:
     name: DDIL Real Multi-Node
-    runs-on: [ self-hosted, ci-multi ]
+    runs-on: [self-hosted, ci-multi]
     timeout-minutes: 60
     env:
       TOFU_LOG: /tmp/e2e-tofu-ddil-${{ github.run_id }}.log
-      # Job-level env wins over the workflow-level default. ci.cell=ddil marks
-      # this workflow's telemetry so a DDIL run's partition-induced errors are
-      # never mistaken for a healthy multi-node run's in the sink.
       SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=ddil
     steps:
       - name: Clean Workspace

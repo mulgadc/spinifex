@@ -33,8 +33,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The suites the nightly E2E matrix actually installs on. This matches
-        # what detect_os accepts: Debian 13+ and Ubuntu 24.04+.
         image:
           - ubuntu:24.04
           - ubuntu:26.04

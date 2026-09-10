@@ -217,6 +217,18 @@ if ! $KEEP_DATA && [ -d "$DATA_DIR/predastore/cluster" ]; then
     run sudo rm -rf "$DATA_DIR/predastore/cluster"
 fi
 
+# JetStream needs the same treatment for the same reason, and the consequence of
+# skipping it is worse. Emptying the files leaves a $G/streams/KV_<name> directory
+# per stream the old cluster held; NATS enumerates those on start and reports them
+# as HA assets it must restore, so a four-node meta group sits at size=4 with no
+# leader, elected over hundreds of assets that have no data behind them. Every
+# service then fails to reach JetStream and the daemon aborts its bootstrap.
+# The directory is recreated on start, so its ownership is not installed state.
+if ! $KEEP_DATA && [ -d "$DATA_DIR/nats/jetstream" ]; then
+    log "removing the JetStream store"
+    run sudo rm -rf "$DATA_DIR/nats/jetstream"
+fi
+
 # Directories may survive — a mountpoint cannot be removed, and neither can the
 # path leading down to one. Files may not: a surviving file is state that would
 # carry into the new cluster, which is the exact failure this script exists to

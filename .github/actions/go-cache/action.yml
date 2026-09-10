@@ -1,0 +1,120 @@
+name: Go build cache
+description: Restore and save GOMODCACHE and GOCACHE from Predastore, for runners that are minted per job.
+
+# Persistent runners keep both caches in $HOME, outside the workspace the job
+# wipes, which is why their builds are fast and why setup-go has cache disabled.
+# An ephemeral VM has no $HOME to come back to, so it borrows one from S3.
+#
+# The objects are rolling rather than keyed. Both caches are content-addressed —
+# GOMODCACHE by immutable module@version, GOCACHE by a hash of source, deps,
+# flags and toolchain — so the most recent object is always safe to restore:
+# anything that no longer matches simply misses and is rebuilt. That is also
+# what makes a Go toolchain bump cheap. A keyed scheme would treat a bump as a
+# total miss and re-download the module graph; restoring the previous object
+# keeps the modules and lets the new toolchain append its entries alongside.
+
+inputs:
+  mode:
+    description: restore or save
+    required: true
+  s3-uri:
+    description: >-
+      Object prefix, e.g. s3://mulga-ci-cache/go-cache. Empty disables the action
+      entirely. The endpoint is not an input: it reaches the runner in its process
+      environment as SPINIFEX_S3_ENDPOINT, which expressions cannot read, so it is
+      resolved in the shell below. A persistent runner has neither and no-ops.
+    required: true
+  region:
+    description: >-
+      Predastore rejects a SigV4 header signed for another region, and a runner
+      VM has no region configured, so it cannot be left to the CLI default.
+    required: false
+    default: ap-southeast-2
+  workdir:
+    description: Directory to resolve the Go toolchain from, so GOTOOLCHAIN=auto reports the version the build will use.
+    required: false
+    default: spinifex
+  save-refs:
+    description: >-
+      Space-separated refs whose runs may write GOCACHE. Trunk only by default:
+      every branch restores, but only trunk writes, so one noisy branch cannot
+      push the shared cache away from what most jobs are about to build.
+    required: false
+    default: refs/heads/dev refs/heads/main
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve cache locations
+      id: locate
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -z "${{ inputs.s3-uri }}" ] || [ -z "${SPINIFEX_S3_ENDPOINT:-}" ]; then
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          echo "go cache disabled — no bucket or no SPINIFEX_S3_ENDPOINT"
+          exit 0
+        fi
+        echo "enabled=true" >> "$GITHUB_OUTPUT"
+        echo "endpoint=${SPINIFEX_S3_ENDPOINT}" >> "$GITHUB_OUTPUT"
+        # Resolved from the module directory so GOTOOLCHAIN=auto reports the
+        # toolchain the build actually uses, not the one setup-go installed.
+        cd "${{ inputs.workdir }}"
+        echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore
+      if: inputs.mode == 'restore' && steps.locate.outputs.enabled == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        for pair in "gomod:${{ steps.locate.outputs.gomodcache }}" "gobuild:${{ steps.locate.outputs.gocache }}"; do
+          name="${pair%%:*}"; dir="${pair#*:}"
+          mkdir -p "$dir"
+          # Restore is best effort by design: a miss is a cold build, not a
+          # failure, and the first run on a new bucket is always a miss.
+          if aws --endpoint-url "${{ steps.locate.outputs.endpoint }}" --region "${{ inputs.region }}" \
+               s3 cp "${{ inputs.s3-uri }}/${name}.tar.zst" - 2>/dev/null \
+               | tar -x --zstd -C "$dir"; then
+            echo ">> restored ${name} ($(du -sh "$dir" | cut -f1))"
+          else
+            echo ">> no ${name} cache — cold build"
+          fi
+          find "$dir" -type f 2>/dev/null | wc -l > "${RUNNER_TEMP}/gocache-count-${name}"
+        done
+
+    - name: Save
+      if: inputs.mode == 'save' && steps.locate.outputs.enabled == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        for pair in "gomod:${{ steps.locate.outputs.gomodcache }}" "gobuild:${{ steps.locate.outputs.gocache }}"; do
+          name="${pair%%:*}"; dir="${pair#*:}"
+          [ -d "$dir" ] || continue
+
+          # GOCACHE changes on every commit, so uploading it from every branch
+          # would be constant churn on an object shared with every other job.
+          if [ "$name" = "gobuild" ] && ! grep -qw -- "${GITHUB_REF}" <<<"${{ inputs.save-refs }}"; then
+            echo ">> ${name}: ${GITHUB_REF} is not a save ref — restore-only"
+            continue
+          fi
+
+          # Skip an upload that would replace the object with the same contents.
+          before=$(cat "${RUNNER_TEMP}/gocache-count-${name}" 2>/dev/null || echo 0)
+          after=$(find "$dir" -type f 2>/dev/null | wc -l)
+          if [ "$after" -le "$before" ]; then
+            echo ">> ${name}: unchanged at ${after} files — not uploading"
+            continue
+          fi
+
+          echo ">> saving ${name}: ${before} -> ${after} files ($(du -sh "$dir" | cut -f1))"
+          if tar -c --zstd -C "$dir" . \
+             | aws --endpoint-url "${{ steps.locate.outputs.endpoint }}" --region "${{ inputs.region }}" \
+                 s3 cp - "${{ inputs.s3-uri }}/${name}.tar.zst"; then
+            echo ">> saved ${name}"
+          else
+            # A failed save costs the next run its warm start and nothing else,
+            # so it must not fail a job whose tests have already passed.
+            echo ">> WARNING: could not save ${name} — next run starts cold"
+          fi
+        done

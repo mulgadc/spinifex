@@ -750,14 +750,17 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 }
 
 // CleanupMgmtNetwork tears down the management TAP device (derived from
-// instance.ID so unsetup instances are tolerated) and releases the
-// management IP allocation if the daemon has one.
+// instance.ID so unsetup instances are tolerated), invalidates the host ARP
+// entry for the address, and releases the management IP allocation.
 func (a *instanceCleanerAdapter) CleanupMgmtNetwork(instance *vm.VM) {
 	mgmtTap := vm.MgmtTapName(instance.ID)
 	if err := a.d.networkPlumber.CleanupTap(mgmtTap); err != nil {
 		slog.Warn("Failed to clean up mgmt tap device",
 			"tap", mgmtTap, "instanceId", instance.ID, "err", err)
 	}
+	// Before Release: once the address is back in the pool the next launch can
+	// take it, and it must not find the terminated instance's MAC still cached.
+	a.d.invalidateMgmtNeigh(instance.ID, instance.MgmtIP)
 	if a.d.mgmtIPAllocator != nil {
 		a.d.mgmtIPAllocator.Release(instance.ID)
 	}

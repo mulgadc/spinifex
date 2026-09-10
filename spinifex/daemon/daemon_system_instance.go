@@ -342,10 +342,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 
 	// Management NIC: allocate IP, generate MAC, create TAP on br-mgmt
 	if d.mgmtIPAllocator != nil && d.mgmtBridgeIP != "" {
-		mgmtBridge := "br-mgmt"
-		if d.config.Daemon.MgmtBridge != "" {
-			mgmtBridge = d.config.Daemon.MgmtBridge
-		}
+		mgmtBridge := d.mgmtBridgeName()
 
 		mgmtIP, allocErr := d.mgmtIPAllocator.Allocate(instance.ID)
 		if allocErr != nil {
@@ -378,6 +375,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				}
 				slog.Error("LaunchSystemInstance: failed to setup mgmt tap", "instanceId", instance.ID, "err", tapErr)
 			} else {
+				d.primeMgmtNeighEntry(instance.ID, mgmtIP, instance.MgmtMAC)
 				slog.Info("LaunchSystemInstance: mgmt NIC configured",
 					"instanceId", instance.ID, "mgmtIP", mgmtIP, "mgmtMAC", instance.MgmtMAC, "mgmtTap", tapName)
 			}
@@ -571,10 +569,7 @@ func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
 	if d.mgmtIPAllocator == nil || d.mgmtBridgeIP == "" {
 		return errors.New("sysinstance: management bridge unavailable; system VM would have no route to the daemon")
 	}
-	mgmtBridge := "br-mgmt"
-	if d.config.Daemon.MgmtBridge != "" {
-		mgmtBridge = d.config.Daemon.MgmtBridge
-	}
+	mgmtBridge := d.mgmtBridgeName()
 	mgmtIP, err := d.mgmtIPAllocator.Allocate(inst.ID)
 	if err != nil {
 		return fmt.Errorf("allocate mgmt IP: %w", err)
@@ -588,6 +583,7 @@ func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
 		inst.MgmtIP = ""
 		return fmt.Errorf("setup mgmt tap: %w", err)
 	}
+	d.primeMgmtNeighEntry(inst.ID, mgmtIP, inst.MgmtMAC)
 	slog.Info("System instance mgmt NIC configured",
 		"instanceId", inst.ID, "mgmtIP", mgmtIP, "mgmtMAC", inst.MgmtMAC, "mgmtTap", tapName)
 	return nil

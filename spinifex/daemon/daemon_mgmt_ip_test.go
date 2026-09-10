@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 )
@@ -615,5 +617,128 @@ func TestMgmtIPAllocator_Allocate_RefusedWhenKVNeverBound(t *testing.T) {
 
 	if _, err := a.Allocate("i-brand-new"); err == nil {
 		t.Fatal("expected allocation to be refused with no KV bound")
+	}
+}
+
+// recordingPlumber satisfies vm.NetworkPlumber for the cleanup-path tests. Only
+// CleanupTap is exercised; the rest are here to satisfy the interface.
+type recordingPlumber struct {
+	cleanedTaps []string
+}
+
+var _ vm.NetworkPlumber = (*recordingPlumber)(nil)
+
+func (p *recordingPlumber) SetupTap(vm.TapSpec) error { return nil }
+func (p *recordingPlumber) CleanupTap(name string) error {
+	p.cleanedTaps = append(p.cleanedTaps, name)
+	return nil
+}
+func (p *recordingPlumber) EnsureIMDSDatapathBridge() error         { return nil }
+func (p *recordingPlumber) AttachIMDSDatapath(_, _, _ string) error { return nil }
+func (p *recordingPlumber) DetachIMDSDatapath(string) error         { return nil }
+func (p *recordingPlumber) EnsureVPCHostPort(_, _, _ string) error  { return nil }
+func (p *recordingPlumber) RemoveVPCHostPort(string) error          { return nil }
+
+// neighCall is one recorded flush or prime.
+type neighCall struct {
+	dev string
+	ip  string
+	mac string
+}
+
+// captureNeighHooks swaps the kernel neighbour hooks for recorders and restores
+// them when the test ends.
+func captureNeighHooks(t *testing.T) (flushed, primed *[]neighCall) {
+	t.Helper()
+	var f, p []neighCall
+	origFlush, origPrime := flushMgmtNeigh, primeMgmtNeigh
+	flushMgmtNeigh = func(_ context.Context, _ host.Runner, dev, ip string) error {
+		f = append(f, neighCall{dev: dev, ip: ip})
+		return nil
+	}
+	primeMgmtNeigh = func(_ context.Context, _ host.Runner, dev, ip, mac string) error {
+		p = append(p, neighCall{dev: dev, ip: ip, mac: mac})
+		return nil
+	}
+	t.Cleanup(func() { flushMgmtNeigh, primeMgmtNeigh = origFlush, origPrime })
+	return &f, &p
+}
+
+// A released address is re-handed within seconds with a different MAC, so the
+// stale entry has to go or the next holder blackholes until the kernel expires
+// it. This is the defect behind the nightly rds isolation failure.
+func TestCleanupMgmtNetwork_FlushesNeighForReleasedAddress(t *testing.T) {
+	flushed, _ := captureNeighHooks(t)
+
+	alloc, err := NewMgmtIPAllocator("10.15.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plumber := &recordingPlumber{}
+	d := &Daemon{networkPlumber: plumber, mgmtIPAllocator: alloc}
+
+	newInstanceCleanerAdapter(d).CleanupMgmtNetwork(&vm.VM{ID: "i-abc", MgmtIP: "10.15.8.10"})
+
+	if len(*flushed) != 1 {
+		t.Fatalf("flush calls = %d, want 1", len(*flushed))
+	}
+	if got := (*flushed)[0]; got.ip != "10.15.8.10" || got.dev != "br-mgmt" {
+		t.Errorf("flushed %+v, want ip 10.15.8.10 on br-mgmt", got)
+	}
+	if len(plumber.cleanedTaps) != 1 {
+		t.Errorf("tap cleanup calls = %d, want 1", len(plumber.cleanedTaps))
+	}
+}
+
+// An instance that never got a mgmt NIC has no address to invalidate, and
+// flushing "" would be an error the operator cannot act on.
+func TestCleanupMgmtNetwork_NoMgmtIPSkipsFlush(t *testing.T) {
+	flushed, _ := captureNeighHooks(t)
+
+	d := &Daemon{networkPlumber: &recordingPlumber{}}
+	newInstanceCleanerAdapter(d).CleanupMgmtNetwork(&vm.VM{ID: "i-abc"})
+
+	if len(*flushed) != 0 {
+		t.Errorf("flush calls = %d, want 0", len(*flushed))
+	}
+}
+
+func TestInvalidateMgmtNeigh_UsesConfiguredBridge(t *testing.T) {
+	flushed, _ := captureNeighHooks(t)
+
+	d := &Daemon{config: &config.Config{}}
+	d.config.Daemon.MgmtBridge = "br-ctrl"
+	d.invalidateMgmtNeigh("i-abc", "10.15.8.10")
+
+	if len(*flushed) != 1 || (*flushed)[0].dev != "br-ctrl" {
+		t.Fatalf("flushed %+v, want one call on br-ctrl", *flushed)
+	}
+}
+
+// The MAC is known at attach time, so the entry is programmed directly rather
+// than left for the first dial to resolve — the same choice the EIP path makes.
+func TestPrimeMgmtNeighEntry_ProgramsAddressAndMAC(t *testing.T) {
+	_, primed := captureNeighHooks(t)
+
+	d := &Daemon{}
+	d.primeMgmtNeighEntry("i-abc", "10.15.8.10", "02:d9:f3:a8:fb:be")
+
+	if len(*primed) != 1 {
+		t.Fatalf("prime calls = %d, want 1", len(*primed))
+	}
+	want := neighCall{dev: "br-mgmt", ip: "10.15.8.10", mac: "02:d9:f3:a8:fb:be"}
+	if (*primed)[0] != want {
+		t.Errorf("primed %+v, want %+v", (*primed)[0], want)
+	}
+}
+
+func TestPrimeMgmtNeighEntry_NoMACIsNoOp(t *testing.T) {
+	_, primed := captureNeighHooks(t)
+
+	d := &Daemon{}
+	d.primeMgmtNeighEntry("i-abc", "10.15.8.10", "")
+
+	if len(*primed) != 0 {
+		t.Errorf("prime calls = %d, want 0", len(*primed))
 	}
 }

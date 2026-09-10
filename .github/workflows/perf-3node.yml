@@ -135,7 +135,7 @@ jobs:
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
         env:
-          CLUSTER_REF: ${{ inputs.cluster_ref || 'fix/ranged-get-read-amplification' }}
+          CLUSTER_REF: ${{ inputs.cluster_ref || 'dev' }}
         run: |
           ./build-install-artifacts.sh "${CLUSTER_REF:-$GIT_BRANCH}" \
             "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
@@ -344,7 +344,7 @@ jobs:
           PERF_PRESET: ${{ inputs.perf_preset || 'compare' }}
           # What is deployed, not what the harness was checked out at. With a
           # cluster_ref those differ, and run-info.txt records the cluster.
-          PERF_EXTERNAL_SHA: ${{ inputs.cluster_ref || 'fix/ranged-get-read-amplification' }}
+          PERF_EXTERNAL_SHA: ${{ inputs.cluster_ref || 'dev' }}
           SSH_KEY: ${{ steps.cluster.outputs.ssh_key }}
           SSH_USER: ${{ steps.cluster.outputs.ssh_user }}
           NODE1_IP: ${{ steps.cluster.outputs.node1_ip }}

@@ -1,12 +1,6 @@
 name: Predastore 3-Node Performance
 
-# GitHub only accepts workflow_dispatch for a workflow already on the default
-# branch, so the push trigger is how this one gets its first run before it is
-# merged. Remove the push trigger once it is on dev.
 on:
-  push:
-    branches:
-      - feat/perf-3node-benchmark
   workflow_dispatch:
     inputs:
       perf_preset:
@@ -135,7 +129,7 @@ jobs:
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
         env:
-          CLUSTER_REF: ${{ inputs.cluster_ref || 'dev' }}
+          CLUSTER_REF: ${{ inputs.cluster_ref }}
         run: |
           ./build-install-artifacts.sh "${CLUSTER_REF:-$GIT_BRANCH}" \
             "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
@@ -344,7 +338,7 @@ jobs:
           PERF_PRESET: ${{ inputs.perf_preset || 'compare' }}
           # What is deployed, not what the harness was checked out at. With a
           # cluster_ref those differ, and run-info.txt records the cluster.
-          PERF_EXTERNAL_SHA: ${{ inputs.cluster_ref || 'dev' }}
+          PERF_EXTERNAL_SHA: ${{ inputs.cluster_ref || steps.predastore.outputs.commit }}
           SSH_KEY: ${{ steps.cluster.outputs.ssh_key }}
           SSH_USER: ${{ steps.cluster.outputs.ssh_user }}
           NODE1_IP: ${{ steps.cluster.outputs.node1_ip }}

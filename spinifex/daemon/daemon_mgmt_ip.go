@@ -1,12 +1,15 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -325,4 +328,60 @@ func (a *MgmtIPAllocator) AllocatedCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return len(a.allocated)
+}
+
+// defaultMgmtBridge is the management bridge assumed when config names none.
+const defaultMgmtBridge = "br-mgmt"
+
+// mgmtNeighTimeout bounds one `ip neigh` invocation. The kernel answers at once;
+// the budget covers a wedged exec, not slow work.
+const mgmtNeighTimeout = 5 * time.Second
+
+// Kernel neighbour-table hooks, indirected so the unit suite can observe them
+// without running `ip neigh` as root. Same idiom as health.go's gateDialFn.
+var (
+	flushMgmtNeigh = host.FlushNeigh
+	primeMgmtNeigh = host.ReplaceNeigh
+)
+
+// mgmtBridgeName returns the configured management bridge, or the default.
+func (d *Daemon) mgmtBridgeName() string {
+	if d.config != nil && d.config.Daemon.MgmtBridge != "" {
+		return d.config.Daemon.MgmtBridge
+	}
+	return defaultMgmtBridge
+}
+
+// invalidateMgmtNeigh drops the host ARP entry for a released management IP.
+// br-mgmt is one flat L2 segment and the address is re-handed within seconds
+// with a fresh MAC, so a surviving entry blackholes the next holder.
+func (d *Daemon) invalidateMgmtNeigh(instanceID, mgmtIP string) {
+	// mgmtBridgeIP is empty when startLocal found no bridge, so there is no
+	// neighbour table to hold a stale entry and `ip neigh` would only ENODEV.
+	if mgmtIP == "" || d.mgmtBridgeIP == "" {
+		return
+	}
+	bridge := d.mgmtBridgeName()
+	ctx, cancel := context.WithTimeout(context.Background(), mgmtNeighTimeout)
+	defer cancel()
+	if err := flushMgmtNeigh(ctx, nil, bridge, mgmtIP); err != nil {
+		slog.Warn("Failed to flush mgmt ARP entry; a recycled address may blackhole until the entry expires",
+			"instanceId", instanceID, "mgmtIP", mgmtIP, "bridge", bridge, "err", err)
+	}
+}
+
+// primeMgmtNeighEntry programs the ARP entry for a freshly assigned management
+// IP. Preferred over relying on the release-side flush alone: the MAC is known
+// here, so the first dial does not race an ARP round trip.
+func (d *Daemon) primeMgmtNeighEntry(instanceID, mgmtIP, mgmtMAC string) {
+	if mgmtIP == "" || mgmtMAC == "" {
+		return
+	}
+	bridge := d.mgmtBridgeName()
+	ctx, cancel := context.WithTimeout(context.Background(), mgmtNeighTimeout)
+	defer cancel()
+	if err := primeMgmtNeigh(ctx, nil, bridge, mgmtIP, mgmtMAC); err != nil {
+		slog.Warn("Failed to prime mgmt ARP entry; the first dial falls back to ARP resolution",
+			"instanceId", instanceID, "mgmtIP", mgmtIP, "mgmtMAC", mgmtMAC, "bridge", bridge, "err", err)
+	}
 }

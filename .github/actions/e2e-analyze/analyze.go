@@ -134,21 +134,22 @@ var cascadeMarkers = []string{
 	"Expected value not to be nil",
 }
 
-// teardownPatterns match the content a test logs from t.Cleanup or from the
-// harness's on-failure diagnostics — i.e. after it has already failed. They are
-// the LAST file:line lines in the failure body, so extractErrorLine's
-// keep-the-last rule picks them over the assertion unless they are skipped.
-// Anchored deliberately: a fragment loose enough to match an assertion would
-// blank out the one line the report exists to show.
-var teardownPatterns = []*regexp.Regexp{
+// nonFailurePatterns match content a test emits AFTER the assertion that failed
+// — t.Cleanup, harness diagnostics, or a t.Logf on a passing branch — which
+// extractErrorLine's keep-the-last rule would otherwise pick over the assertion.
+// Go emits t.Logf and t.Errorf identically, so anchor every entry: a fragment
+// loose enough to match an assertion blanks out the line the report exists to
+// show. `\bas expected\b` unanchored also matches "did not fail as expected".
+var nonFailurePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`^DB instance \S+ is gone$`),
 	regexp.MustCompile(`^db diagnostics \S+:`),
+	regexp.MustCompile(`^\S+: management bridge \S+:\d+ refused as expected$`),
 }
 
-// isTeardownLine reports whether a candidate error line was emitted after the
-// failure it would otherwise be mistaken for.
-func isTeardownLine(content string) bool {
-	for _, re := range teardownPatterns {
+// isNonFailureLine reports whether a candidate error line was emitted after the
+// failure it would otherwise be mistaken for, or reports an expected outcome.
+func isNonFailureLine(content string) bool {
+	for _, re := range nonFailurePatterns {
 		if re.MatchString(content) {
 			return true
 		}
@@ -245,12 +246,12 @@ func extractErrorLine(body string) string {
 			// progress lines from the same file:line pattern before the
 			// failing assertion finally fires. Cleanup runs after it, though,
 			// so its lines are last of all and have to be skipped.
-			if content := strings.TrimSpace(m[1]); !isTeardownLine(content) {
+			if content := strings.TrimSpace(m[1]); !isNonFailureLine(content) {
 				goFileLine = content
 			}
 			continue
 		}
-		if fileHintRe.MatchString(l) && !isTeardownLine(l) {
+		if fileHintRe.MatchString(l) && !isNonFailureLine(l) {
 			lastTestLine = l
 		}
 	}
@@ -296,15 +297,23 @@ func extractFileHint(body string) string {
 	}
 	// Scanned line by line rather than across the body so a cleanup line's own
 	// file:line does not become the site the report points a reader at.
-	hint := ""
+	hint, filtered := "", ""
 	for _, raw := range strings.Split(body, "\n") {
 		l := strings.TrimSpace(raw)
-		if m := goFileLineRe.FindStringSubmatch(l); m != nil && isTeardownLine(strings.TrimSpace(m[1])) {
+		all := fileHintRe.FindAllString(l, -1)
+		if len(all) == 0 {
 			continue
 		}
-		if all := fileHintRe.FindAllString(l, -1); len(all) > 0 {
-			hint = all[len(all)-1]
+		if m := goFileLineRe.FindStringSubmatch(l); m != nil && isNonFailureLine(strings.TrimSpace(m[1])) {
+			filtered = all[len(all)-1]
+			continue
 		}
+		hint = all[len(all)-1]
+	}
+	// A body whose only file:line was allowlisted still gets a pointer: coarse
+	// beats none, and extractErrorLine has the same last-resort shape.
+	if hint == "" {
+		return filtered
 	}
 	return hint
 }

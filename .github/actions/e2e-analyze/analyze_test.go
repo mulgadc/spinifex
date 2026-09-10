@@ -141,6 +141,46 @@ func TestExtractErrorLine_SkipsCleanupLoggedAfterTheFailure(t *testing.T) {
 	}
 }
 
+// A subtest looping over two subjects calls t.Errorf for the first and t.Logf
+// for the second, so the success line is last in the body. Nightly run
+// 34383800404 reported that log line as the failure.
+func TestExtractErrorLine_SkipsSuccessLoggedAfterTheFailure(t *testing.T) {
+	body := `    isolation_test.go:80: rds-e2e-iso-a-1788981456: management bridge 10.15.8.10:5432 could not be tested: want connection refused, got dial tcp 10.15.8.10:5432: i/o timeout
+    isolation_test.go:84: rds-e2e-iso-b-1788981456: management bridge 10.15.8.11:5432 refused as expected`
+	got := extractErrorLine(body)
+	if !strings.Contains(got, "could not be tested") {
+		t.Errorf("extractErrorLine = %q, want the assertion at isolation_test.go:80", got)
+	}
+	if hint := extractFileHint(body); hint != "isolation_test.go:80" {
+		t.Errorf("extractFileHint = %q, want isolation_test.go:80", hint)
+	}
+}
+
+// "as expected" reads the same in an affirmation and in its negation, so an
+// unanchored pattern suppresses the assertion it was meant to outrank and
+// promotes a harness progress line in its place.
+func TestExtractErrorLine_KeepsNegatedExpectationAssertions(t *testing.T) {
+	body := `    isolation_test.go:60: waiting for the db instance to become available
+    isolation_test.go:80: rds-e2e-iso-a: management bridge 10.15.8.10:5432 was not refused as expected: got a connection`
+	got := extractErrorLine(body)
+	if !strings.Contains(got, "was not refused as expected") {
+		t.Errorf("extractErrorLine = %q, want the assertion at isolation_test.go:80", got)
+	}
+	if hint := extractFileHint(body); hint != "isolation_test.go:80" {
+		t.Errorf("extractFileHint = %q, want isolation_test.go:80", hint)
+	}
+}
+
+// Every candidate allowlisted leaves extractFileHint with nothing to return,
+// and unlike extractErrorLine it has no last-resort branch. A coarse pointer
+// beats sending the reader to no file at all.
+func TestExtractFileHint_FallsBackWhenEveryCandidateFiltered(t *testing.T) {
+	body := `    isolation_test.go:84: rds-e2e-iso-b: management bridge 10.15.8.11:5432 refused as expected`
+	if hint := extractFileHint(body); hint != "isolation_test.go:84" {
+		t.Errorf("extractFileHint = %q, want isolation_test.go:84", hint)
+	}
+}
+
 func TestExtractFileHint_PicksLastMatch(t *testing.T) {
 	body := "ec2helpers.go:50: setup\n    vpc_test.go:227: Eventually: condition not met"
 	got := extractFileHint(body)

@@ -62,7 +62,10 @@ func closedPort(t *testing.T) string {
 // TestWaitForClusterReady_ReadyImmediately asserts the loop returns on the first
 // pass without sleeping when both dependencies are already reachable.
 func TestWaitForClusterReady_ReadyImmediately(t *testing.T) {
-	_, nc := testutil.StartTestNATS(t)
+	// JetStream, not a bare NATS server: viperblock readiness means the KV the
+	// mount claims its volume lease from can answer, and a connection to a
+	// server whose JetStream is still starting reports connected regardless.
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	sleeps := 0
 	stubClusterReadySleep(t, func(time.Duration) { sleeps++ })
@@ -79,7 +82,7 @@ func TestWaitForClusterReady_ReadyImmediately(t *testing.T) {
 // while predastore is unreachable and returns once it starts serving, rather
 // than latching the first not-ready result.
 func TestWaitForClusterReady_PredastoreBecomesReady(t *testing.T) {
-	_, nc := testutil.StartTestNATS(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
 
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -106,6 +109,31 @@ func TestWaitForClusterReady_PredastoreBecomesReady(t *testing.T) {
 
 	assert.Equal(t, 1, sleeps, "must poll again after predastore reports not ready")
 	assert.NotContains(t, logs.String(), "Cluster readiness timeout")
+}
+
+// TestCheckViperblockReady_ConnectedButJetStreamNotServing is the regression
+// guard for a guest lost across a cluster update. A TCP connection to NATS says
+// nothing about whether JetStream can serve, so readiness used to pass while the
+// volume-lease KV was still unavailable, recovery ran into a lease timeout, and
+// the instance was parked in error permanently.
+func TestCheckViperblockReady_ConnectedButJetStreamNotServing(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	require.True(t, nc.IsConnected(), "the connection itself must be up, or this proves nothing")
+
+	d := &Daemon{config: &config.Config{}, natsConn: nc}
+
+	assert.False(t, d.checkViperblockReady(),
+		"connected to a server with no JetStream is not ready: the lease KV cannot answer")
+}
+
+// TestCheckViperblockReady_JetStreamServing is the other half: once JetStream
+// answers, readiness must pass rather than holding startup open.
+func TestCheckViperblockReady_JetStreamServing(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	d := &Daemon{config: &config.Config{}, natsConn: nc}
+
+	assert.True(t, d.checkViperblockReady())
 }
 
 // TestWaitForClusterReady_TimesOut asserts the deadline branch: with viperblock

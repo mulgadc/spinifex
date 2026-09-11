@@ -113,6 +113,12 @@ type VM struct {
 	// Set when ownership is released on stop for shared KV storage.
 	LastNode string `json:"last_node,omitempty"`
 
+	// recoveryRetries counts automatic retries of a recovery failure caused by
+	// an unavailable dependency. Unexported and unpersisted on purpose: the
+	// budget is per daemon run, so a node that restarts gets a fresh one, which
+	// is right because a restart is new information about the dependency.
+	recoveryRetries int
+
 	// AZ is the availability zone of the node that last ran this instance,
 	// stamped by that node from its own config. Placement observed by the
 	// owner, not something an operator requests.

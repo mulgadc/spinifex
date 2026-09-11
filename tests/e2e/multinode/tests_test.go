@@ -73,6 +73,16 @@ func TestMultinodeNodeRecovery(t *testing.T) {
 	runNodeRecovery(t, requireMultiNodeFixture(t))
 }
 
+// TestMultinodeClusterRestartResumesGuests is sequential and declared after
+// NodeRecovery so the cluster is whole before it takes the whole thing down.
+// It is the software-update path — a coordinated drain and restart — which the
+// node-failure tests deliberately do not cover: they leave guests running, and
+// the failure this catches only appears when a guest has to relaunch from a
+// sealed volume against dependencies that are still starting.
+func TestMultinodeClusterRestartResumesGuests(t *testing.T) {
+	runClusterRestartResumesGuests(t, requireMultiNodeFixture(t))
+}
+
 // TestMultinodeOVNRaft is sequential: stops ovn-central on the NB leader to
 // prove DB failover, restoring it in cleanup before later tests run.
 func TestMultinodeOVNRaft(t *testing.T) {

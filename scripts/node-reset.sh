@@ -103,17 +103,69 @@ fi
 log "stopping services"
 run sudo systemctl stop spinifex.target 2>/dev/null || true
 run sudo systemctl reset-failed 'spinifex-*' 2>/dev/null || true
-run sudo pkill -x qemu-system-x86_64 2>/dev/null || true
-run sudo pkill -x qemu-system-aarch64 2>/dev/null || true
+
+# Stopping the target is not the same as its services being stopped.
+# spinifex-shutdown.service is ordered After= the storage services so its drain
+# runs while they are still up, which queues their stop jobs behind its
+# ExecStop, and `systemctl stop` returns as soon as the target itself is
+# inactive. NATS surviving that is what lets JetStream rewrite its index after
+# the wipe and before the verification, failing the reset on a file the script
+# had already deleted. update-nodes.sh carries the same wait.
+if ! $DRY_RUN; then
+    for unit in spinifex-predastore spinifex-viperblock spinifex-nats; do
+        if systemctl is-active --quiet "$unit"; then
+            sudo systemctl stop "$unit" || true
+        fi
+    done
+    elapsed=0
+    while [ -n "$(pgrep -x spx || true)" ]; do
+        if [ "$elapsed" -ge 120 ]; then
+            echo "ERROR: spx still running after 120s:" >&2
+            pgrep -ax spx >&2 || true
+            echo "  Wiping under a live service races JetStream, which rewrites" >&2
+            echo "  its index after the rm. Stop them manually and re-run." >&2
+            exit 1
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+fi
+
+# `pgrep -x` and `pkill -x` match against comm, which the kernel truncates to 15
+# characters, so `qemu-system-x86_64` is stored as `qemu-system-x86` and an -x
+# match on the full name can never fire. Match the prefix instead: it is 11
+# characters, well under the limit, and covers both x86_64 and aarch64. This is
+# the same rule qemuProcessPrefix applies in spinifex/vm/orphan_scan.go.
+#
+# Deliberately not -f. That matches the whole command line, where argv[0] may
+# carry a path, so an anchored pattern misses the process it was written for.
+#
+# Scoped by owner, because a host carrying libvirt guests alongside Spinifex
+# ones has both under the same comm and an unscoped kill would take the wrong
+# set down. The daemon runs guests as its own service user on an installed node;
+# a dev install runs them as whoever invoked spx.
+QEMU_PGREP=('^qemu-system')
+for qemu_user in spinifex-daemon spinifex "${SUDO_USER:-$(id -un)}"; do
+    if id -u "$qemu_user" >/dev/null 2>&1; then
+        QEMU_PGREP=(-u "$qemu_user" "${QEMU_PGREP[@]}")
+        break
+    fi
+done
+qemu_pids() { sudo pgrep "${QEMU_PGREP[@]}" 2>/dev/null || true; }
+
+if [ -n "$(qemu_pids)" ]; then
+    log "signalling QEMU guests owned by $qemu_user"
+    run sudo pkill "${QEMU_PGREP[@]}" 2>/dev/null || true
+fi
 
 # Viperblock state must not be torn out from under a live guest, so wait for
 # QEMU to actually exit rather than assuming the signal was enough.
 if ! $DRY_RUN; then
     elapsed=0
-    while pgrep -x 'qemu-system-x86_64|qemu-system-aarch64' >/dev/null 2>&1; do
+    while [ -n "$(qemu_pids)" ]; do
         if [ "$elapsed" -ge 30 ]; then
             echo "ERROR: QEMU still running after 30s:" >&2
-            pgrep -af 'qemu-system-' >&2 || true
+            sudo pgrep -a "${QEMU_PGREP[@]}" >&2 || true
             echo "  Kill them manually and re-run." >&2
             exit 1
         fi
@@ -150,9 +202,28 @@ run sudo rm -f /etc/openvswitch/system-id.conf
 # stays open forever. Read the arming mode now and regenerate the stage after
 # the wipe. peers.nft is the one file here that really is cluster state, and
 # regenerating does not bring it back.
+#
+# Reading it from $ETC_DIR alone is not enough, because a run that fails between
+# the wipe and the restore has already deleted the file. The retry then reads
+# the absence as "this node was never armed", skips the restore, and
+# install-node.sh honours that and forms the cluster with an open node on a
+# public address. Stash the mode outside every wiped tree so the retry can still
+# find it, and keep it there until the policy is back.
+FIREWALL_STASH=/var/lib/spinifex-reset/firewall-mode
+
 FIREWALL_MODE=""
 if [ -r "$ETC_DIR/firewall/mode" ]; then
     FIREWALL_MODE=$(sudo cat "$ETC_DIR/firewall/mode" 2>/dev/null | tr -d '[:space:]')
+elif [ -r "$FIREWALL_STASH" ]; then
+    FIREWALL_MODE=$(sudo cat "$FIREWALL_STASH" 2>/dev/null | tr -d '[:space:]')
+    log "recovered the firewall mode from an interrupted reset: $FIREWALL_MODE"
+fi
+
+# Absent from both means this node genuinely has no policy — a fresh install or
+# a dev tree — and arming one here would be inventing a decision nobody made.
+if [ -n "$FIREWALL_MODE" ] && ! $DRY_RUN; then
+    sudo mkdir -p "$(dirname "$FIREWALL_STASH")"
+    printf '%s\n' "$FIREWALL_MODE" | sudo tee "$FIREWALL_STASH" >/dev/null
 fi
 
 # Named in the transcript because the risk runs the other way too: an allowlist
@@ -237,13 +308,31 @@ fi
 
 # Put the firewall policy back. Only this stage runs, so the node stays on the
 # build it was already running — nothing is downloaded or reinstalled.
+#
+# A node that arrived armed and leaves unarmed is a failure, not a warning. It
+# sits on a public address with nothing in front of it, and the only signal used
+# to be a log line that reads as cosmetic. Exit non-zero so the caller stops
+# rather than forming a cluster around it, and leave the stash in place so the
+# retry still knows what mode to restore.
 SETUP_SH=/usr/local/share/spinifex/setup.sh
-if [ -n "$FIREWALL_MODE" ] && [ -x "$SETUP_SH" ]; then
+if [ -n "$FIREWALL_MODE" ]; then
+    if [ ! -x "$SETUP_SH" ]; then
+        echo "ERROR: $SETUP_SH is missing, cannot restore the firewall policy." >&2
+        echo "  This node was armed ($FIREWALL_MODE) and is now open. Reinstall it" >&2
+        echo "  or arm it by hand before forming a cluster." >&2
+        $DRY_RUN || exit 1
+    fi
     log "restoring the host firewall policy (mode: $FIREWALL_MODE)"
-    run sudo env SETUP_STAGES=firewall "$SETUP_SH" --firewall "$FIREWALL_MODE" ||
-        log "  WARNING: could not restore the firewall policy — this node will not re-arm"
-elif [ -n "$FIREWALL_MODE" ]; then
-    log "  WARNING: $SETUP_SH is missing, cannot restore the firewall policy"
+    if run sudo env SETUP_STAGES=firewall "$SETUP_SH" --firewall "$FIREWALL_MODE"; then
+        run sudo rm -f "$FIREWALL_STASH"
+    else
+        echo "ERROR: could not restore the firewall policy." >&2
+        echo "  This node was armed ($FIREWALL_MODE) and is now open on its public" >&2
+        echo "  addresses. Repair with:" >&2
+        echo "    sudo env SETUP_STAGES=firewall $SETUP_SH --firewall $FIREWALL_MODE" >&2
+        echo "    sudo systemctl restart spinifex-daemon" >&2
+        $DRY_RUN || exit 1
+    fi
 fi
 
 if [ ! -d /etc/spinifex ]; then

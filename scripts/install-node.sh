@@ -379,6 +379,32 @@ done
 declare -a WAS_ARMED
 for i in $(seq 0 $((N - 1))); do WAS_ARMED[i]=false; done
 
+# Anything that aborts between here and the re-arm below leaves every node it
+# disarmed open on a public address, and `fail` is called from a dozen places in
+# between. The 2026-09-11 rebuild ended with all four nodes unarmed for exactly
+# that reason: one node failed to restore its own policy, verification failed,
+# and the three that had been disarmed for formation were never put back.
+DISARMED_HOSTS=()
+restore_firewall_on_abort() {
+    local status=$?
+    if [ "$status" -eq 0 ] || [ ${#DISARMED_HOSTS[@]} -eq 0 ]; then
+        return "$status"
+    fi
+    echo ""
+    log "aborting — re-arming the ${#DISARMED_HOSTS[@]} host(s) disarmed for formation"
+    local host
+    for host in "${DISARMED_HOSTS[@]}"; do
+        if on "$host" "sudo systemctl restart spinifex-daemon"; then
+            log "  $host re-armed"
+        else
+            log "  $host: COULD NOT RE-ARM — it is open on its public addresses."
+            log "    Repair: ssh $SSH_USER@$host 'sudo systemctl restart spinifex-daemon'"
+        fi
+    done
+    return "$status"
+}
+trap restore_firewall_on_abort EXIT
+
 if $MANAGE_FIREWALL; then
     log "disarming the host firewall while the cluster forms"
     for i in $(seq 0 $((N - 1))); do
@@ -389,6 +415,7 @@ if $MANAGE_FIREWALL; then
         on "$host" "if [ -x $FIREWALL_HELPER ]; then sudo $FIREWALL_HELPER disable; fi" ||
             fail "$host: could not disarm the host firewall"
         if ${WAS_ARMED[$i]}; then
+            DISARMED_HOSTS+=("$host")
             log "  $host disarmed"
         else
             log "  $host had no policy loaded"
@@ -722,8 +749,17 @@ if $MANAGE_FIREWALL; then
 
     for i in $(seq 0 $((N - 1))); do
         host="${HOSTS[$i]}"
+        # Said at this volume because it used to read as a routine note and is
+        # not one: this host is joining a cluster on public addresses with
+        # nothing in front of it. A node that arrives unarmed is usually a reset
+        # that failed after deleting the policy, not a deliberate choice.
         if ! ${WAS_ARMED[$i]}; then
-            log "  $host: firewall was not armed before forming, leaving it off"
+            log "  $host: WARNING — no firewall policy before forming, leaving it OFF."
+            log "    This node is open on its public addresses. If that was not"
+            log "    deliberate, arm it with:"
+            log "      ssh $SSH_USER@$host 'sudo env SETUP_STAGES=firewall \\"
+            log "        /usr/local/share/spinifex/setup.sh --firewall on'"
+            log "      ssh $SSH_USER@$host 'sudo systemctl restart spinifex-daemon'"
             continue
         fi
 
@@ -763,6 +799,10 @@ if $MANAGE_FIREWALL; then
 
         log "  $host armed: $(grep -c . <<<"$loaded") peers, $encap_count tunnel endpoints"
     done
+
+    # Every disarmed host has been put back and verified, so a later failure is
+    # not a firewall failure and the abort handler has nothing left to repair.
+    DISARMED_HOSTS=()
 else
     echo ""
     log "host firewall: left alone (--no-firewall). If these nodes arrived armed they"

@@ -2,6 +2,7 @@ package viperblockd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -306,4 +307,62 @@ func TestVolumeLease_SurrenderedLeaseIsNotDeletedOnRelease(t *testing.T) {
 
 	_, err = leases.kv.Get(t.Context(), volumeName)
 	require.NoError(t, err, "releasing a surrendered lease must leave the entry alone: it may be the successor's now")
+}
+
+// TestLeaseStoreUnavailable separates "the store could not answer" from "the
+// store answered no". Only the first is worth retrying, and getting it wrong in
+// either direction is expensive: treating a held lease as transient would retry
+// into a second engine on one encrypted volume, and treating a timeout as
+// permanent strands a guest across a cluster restart, which is what happened.
+func TestLeaseStoreUnavailable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"context deadline on a starting JetStream", context.DeadlineExceeded, true},
+		{"wrapped deadline", fmt.Errorf("kv update: %w", context.DeadlineExceeded), true},
+		{"no responders", nats.ErrNoResponders, true},
+		{"request timeout", nats.ErrTimeout, true},
+		{"connection closed", nats.ErrConnectionClosed, true},
+		{"connection draining", nats.ErrConnectionDraining, true},
+		{"no servers", nats.ErrNoServers, true},
+		{"bucket not yet created", jetstream.ErrBucketNotFound, true},
+
+		// The store was reachable and said no. Retrying cannot change it.
+		{"key already exists", jetstream.ErrKeyExists, false},
+		{"lease held by another owner", errVolumeLeaseHeld, false},
+		{"unrelated failure", errors.New("marshal lease record"), false},
+		{"nil", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, leaseStoreUnavailable(tt.err))
+		})
+	}
+}
+
+// TestVolumeLease_UnreachableStoreIsRetryable is the end of the chain that
+// matters: an acquire against a store that cannot answer must surface as
+// ErrLeaseStoreUnavailable, because that is the sentinel mountErrRetryable
+// looks for and the only reason the relaunch backoff engages.
+func TestVolumeLease_UnreachableStoreIsRetryable(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	leases, err := newVolumeLeases(t.Context(), nc, "node-a")
+	require.NoError(t, err)
+
+	// Close the connection under the bound store, which is the shape of a
+	// daemon that came back before NATS finished starting.
+	nc.Close()
+
+	_, err = leases.acquire(t.Context(), "vol-storedown1")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrLeaseStoreUnavailable,
+		"a store that cannot answer must be reported as retryable, not as a refusal")
+	assert.NotErrorIs(t, err, errVolumeLeaseHeld)
 }

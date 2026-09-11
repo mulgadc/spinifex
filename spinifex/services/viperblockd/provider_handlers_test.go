@@ -33,9 +33,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMountErrRetryable locks down the classifier relaunchAll's
-// recovery-retry relies on: only the two viperblock state-load sentinels
-// count as a transient, retryable mount failure.
+// TestMountErrRetryable locks down the classifier relaunchAll's recovery-retry
+// relies on: a mount that failed because a dependency was still starting is
+// retryable, and nothing else is. A guest lost across a cluster update because
+// the lease-store cases below were missing — the mount failed on a JetStream
+// that had not finished coming up, was reported as permanent, and the existing
+// backoff never engaged.
 func TestMountErrRetryable(t *testing.T) {
 	tests := []struct {
 		name string
@@ -46,7 +49,14 @@ func TestMountErrRetryable(t *testing.T) {
 		{"wrapped ErrStateNotFound", fmt.Errorf("state present but BlockSize=0: %w", viperblock.ErrStateNotFound), true},
 		{"ErrStateBackendUnavailable", viperblock.ErrStateBackendUnavailable, true},
 		{"wrapped ErrStateBackendUnavailable", fmt.Errorf("LoadState exhausted 5 retries: %w", viperblock.ErrStateBackendUnavailable), true},
+		{"ErrLeaseStoreUnavailable", ErrLeaseStoreUnavailable, true},
+		{
+			"lease claim against a JetStream that is still starting",
+			fmt.Errorf("claim lease for vol-1: %w: %w", context.DeadlineExceeded, ErrLeaseStoreUnavailable),
+			true,
+		},
 		{"plain error", errors.New("some other mount failure"), false},
+		{"lease held by another node is not retryable", errVolumeLeaseHeld, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

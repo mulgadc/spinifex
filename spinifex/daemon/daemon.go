@@ -2349,12 +2349,33 @@ func (d *Daemon) waitForClusterReady() {
 	slog.Warn("Cluster readiness timeout, proceeding with recovery anyway", "max_wait_ms", otelsetup.Millis(maxWait))
 }
 
-// checkViperblockReady reports whether viperblock is reachable via NATS.
+// checkViperblockReady reports whether viperblock can actually serve a mount,
+// which needs more than a live NATS socket: mounting claims a JetStream KV
+// lease before it reads any state, so JetStream must be serving too.
+//
+// Testing only IsConnected was why waitForClusterReady did not prevent the
+// race it exists to prevent. The client reconnects as soon as nats-server
+// accepts TCP, which is well before JetStream has quorum, so readiness passed
+// roughly 30 seconds before the first lease claim could have succeeded — and
+// every guest recovering in that window was failed and latched.
+//
+// AccountInfo is the probe because it is the cheapest round trip that proves
+// JetStream is answering, and it changes nothing.
 func (d *Daemon) checkViperblockReady() bool {
-	if d.natsConn == nil {
+	if d.natsConn == nil || !d.natsConn.IsConnected() {
 		return false
 	}
-	return d.natsConn.IsConnected()
+
+	js, err := jetstream.New(d.natsConn)
+	if err != nil {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	_, err = js.AccountInfo(ctx)
+	return err == nil
 }
 
 // predastoreReadinessClient is hoisted to package scope so the 2s readiness
@@ -2413,11 +2434,29 @@ func (d *Daemon) LoadState() error {
 
 // restoreInstances delegates to vm.Manager.Restore and syncs the local state
 // file so it matches in-memory state.
+//
+// It then starts the recovery retry loop in the background. Restore is a single
+// pass: any instance whose relaunch lost a race with a still-starting dependency
+// is parked in StateError and, before this, stayed there until an operator
+// noticed. The loop reconsiders exactly those, once the backing store is
+// confirmed ready, and returns as soon as there is nothing left to retry.
+//
+// Backgrounded because it must not hold up the rest of daemon start: the guests
+// it is recovering are already down, and blocking here would keep the API from
+// coming up while it waits.
 func (d *Daemon) restoreInstances() error {
 	d.vmMgr.Restore()
 	if err := d.WriteState(); err != nil {
 		slog.Error("Failed to persist local state after restore", "error", err)
 	}
+
+	go func() {
+		d.vmMgr.RunRecoveryRetryLoop(d.shuttingDown.Load)
+		if err := d.WriteState(); err != nil {
+			slog.Error("Failed to persist local state after recovery retry", "error", err)
+		}
+	}()
+
 	return nil
 }
 

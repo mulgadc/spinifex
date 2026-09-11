@@ -1327,10 +1327,17 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 
 // mountErrRetryable reports whether a mount failure was caused by the
 // backing store not yet being ready (a transient state-load gap) rather
-// than a permanent condition. Only these two sentinels qualify for the
+// than a permanent condition. Only these sentinels qualify for the
 // recovery-relaunch retry in vm.Manager.
+//
+// ErrLeaseStoreUnavailable belongs here for the same reason the other two do,
+// and its absence is what made a routine cluster update destructive: the lease
+// is claimed before any state is read, so a node coming up alongside NATS fails
+// there first and never reaches the conditions these sentinels describe.
 func mountErrRetryable(err error) bool {
-	return errors.Is(err, viperblock.ErrStateNotFound) || errors.Is(err, viperblock.ErrStateBackendUnavailable)
+	return errors.Is(err, viperblock.ErrStateNotFound) ||
+		errors.Is(err, viperblock.ErrStateBackendUnavailable) ||
+		errors.Is(err, ErrLeaseStoreUnavailable)
 }
 
 // mountVolume is launchService's ebs.mount body, extracted so the legacy

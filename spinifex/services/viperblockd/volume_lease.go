@@ -20,6 +20,35 @@ import (
 // exclusion rather than a record of it.
 const volumeLeaseBucket = "VIPERBLOCK_VOLUME_LEASES"
 
+// ErrLeaseStoreUnavailable marks a lease claim that failed because JetStream
+// could not be reached, as distinct from one that failed on its merits. The
+// two are opposite conclusions: unreachable means try again shortly, whereas
+// a refused claim means somebody else holds the volume.
+//
+// It exists because they were previously indistinguishable to the caller. A
+// node restarting alongside NATS claims a lease before JetStream is serving,
+// gets a deadline, and the mount is reported permanent — so a guest that only
+// needed a few more seconds is failed and latched out of recovery instead.
+var ErrLeaseStoreUnavailable = errors.New("volume lease store unavailable")
+
+// leaseStoreUnavailable reports whether err means the lease store could not be
+// reached at all. Deliberately a closed list of transport failures: anything
+// unrecognised stays permanent, because retrying a claim that was genuinely
+// refused would keep a volume wedged behind a node that cannot have it.
+func leaseStoreUnavailable(err error) bool {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, nats.ErrNoResponders),
+		errors.Is(err, nats.ErrTimeout),
+		errors.Is(err, nats.ErrConnectionClosed),
+		errors.Is(err, nats.ErrConnectionDraining),
+		errors.Is(err, nats.ErrNoServers),
+		errors.Is(err, jetstream.ErrBucketNotFound):
+		return true
+	}
+	return false
+}
+
 // volumeLeaseTTL is how long a lease outlives the node holding it. A node that
 // dies mid-mount leaves its entry behind and nothing else may open the volume
 // until the entry ages out.
@@ -174,6 +203,9 @@ func (l *volumeLeases) acquire(ctx context.Context, volumeName string) (*volumeL
 			return nil, err
 		}
 	case err != nil:
+		if leaseStoreUnavailable(err) {
+			return nil, fmt.Errorf("claim lease for %s: %w: %w", volumeName, err, ErrLeaseStoreUnavailable)
+		}
 		return nil, fmt.Errorf("claim lease for %s: %w", volumeName, err)
 	}
 

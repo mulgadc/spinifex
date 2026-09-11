@@ -29,10 +29,11 @@ const clusterShutdownPhaseTimeout = 10 * time.Minute
 const spxProcessDrainTimeout = 3 * time.Minute
 
 // ClusterShutdownAndRestart performs the full operator shutdown sequence and
-// brings the cluster back: the coordinated phased shutdown, a per-unit stop on
-// every node, a confirmed wait for every spx process to exit, then a start of
-// spinifex.target everywhere. It returns once NATS has reformed and every
-// gateway answers, so a caller can immediately assert on guest state.
+// brings the cluster back: the coordinated phased shutdown, a stop of
+// spinifex.target on every node, a confirmed wait for every spx process to exit
+// and for systemd to have no spinifex job left queued, then a start of the
+// target everywhere. It returns once NATS has reformed and every gateway
+// answers, so a caller can immediately assert on guest state.
 //
 // The spx-process wait is the step that makes this a real restart rather than a
 // systemctl call that returned early. spinifex-shutdown.service is ordered
@@ -87,16 +88,62 @@ func ClusterShutdown(t *testing.T, c *Cluster) {
 		t.Logf("cluster shutdown on %s reported %v — proceeding to the per-unit stop", leader.Name, err)
 	}
 
-	Step(t, "stop spinifex units on all %d nodes", len(c.Nodes))
+	// StopNode is not used here. It stops the service units directly and leaves
+	// spinifex.target active, which is right for the hard outage it simulates
+	// and wrong for a real shutdown: the target then reads as satisfied while
+	// its units are dead, and a later start can race a stop job that is still
+	// queued. Exactly that lost node3's NATS on the first run — stopped and
+	// never started again, so the cluster reformed to 2 peers of 3.
+	Step(t, "stop spinifex.target on all %d nodes", len(c.Nodes))
 	for _, n := range c.Nodes {
-		StopNode(t, n)
-		stopUnitsHoldingSpx(t, n)
+		stopTarget(t, n)
 	}
 
 	Step(t, "confirm no spx process survives on any node")
 	for _, n := range c.Nodes {
 		waitNoSpxProcess(t, n)
 	}
+
+	Step(t, "confirm systemd has no spinifex jobs still queued")
+	for _, n := range c.Nodes {
+		waitNoPendingJobs(t, n)
+	}
+}
+
+// stopTarget stops spinifex.target, which is what the operator procedure runs
+// and what update-nodes.sh runs. Non-fatal: the teardown can racily drop the
+// SSH channel, and the waits below are the authoritative gate.
+func stopTarget(t *testing.T, node Node) {
+	t.Helper()
+
+	ssh := NewPeerSSH()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if _, err := ssh.Run(ctx, node.Addr, "sudo systemctl stop spinifex.target"); err != nil {
+		t.Logf("stop spinifex.target on %s: %v (proceeding — the waits are the gate)", node.Name, err)
+	}
+}
+
+// waitNoPendingJobs blocks until systemd has no queued job for any spinifex
+// unit. Starting the target with a stop still queued is how a service ends up
+// stopped by a job that completes after the start was issued.
+func waitNoPendingJobs(t *testing.T, node Node) {
+	t.Helper()
+
+	ssh := NewPeerSSH()
+	EventuallyErr(t, func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		out, err := ssh.Run(ctx, node.Addr,
+			"systemctl list-jobs --no-legend --no-pager | grep -c spinifex || true")
+		if err != nil {
+			return fmt.Errorf("%s list-jobs: %w", node.Name, err)
+		}
+		if n := strings.TrimSpace(string(out)); n != "0" {
+			return fmt.Errorf("%s still has %s queued spinifex job(s)", node.Name, n)
+		}
+		return nil
+	}, 2*time.Minute, 2*time.Second)
 }
 
 // stopUnitsHoldingSpx stops whatever units are still running the spx binary,

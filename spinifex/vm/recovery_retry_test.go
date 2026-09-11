@@ -1,3 +1,8 @@
+//test:in-package — the retry policy is unexported (recoveryRetryMaxPasses,
+//recoveryRetryInterval, hasRetryableRecoveryFailures) and the tests drive it
+//through the same seams restore_test.go uses: relaunchTestManager, the
+//runForRelaunch stub, and VM.recoveryRetries.
+
 package vm
 
 import (

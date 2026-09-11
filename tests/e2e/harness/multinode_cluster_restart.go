@@ -90,11 +90,38 @@ func ClusterShutdown(t *testing.T, c *Cluster) {
 	Step(t, "stop spinifex units on all %d nodes", len(c.Nodes))
 	for _, n := range c.Nodes {
 		StopNode(t, n)
+		stopUnitsHoldingSpx(t, n)
 	}
 
 	Step(t, "confirm no spx process survives on any node")
 	for _, n := range c.Nodes {
 		waitNoSpxProcess(t, n)
+	}
+}
+
+// stopUnitsHoldingSpx stops whatever units are still running the spx binary,
+// found from the processes themselves rather than from a list.
+//
+// Every service is the same binary — `spx service <name> start` — so the set
+// that has to stop is "whoever is still running it", and a hard-coded list goes
+// stale silently the moment a service is added. StopNode's list omits
+// spinifex-northstar and spinifex-qmp-collector, which is harmless for the hard
+// outage it simulates and not harmless here.
+func stopUnitsHoldingSpx(t *testing.T, node Node) {
+	t.Helper()
+
+	ssh := NewPeerSSH()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	// The unit name comes from each survivor's cgroup, so this needs no
+	// knowledge of which units exist.
+	const cmd = `for pid in $(pgrep -x spx || true); do
+    unit=$(grep -oE 'spinifex-[a-z0-9-]+\.service' "/proc/$pid/cgroup" 2>/dev/null | head -1)
+    [ -n "$unit" ] && sudo systemctl stop "$unit"
+done; true`
+	if _, err := ssh.Run(ctx, node.Addr, cmd); err != nil {
+		t.Logf("stopUnitsHoldingSpx %s: %v (the wait below is the gate)", node.Name, err)
 	}
 }
 
@@ -115,6 +142,9 @@ func waitNoSpxProcess(t *testing.T, node Node) {
 			return fmt.Errorf("%s pgrep spx: %w", node.Name, err)
 		}
 		if n := strings.TrimSpace(string(out)); n != "0" {
+			// A survivor is a unit that was never asked to stop, or one that
+			// systemd restarted. Ask again rather than only polling.
+			stopUnitsHoldingSpx(t, node)
 			return fmt.Errorf("%s still has %s spx process(es)", node.Name, n)
 		}
 		return nil

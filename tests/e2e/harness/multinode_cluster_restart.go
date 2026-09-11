@@ -54,8 +54,10 @@ func ClusterShutdownAndRestart(t *testing.T, c *Cluster, env *Env) {
 		StartNode(t, n)
 	}
 
-	Step(t, "wait NATS to reform to %d peers", len(c.Nodes))
-	c.WaitNATSPeers(t, len(c.Nodes), WithTimeout(3*time.Minute), WithPoll(2*time.Second))
+	// WaitNATSPeers counts remote peers, so a whole cluster is one less than
+	// the node count.
+	Step(t, "wait NATS to reform to %d peers", len(c.Nodes)-1)
+	c.WaitNATSPeers(t, len(c.Nodes)-1, WithTimeout(3*time.Minute), WithPoll(2*time.Second))
 
 	Step(t, "wait every gateway to answer")
 	c.WaitGatewayHealthy(t, WithTimeout(3*time.Minute), WithPoll(2*time.Second))

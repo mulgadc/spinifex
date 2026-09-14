@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -89,6 +90,11 @@ type VM struct {
 	// device_add fails with "slot 0 ... already occupied". Non-persisted; the
 	// Manager hands out a stable *VM, so the lock is shared across calls.
 	attachMu sync.Mutex `json:"-"`
+
+	// rebooting marks the window in which this guest is expected to power
+	// itself off and be reset again. The heartbeat quits a guest it finds
+	// stopped in the shutdown run state, and a reboot passes through it.
+	rebooting atomic.Bool `json:"-"`
 
 	// DesiredState is the state this instance has been asked to be in, as
 	// opposed to Status, which is the state it is observed to be in.
@@ -395,6 +401,11 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 	if cfg.Name != "" {
 		args = append(args, "-name", fmt.Sprintf("guest=%s,debug-threads=on", cfg.Name))
 	}
+
+	// A guest that powers itself off pauses QEMU instead of ending it. That
+	// window is what a graceful reboot needs — process, taps and drives all
+	// survive the guest's clean shutdown. Every other path closes it with quit.
+	args = append(args, "-action", "shutdown=pause")
 
 	if cfg.PIDFile != "" {
 		args = append(args, "-pidfile", cfg.PIDFile)

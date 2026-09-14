@@ -16,6 +16,7 @@ var CommandResponseTypes = map[string]unmarshalTarget{
 	"system_powerdown": &json.RawMessage{},
 	"system_reset":     &json.RawMessage{},
 	"system_wakeup":    &json.RawMessage{},
+	"quit":             &json.RawMessage{},
 
 	"query-block": &[]BlockDevice{},
 

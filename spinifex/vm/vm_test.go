@@ -58,6 +58,7 @@ func TestExecute(t *testing.T) {
 
 	expectedArgs := []string{
 		"-name", "guest=test-vm,debug-threads=on",
+		"-action", "shutdown=pause",
 		"-smp", "2",
 		"-m", "1024",
 		"-drive", "file=disk.img,format=qcow2",

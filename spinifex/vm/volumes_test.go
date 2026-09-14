@@ -602,6 +602,16 @@ func TestReboot_InstanceNotFound(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInstanceNotFound)
 }
 
+// pausingGuest makes qemuPausesOnShutdown describe this test's guest as one
+// whose QEMU pauses on shutdown, which is what every guest launched by the
+// current code does. Restores the real /proc check on cleanup.
+func pausingGuest(t *testing.T) {
+	t.Helper()
+	previous := qemuPausesOnShutdown
+	qemuPausesOnShutdown = func(*VM) bool { return true }
+	t.Cleanup(func() { qemuPausesOnShutdown = previous })
+}
+
 func TestReboot_NotRunning(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateStopped})
@@ -614,9 +624,11 @@ func TestReboot_NotRunning(t *testing.T) {
 // TestReboot_DoesNotFireHooks asserts that Manager.Reboot fires neither
 // OnInstanceUp nor OnInstanceDown. The hook contract requires
 // hooks to fire only on Pending→Running and terminal transitions; reboot keeps
-// the VM in StateRunning across system_reset, so firing OnInstanceDown +
-// OnInstanceUp would tear down per-instance NATS subs on every reboot.
+// the VM in StateRunning across the powerdown and reset, so firing
+// OnInstanceDown + OnInstanceUp would tear down per-instance NATS subs on
+// every reboot.
 func TestReboot_DoesNotFireHooks(t *testing.T) {
+	pausingGuest(t)
 	recorder := &qmpRecorder{}
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		recorder.record(cmd)
@@ -639,14 +651,16 @@ func TestReboot_DoesNotFireHooks(t *testing.T) {
 
 	assert.Equal(t, 0, upCalls, "Reboot must not fire OnInstanceUp")
 	assert.Equal(t, 0, downCalls, "Reboot must not fire OnInstanceDown")
-	assert.Equal(t, []string{"system_reset", "query-status"}, recorder.executes(),
-		"Reboot must verify QEMU resumed after system_reset")
+	assert.Equal(t, []string{"system_powerdown", "query-status", "system_reset", "query-status"},
+		recorder.executes(),
+		"Reboot must ask the guest down first, then verify QEMU resumed after system_reset")
 }
 
 // TestReboot_DoesNotChangeStatus asserts the VM stays in StateRunning across
 // reboot. Pairs with TestReboot_DoesNotFireHooks to lock down the hook
 // contract: status doesn't transition, so hooks shouldn't fire.
 func TestReboot_DoesNotChangeStatus(t *testing.T) {
+	pausingGuest(t)
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		if cmd.Execute == "query-status" {
 			return qmpStatusResponse("running", true)
@@ -666,6 +680,7 @@ func TestReboot_DoesNotChangeStatus(t *testing.T) {
 }
 
 func TestReboot_QMPFailureSurfacesError(t *testing.T) {
+	pausingGuest(t)
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		return map[string]any{
 			"error": map[string]any{
@@ -684,18 +699,30 @@ func TestReboot_QMPFailureSurfacesError(t *testing.T) {
 	assert.Contains(t, err.Error(), "QMP system_reset")
 }
 
+// TestReboot_ResumesPausedRunstates drives the whole reboot: the guest reaches
+// the shutdown runstate on its own, is reset, and lands parked in a runstate
+// that needs cont before its vCPUs run again.
 func TestReboot_ResumesPausedRunstates(t *testing.T) {
+	pausingGuest(t)
 	for _, runstate := range []string{"paused", "prelaunch"} {
 		t.Run(runstate, func(t *testing.T) {
 			recorder := &qmpRecorder{}
-			statusQueries := 0
+			reset := false
+			postResetQueries := 0
 			qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 				recorder.record(cmd)
+				if cmd.Execute == "system_reset" {
+					reset = true
+					return nil
+				}
 				if cmd.Execute != "query-status" {
 					return nil
 				}
-				statusQueries++
-				if statusQueries == 1 {
+				if !reset {
+					return qmpStatusResponse(qmpStatusShutdown, false)
+				}
+				postResetQueries++
+				if postResetQueries == 1 {
 					return qmpStatusResponse(runstate, false)
 				}
 				return qmpStatusResponse("running", true)
@@ -706,12 +733,16 @@ func TestReboot_ResumesPausedRunstates(t *testing.T) {
 			m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
 
 			require.NoError(t, m.Reboot(t.Context(), "i-1"))
-			assert.Equal(t, []string{"system_reset", "query-status", "cont", "query-status"}, recorder.executes())
+			assert.Equal(t, []string{
+				"system_powerdown", "query-status",
+				"system_reset", "query-status", "cont", "query-status",
+			}, recorder.executes())
 		})
 	}
 }
 
 func TestReboot_NonRunningTimesOut(t *testing.T) {
+	pausingGuest(t)
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		if cmd.Execute == "query-status" {
 			return qmpStatusResponse("shutdown", false)
@@ -732,6 +763,7 @@ func TestReboot_NonRunningTimesOut(t *testing.T) {
 }
 
 func TestReboot_MalformedStatusSurfacesError(t *testing.T) {
+	pausingGuest(t)
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		if cmd.Execute == "query-status" {
 			return map[string]any{"return": map[string]any{}}
@@ -749,6 +781,7 @@ func TestReboot_MalformedStatusSurfacesError(t *testing.T) {
 }
 
 func TestReboot_ContFailureSurfacesError(t *testing.T) {
+	pausingGuest(t)
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		if cmd.Execute == "query-status" {
 			return qmpStatusResponse("paused", false)
@@ -771,15 +804,26 @@ func TestReboot_ContFailureSurfacesError(t *testing.T) {
 }
 
 func TestReboot_StateChangePreventsCont(t *testing.T) {
+	pausingGuest(t)
 	var m *Manager
 	recorder := &qmpRecorder{}
+	reset := false
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		recorder.record(cmd)
-		if cmd.Execute == "query-status" {
-			m.UpdateState("i-1", func(v *VM) { v.Status = StateStopping })
-			return qmpStatusResponse("paused", false)
+		if cmd.Execute == "system_reset" {
+			reset = true
+			return nil
 		}
-		return nil
+		if cmd.Execute != "query-status" {
+			return nil
+		}
+		if !reset {
+			return qmpStatusResponse(qmpStatusShutdown, false)
+		}
+		// A concurrent stop lands between the reset and the resume: cont must
+		// not run against an instance that is no longer meant to be running.
+		m.UpdateState("i-1", func(v *VM) { v.Status = StateStopping })
+		return qmpStatusResponse("paused", false)
 	})
 	defer cancel()
 
@@ -789,7 +833,9 @@ func TestReboot_StateChangePreventsCont(t *testing.T) {
 	err := m.Reboot(t.Context(), "i-1")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidTransition)
-	assert.Equal(t, []string{"system_reset", "query-status"}, recorder.executes())
+	assert.Equal(t, []string{
+		"system_powerdown", "query-status", "system_reset", "query-status",
+	}, recorder.executes())
 }
 
 func TestQMPHeartbeatPoll_UsesRunstate(t *testing.T) {
@@ -1568,4 +1614,135 @@ func TestDetachVolume_BlockdevDelAlreadyRemoved_IdempotentSuccess(t *testing.T) 
 	assert.Equal(t, "/dev/sdf", device)
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne,
 		"an already-removed block node must resume through to the unmount seal")
+}
+
+// TestReboot_WedgedGuestFallsBackToHardReset asserts the AWS contract: a guest
+// that will not shut down cleanly is reset anyway rather than left running, and
+// the instance stays in StateRunning throughout.
+func TestReboot_WedgedGuestFallsBackToHardReset(t *testing.T) {
+	pausingGuest(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	require.NoError(t, utils.WritePidFile("i-1", os.Getpid()))
+	t.Cleanup(func() { _ = utils.RemovePidFile("i-1") })
+
+	previous := rebootPowerdownTimeout
+	rebootPowerdownTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { rebootPowerdownTimeout = previous })
+
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		// The guest ignores the power button and never leaves the running run
+		// state, which is also how it reads coming back from the hard reset.
+		if cmd.Execute == "query-status" {
+			return qmpStatusResponse("running", true)
+		}
+		return nil
+	})
+	defer cancel()
+
+	m := NewManager()
+	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
+
+	require.NoError(t, m.Reboot(t.Context(), "i-1"))
+
+	assert.Contains(t, recorder.executes(), "system_reset",
+		"a guest that will not power down must still be reset")
+	v, ok := m.Get("i-1")
+	require.True(t, ok)
+	assert.Equal(t, StateRunning, m.Status(v))
+}
+
+// TestQMPHeartbeatPoll_QuitsGuestThatPoweredItselfOff covers the cost of the
+// -action shutdown=pause flag: a guest that runs `poweroff` now leaves QEMU
+// paused rather than gone, and something has to end it.
+func TestQMPHeartbeatPoll_QuitsGuestThatPoweredItselfOff(t *testing.T) {
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		if cmd.Execute == "query-status" {
+			return qmpStatusResponse(qmpStatusShutdown, false)
+		}
+		return nil
+	})
+	defer cancel()
+
+	m := NewManager()
+	instance := &VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient}
+	m.Insert(instance)
+
+	assert.True(t, m.qmpHeartbeatPoll(instance))
+	assert.Equal(t, []string{"query-status", "quit"}, recorder.executes())
+}
+
+// TestQMPHeartbeatPoll_LeavesARebootingGuestAlone is the other side of it. A
+// reboot passes through the same run state on purpose, so quitting on sight
+// would destroy the guest the reboot was about to bring back.
+func TestQMPHeartbeatPoll_LeavesARebootingGuestAlone(t *testing.T) {
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		if cmd.Execute == "query-status" {
+			return qmpStatusResponse(qmpStatusShutdown, false)
+		}
+		return nil
+	})
+	defer cancel()
+
+	m := NewManager()
+	instance := &VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient}
+	instance.rebooting.Store(true)
+	m.Insert(instance)
+
+	assert.True(t, m.qmpHeartbeatPoll(instance))
+	assert.Equal(t, []string{"query-status"}, recorder.executes(),
+		"a rebooting guest must not be quit, and must not be counted unresponsive")
+	assert.Zero(t, instance.Health.QMPConsecutiveFailures,
+		"a reboot in flight is not a failed heartbeat")
+}
+
+// TestReboot_PreFlagGuestSkipsPowerdown covers the upgrade window. A guest
+// launched before -action shutdown=pause exits on powerdown rather than
+// pausing, so asking it to shut down would leave nothing to reset and the
+// guest down. Those are reset without asking, exactly as they were before.
+func TestReboot_PreFlagGuestSkipsPowerdown(t *testing.T) {
+	previous := qemuPausesOnShutdown
+	qemuPausesOnShutdown = func(*VM) bool { return false }
+	t.Cleanup(func() { qemuPausesOnShutdown = previous })
+
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		if cmd.Execute == "query-status" {
+			return qmpStatusResponse("running", true)
+		}
+		return nil
+	})
+	defer cancel()
+
+	m := NewManager()
+	m.Insert(&VM{ID: "i-1", Status: StateRunning, QMPClient: qmpClient})
+
+	require.NoError(t, m.Reboot(t.Context(), "i-1"))
+	assert.Equal(t, []string{"system_reset", "query-status"}, recorder.executes(),
+		"a guest that would exit on powerdown must not be asked to power down")
+}
+
+func TestCmdlineHasPauseAction(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cmdline string
+		want    bool
+	}{
+		"present":      {"qemu-system-x86_64\x00-action\x00shutdown=pause\x00-smp\x002", true},
+		"absent":       {"qemu-system-x86_64\x00-smp\x002", false},
+		"other action": {"qemu-system-x86_64\x00-action\x00reboot=shutdown", false},
+		// A substring match would accept this and reboot would then hang
+		// waiting for a pause that never comes.
+		"substring only": {"qemu-system-x86_64\x00-name\x00guest=shutdown=paused", false},
+		"empty":          {"", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, cmdlineHasPauseAction([]byte(tc.cmdline)))
+		})
+	}
 }

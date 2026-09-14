@@ -1366,10 +1366,10 @@ func TestShutdownAndUnmount_NilQMPClient_ProceedsToUnmount(t *testing.T) {
 }
 
 // TestShutdownAndUnmount_PowerdownSent_NoForceKill exercises the happy path:
-// QMPClient is wired, system_powerdown is dispatched, the PID-file wait
-// returns immediately (no PID file present), and the unmount step runs.
-// The force-kill branch must not run because WaitForPidFileRemoval returned
-// nil.
+// QMPClient is wired, the guest is asked to power down and the paused QEMU is
+// then quit, the PID-file wait returns immediately (no PID file present), and
+// the unmount step runs. The force-kill branch must not run because
+// WaitForPidFileRemoval returned nil.
 func TestShutdownAndUnmount_PowerdownSent_NoForceKill(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	recorder := &qmpRecorder{}
@@ -1386,8 +1386,8 @@ func TestShutdownAndUnmount_PowerdownSent_NoForceKill(t *testing.T) {
 
 	require.NoError(t, m.shutdownAndUnmount(instance))
 
-	assert.Equal(t, []string{"system_powerdown"}, recorder.executes(),
-		"shutdownAndUnmount must dispatch exactly one system_powerdown QMP command")
+	assert.Equal(t, []string{"system_powerdown", "query-status", "quit"}, recorder.executes(),
+		"shutdownAndUnmount must ask the guest to power down, then end the paused QEMU")
 
 	mounter.mu.Lock()
 	defer mounter.mu.Unlock()
@@ -1577,4 +1577,65 @@ func TestTerminate_SealFailure_Tolerated(t *testing.T) {
 		"terminate must tolerate a failed seal")
 	assert.Equal(t, []string{"i-term-seal"}, cleaner.deleteVolumes,
 		"terminate must still delete the volumes after a failed seal")
+}
+
+// TestGracefulPowerdown_ResendReachesALateGuest is the boot-race defect stated
+// directly: a guest whose acpid has not started yet ignores the first power
+// button. One signal would burn the whole budget and escalate to a kill on a
+// guest that was only busy booting, so the button is pressed again.
+func TestGracefulPowerdown_ResendReachesALateGuest(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	require.NoError(t, utils.WritePidFile("i-late", os.Getpid()))
+	t.Cleanup(func() { _ = utils.RemovePidFile("i-late") })
+
+	var presses int
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		if cmd.Execute == "system_powerdown" {
+			presses++
+			return nil
+		}
+		if cmd.Execute != "query-status" {
+			return nil
+		}
+		// The guest only acts on the third press.
+		if presses < 3 {
+			return qmpStatusResponse("running", true)
+		}
+		return qmpStatusResponse(qmpStatusShutdown, false)
+	})
+	defer cancel()
+
+	m := NewManager()
+	instance := &VM{ID: "i-late", Status: StateRunning, QMPClient: qmpClient}
+
+	err := m.powerdownWithTuning(t.Context(), instance, 5*time.Second, 5*time.Millisecond, time.Millisecond)
+	require.NoError(t, err, "a guest that honours a later press must still shut down gracefully")
+	assert.GreaterOrEqual(t, presses, 3, "the power button must be pressed again while the guest ignores it")
+}
+
+// TestGracefulPowerdown_WedgedGuestTimesOut covers the other half: a guest that
+// never answers must not be waited on forever. The error is what Stop escalates
+// to SIGKILL on and Reboot escalates to a hard reset on.
+func TestGracefulPowerdown_WedgedGuestTimesOut(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	require.NoError(t, utils.WritePidFile("i-wedged", os.Getpid()))
+	t.Cleanup(func() { _ = utils.RemovePidFile("i-wedged") })
+
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		if cmd.Execute == "query-status" {
+			return qmpStatusResponse("running", true)
+		}
+		return nil
+	})
+	defer cancel()
+
+	m := NewManager()
+	instance := &VM{ID: "i-wedged", Status: StateRunning, QMPClient: qmpClient}
+
+	err := m.powerdownWithTuning(t.Context(), instance, 30*time.Millisecond, 5*time.Millisecond, time.Millisecond)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errPowerdownTimedOut)
+	assert.Contains(t, err.Error(), `last run state "running"`)
 }

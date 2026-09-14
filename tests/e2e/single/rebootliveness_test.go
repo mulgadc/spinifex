@@ -54,19 +54,39 @@ func runEarlyRebootLiveness(t *testing.T, fix *Fixture) {
 	}
 
 	deadline := time.Now().Add(earlyRebootRecoveryTimeout)
+	// "SSH never answered" and "SSH answered with the boot ID it had before"
+	// are different faults — a guest that never came back versus a reset that
+	// never reached it — and one message for both names neither.
+	var (
+		reachedOnce bool
+		lastBootID  string
+		lastSSHErr  error
+	)
 	for {
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		out, sshErr := harness.RunGuestSSH(ctx, tgt, "cat /proc/sys/kernel/random/boot_id")
 		cancel()
+		lastSSHErr = sshErr
 		if sshErr == nil {
+			reachedOnce = true
 			newBootID := strings.TrimSpace(string(out))
+			lastBootID = newBootID
 			if newBootID != "" && newBootID != bootID {
 				harness.Detail(t, "reboot_outcome", "resumed", "boot_id", newBootID)
 				return
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("reboot API succeeded but guest boot ID did not change within %s", earlyRebootRecoveryTimeout)
+			harness.DumpInstanceConsole(t, fix.AWS, instanceID,
+				fix.ArtifactDir(t), "early-reboot-console.log")
+			if !reachedOnce {
+				t.Fatalf("reboot API succeeded but the guest never answered SSH again within %s "+
+					"(boot ID before the reboot %s, last SSH error: %v)",
+					earlyRebootRecoveryTimeout, bootID, lastSSHErr)
+			}
+			t.Fatalf("reboot API succeeded but the guest answered SSH still holding boot ID %s after %s "+
+				"(so the reset never reached the guest kernel; last read %q)",
+				bootID, earlyRebootRecoveryTimeout, lastBootID)
 		}
 		time.Sleep(2 * time.Second)
 	}

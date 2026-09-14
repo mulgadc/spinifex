@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -102,8 +103,14 @@ const (
 	rebootStatusPollInterval = 100 * time.Millisecond
 )
 
-// Reboot resets QEMU and verifies its vCPUs resume. The VM remains in
-// StateRunning while firmware re-runs.
+// rebootPowerdownTimeout is how long the guest gets to shut itself down before
+// it is reset under. Nova's shutdown_timeout, and the same shape as the hard
+// reboot AWS documents once a guest will not go quietly.
+var rebootPowerdownTimeout = 60 * time.Second
+
+// Reboot asks the guest to shut itself down, then resets and resumes it in the
+// same QEMU process. The VM remains in StateRunning throughout. A guest that
+// will not power down inside its budget is hard-reset, and that is logged.
 func (m *Manager) Reboot(ctx context.Context, id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
@@ -112,6 +119,26 @@ func (m *Manager) Reboot(ctx context.Context, id string) error {
 	if status := m.Status(instance); status != StateRunning {
 		return fmt.Errorf("%w: cannot reboot instance %s in state %s",
 			ErrInvalidTransition, id, status)
+	}
+
+	// Tell the heartbeat this guest is meant to be stopped for a moment. It
+	// quits a guest it finds in the shutdown run state, which is exactly the
+	// state a reboot passes through.
+	instance.rebooting.Store(true)
+	defer instance.rebooting.Store(false)
+
+	// A reset alone never reaches the guest kernel, so it syncs nothing and
+	// every dirty page is lost. Ask first; reset only once asking has failed.
+	// A guest whose QEMU would exit rather than pause is reset without asking,
+	// because a powerdown there leaves nothing to reset and the guest down.
+	switch {
+	case !qemuPausesOnShutdown(instance):
+		slog.InfoContext(ctx, "Guest predates the paused-shutdown flag, hard-resetting", "instanceId", id)
+	default:
+		if err := m.gracefulPowerdown(ctx, instance, rebootPowerdownTimeout); err != nil {
+			slog.WarnContext(ctx, "Guest did not power down for reboot, hard-resetting",
+				"instanceId", id, "budget_ms", otelsetup.Millis(rebootPowerdownTimeout), "err", err)
+		}
 	}
 
 	rebootCtx, cancel := context.WithTimeout(ctx, rebootRunningTimeout)
@@ -124,8 +151,9 @@ func (m *Manager) Reboot(ctx context.Context, id string) error {
 	return m.waitForQMPRunning(rebootCtx, instance, rebootStatusPollInterval)
 }
 
-// waitForQMPRunning polls until QEMU reports running or ctx expires. Paused
-// and prelaunch guests receive cont so a reset cannot leave their vCPUs parked.
+// waitForQMPRunning polls until QEMU reports running or ctx expires. Paused,
+// prelaunch and shutdown guests receive cont so a reset cannot leave their
+// vCPUs parked — a reset from a powered-down guest lands in one of the three.
 func (m *Manager) waitForQMPRunning(ctx context.Context, instance *VM, pollInterval time.Duration) error {
 	var lastStatus qmp.Status
 	for {
@@ -146,7 +174,8 @@ func (m *Manager) waitForQMPRunning(ctx context.Context, instance *VM, pollInter
 			return nil
 		}
 
-		if qmpStatus.Status == "paused" || qmpStatus.Status == "prelaunch" {
+		if qmpStatus.Status == "paused" || qmpStatus.Status == "prelaunch" ||
+			qmpStatus.Status == qmpStatusShutdown {
 			if status := m.Status(instance); status != StateRunning {
 				return fmt.Errorf("%w: cannot resume instance %s in state %s",
 					ErrInvalidTransition, instance.ID, status)
@@ -944,7 +973,25 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 		return true
 	}
 
-	if err == nil && !qmpStatus.Running && m.Status(instance) == StateRunning {
+	// A guest that powered itself off leaves QEMU paused rather than gone,
+	// because that window is what a reboot needs. Nobody is rebooting this one,
+	// so close it: quit lets the process exit and recovery proceed as before.
+	if err == nil && qmpStatus.Status == qmpStatusShutdown &&
+		m.Status(instance) == StateRunning && !instance.rebooting.Load() {
+		slog.InfoContext(ctx, "Guest powered itself off, ending QEMU", "instance", instance.ID)
+		if _, quitErr := sendQMPCommand(ctx, instance.QMPClient,
+			qmp.QMPCommand{Execute: "quit"}, instance.ID); quitErr != nil {
+			slog.WarnContext(ctx, "QMP quit failed after guest shutdown",
+				"instance", instance.ID, "err", quitErr)
+		}
+		return true
+	}
+
+	// A reboot in flight is meant to be stopped for a moment, so counting it as
+	// unresponsive would mark a healthy guest impaired for doing what it was
+	// asked. Reboot bounds its own window; this only declines to judge it.
+	if err == nil && !qmpStatus.Running && m.Status(instance) == StateRunning &&
+		!instance.rebooting.Load() {
 		err = fmt.Errorf("QMP reported non-running status %q", qmpStatus.Status)
 	}
 	if err != nil {

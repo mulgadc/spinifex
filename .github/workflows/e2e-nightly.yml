@@ -2,7 +2,13 @@ name: E2E Nightly
 
 on:
   schedule:
-    - cron: "0 14 * * 0-4" # 00:00 Mon-Fri AEST = 14:00 Sun-Thu UTC
+    # 14:00 UTC is midnight AEST (01:00 AEDT — cron has no DST), when the
+    # hypervisors are idle. Every day, not weeknights: a weekend gap is two runs
+    # of evidence lost on a suite whose remaining failures are a rate, not a bug.
+    # :17 rather than :00 because GitHub queues scheduled runs behind every other
+    # top-of-hour cron and drops them under load, which is why 2026-09-14 never
+    # fired and why every run in that window started 3h15m-3h45m late.
+    - cron: "17 14 * * *"
   workflow_dispatch:
     inputs:
       cells:
@@ -756,7 +762,7 @@ jobs:
 
   # Bare-metal single-node suite. Doesn't fit the tofu matrix shape, so it
   # runs as a sibling job via the reusable e2e-baremetal workflow. Gated like a
-  # matrix cell ("cell 20"): every weeknight cron, or dispatch with 20 selected
+  # matrix cell ("cell 20"): every nightly cron, or dispatch with 20 selected
   # (blank cells = all). Tests `dev` on schedule to match GIT_BRANCH above.
   baremetal:
     name: cell-20 (baremetal/pxe/real-hw)

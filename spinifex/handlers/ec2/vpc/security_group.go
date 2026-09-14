@@ -1180,6 +1180,11 @@ func (s *VPCServiceImpl) updateSGRuleDescriptions(ctx context.Context, accountID
 	if len(req.descriptions) == 0 && len(req.permissions) == 0 {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
+	// AWS takes one resolution mode per request. Honouring both would let the
+	// two lists name the same rule and resolve last-wins, invisibly.
+	if len(req.descriptions) > 0 && len(req.permissions) > 0 {
+		return errors.New(awserrors.ErrorInvalidParameterCombination)
+	}
 
 	key := utils.AccountKey(accountID, req.groupId)
 	entry, err := s.sgKV.Get(ctx, key)
@@ -1269,7 +1274,7 @@ func applySGRuleDescriptions(rules []SGRule, descriptions []*ec2.SecurityGroupRu
 
 	targets, err := ipPermissionsToDescriptionTargets(permissions)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "invalid IpPermissions: %w", err)
 	}
 	for _, t := range targets {
 		i, ok := byKey[t.key]
@@ -1294,7 +1299,8 @@ type sgDescriptionTarget struct {
 
 // ipPermissionsToDescriptionTargets resolves IpPermissions to rule-identity
 // keys, applying the same protocol normalisation and validation as the
-// authorize path. IPv6 ranges are skipped: no IPv6 rule can be stored.
+// authorize path. A permission that resolves to no target is an error: the
+// authorize path rejects the same input, so no matching rule can exist.
 func ipPermissionsToDescriptionTargets(perms []*ec2.IpPermission) ([]sgDescriptionTarget, error) {
 	var targets []sgDescriptionTarget
 	for _, perm := range perms {
@@ -1318,6 +1324,8 @@ func ipPermissionsToDescriptionTargets(perms []*ec2.IpPermission) ([]sgDescripti
 			toPort = *perm.ToPort
 		}
 
+		before := len(targets)
+
 		for _, ipRange := range perm.IpRanges {
 			if ipRange == nil || ipRange.CidrIp == nil {
 				continue
@@ -1338,6 +1346,13 @@ func ipPermissionsToDescriptionTargets(perms []*ec2.IpPermission) ([]sgDescripti
 				return nil, err
 			}
 			targets = append(targets, sgDescriptionTarget{key: sgRuleKey(r), description: pair.Description})
+		}
+
+		if len(targets) == before {
+			if len(perm.Ipv6Ranges) > 0 {
+				return nil, errors.New("IPv6 rules are not supported")
+			}
+			return nil, errors.New("IpPermission must specify at least one IpRange or UserIdGroupPair")
 		}
 	}
 	return targets, nil

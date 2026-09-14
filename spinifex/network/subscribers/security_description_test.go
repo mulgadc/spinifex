@@ -1,3 +1,6 @@
+//test:in-package — projects an SGEvent through the unexported toSpec, which is
+//how the vpc.update-sg handler itself reaches policy.UpdateSG.
+
 package subscribers
 
 import (

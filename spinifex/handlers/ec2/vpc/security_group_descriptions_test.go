@@ -1,3 +1,7 @@
+//test:in-package — builds on the package's unexported SG fixtures
+//(setupTestVPCService, createTestSG, authorizeIngressTCP, failingUpdateResponder),
+//which back every other security group test in this package.
+
 package handlers_ec2_vpc
 
 import (
@@ -280,6 +284,102 @@ func TestUpdateSecurityGroupRuleDescriptionsIngress_UnmatchedPermission(t *testi
 		}},
 	}, testAccountID)
 	require.ErrorContains(t, err, awserrors.ErrorInvalidPermissionNotFound)
+}
+
+// TestUpdateSecurityGroupRuleDescriptions_UnresolvablePermission pins that a
+// permission naming no rule the store can hold is an error. Authorize rejects
+// all three of these, so no matching rule can exist to describe.
+func TestUpdateSecurityGroupRuleDescriptions_UnresolvablePermission(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "desc-unresolvable-perm")
+	ruleID := authorizeIngressTCP(t, svc, sgID, 443, "10.0.0.0/24")
+
+	cases := map[string]*ec2.IpPermission{
+		"ipv6 only": {
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(443),
+			ToPort:     aws.Int64(443),
+			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0"), Description: aws.String("v6")}},
+		},
+		"prefix list only": {
+			IpProtocol:    aws.String("tcp"),
+			FromPort:      aws.Int64(443),
+			ToPort:        aws.Int64(443),
+			PrefixListIds: []*ec2.PrefixListId{{PrefixListId: aws.String("pl-0123456789abcdef0"), Description: aws.String("pl")}},
+		},
+		"no source at all": {
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(443),
+			ToPort:     aws.Int64(443),
+		},
+	}
+
+	for name, perm := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := svc.UpdateSecurityGroupRuleDescriptionsIngress(context.Background(), &ec2.UpdateSecurityGroupRuleDescriptionsIngressInput{
+				GroupId:       aws.String(sgID),
+				IpPermissions: []*ec2.IpPermission{perm},
+			}, testAccountID)
+			require.ErrorContains(t, err, awserrors.ErrorInvalidParameterValue,
+				"an unresolvable permission must not succeed as a no-op")
+			assert.Nil(t, sgRuleByID(t, svc, testAccountID, ruleID).Description)
+		})
+	}
+}
+
+// TestUpdateSecurityGroupRuleDescriptions_InvalidPermissionKeepsItsReason pins
+// that the underlying validation failure survives into the returned error,
+// rather than collapsing to a bare code the logs cannot explain.
+func TestUpdateSecurityGroupRuleDescriptions_InvalidPermissionKeepsItsReason(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "desc-invalid-perm")
+
+	_, err := svc.UpdateSecurityGroupRuleDescriptionsIngress(context.Background(), &ec2.UpdateSecurityGroupRuleDescriptionsIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(443),
+			ToPort:     aws.Int64(443),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.5/24")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "the AWS code must stay resolvable or the client gets a 500")
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Contains(t, message, "10.0.0.5/24", "the offending value must reach the logs")
+}
+
+// TestUpdateSecurityGroupRuleDescriptions_RejectsBothResolutionModes pins that
+// the two lists are mutually exclusive, so neither can silently overwrite the
+// other's description for the same rule.
+func TestUpdateSecurityGroupRuleDescriptions_RejectsBothResolutionModes(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "desc-both-modes")
+	ruleID := authorizeIngressTCP(t, svc, sgID, 443, "10.0.0.0/24")
+
+	_, err := svc.UpdateSecurityGroupRuleDescriptionsIngress(context.Background(), &ec2.UpdateSecurityGroupRuleDescriptionsIngressInput{
+		GroupId: aws.String(sgID),
+		SecurityGroupRuleDescriptions: []*ec2.SecurityGroupRuleDescription{
+			{SecurityGroupRuleId: aws.String(ruleID), Description: aws.String("by id")},
+		},
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(443),
+			ToPort:     aws.Int64(443),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/24"), Description: aws.String("by content")}},
+		}},
+	}, testAccountID)
+	require.ErrorContains(t, err, awserrors.ErrorInvalidParameterCombination)
+	assert.Nil(t, sgRuleByID(t, svc, testAccountID, ruleID).Description)
 }
 
 func TestUpdateSecurityGroupRuleDescriptions_RejectsEmptyRequest(t *testing.T) {

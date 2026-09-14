@@ -27,11 +27,7 @@ func TestRunCommandWithTimeoutKillsProcessGroup(t *testing.T) {
 	}
 
 	childPID := childPIDFromOutput(t, output)
-	deadline := time.Now().Add(time.Second)
-	for processRunning(childPID) && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if processRunning(childPID) {
+	if !processExitsWithin(childPID, time.Second) {
 		t.Errorf("child process %d survived command timeout", childPID)
 	}
 }
@@ -47,11 +43,7 @@ func TestRunCommandWithTimeoutKillsDetachedOutputHolder(t *testing.T) {
 	}
 
 	childPID := childPIDFromOutput(t, output)
-	deadline := time.Now().Add(time.Second)
-	for processRunning(childPID) && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if processRunning(childPID) {
+	if !processExitsWithin(childPID, time.Second) {
 		t.Errorf("detached child process %d survived command cleanup", childPID)
 	}
 }
@@ -85,11 +77,24 @@ func childPIDFromOutput(t *testing.T, output string) int {
 	return 0
 }
 
+// processExitsWithin polls until pid is gone. One not-running observation is
+// final: a re-check can catch a reaped task's brief "X" state and misreport it.
+func processExitsWithin(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for processRunning(pid) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return true
+}
+
 func processRunning(pid int) bool {
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err == nil {
 		fields := strings.Fields(string(data))
-		return len(fields) < 3 || fields[2] != "Z"
+		return len(fields) < 3 || (fields[2] != "Z" && fields[2] != "X")
 	}
 	if os.IsNotExist(err) {
 		return false

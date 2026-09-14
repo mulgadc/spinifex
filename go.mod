@@ -21,6 +21,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.73
+	github.com/minio/highwayhash v1.0.4
 	github.com/mulgadc/bluebottle v1.19.0
 	github.com/mulgadc/northstar v1.19.0
 	github.com/mulgadc/predastore v1.19.0
@@ -146,7 +147,6 @@ require (
 	github.com/mdlayher/packet v1.1.2 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
-	github.com/minio/highwayhash v1.0.4 // indirect
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/sys/capability v0.4.0 // indirect
 	github.com/moby/sys/mountinfo v0.7.2 // indirect

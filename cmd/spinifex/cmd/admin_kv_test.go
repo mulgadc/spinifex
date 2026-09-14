@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +146,128 @@ func TestKVDigestStreamFilterAndDeletedSeq(t *testing.T) {
 	assert.Equal(t, "ONE", d[0].Name)
 	assert.Equal(t, uint64(2), d[0].Msgs)
 	assert.Equal(t, []seqDigest{{1, d[0].Seqs[0].Hash}, {2, "deleted"}, {3, d[0].Seqs[2].Hash}}, d[0].Seqs)
+}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// A replicated stream's meta.inf carries num_replicas > 1, which a standalone
+// server refuses to load; this is the case every production node presents.
+func TestKVDigestClusteredReplicas(t *testing.T) {
+	ctx := context.Background()
+	const n = 3
+	ports := make([]int, n)
+	routes := make([]string, n)
+	for i := range ports {
+		ports[i] = freePort(t)
+		routes[i] = fmt.Sprintf("nats://127.0.0.1:%d", ports[i])
+	}
+	stores := make([]string, n)
+	servers := make([]*server.Server, n)
+	for i := range servers {
+		stores[i] = t.TempDir()
+		ns, err := server.NewServer(&server.Options{
+			ServerName: fmt.Sprintf("s%d", i+1), JetStream: true, StoreDir: stores[i],
+			Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true,
+			Cluster: server.ClusterOpts{Name: "digest", Host: "127.0.0.1", Port: ports[i]},
+			Routes:  server.RoutesFromStr(strings.Join(routes, ",")),
+		})
+		require.NoError(t, err)
+		ns.Start()
+		servers[i] = ns
+	}
+	t.Cleanup(func() {
+		for _, ns := range servers {
+			ns.Shutdown()
+			ns.WaitForShutdown()
+		}
+	})
+
+	nc, err := nats.Connect("", nats.InProcessServer(servers[0]))
+	require.NoError(t, err)
+	defer nc.Close()
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+
+	var kv jetstream.KeyValue
+	require.Eventually(t, func() bool {
+		kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "rep", History: 3, Replicas: n, TTL: time.Hour})
+		return err == nil
+	}, 30*time.Second, 250*time.Millisecond, "clustered KV create: %v", err)
+	for i := range 5 {
+		_, err := kv.PutString(ctx, fmt.Sprintf("k%d", i%2), fmt.Sprintf("v%d", i))
+		require.NoError(t, err)
+	}
+	s, err := js.Stream(ctx, "KV_rep")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		info, err := s.Info(ctx)
+		if err != nil || info.Cluster == nil || len(info.Cluster.Replicas) != n-1 {
+			return false
+		}
+		for _, r := range info.Cluster.Replicas {
+			if !r.Current || r.Lag != 0 {
+				return false
+			}
+		}
+		return true
+	}, 30*time.Second, 250*time.Millisecond)
+
+	// Current means applied, not flushed; shutdown flushes every block to disk.
+	nc.Close()
+	for _, ns := range servers {
+		ns.Shutdown()
+		ns.WaitForShutdown()
+	}
+
+	var first string
+	for i, store := range stores {
+		d := digestOf(t, filepath.Join(store, "jetstream"), false)
+		require.Len(t, d, 1, "replica %d", i+1)
+		assert.Equal(t, uint64(5), d[0].Msgs, "replica %d", i+1)
+		if i == 0 {
+			first = d[0].Digest
+			continue
+		}
+		assert.Equal(t, first, d[0].Digest, "replica %d matches replica 1", i+1)
+	}
+}
+
+// Recovery applies MaxAge, so without the rewrite an expired bucket copy
+// would read as empty and mask whatever the replica holds.
+func TestKVDigestIgnoresExpiry(t *testing.T) {
+	ctx := context.Background()
+	parent := t.TempDir()
+	ns, err := server.NewServer(&server.Options{JetStream: true, StoreDir: parent, DontListen: true, NoLog: true, NoSigs: true})
+	require.NoError(t, err)
+	ns.Start()
+	require.True(t, ns.ReadyForConnections(10*time.Second))
+	nc, err := nats.Connect("", nats.InProcessServer(ns))
+	require.NoError(t, err)
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "ttl", TTL: time.Second})
+	require.NoError(t, err)
+	_, err = kv.PutString(ctx, "k", "v")
+	require.NoError(t, err)
+
+	work := t.TempDir()
+	_, err = copyStreamTree(filepath.Join(parent, "jetstream"), filepath.Join(work, "jetstream"))
+	require.NoError(t, err)
+	nc.Close()
+	ns.Shutdown()
+	ns.WaitForShutdown()
+
+	time.Sleep(1500 * time.Millisecond)
+	d, err := digestStore(ctx, work, nil, false)
+	require.NoError(t, err)
+	require.Len(t, d, 1)
+	assert.Equal(t, uint64(1), d[0].Msgs)
 }
 
 func TestCopyStreamTree(t *testing.T) {

@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -40,10 +43,12 @@ produce identical lines; any difference means the replicas have diverged, and
 
 It never touches the live store. A direct get over NATS may be answered by any
 replica, so instead the streams tree is copied to --work-dir and read by a
-private in-process server with no listener, which is removed afterwards.
+private in-process server with no listener, which is removed afterwards. The
+copy's stream config is set to one replica with no expiry so it can be loaded.
 
-Writes landing during the copy can make a replica's last sequence differ, so
-gate API writes or re-run before calling a tail difference divergence.`,
+Writes landing during the copy, or applied but not yet flushed to disk, can
+make a replica's tail differ, so gate API writes and re-run before calling a
+tail difference divergence.`,
 	Run: runKVDigest,
 }
 
@@ -176,7 +181,57 @@ func copyStreamTree(storeDir, dst string) (skipped []string, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("copy streams from %s: %w", src, err)
 	}
+	entries, err := os.ReadDir(out)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			if err := rewriteStreamMetaStandalone(filepath.Join(out, e.Name())); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return skipped, nil
+}
+
+// rewriteStreamMetaStandalone makes a copied stream loadable by a standalone
+// server, which refuses replicas > 1 and would expire aged messages on
+// recovery. meta.sum is highwayhash64 keyed by sha256 of the directory name.
+func rewriteStreamMetaStandalone(streamDir string) error {
+	metaPath := filepath.Join(streamDir, "meta.inf")
+	raw, err := os.ReadFile(metaPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var meta map[string]any
+	if err := dec.Decode(&meta); err != nil {
+		return fmt.Errorf("parse %s: %w", metaPath, err)
+	}
+	meta["num_replicas"] = 1
+	meta["max_age"] = 0
+	delete(meta, "allow_msg_ttl")
+	delete(meta, "subject_delete_marker_ttl")
+	delete(meta, "placement")
+	out, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	key := sha256.Sum256([]byte(filepath.Base(streamDir)))
+	hh, err := highwayhash.New64(key[:])
+	if err != nil {
+		return err
+	}
+	hh.Write(out)
+	if err := os.WriteFile(metaPath, out, 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(streamDir, "meta.sum"), []byte(hex.EncodeToString(hh.Sum(nil))), 0o600)
 }
 
 func copyFile(src, dst string) error {

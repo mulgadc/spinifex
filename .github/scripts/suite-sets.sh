@@ -77,8 +77,9 @@ e2e_suite_timeout() {
     # what the queue costs, not what the tests do: single tests logged 11m, 22m
     # and 26m waiting for budget. 17 tests at that concurrency is over an hour
     # before anything goes wrong, and the first pass to run deep into the suite
-    # still had three left at 60m.
-    rds) echo "90m" ;;
+    # still had three left at 60m. The loaded graceful-reboot case adds an
+    # instance that holds its slot through a pgbench load as well as a create.
+    rds) echo "105m" ;;
     # diskperf runs two 16 GiB fio profiles per repetition, each on a volume it
     # creates first. One pass is ~20 minutes on the bare-metal cell and a
     # baseline capture at SPINIFEX_DISKPERF_REPS=3 is three times that.

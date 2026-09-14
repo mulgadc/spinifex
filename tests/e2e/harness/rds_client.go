@@ -60,6 +60,9 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y || exit 10
 apt-get install -y postgresql-client || exit 11
 apt-get install -y mariadb-client || exit 12
+# pgbench ships in contrib, not the client package, and a load phase has no
+# other way to dirty an engine's buffer pool from outside it.
+apt-get install -y postgresql-contrib || exit 13
 
 echo done > %[1]s
 `, rdsClientStatusFile, rdsClientExitCodeFile)
@@ -308,6 +311,35 @@ func psqlCommand(conn PSQLConn, sql string) string {
 		"--command", ShellQuote(sql),
 	}
 	return strings.Join(env, " ") + " " + strings.Join(args, " ")
+}
+
+// pgbenchTimeout bounds one load phase. Initialising a scale factor's worth of
+// rows and then driving the buffer pool dirty are both minutes of guest I/O on
+// these hosts rather than seconds.
+const pgbenchTimeout = 20 * time.Minute
+
+// PGBench runs pgbench in the client guest against conn, and returns its output.
+// The password goes through the environment for the same reason psql's does.
+func PGBench(t *testing.T, tgt SSHTarget, conn PSQLConn, args ...string) string {
+	t.Helper()
+	port := conn.Port
+	if port == 0 {
+		port = PostgresEnginePort
+	}
+	command := strings.Join(append([]string{
+		"PGPASSWORD=" + ShellQuote(conn.Password),
+		"PGCONNECT_TIMEOUT=30",
+		"pgbench",
+		"--host", ShellQuote(conn.Host),
+		"--port", strconv.FormatInt(port, 10),
+		"--username", ShellQuote(conn.User),
+	}, append(args, ShellQuote(conn.DBName))...), " ")
+
+	out, err := GuestExecTimeout(tgt, command, pgbenchTimeout)
+	if err != nil {
+		t.Fatalf("pgbench %v against %s:%d/%s: %v\n%s", args, conn.Host, port, conn.DBName, err, out)
+	}
+	return out
 }
 
 // ResolveInGuest returns the addresses host resolves to inside the guest.

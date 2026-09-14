@@ -94,6 +94,7 @@ type fixture struct {
 
 	appInstanceIDs []string
 	preIPs         map[string]string
+	keyPairName    string // the pair this fixture created, and the one cleanup removes
 	privateKeyPath string // local PEM written from CreateKeyPair KeyMaterial
 
 	tgArn       string
@@ -263,21 +264,52 @@ func phase0Prereqs(t *testing.T, fix *fixture) {
 	fix.amiID = discoverAMI(t, fix.aws)
 	harness.Detail(t, "ami", fix.amiID)
 
-	// Capture KeyMaterial so post-reboot diagnostics can SSH into guest VMs.
-	_, _ = fix.aws.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(keyName)})
-	kpOut, err := fix.aws.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(keyName)})
-	require.NoErrorf(t, err, "create-key-pair %s", keyName)
+	provisionKeyPair(t, fix, keyName)
+}
+
+// provisionKeyPair creates a key pair and keeps its material, so a test can SSH
+// into the guests it launches. Recreated rather than reused: the material is
+// returned once, at creation, and a pair left behind by an earlier run cannot
+// be read back.
+func provisionKeyPair(t *testing.T, fix *fixture, name string) {
+	t.Helper()
+	_, _ = fix.aws.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(name)})
+	kpOut, err := fix.aws.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(name)})
+	require.NoErrorf(t, err, "create-key-pair %s", name)
 	material := aws.StringValue(kpOut.KeyMaterial)
-	require.NotEmptyf(t, material, "create-key-pair %s returned no KeyMaterial", keyName)
-	fix.privateKeyPath = filepath.Join(fix.artifacts, keyName+".pem")
+	require.NotEmptyf(t, material, "create-key-pair %s returned no KeyMaterial", name)
+	fix.keyPairName = name
+	fix.privateKeyPath = filepath.Join(fix.artifacts, name+".pem")
 	require.NoError(t, os.WriteFile(fix.privateKeyPath, []byte(material), 0o600), "write private key")
-	harness.Detail(t, "key_pair", keyName)
+	harness.Detail(t, "key_pair", name)
 }
 
 func phase1Network(t *testing.T, fix *fixture) {
 	t.Helper()
+	provisionNetwork(t, fix, netNames{
+		sg:         sgName,
+		sgDesc:     "Reboot E2E shared SG (ALB + app instances)",
+		vpcCIDR:    vpcCIDR,
+		subnetCIDR: subnetCIDR,
+	})
+}
 
-	vpcOut, err := fix.aws.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(vpcCIDR)})
+// netNames is the set of names one test's network is built under. Each test in
+// this package brings its own, so tearing one down cannot take the other's VPC.
+type netNames struct {
+	sg         string
+	sgDesc     string
+	vpcCIDR    string
+	subnetCIDR string
+}
+
+// provisionNetwork builds a VPC, a public subnet and a security group admitting
+// tcp/80 and tcp/22 from anywhere — 22 so the test and its diagnostics can SSH
+// into the guests it launches.
+func provisionNetwork(t *testing.T, fix *fixture, names netNames) {
+	t.Helper()
+
+	vpcOut, err := fix.aws.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(names.vpcCIDR)})
 	require.NoError(t, err, "create-vpc")
 	fix.vpcID = aws.StringValue(vpcOut.Vpc.VpcId)
 	harness.Detail(t, "vpc", fix.vpcID)
@@ -294,7 +326,7 @@ func phase1Network(t *testing.T, fix *fixture) {
 
 	subnetOut, err := fix.aws.EC2.CreateSubnet(&ec2.CreateSubnetInput{
 		VpcId:     aws.String(fix.vpcID),
-		CidrBlock: aws.String(subnetCIDR),
+		CidrBlock: aws.String(names.subnetCIDR),
 	})
 	require.NoError(t, err, "create-subnet")
 	fix.subnetID = aws.StringValue(subnetOut.Subnet.SubnetId)
@@ -305,8 +337,8 @@ func phase1Network(t *testing.T, fix *fixture) {
 	harness.Detail(t, "subnet", fix.subnetID)
 
 	sgOut, err := fix.aws.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
-		GroupName:   aws.String(sgName),
-		Description: aws.String("Reboot E2E shared SG (ALB + app instances)"),
+		GroupName:   aws.String(names.sg),
+		Description: aws.String(names.sgDesc),
 		VpcId:       aws.String(fix.vpcID),
 	})
 	require.NoError(t, err, "create-security-group")
@@ -1406,7 +1438,9 @@ func cleanup(t *testing.T, fix *fixture) {
 		harness.WaitForInstanceTerminated(t, fix.aws, fix.appInstanceIDs, 60*time.Second)
 	}
 
-	_, _ = fix.aws.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(keyName)})
+	if fix.keyPairName != "" {
+		_, _ = fix.aws.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(fix.keyPairName)})
+	}
 
 	// SG must come after instances + ALB ENIs are gone.
 	if fix.sgID != "" {

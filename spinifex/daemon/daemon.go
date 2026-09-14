@@ -174,6 +174,10 @@ type Daemon struct {
 	cancel                context.CancelFunc
 	shutdownWg            sync.WaitGroup
 
+	// recoveryRetryWg tracks the post-restore retry loop, which writes the
+	// local state file when it finishes. Tests wait on it before cleanup.
+	recoveryRetryWg sync.WaitGroup
+
 	// systemDispatchWg tracks in-flight system.LaunchInstance / TerminateInstance
 	// handlers. Each runs in its own goroutine so a slow VM boot never blocks
 	// the NATS subscription. Used by tests to await dispatch completion.
@@ -2451,12 +2455,12 @@ func (d *Daemon) restoreInstances() error {
 		slog.Error("Failed to persist local state after restore", "error", err)
 	}
 
-	go func() {
+	d.recoveryRetryWg.Go(func() {
 		d.vmMgr.RunRecoveryRetryLoop(d.shuttingDown.Load)
 		if err := d.WriteState(); err != nil {
 			slog.Error("Failed to persist local state after recovery retry", "error", err)
 		}
-	}()
+	})
 
 	return nil
 }

@@ -265,6 +265,7 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DescribeInstanceAttribute":              unscoped,
 	"DescribeInstanceCreditSpecifications":   unscoped,
 	"DescribeInstanceStatus":                 unscoped,
+	"DescribeInstanceTypeOfferings":          unscoped,
 	"DescribeInstanceTypes":                  unscoped,
 	"DescribeInstances":                      unscoped,
 	"DescribeInternetGateways":               unscoped,

@@ -60,6 +60,9 @@ func TestEC2Describe_EmptyResult_EmitsContainer(t *testing.T) {
 		{"DescribeImages", "DescribeImages", "imagesSet", func(t *testing.T) string {
 			return render[ec2.DescribeImagesInput](t, "DescribeImages", ec2.DescribeImagesOutput{})
 		}},
+		{"DescribeInstanceTypeOfferings", "DescribeInstanceTypeOfferings", "instanceTypeOfferingSet", func(t *testing.T) string {
+			return render[ec2.DescribeInstanceTypeOfferingsInput](t, "DescribeInstanceTypeOfferings", ec2.DescribeInstanceTypeOfferingsOutput{})
+		}},
 	}
 
 	for _, tc := range cases {

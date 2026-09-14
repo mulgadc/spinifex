@@ -462,8 +462,9 @@ func elbv2Uncased() map[string]string {
 		uncased[action] = byName
 	}
 	for _, action := range []string{
-		"DescribeLoadBalancers", "DescribeTargetGroups", "DescribeListeners", "DescribeRules",
-		"DescribeSSLPolicies", "LBAgentHeartbeat", "GetLBConfig",
+		"DescribeAccountLimits", "DescribeLoadBalancers", "DescribeTargetGroups",
+		"DescribeListeners", "DescribeRules", "DescribeSSLPolicies", "LBAgentHeartbeat",
+		"GetLBConfig",
 	} {
 		uncased[action] = accountLevel
 	}

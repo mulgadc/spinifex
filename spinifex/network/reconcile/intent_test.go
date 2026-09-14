@@ -15,6 +15,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -553,6 +554,69 @@ func TestLoadIntentFromKV_SGRuleFieldMapping(t *testing.T) {
 	}
 	if empty.IngressRules != nil || empty.EgressRules != nil {
 		t.Errorf("rule-less SG got ingress=%v egress=%v, want both nil", empty.IngressRules, empty.EgressRules)
+	}
+}
+
+// Only an instance nothing will relaunch marks its public-IP port idle. A DRAIN
+// stop is relaunched by restore, and a missing record is unknown, so both stay
+// probed; a port with no public IP is never read at all.
+func TestLoadIntentFromKV_IdlePortsFromInstanceState(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-a": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a", CreatedAt: time.Now(),
+		}),
+	})
+	eni := func(id, ip, publicIP, instanceID string) []byte {
+		return mustJSON(t, handlers_ec2_vpc.ENIRecord{
+			NetworkInterfaceId: id, SubnetId: "subnet-a", VpcId: "vpc-a",
+			PrivateIpAddress: ip, MacAddress: "02:00:00:00:00:" + ip[len(ip)-2:],
+			PublicIpAddress: publicIP, InstanceId: instanceID, Status: "in-use", CreatedAt: time.Now(),
+		})
+	}
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketENIs, map[string][]byte{
+		"acct/eni-stopped": eni("eni-stopped", "10.0.1.11", "192.0.2.11", "i-stopped"),
+		"acct/eni-term":    eni("eni-term", "10.0.1.12", "192.0.2.12", "i-term"),
+		"acct/eni-drain":   eni("eni-drain", "10.0.1.13", "192.0.2.13", "i-drain"),
+		"acct/eni-running": eni("eni-running", "10.0.1.14", "192.0.2.14", "i-running"),
+		"acct/eni-gone":    eni("eni-gone", "10.0.1.15", "192.0.2.15", "i-gone"),
+		"acct/eni-eip":     eni("eni-eip", "10.0.1.16", "", "i-eip"),
+		"acct/eni-private": eni("eni-private", "10.0.1.17", "", "i-private"),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_eip.KVBucketEIPs, map[string][]byte{
+		"acct/eipassoc-a": mustJSON(t, handlers_ec2_eip.EIPRecord{
+			AllocationId: "eipalloc-a", PublicIp: "203.0.113.16", PrivateIp: "10.0.1.16",
+			VpcId: "vpc-a", ENIId: "eni-eip", State: "associated",
+		}),
+	})
+	record := func(status vm.InstanceState, desired vm.DesiredState) []byte {
+		return mustJSON(t, &vm.InstanceRecord{
+			Spec:   vm.InstanceSpec{DesiredState: desired},
+			Status: vm.InstanceStatus{Status: status},
+		})
+	}
+	testutil.SeedKV(t, js, InstanceRecordBucket, map[string][]byte{
+		InstanceRecordPrefix + "i-stopped": record(vm.StateStopped, vm.DesiredStopped),
+		InstanceRecordPrefix + "i-term":    record(vm.StateTerminated, vm.DesiredRunning),
+		InstanceRecordPrefix + "i-drain":   record(vm.StateStopped, vm.DesiredRunning),
+		InstanceRecordPrefix + "i-running": record(vm.StateRunning, vm.DesiredRunning),
+		InstanceRecordPrefix + "i-eip":     record(vm.StateStopped, vm.DesiredStopped),
+		InstanceRecordPrefix + "i-private": record(vm.StateStopped, vm.DesiredStopped),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	want := map[string]string{
+		"port-eni-stopped": "i-stopped",
+		"port-eni-term":    "i-term",
+		"port-eni-eip":     "i-eip",
+	}
+	if !reflect.DeepEqual(intent.IdlePorts, want) {
+		t.Errorf("IdlePorts = %v, want %v", intent.IdlePorts, want)
 	}
 }
 

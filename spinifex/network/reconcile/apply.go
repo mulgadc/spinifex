@@ -707,6 +707,9 @@ func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ Actual
 	sem := make(chan struct{}, guestPortDatapathConcurrency)
 	var wg sync.WaitGroup
 	for _, spec := range specs {
+		if r.guestPortIdle(spec, intent.IdlePorts) {
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			wg.Wait()
@@ -719,6 +722,60 @@ func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ Actual
 		})
 	}
 	wg.Wait()
+	r.forgetIdlePorts(specs)
+}
+
+// guestPortIdle reports whether spec's port belongs to a stopped or terminated
+// instance, logging at Info only when that changes. Entering idle drops any held
+// backoff, so the port is probed on the first pass after the instance starts.
+func (r *reconciler) guestPortIdle(spec policy.EIPSpec, idle map[string]string) bool {
+	if spec.PortName == "" {
+		return false
+	}
+	instanceID, isIdle := idle[spec.PortName]
+
+	r.portBackoffMu.Lock()
+	_, wasIdle := r.idlePorts[spec.PortName]
+	switch {
+	case isIdle && !wasIdle:
+		if r.idlePorts == nil {
+			r.idlePorts = map[string]struct{}{}
+		}
+		r.idlePorts[spec.PortName] = struct{}{}
+		delete(r.portBackoff, spec.PortName)
+	case !isIdle && wasIdle:
+		delete(r.idlePorts, spec.PortName)
+	}
+	r.portBackoffMu.Unlock()
+
+	logKV := []any{"vpc_id", spec.VPCID, "lsp", spec.PortName, "eni_id", eniIDFromPort(spec.PortName),
+		"external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP}
+	switch {
+	case isIdle && !wasIdle:
+		slog.Info("reconcile/apply: guest port's instance is not running; not probing its datapath",
+			append(logKV, "instance_id", instanceID)...)
+	case isIdle:
+		slog.Debug("reconcile/apply: guest port's instance still not running; not probing", logKV...)
+	case wasIdle:
+		slog.Info("reconcile/apply: guest port's instance is no longer stopped; probing its datapath again", logKV...)
+	}
+	return isIdle
+}
+
+// forgetIdlePorts drops idle marks for ports that no longer carry a public IP, so
+// the set tracks live EIPs rather than every port ever seen.
+func (r *reconciler) forgetIdlePorts(specs []policy.EIPSpec) {
+	live := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		live[spec.PortName] = struct{}{}
+	}
+	r.portBackoffMu.Lock()
+	defer r.portBackoffMu.Unlock()
+	for lsp := range r.idlePorts {
+		if _, ok := live[lsp]; !ok {
+			delete(r.idlePorts, lsp)
+		}
+	}
 }
 
 // floatingIPSpecs is every dnat_and_snat the datapath must carry: user EIPs

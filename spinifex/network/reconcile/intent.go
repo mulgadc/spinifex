@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -35,7 +36,17 @@ type IntentState struct {
 	IGWRoutes   map[string]SubnetEgressIntent // per (subnet, dest) IGW egress reroute
 	NATGWRoutes map[string]SubnetEgressIntent // per (subnet, dest) NATGW egress reroute
 	DropGates   map[string]SubnetEgressIntent // per (subnet, dest=0.0.0.0/0) drop policy
+	// IdlePorts maps a public-IP guest LSP to its instance when that instance is
+	// stopped or terminated. Its port has no tap, so the datapath probe skips it.
+	IdlePorts map[string]string
 }
+
+// The instance record space the daemon owns. Duplicated rather than imported
+// because daemon imports this package; a daemon test pins the two together.
+const (
+	InstanceRecordBucket = "spinifex-instance-state"
+	InstanceRecordPrefix = "i."
+)
 
 // SubnetEgressIntent is a per-subnet default-route policy entry for the VPC LR,
 // keyed by (subnet, destCIDR) pointing at an IGW or NAT gateway.
@@ -64,6 +75,7 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 		IGWRoutes:   make(map[string]SubnetEgressIntent),
 		NATGWRoutes: make(map[string]SubnetEgressIntent),
 		DropGates:   make(map[string]SubnetEgressIntent),
+		IdlePorts:   make(map[string]string),
 	}
 
 	localVPCs, err := loadVPCs(ctx, js, localAZ, intent.VPCs)
@@ -76,7 +88,8 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 	if err := loadSGs(ctx, js, localVPCs, intent.SGs); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadPorts(ctx, js, localVPCs, intent.Ports); err != nil {
+	portInstances := make(map[string]string)
+	if err := loadPorts(ctx, js, localVPCs, intent.Ports, portInstances); err != nil {
 		return IntentState{}, err
 	}
 	if err := loadIGWs(ctx, js, localVPCs, intent.IGWs); err != nil {
@@ -85,6 +98,7 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 	if err := loadEIPs(ctx, js, localVPCs, intent.EIPs); err != nil {
 		return IntentState{}, err
 	}
+	loadIdlePorts(ctx, js, intent, portInstances)
 	routeTables, err := loadRouteTables(ctx, js, localVPCs)
 	if err != nil {
 		return IntentState{}, err
@@ -348,7 +362,7 @@ func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]s
 	return nil
 }
 
-func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.PortSpec) error {
+func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.PortSpec, instances map[string]string) error {
 	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketENIs)
 	if err != nil {
 		slog.Debug("reconcile/intent: ENI bucket not available, skipping", "err", err)
@@ -401,8 +415,69 @@ func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string
 			PublicIP:     publicIP,
 			SuppressDHCP: rec.SuppressDHCP,
 		}
+		if rec.InstanceId != "" {
+			instances[rec.NetworkInterfaceId] = rec.InstanceId
+		}
 	}
 	return nil
+}
+
+// loadIdlePorts fills intent.IdlePorts for the ports the EIP datapath probe would
+// visit. Anything it cannot read is left out, so the port is probed as before.
+func loadIdlePorts(ctx context.Context, js jetstream.JetStream, intent IntentState, instances map[string]string) {
+	candidates := make(map[string]struct{}, len(intent.EIPs))
+	for id, p := range intent.Ports {
+		if p.PublicIP.IsValid() {
+			candidates[topology.Port(id)] = struct{}{}
+		}
+	}
+	for _, e := range intent.EIPs {
+		if e.PortName != "" {
+			candidates[e.PortName] = struct{}{}
+		}
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	kv, err := js.KeyValue(ctx, InstanceRecordBucket)
+	if err != nil {
+		slog.Debug("reconcile/intent: instance record bucket not available, probing every guest port", "err", err)
+		return
+	}
+	for lsp := range candidates {
+		instanceID := instances[eniIDFromPort(lsp)]
+		if instanceID == "" {
+			continue
+		}
+		entry, err := kv.Get(ctx, InstanceRecordPrefix+instanceID)
+		if err != nil {
+			if !errors.Is(err, jetstream.ErrKeyNotFound) {
+				slog.Warn("reconcile/intent: instance record read failed", "instance_id", instanceID, "err", err)
+			}
+			continue
+		}
+		var rec vm.InstanceRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.Warn("reconcile/intent: instance record unmarshal failed", "instance_id", instanceID, "err", err)
+			continue
+		}
+		if instanceHasNoTap(&rec) {
+			intent.IdlePorts[lsp] = instanceID
+		}
+	}
+}
+
+// instanceHasNoTap reports an instance nothing will relaunch. A DRAIN also leaves
+// StateStopped, but restore relaunches those, so desired state has to agree.
+func instanceHasNoTap(rec *vm.InstanceRecord) bool {
+	switch rec.Status.Status {
+	case vm.StateTerminated:
+		return true
+	case vm.StateStopped:
+		return rec.Spec.DesiredState == vm.DesiredStopped
+	}
+	return false
 }
 
 func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]external.IGWSpec) error {

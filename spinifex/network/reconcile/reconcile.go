@@ -154,6 +154,8 @@ type reconciler struct {
 	// is gone stops paying the full nudge sequence every cycle.
 	portBackoffMu sync.Mutex
 	portBackoff   map[string]portBackoffState
+	// Guest ports last seen idle, so the skip is logged once per state change.
+	idlePorts map[string]struct{}
 
 	// Serialises sb-cluster-state-reset. It is cluster-wide and re-syncs every
 	// chassis, so concurrent guest-port probes must not each fire one.

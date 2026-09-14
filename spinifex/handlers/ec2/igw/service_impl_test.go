@@ -453,6 +453,50 @@ func TestDetachThenAttachStartsPending(t *testing.T) {
 	assert.Empty(t, desc.InternetGateways[0].Attachments, "a re-attach must start pending, not inherit the previous confirmation")
 }
 
+func TestCreateAttachedInternetGateway(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	ctx := context.Background()
+
+	created, err := svc.CreateAttachedInternetGateway(ctx, testAccountID, "igw-agreed", "vpc-test123")
+	require.NoError(t, err)
+	assert.True(t, created)
+
+	// A second node with the same agreed ID converges on the first gateway.
+	created, err = svc.CreateAttachedInternetGateway(ctx, testAccountID, "igw-agreed", "vpc-test123")
+	require.NoError(t, err)
+	assert.False(t, created)
+
+	igw, err := svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	require.NotNil(t, igw)
+	assert.Equal(t, "igw-agreed", aws.StringValue(igw.InternetGatewayId))
+
+	desc, err := svc.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.InternetGateways, 1)
+
+	_, err = svc.CreateAttachedInternetGateway(ctx, testAccountID, "igw-agreed", "vpc-other")
+	assert.ErrorContains(t, err, "Resource.AlreadyAssociated")
+
+	_, err = svc.CreateAttachedInternetGateway(ctx, testAccountID, "igw-novpc", "vpc-missing")
+	assert.ErrorContains(t, err, "InvalidVpcID.NotFound")
+}
+
+func TestCreateAttachedInternetGateway_AttachesDetachedGateway(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	ctx := context.Background()
+	igwID := createTestIGW(t, svc)
+
+	created, err := svc.CreateAttachedInternetGateway(ctx, testAccountID, igwID, "vpc-test123")
+	require.NoError(t, err)
+	assert.False(t, created)
+
+	igw, err := svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	require.NotNil(t, igw)
+	assert.Equal(t, igwID, aws.StringValue(igw.InternetGatewayId))
+}
+
 func TestAttachInternetGateway_NotFound(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{

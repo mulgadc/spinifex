@@ -1364,10 +1364,22 @@ func (s *VPCServiceImpl) requestSGEvent(topic string, evt SGEvent) error {
 
 // createDefaultSecurityGroupInternal provisions the per-VPC default SG with
 // AWS-equivalent rules, bypassing the public-API reserved-name guard. Used by
-// CreateVpc and EnsureDefaultVPC.
+// CreateVpc.
 func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(ctx context.Context, accountID, vpcId string) (string, error) {
-	groupId := utils.GenerateResourceID("sg")
-	record := SecurityGroupRecord{
+	record, _, err := s.storeDefaultSecurityGroup(ctx, accountID, vpcId, utils.GenerateResourceID("sg"))
+	if err != nil {
+		return "", err
+	}
+	if err := s.announceDefaultSecurityGroup(record); err != nil {
+		return "", err
+	}
+	return record.GroupId, nil
+}
+
+// storeDefaultSecurityGroup creates the default SG record under groupId. It
+// never overwrites: created is false when the record already exists.
+func (s *VPCServiceImpl) storeDefaultSecurityGroup(ctx context.Context, accountID, vpcId, groupId string) (record *SecurityGroupRecord, created bool, err error) {
+	record = &SecurityGroupRecord{
 		GroupId:     groupId,
 		GroupName:   defaultSecurityGroupName,
 		Description: defaultSecurityGroupDescription,
@@ -1385,23 +1397,31 @@ func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(ctx context.Context,
 
 	data, err := json.Marshal(record)
 	if err != nil {
-		return "", fmt.Errorf("marshal default security group: %w", err)
+		return nil, false, fmt.Errorf("marshal default security group: %w", err)
 	}
-	if _, err := s.sgKV.Put(ctx, utils.AccountKey(accountID, groupId), data); err != nil {
-		return "", fmt.Errorf("store default security group: %w", err)
+	if _, err := s.sgKV.Create(ctx, utils.AccountKey(accountID, groupId), data); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			return record, false, nil
+		}
+		return nil, false, fmt.Errorf("store default security group: %w", err)
 	}
 
 	slog.InfoContext(ctx, "Created default security group", "groupId", groupId, "vpcId", vpcId, "accountID", accountID)
+	return record, true, nil
+}
 
+// announceDefaultSecurityGroup asks vpcd to build the port group for a newly
+// stored default SG.
+func (s *VPCServiceImpl) announceDefaultSecurityGroup(record *SecurityGroupRecord) error {
 	if err := s.requestSGEvent("vpc.create-sg", SGEvent{
-		GroupId:      groupId,
-		VpcId:        vpcId,
+		GroupId:      record.GroupId,
+		VpcId:        record.VpcId,
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
 	}); err != nil {
-		return "", fmt.Errorf("vpcd vpc.create-sg: %w", err)
+		return fmt.Errorf("vpcd vpc.create-sg: %w", err)
 	}
-	return groupId, nil
+	return nil
 }
 
 // deleteSecurityGroupInternal removes an SG record without the public-API

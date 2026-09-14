@@ -111,13 +111,7 @@ func NewIGWServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 	}, nil
 }
 
-// CreateInternetGateway creates a new Internet Gateway (initially detached)
-// CreateInternetGatewayWithID creates an IGW with a pre-determined ID.
-// Used by bootstrap to ensure the IGW ID matches [bootstrap] in spinifex.toml.
-func (s *IGWServiceImpl) CreateInternetGatewayWithID(input *ec2.CreateInternetGatewayInput, accountID, igwID string) (*ec2.CreateInternetGatewayOutput, error) {
-	return s.createIGW(context.Background(), input, accountID, igwID)
-}
-
+// CreateInternetGateway creates a new Internet Gateway (initially detached).
 func (s *IGWServiceImpl) CreateInternetGateway(ctx context.Context, input *ec2.CreateInternetGatewayInput, accountID string) (*ec2.CreateInternetGatewayOutput, error) {
 	igwID := utils.GenerateResourceID("igw")
 	return s.createIGW(ctx, input, accountID, igwID)
@@ -351,19 +345,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Publish event for vpcd to create OVN external switch + gateway + SNAT
-	if s.natsConn != nil {
-		event := types.IGWEvent{
-			InternetGatewayId: igwID,
-			VpcId:             vpcID,
-		}
-		eventData, err := json.Marshal(event)
-		if err != nil {
-			slog.WarnContext(ctx, "Failed to marshal IGW attach event", "error", err)
-		} else if err := s.natsConn.Publish("vpc.igw-attach", eventData); err != nil {
-			slog.WarnContext(ctx, "Failed to publish IGW attach event", "error", err)
-		}
-	}
+	s.publishAttach(ctx, igwID, vpcID)
 
 	// Gate fan-out is intentionally skipped on attach to avoid a race with
 	// the bootstrap CreateRoute path. Detach triggers gate fan-out directly.
@@ -438,6 +420,70 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 	slog.InfoContext(ctx, "DetachInternetGateway completed", "internetGatewayId", igwID, "vpcId", vpcID, "accountID", accountID)
 
 	return &ec2.DetachInternetGatewayOutput{}, nil
+}
+
+// publishAttach asks vpcd to create the OVN external switch, gateway and SNAT.
+func (s *IGWServiceImpl) publishAttach(ctx context.Context, igwID, vpcID string) {
+	if s.natsConn == nil {
+		return
+	}
+	eventData, err := json.Marshal(types.IGWEvent{InternetGatewayId: igwID, VpcId: vpcID})
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to marshal IGW attach event", "error", err)
+	} else if err := s.natsConn.Publish("vpc.igw-attach", eventData); err != nil {
+		slog.WarnContext(ctx, "Failed to publish IGW attach event", "error", err)
+	}
+}
+
+// CreateAttachedInternetGateway creates igwID already attached to vpcID, for a
+// default VPC whose gateway ID every node agreed in advance. It never overwrites,
+// so racing callers build one gateway; created is false when another got there first.
+func (s *IGWServiceImpl) CreateAttachedInternetGateway(ctx context.Context, accountID, igwID, vpcID string) (created bool, err error) {
+	if s.vpcKV == nil {
+		return false, errors.New(awserrors.ErrorServerInternal)
+	}
+	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID)); err != nil {
+		return false, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+	}
+
+	key := utils.AccountKey(accountID, igwID)
+	data, err := json.Marshal(IGWRecord{
+		InternetGatewayId: igwID,
+		VpcId:             vpcID,
+		State:             "available",
+		AttachState:       AttachStatePending,
+		Tags:              map[string]string{},
+		CreatedAt:         time.Now(),
+	})
+	if err != nil {
+		return false, errors.New(awserrors.ErrorServerInternal)
+	}
+	if _, err := s.igwKV.Create(ctx, key, data); err != nil {
+		if !errors.Is(err, jetstream.ErrKeyExists) {
+			return false, errors.New(awserrors.ErrorServerInternal)
+		}
+		entry, err := s.igwKV.Get(ctx, key)
+		if err != nil {
+			return false, errors.New(awserrors.ErrorServerInternal)
+		}
+		var existing IGWRecord
+		if err := json.Unmarshal(entry.Value(), &existing); err != nil {
+			return false, errors.New(awserrors.ErrorServerInternal)
+		}
+		if existing.VpcId == vpcID {
+			return false, nil
+		}
+		// Present but detached: attach it rather than failing the default VPC.
+		_, err = s.AttachInternetGateway(ctx, &ec2.AttachInternetGatewayInput{
+			InternetGatewayId: &igwID,
+			VpcId:             &vpcID,
+		}, accountID)
+		return false, err
+	}
+
+	s.publishAttach(ctx, igwID, vpcID)
+	slog.InfoContext(ctx, "Created attached internet gateway", "internetGatewayId", igwID, "vpcId", vpcID, "accountID", accountID)
+	return true, nil
 }
 
 // AttachmentIntent returns the IGW whose record names vpcID, or nil if none

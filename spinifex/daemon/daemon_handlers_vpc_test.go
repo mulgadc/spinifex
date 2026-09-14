@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,10 +25,30 @@ import (
 func createDefaultVPCTestDaemon(t *testing.T) (*Daemon, *nats.Conn) {
 	t.Helper()
 
-	daemon := createTestDaemon(t, sharedNATSURL)
-
 	_, nc, _ := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
+	return wireDefaultVPCServices(t, createTestDaemon(t, sharedNATSURL), nc), nc
+}
+
+// createDefaultVPCTestDaemons wires n daemons onto one JetStream, each through
+// its own connection, standing in for the nodes of one cluster.
+func createDefaultVPCTestDaemons(t *testing.T, n int) []*Daemon {
+	t.Helper()
+
+	ns, nc, _ := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
+	daemons := make([]*Daemon, n)
+	for i := range n {
+		conn, err := nats.Connect(ns.ClientURL())
+		require.NoError(t, err)
+		t.Cleanup(conn.Close)
+		daemons[i] = wireDefaultVPCServices(t, createTestDaemon(t, sharedNATSURL), conn)
+	}
+	return daemons
+}
+
+func wireDefaultVPCServices(t *testing.T, daemon *Daemon, nc *nats.Conn) *Daemon {
+	t.Helper()
 
 	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
@@ -41,7 +62,7 @@ func createDefaultVPCTestDaemon(t *testing.T) (*Daemon, *nats.Conn) {
 	require.NoError(t, err)
 	daemon.routeTableService = rtbSvc
 
-	return daemon, nc
+	return daemon
 }
 
 // defaultVPCID returns the account's default VPC ID, or "" when it has none.
@@ -85,6 +106,50 @@ func TestHandleAccountCreated_BuildsDefaultVPCInfrastructure(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, defaultRoutes, "the default VPC must get its 0.0.0.0/0 route")
+}
+
+func TestHandleAccountCreated_RacingNodesAttachOneGateway(t *testing.T) {
+	daemons := createDefaultVPCTestDaemons(t, 4)
+
+	const accountID = "000000000066"
+	evt, err := json.Marshal(map[string]string{"account_id": accountID})
+	require.NoError(t, err)
+
+	// The IAM event and the gateway's request can land on different nodes, and
+	// every node must converge on one gateway and one default route.
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, d := range daemons {
+		wg.Go(func() {
+			<-start
+			assert.Equal(t, outcomeSuccess, d.handleAccountCreated(&nats.Msg{Subject: "account.created", Data: evt}))
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	d := daemons[0]
+	vpcID := defaultVPCID(t, d, accountID)
+	require.NotEmpty(t, vpcID)
+
+	igws, err := d.igwService.DescribeInternetGateways(t.Context(), &ec2.DescribeInternetGatewaysInput{}, accountID)
+	require.NoError(t, err)
+	require.Len(t, igws.InternetGateways, 1, "racing nodes attached more than one gateway")
+	igw, err := d.igwService.AttachmentIntent(t.Context(), accountID, vpcID)
+	require.NoError(t, err)
+	require.NotNil(t, igw)
+
+	rtbs, err := d.routeTableService.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{}, accountID)
+	require.NoError(t, err)
+	require.Len(t, rtbs.RouteTables, 1)
+	var defaultRoutes int
+	for _, r := range rtbs.RouteTables[0].Routes {
+		if aws.StringValue(r.DestinationCidrBlock) == "0.0.0.0/0" {
+			defaultRoutes++
+			assert.Equal(t, aws.StringValue(igw.InternetGatewayId), aws.StringValue(r.GatewayId))
+		}
+	}
+	assert.Equal(t, 1, defaultRoutes)
 }
 
 func TestHandleAccountCreated_RejectsUnusableEvents(t *testing.T) {

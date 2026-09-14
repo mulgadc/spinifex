@@ -32,6 +32,7 @@ const (
 	KVBucketVNICounter = "spinifex-vpc-vni-counter"
 	vniCounterKey      = "counter"
 	vniStart           = 100 // Starting VNI value (avoid 0 and low numbers)
+	vniCASAttempts     = 16  // every node's startup allocates at once on a fresh cluster
 
 	KVBucketVPCsVersion       = 1
 	KVBucketSubnetsVersion    = 1
@@ -74,16 +75,17 @@ type SubnetRecord struct {
 
 // VPCServiceImpl implements VPC, Subnet, and ENI operations with NATS JetStream persistence.
 type VPCServiceImpl struct {
-	config   *config.Config
-	natsConn *nats.Conn
-	vpcKV    jetstream.KeyValue
-	subnetKV jetstream.KeyValue
-	vniKV    jetstream.KeyValue
-	eniKV    jetstream.KeyValue
-	sgKV     jetstream.KeyValue
-	rtbKV    jetstream.KeyValue // route table bucket for auto-creating main route table
-	igwKV    jetstream.KeyValue // internet gateway bucket for the DeleteVpc dependency check
-	ipam     *IPAM
+	config     *config.Config
+	natsConn   *nats.Conn
+	vpcKV      jetstream.KeyValue
+	subnetKV   jetstream.KeyValue
+	vniKV      jetstream.KeyValue
+	eniKV      jetstream.KeyValue
+	sgKV       jetstream.KeyValue
+	defaultsKV jetstream.KeyValue // one default-resource claim per account
+	rtbKV      jetstream.KeyValue // route table bucket for auto-creating main route table
+	igwKV      jetstream.KeyValue // internet gateway bucket for the DeleteVpc dependency check
+	ipam       *IPAM
 
 	// Optional: injected after construction for public IP cleanup in DeleteNetworkInterface.
 	externalIPAM *ExternalIPAM
@@ -165,6 +167,14 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketSecurityGroups, err)
 	}
 
+	defaultsKV, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketDefaultVPCs, 10)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketDefaultVPCs, err)
+	}
+	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketDefaultVPCs, defaultsKV, KVBucketDefaultVPCsVersion); err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", KVBucketDefaultVPCs, err)
+	}
+
 	rtbKV, err := kvutil.GetOrCreateBucket(ctx, js, "spinifex-vpc-route-tables", 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket spinifex-vpc-route-tables: %w", err)
@@ -190,53 +200,36 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 		"sgBucket", KVBucketSecurityGroups)
 
 	return &VPCServiceImpl{
-		config:   cfg,
-		natsConn: natsConn,
-		vpcKV:    vpcKV,
-		subnetKV: subnetKV,
-		vniKV:    vniKV,
-		eniKV:    eniKV,
-		sgKV:     sgKV,
-		rtbKV:    rtbKV,
-		igwKV:    igwKV,
-		ipam:     ipam,
+		config:     cfg,
+		natsConn:   natsConn,
+		vpcKV:      vpcKV,
+		subnetKV:   subnetKV,
+		vniKV:      vniKV,
+		eniKV:      eniKV,
+		sgKV:       sgKV,
+		defaultsKV: defaultsKV,
+		rtbKV:      rtbKV,
+		igwKV:      igwKV,
+		ipam:       ipam,
 	}, nil
 }
 
 // nextVNI allocates the next VNI using atomic increment on the NATS KV counter.
 func (s *VPCServiceImpl) nextVNI(ctx context.Context) (int64, error) {
-	entry, err := s.vniKV.Get(ctx, vniCounterKey)
+	var allocated int64
+	_, err := kvutil.Update(ctx, s.vniKV, vniCounterKey, kvutil.CASConfig{CreateIfAbsent: true, Attempts: vniCASAttempts},
+		func(next *int64) (bool, error) {
+			if *next == 0 {
+				*next = vniStart
+			}
+			allocated = *next
+			*next++
+			return true, nil
+		})
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			// First VNI allocation — initialize counter
-			vni := int64(vniStart)
-			data, marshalErr := json.Marshal(vni + 1)
-			if marshalErr != nil {
-				return 0, fmt.Errorf("failed to marshal VNI counter: %w", marshalErr)
-			}
-			if _, err := s.vniKV.Create(ctx, vniCounterKey, data); err != nil {
-				return 0, fmt.Errorf("failed to initialize VNI counter: %w", err)
-			}
-			return vni, nil
-		}
-		return 0, fmt.Errorf("failed to get VNI counter: %w", err)
+		return 0, fmt.Errorf("allocate VNI: %w", err)
 	}
-
-	var current int64
-	if err := json.Unmarshal(entry.Value(), &current); err != nil {
-		return 0, fmt.Errorf("failed to unmarshal VNI counter: %w", err)
-	}
-
-	next := current + 1
-	data, marshalErr := json.Marshal(next)
-	if marshalErr != nil {
-		return 0, fmt.Errorf("failed to marshal VNI counter: %w", marshalErr)
-	}
-	if _, err := s.vniKV.Update(ctx, vniCounterKey, data, entry.Revision()); err != nil {
-		return 0, fmt.Errorf("failed to update VNI counter (CAS conflict): %w", err)
-	}
-
-	return current, nil
+	return allocated, nil
 }
 
 // CreateVpc creates a new VPC.
@@ -487,6 +480,7 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	if err := s.vpcKV.Delete(ctx, key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	s.releaseDefaultVPCClaim(ctx, accountID, vpcID)
 
 	slog.InfoContext(ctx, "DeleteVpc completed", "vpcId", vpcID, "accountID", accountID)
 
@@ -1341,169 +1335,8 @@ const (
 	DefaultSubnetCidr = "172.31.0.0/20"
 )
 
-// DefaultVPCInfo holds the IDs of the default VPC and subnet for bootstrap config.
-type DefaultVPCInfo struct {
-	VpcId      string
-	SubnetId   string
-	Cidr       string
-	SubnetCidr string
-}
-
-// BootstrapIDs holds pre-generated resource IDs from the [bootstrap] config.
-// When provided, EnsureDefaultVPC uses these IDs instead of generating random ones,
-// ensuring consistency between admin init, daemon, and vpcd.
-type BootstrapIDs struct {
-	VpcId    string
-	SubnetId string
-}
-
-// EnsureDefaultVPC creates a default VPC and subnet if none exists for the
-// account. Safe to call multiple times — no-ops if already present.
-func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...BootstrapIDs) (*DefaultVPCInfo, error) {
-	return s.ensureDefaultVPC(context.Background(), accountID, bootstrap...)
-}
-
-func (s *VPCServiceImpl) ensureDefaultVPC(ctx context.Context, accountID string, bootstrap ...BootstrapIDs) (*DefaultVPCInfo, error) {
-	if s.vpcKV == nil {
-		return nil, nil // No persistence, skip
-	}
-
-	// Check if a default VPC already exists for this account
-	prefix := accountID + "."
-	keys, err := s.vpcKV.Keys(ctx)
-	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
-		return nil, fmt.Errorf("list VPCs: %w", err)
-	}
-
-	for _, key := range keys {
-		if key == utils.VersionKey {
-			continue
-		}
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		entry, err := s.vpcKV.Get(ctx, key)
-		if err != nil {
-			continue
-		}
-		var record VPCRecord
-		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			continue
-		}
-		if record.IsDefault {
-			slog.Debug("Default VPC already exists", "vpcId", record.VpcId, "accountID", accountID)
-			// Look up the default subnet to return full info
-			defaultSubnet, _ := s.getDefaultSubnet(ctx, accountID)
-			info := &DefaultVPCInfo{VpcId: record.VpcId, Cidr: record.CidrBlock}
-			if defaultSubnet != nil {
-				info.SubnetId = defaultSubnet.SubnetId
-				info.SubnetCidr = defaultSubnet.CidrBlock
-			}
-			return info, nil
-		}
-	}
-
-	// Create default VPC — use bootstrap IDs if provided for consistency
-	vni, err := s.nextVNI(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("allocate VNI for default VPC: %w", err)
-	}
-
-	vpcID := utils.GenerateResourceID("vpc")
-	if len(bootstrap) > 0 && bootstrap[0].VpcId != "" {
-		vpcID = bootstrap[0].VpcId
-	}
-	vpcRecord := VPCRecord{
-		VpcId:              vpcID,
-		CidrBlock:          DefaultVPCCidr,
-		State:              "available",
-		IsDefault:          true,
-		VNI:                vni,
-		AZ:                 s.localAZ(),
-		EnableDnsSupport:   true, // AWS default
-		EnableDnsHostnames: true, // AWS default for default VPC
-		Tags:               map[string]string{"Name": "default"},
-		CreatedAt:          time.Now(),
-	}
-
-	data, err := json.Marshal(vpcRecord)
-	if err != nil {
-		return nil, fmt.Errorf("marshal default VPC: %w", err)
-	}
-	if _, err := s.vpcKV.Put(ctx, utils.AccountKey(accountID, vpcID), data); err != nil {
-		return nil, fmt.Errorf("store default VPC: %w", err)
-	}
-
-	s.publishVPCEvent("vpc.create", vpcID, DefaultVPCCidr, vni)
-
-	// Determine AZ
-	az := "us-east-1a"
-	if s.config != nil && s.config.AZ != "" {
-		az = s.config.AZ
-	}
-
-	// Create default subnet (public — matches AWS default VPC behavior)
-	subnetID := utils.GenerateResourceID("subnet")
-	if len(bootstrap) > 0 && bootstrap[0].SubnetId != "" {
-		subnetID = bootstrap[0].SubnetId
-	}
-	subnetRecord := SubnetRecord{
-		SubnetId:            subnetID,
-		VpcId:               vpcID,
-		CidrBlock:           DefaultSubnetCidr,
-		AvailabilityZone:    az,
-		State:               "available",
-		IsDefault:           true,
-		MapPublicIpOnLaunch: !s.disableDefaultPublicIP, // AWS default subnets auto-assign public IPs (unless external mode has none)
-		Tags:                map[string]string{"Name": "default"},
-		CreatedAt:           time.Now(),
-	}
-
-	data, err = json.Marshal(subnetRecord)
-	if err != nil {
-		return nil, fmt.Errorf("marshal default subnet: %w", err)
-	}
-	if _, err := s.subnetKV.Put(ctx, utils.AccountKey(accountID, subnetID), data); err != nil {
-		return nil, fmt.Errorf("store default subnet: %w", err)
-	}
-
-	s.publishSubnetEvent("vpc.create-subnet", subnetID, vpcID, DefaultSubnetCidr)
-
-	// Create main route table with local route (written directly to KV to avoid circular import)
-	if s.rtbKV != nil {
-		if err := s.createMainRouteTable(ctx, accountID, vpcID, DefaultVPCCidr); err != nil {
-			slog.Error("Failed to create main route table for VPC", "vpcId", vpcID, "err", err)
-		}
-	}
-
-	// Best-effort default SG provisioning. Bootstrap runs during daemon Start()
-	// before vpcd has subscribed to vpc.create-sg, so the synchronous round-trip
-	// will time out on first boot. The SG record is already in KV; vpcd's
-	// reconcile-sgs loop creates the OVN port group on its first scan.
-	if _, err := s.createDefaultSecurityGroupInternal(ctx, accountID, vpcID); err != nil {
-		slog.Warn("Default security group bootstrap deferred to vpcd reconciler",
-			"vpcId", vpcID, "accountID", accountID, "err", err)
-	}
-
-	slog.Info("Created default VPC and subnet",
-		"vpcId", vpcID,
-		"vpcCidr", DefaultVPCCidr,
-		"subnetId", subnetID,
-		"subnetCidr", DefaultSubnetCidr,
-		"az", az,
-		"accountID", accountID,
-	)
-	return &DefaultVPCInfo{
-		VpcId:      vpcID,
-		SubnetId:   subnetID,
-		Cidr:       DefaultVPCCidr,
-		SubnetCidr: DefaultSubnetCidr,
-	}, nil
-}
-
 // createMainRouteTable writes a main route table record directly to the route
-// table KV bucket. Avoids a circular import; idempotent via findMainRouteTableID
-// so concurrent EnsureDefaultVPC calls do not mint duplicate main RTs.
+// table KV bucket, avoiding a circular import. A no-op when the VPC already has one.
 func (s *VPCServiceImpl) createMainRouteTable(ctx context.Context, accountID, vpcID, vpcCidr string) error {
 	if existing, err := s.findMainRouteTableID(ctx, accountID, vpcID); err != nil {
 		return fmt.Errorf("check existing main route table: %w", err)
@@ -1512,6 +1345,13 @@ func (s *VPCServiceImpl) createMainRouteTable(ctx context.Context, accountID, vp
 			"routeTableId", existing, "vpcId", vpcID, "accountID", accountID)
 		return nil
 	}
+	_, err := s.writeMainRouteTable(ctx, accountID, vpcID, vpcCidr, utils.GenerateResourceID("rtb"))
+	return err
+}
+
+// writeMainRouteTable creates the main route table rtbID for vpcID. It never
+// overwrites: created is false when the record already exists.
+func (s *VPCServiceImpl) writeMainRouteTable(ctx context.Context, accountID, vpcID, vpcCidr, rtbID string) (created bool, err error) {
 	type rtbRecord struct {
 		RouteTableId string `json:"route_table_id"`
 		VpcId        string `json:"vpc_id"`
@@ -1531,7 +1371,6 @@ func (s *VPCServiceImpl) createMainRouteTable(ctx context.Context, accountID, vp
 		CreatedAt time.Time         `json:"created_at"`
 	}
 
-	rtbID := utils.GenerateResourceID("rtb")
 	record := rtbRecord{
 		RouteTableId: rtbID,
 		VpcId:        vpcID,
@@ -1557,14 +1396,17 @@ func (s *VPCServiceImpl) createMainRouteTable(ctx context.Context, accountID, vp
 
 	data, err := json.Marshal(record)
 	if err != nil {
-		return fmt.Errorf("marshal main route table: %w", err)
+		return false, fmt.Errorf("marshal main route table: %w", err)
 	}
-	if _, err := s.rtbKV.Put(ctx, utils.AccountKey(accountID, rtbID), data); err != nil {
-		return fmt.Errorf("store main route table: %w", err)
+	if _, err := s.rtbKV.Create(ctx, utils.AccountKey(accountID, rtbID), data); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			return false, nil
+		}
+		return false, fmt.Errorf("store main route table: %w", err)
 	}
 
 	slog.InfoContext(ctx, "Created main route table for VPC", "routeTableId", rtbID, "vpcId", vpcID, "accountID", accountID)
-	return nil
+	return true, nil
 }
 
 // findMainRouteTableID returns the rtb-ID of the main route table for vpcID

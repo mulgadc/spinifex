@@ -1969,6 +1969,7 @@ func (d *Daemon) startCluster() error {
 				opts = append(opts, handlers_ec2_vpc.BootstrapIDs{
 					VpcId:    d.clusterConfig.Bootstrap.VpcId,
 					SubnetId: d.clusterConfig.Bootstrap.SubnetId,
+					IgwId:    d.clusterConfig.Bootstrap.IgwId,
 				})
 			}
 			if _, err := d.vpcService.EnsureDefaultVPC(accountID, opts...); err != nil {

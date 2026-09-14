@@ -122,32 +122,26 @@ func (d *Daemon) ensureDefaultVPCInfrastructureFor(ctx context.Context, accountI
 		return
 	}
 
-	// Find the default VPC for this account
-	descOut, err := d.vpcService.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{}, accountID)
+	// The claim names the default VPC and the gateway ID every node agreed on.
+	info, err := d.vpcService.DefaultVPC(ctx, accountID)
 	if err != nil {
-		slog.WarnContext(ctx, "DescribeVpcs failed for default VPC infrastructure, retrying", "accountID", accountID, "err", err)
+		slog.WarnContext(ctx, "Default VPC lookup failed for default VPC infrastructure, retrying", "accountID", accountID, "err", err)
 		time.Sleep(500 * time.Millisecond)
-		descOut, err = d.vpcService.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{}, accountID)
+		info, err = d.vpcService.DefaultVPC(ctx, accountID)
 		if err != nil {
-			slog.ErrorContext(ctx, "DescribeVpcs failed for default VPC infrastructure after retry",
+			slog.ErrorContext(ctx, "Default VPC lookup failed for default VPC infrastructure after retry",
 				"accountID", accountID, "err", err)
 			return
 		}
 	}
-	var defaultVpcId string
-	for _, vpc := range descOut.Vpcs {
-		if vpc.IsDefault != nil && *vpc.IsDefault {
-			defaultVpcId = *vpc.VpcId
-			break
-		}
-	}
-	if defaultVpcId == "" {
+	if info == nil || info.VpcId == "" {
 		return
 	}
+	defaultVpcId := info.VpcId
 
 	// Check if IGW already attached. Uses the intent view: an attach requested
-	// by an earlier pass but not yet confirmed still counts, or this creates a
-	// second gateway for the same VPC every time it runs inside that window.
+	// by an earlier pass but not yet confirmed still counts, and a gateway the
+	// user attached in place of the default one is left alone.
 	existingIGW, err := d.igwService.AttachmentIntent(ctx, accountID, defaultVpcId)
 	if err != nil {
 		slog.WarnContext(ctx, "IGW lookup failed for default VPC infrastructure, retrying",
@@ -161,27 +155,13 @@ func (d *Daemon) ensureDefaultVPCInfrastructureFor(ctx context.Context, accountI
 		}
 	}
 	if existingIGW == nil {
-		// Create and attach an IGW — use bootstrap ID if available
-		var createOut *ec2.CreateInternetGatewayOutput
-		var err error
-		if accountID == admin.DefaultAccountID() && d.clusterConfig != nil && d.clusterConfig.Bootstrap.IgwId != "" {
-			createOut, err = d.igwService.CreateInternetGatewayWithID(&ec2.CreateInternetGatewayInput{}, accountID, d.clusterConfig.Bootstrap.IgwId)
-		} else {
-			createOut, err = d.igwService.CreateInternetGateway(ctx, &ec2.CreateInternetGatewayInput{}, accountID)
-		}
+		created, err := d.igwService.CreateAttachedInternetGateway(ctx, accountID, info.InternetGatewayId, defaultVpcId)
 		if err != nil {
-			slog.ErrorContext(ctx, "Failed to create default IGW", "accountID", accountID, "err", err)
+			slog.ErrorContext(ctx, "Failed to attach default IGW", "igwId", info.InternetGatewayId, "vpcId", defaultVpcId, "err", err)
 			return
 		}
-		igwId := *createOut.InternetGateway.InternetGatewayId
-		_, err = d.igwService.AttachInternetGateway(ctx, &ec2.AttachInternetGatewayInput{
-			InternetGatewayId: &igwId,
-			VpcId:             &defaultVpcId,
-		}, accountID)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to attach default IGW", "igwId", igwId, "vpcId", defaultVpcId, "err", err)
-		} else {
-			slog.InfoContext(ctx, "Attached default IGW to default VPC", "igwId", igwId, "vpcId", defaultVpcId, "accountID", accountID)
+		if created {
+			slog.InfoContext(ctx, "Attached default IGW to default VPC", "igwId", info.InternetGatewayId, "vpcId", defaultVpcId, "accountID", accountID)
 		}
 	}
 

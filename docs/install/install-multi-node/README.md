@@ -235,7 +235,9 @@ sudo ovn-sbctl show
 
 Run init and join **concurrently** — init blocks until all nodes have joined.
 
-`--force` is in every command below so the sequence is identical whichever way you installed. It does the work on ISO-installed servers, which arrive as their own single-node cluster: joining replaces that server's CA and master key with server 1's, and `--force` is the confirmation. On `spx admin init` it is idempotent — existing keys, credentials and CA are preserved, and only the config files and server certificate are refreshed. On a freshly installed server there is nothing to lose either way.
+`--force` is in every command below so the sequence is identical whichever way you installed. It does the work on ISO-installed servers, which arrive as their own single-node cluster: joining replaces that server's CA and master key with server 1's and removes its JetStream store, and `--force` is the confirmation. On `spx admin init` it is idempotent — existing keys, credentials and CA are preserved, and only the config files and server certificate are refreshed. On a freshly installed server there is nothing to lose either way.
+
+`--discard-jetstream` on server 1 removes the streams its single-node cluster wrote, once every server has joined. Without it init refuses to form a cluster over them, because NATS would adopt each server's own copy as a replica and those copies never converge. Stop `spinifex.target` on every server first and confirm `pgrep -af 'spx service'` prints nothing: init and join both refuse while NATS is still running.
 
 > [!WARNING]
 > Do not point these commands at a server that has already been in service. Joining discards its master key, orphaning every volume and fragment sealed under it. That is what `--force` overrides, and it is unrecoverable.
@@ -243,7 +245,7 @@ Run init and join **concurrently** — init blocks until all nodes have joined.
 **Server 1 — initialize:**
 
 ```bash
-sudo spx admin init --force \
+sudo spx admin init --force --discard-jetstream \
   --node node1 --nodes 3 \
   --bind $SPINIFEX_NODE1 --cluster-bind $SPINIFEX_NODE1 \
   --port 4432 --region $AWS_REGION --az $AWS_AZ

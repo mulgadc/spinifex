@@ -368,6 +368,22 @@ for host in "${HOSTS[@]}"; do
     on "$host" "sudo systemctl stop spinifex.target" || fail "$host: could not stop spinifex.target"
 done
 
+# Init and join remove each node's JetStream store and refuse while NATS still
+# runs. A stopped target is not proof of that: its storage units can outlive it.
+# Matched on the service argv so the ssh shell running this cannot match itself.
+for host in "${HOSTS[@]}"; do
+    $DRY_RUN && { echo "  [dry-run] $host: wait for every 'spx service' process to exit"; continue; }
+    on "$host" "for u in spinifex-predastore spinifex-viperblock spinifex-nats; do
+            systemctl is-active --quiet \$u && sudo systemctl stop \$u
+        done
+        for _ in \$(seq 1 45); do
+            pgrep -f '^(/usr/local/bin/)?spx service ' >/dev/null || exit 0
+            sleep 2
+        done
+        pgrep -af '^(/usr/local/bin/)?spx service ' >&2
+        exit 1" || fail "$host: spx services still running 90s after stopping spinifex.target"
+done
+
 # --- Disarm the host firewall ----------------------------------------------
 #
 # The policy lives in the kernel and outlives the services, so stopping the
@@ -529,6 +545,7 @@ done
 # target.
 init_args=(
     --force
+    --discard-jetstream
     --node "${NODE_NAMES[0]}"
     --nodes "$N"
     --bind "${LAN_IPS[0]}"
@@ -577,8 +594,8 @@ else
 fi
 
 # --force: each joining node arrived from the ISO already initialized, with its
-# own CA and master key. Joining replaces them with the init node's, and
-# `spx admin join` refuses to do that silently.
+# own CA, master key and JetStream store. Joining replaces the keys with the init
+# node's and removes the store, and `spx admin join` refuses to do that silently.
 #
 # Every join must run concurrently. `spx admin join` registers and then blocks
 # until the formation server has all N nodes, so joining one at a time deadlocks

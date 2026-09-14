@@ -358,6 +358,7 @@ func init() {
 
 	// Flags for admin init
 	adminInitCmd.Flags().Bool("force", false, "Force re-initialization (overwrites existing config)")
+	adminInitCmd.Flags().Bool("discard-jetstream", false, "With --nodes >= 2, remove this node's existing JetStream streams once every node has joined")
 	adminInitCmd.Flags().String("region", "ap-southeast-2", "Mulga region to create")
 	adminInitCmd.Flags().String("az", "ap-southeast-2a", "Mulga AZ to create")
 	adminInitCmd.Flags().String("node", "node1", "Node name, increment for additional nodes (default, node1)")
@@ -1313,6 +1314,15 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(0)
 	}
 
+	if spxRoot == "" {
+		spxRoot = DefaultDataDir()
+	}
+	discardJetStream, _ := cmd.Flags().GetBool("discard-jetstream")
+	if err := checkInitJetStreamStore(jetStreamStoreDir(spxRoot), nodes, discardJetStream); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Preserve the previously-captured operator email across --force re-inits
 	// when --email is omitted (e.g. reset-dev-env.sh workflows). Without this
 	// a reset would silently blank the address.
@@ -1845,6 +1855,17 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 
 	fmt.Printf("✅ All %d nodes joined!\n", expectedNodes)
 
+	// The pre-start check refused a store with streams unless discard was asked
+	// for, so anything left here is removed now that the cluster is committed.
+	if discard, _ := cmd.Flags().GetBool("discard-jetstream"); discard {
+		storeDir := jetStreamStoreDir(spxRoot)
+		if err := discardJetStreamStore(storeDir); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Discarded this node's pre-formation JetStream store: %s\n", storeDir)
+	}
+
 	// Build cluster topology from formation data
 	allNodes := fs.Nodes()
 	clusterRoutes := formation.BuildClusterRoutes(allNodes)
@@ -2002,19 +2023,27 @@ func joinRetryable(err error, statusCode int) bool {
 }
 
 // checkJoinPreconditions rejects a join that would silently destroy this node's
-// existing cluster identity. Joining adopts the primary's CA and master key,
-// overwriting whatever is here: correct on a freshly installed node, and on one
-// that has been in service it orphans every fragment and volume sealed under the
-// old key. runAdminInit guards the same way before re-initializing.
-func checkJoinPreconditions(configDir string, force bool) error {
+// identity or JetStream data; --force accepts that loss. A running NATS service
+// is refused even with --force, because the store cannot be removed under it.
+func checkJoinPreconditions(configDir, storeDir string, force bool) error {
+	if err := checkStoreDiscardable(); err != nil {
+		return err
+	}
 	if force {
 		return nil
 	}
 	tomlPath := filepath.Join(configDir, "spinifex.toml")
-	if !admin.FileExists(tomlPath) {
-		return nil
+	if admin.FileExists(tomlPath) {
+		return fmt.Errorf("this node is already initialized: %s", tomlPath)
 	}
-	return fmt.Errorf("this node is already initialized: %s", tomlPath)
+	streams, err := localStreams(storeDir)
+	if err != nil {
+		return err
+	}
+	if len(streams) > 0 {
+		return fmt.Errorf("this node's JetStream store %s holds %d stream(s)", storeDir, len(streams))
+	}
+	return nil
 }
 
 // joinDiscardsIdentityMsg spells out what a forced join throws away. Kept out of
@@ -2023,6 +2052,8 @@ const joinDiscardsIdentityMsg = `Joining will discard this node's own cluster id
   - CA certificate and key
   - master key, and any data sealed under it
   - viperblock key, and any volumes encrypted under it
+  - JetStream store (<data-dir>/nats/jetstream): every stream and KV bucket
+    this node holds, so it takes the cluster's copy instead of diverging from it
 
 That is safe on a freshly installed node — an ISO install initializes a
 single-node cluster at first boot, and nothing has been sealed under these keys
@@ -2103,7 +2134,11 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	// Checked before any network call so a node that will not join says so
 	// immediately. Unlike init this exits non-zero: a node that did not join
 	// must not look like success to a provisioning script.
-	if err := checkJoinPreconditions(configDir, force); err != nil {
+	if dataDir == "" {
+		dataDir = DefaultDataDir()
+	}
+	storeDir := jetStreamStoreDir(dataDir)
+	if err := checkJoinPreconditions(configDir, storeDir, force); err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  %v\n\n%s\n", err, joinDiscardsIdentityMsg)
 		os.Exit(1)
 	}
@@ -2111,11 +2146,6 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	// Default cluster-bind to bind IP if not specified
 	if clusterBind == "" {
 		clusterBind = bindIP
-	}
-
-	// Set default data directory
-	if dataDir == "" {
-		dataDir = DefaultDataDir()
 	}
 
 	fmt.Println("🚀 Joining Spinifex cluster...")
@@ -2297,6 +2327,14 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "❌ Error: formation server did not return credentials\n")
 		os.Exit(1)
 	}
+
+	// Removed only once formation has succeeded, so a failed join leaves the
+	// node's single-node cluster intact.
+	if err := discardJetStreamStore(storeDir); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ Discarded this node's pre-formation JetStream store: %s\n", storeDir)
 
 	// Set up config directory
 	if configDir == "" {

@@ -1289,6 +1289,9 @@ func TestAMIVolumeSizeGiB(t *testing.T) {
 }
 
 func TestCheckJoinPreconditions(t *testing.T) {
+	withFakeProc(t, nil)
+	noStore := filepath.Join(t.TempDir(), "nats", "jetstream")
+
 	writeToml := func(t *testing.T) string {
 		t.Helper()
 		dir := t.TempDir()
@@ -1299,13 +1302,13 @@ func TestCheckJoinPreconditions(t *testing.T) {
 	}
 
 	t.Run("uninitialized node joins", func(t *testing.T) {
-		if err := checkJoinPreconditions(t.TempDir(), false); err != nil {
+		if err := checkJoinPreconditions(t.TempDir(), noStore, false); err != nil {
 			t.Fatalf("want nil, got %v", err)
 		}
 	})
 
 	t.Run("initialized node is refused", func(t *testing.T) {
-		err := checkJoinPreconditions(writeToml(t), false)
+		err := checkJoinPreconditions(writeToml(t), noStore, false)
 		if err == nil {
 			t.Fatal("want refusal, got nil")
 		}
@@ -1317,7 +1320,7 @@ func TestCheckJoinPreconditions(t *testing.T) {
 	// The guidance is the whole point of the guard: an operator must be able to
 	// tell what a forced join would destroy without reading the source.
 	t.Run("guidance names what is discarded", func(t *testing.T) {
-		for _, want := range []string{"CA certificate", "master key", "viperblock key", "--force"} {
+		for _, want := range []string{"CA certificate", "master key", "viperblock key", "JetStream store", "--force"} {
 			if !strings.Contains(joinDiscardsIdentityMsg, want) {
 				t.Errorf("guidance missing %q", want)
 			}
@@ -1325,8 +1328,25 @@ func TestCheckJoinPreconditions(t *testing.T) {
 	})
 
 	t.Run("force overrides", func(t *testing.T) {
-		if err := checkJoinPreconditions(writeToml(t), true); err != nil {
+		if err := checkJoinPreconditions(writeToml(t), noStore, true); err != nil {
 			t.Fatalf("want nil with force, got %v", err)
+		}
+	})
+
+	// A store with streams and no config is still data the join would destroy.
+	t.Run("uninitialized node with streams is refused", func(t *testing.T) {
+		err := checkJoinPreconditions(t.TempDir(), seedStore(t, "KV_a"), false)
+		if err == nil || !strings.Contains(err.Error(), "JetStream store") {
+			t.Fatalf("want JetStream refusal, got %v", err)
+		}
+	})
+
+	// --force accepts the loss of data, never a wipe under a live server.
+	t.Run("running NATS is refused even with force", func(t *testing.T) {
+		withFakeProc(t, map[string]string{"4242": "/usr/local/bin/spx\x00service\x00nats\x00start\x00"})
+		err := checkJoinPreconditions(writeToml(t), seedStore(t, "KV_a"), true)
+		if !errors.Is(err, errNATSRunning) {
+			t.Fatalf("want errNATSRunning, got %v", err)
 		}
 	})
 }

@@ -37,28 +37,41 @@ func EnableIPSecEncapsulation() error {
 	return nil
 }
 
-// errNBUnreachable marks the one failure that means "this node has no local NB
-// DB" rather than "the read broke". A permission change on the socket, a missing
-// binary or a timed-out transaction are all real faults on a management node,
-// and lumping them in with this would silence them.
-var errNBUnreachable = errors.New("no local OVN NB DB")
+// errNBUnreachable marks the one failure that means "no NB DB answered" rather
+// than "the read broke". A permission change on the socket, a missing binary or
+// a timed-out transaction are real faults, and lumping them in would silence them.
+var errNBUnreachable = errors.New("no OVN NB DB reachable")
 
 // nbUnreachablePatterns are what ovsdb's client library prints when it cannot
-// open or complete a handshake on the socket.
+// open or complete a handshake with any of its remotes.
 var nbUnreachablePatterns = []string{
 	"database connection failed",
 	"connection refused",
 	"no such file or directory",
 }
 
-// GetNBGlobalIPSec reads NB_Global.ipsec from the local OVN NB DB. The error
-// doubles as the reachability answer: a present socket file says nothing about
-// whether the database behind it accepts connections yet.
+// nbctlArgs targets nbAddr (the cluster remote list; empty is the local socket).
+// Reads accept any connected member, so a raft follower answers instead of
+// refusing; writes stay leader-only so ovn-nbctl walks the remotes to the leader.
+func nbctlArgs(nbAddr string, leaderOnly bool, cmd ...string) []string {
+	var args []string
+	if nbAddr != "" {
+		args = append(args, "--db="+nbAddr)
+	}
+	if !leaderOnly {
+		args = append(args, "--no-leader-only")
+	}
+	return append(append(args, "--timeout=5"), cmd...)
+}
+
+// GetNBGlobalIPSec reads NB_Global.ipsec. The error doubles as the reachability
+// answer: a present socket file says nothing about whether the database behind
+// it accepts connections yet.
 //
 // Reads stdout alone. ovn-nbctl writes vlog lines to stderr on a successful run,
 // and folding those into the value parses a live "true" as false.
-func GetNBGlobalIPSec() (bool, error) {
-	cmd := utils.SudoCommand("ovn-nbctl", "--timeout=5", "get", "NB_Global", ".", "ipsec")
+func GetNBGlobalIPSec(nbAddr string) (bool, error) {
+	cmd := utils.SudoCommand("ovn-nbctl", nbctlArgs(nbAddr, false, "get", "NB_Global", ".", "ipsec")...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -83,15 +96,15 @@ func isNBUnreachable(msg string) bool {
 	return false
 }
 
-// SetNBGlobalIPSec writes NB_Global.ipsec on the local OVN NB DB, triggering
-// ovn-controller to add options:remote_name to Geneve tunnels for strongSwan.
-// Only the management node has a reachable NB DB; callers gate on that.
-func SetNBGlobalIPSec(enable bool) error {
+// SetNBGlobalIPSec writes NB_Global.ipsec, triggering ovn-controller to add
+// options:remote_name to Geneve tunnels for strongSwan. Callers elect a single
+// writer, so this never races another node's write.
+func SetNBGlobalIPSec(nbAddr string, enable bool) error {
 	val := "false"
 	if enable {
 		val = "true"
 	}
-	out, err := utils.SudoCommand("ovn-nbctl", "--timeout=5", "set", "NB_Global", ".", "ipsec="+val).CombinedOutput()
+	out, err := utils.SudoCommand("ovn-nbctl", nbctlArgs(nbAddr, true, "set", "NB_Global", ".", "ipsec="+val)...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("set NB_Global ipsec=%s: %s: %w", val, strings.TrimSpace(string(out)), err)
 	}

@@ -33,15 +33,15 @@ type recordingSudo struct {
 	activeOutput  string
 	enabledOutput map[string]string
 	activePerUnit map[string]string
-	// nbUnreachable stands in for a node whose ovn-central is not answering, or
-	// which is not a management node at all. The socket file exists in both
-	// cases, which is why its presence was never the right question.
+	// nbUnreachable stands in for a node that no NB DB answered, over its
+	// remotes or its local socket. A socket file can exist either way, which is
+	// why its presence was never the right question.
 	nbUnreachable bool
 	// nbIPSec is what NB_Global.ipsec currently reads as.
 	nbIPSec string
-	// nbError is a failure that is not "there is no local NB DB here" — a
-	// permission change on the socket, a missing binary, a timed-out
-	// transaction. On a management node each of those is a real fault.
+	// nbError is a failure that is not "no NB DB answered" — a permission
+	// change on the socket, a missing binary, a timed-out transaction. Each of
+	// those is a real fault.
 	nbError string
 }
 
@@ -122,7 +122,7 @@ func (f *fakeBarrier) Cluster(_ context.Context, _ []string) (map[string]IPSecNo
 }
 
 // allReady is the steady state: every chassis has finished its local setup and
-// node1 is the management node that owns the NB_Global write.
+// node1 is the first node that reads NB_Global, so it owns the write.
 func allReady() *fakeBarrier {
 	return &fakeBarrier{cluster: map[string]IPSecNodeStatus{
 		"node1": {Ready: true, NBReachable: true},
@@ -521,7 +521,7 @@ func (f *flakyBarrier) succeeded() bool {
 	return f.calls > f.failFor
 }
 
-// Every management node can reach the NB DB, so without a single elected writer
+// Every node that reads NB_Global can write it, so without a single elected writer
 // two of them disagreeing for one pass flip the flag and rebuild every
 // strongSwan connection in the cluster.
 func TestEnableOVNIPSec_OnlyTheElectedWriterTouchesNBGlobal(t *testing.T) {
@@ -542,8 +542,8 @@ func TestEnableOVNIPSec_OnlyTheElectedWriterTouchesNBGlobal(t *testing.T) {
 		"a node that is not the elected writer must not race the flag")
 }
 
-// The elected writer is the first live management node, not merely the first
-// node: a hypervisor cannot write the flag and must not veto the one that can.
+// The elected writer is the first live node that could read NB_Global, not
+// merely the first node: one that cannot reach NB must not veto one that can.
 func TestNBGlobalWriter_SkipsNodesWithoutANBDB(t *testing.T) {
 	writer := nbGlobalWriter(map[string]IPSecNodeStatus{
 		"node1": {Ready: true},
@@ -606,8 +606,8 @@ func TestReconcileOVNIPSec_DisabledIsANoOpWhenAlreadyReleased(t *testing.T) {
 	assert.Empty(t, recorder.nbctlWrites())
 }
 
-// A management node whose NB read fails for any reason other than "there is no
-// local DB here" has a real fault. Swallowing it was how the node that holds
+// A node whose NB read fails for any reason other than "no NB DB answered" has
+// a real fault. Swallowing it was how the node that holds
 // the flag could go blind and never retract.
 func TestEnableOVNIPSec_NBReadFailureFailsThePass(t *testing.T) {
 	recorder := &recordingSudo{nbError: "ovn-nbctl: unix:/var/run/ovn/ovnnb_db.sock: permission denied"}
@@ -621,7 +621,7 @@ func TestEnableOVNIPSec_NBReadFailureFailsThePass(t *testing.T) {
 	assert.Empty(t, recorder.nbctlWrites())
 }
 
-// A node with no local NB DB is the ordinary hypervisor case, not a fault.
+// No NB DB answering is skipped quietly, not a fault, and the node stands down.
 func TestEnableOVNIPSec_NoLocalNBDBIsNotAnError(t *testing.T) {
 	recorder := &recordingSudo{nbUnreachable: true}
 	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
@@ -645,7 +645,59 @@ func TestGetNBGlobalIPSec_IgnoresStderrChatter(t *testing.T) {
 		return exec.Command("sh", "-c", `echo "ovsdb-idl|WARN|reconnecting" >&2; echo true`)
 	}))
 
-	value, err := GetNBGlobalIPSec()
+	value, err := GetNBGlobalIPSec("")
 	require.NoError(t, err)
 	assert.True(t, value)
+}
+
+// nbctlReads returns the ovn-nbctl invocations that read NB_Global.
+func (r *recordingSudo) nbctlReads() [][]string {
+	var out [][]string
+	for _, run := range r.runs {
+		if run[0] == "ovn-nbctl" && slices.Contains(run, "get") {
+			out = append(out, run)
+		}
+	}
+	return out
+}
+
+// A raft follower refuses a leader-only read on its own socket, which logged an
+// ERR every minute and read as "no NB DB here". The read must accept any
+// connected member; the write must still reach the leader.
+func TestNBctlArgs_ReadsAcceptFollowersWritesStayLeaderOnly(t *testing.T) {
+	const nb = "tcp:10.0.0.1:6641,tcp:10.0.0.2:6641"
+
+	assert.Equal(t, []string{"--no-leader-only", "--timeout=5", "get", "NB_Global", ".", "ipsec"},
+		nbctlArgs("", false, "get", "NB_Global", ".", "ipsec"))
+	assert.Equal(t, []string{"--db=" + nb, "--no-leader-only", "--timeout=5", "get", "NB_Global", ".", "ipsec"},
+		nbctlArgs(nb, false, "get", "NB_Global", ".", "ipsec"))
+	assert.Equal(t, []string{"--db=" + nb, "--timeout=5", "set", "NB_Global", ".", "ipsec=false"},
+		nbctlArgs(nb, true, "set", "NB_Global", ".", "ipsec=false"))
+}
+
+// A node that runs no NB DB reaches the cluster through its configured remotes,
+// so both the read and the retraction carry the list rather than the local socket.
+func TestReconcileOVNIPSec_UsesTheConfiguredNBRemotes(t *testing.T) {
+	const nb = "tcp:10.0.0.1:6641,tcp:10.0.0.2:6641"
+	recorder := &recordingSudo{nbIPSec: "true"}
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+
+	cfg := multiNodeIPSecConfig(false)
+	cfg.Nodes["node1"] = config.Config{VPCD: config.VPCDConfig{OVNNBAddr: nb}}
+
+	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", cfg, allReady()))
+
+	assert.Equal(t, [][]string{{"ovn-nbctl", "--db=" + nb, "--no-leader-only", "--timeout=5", "get", "NB_Global", ".", "ipsec"}},
+		recorder.nbctlReads())
+	assert.Equal(t, [][]string{{"ovn-nbctl", "--db=" + nb, "--timeout=5", "set", "NB_Global", ".", "ipsec=false"}},
+		recorder.nbctlWrites())
+}
+
+// Only "nothing answered" is unreachable. The local socket being absent is that
+// case; a follower that answers is not, and never produces this output.
+func TestIsNBUnreachable(t *testing.T) {
+	assert.True(t, isNBUnreachable("ovn-nbctl: unix:/var/run/ovn/ovnnb_db.sock: database connection failed (No such file or directory)"))
+	assert.True(t, isNBUnreachable("ovn-nbctl: tcp:10.0.0.1:6641: database connection failed (Connection refused)"))
+	assert.False(t, isNBUnreachable("ovn-nbctl: unix:/var/run/ovn/ovnnb_db.sock: permission denied"))
+	assert.False(t, isNBUnreachable("ovn-nbctl: transaction timed out"))
 }

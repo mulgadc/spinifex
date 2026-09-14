@@ -36,10 +36,19 @@ type IPSecNodeStatus struct {
 	// Ready reports that this node's local IPsec configuration is complete.
 	Ready bool
 
-	// NBReachable reports that this node can read and write NB_Global. Only
-	// management nodes can, and which nodes those are is not in the config, so
-	// they say so here and every node elects the same writer from the answer.
+	// NBReachable reports that this node read NB_Global this pass, over its
+	// configured NB remotes or its local socket. Reachability can differ per node,
+	// so each says so here and every node elects the same writer from the answer.
 	NBReachable bool
+}
+
+// nbAddrFor returns this node's configured NB remote list, or "" for the local
+// socket. The list reaches the cluster from a node that runs no NB DB at all.
+func nbAddrFor(clusterConfig *config.ClusterConfig) string {
+	if clusterConfig == nil {
+		return ""
+	}
+	return clusterConfig.Nodes[clusterConfig.Node].VPCD.OVNNBAddr
 }
 
 // IPSecBarrier carries each node's IPsec state across the cluster.
@@ -156,7 +165,8 @@ func DisableOVNIPSec(ctx context.Context, clusterConfig *config.ClusterConfig, b
 		}
 	}
 
-	current, err := GetNBGlobalIPSec()
+	nbAddr := nbAddrFor(clusterConfig)
+	current, err := GetNBGlobalIPSec(nbAddr)
 	if err != nil {
 		return skipUnlessNBReadable(err)
 	}
@@ -164,15 +174,15 @@ func DisableOVNIPSec(ctx context.Context, clusterConfig *config.ClusterConfig, b
 		return nil
 	}
 	slog.Info("ipsec: switched off for this cluster, releasing the cluster-wide encryption requirement")
-	return SetNBGlobalIPSec(false)
+	return SetNBGlobalIPSec(nbAddr, false)
 }
 
-// skipUnlessNBReadable turns "this node has no local NB DB" into a quiet skip
-// and leaves every other failure — a socket it may not open, a missing binary,
-// a timed-out transaction — as a real error, so the pass retries and says so.
+// skipUnlessNBReadable turns "no NB DB answered" into a quiet skip and leaves
+// every other failure — a socket it may not open, a missing binary, a timed-out
+// transaction — as a real error, so the pass retries and says so.
 func skipUnlessNBReadable(err error) error {
 	if errors.Is(err, errNBUnreachable) {
-		slog.Debug("ipsec: no local OVN NB DB, leaving NB_Global to a management node", "err", err)
+		slog.Debug("ipsec: no OVN NB DB reachable, leaving NB_Global to a node that can read it", "err", err)
 		return nil
 	}
 	return err
@@ -232,7 +242,8 @@ func EnableOVNIPSec(ctx context.Context, configPath string, clusterConfig *confi
 
 	// Probed before the local half, because the answer is published alongside it:
 	// which nodes can write NB_Global is not in the config, so they have to say.
-	current, nbErr := GetNBGlobalIPSec()
+	nbAddr := nbAddrFor(clusterConfig)
+	current, nbErr := GetNBGlobalIPSec(nbAddr)
 	if nbErr != nil && !errors.Is(nbErr, errNBUnreachable) {
 		return nbErr
 	}
@@ -256,7 +267,7 @@ func EnableOVNIPSec(ctx context.Context, configPath string, clusterConfig *confi
 	if nbErr != nil {
 		return skipUnlessNBReadable(nbErr)
 	}
-	return reconcileNBGlobalIPSec(ctx, clusterConfig, barrier, current)
+	return reconcileNBGlobalIPSec(ctx, clusterConfig, barrier, nbAddr, current)
 }
 
 // configureLocalIPSec does this node's own half: point OVS at the peer cert and
@@ -298,12 +309,12 @@ func publishStatus(ctx context.Context, clusterConfig *config.ClusterConfig, bar
 // and ovs-monitor-ipsec materialises no strongSwan connections; with it, a
 // chassis that has not finished its own setup silently drops guest traffic. So
 // it tracks the slowest live chassis, not this one.
-func reconcileNBGlobalIPSec(ctx context.Context, clusterConfig *config.ClusterConfig, barrier IPSecBarrier, current bool) error {
+func reconcileNBGlobalIPSec(ctx context.Context, clusterConfig *config.ClusterConfig, barrier IPSecBarrier, nbAddr string, current bool) error {
 	if barrier == nil || clusterConfig == nil {
 		if current {
 			return nil
 		}
-		return SetNBGlobalIPSec(true)
+		return SetNBGlobalIPSec(nbAddr, true)
 	}
 
 	cluster, err := barrier.Cluster(ctx, nodeNames(clusterConfig))
@@ -313,7 +324,7 @@ func reconcileNBGlobalIPSec(ctx context.Context, clusterConfig *config.ClusterCo
 		return fmt.Errorf("read IPsec cluster state: %w", err)
 	}
 
-	// One writer. Every management node can reach the NB DB, so without this they
+	// One writer. Every node that reads NB_Global can also write it, so without this they
 	// race on one cluster-global row from snapshots taken at different instants,
 	// and two that disagree for a single pass flip the flag — tearing down and
 	// rebuilding every strongSwan connection in the cluster on each flip.
@@ -329,7 +340,7 @@ func reconcileNBGlobalIPSec(ctx context.Context, clusterConfig *config.ClusterCo
 		return nil
 	case len(pending) == 0:
 		slog.Info("ipsec: every live chassis reports a complete configuration, requiring encryption cluster-wide")
-		return SetNBGlobalIPSec(true)
+		return SetNBGlobalIPSec(nbAddr, true)
 	case !current:
 		slog.Info("ipsec: holding encryption off until every chassis is configured", "pending", pending)
 		return nil
@@ -338,7 +349,7 @@ func reconcileNBGlobalIPSec(ctx context.Context, clusterConfig *config.ClusterCo
 	// Plaintext Geneve is where the cluster sat before IPsec was asked for, and it
 	// is both recoverable and visible. A black hole is neither.
 	slog.Error("ipsec: retracting cluster-wide encryption, chassis are unconfigured and cross-chassis guest traffic would black-hole", "pending", pending)
-	if err := SetNBGlobalIPSec(false); err != nil {
+	if err := SetNBGlobalIPSec(nbAddr, false); err != nil {
 		slog.Error("ipsec: NB_Global still demands encryption that unconfigured chassis cannot perform, cross-chassis guest traffic is being dropped now",
 			"pending", pending, "err", err)
 		return err
@@ -347,8 +358,8 @@ func reconcileNBGlobalIPSec(ctx context.Context, clusterConfig *config.ClusterCo
 }
 
 // nbGlobalWriter picks the one node that may write NB_Global this pass: the
-// first live management node in name order. Every node computes it from the same
-// published set, so they agree without a lock.
+// first live node in name order that could read it. Every node computes it from
+// the same published set, so they agree without a lock.
 func nbGlobalWriter(cluster map[string]IPSecNodeStatus) string {
 	var writer string
 	for _, node := range slices.Sorted(maps.Keys(cluster)) {

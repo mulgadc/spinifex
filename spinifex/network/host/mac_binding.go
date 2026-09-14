@@ -58,6 +58,8 @@ func SeedNexthopMAC(ctx context.Context, runner Runner, nbAddr, lrpName, nexthop
 		}
 	}
 
+	// Writes with --no-leader-only and relies on a follower forwarding the
+	// transaction. NB_Global.ipsec writes stay leader-only instead (ipsec.go).
 	var db []string
 	if nbAddr != "" {
 		db = []string{"--db=" + nbAddr, "--no-leader-only"}

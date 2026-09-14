@@ -531,6 +531,14 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		host, port := harness.InstancePublicSSHHost(t, inst)
 		waitForSSHReady(t, host, port, keyPath)
 
+		// The boot ID is what proves a reboot happened. Uptime cannot on its
+		// own: a reboot is asynchronous, so the guest answering shortly after
+		// the call may still be the one that has not shut down yet.
+		preBootID := strings.TrimSpace(runSSH(t,
+			harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath},
+			"cat /proc/sys/kernel/random/boot_id"))
+		require.NotEmpty(t, preBootID, "guest returned an empty boot ID before the reboot")
+
 		// Capture pre-reboot private IP for the post-reboot identity check.
 		preDesc, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
 			InstanceIds: []*string{aws.String(instanceID)},
@@ -573,6 +581,10 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		waitForSSHReady(t, host, port, keyPath)
 
 		tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
+		waitForNewBootID(t, tgt, preBootID)
+
+		// Now that the guest is known to be on a new boot, uptime is a second
+		// reading of the same fact rather than a guess at it.
 		harness.Step(t, "ssh uptime")
 		uptimeOut := strings.TrimSpace(runSSH(t, tgt, "cat /proc/uptime | cut -d. -f1"))
 		uptimeSecs, err := strconv.ParseInt(uptimeOut, 10, 64)
@@ -589,6 +601,44 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		// to still be up.
 	})
 	verifySentinel(t, "Reboot")
+}
+
+// rebootBootIDTimeout covers a guest asked to shut down cleanly, the reset it
+// gets if it will not, and the boot after either.
+const rebootBootIDTimeout = 3 * time.Minute
+
+// waitForNewBootID blocks until the guest answers SSH holding a boot ID other
+// than the one it had. "Reachable" and "rebooted" are different facts while a
+// reboot is in flight, and only the second one is worth asserting on.
+func waitForNewBootID(t *testing.T, tgt harness.SSHTarget, previous string) string {
+	t.Helper()
+	harness.Step(t, "waiting for the guest to come back on a new boot ID")
+	deadline := time.Now().Add(rebootBootIDTimeout)
+	var lastID string
+	var lastErr error
+	for {
+		out, err := runSSHQuiet(tgt, "cat /proc/sys/kernel/random/boot_id")
+		lastErr = err
+		if err == nil {
+			lastID = strings.TrimSpace(out)
+			if lastID != "" && lastID != previous {
+				harness.Detail(t, "post_reboot_boot_id", lastID)
+				return lastID
+			}
+		}
+		if time.Now().After(deadline) {
+			// "Never answered" and "answered holding the old boot ID" are
+			// different faults — a guest that did not come back versus a reset
+			// that never reached it — and one message for both names neither.
+			if lastID == previous {
+				t.Fatalf("guest still holds boot ID %s after %s, so it never rebooted",
+					previous, rebootBootIDTimeout)
+			}
+			t.Fatalf("guest never answered SSH with a boot ID within %s (last error: %v)",
+				rebootBootIDTimeout, lastErr)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // describeSingletonInstance returns the current *ec2.Instance for

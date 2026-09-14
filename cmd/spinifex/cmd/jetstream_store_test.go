@@ -1,3 +1,6 @@
+//test:in-package: swaps the unexported procRoot for a fake /proc tree and asserts on
+// the store helpers the init and join commands call.
+
 package cmd
 
 import (

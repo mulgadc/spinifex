@@ -1,3 +1,6 @@
+//test:in-package: exercises the unexported digest helpers against a real clustered
+// store, which the cobra command only reaches through a live node.
+
 package cmd
 
 import (

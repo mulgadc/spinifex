@@ -160,12 +160,37 @@ var elbv2Actions = map[string]elbv2Action{
 	"DescribeSSLPolicies": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeSSLPoliciesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeSSLPolicies(ctx, input, gw.NATSConn, accountID)
 	}),
+	"DescribeAccountLimits": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeAccountLimitsInput, gw *GatewayConfig, accountID string) (any, error) {
+		loadBalancers, err := accountLoadBalancerLimit(ctx, gw, accountID)
+		if err != nil {
+			return nil, err
+		}
+		return gateway_elbv2.DescribeAccountLimits(input, loadBalancers), nil
+	}),
 	"DescribeListenerAttributes": elbv2Handler(func(ctx context.Context, input *gateway_elbv2.DescribeListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeListenerAttributes(input, accountID)
 	}),
 	"ModifyListenerAttributes": elbv2Handler(func(ctx context.Context, input *gateway_elbv2.ModifyListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.ModifyListenerAttributes(input, accountID)
 	}),
+}
+
+// accountLoadBalancerLimit resolves the load balancer cap DescribeAccountLimits
+// reports. It is read here rather than in the operation file because
+// handlers/quota imports gateway/elbv2 to count live load balancers, so the
+// operation file cannot import it back.
+func accountLoadBalancerLimit(ctx context.Context, gw *GatewayConfig, accountID string) (int, error) {
+	// An exempt account has no cap enforced against it, so the AWS default is a
+	// truer answer than a configured limit nothing consults.
+	if gw.Quota.Exempt(accountID) {
+		return gateway_elbv2.DefaultLoadBalancerLimit, nil
+	}
+	_, limits, err := gw.Quota.GetAccountQuota(ctx, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "DescribeAccountLimits: failed to read account quota", "accountID", accountID, "err", err)
+		return 0, errors.New(awserrors.ErrorInternalError)
+	}
+	return limits.LoadBalancers, nil
 }
 
 func (gw *GatewayConfig) ELBv2_Request(w http.ResponseWriter, r *http.Request) error {

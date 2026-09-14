@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **33 of the 46** operations (**71.7%**) in the ELBv2 `2015-12-01` API model.
+Spinifex implements **34 of the 46** operations (**73.9%**) in the ELBv2 `2015-12-01` API model.
 
 ### Two data planes
 
@@ -43,7 +43,7 @@ The data plane is a system-managed load balancer VM, launched automatically duri
 | `DeleteTargetGroup` | ✅ Implemented |
 | `DeleteTrustStore` | ❌ Not implemented |
 | `DeregisterTargets` | ✅ Implemented |
-| `DescribeAccountLimits` | ❌ Not implemented |
+| `DescribeAccountLimits` | ✅ Implemented |
 | `DescribeListenerCertificates` | ✅ Implemented |
 | `DescribeListeners` | ✅ Implemented |
 | `DescribeLoadBalancerAttributes` | ✅ Implemented |

@@ -97,6 +97,9 @@ var elbv2Scopes = map[string][]resourceSource{
 	"DescribeRules":         {sourceAny},
 	"DescribeSSLPolicies":   {sourceAny},
 
+	// Account-scoped: the limits belong to the account, not to any resource.
+	"DescribeAccountLimits": {sourceAny},
+
 	// The lb-agent routes carry only the load balancer's short id. Recovering
 	// its name and type to build an ARN needs a NATS round trip on every
 	// heartbeat, so both authorize account-wide.

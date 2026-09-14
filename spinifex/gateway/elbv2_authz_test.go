@@ -225,9 +225,10 @@ func TestELBv2Request_AccountWideAllowStillPermitsEveryScopedAction(t *testing.T
 	}
 }
 
-// The seven actions AWS documents no resource type for, listed here so the
+// The eight actions AWS documents no resource type for, listed here so the
 // non-regression table above can assert it covers everything else.
 var elbv2UnscopedActions = map[string]struct{}{
+	"DescribeAccountLimits": {},
 	"DescribeLoadBalancers": {},
 	"DescribeTargetGroups":  {},
 	"DescribeListeners":     {},

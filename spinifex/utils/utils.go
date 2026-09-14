@@ -14,9 +14,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -391,6 +393,21 @@ func HashMAC(id string) string {
 	b[0] = 0x02
 	copy(b[1:], sum[:5])
 	return net.HardwareAddr(b).String()
+}
+
+// RequestClientIP is the caller's address: X-Real-IP when the connection is from
+// loopback, where only a local proxy (the nginx edge, the console) can have set
+// it, and RemoteAddr otherwise, so a direct client cannot choose what is logged.
+func RequestClientIP(r *http.Request) string {
+	ip := ClientIP(r.RemoteAddr)
+	if addr, err := netip.ParseAddr(ip); err != nil || !addr.IsLoopback() {
+		return ip
+	}
+	realIP, err := netip.ParseAddr(strings.TrimSpace(r.Header.Get("X-Real-IP")))
+	if err != nil {
+		return ip
+	}
+	return realIP.String()
 }
 
 // ClientIP returns the IP from a RemoteAddr, stripping the port. Handles both

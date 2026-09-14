@@ -1,10 +1,14 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +66,7 @@ func TestRequestAuditCarriesNoSecret(t *testing.T) {
 	}
 	assert.Equal(t, []string{
 		"sourceIP", "accessKeyID", "accountID", "region", "service", "action",
-		"principalType", "authError",
+		"principalType", "authError", "requestID",
 	}, keys)
 }
 
@@ -169,4 +173,84 @@ func TestRequestAuditRecordsRateLimitLockout(t *testing.T) {
 	require.NotNil(t, audit())
 	assert.Equal(t, "10.15.8.13", audit().clientIP)
 	assert.Equal(t, awserrors.ErrorRequestLimitExceeded, audit().authError)
+}
+
+// sourceIP must not be something a direct caller can choose. X-Real-IP is the
+// edge's word only on a loopback connection; from anywhere else both it and
+// X-Forwarded-For are ignored.
+func TestRequestAuditClientIPIgnoresSpoofedHeadersFromNonLoopback(t *testing.T) {
+	handler, audit := auditRouter(t, nil)
+
+	for _, remote := range []string{"203.0.113.9:5555", "10.2.0.3:5555", "[2001:db8::9]:5555"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = remote
+		req.Header.Set("X-Real-IP", "127.0.0.1")
+		req.Header.Set("X-Forwarded-For", "198.51.100.1")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+
+		require.NotNil(t, audit())
+		host, _, err := net.SplitHostPort(remote)
+		require.NoError(t, err)
+		assert.Equal(t, host, audit().clientIP, "spoofed headers from %s must not be logged as the source", remote)
+	}
+}
+
+// Through the edge (or the console proxy) the connection is loopback, and the
+// edge's X-Real-IP is the real client.
+func TestRequestAuditClientIPTrustsRealIPFromLoopback(t *testing.T) {
+	handler, audit := auditRouter(t, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set("X-Real-IP", "198.51.100.7")
+	req.Header.Set("X-Forwarded-For", "203.0.113.1")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	require.NotNil(t, audit())
+	assert.Equal(t, "198.51.100.7", audit().clientIP)
+}
+
+// The edge's request ID joins an awsgw line to its access-log line; a value that
+// does not look like an ID is dropped rather than written into the log.
+func TestRequestAuditRecordsRequestID(t *testing.T) {
+	handler, audit := auditRouter(t, nil)
+
+	cases := map[string]string{
+		"4f1c2b7e9a0d4e6f8b3c5a7d9e1f2a3b": "4f1c2b7e9a0d4e6f8b3c5a7d9e1f2a3b",
+		"":                                 "",
+		"has space":                        "",
+		strings.Repeat("a", 129):           "",
+	}
+	for header, want := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "127.0.0.1:40000"
+		if header != "" {
+			req.Header.Set("X-Request-ID", header)
+		}
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+
+		require.NotNil(t, audit())
+		assert.Equal(t, want, audit().requestID, "X-Request-ID %q", header)
+	}
+}
+
+// slog renders a bare time.Duration as unitless nanoseconds, so the access line
+// carries duration_ms instead.
+func TestLogRequestDurationInMilliseconds(t *testing.T) {
+	buf := &bytes.Buffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	audit := &requestAudit{clientIP: "198.51.100.7", requestID: "abc123"}
+	req = req.WithContext(context.WithValue(req.Context(), ctxAudit, audit))
+
+	logRequest(req, http.StatusOK, 1500*time.Millisecond)
+
+	out := buf.String()
+	assert.Contains(t, out, "duration_ms=1500")
+	assert.NotContains(t, out, "duration=")
+	assert.Contains(t, out, "sourceIP=198.51.100.7")
+	assert.Contains(t, out, "requestID=abc123")
 }

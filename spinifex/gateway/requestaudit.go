@@ -4,12 +4,14 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -26,6 +28,7 @@ const ctxAudit contextKey = "gateway.audit"
 type requestAudit struct {
 	mu            sync.Mutex
 	clientIP      string
+	requestID     string
 	accessKeyID   string
 	accountID     string
 	region        string
@@ -40,11 +43,25 @@ type requestAudit struct {
 // logging happens to be enabled.
 func requestAuditMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		audit := &requestAudit{clientIP: utils.ClientIP(r.RemoteAddr)}
+		audit := &requestAudit{clientIP: utils.RequestClientIP(r), requestID: requestIDFrom(r)}
 		ctx := context.WithValue(r.Context(), ctxAudit, audit)
 		next.ServeHTTP(w, r.WithContext(ctx))
 		audit.annotate(ctx)
 	})
+}
+
+// requestIDPattern is what a correlation ID may look like. nginx's $request_id is
+// 32 hex characters; anything else a client sends is dropped rather than logged.
+var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+
+// requestIDFrom returns the X-Request-ID the edge stamped, so an awsgw line can
+// be joined to the edge access-log line that produced it.
+func requestIDFrom(r *http.Request) string {
+	id := r.Header.Get("X-Request-ID")
+	if !requestIDPattern.MatchString(id) {
+		return ""
+	}
+	return id
 }
 
 // auditFrom returns the request's audit record, or nil when there is none. Every
@@ -164,12 +181,13 @@ func (a *requestAudit) pairs() []auditField {
 		{"action", "aws.action", a.action},
 		{"principalType", "aws.principal_type", a.principalType},
 		{"authError", "aws.auth_error", a.authError},
+		{"requestID", "http.request.header.x-request-id", a.requestID},
 	}
 }
 
 // logRequest emits the access log line for a finished request, carrying the
 // audit fields alongside the HTTP result.
 func logRequest(r *http.Request, status int, duration time.Duration) {
-	attrs := []any{"method", r.Method, "path", r.URL.Path, "status", status, "duration", duration}
+	attrs := []any{"method", r.Method, "path", r.URL.Path, "status", status, "duration_ms", otelsetup.Millis(duration)}
 	slog.InfoContext(r.Context(), "request", append(attrs, auditFrom(r.Context()).fields()...)...)
 }

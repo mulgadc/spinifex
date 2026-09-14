@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -58,6 +59,11 @@ func newReverseProxy(backendHost, pathPrefix string, transport http.RoundTripper
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
+
+			// The backend trusts X-Real-IP from loopback, which this hop always is.
+			// The UI also listens publicly, so re-derive it rather than forward a
+			// client's own claim. X-Request-ID passes through unchanged.
+			pr.Out.Header.Set("X-Real-IP", utils.RequestClientIP(pr.In))
 
 			// Strip the prefix from both path forms. RawPath must survive: a
 			// client that percent-encodes a segment (a ':' in a bedrock

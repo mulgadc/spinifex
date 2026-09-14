@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -92,7 +91,7 @@ func TestDiscardJetStreamStore(t *testing.T) {
 		store := seedStore(t, "KV_a")
 		require.NoError(t, discardJetStreamStore(store))
 		_, err := os.Stat(store)
-		assert.True(t, errors.Is(err, os.ErrNotExist))
+		assert.ErrorIs(t, err, os.ErrNotExist)
 	})
 
 	t.Run("missing store is not an error", func(t *testing.T) {

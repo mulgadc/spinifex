@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **123 of the 625** operations (**19.7%**) in the EC2 `2016-11-15` API model.
+Spinifex implements **125 of the 625** operations (**20.0%**) in the EC2 `2016-11-15` API model.
 
 ### Spot Instances Are a Mock
 
@@ -650,8 +650,8 @@ Spot Instance Requests are a mock over the on-demand `RunInstances` path. A requ
 | `UnassignPrivateNatGatewayAddress` | ❌ Not implemented |
 | `UnlockSnapshot` | ❌ Not implemented |
 | `UnmonitorInstances` | ✅ Implemented |
-| `UpdateSecurityGroupRuleDescriptionsEgress` | ❌ Not implemented |
-| `UpdateSecurityGroupRuleDescriptionsIngress` | ❌ Not implemented |
+| `UpdateSecurityGroupRuleDescriptionsEgress` | ✅ Implemented |
+| `UpdateSecurityGroupRuleDescriptionsIngress` | ✅ Implemented |
 | `WithdrawByoipCidr` | ❌ Not implemented |
 
 ### Notes

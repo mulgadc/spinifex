@@ -979,6 +979,8 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.AuthorizeSecurityGroupEgress", handleNATSRequest(d.node, d.vpcService.AuthorizeSecurityGroupEgress), "spinifex-workers"},
 		{"ec2.RevokeSecurityGroupIngress", handleNATSRequest(d.node, d.vpcService.RevokeSecurityGroupIngress), "spinifex-workers"},
 		{"ec2.RevokeSecurityGroupEgress", handleNATSRequest(d.node, d.vpcService.RevokeSecurityGroupEgress), "spinifex-workers"},
+		{"ec2.UpdateSecurityGroupRuleDescriptionsIngress", handleNATSRequest(d.node, d.vpcService.UpdateSecurityGroupRuleDescriptionsIngress), "spinifex-workers"},
+		{"ec2.UpdateSecurityGroupRuleDescriptionsEgress", handleNATSRequest(d.node, d.vpcService.UpdateSecurityGroupRuleDescriptionsEgress), "spinifex-workers"},
 		{"ec2.ModifyInstanceAttribute", handleNATSRequest(d.node, d.instanceService.ModifyInstanceAttribute), "spinifex-workers"},
 		{"ec2.ModifyInstanceMetadataOptions", handleNATSRequest(d.node, d.instanceService.ModifyInstanceMetadataOptions), "spinifex-workers"},
 		{"ec2.MonitorInstances", handleNATSRequest(d.node, d.monitorInstances), "spinifex-workers"},

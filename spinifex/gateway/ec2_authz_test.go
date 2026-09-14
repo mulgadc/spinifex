@@ -190,6 +190,21 @@ func TestEC2Request_GetSecurityGroupsForVpcIsVpcScoped(t *testing.T) {
 	assertPermitted(t, dispatchEC2(t, gw, "Action=GetSecurityGroupsForVpc&VpcId=vpc-dev"))
 }
 
+// TestEC2Request_UpdateSecurityGroupRuleDescriptionsIsGroupScoped pins that
+// both description writers name the group they mutate: registered unscoped, a
+// policy fencing one security group would not apply to them.
+func TestEC2Request_UpdateSecurityGroupRuleDescriptionsIsGroupScoped(t *testing.T) {
+	gw := scopedPolicyGateway(
+		statement("Allow", "ec2:*", "*"),
+		statement("Deny", "ec2:UpdateSecurityGroupRuleDescriptions*", "arn:aws:ec2:*:*:security-group/sg-prod"),
+	)
+
+	for _, action := range []string{"UpdateSecurityGroupRuleDescriptionsIngress", "UpdateSecurityGroupRuleDescriptionsEgress"} {
+		assertDenied(t, dispatchEC2(t, gw, "Action="+action+"&GroupId=sg-prod"))
+		assertPermitted(t, dispatchEC2(t, gw, "Action="+action+"&GroupId=sg-dev"))
+	}
+}
+
 func TestEC2Request_RejectsOversizedResourceList(t *testing.T) {
 	var body strings.Builder
 	body.WriteString("Action=TerminateInstances")

@@ -834,6 +834,9 @@ func sgRuleToSecurityGroupRule(record *SecurityGroupRecord, rule SGRule, isEgres
 		FromPort:            aws.Int64(rule.FromPort),
 		ToPort:              aws.Int64(rule.ToPort),
 	}
+	if rule.Description != "" {
+		out.Description = aws.String(rule.Description)
+	}
 	if rule.CidrIp != "" {
 		out.CidrIpv4 = aws.String(rule.CidrIp)
 	}
@@ -1119,6 +1122,225 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *e
 	return &ec2.RevokeSecurityGroupEgressOutput{
 		Return: aws.Bool(true),
 	}, nil
+}
+
+// UpdateSecurityGroupRuleDescriptionsIngress sets the description on existing
+// ingress rules, resolved by SecurityGroupRuleId or by matching IpPermissions.
+func (s *VPCServiceImpl) UpdateSecurityGroupRuleDescriptionsIngress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsIngressInput, accountID string) (*ec2.UpdateSecurityGroupRuleDescriptionsIngressOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if err := s.updateSGRuleDescriptions(ctx, accountID, sgDescriptionRequest{
+		op:           "UpdateSecurityGroupRuleDescriptionsIngress",
+		groupId:      aws.StringValue(input.GroupId),
+		descriptions: input.SecurityGroupRuleDescriptions,
+		permissions:  input.IpPermissions,
+		egress:       false,
+	}); err != nil {
+		return nil, err
+	}
+	return &ec2.UpdateSecurityGroupRuleDescriptionsIngressOutput{Return: aws.Bool(true)}, nil
+}
+
+// UpdateSecurityGroupRuleDescriptionsEgress sets the description on existing
+// egress rules, resolved by SecurityGroupRuleId or by matching IpPermissions.
+func (s *VPCServiceImpl) UpdateSecurityGroupRuleDescriptionsEgress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsEgressInput, accountID string) (*ec2.UpdateSecurityGroupRuleDescriptionsEgressOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if err := s.updateSGRuleDescriptions(ctx, accountID, sgDescriptionRequest{
+		op:           "UpdateSecurityGroupRuleDescriptionsEgress",
+		groupId:      aws.StringValue(input.GroupId),
+		descriptions: input.SecurityGroupRuleDescriptions,
+		permissions:  input.IpPermissions,
+		egress:       true,
+	}); err != nil {
+		return nil, err
+	}
+	return &ec2.UpdateSecurityGroupRuleDescriptionsEgressOutput{Return: aws.Bool(true)}, nil
+}
+
+// sgDescriptionRequest carries the two Update*RuleDescriptions* variants into
+// one implementation; egress selects which side of the record is walked.
+type sgDescriptionRequest struct {
+	op           string
+	groupId      string
+	descriptions []*ec2.SecurityGroupRuleDescription
+	permissions  []*ec2.IpPermission
+	egress       bool
+}
+
+// updateSGRuleDescriptions writes Description onto already-stored rules.
+// Description sits outside sgRuleKey, so no rule's identity, RuleId or
+// duplicate status changes and the projected ACL set is unaffected.
+func (s *VPCServiceImpl) updateSGRuleDescriptions(ctx context.Context, accountID string, req sgDescriptionRequest) error {
+	if req.groupId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(req.descriptions) == 0 && len(req.permissions) == 0 {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	key := utils.AccountKey(accountID, req.groupId)
+	entry, err := s.sgKV.Get(ctx, key)
+	if err != nil {
+		return errors.New(awserrors.ErrorInvalidGroupNotFound)
+	}
+
+	var record SecurityGroupRecord
+	if err := json.Unmarshal(entry.Value(), &record); err != nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	rules := record.IngressRules
+	if req.egress {
+		rules = record.EgressRules
+	}
+
+	updated, err := applySGRuleDescriptions(rules, req.descriptions, req.permissions)
+	if err != nil {
+		slog.WarnContext(ctx, req.op+": rule resolution failed", "groupId", req.groupId, "err", err)
+		return err
+	}
+
+	if req.egress {
+		record.EgressRules = updated
+	} else {
+		record.IngressRules = updated
+	}
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("failed to marshal security group record: %w", err)
+	}
+	if _, err := s.sgKV.Update(ctx, key, data, entry.Revision()); err != nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.InfoContext(ctx, req.op+" completed", "groupId", req.groupId, "accountID", accountID)
+
+	// The ACL set this rebuilds is byte-identical, because toPolicyRules drops
+	// Description. Publishing anyway keeps every mutating path on one shape.
+	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
+		GroupId:      req.groupId,
+		VpcId:        record.VpcId,
+		IngressRules: record.IngressRules,
+		EgressRules:  record.EgressRules,
+	}); err != nil {
+		slog.ErrorContext(ctx, req.op+": vpcd request failed", "groupId", req.groupId, "err", err)
+		return err
+	}
+	return nil
+}
+
+// applySGRuleDescriptions returns rules with the requested descriptions set,
+// resolving targets by SecurityGroupRuleId then by IpPermissions content. An
+// unresolvable target is an error, so a caller never sees a successful no-op.
+func applySGRuleDescriptions(rules []SGRule, descriptions []*ec2.SecurityGroupRuleDescription, permissions []*ec2.IpPermission) ([]SGRule, error) {
+	byID := make(map[string]int, len(rules))
+	byKey := make(map[string]int, len(rules))
+	for i, r := range rules {
+		if r.RuleId != "" {
+			byID[r.RuleId] = i
+		}
+		byKey[sgRuleKey(r)] = i
+	}
+
+	out := slices.Clone(rules)
+
+	for _, d := range descriptions {
+		if d == nil || aws.StringValue(d.SecurityGroupRuleId) == "" {
+			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
+		}
+		id := *d.SecurityGroupRuleId
+		if !SGRuleIDRegex.MatchString(id) {
+			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
+		}
+		// A rule on the other side, in another group or in another account is
+		// absent from this record and so is not-found, never a silent no-op.
+		i, ok := byID[id]
+		if !ok {
+			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound)
+		}
+		if d.Description != nil {
+			out[i].Description = *d.Description
+		}
+	}
+
+	targets, err := ipPermissionsToDescriptionTargets(permissions)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	for _, t := range targets {
+		i, ok := byKey[t.key]
+		if !ok {
+			return nil, errors.New(awserrors.ErrorInvalidPermissionNotFound)
+		}
+		if t.description != nil {
+			out[i].Description = *t.description
+		}
+	}
+
+	return out, nil
+}
+
+// sgDescriptionTarget is one rule matched by content plus the description the
+// caller asked for. A nil description leaves the stored one untouched, so
+// clearing a description to "" stays distinguishable from not supplying one.
+type sgDescriptionTarget struct {
+	key         string
+	description *string
+}
+
+// ipPermissionsToDescriptionTargets resolves IpPermissions to rule-identity
+// keys, applying the same protocol normalisation and validation as the
+// authorize path. IPv6 ranges are skipped: no IPv6 rule can be stored.
+func ipPermissionsToDescriptionTargets(perms []*ec2.IpPermission) ([]sgDescriptionTarget, error) {
+	var targets []sgDescriptionTarget
+	for _, perm := range perms {
+		if perm == nil {
+			continue
+		}
+		raw := ""
+		if perm.IpProtocol != nil {
+			raw = *perm.IpProtocol
+		}
+		proto, err := normalizeIPProtocol(raw)
+		if err != nil {
+			return nil, err
+		}
+
+		var fromPort, toPort int64
+		if perm.FromPort != nil {
+			fromPort = *perm.FromPort
+		}
+		if perm.ToPort != nil {
+			toPort = *perm.ToPort
+		}
+
+		for _, ipRange := range perm.IpRanges {
+			if ipRange == nil || ipRange.CidrIp == nil {
+				continue
+			}
+			r := SGRule{IpProtocol: proto, FromPort: fromPort, ToPort: toPort, CidrIp: *ipRange.CidrIp}
+			if err := validateSGRule(r); err != nil {
+				return nil, err
+			}
+			targets = append(targets, sgDescriptionTarget{key: sgRuleKey(r), description: ipRange.Description})
+		}
+
+		for _, pair := range perm.UserIdGroupPairs {
+			if pair == nil || pair.GroupId == nil {
+				continue
+			}
+			r := SGRule{IpProtocol: proto, FromPort: fromPort, ToPort: toPort, SourceSG: *pair.GroupId}
+			if err := validateSGRule(r); err != nil {
+				return nil, err
+			}
+			targets = append(targets, sgDescriptionTarget{key: sgRuleKey(r), description: pair.Description})
+		}
+	}
+	return targets, nil
 }
 
 // sgRecordToEC2 converts a SecurityGroupRecord to an EC2 SecurityGroup.

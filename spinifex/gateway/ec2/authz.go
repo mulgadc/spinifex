@@ -214,6 +214,9 @@ var ec2Scopes = map[string][]*resourceScope{
 	"RevokeSecurityGroupIngress":    {securityGroupScope},
 	"RevokeSecurityGroupEgress":     {securityGroupScope},
 
+	"UpdateSecurityGroupRuleDescriptionsIngress": {securityGroupScope},
+	"UpdateSecurityGroupRuleDescriptionsEgress":  {securityGroupScope},
+
 	// Unlike the account-wide describes, this one names the VPC it reports on,
 	// so a policy scoped to one VPC has to apply.
 	"GetSecurityGroupsForVpc": {vpcScope},

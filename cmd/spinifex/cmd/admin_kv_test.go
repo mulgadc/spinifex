@@ -48,9 +48,9 @@ func kvServer(t *testing.T, storeParent, bucket string) (jetstream.KeyValue, fun
 func digestOf(t *testing.T, storeDir string, withSeqs bool) []streamDigest {
 	t.Helper()
 	work := t.TempDir()
-	_, err := copyStreamTree(storeDir, filepath.Join(work, "jetstream"))
+	_, metas, err := copyStreamTree(storeDir, filepath.Join(work, "jetstream"))
 	require.NoError(t, err)
-	d, err := digestStore(context.Background(), work, nil, withSeqs)
+	d, err := digestStore(context.Background(), work, nil, withSeqs, metas)
 	require.NoError(t, err)
 	return d
 }
@@ -98,8 +98,19 @@ func TestKVDigest(t *testing.T) {
 		}
 		require.NoError(t, kv2.Delete(ctx, "b"))
 		stop2()
-		d := digestOf(t, filepath.Join(other, "jetstream"), false)
+		d := digestOf(t, filepath.Join(other, "jetstream"), true)
 		assert.NotEqual(t, live[0].Digest, d[0].Digest)
+
+		// Two stores adopted as replicas of one stream: same subjects and
+		// sequences, different content, which compare must call divergent.
+		res, err := compareNodeDigests([]nodeDigest{
+			{Host: "node1", CopiedAt: time.Now(), Streams: live},
+			{Host: "node2", CopiedAt: time.Now(), Streams: d},
+		})
+		require.NoError(t, err)
+		require.True(t, res.divergent())
+		require.Len(t, res.Streams, 1)
+		assert.Contains(t, strings.Join(res.Streams[0].Problems, "\n"), "seq 1 $KV.test.a holds different content")
 	})
 
 	t.Run("report lines", func(t *testing.T) {
@@ -141,14 +152,21 @@ func TestKVDigestStreamFilterAndDeletedSeq(t *testing.T) {
 	ns.WaitForShutdown()
 
 	work := t.TempDir()
-	_, err = copyStreamTree(filepath.Join(parent, "jetstream"), filepath.Join(work, "jetstream"))
+	_, metas, err := copyStreamTree(filepath.Join(parent, "jetstream"), filepath.Join(work, "jetstream"))
 	require.NoError(t, err)
-	d, err := digestStore(ctx, work, []string{"ONE"}, true)
+	d, err := digestStore(ctx, work, []string{"ONE"}, true, metas)
 	require.NoError(t, err)
 	require.Len(t, d, 1)
 	assert.Equal(t, "ONE", d[0].Name)
 	assert.Equal(t, uint64(2), d[0].Msgs)
-	assert.Equal(t, []seqDigest{{1, d[0].Seqs[0].Hash}, {2, "deleted"}, {3, d[0].Seqs[2].Hash}}, d[0].Seqs)
+	require.Len(t, d[0].Seqs, 3)
+	assert.Equal(t, seqDigest{Seq: 2, Hash: "deleted"}, d[0].Seqs[1])
+	for _, i := range []int{0, 2} {
+		assert.Equal(t, "one.k", d[0].Seqs[i].Subject)
+		assert.False(t, d[0].Seqs[i].Time.IsZero())
+	}
+	assert.Equal(t, "limits", d[0].Retention)
+	assert.Equal(t, 1, d[0].Replicas)
 }
 
 func freePort(t *testing.T) int {
@@ -229,16 +247,23 @@ func TestKVDigestClusteredReplicas(t *testing.T) {
 	}
 
 	var first string
+	var nodes []nodeDigest
 	for i, store := range stores {
-		d := digestOf(t, filepath.Join(store, "jetstream"), false)
+		d := digestOf(t, filepath.Join(store, "jetstream"), true)
 		require.Len(t, d, 1, "replica %d", i+1)
 		assert.Equal(t, uint64(5), d[0].Msgs, "replica %d", i+1)
+		assert.Equal(t, n, d[0].Replicas, "live replica count survives the standalone rewrite")
+		assert.Equal(t, time.Hour, d[0].MaxAge)
+		nodes = append(nodes, nodeDigest{Host: fmt.Sprintf("s%d", i+1), CopiedAt: time.Now(), Streams: d})
 		if i == 0 {
 			first = d[0].Digest
 			continue
 		}
 		assert.Equal(t, first, d[0].Digest, "replica %d matches replica 1", i+1)
 	}
+	res, err := compareNodeDigests(nodes)
+	require.NoError(t, err)
+	assert.False(t, res.divergent(), "%+v", res)
 }
 
 // Recovery applies MaxAge, so without the rewrite an expired bucket copy
@@ -260,14 +285,14 @@ func TestKVDigestIgnoresExpiry(t *testing.T) {
 	require.NoError(t, err)
 
 	work := t.TempDir()
-	_, err = copyStreamTree(filepath.Join(parent, "jetstream"), filepath.Join(work, "jetstream"))
+	_, metas, err := copyStreamTree(filepath.Join(parent, "jetstream"), filepath.Join(work, "jetstream"))
 	require.NoError(t, err)
 	nc.Close()
 	ns.Shutdown()
 	ns.WaitForShutdown()
 
 	time.Sleep(1500 * time.Millisecond)
-	d, err := digestStore(ctx, work, nil, false)
+	d, err := digestStore(ctx, work, nil, false, metas)
 	require.NoError(t, err)
 	require.Len(t, d, 1)
 	assert.Equal(t, uint64(1), d[0].Msgs)
@@ -280,7 +305,7 @@ func TestCopyStreamTree(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(store, "ACME", "streams", "ORDERS"), 0o755))
 
 	dst := filepath.Join(t.TempDir(), "jetstream")
-	skipped, err := copyStreamTree(store, dst)
+	skipped, _, err := copyStreamTree(store, dst)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"ACME/ORDERS"}, skipped)
 
@@ -289,6 +314,6 @@ func TestCopyStreamTree(t *testing.T) {
 	_, err = os.Stat(filepath.Join(dst, "$G", "streams", "KV_a", "obs"))
 	assert.True(t, os.IsNotExist(err), "consumer state is left out")
 
-	_, err = copyStreamTree(filepath.Join(t.TempDir(), "absent"), dst)
+	_, _, err = copyStreamTree(filepath.Join(t.TempDir(), "absent"), dst)
 	assert.Error(t, err)
 }

@@ -237,7 +237,7 @@ Run init and join **concurrently** — init blocks until all nodes have joined.
 
 `--force` is in every command below so the sequence is identical whichever way you installed. It does the work on ISO-installed servers, which arrive as their own single-node cluster: joining replaces that server's CA and master key with server 1's and removes its JetStream store, and `--force` is the confirmation. On `spx admin init` it is idempotent — existing keys, credentials and CA are preserved, and only the config files and server certificate are refreshed. On a freshly installed server there is nothing to lose either way.
 
-`--discard-jetstream` on server 1 removes the streams its single-node cluster wrote, once every server has joined. Without it init refuses to form a cluster over them, because NATS would adopt each server's own copy as a replica and those copies never converge. Stop `spinifex.target` on every server first and confirm `pgrep -af 'spx service'` prints nothing: init and join both refuse while NATS is still running.
+Every server also discards the JetStream store its single-node cluster wrote. Server 1 removes its own once every server has joined, and each joining server removes its own when it joins. Keeping them is never safe: NATS would adopt each server's copy as a replica of the cluster's stream, and those copies never converge. This is automatic whenever `--nodes` is 2 or more. `--discard-jetstream=false` makes init refuse to form over a non-empty store instead, for a server whose store you want to inspect first. Stop `spinifex.target` on every server first and confirm `pgrep -af 'spx service'` prints nothing: init and join both refuse while NATS is still running.
 
 > [!WARNING]
 > Do not point these commands at a server that has already been in service. Joining discards its master key, orphaning every volume and fragment sealed under it. That is what `--force` overrides, and it is unrecoverable.
@@ -245,13 +245,15 @@ Run init and join **concurrently** — init blocks until all nodes have joined.
 **Server 1 — initialize:**
 
 ```bash
-sudo spx admin init --force --discard-jetstream \
+sudo spx admin init --force \
   --node node1 --nodes 3 \
   --bind $SPINIFEX_NODE1 --cluster-bind $SPINIFEX_NODE1 \
   --port 4432 --region $AWS_REGION --az $AWS_AZ
 ```
 
 `--nodes 3` is the number of servers init waits for. Set it to your total node count if you are building a larger cluster.
+
+IPsec encrypts the Geneve overlay between servers and is on by default. Joining servers take the setting from server 1, so it is chosen once, on init. On servers that share a trusted private link, `--ipsec=false` leaves the overlay unencrypted in exchange for considerably higher throughput between instances.
 
 The init output displays the join command including the token:
 
@@ -367,6 +369,32 @@ aws ec2 describe-instance-types
 ```
 
 A list of instance types means the gateway, IAM and the cluster behind them are all working.
+
+**4. Every server holds the same cluster state.**
+
+Services report Ready even over a cluster whose JetStream replicas disagree, so check the replicas themselves. On **every server**, take a digest of its local store:
+
+```bash
+sudo spx admin kv digest --json --seqs > kv-digest-$(hostname).json
+```
+
+Copy the files to one server and compare them:
+
+```bash
+spx admin kv compare kv-digest-*.json
+```
+
+```
+compared 3 digests: node1@10:02:11 node2@10:02:14 node3@10:02:18
+ok        KV_spinifex-iam-users  [node1,node2,node3]
+      identical, seqs 1-14
+...
+42 streams: 42 consistent, 0 diverged
+```
+
+The last line must report `0 diverged`, and the command exits non-zero otherwise. The digests are copied from live stores a few seconds apart, so a write landing between two copies can briefly show as a difference: take fresh digests and compare again before acting on one. A difference that persists means the cluster adopted a server's old store as a replica. Do not put that cluster in service — reset the servers and form it again.
+
+A replica that is merely behind is not reported, and neither is a message that one server has already replaced with a newer write to the same key. `spx admin kv compare --help` lists exactly what counts as divergence.
 
 **Congratulations! Your Spinifex cluster is installed.**
 

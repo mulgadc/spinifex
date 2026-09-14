@@ -32,6 +32,9 @@
 #   --identity FILE          SSH private key
 #   --hosts-file FILE        One host per line; blank lines and # comments ignored
 #   --token-ttl D            Join token validity (default: 30m)
+#   --ipsec on|off           Encrypt Geneve between nodes with OVN IPsec
+#                            (default: on). Joining nodes take it from the first
+#                            host; off is for nodes on a trusted private link.
 #   --wipe                   Reset every host to its pre-install state first.
 #                            Destroys all data on ALL hosts, including the first.
 #                            Confirmed separately from --yes; unattended runs
@@ -77,6 +80,7 @@ AZ=""
 EMAIL=""
 PORT=4432
 TOKEN_TTL="30m"
+IPSEC="on"
 RUN_SMOKE=false
 WIPE=false
 MANAGE_FIREWALL=true
@@ -96,6 +100,12 @@ FIREWALL_TIMEOUT=180
 # How long to wait for every ovn-controller to register its chassis.
 CHASSIS_TIMEOUT=120
 
+# How many times to compare the nodes' JetStream digests, and the pause between.
+# Digests are copied from live stores seconds apart, so one round can catch a
+# write that has reached some replicas and not yet the others.
+KV_ROUNDS=5
+KV_RETRY_SLEEP=15
+
 FIREWALL_HELPER="/usr/local/lib/spinifex/spinifex-firewall-apply"
 FIREWALL_PEERS="/etc/spinifex/firewall/peers.nft"
 
@@ -114,6 +124,7 @@ while [[ $# -gt 0 ]]; do
         --user)                SSH_USER="$2"; shift 2 ;;
         --identity)            IDENTITY="$2"; shift 2 ;;
         --token-ttl)           TOKEN_TTL="$2"; shift 2 ;;
+        --ipsec)               IPSEC="$2"; shift 2 ;;
         --hosts-file)
             while IFS= read -r line; do
                 line="${line%%#*}"
@@ -127,7 +138,7 @@ while [[ $# -gt 0 ]]; do
         --no-firewall)  MANAGE_FIREWALL=false; shift ;;
         --yes|-y)   ASSUME_YES=true; shift ;;
         --dry-run)  DRY_RUN=true; shift ;;
-        -h|--help)  sed -n '2,58p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,61p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*)         echo "ERROR: unknown option: $1" >&2; exit 2 ;;
         *)          HOSTS+=("$1"); shift ;;
     esac
@@ -160,6 +171,12 @@ for required in "--external-pool:$EXT_POOL" "--external-gateway:$EXT_GATEWAY" "-
          --external-pool 216.218.163.101-216.218.163.110 \\
          --external-gateway 216.218.163.97 --external-prefix-len 27"
 done
+
+case "$IPSEC" in
+    on)  IPSEC_ENABLED=true ;;
+    off) IPSEC_ENABLED=false ;;
+    *)   fail "--ipsec must be on or off, got: $IPSEC" ;;
+esac
 
 [[ "$EXT_POOL" =~ ^[0-9.]+-[0-9.]+$ ]] || fail "--external-pool must be START-END, got: $EXT_POOL"
 [[ "$EXT_PREFIX" =~ ^[0-9]+$ ]] && [ "$EXT_PREFIX" -ge 1 ] && [ "$EXT_PREFIX" -le 32 ] ||
@@ -542,10 +559,12 @@ done
 # --advertise must be explicit whenever --bind is pinned. resolveAdvertiseIP
 # echoes a non-wildcard --bind straight back, so binding services to the lan
 # plane without this publishes the internal address as the node's public dial
-# target.
+# target. --discard-jetstream is init's default for a formation, spelled out
+# because a node that kept its own store would never converge with the rest.
 init_args=(
     --force
     --discard-jetstream
+    --ipsec="$IPSEC_ENABLED"
     --node "${NODE_NAMES[0]}"
     --nodes "$N"
     --bind "${LAN_IPS[0]}"
@@ -732,6 +751,26 @@ done
 
 log "  OVN Southbound: $chassis chassis registered"
 
+# Joiners copy the IPsec setting from the init node's formation response, so a
+# node that disagrees here got its config from somewhere else.
+ipsec_mismatch=""
+for i in $(seq 0 $((N - 1))); do
+    got=$(out "${HOSTS[$i]}" "sudo grep -oP '^ipsec_enabled\s*=\s*\K\w+' /etc/spinifex/spinifex.toml")
+    got="${got//[$'\r\n']/}"
+    [ "$got" = "$IPSEC_ENABLED" ] || ipsec_mismatch+=" ${HOSTS[$i]}=${got:-unset}"
+done
+[ -z "$ipsec_mismatch" ] ||
+    fail "ipsec_enabled should be $IPSEC_ENABLED on every node, found:$ipsec_mismatch"
+
+if ! $IPSEC_ENABLED; then
+    nb_remotes=""
+    for i in $(seq 0 $((DB_NODES - 1))); do nb_remotes+="${nb_remotes:+,}tcp:${LAN_IPS[$i]}:6641"; done
+    nb_ipsec=$(out "${HOSTS[0]}" "sudo ovn-nbctl --db=$nb_remotes --no-leader-only get NB_Global . ipsec")
+    [ "${nb_ipsec//[$'\r\n']/}" = "false" ] ||
+        fail "--ipsec off, but NB_Global.ipsec is '${nb_ipsec//[$'\r\n']/}' — Geneve would demand encryption no node provides"
+fi
+log "  IPsec: $IPSEC on every node"
+
 # --- Re-arm the host firewall ----------------------------------------------
 #
 # The daemon derives the peer sets from cluster membership, so starting the
@@ -825,6 +864,48 @@ else
     log "host firewall: left alone (--no-firewall). If these nodes arrived armed they"
     log "               are still scoped to themselves and will drop cluster traffic."
 fi
+
+# --- Verify the JetStream replicas agree ------------------------------------
+#
+# Every node discarded its own store on the way in, so each stream's replicas
+# must hold the same content. A formation that adopted a stale store still
+# reports Ready nodes; only reading the replicas themselves shows it.
+
+echo ""
+log "checking that every node holds the same JetStream state"
+kv_rc=1
+kv_report=""
+for round in $(seq 1 "$KV_ROUNDS"); do
+    digests=""
+    for host in "${HOSTS[@]}"; do
+        d=$(out "$host" "sudo spx admin kv digest --json --seqs")
+        [ -n "$d" ] || fail "$host: spx admin kv digest produced no output — run it there to see why"
+        digests+="$d"$'\n'
+    done
+    kv_rc=0
+    kv_report=$(ssh "${SSH_OPTS[@]}" "$SSH_USER@${HOSTS[0]}" "sudo spx admin kv compare -" <<<"$digests" 2>&1) ||
+        kv_rc=$?
+    [ "$kv_rc" -eq 1 ] || break
+    [ "$round" -lt "$KV_ROUNDS" ] || break
+    log "  round $round of $KV_ROUNDS: replicas differ, checking again in ${KV_RETRY_SLEEP}s"
+    sleep "$KV_RETRY_SLEEP"
+done
+
+case "$kv_rc" in
+    0)
+        log "  $(tail -1 <<<"$kv_report")"
+        ;;
+    1)
+        grep -E '^DIVERGED|^    !|streams:' <<<"$kv_report" | sed 's/^/  /' >&2
+        fail "JetStream replicas still disagree after $KV_ROUNDS rounds.
+       The cluster has adopted inconsistent state and must not be put in service.
+       Reset these nodes and form the cluster again."
+        ;;
+    *)
+        sed 's/^/  | /' <<<"$kv_report" >&2
+        fail "could not compare the JetStream digests (spx admin kv compare exited $kv_rc)"
+        ;;
+esac
 
 # The pool is the one thing the operator supplied by hand and the one thing
 # nothing else validates, so print what actually landed. dns_servers in

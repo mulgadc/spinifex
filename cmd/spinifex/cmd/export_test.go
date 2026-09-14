@@ -4,8 +4,10 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -146,3 +148,28 @@ var PrintAccountTable = printAccountTable
 
 // AccountSummaries exposes accountSummaries for testing.
 var AccountSummaries = accountSummaries
+
+// CompareKVDigests runs "kv compare" over digest JSON documents and returns
+// whether any stream diverged, plus the printed report.
+func CompareKVDigests(docs ...string) (bool, string, error) {
+	var nodes []nodeDigest
+	for i, doc := range docs {
+		got, err := loadNodeDigests(strings.NewReader(doc), "doc"+strconv.Itoa(i))
+		if err != nil {
+			return false, "", err
+		}
+		nodes = append(nodes, got...)
+	}
+	res, err := compareNodeDigests(nodes)
+	if err != nil {
+		return false, "", err
+	}
+	var buf bytes.Buffer
+	writeCompareResult(&buf, nodes, res)
+	return res.divergent(), buf.String(), nil
+}
+
+// AdminInitFlagDefault returns the registered default of an admin init flag.
+func AdminInitFlagDefault(name string) string {
+	return adminInitCmd.Flags().Lookup(name).DefValue
+}

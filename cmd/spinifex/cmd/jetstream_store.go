@@ -117,7 +117,7 @@ func discardJetStreamStore(storeDir string) error {
 }
 
 // checkInitJetStreamStore refuses a multi-node init over a store holding streams
-// unless discard was asked for. Keeping it as a seed is not safe: leadership
+// when discard was turned off. Keeping it as a seed is not safe: leadership
 // ignores who holds data, and unassigned local streams are deleted as orphans.
 func checkInitJetStreamStore(storeDir string, nodes int, discard bool) error {
 	if nodes < 2 {
@@ -133,7 +133,7 @@ func checkInitJetStreamStore(storeDir string, nodes int, discard bool) error {
 	if !discard {
 		return fmt.Errorf("this node's JetStream store %s holds %d stream(s) from before formation; "+
 			"a multi-node cluster cannot adopt them consistently. "+
-			"Re-run with --discard-jetstream to remove them once every node has joined", storeDir, len(streams))
+			"re-run without --discard-jetstream=false to remove them once every node has joined", storeDir, len(streams))
 	}
 	return checkStoreDiscardable()
 }

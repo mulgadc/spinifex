@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,7 +40,9 @@ stored message (sequence, subject, timestamp, headers, data).
 
 Run it on every node and compare the output. Replicas of one stream must
 produce identical lines; any difference means the replicas have diverged, and
---seqs prints a hash per sequence to find where.
+--seqs prints a hash per sequence to find where. For a check that tells a
+diverged replica from one that is merely behind, run it with --json --seqs on
+every node and pass the results to "spx admin kv compare".
 
 It never touches the live store. A direct get over NATS may be answered by any
 replica, so instead the streams tree is copied to --work-dir and read by a
@@ -59,24 +62,53 @@ func init() {
 	kvDigestCmd.Flags().String("work-dir", os.TempDir(), "Directory to hold the temporary copy")
 	kvDigestCmd.Flags().StringSlice("stream", nil, "Only these streams (repeatable)")
 	kvDigestCmd.Flags().Bool("seqs", false, "Also print a hash per sequence")
+	kvDigestCmd.Flags().Bool("json", false, "Print one JSON document, the input to \"spx admin kv compare\"")
+}
+
+// nodeDigest is one node's digest report, the unit "kv compare" reads.
+type nodeDigest struct {
+	Host     string         `json:"host"`
+	Store    string         `json:"store"`
+	CopiedAt time.Time      `json:"copied_at"`
+	Skipped  []string       `json:"skipped,omitempty"`
+	Streams  []streamDigest `json:"streams"`
 }
 
 // streamDigest is one stream's content as held by one replica.
 type streamDigest struct {
-	Name     string
-	FirstSeq uint64
-	LastSeq  uint64
-	Msgs     uint64
-	Digest   string
-	Seqs     []seqDigest
+	streamMeta
+
+	Name     string      `json:"name"`
+	FirstSeq uint64      `json:"first_seq"`
+	LastSeq  uint64      `json:"last_seq"`
+	Msgs     uint64      `json:"msgs"`
+	Digest   string      `json:"sha256"`
+	Seqs     []seqDigest `json:"seqs,omitempty"`
+}
+
+// streamMeta is the part of the live stream config that decides which replica
+// differences are legitimate. It is read before the copy is rewritten.
+type streamMeta struct {
+	Replicas    int           `json:"replicas,omitempty"`
+	Retention   string        `json:"retention,omitempty"`
+	MaxAge      time.Duration `json:"max_age_ns,omitempty"`
+	AllowMsgTTL bool          `json:"allow_msg_ttl,omitempty"`
+	MaxMsgs     int64         `json:"max_msgs,omitempty"`
+	MaxBytes    int64         `json:"max_bytes,omitempty"`
 }
 
 // seqDigest is the hash of one stored sequence, or "deleted" when the replica
-// has no message at that sequence.
+// has no message at that sequence. Subject, time and TTL are empty then.
 type seqDigest struct {
-	Seq  uint64
-	Hash string
+	Seq     uint64        `json:"seq"`
+	Hash    string        `json:"hash"`
+	Subject string        `json:"subject,omitempty"`
+	Time    time.Time     `json:"time,omitzero"`
+	TTL     time.Duration `json:"ttl_ns,omitempty"`
 }
+
+// deletedHash marks a sequence the replica holds no message for.
+const deletedHash = "deleted"
 
 func runKVDigest(cmd *cobra.Command, _ []string) {
 	storeDir, _ := cmd.Flags().GetString("store-dir")
@@ -90,6 +122,7 @@ func runKVDigest(cmd *cobra.Command, _ []string) {
 	workParent, _ := cmd.Flags().GetString("work-dir")
 	only, _ := cmd.Flags().GetStringSlice("stream")
 	withSeqs, _ := cmd.Flags().GetBool("seqs")
+	asJSON, _ := cmd.Flags().GetBool("json")
 
 	work, err := os.MkdirTemp(workParent, "spx-kv-digest-")
 	if err != nil {
@@ -99,7 +132,7 @@ func runKVDigest(cmd *cobra.Command, _ []string) {
 	defer os.RemoveAll(work)
 
 	copiedAt := time.Now().UTC()
-	skipped, err := copyStreamTree(storeDir, filepath.Join(work, "jetstream"))
+	skipped, metas, err := copyStreamTree(storeDir, filepath.Join(work, "jetstream"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kv digest: %v\n", err)
 		os.RemoveAll(work)
@@ -108,7 +141,7 @@ func runKVDigest(cmd *cobra.Command, _ []string) {
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 	defer cancel()
-	digests, err := digestStore(ctx, work, only, withSeqs)
+	digests, err := digestStore(ctx, work, only, withSeqs, metas)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kv digest: %v\n", err)
 		cancel()
@@ -117,6 +150,14 @@ func runKVDigest(cmd *cobra.Command, _ []string) {
 	}
 
 	host, _ := os.Hostname()
+	if asJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		if err := enc.Encode(nodeDigest{Host: host, Store: storeDir, CopiedAt: copiedAt, Skipped: skipped, Streams: digests}); err != nil {
+			fmt.Fprintf(os.Stderr, "kv digest: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	writeDigests(cmd.OutOrStdout(), host, storeDir, copiedAt, skipped, digests)
 }
 
@@ -140,14 +181,15 @@ func writeDigests(w io.Writer, host, storeDir string, copiedAt time.Time, skippe
 const globalAccountDir = "$G"
 
 // copyStreamTree copies <storeDir>/$G/streams to <dst>/$G/streams, leaving out
-// consumer state (obs), and returns streams found under other accounts.
-func copyStreamTree(storeDir, dst string) (skipped []string, err error) {
+// consumer state (obs). It returns streams found under other accounts and each
+// copied stream's config as the live server held it, keyed by stream name.
+func copyStreamTree(storeDir, dst string) (skipped []string, metas map[string]streamMeta, err error) {
 	streams, err := localStreams(storeDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(streams) == 0 {
-		return nil, fmt.Errorf("no streams found under %s", storeDir)
+		return nil, nil, fmt.Errorf("no streams found under %s", storeDir)
 	}
 	for _, s := range streams {
 		if !strings.HasPrefix(s, globalAccountDir+"/") {
@@ -179,39 +221,58 @@ func copyStreamTree(storeDir, dst string) (skipped []string, err error) {
 		return copyFile(path, target)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("copy streams from %s: %w", src, err)
+		return nil, nil, fmt.Errorf("copy streams from %s: %w", src, err)
 	}
 	entries, err := os.ReadDir(out)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	metas = make(map[string]streamMeta, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
-			if err := rewriteStreamMetaStandalone(filepath.Join(out, e.Name())); err != nil {
-				return nil, err
+			meta, err := rewriteStreamMetaStandalone(filepath.Join(out, e.Name()))
+			if err != nil {
+				return nil, nil, err
 			}
+			metas[e.Name()] = meta
 		}
 	}
-	return skipped, nil
+	return skipped, metas, nil
 }
 
 // rewriteStreamMetaStandalone makes a copied stream loadable by a standalone
 // server, which refuses replicas > 1 and would expire aged messages on
 // recovery. meta.sum is highwayhash64 keyed by sha256 of the directory name.
-func rewriteStreamMetaStandalone(streamDir string) error {
+// It returns the settings as they were before the rewrite.
+func rewriteStreamMetaStandalone(streamDir string) (streamMeta, error) {
 	metaPath := filepath.Join(streamDir, "meta.inf")
 	raw, err := os.ReadFile(metaPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return streamMeta{}, nil
 	}
 	if err != nil {
-		return err
+		return streamMeta{}, err
+	}
+	var orig struct {
+		Replicas    int           `json:"num_replicas"`
+		Retention   string        `json:"retention"`
+		MaxAge      time.Duration `json:"max_age"`
+		AllowMsgTTL bool          `json:"allow_msg_ttl"`
+		MaxMsgs     int64         `json:"max_msgs"`
+		MaxBytes    int64         `json:"max_bytes"`
+	}
+	if err := json.Unmarshal(raw, &orig); err != nil {
+		return streamMeta{}, fmt.Errorf("parse %s: %w", metaPath, err)
+	}
+	kept := streamMeta{
+		Replicas: orig.Replicas, Retention: orig.Retention, MaxAge: orig.MaxAge,
+		AllowMsgTTL: orig.AllowMsgTTL, MaxMsgs: orig.MaxMsgs, MaxBytes: orig.MaxBytes,
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var meta map[string]any
 	if err := dec.Decode(&meta); err != nil {
-		return fmt.Errorf("parse %s: %w", metaPath, err)
+		return streamMeta{}, fmt.Errorf("parse %s: %w", metaPath, err)
 	}
 	meta["num_replicas"] = 1
 	meta["max_age"] = 0
@@ -220,18 +281,18 @@ func rewriteStreamMetaStandalone(streamDir string) error {
 	delete(meta, "placement")
 	out, err := json.Marshal(meta)
 	if err != nil {
-		return err
+		return streamMeta{}, err
 	}
 	key := sha256.Sum256([]byte(filepath.Base(streamDir)))
 	hh, err := highwayhash.New64(key[:])
 	if err != nil {
-		return err
+		return streamMeta{}, err
 	}
 	hh.Write(out)
 	if err := os.WriteFile(metaPath, out, 0o600); err != nil {
-		return err
+		return streamMeta{}, err
 	}
-	return os.WriteFile(filepath.Join(streamDir, "meta.sum"), []byte(hex.EncodeToString(hh.Sum(nil))), 0o600)
+	return kept, os.WriteFile(filepath.Join(streamDir, "meta.sum"), []byte(hex.EncodeToString(hh.Sum(nil))), 0o600)
 }
 
 func copyFile(src, dst string) error {
@@ -253,7 +314,7 @@ func copyFile(src, dst string) error {
 
 // digestStore opens storeParent (holding jetstream/) in a standalone server
 // that accepts in-process connections only, and digests each stream.
-func digestStore(ctx context.Context, storeParent string, only []string, withSeqs bool) ([]streamDigest, error) {
+func digestStore(ctx context.Context, storeParent string, only []string, withSeqs bool, metas map[string]streamMeta) ([]streamDigest, error) {
 	ns, err := server.NewServer(&server.Options{
 		ServerName: "spx-kv-digest",
 		JetStream:  true,
@@ -302,6 +363,7 @@ func digestStore(ctx context.Context, storeParent string, only []string, withSeq
 		if err != nil {
 			return nil, err
 		}
+		d.streamMeta = metas[name]
 		digests = append(digests, d)
 	}
 	return digests, nil
@@ -322,18 +384,21 @@ func digestStream(ctx context.Context, js jetstream.JetStream, name string, with
 	whole := sha256.New()
 	for seq := st.FirstSeq; st.Msgs > 0 && seq <= st.LastSeq; seq++ {
 		msg, err := s.GetMsg(ctx, seq)
-		var h string
+		sd := seqDigest{Seq: seq}
 		switch {
 		case errors.Is(err, jetstream.ErrMsgNotFound):
-			h = "deleted"
+			sd.Hash = deletedHash
 		case err != nil:
 			return streamDigest{}, fmt.Errorf("read %s seq %d: %w", name, seq, err)
 		default:
-			h = hashStoredMsg(msg)
+			sd.Hash = hashStoredMsg(msg)
+			sd.Subject = msg.Subject
+			sd.Time = msg.Time.UTC()
+			sd.TTL = msgTTL(msg.Header.Get(jetstream.MsgTTLHeader))
 		}
-		fmt.Fprintf(whole, "%d:%s\n", seq, h)
+		fmt.Fprintf(whole, "%d:%s\n", seq, sd.Hash)
 		if withSeqs {
-			d.Seqs = append(d.Seqs, seqDigest{Seq: seq, Hash: h})
+			d.Seqs = append(d.Seqs, sd)
 		}
 	}
 	d.Digest = hex.EncodeToString(whole.Sum(nil))
@@ -368,4 +433,19 @@ func hashStoredMsg(m *jetstream.RawStreamMsg) string {
 	}
 	field(m.Data)
 	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// msgTTL parses a Nats-TTL header: a Go duration or whole seconds. "never", an
+// absent header or an unparseable one yield zero, meaning no expiry.
+func msgTTL(v string) time.Duration {
+	if v == "" {
+		return 0
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return 0
 }

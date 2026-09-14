@@ -358,7 +358,7 @@ func init() {
 
 	// Flags for admin init
 	adminInitCmd.Flags().Bool("force", false, "Force re-initialization (overwrites existing config)")
-	adminInitCmd.Flags().Bool("discard-jetstream", false, "With --nodes >= 2, remove this node's existing JetStream streams once every node has joined")
+	adminInitCmd.Flags().Bool("discard-jetstream", true, "With --nodes >= 2, remove this node's existing JetStream streams once every node has joined; =false refuses to form over a non-empty store instead. Ignored with --nodes 1")
 	adminInitCmd.Flags().String("region", "ap-southeast-2", "Mulga region to create")
 	adminInitCmd.Flags().String("az", "ap-southeast-2a", "Mulga AZ to create")
 	adminInitCmd.Flags().String("node", "node1", "Node name, increment for additional nodes (default, node1)")

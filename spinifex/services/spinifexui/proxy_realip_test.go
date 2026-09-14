@@ -1,3 +1,6 @@
+//test:in-package: drives the unexported newReverseProxy, which the package exports only through
+// the full UI server; building that here would test far more than the header rule.
+
 package spinifexui
 
 import (

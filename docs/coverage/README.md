@@ -22,7 +22,7 @@ Spinifex serves the AWS APIs below. Every page counts the operations in the pinn
 | Service | Implemented | Modelled | Coverage |
 |---|---:|---:|---:|
 | [ACM](/coverage/acm) | 9 | 15 | 60.0% |
-| [EC2](/coverage/ec2) | 122 | 625 | 19.5% |
+| [EC2](/coverage/ec2) | 123 | 625 | 19.7% |
 | [ECR](/coverage/ecr) | 19 | 47 | 40.4% |
 | [ECS](/coverage/ecs) | 31 | 56 | 55.4% |
 | [EKS](/coverage/eks) | 34 | 56 | 60.7% |

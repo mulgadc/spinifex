@@ -89,6 +89,10 @@ func (s *NATSVPCService) DescribeSecurityGroupRules(ctx context.Context, input *
 	return utils.NATSRequest[ec2.DescribeSecurityGroupRulesOutput](ctx, s.natsConn, "ec2.DescribeSecurityGroupRules", input, 30*time.Second, accountID)
 }
 
+func (s *NATSVPCService) GetSecurityGroupsForVpc(ctx context.Context, input *ec2.GetSecurityGroupsForVpcInput, accountID string) (*ec2.GetSecurityGroupsForVpcOutput, error) {
+	return utils.NATSRequest[ec2.GetSecurityGroupsForVpcOutput](ctx, s.natsConn, "ec2.GetSecurityGroupsForVpc", input, 30*time.Second, accountID)
+}
+
 func (s *NATSVPCService) AuthorizeSecurityGroupIngress(ctx context.Context, input *ec2.AuthorizeSecurityGroupIngressInput, accountID string) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
 	return utils.NATSRequest[ec2.AuthorizeSecurityGroupIngressOutput](ctx, s.natsConn, "ec2.AuthorizeSecurityGroupIngress", input, 30*time.Second, accountID)
 }

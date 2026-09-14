@@ -9,6 +9,7 @@ import (
 	"net"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -531,6 +532,170 @@ func sgIngressCIDRMatchesAny(rules []SGRule, values []string) bool {
 		}
 	}
 	return false
+}
+
+// getSecurityGroupsForVpcValidFilters defines the set of filter names accepted
+// by GetSecurityGroupsForVpc. The model names the VPC primary-vpc-id here, and
+// does not accept the vpc-id or ip-permission.cidr DescribeSecurityGroups takes.
+var getSecurityGroupsForVpcValidFilters = map[string]bool{
+	"group-id":       true,
+	"group-name":     true,
+	"description":    true,
+	"owner-id":       true,
+	"primary-vpc-id": true,
+}
+
+// defaultSGForVpcPerPage caps a request that names no MaxResults, matching the
+// model's ceiling.
+const defaultSGForVpcPerPage = 1000
+
+// GetSecurityGroupsForVpc lists the security groups an interface in the named
+// VPC can be associated with. It is the same account-prefixed scan
+// DescribeSecurityGroups runs, projected to the fields the model returns: the
+// rule set is deliberately absent, since a caller wanting rules has
+// DescribeSecurityGroupRules.
+func (s *VPCServiceImpl) GetSecurityGroupsForVpc(ctx context.Context, input *ec2.GetSecurityGroupsForVpcInput, accountID string) (*ec2.GetSecurityGroupsForVpcOutput, error) {
+	if input == nil || input.VpcId == nil || *input.VpcId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	vpcID := *input.VpcId
+
+	// An unknown VPC is not-found rather than an empty list: an empty list is
+	// indistinguishable from a VPC that genuinely holds no groups, and would
+	// send the caller on to create an interface in a VPC that does not exist.
+	if err := s.requireVPCExists(ctx, accountID, vpcID); err != nil {
+		return nil, err
+	}
+
+	parsedFilters, err := filterutil.ParseFilters(input.Filters, getSecurityGroupsForVpcValidFilters)
+	if err != nil {
+		slog.WarnContext(ctx, "GetSecurityGroupsForVpc: invalid filter", "err", err)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	prefix := accountID + "."
+	keys, err := s.sgKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	groups := []*ec2.SecurityGroupForVpc{}
+	for _, key := range keys {
+		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := s.sgKV.Get(ctx, key)
+		if err != nil {
+			slog.ErrorContext(ctx, "GetSecurityGroupsForVpc: SG read failed", "key", key, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		var record SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			slog.ErrorContext(ctx, "GetSecurityGroupsForVpc: SG unmarshal failed", "key", key, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+
+		if record.VpcId != vpcID {
+			continue
+		}
+		if len(parsedFilters) > 0 && !sgForVpcMatchesFilters(&record, accountID, parsedFilters) {
+			continue
+		}
+
+		groups = append(groups, &ec2.SecurityGroupForVpc{
+			GroupId:      aws.String(record.GroupId),
+			GroupName:    aws.String(record.GroupName),
+			Description:  aws.String(record.Description),
+			OwnerId:      aws.String(accountID),
+			PrimaryVpcId: aws.String(record.VpcId),
+			Tags:         utils.MapToEC2Tags(record.Tags),
+		})
+	}
+
+	// The KV key order is not guaranteed stable across calls, so a token
+	// addressing an offset into an unsorted set could skip or repeat a group.
+	slices.SortFunc(groups, func(a, b *ec2.SecurityGroupForVpc) int {
+		return strings.Compare(aws.StringValue(a.GroupId), aws.StringValue(b.GroupId))
+	})
+
+	page, nextToken, err := pageSecurityGroupsForVpc(groups, input.NextToken, input.MaxResults)
+	if err != nil {
+		slog.WarnContext(ctx, "GetSecurityGroupsForVpc: invalid NextToken", "next_token", aws.StringValue(input.NextToken))
+		return nil, err
+	}
+
+	slog.InfoContext(ctx, "GetSecurityGroupsForVpc completed",
+		"count", len(page), "total", len(groups), "vpcId", vpcID, "accountID", accountID)
+
+	return &ec2.GetSecurityGroupsForVpcOutput{
+		SecurityGroupForVpcs: page,
+		NextToken:            nextToken,
+	}, nil
+}
+
+// sgForVpcMatchesFilters applies the GetSecurityGroupsForVpc filter set. The
+// owner is the account the scan is prefixed by, so owner-id can only match the
+// caller's own account.
+func sgForVpcMatchesFilters(record *SecurityGroupRecord, accountID string, filters map[string][]string) bool {
+	for name, values := range filters {
+		if strings.HasPrefix(name, "tag:") {
+			continue
+		}
+
+		switch name {
+		case "group-id":
+			if !filterutil.MatchesAny(values, record.GroupId) {
+				return false
+			}
+		case "group-name":
+			if !filterutil.MatchesAny(values, record.GroupName) {
+				return false
+			}
+		case "description":
+			if !filterutil.MatchesAny(values, record.Description) {
+				return false
+			}
+		case "owner-id":
+			if !filterutil.MatchesAny(values, accountID) {
+				return false
+			}
+		case "primary-vpc-id":
+			if !filterutil.MatchesAny(values, record.VpcId) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+
+	return filterutil.MatchesTags(filters, record.Tags)
+}
+
+// pageSecurityGroupsForVpc slices one page out of a sorted group set, using an
+// opaque integer offset as the token. The last page carries a nil token.
+func pageSecurityGroupsForVpc(groups []*ec2.SecurityGroupForVpc, token *string, maxResults *int64) ([]*ec2.SecurityGroupForVpc, *string, error) {
+	start := 0
+	if aws.StringValue(token) != "" {
+		n, err := strconv.Atoi(*token)
+		if err != nil || n < 0 {
+			return nil, nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		start = n
+	}
+	if start > len(groups) {
+		start = len(groups)
+	}
+
+	size := defaultSGForVpcPerPage
+	if maxResults != nil && *maxResults > 0 {
+		size = int(*maxResults)
+	}
+
+	end := start + size
+	if end >= len(groups) {
+		return groups[start:], nil, nil
+	}
+	return groups[start:end], aws.String(strconv.Itoa(end)), nil
 }
 
 // describeSecurityGroupRulesValidFilters defines the set of filter names accepted by DescribeSecurityGroupRules.

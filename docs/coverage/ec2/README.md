@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **122 of the 625** operations (**19.5%**) in the EC2 `2016-11-15` API model.
+Spinifex implements **123 of the 625** operations (**19.7%**) in the EC2 `2016-11-15` API model.
 
 ### Spot Instances Are a Mock
 
@@ -492,7 +492,7 @@ Spot Instance Requests are a mock over the on-demand `RunInstances` path. A requ
 | `GetNetworkInsightsAccessScopeContent` | ❌ Not implemented |
 | `GetPasswordData` | ✅ Implemented |
 | `GetReservedInstancesExchangeQuote` | ❌ Not implemented |
-| `GetSecurityGroupsForVpc` | ❌ Not implemented |
+| `GetSecurityGroupsForVpc` | ✅ Implemented |
 | `GetSerialConsoleAccessStatus` | ✅ Implemented |
 | `GetSnapshotBlockPublicAccessState` | ❌ Not implemented |
 | `GetSpotPlacementScores` | ❌ Not implemented |

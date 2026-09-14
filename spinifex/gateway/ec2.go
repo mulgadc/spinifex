@@ -535,6 +535,9 @@ var ec2Actions = map[string]ec2Action{
 	"DescribeSecurityGroupRules": ec2Handler(func(ctx context.Context, input *ec2.DescribeSecurityGroupRulesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_vpc.DescribeSecurityGroupRules(ctx, input, gw.NATSConn, accountID)
 	}),
+	"GetSecurityGroupsForVpc": ec2Handler(func(ctx context.Context, input *ec2.GetSecurityGroupsForVpcInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_vpc.GetSecurityGroupsForVpc(ctx, input, gw.NATSConn, accountID)
+	}),
 	"AuthorizeSecurityGroupIngress": ec2Handler(func(ctx context.Context, input *ec2.AuthorizeSecurityGroupIngressInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_vpc.AuthorizeSecurityGroupIngress(ctx, input, gw.NATSConn, accountID)
 	}),

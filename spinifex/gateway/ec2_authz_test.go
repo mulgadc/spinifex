@@ -177,6 +177,19 @@ func TestEC2Request_RequestSpotInstancesChecksLaunchResources(t *testing.T) {
 	assertDenied(t, dispatchEC2(t, gw, body))
 }
 
+// TestEC2Request_GetSecurityGroupsForVpcIsVpcScoped pins the one read action
+// that names a resource: registered unscoped, a policy fencing one VPC would be
+// bypassed by asking about another.
+func TestEC2Request_GetSecurityGroupsForVpcIsVpcScoped(t *testing.T) {
+	gw := scopedPolicyGateway(
+		statement("Allow", "ec2:*", "*"),
+		statement("Deny", "ec2:GetSecurityGroupsForVpc", "arn:aws:ec2:*:*:vpc/vpc-prod"),
+	)
+
+	assertDenied(t, dispatchEC2(t, gw, "Action=GetSecurityGroupsForVpc&VpcId=vpc-prod"))
+	assertPermitted(t, dispatchEC2(t, gw, "Action=GetSecurityGroupsForVpc&VpcId=vpc-dev"))
+}
+
 func TestEC2Request_RejectsOversizedResourceList(t *testing.T) {
 	var body strings.Builder
 	body.WriteString("Action=TerminateInstances")

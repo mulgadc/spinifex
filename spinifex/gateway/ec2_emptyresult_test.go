@@ -63,6 +63,9 @@ func TestEC2Describe_EmptyResult_EmitsContainer(t *testing.T) {
 		{"DescribeInstanceTypeOfferings", "DescribeInstanceTypeOfferings", "instanceTypeOfferingSet", func(t *testing.T) string {
 			return render[ec2.DescribeInstanceTypeOfferingsInput](t, "DescribeInstanceTypeOfferings", ec2.DescribeInstanceTypeOfferingsOutput{})
 		}},
+		{"GetSecurityGroupsForVpc", "GetSecurityGroupsForVpc", "securityGroupForVpcSet", func(t *testing.T) string {
+			return render[ec2.GetSecurityGroupsForVpcInput](t, "GetSecurityGroupsForVpc", ec2.GetSecurityGroupsForVpcOutput{})
+		}},
 	}
 
 	for _, tc := range cases {

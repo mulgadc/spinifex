@@ -64,6 +64,9 @@ var stsActions = map[string]STSHandler{
 	"AssumeRoleWithWebIdentity": stsHandler(func(_ stsCaller, input *sts.AssumeRoleWithWebIdentityInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.AssumeRoleWithWebIdentity(input, gw.STSService)
 	}),
+	"GetAccessKeyInfo": stsHandler(func(_ stsCaller, input *sts.GetAccessKeyInfoInput, gw *GatewayConfig) (any, error) {
+		return gateway_sts.GetAccessKeyInfo(input, gw.STSService)
+	}),
 	"GetCallerIdentity": stsHandler(func(c stsCaller, input *sts.GetCallerIdentityInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.GetCallerIdentity(c.accountID, c.arn, c.principalType, c.identity, c.assumedRoleID, input, gw.IAMService, gw.STSService)
 	}),
@@ -79,7 +82,7 @@ var anonymousSTSActions = map[string]bool{
 }
 
 // stsPolicyGatedActions lists the actions requiring a pass on the caller's
-// identity policy. GetCallerIdentity and GetSessionToken are authentication
+// identity policy. GetCallerIdentity, GetSessionToken and GetAccessKeyInfo are
 // operations AWS requires no permission for, and AssumeRoleWithWebIdentity
 // arrives with no identity to evaluate.
 var stsPolicyGatedActions = map[string]bool{

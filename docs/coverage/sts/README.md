@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **4 of the 8** operations (**50.0%**) in the STS `2011-06-15` API model.
+Spinifex implements **5 of the 8** operations (**62.5%**) in the STS `2011-06-15` API model.
 
 ### Trust policies
 
@@ -38,7 +38,7 @@ Several inputs the model describes are deliberately rejected rather than accepte
 | `AssumeRoleWithSAML` | ❌ Not implemented |
 | `AssumeRoleWithWebIdentity` | ✅ Implemented |
 | `DecodeAuthorizationMessage` | ❌ Not implemented |
-| `GetAccessKeyInfo` | ❌ Not implemented |
+| `GetAccessKeyInfo` | ✅ Implemented |
 | `GetCallerIdentity` | ✅ Implemented |
 | `GetFederationToken` | ❌ Not implemented |
 | `GetSessionToken` | ✅ Implemented |

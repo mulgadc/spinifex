@@ -20,6 +20,11 @@ type STSService interface {
 	// bound to the target role. Anonymous — caller identity comes from JWT claims, not SigV4.
 	AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error)
 
+	// GetAccessKeyInfo resolves an access key ID to the ID of the account that owns it.
+	// Takes no caller identity: AWS requires no permission and does not scope the
+	// answer to the caller. An unresolvable ID is InvalidClientTokenId, not a blank account.
+	GetAccessKeyInfo(input *sts.GetAccessKeyInfoInput) (*sts.GetAccessKeyInfoOutput, error)
+
 	// GetCallerIdentity returns the authenticated principal's account, ARN, and UserId.
 	// Allowed for every authenticated caller; not gated by checkPolicy.
 	GetCallerIdentity(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)

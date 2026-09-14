@@ -29,4 +29,4 @@ Spinifex serves the AWS APIs below. Every page counts the operations in the pinn
 | [ELBv2](/coverage/elbv2) | 33 | 46 | 71.7% |
 | [IAM](/coverage/iam) | 75 | 159 | 47.2% |
 | [RDS](/coverage/rds) | 26 | 162 | 16.0% |
-| [STS](/coverage/sts) | 4 | 8 | 50.0% |
+| [STS](/coverage/sts) | 5 | 8 | 62.5% |

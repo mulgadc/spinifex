@@ -798,13 +798,14 @@ func TestHandleEC2Events_RebootRunningInstance(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 
-	// vm.Reboot returns a generic "QMP system_reset" error when the
-	// QMPClient encoder/decoder is nil, which handleRebootInstance maps
-	// to ServerInternal via its default branch.
+	// The daemon admits the reboot and runs it in the background, so the reply
+	// carries no error even though this guest's QMP client cannot be reset. A
+	// reply that waited for the guest would arrive after the caller gave up.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
+	assert.NotContains(t, errResp, "Code", "an admitted reboot must not answer with an error")
+	t.Cleanup(daemon.vmMgr.WaitForBackgroundWork)
 
 	// Instance should remain in running state (reboot doesn't change state)
 	var status vm.InstanceState

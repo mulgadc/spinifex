@@ -3854,15 +3854,33 @@ func TestRebootInstance_NotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
 
-func TestRebootInstance_QMPFailureReturnsInternalError(t *testing.T) {
+// TestRebootInstance_QMPFailureIsNotTheCallersToHear covers the async contract
+// EC2 documents: the answer reports admission, so a reset that fails afterwards
+// cannot be returned and must not hold the reply up either. The guest is left
+// running and the heartbeat is what notices it never came back.
+func TestRebootInstance_QMPFailureIsNotTheCallersToHear(t *testing.T) {
 	id := "i-qmp-failure"
 	instance := &vm.VM{ID: id, Status: vm.StateRunning}
+	mgr := mgrWith(map[string]*vm.VM{id: instance})
+	t.Cleanup(mgr.WaitForBackgroundWork)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+
+	require.NoError(t, svc.RebootInstance(context.Background(), instance, spxtypes.EC2InstanceCommand{ID: id}))
+	assert.Equal(t, vm.StateRunning, mgr.Status(instance))
+}
+
+// TestRebootInstance_NotRunning asserts the second of the two failures that can
+// still be reported, so a reboot of a stopped guest is refused rather than
+// accepted and quietly dropped.
+func TestRebootInstance_NotRunning(t *testing.T) {
+	id := "i-stopped"
+	instance := &vm.VM{ID: id, Status: vm.StateStopped}
 	mgr := mgrWith(map[string]*vm.VM{id: instance})
 	svc := &InstanceServiceImpl{vmMgr: mgr}
 
 	err := svc.RebootInstance(context.Background(), instance, spxtypes.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }
 
 // TestStartInstance_NotFound verifies that a missing instance returns

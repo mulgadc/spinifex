@@ -15,6 +15,12 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// rebootInstancesTimeout is the NATS request timeout, overridable in tests so
+// the ErrTimeout path can be exercised without a real 5-second wait. The daemon
+// admits a reboot and runs it in the background, so this bounds the admission
+// and never the guest's shutdown.
+var rebootInstancesTimeout = 5 * time.Second
+
 func ValidateRebootInstancesInput(input *ec2.RebootInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -59,9 +65,17 @@ func RebootInstances(ctx context.Context, input *ec2.RebootInstancesInput, natsC
 		reqMsg.Data = jsonData
 		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
 		utils.InjectTraceContext(ctx, reqMsg.Header)
-		msg, err := natsConn.RequestMsg(reqMsg, 5*time.Second)
+		msg, err := natsConn.RequestMsg(reqMsg, rebootInstancesTimeout)
 		if err != nil {
 			slog.ErrorContext(ctx, "RebootInstances: Failed to send command", "instance_id", instanceID, "err", err)
+
+			// Only the absence of a subscriber says anything about where the
+			// instance is. A timeout is a daemon that is slow or wedged, and
+			// calling that NotFound sends the caller after an entirely
+			// different fault than the one it hit.
+			if !errors.Is(err, nats.ErrNoResponders) {
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
 
 			// No daemon subscription: check stopped-KV to return IncorrectInstanceState instead of NotFound.
 			describeInput := &ec2.DescribeInstancesInput{

@@ -108,9 +108,10 @@ const (
 // reboot AWS documents once a guest will not go quietly.
 var rebootPowerdownTimeout = 60 * time.Second
 
-// Reboot asks the guest to shut itself down, then resets and resumes it in the
-// same QEMU process. The VM remains in StateRunning throughout. A guest that
-// will not power down inside its budget is hard-reset, and that is logged.
+// Reboot admits a reboot and runs it in the background, the way EC2 does: the
+// answer says the request was accepted, not that the guest is back. Asking a
+// guest to shut down takes as long as the guest takes, which is far longer than
+// any caller waits, so only the two admission failures can be reported at all.
 func (m *Manager) Reboot(ctx context.Context, id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
@@ -121,23 +122,45 @@ func (m *Manager) Reboot(ctx context.Context, id string) error {
 			ErrInvalidTransition, id, status)
 	}
 
-	// Tell the heartbeat this guest is meant to be stopped for a moment. It
-	// quits a guest it finds in the shutdown run state, which is exactly the
-	// state a reboot passes through.
-	instance.rebooting.Store(true)
-	defer instance.rebooting.Store(false)
+	// Tell the heartbeat this guest is meant to be stopped for a moment: it
+	// quits a guest it finds in the shutdown run state, which is the state a
+	// reboot passes through. Claiming the flag also serialises reboots, so a
+	// repeated request joins the one in flight instead of racing it.
+	if !instance.rebooting.CompareAndSwap(false, true) {
+		slog.InfoContext(ctx, "Reboot already in flight, ignoring the repeat", "instanceId", id)
+		return nil
+	}
 
+	// Detached rather than derived: the caller is answered immediately, so its
+	// context is cancelled long before the guest has finished shutting down.
+	rebootCtx := context.WithoutCancel(ctx)
+	m.goroutineWg.Go(func() {
+		defer instance.rebooting.Store(false)
+		if err := m.rebootNow(rebootCtx, instance); err != nil {
+			// Nobody is left to return this to. The guest is either back or it
+			// is not, and the heartbeat is what notices the second case.
+			slog.ErrorContext(rebootCtx, "Reboot failed", "instanceId", id, "err", err)
+		}
+	})
+	return nil
+}
+
+// rebootNow asks the guest to shut itself down, then resets and resumes it in
+// the same QEMU process. The VM remains in StateRunning throughout. A guest
+// that will not power down inside its budget is hard-reset, and that is logged.
+func (m *Manager) rebootNow(ctx context.Context, instance *VM) error {
 	// A reset alone never reaches the guest kernel, so it syncs nothing and
 	// every dirty page is lost. Ask first; reset only once asking has failed.
 	// A guest whose QEMU would exit rather than pause is reset without asking,
 	// because a powerdown there leaves nothing to reset and the guest down.
 	switch {
 	case !qemuPausesOnShutdown(instance):
-		slog.InfoContext(ctx, "Guest predates the paused-shutdown flag, hard-resetting", "instanceId", id)
+		slog.InfoContext(ctx, "Guest predates the paused-shutdown flag, hard-resetting",
+			"instanceId", instance.ID)
 	default:
 		if err := m.gracefulPowerdown(ctx, instance, rebootPowerdownTimeout); err != nil {
 			slog.WarnContext(ctx, "Guest did not power down for reboot, hard-resetting",
-				"instanceId", id, "budget_ms", otelsetup.Millis(rebootPowerdownTimeout), "err", err)
+				"instanceId", instance.ID, "budget_ms", otelsetup.Millis(rebootPowerdownTimeout), "err", err)
 		}
 	}
 
@@ -145,7 +168,7 @@ func (m *Manager) Reboot(ctx context.Context, id string) error {
 	defer cancel()
 
 	if _, err := sendQMPCommandWithTimeout(rebootCtx, instance.QMPClient,
-		qmp.QMPCommand{Execute: "system_reset"}, id, contextTimeRemaining(rebootCtx)); err != nil {
+		qmp.QMPCommand{Execute: "system_reset"}, instance.ID, contextTimeRemaining(rebootCtx)); err != nil {
 		return fmt.Errorf("QMP system_reset: %w", err)
 	}
 	return m.waitForQMPRunning(rebootCtx, instance, rebootStatusPollInterval)

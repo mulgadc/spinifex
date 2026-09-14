@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -88,6 +89,31 @@ func TestRebootInstances_NATSRequestFails(t *testing.T) {
 	_, err := RebootInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+// TestRebootInstances_SlowDaemonIsNotAMissingInstance covers a daemon that
+// holds the request open. Reporting that as NotFound names a fault the caller
+// does not have and hides the one it does: the instance is there, the node
+// answering for it is not answering.
+func TestRebootInstances_SlowDaemonIsNotAMissingInstance(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+
+	previous := rebootInstancesTimeout
+	rebootInstancesTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { rebootInstancesTimeout = previous })
+
+	instanceID := "i-slow"
+	// A live subscriber that never replies forces a real ErrTimeout rather
+	// than the immediate ErrNoResponders a missing subscriber would give.
+	_, err := nc.Subscribe("ec2.cmd."+instanceID, func(*nats.Msg) {})
+	require.NoError(t, err)
+
+	input := &ec2.RebootInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}
+	_, err = RebootInstances(context.Background(), input, nc, "123456789012")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
 func TestRebootInstances_StoppedInstance(t *testing.T) {

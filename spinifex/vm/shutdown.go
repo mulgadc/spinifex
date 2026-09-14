@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -56,12 +57,7 @@ var qemuPausesOnShutdown = func(instance *VM) bool {
 // cmdlineHasPauseAction looks for the shutdown action in a NUL-separated
 // /proc cmdline. Split out from the /proc read so the matching is testable.
 func cmdlineHasPauseAction(cmdline []byte) bool {
-	for _, arg := range strings.Split(string(cmdline), "\x00") {
-		if arg == "shutdown=pause" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Split(string(cmdline), "\x00"), "shutdown=pause")
 }
 
 // gracefulPowerdown presses the guest's power button until it shuts itself

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -38,7 +39,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			clientIP := utils.ClientIP(r.RemoteAddr)
 			if errCode := gw.RateLimiter.CheckIP(clientIP); errCode != "" {
-				gw.writeSigV4Error(w, r, errCode)
+				gw.writeSigV4Error(w, r, errCode, "")
 				return
 			}
 
@@ -53,9 +54,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				// which validation stage rejects it.
 				switch {
 				case errors.Is(err, sigv4.ErrMissingAuthentication):
-					gw.writeSigV4Error(w, r, awserrors.ErrorMissingAuthenticationToken)
+					gw.writeSigV4Error(w, r, awserrors.ErrorMissingAuthenticationToken, "")
 				case errors.Is(err, sigv4.ErrPayloadTooLarge):
-					gw.writeSigV4Error(w, r, awserrors.ErrorRequestEntityTooLarge)
+					gw.writeSigV4Error(w, r, awserrors.ErrorRequestEntityTooLarge, "")
 				case errors.Is(err, sigv4.ErrRequestTimeTooSkewed):
 					// Skew/replay: AWS returns this as SignatureDoesNotMatch, which is
 					// indistinguishable on the wire from a canonicalisation mismatch.
@@ -68,7 +69,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 					// Anonymous: the request was rejected before its key id was parsed,
 					// so there is no client identity for the lockout to protect.
 					gw.RateLimiter.RecordFailure(clientIP, anonymousAttempt)
-					gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
+					gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch, "")
 				default:
 					// Malformed Authorization, bad credential scope, unsupported
 					// algorithm, missing content hash: a failed auth attempt. The parse
@@ -76,7 +77,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 					slog.Warn("Auth failure: malformed signature envelope",
 						"sourceIP", clientIP, "err", err)
 					gw.RateLimiter.RecordFailure(clientIP, anonymousAttempt)
-					gw.writeSigV4Error(w, r, awserrors.ErrorIncompleteSignature)
+					gw.writeSigV4Error(w, r, awserrors.ErrorIncompleteSignature, "")
 				}
 				return
 			}
@@ -94,12 +95,14 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			// Reject unknown services before crypto; otherwise Verify re-signs with
 			// the client-claimed service name and rubber-stamps the scope.
 			if !supportedServices[sig.Credential.Service] {
-				// Also surfaces as SignatureDoesNotMatch, so name the service that was
-				// rejected rather than leaving it to look like a signing bug.
 				slog.Warn("Auth failure: unsupported service in credential scope",
 					"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP,
 					"service", sig.Credential.Service)
-				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
+				// Code stays SignatureDoesNotMatch (no registered code fits "not
+				// served here"); the message names the real reason instead, since
+				// nothing was ever wrong with the credentials.
+				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch,
+					fmt.Sprintf("Service %q is not served by this gateway.", sig.Credential.Service))
 				return
 			}
 
@@ -112,7 +115,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 
 			if gw.IAMService == nil {
 				slog.Error("SigV4 auth: IAM service not initialized")
-				gw.writeSigV4Error(w, r, awserrors.ErrorInternalError)
+				gw.writeSigV4Error(w, r, awserrors.ErrorInternalError, "")
 				return
 			}
 
@@ -129,11 +132,11 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			default:
 				slog.Warn("Auth failure: unknown AKID prefix", "accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP)
 				gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("unknown-prefix", sig.Credential.AccessKeyID))
-				gw.writeSigV4Error(w, r, awserrors.ErrorInvalidClientTokenId)
+				gw.writeSigV4Error(w, r, awserrors.ErrorInvalidClientTokenId, "")
 				return
 			}
 			if lookupCode != "" {
-				gw.writeSigV4Error(w, r, lookupCode)
+				gw.writeSigV4Error(w, r, lookupCode, "")
 				return
 			}
 
@@ -153,14 +156,14 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				// secret produces a different one, while a client retrying an identical
 				// bad request produces the same one.
 				gw.RateLimiter.RecordFailure(clientIP, failureFingerprint("signature", sig.Credential.AccessKeyID, sig.Signature))
-				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
+				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch, "")
 				return
 			}
 
 			// Only after the signature holds: an unauthenticated prober must not
 			// be able to use this to tell a suspended account from a live one.
 			if errCode := gw.checkAccountActive(principal.accountID, clientIP); errCode != "" {
-				gw.writeSigV4Error(w, r, errCode)
+				gw.writeSigV4Error(w, r, errCode, "")
 				return
 			}
 
@@ -168,7 +171,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			// the same reason: a session name resolves to whichever principal holds it
 			// now, so it has to be checked against the ID the session was minted for.
 			if errCode := gw.checkSessionPrincipal(principal, sig.Credential.AccessKeyID, clientIP); errCode != "" {
-				gw.writeSigV4Error(w, r, errCode)
+				gw.writeSigV4Error(w, r, errCode, "")
 				return
 			}
 
@@ -176,7 +179,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			// the request rather than authorize it against a context missing the key.
 			userID, err := gw.principalUserID(principal)
 			if err != nil {
-				gw.writeSigV4Error(w, r, err.Error())
+				gw.writeSigV4Error(w, r, err.Error(), "")
 				return
 			}
 			principal.userID = userID
@@ -186,7 +189,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				slog.Error("Failed to read request body", "err", err)
-				gw.writeSigV4Error(w, r, awserrors.ErrorInternalError)
+				gw.writeSigV4Error(w, r, awserrors.ErrorInternalError, "")
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
@@ -229,6 +232,13 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				ctx = context.WithValue(ctx, ctxAction, method)
 			}
 
+			// JSON-1.1 and path-routed REST-JSON services carry no query-protocol
+			// Action; without this every one of their requests shared the same
+			// "unknown" throttle bucket, so no per-action override could ever match.
+			if action := resolveNonQueryAction(r, sig.Credential.Service); action != "" {
+				ctx = context.WithValue(ctx, ctxAction, action)
+			}
+
 			slog.Debug("SigV4 authentication successful",
 				"accessKey", sig.Credential.AccessKeyID,
 				"identity", principal.identity,
@@ -237,6 +247,46 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// resolveNonQueryAction resolves the action for JSON-1.1 (X-Amz-Target) and
+// path-routed REST-JSON services (eks, the bedrock family), which carry no
+// query-protocol Action parameter. Empty on no match.
+func resolveNonQueryAction(r *http.Request, service string) string {
+	if target := r.Header.Get("X-Amz-Target"); target != "" {
+		if i := strings.LastIndex(target, "."); i >= 0 {
+			return target[i+1:]
+		}
+		return target
+	}
+
+	if service == "bedrock" {
+		service = resolveBedrockSubservice(r.URL.Path)
+	}
+	method, path := r.Method, r.URL.EscapedPath()
+	switch service {
+	case "eks":
+		if action, _, _, ok := lookupEKSAction(method, path); ok {
+			return action
+		}
+	case "bedrock":
+		if action, _, _, ok := lookupBedrockAction(method, path); ok {
+			return action
+		}
+	case "bedrock-runtime":
+		if action, _, _, ok := lookupBedrockRuntimeAction(method, path); ok {
+			return action
+		}
+	case "bedrock-agent":
+		if action, _, _, ok := lookupBedrockAgentAction(method, path); ok {
+			return action
+		}
+	case "bedrock-agent-runtime":
+		if action, _, _, ok := lookupBedrockAgentRuntimeAction(method, path); ok {
+			return action
+		}
+	}
+	return ""
 }
 
 // signingTime returns the timestamp the client signed with, read straight off the
@@ -437,16 +487,22 @@ func (gw *GatewayConfig) checkSessionPrincipal(principal principalContext, acces
 	return ""
 }
 
-// writeSigV4Error writes an auth-failure error in the service-appropriate format.
-// Every auth rejection funnels through here, a rate-limit lockout included, so
-// this is the one place that has to record the verdict onto the request.
-func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request, errorCode string) {
+// writeSigV4Error writes an auth-failure error in the service-appropriate
+// format. Every auth rejection funnels through here, a rate-limit lockout
+// included, so this is the one place that has to record the verdict onto the
+// request. message overrides the registry text from ErrorLookup when the
+// call site knows a more truthful reason to give; pass "" to use the
+// registry text unchanged.
+func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request, errorCode, message string) {
 	requestID := uuid.NewV4().String()
 	auditFrom(r.Context()).setAuthError(errorCode)
 
 	errorMsg, exists := awserrors.ErrorLookup[errorCode]
 	if !exists {
 		errorMsg = awserrors.ErrorMessage{HTTPCode: 500, Message: "Internal error"}
+	}
+	if message != "" {
+		errorMsg.Message = message
 	}
 
 	svc := signedService(r)
@@ -455,6 +511,7 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 	// the SDK chokes deserializing our XML into its shape.
 	if jsonErrorService(svc) {
 		w.Header().Set("Content-Type", eksJSONContentType)
+		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
 		w.WriteHeader(errorMsg.HTTPCode)
 		_, _ = w.Write(GenerateEKSErrorResponse(errorCode, errorMsg.Message, requestID))
 		return

@@ -134,7 +134,10 @@ func TestXMLErrorBody_EnvelopePerService(t *testing.T) {
 		{"rds", "ErrorResponse"},
 		{"ec2", "Response"},
 		{"spinifex", "Response"},
-		{"unknown-service", "Response"},
+		// Not enumerated on the EC2 arm: the generic REST-XML envelope, not
+		// the EC2 query envelope a REST-XML client cannot deserialize.
+		{"unknown-service", "ErrorResponse"},
+		{"route53", "ErrorResponse"},
 	}
 
 	for _, tc := range tests {
@@ -1541,6 +1544,8 @@ func TestWriteThrottleError_Bedrock(t *testing.T) {
 	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"), "bedrock must get JSON, not XML")
 	assert.Contains(t, string(body), `"__type"`)
 	assert.NotContains(t, string(body), "<?xml")
+	// SDKs resolve the modelled exception type from this header, not the body.
+	assert.Equal(t, "RequestLimitExceededException", resp.Header.Get("X-Amzn-Errortype"))
 }
 
 func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
@@ -1550,7 +1555,7 @@ func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), ctxService, "bedrock"))
 	w := httptest.NewRecorder()
 
-	gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch)
+	gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch, "")
 
 	resp := w.Result()
 	body, _ := io.ReadAll(resp.Body)
@@ -1558,6 +1563,8 @@ func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
 	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"), "a bedrock auth failure must be SDK-parseable JSON")
 	assert.Contains(t, string(body), "SignatureDoesNotMatch")
 	assert.NotContains(t, string(body), "<?xml")
+	// SDKs resolve the modelled exception type from this header, not the body.
+	assert.Equal(t, "SignatureDoesNotMatchException", resp.Header.Get("X-Amzn-Errortype"))
 }
 
 func TestThrottleMiddleware_Integration(t *testing.T) {

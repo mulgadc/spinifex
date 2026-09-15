@@ -387,6 +387,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 	if jsonErrorService(svc) {
 		body := GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID)
 		w.Header().Set("Content-Type", eksJSONContentType)
+		w.Header().Set("X-Amzn-Errortype", jsonErrorType(awserrors.ErrorServiceUnavailable))
 		w.WriteHeader(http.StatusServiceUnavailable)
 		if _, err := w.Write(body); err != nil {
 			slog.Error("Failed to write JSON cluster-unavailable response", "err", err)
@@ -418,6 +419,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	if jsonErrorService(svc) {
 		body := GenerateEKSErrorResponse(errorCode, errorMsg.Message, requestID)
 		w.Header().Set("Content-Type", eksJSONContentType)
+		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
 		w.WriteHeader(errorMsg.HTTPCode)
 		if _, err := w.Write(body); err != nil {
 			slog.Error("Failed to write JSON throttle error response", "err", err)
@@ -500,31 +502,32 @@ func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
 	if !ok {
 		return "", errors.New(awserrors.ErrorAuthFailure)
 	}
-	// The whole Bedrock family (bedrock, bedrock-runtime, bedrock-agent,
-	// bedrock-agent-runtime) shares the SigV4 signing name "bedrock" -- real
-	// AWS separates them by endpoint hostname, but the gateway serves one
-	// endpoint, so the request path is the only discriminator available here.
-	// /model/... and singular /guardrail/... are exclusive to bedrock-runtime;
-	// control-plane guardrail CRUD uses the plural /guardrails, so the
-	// prefixes never collide. Retrieve's /knowledgebases/{id}/retrieve and
-	// RetrieveAndGenerate's /retrieveAndGenerate are checked ahead of the
-	// bedrock-agent /knowledgebases/... prefix, since Retrieve's own path is
-	// itself a /knowledgebases/... path.
+	// The whole Bedrock family shares the SigV4 signing name "bedrock"; the
+	// request path is the only discriminator, since the gateway serves one endpoint.
 	if svc == "bedrock" {
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/model/") || strings.HasPrefix(r.URL.Path, "/guardrail/"):
-			svc = "bedrock-runtime"
-		case r.URL.Path == "/retrieveAndGenerate" || (strings.HasPrefix(r.URL.Path, "/knowledgebases/") && strings.HasSuffix(r.URL.Path, "/retrieve")):
-			svc = "bedrock-agent-runtime"
-		case strings.HasPrefix(r.URL.Path, "/knowledgebases/"):
-			svc = "bedrock-agent"
-		}
+		svc = resolveBedrockSubservice(r.URL.Path)
 	}
 	if !supportedServices[svc] {
 		slog.Debug("Unsupported service", "service", svc)
 		return "", errors.New(awserrors.ErrorUnsupportedOperation)
 	}
 	return svc, nil
+}
+
+// resolveBedrockSubservice maps a bedrock-family request path to its real
+// sub-service, the only discriminator since all four share one signing name.
+// Shared by GetService (post-auth dispatch) and SigV4 auth (action resolution).
+func resolveBedrockSubservice(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/model/") || strings.HasPrefix(path, "/guardrail/"):
+		return "bedrock-runtime"
+	case path == "/retrieveAndGenerate" || (strings.HasPrefix(path, "/knowledgebases/") && strings.HasSuffix(path, "/retrieve")):
+		return "bedrock-agent-runtime"
+	case strings.HasPrefix(path, "/knowledgebases/"):
+		return "bedrock-agent"
+	default:
+		return "bedrock"
+	}
 }
 
 // isNATSTransient reports whether err represents a transient NATS/JetStream
@@ -821,6 +824,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		body := GenerateEKSErrorResponse(code, errorMsg.Message, requestId)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)
+		w.Header().Set("X-Amzn-Errortype", jsonErrorType(code))
 		w.WriteHeader(errorMsg.HTTPCode)
 		if _, err := w.Write(body); err != nil {
 			slog.Error("Failed to write EKS error response", "err", err)
@@ -912,6 +916,9 @@ type IAMErrorDetail struct {
 	Message string `xml:"Message"`
 }
 
+// GenerateIAMErrorResponse builds the generic REST-XML/AWS-query ErrorResponse
+// envelope. Originally IAM/STS-specific, it is also xmlErrorBody's default for
+// every scope with no dedicated shape, including ones the gateway does not serve.
 func GenerateIAMErrorResponse(code, message, requestID string) (output []byte) {
 	errorXml := IAMErrorResponse{
 		Error: IAMErrorDetail{
@@ -953,18 +960,24 @@ func GenerateS3ErrorResponse(code, message, requestID, resource string) (output 
 }
 
 // xmlErrorBody renders an error in the XML envelope svc's clients expect. The
-// one place the service-to-envelope mapping lives, so a service cannot be added
-// to some emitters and missed by others. JSON services never reach here — every
-// caller checks jsonErrorService first.
+// one place the service-to-envelope mapping lives, so a service cannot be
+// added to some emitters and missed by others. JSON services never reach
+// here — every caller checks jsonErrorService first.
 func xmlErrorBody(svc, code, message, requestID, resource string) []byte {
 	switch svc {
 	case "s3":
 		return GenerateS3ErrorResponse(code, message, requestID, resource)
-	case "iam", "sts", "elasticloadbalancing", "rds":
-		return GenerateIAMErrorResponse(code, message, requestID)
-	default:
-		// ec2, account, spinifex, and any scope the gateway does not serve.
+	case "ec2", "spinifex", "":
+		// Both speak the Action-parameter query protocol, and their clients
+		// parse the EC2 <Response><Errors> shape, not the generic ErrorResponse.
+		// Empty means the signature never parsed, so no service is known yet;
+		// keep EC2's shape there rather than changing a path this is not about.
 		return GenerateEC2ErrorResponse(code, message, requestID)
+	default:
+		// iam, sts, elasticloadbalancing, rds, and any unenumerated or
+		// unserved scope: the generic REST-XML ErrorResponse envelope, never
+		// EC2's shape, which a REST-XML client cannot deserialize.
+		return GenerateIAMErrorResponse(code, message, requestID)
 	}
 }
 
@@ -1039,12 +1052,9 @@ func (gw *GatewayConfig) rememberActiveNodes(count int) {
 	gw.activeNodesAt = time.Now()
 }
 
-// recordResolvedAction renames the current span to service.action, tags it
-// with aws.service/aws.action, and updates the request's metric action name.
-// Query-protocol services resolve their action during SigV4 auth, before
-// dispatch; REST-JSON services (path-routed or X-Amz-Target-routed) only know
-// it once checkPolicyResource runs. Called from both paths, so it must be
-// idempotent — the last call before the response is written wins.
+// recordResolvedAction renames the current span to service.action and tags
+// aws.service/aws.action. Called from both SigV4 auth and checkPolicyResource,
+// so it must be idempotent — the last call before the response wins.
 func recordResolvedAction(ctx context.Context, service, action string) {
 	if action == "" {
 		return
@@ -1063,9 +1073,8 @@ func recordResolvedAction(ctx context.Context, service, action string) {
 
 // traceActionEnricher renames the server span to the resolved SigV4
 // service.Action and tags account/region once auth populated the context.
-// Only fires here for query-protocol services, whose action is known before
-// dispatch; REST-JSON services get the same treatment later, from
-// checkPolicyResource, once their dispatcher resolves the action.
+// A dispatcher lacking its own action source (none currently do) would get
+// the same treatment later, from checkPolicyResource.
 func traceActionEnricher(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()

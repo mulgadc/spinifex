@@ -214,6 +214,8 @@ func TestErrorHandler_EKSEmitsJSONNotXML(t *testing.T) {
 	var env gateway_eks.EKSJSONError
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
 	assert.Equal(t, "NotImplementedException", env.Type)
+	// SDKs resolve the modelled exception type from this header, not the body.
+	assert.Equal(t, env.Type, w.Header().Get("X-Amzn-Errortype"))
 }
 
 // errEKSNotImpl returns the error a stub EKS handler would surface.

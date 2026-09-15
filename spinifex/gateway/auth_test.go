@@ -700,7 +700,7 @@ func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
 			w := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 
-			gw.writeSigV4Error(w, req, tc.errorCode)
+			gw.writeSigV4Error(w, req, tc.errorCode, "")
 			resp := w.Result()
 
 			// Correct HTTP status code
@@ -714,7 +714,8 @@ func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
 				t.Errorf("Expected Content-Type application/xml, got %q", ct)
 			}
 
-			// Body is well-formed XML containing the error code and RequestID
+			// No ctxService is set here, so the signature never parsed and the
+			// EC2 query envelope still applies, RequestID casing included.
 			body, _ := io.ReadAll(resp.Body)
 			bodyStr := string(body)
 
@@ -738,7 +739,7 @@ func TestWriteSigV4Error_IgnoresClientRequestID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Amz-Request-Id", "test-request-id-123")
 
-	gw.writeSigV4Error(w, req, awserrors.ErrorIncompleteSignature)
+	gw.writeSigV4Error(w, req, awserrors.ErrorIncompleteSignature, "")
 
 	body, _ := io.ReadAll(w.Result().Body)
 	if strings.Contains(string(body), "test-request-id-123") {
@@ -2534,4 +2535,104 @@ func TestRedactedCanonicalRequest_MasksSessionToken(t *testing.T) {
 	// The rest must stay intact, or the log is useless for diffing.
 	assert.Contains(t, out, "POST")
 	assert.Contains(t, out, "x-amz-date:")
+}
+
+// --- Unserved-service rejection: envelope and message (A + B) ---
+
+// A scope the gateway does not serve is rejected at the supportedServices
+// gate before any signature check, so the response must not blame the
+// credentials, and must render in the generic REST-XML envelope rather than
+// the EC2 query shape a REST-XML client like route53's cannot deserialize.
+func TestSigV4Auth_UnservedServiceNamesServiceNotCredentials(t *testing.T) {
+	handler := setupTestApp(testAccessKey, testSecretKey)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "route53", time.Now().UTC())
+
+	resp := doRequest(handler, req)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var parsed struct {
+		Error struct {
+			Code    string `xml:"Code"`
+			Message string `xml:"Message"`
+		} `xml:"Error"`
+		RequestID string `xml:"RequestId"`
+	}
+	require.NoError(t, xml.Unmarshal(body, &parsed), "body: %s", body)
+
+	assert.Equal(t, "ErrorResponse", xmlRootName(t, body))
+	assert.Equal(t, awserrors.ErrorSignatureDoesNotMatch, parsed.Error.Code)
+	assert.Contains(t, parsed.Error.Message, "route53")
+	assert.NotContains(t, parsed.Error.Message, "credentials",
+		"nothing was wrong with the credentials, which were never checked")
+}
+
+// --- ctxAction resolution for non-query-protocol services (C) ---
+
+// JSON-1.1 and path-routed REST-JSON requests carry no query-protocol Action,
+// so before the fix ctxAction stayed empty and every such request shared the
+// throttle bucket "<account>:unknown", which no per-action limit can match.
+func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
+	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	require.NoError(t, err)
+
+	mockSvc := &mockIAMService{
+		masterKey: testMasterKey,
+		accessKeys: map[string]*handlers_iam.AccessKey{
+			testAccessKey: {
+				AccessKeyID:     testAccessKey,
+				SecretAccessKey: encryptedSecret,
+				UserName:        "alice",
+				AccountID:       "123456789012",
+				Status:          "Active",
+			},
+		},
+	}
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: mockSvc}
+
+	var gotAction, gotThrottleKey string
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
+		gotAction, _ = r.Context().Value(ctxAction).(string)
+		gotThrottleKey, _ = gw.throttleKeyFuncs()[1](r)
+		w.Write([]byte("OK"))
+	})
+
+	testCases := []struct {
+		name       string
+		method     string
+		path       string
+		service    string
+		target     string
+		wantAction string
+	}{
+		{"JSON-1.1 X-Amz-Target", http.MethodPost, "/", "tagging",
+			"ResourceGroupsTaggingAPI_20170126.GetResources", "GetResources"},
+		{"path-routed EKS", http.MethodGet, "/clusters", "eks", "", "ListClusters"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotAction, gotThrottleKey = "", ""
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Host = "localhost:9999"
+			if tc.target != "" {
+				req.Header.Set("X-Amz-Target", tc.target)
+			}
+			signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, tc.service, time.Now().UTC())
+
+			resp := doRequest(r, req)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.Equal(t, tc.wantAction, gotAction)
+			assert.NotEqual(t, "unknown", gotThrottleKey,
+				"throttle bucket must not fall back to the shared unknown key")
+			assert.Equal(t, tc.wantAction, gotThrottleKey)
+		})
+	}
 }

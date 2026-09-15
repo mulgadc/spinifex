@@ -81,9 +81,10 @@ var Actions = map[string]Handler{
 	"PutRegistryPolicy":      NotImplemented,
 	"DescribeRegistry":       NotImplemented,
 
-	// Image scanning is unsupported (no scanner backend): the whole scan surface
-	// returns OperationNotSupportedException rather than NotImplemented.
-	"PutImageScanningConfiguration":           ScanningNotSupported,
+	// Image scanning is unsupported (no scanner backend), except that
+	// PutImageScanningConfiguration accepts the scanOnPush=false no-op rather
+	// than rejecting the whole action unread.
+	"PutImageScanningConfiguration":           PutImageScanningConfiguration,
 	"GetImageScanningConfiguration":           ScanningNotSupported,
 	"StartImageScan":                          ScanningNotSupported,
 	"DescribeImageScanFindings":               ScanningNotSupported,
@@ -91,7 +92,7 @@ var Actions = map[string]Handler{
 	"PutRegistryScanningConfiguration":        ScanningNotSupported,
 	"BatchGetRepositoryScanningConfiguration": ScanningNotSupported,
 
-	// Deferred-feature surface (lifecycle, replication, tagging).
+	// Deferred-feature surface (lifecycle, replication).
 	"PutLifecyclePolicy":          PutLifecyclePolicy,
 	"GetLifecyclePolicy":          GetLifecyclePolicy,
 	"DeleteLifecyclePolicy":       DeleteLifecyclePolicy,
@@ -99,9 +100,11 @@ var Actions = map[string]Handler{
 	"GetLifecyclePolicyPreview":   NotImplemented,
 	"PutReplicationConfiguration": NotImplemented,
 	"ReplicateImage":              NotImplemented,
-	"TagResource":                 NotImplemented,
-	"UntagResource":               NotImplemented,
-	"ListTagsForResource":         ListTagsForResource,
+
+	// Resource tags.
+	"TagResource":         TagResource,
+	"UntagResource":       UntagResource,
+	"ListTagsForResource": ListTagsForResource,
 }
 
 // StubbedActionNames returns the Actions entries still bound to NotImplemented.

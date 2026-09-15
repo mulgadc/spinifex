@@ -70,12 +70,18 @@ func describeReposRequest(t *testing.T, gw *GatewayConfig, body string) *httptes
 
 type describeReposOut struct {
 	Repositories []struct {
-		RepositoryName     string  `json:"repositoryName"`
-		RegistryID         string  `json:"registryId"`
-		RepositoryArn      string  `json:"repositoryArn"`
-		RepositoryURI      string  `json:"repositoryUri"`
-		ImageTagMutability string  `json:"imageTagMutability"`
-		CreatedAt          float64 `json:"createdAt"`
+		RepositoryName          string  `json:"repositoryName"`
+		RegistryID              string  `json:"registryId"`
+		RepositoryArn           string  `json:"repositoryArn"`
+		RepositoryURI           string  `json:"repositoryUri"`
+		ImageTagMutability      string  `json:"imageTagMutability"`
+		CreatedAt               float64 `json:"createdAt"`
+		EncryptionConfiguration struct {
+			EncryptionType string `json:"encryptionType"`
+		} `json:"encryptionConfiguration"`
+		ImageScanningConfiguration struct {
+			ScanOnPush bool `json:"scanOnPush"`
+		} `json:"imageScanningConfiguration"`
 	} `json:"repositories"`
 }
 
@@ -98,6 +104,8 @@ func TestDescribeRepositories_ListsAccountScoped(t *testing.T) {
 	assert.Equal(t, ecrTestAccount+".dkr.ecr."+ecrTestRegion+"."+ecrTestSuffix+"/team/app", app.RepositoryURI)
 	assert.Equal(t, "MUTABLE", app.ImageTagMutability)
 	assert.Positive(t, app.CreatedAt)
+	assert.Equal(t, "AES256", app.EncryptionConfiguration.EncryptionType)
+	assert.False(t, app.ImageScanningConfiguration.ScanOnPush)
 }
 
 func TestECRRegistryHost_AppendsAdvertisedPort(t *testing.T) {

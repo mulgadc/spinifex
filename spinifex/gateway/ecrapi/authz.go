@@ -201,13 +201,24 @@ func repositoryARN(region, accountID, name string) string {
 // caller's account: the tag handler keys off the repository name alone and
 // operates in the caller's own account bucket.
 func tagARN(region, accountID, resourceARN string) string {
-	parts := strings.SplitN(resourceARN, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" || parts[2] != "ecr" {
-		return anyResource
-	}
-	kind, name, found := strings.Cut(parts[5], "/")
-	if !found || kind != repositoryResourceType || name == "" {
+	name, err := RepositoryNameFromResourceARN(resourceARN)
+	if err != nil {
 		return anyResource
 	}
 	return repositoryARN(region, accountID, name)
+}
+
+// RepositoryNameFromResourceARN extracts the repository name from an ECR
+// resource ARN (arn:aws:ecr:<region>:<account>:repository/<name>). tagARN and
+// the tag handlers share this one parser for that shape.
+func RepositoryNameFromResourceARN(resourceARN string) (string, error) {
+	parts := strings.SplitN(resourceARN, ":", 6)
+	if len(parts) != 6 || parts[0] != "arn" || parts[2] != "ecr" {
+		return "", errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	kind, name, found := strings.Cut(parts[5], "/")
+	if !found || kind != repositoryResourceType || name == "" {
+		return "", errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	return name, nil
 }

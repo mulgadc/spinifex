@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
@@ -69,14 +68,7 @@ func (gw *GatewayConfig) handleDescribeRepositories(w http.ResponseWriter, r *ht
 			slog.ErrorContext(ctx, "DescribeRepositories: get repo failed", "repo", name, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		repos = append(repos, &ecr.Repository{
-			RegistryId:         aws.String(accountID),
-			RepositoryName:     aws.String(name),
-			RepositoryArn:      aws.String(gw.ecrRepositoryArn(accountID, name)),
-			RepositoryUri:      aws.String(gw.ecrRepositoryUri(accountID, name)),
-			CreatedAt:          aws.Time(meta.CreatedAt),
-			ImageTagMutability: aws.String(meta.TagMutability()),
-		})
+		repos = append(repos, gw.buildRepository(accountID, name, meta))
 	}
 
 	gateway_ecrapi.WriteJSONResponse(w, &ecr.DescribeRepositoriesOutput{Repositories: repos})

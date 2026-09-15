@@ -29,12 +29,27 @@ const (
 	TagMutabilityImmutable = "IMMUTABLE"
 )
 
+// Repository encryption types. AES256 is the only value CreateRepository
+// accepts: predastore seals every stored fragment with AES-256-GCM regardless
+// of caller input. KMS is rejected: no customer key material is plumbed here.
+const (
+	EncryptionTypeAES256 = "AES256"
+	EncryptionTypeKMS    = "KMS"
+)
+
 // RepoMeta is the per-repository metadata record.
 type RepoMeta struct {
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"createdAt"`
 	// ImageTagMutability is MUTABLE or IMMUTABLE; empty == MUTABLE.
 	ImageTagMutability string `json:"imageTagMutability,omitempty"`
+	// EncryptionType is always AES256 in practice; empty == AES256.
+	EncryptionType string `json:"encryptionType,omitempty"`
+	// ScanOnPush mirrors imageScanningConfiguration.scanOnPush; unset == false,
+	// and no path in this codebase ever sets it true.
+	ScanOnPush bool `json:"scanOnPush,omitempty"`
+	// Tags is the resource tag map managed by TagResource/UntagResource.
+	Tags map[string]string `json:"tags,omitempty"`
 }
 
 // TagMutability returns the repo's effective mutability, defaulting an unset
@@ -44,6 +59,15 @@ func (m RepoMeta) TagMutability() string {
 		return TagMutabilityMutable
 	}
 	return m.ImageTagMutability
+}
+
+// EncryptionTypeOrDefault returns the repo's effective encryption type,
+// defaulting an unset value to AES256.
+func (m RepoMeta) EncryptionTypeOrDefault() string {
+	if m.EncryptionType == "" {
+		return EncryptionTypeAES256
+	}
+	return m.EncryptionType
 }
 
 // ManifestMeta records a stored manifest's properties for shallow validation

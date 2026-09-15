@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
@@ -80,14 +79,7 @@ func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.R
 	}
 
 	gateway_ecrapi.WriteJSONResponse(w, &ecr.DeleteRepositoryOutput{
-		Repository: &ecr.Repository{
-			RegistryId:         aws.String(accountID),
-			RepositoryName:     aws.String(req.RepositoryName),
-			RepositoryArn:      aws.String(gw.ecrRepositoryArn(accountID, req.RepositoryName)),
-			RepositoryUri:      aws.String(gw.ecrRepositoryUri(accountID, req.RepositoryName)),
-			CreatedAt:          aws.Time(meta.CreatedAt),
-			ImageTagMutability: aws.String(meta.TagMutability()),
-		},
+		Repository: gw.buildRepository(accountID, req.RepositoryName, meta),
 	})
 	return nil
 }

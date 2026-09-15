@@ -43,9 +43,12 @@ func TestScanningNotSupported(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorOperationNotSupported, err.Error())
 }
 
+// TestActions_ScanSurfaceUnsupported covers actions that reject every call
+// outright. PutImageScanningConfiguration is excluded: it inspects the body,
+// covered separately in imagescanning_test.go.
 func TestActions_ScanSurfaceUnsupported(t *testing.T) {
 	scan := []string{
-		"PutImageScanningConfiguration", "GetImageScanningConfiguration",
+		"GetImageScanningConfiguration",
 		"StartImageScan", "DescribeImageScanFindings",
 		"GetRegistryScanningConfiguration", "PutRegistryScanningConfiguration",
 		"BatchGetRepositoryScanningConfiguration",

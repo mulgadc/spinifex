@@ -2,6 +2,7 @@ package ecr
 
 import (
 	"context"
+	"encoding/json"
 
 	"strings"
 	"testing"
@@ -10,6 +11,26 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestRepoMeta_DecodesZeroValueRecord proves a KV record written before
+// EncryptionType, ScanOnPush, and Tags existed still decodes cleanly: every
+// new field is omitempty, so an old record simply zero-values them.
+func TestRepoMeta_DecodesZeroValueRecord(t *testing.T) {
+	const oldRecord = `{"name":"team/app","createdAt":"2024-01-01T00:00:00Z","imageTagMutability":"MUTABLE"}`
+	var m RepoMeta
+	require.NoError(t, json.Unmarshal([]byte(oldRecord), &m))
+	assert.Equal(t, "team/app", m.Name)
+	assert.Equal(t, "MUTABLE", m.ImageTagMutability)
+	assert.Empty(t, m.EncryptionType)
+	assert.Equal(t, EncryptionTypeAES256, m.EncryptionTypeOrDefault())
+	assert.False(t, m.ScanOnPush)
+	assert.Nil(t, m.Tags)
+}
+
+func TestRepoMeta_EncryptionTypeOrDefault(t *testing.T) {
+	assert.Equal(t, EncryptionTypeAES256, RepoMeta{}.EncryptionTypeOrDefault())
+	assert.Equal(t, EncryptionTypeAES256, RepoMeta{EncryptionType: EncryptionTypeAES256}.EncryptionTypeOrDefault())
+}
 
 func TestValidateRepoName(t *testing.T) {
 	valid := []string{"ab", "team/app", "a/b/c", "my-repo.name_1", "x0/y1/z2"}

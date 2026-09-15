@@ -1,7 +1,6 @@
 package handlers_ec2_instance
 
 import (
-	"errors"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -41,7 +40,7 @@ func ParseStatusSelection(input *ec2.DescribeInstanceStatusInput, accountID stri
 	filters, err := filterutil.ParseFilters(input.Filters, DescribeInstanceStatusValidFilters)
 	if err != nil {
 		slog.Warn("DescribeInstanceStatus: invalid filter", "err", err)
-		return StatusSelection{}, errors.New(awserrors.ErrorInvalidParameterValue)
+		return StatusSelection{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 
 	includedStates := describeInstanceStatusRunningOnly

@@ -203,7 +203,7 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeIGWValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeInternetGateways: invalid filter", "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 
 	prefix := accountID + "."

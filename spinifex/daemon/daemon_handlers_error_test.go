@@ -44,11 +44,11 @@ func requestErrorEnvelope(t *testing.T, subject string, fn func(context.Context,
 	return errResp
 }
 
-// An unregistered error sanitizes to ServerInternal, but its reason must still
-// reach the caller. This is the ACM force-renew refusal: without the message the
-// CLI prints a bare "ServerInternal" and the operator has to read the daemon log
-// to learn that only PRIVATE_CA certificates can be force-renewed.
-func TestHandleNATSRequest_UncodedErrorCarriesMessage(t *testing.T) {
+// A plain errors.New carries no client-facing message: only awserrors.Errorf
+// records one. Falling back to err.Error() here would put whatever context a
+// caller wrapped in for its own logs onto the wire, which is the disclosure
+// risk this contract exists to prevent.
+func TestHandleNATSRequest_UncodedErrorOmitsMessage(t *testing.T) {
 	const reason = "acm renewal: arn:aws:acm:ap-southeast-2:000000000001:certificate/abc is a AMAZON_ISSUED certificate; only PRIVATE_CA certificates can be force-renewed"
 
 	errResp := requestErrorEnvelope(t, "test.err.msg.uncoded", func(context.Context, *testInput, string) (*testOutput, error) {
@@ -56,19 +56,49 @@ func TestHandleNATSRequest_UncodedErrorCarriesMessage(t *testing.T) {
 	})
 
 	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
+	assert.Nil(t, errResp["Message"])
+}
+
+// The ACM force-renew refusal this test mirrors now builds its error with
+// awserrors.Errorf specifically so the operator sees the actionable reason
+// instead of a bare "ServerInternal", without relying on the rejected
+// err.Error() fallback.
+func TestHandleNATSRequest_ErrorfMessageOnUnregisteredCodeCarriesMessage(t *testing.T) {
+	const reason = "acm renewal: arn:aws:acm:ap-southeast-2:000000000001:certificate/abc is a AMAZON_ISSUED certificate; only PRIVATE_CA certificates can be force-renewed"
+
+	errResp := requestErrorEnvelope(t, "test.err.msg.uncoded.errorf", func(context.Context, *testInput, string) (*testOutput, error) {
+		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "%s", reason)
+	})
+
+	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
 	assert.Equal(t, reason, errResp["Message"],
 		"the actionable reason must survive the transport, not only the daemon log")
 }
 
-// A wrapped coded error keeps the real code (so the gateway maps the right HTTP
-// status) and carries the wrapping context alongside it.
-func TestHandleNATSRequest_WrappedCodedErrorCarriesMessage(t *testing.T) {
+// A bare coded error wrapped only for the handler's own log line keeps the
+// real code (so the gateway maps the right HTTP status) but must not leak the
+// wrapping context onto the wire — that context is internal detail, not a
+// message the producing call site attached via awserrors.Errorf.
+func TestHandleNATSRequest_WrappedCodedErrorOmitsWrapperContext(t *testing.T) {
 	errResp := requestErrorEnvelope(t, "test.err.msg.wrapped", func(context.Context, *testInput, string) (*testOutput, error) {
 		return nil, fmt.Errorf("vol-123 is attached to i-456: %w", errors.New(awserrors.ErrorVolumeInUse))
 	})
 
 	assert.Equal(t, awserrors.ErrorVolumeInUse, errResp["Code"])
-	assert.Contains(t, errResp["Message"], "vol-123 is attached to i-456")
+	assert.Nil(t, errResp["Message"])
+}
+
+// A wrapped Errorf-built error keeps its curated message across the wire, but
+// drops an outer wrapper added purely for the handler's own log line.
+func TestHandleNATSRequest_WrappedErrorfCarriesMessageNotWrapperContext(t *testing.T) {
+	const curated = "vol-123 is attached to i-456"
+	errResp := requestErrorEnvelope(t, "test.err.msg.wrapped.errorf", func(context.Context, *testInput, string) (*testOutput, error) {
+		cause := awserrors.Errorf(awserrors.ErrorVolumeInUse, "%s", curated)
+		return nil, fmt.Errorf("detach: %w", cause)
+	})
+
+	assert.Equal(t, awserrors.ErrorVolumeInUse, errResp["Code"])
+	assert.Equal(t, curated, errResp["Message"])
 }
 
 // A bare code carries no message. Handlers returning errors.New(awserrors.X) are

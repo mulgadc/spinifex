@@ -79,7 +79,7 @@ func TestVLLMProvider_Converse_UnresolvedEndpointReturnsModelNotReady(t *testing
 }
 
 // TestVLLMProvider_Converse_EndpointErrorPropagatesCode proves a resolver err
-// carrying an admission-refusal code (wrapped the way decodedNATSError's
+// carrying an admission-refusal code (wrapped the way a decoded NATS error's
 // Unwrap tree does) surfaces faithfully rather than being flattened to
 // ServiceUnavailableException.
 func TestVLLMProvider_Converse_EndpointErrorPropagatesCode(t *testing.T) {

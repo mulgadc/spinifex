@@ -73,7 +73,8 @@ func respondWithError(nodeID string, msg *nats.Msg, errCode string) {
 // an opaque ServerInternal, leaving the reason visible only in the daemon log.
 // Mirrors utils.ServeNATSRequestCtx, which has always preserved the message.
 func respondWithServiceError(nodeID string, msg *nats.Msg, err error) {
-	payload := utils.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), err.Error())
+	_, message, _ := awserrors.ResolveErrorDetail(err)
+	payload := utils.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message)
 	respondNATSMsg(nodeID, msg, payload)
 }
 

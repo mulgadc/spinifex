@@ -2138,7 +2138,10 @@ func TestDescribeVolumes_FilterUnknownName_Error(t *testing.T) {
 		},
 	}, "000000000001")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Contains(t, message, "bogus-filter")
 }
 
 func TestDescribeVolumes_FilterNoResults(t *testing.T) {
@@ -2670,5 +2673,8 @@ func TestDescribeVolumesModifications_UnknownFilter(t *testing.T) {
 		},
 	}, testVolAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Contains(t, message, "not-a-real-filter")
 }

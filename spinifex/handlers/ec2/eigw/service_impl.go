@@ -163,7 +163,7 @@ func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx contex
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeEIGWValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeEgressOnlyInternetGateways: invalid filter", "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 
 	prefix := accountID + "."

@@ -376,7 +376,7 @@ func (w *Worker) ForceRenewCertificate(ctx context.Context, input *ForceRenewCer
 		return nil, err
 	}
 	if rec.Type != acm.CertificateTypePrivate {
-		return nil, fmt.Errorf("acm renewal: %s is a %s certificate; only PRIVATE_CA certificates can be force-renewed", input.CertificateArn, rec.Type)
+		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "acm renewal: %s is a %s certificate; only PRIVATE_CA certificates can be force-renewed", input.CertificateArn, rec.Type)
 	}
 
 	acquired, err := w.renewWithLease(ctx, input.CertificateArn)
@@ -384,7 +384,7 @@ func (w *Worker) ForceRenewCertificate(ctx context.Context, input *ForceRenewCer
 		return nil, err
 	}
 	if !acquired {
-		return nil, fmt.Errorf("acm renewal: %s is currently leased by another node; try again shortly", input.CertificateArn)
+		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "acm renewal: %s is currently leased by another node; try again shortly", input.CertificateArn)
 	}
 
 	// Re-read for the post-renewal outcome only: serial, validity and renewal

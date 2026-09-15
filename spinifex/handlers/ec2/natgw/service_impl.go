@@ -376,7 +376,7 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 	parsedFilters, err := filterutil.ParseFilters(input.Filter, describeNatGatewaysValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeNatGateways: invalid filter", "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 
 	natgwIDs := make(map[string]bool)

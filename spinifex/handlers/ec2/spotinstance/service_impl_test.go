@@ -223,7 +223,10 @@ func TestDescribe_InvalidFilter(t *testing.T) {
 		Filters: []*ec2.Filter{{Name: aws.String("bogus-filter"), Values: []*string{aws.String("x")}}},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Contains(t, message, "bogus-filter")
 }
 
 // --- Cancel ---

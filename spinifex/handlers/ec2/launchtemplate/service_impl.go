@@ -599,7 +599,7 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 	filters, err := filterutil.ParseFilters(input.Filters, describeLaunchTemplatesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeLaunchTemplates: invalid filter", "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 
 	for _, id := range input.LaunchTemplateIds {
@@ -718,7 +718,7 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplateVersions(ctx context.C
 	filters, err := filterutil.ParseFilters(input.Filters, describeLaunchTemplateVersionsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeLaunchTemplateVersions: invalid filter", "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 
 	header, _, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)

@@ -1181,7 +1181,10 @@ func TestDescribeImages_FilterUnknownName_Error(t *testing.T) {
 		},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Contains(t, message, "bogus-filter")
 }
 
 func TestDescribeImages_FilterWildcard(t *testing.T) {

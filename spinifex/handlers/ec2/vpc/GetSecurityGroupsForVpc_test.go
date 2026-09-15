@@ -223,7 +223,10 @@ func TestGetSecurityGroupsForVpc_Filters(t *testing.T) {
 		Filters: []*ec2.Filter{{Name: aws.String("vpc-id"), Values: []*string{aws.String(vpcID)}}},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Contains(t, message, "vpc-id")
 
 	out, err = svc.GetSecurityGroupsForVpc(context.Background(), &ec2.GetSecurityGroupsForVpcInput{
 		VpcId:   aws.String(vpcID),

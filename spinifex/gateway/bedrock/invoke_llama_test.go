@@ -106,8 +106,8 @@ func TestLlamaInvokeAdapter_InvokeModel_UnresolvedEndpointReturnsModelNotReady(t
 }
 
 // TestLlamaInvokeAdapter_InvokeModel_EndpointErrorPropagatesCode proves a
-// resolver err carrying an admission-refusal code (wrapped the way
-// decodedNATSError's Unwrap tree does) surfaces faithfully rather than being
+// resolver err carrying an admission-refusal code (wrapped the way a decoded
+// NATS error's Unwrap tree does) surfaces faithfully rather than being
 // flattened to ServiceUnavailableException.
 func TestLlamaInvokeAdapter_InvokeModel_EndpointErrorPropagatesCode(t *testing.T) {
 	wrapped := fmt.Errorf("endpoint resolve: %w", errors.New(awserrors.ErrorModelNotReadyException))

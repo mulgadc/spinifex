@@ -115,6 +115,26 @@ func TestResolveErrorDetail_ErrorfMessageWins(t *testing.T) {
 	}
 }
 
+// TestResolveErrorDetail_ErrorfMessageSurvivesOuterWrapper is the core
+// anti-leak assertion: a call site's own %w wrapper, added purely for its
+// logs, must not replace or blend with the curated message Errorf recorded.
+func TestResolveErrorDetail_ErrorfMessageSurvivesOuterWrapper(t *testing.T) {
+	inner := Errorf(ErrorInsufficientAddressCapacity, "no capacity for m5.large on any eligible node")
+	outer := fmt.Errorf("dial predastore 10.0.1.5:8443: %w", inner)
+
+	code, message, ok := ResolveErrorDetail(outer)
+	if !ok || code != ErrorInsufficientAddressCapacity {
+		t.Fatalf("ResolveErrorDetail() code = (%q, %v), want (%q, true)", code, ok, ErrorInsufficientAddressCapacity)
+	}
+	want := "no capacity for m5.large on any eligible node"
+	if message != want {
+		t.Errorf("ResolveErrorDetail() message = %q, want %q", message, want)
+	}
+	if strings.Contains(message, "dial predastore") {
+		t.Errorf("ResolveErrorDetail() message %q leaked the outer wrapper's context", message)
+	}
+}
+
 // TestResolveErrorDetail_PlainWrapCarriesNoMessage is the compatibility case:
 // a generic %w wrapper not produced by Errorf must not be mistaken for a
 // client-facing message, even though it sits right next to the bare code.

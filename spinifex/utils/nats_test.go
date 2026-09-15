@@ -286,6 +286,30 @@ func TestNATSRequest_ErrorResponse(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
 }
 
+// TestNATSRequest_DecodedErrorContainsCode pins the shape strings.Contains(err.Error(), code)
+// classifiers depend on (e.g. handlers/iam/provision.go's isAlreadyExists,
+// gateway/auth.go's IAM-not-found branch): the decoded error's Error() text
+// must still contain the wire code even when a message rides alongside it.
+func TestNATSRequest_DecodedErrorContainsCode(t *testing.T) {
+	ns := startTestNATSServer(t)
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+
+	const code = "EntityAlreadyExists"
+	const reason = "access key AKIA... already exists for user provisioning-bot"
+	_, err = nc.Subscribe("test.fail.classify", func(msg *nats.Msg) {
+		msg.Respond(GenerateErrorPayloadWithMessage(code, reason))
+	})
+	require.NoError(t, err)
+
+	type Resp struct{}
+	_, err = NATSRequest[Resp](context.Background(), nc, "test.fail.classify", struct{}{}, 2*time.Second, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), code)
+}
+
 func TestNATSRequest_ErrorResponseSurfacesMessage(t *testing.T) {
 	ns := startTestNATSServer(t)
 
@@ -304,20 +328,22 @@ func TestNATSRequest_ErrorResponseSurfacesMessage(t *testing.T) {
 	type Resp struct{}
 	_, err = NATSRequest[Resp](context.Background(), nc, "test.fail.msg", struct{}{}, 2*time.Second, "")
 	assert.Error(t, err)
-	assert.Equal(t, reason, err.Error())
-	code, ok := awserrors.ResolveErrorCode(err)
+	assert.Contains(t, err.Error(), reason)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
 	assert.True(t, ok)
 	assert.Equal(t, awserrors.ErrorServerInternal, code)
+	assert.Equal(t, reason, message)
 }
 
-func TestServeNATSRequest_WrappedErrorPreservesCodeAndMessage(t *testing.T) {
+func TestServeNATSRequest_WrappedErrorPreservesCodeButDropsWrapperContext(t *testing.T) {
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
 	defer nc.Close()
 
-	const message = "launch on node-1: InsufficientAddressCapacity"
+	// A bare errors.New(code) wrapped only for the handler's own logs carries
+	// no client-facing message, so the wrapper text must not reach the wire.
 	_, err = nc.Subscribe("test.serve.error", func(msg *nats.Msg) {
 		ServeNATSRequest(msg, func(_ *struct{}) (*struct{}, error) {
 			cause := errors.New(awserrors.ErrorInsufficientAddressCapacity)
@@ -329,10 +355,39 @@ func TestServeNATSRequest_WrappedErrorPreservesCodeAndMessage(t *testing.T) {
 
 	_, err = NATSRequest[struct{}](context.Background(), nc, "test.serve.error", struct{}{}, 2*time.Second, "")
 	require.Error(t, err)
-	assert.Equal(t, message, err.Error())
+	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, err.Error())
+	assert.NotContains(t, err.Error(), "launch on node-1")
 	code, ok := awserrors.ResolveErrorCode(err)
 	assert.True(t, ok)
 	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, code)
+}
+
+func TestServeNATSRequest_ErrorfMessageSurvivesOuterWrapperContext(t *testing.T) {
+	ns := startTestNATSServer(t)
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+
+	// The curated message from awserrors.Errorf must round-trip over NATS,
+	// but an outer %w wrapper added only for the handler's own logs must not.
+	const curated = "no capacity for m5.large on any eligible node"
+	_, err = nc.Subscribe("test.serve.error.curated", func(msg *nats.Msg) {
+		ServeNATSRequest(msg, func(_ *struct{}) (*struct{}, error) {
+			cause := awserrors.Errorf(awserrors.ErrorInsufficientAddressCapacity, "%s", curated)
+			return nil, fmt.Errorf("launch on node-1: %w", cause)
+		})
+	})
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+
+	_, err = NATSRequest[struct{}](context.Background(), nc, "test.serve.error.curated", struct{}{}, 2*time.Second, "")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "launch on node-1")
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, code)
+	assert.Equal(t, curated, message)
 }
 
 func TestNATSRequest_NoResponders(t *testing.T) {

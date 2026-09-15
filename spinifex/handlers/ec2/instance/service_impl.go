@@ -1778,7 +1778,7 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, DescribeInstancesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeInstances: invalid filter", "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 
 	reservationMap := make(map[string]*ec2.Reservation)
@@ -1906,7 +1906,7 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 	parsedFilters, filterErr := filterutil.ParseFilters(input.Filters, DescribeInstancesValidFilters)
 	if filterErr != nil {
 		slog.WarnContext(ctx, opName+": invalid filter", "err", filterErr)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", filterErr)
 	}
 
 	instances, err := listFn()

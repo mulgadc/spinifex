@@ -476,7 +476,7 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeNetworkInterfacesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeNetworkInterfaces: invalid filter", "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 
 	enis := make([]*ec2.NetworkInterface, 0)

@@ -473,10 +473,10 @@ func elbv2Uncased() map[string]string {
 
 func iamUncased() map[string]string {
 	uncased := map[string]string{}
-	// The six siblings of GetPolicy read PolicyArn through the same branch.
+	// The seven siblings of GetPolicy read PolicyArn through the same branch.
 	for _, action := range []string{
 		"GetPolicyVersion", "ListPolicyVersions", "DeletePolicy", "TagPolicy", "UntagPolicy",
-		"ListPolicyTags",
+		"ListPolicyTags", "ListEntitiesForPolicy",
 	} {
 		uncased[action] = sameHelper("GetPolicy")
 	}

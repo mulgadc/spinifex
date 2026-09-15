@@ -171,6 +171,7 @@ func TestResourceARNs_PolicyARNIsReanchoredOntoCallerAccount(t *testing.T) {
 		{"TagPolicy", &iam.TagPolicyInput{PolicyArn: aws.String(foreign)}},
 		{"UntagPolicy", &iam.UntagPolicyInput{PolicyArn: aws.String(foreign)}},
 		{"ListPolicyTags", &iam.ListPolicyTagsInput{PolicyArn: aws.String(foreign)}},
+		{"ListEntitiesForPolicy", &iam.ListEntitiesForPolicyInput{PolicyArn: aws.String(foreign)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.action, func(t *testing.T) {

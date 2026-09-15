@@ -52,10 +52,40 @@ type NodegroupRecord struct {
 	// GPUEnabled/GPUVendor cache whether InstanceTypes includes a GPU family and
 	// which vendor, so worker launches resolve the matching GPU node AMI without
 	// re-scanning InstanceTypes on every launch.
-	GPUEnabled bool      `json:"gpuEnabled,omitempty"`
-	GPUVendor  string    `json:"gpuVendor,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
-	ModifiedAt time.Time `json:"modifiedAt"`
+	GPUEnabled bool   `json:"gpuEnabled,omitempty"`
+	GPUVendor  string `json:"gpuVendor,omitempty"`
+	// LaunchTemplate/CapacityType/ReleaseVersion/Taints/UpdateConfig echo the
+	// CreateNodegroup request verbatim, so a repeat DescribeNodegroup matches
+	// what the caller already applied instead of proposing a replace.
+	LaunchTemplate *NodegroupLaunchTemplate `json:"launchTemplate,omitempty"`
+	CapacityType   string                   `json:"capacityType,omitempty"`
+	ReleaseVersion string                   `json:"releaseVersion,omitempty"`
+	Taints         []NodegroupTaint         `json:"taints,omitempty"`
+	UpdateConfig   *NodegroupUpdateConfig   `json:"updateConfig,omitempty"`
+	CreatedAt      time.Time                `json:"createdAt"`
+	ModifiedAt     time.Time                `json:"modifiedAt"`
+}
+
+// NodegroupLaunchTemplate mirrors eks.LaunchTemplateSpecification, captured
+// verbatim from CreateNodegroup — the launch template is force-new, so a
+// synthesised value here would create a permanent, unfixable diff.
+type NodegroupLaunchTemplate struct {
+	ID      string `json:"id,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
+// NodegroupTaint mirrors one entry of eks.Taint.
+type NodegroupTaint struct {
+	Key    string `json:"key,omitempty"`
+	Value  string `json:"value,omitempty"`
+	Effect string `json:"effect,omitempty"`
+}
+
+// NodegroupUpdateConfig mirrors eks.NodegroupUpdateConfig.
+type NodegroupUpdateConfig struct {
+	MaxUnavailable           int64 `json:"maxUnavailable,omitempty"`
+	MaxUnavailablePercentage int64 `json:"maxUnavailablePercentage,omitempty"`
 }
 
 // AccessEntryRecord is the persisted-state envelope for an EKS API-mode

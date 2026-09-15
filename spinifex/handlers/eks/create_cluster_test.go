@@ -401,3 +401,100 @@ func TestCreateCluster_BuildsManagedCPVPCUnderSystemAccount(t *testing.T) {
 	}
 	assert.True(t, tagged, "NAT gateway EIP must carry the ManagedBy=eks tag")
 }
+
+// The primary cluster SG (clusterSecurityGroupId) must be created in the
+// caller's own VPC, not the system-managed CP VPC the control-plane VM
+// actually lives in — otherwise the tenant's own DescribeSecurityGroups can
+// never resolve it. fakeSubnetResolver resolves every subnet to "vpc-aaa".
+func TestCreateCluster_ClusterSecurityGroupCreatedInCallerVPC(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	meta, err := GetClusterMeta(t.Context(), f.kv, "alpha")
+	require.NoError(t, err)
+	require.NotNil(t, meta.ResourcesVpcConfig)
+	assert.NotEmpty(t, meta.ResourcesVpcConfig.ClusterSecurityGroupId)
+
+	found := false
+	for _, call := range f.sg.createCalls {
+		if aws.StringValue(call.GroupName) == ClusterControlPlaneSGName("alpha") && aws.StringValue(call.VpcId) == "vpc-aaa" {
+			found = true
+		}
+	}
+	assert.True(t, found, "control-plane SG must be created in the caller's VPC (vpc-aaa)")
+
+	out, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.Cluster.ResourcesVpcConfig)
+	assert.Equal(t, meta.ResourcesVpcConfig.ClusterSecurityGroupId, aws.StringValue(out.Cluster.ResourcesVpcConfig.ClusterSecurityGroupId))
+}
+
+// Security groups the caller explicitly passes on CreateCluster must come back
+// unchanged from DescribeCluster — never substituted with platform-created ids.
+func TestCreateCluster_CallerSecurityGroupIdsEchoedNotOverwritten(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	in := createInput("alpha")
+	in.ResourcesVpcConfig.SecurityGroupIds = aws.StringSlice([]string{"sg-caller-1"})
+
+	_, err := f.svc.CreateCluster(context.Background(), in, testAccountID, "")
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	out, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.Cluster.ResourcesVpcConfig)
+	assert.Equal(t, []string{"sg-caller-1"}, aws.StringValueSlice(out.Cluster.ResourcesVpcConfig.SecurityGroupIds))
+	assert.NotEmpty(t, aws.StringValue(out.Cluster.ResourcesVpcConfig.ClusterSecurityGroupId),
+		"the platform's own primary SG is reported separately, never folded into securityGroupIds")
+}
+
+// DescribeCluster must surface accessConfig, kubernetesNetworkConfig,
+// platformVersion, upgradePolicy and logging immediately, without waiting on
+// any nodegroup — the registry module reads all of these on the bare cluster.
+func TestCreateCluster_DescribeSurfacesReadbackConformanceFields(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	in := createInput("alpha")
+	in.KubernetesNetworkConfig = &eks.KubernetesNetworkConfigRequest{
+		IpFamily:        aws.String(eks.IpFamilyIpv4),
+		ServiceIpv4Cidr: aws.String("172.20.0.0/16"),
+	}
+	in.AccessConfig = &eks.CreateAccessConfigRequest{
+		BootstrapClusterCreatorAdminPermissions: aws.Bool(true),
+	}
+	in.UpgradePolicy = &eks.UpgradePolicyRequest{SupportType: aws.String(eks.SupportTypeExtended)}
+	in.Logging = &eks.Logging{
+		ClusterLogging: []*eks.LogSetup{
+			{Types: aws.StringSlice([]string{eks.LogTypeApi}), Enabled: aws.Bool(true)},
+		},
+	}
+
+	_, err := f.svc.CreateCluster(context.Background(), in, testAccountID, "")
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	out, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
+	require.NoError(t, err)
+	c := out.Cluster
+
+	require.NotNil(t, c.KubernetesNetworkConfig)
+	assert.Equal(t, "172.20.0.0/16", aws.StringValue(c.KubernetesNetworkConfig.ServiceIpv4Cidr))
+	assert.Equal(t, eks.IpFamilyIpv4, aws.StringValue(c.KubernetesNetworkConfig.IpFamily))
+
+	require.NotNil(t, c.AccessConfig)
+	assert.True(t, aws.BoolValue(c.AccessConfig.BootstrapClusterCreatorAdminPermissions))
+
+	assert.NotEmpty(t, aws.StringValue(c.PlatformVersion))
+
+	require.NotNil(t, c.UpgradePolicy)
+	assert.Equal(t, eks.SupportTypeExtended, aws.StringValue(c.UpgradePolicy.SupportType))
+
+	require.NotNil(t, c.Logging)
+	require.Len(t, c.Logging.ClusterLogging, 1)
+	assert.Equal(t, []string{eks.LogTypeApi}, aws.StringValueSlice(c.Logging.ClusterLogging[0].Types))
+	assert.True(t, aws.BoolValue(c.Logging.ClusterLogging[0].Enabled))
+}

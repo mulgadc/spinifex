@@ -577,6 +577,7 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 
 	publicAccess, privateAccess := endpointAccess(input.ResourcesVpcConfig)
 	publicCidrs := publicAccessCidrs(input.ResourcesVpcConfig, publicAccess)
+	bootstrapAdmin := bootstrapCreatorAdmin(input)
 
 	meta := &ClusterMeta{
 		Name:    name,
@@ -585,14 +586,21 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 		Version: deref(input.Version, defaultK8sVersion),
 		RoleArn: aws.StringValue(input.RoleArn),
 		ResourcesVpcConfig: &ClusterVpcConfig{
-			SubnetIds:             subnetIDs,
+			SubnetIds: subnetIDs,
+			// Caller-supplied additional SGs only; never the platform's own
+			// primary SGs (those project separately as clusterSecurityGroupId).
+			SecurityGroupIds:      aws.StringValueSlice(input.ResourcesVpcConfig.SecurityGroupIds),
 			VpcId:                 vpcID,
 			EndpointPublicAccess:  publicAccess,
 			EndpointPrivateAccess: privateAccess,
 			PublicAccessCidrs:     publicCidrs,
 		},
-		Tags:      aws.StringValueMap(input.Tags),
-		CreatedAt: time.Now().UTC(),
+		KubernetesNetworkConfig:                 clusterNetworkConfigFromInput(input.KubernetesNetworkConfig),
+		BootstrapClusterCreatorAdminPermissions: &bootstrapAdmin,
+		UpgradePolicy:                           clusterUpgradePolicyFromInput(input.UpgradePolicy),
+		Logging:                                 clusterLoggingFromInput(input.Logging),
+		Tags:                                    aws.StringValueMap(input.Tags),
+		CreatedAt:                               time.Now().UTC(),
 	}
 	// Claim the cluster name before any launching; duplicate/retry handlers lose the claim.
 	if err := s.claimClusterName(ctx, accountID, acctKV, meta); err != nil {
@@ -743,12 +751,11 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		return
 	}
 
-	cpSG, ngSG, err := EnsureClusterSGs(ctx, s.deps.VPCSG, sysAcct, name, cpRefs.VpcID)
+	cpSG, _, err := EnsureClusterSGs(ctx, s.deps.VPCSG, sysAcct, name, cpRefs.VpcID)
 	if err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "ensure cluster SGs", err)
 		return
 	}
-	meta.ResourcesVpcConfig.SecurityGroupIds = []string{cpSG, ngSG}
 
 	// The NLB's backing LB VM forwards the published endpoint to the apiserver
 	// from inside the CP VPC, so the control-plane SG must admit that hop (CP VPC
@@ -762,6 +769,21 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	// registers but its etcd never replicates, so the node never reports Ready.
 	if err := EnsureControlPlaneHAIngress(ctx, s.deps.VPCSG, sysAcct, cpSG); err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "ensure control-plane HA ingress", err)
+		return
+	}
+
+	// The customer-facing "cluster security group" AWS auto-creates lives in the
+	// caller's own VPC, not the system-managed CP VPC above — otherwise the
+	// tenant's own DescribeSecurityGroups can never resolve it. Idempotent with
+	// launchNodegroupInfra's own EnsureClusterSGs call, which reuses this same id.
+	custClusterSG, _, err := EnsureClusterSGs(ctx, s.deps.VPCSG, accountID, name, lc.vpcID)
+	if err != nil {
+		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "ensure customer-vpc cluster SGs", err)
+		return
+	}
+	meta.ResourcesVpcConfig.ClusterSecurityGroupId = custClusterSG
+	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
+		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist cluster security group id", err)
 		return
 	}
 
@@ -2225,6 +2247,131 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 	}
 }
 
+// eksPlatformVersion is the platform build DescribeCluster reports. AWS bumps
+// this per Kubernetes patch/security release; Spinifex has no such release
+// train yet, so every cluster reports the same stable value.
+const eksPlatformVersion = "eks.1"
+
+// defaultServiceIPv4CIDR is the service CIDR every cluster genuinely runs: k3s's
+// own built-in default (see coredns-mulga.yaml's 10.43.0.10 clusterIP). No
+// per-cluster --service-cidr flag is ever threaded through, so this is the real
+// value in force, not a synthesised guess.
+const defaultServiceIPv4CIDR = "10.43.0.0/16"
+
+// defaultClusterSupportType is projected when the caller specified no
+// upgradePolicy, matching the AWS-documented default.
+const defaultClusterSupportType = eks.SupportTypeStandard
+
+// clusterNetworkConfigFromInput captures the requested Kubernetes network
+// config verbatim; nil if the caller specified none of it.
+func clusterNetworkConfigFromInput(n *eks.KubernetesNetworkConfigRequest) *ClusterNetworkConfig {
+	if n == nil {
+		return nil
+	}
+	// The request shape has no ServiceIpv6Cidr — AWS derives it itself from the
+	// unique-local range; a caller can only ask for ipFamily and (for ipv4) a
+	// custom ServiceIpv4Cidr.
+	cfg := &ClusterNetworkConfig{
+		IpFamily:        aws.StringValue(n.IpFamily),
+		ServiceIpv4Cidr: aws.StringValue(n.ServiceIpv4Cidr),
+	}
+	if cfg.IpFamily == "" && cfg.ServiceIpv4Cidr == "" {
+		return nil
+	}
+	return cfg
+}
+
+// clusterNetworkConfigToAWS projects the stored network config, falling back to
+// the real ipv4/10.43.0.0/16 values every cluster actually runs when the
+// caller (or a record predating this field) specified none.
+func clusterNetworkConfigToAWS(meta *ClusterNetworkConfig) *eks.KubernetesNetworkConfigResponse {
+	ipFamily := eks.IpFamilyIpv4
+	if meta != nil && meta.IpFamily != "" {
+		ipFamily = meta.IpFamily
+	}
+	out := &eks.KubernetesNetworkConfigResponse{IpFamily: aws.String(ipFamily)}
+	if ipFamily == eks.IpFamilyIpv6 {
+		if meta != nil && meta.ServiceIpv6Cidr != "" {
+			out.ServiceIpv6Cidr = aws.String(meta.ServiceIpv6Cidr)
+		}
+		return out
+	}
+	serviceCidr := defaultServiceIPv4CIDR
+	if meta != nil && meta.ServiceIpv4Cidr != "" {
+		serviceCidr = meta.ServiceIpv4Cidr
+	}
+	out.ServiceIpv4Cidr = aws.String(serviceCidr)
+	return out
+}
+
+// clusterUpgradePolicyFromInput captures the requested upgrade policy verbatim;
+// nil if the caller specified none.
+func clusterUpgradePolicyFromInput(u *eks.UpgradePolicyRequest) *ClusterUpgradePolicyMeta {
+	if u == nil || aws.StringValue(u.SupportType) == "" {
+		return nil
+	}
+	return &ClusterUpgradePolicyMeta{SupportType: aws.StringValue(u.SupportType)}
+}
+
+// clusterUpgradePolicyToAWS projects the stored upgrade policy, falling back to
+// the AWS-standard default when none was requested (or the record predates
+// this field).
+func clusterUpgradePolicyToAWS(meta *ClusterUpgradePolicyMeta) *eks.UpgradePolicyResponse {
+	supportType := defaultClusterSupportType
+	if meta != nil && meta.SupportType != "" {
+		supportType = meta.SupportType
+	}
+	return &eks.UpgradePolicyResponse{SupportType: aws.String(supportType)}
+}
+
+// allClusterLogTypes lists every EKS control-plane log type, used to report an
+// honest "everything disabled" default when no logging was requested.
+var allClusterLogTypes = []string{
+	eks.LogTypeApi,
+	eks.LogTypeAudit,
+	eks.LogTypeAuthenticator,
+	eks.LogTypeControllerManager,
+	eks.LogTypeScheduler,
+}
+
+// clusterLoggingFromInput captures the requested clusterLogging list verbatim,
+// including disabled entries; nil if the caller specified none.
+func clusterLoggingFromInput(l *eks.Logging) []ClusterLogSetup {
+	if l == nil || len(l.ClusterLogging) == 0 {
+		return nil
+	}
+	out := make([]ClusterLogSetup, 0, len(l.ClusterLogging))
+	for _, ls := range l.ClusterLogging {
+		if ls == nil {
+			continue
+		}
+		out = append(out, ClusterLogSetup{
+			Types:   aws.StringValueSlice(ls.Types),
+			Enabled: aws.BoolValue(ls.Enabled),
+		})
+	}
+	return out
+}
+
+// clusterLoggingToAWS projects the stored logging config. No control-plane
+// logging is ever actually exported, so an empty/absent request (or a record
+// predating this field) honestly reports every known type disabled rather
+// than omitting the block.
+func clusterLoggingToAWS(stored []ClusterLogSetup) *eks.Logging {
+	entries := stored
+	if len(entries) == 0 {
+		entries = []ClusterLogSetup{{Types: allClusterLogTypes, Enabled: false}}
+	}
+	setups := make([]*eks.LogSetup, 0, len(entries))
+	for _, e := range entries {
+		setups = append(setups, &eks.LogSetup{
+			Types:   aws.StringSlice(e.Types),
+			Enabled: aws.Bool(e.Enabled),
+		})
+	}
+	return &eks.Logging{ClusterLogging: setups}
+}
+
 func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 	if meta == nil {
 		return nil
@@ -2255,7 +2402,24 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 			EndpointPrivateAccess: aws.Bool(meta.ResourcesVpcConfig.EndpointPrivateAccess),
 			PublicAccessCidrs:     aws.StringSlice(meta.ResourcesVpcConfig.PublicAccessCidrs),
 		}
+		if meta.ResourcesVpcConfig.ClusterSecurityGroupId != "" {
+			out.ResourcesVpcConfig.ClusterSecurityGroupId = aws.String(meta.ResourcesVpcConfig.ClusterSecurityGroupId)
+		}
 	}
+	out.KubernetesNetworkConfig = clusterNetworkConfigToAWS(meta.KubernetesNetworkConfig)
+	bootstrapAdmin := true
+	if meta.BootstrapClusterCreatorAdminPermissions != nil {
+		bootstrapAdmin = *meta.BootstrapClusterCreatorAdminPermissions
+	}
+	out.AccessConfig = &eks.AccessConfigResponse{
+		// Spinifex has no aws-auth ConfigMap path; API access-entry auth is the
+		// only mode it ever actually runs, regardless of what was requested.
+		AuthenticationMode:                      aws.String(eks.AuthenticationModeApi),
+		BootstrapClusterCreatorAdminPermissions: aws.Bool(bootstrapAdmin),
+	}
+	out.PlatformVersion = aws.String(eksPlatformVersion)
+	out.UpgradePolicy = clusterUpgradePolicyToAWS(meta.UpgradePolicy)
+	out.Logging = clusterLoggingToAWS(meta.Logging)
 	var issues []*eks.ClusterIssue
 	if meta.HealthIssue != "" {
 		issues = append(issues, &eks.ClusterIssue{

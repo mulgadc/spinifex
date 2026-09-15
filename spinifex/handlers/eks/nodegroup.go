@@ -39,6 +39,11 @@ const defaultNodegroupInstanceType = "t3.medium"
 // a worker no room for the container images it exists to run.
 const defaultNodegroupDiskSizeGiB = 20
 
+// defaultNodegroupReleaseVersion is stored when the caller omits releaseVersion.
+// There is no dated AMI release stream here to report a real one from, so this
+// is a stable placeholder rather than a value invented per call.
+const defaultNodegroupReleaseVersion = "1.0.0-spinifex-eks-node"
+
 // defaultNodegroupReadyTimeout / defaultNodegroupReadyPoll bound how long
 // launchNodegroupInfra waits for its workers to register Ready (observed via the
 // CP state report's Ready-node count, refreshed at the reconcile cadence) before
@@ -271,6 +276,45 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 		diskSize = defaultNodegroupDiskSizeGiB
 	}
 
+	// RunInstances never branches on capacityType — every worker launches the
+	// same way — so this echoes the caller's request (or AWS's own ON_DEMAND
+	// default) rather than claiming a distinction the launch path doesn't make.
+	capacityType := aws.StringValue(input.CapacityType)
+	if capacityType == "" {
+		capacityType = eks.CapacityTypesOnDemand
+	}
+
+	releaseVersion := aws.StringValue(input.ReleaseVersion)
+	if releaseVersion == "" {
+		releaseVersion = defaultNodegroupReleaseVersion
+	}
+
+	var launchTemplate *NodegroupLaunchTemplate
+	if input.LaunchTemplate != nil {
+		launchTemplate = &NodegroupLaunchTemplate{
+			ID:      aws.StringValue(input.LaunchTemplate.Id),
+			Name:    aws.StringValue(input.LaunchTemplate.Name),
+			Version: aws.StringValue(input.LaunchTemplate.Version),
+		}
+	}
+
+	taints := make([]NodegroupTaint, 0, len(input.Taints))
+	for _, t := range input.Taints {
+		taints = append(taints, NodegroupTaint{
+			Key:    aws.StringValue(t.Key),
+			Value:  aws.StringValue(t.Value),
+			Effect: aws.StringValue(t.Effect),
+		})
+	}
+
+	var updateConfig *NodegroupUpdateConfig
+	if input.UpdateConfig != nil {
+		updateConfig = &NodegroupUpdateConfig{
+			MaxUnavailable:           aws.Int64Value(input.UpdateConfig.MaxUnavailable),
+			MaxUnavailablePercentage: aws.Int64Value(input.UpdateConfig.MaxUnavailablePercentage),
+		}
+	}
+
 	now := time.Now().UTC()
 	rec := &NodegroupRecord{
 		ClusterName: cluster,
@@ -292,6 +336,11 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 		Tags:           aws.StringValueMap(input.Tags),
 		GPUEnabled:     gpuEnabled,
 		GPUVendor:      gpuVendor,
+		LaunchTemplate: launchTemplate,
+		CapacityType:   capacityType,
+		ReleaseVersion: releaseVersion,
+		Taints:         taints,
+		UpdateConfig:   updateConfig,
 		CreatedAt:      now,
 		ModifiedAt:     now,
 	}
@@ -834,7 +883,7 @@ func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV jetst
 		return nil, err
 	}
 
-	rec, err := s.reconcileNodegroup(ctx, acctKV, accountID, cluster, ng, meta, input.ScalingConfig, input.Labels)
+	rec, err := s.reconcileNodegroup(ctx, acctKV, accountID, cluster, ng, meta, input.ScalingConfig, input.Labels, input.Taints, input.UpdateConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -847,12 +896,13 @@ func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV jetst
 	}}, nil
 }
 
-// reconcileNodegroup applies the scaling/label deltas and converges the worker
-// count to ScalingDesired under compare-and-swap. Every durable mutation is a
-// CAS on the record revision, so two overlapping UpdateNodegroupConfig calls can
-// never both launch the same delta — the lost-update that scaled 1 worker to 5
-// (two reconciles each reading current=1 and each launching desired-current=2).
-func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstream.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, scaling *eks.NodegroupScalingConfig, labels *eks.UpdateLabelsPayload) (*NodegroupRecord, error) {
+// reconcileNodegroup applies the scaling/label/taint/updateConfig deltas and
+// converges the worker count to ScalingDesired under compare-and-swap. Every
+// durable mutation is a CAS on the record revision, so two overlapping
+// UpdateNodegroupConfig calls can never both launch the same delta — the
+// lost-update that scaled 1 worker to 5 (two reconciles each reading
+// current=1 and each launching desired-current=2).
+func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstream.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, scaling *eks.NodegroupScalingConfig, labels *eks.UpdateLabelsPayload, taints *eks.UpdateTaintsPayload, updateConfig *eks.NodegroupUpdateConfig) (*NodegroupRecord, error) {
 	for range ngCASMaxRetries {
 		rec, rev, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
 		if err != nil {
@@ -864,6 +914,15 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstrea
 		applyScalingUpdate(rec, scaling)
 		if labels != nil {
 			rec.Labels = applyLabelUpdate(rec.Labels, labels)
+		}
+		if taints != nil {
+			rec.Taints = applyTaintUpdate(rec.Taints, taints)
+		}
+		if updateConfig != nil {
+			rec.UpdateConfig = &NodegroupUpdateConfig{
+				MaxUnavailable:           aws.Int64Value(updateConfig.MaxUnavailable),
+				MaxUnavailablePercentage: aws.Int64Value(updateConfig.MaxUnavailablePercentage),
+			}
 		}
 		desired := int(rec.ScalingDesired)
 		current := len(rec.InstanceIDs)
@@ -1212,6 +1271,38 @@ func applyLabelUpdate(existing map[string]string, payload *eks.UpdateLabelsPaylo
 	return out
 }
 
+// applyTaintUpdate applies an UpdateTaintsPayload (addOrUpdate + remove) onto
+// the record's taint list, keyed on (key, effect) — a node can carry more than
+// one taint on the same key differentiated only by effect.
+func applyTaintUpdate(existing []NodegroupTaint, payload *eks.UpdateTaintsPayload) []NodegroupTaint {
+	if payload == nil {
+		return existing
+	}
+	out := append([]NodegroupTaint(nil), existing...)
+	for _, t := range payload.AddOrUpdateTaints {
+		next := NodegroupTaint{
+			Key:    aws.StringValue(t.Key),
+			Value:  aws.StringValue(t.Value),
+			Effect: aws.StringValue(t.Effect),
+		}
+		i := slices.IndexFunc(out, func(x NodegroupTaint) bool {
+			return x.Key == next.Key && x.Effect == next.Effect
+		})
+		if i >= 0 {
+			out[i] = next
+		} else {
+			out = append(out, next)
+		}
+	}
+	for _, t := range payload.RemoveTaints {
+		key, effect := aws.StringValue(t.Key), aws.StringValue(t.Effect)
+		out = slices.DeleteFunc(out, func(x NodegroupTaint) bool {
+			return x.Key == key && x.Effect == effect
+		})
+	}
+	return out
+}
+
 func nodegroupRecordToAWS(rec *NodegroupRecord) *eks.Nodegroup {
 	if rec == nil {
 		return nil
@@ -1238,11 +1329,61 @@ func nodegroupRecordToAWS(rec *NodegroupRecord) *eks.Nodegroup {
 	if rec.DiskSize > 0 {
 		out.DiskSize = aws.Int64(rec.DiskSize)
 	}
-	if len(rec.Labels) > 0 {
-		out.Labels = aws.StringMap(rec.Labels)
-	}
+	// AWS always returns labels, empty map included, and the provider reads it as
+	// Optional+Computed — omitting it leaves a nodegroup with no labels reporting
+	// nil against a schema that expects a map.
+	out.Labels = aws.StringMap(rec.Labels)
 	if len(rec.Tags) > 0 {
 		out.Tags = aws.StringMap(rec.Tags)
+	}
+	if rec.LaunchTemplate != nil {
+		// Spinifex does no id/name resolution the way real AWS does, so an
+		// unset subfield must stay nil, not "" — the provider's Optional+Computed
+		// launch_template.id would read "" as a contradicted computed value.
+		lt := &eks.LaunchTemplateSpecification{}
+		if rec.LaunchTemplate.ID != "" {
+			lt.Id = aws.String(rec.LaunchTemplate.ID)
+		}
+		if rec.LaunchTemplate.Name != "" {
+			lt.Name = aws.String(rec.LaunchTemplate.Name)
+		}
+		if rec.LaunchTemplate.Version != "" {
+			lt.Version = aws.String(rec.LaunchTemplate.Version)
+		}
+		out.LaunchTemplate = lt
+	}
+	if rec.CapacityType != "" {
+		out.CapacityType = aws.String(rec.CapacityType)
+	}
+	if rec.ReleaseVersion != "" {
+		out.ReleaseVersion = aws.String(rec.ReleaseVersion)
+	}
+	if len(rec.Taints) > 0 {
+		taints := make([]*eks.Taint, 0, len(rec.Taints))
+		for _, t := range rec.Taints {
+			taint := &eks.Taint{}
+			if t.Key != "" {
+				taint.Key = aws.String(t.Key)
+			}
+			if t.Value != "" {
+				taint.Value = aws.String(t.Value)
+			}
+			if t.Effect != "" {
+				taint.Effect = aws.String(t.Effect)
+			}
+			taints = append(taints, taint)
+		}
+		out.Taints = taints
+	}
+	if rec.UpdateConfig != nil {
+		cfg := &eks.NodegroupUpdateConfig{}
+		if rec.UpdateConfig.MaxUnavailable > 0 {
+			cfg.MaxUnavailable = aws.Int64(rec.UpdateConfig.MaxUnavailable)
+		}
+		if rec.UpdateConfig.MaxUnavailablePercentage > 0 {
+			cfg.MaxUnavailablePercentage = aws.Int64(rec.UpdateConfig.MaxUnavailablePercentage)
+		}
+		out.UpdateConfig = cfg
 	}
 	if rec.StatusReason != "" {
 		out.Health = &eks.NodegroupHealth{Issues: []*eks.Issue{{

@@ -960,3 +960,304 @@ func TestSelectWorkerHost_SpreadsThenPacks(t *testing.T) {
 		require.Equal(t, 2, placed[h], "host %s should hold 2 of 6 workers", h)
 	}
 }
+
+// TestNodegroupRecordToAWS_LaunchTemplateCapacityTypeReleaseVersion pins bead
+// B: launchTemplate/capacityType/releaseVersion must round-trip through the
+// projection, and a record from before these fields existed must project
+// exactly as it always has (no field, not a synthesised value).
+func TestNodegroupRecordToAWS_LaunchTemplateCapacityTypeReleaseVersion(t *testing.T) {
+	cases := []struct {
+		name               string
+		rec                *NodegroupRecord
+		wantLaunchTemplate *eks.LaunchTemplateSpecification
+		wantCapacityType   *string
+		wantReleaseVersion *string
+	}{
+		{
+			name: "fields set at create are echoed back",
+			rec: &NodegroupRecord{
+				ClusterName:    "c1",
+				Name:           "ng1",
+				Status:         eks.NodegroupStatusActive,
+				LaunchTemplate: &NodegroupLaunchTemplate{ID: "lt-123", Name: "my-lt", Version: "3"},
+				CapacityType:   eks.CapacityTypesSpot,
+				ReleaseVersion: "1.32.0-20240307",
+			},
+			wantLaunchTemplate: &eks.LaunchTemplateSpecification{
+				Id: aws.String("lt-123"), Name: aws.String("my-lt"), Version: aws.String("3"),
+			},
+			wantCapacityType:   aws.String(eks.CapacityTypesSpot),
+			wantReleaseVersion: aws.String("1.32.0-20240307"),
+		},
+		{
+			name:               "zero-value record predating the fields projects unchanged",
+			rec:                &NodegroupRecord{ClusterName: "c1", Name: "ng1", Status: eks.NodegroupStatusActive},
+			wantLaunchTemplate: nil,
+			wantCapacityType:   nil,
+			wantReleaseVersion: nil,
+		},
+		{
+			// Spinifex does no id/name resolution the way real AWS does, so a
+			// caller who supplied only name must not get id back as "" — that
+			// contradicts the provider's Optional+Computed launch_template.id.
+			name: "only name set projects id and version as nil, not empty strings",
+			rec: &NodegroupRecord{
+				ClusterName:    "c1",
+				Name:           "ng1",
+				Status:         eks.NodegroupStatusActive,
+				LaunchTemplate: &NodegroupLaunchTemplate{Name: "my-lt"},
+			},
+			wantLaunchTemplate: &eks.LaunchTemplateSpecification{Name: aws.String("my-lt")},
+			wantCapacityType:   nil,
+			wantReleaseVersion: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := nodegroupRecordToAWS(tc.rec)
+			require.NotNil(t, out)
+			// assert.Equal on the struct pointer already fails if an unset
+			// subfield comes back as aws.String("") instead of a nil pointer.
+			assert.Equal(t, tc.wantLaunchTemplate, out.LaunchTemplate)
+			assert.Equal(t, tc.wantCapacityType, out.CapacityType)
+			assert.Equal(t, tc.wantReleaseVersion, out.ReleaseVersion)
+		})
+	}
+}
+
+// TestNodegroupRecordToAWS_TaintsAndUpdateConfig pins bead G's projection half:
+// taints/updateConfig must round-trip, and a zero-value record predating them
+// must project with both fields absent, exactly as it does today.
+func TestNodegroupRecordToAWS_TaintsAndUpdateConfig(t *testing.T) {
+	cases := []struct {
+		name             string
+		rec              *NodegroupRecord
+		wantTaints       []*eks.Taint
+		wantUpdateConfig *eks.NodegroupUpdateConfig
+	}{
+		{
+			name: "fields set are echoed back",
+			rec: &NodegroupRecord{
+				ClusterName: "c1",
+				Name:        "ng1",
+				Status:      eks.NodegroupStatusActive,
+				Taints: []NodegroupTaint{
+					{Key: "dedicated", Value: "gpu", Effect: eks.TaintEffectNoSchedule},
+				},
+				UpdateConfig: &NodegroupUpdateConfig{MaxUnavailable: 1},
+			},
+			wantTaints: []*eks.Taint{
+				{Key: aws.String("dedicated"), Value: aws.String("gpu"), Effect: aws.String(eks.TaintEffectNoSchedule)},
+			},
+			wantUpdateConfig: &eks.NodegroupUpdateConfig{MaxUnavailable: aws.Int64(1)},
+		},
+		{
+			name:             "zero-value record predating the fields projects unchanged",
+			rec:              &NodegroupRecord{ClusterName: "c1", Name: "ng1", Status: eks.NodegroupStatusActive},
+			wantTaints:       nil,
+			wantUpdateConfig: nil,
+		},
+		{
+			// Value is optional on a real taint; an unset one must come back nil,
+			// not aws.String(""), mirroring the launch template subfield guard.
+			name: "taint with no value projects value as nil, not empty string",
+			rec: &NodegroupRecord{
+				ClusterName: "c1",
+				Name:        "ng1",
+				Status:      eks.NodegroupStatusActive,
+				Taints:      []NodegroupTaint{{Key: "dedicated", Effect: eks.TaintEffectNoSchedule}},
+			},
+			wantTaints: []*eks.Taint{
+				{Key: aws.String("dedicated"), Effect: aws.String(eks.TaintEffectNoSchedule)},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := nodegroupRecordToAWS(tc.rec)
+			require.NotNil(t, out)
+			assert.Equal(t, tc.wantTaints, out.Taints)
+			assert.Equal(t, tc.wantUpdateConfig, out.UpdateConfig)
+		})
+	}
+}
+
+// TestNodegroupRecordToAWS_LabelsAlwaysPresent pins labels as a map even when
+// the node group has none. AWS always returns the field, and the provider reads
+// it as Optional+Computed, so a nil reads as a contradicted computed value.
+func TestNodegroupRecordToAWS_LabelsAlwaysPresent(t *testing.T) {
+	out := nodegroupRecordToAWS(&NodegroupRecord{
+		ClusterName: "c1", Name: "ng1", Status: eks.NodegroupStatusActive,
+	})
+	require.NotNil(t, out)
+	assert.NotNil(t, out.Labels)
+	assert.Empty(t, out.Labels)
+
+	withLabels := nodegroupRecordToAWS(&NodegroupRecord{
+		ClusterName: "c1", Name: "ng1", Status: eks.NodegroupStatusActive,
+		Labels: map[string]string{"team": "core"},
+	})
+	require.NotNil(t, withLabels)
+	assert.Equal(t, map[string]*string{"team": aws.String("core")}, withLabels.Labels)
+}
+
+// TestCreateNodegroup_CapturesLaunchTemplateCapacityTypeReleaseVersion proves
+// the create path stores exactly what the caller asked for, not a value
+// resolved at describe time — launchTemplate is force-new, so a mismatch here
+// would replace the node group on the very next plan.
+func TestCreateNodegroup_CapturesLaunchTemplateCapacityTypeReleaseVersion(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	in := createNGInput("c1", "ng1", 1)
+	in.LaunchTemplate = &eks.LaunchTemplateSpecification{Id: aws.String("lt-abc"), Version: aws.String("2")}
+	in.CapacityType = aws.String(eks.CapacityTypesSpot)
+	in.ReleaseVersion = aws.String("1.32.0-20240307")
+
+	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
+	require.NoError(t, err)
+
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	require.NotNil(t, rec.LaunchTemplate)
+	assert.Equal(t, "lt-abc", rec.LaunchTemplate.ID)
+	assert.Equal(t, "2", rec.LaunchTemplate.Version)
+	assert.Equal(t, eks.CapacityTypesSpot, rec.CapacityType)
+	assert.Equal(t, "1.32.0-20240307", rec.ReleaseVersion)
+
+	markWorkersReady(t, f, "c1", "ng1", 1)
+	f.svc.WaitLaunches()
+}
+
+// TestCreateNodegroup_OmittedCapacityTypeAndReleaseVersionUseDefaults proves an
+// omitted capacityType/releaseVersion falls back to a fixed value (AWS's own
+// ON_DEMAND default, and a named placeholder) rather than staying empty, which
+// would omit the field from every future DescribeNodegroup.
+func TestCreateNodegroup_OmittedCapacityTypeAndReleaseVersionUseDefaults(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Equal(t, eks.CapacityTypesOnDemand, rec.CapacityType)
+	assert.Equal(t, defaultNodegroupReleaseVersion, rec.ReleaseVersion)
+	assert.Nil(t, rec.LaunchTemplate)
+
+	markWorkersReady(t, f, "c1", "ng1", 1)
+	f.svc.WaitLaunches()
+}
+
+// TestCreateNodegroup_CapturesTaints proves taints supplied to CreateNodegroup
+// land on the record, the other missing half of bead G alongside updateConfig.
+func TestCreateNodegroup_CapturesTaints(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	in := createNGInput("c1", "ng1", 1)
+	in.Taints = []*eks.Taint{
+		{Key: aws.String("dedicated"), Value: aws.String("gpu"), Effect: aws.String(eks.TaintEffectNoSchedule)},
+	}
+
+	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
+	require.NoError(t, err)
+
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	require.Len(t, rec.Taints, 1)
+	assert.Equal(t, "dedicated", rec.Taints[0].Key)
+	assert.Equal(t, eks.TaintEffectNoSchedule, rec.Taints[0].Effect)
+
+	markWorkersReady(t, f, "c1", "ng1", 1)
+	f.svc.WaitLaunches()
+}
+
+// TestApplyTaintUpdate exercises the keying rule directly: upsert matches on
+// (key, effect) so a same-key different-effect taint is never clobbered, and
+// remove deletes only the matching pair.
+func TestApplyTaintUpdate(t *testing.T) {
+	existing := []NodegroupTaint{
+		{Key: "a", Value: "1", Effect: eks.TaintEffectNoSchedule},
+		{Key: "b", Value: "1", Effect: eks.TaintEffectPreferNoSchedule},
+	}
+
+	updated := applyTaintUpdate(existing, &eks.UpdateTaintsPayload{
+		AddOrUpdateTaints: []*eks.Taint{
+			{Key: aws.String("a"), Value: aws.String("2"), Effect: aws.String(eks.TaintEffectNoSchedule)},
+			{Key: aws.String("c"), Value: aws.String("1"), Effect: aws.String(eks.TaintEffectNoExecute)},
+		},
+	})
+	require.Len(t, updated, 3)
+	assert.Contains(t, updated, NodegroupTaint{Key: "a", Value: "2", Effect: eks.TaintEffectNoSchedule})
+	assert.Contains(t, updated, NodegroupTaint{Key: "c", Value: "1", Effect: eks.TaintEffectNoExecute})
+
+	removed := applyTaintUpdate(updated, &eks.UpdateTaintsPayload{
+		RemoveTaints: []*eks.Taint{{Key: aws.String("a"), Effect: aws.String(eks.TaintEffectNoSchedule)}},
+	})
+	assert.NotContains(t, removed, NodegroupTaint{Key: "a", Value: "2", Effect: eks.TaintEffectNoSchedule})
+	assert.Contains(t, removed, NodegroupTaint{Key: "b", Value: "1", Effect: eks.TaintEffectPreferNoSchedule})
+
+	assert.Equal(t, removed, applyTaintUpdate(removed, nil))
+}
+
+// TestUpdateNodegroupConfig_HonoursTaintsAndUpdateConfig pins the fix for the
+// convergence trap: updateNodegroupConfig used to accept Taints/UpdateConfig,
+// silently drop both, and still report SUCCESSFUL, so a caller's plan never
+// converged and never errored either. It must now record what was asked for
+// and hand it back on the next Describe.
+func TestUpdateNodegroupConfig_HonoursTaintsAndUpdateConfig(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+	markWorkersReady(t, f, "c1", "ng1", 1)
+	f.svc.WaitLaunches()
+
+	out, err := f.svc.UpdateNodegroupConfig(context.Background(), &eks.UpdateNodegroupConfigInput{
+		ClusterName:   aws.String("c1"),
+		NodegroupName: aws.String("ng1"),
+		Taints: &eks.UpdateTaintsPayload{
+			AddOrUpdateTaints: []*eks.Taint{
+				{Key: aws.String("dedicated"), Value: aws.String("gpu"), Effect: aws.String(eks.TaintEffectNoSchedule)},
+			},
+		},
+		UpdateConfig: &eks.NodegroupUpdateConfig{MaxUnavailable: aws.Int64(2)},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, eks.UpdateStatusSuccessful, aws.StringValue(out.Update.Status))
+
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	require.Len(t, rec.Taints, 1)
+	assert.Equal(t, "dedicated", rec.Taints[0].Key)
+	require.NotNil(t, rec.UpdateConfig)
+	assert.Equal(t, int64(2), rec.UpdateConfig.MaxUnavailable)
+
+	// A repeat DescribeNodegroup must read the applied update back, so a plan
+	// converges instead of asking for the same change on every apply.
+	desc, err := f.svc.DescribeNodegroup(context.Background(), &eks.DescribeNodegroupInput{
+		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Nodegroup.Taints, 1)
+	assert.Equal(t, "dedicated", aws.StringValue(desc.Nodegroup.Taints[0].Key))
+	require.NotNil(t, desc.Nodegroup.UpdateConfig)
+	assert.Equal(t, int64(2), aws.Int64Value(desc.Nodegroup.UpdateConfig.MaxUnavailable))
+
+	// Removing the taint must delete it from the record too, by (key, effect).
+	_, err = f.svc.UpdateNodegroupConfig(context.Background(), &eks.UpdateNodegroupConfigInput{
+		ClusterName:   aws.String("c1"),
+		NodegroupName: aws.String("ng1"),
+		Taints: &eks.UpdateTaintsPayload{
+			RemoveTaints: []*eks.Taint{{Key: aws.String("dedicated"), Effect: aws.String(eks.TaintEffectNoSchedule)}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	rec, err = GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Empty(t, rec.Taints)
+}

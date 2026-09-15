@@ -33,6 +33,32 @@ type ClusterVpcConfig struct {
 	EndpointPublicAccess  bool     `json:"endpointPublicAccess"`
 	EndpointPrivateAccess bool     `json:"endpointPrivateAccess"`
 	PublicAccessCidrs     []string `json:"publicAccessCidrs,omitempty"`
+	// ClusterSecurityGroupId is the EKS-managed primary SG id, created in the
+	// caller's own VPC so DescribeSecurityGroups (scoped to the caller's
+	// account) can resolve it. Empty for clusters created before this field.
+	ClusterSecurityGroupId string `json:"clusterSecurityGroupId,omitempty"`
+}
+
+// ClusterNetworkConfig is the persisted subset of eks.KubernetesNetworkConfigResponse,
+// captured verbatim from CreateCluster's request. This is a force-new, create-only
+// field with no update path, so it is never synthesised after the fact.
+type ClusterNetworkConfig struct {
+	IpFamily        string `json:"ipFamily,omitempty"`
+	ServiceIpv4Cidr string `json:"serviceIpv4Cidr,omitempty"`
+	ServiceIpv6Cidr string `json:"serviceIpv6Cidr,omitempty"`
+}
+
+// ClusterUpgradePolicyMeta is the persisted subset of eks.UpgradePolicyResponse.
+type ClusterUpgradePolicyMeta struct {
+	SupportType string `json:"supportType,omitempty"`
+}
+
+// ClusterLogSetup mirrors one eks.LogSetup {types, enabled} pairing from a
+// CreateCluster request's logging.clusterLogging list, stored verbatim so
+// DescribeCluster can echo back exactly what was asked for.
+type ClusterLogSetup struct {
+	Types   []string `json:"types,omitempty"`
+	Enabled bool     `json:"enabled"`
 }
 
 // ClusterMeta is the persisted control-plane record at ClusterMetaKey(name); source of truth for DescribeCluster.
@@ -60,9 +86,25 @@ type ClusterMeta struct {
 	OIDCIssuer              string            `json:"oidcIssuer,omitempty"`
 	CertificateAuthorityB64 string            `json:"certificateAuthorityB64,omitempty"`
 	ResourcesVpcConfig      *ClusterVpcConfig `json:"resourcesVpcConfig,omitempty"`
-	ControlPlaneInstanceID  string            `json:"controlPlaneInstanceId,omitempty"`
-	ControlPlaneENIID       string            `json:"controlPlaneEniId,omitempty"`
-	ControlPlaneENIIP       string            `json:"controlPlaneEniIp,omitempty"`
+	// KubernetesNetworkConfig is the requested service-IP network config,
+	// stored verbatim; nil for clusters created before this field or when the
+	// caller specified none of it.
+	KubernetesNetworkConfig *ClusterNetworkConfig `json:"kubernetesNetworkConfig,omitempty"`
+	// BootstrapClusterCreatorAdminPermissions mirrors bootstrapCreatorAdmin's
+	// resolved default-true decision, so DescribeCluster echoes exactly what
+	// CreateCluster actually did. Nil predates this field and also defaults true.
+	BootstrapClusterCreatorAdminPermissions *bool `json:"bootstrapClusterCreatorAdminPermissions,omitempty"`
+	// UpgradePolicy is the requested extended-support policy, stored verbatim;
+	// nil when the caller specified none (DescribeCluster then reports the
+	// AWS-standard default).
+	UpgradePolicy *ClusterUpgradePolicyMeta `json:"upgradePolicy,omitempty"`
+	// Logging is the requested clusterLogging list, stored verbatim including
+	// disabled entries; nil when the caller specified none (DescribeCluster
+	// then reports every known log type disabled, since none is ever exported).
+	Logging                []ClusterLogSetup `json:"logging,omitempty"`
+	ControlPlaneInstanceID string            `json:"controlPlaneInstanceId,omitempty"`
+	ControlPlaneENIID      string            `json:"controlPlaneEniId,omitempty"`
+	ControlPlaneENIIP      string            `json:"controlPlaneEniIp,omitempty"`
 	// ControlPlaneMgmtIP is the CP VM's br-mgmt NIC address, used as the /healthz
 	// probe target until authoritative in-VPC DNS is available.
 	ControlPlaneMgmtIP string `json:"controlPlaneMgmtIp,omitempty"`

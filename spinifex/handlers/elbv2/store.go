@@ -35,6 +35,11 @@ const (
 	// maxLBNameClaimRetries bounds the crash-orphan CAS-reclaim loop in ClaimLBName.
 	maxLBNameClaimRetries = 5
 
+	// targetGroupCASAttempts bounds a target-group read-modify-write. It sits
+	// above the kvutil default because Terraform registers targets at its own
+	// parallelism (10 by default), every one contending for the same record.
+	targetGroupCASAttempts = 12
+
 	// lbNameClaimTTL bounds how long an unresolved claim blocks other creators
 	// before ClaimLBName treats it as a crash orphan. A legitimate create finishes
 	// well under this window; it only exists to reclaim an abandoned name.
@@ -264,7 +269,45 @@ func (s *Store) GetLoadBalancerByName(ctx context.Context, name, accountID strin
 
 // --- Target Group CRUD ---
 
-// PutTargetGroup stores a target group record.
+// ErrTargetGroupNotFound is what a target-group CAS update reports when the
+// record is absent or its stored ARN does not match the one addressed, so a
+// caller can map it onto its own API error.
+var ErrTargetGroupNotFound = errors.New("elbv2: target group not found")
+
+// UpdateTargetGroup applies mutate to one target group under optimistic
+// concurrency: a writer that loses the race re-reads and retries instead of
+// overwriting the winner. mutate returns false to commit nothing.
+func (s *Store) UpdateTargetGroup(ctx context.Context, tgID string, mutate func(*TargetGroupRecord) (bool, error)) (*TargetGroupRecord, error) {
+	return kvutil.Update(ctx, s.kv, KeyPrefixTG+tgID, kvutil.CASConfig{
+		Attempts: targetGroupCASAttempts,
+		NotFound: ErrTargetGroupNotFound,
+		Exhausted: func(_ string, attempts int) error {
+			return fmt.Errorf("elbv2: target group %s contended, CAS exhausted after %d attempts", tgID, attempts)
+		},
+	}, mutate)
+}
+
+// UpdateTargetGroupByArn is UpdateTargetGroup addressed by ARN. The short ID
+// comes from the ARN's final segment (see GetTargetGroupByArn) and the stored
+// ARN is re-checked under the CAS so a mismatched record is never mutated.
+func (s *Store) UpdateTargetGroupByArn(ctx context.Context, arn string, mutate func(*TargetGroupRecord) (bool, error)) (*TargetGroupRecord, error) {
+	idx := strings.LastIndex(arn, "/")
+	if idx < 0 || idx == len(arn)-1 {
+		return nil, ErrTargetGroupNotFound
+	}
+	return s.UpdateTargetGroup(ctx, arn[idx+1:], func(tg *TargetGroupRecord) (bool, error) {
+		if tg.TargetGroupArn != arn {
+			slog.Error("target group KV record ARN mismatch",
+				"requested_arn", arn, "stored_arn", tg.TargetGroupArn)
+			return false, ErrTargetGroupNotFound
+		}
+		return mutate(tg)
+	})
+}
+
+// PutTargetGroup stores a target group record wholesale. Use UpdateTargetGroup
+// for any read-modify-write: a blind Put of a stale record silently discards
+// every field a concurrent writer changed.
 func (s *Store) PutTargetGroup(ctx context.Context, tg *TargetGroupRecord) error {
 	data, err := json.Marshal(tg)
 	if err != nil {

@@ -3,6 +3,7 @@ package handlers_elbv2
 import (
 	"context"
 	"encoding/xml"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -3646,4 +3647,175 @@ func TestDNSWatchBucket_WithStore(t *testing.T) {
 	bucket := svc.DNSWatchBucket()
 	require.NotNil(t, bucket)
 	assert.Equal(t, KVBucketELBv2, bucket.Name())
+}
+
+// Terraform creates aws_lb_target_group_attachment resources in parallel, so a
+// read-modify-write on the group's target list drops registrations — and the
+// apply still exits 0 with part of the fleet not behind the load balancer.
+func TestRegisterTargets_ConcurrentRegistrationsAllLand(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	const targetsPerTrial = 8
+	// A single trial passes often enough to prove nothing, so each trial races
+	// on a fresh target group and every one of them has to keep all its targets.
+	for trial := range 5 {
+		tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+			Name: aws.String(fmt.Sprintf("race-tg-%d", trial)),
+			Port: aws.Int64(80),
+		}, testAccountID)
+		require.NoError(t, err)
+		tgArn := tgOut.TargetGroups[0].TargetGroupArn
+
+		want := make([]string, 0, targetsPerTrial)
+		for i := range targetsPerTrial {
+			want = append(want, fmt.Sprintf("i-race%02d", i))
+		}
+
+		start := make(chan struct{})
+		errs := make([]error, targetsPerTrial)
+		var wg sync.WaitGroup
+		for i := range targetsPerTrial {
+			wg.Go(func() {
+				<-start
+				_, errs[i] = svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
+					TargetGroupArn: tgArn,
+					Targets:        []*elbv2.TargetDescription{{Id: aws.String(want[i])}},
+				}, testAccountID)
+			})
+		}
+		close(start)
+		wg.Wait()
+
+		for i, regErr := range errs {
+			require.NoError(t, regErr, "trial %d: registration of %s failed", trial, want[i])
+		}
+
+		tg, err := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
+		require.NoError(t, err)
+		got := make([]string, 0, len(tg.Targets))
+		for _, target := range tg.Targets {
+			got = append(got, target.Id)
+		}
+		assert.ElementsMatch(t, want, got, "trial %d lost a concurrent registration", trial)
+	}
+}
+
+// Deregistration is the same read-modify-write on the same record, so it has to
+// hold under the same contention or a destroy leaves orphaned targets behind.
+func TestDeregisterTargets_ConcurrentDeregistrationsAllLand(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	const registered = 8
+	const removing = 6
+	for trial := range 3 {
+		tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+			Name: aws.String(fmt.Sprintf("dereg-race-tg-%d", trial)),
+			Port: aws.Int64(80),
+		}, testAccountID)
+		require.NoError(t, err)
+		tgArn := tgOut.TargetGroups[0].TargetGroupArn
+
+		ids := make([]*elbv2.TargetDescription, 0, registered)
+		for i := range registered {
+			ids = append(ids, &elbv2.TargetDescription{Id: aws.String(fmt.Sprintf("i-drace%02d", i))})
+		}
+		_, err = svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
+			TargetGroupArn: tgArn, Targets: ids,
+		}, testAccountID)
+		require.NoError(t, err)
+
+		start := make(chan struct{})
+		errs := make([]error, removing)
+		var wg sync.WaitGroup
+		for i := range removing {
+			wg.Go(func() {
+				<-start
+				_, errs[i] = svc.DeregisterTargets(context.Background(), &elbv2.DeregisterTargetsInput{
+					TargetGroupArn: tgArn,
+					Targets:        []*elbv2.TargetDescription{ids[i]},
+				}, testAccountID)
+			})
+		}
+		close(start)
+		wg.Wait()
+
+		for i, deregErr := range errs {
+			require.NoError(t, deregErr, "trial %d: deregistration %d failed", trial, i)
+		}
+
+		tg, err := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
+		require.NoError(t, err)
+		got := make([]string, 0, len(tg.Targets))
+		for _, target := range tg.Targets {
+			got = append(got, target.Id)
+		}
+		assert.ElementsMatch(t, []string{"i-drace06", "i-drace07"}, got,
+			"trial %d: a concurrent deregistration was lost or over-applied", trial)
+	}
+}
+
+// A CAS loop on one writer is defeated by a blind whole-record write from
+// another, so the tag and attribute paths have to leave the target list alone.
+func TestRegisterTargets_SurvivesConcurrentTagAndAttributeWrites(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name: aws.String("clobber-tg"),
+		Port: aws.Int64(80),
+	}, testAccountID)
+	require.NoError(t, err)
+	tgArn := tgOut.TargetGroups[0].TargetGroupArn
+
+	const targets = 6
+	start := make(chan struct{})
+	errs := make([]error, targets+2)
+	var wg sync.WaitGroup
+	for i := range targets {
+		wg.Go(func() {
+			<-start
+			_, errs[i] = svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
+				TargetGroupArn: tgArn,
+				Targets:        []*elbv2.TargetDescription{{Id: aws.String(fmt.Sprintf("i-clob%02d", i))}},
+			}, testAccountID)
+		})
+	}
+	wg.Go(func() {
+		<-start
+		_, errs[targets] = svc.AddTags(context.Background(), &elbv2.AddTagsInput{
+			ResourceArns: []*string{tgArn},
+			Tags:         []*elbv2.Tag{{Key: aws.String("Name"), Value: aws.String("clobber")}},
+		}, testAccountID)
+	})
+	wg.Go(func() {
+		<-start
+		_, errs[targets+1] = svc.ModifyTargetGroupAttributes(context.Background(), &elbv2.ModifyTargetGroupAttributesInput{
+			TargetGroupArn: tgArn,
+			Attributes: []*elbv2.TargetGroupAttribute{
+				{Key: aws.String("deregistration_delay.timeout_seconds"), Value: aws.String("17")},
+			},
+		}, testAccountID)
+	})
+	close(start)
+	wg.Wait()
+
+	for i, writeErr := range errs {
+		require.NoError(t, writeErr, "writer %d failed", i)
+	}
+
+	tg, err := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
+	require.NoError(t, err)
+	got := make([]string, 0, len(tg.Targets))
+	for _, target := range tg.Targets {
+		got = append(got, target.Id)
+	}
+	want := make([]string, 0, targets)
+	for i := range targets {
+		want = append(want, fmt.Sprintf("i-clob%02d", i))
+	}
+	assert.ElementsMatch(t, want, got, "a tag or attribute write discarded a registration")
+	assert.Equal(t, "clobber", tg.Tags["Name"])
+	assert.Equal(t, "17", tg.Attributes["deregistration_delay.timeout_seconds"])
 }

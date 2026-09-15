@@ -220,27 +220,35 @@ func (s *ELBv2ServiceImpl) ResetTargetHealthOnStartup(ctx context.Context) error
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		changed := false
-		for i := range tg.Targets {
-			t := &tg.Targets[i]
-			// Draining state is driven by DeregisterTargets; don't clobber it.
-			if t.HealthState == TargetHealthDraining {
-				continue
+		// Counted inside the CAS body and only added on commit, so a retried
+		// attempt does not count the same target twice.
+		reset := 0
+		updated, err := s.store.UpdateTargetGroup(ctx, tg.TargetGroupID, func(rec *TargetGroupRecord) (bool, error) {
+			reset = 0
+			for i := range rec.Targets {
+				t := &rec.Targets[i]
+				// Draining state is driven by DeregisterTargets; don't clobber it.
+				if t.HealthState == TargetHealthDraining {
+					continue
+				}
+				if t.HealthState == TargetHealthInitial {
+					continue
+				}
+				t.HealthState = TargetHealthInitial
+				t.HealthDesc = "Target registration is in progress"
+				reset++
 			}
-			if t.HealthState == TargetHealthInitial {
-				continue
-			}
-			t.HealthState = TargetHealthInitial
-			t.HealthDesc = "Target registration is in progress"
-			changed = true
-			resetTargets++
-		}
-		if changed {
-			if err := s.store.PutTargetGroup(ctx, tg); err != nil {
+			return reset > 0, nil
+		})
+		if err != nil {
+			if !errors.Is(err, ErrTargetGroupNotFound) {
 				slog.Error("ResetTargetHealthOnStartup: persist failed",
 					"tgId", tg.TargetGroupID, "err", err)
-				continue
 			}
+			continue
+		}
+		if updated != nil && reset > 0 {
+			resetTargets += reset
 			resetTGs++
 		}
 	}
@@ -2011,54 +2019,51 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.M
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	tg, err := s.store.GetTargetGroupByArn(ctx, *input.TargetGroupArn)
+	// Under CAS, so a health-check change and a concurrent target registration
+	// on the same group cannot discard each other.
+	tg, err := s.updateTargetGroupCAS(ctx, *input.TargetGroupArn, accountID, "ModifyTargetGroup", func(rec *TargetGroupRecord) (bool, error) {
+		hc := rec.HealthCheck
+		if input.HealthCheckEnabled != nil {
+			hc.Enabled = *input.HealthCheckEnabled
+		}
+		if input.HealthCheckProtocol != nil {
+			hc.Protocol = *input.HealthCheckProtocol
+		}
+		if input.HealthCheckPort != nil {
+			hc.Port = *input.HealthCheckPort
+		}
+		if input.HealthCheckPath != nil {
+			if err := validateHealthCheckPath(*input.HealthCheckPath); err != nil {
+				return false, err
+			}
+			hc.Path = *input.HealthCheckPath
+		}
+		if input.HealthCheckIntervalSeconds != nil {
+			hc.IntervalSeconds = *input.HealthCheckIntervalSeconds
+		}
+		if input.HealthCheckTimeoutSeconds != nil {
+			hc.TimeoutSeconds = *input.HealthCheckTimeoutSeconds
+		}
+		if input.HealthyThresholdCount != nil {
+			hc.HealthyThreshold = *input.HealthyThresholdCount
+		}
+		if input.UnhealthyThresholdCount != nil {
+			hc.UnhealthyThreshold = *input.UnhealthyThresholdCount
+		}
+		if input.Matcher != nil && input.Matcher.HttpCode != nil {
+			if err := validateHealthCheckMatcher(*input.Matcher.HttpCode); err != nil {
+				return false, err
+			}
+			hc.Matcher = *input.Matcher.HttpCode
+		}
+		if hc == rec.HealthCheck {
+			return false, nil
+		}
+		rec.HealthCheck = hc
+		return true, nil
+	})
 	if err != nil {
-		slog.ErrorContext(ctx, "ModifyTargetGroup: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	if tg == nil || tg.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
-	}
-
-	hc := tg.HealthCheck
-	if input.HealthCheckEnabled != nil {
-		hc.Enabled = *input.HealthCheckEnabled
-	}
-	if input.HealthCheckProtocol != nil {
-		hc.Protocol = *input.HealthCheckProtocol
-	}
-	if input.HealthCheckPort != nil {
-		hc.Port = *input.HealthCheckPort
-	}
-	if input.HealthCheckPath != nil {
-		if err := validateHealthCheckPath(*input.HealthCheckPath); err != nil {
-			return nil, err
-		}
-		hc.Path = *input.HealthCheckPath
-	}
-	if input.HealthCheckIntervalSeconds != nil {
-		hc.IntervalSeconds = *input.HealthCheckIntervalSeconds
-	}
-	if input.HealthCheckTimeoutSeconds != nil {
-		hc.TimeoutSeconds = *input.HealthCheckTimeoutSeconds
-	}
-	if input.HealthyThresholdCount != nil {
-		hc.HealthyThreshold = *input.HealthyThresholdCount
-	}
-	if input.UnhealthyThresholdCount != nil {
-		hc.UnhealthyThreshold = *input.UnhealthyThresholdCount
-	}
-	if input.Matcher != nil && input.Matcher.HttpCode != nil {
-		if err := validateHealthCheckMatcher(*input.Matcher.HttpCode); err != nil {
-			return nil, err
-		}
-		hc.Matcher = *input.Matcher.HttpCode
-	}
-	tg.HealthCheck = hc
-
-	if err := s.store.PutTargetGroup(ctx, tg); err != nil {
-		slog.ErrorContext(ctx, "ModifyTargetGroup: failed to persist record", "arn", tg.TargetGroupArn, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
+		return nil, err
 	}
 
 	slog.InfoContext(ctx, "ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
@@ -2197,27 +2202,61 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 
 // --- Target registration ---
 
+// targetKey identifies a registered target within its group. Port is always the
+// resolved one (the group default when the caller sent none), so the same target
+// never appears under two keys.
+func targetKey(id string, port int64) string {
+	return fmt.Sprintf("%s:%d", id, port)
+}
+
+// updateTargetGroupCAS mutates the target group at arn under optimistic
+// concurrency, mapping an absent or cross-account record onto the ELBv2
+// not-found error and anything unclassified onto an internal error.
+func (s *ELBv2ServiceImpl) updateTargetGroupCAS(ctx context.Context, arn, accountID, opName string, mutate func(*TargetGroupRecord) (bool, error)) (*TargetGroupRecord, error) {
+	tg, err := s.store.UpdateTargetGroupByArn(ctx, arn, func(rec *TargetGroupRecord) (bool, error) {
+		if rec.AccountID != accountID {
+			return false, ErrTargetGroupNotFound
+		}
+		return mutate(rec)
+	})
+	switch {
+	case err == nil:
+		return tg, nil
+	case errors.Is(err, ErrTargetGroupNotFound):
+		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+	}
+	// An error the mutation raised already carries its own AWS code; only an
+	// unclassified store or contention failure becomes an internal error.
+	if _, ok := awserrors.ResolveErrorCode(err); ok {
+		return nil, err
+	}
+	slog.ErrorContext(ctx, opName+": failed to update TG", "arn", arn, "err", err)
+	return nil, errors.New(awserrors.ErrorServerInternal)
+}
+
 func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.RegisterTargetsInput, accountID string) (*elbv2.RegisterTargetsOutput, error) {
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
+	tgArn := *input.TargetGroupArn
 
-	tg, err := s.store.GetTargetGroupByArn(ctx, *input.TargetGroupArn)
+	tg, err := s.store.GetTargetGroupByArn(ctx, tgArn)
 	if err != nil {
-		slog.ErrorContext(ctx, "RegisterTargets: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
+		slog.ErrorContext(ctx, "RegisterTargets: failed to get TG", "arn", tgArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if tg == nil || tg.AccountID != accountID {
 		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
 	}
 
-	// Build map of existing targets for dedup
-	existing := make(map[string]int) // id:port -> index
-	for i, t := range tg.Targets {
-		key := fmt.Sprintf("%s:%d", t.Id, t.Port)
-		existing[key] = i
+	// Resolve private IPs before the CAS loop: an ENI lookup is network I/O and
+	// must not repeat on every retry. An already-registered target is skipped
+	// without one, so re-registering never depends on the instance still existing.
+	registered := make(map[string]bool, len(tg.Targets))
+	for _, t := range tg.Targets {
+		registered[targetKey(t.Id, t.Port)] = true
 	}
-
+	pending := make([]Target, 0, len(input.Targets))
 	for _, td := range input.Targets {
 		if td.Id == nil {
 			continue
@@ -2226,18 +2265,14 @@ func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.Reg
 		if td.Port != nil {
 			port = *td.Port
 		}
-		key := fmt.Sprintf("%s:%d", *td.Id, port)
-		if _, exists := existing[key]; exists {
+		if registered[targetKey(*td.Id, port)] {
 			continue // Already registered
 		}
-
-		// Resolve target ID → private IP (instance ENI lookup, or raw IP for ip-type TGs)
 		privateIP, err := s.resolveRegisteredTargetIP(ctx, tg.TargetType, *td.Id, accountID)
 		if err != nil {
 			return nil, err
 		}
-
-		tg.Targets = append(tg.Targets, Target{
+		pending = append(pending, Target{
 			Id:          *td.Id,
 			Port:        port,
 			HealthState: TargetHealthInitial,
@@ -2246,18 +2281,35 @@ func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.Reg
 		})
 	}
 
-	if err := s.store.PutTargetGroup(ctx, tg); err != nil {
-		slog.ErrorContext(ctx, "RegisterTargets: failed to persist TG", "arn", *input.TargetGroupArn, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
+	// The append runs against the record as committed, not the copy read above,
+	// so two concurrent registrations on one group both land.
+	if _, err := s.updateTargetGroupCAS(ctx, tgArn, accountID, "RegisterTargets", func(rec *TargetGroupRecord) (bool, error) {
+		present := make(map[string]bool, len(rec.Targets))
+		for _, t := range rec.Targets {
+			present[targetKey(t.Id, t.Port)] = true
+		}
+		changed := false
+		for _, t := range pending {
+			key := targetKey(t.Id, t.Port)
+			if present[key] {
+				continue
+			}
+			present[key] = true
+			rec.Targets = append(rec.Targets, t)
+			changed = true
+		}
+		return changed, nil
+	}); err != nil {
+		return nil, err
 	}
 
 	// Reload HAProxy for any LBs that reference this target group
-	if err := s.updateStoredConfigForTargetGroup(ctx, tg.TargetGroupArn); err != nil {
-		slog.ErrorContext(ctx, "RegisterTargets: failed to update config", "arn", *input.TargetGroupArn, "err", err)
+	if err := s.updateStoredConfigForTargetGroup(ctx, tgArn); err != nil {
+		slog.ErrorContext(ctx, "RegisterTargets: failed to update config", "arn", tgArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.InfoContext(ctx, "RegisterTargets completed", "tgArn", *input.TargetGroupArn, "targetsAdded", len(input.Targets), "accountID", accountID)
+	slog.InfoContext(ctx, "RegisterTargets completed", "tgArn", tgArn, "targetsAdded", len(input.Targets), "accountID", accountID)
 
 	return &elbv2.RegisterTargetsOutput{}, nil
 }
@@ -2266,10 +2318,11 @@ func (s *ELBv2ServiceImpl) DeregisterTargets(ctx context.Context, input *elbv2.D
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
+	tgArn := *input.TargetGroupArn
 
-	tg, err := s.store.GetTargetGroupByArn(ctx, *input.TargetGroupArn)
+	tg, err := s.store.GetTargetGroupByArn(ctx, tgArn)
 	if err != nil {
-		slog.ErrorContext(ctx, "DeregisterTargets: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
+		slog.ErrorContext(ctx, "DeregisterTargets: failed to get TG", "arn", tgArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if tg == nil || tg.AccountID != accountID {
@@ -2286,32 +2339,42 @@ func (s *ELBv2ServiceImpl) DeregisterTargets(ctx context.Context, input *elbv2.D
 		if td.Port != nil {
 			port = *td.Port
 		}
-		removeSet[fmt.Sprintf("%s:%d", *td.Id, port)] = true
+		removeSet[targetKey(*td.Id, port)] = true
 	}
 
-	var remaining []Target
-	for _, t := range tg.Targets {
-		key := fmt.Sprintf("%s:%d", t.Id, t.Port)
-		if removeSet[key] {
-			s.hc.removeTarget(tg.TargetGroupID, t.Id, t.Port)
-		} else {
+	// removed is rebuilt on every attempt, so a lost CAS race cannot leave a
+	// target from an abandoned attempt in the health-checker eviction list.
+	var removed []Target
+	updated, err := s.updateTargetGroupCAS(ctx, tgArn, accountID, "DeregisterTargets", func(rec *TargetGroupRecord) (bool, error) {
+		removed = nil
+		remaining := make([]Target, 0, len(rec.Targets))
+		for _, t := range rec.Targets {
+			if removeSet[targetKey(t.Id, t.Port)] {
+				removed = append(removed, t)
+				continue
+			}
 			remaining = append(remaining, t)
 		}
+		if len(removed) == 0 {
+			return false, nil
+		}
+		rec.Targets = remaining
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	tg.Targets = remaining
-
-	if err := s.store.PutTargetGroup(ctx, tg); err != nil {
-		slog.ErrorContext(ctx, "DeregisterTargets: failed to persist TG", "arn", *input.TargetGroupArn, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
+	for _, t := range removed {
+		s.hc.removeTarget(updated.TargetGroupID, t.Id, t.Port)
 	}
 
 	// Reload HAProxy for any LBs that reference this target group
-	if err := s.updateStoredConfigForTargetGroup(ctx, tg.TargetGroupArn); err != nil {
-		slog.ErrorContext(ctx, "DeregisterTargets: failed to update config", "arn", *input.TargetGroupArn, "err", err)
+	if err := s.updateStoredConfigForTargetGroup(ctx, tgArn); err != nil {
+		slog.ErrorContext(ctx, "DeregisterTargets: failed to update config", "arn", tgArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	slog.InfoContext(ctx, "DeregisterTargets completed", "tgArn", *input.TargetGroupArn, "targetsRemoved", len(input.Targets), "accountID", accountID)
+	slog.InfoContext(ctx, "DeregisterTargets completed", "tgArn", tgArn, "targetsRemoved", len(input.Targets), "accountID", accountID)
 
 	return &elbv2.DeregisterTargetsOutput{}, nil
 }

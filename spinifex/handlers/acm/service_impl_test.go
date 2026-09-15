@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -715,4 +716,67 @@ func TestMintedArnRoundTripsThroughTheGatesFormatter(t *testing.T) {
 	id, ok := arn.ParseACMCertificateID(minted)
 	require.True(t, ok)
 	assert.Equal(t, minted, arn.FormatACMCertificate(svc.region, testAccountID, id))
+}
+
+// An account with no certificates must still answer with the key present and
+// empty: the SDK marshaller drops a nil slice, so a caller that ranges over the
+// result without a nil check breaks on every account's first state.
+func TestListCertificates_EmptyAccountReturnsEmptyList(t *testing.T) {
+	svc := setupACMService(t)
+
+	list, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, list.CertificateSummaryList, "CertificateSummaryList must be present, not nil")
+	assert.Empty(t, list.CertificateSummaryList)
+
+	body, err := jsonutil.BuildJSON(list)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "CertificateSummaryList", "the wire body must carry the key, not {}")
+}
+
+// The populated case must keep working: an empty slice that never fills is just
+// a different way of losing the list.
+func TestListCertificates_PopulatedAccountReturnsSummaries(t *testing.T) {
+	svc := setupACMService(t)
+	c1, k1 := genCert(t, "filled-one.example.com")
+	c2, k2 := genCert(t, "filled-two.example.com")
+
+	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c2, PrivateKey: k2}, testAccountID)
+	require.NoError(t, err)
+
+	list, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, list.CertificateSummaryList, 2)
+	domains := []string{
+		aws.StringValue(list.CertificateSummaryList[0].DomainName),
+		aws.StringValue(list.CertificateSummaryList[1].DomainName),
+	}
+	assert.ElementsMatch(t, []string{"filled-one.example.com", "filled-two.example.com"}, domains)
+}
+
+// A missing tenant CA is a precondition the operator can fix, not a server
+// fault. InternalErrorException is a retryable 500, so Terraform sat on
+// "Still creating..." instead of failing; this asserts the 4xx and the reason.
+func TestRequestCertificate_NoTenantCAIsAClientErrorNamingTheCause(t *testing.T) {
+	svc := setupACMService(t)
+	require.Nil(t, svc.TenantCA, "this test only means anything with no tenant CA wired")
+
+	_, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName: aws.String("no-ca.example.com"),
+	}, testAccountID)
+	require.Error(t, err)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "the error must carry a registered AWS code")
+	assert.Equal(t, awserrors.ErrorResourceNotFound, code)
+	assert.NotEqual(t, awserrors.ErrorInternalError, code, "a retryable 500 hangs the provider's create")
+
+	assert.Equal(t, 404, awserrors.ErrorLookup[code].HTTPCode)
+	assert.True(t, awserrors.IsTerminal(err), "the provider must fail fast, not retry with backoff")
+
+	assert.Contains(t, message, "tenant CA", "the message must name the missing tenant CA")
+	assert.Contains(t, message, "no-ca.example.com")
+	assert.Contains(t, message, tenantCACreateCommandHint, "the message must name the command that fixes it")
 }

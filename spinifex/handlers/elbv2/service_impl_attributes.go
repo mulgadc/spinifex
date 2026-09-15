@@ -166,8 +166,16 @@ func (s *ELBv2ServiceImpl) tgAttrResource(ctx context.Context, arn, accountID, o
 		notFound:  awserrors.ErrorELBv2TargetGroupNotFound,
 		// fetch/save close over ctx: attrResource is consumed by the generic
 		// attribute helpers, which have no context of their own to pass down.
-		fetch:       func(arn string) (*TargetGroupRecord, error) { return s.store.GetTargetGroupByArn(ctx, arn) },
-		save:        func(tg *TargetGroupRecord) error { return s.store.PutTargetGroup(ctx, tg) },
+		fetch: func(arn string) (*TargetGroupRecord, error) { return s.store.GetTargetGroupByArn(ctx, arn) },
+		// CAS the attribute field alone: a whole-record Put here would discard
+		// targets registered since fetch read this copy.
+		save: func(tg *TargetGroupRecord) error {
+			_, err := s.store.UpdateTargetGroupByArn(ctx, tg.TargetGroupArn, func(rec *TargetGroupRecord) (bool, error) {
+				rec.Attributes = tg.Attributes
+				return true, nil
+			})
+			return err
+		},
 		accountIDOf: func(r *TargetGroupRecord) string { return r.AccountID },
 		defaults:    func(*TargetGroupRecord) map[string]string { return DefaultTargetGroupAttributes() },
 		attrsOf:     func(r *TargetGroupRecord) map[string]string { return r.Attributes },

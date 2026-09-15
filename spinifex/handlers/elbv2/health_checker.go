@@ -2,6 +2,7 @@ package handlers_elbv2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -114,8 +115,29 @@ func (hc *healthChecker) handleHealthReportDirect(ctx context.Context, report lb
 	}
 	hc.mu.Unlock()
 
+	// Apply the new states field-by-field under CAS. A whole-record Put here
+	// would discard any target registered since this scan read the group, which
+	// is the one write on this key that runs on its own schedule.
 	for _, tg := range changedTGs {
-		if err := hc.store.PutTargetGroup(ctx, tg); err != nil {
+		states := make(map[string]Target, len(tg.Targets))
+		for _, t := range tg.Targets {
+			states[targetKey(t.Id, t.Port)] = t
+		}
+		_, err := hc.store.UpdateTargetGroup(ctx, tg.TargetGroupID, func(rec *TargetGroupRecord) (bool, error) {
+			changed := false
+			for i := range rec.Targets {
+				cur := &rec.Targets[i]
+				want, ok := states[targetKey(cur.Id, cur.Port)]
+				if !ok || cur.HealthState == want.HealthState {
+					continue
+				}
+				cur.HealthState = want.HealthState
+				cur.HealthDesc = want.HealthDesc
+				changed = true
+			}
+			return changed, nil
+		})
+		if err != nil && !errors.Is(err, ErrTargetGroupNotFound) {
 			slog.ErrorContext(ctx, "healthChecker: failed to persist target group", "tgId", tg.TargetGroupID, "err", err)
 		}
 	}

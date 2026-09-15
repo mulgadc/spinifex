@@ -52,9 +52,14 @@ func (s *ELBv2ServiceImpl) resolveTaggable(ctx context.Context, arn string) (h t
 		}
 		if tg != nil {
 			found = true
+			// CAS the tag field alone: a whole-record Put here would discard
+			// targets registered since this copy was read.
 			h = taggable{tags: tg.Tags, owner: tg.AccountID, save: func(t map[string]string) error {
-				tg.Tags = t
-				return s.store.PutTargetGroup(ctx, tg)
+				_, uerr := s.store.UpdateTargetGroupByArn(ctx, arn, func(rec *TargetGroupRecord) (bool, error) {
+					rec.Tags = t
+					return true, nil
+				})
+				return uerr
 			}}
 		}
 	case resourcearn.ELBv2Listener:

@@ -298,7 +298,12 @@ func (s *ACMServiceImpl) RequestCertificate(ctx context.Context, input *acm.Requ
 	if mode == ValidationModePrivateCA {
 		if s.TenantCA == nil {
 			slog.ErrorContext(ctx, "RequestCertificate: PRIVATE_CA mode derived but no tenant CA is wired", "domain", domain)
-			return nil, errors.New(awserrors.ErrorInternalError)
+			// An absent tenant CA is an unmet precondition the caller can act
+			// on, not a server fault: ResourceNotFound is a 404 the provider
+			// fails fast on, where InternalError is retried with backoff.
+			return nil, awserrors.Errorf(awserrors.ErrorResourceNotFound,
+				"no tenant CA is configured, so PRIVATE_CA issuance for %q is unavailable; create one with %q",
+				domain, tenantCACreateCommandHint)
 		}
 		for _, d := range allDomains {
 			if !s.TenantCA.Authorized(d) {
@@ -499,14 +504,18 @@ func (s *ACMServiceImpl) GetCertificate(ctx context.Context, input *acm.GetCerti
 
 // ListCertificates returns summaries for every cert owned by accountID.
 // Summaries carry no key material, so this takes the metadata-only accessor.
+//
+// The list is built with make, never appended into a nil field: the SDK's JSON
+// marshaller drops a nil slice whatever the struct tag says, so an account with
+// no certificates would answer {} and hand an SDK caller a nil to range over.
 func (s *ACMServiceImpl) ListCertificates(ctx context.Context, input *acm.ListCertificatesInput, accountID string) (*acm.ListCertificatesOutput, error) {
 	recs, err := s.store.ListCertMetadata(ctx, accountID)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
-	out := &acm.ListCertificatesOutput{}
+	summaries := make([]*acm.CertificateSummary, 0, len(recs))
 	for _, rec := range recs {
-		out.CertificateSummaryList = append(out.CertificateSummaryList, &acm.CertificateSummary{
+		summaries = append(summaries, &acm.CertificateSummary{
 			CertificateArn: aws.String(rec.CertificateArn),
 			DomainName:     aws.String(rec.DomainName),
 			Status:         aws.String(certStatusOrDefault(rec)),
@@ -518,7 +527,7 @@ func (s *ACMServiceImpl) ListCertificates(ctx context.Context, input *acm.ListCe
 			InUse:          aws.Bool(len(rec.InUseBy) > 0),
 		})
 	}
-	return out, nil
+	return &acm.ListCertificatesOutput{CertificateSummaryList: summaries}, nil
 }
 
 // DeleteCertificate removes an owned cert; unknown ARN → ResourceNotFound.

@@ -248,6 +248,85 @@ func TestClassifyRestoredInstances_ShuttingDownFinalizesToTerminated(t *testing.
 	assert.NotNil(t, store.terminated[v.ID])
 }
 
+// spawnLiveChild starts a real child process and returns its PID, so a test can
+// exercise the live-QEMU branch. killOrphanedQEMU SIGKILLs whatever PID it finds,
+// so this must be a process the test owns and never the test process itself.
+func spawnLiveChild(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("sleep", "300")
+	require.NoError(t, cmd.Start())
+	// Reap in the background. A killed child of this process would otherwise
+	// linger as a zombie, which still answers signal(0), so the production
+	// exit-wait would never observe it dying. Real QEMU is reparented to init.
+	reaped := make(chan struct{})
+	go func() { _, _ = cmd.Process.Wait(); close(reaped) }()
+	t.Cleanup(func() {
+		select {
+		case <-reaped:
+		default:
+			_ = cmd.Process.Kill()
+			<-reaped
+		}
+	})
+	return cmd.Process.Pid
+}
+
+// A terminate acknowledged before a daemon restart must survive the restart. The
+// guest can outlive the daemon when it refuses to power down, and reconnecting to
+// it silently discarded the terminate and re-advertised the instance as running.
+func TestClassifyRestoredInstances_ShuttingDownWithLiveQEMUTerminates(t *testing.T) {
+	m, store, _ := classifyTestManager(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	v := &VM{ID: "i-shutdown-live", Status: StateShuttingDown, InstanceType: "t3.micro"}
+	require.NoError(t, utils.WritePidFile(v.ID, spawnLiveChild(t)))
+	m.Replace(map[string]*VM{v.ID: v})
+
+	toLaunch := m.classifyRestoredInstances()
+
+	assert.Empty(t, toLaunch, "a terminating instance must never be queued for relaunch")
+	assert.Equal(t, StateTerminated, v.Status,
+		"a surviving QEMU must not outrank an acknowledged terminate")
+	assert.NotNil(t, store.terminated[v.ID])
+}
+
+// The stop half of the same invariant: a stop already acknowledged must finalise
+// to Stopped rather than reconnect, so a guest that ignored the power button does
+// not come back running.
+func TestClassifyRestoredInstances_StoppingWithLiveQEMUStops(t *testing.T) {
+	m, store, _ := classifyTestManager(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	v := &VM{ID: "i-stopping-live", Status: StateStopping, InstanceType: "t3.micro"}
+	require.NoError(t, utils.WritePidFile(v.ID, spawnLiveChild(t)))
+	m.Replace(map[string]*VM{v.ID: v})
+
+	toLaunch := m.classifyRestoredInstances()
+
+	assert.Empty(t, toLaunch)
+	assert.Equal(t, StateStopped, v.Status,
+		"a surviving QEMU must not outrank an acknowledged stop")
+	assert.NotNil(t, store.stopped[v.ID])
+}
+
+// Belt and braces for the same invariant at its last enforcement point: even if a
+// future caller reaches reconnectInstance with a transitional instance, it must
+// refuse rather than promote it to Running.
+func TestReconnectInstance_RefusesTransitionalState(t *testing.T) {
+	m, _, _ := classifyTestManager(t)
+
+	// Succeed at every step a reconnect would otherwise fail on, so the refusal
+	// under test is the guard itself and not a missing QMP socket.
+	orig := attachQMPForReconnect
+	t.Cleanup(func() { attachQMPForReconnect = orig })
+	attachQMPForReconnect = func(_ *Manager, v *VM) error { fakeAttachQMP(t, v); return nil }
+
+	for _, status := range []InstanceState{StateStopping, StateShuttingDown} {
+		v := &VM{ID: "i-" + string(status), Status: status, InstanceType: "t3.micro"}
+		err := m.reconnectInstance(v)
+		require.Errorf(t, err, "reconnect must refuse an instance in %s", status)
+		assert.Equal(t, status, v.Status, "a refused reconnect must not change the status")
+	}
+}
+
 // TestClassifyRestoredInstances_RunningWithDeadPidQueuedForRelaunch
 // covers the no-PID-file path: Status was Running at shutdown but no
 // QEMU process is alive. classify must reset Status to Pending and

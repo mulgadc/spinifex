@@ -175,6 +175,21 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 			}
 		}
 
+		// A stop or terminate acknowledged before the restart outranks a
+		// surviving QEMU: finish what the caller asked for rather than
+		// re-advertising the instance as running.
+		if instance.Status == StateStopping || instance.Status == StateShuttingDown {
+			if isInstanceProcessRunning(instance) {
+				slog.Warn("QEMU outlived an in-flight transition, killing it to finish",
+					"instance", instance.ID, "status", instance.Status)
+				if !killOrphanedQEMU(instance) {
+					continue
+				}
+			}
+			m.finalizeTransitionalRestore(instance)
+			continue
+		}
+
 		if isInstanceProcessRunning(instance) {
 			socketsValid := AreVolumeSocketsValid(instance)
 			if !socketsValid && m.backingStoreReady() {
@@ -205,14 +220,8 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 			}
 		}
 
-		// QEMU is not running -- resolve transitional states from interrupted operations.
-		switch instance.Status {
-		case StateStopping, StateShuttingDown:
-			if m.finalizeTransitionalRestore(instance) {
-				continue
-			}
-			continue
-		case StateRunning:
+		// QEMU is not running -- an instance that was up relaunches from scratch.
+		if instance.Status == StateRunning {
 			instance.Status = StatePending
 			slog.Info("Instance was running but QEMU exited, relaunching", "instance", instance.ID)
 		}
@@ -408,6 +417,13 @@ var attachQMPForReconnect = (*Manager).AttachQMP
 // closes QMP and propagates the error; status is only set to Running after
 // subscriptions are confirmed live to avoid advertising a broken instance.
 func (m *Manager) reconnectInstance(instance *VM) error {
+	// Promoting a transitional instance to Running would silently discard a
+	// stop or terminate the caller already had acknowledged. Callers resolve
+	// those before reconnecting, so reaching here is a bug, not a state.
+	if instance.Status == StateStopping || instance.Status == StateShuttingDown {
+		return fmt.Errorf("refusing to reconnect instance in transitional state %s", instance.Status)
+	}
+
 	if err := attachQMPForReconnect(m, instance); err != nil {
 		return fmt.Errorf("failed to reconnect QMP: %w", err)
 	}

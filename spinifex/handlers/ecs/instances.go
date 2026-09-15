@@ -114,11 +114,11 @@ func (s *Service) ListContainerInstances(ctx context.Context, input *ecs.ListCon
 	if err != nil {
 		return nil, err
 	}
-	out := &ecs.ListContainerInstancesOutput{}
+	arns := make([]string, 0, len(recs))
 	for i := range recs {
-		out.ContainerInstanceArns = append(out.ContainerInstanceArns, aws.String(recs[i].ARN))
+		arns = append(arns, recs[i].ARN)
 	}
-	return out, nil
+	return &ecs.ListContainerInstancesOutput{ContainerInstanceArns: aws.StringSlice(arns)}, nil
 }
 
 // upsertInstance reads-or-creates the instance record, applies mutate, and writes

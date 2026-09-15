@@ -116,6 +116,7 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 				ContainerPort: int(aws.Int64Value(p.ContainerPort)),
 				HostPort:      int(aws.Int64Value(p.HostPort)),
 				Protocol:      aws.StringValue(p.Protocol),
+				Name:          aws.StringValue(p.Name),
 			})
 		}
 		if lc := c.LogConfiguration; lc != nil {
@@ -130,6 +131,18 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 		out = append(out, def)
 	}
 	return out
+}
+
+// runtimePlatformFromAWS maps the SDK runtimePlatform to the persisted subset.
+// Pure echo: nothing in v1 enforces CPU architecture or OS family selection.
+func runtimePlatformFromAWS(in *ecs.RuntimePlatform) *RuntimePlatformRecord {
+	if in == nil {
+		return nil
+	}
+	return &RuntimePlatformRecord{
+		CPUArchitecture:       aws.StringValue(in.CpuArchitecture),
+		OperatingSystemFamily: aws.StringValue(in.OperatingSystemFamily),
+	}
 }
 
 func (c ContainerDef) toAWS() *ecs.ContainerDefinition {
@@ -163,6 +176,9 @@ func (c ContainerDef) toAWS() *ecs.ContainerDefinition {
 		}
 		if p.Protocol != "" {
 			pm.Protocol = aws.String(p.Protocol)
+		}
+		if p.Name != "" {
+			pm.Name = aws.String(p.Name)
 		}
 		cd.PortMappings = append(cd.PortMappings, pm)
 	}

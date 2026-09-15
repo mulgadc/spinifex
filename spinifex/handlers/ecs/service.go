@@ -282,11 +282,56 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 		if err != nil {
 			return nil, err
 		}
-		if found {
-			out.Clusters = append(out.Clusters, rec.toAWS())
+		if !found {
+			continue
 		}
+		c := rec.toAWS()
+		if err := s.applyClusterCounts(ctx, kv, name, c); err != nil {
+			return nil, err
+		}
+		out.Clusters = append(out.Clusters, c)
 	}
 	return out, nil
+}
+
+// applyClusterCounts fills the four count fields AWS always returns on a
+// cluster, tallied at read time from the existing listers. The separate
+// Statistics key/value list, which Include=STATISTICS adds, stays unset.
+func (s *Service) applyClusterCounts(ctx context.Context, kv jetstream.KeyValue, cluster string, c *ecs.Cluster) error {
+	instances, err := s.listInstanceRecords(ctx, kv, cluster)
+	if err != nil {
+		return err
+	}
+	c.RegisteredContainerInstancesCount = aws.Int64(int64(len(instances)))
+
+	tasks, err := s.listTaskRecords(ctx, kv, cluster)
+	if err != nil {
+		return err
+	}
+	var running, pending int64
+	for i := range tasks {
+		switch tasks[i].LastStatus {
+		case TaskStatusRunning:
+			running++
+		case TaskStatusPending:
+			pending++
+		}
+	}
+	c.RunningTasksCount = aws.Int64(running)
+	c.PendingTasksCount = aws.Int64(pending)
+
+	services, err := s.listServiceRecords(ctx, kv, cluster)
+	if err != nil {
+		return err
+	}
+	var active int64
+	for i := range services {
+		if services[i].Status == ServiceStatusActive {
+			active++
+		}
+	}
+	c.ActiveServicesCount = aws.Int64(active)
+	return nil
 }
 
 // ListClusters returns the ARNs of all clusters in the account.
@@ -299,7 +344,7 @@ func (s *Service) ListClusters(ctx context.Context, _ *ecs.ListClustersInput, ac
 	if err != nil {
 		return nil, err
 	}
-	out := &ecs.ListClustersOutput{}
+	arns := make([]string, 0, len(keys))
 	for _, k := range keys {
 		if !strings.HasSuffix(k, "/meta") {
 			continue
@@ -310,10 +355,10 @@ func (s *Service) ListClusters(ctx context.Context, _ *ecs.ListClustersInput, ac
 			return nil, err
 		}
 		if found {
-			out.ClusterArns = append(out.ClusterArns, aws.String(rec.ARN))
+			arns = append(arns, rec.ARN)
 		}
 	}
-	return out, nil
+	return &ecs.ListClustersOutput{ClusterArns: aws.StringSlice(arns)}, nil
 }
 
 func (r *ClusterRecord) toAWS() *ecs.Cluster {
@@ -402,6 +447,7 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 		Containers:       containerDefsFromAWS(input.ContainerDefinitions),
 
 		RequiresCompatibilities: aws.StringValueSlice(input.RequiresCompatibilities),
+		RuntimePlatform:         runtimePlatformFromAWS(input.RuntimePlatform),
 	}
 	if err := putJSON(ctx, kv, TaskDefRevKey(family, rev), &rec); err != nil {
 		return nil, err
@@ -514,7 +560,7 @@ func (s *Service) ListTaskDefinitions(ctx context.Context, input *ecs.ListTaskDe
 	if err != nil {
 		return nil, err
 	}
-	out := &ecs.ListTaskDefinitionsOutput{}
+	arns := make([]string, 0, len(keys))
 	for _, k := range keys {
 		if !strings.Contains(k, "/revs/") {
 			continue
@@ -525,10 +571,10 @@ func (s *Service) ListTaskDefinitions(ctx context.Context, input *ecs.ListTaskDe
 			return nil, err
 		}
 		if found && rec.Status == wantStatus {
-			out.TaskDefinitionArns = append(out.TaskDefinitionArns, aws.String(rec.ARN))
+			arns = append(arns, rec.ARN)
 		}
 	}
-	return out, nil
+	return &ecs.ListTaskDefinitionsOutput{TaskDefinitionArns: aws.StringSlice(arns)}, nil
 }
 
 // resolveTaskDef loads the TaskDefRecord named by ref ("family", "family:rev",
@@ -602,6 +648,16 @@ func (r *TaskDefRecord) toAWS() *ecs.TaskDefinition {
 	}
 	if len(r.RequiresCompatibilities) > 0 {
 		td.RequiresCompatibilities = aws.StringSlice(r.RequiresCompatibilities)
+	}
+	if r.RuntimePlatform != nil {
+		rp := &ecs.RuntimePlatform{}
+		if r.RuntimePlatform.CPUArchitecture != "" {
+			rp.CpuArchitecture = aws.String(r.RuntimePlatform.CPUArchitecture)
+		}
+		if r.RuntimePlatform.OperatingSystemFamily != "" {
+			rp.OperatingSystemFamily = aws.String(r.RuntimePlatform.OperatingSystemFamily)
+		}
+		td.RuntimePlatform = rp
 	}
 	for _, c := range r.Containers {
 		td.ContainerDefinitions = append(td.ContainerDefinitions, c.toAWS())

@@ -206,6 +206,14 @@ type ContainerDef struct {
 // lands in the host journal/file, retrievable per ecs-logging.md.
 const LogDriverJSONFile = "json-file"
 
+// RuntimePlatformRecord is the persisted subset of an ecs.RuntimePlatform.
+// Pure echo, same as RequiresCompatibilities: nothing selects capacity by CPU
+// architecture or OS family, but a caller that sets it must read it back.
+type RuntimePlatformRecord struct {
+	CPUArchitecture       string `json:"cpuArchitecture,omitempty"`
+	OperatingSystemFamily string `json:"operatingSystemFamily,omitempty"`
+}
+
 // TaskDefRecord is the persisted task definition revision at TaskDefRevKey.
 type TaskDefRecord struct {
 	Family           string `json:"family"`
@@ -219,11 +227,12 @@ type TaskDefRecord struct {
 	// Persisted purely so Describe echoes back what Register was given. Only
 	// the EC2 launch type is implemented, but a client that sets this and
 	// reads back an empty list sees permanent drift.
-	RequiresCompatibilities []string          `json:"requiresCompatibilities,omitempty"`
-	Containers              []ContainerDef    `json:"containers"`
-	Status                  string            `json:"status"`
-	Tags                    map[string]string `json:"tags,omitempty"`
-	RegisteredAt            time.Time         `json:"registeredAt"`
+	RequiresCompatibilities []string               `json:"requiresCompatibilities,omitempty"`
+	RuntimePlatform         *RuntimePlatformRecord `json:"runtimePlatform,omitempty"`
+	Containers              []ContainerDef         `json:"containers"`
+	Status                  string                 `json:"status"`
+	Tags                    map[string]string      `json:"tags,omitempty"`
+	RegisteredAt            time.Time              `json:"registeredAt"`
 }
 
 // reservedCPU/reservedMemory sum the task definition's per-container reservations
@@ -384,7 +393,10 @@ type ServiceRecord struct {
 	DeploymentID       string               `json:"deploymentId"`
 	RunningCount       int                  `json:"runningCount"`
 	PendingCount       int                  `json:"pendingCount"`
-	Tags               map[string]string    `json:"tags,omitempty"`
+	// EnableECSManagedTags is persisted purely so Describe echoes back what
+	// Create was given; nothing in v1 propagates ECS-managed tags onto tasks.
+	EnableECSManagedTags bool              `json:"enableEcsManagedTags,omitempty"`
+	Tags                 map[string]string `json:"tags,omitempty"`
 	// Rolling-update configuration (deploymentConfiguration) and its live state.
 	// MinimumHealthyPercent / MaximumPercent gate the rollout; the circuit breaker
 	// trips a failing deployment and optionally rolls back to LastGoodTaskDefARN.

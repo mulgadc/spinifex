@@ -198,6 +198,119 @@ func TestService_DescribeAndList(t *testing.T) {
 	assert.Len(t, miss.Failures, 1)
 }
 
+// TestService_ListServices_EmptyIsPresentNotAbsent covers the ARN-list D-fix
+// for ListServices: the key must marshal as an empty list, not vanish.
+func TestService_ListServices_EmptyIsPresentNotAbsent(t *testing.T) {
+	svc, _, _ := serviceTestRig(t)
+	out, err := svc.ListServices(context.Background(), &ecs.ListServicesInput{Cluster: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	assert.NotNil(t, out.ServiceArns)
+	assert.Empty(t, out.ServiceArns)
+}
+
+// TestService_CreateService_ProjectsNetworkConfigurationAndManagedTags covers
+// the two DescribeServices projection gaps: networkConfiguration is already
+// stored and used internally to place tasks, but serviceToAWS never echoed
+// it; enableECSManagedTags was not stored at all.
+func TestService_CreateService_ProjectsNetworkConfigurationAndManagedTags(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family:      aws.String("app"),
+		NetworkMode: aws.String(NetworkModeAwsvpc),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
+		DesiredCount:         aws.Int64(0),
+		EnableECSManagedTags: aws.Bool(true),
+		NetworkConfiguration: &ecs.NetworkConfiguration{
+			AwsvpcConfiguration: &ecs.AwsVpcConfiguration{
+				Subnets:        aws.StringSlice([]string{"subnet-1", "subnet-2"}),
+				SecurityGroups: aws.StringSlice([]string{"sg-1"}),
+				AssignPublicIp: aws.String("ENABLED"),
+			},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.True(t, aws.BoolValue(out.Service.EnableECSManagedTags))
+	require.NotNil(t, out.Service.NetworkConfiguration)
+	nc := out.Service.NetworkConfiguration.AwsvpcConfiguration
+	require.NotNil(t, nc)
+	assert.ElementsMatch(t, []string{"subnet-1", "subnet-2"}, aws.StringValueSlice(nc.Subnets))
+	assert.ElementsMatch(t, []string{"sg-1"}, aws.StringValueSlice(nc.SecurityGroups))
+	assert.Equal(t, "ENABLED", aws.StringValue(nc.AssignPublicIp))
+}
+
+// TestService_UpdateService_ChangesNetworkConfiguration covers the
+// cross-cutting constraint: once networkConfiguration is echoed back,
+// UpdateService must actually persist a changed value, or a caller changing
+// subnets would see a diff no apply could ever converge.
+func TestService_UpdateService_ChangesNetworkConfiguration(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family:      aws.String("app"),
+		NetworkMode: aws.String(NetworkModeAwsvpc),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
+		DesiredCount: aws.Int64(0),
+		NetworkConfiguration: &ecs.NetworkConfiguration{
+			AwsvpcConfiguration: &ecs.AwsVpcConfiguration{Subnets: aws.StringSlice([]string{"subnet-1"})},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"),
+		NetworkConfiguration: &ecs.NetworkConfiguration{
+			AwsvpcConfiguration: &ecs.AwsVpcConfiguration{Subnets: aws.StringSlice([]string{"subnet-2"})},
+		},
+		EnableECSManagedTags: aws.Bool(true),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.Service.NetworkConfiguration)
+	assert.Equal(t, []string{"subnet-2"},
+		aws.StringValueSlice(out.Service.NetworkConfiguration.AwsvpcConfiguration.Subnets))
+	assert.True(t, aws.BoolValue(out.Service.EnableECSManagedTags))
+
+	// The change persisted, not just the response of this one call.
+	desc, err := svc.DescribeServices(context.Background(), &ecs.DescribeServicesInput{
+		Cluster: aws.String("web"), Services: []*string{aws.String("web")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Services, 1)
+	assert.Equal(t, []string{"subnet-2"},
+		aws.StringValueSlice(desc.Services[0].NetworkConfiguration.AwsvpcConfiguration.Subnets))
+	assert.True(t, aws.BoolValue(desc.Services[0].EnableECSManagedTags))
+
+	// An update naming neither field leaves both alone rather than resetting
+	// them to their zero values.
+	_, err = svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"), DesiredCount: aws.Int64(0),
+	}, testAccountID)
+	require.NoError(t, err)
+	desc, err = svc.DescribeServices(context.Background(), &ecs.DescribeServicesInput{
+		Cluster: aws.String("web"), Services: []*string{aws.String("web")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Services, 1)
+	assert.Equal(t, []string{"subnet-2"},
+		aws.StringValueSlice(desc.Services[0].NetworkConfiguration.AwsvpcConfiguration.Subnets))
+	assert.True(t, aws.BoolValue(desc.Services[0].EnableECSManagedTags))
+}
+
 // StartTask places one task per named container instance and assigns it.
 func TestService_StartTask_PlacesPerInstance(t *testing.T) {
 	svc, _, kv := serviceTestRig(t)

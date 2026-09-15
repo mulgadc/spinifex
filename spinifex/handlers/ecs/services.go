@@ -166,23 +166,24 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 
 	now := time.Now().UTC()
 	rec := ServiceRecord{
-		Name:               name,
-		ARN:                ServiceARN(s.region, accountID, cluster, name),
-		Cluster:            cluster,
-		TaskDefFamily:      taskDef.Family,
-		TaskDefRevision:    taskDef.Revision,
-		TaskDefARN:         taskDef.ARN,
-		DesiredCount:       int(aws.Int64Value(input.DesiredCount)),
-		Status:             ServiceStatusActive,
-		SchedulingStrategy: SchedulingStrategyReplica,
-		LaunchType:         aws.StringValue(input.LaunchType),
-		NetworkMode:        resolveNetworkMode(taskDef),
-		PlacementStrategy:  placementStrategyFromAWS(input.PlacementStrategy),
-		LoadBalancers:      loadBalancersFromAWS(input.LoadBalancers),
-		DeploymentID:       uuid.NewV4().String(),
-		Tags:               tagsToMap(input.Tags),
-		CreatedAt:          now,
-		UpdatedAt:          now,
+		Name:                 name,
+		ARN:                  ServiceARN(s.region, accountID, cluster, name),
+		Cluster:              cluster,
+		TaskDefFamily:        taskDef.Family,
+		TaskDefRevision:      taskDef.Revision,
+		TaskDefARN:           taskDef.ARN,
+		DesiredCount:         int(aws.Int64Value(input.DesiredCount)),
+		Status:               ServiceStatusActive,
+		SchedulingStrategy:   SchedulingStrategyReplica,
+		LaunchType:           aws.StringValue(input.LaunchType),
+		NetworkMode:          resolveNetworkMode(taskDef),
+		PlacementStrategy:    placementStrategyFromAWS(input.PlacementStrategy),
+		LoadBalancers:        loadBalancersFromAWS(input.LoadBalancers),
+		DeploymentID:         uuid.NewV4().String(),
+		EnableECSManagedTags: aws.BoolValue(input.EnableECSManagedTags),
+		Tags:                 tagsToMap(input.Tags),
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	if input.NetworkConfiguration != nil && input.NetworkConfiguration.AwsvpcConfiguration != nil {
 		v := input.NetworkConfiguration.AwsvpcConfiguration
@@ -223,6 +224,18 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 	rec.ensurePrimaryDeployment()
 	if input.DeploymentConfiguration != nil {
 		applyDeploymentConfig(&rec, input.DeploymentConfiguration)
+	}
+	// Persisted so the next Describe reflects it; only tasks placed after this
+	// point pick it up, as AWS does not move an existing awsvpc ENI. Without
+	// this a subnet change is a diff no apply can converge.
+	if input.NetworkConfiguration != nil && input.NetworkConfiguration.AwsvpcConfiguration != nil {
+		v := input.NetworkConfiguration.AwsvpcConfiguration
+		rec.Subnets = awsStringSlice(v.Subnets)
+		rec.SecurityGroups = awsStringSlice(v.SecurityGroups)
+		rec.AssignPublicIP = aws.StringValue(v.AssignPublicIp)
+	}
+	if input.EnableECSManagedTags != nil {
+		rec.EnableECSManagedTags = aws.BoolValue(input.EnableECSManagedTags)
 	}
 	if input.DesiredCount != nil {
 		rec.DesiredCount = int(aws.Int64Value(input.DesiredCount))
@@ -319,11 +332,11 @@ func (s *Service) ListServices(ctx context.Context, input *ecs.ListServicesInput
 	if err != nil {
 		return nil, err
 	}
-	out := &ecs.ListServicesOutput{}
+	arns := make([]string, 0, len(recs))
 	for i := range recs {
-		out.ServiceArns = append(out.ServiceArns, aws.String(recs[i].ARN))
+		arns = append(arns, recs[i].ARN)
 	}
-	return out, nil
+	return &ecs.ListServicesOutput{ServiceArns: aws.StringSlice(arns)}, nil
 }
 
 // --- Reconciliation ---
@@ -661,19 +674,32 @@ func loadBalancersFromAWS(in []*ecs.LoadBalancer) []LoadBalancerTarget {
 
 func (s *Service) serviceToAWS(accountID string, r *ServiceRecord) *ecs.Service {
 	svc := &ecs.Service{
-		ServiceName:        aws.String(r.Name),
-		ServiceArn:         aws.String(r.ARN),
-		ClusterArn:         aws.String(ClusterARN(s.region, accountID, r.Cluster)),
-		Status:             aws.String(r.Status),
-		DesiredCount:       aws.Int64(int64(r.DesiredCount)),
-		RunningCount:       aws.Int64(int64(r.RunningCount)),
-		PendingCount:       aws.Int64(int64(r.PendingCount)),
-		SchedulingStrategy: aws.String(r.SchedulingStrategy),
-		TaskDefinition:     aws.String(r.TaskDefARN),
-		Tags:               tagsToAWS(r.Tags),
+		ServiceName:          aws.String(r.Name),
+		ServiceArn:           aws.String(r.ARN),
+		ClusterArn:           aws.String(ClusterARN(s.region, accountID, r.Cluster)),
+		Status:               aws.String(r.Status),
+		DesiredCount:         aws.Int64(int64(r.DesiredCount)),
+		RunningCount:         aws.Int64(int64(r.RunningCount)),
+		PendingCount:         aws.Int64(int64(r.PendingCount)),
+		SchedulingStrategy:   aws.String(r.SchedulingStrategy),
+		TaskDefinition:       aws.String(r.TaskDefARN),
+		EnableECSManagedTags: aws.Bool(r.EnableECSManagedTags),
+		Tags:                 tagsToAWS(r.Tags),
 	}
 	if r.LaunchType != "" {
 		svc.LaunchType = aws.String(r.LaunchType)
+	}
+	// Only awsvpc tasks carry a subnet/security-group selection; other modes
+	// never populate one (RunTask's parseAwsvpcConfig gates it the same way).
+	if r.NetworkMode == NetworkModeAwsvpc {
+		awsvpc := &ecs.AwsVpcConfiguration{
+			Subnets:        aws.StringSlice(r.Subnets),
+			SecurityGroups: aws.StringSlice(r.SecurityGroups),
+		}
+		if r.AssignPublicIP != "" {
+			awsvpc.AssignPublicIp = aws.String(r.AssignPublicIP)
+		}
+		svc.NetworkConfiguration = &ecs.NetworkConfiguration{AwsvpcConfiguration: awsvpc}
 	}
 	for _, lb := range r.LoadBalancers {
 		svc.LoadBalancers = append(svc.LoadBalancers, &ecs.LoadBalancer{

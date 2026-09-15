@@ -694,6 +694,87 @@ func TestRecordRegister_GPU_CarriesDeviceUUIDs(t *testing.T) {
 	assert.Equal(t, []string{"GPU-aaa", "GPU-bbb"}, rec.GPUIDs)
 }
 
+// TestService_DescribeClusters_CountsAlwaysPresent verifies the four count
+// fields come back on every DescribeClusters, not only under
+// Include=STATISTICS, and that they are tallied from the live
+// instance/task/service records rather than any persisted counter. AWS returns
+// them unconditionally; Include=STATISTICS adds a separate key/value list.
+func TestService_DescribeClusters_CountsAlwaysPresent(t *testing.T) {
+	svc, _, _ := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
+		DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	assertCounts := func(t *testing.T, c *ecs.Cluster) {
+		t.Helper()
+		assert.Equal(t, int64(1), aws.Int64Value(c.RegisteredContainerInstancesCount))
+		assert.Equal(t, int64(1), aws.Int64Value(c.ActiveServicesCount))
+		assert.Equal(t, int64(1), aws.Int64Value(c.PendingTasksCount))
+		assert.Equal(t, int64(0), aws.Int64Value(c.RunningTasksCount))
+	}
+
+	// No Include at all: this is what the Terraform data source sends, and the
+	// counts must still be populated.
+	out, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{
+		Clusters: []*string{aws.String("web")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Clusters, 1)
+	assertCounts(t, out.Clusters[0])
+
+	stats, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{
+		Clusters: []*string{aws.String("web")},
+		Include:  aws.StringSlice([]string{ecs.ClusterFieldStatistics}),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, stats.Clusters, 1)
+	assertCounts(t, stats.Clusters[0])
+}
+
+// The following cover the ECS list operations that must return the ARNs key
+// as a present, empty list rather than omit it: the SDK's JSON marshaller
+// drops a nil slice unconditionally, regardless of the "omitempty" AWS itself
+// documents for these fields, so this must build the slice with make(..., 0,
+// n) rather than append into a nil field.
+
+func TestService_ListClusters_EmptyIsPresentNotAbsent(t *testing.T) {
+	svc, _ := newTestService(t)
+	out, err := svc.ListClusters(context.Background(), &ecs.ListClustersInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.NotNil(t, out.ClusterArns)
+	assert.Empty(t, out.ClusterArns)
+}
+
+func TestService_ListTaskDefinitions_EmptyIsPresentNotAbsent(t *testing.T) {
+	svc, _ := newTestService(t)
+	out, err := svc.ListTaskDefinitions(context.Background(), &ecs.ListTaskDefinitionsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.NotNil(t, out.TaskDefinitionArns)
+	assert.Empty(t, out.TaskDefinitionArns)
+}
+
+func TestService_ListTasks_EmptyIsPresentNotAbsent(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	out, err := svc.ListTasks(context.Background(), &ecs.ListTasksInput{Cluster: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	assert.NotNil(t, out.TaskArns)
+	assert.Empty(t, out.TaskArns)
+}
+
+func TestService_ListContainerInstances_EmptyIsPresentNotAbsent(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	out, err := svc.ListContainerInstances(context.Background(), &ecs.ListContainerInstancesInput{Cluster: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	assert.NotNil(t, out.ContainerInstanceArns)
+	assert.Empty(t, out.ContainerInstanceArns)
+}
+
 func TestAccountIDFromBucket(t *testing.T) {
 	id, ok := accountIDFromBucket(AccountBucketName(testAccountID))
 	assert.True(t, ok)

@@ -53,11 +53,16 @@ const (
 	TaskStatusStopped = "STOPPED"
 )
 
-// PortMapping is a container port exposed on the host (bridge mode v1).
+// PortMapping is a container port exposed on the host (bridge mode v1). Shared
+// by the persisted ContainerDef and the AssignContainer wire payload below; Name
+// is a pure echo the agent does not read.
 type PortMapping struct {
 	ContainerPort int    `json:"containerPort"`
 	HostPort      int    `json:"hostPort,omitempty"`
 	Protocol      string `json:"protocol,omitempty"` // tcp | udp (default tcp)
+	// Name is the Service Connect port-mapping name; inert until Service Connect
+	// is implemented, but harmless to echo (the agent ignores it).
+	Name string `json:"name,omitempty"`
 }
 
 // AssignContainer is one container the agent must pull and run for a task.

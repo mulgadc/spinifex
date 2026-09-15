@@ -77,6 +77,52 @@ func TestRegisterTaskDefinition_EchoesRequiresCompatibilities(t *testing.T) {
 	assert.Equal(t, []string{"EC2"}, aws.StringValueSlice(d.TaskDefinition.RequiresCompatibilities))
 }
 
+// TestRegisterTaskDefinition_EchoesRuntimePlatform: runtimePlatform is inert
+// (nothing selects capacity by CPU architecture or OS family in v1), but the
+// same drift trap as RequiresCompatibilities applies if it is not echoed back.
+func TestRegisterTaskDefinition_EchoesRuntimePlatform(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		RuntimePlatform: &ecs.RuntimePlatform{
+			CpuArchitecture:       aws.String("ARM64"),
+			OperatingSystemFamily: aws.String("LINUX"),
+		},
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	d, err := svc.DescribeTaskDefinition(context.Background(), &ecs.DescribeTaskDefinitionInput{
+		TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, d.TaskDefinition.RuntimePlatform)
+	assert.Equal(t, "ARM64", aws.StringValue(d.TaskDefinition.RuntimePlatform.CpuArchitecture))
+	assert.Equal(t, "LINUX", aws.StringValue(d.TaskDefinition.RuntimePlatform.OperatingSystemFamily))
+}
+
+// TestRegisterTaskDefinition_RuntimePlatformOmittedWhenUnset verifies that a
+// task definition registered without runtimePlatform describes with a nil
+// RuntimePlatform rather than an invented empty struct.
+func TestRegisterTaskDefinition_RuntimePlatformOmittedWhenUnset(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	d, err := svc.DescribeTaskDefinition(context.Background(), &ecs.DescribeTaskDefinitionInput{
+		TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Nil(t, d.TaskDefinition.RuntimePlatform)
+}
+
 // TestRunTask_AssignCarriesExecutionRoleAndLogDriver verifies that execution
 // role plumbed to the agent) and the log driver reaches the assign.
 func TestRunTask_AssignCarriesExecutionRoleAndLogDriver(t *testing.T) {

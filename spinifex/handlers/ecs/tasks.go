@@ -252,7 +252,7 @@ func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, acco
 	if err != nil {
 		return nil, err
 	}
-	out := &ecs.ListTasksOutput{}
+	arns := make([]string, 0, len(keys))
 	for _, k := range keys {
 		var rec TaskRecord
 		found, err := getJSON(ctx, kv, k, &rec)
@@ -260,10 +260,10 @@ func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, acco
 			return nil, err
 		}
 		if found {
-			out.TaskArns = append(out.TaskArns, aws.String(rec.ARN))
+			arns = append(arns, rec.ARN)
 		}
 	}
-	return out, nil
+	return &ecs.ListTasksOutput{TaskArns: aws.StringSlice(arns)}, nil
 }
 
 func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {

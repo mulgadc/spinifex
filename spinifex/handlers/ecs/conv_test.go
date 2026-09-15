@@ -56,7 +56,7 @@ func TestContainerDefRoundTrip(t *testing.T) {
 		Essential:    aws.Bool(true),
 		Command:      []*string{aws.String("/bin/sh"), aws.String("-c")},
 		Environment:  []*ecs.KeyValuePair{{Name: aws.String("FOO"), Value: aws.String("bar")}},
-		PortMappings: []*ecs.PortMapping{{ContainerPort: aws.Int64(80), HostPort: aws.Int64(8080), Protocol: aws.String("tcp")}},
+		PortMappings: []*ecs.PortMapping{{ContainerPort: aws.Int64(80), HostPort: aws.Int64(8080), Protocol: aws.String("tcp"), Name: aws.String("http")}},
 	}}
 	defs := containerDefsFromAWS(in)
 	require.Len(t, defs, 1)
@@ -67,15 +67,31 @@ func TestContainerDefRoundTrip(t *testing.T) {
 	assert.Equal(t, "bar", d.Environment["FOO"])
 	require.Len(t, d.PortMappings, 1)
 	assert.Equal(t, 8080, d.PortMappings[0].HostPort)
+	assert.Equal(t, "http", d.PortMappings[0].Name)
 
 	back := d.toAWS()
 	assert.Equal(t, "registry/web:1", aws.StringValue(back.Image))
 	assert.Equal(t, int64(80), aws.Int64Value(back.PortMappings[0].ContainerPort))
+	assert.Equal(t, "http", aws.StringValue(back.PortMappings[0].Name))
 
 	ac := d.toAssignContainer()
 	assert.Equal(t, "web", ac.Name)
 	assert.Equal(t, "registry/web:1", ac.Image)
 	assert.Equal(t, "bar", ac.Environment["FOO"])
+}
+
+// TestContainerDefRoundTrip_PortNameOmittedWhenUnset covers the AWS-parity
+// path: a port mapping with no name must not grow one on the way back out.
+func TestContainerDefRoundTrip_PortNameOmittedWhenUnset(t *testing.T) {
+	in := []*ecs.ContainerDefinition{{
+		Name: aws.String("web"), Image: aws.String("registry/web:1"), Essential: aws.Bool(true),
+		PortMappings: []*ecs.PortMapping{{ContainerPort: aws.Int64(80)}},
+	}}
+	defs := containerDefsFromAWS(in)
+	require.Len(t, defs, 1)
+	assert.Empty(t, defs[0].PortMappings[0].Name)
+	back := defs[0].toAWS()
+	assert.Nil(t, back.PortMappings[0].Name)
 }
 
 func TestContainerDefsFromAWS_SkipsNil(t *testing.T) {

@@ -130,7 +130,7 @@ func (s *SpotInstanceServiceImpl) DescribeSpotInstanceRequests(ctx context.Conte
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSpotRequestsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSpotInstanceRequests: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	idSet := make(map[string]bool)

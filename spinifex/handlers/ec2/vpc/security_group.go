@@ -426,7 +426,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSecurityGroupsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSecurityGroups: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	prefix := accountID + "."
@@ -570,7 +570,7 @@ func (s *VPCServiceImpl) GetSecurityGroupsForVpc(ctx context.Context, input *ec2
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, getSecurityGroupsForVpcValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "GetSecurityGroupsForVpc: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	prefix := accountID + "."
@@ -726,7 +726,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 	parsedFilters, err := filterutil.ParseFilters(filters, describeSecurityGroupRulesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSecurityGroupRules: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	prefix := accountID + "."

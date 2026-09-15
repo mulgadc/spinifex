@@ -605,7 +605,7 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeKeyPairsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeKeyPairs: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	prefix := fmt.Sprintf("keys/%s/", accountID)

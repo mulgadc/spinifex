@@ -179,7 +179,7 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context,
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describePlacementGroupsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribePlacementGroups: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	// Build filter maps for GroupNames/GroupIds parameters

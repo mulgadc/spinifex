@@ -218,7 +218,7 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 		filters, err = filterutil.ParseFilters(input.Filters, describeTagsValidFilters)
 		if err != nil {
 			slog.WarnContext(ctx, "DescribeTags: invalid filter", "err", err)
-			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+			return nil, err
 		}
 	}
 

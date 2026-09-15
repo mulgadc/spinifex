@@ -613,7 +613,7 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeRouteTablesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeRouteTables: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	prefix := accountID + "."

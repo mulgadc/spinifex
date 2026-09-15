@@ -442,7 +442,7 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSnapshotsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSnapshots: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	// The caller's prefix is the isolation and the whole answer: no other

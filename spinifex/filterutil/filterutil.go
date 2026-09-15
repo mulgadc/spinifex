@@ -1,11 +1,11 @@
 package filterutil
 
 import (
-	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
 // ParseFilters converts AWS SDK filter types to map[string][]string.
@@ -23,8 +23,10 @@ func ParseFilters(filters []*ec2.Filter, validNames map[string]bool) (map[string
 		}
 		name := *f.Name
 
+		// Carries the code itself so callers return it unwrapped; wrapping it
+		// again would reach the client stuttered, code repeated in the message.
 		if !strings.HasPrefix(name, "tag:") && !validNames[name] {
-			return nil, fmt.Errorf("InvalidParameterValue: The filter '%s' is invalid", name)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "The filter '%s' is invalid", name)
 		}
 
 		for _, v := range f.Values {

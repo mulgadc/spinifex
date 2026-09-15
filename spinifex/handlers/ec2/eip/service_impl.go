@@ -449,7 +449,7 @@ func (s *EIPServiceImpl) DescribeAddresses(ctx context.Context, input *ec2.Descr
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeAddressesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeAddresses: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	prefix := accountID + "."

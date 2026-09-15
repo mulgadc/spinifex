@@ -297,7 +297,7 @@ func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.Desc
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeVolumesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeVolumes: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	// Fast path: specific volume IDs requested. Fetch each document
@@ -441,7 +441,7 @@ func (s *VolumeServiceImpl) DescribeVolumeStatus(ctx context.Context, input *ec2
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeVolumeStatusValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeVolumeStatus: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	return s.describeVolumeStatus(ctx, input, accountID, parsedFilters)
@@ -659,7 +659,7 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeVolumesModificationsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeVolumesModifications: invalid filter", "err", err)
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return nil, err
 	}
 
 	var modifications []*ec2.VolumeModification

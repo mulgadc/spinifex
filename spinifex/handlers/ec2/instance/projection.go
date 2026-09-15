@@ -45,6 +45,10 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 	instanceCopy := *v.Instance
 	instanceCopy.State = &ec2.InstanceState{}
 
+	// Hoisted so the instance-level PublicDnsName and the primary NIC's
+	// Association.PublicDnsName (stamped below) cannot drift apart.
+	var publicDNS string
+
 	// Public IP and its derived DNS names exist only while the instance runs; a
 	// stopped instance has released the public IP, so the KV path leaves them
 	// unset. Mirrors the records the control-plane writer publishes to northstar.
@@ -53,7 +57,8 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 			instanceCopy.PublicIpAddress = aws.String(v.PublicIP)
 		}
 
-		publicDNS, privateDNS := handlers_dns.EC2DNSNames(
+		var privateDNS string
+		publicDNS, privateDNS = handlers_dns.EC2DNSNames(
 			cfg.Region, cfg.DNSBaseDomain, cfg.DNSInternalDomain,
 			aws.StringValue(instanceCopy.PublicIpAddress), aws.StringValue(instanceCopy.PrivateIpAddress),
 		)
@@ -131,6 +136,11 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 	}
 	instanceCopy.Monitoring = &ec2.Monitoring{State: aws.String(monitoringState)}
 
+	// AWS always reports EnclaveOptions, and Spinifex never enables it. Stamped
+	// unconditionally, including on stopped instances, since it is launch
+	// configuration rather than runtime network state.
+	instanceCopy.EnclaveOptions = &ec2.EnclaveOptions{Enabled: aws.Bool(false)}
+
 	// Spot lineage stamped by the post-launch write-back survives a stop, so
 	// project it regardless of runtime state. Both empty for on-demand, so the
 	// fields stay absent there.
@@ -157,6 +167,19 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 			}
 			nicCopy := *nic
 			nicCopy.SourceDestCheck = aws.Bool(true)
+
+			// associate_public_ip_address is read off the primary interface and is
+			// force-new, so leaving Association unset reports false for an instance
+			// that has a public IP and every plan proposes a destroy/recreate.
+			isPrimaryNIC := nicCopy.Attachment != nil && nicCopy.Attachment.DeviceIndex != nil && *nicCopy.Attachment.DeviceIndex == 0
+			if cfg.IncludeRuntimeNetwork && isPrimaryNIC && v.PublicIP != "" {
+				nicCopy.Association = &ec2.InstanceNetworkInterfaceAssociation{
+					PublicIp:      aws.String(v.PublicIP),
+					PublicDnsName: aws.String(publicDNS),
+					IpOwnerId:     aws.String(v.AccountID),
+				}
+			}
+
 			nics = append(nics, &nicCopy)
 		}
 		instanceCopy.NetworkInterfaces = nics

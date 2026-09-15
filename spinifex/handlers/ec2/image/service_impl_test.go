@@ -1052,6 +1052,90 @@ func TestDescribeImages_FilterBy(t *testing.T) {
 	}
 }
 
+// TestDescribeImages_OwnerSelf_GlobalAccountIncludesSystemAMI is the direct
+// bug fix: describeImages used to compare the raw alias string against the
+// caller's account ID, so a system AMI could never match "self" even for the
+// global account that conceptually owns it.
+func TestDescribeImages_OwnerSelf_GlobalAccountIncludesSystemAMI(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-system", "system-ami", "amazon")
+
+	out, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
+		Owners: []*string{aws.String("self")},
+	}, utils.GlobalAccountID)
+	require.NoError(t, err)
+
+	gotIDs := make([]string, len(out.Images))
+	for i, img := range out.Images {
+		gotIDs[i] = aws.StringValue(img.ImageId)
+	}
+	assert.ElementsMatch(t, []string{"ami-system"}, gotIDs)
+}
+
+// TestDescribeImages_OwnerSelf_TenantExcludesSystemAMI pins the other half of
+// the fix: an ordinary tenant's "self" must still exclude a system AMI, so the
+// resolved-ownerID rewrite cannot widen self beyond the caller's own images.
+func TestDescribeImages_OwnerSelf_TenantExcludesSystemAMI(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-selfowned", "self-owned-ami", testAccountID)
+	createTestAMIConfigWithOwner(t, store, "ami-system", "system-ami", "amazon")
+
+	out, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
+		Owners: []*string{aws.String("self")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	gotIDs := make([]string, len(out.Images))
+	for i, img := range out.Images {
+		gotIDs[i] = aws.StringValue(img.ImageId)
+	}
+	assert.ElementsMatch(t, []string{"ami-selfowned"}, gotIDs)
+}
+
+// TestDescribeImages_OwnerAlias_MatchesSystemAMIs covers the "amazon" and
+// "system" alias values Terraform/CLI callers send for built-in images.
+func TestDescribeImages_OwnerAlias_MatchesSystemAMIs(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-system", "system-ami", "amazon")
+	createTestAMIConfigWithOwner(t, store, "ami-tenant", "tenant-ami", testAccountID)
+
+	for _, alias := range []string{"amazon", "system"} {
+		t.Run(alias, func(t *testing.T) {
+			out, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
+				Owners: []*string{aws.String(alias)},
+			}, testAccountID)
+			require.NoError(t, err)
+
+			gotIDs := make([]string, len(out.Images))
+			for i, img := range out.Images {
+				gotIDs[i] = aws.StringValue(img.ImageId)
+			}
+			assert.ElementsMatch(t, []string{"ami-system"}, gotIDs)
+		})
+	}
+}
+
+// TestDescribeImages_OwnerNumericID_UnaffectedByOrdering is the regression
+// guard for the accountteardown image reaper: a numeric owner ID must keep
+// matching exactly the caller's own images, not widen to include system AMIs,
+// after hoisting the ownerID resolution above the filter.
+func TestDescribeImages_OwnerNumericID_UnaffectedByOrdering(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-tenant", "tenant-ami", testAccountID)
+	createTestAMIConfigWithOwner(t, store, "ami-system", "system-ami", "amazon")
+
+	out, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
+		Owners: []*string{aws.String(testAccountID)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	gotIDs := make([]string, len(out.Images))
+	for i, img := range out.Images {
+		gotIDs[i] = aws.StringValue(img.ImageId)
+	}
+	assert.ElementsMatch(t, []string{"ami-tenant"}, gotIDs)
+}
+
 func TestDescribeImages_FilterMultipleValues_OR(t *testing.T) {
 	svc, store := setupTestImageService(t)
 	createTestAMIConfigWithName(t, store, "ami-aaa", "debian-13")

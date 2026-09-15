@@ -542,12 +542,18 @@ func (s *VPCServiceImpl) rejectAttachedIGW(ctx context.Context, accountID, vpcID
 }
 
 // describeVpcsValidFilters defines the set of filter names accepted by DescribeVpcs.
+// cidr-block and is-default are the spellings an internal caller
+// (handlers/rds/network.go) is pinned to; cidr and isDefault are the
+// spellings AWS itself sends, so both must be accepted side by side.
 var describeVpcsValidFilters = map[string]bool{
-	"vpc-id":     true,
-	"state":      true,
-	"cidr-block": true,
-	"is-default": true,
-	"owner-id":   true,
+	"vpc-id":                            true,
+	"state":                             true,
+	"cidr-block":                        true,
+	"cidr":                              true,
+	"is-default":                        true,
+	"isDefault":                         true,
+	"owner-id":                          true,
+	"cidr-block-association.cidr-block": true,
 }
 
 // SupportsDescribeVpcsFilter reports whether DescribeVpcs accepts a filter name.
@@ -572,7 +578,7 @@ func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVp
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeVpcsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeVpcs: invalid filter", "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 
 	prefix := accountID + "."
@@ -1099,9 +1105,13 @@ func vpcMatchesFilters(record *VPCRecord, accountID string, filters map[string][
 			field = record.VpcId
 		case "state":
 			field = record.State
-		case "cidr-block":
+		case "cidr-block", "cidr":
 			field = record.CidrBlock
-		case "is-default":
+		case "cidr-block-association.cidr-block":
+			// VPCRecord stores only the primary CIDR; the association set is
+			// synthesised per-request, so this can only ever match it.
+			field = record.CidrBlock
+		case "is-default", "isDefault":
 			field = strconv.FormatBool(record.IsDefault)
 		case "owner-id":
 			field = accountID

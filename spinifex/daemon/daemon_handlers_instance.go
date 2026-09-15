@@ -164,6 +164,13 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 		return outcomeError
 	}
 
+	// A multi-node spread carries the reservation ID the gateway minted once
+	// for the whole call. reservation is the same pointer every instance
+	// holds, so this override reaches all of them.
+	if gatewayReservationID := utils.ReservationIDFromMsg(msg); gatewayReservationID != "" {
+		reservation.SetReservationId(gatewayReservationID)
+	}
+
 	// PlacementGroupNode is daemon-local identity, set after prepare.
 	for _, instance := range instances {
 		if instance.PlacementGroupName != "" {

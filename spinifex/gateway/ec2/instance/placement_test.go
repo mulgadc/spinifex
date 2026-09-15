@@ -500,6 +500,65 @@ func TestDistributeInstances_SuccessfulSpread(t *testing.T) {
 	assert.True(t, ids["i-n2"], "should have instance from node-2")
 }
 
+// TestDistributeInstances_MultiNodeLaunchSharesOneReservationID checks that
+// distributeInstances mints one reservation ID and forwards it to every node
+// via the X-Reservation-Id header, so a spread launch shares one reservation.
+func TestDistributeInstances_MultiNodeLaunchSharesOneReservationID(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	statusSub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {
+		for _, resp := range []types.NodeStatusResponse{
+			{Node: "node-1", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.micro", Available: 2}}},
+			{Node: "node-2", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.micro", Available: 2}}},
+		} {
+			data, _ := json.Marshal(resp)
+			_ = nc.Publish(msg.Reply, data)
+		}
+	})
+	require.NoError(t, err)
+	defer statusSub.Unsubscribe()
+
+	receivedIDs := make(chan string, 2)
+	makeHandler := func(node string) nats.MsgHandler {
+		return func(msg *nats.Msg) {
+			resID := msg.Header.Get(utils.ReservationIDHeader)
+			receivedIDs <- resID
+			reservation := ec2.Reservation{
+				ReservationId: aws.String(resID),
+				Instances:     []*ec2.Instance{{InstanceId: aws.String(fmt.Sprintf("i-%s", node))}},
+			}
+			data, _ := json.Marshal(reservation)
+			_ = msg.Respond(data)
+		}
+	}
+	sub1, err := nc.Subscribe("ec2.RunInstances.t3.micro.node-1", makeHandler("node-1"))
+	require.NoError(t, err)
+	defer sub1.Unsubscribe()
+	sub2, err := nc.Subscribe("ec2.RunInstances.t3.micro.node-2", makeHandler("node-2"))
+	require.NoError(t, err)
+	defer sub2.Unsubscribe()
+
+	require.NoError(t, nc.Flush())
+
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-test"),
+		InstanceType: aws.String("t3.micro"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}
+
+	reservation, err := distributeInstances(context.Background(), input, nc, "test-account", 2)
+	require.NoError(t, err)
+	require.NotEmpty(t, aws.StringValue(reservation.ReservationId))
+
+	id1 := <-receivedIDs
+	id2 := <-receivedIDs
+	assert.NotEmpty(t, id1)
+	assert.Equal(t, id1, id2, "every node in a single RunInstances call must receive the same reservation id")
+	assert.Equal(t, id1, aws.StringValue(reservation.ReservationId))
+}
+
 func TestDistributeInstances_InsufficientCapacity(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)

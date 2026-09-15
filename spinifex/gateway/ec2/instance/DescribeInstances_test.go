@@ -101,6 +101,138 @@ func TestDescribeInstances_MultipleNodes(t *testing.T) {
 	assert.Len(t, output.Reservations, 2)
 }
 
+// TestDescribeInstances_MergesFramesBySameReservationID covers the second
+// reservation-grouping defect: frames from different nodes sharing a
+// ReservationId must merge into ONE Reservation, not two.
+func TestDescribeInstances_MergesFramesBySameReservationID(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{
+			Reservations: []*ec2.Reservation{{
+				ReservationId: aws.String("r-shared"),
+				Instances:     []*ec2.Instance{{InstanceId: aws.String("i-a")}},
+			}},
+		})
+		msg.Respond(data)
+	})
+
+	nc2, err := nats.Connect(nc.ConnectedUrl())
+	require.NoError(t, err)
+	defer nc2.Close()
+
+	nc2.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{
+			Reservations: []*ec2.Reservation{{
+				ReservationId: aws.String("r-shared"),
+				Instances:     []*ec2.Instance{{InstanceId: aws.String("i-b")}},
+			}},
+		})
+		msg.Respond(data)
+	})
+
+	nc.Flush()
+	nc2.Flush()
+
+	input := &ec2.DescribeInstancesInput{}
+	output, err := DescribeInstances(context.Background(), input, nc, 2, "123456789012")
+
+	require.NoError(t, err)
+	require.NotNil(t, output)
+	require.Len(t, output.Reservations, 1, "two frames sharing a ReservationId must merge into one Reservation")
+	var gotIDs []string
+	for _, inst := range output.Reservations[0].Instances {
+		gotIDs = append(gotIDs, aws.StringValue(inst.InstanceId))
+	}
+	assert.ElementsMatch(t, []string{"i-a", "i-b"}, gotIDs)
+}
+
+// TestDescribeInstances_MergedReservationOrderIsDeterministic guards against
+// the nondeterminism the merge fixes: repeated calls with the same input
+// must answer with reservations in the same order every time.
+func TestDescribeInstances_MergedReservationOrderIsDeterministic(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{
+			Reservations: []*ec2.Reservation{
+				{ReservationId: aws.String("r-charlie"), Instances: []*ec2.Instance{{InstanceId: aws.String("i-c")}}},
+				{ReservationId: aws.String("r-alpha"), Instances: []*ec2.Instance{{InstanceId: aws.String("i-a")}}},
+				{ReservationId: aws.String("r-bravo"), Instances: []*ec2.Instance{{InstanceId: aws.String("i-b")}}},
+			},
+		})
+		msg.Respond(data)
+	})
+
+	input := &ec2.DescribeInstancesInput{}
+	var orders [][]string
+	for range 5 {
+		output, err := DescribeInstances(context.Background(), input, nc, 1, "123456789012")
+		require.NoError(t, err)
+		var order []string
+		for _, res := range output.Reservations {
+			order = append(order, aws.StringValue(res.ReservationId))
+		}
+		orders = append(orders, order)
+	}
+
+	for i := 1; i < len(orders); i++ {
+		assert.Equal(t, orders[0], orders[i], "repeated calls with the same input must return reservations in the same order")
+	}
+	assert.Equal(t, []string{"r-alpha", "r-bravo", "r-charlie"}, orders[0])
+}
+
+// TestDescribeInstances_MergePreservesReservationLevelFields ensures merging
+// two frames of the same reservation does not drop OwnerId, RequesterId, or
+// Groups just because only one of the two frames carried them.
+func TestDescribeInstances_MergePreservesReservationLevelFields(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{
+			Reservations: []*ec2.Reservation{{
+				ReservationId: aws.String("r-shared"),
+				OwnerId:       aws.String("111111111111"),
+				Instances:     []*ec2.Instance{{InstanceId: aws.String("i-a")}},
+			}},
+		})
+		msg.Respond(data)
+	})
+
+	nc2, err := nats.Connect(nc.ConnectedUrl())
+	require.NoError(t, err)
+	defer nc2.Close()
+
+	nc2.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{
+			Reservations: []*ec2.Reservation{{
+				ReservationId: aws.String("r-shared"),
+				RequesterId:   aws.String("requester-x"),
+				Groups:        []*ec2.GroupIdentifier{{GroupName: aws.String("sg-1")}},
+				Instances:     []*ec2.Instance{{InstanceId: aws.String("i-b")}},
+			}},
+		})
+		msg.Respond(data)
+	})
+
+	nc.Flush()
+	nc2.Flush()
+
+	input := &ec2.DescribeInstancesInput{}
+	output, err := DescribeInstances(context.Background(), input, nc, 2, "123456789012")
+
+	require.NoError(t, err)
+	require.Len(t, output.Reservations, 1)
+	res := output.Reservations[0]
+	assert.Equal(t, "111111111111", aws.StringValue(res.OwnerId))
+	assert.Equal(t, "requester-x", aws.StringValue(res.RequesterId))
+	require.Len(t, res.Groups, 1)
+	assert.Equal(t, "sg-1", aws.StringValue(res.Groups[0].GroupName))
+}
+
 func TestDescribeInstances_NoSubscribers(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
@@ -217,7 +349,7 @@ func TestDescribeInstances_TimeoutCollection(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{
 			Reservations: []*ec2.Reservation{
-				{ReservationId: aws.String("r-delayed")},
+				{ReservationId: aws.String("r-delayed"), Instances: []*ec2.Instance{{InstanceId: aws.String("i-delayed")}}},
 			},
 		})
 		msg.Respond(data)
@@ -240,7 +372,7 @@ func TestDescribeInstances_EarlyExitWithExpectedNodes(t *testing.T) {
 	nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
 		data, _ := json.Marshal(&ec2.DescribeInstancesOutput{
 			Reservations: []*ec2.Reservation{
-				{ReservationId: aws.String("r-fast")},
+				{ReservationId: aws.String("r-fast"), Instances: []*ec2.Instance{{InstanceId: aws.String("i-fast")}}},
 			},
 		})
 		msg.Respond(data)
@@ -386,12 +518,25 @@ func TestDescribeInstancesChecked_FilterOnlyNoMatch_ReturnsEmptyNotNotFound(t *t
 	assert.Empty(t, output.Reservations)
 }
 
-// TestDescribeInstancesChecked_ExplicitIDNotFound_NodeTimeout verifies the
-// subtle third criterion: a node timing out during the fan-out must not
-// produce a false NotFound. Only one of two expected nodes answers, so the
-// sweep is provably incomplete and the naive found-set check must be
-// suppressed.
-func TestDescribeInstancesChecked_ExplicitIDNotFound_NodeTimeout(t *testing.T) {
+// assertIncompleteSweepUnavailable asserts err is the retryable
+// ServiceUnavailable returned when an incomplete fan-out leaves wantIDs
+// unresolved: never a false NotFound, but never silent either.
+func assertIncompleteSweepUnavailable(t *testing.T, err error, wantIDs ...string) {
+	t.Helper()
+	require.Error(t, err, "an incomplete sweep must never assert a false NotFound, but it must not stay silent either")
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered awserrors code")
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, code)
+	assert.False(t, awserrors.IsTerminal(err), "an incomplete sweep is retryable, not a terminal client fault")
+	for _, id := range wantIDs {
+		assert.Contains(t, message, id)
+	}
+}
+
+// TestDescribeInstancesChecked_ExplicitID_NodeTimeout_ReturnsRetryableUnavailable
+// covers a node timeout: only one of two expected nodes answers, so the
+// sweep is incomplete and the named id must come back retryable, not NotFound.
+func TestDescribeInstancesChecked_ExplicitID_NodeTimeout_ReturnsRetryableUnavailable(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
@@ -409,17 +554,15 @@ func TestDescribeInstancesChecked_ExplicitIDNotFound_NodeTimeout(t *testing.T) {
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 2, nil, "123456789012",
 		WithFanoutTimeout(300*time.Millisecond))
 
-	require.NoError(t, err, "an incomplete sweep must never assert a false NotFound")
-	require.NotNil(t, output)
-	assert.Empty(t, output.Reservations)
+	assert.Nil(t, output)
+	assertIncompleteSweepUnavailable(t, err, "i-on-the-slow-node")
 }
 
 // --- Identity-mode completeness (nodeIDs set) ---
 
-// A missing configured node suppresses NotFound even though the requested ID
-// never showed up in what did arrive: the sweep is provably incomplete, so
-// silence is the only safe answer.
-func TestDescribeInstancesChecked_Identity_MissingNodeSuppressesNotFound(t *testing.T) {
+// A missing configured node leaves the requested ID's absence unproven, so
+// a retryable 503 replaces the old false NotFound / silent empty success.
+func TestDescribeInstancesChecked_Identity_MissingNode_ReturnsRetryableUnavailable(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
@@ -437,11 +580,8 @@ func TestDescribeInstancesChecked_Identity_MissingNodeSuppressesNotFound(t *test
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
 		WithFanoutTimeout(300*time.Millisecond))
 
-	// The sweep stays lenient on a partial view — node-1's reservations are
-	// still returned — it is only the NotFound assertion that a missing node
-	// must suppress.
-	require.NoError(t, err, "a node missing from the configured set must never assert a false NotFound")
-	require.NotNil(t, output)
+	assert.Nil(t, output)
+	assertIncompleteSweepUnavailable(t, err, "i-doesnotexist0000000")
 }
 
 // The positive counterpart: every configured node answers, so the sweep is
@@ -469,10 +609,9 @@ func TestDescribeInstancesChecked_Identity_AllNodesAnswer_NotFoundAsserted(t *te
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
 
-// A node that answers with a decodable error envelope (a 5xx from that node)
-// never becomes a valid responder, so it counts the same as a missing node —
-// the sweep stays incomplete and NotFound is suppressed.
-func TestDescribeInstancesChecked_Identity_ErroringNodeSuppressesNotFound(t *testing.T) {
+// A node answering with a decodable error envelope never becomes a valid
+// responder, so it counts as missing: the caller gets a retryable 503.
+func TestDescribeInstancesChecked_Identity_ErroringNode_ReturnsRetryableUnavailable(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
@@ -486,16 +625,13 @@ func TestDescribeInstancesChecked_Identity_ErroringNodeSuppressesNotFound(t *tes
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
 		WithFanoutTimeout(300*time.Millisecond))
 
-	require.NoError(t, err, "an erroring node must suppress NotFound, not be treated as an empty-handed valid responder")
-	require.NotNil(t, output)
-	assert.Empty(t, output.Reservations)
+	assert.Nil(t, output)
+	assertIncompleteSweepUnavailable(t, err, "i-doesnotexist0000000")
 }
 
-// A payload that is neither a valid error envelope nor a decodable
-// DescribeInstancesOutput (a malformed reply) leaves its node out of
-// ValidResponders, so the sweep is incomplete and NotFound is suppressed —
-// the same as a node that never answered at all.
-func TestDescribeInstancesChecked_Identity_UndecodablePayloadSuppressesNotFound(t *testing.T) {
+// An undecodable payload leaves its node out of ValidResponders, the same
+// as a node that never answered, so the caller gets a retryable 503.
+func TestDescribeInstancesChecked_Identity_UndecodablePayload_ReturnsRetryableUnavailable(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
@@ -508,9 +644,8 @@ func TestDescribeInstancesChecked_Identity_UndecodablePayloadSuppressesNotFound(
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
 		WithFanoutTimeout(300*time.Millisecond))
 
-	require.NoError(t, err)
-	require.NotNil(t, output)
-	assert.Empty(t, output.Reservations)
+	assert.Nil(t, output)
+	assertIncompleteSweepUnavailable(t, err, "i-doesnotexist0000000")
 }
 
 // A node with nil Reservations still decoded successfully, so it is a valid
@@ -533,12 +668,10 @@ func TestDescribeInstancesChecked_Identity_NilReservationsIsValidResponder(t *te
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
 
-// An empty or unset nodeIDs falls back to the legacy expectedNodes path.
-// DescribeInstancesChecked's only production caller always passes
-// expectedNodes=0 alongside its node set, so an empty node set (e.g. an
-// unconfigured cluster) can never satisfy expectedNodes>0 and NotFound stays
-// suppressed — the fallback fails closed rather than trusting a stale count.
-func TestDescribeInstancesChecked_Identity_EmptyNodeIDsFallsBackAndStaysSuppressed(t *testing.T) {
+// An empty nodeIDs falls back to the legacy expectedNodes path, which the
+// only production caller always leaves at 0 — permanently incomplete — so
+// a named ID here must come back retryable, never a false NotFound.
+func TestDescribeInstancesChecked_Identity_EmptyNodeIDsFallsBack_ReturnsRetryableUnavailable(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
@@ -550,9 +683,8 @@ func TestDescribeInstancesChecked_Identity_EmptyNodeIDsFallsBackAndStaysSuppress
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, nil, "123456789012",
 		WithFanoutTimeout(300*time.Millisecond))
 
-	require.NoError(t, err)
-	require.NotNil(t, output)
-	assert.Empty(t, output.Reservations)
+	assert.Nil(t, output)
+	assertIncompleteSweepUnavailable(t, err, "i-doesnotexist0000000")
 }
 
 // mustMarshalDescribeOutput is a t.Helper wrapper so the identity-mode tests

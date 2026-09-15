@@ -55,7 +55,10 @@ func distributeInstances(ctx context.Context, input *ec2.RunInstancesInput, nats
 
 	launchCount := min(maxCount, totalCapacity)
 	allocations := spreadAllocate(nodes, launchCount)
-	results := launchOnNodes(ctx, allocations, input, natsConn, accountID)
+	// Minted once here and handed to every node, so a launch that spreads
+	// across nodes comes back as one reservation instead of one per node.
+	reservationID := utils.GenerateResourceID("r")
+	results := launchOnNodes(ctx, allocations, input, natsConn, accountID, reservationID)
 	return aggregateResults(ctx, results, minCount, natsConn, accountID)
 }
 
@@ -157,8 +160,10 @@ type nodeLaunchResult struct {
 	Err         error
 }
 
-// launchOnNodes sends targeted RunInstances to each node in parallel with MinCount=MaxCount=assigned.
-func launchOnNodes(ctx context.Context, allocations []nodeAllocation, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string) []nodeLaunchResult {
+// launchOnNodes sends targeted RunInstances to each node in parallel with
+// MinCount=MaxCount=assigned. A non-empty reservationID is forwarded as a
+// header so every node launches into the same reservation.
+func launchOnNodes(ctx context.Context, allocations []nodeAllocation, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID, reservationID string) []nodeLaunchResult {
 	instanceType := aws.StringValue(input.InstanceType)
 
 	results := make([]nodeLaunchResult, len(allocations))
@@ -174,7 +179,11 @@ func launchOnNodes(ctx context.Context, allocations []nodeAllocation, input *ec2
 			nodeInput.MaxCount = aws.Int64(int64(a.Assigned))
 
 			topic := fmt.Sprintf("ec2.RunInstances.%s.%s", instanceType, a.NodeID)
-			reservation, err := utils.NATSRequest[ec2.Reservation](ctx, natsConn, topic, &nodeInput, 5*time.Minute, accountID)
+			var headers []utils.NATSHeader
+			if reservationID != "" {
+				headers = append(headers, utils.NATSHeader{Key: utils.ReservationIDHeader, Value: reservationID})
+			}
+			reservation, err := utils.NATSRequest[ec2.Reservation](ctx, natsConn, topic, &nodeInput, 5*time.Minute, accountID, headers...)
 			if err != nil {
 				results[idx] = nodeLaunchResult{NodeID: a.NodeID, Err: fmt.Errorf("launch on %s: %w", a.NodeID, err)}
 				return
@@ -269,10 +278,14 @@ func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput
 		allocations[i] = nodeAllocation{NodeID: nodeID, Assigned: 1}
 	}
 
-	results := launchOnNodes(ctx, allocations, input, natsConn, accountID)
+	// A spread group puts one instance on each node, so without a shared ID
+	// every node mints its own and one launch comes back as several
+	// reservations.
+	spreadReservationID := utils.GenerateResourceID("r")
+	results := launchOnNodes(ctx, allocations, input, natsConn, accountID, spreadReservationID)
 
 	var allInstances []*ec2.Instance
-	var reservationID *string
+	reservationID := aws.String(spreadReservationID)
 	nodeInstances := make(map[string][]string)
 	var failedNodes []string
 
@@ -288,9 +301,6 @@ func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput
 				if inst.InstanceId != nil {
 					nodeInstances[r.NodeID] = append(nodeInstances[r.NodeID], *inst.InstanceId)
 				}
-			}
-			if reservationID == nil {
-				reservationID = r.Reservation.ReservationId
 			}
 		}
 	}
@@ -397,7 +407,7 @@ func distributeInstancesCluster(ctx context.Context, input *ec2.RunInstancesInpu
 		NodeID:   targetNode,
 		Assigned: launchCount,
 	}}
-	results := launchOnNodes(ctx, allocations, input, natsConn, accountID)
+	results := launchOnNodes(ctx, allocations, input, natsConn, accountID, "")
 
 	if results[0].Err != nil {
 		if clientErr := extractClientError(results); clientErr != nil {

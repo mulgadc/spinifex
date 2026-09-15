@@ -171,6 +171,14 @@ func (s *ImageServiceImpl) describeImages(ctx context.Context, input *ec2.Descri
 		amiOwner := amiMeta.ImageOwnerAlias
 		isSystemAMI := amiOwner != "" && !utils.IsAccountID(amiOwner)
 
+		// Resolved up front so the owner filter below compares against the same
+		// value the OwnerId field reports, rather than the raw alias string a
+		// system AMI carries instead of a numeric account ID.
+		ownerID := amiOwner
+		if isSystemAMI {
+			ownerID = utils.GlobalAccountID
+		}
+
 		if !callerCanReadAMI(amiMeta, accountID) {
 			continue
 		}
@@ -183,13 +191,15 @@ func (s *ImageServiceImpl) describeImages(ctx context.Context, input *ec2.Descri
 				}
 				switch *owner {
 				case "self":
-					if amiOwner == accountID {
+					if ownerID == accountID {
+						found = true
+					}
+				case "amazon", "system", "aws-marketplace":
+					if isSystemAMI {
 						found = true
 					}
 				default:
-					if amiOwner == *owner {
-						found = true
-					} else if isSystemAMI && *owner == utils.GlobalAccountID {
+					if ownerID == *owner {
 						found = true
 					}
 				}
@@ -200,11 +210,6 @@ func (s *ImageServiceImpl) describeImages(ctx context.Context, input *ec2.Descri
 			if !found {
 				continue
 			}
-		}
-
-		ownerID := amiOwner
-		if isSystemAMI {
-			ownerID = utils.GlobalAccountID
 		}
 
 		image := &ec2.Image{

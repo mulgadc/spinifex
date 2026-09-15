@@ -1801,16 +1801,6 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 				resID = *instance.Reservation.ReservationId
 			}
 
-			if _, exists := reservationMap[resID]; !exists {
-				reservation := &ec2.Reservation{}
-				reservation.SetReservationId(resID)
-				if instance.Reservation.OwnerId != nil {
-					reservation.SetOwnerId(*instance.Reservation.OwnerId)
-				}
-				reservation.Instances = []*ec2.Instance{}
-				reservationMap[resID] = reservation
-			}
-
 			// Project every vm.VM-sourced field via the shared projection, the
 			// same call the daemon's running path makes, so both define the field
 			// set once. Running instances include their runtime network and
@@ -1831,6 +1821,19 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 
 			if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, projected, parsedFilters) {
 				continue
+			}
+
+			// Only create the reservation entry once an instance has survived
+			// filtering, so a reservation with every instance filtered out
+			// never appears in the response.
+			if _, exists := reservationMap[resID]; !exists {
+				reservation := &ec2.Reservation{}
+				reservation.SetReservationId(resID)
+				if instance.Reservation.OwnerId != nil {
+					reservation.SetOwnerId(*instance.Reservation.OwnerId)
+				}
+				reservation.Instances = []*ec2.Instance{}
+				reservationMap[resID] = reservation
 			}
 
 			reservationMap[resID].Instances = append(reservationMap[resID].Instances, projected)
@@ -1932,16 +1935,6 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 			resID = *instance.Reservation.ReservationId
 		}
 
-		if _, exists := reservationMap[resID]; !exists {
-			reservation := &ec2.Reservation{}
-			reservation.SetReservationId(resID)
-			if instance.Reservation.OwnerId != nil {
-				reservation.SetOwnerId(*instance.Reservation.OwnerId)
-			}
-			reservation.Instances = []*ec2.Instance{}
-			reservationMap[resID] = reservation
-		}
-
 		// Reuse the shared projection so stopped/terminated instances carry the
 		// same fields as the running path. Runtime network and the capacity
 		// reservation are released on stop, so IncludeRuntimeNetwork stays false;
@@ -1955,6 +1948,19 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 
 		if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, projected, parsedFilters) {
 			continue
+		}
+
+		// Only create the reservation entry once an instance has survived
+		// filtering, so a reservation with every instance filtered out
+		// never appears in the response.
+		if _, exists := reservationMap[resID]; !exists {
+			reservation := &ec2.Reservation{}
+			reservation.SetReservationId(resID)
+			if instance.Reservation.OwnerId != nil {
+				reservation.SetOwnerId(*instance.Reservation.OwnerId)
+			}
+			reservation.Instances = []*ec2.Instance{}
+			reservationMap[resID] = reservation
 		}
 
 		reservationMap[resID].Instances = append(reservationMap[resID].Instances, projected)

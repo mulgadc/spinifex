@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
@@ -1738,6 +1739,73 @@ func TestDescribeVpcs_FilterUnknownName_Error(t *testing.T) {
 		},
 	}, testAccountID)
 	require.Error(t, err)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "the AWS code must stay resolvable or the client gets a 500")
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Contains(t, message, "bogus-filter", "the offending filter name must reach the client")
+}
+
+// TestDescribeVpcs_FilterByCidrAlias pins the AWS spelling ("cidr") alongside
+// the pre-existing "cidr-block", so terraform's aws_vpc data source (which
+// sends "cidr") stops getting InvalidParameterValue.
+func TestDescribeVpcs_FilterByCidrAlias(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	createTestVPC(t, svc, "10.0.0.0/16")
+	createTestVPC(t, svc, "172.16.0.0/16")
+
+	out, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("cidr"), Values: []*string{aws.String("10.0.0.0/16")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.Vpcs, 1)
+	assert.Equal(t, "10.0.0.0/16", *out.Vpcs[0].CidrBlock)
+}
+
+// TestDescribeVpcs_FilterByIsDefaultAlias pins the AWS spelling ("isDefault")
+// alongside the pre-existing "is-default", which an internal RDS caller
+// hardcodes and must keep working unchanged.
+func TestDescribeVpcs_FilterByIsDefaultAlias(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	createTestVPC(t, svc, "10.0.0.0/16")
+
+	out, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("isDefault"), Values: []*string{aws.String("false")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.Vpcs, 1)
+
+	out, err = svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("isDefault"), Values: []*string{aws.String("true")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Vpcs)
+}
+
+// TestDescribeVpcs_FilterByCidrBlockAssociation covers the association-set
+// filter against the primary CIDR, the only CIDR VPCRecord stores today.
+func TestDescribeVpcs_FilterByCidrBlockAssociation(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	createTestVPC(t, svc, "10.0.0.0/16")
+	createTestVPC(t, svc, "172.16.0.0/16")
+
+	out, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("cidr-block-association.cidr-block"), Values: []*string{aws.String("10.0.0.0/16")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.Vpcs, 1)
+	assert.Equal(t, "10.0.0.0/16", *out.Vpcs[0].CidrBlock)
 }
 
 func TestDescribeVpcs_FilterWildcard(t *testing.T) {

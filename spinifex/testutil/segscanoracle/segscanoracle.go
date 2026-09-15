@@ -151,7 +151,10 @@ func build(t *testing.T, srcDir string) (string, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, ".")
+	// -buildvcs=false for the same reason as GOWORK=off below: the build must
+	// not depend on ambient repository state. Stamping fails outright when the
+	// VCS probe errors, which it does for a synthetic module under a temp dir.
+	cmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-o", bin, ".")
 	cmd.Dir = srcDir
 	// GOWORK=off: scripts/segscan is its own module with its own go.mod/go.sum.
 	// An ancestor directory of srcDir may have an unrelated go.work (the mulga

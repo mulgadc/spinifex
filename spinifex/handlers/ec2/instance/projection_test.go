@@ -21,6 +21,7 @@ func fullVM(status vm.InstanceState) *vm.VM {
 			InstanceId:       aws.String("i-abc123"),
 			PrivateIpAddress: aws.String("10.0.0.5"),
 		},
+		AccountID:             "123456789012",
 		PublicIP:              "203.0.113.7",
 		PlacementGroupName:    "pg-1",
 		IamInstanceProfileArn: "arn:aws:iam::123456789012:instance-profile/role",
@@ -170,6 +171,7 @@ func TestProjectInstance_DoesNotMutateSource(t *testing.T) {
 	v := fullVM(vm.StateRunning)
 	v.Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{{
 		NetworkInterfaceId: aws.String("eni-1"),
+		Attachment:         &ec2.InstanceNetworkInterfaceAttachment{DeviceIndex: aws.Int64(0)},
 	}}
 
 	_, _ = ProjectInstance(v, runningCfg())
@@ -180,6 +182,8 @@ func TestProjectInstance_DoesNotMutateSource(t *testing.T) {
 	assert.Nil(t, v.Instance.SourceDestCheck)
 	assert.Nil(t, v.Instance.NetworkInterfaces[0].SourceDestCheck,
 		"the interfaces are shared with the stored instance, so they must be copied before they are stamped")
+	assert.Nil(t, v.Instance.NetworkInterfaces[0].Association,
+		"the interfaces are shared with the stored instance, so the new Association must not be written back onto it")
 }
 
 // The check is always on and cannot be turned off, but the describe never said
@@ -223,6 +227,86 @@ func TestProjectInstance_PathsAgreeOnRetainedFields(t *testing.T) {
 	// Runtime-only fields are intentionally path-specific.
 	assert.NotEqual(t, running.PublicIpAddress, stopped.PublicIpAddress)
 	assert.NotEqual(t, running.CapacityReservationId, stopped.CapacityReservationId)
+
+	// EnclaveOptions is launch configuration, not runtime network state, so it
+	// must be present and identical on both paths.
+	require.NotNil(t, running.EnclaveOptions)
+	require.NotNil(t, stopped.EnclaveOptions)
+	assert.Equal(t, running.EnclaveOptions, stopped.EnclaveOptions)
+	assert.False(t, aws.BoolValue(stopped.EnclaveOptions.Enabled))
+}
+
+// TestProjectInstance_PrimaryNICAssociation covers the force-new
+// associate_public_ip_address regression: Terraform reads it off the primary
+// interface, so an instance with a public IP must report an Association there.
+func TestProjectInstance_PrimaryNICAssociation(t *testing.T) {
+	newNICs := func() []*ec2.InstanceNetworkInterface {
+		return []*ec2.InstanceNetworkInterface{
+			{
+				NetworkInterfaceId: aws.String("eni-primary"),
+				Attachment:         &ec2.InstanceNetworkInterfaceAttachment{DeviceIndex: aws.Int64(0)},
+			},
+			{
+				NetworkInterfaceId: aws.String("eni-secondary"),
+				Attachment:         &ec2.InstanceNetworkInterfaceAttachment{DeviceIndex: aws.Int64(1)},
+			},
+		}
+	}
+
+	t.Run("running with public IP stamps the primary NIC only", func(t *testing.T) {
+		v := fullVM(vm.StateRunning)
+		v.Instance.NetworkInterfaces = newNICs()
+
+		got, _ := ProjectInstance(v, runningCfg())
+
+		require.Len(t, got.NetworkInterfaces, 2)
+		primary := got.NetworkInterfaces[0]
+		secondary := got.NetworkInterfaces[1]
+
+		require.NotNil(t, primary.Association)
+		assert.Equal(t, "203.0.113.7", aws.StringValue(primary.Association.PublicIp))
+		assert.Equal(t, aws.StringValue(got.PublicDnsName), aws.StringValue(primary.Association.PublicDnsName))
+		assert.NotEmpty(t, aws.StringValue(primary.Association.PublicDnsName))
+		assert.Equal(t, "123456789012", aws.StringValue(primary.Association.IpOwnerId))
+
+		assert.Nil(t, secondary.Association)
+	})
+
+	t.Run("IncludeRuntimeNetwork off leaves Association unset", func(t *testing.T) {
+		v := fullVM(vm.StateStopped)
+		v.Instance.NetworkInterfaces = newNICs()
+
+		got, _ := ProjectInstance(v, stoppedCfg(80, "stopped"))
+
+		require.Len(t, got.NetworkInterfaces, 2)
+		assert.Nil(t, got.NetworkInterfaces[0].Association)
+		assert.Nil(t, got.NetworkInterfaces[1].Association)
+	})
+
+	t.Run("no public IP leaves Association unset", func(t *testing.T) {
+		v := fullVM(vm.StateRunning)
+		v.PublicIP = ""
+		v.Instance.NetworkInterfaces = newNICs()
+
+		got, _ := ProjectInstance(v, runningCfg())
+
+		require.Len(t, got.NetworkInterfaces, 2)
+		assert.Nil(t, got.NetworkInterfaces[0].Association)
+	})
+}
+
+// TestProjectInstance_EnclaveOptionsAlwaysDisabled covers the permanent
+// enclave_options {} Terraform diff: AWS always reports the block, and
+// Spinifex never enables it, on both the running and the stopped/KV paths.
+func TestProjectInstance_EnclaveOptionsAlwaysDisabled(t *testing.T) {
+	running, _ := ProjectInstance(fullVM(vm.StateRunning), runningCfg())
+	stopped, _ := ProjectInstance(fullVM(vm.StateStopped), stoppedCfg(80, "stopped"))
+
+	require.NotNil(t, running.EnclaveOptions)
+	assert.False(t, aws.BoolValue(running.EnclaveOptions.Enabled))
+
+	require.NotNil(t, stopped.EnclaveOptions)
+	assert.False(t, aws.BoolValue(stopped.EnclaveOptions.Enabled))
 }
 
 func TestParseInstanceIDFilter(t *testing.T) {

@@ -239,6 +239,21 @@ const AccountIDHeader = "X-Account-ID"
 // PrincipalARNHeader carries the caller's resolved IAM principal ARN from gateway to daemon handlers.
 const PrincipalARNHeader = "X-Principal-ARN"
 
+// ReservationIDHeader carries a gateway-assigned launch-group reservation ID
+// for a node-targeted RunInstances request. A node that does not read this
+// header (an older build, or a request that never set it) mints its own ID
+// as before, so the header is purely additive and never required.
+const ReservationIDHeader = "X-Reservation-Id"
+
+// ReservationIDFromMsg extracts the gateway-assigned reservation ID from a
+// NATS message header. Returns "" when absent.
+func ReservationIDFromMsg(msg *nats.Msg) string {
+	if msg == nil || msg.Header == nil {
+		return ""
+	}
+	return msg.Header.Get(ReservationIDHeader)
+}
+
 // NATSHeader is an extra request header passed to NATSRequest beyond the
 // always-set X-Account-ID.
 type NATSHeader struct{ Key, Value string }

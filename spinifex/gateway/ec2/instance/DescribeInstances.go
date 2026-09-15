@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -115,23 +117,52 @@ func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesI
 		return nil, errors.New(firstClient4xx)
 	}
 
-	if len(input.InstanceIds) > 0 && complete {
-		found := make(map[string]bool)
-		for _, res := range reservations {
-			for _, inst := range res.Instances {
-				if inst != nil && inst.InstanceId != nil {
-					found[*inst.InstanceId] = true
-				}
-			}
-		}
-		for _, id := range input.InstanceIds {
-			if id != nil && !found[*id] {
+	if len(input.InstanceIds) > 0 {
+		missing := missingInstanceIDs(reservations, input.InstanceIds)
+		if len(missing) > 0 {
+			if complete {
 				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 			}
+			// An incomplete sweep cannot prove absence, so a missing id is
+			// unresolved, not gone. NotFound would be a false negative and an
+			// empty success would look identical to a real one, so return 503.
+			return nil, errors.Join(
+				awserrors.Errorf(awserrors.ErrorServiceUnavailable,
+					"cannot confirm status of instance(s) %s: describe fan-out did not complete", strings.Join(missing, ", ")),
+				awserrors.RetryAfter(awserrors.ErrorServiceUnavailable, describeIncompleteRetryAfter),
+			)
 		}
 	}
 
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+}
+
+// describeIncompleteRetryAfter is the suggested backoff surfaced to a caller
+// whose named-ID describe hit an incomplete fan-out. Set near the fan-out's
+// own deadline, so an immediate retry has a real chance of landing complete.
+const describeIncompleteRetryAfter = 3 * time.Second
+
+// missingInstanceIDs returns the requested instance IDs absent from
+// reservations, preserving the caller's requested order.
+func missingInstanceIDs(reservations []*ec2.Reservation, instanceIDs []*string) []string {
+	found := make(map[string]bool)
+	for _, res := range reservations {
+		if res == nil {
+			continue
+		}
+		for _, inst := range res.Instances {
+			if inst != nil && inst.InstanceId != nil {
+				found[*inst.InstanceId] = true
+			}
+		}
+	}
+	var missing []string
+	for _, id := range instanceIDs {
+		if id != nil && !found[*id] {
+			missing = append(missing, *id)
+		}
+	}
+	return missing
 }
 
 // DescribeInstancesForReconcile is the strict variant, for a caller that may act
@@ -242,9 +273,59 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 
 	kvWg.Wait()
 	allReservations = append(allReservations, bucketReservations...)
+	allReservations = mergeReservationsByID(allReservations)
 
 	slog.InfoContext(ctx, "DescribeInstances: Aggregated response", "total_reservations", len(allReservations))
 	return allReservations, fanoutComplete && bucketsOK, sum.FirstClient4xx, nil
+}
+
+// mergeReservationsByID merges frames sharing a ReservationId into one, drops
+// empty results, and sorts by id so repeated calls answer identically.
+func mergeReservationsByID(reservations []*ec2.Reservation) []*ec2.Reservation {
+	order := make([]string, 0, len(reservations))
+	merged := make(map[string]*ec2.Reservation, len(reservations))
+	for _, res := range reservations {
+		if res == nil {
+			continue
+		}
+		id := ""
+		if res.ReservationId != nil {
+			id = *res.ReservationId
+		}
+		existing, ok := merged[id]
+		if !ok {
+			// The slices this function appends to or replaces are copied, so
+			// merging never writes through to a caller's frame. Instance and
+			// group elements are shared by pointer and must stay read-only.
+			copyRes := *res
+			copyRes.Instances = append([]*ec2.Instance(nil), res.Instances...)
+			copyRes.Groups = append([]*ec2.GroupIdentifier(nil), res.Groups...)
+			merged[id] = &copyRes
+			order = append(order, id)
+			continue
+		}
+		existing.Instances = append(existing.Instances, res.Instances...)
+		if existing.OwnerId == nil {
+			existing.OwnerId = res.OwnerId
+		}
+		if existing.RequesterId == nil {
+			existing.RequesterId = res.RequesterId
+		}
+		if len(existing.Groups) == 0 {
+			existing.Groups = append([]*ec2.GroupIdentifier(nil), res.Groups...)
+		}
+	}
+
+	sort.Strings(order)
+	result := make([]*ec2.Reservation, 0, len(order))
+	for _, id := range order {
+		res := merged[id]
+		if len(res.Instances) == 0 {
+			continue
+		}
+		result = append(result, res)
+	}
+	return result
 }
 
 // instanceSettler tracks which of the requested instance ids have turned up,

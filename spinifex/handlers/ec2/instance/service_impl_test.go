@@ -847,6 +847,46 @@ func TestDescribeInstances_ReservationGrouping(t *testing.T) {
 	assert.Len(t, out.Reservations[0].Instances, 2)
 }
 
+// TestDescribeInstances_FilterExcludesOnlyInstance_ReturnsZeroReservations
+// checks a reservation whose one instance is filtered out by --filters does
+// not appear in the response at all, since AWS never returns an empty one.
+func TestDescribeInstances_FilterExcludesOnlyInstance_ReturnsZeroReservations(t *testing.T) {
+	lonely := &vm.VM{
+		ID:           "i-lonely",
+		InstanceType: "t3.micro",
+		Reservation:  &ec2.Reservation{ReservationId: aws.String("r-lonely")},
+		Instance:     &ec2.Instance{InstanceId: aws.String("i-lonely")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{lonely.ID: lonely}), config: &config.Config{}}
+
+	input := &ec2.DescribeInstancesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("instance-type"), Values: []*string{aws.String("t3.nano")}}},
+	}
+	out, err := svc.DescribeInstances(context.Background(), input, utils.GlobalAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations, "a reservation with every instance filtered out must not appear in the response")
+}
+
+// TestDescribeInstancesFromKV_FilterExcludesOnlyInstance_ReturnsZeroReservations
+// is the KV-path (stopped/terminated) counterpart of the live-path test above.
+func TestDescribeInstancesFromKV_FilterExcludesOnlyInstance_ReturnsZeroReservations(t *testing.T) {
+	lonely := &vm.VM{
+		ID:           "i-lonely-stopped",
+		InstanceType: "t3.micro",
+		Reservation:  &ec2.Reservation{ReservationId: aws.String("r-lonely-stopped")},
+		Instance:     &ec2.Instance{InstanceId: aws.String("i-lonely-stopped")},
+	}
+	svc := &InstanceServiceImpl{config: &config.Config{}}
+	listFn := func() ([]*vm.VM, error) { return []*vm.VM{lonely}, nil }
+
+	input := &ec2.DescribeInstancesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("instance-type"), Values: []*string{aws.String("t3.nano")}}},
+	}
+	out, err := svc.describeInstancesFromKV(context.Background(), input, utils.GlobalAccountID, listFn, 80, "stopped", "DescribeStoppedInstances")
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations, "a reservation with every instance filtered out must not appear in the response")
+}
+
 func TestDescribeInstanceAttribute_MissingInstanceID(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
 	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{

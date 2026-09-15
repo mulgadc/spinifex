@@ -87,6 +87,32 @@ func TestCreateRepository_Happy(t *testing.T) {
 	assert.False(t, out.Repository.ImageScanningConfiguration.ScanOnPush)
 }
 
+// TestCreateRepository_Tags pins create-time tags surviving to the stored
+// record. The wire keys are capitalized Key/Value because ecr.Tag carries no
+// locationName; a lowercase spelling decodes to empty strings and is rejected.
+func TestCreateRepository_Tags(t *testing.T) {
+	gw, nc := newRepoLifecycleGateway(t)
+
+	_, err := createRepo(t, gw, `{"repositoryName":"team/tagged","tags":[{"Key":"env","Value":"prod"},{"Key":"team","Value":""}]}`)
+	require.NoError(t, err)
+
+	meta, err := handlers_ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), ecrTestAccount, "team/tagged")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"env": "prod", "team": ""}, meta.Tags)
+
+	// An absent list must leave the map nil, so the record is byte-identical to
+	// one written before tags were accepted here.
+	_, err = createRepo(t, gw, `{"repositoryName":"team/untagged"}`)
+	require.NoError(t, err)
+	meta, err = handlers_ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), ecrTestAccount, "team/untagged")
+	require.NoError(t, err)
+	assert.Nil(t, meta.Tags)
+
+	_, err = createRepo(t, gw, `{"repositoryName":"team/badtag","tags":[{"Key":"","Value":"x"}]}`)
+	require.Error(t, err)
+	assert.Equal(t, "InvalidParameterValue", err.Error())
+}
+
 func TestCreateRepository_EncryptionAndScanningConfiguration(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
 

@@ -8,19 +8,21 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 )
 
-// createRepositoryRequest is the camelCase AWS JSON 1.1 input shape. Tags are
-// set via a follow-on TagResource call by real clients, matching AWS, so they
-// are not accepted here.
+// createRepositoryRequest is the camelCase AWS JSON 1.1 input shape. ecr.Tag
+// carries no locationName, so its wire keys are Key/Value (capitalized);
+// reusing the SDK type keeps that spelling rather than a lowercase hand-roll.
 type createRepositoryRequest struct {
 	RepositoryName             string                           `json:"repositoryName"`
 	RegistryID                 string                           `json:"registryId"`
 	ImageTagMutability         string                           `json:"imageTagMutability"`
+	Tags                       []*ecr.Tag                       `json:"tags"`
 	EncryptionConfiguration    *encryptionConfigurationInput    `json:"encryptionConfiguration"`
 	ImageScanningConfiguration *imageScanningConfigurationInput `json:"imageScanningConfiguration"`
 }
@@ -74,6 +76,10 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 		return err
 	}
 	scanOnPush := req.ImageScanningConfiguration != nil && req.ImageScanningConfiguration.ScanOnPush
+	tags, err := tagMapFromInput(req.Tags)
+	if err != nil {
+		return err
+	}
 
 	store := handlers_ecr.NewNATSMetaStore(gw.NATSConn)
 	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err == nil {
@@ -89,6 +95,7 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 		ImageTagMutability: mutability,
 		EncryptionType:     encryptionType,
 		ScanOnPush:         scanOnPush,
+		Tags:               tags,
 	}
 	if err := store.PutRepo(ctx, accountID, meta); err != nil {
 		slog.ErrorContext(ctx, "CreateRepository: put repo failed", "repo", req.RepositoryName, "err", err)
@@ -99,6 +106,23 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 		Repository: gw.buildRepository(accountID, req.RepositoryName, meta),
 	})
 	return nil
+}
+
+// tagMapFromInput folds the create-time tag list into the map RepoMeta stores,
+// rejecting an empty key exactly as TagResource does. An absent list yields a
+// nil map so the record round-trips identically to one created without tags.
+func tagMapFromInput(in []*ecr.Tag) (map[string]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(in))
+	for _, t := range in {
+		if t == nil || aws.StringValue(t.Key) == "" {
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		out[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+	}
+	return out, nil
 }
 
 // normalizeEncryptionType validates the requested encryption configuration,

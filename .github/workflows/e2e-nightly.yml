@@ -677,6 +677,66 @@ jobs:
             > "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null || true
           echo "collected: $(ls "${ARTIFACT_DIR}" 2>/dev/null | wc -l) entries"
 
+      # Whether br-mgmt is a per-host island or one L2 segment spanning the
+      # cluster decides whether a system instance can reach the gateway address
+      # it was baked with. Nothing in a failing run records which one was built,
+      # and the environment is destroyed before it can be asked.
+      - name: Collect management-fabric topology
+        if: always()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set +e
+          mkdir -p "${ARTIFACT_DIR}"
+          OUT="${ARTIFACT_DIR}/mgmt-fabric.txt"
+          INVENTORY=$(tofu output -json inventory 2>/dev/null) || { echo "no inventory; skipping"; exit 0; }
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path'); SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          NODE_COUNT=$(echo "$INVENTORY" | jq '.nodes | length')
+          SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY")
+
+          declare -a WAN=() MGMT=()
+          for i in $(seq 0 $((NODE_COUNT - 1))); do
+            WAN[$i]=$(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip")
+          done
+
+          for i in $(seq 0 $((NODE_COUNT - 1))); do
+            idx=$((i + 1))
+            {
+              echo "=== node${idx} (${WAN[$i]}) ==="
+              ssh "${SSH_OPTS[@]}" tf-user@"${WAN[$i]}" \
+                'sudo ovs-vsctl list-ports br-mgmt 2>&1 | sed "s/^/ports: /"; \
+                 ip -4 addr show br-mgmt 2>&1 | sed "s/^/addr:  /"; \
+                 sudo ovs-vsctl get Bridge br-mgmt fail_mode 2>&1 | sed "s/^/fail:  /"'
+              echo
+            } >> "$OUT" 2>&1
+            MGMT[$i]=$(ssh "${SSH_OPTS[@]}" tf-user@"${WAN[$i]}" \
+              "ip -4 -o addr show br-mgmt 2>/dev/null | awk '{print \$4}' | cut -d/ -f1" 2>/dev/null)
+          done
+
+          # An island cluster reaches only its own address and that is correct;
+          # a spanned one must reach every peer. Either result is a finding, and
+          # a mixed result is the failure this matrix exists to catch.
+          {
+            echo "=== br-mgmt reachability (row = prober, column = target) ==="
+            printf '%-10s' "from\\to"
+            for i in $(seq 0 $((NODE_COUNT - 1))); do printf '%-18s' "node$((i+1)):${MGMT[$i]:-none}"; done
+            echo
+            for i in $(seq 0 $((NODE_COUNT - 1))); do
+              printf '%-10s' "node$((i+1))"
+              for j in $(seq 0 $((NODE_COUNT - 1))); do
+                if [ -z "${MGMT[$j]}" ]; then printf '%-18s' "-"; continue; fi
+                if ssh "${SSH_OPTS[@]}" tf-user@"${WAN[$i]}" \
+                     "ping -c1 -W1 ${MGMT[$j]} >/dev/null 2>&1"; then
+                  printf '%-18s' ok
+                else
+                  printf '%-18s' FAIL
+                fi
+              done
+              echo
+            done
+          } >> "$OUT" 2>&1
+
+          cat "$OUT"
+
       - name: Install go-junit-report
         if: always()
         run: |

@@ -79,6 +79,10 @@ func (s *stubIAMService) DeletePolicy(_ string, _ *iam.DeletePolicyInput) (*iam.
 	return &iam.DeletePolicyOutput{}, nil
 }
 
+func (s *stubIAMService) ListEntitiesForPolicy(_ string, _ *iam.ListEntitiesForPolicyInput) (*iam.ListEntitiesForPolicyOutput, error) {
+	return &iam.ListEntitiesForPolicyOutput{}, nil
+}
+
 func (s *stubIAMService) AttachUserPolicy(_ string, _ *iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error) {
 	return &iam.AttachUserPolicyOutput{}, nil
 }
@@ -558,6 +562,30 @@ func TestDeletePolicy(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := DeletePolicy(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestListEntitiesForPolicy(t *testing.T) {
+	svc := &stubIAMService{}
+	tests := []struct {
+		name    string
+		input   *iam.ListEntitiesForPolicyInput
+		wantErr string
+	}{
+		{"nil PolicyArn", &iam.ListEntitiesForPolicyInput{}, awserrors.ErrorMissingParameter},
+		{"empty PolicyArn", &iam.ListEntitiesForPolicyInput{PolicyArn: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.ListEntitiesForPolicyInput{PolicyArn: aws.String("arn:aws:iam::000000000000:policy/mypolicy")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ListEntitiesForPolicy(testAccountID, tc.input, svc)
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				assert.Equal(t, tc.wantErr, err.Error())

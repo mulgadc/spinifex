@@ -98,6 +98,9 @@ var iamActions = map[string]iamAction{
 	"DeletePolicy": iamHandler(func(accountID string, input *iam.DeletePolicyInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.DeletePolicy(accountID, input, gw.IAMService)
 	}),
+	"ListEntitiesForPolicy": iamHandler(func(accountID string, input *iam.ListEntitiesForPolicyInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListEntitiesForPolicy(accountID, input, gw.IAMService)
+	}),
 
 	// Policy attachment
 	"AttachUserPolicy": iamHandler(func(accountID string, input *iam.AttachUserPolicyInput, gw *GatewayConfig) (any, error) {

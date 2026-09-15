@@ -1187,6 +1187,10 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 			"policy %q: %w", policyName, err)
 	}
 
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
 	path := aws.StringValue(input.Path)
 	if path == "" {
 		path = "/"
@@ -1207,7 +1211,7 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 		PolicyDocument: *input.PolicyDocument,
 		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 		DefaultVersion: "v1",
-		Tags:           []Tag{},
+		Tags:           copyTags(input.Tags),
 	}
 
 	data, err := json.Marshal(policy)
@@ -1236,6 +1240,7 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 			CreateDate:       aws.Time(createdAt),
 			AttachmentCount:  aws.Int64(0),
 			IsAttachable:     aws.Bool(true),
+			Tags:             tagsToSDK(policy.Tags),
 		},
 	}, nil
 }
@@ -1265,6 +1270,7 @@ func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) 
 			CreateDate:       aws.Time(createdAt),
 			AttachmentCount:  aws.Int64(attachmentCount),
 			IsAttachable:     aws.Bool(true),
+			Tags:             tagsToSDK(policy.Tags),
 		},
 	}, nil
 }
@@ -1365,6 +1371,7 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 			CreateDate:       aws.Time(createdAt),
 			AttachmentCount:  aws.Int64(attachCounts[policy.ARN]),
 			IsAttachable:     aws.Bool(true),
+			Tags:             tagsToSDK(policy.Tags),
 		})
 	}
 
@@ -1396,6 +1403,76 @@ func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyI
 
 	slog.Info("IAM policy deleted", "accountID", accountID, "policyName", policy.PolicyName)
 	return &iam.DeletePolicyOutput{}, nil
+}
+
+// ListEntitiesForPolicy reports every user, role, and group that has the given
+// policy attached. The PolicyArn is used as-is against the attachment
+// traversal without first resolving it to a stored Policy record, so an
+// AWS-managed ARN (never provisioned locally, but attachable and stored
+// opaquely on the principal's AttachedPolicies) is found the same way a
+// customer-managed one is.
+func (s *IAMServiceImpl) ListEntitiesForPolicy(accountID string, input *iam.ListEntitiesForPolicyInput) (*iam.ListEntitiesForPolicyOutput, error) {
+	ctx := context.Background()
+	policyARN := *input.PolicyArn
+
+	empty := &iam.ListEntitiesForPolicyOutput{
+		PolicyUsers:  make([]*iam.PolicyUser, 0),
+		PolicyRoles:  make([]*iam.PolicyRole, 0),
+		PolicyGroups: make([]*iam.PolicyGroup, 0),
+		IsTruncated:  aws.Bool(false),
+	}
+
+	// Permissions boundaries are rejected outright at policy-attachment time,
+	// so no entity ever uses a policy that way. The correct answer is empty.
+	if aws.StringValue(input.PolicyUsageFilter) == iam.PolicyUsageTypePermissionsBoundary {
+		return empty, nil
+	}
+
+	entityFilter := aws.StringValue(input.EntityFilter)
+	switch entityFilter {
+	case "", iam.EntityTypeUser, iam.EntityTypeRole, iam.EntityTypeGroup,
+		iam.EntityTypeLocalManagedPolicy, iam.EntityTypeAwsmanagedPolicy:
+		// valid
+	default:
+		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	}
+
+	// LocalManagedPolicy/AWSManagedPolicy describe the policy's own management
+	// type, not an entity kind this call returns, so no user/role/group ever
+	// matches one of those two filter values.
+	if entityFilter == iam.EntityTypeLocalManagedPolicy || entityFilter == iam.EntityTypeAwsmanagedPolicy {
+		return empty, nil
+	}
+
+	pathPrefix := aws.StringValue(input.PathPrefix)
+	if pathPrefix == "" {
+		pathPrefix = "/"
+	}
+
+	attachments, err := s.buildPolicyAttachments(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("list entities for policy: %w", err)
+	}
+
+	out := empty
+	for _, ref := range attachments[policyARN] {
+		if !strings.HasPrefix(ref.path, pathPrefix) {
+			continue
+		}
+		if entityFilter != "" && entityFilter != ref.kind {
+			continue
+		}
+		switch ref.kind {
+		case iam.EntityTypeUser:
+			out.PolicyUsers = append(out.PolicyUsers, &iam.PolicyUser{UserId: aws.String(ref.id), UserName: aws.String(ref.name)})
+		case iam.EntityTypeRole:
+			out.PolicyRoles = append(out.PolicyRoles, &iam.PolicyRole{RoleId: aws.String(ref.id), RoleName: aws.String(ref.name)})
+		case iam.EntityTypeGroup:
+			out.PolicyGroups = append(out.PolicyGroups, &iam.PolicyGroup{GroupId: aws.String(ref.id), GroupName: aws.String(ref.name)})
+		}
+	}
+
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1873,45 +1950,117 @@ func (s *IAMServiceImpl) getPolicyByARN(ctx context.Context, accountID, policyAR
 	return &policy, nil
 }
 
-// buildAttachmentCounts fetches all users for the account once and returns a
-// map of policyARN -> number of users that have it attached, avoiding a
-// per-policy full scan when listing or inspecting policies.
-func (s *IAMServiceImpl) buildAttachmentCounts(ctx context.Context, accountID string) (map[string]int64, error) {
-	keys, err := kvutil.Keys(ctx, s.usersBucket)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("build attachment counts: %w", err)
+// entityRef identifies one principal record found to have a given policy
+// attached. It carries enough of the stored record to serve both attachment
+// counts and ListEntitiesForPolicy without a second lookup.
+type entityRef struct {
+	kind string // iam.EntityTypeUser, iam.EntityTypeRole, or iam.EntityTypeGroup
+	name string
+	id   string
+	path string
+}
+
+// attachedPrincipal is the bucket-agnostic shape buildPolicyAttachments needs
+// out of a User, Role, or Group record.
+type attachedPrincipal struct {
+	name     string
+	id       string
+	path     string
+	attached []string
+}
+
+// buildPolicyAttachments scans the users, roles, and groups buckets once and
+// returns, for every attached policy ARN, every principal that attaches it.
+// GetPolicy, ListPolicies, and DeletePolicy only need the count, but
+// ListEntitiesForPolicy needs the identities, so one traversal serves both
+// rather than keeping a count-only copy that would drift from this one. This
+// triples an already O(principals) scan on every GetPolicy, ListPolicies, and
+// DeletePolicy call; acceptable at current scale, but worth knowing about
+// before assuming any of those three got slower for an unrelated reason.
+func (s *IAMServiceImpl) buildPolicyAttachments(ctx context.Context, accountID string) (map[string][]entityRef, error) {
+	attachments := make(map[string][]entityRef)
+
+	scans := []struct {
+		bucket jetstream.KeyValue
+		kind   string
+		decode func([]byte) (attachedPrincipal, error)
+	}{
+		{s.usersBucket, iam.EntityTypeUser, func(data []byte) (attachedPrincipal, error) {
+			var u User
+			err := json.Unmarshal(data, &u)
+			return attachedPrincipal{name: u.UserName, id: u.UserID, path: u.Path, attached: u.AttachedPolicies}, err
+		}},
+		{s.rolesBucket, iam.EntityTypeRole, func(data []byte) (attachedPrincipal, error) {
+			var r Role
+			err := json.Unmarshal(data, &r)
+			return attachedPrincipal{name: r.RoleName, id: r.RoleID, path: r.Path, attached: r.AttachedPolicies}, err
+		}},
+		{s.groupsBucket, iam.EntityTypeGroup, func(data []byte) (attachedPrincipal, error) {
+			var g Group
+			err := json.Unmarshal(data, &g)
+			return attachedPrincipal{name: g.GroupName, id: g.GroupID, path: g.Path, attached: g.AttachedPolicies}, err
+		}},
 	}
 
-	counts := make(map[string]int64)
 	keyPrefix := accountID + "."
-	for _, key := range keys {
-		if key == utils.VersionKey {
-			continue
-		}
-		if !strings.HasPrefix(key, keyPrefix) {
-			continue
-		}
-
-		entry, err := s.usersBucket.Get(ctx, key)
+	for _, scan := range scans {
+		keys, err := kvutil.Keys(ctx, scan.bucket)
 		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				slog.Debug("buildAttachmentCounts: user key disappeared", "key", key)
+			if errors.Is(err, jetstream.ErrNoKeysFound) {
 				continue
 			}
-			slog.Warn("buildAttachmentCounts: failed to get user", "key", key, "err", err)
-			continue
+			return nil, fmt.Errorf("build policy attachments (%s): %w", scan.kind, err)
 		}
-		var user User
-		if err := json.Unmarshal(entry.Value(), &user); err != nil {
-			slog.Warn("buildAttachmentCounts: failed to unmarshal user", "key", key, "err", err)
-			continue
+
+		for _, key := range keys {
+			if key == utils.VersionKey {
+				continue
+			}
+			if !strings.HasPrefix(key, keyPrefix) {
+				continue
+			}
+
+			entry, err := scan.bucket.Get(ctx, key)
+			if err != nil {
+				if errors.Is(err, jetstream.ErrKeyNotFound) {
+					slog.Debug("buildPolicyAttachments: key disappeared (concurrent delete)", "kind", scan.kind, "key", key)
+					continue
+				}
+				slog.Warn("buildPolicyAttachments: failed to get record", "kind", scan.kind, "key", key, "err", err)
+				continue
+			}
+
+			principal, err := scan.decode(entry.Value())
+			if err != nil {
+				slog.Warn("buildPolicyAttachments: failed to unmarshal record", "kind", scan.kind, "key", key, "err", err)
+				continue
+			}
+
+			for _, policyARN := range principal.attached {
+				attachments[policyARN] = append(attachments[policyARN], entityRef{
+					kind: scan.kind,
+					name: principal.name,
+					id:   principal.id,
+					path: principal.path,
+				})
+			}
 		}
-		for _, arn := range user.AttachedPolicies {
-			counts[arn]++
-		}
+	}
+
+	return attachments, nil
+}
+
+// buildAttachmentCounts derives per-policy attachment counts from the shared
+// traversal so GetPolicy, ListPolicies, and DeletePolicy don't carry their own
+// copy of the count-only logic.
+func (s *IAMServiceImpl) buildAttachmentCounts(ctx context.Context, accountID string) (map[string]int64, error) {
+	attachments, err := s.buildPolicyAttachments(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int64, len(attachments))
+	for policyARN, refs := range attachments {
+		counts[policyARN] = int64(len(refs))
 	}
 	return counts, nil
 }

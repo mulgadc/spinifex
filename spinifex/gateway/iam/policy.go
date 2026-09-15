@@ -53,6 +53,13 @@ func DeletePolicy(accountID string, input *iam.DeletePolicyInput, svc handlers_i
 	return svc.DeletePolicy(accountID, input)
 }
 
+func ListEntitiesForPolicy(accountID string, input *iam.ListEntitiesForPolicyInput, svc handlers_iam.IAMService) (*iam.ListEntitiesForPolicyOutput, error) {
+	if input.PolicyArn == nil || *input.PolicyArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.ListEntitiesForPolicy(accountID, input)
+}
+
 func AttachUserPolicy(accountID string, input *iam.AttachUserPolicyInput, svc handlers_iam.IAMService) (*iam.AttachUserPolicyOutput, error) {
 	if input.UserName == nil || *input.UserName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

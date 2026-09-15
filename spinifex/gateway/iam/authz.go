@@ -97,14 +97,15 @@ var iamScopes = map[string]resourceScope{
 	"ListGroupPolicies":         existingScope(arn.IAMGroup, "GroupName"),
 
 	// Managed policies are normalized into the caller's trusted account.
-	"CreatePolicy":       createScope(arn.IAMPolicy, "PolicyName"),
-	"GetPolicy":          {source: sourcePolicyARN, nameField: "PolicyArn"},
-	"GetPolicyVersion":   {source: sourcePolicyARN, nameField: "PolicyArn"},
-	"ListPolicyVersions": {source: sourcePolicyARN, nameField: "PolicyArn"},
-	"DeletePolicy":       {source: sourcePolicyARN, nameField: "PolicyArn"},
-	"TagPolicy":          {source: sourcePolicyARN, nameField: "PolicyArn"},
-	"UntagPolicy":        {source: sourcePolicyARN, nameField: "PolicyArn"},
-	"ListPolicyTags":     {source: sourcePolicyARN, nameField: "PolicyArn"},
+	"CreatePolicy":          createScope(arn.IAMPolicy, "PolicyName"),
+	"GetPolicy":             {source: sourcePolicyARN, nameField: "PolicyArn"},
+	"GetPolicyVersion":      {source: sourcePolicyARN, nameField: "PolicyArn"},
+	"ListPolicyVersions":    {source: sourcePolicyARN, nameField: "PolicyArn"},
+	"DeletePolicy":          {source: sourcePolicyARN, nameField: "PolicyArn"},
+	"ListEntitiesForPolicy": {source: sourcePolicyARN, nameField: "PolicyArn"},
+	"TagPolicy":             {source: sourcePolicyARN, nameField: "PolicyArn"},
+	"UntagPolicy":           {source: sourcePolicyARN, nameField: "PolicyArn"},
+	"ListPolicyTags":        {source: sourcePolicyARN, nameField: "PolicyArn"},
 
 	// Instance profiles. Role operands are IAM condition-key values, not extra resources.
 	"CreateInstanceProfile":         createScope(arn.IAMInstanceProfile, "InstanceProfileName"),

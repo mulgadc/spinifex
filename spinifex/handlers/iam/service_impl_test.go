@@ -1206,6 +1206,75 @@ func TestCreatePolicy_ArrayActions(t *testing.T) {
 	assert.Equal(t, "ArrayActions", *out.Policy.PolicyName)
 }
 
+func TestCreatePolicy_WithTags(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	tags := []*iam.Tag{
+		{Key: aws.String("team"), Value: aws.String("platform")},
+		{Key: aws.String("env"), Value: aws.String("prod")},
+	}
+	createOut, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("TaggedPolicy"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+		Tags:           tags,
+	})
+	require.NoError(t, err)
+	require.Len(t, createOut.Policy.Tags, 2)
+
+	getOut, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{PolicyArn: createOut.Policy.Arn})
+	require.NoError(t, err)
+	require.Len(t, getOut.Policy.Tags, 2)
+
+	listOut, err := svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{})
+	require.NoError(t, err)
+	var listed *iam.Policy
+	for _, p := range listOut.Policies {
+		if *p.PolicyName == "TaggedPolicy" {
+			listed = p
+		}
+	}
+	require.NotNil(t, listed, "TaggedPolicy missing from ListPolicies")
+	require.Len(t, listed.Tags, 2)
+
+	tagsOut, err := svc.ListPolicyTags(testAccountID, &iam.ListPolicyTagsInput{PolicyArn: createOut.Policy.Arn})
+	require.NoError(t, err)
+	require.Len(t, tagsOut.Tags, 2)
+
+	byKey := func(tags []*iam.Tag) map[string]string {
+		m := make(map[string]string, len(tags))
+		for _, tag := range tags {
+			m[*tag.Key] = aws.StringValue(tag.Value)
+		}
+		return m
+	}
+	want := map[string]string{"team": "platform", "env": "prod"}
+	assert.Equal(t, want, byKey(createOut.Policy.Tags))
+	assert.Equal(t, want, byKey(getOut.Policy.Tags))
+	assert.Equal(t, want, byKey(listed.Tags))
+	assert.Equal(t, want, byKey(tagsOut.Tags))
+}
+
+func TestCreatePolicy_InvalidTag(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("BadTagPolicy"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+		Tags:           []*iam.Tag{{Key: aws.String(""), Value: aws.String("x")}},
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+
+	// The rejected policy must not have been stored.
+	_, err = svc.GetPolicy(testAccountID, &iam.GetPolicyInput{
+		PolicyArn: aws.String("arn:aws:iam::" + testAccountID + ":policy/BadTagPolicy"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
 func TestGetPolicy(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
@@ -1468,6 +1537,242 @@ func TestDeletePolicy_AttachedConflict(t *testing.T) {
 		PolicyArn: created.Arn,
 	})
 	require.NoError(t, err)
+}
+
+func TestGetPolicy_AttachmentCount_AllPrincipalKinds(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	userPolicy := createTestPolicy(t, svc, "UserAttached")
+	rolePolicy := createTestPolicy(t, svc, "RoleAttached")
+	groupPolicy := createTestPolicy(t, svc, "GroupAttached")
+
+	createTestUser(t, svc, "countuser")
+	createTestRole(t, svc, "countrole")
+	createTestGroup(t, svc, "countgroup")
+
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName: aws.String("countuser"), PolicyArn: userPolicy.Arn,
+	})
+	require.NoError(t, err)
+	_, err = svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName: aws.String("countrole"), PolicyArn: rolePolicy.Arn,
+	})
+	require.NoError(t, err)
+	_, err = svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{
+		GroupName: aws.String("countgroup"), PolicyArn: groupPolicy.Arn,
+	})
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name string
+		arn  *string
+	}{
+		{"user", userPolicy.Arn},
+		{"role", rolePolicy.Arn},
+		{"group", groupPolicy.Arn},
+	} {
+		out, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{PolicyArn: tc.arn})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), *out.Policy.AttachmentCount, "%s-attached policy", tc.name)
+	}
+}
+
+func TestDeletePolicy_AttachedConflict_Role(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "RoleConflict")
+	createTestRole(t, svc, "conflictrole")
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  aws.String("conflictrole"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{PolicyArn: created.Arn})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+
+	_, err = svc.DetachRolePolicy(testAccountID, &iam.DetachRolePolicyInput{
+		RoleName:  aws.String("conflictrole"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{PolicyArn: created.Arn})
+	require.NoError(t, err)
+}
+
+func TestDeletePolicy_AttachedConflict_Group(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "GroupConflict")
+	createTestGroup(t, svc, "conflictgroup")
+
+	_, err := svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{
+		GroupName: aws.String("conflictgroup"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{PolicyArn: created.Arn})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+
+	_, err = svc.DetachGroupPolicy(testAccountID, &iam.DetachGroupPolicyInput{
+		GroupName: aws.String("conflictgroup"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{PolicyArn: created.Arn})
+	require.NoError(t, err)
+}
+
+// ============================================================================
+// ListEntitiesForPolicy Tests
+// ============================================================================
+
+func TestListEntitiesForPolicy_Empty(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "NoEntities")
+
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out.PolicyUsers, emptyRequiredListMsg("ListEntitiesForPolicy", "PolicyUsers"))
+	require.NotNil(t, out.PolicyRoles, emptyRequiredListMsg("ListEntitiesForPolicy", "PolicyRoles"))
+	require.NotNil(t, out.PolicyGroups, emptyRequiredListMsg("ListEntitiesForPolicy", "PolicyGroups"))
+	assert.Empty(t, out.PolicyUsers)
+	assert.Empty(t, out.PolicyRoles)
+	assert.Empty(t, out.PolicyGroups)
+}
+
+func TestListEntitiesForPolicy_AllKinds(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "Shared")
+
+	createTestUser(t, svc, "entuser")
+	createTestRole(t, svc, "entrole")
+	createTestGroup(t, svc, "entgroup")
+
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("entuser"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+	_, err = svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{RoleName: aws.String("entrole"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+	_, err = svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{GroupName: aws.String("entgroup"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{PolicyArn: created.Arn})
+	require.NoError(t, err)
+	require.Len(t, out.PolicyUsers, 1)
+	require.Len(t, out.PolicyRoles, 1)
+	require.Len(t, out.PolicyGroups, 1)
+	assert.Equal(t, "entuser", *out.PolicyUsers[0].UserName)
+	assert.Equal(t, "entrole", *out.PolicyRoles[0].RoleName)
+	assert.Equal(t, "entgroup", *out.PolicyGroups[0].GroupName)
+}
+
+func TestListEntitiesForPolicy_EntityFilter(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "FilterMe")
+
+	createTestUser(t, svc, "filteruser")
+	createTestRole(t, svc, "filterrole")
+	createTestGroup(t, svc, "filtergroup")
+
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("filteruser"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+	_, err = svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{RoleName: aws.String("filterrole"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+	_, err = svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{GroupName: aws.String("filtergroup"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn:    created.Arn,
+		EntityFilter: aws.String(iam.EntityTypeRole),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.PolicyUsers)
+	assert.Empty(t, out.PolicyGroups)
+	require.Len(t, out.PolicyRoles, 1)
+	assert.Equal(t, "filterrole", *out.PolicyRoles[0].RoleName)
+}
+
+func TestListEntitiesForPolicy_PolicyTypeFilterYieldsNoEntities(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "PolicyTypeFilter")
+	createTestUser(t, svc, "ptfuser")
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("ptfuser"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+
+	// LocalManagedPolicy/AWSManagedPolicy describe the policy's own management
+	// type; ListEntitiesForPolicy only ever returns users/roles/groups, so
+	// neither value can match any collected entity.
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn:    created.Arn,
+		EntityFilter: aws.String(iam.EntityTypeLocalManagedPolicy),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.PolicyUsers)
+	assert.Empty(t, out.PolicyRoles)
+	assert.Empty(t, out.PolicyGroups)
+}
+
+func TestListEntitiesForPolicy_PathPrefix(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "PathFiltered")
+
+	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("devuser"), Path: aws.String("/dev/"),
+	})
+	require.NoError(t, err)
+	_, err = svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("opsuser"), Path: aws.String("/ops/"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("devuser"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+	_, err = svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("opsuser"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn:  created.Arn,
+		PathPrefix: aws.String("/dev/"),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.PolicyUsers, 1)
+	assert.Equal(t, "devuser", *out.PolicyUsers[0].UserName)
+}
+
+func TestListEntitiesForPolicy_AWSManagedARN(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	managedARN := "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+	createTestRole(t, svc, "eksrole")
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName: aws.String("eksrole"), PolicyArn: aws.String(managedARN),
+	})
+	require.NoError(t, err)
+
+	// AWS-managed ARNs are stored opaquely and never appear in the policies
+	// bucket, so this call resolves entities purely from the attachment
+	// traversal rather than a lookup keyed on a stored Policy record.
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn: aws.String(managedARN),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.PolicyRoles, 1)
+	assert.Equal(t, "eksrole", *out.PolicyRoles[0].RoleName)
 }
 
 // ============================================================================

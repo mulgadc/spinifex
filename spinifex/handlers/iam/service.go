@@ -26,6 +26,7 @@ type IAMService interface {
 	ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error)
 	ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error)
 	DeletePolicy(accountID string, input *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error)
+	ListEntitiesForPolicy(accountID string, input *iam.ListEntitiesForPolicyInput) (*iam.ListEntitiesForPolicyOutput, error)
 
 	// Policy attachment — account-scoped
 	AttachUserPolicy(accountID string, input *iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error)

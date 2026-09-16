@@ -65,6 +65,13 @@ type PortMapping struct {
 	Name string `json:"name,omitempty"`
 }
 
+// SystemControl is a sysctl namespace/value pair (linux systemControls).
+// Shared by the persisted ContainerDef and the AssignContainer wire payload.
+type SystemControl struct {
+	Namespace string `json:"namespace"`
+	Value     string `json:"value"`
+}
+
 // AssignContainer is one container the agent must pull and run for a task.
 type AssignContainer struct {
 	Name      string `json:"name"`
@@ -81,6 +88,23 @@ type AssignContainer struct {
 	// LogDriver is the requested container log driver; only json-file is honored
 	// (host-side). Any other value means logs are discarded (warned at register).
 	LogDriver string `json:"logDriver,omitempty"`
+	// User, ReadonlyRootFilesystem, Privileged, PseudoTerminal, Interactive,
+	// SystemControls and CapAdd/CapDrop mirror the persisted ContainerDef and
+	// are applied to the OCI spec by the agent. Nil bools mean "not requested",
+	// distinct from an explicit false; an older agent decoding this struct
+	// ignores fields it does not know, so adding fields here is safe.
+	User                   string          `json:"user,omitempty"`
+	ReadonlyRootFilesystem *bool           `json:"readonlyRootFilesystem,omitempty"`
+	Privileged             *bool           `json:"privileged,omitempty"`
+	PseudoTerminal         *bool           `json:"pseudoTerminal,omitempty"`
+	Interactive            *bool           `json:"interactive,omitempty"`
+	SystemControls         []SystemControl `json:"systemControls,omitempty"`
+	CapAdd                 []string        `json:"capAdd,omitempty"`
+	CapDrop                []string        `json:"capDrop,omitempty"`
+	// StartTimeout / StopTimeout bound the agent's task lifecycle around the
+	// run and stop calls; they are not OCI spec options.
+	StartTimeout *int64 `json:"startTimeout,omitempty"`
+	StopTimeout  *int64 `json:"stopTimeout,omitempty"`
 }
 
 // Assign is published on AssignSubject when the scheduler places a task on this

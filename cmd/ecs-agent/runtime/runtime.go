@@ -4,7 +4,10 @@
 // scheduler-only build run against a fake.
 package runtime
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // PullSpec describes one image to pull.
 type PullSpec struct {
@@ -35,6 +38,12 @@ type ImagePuller interface {
 	Close() error
 }
 
+// SystemControl is a sysctl namespace/value pair applied to the OCI spec.
+type SystemControl struct {
+	Namespace string
+	Value     string
+}
+
 // RunSpec describes a single container the agent must create and start. v1 runs
 // the container in the host network namespace (bridge/CNI task networking lands
 // in a later sprint); Labels carry the mulga.ecs.* task identity for the reboot
@@ -54,6 +63,22 @@ type RunSpec struct {
 	// per GPU requested. Empty for non-GPU containers or if pinning fell short.
 	// The runner injects these as CDI devices into the OCI spec.
 	GPUIDs []string
+	// User is the OCI process user (oci.WithUser). Empty runs as the image
+	// default.
+	User string
+	// ReadonlyRootFilesystem, Privileged, PseudoTerminal and Interactive are
+	// pointers so the runner can tell "not requested" (nil) from an explicit
+	// false, which still needs echoing but applies nothing.
+	ReadonlyRootFilesystem *bool
+	Privileged             *bool
+	PseudoTerminal         *bool
+	Interactive            *bool
+	// SystemControls are sysctls set on the OCI spec's Linux.Sysctl map.
+	SystemControls []SystemControl
+	// CapAdd / CapDrop are Linux capabilities added/dropped from the OCI
+	// spec's process capability sets (linuxParameters.capabilities).
+	CapAdd  []string
+	CapDrop []string
 }
 
 // RunStatus is a finished container's outcome.
@@ -71,12 +96,16 @@ type Container struct {
 }
 
 // Runner creates and starts containers from already-pulled images. id is a
-// caller-unique container ID; Wait blocks until the container exits; Remove
-// tears down the container + its task; List enumerates known containers so the
-// reboot reconciler can re-adopt the ones still running.
+// caller-unique container ID; Wait blocks until the container exits; Stop
+// requests a graceful exit (SIGTERM, then a forced kill+remove once timeout
+// elapses) — the agent's enforcement of a container's stopTimeout; Remove
+// tears down the container + its task immediately, with no grace period; List
+// enumerates known containers so the reboot reconciler can re-adopt the ones
+// still running.
 type Runner interface {
 	Run(ctx context.Context, id string, spec RunSpec) (containerID string, err error)
 	Wait(ctx context.Context, containerID string) (RunStatus, error)
+	Stop(ctx context.Context, containerID string, timeout time.Duration) error
 	Remove(ctx context.Context, containerID string) error
 	List(ctx context.Context) ([]Container, error)
 }

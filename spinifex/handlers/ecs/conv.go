@@ -128,6 +128,26 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 				def.LogOptions[k] = aws.StringValue(v)
 			}
 		}
+		def.User = aws.StringValue(c.User)
+		def.ReadonlyRootFilesystem = c.ReadonlyRootFilesystem
+		def.Privileged = c.Privileged
+		def.PseudoTerminal = c.PseudoTerminal
+		def.Interactive = c.Interactive
+		for _, sc := range c.SystemControls {
+			if sc == nil {
+				continue
+			}
+			def.SystemControls = append(def.SystemControls, bus.SystemControl{
+				Namespace: aws.StringValue(sc.Namespace),
+				Value:     aws.StringValue(sc.Value),
+			})
+		}
+		if lp := c.LinuxParameters; lp != nil && lp.Capabilities != nil {
+			def.CapAdd = awsStringSlice(lp.Capabilities.Add)
+			def.CapDrop = awsStringSlice(lp.Capabilities.Drop)
+		}
+		def.StartTimeout = c.StartTimeout
+		def.StopTimeout = c.StopTimeout
 		out = append(out, def)
 	}
 	return out
@@ -192,21 +212,56 @@ func (c ContainerDef) toAWS() *ecs.ContainerDefinition {
 		}
 		cd.LogConfiguration = lc
 	}
+	if c.User != "" {
+		cd.User = aws.String(c.User)
+	}
+	cd.ReadonlyRootFilesystem = c.ReadonlyRootFilesystem
+	cd.Privileged = c.Privileged
+	cd.PseudoTerminal = c.PseudoTerminal
+	cd.Interactive = c.Interactive
+	for _, sc := range c.SystemControls {
+		cd.SystemControls = append(cd.SystemControls, &ecs.SystemControl{
+			Namespace: aws.String(sc.Namespace),
+			Value:     aws.String(sc.Value),
+		})
+	}
+	if len(c.CapAdd) > 0 || len(c.CapDrop) > 0 {
+		caps := &ecs.KernelCapabilities{}
+		if len(c.CapAdd) > 0 {
+			caps.Add = aws.StringSlice(c.CapAdd)
+		}
+		if len(c.CapDrop) > 0 {
+			caps.Drop = aws.StringSlice(c.CapDrop)
+		}
+		cd.LinuxParameters = &ecs.LinuxParameters{Capabilities: caps}
+	}
+	cd.StartTimeout = c.StartTimeout
+	cd.StopTimeout = c.StopTimeout
 	return cd
 }
 
 // toAssignContainer maps a persisted container def to its bus assign payload.
 func (c ContainerDef) toAssignContainer() bus.AssignContainer {
 	return bus.AssignContainer{
-		Name:         c.Name,
-		Image:        c.Image,
-		CPU:          c.CPU,
-		MemoryMiB:    c.MemoryMiB,
-		GPU:          c.GPU,
-		Essential:    c.Essential,
-		Command:      c.Command,
-		Environment:  c.Environment,
-		PortMappings: c.PortMappings,
-		LogDriver:    c.LogDriver,
+		Name:                   c.Name,
+		Image:                  c.Image,
+		CPU:                    c.CPU,
+		MemoryMiB:              c.MemoryMiB,
+		GPU:                    c.GPU,
+		Essential:              c.Essential,
+		Command:                c.Command,
+		Environment:            c.Environment,
+		PortMappings:           c.PortMappings,
+		LogDriver:              c.LogDriver,
+		User:                   c.User,
+		ReadonlyRootFilesystem: c.ReadonlyRootFilesystem,
+		Privileged:             c.Privileged,
+		PseudoTerminal:         c.PseudoTerminal,
+		Interactive:            c.Interactive,
+		SystemControls:         c.SystemControls,
+		CapAdd:                 c.CapAdd,
+		CapDrop:                c.CapDrop,
+		StartTimeout:           c.StartTimeout,
+		StopTimeout:            c.StopTimeout,
 	}
 }

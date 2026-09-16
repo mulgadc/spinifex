@@ -215,6 +215,30 @@ type ContainerDef struct {
 	// parity but warned at register time (logs are discarded).
 	LogDriver  string            `json:"logDriver,omitempty"`
 	LogOptions map[string]string `json:"logOptions,omitempty"`
+	// User is enforced via oci.WithUser. Empty is indistinguishable from unset
+	// (both mean "run as the image's default user"), so a plain string is enough.
+	User string `json:"user,omitempty"`
+	// ReadonlyRootFilesystem, Privileged, PseudoTerminal and Interactive are
+	// pointers because the per-value fail-open test requires telling "caller
+	// said false" from "caller said nothing" apart: a nil field is omitted on
+	// describe (unchanged from before this fix), a non-nil field is echoed and
+	// enforced exactly as submitted, true or false.
+	ReadonlyRootFilesystem *bool `json:"readonlyRootFilesystem,omitempty"`
+	Privileged             *bool `json:"privileged,omitempty"`
+	PseudoTerminal         *bool `json:"pseudoTerminal,omitempty"`
+	Interactive            *bool `json:"interactive,omitempty"`
+	// SystemControls are sysctl namespace/value pairs applied to the OCI spec.
+	SystemControls []bus.SystemControl `json:"systemControls,omitempty"`
+	// CapAdd / CapDrop are linuxParameters.capabilities.add/drop. The rest of
+	// linuxParameters (devices, initProcessEnabled, sharedMemorySize, tmpfs) is
+	// refused at registration rather than stored, see validateContainerDefs.
+	CapAdd  []string `json:"capAdd,omitempty"`
+	CapDrop []string `json:"capDrop,omitempty"`
+	// StartTimeout / StopTimeout are pointers because zero is a meaningful value
+	// distinct from unset on the AWS shape; enforcement lives in the agent's
+	// task lifecycle, not in the OCI spec.
+	StartTimeout *int64 `json:"startTimeout,omitempty"`
+	StopTimeout  *int64 `json:"stopTimeout,omitempty"`
 }
 
 // LogDriverJSONFile is the only log driver the agent honors: containerd's task IO

@@ -3,9 +3,14 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
+	"strings"
+	"syscall"
+	"time"
 
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/pkg/cdi"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
@@ -39,6 +44,70 @@ func cdiSpecOpts(gpuIDs []string) []oci.SpecOpts {
 		return nil
 	}
 	return []oci.SpecOpts{cdi.WithCDIDevices(devices...)}
+}
+
+// ociCapName renders an ECS Linux capability (Docker's bare name, e.g.
+// "SYS_ADMIN") as the OCI runtime-spec name ("CAP_SYS_ADMIN") capabilities.Add/
+// Drop expect.
+func ociCapName(name string) string {
+	if strings.HasPrefix(name, "CAP_") {
+		return name
+	}
+	return "CAP_" + name
+}
+
+// ociCapNames maps a list of ECS capability names to their OCI form.
+func ociCapNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = ociCapName(n)
+	}
+	return out
+}
+
+// withSysctls sets Linux.Sysctl on the OCI spec from systemControls namespace/
+// value pairs. containerd has no built-in SpecOpts for sysctls.
+func withSysctls(ctls []SystemControl) oci.SpecOpts {
+	return func(_ context.Context, _ oci.Client, _ *containers.Container, s *oci.Spec) error {
+		if len(ctls) == 0 {
+			return nil
+		}
+		if s.Linux == nil {
+			s.Linux = &specs.Linux{}
+		}
+		if s.Linux.Sysctl == nil {
+			s.Linux.Sysctl = map[string]string{}
+		}
+		for _, c := range ctls {
+			s.Linux.Sysctl[c.Namespace] = c.Value
+		}
+		return nil
+	}
+}
+
+// blockingStdin is an io.Reader that never returns, backing an interactive
+// container's stdin: reads block instead of hitting an immediate EOF, which is
+// the "stdin held open" behaviour interactive=true asks for. Nothing in this
+// agent attaches to a running container's stdin, so one reader shared by every
+// interactive container is enough — it never produces data for anyone to
+// demux.
+type blockingStdin struct{}
+
+func (blockingStdin) Read([]byte) (int, error) {
+	select {}
+}
+
+// containerIOCreator returns cio.NullIO for a non-interactive container
+// (stdin reads EOF immediately, matching today's behaviour) or a creator that
+// keeps stdin open via blockingStdin when interactive is requested.
+func containerIOCreator(interactive bool) cio.Creator {
+	if !interactive {
+		return cio.NullIO
+	}
+	return cio.NewCreator(cio.WithStreams(blockingStdin{}, io.Discard, io.Discard))
 }
 
 var _ Runner = (*containerdPuller)(nil)
@@ -81,6 +150,25 @@ func (p *containerdPuller) Run(ctx context.Context, id string, spec RunSpec) (st
 		specOpts = append(specOpts, oci.WithEnv(envSlice(spec.Env)))
 	}
 	specOpts = append(specOpts, cdiSpecOpts(spec.GPUIDs)...)
+	if spec.User != "" {
+		specOpts = append(specOpts, oci.WithUser(spec.User))
+	}
+	if spec.ReadonlyRootFilesystem != nil && *spec.ReadonlyRootFilesystem {
+		specOpts = append(specOpts, oci.WithRootFSReadonly())
+	}
+	if spec.Privileged != nil && *spec.Privileged {
+		specOpts = append(specOpts, oci.WithPrivileged)
+	}
+	if spec.PseudoTerminal != nil && *spec.PseudoTerminal {
+		specOpts = append(specOpts, oci.WithTTY)
+	}
+	specOpts = append(specOpts, withSysctls(spec.SystemControls))
+	if len(spec.CapAdd) > 0 {
+		specOpts = append(specOpts, oci.WithAddedCapabilities(ociCapNames(spec.CapAdd)))
+	}
+	if len(spec.CapDrop) > 0 {
+		specOpts = append(specOpts, oci.WithDroppedCapabilities(ociCapNames(spec.CapDrop)))
+	}
 
 	container, err := p.client.NewContainer(ctx, id,
 		containerd.WithNewSnapshot(id+"-snapshot", image),
@@ -91,7 +179,8 @@ func (p *containerdPuller) Run(ctx context.Context, id string, spec RunSpec) (st
 		return "", fmt.Errorf("create container %s: %w", id, err)
 	}
 
-	task, err := container.NewTask(ctx, cio.NullIO)
+	interactive := spec.Interactive != nil && *spec.Interactive
+	task, err := container.NewTask(ctx, containerIOCreator(interactive))
 	if err != nil {
 		_ = container.Delete(ctx, containerd.WithSnapshotCleanup)
 		return "", fmt.Errorf("create task %s: %w", id, err)
@@ -146,6 +235,31 @@ func (p *containerdPuller) List(ctx context.Context) ([]Container, error) {
 		out = append(out, Container{ID: c.ID(), Labels: labels, Running: running})
 	}
 	return out, nil
+}
+
+// Stop enforces a container's stopTimeout: SIGTERM the task, wait up to
+// timeout for it to exit on its own, then fall through to Remove's forced
+// kill+delete regardless of whether it exited in time. A container with no
+// live task (already gone) or that fails to accept the signal goes straight to
+// Remove, matching Remove's own already-gone tolerance.
+func (p *containerdPuller) Stop(ctx context.Context, containerID string, timeout time.Duration) error {
+	ctx = namespaces.WithNamespace(ctx, ecsNamespace)
+	container, err := p.client.LoadContainer(ctx, containerID)
+	if err != nil {
+		return nil //nolint:nilerr // load failure means the container is already gone
+	}
+	task, terr := container.Task(ctx, nil)
+	if terr != nil {
+		return p.Remove(ctx, containerID)
+	}
+	statusC, werr := task.Wait(ctx)
+	if werr == nil && task.Kill(ctx, syscall.SIGTERM) == nil {
+		select {
+		case <-statusC:
+		case <-time.After(timeout):
+		}
+	}
+	return p.Remove(ctx, containerID)
 }
 
 // Remove kills and deletes the container's task, then the container + snapshot.

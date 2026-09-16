@@ -169,9 +169,19 @@ func TestCreateRole_MalformedTrustPolicy_NamesTheReason(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "condition-on-a-non-web-identity-action",
-			doc:  `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceAccount":"000000000001"}}}]}`,
+			// sts:AssumeRole is itself one of the two actions Condition blocks are
+			// supported on (mulga-yxd9p part B, aws:SourceAccount); this exercises
+			// an action outside both, which must still be refused at write time.
+			name: "condition-on-an-unsupported-action",
+			doc:  `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:GetSessionToken","Condition":{"StringEquals":{"aws:SourceAccount":"000000000001"}}}]}`,
 			want: []string{"statement 0", STSActionAssumeRoleWithWebIdentity},
+		},
+		{
+			// sts:AssumeRole is supported, but only for aws:SourceAccount — every
+			// other key must still be refused, naming the key and the action.
+			name: "unsupported-key-on-assume-role",
+			doc:  `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceArn":"arn:aws:ecs:ap-southeast-2:000000000001:*"}}}]}`,
+			want: []string{"statement 0", "aws:SourceArn", "sts:AssumeRole"},
 		},
 		{
 			name: "bad-effect",
@@ -208,7 +218,7 @@ func TestUpdateAssumeRolePolicy_MalformedTrustPolicy_NamesTheReason(t *testing.T
 
 	_, err := svc.UpdateAssumeRolePolicy(testAccountID, &iam.UpdateAssumeRolePolicyInput{
 		RoleName:       aws.String("update-reason"),
-		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceAccount":"000000000001"}}}]}`),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:GetSessionToken","Condition":{"StringEquals":{"aws:SourceAccount":"000000000001"}}}]}`),
 	})
 	require.Error(t, err)
 	code, message, ok := awserrors.ResolveErrorDetail(err)

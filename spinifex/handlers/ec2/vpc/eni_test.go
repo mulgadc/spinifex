@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,6 +83,103 @@ func TestCreateNetworkInterface_InvalidSubnet(t *testing.T) {
 		SubnetId: aws.String("subnet-nonexistent"),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "InvalidSubnetID.NotFound")
+}
+
+func TestCreateNetworkInterface_HonoursRequestedPrivateIP(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId:         aws.String(subnetId),
+		PrivateIpAddress: aws.String("10.0.1.50"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.NetworkInterface)
+	assert.Equal(t, "10.0.1.50", *out.NetworkInterface.PrivateIpAddress)
+}
+
+func TestCreateNetworkInterface_RequestedPrivateIPOutOfRange(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+
+	_, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId:         aws.String(subnetId),
+		PrivateIpAddress: aws.String("172.31.0.50"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestCreateNetworkInterface_RequestedPrivateIPReserved(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+
+	_, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId:         aws.String(subnetId),
+		PrivateIpAddress: aws.String("10.0.1.1"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestCreateNetworkInterface_RequestedPrivateIPAlreadyInUse(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+
+	_, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId:         aws.String(subnetId),
+		PrivateIpAddress: aws.String("10.0.1.50"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId:         aws.String(subnetId),
+		PrivateIpAddress: aws.String("10.0.1.50"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, awserrors.ErrorInvalidIPAddressInUse)
+}
+
+func TestCreateNetworkInterface_RequestedPrivateIPRaceHasOneWinner(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+
+	const contenders = 8
+	var wg sync.WaitGroup
+	errs := make([]error, contenders)
+	for i := range contenders {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+				SubnetId:         aws.String(subnetId),
+				PrivateIpAddress: aws.String("10.0.1.60"),
+			}, testAccountID)
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+
+	successes, conflicts := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case err.Error() == awserrors.ErrorInvalidIPAddressInUse:
+			conflicts++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	assert.Equal(t, 1, successes)
+	assert.Equal(t, contenders-1, conflicts)
 }
 
 func TestCreateNetworkInterface_WithTags(t *testing.T) {

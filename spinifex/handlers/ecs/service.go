@@ -458,13 +458,53 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 	return &ecs.RegisterTaskDefinitionOutput{TaskDefinition: rec.toAWS(), Tags: tagsToAWS(rec.Tags)}, nil
 }
 
-// validateContainerDefs hard-rejects taskdef features the data plane cannot honor.
-// secrets[] is dropped silently by the assign path, so a task would run believing
-// it has secrets it never receives (ecs-v1 Q18) — reject at register instead.
+// validateContainerDefs hard-rejects taskdef features the data plane cannot
+// honor. secrets[] is dropped silently by the assign path, so a task would run
+// believing it has secrets it never receives (ecs-v1 Q18) — reject at register
+// instead. The same reasoning extends to the runtime fields a container can
+// request but this agent cannot apply: mountPoints/volumesFrom (no task volume
+// model), linuxParameters.devices (device injection), initProcessEnabled (no
+// init shim) and linuxParameters.sharedMemorySize/tmpfs (mounts).
+//
+// The test here is per value, not per field: an empty list or a false/unset
+// flag requests nothing and is accepted, because there is nothing to enforce
+// or refuse. Only a value that asks for the restriction is rejected.
 func validateContainerDefs(defs []*ecs.ContainerDefinition) error {
 	for _, c := range defs {
-		if c != nil && len(c.Secrets) > 0 {
+		if c == nil {
+			continue
+		}
+		name := aws.StringValue(c.Name)
+		if len(c.Secrets) > 0 {
 			return errors.New(awserrors.ErrorECSInvalidParameter)
+		}
+		if len(c.MountPoints) > 0 {
+			return awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
+				"container %s: mountPoints cannot be applied (no task volume model)", name)
+		}
+		if len(c.VolumesFrom) > 0 {
+			return awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
+				"container %s: volumesFrom cannot be applied (no task volume model)", name)
+		}
+		lp := c.LinuxParameters
+		if lp == nil {
+			continue
+		}
+		if len(lp.Devices) > 0 {
+			return awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
+				"container %s: linuxParameters.devices cannot be applied", name)
+		}
+		if aws.BoolValue(lp.InitProcessEnabled) {
+			return awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
+				"container %s: linuxParameters.initProcessEnabled cannot be applied", name)
+		}
+		if lp.SharedMemorySize != nil && aws.Int64Value(lp.SharedMemorySize) != 0 {
+			return awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
+				"container %s: linuxParameters.sharedMemorySize cannot be applied", name)
+		}
+		if len(lp.Tmpfs) > 0 {
+			return awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
+				"container %s: linuxParameters.tmpfs cannot be applied", name)
 		}
 	}
 	return nil

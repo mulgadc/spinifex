@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // FakePuller is an in-memory ImagePuller for tests and the scheduler-only build.
@@ -25,6 +26,13 @@ type FakePuller struct {
 	Waited   []string
 	Removed  []string
 	OnRun    func(string, RunSpec) (string, error)
+
+	// Stop bookkeeping: StopTimeouts pairs the container ID with the timeout it
+	// was stopped with, in call order, so a test can assert both the target and
+	// the enforced stopTimeout without a fake containerd.
+	Stopped      []string
+	StopTimeouts []time.Duration
+	StopErr      error
 
 	// List bookkeeping: Containers is replayed by List; ListErr forces a failure;
 	// Listed records that List was called.
@@ -96,6 +104,15 @@ func (f *FakePuller) Wait(_ context.Context, containerID string) (RunStatus, err
 	f.Waited = append(f.Waited, containerID)
 	f.mu.Unlock()
 	return RunStatus{ExitCode: f.WaitCode}, f.WaitErr
+}
+
+// Stop records the container ID and the timeout it was stopped with.
+func (f *FakePuller) Stop(_ context.Context, containerID string, timeout time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Stopped = append(f.Stopped, containerID)
+	f.StopTimeouts = append(f.StopTimeouts, timeout)
+	return f.StopErr
 }
 
 // Remove records the container ID.

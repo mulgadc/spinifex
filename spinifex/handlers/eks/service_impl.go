@@ -1691,6 +1691,10 @@ func (s *EKSServiceImpl) AssociateAccessPolicy(ctx context.Context, input *eks.A
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+	if scope.Type == accessScopeNamespace {
+		return nil, awserrors.Errorf(awserrors.ErrorEKSInvalidParameter,
+			"accessScope.type: namespace-scoped access policies are not supported, only cluster is supported")
+	}
 	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err

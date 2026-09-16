@@ -99,12 +99,12 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 			Essential: aws.BoolValue(c.Essential),
 			Command:   awsStringSlice(c.Command),
 		}
+		if c.Environment != nil {
+			def.Environment = map[string]string{}
+		}
 		for _, e := range c.Environment {
 			if e == nil {
 				continue
-			}
-			if def.Environment == nil {
-				def.Environment = map[string]string{}
 			}
 			def.Environment[aws.StringValue(e.Name)] = aws.StringValue(e.Value)
 		}
@@ -128,6 +128,34 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 				def.LogOptions[k] = aws.StringValue(v)
 			}
 		}
+		def.User = aws.StringValue(c.User)
+		def.ReadonlyRootFilesystem = c.ReadonlyRootFilesystem
+		def.Privileged = c.Privileged
+		def.PseudoTerminal = c.PseudoTerminal
+		def.Interactive = c.Interactive
+		if c.SystemControls != nil {
+			def.SystemControls = []bus.SystemControl{}
+		}
+		for _, sc := range c.SystemControls {
+			if sc == nil {
+				continue
+			}
+			def.SystemControls = append(def.SystemControls, bus.SystemControl{
+				Namespace: aws.StringValue(sc.Namespace),
+				Value:     aws.StringValue(sc.Value),
+			})
+		}
+		def.MountPointsSet = c.MountPoints != nil
+		def.VolumesFromSet = c.VolumesFrom != nil
+		if lp := c.LinuxParameters; lp != nil {
+			def.InitProcessEnabled = lp.InitProcessEnabled
+			if lp.Capabilities != nil {
+				def.CapAdd = awsStringSlice(lp.Capabilities.Add)
+				def.CapDrop = awsStringSlice(lp.Capabilities.Drop)
+			}
+		}
+		def.StartTimeout = c.StartTimeout
+		def.StopTimeout = c.StopTimeout
 		out = append(out, def)
 	}
 	return out
@@ -166,6 +194,9 @@ func (c ContainerDef) toAWS() *ecs.ContainerDefinition {
 	for _, cmd := range c.Command {
 		cd.Command = append(cd.Command, aws.String(cmd))
 	}
+	if c.Environment != nil {
+		cd.Environment = []*ecs.KeyValuePair{}
+	}
 	for k, v := range c.Environment {
 		cd.Environment = append(cd.Environment, &ecs.KeyValuePair{Name: aws.String(k), Value: aws.String(v)})
 	}
@@ -192,21 +223,69 @@ func (c ContainerDef) toAWS() *ecs.ContainerDefinition {
 		}
 		cd.LogConfiguration = lc
 	}
+	if c.User != "" {
+		cd.User = aws.String(c.User)
+	}
+	cd.ReadonlyRootFilesystem = c.ReadonlyRootFilesystem
+	cd.Privileged = c.Privileged
+	cd.PseudoTerminal = c.PseudoTerminal
+	cd.Interactive = c.Interactive
+	if c.SystemControls != nil {
+		cd.SystemControls = []*ecs.SystemControl{}
+	}
+	for _, sc := range c.SystemControls {
+		cd.SystemControls = append(cd.SystemControls, &ecs.SystemControl{
+			Namespace: aws.String(sc.Namespace),
+			Value:     aws.String(sc.Value),
+		})
+	}
+	if c.MountPointsSet {
+		cd.MountPoints = []*ecs.MountPoint{}
+	}
+	if c.VolumesFromSet {
+		cd.VolumesFrom = []*ecs.VolumeFrom{}
+	}
+	if len(c.CapAdd) > 0 || len(c.CapDrop) > 0 || c.InitProcessEnabled != nil {
+		lp := &ecs.LinuxParameters{InitProcessEnabled: c.InitProcessEnabled}
+		if len(c.CapAdd) > 0 || len(c.CapDrop) > 0 {
+			caps := &ecs.KernelCapabilities{}
+			if len(c.CapAdd) > 0 {
+				caps.Add = aws.StringSlice(c.CapAdd)
+			}
+			if len(c.CapDrop) > 0 {
+				caps.Drop = aws.StringSlice(c.CapDrop)
+			}
+			lp.Capabilities = caps
+		}
+		cd.LinuxParameters = lp
+	}
+	cd.StartTimeout = c.StartTimeout
+	cd.StopTimeout = c.StopTimeout
 	return cd
 }
 
 // toAssignContainer maps a persisted container def to its bus assign payload.
 func (c ContainerDef) toAssignContainer() bus.AssignContainer {
 	return bus.AssignContainer{
-		Name:         c.Name,
-		Image:        c.Image,
-		CPU:          c.CPU,
-		MemoryMiB:    c.MemoryMiB,
-		GPU:          c.GPU,
-		Essential:    c.Essential,
-		Command:      c.Command,
-		Environment:  c.Environment,
-		PortMappings: c.PortMappings,
-		LogDriver:    c.LogDriver,
+		Name:                   c.Name,
+		Image:                  c.Image,
+		CPU:                    c.CPU,
+		MemoryMiB:              c.MemoryMiB,
+		GPU:                    c.GPU,
+		Essential:              c.Essential,
+		Command:                c.Command,
+		Environment:            c.Environment,
+		PortMappings:           c.PortMappings,
+		LogDriver:              c.LogDriver,
+		User:                   c.User,
+		ReadonlyRootFilesystem: c.ReadonlyRootFilesystem,
+		Privileged:             c.Privileged,
+		PseudoTerminal:         c.PseudoTerminal,
+		Interactive:            c.Interactive,
+		SystemControls:         c.SystemControls,
+		CapAdd:                 c.CapAdd,
+		CapDrop:                c.CapDrop,
+		StartTimeout:           c.StartTimeout,
+		StopTimeout:            c.StopTimeout,
 	}
 }

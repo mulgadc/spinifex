@@ -3,6 +3,8 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"compress/bzip2"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -27,6 +29,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/klauspost/compress/zstd"
 )
 
 var ErrQCOWDetected = errors.New("qcow format detected")
@@ -594,6 +597,11 @@ var AvailableImages = map[string]Images{
 	},
 }
 
+// ExtractDiskImageFromFile turns a downloaded artifact at imagepath into a bootable disk
+// image and returns its path. tar-based archives are expanded into tmpdir and their listing
+// is scanned for the member that carries the payload; single-file compressed artifacts
+// (.zst, .bz2, .xz, .gz) are streamed straight into tmpdir under their own decompressed name.
+// The source artifact at imagepath is never modified or overwritten.
 func ExtractDiskImageFromFile(imagepath string, tmpdir string) (diskimage string, err error) {
 	var args []string
 	var execCmd string
@@ -605,77 +613,56 @@ func ExtractDiskImageFromFile(imagepath string, tmpdir string) (diskimage string
 
 	imagefile := filepath.Base(imagepath)
 
-	if strings.HasSuffix(imagefile, ".raw") || strings.HasSuffix(imagefile, ".img") || strings.HasSuffix(imagefile, ".qcow2") || strings.HasSuffix(imagefile, ".qcow") {
+	switch {
+	case strings.HasSuffix(imagefile, ".raw") || strings.HasSuffix(imagefile, ".img") || strings.HasSuffix(imagefile, ".qcow2") || strings.HasSuffix(imagefile, ".qcow"):
 		path, err := filepath.Abs(imagepath)
 		if err != nil {
 			return path, err
 		}
-		err = validateDiskImagePath(path)
-		if errors.Is(err, ErrQCOWDetected) {
-			extractpath := fmt.Sprintf("%s/%s", tmpdir, imagefile)
-			extractpath = strings.TrimSuffix(extractpath, ".qcow2") + ".raw"
+		return finalizeDiskImage(path, tmpdir)
 
-			args = []string{
-				"convert",
-				"-f",
-				"qcow2",
-				"-O",
-				"raw",
-				imagepath,
-				"-C",
-				extractpath,
-			}
-
-			execCmd = "qemu-img"
-
-			cmd := exec.Command(execCmd, args...)
-			_, err = cmd.Output()
-
-			if err != nil {
-				return path, err
-			}
-
-			return extractpath, nil
-		}
-
-		return path, err
-	} else if strings.HasSuffix(imagefile, ".tar.xz") {
-		args = []string{
-			"xfvJ",
-			imagepath,
-			"-C",
-			tmpdir,
-		}
-
+	case strings.HasSuffix(imagefile, ".tar.xz"):
+		args = []string{"xfvJ", imagepath, "-C", tmpdir}
 		execCmd = "tar"
-	} else if strings.HasSuffix(imagefile, ".tar.gz") || strings.HasSuffix(imagefile, ".tgz") {
-		args = []string{
-			"xfvz",
-			imagepath,
-			"-C",
-			tmpdir,
-		}
 
+	case strings.HasSuffix(imagefile, ".tar.gz") || strings.HasSuffix(imagefile, ".tgz"):
+		args = []string{"xfvz", imagepath, "-C", tmpdir}
 		execCmd = "tar"
-	} else if strings.HasSuffix(imagefile, ".tar") {
-		args = []string{
-			"xfv",
-			imagepath,
-			"-C",
-			tmpdir,
-		}
 
+	case strings.HasSuffix(imagefile, ".tar"):
+		args = []string{"xfv", imagepath, "-C", tmpdir}
 		execCmd = "tar"
-	} else if strings.HasSuffix(imagefile, ".xz") {
-		args = []string{
-			"-dk",
-			imagepath,
-		}
 
-		execCmd = "xz"
-	} else {
-		err = errors.New("unsupported filetype")
-		return diskimage, err
+	case strings.HasSuffix(imagefile, ".zst"):
+		extracted, err := decompressZstd(imagepath, tmpdir)
+		if err != nil {
+			return diskimage, err
+		}
+		return finalizeDiskImage(extracted, tmpdir)
+
+	case strings.HasSuffix(imagefile, ".bz2"):
+		extracted, err := decompressBzip2(imagepath, tmpdir)
+		if err != nil {
+			return diskimage, err
+		}
+		return finalizeDiskImage(extracted, tmpdir)
+
+	case strings.HasSuffix(imagefile, ".xz"):
+		extracted, err := decompressXz(imagepath, tmpdir)
+		if err != nil {
+			return diskimage, err
+		}
+		return finalizeDiskImage(extracted, tmpdir)
+
+	case strings.HasSuffix(imagefile, ".gz"):
+		extracted, err := decompressGzip(imagepath, tmpdir)
+		if err != nil {
+			return diskimage, err
+		}
+		return finalizeDiskImage(extracted, tmpdir)
+
+	default:
+		return diskimage, errors.New("unsupported filetype")
 	}
 
 	cmd := exec.Command(execCmd, args...)
@@ -688,6 +675,194 @@ func ExtractDiskImageFromFile(imagepath string, tmpdir string) (diskimage string
 	diskimage, err = extractDiskImagePath(tmpdir, output)
 
 	return diskimage, err
+}
+
+// finalizeDiskImage runs the file(1) sniff gate on path and, if it detects a QCOW2 payload,
+// converts it to raw inside tmpdir. path may be the original source (already .raw/.img/.qcow2)
+// or a file this package just decompressed into tmpdir; either way the source is left intact
+// and only the raw output lands in tmpdir.
+func finalizeDiskImage(path string, tmpdir string) (diskimage string, err error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return absPath, err
+	}
+
+	err = validateDiskImagePath(absPath)
+	if errors.Is(err, ErrQCOWDetected) {
+		base := strings.TrimSuffix(strings.TrimSuffix(filepath.Base(absPath), ".qcow2"), ".qcow")
+		extractpath := filepath.Join(tmpdir, base+".raw")
+
+		cmd := exec.Command("qemu-img", "convert", "-f", "qcow2", "-O", "raw", absPath, "-C", extractpath)
+		if _, err := cmd.Output(); err != nil {
+			return absPath, err
+		}
+
+		return extractpath, nil
+	}
+
+	return absPath, err
+}
+
+// sparseBlockSize is the unit decompressToTemp checks for an all-zero run before punching a
+// hole instead of writing it. 1 MiB comfortably amortises the read/seek syscall overhead over
+// a multi-GiB image and still catches the large contiguous zero runs that dominate a sparse
+// raw disk (unused extents span tens of MiB or more); a zero run shorter than one block simply
+// gets written literally, which is the safe direction for a false negative to fail in.
+const sparseBlockSize = 1 << 20
+
+// decompressToTemp streams r into a new sparse file inside tmpdir, named after src with
+// suffix stripped, and returns that path. All-zero blocks are skipped via Seek rather than
+// written, so a mostly-unused multi-GiB raw image (e.g. a Talos artifact, ~11 GiB apparent but
+// only a few hundred MiB of real content) costs disk space proportional to its real content —
+// matching the existing qcow2-to-raw path, which already writes sparse via qemu-img convert.
+// It never writes into src's own directory, so a multi-GiB source is never duplicated beside
+// itself while the caller-provided tmpdir receives the copy.
+func decompressToTemp(src, tmpdir, suffix string, r io.Reader) (string, error) {
+	outPath := filepath.Join(tmpdir, strings.TrimSuffix(filepath.Base(src), suffix))
+
+	out, err := os.Create(outPath)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+
+	var size int64
+	buf := make([]byte, sparseBlockSize)
+	for {
+		n, readErr := io.ReadFull(r, buf)
+		if n > 0 {
+			block := buf[:n]
+			if isZeroBlock(block) {
+				if _, err := out.Seek(int64(n), io.SeekCurrent); err != nil {
+					return "", fmt.Errorf("decompress %s: seek hole: %w", src, err)
+				}
+			} else if _, err := out.Write(block); err != nil {
+				return "", fmt.Errorf("decompress %s: %w", src, err)
+			}
+			size += int64(n)
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
+				break
+			}
+			return "", fmt.Errorf("decompress %s: %w", src, readErr)
+		}
+	}
+
+	// A trailing all-zero block only advances the file position via Seek, which does not
+	// extend the file on its own; Truncate records that final hole at the right size.
+	if err := out.Truncate(size); err != nil {
+		return "", fmt.Errorf("decompress %s: truncate: %w", src, err)
+	}
+
+	return outPath, nil
+}
+
+// isZeroBlock reports whether every byte in b is zero.
+func isZeroBlock(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// decompressZstd streams a single-file .zst artifact (e.g. Talos raw.zst) into tmpdir using
+// klauspost/compress, already a transitive dependency via containerd, so no new module is
+// added. It is a pure-Go streaming decoder, unlike shelling out to a zstd binary that may not
+// exist on a customer node.
+func decompressZstd(src, tmpdir string) (string, error) {
+	f, err := os.Open(src)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		return "", fmt.Errorf("zstd reader for %s: %w", src, err)
+	}
+	defer zr.Close()
+
+	return decompressToTemp(src, tmpdir, ".zst", zr)
+}
+
+// decompressBzip2 streams a single-file .bz2 artifact (e.g. Flatcar img.bz2) into tmpdir
+// using the standard library's decompress-only reader; no bzip2 encoder exists in this
+// codebase, so there is nothing to conflate this with a compression path.
+func decompressBzip2(src, tmpdir string) (string, error) {
+	f, err := os.Open(src)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	return decompressToTemp(src, tmpdir, ".bz2", bzip2.NewReader(f))
+}
+
+// decompressGzip streams a single-file .gz artifact into tmpdir using the standard library.
+func decompressGzip(src, tmpdir string) (string, error) {
+	f, err := os.Open(src)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		return "", fmt.Errorf("gzip reader for %s: %w", src, err)
+	}
+	defer gr.Close()
+
+	return decompressToTemp(src, tmpdir, ".gz", gr)
+}
+
+// decompressXz shells out to the xz binary, piping its decompressed stdout through
+// decompressToTemp via an io.Pipe so a plain .xz image gets the same sparse-hole handling as
+// the other codecs rather than a dense copy. No pure-Go xz decoder is already a dependency of
+// this module, and the existing .tar.xz branch already requires the xz binary on the host
+// (tar's -J flag invokes it internally), so this adds no new host requirement — only makes the
+// existing one explicit for the plain-.xz case.
+func decompressXz(src, tmpdir string) (string, error) {
+	var stderr bytes.Buffer
+	cmd := exec.Command("xz", "-dc", src)
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("start xz for %s: %w", src, err)
+	}
+
+	// cmd.Stdout is not an *os.File, so exec.Cmd already runs its own copier goroutine from
+	// the child's real pipe into pw; Wait joins it. This goroutine closes pw with the
+	// process's exit error once Wait returns, so a Read past the end of the stream on pr
+	// surfaces that error instead of a bare EOF.
+	waitErrCh := make(chan error, 1)
+	go func() {
+		waitErr := cmd.Wait()
+		waitErrCh <- waitErr
+		pw.CloseWithError(waitErr)
+	}()
+
+	outPath, err := decompressToTemp(src, tmpdir, ".xz", pr)
+	if err != nil {
+		// decompressToTemp gave up before draining the pipe (e.g. a local write failure), so
+		// close the read end now — otherwise the copier goroutine above would stay blocked
+		// writing into it forever, wedging cmd.Wait() and leaking both goroutines.
+		pr.CloseWithError(err)
+	}
+	waitErr := <-waitErrCh
+
+	if waitErr != nil {
+		return "", fmt.Errorf("xz decompress %s: %w: %s", src, waitErr, strings.TrimSpace(stderr.String()))
+	}
+	if err != nil {
+		return "", fmt.Errorf("decompress %s: %w", src, err)
+	}
+
+	return outPath, nil
 }
 
 func extractDiskImagePath(imagedir string, output []byte) (diskimage string, err error) {

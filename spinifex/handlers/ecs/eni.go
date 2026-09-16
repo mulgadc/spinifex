@@ -127,18 +127,20 @@ func eniCmdSubject(instanceID string) string {
 	return fmt.Sprintf("ec2.cmd.%s", instanceID)
 }
 
-// reclaimTaskENI releases an awsvpc task's ENI on the single-writer teardown path
-// (graceful stop + reaper both reach it). Best effort: a failure is logged and the
-// ENI fields stay on the record for a later retry, never blocking the STOPPED
-// transition. No-op for non-awsvpc tasks or tasks with no ENI.
+// reclaimTaskENI releases an awsvpc task's ENI on the single-writer teardown
+// path. Success marks ENIReleased so a second call is a no-op; failure leaves
+// it unset, so the stopped-task sweep keeps retrying from it. ENIID itself is
+// never cleared: DescribeTasks still needs it for the stopped-task attachment.
 func (s *Service) reclaimTaskENI(ctx context.Context, accountID string, task *TaskRecord) {
-	if s.eni == nil || task == nil || task.NetworkMode != NetworkModeAwsvpc || task.ENIID == "" {
+	if s.eni == nil || task == nil || task.NetworkMode != NetworkModeAwsvpc || task.ENIID == "" || task.ENIReleased {
 		return
 	}
 	if err := s.eni.Release(ctx, accountID, task); err != nil {
 		slog.ErrorContext(ctx, "ECS: task ENI release failed",
 			"task", task.TaskID, "eni", task.ENIID, "err", err)
+		return
 	}
+	task.ENIReleased = true
 }
 
 // isENINotFound reports whether err is an idempotent already-gone signal — a

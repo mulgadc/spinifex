@@ -66,7 +66,34 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 		return errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
 
+	// AWS only accepts a pinned private IP for a single-instance launch: a
+	// batch would collide every instance on the same address.
+	if *input.MaxCount > 1 && hasPinnedPrivateIP(input) {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
 	return err
+}
+
+// hasPinnedPrivateIP reports whether input requests a specific private IP,
+// either directly or via the primary network interface spec.
+func hasPinnedPrivateIP(input *ec2.RunInstancesInput) bool {
+	if aws.StringValue(input.PrivateIpAddress) != "" {
+		return true
+	}
+	if len(input.NetworkInterfaces) == 0 || input.NetworkInterfaces[0] == nil {
+		return false
+	}
+	nic := input.NetworkInterfaces[0]
+	if aws.StringValue(nic.PrivateIpAddress) != "" {
+		return true
+	}
+	for _, spec := range nic.PrivateIpAddresses {
+		if spec != nil && aws.StringValue(spec.PrivateIpAddress) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // RunInstances validates input, resolves any IAM instance profile (normalising

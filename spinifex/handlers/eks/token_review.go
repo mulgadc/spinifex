@@ -57,8 +57,42 @@ func Authenticate(
 		Authenticated: true,
 		Username:      rec.KubernetesUsername,
 		UID:           uid,
-		Groups:        rec.KubernetesGroups,
+		Groups:        effectiveGroups(rec),
 	}
+}
+
+// effectiveGroups returns rec's static groups plus the Kubernetes group each
+// cluster-scoped associated policy projects, deduplicated in first-seen order.
+// A namespace-scoped or unrecognized association contributes nothing, so an
+// older or wider record degrades safely instead of widening scope or panicking.
+func effectiveGroups(rec *AccessEntryRecord) []string {
+	seen := make(map[string]struct{}, len(rec.KubernetesGroups))
+	groups := make([]string, 0, len(rec.KubernetesGroups))
+	add := func(g string) {
+		if g == "" {
+			return
+		}
+		if _, ok := seen[g]; ok {
+			return
+		}
+		seen[g] = struct{}{}
+		groups = append(groups, g)
+	}
+	for _, g := range rec.KubernetesGroups {
+		add(g)
+	}
+	for _, p := range rec.AssociatedPolicies {
+		if p.AccessScope.Type != accessScopeCluster {
+			continue
+		}
+		g, ok := accessPolicyGroups[p.PolicyARN]
+		if !ok {
+			slog.Debug("access policy projection: unrecognized policy ARN", "policy_arn", p.PolicyARN)
+			continue
+		}
+		add(g)
+	}
+	return groups
 }
 
 // ResolveTokenReview runs the TokenReview decision host-side, wiring the real

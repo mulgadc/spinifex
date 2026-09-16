@@ -660,7 +660,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		Description:     fmt.Sprintf("%s cloud image prepared for Spinifex", amiName),
 		Architecture:    image.Arch,
 		PlatformDetails: image.Platform,
-		CreationDate:    time.Now(),
+		CreationDate:    time.Now().UTC(),
 		RootDeviceType:  "ebs",
 		Virtualization:  "hvm",
 		ImageOwnerAlias: "system",

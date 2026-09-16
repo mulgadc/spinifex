@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"strconv"
 	"time"
 
 	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
+
+// defaultStopTimeout is applied when a container carries no explicit
+// stopTimeout, matching the EC2 launch-type default ECS itself uses.
+const defaultStopTimeout = 30 * time.Second
 
 // pollAssignments drains the instance's assignment inbox on a ticker until ctx is
 // cancelled. Each assign is dispatched to runTask exactly once; the taskIDs seen
@@ -61,11 +66,12 @@ func (a *Agent) pollAssignments(ctx context.Context, dispatched map[string]bool)
 	}
 }
 
-// stopTask reaps a task's containers on a control-plane stop directive: it lists
-// the runtime's containers, removes the ones labeled with this task (kill +
-// delete, releasing host ports/netns), then reports the task STOPPED with the
-// directive's reason. Idempotent — a task with no live containers still reports
-// STOPPED so the scheduler releases its capacity.
+// stopTask reaps a task's containers on a control-plane stop directive: it
+// lists the runtime's containers, gracefully stops (SIGTERM, wait up to the
+// container's stopTimeout, then force kill + delete) the ones labeled with
+// this task, then reports the task STOPPED with the directive's reason.
+// Idempotent — a task with no live containers still reports STOPPED so the
+// scheduler releases its capacity.
 func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) {
 	if a.runner == nil {
 		return
@@ -80,8 +86,8 @@ func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) {
 		if c.Labels[labelTaskID] != sd.TaskID {
 			continue
 		}
-		if rerr := a.runner.Remove(ctx, c.ID); rerr != nil {
-			slog.Warn("ecs-agent: stop remove failed", "task", sd.TaskID, "container", c.ID, "err", rerr)
+		if rerr := a.runner.Stop(ctx, c.ID, containerStopTimeout(c.Labels)); rerr != nil {
+			slog.Warn("ecs-agent: stop failed", "task", sd.TaskID, "container", c.ID, "err", rerr)
 		}
 		statuses = append(statuses, bus.ContainerStatus{
 			Name: c.Labels[labelContainerName], Status: bus.TaskStatusStopped, ContainerID: c.ID,
@@ -117,7 +123,12 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 
 	statuses := make([]bus.ContainerStatus, 0, len(as.Containers))
 	for _, c := range as.Containers {
-		if _, err := a.puller.Pull(ctx, ctrruntime.PullSpec{Ref: c.Image}, resolver); err != nil {
+		// startTimeout bounds pull-through-start as a unit: real ECS measures a
+		// container's time-to-RUNNING from the same starting point.
+		runCtx, cancel := containerStartCtx(ctx, c.StartTimeout)
+
+		if _, err := a.puller.Pull(runCtx, ctrruntime.PullSpec{Ref: c.Image}, resolver); err != nil {
+			cancel()
 			slog.Error("ecs-agent: pull failed", "task", as.TaskID, "image", c.Image, "err", err)
 			a.teardownTaskNetns(as)
 			a.reportTaskState(as, bus.TaskStatusStopped, "image pull failed: "+err.Error(), statuses)
@@ -126,16 +137,29 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 
 		cid := containerID(as.TaskID, c.Name)
 		gpuIDs := a.pinContainerGPUs(as.TaskID, c.Name, c.GPU)
-		spec := ctrruntime.RunSpec{
-			Image:     c.Image,
-			Command:   c.Command,
-			Env:       withCredEnv(c.Environment, credID),
-			Labels:    taskLabels(as, c.Name),
-			NetnsPath: netnsPath,
-			GPU:       c.GPU,
-			GPUIDs:    gpuIDs,
+		labels := taskLabels(as, c.Name)
+		if c.StopTimeout != nil {
+			labels[labelStopTimeout] = strconv.FormatInt(*c.StopTimeout, 10)
 		}
-		id, err := a.runner.Run(ctx, cid, spec)
+		spec := ctrruntime.RunSpec{
+			Image:                  c.Image,
+			Command:                c.Command,
+			Env:                    withCredEnv(c.Environment, credID),
+			Labels:                 labels,
+			NetnsPath:              netnsPath,
+			GPU:                    c.GPU,
+			GPUIDs:                 gpuIDs,
+			User:                   c.User,
+			ReadonlyRootFilesystem: c.ReadonlyRootFilesystem,
+			Privileged:             c.Privileged,
+			PseudoTerminal:         c.PseudoTerminal,
+			Interactive:            c.Interactive,
+			SystemControls:         toRuntimeSystemControls(c.SystemControls),
+			CapAdd:                 c.CapAdd,
+			CapDrop:                c.CapDrop,
+		}
+		id, err := a.runner.Run(runCtx, cid, spec)
+		cancel()
 		if err != nil {
 			slog.Error("ecs-agent: run failed", "task", as.TaskID, "container", c.Name, "err", err)
 			a.teardownTaskNetns(as)
@@ -240,6 +264,44 @@ func withCredEnv(env map[string]string, credID string) map[string]string {
 	return out
 }
 
+// containerStartCtx bounds pull+run by a container's startTimeout, if set. A
+// nil startTimeout (the common case) returns ctx unchanged with a no-op
+// cancel, matching today's unbounded behaviour.
+func containerStartCtx(ctx context.Context, startTimeout *int64) (context.Context, context.CancelFunc) {
+	if startTimeout == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, time.Duration(*startTimeout)*time.Second)
+}
+
+// containerStopTimeout reads the stopTimeout stamped on a container's labels
+// by runTask, falling back to defaultStopTimeout when absent or unparseable.
+func containerStopTimeout(labels map[string]string) time.Duration {
+	v, ok := labels[labelStopTimeout]
+	if !ok {
+		return defaultStopTimeout
+	}
+	secs, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return defaultStopTimeout
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// toRuntimeSystemControls maps the assign's sysctl pairs to the runtime
+// package's own type, keeping cmd/ecs-agent/runtime decoupled from the ecs
+// handlers' bus package.
+func toRuntimeSystemControls(in []bus.SystemControl) []ctrruntime.SystemControl {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ctrruntime.SystemControl, len(in))
+	for i, sc := range in {
+		out[i] = ctrruntime.SystemControl{Namespace: sc.Namespace, Value: sc.Value}
+	}
+	return out
+}
+
 // pinContainerGPUs reserves n device UUIDs for a container from the local
 // ledger, before the container is started so the runner can inject them as
 // CDI devices. A short ledger (fewer free devices than requested, e.g.
@@ -317,6 +379,9 @@ const (
 	labelCredID        = "mulga.ecs.credID"
 	labelTaskRoleARN   = "mulga.ecs.taskRoleArn"
 	labelENIMac        = "mulga.ecs.eniMac"
+	// labelStopTimeout carries a container's stopTimeout (seconds) so stopTask
+	// can read it back from List's labels; it has no assign to consult there.
+	labelStopTimeout = "mulga.ecs.stopTimeout"
 )
 
 // taskLabels are the mulga.ecs.* labels stamped on a container. The cred/role/MAC

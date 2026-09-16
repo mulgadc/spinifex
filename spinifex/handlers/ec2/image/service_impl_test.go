@@ -234,6 +234,39 @@ func TestDescribeImages_BootModeProjection(t *testing.T) {
 		`an AMI with no BootMode must omit the member, not be backfilled and not emit "": BootMode is an enum of [legacy-bios, uefi, uefi-preferred]`)
 }
 
+// TestDescribeImages_CreationDateRenderedAsUTC asserts that a CreationDate stored
+// in a non-UTC location still renders as the correct UTC instant. A stored record
+// carrying local wall-clock time with a literal "Z" appended would misreport an
+// event by the zone offset, which is exactly what sorts wrong under most_recent.
+func TestDescribeImages_CreationDateRenderedAsUTC(t *testing.T) {
+	svc, store := setupTestImageService(t)
+
+	// A fixed, non-Local zone keeps this deterministic on a UTC CI runner:
+	// ambient time.Local would just happen to already be UTC there.
+	offEast := time.FixedZone("test", 10*60*60)
+	local := time.Date(2026, 9, 16, 21, 42, 24, 895000000, offEast)
+
+	createTestAMIConfigFull(t, store, ebsmetadata.AMI{
+		ImageID:         "ami-utccheck001",
+		Name:            "utc-check",
+		Architecture:    "x86_64",
+		PlatformDetails: "Linux/UNIX",
+		Virtualization:  "hvm",
+		RootDeviceType:  "ebs",
+		VolumeSizeGiB:   8,
+		ImageOwnerAlias: testAccountID,
+		CreationDate:    local,
+	})
+
+	result, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
+		ImageIds: []*string{aws.String("ami-utccheck001")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, result.Images, 1)
+
+	assert.Equal(t, "2026-09-16T11:42:24.895Z", aws.StringValue(result.Images[0].CreationDate))
+}
+
 // TestDescribeImages_StateProjection asserts that AMIMetadata.State drives the
 // reported ec2.Image state. An AMI with no State at all (registered before the
 // field existed) is the legacy-compatibility case and MUST report "available",

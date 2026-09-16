@@ -193,12 +193,51 @@ func TestParseRunInstances(t *testing.T) {
 			},
 			want: errors.New(awserrors.ErrorMissingParameter),
 		},
+
+		{
+			name: "PinnedPrivateIPWithMultipleInstancesRejected",
+			input: &ec2.RunInstancesInput{
+				ImageId:          defaults.ImageId,
+				InstanceType:     defaults.InstanceType,
+				MinCount:         aws.Int64(1),
+				MaxCount:         aws.Int64(3),
+				KeyName:          defaults.KeyName,
+				SecurityGroupIds: defaults.SecurityGroupIds,
+				SubnetId:         defaults.SubnetId,
+				PrivateIpAddress: aws.String("172.31.0.50"),
+			},
+			want: errors.New(awserrors.ErrorInvalidParameterValue),
+		},
+
+		{
+			name: "PinnedPrivateIPViaNetworkInterfaceWithMultipleInstancesRejected",
+			input: &ec2.RunInstancesInput{
+				ImageId:          defaults.ImageId,
+				InstanceType:     defaults.InstanceType,
+				MinCount:         aws.Int64(2),
+				MaxCount:         aws.Int64(2),
+				KeyName:          defaults.KeyName,
+				SecurityGroupIds: defaults.SecurityGroupIds,
+				SubnetId:         defaults.SubnetId,
+				NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{
+					{PrivateIpAddress: aws.String("172.31.0.50")},
+				},
+			},
+			want: errors.New(awserrors.ErrorInvalidParameterValue),
+		},
 	}
 
 	t.Run("MissingKeyNameIsValid", func(t *testing.T) {
 		t.Parallel()
 		input := defaults
 		input.KeyName = nil
+		assert.NoError(t, ValidateRunInstancesInput(&input))
+	})
+
+	t.Run("PinnedPrivateIPWithSingleInstanceIsValid", func(t *testing.T) {
+		t.Parallel()
+		input := defaults
+		input.PrivateIpAddress = aws.String("172.31.0.50")
 		assert.NoError(t, ValidateRunInstancesInput(&input))
 	})
 

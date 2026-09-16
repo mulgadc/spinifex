@@ -23,6 +23,8 @@ KONN_AGENT_MANIFEST_DST=${KONN_AGENT_MANIFEST_DST:-/var/lib/rancher/k3s/server/m
 COREDNS_SRC=${COREDNS_SRC:-/usr/share/spinifex-eks/coredns/coredns-mulga.yaml}
 COREDNS_SKIP=${COREDNS_SKIP:-/var/lib/rancher/k3s/server/manifests/coredns.yaml.skip}
 COREDNS_DST=${COREDNS_DST:-/var/lib/rancher/k3s/server/manifests/coredns-mulga.yaml}
+ACCESS_POLICY_BINDINGS_SRC=${ACCESS_POLICY_BINDINGS_SRC:-/usr/share/spinifex-eks/rbac/eks-access-policy-bindings.yaml}
+ACCESS_POLICY_BINDINGS_DST=${ACCESS_POLICY_BINDINGS_DST:-/var/lib/rancher/k3s/server/manifests/eks-access-policy-bindings.yaml}
 TOKEN_WEBHOOK_KUBECONFIG=${TOKEN_WEBHOOK_KUBECONFIG:-/etc/spinifex-eks/token-webhook.kubeconfig}
 WAIT_SECS=${WAIT_SECS:-30}
 
@@ -89,6 +91,14 @@ if [ -f "${COREDNS_SRC}" ]; then
     mkdir -p "$(dirname "${COREDNS_DST}")"
     : > "${COREDNS_SKIP}"
     cp "${COREDNS_SRC}" "${COREDNS_DST}"
+fi
+
+# Static ClusterRoleBindings for the EKS access-policy groups (mulga:eks-admin/
+# edit/view). No templating, so a plain idempotent copy; guarded on the baked
+# manifest so an older image without it just leaves the associations unbound.
+if [ -f "${ACCESS_POLICY_BINDINGS_SRC}" ]; then
+    mkdir -p "$(dirname "${ACCESS_POLICY_BINDINGS_DST}")"
+    cp "${ACCESS_POLICY_BINDINGS_SRC}" "${ACCESS_POLICY_BINDINGS_DST}"
 fi
 
 # The apiserver is configured with --authentication-token-webhook-config-file

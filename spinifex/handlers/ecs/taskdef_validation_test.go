@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -207,4 +208,340 @@ func TestRunTask_AssignCarriesGPU(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, 1, rec.GPU)
+}
+
+// The enforced container-runtime fields read back exactly as submitted: the
+// read-back is the fix, not just acceptance at register time.
+func TestRegisterTaskDefinition_EchoesRuntimeFields(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			User:                   aws.String("1000:1000"),
+			ReadonlyRootFilesystem: aws.Bool(true),
+			Privileged:             aws.Bool(false),
+			PseudoTerminal:         aws.Bool(true),
+			Interactive:            aws.Bool(true),
+			StartTimeout:           aws.Int64(30),
+			StopTimeout:            aws.Int64(0),
+			SystemControls: []*ecs.SystemControl{
+				{Namespace: aws.String("net.core.somaxconn"), Value: aws.String("1024")},
+			},
+			LinuxParameters: &ecs.LinuxParameters{
+				Capabilities: &ecs.KernelCapabilities{
+					Add:  aws.StringSlice([]string{"SYS_PTRACE"}),
+					Drop: aws.StringSlice([]string{"NET_RAW"}),
+				},
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	d, err := svc.DescribeTaskDefinition(context.Background(), &ecs.DescribeTaskDefinitionInput{
+		TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, d.TaskDefinition.ContainerDefinitions, 1)
+	c := d.TaskDefinition.ContainerDefinitions[0]
+
+	assert.Equal(t, "1000:1000", aws.StringValue(c.User))
+	require.NotNil(t, c.ReadonlyRootFilesystem)
+	assert.True(t, aws.BoolValue(c.ReadonlyRootFilesystem))
+	require.NotNil(t, c.Privileged)
+	assert.False(t, aws.BoolValue(c.Privileged))
+	require.NotNil(t, c.PseudoTerminal)
+	assert.True(t, aws.BoolValue(c.PseudoTerminal))
+	require.NotNil(t, c.Interactive)
+	assert.True(t, aws.BoolValue(c.Interactive))
+	require.NotNil(t, c.StartTimeout)
+	assert.EqualValues(t, 30, aws.Int64Value(c.StartTimeout))
+	require.NotNil(t, c.StopTimeout)
+	assert.EqualValues(t, 0, aws.Int64Value(c.StopTimeout))
+	require.Len(t, c.SystemControls, 1)
+	assert.Equal(t, "net.core.somaxconn", aws.StringValue(c.SystemControls[0].Namespace))
+	assert.Equal(t, "1024", aws.StringValue(c.SystemControls[0].Value))
+	require.NotNil(t, c.LinuxParameters)
+	require.NotNil(t, c.LinuxParameters.Capabilities)
+	assert.Equal(t, []string{"SYS_PTRACE"}, aws.StringValueSlice(c.LinuxParameters.Capabilities.Add))
+	assert.Equal(t, []string{"NET_RAW"}, aws.StringValueSlice(c.LinuxParameters.Capabilities.Drop))
+}
+
+// A task definition registered without any of the new fields reads back
+// byte-identical to before, so an existing revision does not churn.
+func TestRegisterTaskDefinition_RuntimeFieldsOmittedWhenUnset(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	d, err := svc.DescribeTaskDefinition(context.Background(), &ecs.DescribeTaskDefinitionInput{
+		TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, d.TaskDefinition.ContainerDefinitions, 1)
+	c := d.TaskDefinition.ContainerDefinitions[0]
+
+	assert.Empty(t, aws.StringValue(c.User))
+	assert.Nil(t, c.ReadonlyRootFilesystem)
+	assert.Nil(t, c.Privileged)
+	assert.Nil(t, c.PseudoTerminal)
+	assert.Nil(t, c.Interactive)
+	assert.Nil(t, c.StartTimeout)
+	assert.Nil(t, c.StopTimeout)
+	assert.Empty(t, c.SystemControls)
+	assert.Nil(t, c.LinuxParameters)
+}
+
+// TestRegisterTaskDefinition_AcceptsEmptyRuntimeFields is the case that keeps
+// the module this fix exists to unblock working: an over-eager validator that
+// refuses mountPoints=[] would break the terraform-aws-modules/ecs 5.12.1
+// stack, which sends exactly these empty/false values for fields it does not
+// otherwise use. Each requests nothing, so each must be accepted.
+// An empty collection the caller supplied must read back as an empty
+// collection, not as an absent field. Terraform treats absent and empty as
+// different, so omitting one forces a task-definition replacement on a plan
+// taken straight after a clean apply.
+func TestRegisterTaskDefinition_EchoesEmptyCollections(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Environment:     []*ecs.KeyValuePair{},
+			MountPoints:     []*ecs.MountPoint{},
+			VolumesFrom:     []*ecs.VolumeFrom{},
+			SystemControls:  []*ecs.SystemControl{},
+			LinuxParameters: &ecs.LinuxParameters{InitProcessEnabled: aws.Bool(false)},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	d, err := svc.DescribeTaskDefinition(context.Background(), &ecs.DescribeTaskDefinitionInput{
+		TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, d.TaskDefinition.ContainerDefinitions, 1)
+	c := d.TaskDefinition.ContainerDefinitions[0]
+
+	require.NotNil(t, c.Environment)
+	assert.Empty(t, c.Environment)
+	require.NotNil(t, c.MountPoints)
+	assert.Empty(t, c.MountPoints)
+	require.NotNil(t, c.VolumesFrom)
+	assert.Empty(t, c.VolumesFrom)
+	require.NotNil(t, c.SystemControls)
+	assert.Empty(t, c.SystemControls)
+	require.NotNil(t, c.LinuxParameters)
+	require.NotNil(t, c.LinuxParameters.InitProcessEnabled)
+	assert.False(t, aws.BoolValue(c.LinuxParameters.InitProcessEnabled))
+}
+
+// A container that supplied none of these fields must still read back with
+// them absent, so an existing revision registered before this change does not
+// gain fields and churn.
+func TestRegisterTaskDefinition_OmitsUnsuppliedCollections(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	d, err := svc.DescribeTaskDefinition(context.Background(), &ecs.DescribeTaskDefinitionInput{
+		TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	require.NoError(t, err)
+	c := d.TaskDefinition.ContainerDefinitions[0]
+
+	assert.Nil(t, c.Environment)
+	assert.Nil(t, c.MountPoints)
+	assert.Nil(t, c.VolumesFrom)
+	assert.Nil(t, c.SystemControls)
+	assert.Nil(t, c.LinuxParameters)
+}
+
+func TestRegisterTaskDefinition_AcceptsEmptyRuntimeFields(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			MountPoints:    []*ecs.MountPoint{},
+			VolumesFrom:    []*ecs.VolumeFrom{},
+			SystemControls: []*ecs.SystemControl{},
+			LinuxParameters: &ecs.LinuxParameters{
+				InitProcessEnabled: aws.Bool(false),
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
+// TestRegisterTaskDefinition_RejectsMountPoints verifies that a non-empty
+// mountPoints is refused at registration rather than silently dropped: there
+// is no task volume model to honor it against.
+func TestRegisterTaskDefinition_RejectsMountPoints(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			MountPoints: []*ecs.MountPoint{{
+				SourceVolume: aws.String("data"), ContainerPath: aws.String("/data"),
+			}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorECSInvalidParameter, code)
+	assert.Contains(t, message, "app")
+	assert.Contains(t, message, "mountPoints")
+}
+
+// TestRegisterTaskDefinition_RejectsVolumesFrom mirrors RejectsMountPoints for
+// volumesFrom: no task volume model, no way to honor it.
+func TestRegisterTaskDefinition_RejectsVolumesFrom(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			VolumesFrom: []*ecs.VolumeFrom{{SourceContainer: aws.String("other")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorECSInvalidParameter, code)
+	assert.Contains(t, message, "volumesFrom")
+}
+
+// TestRegisterTaskDefinition_RejectsLinuxParametersDevices verifies device
+// injection is refused rather than silently dropped.
+func TestRegisterTaskDefinition_RejectsLinuxParametersDevices(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			LinuxParameters: &ecs.LinuxParameters{
+				Devices: []*ecs.Device{{HostPath: aws.String("/dev/fuse")}},
+			},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorECSInvalidParameter, code)
+	assert.Contains(t, message, "linuxParameters.devices")
+}
+
+// TestRegisterTaskDefinition_RejectsInitProcessEnabled verifies
+// initProcessEnabled=true is refused: there is no init shim to honor it.
+func TestRegisterTaskDefinition_RejectsInitProcessEnabled(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			LinuxParameters: &ecs.LinuxParameters{InitProcessEnabled: aws.Bool(true)},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorECSInvalidParameter, code)
+	assert.Contains(t, message, "initProcessEnabled")
+}
+
+// TestRegisterTaskDefinition_RejectsSharedMemoryAndTmpfs verifies
+// sharedMemorySize and tmpfs are refused: both need mounts this agent does
+// not model.
+func TestRegisterTaskDefinition_RejectsSharedMemoryAndTmpfs(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("shm"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			LinuxParameters: &ecs.LinuxParameters{SharedMemorySize: aws.Int64(64)},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	_, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Contains(t, message, "sharedMemorySize")
+
+	_, err = svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("tmpfs"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			LinuxParameters: &ecs.LinuxParameters{
+				Tmpfs: []*ecs.Tmpfs{{ContainerPath: aws.String("/tmp"), Size: aws.Int64(64)}},
+			},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	_, message, ok = awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Contains(t, message, "tmpfs")
+}
+
+// TestRunTask_AssignCarriesRuntimeFields verifies the enforced runtime fields
+// reach bus.AssignContainer, the daemon-to-agent wire contract — the third of
+// the four drop points this fix closes (stored, sent, applied, returned).
+func TestRunTask_AssignCarriesRuntimeFields(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			User:                   aws.String("1000"),
+			ReadonlyRootFilesystem: aws.Bool(true),
+			Privileged:             aws.Bool(true),
+			StartTimeout:           aws.Int64(15),
+			StopTimeout:            aws.Int64(5),
+			SystemControls: []*ecs.SystemControl{
+				{Namespace: aws.String("net.core.somaxconn"), Value: aws.String("1024")},
+			},
+			LinuxParameters: &ecs.LinuxParameters{
+				Capabilities: &ecs.KernelCapabilities{Add: aws.StringSlice([]string{"SYS_PTRACE"})},
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+
+	_, err = svc.RunTask(context.Background(), &ecs.RunTaskInput{
+		Cluster: aws.String("web"), TaskDefinition: aws.String("app"), Count: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	poll, err := svc.PollAssignments(context.Background(), &PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, poll.Assignments, 1)
+	require.Len(t, poll.Assignments[0].Containers, 1)
+	ac := poll.Assignments[0].Containers[0]
+
+	assert.Equal(t, "1000", ac.User)
+	require.NotNil(t, ac.ReadonlyRootFilesystem)
+	assert.True(t, *ac.ReadonlyRootFilesystem)
+	require.NotNil(t, ac.Privileged)
+	assert.True(t, *ac.Privileged)
+	require.NotNil(t, ac.StartTimeout)
+	assert.EqualValues(t, 15, *ac.StartTimeout)
+	require.NotNil(t, ac.StopTimeout)
+	assert.EqualValues(t, 5, *ac.StopTimeout)
+	require.Len(t, ac.SystemControls, 1)
+	assert.Equal(t, "net.core.somaxconn", ac.SystemControls[0].Namespace)
+	assert.Equal(t, []string{"SYS_PTRACE"}, ac.CapAdd)
 }

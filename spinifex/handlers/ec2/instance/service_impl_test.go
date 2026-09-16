@@ -3087,6 +3087,7 @@ type fakeENICreator struct {
 	getENIErr       error
 	createOut       *ec2.CreateNetworkInterfaceOutput
 	createOuts      []*ec2.CreateNetworkInterfaceOutput // per-call outputs; overrides createOut when set
+	createInputs    []*ec2.CreateNetworkInterfaceInput  // every input CreateNetworkInterface received, in call order
 	createCalls     int
 	createErr       error
 	createErrOnCall int // 1-based call index to fail; 0 fails every call when createErr is set
@@ -3130,8 +3131,9 @@ func (f *fakeENICreator) GetENI(_ context.Context, _, eniID string) (*ENIInfo, e
 	return info, nil
 }
 
-func (f *fakeENICreator) CreateNetworkInterface(_ context.Context, _ *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
+func (f *fakeENICreator) CreateNetworkInterface(_ context.Context, input *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
 	f.createCalls++
+	f.createInputs = append(f.createInputs, input)
 	if f.createErr != nil && (f.createErrOnCall == 0 || f.createErrOnCall == f.createCalls) {
 		return nil, f.createErr
 	}
@@ -3236,6 +3238,95 @@ func TestPrepareRunInstances_DefaultSubnetResolved(t *testing.T) {
 	require.Len(t, instances, 1)
 	assert.Equal(t, "eni-1", instances[0].ENIId)
 	assert.Equal(t, 1, eni.attachCalls)
+}
+
+// TestPrepareRunInstances_ForwardsPrivateIpAddress verifies a pinned
+// RunInstancesInput.PrivateIpAddress reaches CreateNetworkInterfaceInput,
+// where the IPAM claim path (eni.go) actually enforces it.
+func TestPrepareRunInstances_ForwardsPrivateIpAddress(t *testing.T) {
+	eni := &fakeENICreator{
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-1"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+				PrivateIpAddress:   aws.String("10.0.0.50"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType:     aws.String("t3.micro"),
+		ImageId:          aws.String("ami-1"),
+		SubnetId:         aws.String("subnet-1"),
+		MinCount:         aws.Int64(1),
+		MaxCount:         aws.Int64(1),
+		PrivateIpAddress: aws.String("10.0.0.50"),
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	require.Len(t, eni.createInputs, 1)
+	require.NotNil(t, eni.createInputs[0].PrivateIpAddress)
+	assert.Equal(t, "10.0.0.50", *eni.createInputs[0].PrivateIpAddress)
+}
+
+// TestPrepareRunInstances_ForwardsPrivateIpAddressFromNetworkInterface
+// verifies the NetworkInterfaces[0].PrivateIpAddresses primary entry is
+// lifted to the top level and forwarded the same way as the direct field.
+func TestPrepareRunInstances_ForwardsPrivateIpAddressFromNetworkInterface(t *testing.T) {
+	eni := &fakeENICreator{
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-1"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+				PrivateIpAddress:   aws.String("10.0.0.60"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{
+			{
+				PrivateIpAddresses: []*ec2.PrivateIpAddressSpecification{
+					{Primary: aws.Bool(true), PrivateIpAddress: aws.String("10.0.0.60")},
+				},
+			},
+		},
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	require.Len(t, eni.createInputs, 1)
+	require.NotNil(t, eni.createInputs[0].PrivateIpAddress)
+	assert.Equal(t, "10.0.0.60", *eni.createInputs[0].PrivateIpAddress)
+}
+
+// TestPrepareRunInstances_PinnedPrivateIPFailurePropagatesCode verifies a
+// rejected pinned address (out of range / already in use) surfaces its AWS
+// error code rather than a generic failure.
+func TestPrepareRunInstances_PinnedPrivateIPFailurePropagatesCode(t *testing.T) {
+	cause := errors.New(awserrors.ErrorInvalidIPAddressInUse)
+	eni := &fakeENICreator{createErr: cause}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType:     aws.String("t3.micro"),
+		ImageId:          aws.String("ami-1"),
+		SubnetId:         aws.String("subnet-1"),
+		MinCount:         aws.Int64(1),
+		MaxCount:         aws.Int64(1),
+		PrivateIpAddress: aws.String("10.0.0.50"),
+	}, "acc", "")
+
+	require.EqualError(t, err, awserrors.ErrorInvalidIPAddressInUse)
+	require.Len(t, prov.deallocated, 1)
 }
 
 func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {

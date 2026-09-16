@@ -35,7 +35,7 @@ func (sc *Scheduler) sweepStoppedTasks(ctx context.Context) (time.Duration, erro
 			slog.Error("ECS sweep: open bucket failed", "bucket", bucket.name, "err", err)
 			continue
 		}
-		pruned, due, serr := sc.svc.sweepStoppedBucket(ctx, kv, now, stoppedTaskRetention)
+		pruned, due, serr := sc.svc.sweepStoppedBucket(ctx, kv, bucket.accountID, now, stoppedTaskRetention)
 		if serr != nil {
 			slog.Error("ECS sweep: bucket failed", "bucket", bucket.name, "err", serr)
 			continue
@@ -48,16 +48,16 @@ func (sc *Scheduler) sweepStoppedTasks(ctx context.Context) (time.Duration, erro
 	return next, nil
 }
 
-// sweepStoppedBucket deletes task records that have been STOPPED longer than
-// retention. A task missing its StoppedAt timestamp is never pruned (defensive:
-// it would otherwise look infinitely old). Returns the number deleted and when
-// the soonest record it kept falls due.
-func (s *Service) sweepStoppedBucket(ctx context.Context, kv jetstream.KeyValue, now time.Time, retention time.Duration) (int, time.Duration, error) {
+// sweepStoppedBucket deletes STOPPED task records past retention and retries
+// the ENI release for any that still owe one. A missing StoppedAt or an owed
+// (unreleased) ENI both block deletion; the latter until the release succeeds.
+func (s *Service) sweepStoppedBucket(ctx context.Context, kv jetstream.KeyValue, accountID string, now time.Time, retention time.Duration) (int, time.Duration, error) {
 	keys, err := keysWithPrefix(ctx, kv, "clusters/")
 	if err != nil {
 		return 0, 0, err
 	}
 	pruned := 0
+	retried := 0
 	var next time.Duration
 	for _, k := range keys {
 		if !strings.Contains(k, "/tasks/") {
@@ -71,6 +71,26 @@ func (s *Service) sweepStoppedBucket(ctx context.Context, kv jetstream.KeyValue,
 		if task.LastStatus != TaskStatusStopped || task.StoppedAt.IsZero() {
 			continue
 		}
+		if task.ENIID != "" && !task.ENIReleased {
+			due := !task.ENIReleaseNextTry.After(now)
+			switch {
+			case due && retried < eniReleaseRetriesPerPass:
+				// Attempt the retry now; a failure recomputes ENIReleaseNextTry
+				// itself, so only a leftover success needs no further deadline.
+				retried++
+				s.retryTaskENIRelease(ctx, kv, k, accountID, &task, now)
+				if !task.ENIReleased && task.ENIReleaseNextTry.After(now) {
+					next = reconciler.Earliest(next, task.ENIReleaseNextTry.Sub(now))
+				}
+			case due:
+				// Due, but this pass's retry budget is spent: come back soon
+				// rather than falling through to whatever else sets next.
+				next = reconciler.Earliest(next, sweepInterval)
+			default:
+				next = reconciler.Earliest(next, task.ENIReleaseNextTry.Sub(now))
+			}
+			continue
+		}
 		if now.Sub(task.StoppedAt) <= retention {
 			next = reconciler.Earliest(next, task.StoppedAt.Add(retention).Sub(now))
 			continue
@@ -82,4 +102,29 @@ func (s *Service) sweepStoppedBucket(ctx context.Context, kv jetstream.KeyValue,
 		pruned++
 	}
 	return pruned, next, nil
+}
+
+// retryTaskENIRelease makes one more attempt at a STOPPED task's owed ENI
+// release, then persists the outcome: success clears the identity and retry
+// state, failure bumps the attempt count and backs off the next try.
+func (s *Service) retryTaskENIRelease(ctx context.Context, kv jetstream.KeyValue, key, accountID string, task *TaskRecord, now time.Time) {
+	s.reclaimTaskENI(ctx, accountID, task)
+	if task.ENIReleased {
+		task.ENIReleaseAttempts = 0
+		task.ENIReleaseNextTry = time.Time{}
+	} else {
+		task.ENIReleaseAttempts++
+		task.ENIReleaseNextTry = now.Add(eniReleaseBackoff(task.ENIReleaseAttempts))
+	}
+	if perr := putJSON(ctx, kv, key, task); perr != nil {
+		slog.Warn("ECS sweep: persist ENI retry state failed", "key", key, "err", perr)
+	}
+}
+
+// eniReleaseBackoff is the delay before the attempt after the attempts-th
+// failure, doubling from eniReleaseBackoffBase and capped at
+// eniReleaseBackoffMax.
+func eniReleaseBackoff(attempts int) time.Duration {
+	shift := min(max(attempts-1, 0), 10)
+	return min(eniReleaseBackoffBase<<shift, eniReleaseBackoffMax)
 }

@@ -70,6 +70,157 @@ func TestRunTask_PullRunReportsRunning(t *testing.T) {
 	}
 }
 
+// Each enforced field maps onto RunSpec exactly, asserted through the fake
+// runtime — the mapping this change exists to wire, without a real containerd.
+func TestRunTask_RuntimeFieldsCarriedToRunSpec(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newRunAgent(cp, rt)
+	as := testAssign()
+	ro := true
+	priv := false
+	tty := true
+	interactive := true
+	as.Containers[0].User = "1000:1000"
+	as.Containers[0].ReadonlyRootFilesystem = &ro
+	as.Containers[0].Privileged = &priv
+	as.Containers[0].PseudoTerminal = &tty
+	as.Containers[0].Interactive = &interactive
+	as.Containers[0].SystemControls = []bus.SystemControl{{Namespace: "net.core.somaxconn", Value: "1024"}}
+	as.Containers[0].CapAdd = []string{"SYS_PTRACE"}
+	as.Containers[0].CapDrop = []string{"NET_RAW"}
+	a.runTask(context.Background(), as)
+
+	if len(rt.Runs) != 1 {
+		t.Fatalf("expected one run, got %+v", rt.Runs)
+	}
+	got := rt.Runs[0]
+	if got.User != "1000:1000" {
+		t.Errorf("User = %q, want 1000:1000", got.User)
+	}
+	if got.ReadonlyRootFilesystem == nil || !*got.ReadonlyRootFilesystem {
+		t.Errorf("ReadonlyRootFilesystem = %v, want true", got.ReadonlyRootFilesystem)
+	}
+	if got.Privileged == nil || *got.Privileged {
+		t.Errorf("Privileged = %v, want false (present, not applied)", got.Privileged)
+	}
+	if got.PseudoTerminal == nil || !*got.PseudoTerminal {
+		t.Errorf("PseudoTerminal = %v, want true", got.PseudoTerminal)
+	}
+	if got.Interactive == nil || !*got.Interactive {
+		t.Errorf("Interactive = %v, want true", got.Interactive)
+	}
+	if len(got.SystemControls) != 1 || got.SystemControls[0].Namespace != "net.core.somaxconn" {
+		t.Errorf("SystemControls = %+v, want one net.core.somaxconn entry", got.SystemControls)
+	}
+	if len(got.CapAdd) != 1 || got.CapAdd[0] != "SYS_PTRACE" {
+		t.Errorf("CapAdd = %+v, want [SYS_PTRACE]", got.CapAdd)
+	}
+	if len(got.CapDrop) != 1 || got.CapDrop[0] != "NET_RAW" {
+		t.Errorf("CapDrop = %+v, want [NET_RAW]", got.CapDrop)
+	}
+}
+
+// An assign carrying none of the new fields leaves RunSpec's pointer fields
+// nil rather than defaulting to a false indistinguishable from "explicitly
+// not requested".
+func TestRunTask_NilRuntimeFieldsLeaveRunSpecUnset(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newRunAgent(cp, rt)
+	a.runTask(context.Background(), testAssign())
+
+	if len(rt.Runs) != 1 {
+		t.Fatalf("expected one run, got %+v", rt.Runs)
+	}
+	got := rt.Runs[0]
+	if got.ReadonlyRootFilesystem != nil || got.Privileged != nil || got.PseudoTerminal != nil || got.Interactive != nil {
+		t.Errorf("want all runtime-field pointers nil, got %+v", got)
+	}
+	if len(got.SystemControls) != 0 || len(got.CapAdd) != 0 || len(got.CapDrop) != 0 {
+		t.Errorf("want no sysctls/capabilities, got %+v", got)
+	}
+}
+
+// TestRunTask_StampsStopTimeoutLabel verifies runTask stamps a container's
+// stopTimeout as a label — the only way stopTask (which only has List's
+// labels, not the original assign) can recover it later.
+func TestRunTask_StampsStopTimeoutLabel(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newRunAgent(cp, rt)
+	as := testAssign()
+	stop := int64(45)
+	as.Containers[0].StopTimeout = &stop
+	a.runTask(context.Background(), as)
+
+	if len(rt.Runs) != 1 {
+		t.Fatalf("expected one run, got %+v", rt.Runs)
+	}
+	if got := rt.Runs[0].Labels[labelStopTimeout]; got != "45" {
+		t.Errorf("stopTimeout label = %q, want 45", got)
+	}
+}
+
+// TestRunTask_NoStopTimeoutLabelWhenUnset verifies a container with no
+// stopTimeout carries no label, so stopTask falls back to the default rather
+// than reading a stray "0".
+func TestRunTask_NoStopTimeoutLabelWhenUnset(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
+	a := newRunAgent(cp, rt)
+	a.runTask(context.Background(), testAssign())
+
+	if len(rt.Runs) != 1 {
+		t.Fatalf("expected one run, got %+v", rt.Runs)
+	}
+	if _, ok := rt.Runs[0].Labels[labelStopTimeout]; ok {
+		t.Errorf("want no stopTimeout label, got %+v", rt.Runs[0].Labels)
+	}
+}
+
+// TestStopTask_UsesContainerStopTimeout verifies that stopTask reads a
+// container's stopTimeout label and calls the runner's graceful Stop (SIGTERM
+// + bounded wait) with it, instead of the hard kill+delete used before this
+// fix.
+func TestStopTask_UsesContainerStopTimeout(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{Containers: []ctrruntime.Container{{
+		ID: "t-001-web",
+		Labels: map[string]string{
+			labelTaskID: "t-001", labelContainerName: "web", labelStopTimeout: "45",
+		},
+	}}}
+	a := newRunAgent(cp, rt)
+
+	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "bye"})
+
+	if len(rt.Stopped) != 1 || rt.Stopped[0] != "t-001-web" {
+		t.Fatalf("want t-001-web stopped, got %+v", rt.Stopped)
+	}
+	if len(rt.StopTimeouts) != 1 || rt.StopTimeouts[0] != 45*time.Second {
+		t.Fatalf("want stopTimeout 45s, got %+v", rt.StopTimeouts)
+	}
+}
+
+// TestStopTask_DefaultStopTimeoutWhenUnset verifies a container with no
+// stopTimeout label gets the EC2 launch-type default rather than an unbounded
+// or zero grace period.
+func TestStopTask_DefaultStopTimeoutWhenUnset(t *testing.T) {
+	cp := &fakeCP{}
+	rt := &ctrruntime.FakePuller{Containers: []ctrruntime.Container{{
+		ID:     "t-001-web",
+		Labels: map[string]string{labelTaskID: "t-001", labelContainerName: "web"},
+	}}}
+	a := newRunAgent(cp, rt)
+
+	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "bye"})
+
+	if len(rt.StopTimeouts) != 1 || rt.StopTimeouts[0] != defaultStopTimeout {
+		t.Fatalf("want default stopTimeout %v, got %+v", defaultStopTimeout, rt.StopTimeouts)
+	}
+}
+
 // TestRunTask_GPUCarriedToRunSpec verifies that the AssignContainer's GPU count
 // reaches the runtime RunSpec unchanged; a
 // container with no GPU request keeps RunSpec.GPU at zero (regression).
@@ -342,8 +493,8 @@ func TestStopTask_ReapsLabeledContainersAndReportsStopped(t *testing.T) {
 
 	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "bye"})
 
-	if len(rt.Removed) != 1 || rt.Removed[0] != "t-001-web" {
-		t.Fatalf("want only t-001-web removed, got %+v", rt.Removed)
+	if len(rt.Stopped) != 1 || rt.Stopped[0] != "t-001-web" {
+		t.Fatalf("want only t-001-web stopped, got %+v", rt.Stopped)
 	}
 	st := cp.taskStates()
 	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {
@@ -459,8 +610,8 @@ func TestStopTask_EmptyReasonReapsWithDefault(t *testing.T) {
 	a := newRunAgent(cp, rt)
 	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001"})
 
-	if len(rt.Removed) != 1 || rt.Removed[0] != "t-001-web" {
-		t.Fatalf("want container t-001-web reaped, got %+v", rt.Removed)
+	if len(rt.Stopped) != 1 || rt.Stopped[0] != "t-001-web" {
+		t.Fatalf("want container t-001-web reaped, got %+v", rt.Stopped)
 	}
 	st := cp.taskStates()
 	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {

@@ -644,15 +644,28 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		}
 		applyPlatformTokenDefault(ec2Instance, requestedTokens, ec2Instance.Platform)
 
-		// Terraform may pass subnet/SG via NetworkInterfaces[0]; lift to top-level.
-		if (input.SubnetId == nil || *input.SubnetId == "") &&
-			len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil {
+		// Terraform may pass subnet/SG/private IP via NetworkInterfaces[0]; lift to
+		// top-level, mirroring AWS's flattening of the primary interface spec.
+		if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil {
 			nic := input.NetworkInterfaces[0]
-			if nic.SubnetId != nil && *nic.SubnetId != "" {
+			if (input.SubnetId == nil || *input.SubnetId == "") && nic.SubnetId != nil && *nic.SubnetId != "" {
 				input.SubnetId = nic.SubnetId
 			}
 			if len(input.SecurityGroupIds) == 0 && len(nic.Groups) > 0 {
 				input.SecurityGroupIds = nic.Groups
+			}
+			if input.PrivateIpAddress == nil || *input.PrivateIpAddress == "" {
+				if nic.PrivateIpAddress != nil && *nic.PrivateIpAddress != "" {
+					input.PrivateIpAddress = nic.PrivateIpAddress
+				} else {
+					for _, spec := range nic.PrivateIpAddresses {
+						if spec != nil && aws.BoolValue(spec.Primary) &&
+							spec.PrivateIpAddress != nil && *spec.PrivateIpAddress != "" {
+							input.PrivateIpAddress = spec.PrivateIpAddress
+							break
+						}
+					}
+				}
 			}
 		}
 
@@ -701,9 +714,10 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 
 		if input.SubnetId != nil && *input.SubnetId != "" && s.eniCreator != nil {
 			eniOut, eniErr := s.eniCreator.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
-				SubnetId:    input.SubnetId,
-				Description: aws.String(handlers_ec2_vpc.AutoENIDescriptionPrefix + instance.ID),
-				Groups:      input.SecurityGroupIds,
+				SubnetId:         input.SubnetId,
+				Description:      aws.String(handlers_ec2_vpc.AutoENIDescriptionPrefix + instance.ID),
+				Groups:           input.SecurityGroupIds,
+				PrivateIpAddress: input.PrivateIpAddress,
 			}, accountID)
 			if eniErr != nil {
 				slog.ErrorContext(ctx, "PrepareRunInstances: auto-create ENI failed", "instanceId", instance.ID, "subnetId", *input.SubnetId, "err", eniErr)

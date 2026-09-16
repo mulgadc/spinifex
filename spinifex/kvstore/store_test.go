@@ -316,14 +316,15 @@ func TestStore_CompareAndSetRejectsAStaleRevision(t *testing.T) {
 	// Another writer commits first, moving the revision on.
 	seedRaw(t, store, "acct-a/one", record{Name: "one", Count: 2})
 
-	err := store.CompareAndSet(t.Context(), "acct-a/one", &record{Name: "one", Count: 99}, stale)
+	_, err := store.CompareAndSet(t.Context(), "acct-a/one", &record{Name: "one", Count: 99}, stale)
 	require.ErrorIs(t, err, kvstore.ErrConflict)
 
 	got, fresh, err := store.Get(t.Context(), "acct-a/one")
 	require.NoError(t, err)
 	assert.Equal(t, 2, got.Count, "a rejected write must leave the winner's value in place")
 
-	require.NoError(t, store.CompareAndSet(t.Context(), "acct-a/one", &record{Name: "one", Count: 3}, fresh))
+	_, err = store.CompareAndSet(t.Context(), "acct-a/one", &record{Name: "one", Count: 3}, fresh)
+	require.NoError(t, err)
 	got, _, err = store.Get(t.Context(), "acct-a/one")
 	require.NoError(t, err)
 	assert.Equal(t, 3, got.Count, "the same call commits at the current revision")
@@ -344,11 +345,11 @@ func TestStore_CreateReturnsTheClaimRevision(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, read, claimed, "the claim revision is the record's current revision")
 
-	require.NoError(t, store.CompareAndSet(t.Context(), "singleton", &record{Name: "available"}, claimed),
-		"the winner promotes its own claim without re-reading")
+	_, err = store.CompareAndSet(t.Context(), "singleton", &record{Name: "available"}, claimed)
+	require.NoError(t, err, "the winner promotes its own claim without re-reading")
 
 	// The spent revision must not commit a second time.
-	err = store.CompareAndSet(t.Context(), "singleton", &record{Name: "impostor"}, claimed)
+	_, err = store.CompareAndSet(t.Context(), "singleton", &record{Name: "impostor"}, claimed)
 	require.ErrorIs(t, err, kvstore.ErrConflict)
 
 	got, _, err := store.Get(t.Context(), "singleton")

@@ -676,7 +676,7 @@ func (m *JetStreamManager) ClaimStoppedInstance(instanceID string) (*vm.VM, erro
 
 	claimed := *record
 	claimed.Spec.DesiredState = vm.DesiredRunning
-	if err := m.records.CompareAndSet(context.Background(), key, &claimed, rev); err != nil {
+	if _, err := m.records.CompareAndSet(context.Background(), key, &claimed, rev); err != nil {
 		if errors.Is(err, kvstore.ErrConflict) {
 			return nil, vm.ErrStoppedInstanceClaimed
 		}

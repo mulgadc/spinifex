@@ -128,7 +128,7 @@ func (s *ProvisionedStore) getRevision(ctx context.Context, key string) (Provisi
 // race is reported as a retryable ConflictException rather than silently
 // clobbering the winner's write.
 func (s *ProvisionedStore) update(ctx context.Context, key string, rec ProvisionedModelRecord, rev uint64) error {
-	err := s.store.CompareAndSet(ctx, key, &rec, rev)
+	_, err := s.store.CompareAndSet(ctx, key, &rec, rev)
 	if errors.Is(err, kvstore.ErrConflict) {
 		return awserrors.Errorf(awserrors.ErrorConflictException,
 			"bedrock: provisioned throughput %s was modified concurrently; retry the request", rec.ARN)

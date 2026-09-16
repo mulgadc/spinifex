@@ -367,7 +367,7 @@ func (a *Appliance) promote(ctx context.Context, rec ApplianceRecord, rev uint64
 	rec.Endpoint = endpoint
 	rec.Port = port
 	rec.UpdatedAt = time.Now().UTC()
-	if err := a.store.CompareAndSet(ctx, appliancePostgresKey, &rec, rev); err != nil {
+	if _, err := a.store.CompareAndSet(ctx, appliancePostgresKey, &rec, rev); err != nil {
 		if current, _, getErr := a.getRecord(ctx); getErr == nil && current != nil && current.State == ApplianceStateAvailable {
 			return connInfo(*current), nil
 		}

@@ -148,7 +148,7 @@ func (s *GuardrailStore) put(ctx context.Context, rec GuardrailRecord) error {
 // concurrent mutations of the same guardrail never silently clobber one
 // another. A lost race is reported as a retryable ConflictException.
 func (s *GuardrailStore) update(ctx context.Context, key string, rec GuardrailRecord, rev uint64) error {
-	err := s.store.CompareAndSet(ctx, key, &rec, rev)
+	_, err := s.store.CompareAndSet(ctx, key, &rec, rev)
 	if errors.Is(err, kvstore.ErrConflict) {
 		return awserrors.Errorf(awserrors.ErrorConflictException,
 			"bedrock: guardrail %s was modified concurrently; retry the request", rec.GuardrailID)

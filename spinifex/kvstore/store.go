@@ -99,35 +99,6 @@ func (s *Store[T]) Upsert(ctx context.Context, key string, fn func(*T) (bool, er
 	})
 }
 
-// Delete removes a key. Idempotent: an already-absent key is success.
-func (s *Store[T]) Delete(ctx context.Context, key string) error {
-	err := s.withKV(ctx, func(kv jetstream.KeyValue) error {
-		if err := kv.Delete(ctx, key); err != nil {
-			return fmt.Errorf("kvstore: delete %s: %w", key, err)
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return err
-	}
-	return nil
-}
-
-// Purge is Delete for a key whose history must go with it, so a later Create
-// sees a key that never existed rather than one with a delete marker on top.
-func (s *Store[T]) Purge(ctx context.Context, key string) error {
-	err := s.withKV(ctx, func(kv jetstream.KeyValue) error {
-		if err := kv.Purge(ctx, key); err != nil {
-			return fmt.Errorf("kvstore: purge %s: %w", key, err)
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return err
-	}
-	return nil
-}
-
 // List decodes every record whose key carries the given prefix. An empty
 // prefix matches everything and an empty bucket is not an error. A key that
 // disappears between the listing and the read is skipped.
@@ -316,43 +287,29 @@ func (s *Store[T]) Set(ctx context.Context, key string, v *T) error {
 	})
 }
 
-// Exists reports whether a key is present without decoding its value, so a
-// record that cannot be unmarshalled is still reported as present.
-func (s *Store[T]) Exists(ctx context.Context, key string) (bool, error) {
-	err := s.withKV(ctx, func(kv jetstream.KeyValue) error {
-		if _, err := kv.Get(ctx, key); err != nil {
-			return fmt.Errorf("kvstore: get %s: %w", key, err)
-		}
-		return nil
-	})
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
 // CompareAndSet writes v only if key is still at rev, returning ErrConflict
 // when it is not. For callers whose lost race is a decision rather than a
 // failure; callers that should retry want Mutate.
-func (s *Store[T]) CompareAndSet(ctx context.Context, key string, v *T, rev uint64) error {
+//
+// The revision the write landed at is returned, for a caller chaining a second
+// CAS onto its own first one.
+func (s *Store[T]) CompareAndSet(ctx context.Context, key string, v *T, rev uint64) (uint64, error) {
 	kv, err := s.KV(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("kvstore: encode %s: %w", key, err)
+		return 0, fmt.Errorf("kvstore: encode %s: %w", key, err)
 	}
-	if _, err := kv.Update(ctx, key, data, rev); err != nil {
+	next, err := kv.Update(ctx, key, data, rev)
+	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) || errors.Is(err, jetstream.ErrKeyExists) {
-			return fmt.Errorf("%w: %s", ErrConflict, key)
+			return 0, fmt.Errorf("%w: %s", ErrConflict, key)
 		}
-		return fmt.Errorf("kvstore: update %s: %w", key, err)
+		return 0, fmt.Errorf("kvstore: update %s: %w", key, err)
 	}
-	return nil
+	return next, nil
 }
 
 // keys lists an already-opened bucket, treating an empty bucket as an empty

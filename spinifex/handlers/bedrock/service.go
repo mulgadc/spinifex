@@ -351,7 +351,7 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 		slog.ErrorContext(ctx, "bedrock: re-read endpoint before READY write failed", "group", spec.GroupID, "err", gerr)
 		return
 	}
-	if err := s.store.CompareAndSet(ctx, key, &rec, rev); err != nil {
+	if _, err := s.store.CompareAndSet(ctx, key, &rec, rev); err != nil {
 		slog.ErrorContext(ctx, "bedrock: CAS write of READY state failed", "group", spec.GroupID, "err", err)
 	}
 }
@@ -461,7 +461,7 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 		}
 		rec.State = StateDraining
 		rec.Generation++
-		if err := s.store.CompareAndSet(ctx, key, &rec, rev); err != nil {
+		if _, err := s.store.CompareAndSet(ctx, key, &rec, rev); err != nil {
 			return nil, fmt.Errorf("bedrock: mark endpoint %s draining: %w", in.ModelID, err)
 		}
 	}

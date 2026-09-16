@@ -47,11 +47,12 @@ func TestStore_CreateGetUpdateDelete(t *testing.T) {
 
 	got.State = StateReady
 	got.Generation = 2
-	require.NoError(t, store.CompareAndSet(t.Context(), key, &got, gotRev))
+	_, casErr := store.CompareAndSet(t.Context(), key, &got, gotRev)
+	require.NoError(t, casErr)
 
 	// The CAS update must fail against the now-stale revision — this is what
 	// stops a launch goroutine and a concurrent writer stomping each other.
-	err = store.CompareAndSet(t.Context(), key, &got, gotRev)
+	_, err = store.CompareAndSet(t.Context(), key, &got, gotRev)
 	assert.ErrorIs(t, err, kvstore.ErrConflict)
 
 	require.NoError(t, store.Purge(t.Context(), key))

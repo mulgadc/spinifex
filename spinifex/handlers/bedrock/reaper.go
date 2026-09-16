@@ -286,7 +286,7 @@ func (r *Reaper) persistObservation(ctx context.Context, prev, next EndpointReco
 		return nil
 	}
 	next.Generation = current.Generation + 1
-	if err := r.svc.store.CompareAndSet(ctx, key, &next, rev); err != nil {
+	if _, err := r.svc.store.CompareAndSet(ctx, key, &next, rev); err != nil {
 		if errors.Is(err, kvstore.ErrConflict) {
 			return nil
 		}

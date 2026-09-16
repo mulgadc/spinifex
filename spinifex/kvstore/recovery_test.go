@@ -191,7 +191,7 @@ func TestStore_CompareAndSetDoesNotReRun(t *testing.T) {
 	require.NoError(t, err)
 	loseStream(t, js)
 
-	err = store.CompareAndSet(t.Context(), "acct-a/one", &record{Name: "two"}, rev)
+	_, err = store.CompareAndSet(t.Context(), "acct-a/one", &record{Name: "two"}, rev)
 	require.Error(t, err, "a revision-guarded write must not be replayed onto a reopened bucket")
 	assert.ErrorContains(t, err, "acct-a/one")
 }

@@ -130,7 +130,8 @@ func (f *reaperFixture) age(t *testing.T, readyAgo, activeAgo time.Duration) End
 	if activeAgo > 0 {
 		rec.LastActiveAt = now.Add(-activeAgo)
 	}
-	require.NoError(t, f.store.CompareAndSet(t.Context(), key, &rec, rev))
+	_, casErr := f.store.CompareAndSet(t.Context(), key, &rec, rev)
+	require.NoError(t, casErr)
 	return rec
 }
 
@@ -178,7 +179,8 @@ func TestReaper_NeverReapsPinnedEndpoint(t *testing.T) {
 	rec, rev, _, err := f.store.getRevision(t.Context(), key)
 	require.NoError(t, err)
 	rec.Pinned = true
-	require.NoError(t, f.store.CompareAndSet(t.Context(), key, &rec, rev))
+	_, casErr := f.store.CompareAndSet(t.Context(), key, &rec, rev)
+	require.NoError(t, casErr)
 
 	require.NoError(t, f.reaper.sweepOnce(t.Context()))
 
@@ -292,7 +294,8 @@ func TestReaper_PinnedEndpointNotReapedOnScrapeFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	rec.Pinned = true
-	require.NoError(t, f.store.CompareAndSet(t.Context(), key, &rec, rev))
+	_, casErr := f.store.CompareAndSet(t.Context(), key, &rec, rev)
+	require.NoError(t, casErr)
 
 	f.transport.breakScrapes()
 	for range maxScrapeFailures + 2 {

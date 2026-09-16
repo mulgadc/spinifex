@@ -520,7 +520,7 @@ func (s *Store) AcquireLease(ctx context.Context, certArn, holderID string, ttl 
 	}
 	rec.LeaseHolder = holderID
 	rec.LeaseExpiresAt = now.Add(ttl)
-	if err := s.store.CompareAndSet(ctx, key, rec, rev); err != nil {
+	if _, err := s.store.CompareAndSet(ctx, key, rec, rev); err != nil {
 		if errors.Is(err, kvstore.ErrConflict) {
 			// Lost the race to a concurrent acquirer between Get and Update;
 			// the caller skips this tick rather than retrying immediately.
@@ -552,7 +552,7 @@ func (s *Store) ReleaseLease(ctx context.Context, certArn, holderID string) erro
 	}
 	rec.LeaseHolder = ""
 	rec.LeaseExpiresAt = time.Time{}
-	if err := s.store.CompareAndSet(ctx, key, rec, rev); err != nil {
+	if _, err := s.store.CompareAndSet(ctx, key, rec, rev); err != nil {
 		if errors.Is(err, kvstore.ErrConflict) {
 			return nil // record changed concurrently; nothing to clean up
 		}

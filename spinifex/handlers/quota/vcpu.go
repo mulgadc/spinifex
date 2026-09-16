@@ -94,7 +94,7 @@ func (s *Service) setVCPUAt(ctx context.Context, accountID string, value int, si
 	if revision == 0 {
 		_, err = s.usage.Create(ctx, accountID, &value)
 	} else {
-		err = s.usage.CompareAndSet(ctx, accountID, &value, revision)
+		_, err = s.usage.CompareAndSet(ctx, accountID, &value, revision)
 	}
 	// Losing the race is the guard working, not a failure: a charge got there
 	// first and the next pass recomputes against it.

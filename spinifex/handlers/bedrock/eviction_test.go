@@ -234,5 +234,6 @@ func pinEndpoint(t *testing.T, s *Service, modelID string) {
 	require.NoError(t, err)
 	require.True(t, found)
 	rec.Pinned = true
-	require.NoError(t, s.store.CompareAndSet(t.Context(), key, &rec, rev))
+	_, casErr := s.store.CompareAndSet(t.Context(), key, &rec, rev)
+	require.NoError(t, casErr)
 }

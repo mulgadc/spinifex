@@ -297,6 +297,9 @@ func CreateService(ctx context.Context, nc *nats.Conn, accountID string, body []
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
+	if err := checkAZRebalancing(body); err != nil {
+		return nil, err
+	}
 	return createService(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck)
 }
 
@@ -312,6 +315,9 @@ func createService(ctx context.Context, svc handlers_ecs.ECSService, accountID s
 func UpdateService(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.UpdateServiceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkAZRebalancing(body); err != nil {
 		return nil, err
 	}
 	return updateService(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck)

@@ -141,7 +141,7 @@ func WriteJSONResponse(w http.ResponseWriter, obj any) {
 		http.Error(w, awserrors.ErrorInternalError, http.StatusInternalServerError)
 		return
 	}
-	writeJSONBody(w, body)
+	writeJSONBody(w, addSDKGapFields(obj, body))
 }
 
 // WriteRawJSONResponse serialises obj with encoding/json (RFC3339 times) for the

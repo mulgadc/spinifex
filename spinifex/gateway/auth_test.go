@@ -774,7 +774,7 @@ func TestSigV4Auth_S3ScopeReturnsFlatS3Error(t *testing.T) {
 			signTestRequestAs(t, req, tc.body, testAccessKey, testSecretKey, "s3", time.Now().UTC())
 
 			resp := doRequest(handler, req)
-			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 			body, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
@@ -790,7 +790,7 @@ func TestSigV4Auth_S3ScopeReturnsFlatS3Error(t *testing.T) {
 			// The flat root element is the whole point: an SDK that finds
 			// <Response> here reports an empty code and an empty message.
 			assert.Equal(t, "Error", xmlRootName(t, body))
-			assert.Equal(t, awserrors.ErrorSignatureDoesNotMatch, parsed.Code)
+			assert.Equal(t, awserrors.ErrorInvalidAction, parsed.Code)
 			assert.NotEmpty(t, parsed.Message)
 			assert.NotEmpty(t, parsed.RequestID)
 			assert.Equal(t, req.URL.Path, parsed.Resource)
@@ -2541,8 +2541,11 @@ func TestRedactedCanonicalRequest_MasksSessionToken(t *testing.T) {
 
 // A scope the gateway does not serve is rejected at the supportedServices
 // gate before any signature check, so the response must not blame the
-// credentials, and must render in the generic REST-XML envelope rather than
-// the EC2 query shape a REST-XML client like route53's cannot deserialize.
+// credentials, must carry InvalidAction (the same code an unimplemented
+// action on a served service already returns) rather than a signature
+// failure that never happened, and must render in the generic REST-XML
+// envelope rather than the EC2 query shape a REST-XML client like route53's
+// cannot deserialize.
 func TestSigV4Auth_UnservedServiceNamesServiceNotCredentials(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
@@ -2551,7 +2554,7 @@ func TestSigV4Auth_UnservedServiceNamesServiceNotCredentials(t *testing.T) {
 	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "route53", time.Now().UTC())
 
 	resp := doRequest(handler, req)
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
@@ -2566,10 +2569,126 @@ func TestSigV4Auth_UnservedServiceNamesServiceNotCredentials(t *testing.T) {
 	require.NoError(t, xml.Unmarshal(body, &parsed), "body: %s", body)
 
 	assert.Equal(t, "ErrorResponse", xmlRootName(t, body))
-	assert.Equal(t, awserrors.ErrorSignatureDoesNotMatch, parsed.Error.Code)
+	assert.Equal(t, awserrors.ErrorInvalidAction, parsed.Error.Code)
 	assert.Contains(t, parsed.Error.Message, "route53")
 	assert.NotContains(t, parsed.Error.Message, "credentials",
 		"nothing was wrong with the credentials, which were never checked")
+}
+
+// An unserved scope whose request marks it as an AWS JSON-1.x client (sqs,
+// sns, dynamodb, …) must get the JSON envelope: jsonErrorService has no entry
+// for a scope the gateway does not serve, so without the request-derived
+// fallback this always fell through to XML the client's SDK cannot parse.
+func TestSigV4Auth_UnservedServiceJSONClientGetsJSONEnvelope(t *testing.T) {
+	handler := setupTestApp(testAccessKey, testSecretKey)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Host = "localhost:9999"
+	req.Header.Set("X-Amz-Target", "AmazonSQS.ListQueues")
+	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "sqs", time.Now().UTC())
+
+	resp := doRequest(handler, req)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, "InvalidActionException", resp.Header.Get("X-Amzn-Errortype"))
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "sqs")
+	assert.NotContains(t, string(body), "<?xml")
+}
+
+// The same, driven by Content-Type rather than X-Amz-Target: some JSON
+// clients (dynamodb) identify themselves this way instead.
+func TestSigV4Auth_UnservedServiceJSONContentTypeGetsJSONEnvelope(t *testing.T) {
+	handler := setupTestApp(testAccessKey, testSecretKey)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Host = "localhost:9999"
+	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
+	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "dynamodb", time.Now().UTC())
+
+	resp := doRequest(handler, req)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, "InvalidActionException", resp.Header.Get("X-Amzn-Errortype"))
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "dynamodb")
+}
+
+// An unserved scope whose request carries neither tell (a REST-XML client
+// such as cloudfront's) must keep the XML envelope, which is correct for it.
+func TestSigV4Auth_UnservedServiceNoJSONTellGetsXMLEnvelope(t *testing.T) {
+	handler := setupTestApp(testAccessKey, testSecretKey)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "cloudfront", time.Now().UTC())
+
+	resp := doRequest(handler, req)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "application/xml", resp.Header.Get("Content-Type"))
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "ErrorResponse", xmlRootName(t, body))
+	assert.Contains(t, string(body), "cloudfront")
+}
+
+// Every scope jsonErrorService already lists must keep picking the JSON
+// envelope by exactly the path it did before the fallback was added — a
+// regression guard proving the fallback widened nothing for served scopes.
+func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+
+	for _, svc := range []string{"eks", "ecr", "acm", "ecs", "tagging",
+		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime"} {
+		t.Run(svc, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			req = req.WithContext(context.WithValue(req.Context(), ctxService, svc))
+			w := httptest.NewRecorder()
+
+			gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch, "")
+
+			resp := w.Result()
+			assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+			assert.Equal(t, "SignatureDoesNotMatchException", resp.Header.Get("X-Amzn-Errortype"))
+		})
+	}
+}
+
+// The most important test in this cluster: a genuine signature mismatch on a
+// SERVED scope must still return SignatureDoesNotMatch. Nothing about the
+// unserved-scope InvalidAction change may make a real signature failure
+// unrecognisable.
+func TestSigV4Auth_ServedScopeSignatureMismatchStillSignatureDoesNotMatch(t *testing.T) {
+	handler := setupTestApp(testAccessKey, testSecretKey)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	// Signed with the wrong secret: the credential scope (ec2) is served, so
+	// this must fail verification rather than the unserved-service gate.
+	signTestRequestAs(t, req, nil, testAccessKey, "wrong-secret-entirely", testService, time.Now().UTC())
+
+	resp := doRequest(handler, req)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	// ec2 speaks the query-protocol <Response><Errors><Error> shape, not the
+	// generic <ErrorResponse><Error> envelope other services use.
+	var parsed struct {
+		Errors struct {
+			Error struct {
+				Code string `xml:"Code"`
+			} `xml:"Error"`
+		} `xml:"Errors"`
+	}
+	require.NoError(t, xml.Unmarshal(body, &parsed), "body: %s", body)
+	assert.Equal(t, awserrors.ErrorSignatureDoesNotMatch, parsed.Errors.Error.Code)
 }
 
 // --- ctxAction resolution for non-query-protocol services (C) ---

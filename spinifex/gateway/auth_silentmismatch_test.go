@@ -66,7 +66,7 @@ func TestSigV4Auth_UnsupportedServiceIsLogged(t *testing.T) {
 		req, payloadHash, "notaservice", testRegion, time.Now().UTC()))
 
 	resp := doRequest(handler, req)
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 	out := logs.String()
 	require.Contains(t, out, "unsupported service in credential scope")

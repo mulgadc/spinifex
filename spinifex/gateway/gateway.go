@@ -374,6 +374,17 @@ func jsonErrorService(svc string) bool {
 	return false
 }
 
+// requestSignalsJSONProtocol reads r's own headers for the AWS JSON-1.x
+// tells, for a scope jsonErrorService has no entry for because the gateway
+// does not serve it. A JSON-1.1 action always carries X-Amz-Target, and a
+// JSON-protocol client always sends an application/x-amz-json-* content type.
+func requestSignalsJSONProtocol(r *http.Request) bool {
+	if r.Header.Get("X-Amz-Target") != "" {
+		return true
+	}
+	return strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-amz-json")
+}
+
 // clusterUnavailableMsg is the 503 body when NATS is disconnected. Points
 // operators at /local/status rather than leaving the AWS CLI hanging on timeouts.
 const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check daemon /local/status"

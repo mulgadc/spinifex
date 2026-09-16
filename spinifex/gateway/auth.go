@@ -98,10 +98,10 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				slog.Warn("Auth failure: unsupported service in credential scope",
 					"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP,
 					"service", sig.Credential.Service)
-				// Code stays SignatureDoesNotMatch (no registered code fits "not
-				// served here"); the message names the real reason instead, since
-				// nothing was ever wrong with the credentials.
-				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch,
+				// Consistent with an unimplemented action on a served service: this
+				// gate runs before Verify, so nothing was ever wrong with the
+				// credentials, and no signature was ever checked.
+				gw.writeSigV4Error(w, r, awserrors.ErrorInvalidAction,
 					fmt.Sprintf("Service %q is not served by this gateway.", sig.Credential.Service))
 				return
 			}
@@ -508,8 +508,10 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 	svc := signedService(r)
 
 	// AWS JSON 1.1 services (bedrock family, EKS, …) need a JSON error body, or
-	// the SDK chokes deserializing our XML into its shape.
-	if jsonErrorService(svc) {
+	// the SDK chokes deserializing our XML into its shape. An unserved scope is
+	// absent from jsonErrorService by definition, so its protocol is read off
+	// the request itself instead.
+	if jsonErrorService(svc) || requestSignalsJSONProtocol(r) {
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
 		w.WriteHeader(errorMsg.HTTPCode)

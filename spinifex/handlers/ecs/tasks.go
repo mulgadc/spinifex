@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 	"uuid"
 
@@ -256,7 +257,9 @@ func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInp
 	return out, nil
 }
 
-// ListTasks returns the ARNs of all tasks in a cluster.
+// ListTasks returns the ARNs of the cluster's tasks matching the input filters.
+// An omitted desiredStatus means RUNNING, as it does on AWS, so an unfiltered
+// call does not hand back every task the cluster has ever run.
 func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, accountID string) (*ecs.ListTasksOutput, error) {
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
@@ -267,6 +270,7 @@ func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, acco
 	if err != nil {
 		return nil, err
 	}
+	filter := newTaskFilter(input)
 	arns := make([]string, 0, len(keys))
 	for _, k := range keys {
 		var rec TaskRecord
@@ -274,11 +278,63 @@ func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, acco
 		if err != nil {
 			return nil, err
 		}
-		if found {
+		if found && filter.matches(&rec) {
 			arns = append(arns, rec.ARN)
 		}
 	}
 	return &ecs.ListTasksOutput{TaskArns: aws.StringSlice(arns)}, nil
+}
+
+// taskFilter is ListTasks' input reduced to the fields a task record can be
+// matched on. An empty field matches everything; desiredStatus is the one that
+// defaults, because AWS narrows an unfiltered call to RUNNING.
+type taskFilter struct {
+	desiredStatus     string
+	family            string
+	startedBy         string
+	serviceGroup      string
+	containerInstance string
+}
+
+func newTaskFilter(input *ecs.ListTasksInput) taskFilter {
+	f := taskFilter{desiredStatus: TaskStatusRunning}
+	if input == nil {
+		return f
+	}
+	if v := aws.StringValue(input.DesiredStatus); v != "" {
+		f.desiredStatus = strings.ToUpper(v)
+	}
+	f.family = aws.StringValue(input.Family)
+	f.startedBy = aws.StringValue(input.StartedBy)
+	if v := aws.StringValue(input.ServiceName); v != "" {
+		f.serviceGroup = serviceTaskGroup(ServiceShortName(v))
+	}
+	if v := aws.StringValue(input.ContainerInstance); v != "" {
+		f.containerInstance = ContainerInstanceShortID(v)
+	}
+	return f
+}
+
+// matches reports whether a task record satisfies every set filter. Desired
+// status is compared against the record's own DesiredStatus rather than its
+// last reported one, so a task on its way down is still listed as stopping.
+func (f taskFilter) matches(rec *TaskRecord) bool {
+	if f.desiredStatus != "" && rec.DesiredStatus != f.desiredStatus {
+		return false
+	}
+	if f.family != "" && rec.TaskDefFamily != f.family {
+		return false
+	}
+	if f.startedBy != "" && rec.StartedBy != f.startedBy {
+		return false
+	}
+	if f.serviceGroup != "" && rec.Group != f.serviceGroup {
+		return false
+	}
+	if f.containerInstance != "" && rec.ContainerInstanceID != f.containerInstance {
+		return false
+	}
+	return true
 }
 
 func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {

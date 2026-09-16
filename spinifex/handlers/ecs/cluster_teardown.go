@@ -91,7 +91,9 @@ func (s *Service) DeregisterContainerInstance(ctx context.Context, input *ecs.De
 		return nil, derr
 	}
 	rec.Status = ClusterStatusInactive
-	return &ecs.DeregisterContainerInstanceOutput{ContainerInstance: s.instanceToAWS(&rec)}, nil
+	// The instance is gone, so it holds nothing; counting its records here would
+	// report the tasks that were just force-stopped.
+	return &ecs.DeregisterContainerInstanceOutput{ContainerInstance: s.instanceToAWS(&rec, taskCounts{})}, nil
 }
 
 // UpdateContainerInstancesState sets the requested instances ACTIVE or DRAINING.
@@ -105,6 +107,10 @@ func (s *Service) UpdateContainerInstancesState(ctx context.Context, input *ecs.
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 	kv, err := s.bucket(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	counts, err := s.instanceTaskCounts(ctx, kv, cluster)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +134,7 @@ func (s *Service) UpdateContainerInstancesState(ctx context.Context, input *ecs.
 		if status == InstanceStatusDraining {
 			s.drainInstanceServiceTasks(ctx, kv, accountID, cluster, id)
 		}
-		out.ContainerInstances = append(out.ContainerInstances, s.instanceToAWS(&rec))
+		out.ContainerInstances = append(out.ContainerInstances, s.instanceToAWS(&rec, counts[id]))
 	}
 	return out, nil
 }

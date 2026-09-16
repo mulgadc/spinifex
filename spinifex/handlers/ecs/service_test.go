@@ -214,7 +214,10 @@ func TestService_RunTask_PlacesAndAssigns(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, di.ContainerInstances, 1)
-	assert.Equal(t, int64(1), aws.Int64Value(di.ContainerInstances[0].RunningTasksCount))
+	// The task is PENDING until the agent reports it RUNNING, and the counts
+	// say so rather than counting everything the instance owes capacity for.
+	assert.Equal(t, int64(0), aws.Int64Value(di.ContainerInstances[0].RunningTasksCount))
+	assert.Equal(t, int64(1), aws.Int64Value(di.ContainerInstances[0].PendingTasksCount))
 
 	// Task visible via Describe/List.
 	lt, err := svc.ListTasks(context.Background(), &ecs.ListTasksInput{Cluster: aws.String("web")}, testAccountID)

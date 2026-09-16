@@ -76,13 +76,21 @@ func (s *Service) RegisterContainerInstance(ctx context.Context, input *ecs.Regi
 	if err != nil {
 		return nil, err
 	}
-	return &ecs.RegisterContainerInstanceOutput{ContainerInstance: s.instanceToAWS(rec)}, nil
+	counts, err := s.instanceTaskCounts(ctx, kv, cluster)
+	if err != nil {
+		return nil, err
+	}
+	return &ecs.RegisterContainerInstanceOutput{ContainerInstance: s.instanceToAWS(rec, counts[instanceID])}, nil
 }
 
 // DescribeContainerInstances returns records for the named container instances.
 func (s *Service) DescribeContainerInstances(ctx context.Context, input *ecs.DescribeContainerInstancesInput, accountID string) (*ecs.DescribeContainerInstancesOutput, error) {
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	counts, err := s.instanceTaskCounts(ctx, kv, cluster)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +103,7 @@ func (s *Service) DescribeContainerInstances(ctx context.Context, input *ecs.Des
 			return nil, err
 		}
 		if found {
-			out.ContainerInstances = append(out.ContainerInstances, s.instanceToAWS(&rec))
+			out.ContainerInstances = append(out.ContainerInstances, s.instanceToAWS(&rec, counts[id]))
 		} else {
 			out.Failures = append(out.Failures, &ecs.Failure{Arn: aws.String(ref), Reason: aws.String("MISSING")})
 		}
@@ -149,7 +157,40 @@ func (s *Service) upsertInstance(ctx context.Context, kv jetstream.KeyValue, acc
 	return &rec, nil
 }
 
-func (s *Service) instanceToAWS(r *InstanceRecord) *ecs.ContainerInstance {
+// taskCounts is one container instance's live task tally.
+type taskCounts struct {
+	running int64
+	pending int64
+}
+
+// instanceTaskCounts tallies each instance's RUNNING and PENDING tasks from the
+// task records themselves. PlacedTasks cannot answer this: it is the list of
+// tasks still owing capacity, so a task that stopped without its reservation
+// being released stays in it and is counted as running forever.
+func (s *Service) instanceTaskCounts(ctx context.Context, kv jetstream.KeyValue, cluster string) (map[string]taskCounts, error) {
+	tasks, err := s.listTaskRecords(ctx, kv, cluster)
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[string]taskCounts, len(tasks))
+	for i := range tasks {
+		id := tasks[i].ContainerInstanceID
+		if id == "" {
+			continue
+		}
+		c := counts[id]
+		switch tasks[i].LastStatus {
+		case TaskStatusRunning:
+			c.running++
+		case TaskStatusPending:
+			c.pending++
+		}
+		counts[id] = c
+	}
+	return counts, nil
+}
+
+func (s *Service) instanceToAWS(r *InstanceRecord, counts taskCounts) *ecs.ContainerInstance {
 	registered := []*ecs.Resource{
 		{Name: aws.String("CPU"), Type: aws.String("INTEGER"), IntegerValue: aws.Int64(int64(r.TotalCPU))},
 		{Name: aws.String("MEMORY"), Type: aws.String("INTEGER"), IntegerValue: aws.Int64(int64(r.TotalMemoryMiB))},
@@ -174,7 +215,8 @@ func (s *Service) instanceToAWS(r *InstanceRecord) *ecs.ContainerInstance {
 		Ec2InstanceId:        aws.String(r.InstanceID),
 		Status:               aws.String(r.Status),
 		AgentConnected:       aws.Bool(r.Status == InstanceStatusActive),
-		RunningTasksCount:    aws.Int64(int64(len(r.PlacedTasks))),
+		RunningTasksCount:    aws.Int64(counts.running),
+		PendingTasksCount:    aws.Int64(counts.pending),
 		RegisteredResources:  registered,
 		RemainingResources:   remaining,
 		VersionInfo:          &ecs.VersionInfo{AgentVersion: aws.String(r.AgentVersion)},
@@ -266,6 +308,10 @@ func (s *Service) recordTaskState(ctx context.Context, msg *bus.TaskState) error
 		if msg.Reason != "" {
 			task.StoppedReason = msg.Reason
 		}
+		// A task that exits on its own was never asked to stop, so its desired
+		// status is still RUNNING here. AWS moves it to STOPPED, and a caller
+		// filtering on desired status would otherwise see it as still wanted.
+		task.DesiredStatus = TaskStatusStopped
 	}
 	if err := putJSON(ctx, kv, TaskKey(msg.ClusterName, msg.TaskID), &task); err != nil {
 		return err

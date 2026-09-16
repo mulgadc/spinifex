@@ -22,6 +22,11 @@ type EBSRequest struct {
 	// volume occupies. 0 for boot/non-hot-plugged volumes. Persisted so port
 	// accounting survives a daemon restart.
 	HotplugPort int `json:"HotplugPort,omitempty"`
+	// Serial is the virtio-blk serial minted for this attachment at attach
+	// time. Persisted so a cold-boot relaunch (stop/start, reboot) reads it
+	// back verbatim instead of re-deriving it, which could disagree with what
+	// the guest already saw.
+	Serial string `json:"Serial,omitempty"`
 }
 
 // VolumeTypeGP3 is the only EBS volume type this platform serves.

@@ -77,7 +77,11 @@ func (m *Manager) rollbackHotAttach(ctx context.Context, instance *VM, req types
 // persist in-use → device_add. Partial state is rolled back on failure. If device is empty, the
 // next free /dev/sd[f-p] slot is allocated. Instance must be in StateRunning.
 // Returns the AWS-API device name (/dev/sd[f-p]) echoed in the API response.
-func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string) (string, error) {
+// serialOverride is empty for a normal (CSI/generic) attach, which derives the
+// virtio-blk serial from device so a guest udev rule can rebuild the
+// requested name. RDS/Bedrock pass their own volume-ID-derived serial to keep
+// their existing guest identity mechanism unchanged.
+func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device, serialOverride string) (string, error) {
 	instance, ok := m.Get(id)
 	if !ok {
 		return "", ErrInstanceNotFound
@@ -102,9 +106,19 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		}
 	}
 
+	serial := serialOverride
+	if serial == "" {
+		var err error
+		serial, err = AttachmentSerial(device)
+		if err != nil {
+			return "", fmt.Errorf("attach volume %s: %w", volumeID, err)
+		}
+	}
+
 	ebsRequest := types.EBSRequest{
 		Name:       volumeID,
 		DeviceName: device,
+		Serial:     serial,
 	}
 
 	if m.deps.VolumeMounter == nil {
@@ -198,11 +212,13 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	// live QEMU state above, independent of the AWS device name.
 	hotplugBus := HotplugEBSBus(hotplugPort)
 
-	// serial surfaces in-guest as the block device serial so the EBS CSI node
-	// plugin can locate /dev/disk/by-id and match `lsblk -o SERIAL` against
-	// the volume-id. Shared with buildDrives so a relaunched volume keeps the
-	// same serial.
-	deviceAddArgs := VolumeBlkDeviceQMPArgs(volumeID, nodeName, iothreadID, hotplugBus)
+	// serial surfaces in-guest as the block device serial. For a generic
+	// attach it is the requested device name, so a guest udev rule can
+	// rebuild the AWS-style path by substitution; RDS/Bedrock's override
+	// keeps the volume-ID form their own guest tooling matches on. Persisted
+	// on ebsRequest.Serial above, so buildDrives reuses it on a relaunch
+	// rather than re-deriving it.
+	deviceAddArgs := VolumeBlkDeviceQMPArgs(volumeID, nodeName, iothreadID, hotplugBus, serial)
 
 	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 		Execute:   "device_add",

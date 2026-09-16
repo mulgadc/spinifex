@@ -41,7 +41,7 @@ func TestAttachVolume_KeysStateOnTheInstanceAccount(t *testing.T) {
 		QMPClient: qmpClient, AccountID: stateAccountID,
 	})
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.NoError(t, err)
 
 	calls := stateUpdater.snapshot()
@@ -74,7 +74,7 @@ func TestAttachVolume_RollbackKeysStateOnTheInstanceAccount(t *testing.T) {
 		QMPClient: qmpClient, AccountID: stateAccountID,
 	})
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.Error(t, err)
 
 	calls := stateUpdater.snapshot()
@@ -136,7 +136,7 @@ func TestAttachVolume_StateUpdateErrorSurfacesTheAccount(t *testing.T) {
 	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, VolumeStateUpdater: stateUpdater})
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{}, QMPClient: qmpClient})
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, keyErr)
 	assert.NotContains(t, recorder.executes(), "device_add",

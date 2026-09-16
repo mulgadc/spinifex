@@ -3,6 +3,7 @@ package vm
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -256,10 +257,42 @@ func VolumeIOThreadID(volumeID string) string {
 
 // VolumeSerial returns the virtio-blk serial QEMU exposes in-guest: the
 // volume ID with dashes stripped ("vol" + 17 hex = 20 bytes, the virtio-blk
-// serial limit). The EBS CSI node plugin matches this via
-// /dev/disk/by-id/*<serial>* to locate the device.
+// serial limit). RDS and Bedrock pass this explicitly as their AttachVolume
+// serial override, so the guest can select their fixed-device-name data
+// volume by an identity that is actually unique per volume.
 func VolumeSerial(volumeID string) string {
 	return strings.ReplaceAll(volumeID, "-", "")
+}
+
+// maxVirtioSerialBytes is QEMU's virtio-blk serial= property cap.
+const maxVirtioSerialBytes = 20
+
+// driverFatalSerialPattern mirrors aws-ebs-csi-driver's verifyVolumeSerialMatch
+// regex: a serial matching vol[a-z0-9]+ is compared against the expected
+// volume ID and the mount is refused on disagreement, the one fatal branch in
+// that check. A normalized device name must never collide with it.
+var driverFatalSerialPattern = regexp.MustCompile(`^vol[a-z0-9]+$`)
+
+// AttachmentSerial normalizes an AWS-style requested device name (e.g.
+// "/dev/xvdaa") into the virtio-blk serial a guest udev rule can turn back
+// into the same name by string substitution. It strips a leading "/dev/" and
+// validates rather than truncates: a name that will not fit, or would read as
+// the driver's volume-ID serial pattern, is rejected rather than mangled into
+// a symlink that silently points at the wrong device.
+func AttachmentSerial(device string) (string, error) {
+	serial := strings.TrimPrefix(device, "/dev/")
+	if serial == "" {
+		return "", fmt.Errorf("AttachmentSerial: device name %q normalizes to empty", device)
+	}
+	if len(serial) > maxVirtioSerialBytes {
+		return "", fmt.Errorf("AttachmentSerial: device name %q normalizes to %d bytes, exceeds the %d-byte virtio-blk serial cap",
+			device, len(serial), maxVirtioSerialBytes)
+	}
+	if driverFatalSerialPattern.MatchString(serial) {
+		return "", fmt.Errorf("AttachmentSerial: device name %q normalizes to %q, which matches the aws-ebs-csi-driver's fatal vol[a-z0-9]+ serial check",
+			device, serial)
+	}
+	return serial, nil
 }
 
 // HotplugEBSBus returns the PCIe hot-plug root-port bus name for hot-plug
@@ -273,17 +306,19 @@ func HotplugEBSBus(port int) string {
 // (everything after the leading driver name) as an ordered slice, shared by
 // AttachVolume's QMP device_add (rendered as a map) and buildDrives' -device
 // (rendered as a joined command-line string) so the two block-graph shapes
-// cannot diverge.
+// cannot diverge. serial is minted once by the caller (AttachmentSerial for a
+// generic attach, VolumeSerial for RDS/Bedrock's override) and passed in
+// rather than derived here, so hot-attach and cold-boot never disagree.
 //
 // werror/rerror mirror the boot drive's on-error policy (see Drive.Werror):
 // a data volume has no -drive-backed BlockBackend to carry it, so the qdev
 // device itself sets werror=stop,rerror=stop.
-func VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus string) []string {
+func VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus, serial string) []string {
 	return []string{
 		fmt.Sprintf("id=%s", VolumeDeviceID(volumeID)),
 		fmt.Sprintf("drive=%s", nodeName),
 		fmt.Sprintf("iothread=%s", iothreadID),
-		fmt.Sprintf("serial=%s", VolumeSerial(volumeID)),
+		fmt.Sprintf("serial=%s", serial),
 		fmt.Sprintf("bus=%s", bus),
 		"werror=stop",
 		"rerror=stop",
@@ -292,21 +327,22 @@ func VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus string) []string {
 
 // VolumeBlkDevice renders a QEMU -device argument for buildDrives' cold-boot
 // path: the virtio-blk-pci driver name followed by VolumeBlkDeviceArgs.
-func VolumeBlkDevice(volumeID, nodeName, iothreadID, bus string) Device {
-	args := append([]string{"virtio-blk-pci"}, VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus)...)
+func VolumeBlkDevice(volumeID, nodeName, iothreadID, bus, serial string) Device {
+	args := append([]string{"virtio-blk-pci"}, VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus, serial)...)
 	return Device{Value: strings.Join(args, ",")}
 }
 
 // VolumeBlkDeviceQMPArgs renders the same virtio-blk-pci arguments as a
 // device_add argument map for AttachVolume's QMP hot-attach path. See
-// VolumeBlkDeviceArgs for why werror/rerror are set here.
-func VolumeBlkDeviceQMPArgs(volumeID, nodeName, iothreadID, bus string) map[string]any {
+// VolumeBlkDeviceArgs for why werror/rerror are set here and where serial
+// comes from.
+func VolumeBlkDeviceQMPArgs(volumeID, nodeName, iothreadID, bus, serial string) map[string]any {
 	return map[string]any{
 		"driver":   "virtio-blk-pci",
 		"id":       VolumeDeviceID(volumeID),
 		"drive":    nodeName,
 		"iothread": iothreadID,
-		"serial":   VolumeSerial(volumeID),
+		"serial":   serial,
 		"bus":      bus,
 		"werror":   "stop",
 		"rerror":   "stop",

@@ -408,8 +408,8 @@ func (f *fakeVolumes) DeleteVolume(ctx context.Context, in *ec2.DeleteVolumeInpu
 
 // fakeAttacher records the hot-plug attach request.
 type fakeAttacher struct {
-	accountID, instanceID, volumeID, device string
-	err                                     error
+	accountID, instanceID, volumeID, device, serial string
+	err                                             error
 
 	// onCall fires before the attach returns, so a case can cancel the caller's
 	// context at the moment the step that fails is running.
@@ -418,8 +418,8 @@ type fakeAttacher struct {
 
 var _ volumeAttacher = (*fakeAttacher)(nil)
 
-func (f *fakeAttacher) AttachVolume(_ context.Context, accountID, instanceID, volumeID, device string) (string, error) {
-	f.accountID, f.instanceID, f.volumeID, f.device = accountID, instanceID, volumeID, device
+func (f *fakeAttacher) AttachVolume(_ context.Context, accountID, instanceID, volumeID, device, serial string) (string, error) {
+	f.accountID, f.instanceID, f.volumeID, f.device, f.serial = accountID, instanceID, volumeID, device, serial
 	if f.onCall != nil {
 		f.onCall()
 	}
@@ -457,7 +457,7 @@ func TestNATSVolumeAttacher_MapsNoResponderByInstanceState(t *testing.T) {
 
 			attacher := NewNATSVolumeAttacher(nc)
 			_, err = attacher.AttachVolume(t.Context(), testCustomerAccount,
-				testInstance, "vol-data", dataVolumeDevice)
+				testInstance, "vol-data", dataVolumeDevice, "voldata")
 			assert.EqualError(t, err, tt.expectedErr)
 		})
 	}
@@ -469,7 +469,7 @@ func TestNATSVolumeAttacher_StoppedLookupFailureIsInternal(t *testing.T) {
 
 	attacher := NewNATSVolumeAttacher(nc)
 	_, err := attacher.AttachVolume(t.Context(), testCustomerAccount,
-		testInstance, "vol-data", dataVolumeDevice)
+		testInstance, "vol-data", dataVolumeDevice, "voldata")
 	assert.EqualError(t, err, awserrors.ErrorServerInternal)
 }
 
@@ -484,7 +484,7 @@ func TestNATSVolumeAttacher_RejectsAnEmptyAttachment(t *testing.T) {
 
 	attacher := NewNATSVolumeAttacher(nc)
 	device, err := attacher.AttachVolume(t.Context(), testCustomerAccount,
-		testInstance, "vol-data", dataVolumeDevice)
+		testInstance, "vol-data", dataVolumeDevice, "voldata")
 	assert.EqualError(t, err, awserrors.ErrorServerInternal)
 	assert.Empty(t, device)
 }
@@ -724,6 +724,10 @@ func TestLaunchDBInstanceVMAttachesTheDataVolume(t *testing.T) {
 	assert.Equal(t, "vol-rdsdata01", h.attacher.volumeID)
 	assert.Equal(t, dataVolumeDevice, h.attacher.device)
 	assert.Equal(t, utils.GlobalAccountID, h.attacher.accountID)
+	// RDS's fixed dataVolumeDevice is not a unique identity, so the serial
+	// handed to the daemon must stay volume-ID-derived rather than fall back
+	// to the daemon's device-name-derived default.
+	assert.Equal(t, vm.VolumeSerial(h.attacher.volumeID), h.attacher.serial)
 
 	assert.Equal(t, "vol-rdsdata01", out.DataVolumeID)
 	assert.Equal(t, vm.VolumeSerial(out.DataVolumeID), out.DataVolumeSerial)

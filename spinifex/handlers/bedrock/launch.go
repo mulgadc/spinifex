@@ -19,6 +19,7 @@ import (
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 )
 
 // vllmServePort is the vLLM OpenAI-compatible server's listen port, baked
@@ -53,9 +54,11 @@ type launchVolumeProvisioner interface {
 }
 
 // Split from launchVolumeProvisioner because attach is routed to the node
-// owning the VM, not answered by whichever node picks the request up.
+// owning the VM, not answered by whichever node picks the request up. serial
+// pins the virtio-blk identity explicitly rather than letting the daemon
+// derive one from this launch's fixed device name.
 type volumeAttacher interface {
-	AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device string) (string, error)
+	AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device, serial string) (string, error)
 }
 
 type LaunchDeps struct {
@@ -326,7 +329,10 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 	primaryModelID := in.Members[0].ModelID
 	for _, m := range in.Members {
 		weightsVolumeID := volumeIDs[m.ModelID]
-		attachedDevice, err := deps.Attacher.AttachVolume(ctx, utils.GlobalAccountID, instanceID, weightsVolumeID, devices[m.ModelID])
+		// The device name is a fixed per-slot convention (nthWeightsDevice),
+		// not a unique identity, so the serial must stay volume-ID-derived
+		// rather than take the daemon's default device-name-derived form.
+		attachedDevice, err := deps.Attacher.AttachVolume(ctx, utils.GlobalAccountID, instanceID, weightsVolumeID, devices[m.ModelID], vm.VolumeSerial(weightsVolumeID))
 		if err != nil {
 			return nil, fmt.Errorf("bedrock: attach weights volume %s to %s: %w", weightsVolumeID, instanceID, err)
 		}

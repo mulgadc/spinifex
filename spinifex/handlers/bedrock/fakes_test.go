@@ -286,12 +286,18 @@ func (f *fakeVolume) DeleteVolume(_ context.Context, in *ec2.DeleteVolumeInput, 
 // AttachVolume fail so launch_test.go can exercise the post-boot rollback path.
 type fakeAttacher struct {
 	failErr error
+	// serials records every serial passed to AttachVolume, keyed by volumeID.
+	serials map[string]string
 }
 
-func (f *fakeAttacher) AttachVolume(_ context.Context, _, _, _, device string) (string, error) {
+func (f *fakeAttacher) AttachVolume(_ context.Context, _, _, volumeID, device, serial string) (string, error) {
 	if f.failErr != nil {
 		return "", f.failErr
 	}
+	if f.serials == nil {
+		f.serials = make(map[string]string)
+	}
+	f.serials[volumeID] = serial
 	return device, nil
 }
 

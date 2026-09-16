@@ -38,6 +38,12 @@ type EC2CommandAttributes struct {
 type AttachVolumeData struct {
 	VolumeID string `json:"volume_id"`
 	Device   string `json:"device,omitempty"`
+	// Serial overrides the virtio-blk serial the daemon would otherwise
+	// derive from Device. Empty is the normal case: every CSI/generic
+	// attach gets a serial derived from the requested device name. RDS and
+	// Bedrock set this explicitly to keep their existing volume-ID-derived
+	// guest identity mechanism unchanged.
+	Serial string `json:"serial,omitempty"`
 }
 
 // DetachVolumeData carries parameters for a detach-volume command.

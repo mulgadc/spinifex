@@ -108,9 +108,12 @@ type launchVolumeProvisioner interface {
 }
 
 // Split from launchVolumeProvisioner because attach is routed to the node
-// owning the VM, not answered by whichever node picks the request up.
+// owning the VM, not answered by whichever node picks the request up. serial
+// is the virtio-blk identity the guest matches on; callers with a fixed
+// device name (RDS, Bedrock) must supply their own rather than let the
+// daemon derive one from that constant device name.
 type volumeAttacher interface {
-	AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device string) (string, error)
+	AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device, serial string) (string, error)
 }
 
 type LaunchDeps struct {
@@ -337,7 +340,10 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		}
 	}
 
-	device, err := deps.Attacher.AttachVolume(ctx, utils.GlobalAccountID, instanceID, volumeID, dataVolumeDevice)
+	// The guest locates this volume by serial, not by dataVolumeDevice (see
+	// that constant's comment), so the serial must stay volume-ID-derived
+	// rather than take the daemon's default device-name-derived form.
+	device, err := deps.Attacher.AttachVolume(ctx, utils.GlobalAccountID, instanceID, volumeID, dataVolumeDevice, vm.VolumeSerial(volumeID))
 	if err != nil {
 		return nil, fmt.Errorf("rds: attach data volume %s to %s: %w", volumeID, instanceID, err)
 	}
@@ -568,13 +574,14 @@ func NewNATSVolumeAttacher(nc *nats.Conn) volumeAttacher {
 
 // Returns the device the attachment landed on, which can differ from the
 // requested one when the guest renames it.
-func (a *natsVolumeAttacher) AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device string) (string, error) {
+func (a *natsVolumeAttacher) AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device, serial string) (string, error) {
 	cmd := types.EC2InstanceCommand{
 		ID:         instanceID,
 		Attributes: types.EC2CommandAttributes{AttachVolume: true},
 		AttachVolumeData: &types.AttachVolumeData{
 			VolumeID: volumeID,
 			Device:   device,
+			Serial:   serial,
 		},
 	}
 	out, err := utils.NATSRequest[ec2.VolumeAttachment](ctx, a.nc,

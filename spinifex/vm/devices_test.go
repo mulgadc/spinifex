@@ -173,16 +173,50 @@ func TestRngDevice_MMIO_WithOptions(t *testing.T) {
 // to werror=stop,rerror=stop. Reporting the error handed a backend outage to
 // the guest as EIO, which aborts its journal; stop holds the request instead.
 func TestVolumeBlkDevice_OnErrorStop(t *testing.T) {
-	d := VolumeBlkDevice("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3")
+	d := VolumeBlkDevice("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3", "voldataa")
 	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop", d.Value)
 }
 
 // TestVolumeBlkDeviceQMPArgs_OnErrorStop is the hotplug counterpart: the QMP
 // device_add argument map AttachVolume sends must carry the same policy.
 func TestVolumeBlkDeviceQMPArgs_OnErrorStop(t *testing.T) {
-	args := VolumeBlkDeviceQMPArgs("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3")
+	args := VolumeBlkDeviceQMPArgs("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3", "voldataa")
 	assert.Equal(t, "stop", args["werror"])
 	assert.Equal(t, "stop", args["rerror"])
+}
+
+// TestAttachmentSerial_NormalizesAndValidates pins device-name normalization
+// and the two hard constraints: the 20-byte virtio-blk cap, and never
+// producing a serial the aws-ebs-csi-driver's fatal vol[a-z0-9]+ check would
+// match. Device names can, in principle, be crafted to hit either — this
+// asserts the guard rather than assuming they never will.
+func TestAttachmentSerial_NormalizesAndValidates(t *testing.T) {
+	tests := []struct {
+		name    string
+		device  string
+		want    string
+		wantErr bool
+	}{
+		{name: "strips dev prefix", device: "/dev/xvdaa", want: "xvdaa"},
+		{name: "no leading slash still normalizes", device: "sdf", want: "sdf"},
+		{name: "exactly at the 20-byte cap", device: "/dev/" + strings.Repeat("x", 20), want: strings.Repeat("x", 20)},
+		{name: "over the 20-byte cap fails rather than truncates", device: "/dev/" + strings.Repeat("x", 21), wantErr: true},
+		{name: "empty device fails", device: "", wantErr: true},
+		{name: "bare dev prefix normalizes to empty and fails", device: "/dev/", wantErr: true},
+		{name: "would collide with the driver's fatal vol serial check", device: "/dev/vol0123456789abcdef0", wantErr: true},
+		{name: "vol with uppercase does not collide", device: "/dev/VOL123", want: "VOL123"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := AttachmentSerial(tc.device)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 // host_mtu is how a guest that never takes a DHCP lease — statically addressed,

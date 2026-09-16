@@ -239,7 +239,7 @@ func TestExecute_Blockdev_UnixServer(t *testing.T) {
 			VolumeBlockdev("nbd-vol-data-a", NBDServerOpts{Type: "unix", Path: "/run/spinifex/nbd/nbd-vol-data-a.sock"}),
 		},
 		Devices: []Device{
-			VolumeBlkDevice("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3"),
+			VolumeBlkDevice("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3", "voldataa"),
 		},
 	}
 

@@ -1495,6 +1495,16 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 			iothreadID := VolumeIOThreadID(v.Name)
 			bus := HotplugEBSBus(v.HotplugPort)
 
+			// Reuse the serial minted at attach time so a relaunch cannot
+			// disagree with what the guest already saw. State persisted
+			// before this field existed falls back to the old volume-ID
+			// form: the fix applies to attachments made from here on, not
+			// retroactively to a volume this deploy never re-attached.
+			serial := v.Serial
+			if serial == "" {
+				serial = VolumeSerial(v.Name)
+			}
+
 			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})
 			cfg.Blockdevs = append(cfg.Blockdevs, VolumeBlockdev(nodeName, NBDServerOpts{
 				Type: serverType,
@@ -1502,7 +1512,7 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 				Host: nbdHost,
 				Port: nbdPort,
 			}))
-			cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, bus))
+			cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, bus, serial))
 			// Deliberately no entry in cfg.Drives: the bare anonymous -drive
 			// this case used to emit (no id=, no node-name=) is exactly what
 			// left the volume undetachable.

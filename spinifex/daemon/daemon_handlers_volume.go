@@ -97,7 +97,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidVolumeZoneMismatch)
 	}
 
-	device, err := d.vmMgr.AttachVolume(ctx, instance.ID, volumeID, command.AttachVolumeData.Device)
+	device, err := d.vmMgr.AttachVolume(ctx, instance.ID, volumeID, command.AttachVolumeData.Device, command.AttachVolumeData.Serial)
 	if err != nil {
 		return respondErrorOutcome(d.node, msg, attachDetachErrorCode(err))
 	}

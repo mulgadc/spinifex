@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,6 +65,13 @@ func TestLaunchServingVM_WiresLaunchInput(t *testing.T) {
 	assert.NotEmpty(t, out.Members[testModelID].WeightsVolumeID)
 	assert.Equal(t, testModelID, out.PrimaryModelID)
 	assert.NotEmpty(t, out.InstanceID)
+
+	// The weights device is a fixed per-slot convention, not a unique
+	// identity, so the serial handed to the daemon must stay
+	// volume-ID-derived rather than fall back to the daemon's
+	// device-name-derived default.
+	weightsVolumeID := out.Members[testModelID].WeightsVolumeID
+	assert.Equal(t, vm.VolumeSerial(weightsVolumeID), h.attacher.serials[weightsVolumeID])
 }
 
 func TestLaunchServingVM_ClonesWeightsSnapshotIntoAVolume(t *testing.T) {

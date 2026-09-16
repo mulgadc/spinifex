@@ -391,7 +391,7 @@ func TestIsQMPNodeNotFound(t *testing.T) {
 
 func TestAttachVolume_InstanceNotFound(t *testing.T) {
 	m := NewManager()
-	_, err := m.AttachVolume(t.Context(), "i-missing", "vol-1", "")
+	_, err := m.AttachVolume(t.Context(), "i-missing", "vol-1", "", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInstanceNotFound)
 }
@@ -400,7 +400,7 @@ func TestAttachVolume_NotRunning(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateStopped, Instance: &ec2.Instance{}})
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidTransition)
 }
@@ -414,7 +414,7 @@ func TestAttachVolume_AttachmentLimitExceeded(t *testing.T) {
 	m := NewManager()
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{BlockDeviceMappings: bdms}})
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrAttachmentLimitExceeded)
 }
@@ -907,7 +907,7 @@ func TestAttachVolume_MountAmbiguous_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneErr: ErrMountAmbiguous}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrMountAmbiguous)
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne,
@@ -921,7 +921,7 @@ func TestAttachVolume_GenericMountError_DoesNotUnmount(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneErr: errors.New("ebs.mount NATS request: timeout")}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrMountAmbiguous)
 	assert.Empty(t, mounter.unmountedOne,
@@ -935,7 +935,7 @@ func TestAttachVolume_NBDURIParseFailure_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneURI: "not-a-valid-nbd-uri"}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse NBDURI")
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne)
@@ -961,7 +961,7 @@ func TestAttachVolume_ObjectAddFailure_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
 	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "object-add")
 	assert.Equal(t, []string{"object-add"}, recorder.executes(),
@@ -989,7 +989,7 @@ func TestAttachVolume_BlockdevAddFailure_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
 	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "blockdev-add")
 	assert.Equal(t, []string{"object-add", "blockdev-add", "object-del"}, recorder.executes())
@@ -1023,7 +1023,7 @@ func TestAttachVolume_PersistsStateBeforeDeviceAdd(t *testing.T) {
 	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, VolumeStateUpdater: stateUpdater})
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{}, QMPClient: qmpClient})
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"object-add", "blockdev-add"}, commandsAtUpdate,
 		"in-use state must be durable before device_add makes the volume writable")
@@ -1047,7 +1047,7 @@ func TestAttachVolume_StateUpdateFailurePreventsDeviceAdd(t *testing.T) {
 	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, VolumeStateUpdater: stateUpdater})
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{}, QMPClient: qmpClient})
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, stateErr)
 	assert.Equal(t, []string{"object-add", "blockdev-add", "blockdev-del", "object-del"}, recorder.executes())
@@ -1079,7 +1079,7 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelOK_Unmounts(t *testing.T) {
 	m := NewManagerWithDeps(Deps{VolumeMounter: mounter, VolumeStateUpdater: stateUpdater})
 	m.Insert(&VM{ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{}, QMPClient: qmpClient})
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "device_add")
 	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del", "object-del"}, recorder.executes())
@@ -1117,7 +1117,7 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelFails_SkipsUnmountOne(t *testi
 	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
 	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
 
-	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "device_add")
 	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del"}, recorder.executes())
@@ -1192,7 +1192,7 @@ func TestAttachVolume_PersistsAPIDeviceNameInVolumeMetadata(t *testing.T) {
 		QMPClient: qmpClient,
 	})
 
-	device, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	device, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf", "")
 	require.NoError(t, err)
 
 	assert.Equal(t, "/dev/sdf", device,

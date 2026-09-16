@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -216,27 +217,14 @@ func GetOrCreateSystemBucket(ctx context.Context, js jetstream.JetStream) (jetst
 	return kv, nil
 }
 
-// kvutil.GetOrCreateBucket exposes no TTL knob, so the lease bucket attaches
-// directly and creates only when absent.
+// InitLeaderBucket creates (or attaches to) the shared spinifex-rds-leader
+// bucket used for the reconciler's leader-lease CAS lock.
 func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
-	// Attach before create. This runs on every reconcile tick, and CreateKeyValue
-	// against a bucket that exists with any other config is a STREAM.CREATE the
-	// meta leader answers with an error, so creating first bills one per tick.
-	kv, err := js.KeyValue(ctx, KVBucketRDSLeader)
-	if errors.Is(err, jetstream.ErrBucketNotFound) {
-		kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
-			Bucket:  KVBucketRDSLeader,
-			History: 1,
-			TTL:     KVBucketRDSLeaderTTL,
-		})
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to create or open RDS leader bucket %s: %w", KVBucketRDSLeader, err)
-	}
-	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketRDSLeader, kv, KVBucketRDSLeaderVersion); err != nil {
-		return nil, fmt.Errorf("migrate %s: %w", KVBucketRDSLeader, err)
-	}
-	return kv, nil
+	return kvlease.OpenBucket(ctx, js, kvlease.BucketConfig{
+		Name:    KVBucketRDSLeader,
+		TTL:     KVBucketRDSLeaderTTL,
+		Version: KVBucketRDSLeaderVersion,
+	})
 }
 
 // Every RDS per-account bucket in the cluster. The reconciler and the DNS

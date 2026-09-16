@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -218,28 +217,11 @@ func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accou
 }
 
 // InitLeaderBucket creates (or attaches to) the shared spinifex-ecs-leader bucket
-// used for per-cluster scheduler leader-lease CAS locks. The bucket is configured
-// with History=1 and a 60s TTL so stale leases expire on their own when a leader
-// dies mid-cycle. kvutil.GetOrCreateBucket doesn't expose a TTL knob, so this
-// attaches directly and creates only when absent.
+// used for per-cluster scheduler leader-lease CAS locks.
 func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
-	// Attach before create. This runs on every scheduler tick, and CreateKeyValue
-	// against a bucket that exists with any other config is a STREAM.CREATE the
-	// meta leader answers with an error, so creating first bills one per tick.
-	kv, err := js.KeyValue(ctx, KVBucketECSLeader)
-	if errors.Is(err, jetstream.ErrBucketNotFound) {
-		kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
-			Bucket:  KVBucketECSLeader,
-			History: 1,
-			TTL:     KVBucketECSLeaderTTL,
-		})
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to create or open ECS leader bucket %s: %w", KVBucketECSLeader, err)
-	}
-	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketECSLeader, kv, KVBucketECSLeaderVersion); err != nil {
-		return nil, fmt.Errorf("migrate %s: %w", KVBucketECSLeader, err)
-	}
-	slog.Info("ECS leader bucket initialized", "bucket", KVBucketECSLeader, "ttl_ms", otelsetup.Millis(KVBucketECSLeaderTTL))
-	return kv, nil
+	return kvlease.OpenBucket(ctx, js, kvlease.BucketConfig{
+		Name:    KVBucketECSLeader,
+		TTL:     KVBucketECSLeaderTTL,
+		Version: KVBucketECSLeaderVersion,
+	})
 }

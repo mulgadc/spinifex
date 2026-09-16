@@ -182,34 +182,31 @@ func (m *JetStreamManager) InitKVBucket() error {
 	return err
 }
 
-// InitClusterStateBucket initializes the cluster-state KV bucket, creating it if it doesn't exist.
-func (m *JetStreamManager) InitClusterStateBucket() error {
-	ctx := context.Background()
-	kv, err := m.js.KeyValue(ctx, ClusterStateBucket)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrBucketNotFound) {
-			slog.Debug("Creating JetStream KV bucket", "bucket", ClusterStateBucket, "replicas", m.replicas)
-			kv, err = m.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
-				Bucket:      ClusterStateBucket,
-				Description: "Spinifex cluster state (heartbeats, shutdown markers, service maps)",
-				History:     1,
-				Replicas:    m.replicas,
-				TTL:         1 * time.Hour,
-			})
-			if err != nil {
-				return err
-			}
-		} else {
-			return err
-		}
-	} else {
-		slog.Debug("Connected to existing JetStream KV bucket", "bucket", ClusterStateBucket)
+// clusterStateConfig describes the cluster-state bucket.
+func clusterStateConfig(replicas int) kvstore.Config {
+	return kvstore.Config{
+		Name:        ClusterStateBucket,
+		Description: "Spinifex cluster state (heartbeats, shutdown markers, service maps)",
+		History:     1,
+		Replicas:    replicas,
+		TTL:         1 * time.Hour,
+		OnOpen: func(ctx context.Context, kv jetstream.KeyValue) error {
+			return migrate.DefaultRegistry.RunKV(ctx, ClusterStateBucket, kv, ClusterStateBucketVersion)
+		},
+		Missing: "cluster state KV bucket not initialized",
 	}
+}
 
-	m.clusterKV = kv
-	if err := migrate.DefaultRegistry.RunKV(ctx, ClusterStateBucket, kv, ClusterStateBucketVersion); err != nil {
-		return fmt.Errorf("migrate %s: %w", ClusterStateBucket, err)
+// InitClusterStateBucket initializes the cluster-state KV bucket, creating it if it doesn't exist.
+//
+// The handle is kept rather than the Bucket: this one holds several unrelated
+// record types under one namespace, and its callers still read it as raw keys.
+func (m *JetStreamManager) InitClusterStateBucket() error {
+	kv, err := kvstore.NewBucket(m.js, clusterStateConfig(m.replicas)).KV(context.Background())
+	if err != nil {
+		return err
 	}
+	m.clusterKV = kv
 	return nil
 }
 

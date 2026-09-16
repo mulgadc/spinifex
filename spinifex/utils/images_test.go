@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -340,5 +341,54 @@ func TestExtractDiskImageFromFile_Compression(t *testing.T) {
 				t.Errorf("source dir contains %v, want only %q", names, tc.filename)
 			}
 		})
+	}
+}
+
+// TestDecompressToTemp_WritesSparseHoles is the regression test for the on-disk-size blowup
+// found by verifying this fix live: a Talos raw.zst imported successfully but the decompressed
+// output was written literally rather than sparsely, costing roughly 60x the disk space of the
+// qcow2-to-raw path it sits beside. A realistic layout — a small non-zero header, a large zero
+// run standing in for unused disk space, and a trailing zero run to exercise the final Truncate
+// — should land on disk as a small fraction of its apparent size.
+func TestDecompressToTemp_WritesSparseHoles(t *testing.T) {
+	const zeroRun = 8 << 20 // 8 MiB: several multiples of sparseBlockSize, so the test is
+	// meaningful regardless of the exact block size chosen inside decompressToTemp.
+
+	payload := append([]byte("MULGA-SPARSE-FIXTURE-HEADER"), make([]byte, zeroRun)...)
+
+	tmpdir := t.TempDir()
+	outPath, err := decompressToTemp("talos.raw.img", tmpdir, ".img", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("decompressToTemp: %v", err)
+	}
+
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatal("decompressed content does not round-trip through the sparse writer")
+	}
+
+	info, err := os.Stat(outPath)
+	if err != nil {
+		t.Fatalf("stat output: %v", err)
+	}
+	apparent := info.Size()
+
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("platform does not expose block-count stat info, skipping sparse-size assertion")
+	}
+	onDisk := stat.Blocks * 512
+
+	if onDisk >= apparent {
+		t.Skip("test filesystem does not appear to support sparse files (on-disk size not below apparent size), skipping")
+	}
+
+	// The zero run should collapse to a small fraction of the apparent size; generous
+	// headroom avoids pinning an exact ratio that would vary with filesystem block size.
+	if onDisk > apparent/4 {
+		t.Errorf("on-disk size = %d bytes for %d apparent bytes, want the zero run to be sparse (< 25%% of apparent)", onDisk, apparent)
 	}
 }

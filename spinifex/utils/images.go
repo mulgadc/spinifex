@@ -702,9 +702,20 @@ func finalizeDiskImage(path string, tmpdir string) (diskimage string, err error)
 	return absPath, err
 }
 
-// decompressToTemp streams r into a new file inside tmpdir, named after src with suffix
-// stripped, and returns that path. It never writes into src's own directory, so a multi-GiB
-// source is never duplicated beside itself while the caller-provided tmpdir receives the copy.
+// sparseBlockSize is the unit decompressToTemp checks for an all-zero run before punching a
+// hole instead of writing it. 1 MiB comfortably amortises the read/seek syscall overhead over
+// a multi-GiB image and still catches the large contiguous zero runs that dominate a sparse
+// raw disk (unused extents span tens of MiB or more); a zero run shorter than one block simply
+// gets written literally, which is the safe direction for a false negative to fail in.
+const sparseBlockSize = 1 << 20
+
+// decompressToTemp streams r into a new sparse file inside tmpdir, named after src with
+// suffix stripped, and returns that path. All-zero blocks are skipped via Seek rather than
+// written, so a mostly-unused multi-GiB raw image (e.g. a Talos artifact, ~11 GiB apparent but
+// only a few hundred MiB of real content) costs disk space proportional to its real content —
+// matching the existing qcow2-to-raw path, which already writes sparse via qemu-img convert.
+// It never writes into src's own directory, so a multi-GiB source is never duplicated beside
+// itself while the caller-provided tmpdir receives the copy.
 func decompressToTemp(src, tmpdir, suffix string, r io.Reader) (string, error) {
 	outPath := filepath.Join(tmpdir, strings.TrimSuffix(filepath.Base(src), suffix))
 
@@ -714,11 +725,46 @@ func decompressToTemp(src, tmpdir, suffix string, r io.Reader) (string, error) {
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, r); err != nil {
-		return "", fmt.Errorf("decompress %s: %w", src, err)
+	var size int64
+	buf := make([]byte, sparseBlockSize)
+	for {
+		n, readErr := io.ReadFull(r, buf)
+		if n > 0 {
+			block := buf[:n]
+			if isZeroBlock(block) {
+				if _, err := out.Seek(int64(n), io.SeekCurrent); err != nil {
+					return "", fmt.Errorf("decompress %s: seek hole: %w", src, err)
+				}
+			} else if _, err := out.Write(block); err != nil {
+				return "", fmt.Errorf("decompress %s: %w", src, err)
+			}
+			size += int64(n)
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
+				break
+			}
+			return "", fmt.Errorf("decompress %s: %w", src, readErr)
+		}
+	}
+
+	// A trailing all-zero block only advances the file position via Seek, which does not
+	// extend the file on its own; Truncate records that final hole at the right size.
+	if err := out.Truncate(size); err != nil {
+		return "", fmt.Errorf("decompress %s: truncate: %w", src, err)
 	}
 
 	return outPath, nil
+}
+
+// isZeroBlock reports whether every byte in b is zero.
+func isZeroBlock(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // decompressZstd streams a single-file .zst artifact (e.g. Talos raw.zst) into tmpdir using

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // Applying PendingModifiedValues is the one control-plane operation with two
@@ -31,7 +31,7 @@ var errModifyLeaseLost = errors.New("rds: modify lease lost while applying pendi
 // this change and the caller has nothing to do.
 func (s *Service) withModifyLease(
 	ctx context.Context,
-	kv jetstream.KeyValue,
+	kv *kvstore.Bucket,
 	id string,
 	apply func(context.Context) error,
 ) (bool, error) {
@@ -92,7 +92,7 @@ func (s *Service) newModifyLeaseHolder() string {
 // is allowed, so a caller that already holds it is not deadlocked by itself.
 func (s *Service) claimModifyLease(
 	ctx context.Context,
-	kv jetstream.KeyValue,
+	kv *kvstore.Bucket,
 	id, holder string,
 ) (bool, time.Time, error) {
 	var expiresAt time.Time
@@ -113,7 +113,7 @@ func (s *Service) claimModifyLease(
 // work continue after its last successful renewal expires.
 func (s *Service) renewModifyLease(
 	ctx context.Context,
-	kv jetstream.KeyValue,
+	kv *kvstore.Bucket,
 	id, holder string,
 	expiresAt time.Time,
 	cancelApply context.CancelCauseFunc,

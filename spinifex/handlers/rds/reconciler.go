@@ -195,28 +195,23 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) (time.Duration, error) {
 	if err != nil {
 		return 0, err
 	}
-	buckets, err := AccountBucketNames(ctx, js)
+	buckets, err := AccountBuckets(ctx, js)
 	if err != nil {
 		return 0, fmt.Errorf("rds reconciler: enumerate account buckets: %w", err)
 	}
 	var revisit time.Duration
 	var failures []error
 	for _, bucket := range buckets {
-		kv, err := js.KeyValue(ctx, bucket)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("open %s: %w", bucket, err))
-			continue
-		}
-		due, err := r.reconcileAccount(ctx, kv, AccountIDFromBucketName(bucket))
+		due, err := r.reconcileAccount(ctx, bucket, AccountIDFromBucketName(bucket.Name()))
 		revisit = reconciler.Earliest(revisit, due)
 		if err != nil {
-			failures = append(failures, fmt.Errorf("reconcile %s: %w", bucket, err))
+			failures = append(failures, fmt.Errorf("reconcile %s: %w", bucket.Name(), err))
 		}
 	}
 	return revisit, errors.Join(failures...)
 }
 
-func (r *Reconciler) reconcileAccount(ctx context.Context, kv jetstream.KeyValue, accountID string) (time.Duration, error) {
+func (r *Reconciler) reconcileAccount(ctx context.Context, kv *kvstore.Bucket, accountID string) (time.Duration, error) {
 	ids, err := ListDBInstanceIDs(ctx, kv)
 	if err != nil {
 		return 0, err
@@ -244,7 +239,7 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, kv jetstream.KeyValue
 // The reconciler owns every transitional state that no single API call can
 // finish: the one it drives itself (creating), and the ones whose caller may
 // have died partway through. A settled instance is left alone.
-func (r *Reconciler) reconcileInstance(ctx context.Context, kv jetstream.KeyValue, accountID, id string) (time.Duration, error) {
+func (r *Reconciler) reconcileInstance(ctx context.Context, kv *kvstore.Bucket, accountID, id string) (time.Duration, error) {
 	var rec DBInstanceRecord
 	rev, found, err := getJSONRevision(ctx, kv, DBInstanceKey(id), &rec)
 	if err != nil || !found {
@@ -350,7 +345,7 @@ func (r *Reconciler) failureRevisit(rec *DBInstanceRecord) time.Duration {
 // vpcd applies the requested group list declaratively, so this removes the ENI
 // from the system VPC's default group rather than merely adding the new one
 // alongside it — and that default group is the whole of the exposure.
-func (r *Reconciler) remediateSystemENISG(ctx context.Context, kv jetstream.KeyValue,
+func (r *Reconciler) remediateSystemENISG(ctx context.Context, kv *kvstore.Bucket,
 	rev uint64, rec *DBInstanceRecord) (bool, error) {
 	if rec.SystemENIID == "" || rec.Status == StatusDeleting {
 		return false, nil
@@ -409,7 +404,7 @@ func (r *Reconciler) ensuredSystemSG(ctx context.Context) (string, error) {
 // operator acts. Only reported: deleting the payload on the grounds that a
 // healthy engine implies a completed bootstrap is exactly the inference this
 // protocol refuses to make.
-func (r *Reconciler) reportStalePendingBootstrap(ctx context.Context, kv jetstream.KeyValue,
+func (r *Reconciler) reportStalePendingBootstrap(ctx context.Context, kv *kvstore.Bucket,
 	accountID string, rec *DBInstanceRecord) error {
 	key := accountID + "/" + rec.DBInstanceIdentifier
 	stale := rec.Status == StatusAvailable && time.Since(rec.CreatedAt) > r.svc.bootstrapTimeout()
@@ -454,7 +449,7 @@ func (r *Reconciler) forgetPendingReport(key string) {
 	delete(r.reportedPending, key)
 }
 
-func (r *Reconciler) reconcileCreating(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+func (r *Reconciler) reconcileCreating(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	// No lower bound on the heartbeat: the VM is new, so any beat naming it is
 	// necessarily this instance's.
 	healthy, err := r.engineReady(ctx, accountID, rec, time.Time{})
@@ -485,7 +480,7 @@ func withAgentReason(rec *DBInstanceRecord, reason string) string {
 // Reboot and start both end the same way: the engine comes back and says so.
 // The API call that began them returns before that happens, so this is what
 // actually lands the instance in available.
-func (r *Reconciler) reconcileRestarting(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+func (r *Reconciler) reconcileRestarting(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	// The VM keeps its instance ID across a restart, so only a beat sent after
 	// the transition began proves the engine came back rather than that it was
 	// up before it went down.
@@ -516,7 +511,7 @@ func (r *Reconciler) reconcileRestarting(ctx context.Context, kv jetstream.KeyVa
 // half-applied, and the in-guest filesystem grow, which can only run once the
 // agent is up again. Both are driven from here so a customer's modify completes
 // without them, not just without them watching.
-func (r *Reconciler) reconcileModifying(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+func (r *Reconciler) reconcileModifying(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	pending := rec.PendingModifiedValues
 	overrun := time.Since(transitionStarted(rec)) > transitionTimeout
 
@@ -590,7 +585,7 @@ func (r *Reconciler) reconcileModifying(ctx context.Context, kv jetstream.KeyVal
 // A stop whose caller died leaves the VM possibly still running, so the stop is
 // re-issued rather than assumed: it is idempotent, and a VM no node holds is
 // confirmed down against the fleet before the record calls it stopped.
-func (r *Reconciler) reconcileStopping(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+func (r *Reconciler) reconcileStopping(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	if r.svc.deps.Instances == nil {
 		return errors.New("rds reconciler: no instance command path configured")
 	}
@@ -617,7 +612,7 @@ func (r *Reconciler) reconcileStopping(ctx context.Context, kv jetstream.KeyValu
 // resource, so replaying it converges rather than failing on what it already
 // did; only a teardown still stuck past the bound is called failed, which is
 // what lets the customer retry the delete.
-func (r *Reconciler) reconcileDeleting(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+func (r *Reconciler) reconcileDeleting(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	err := r.svc.teardownDBInstance(ctx, kv, accountID, rec, false)
 	if err == nil || errors.Is(err, errFinalSnapshotInProgress) {
 		return nil
@@ -636,7 +631,7 @@ func (r *Reconciler) reconcileDeleting(ctx context.Context, kv jetstream.KeyValu
 // died. It is returned to where the snapshot found it; the quiesce needs no
 // undoing, because the agent's own hold deadline is far shorter than this bound
 // and has already released the engine.
-func (r *Reconciler) reconcileBackingUp(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+func (r *Reconciler) reconcileBackingUp(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	if time.Since(transitionStarted(rec)) <= transitionTimeout {
 		return nil
 	}
@@ -660,7 +655,7 @@ func (r *Reconciler) reconcileBackingUp(ctx context.Context, kv jetstream.KeyVal
 // The record is re-read rather than carried over from the status pass above,
 // which may have transitioned the instance — a backup must not be started against
 // a status that has since moved.
-func (r *Reconciler) reconcileWindows(ctx context.Context, kv jetstream.KeyValue, accountID, id string) error {
+func (r *Reconciler) reconcileWindows(ctx context.Context, kv *kvstore.Bucket, accountID, id string) error {
 	var rec DBInstanceRecord
 	rev, found, err := getJSONRevision(ctx, kv, DBInstanceKey(id), &rec)
 	if err != nil || !found {
@@ -680,7 +675,7 @@ func (r *Reconciler) reconcileWindows(ctx context.Context, kv jetstream.KeyValue
 // snapshot is the authority: it was tagged with the DB snapshot identifier before
 // the record was flipped, so its presence says the data exists and its absence
 // says the create died before cutting it.
-func (r *Reconciler) reconcileSnapshots(ctx context.Context, kv jetstream.KeyValue, accountID string) (time.Duration, error) {
+func (r *Reconciler) reconcileSnapshots(ctx context.Context, kv *kvstore.Bucket, accountID string) (time.Duration, error) {
 	ids, err := ListDBSnapshotIDs(ctx, kv)
 	if err != nil {
 		return 0, fmt.Errorf("list DB snapshots: %w", err)
@@ -713,16 +708,16 @@ func (r *Reconciler) reconcileSnapshots(ctx context.Context, kv jetstream.KeyVal
 // Either adopts the EC2 snapshot the dead worker cut, or withdraws the record so
 // its identifier is usable again. A record left in creating would otherwise hold
 // the name forever while naming nothing a customer can restore.
-func (r *Reconciler) resolveCreatingSnapshot(ctx context.Context, kv jetstream.KeyValue, rev uint64,
+func (r *Reconciler) resolveCreatingSnapshot(ctx context.Context, kv *kvstore.Bucket, rev uint64,
 	accountID string, rec *DBSnapshotRecord) error {
 	snapshotID, err := r.svc.findEC2SnapshotFor(ctx, accountID, rec.DBSnapshotIdentifier)
 	if err != nil {
 		return err
 	}
 	if snapshotID == "" {
-		if err := kv.Delete(ctx, DBSnapshotKey(rec.DBSnapshotIdentifier), jetstream.LastRevision(rev)); err != nil {
+		if err := kv.CompareAndDelete(ctx, DBSnapshotKey(rec.DBSnapshotIdentifier), rev); err != nil {
 			switch {
-			case errors.Is(err, jetstream.ErrKeyNotFound), errors.Is(err, jetstream.ErrKeyRevisionMismatch):
+			case errors.Is(err, kvstore.ErrConflict):
 				// A concurrent completion or delete owns the newer revision.
 				return nil
 			default:
@@ -743,7 +738,7 @@ func (r *Reconciler) resolveCreatingSnapshot(ctx context.Context, kv jetstream.K
 	// conservative reading is the one that never overstates the snapshot.
 	rec.CrashConsistent = true
 	if err := updateJSON(ctx, kv, DBSnapshotKey(rec.DBSnapshotIdentifier), rev, rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		if errors.Is(err, kvstore.ErrConflict) {
 			return nil
 		}
 		return err
@@ -829,7 +824,7 @@ func (r *Reconciler) engineReady(ctx context.Context, accountID string, rec *DBI
 
 // A CAS write, so a transition raced by an agent report or a lifecycle op is
 // dropped rather than clobbering the newer state; the next pass re-reads.
-func (r *Reconciler) transition(ctx context.Context, kv jetstream.KeyValue, rev uint64, rec *DBInstanceRecord, to Status, reason string) error {
+func (r *Reconciler) transition(ctx context.Context, kv *kvstore.Bucket, rev uint64, rec *DBInstanceRecord, to Status, reason string) error {
 	if !CanTransition(rec.Status, to) {
 		return fmt.Errorf("illegal transition %s -> %s", rec.Status, to)
 	}
@@ -845,7 +840,7 @@ func (r *Reconciler) transition(ctx context.Context, kv jetstream.KeyValue, rev 
 	rec.UpdatedAt = time.Now().UTC()
 
 	if err := updateJSON(ctx, kv, DBInstanceKey(rec.DBInstanceIdentifier), rev, rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		if errors.Is(err, kvstore.ErrConflict) {
 			slog.DebugContext(ctx, "rds reconciler: transition lost a revision race; retrying next pass",
 				"dbInstance", rec.DBInstanceIdentifier, "to", to)
 			return nil
@@ -855,7 +850,7 @@ func (r *Reconciler) transition(ctx context.Context, kv jetstream.KeyValue, rev 
 	slog.InfoContext(ctx, "rds reconciler: DB instance transitioned",
 		"dbInstance", rec.DBInstanceIdentifier, "from", from, "to", to, "reason", reason)
 	if from == StatusCreating && to == StatusAvailable {
-		r.svc.RecordEvent(ctx, AccountIDFromBucketName(kv.Bucket()), EventSourceTypeDBInstance,
+		r.svc.RecordEvent(ctx, AccountIDFromBucketName(kv.Name()), EventSourceTypeDBInstance,
 			rec.DBInstanceIdentifier, "DB instance is available.", EventCategoryAvailability)
 	}
 	return nil
@@ -863,7 +858,7 @@ func (r *Reconciler) transition(ctx context.Context, kv jetstream.KeyValue, rev 
 
 // transition against a freshly read revision, for a caller that has written the
 // record itself since the pass opened and so cannot use the revision it read.
-func (r *Reconciler) transitionFresh(ctx context.Context, kv jetstream.KeyValue, id string, to Status, reason string) error {
+func (r *Reconciler) transitionFresh(ctx context.Context, kv *kvstore.Bucket, id string, to Status, reason string) error {
 	var rec DBInstanceRecord
 	rev, found, err := getJSONRevision(ctx, kv, DBInstanceKey(id), &rec)
 	if err != nil || !found {

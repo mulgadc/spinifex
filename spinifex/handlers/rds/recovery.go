@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // How long an instance may be observed dark before it is called failed, unless
@@ -73,7 +73,7 @@ func classifyHealth(obs healthObservation) healthVerdict {
 // engine reports healthy again — the recovery the AMI's in-guest
 // Restart=on-failure and EC2's VM auto-restart provide underneath. v1.0 does no
 // repair of its own.
-func (r *Reconciler) reconcileHealth(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+func (r *Reconciler) reconcileHealth(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	obs := r.observeAgent(accountID, rec)
 
 	// The VM lookup is a fleet-wide describe fan-out, so it is issued only where
@@ -101,7 +101,7 @@ func (r *Reconciler) reconcileHealth(ctx context.Context, kv jetstream.KeyValue,
 // A healthy heartbeat is the only thing that resets the failure clock. VM state
 // alone must not: a VM that boots and immediately wedges would otherwise reset
 // it every pass and mask a persistent fault indefinitely.
-func (r *Reconciler) clearFailure(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord) error {
+func (r *Reconciler) clearFailure(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	if rec.Status == StatusFailed {
 		rec.UnhealthySince = nil
 		if err := r.transition(ctx, kv, rev, rec, StatusAvailable, ""); err != nil {
@@ -122,7 +122,7 @@ func (r *Reconciler) clearFailure(ctx context.Context, kv jetstream.KeyValue, re
 // Starts the failure clock on the first dark pass and fails the instance once
 // the grace window has elapsed. Both writes carry the clock, so the timestamp a
 // later leader measures against is the one the original observation stamped.
-func (r *Reconciler) recordFailure(ctx context.Context, kv jetstream.KeyValue, rev uint64, accountID string, rec *DBInstanceRecord, obs healthObservation) error {
+func (r *Reconciler) recordFailure(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord, obs healthObservation) error {
 	// Terminal for the control plane in v1.0: nothing retries, so re-recording a
 	// failure that is already recorded would only churn the record.
 	if rec.Status == StatusFailed {
@@ -151,10 +151,10 @@ func (r *Reconciler) recordFailure(ctx context.Context, kv jetstream.KeyValue, r
 // Writes the clock without a status change. A lost revision race is dropped
 // rather than retried: the record moved under this pass, and the next one
 // re-reads and re-stamps against whatever it moved to.
-func (r *Reconciler) persistFailureClock(ctx context.Context, kv jetstream.KeyValue, rev uint64, rec *DBInstanceRecord) error {
+func (r *Reconciler) persistFailureClock(ctx context.Context, kv *kvstore.Bucket, rev uint64, rec *DBInstanceRecord) error {
 	rec.UpdatedAt = time.Now().UTC()
 	err := updateJSON(ctx, kv, DBInstanceKey(rec.DBInstanceIdentifier), rev, rec)
-	if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+	if errors.Is(err, kvstore.ErrConflict) {
 		slog.DebugContext(ctx, "rds reconciler: failure clock lost a revision race; retrying next pass",
 			"dbInstance", rec.DBInstanceIdentifier)
 		return nil

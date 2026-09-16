@@ -5,7 +5,7 @@ import (
 	"log/slog"
 
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // The vanity hostname for a DB instance, or "" on a deployment with no base
@@ -31,20 +31,15 @@ func (s *Service) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
 	if err != nil {
 		return nil, false
 	}
-	buckets, err := AccountBucketNames(ctx, js)
+	buckets, err := AccountBuckets(ctx, js)
 	if err != nil {
 		slog.Warn("rds DesiredDNSChanges: enumerate account buckets", "err", err)
 		return nil, false
 	}
 	for _, bucket := range buckets {
-		kv, err := js.KeyValue(ctx, bucket)
+		bucketChanges, err := desiredBucketDNSChanges(ctx, bucket, s.deps.BaseDomain)
 		if err != nil {
-			slog.Warn("rds DesiredDNSChanges: open account bucket", "bucket", bucket, "err", err)
-			return nil, false
-		}
-		bucketChanges, err := desiredBucketDNSChanges(ctx, kv, s.deps.BaseDomain)
-		if err != nil {
-			slog.Warn("rds DesiredDNSChanges: read DB instances", "bucket", bucket, "err", err)
+			slog.Warn("rds DesiredDNSChanges: read DB instances", "bucket", bucket.Name(), "err", err)
 			return nil, false
 		}
 		changes = append(changes, bucketChanges...)
@@ -55,7 +50,7 @@ func (s *Service) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
 // A deleted instance's record is gone, so it contributes nothing and the
 // reconcile prunes its record. Anything still holding an ENI IP keeps its name
 // resolvable, including a failed instance an operator is still investigating.
-func desiredBucketDNSChanges(ctx context.Context, kv jetstream.KeyValue, baseDomain string) ([]handlers_dns.Change, error) {
+func desiredBucketDNSChanges(ctx context.Context, kv *kvstore.Bucket, baseDomain string) ([]handlers_dns.Change, error) {
 	ids, err := ListDBInstanceIDs(ctx, kv)
 	if err != nil {
 		return nil, err

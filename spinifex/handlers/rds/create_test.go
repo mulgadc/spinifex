@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"

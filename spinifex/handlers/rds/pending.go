@@ -7,7 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // The single drain for everything a modify recorded but has not delivered. Both
@@ -25,7 +25,7 @@ import (
 // The caller has already moved the instance into modifying; the record is left
 // there, because the engine has to come back and report healthy before the
 // reconciler calls it available.
-func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord) error {
+func (s *Service) applyPendingModifications(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBInstanceRecord) error {
 	pending := rec.PendingModifiedValues
 	if pending.empty() {
 		return nil
@@ -146,7 +146,7 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv jetstream.Ke
 // A re-resolve, never a merge: the whole set is recomputed from the catalog and
 // the new group's overrides, so a parameter the old group set and the new one
 // does not reverts to its default rather than lingering.
-func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord, group, instanceClass string, tolerateUnreachableAgent bool) error {
+func (s *Service) applyParameterGroup(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBInstanceRecord, group, instanceClass string, tolerateUnreachableAgent bool) error {
 	engine, err := LookupEngine(rec.Engine)
 	if err != nil {
 		return err
@@ -187,7 +187,7 @@ func (s *Service) applyParameterGroup(ctx context.Context, kv jetstream.KeyValue
 // here in place of the dead agent's reply, with nothing pending a reboot.
 // Persistence uses a detached ctx: the budget that just found the agent
 // unreachable must not also fail the write that unblocks recovery from it.
-func (s *Service) deferParameterApplyToReplacement(ctx context.Context, kv jetstream.KeyValue, rec *DBInstanceRecord, resolved []Parameter) error {
+func (s *Service) deferParameterApplyToReplacement(ctx context.Context, kv *kvstore.Bucket, rec *DBInstanceRecord, resolved []Parameter) error {
 	slog.WarnContext(ctx, "rds: the instance agent is unreachable; deferring the parameter apply to the replacement VM's fresh agent",
 		"dbInstance", rec.DBInstanceIdentifier)
 	rec.Bootstrap.ResolvedParameters = resolved
@@ -211,7 +211,7 @@ func (s *Service) deferParameterApplyToReplacement(ctx context.Context, kv jetst
 // The event is deduped off the stored flag because the reconciler retries a
 // failed modify every pass. A failure to persist joins the cause rather than
 // replacing it — the apply is what the caller asked about.
-func (s *Service) recordParameterApplyFailure(ctx context.Context, kv jetstream.KeyValue, accountID string,
+func (s *Service) recordParameterApplyFailure(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, group string, cause error,
 ) error {
 	first := false
@@ -237,7 +237,7 @@ func (s *Service) recordParameterApplyFailure(ctx context.Context, kv jetstream.
 // the control plane has already grown the volume, and this extends the guest's
 // filesystem onto the capacity that is now there. Both ext4 and XFS grow while
 // mounted, so it needs no ordering against the engine start.
-func (s *Service) finishFilesystemGrow(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord) error {
+func (s *Service) finishFilesystemGrow(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBInstanceRecord) error {
 	if err := s.growFilesystem(ctx, accountID, rec.DBInstanceIdentifier); err != nil {
 		return fmt.Errorf("extend the filesystem of %s onto its grown volume: %w", rec.DBInstanceIdentifier, err)
 	}

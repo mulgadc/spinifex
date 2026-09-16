@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // AWS's own name rules. The name is a KV key rather than a DNS label, so the
@@ -76,7 +76,7 @@ func (s *Service) CreateDBSubnetGroup(ctx context.Context, input *rds.CreateDBSu
 	// Create rather than Put, so two concurrent creates of one name have exactly
 	// one winner instead of both reporting success over each other's subnets.
 	if err := createJSON(ctx, kv, DBSubnetGroupKey(name), &rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, kvstore.ErrExists) {
 			return nil, awserrors.Errorf(awserrors.ErrorDBSubnetGroupAlreadyExists,
 				"DB subnet group %s already exists", name)
 		}
@@ -234,7 +234,7 @@ func (s *Service) resolveGroupSubnets(ctx context.Context, accountID string, req
 
 // The record plus its revision. A missing group raises AWS's own fault, so a
 // well-formed name that resolves to nothing is distinguishable from a bad one.
-func getDBSubnetGroup(ctx context.Context, kv jetstream.KeyValue, name string) (*DBSubnetGroupRecord, uint64, error) {
+func getDBSubnetGroup(ctx context.Context, kv *kvstore.Bucket, name string) (*DBSubnetGroupRecord, uint64, error) {
 	var rec DBSubnetGroupRecord
 	rev, found, err := getJSONRevision(ctx, kv, DBSubnetGroupKey(name), &rec)
 	if err != nil {
@@ -249,7 +249,7 @@ func getDBSubnetGroup(ctx context.Context, kv jetstream.KeyValue, name string) (
 // The identifiers of every instance in the account matching uses, sorted. Both
 // group deletes share it: an in-use guard that missed one instance would strand
 // a live database's configuration.
-func instancesUsingGroup(ctx context.Context, kv jetstream.KeyValue, uses func(*DBInstanceRecord) bool) ([]string, error) {
+func instancesUsingGroup(ctx context.Context, kv *kvstore.Bucket, uses func(*DBInstanceRecord) bool) ([]string, error) {
 	ids, err := ListDBInstanceIDs(ctx, kv)
 	if err != nil {
 		return nil, err

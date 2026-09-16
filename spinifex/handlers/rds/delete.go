@@ -12,9 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 var errFinalSnapshotInProgress = errors.New("rds: final DB snapshot creation is still in progress")
@@ -83,7 +83,7 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 			if reservation.creator {
 				s.rollbackFinalSnapshotReservation(ctx, kv, finalSnapshot, reservation.revision)
 			}
-			if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+			if errors.Is(err, kvstore.ErrConflict) {
 				return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
 					"DB instance %s changed state concurrently; retry the delete", id)
 			}
@@ -153,7 +153,7 @@ func finalSnapshotIsOurs(existing *DBSnapshotRecord, rec *DBInstanceRecord) bool
 // Rejects a taken identifier before anything is torn down, as AWS does. Leaving
 // it to the snapshot step would terminate the VM first and then fail on an
 // error no retry can clear.
-func (s *Service) checkFinalSnapshotAvailable(ctx context.Context, kv jetstream.KeyValue, rec *DBInstanceRecord, identifier string) error {
+func (s *Service) checkFinalSnapshotAvailable(ctx context.Context, kv *kvstore.Bucket, rec *DBInstanceRecord, identifier string) error {
 	if identifier == "" {
 		return nil
 	}
@@ -175,7 +175,7 @@ func (s *Service) checkFinalSnapshotAvailable(ctx context.Context, kv jetstream.
 //
 // Every step treats a missing resource as done, so this is safe to re-run from
 // any point it stopped at.
-func (s *Service) teardownDBInstance(ctx context.Context, kv jetstream.KeyValue, accountID string,
+func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, finalSnapshotCreator bool) error {
 	// Asked to stop cleanly even though the VM is about to go: it is what makes
 	// the final snapshot a clean checkpoint rather than one needing WAL replay.
@@ -203,7 +203,7 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv jetstream.KeyValue,
 	s.deleteInstanceENIs(ctx, accountID, rec)
 
 	if rec.InstanceID != "" {
-		if err := s.DeleteInstanceIndex(ctx, rec.InstanceID); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+		if err := s.DeleteInstanceIndex(ctx, rec.InstanceID); err != nil {
 			return fmt.Errorf("rds: delete the instance index entry for %s: %w", rec.DBInstanceIdentifier, err)
 		}
 	}
@@ -214,7 +214,7 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv jetstream.KeyValue,
 	}
 	// Last: while it exists the instance is still nameable, and everything above
 	// is reachable only through it.
-	if err := kv.Delete(ctx, DBInstanceKey(rec.DBInstanceIdentifier)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := kv.Delete(ctx, DBInstanceKey(rec.DBInstanceIdentifier)); err != nil {
 		return fmt.Errorf("rds: delete the DB instance record for %s: %w", rec.DBInstanceIdentifier, err)
 	}
 
@@ -244,7 +244,7 @@ func (s *Service) terminateInstanceVM(ctx context.Context, instanceID string) er
 // Reserves the final snapshot name before deletion becomes destructive. The
 // creator is the only worker allowed to cut new data; retries may adopt data it
 // already cut, but cannot race it into making a duplicate snapshot.
-func (s *Service) reserveFinalSnapshot(ctx context.Context, kv jetstream.KeyValue, accountID string,
+func (s *Service) reserveFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, identifier string) (finalSnapshotReservation, error) {
 	if identifier == "" || rec.DataVolumeID == "" {
 		return finalSnapshotReservation{}, nil
@@ -262,7 +262,7 @@ func (s *Service) reserveFinalSnapshot(ctx context.Context, kv jetstream.KeyValu
 	if err == nil {
 		return finalSnapshotReservation{creator: true, revision: rev}, nil
 	}
-	if !errors.Is(err, jetstream.ErrKeyExists) {
+	if !errors.Is(err, kvstore.ErrExists) {
 		return finalSnapshotReservation{}, err
 	}
 
@@ -281,15 +281,14 @@ func (s *Service) reserveFinalSnapshot(ctx context.Context, kv jetstream.KeyValu
 // Removes a reservation when the instance never entered deleting or the EC2
 // create failed. The revision guard prevents cleanup from deleting a record
 // another worker has already completed.
-func (s *Service) rollbackFinalSnapshotReservation(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) rollbackFinalSnapshotReservation(ctx context.Context, kv *kvstore.Bucket,
 	identifier string, rev uint64) {
 	if identifier == "" || rev == 0 {
 		return
 	}
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer cancel()
-	if err := kv.Delete(rbCtx, DBSnapshotKey(identifier), jetstream.LastRevision(rev)); err != nil &&
-		!errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := kv.CompareAndDelete(rbCtx, DBSnapshotKey(identifier), rev); err != nil {
 		slog.WarnContext(rbCtx, "rds: rollback of a final snapshot reservation failed",
 			"dbSnapshot", identifier, "err", err)
 	}
@@ -298,7 +297,7 @@ func (s *Service) rollbackFinalSnapshotReservation(ctx context.Context, kv jetst
 // Records the final snapshot under the reservation written before teardown. A
 // retry first adopts matching EC2 data left by a dead creator; it never cuts a
 // second snapshot while that creator may still be running.
-func (s *Service) takeFinalSnapshot(ctx context.Context, kv jetstream.KeyValue, accountID string,
+func (s *Service) takeFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, creator bool) error {
 	if rec.FinalSnapshotIdentifier == "" || rec.DataVolumeID == "" {
 		return nil
@@ -393,7 +392,7 @@ func (s *Service) takeFinalSnapshot(ctx context.Context, kv jetstream.KeyValue, 
 
 // Completes only the snapshot fields under CAS, preserving tags changed while
 // the EC2 snapshot was being cut.
-func (s *Service) completeFinalSnapshot(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) completeFinalSnapshot(ctx context.Context, kv *kvstore.Bucket,
 	source *DBInstanceRecord, snapshotID string) (bool, error) {
 	key := DBSnapshotKey(source.FinalSnapshotIdentifier)
 	for range tagWriteAttempts {
@@ -426,7 +425,7 @@ func (s *Service) completeFinalSnapshot(ctx context.Context, kv jetstream.KeyVal
 		record.Status = SnapshotStatusAvailable
 		if err := updateJSON(ctx, kv, key, rev, &record); err == nil {
 			return true, nil
-		} else if !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		} else if !errors.Is(err, kvstore.ErrConflict) {
 			return false, err
 		}
 	}
@@ -447,7 +446,7 @@ func (s *Service) recordFinalSnapshotCreated(ctx context.Context, accountID stri
 // copying them, so the volume cannot be deleted while any snapshot survives —
 // including the final one just taken. It is retained instead, recorded with the
 // snapshots holding it so the last DeleteDBSnapshot can release it.
-func (s *Service) releaseDataVolume(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord) error {
+func (s *Service) releaseDataVolume(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBInstanceRecord) error {
 	if rec.DataVolumeID == "" {
 		return nil
 	}
@@ -482,7 +481,7 @@ func (s *Service) releaseDataVolume(ctx context.Context, kv jetstream.KeyValue, 
 // the last DeleteDBSnapshot can release it. holdersUnresolved marks the
 // case where the volume store refused the delete but named nobody, so a release
 // has to re-check rather than trust an empty list.
-func (s *Service) retainDataVolume(ctx context.Context, kv jetstream.KeyValue, accountID string,
+func (s *Service) retainDataVolume(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, holders []string, holdersUnresolved bool) error {
 	retained := RetainedVolumeRecord{
 		VolumeID:             rec.DataVolumeID,

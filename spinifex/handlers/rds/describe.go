@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // The prefix AWS gives a DB instance's immutable resource ID, and the two filter
@@ -116,7 +116,7 @@ func dbInstanceFilterMatcher(filters []*rds.Filter) (func(*DBInstanceRecord) boo
 }
 
 // Returns the record plus its revision, for callers that follow with a CAS.
-func (s *Service) getDBInstance(ctx context.Context, kv jetstream.KeyValue, id string) (*DBInstanceRecord, uint64, error) {
+func (s *Service) getDBInstance(ctx context.Context, kv *kvstore.Bucket, id string) (*DBInstanceRecord, uint64, error) {
 	var rec DBInstanceRecord
 	rev, found, err := getJSONRevision(ctx, kv, DBInstanceKey(id), &rec)
 	if err != nil {

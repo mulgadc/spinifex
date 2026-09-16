@@ -45,7 +45,9 @@ func storedPayload(t *testing.T, svc *Service, id string) (*BootstrapPayloadEnve
 	t.Helper()
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	entry, err := kv.Get(t.Context(), BootstrapPayloadKey(id))
+	raw, err := kv.KV(t.Context())
+	require.NoError(t, err)
+	entry, err := raw.Get(t.Context(), BootstrapPayloadKey(id))
 	if err != nil {
 		return nil, ""
 	}
@@ -417,16 +419,18 @@ func TestCreateDBInstance_StagesThePasswordEncrypted(t *testing.T) {
 	keys, err := bucketKeys(t.Context(), kv)
 	require.NoError(t, err)
 	require.Contains(t, keys, BootstrapPayloadKey(testDBInstanceID))
+	raw, err := kv.KV(t.Context())
+	require.NoError(t, err)
 
 	// Nothing anywhere in the account bucket may hold the supplied password.
 	for _, key := range keys {
-		entry, err := kv.Get(t.Context(), key)
+		entry, err := raw.Get(t.Context(), key)
 		require.NoError(t, err)
 		assert.NotContains(t, string(entry.Value()), "Sup3rSecret!", "cleartext at rest under %s", key)
 	}
 
 	var envelope BootstrapPayloadEnvelope
-	entry, err := kv.Get(t.Context(), BootstrapPayloadKey(testDBInstanceID))
+	entry, err := raw.Get(t.Context(), BootstrapPayloadKey(testDBInstanceID))
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(entry.Value(), &envelope))
 	plaintext, err := handlers_iam.DecryptSecret(envelope.EncryptedPayload, testMasterKey)

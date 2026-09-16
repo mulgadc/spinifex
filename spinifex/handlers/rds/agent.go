@@ -7,9 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 )
 
@@ -416,7 +415,7 @@ func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstra
 // A failure to persist the backfill is not a failure to serve it: the value is
 // re-derivable and the next fetch records it, whereas failing here would hold a
 // bootable instance down for a bookkeeping write.
-func (s *Service) resolveClientCIDR(ctx context.Context, kv jetstream.KeyValue, rec *DBInstanceRecord) (string, error) {
+func (s *Service) resolveClientCIDR(ctx context.Context, kv *kvstore.Bucket, rec *DBInstanceRecord) (string, error) {
 	if rec.VpcCIDR != "" {
 		return rec.VpcCIDR, nil
 	}
@@ -453,7 +452,7 @@ func (s *Service) resolveClientCIDR(ctx context.Context, kv jetstream.KeyValue, 
 // rather than returned. Propagating it would discard an attach response this
 // call has already built and reinstate the retry loop it exists to avoid; the
 // verdict is idempotent, so the next fetch records it.
-func (s *Service) applyStagedBootstrap(ctx context.Context, kv jetstream.KeyValue, accountID string,
+func (s *Service) applyStagedBootstrap(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, generationMatches bool, out *GetDBBootstrapConfigOutput) error {
 	envelope, _, err := readBootstrapPayload(ctx, kv, rec.DBInstanceIdentifier)
 	if err != nil {
@@ -500,7 +499,7 @@ func (s *Service) applyStagedBootstrap(ctx context.Context, kv jetstream.KeyValu
 // was never consumed also never bootstrapped, so there is no datadir to save:
 // the password is removed on sight and the instance is marked for recreation
 // rather than left holding a secret at rest for an operator who may never act.
-func (s *Service) scrubLegacyBootstrap(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) scrubLegacyBootstrap(ctx context.Context, kv *kvstore.Bucket,
 	accountID string, rec *DBInstanceRecord) error {
 	if rec.Bootstrap.MasterUserPassword == "" {
 		return nil
@@ -579,7 +578,7 @@ func (s *Service) AcknowledgeDBBootstrap(ctx context.Context, input *Acknowledge
 	}); err != nil {
 		return nil, err
 	}
-	if err := deleteBootstrapPayload(ctx, kv, input.DBInstanceIdentifier, jetstream.LastRevision(rev)); err != nil {
+	if err := deleteBootstrapPayloadAt(ctx, kv, input.DBInstanceIdentifier, rev); err != nil {
 		return nil, err
 	}
 

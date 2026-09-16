@@ -128,7 +128,9 @@ func readRecord(t *testing.T, svc *Service) (DBInstanceRecord, string) {
 	t.Helper()
 	kv, err := svc.bucket(context.Background(), testAccountID)
 	require.NoError(t, err)
-	entry, err := kv.Get(context.Background(), DBInstanceKey(testDBID))
+	raw, err := kv.KV(context.Background())
+	require.NoError(t, err)
+	entry, err := raw.Get(context.Background(), DBInstanceKey(testDBID))
 	require.NoError(t, err)
 	var rec DBInstanceRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &rec))

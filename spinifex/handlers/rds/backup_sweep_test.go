@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -191,7 +192,10 @@ func TestSweep_LeavesTheBackupSetWhenTheRecordCannotBeRead(t *testing.T) {
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	stale := missingKey{KeyValue: kv, key: DBInstanceKey(testDBID)}
+	raw, err := kv.KV(t.Context())
+	require.NoError(t, err)
+	stale := kvstore.NewOpenBucket(nil, missingKey{KeyValue: raw, key: DBInstanceKey(testDBID)},
+		AccountBucketConfig(testAccountID))
 
 	reaped, err := h.svc.sweepInstanceBackups(t.Context(), stale, testAccountID, testDBID,
 		h.automatedStamps(t, testDBID), defaultSweepDeleteLimit)

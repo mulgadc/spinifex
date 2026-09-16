@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // AWS's cap on one ModifyDBParameterGroup call.
@@ -68,7 +68,7 @@ func (s *Service) CreateDBParameterGroup(ctx context.Context, input *rds.CreateD
 		UpdatedAt:   now,
 	}
 	if err := createJSON(ctx, kv, DBParameterGroupMetaKey(name), &rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, kvstore.ErrExists) {
 			return nil, awserrors.Errorf(awserrors.ErrorDBParameterGroupAlreadyExists,
 				"DB parameter group %s already exists", name)
 		}
@@ -198,7 +198,7 @@ func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyD
 // Applies the complete effective set to every instance currently attached to
 // the group. Each record is re-read before the command so a concurrent detach
 // or delete does not receive parameters for a group it no longer uses.
-func (s *Service) propagateParameterGroup(ctx context.Context, kv jetstream.KeyValue, accountID, name string) error {
+func (s *Service) propagateParameterGroup(ctx context.Context, kv *kvstore.Bucket, accountID, name string) error {
 	ids, err := instancesUsingGroup(ctx, kv, func(rec *DBInstanceRecord) bool {
 		return rec.DBParameterGroupName == name
 	})
@@ -403,7 +403,7 @@ func resolveApplyMethod(spec ParameterSpec, requested string) (string, error) {
 // is synthesised rather than written on read: the record carries nothing a write
 // would preserve, and materialising it on a describe would make a read path a
 // writer for no gain.
-func getDBParameterGroup(ctx context.Context, kv jetstream.KeyValue, accountID, name string) (*DBParameterGroupRecord, uint64, error) {
+func getDBParameterGroup(ctx context.Context, kv *kvstore.Bucket, accountID, name string) (*DBParameterGroupRecord, uint64, error) {
 	var rec DBParameterGroupRecord
 	rev, found, err := getJSONRevision(ctx, kv, DBParameterGroupMetaKey(name), &rec)
 	if err != nil {
@@ -513,7 +513,7 @@ func (s *Service) projectParameterGroupRecord(rec *DBParameterGroupRecord) *rds.
 // Every path that binds a group to an instance comes through here — create,
 // modify, restore, the deferred apply and group propagation — so the
 // cross-engine refusal is one check rather than five.
-func (s *Service) resolveGroupParameters(ctx context.Context, kv jetstream.KeyValue, accountID string, engine Engine, group, instanceClass string) ([]Parameter, error) {
+func (s *Service) resolveGroupParameters(ctx context.Context, kv *kvstore.Bucket, accountID string, engine Engine, group, instanceClass string) ([]Parameter, error) {
 	rec, _, err := getDBParameterGroup(ctx, kv, accountID, group)
 	if err != nil {
 		return nil, err

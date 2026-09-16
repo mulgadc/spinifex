@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // AWS's own tag limits. The reserved prefix is refused rather than dropped: a
@@ -180,9 +180,9 @@ func (s *Service) resolveTaggable(resourceName, accountID string) (taggableResou
 // The record plus its revision. A missing record raises the resource's own
 // not-found fault, so an ARN that parses but names nothing is distinguishable
 // from one that does not parse.
-func readTagged(ctx context.Context, kv jetstream.KeyValue, resource taggableResource, identifier string) (TaggedRecord, uint64, error) {
+func readTagged(ctx context.Context, kv *kvstore.Bucket, resource taggableResource, identifier string) (TaggedRecord, uint64, error) {
 	rec := resource.newRecord()
-	rev, found, err := getJSONRevision(ctx, kv, resource.key(identifier), rec)
+	rev, found, err := getJSONRevisionAny(ctx, kv, resource.key(identifier), rec)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -195,7 +195,7 @@ func readTagged(ctx context.Context, kv jetstream.KeyValue, resource taggableRes
 // Applies mutate to the record's tags under CAS. Losing the CAS means another
 // tag write landed first, so the mutation is replayed against its result rather
 // than overwriting it.
-func mutateTags(ctx context.Context, kv jetstream.KeyValue, resource taggableResource, identifier string, mutate func(map[string]string) (map[string]string, error)) error {
+func mutateTags(ctx context.Context, kv *kvstore.Bucket, resource taggableResource, identifier string, mutate func(map[string]string) (map[string]string, error)) error {
 	key := resource.key(identifier)
 	for range tagWriteAttempts {
 		rec, rev, err := readTagged(ctx, kv, resource, identifier)
@@ -214,7 +214,7 @@ func mutateTags(ctx context.Context, kv jetstream.KeyValue, resource taggableRes
 		}
 		// A revision mismatch is a lost race with another writer, not a
 		// duplicate: re-read the record and re-apply the tag mutation.
-		if !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		if !errors.Is(err, kvstore.ErrConflict) {
 			return err
 		}
 	}

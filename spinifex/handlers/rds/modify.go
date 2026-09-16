@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // The resolved effect of a ModifyDBInstance request: what changes now and what
@@ -353,7 +353,7 @@ func (s *Service) planBackupSettings(input *rds.ModifyDBInstanceInput, rec *DBIn
 // rotation, an ENI security-group re-association, and record settings. Each is
 // applied before any disruptive work, so a modify that carries both does not
 // lose the cheap half to a failure in the expensive one.
-func (s *Service) applyImmediateModify(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord, plan *modifyPlan) error {
+func (s *Service) applyImmediateModify(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBInstanceRecord, plan *modifyPlan) error {
 	if !plan.immediate() {
 		return nil
 	}
@@ -427,7 +427,7 @@ func (s *Service) applyImmediateModify(ctx context.Context, kv jetstream.KeyValu
 // The retention change itself has already landed, so a sweep that cannot finish
 // is reported rather than allowed to fail the modify: the retention reaper reads
 // the same zero retention and removes whatever is left, including the newest.
-func (s *Service) disableAutomatedBackups(ctx context.Context, kv jetstream.KeyValue, accountID, id string) {
+func (s *Service) disableAutomatedBackups(ctx context.Context, kv *kvstore.Bucket, accountID, id string) {
 	if err := s.purgeAutomatedBackups(ctx, kv, accountID, id); err != nil {
 		slog.WarnContext(ctx, "rds: sweeping the automated backups of a disabled instance failed; the retention reaper will finish it",
 			"dbInstance", id, "accountId", accountID, "err", err)

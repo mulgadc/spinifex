@@ -11,8 +11,8 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // The staged master password is encrypted at rest under bootstrap-payloads/{id}
@@ -79,7 +79,7 @@ func bootstrapKeyID(key []byte) string {
 // Stages the master password for rec's current VM generation. The key's presence
 // is what makes the bootstrap pending, so it is written once and only ever
 // deleted by an acknowledgement, a delete, or a generation bump.
-func (s *Service) writeBootstrapPayload(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) writeBootstrapPayload(ctx context.Context, kv *kvstore.Bucket,
 	accountID string, rec *DBInstanceRecord, masterPassword string) (string, error) {
 	key, err := s.masterKey()
 	if err != nil {
@@ -126,7 +126,7 @@ func (s *Service) writeBootstrapPayload(ctx context.Context, kv jetstream.KeyVal
 
 // Returns (nil, 0, nil) when nothing is staged, which is what an acknowledged,
 // restored or legacy instance reads as.
-func readBootstrapPayload(ctx context.Context, kv jetstream.KeyValue,
+func readBootstrapPayload(ctx context.Context, kv *kvstore.Bucket,
 	dbInstanceIdentifier string) (*BootstrapPayloadEnvelope, uint64, error) {
 	var envelope BootstrapPayloadEnvelope
 	rev, found, err := getJSONRevision(ctx, kv, BootstrapPayloadKey(dbInstanceIdentifier), &envelope)
@@ -138,10 +138,17 @@ func readBootstrapPayload(ctx context.Context, kv jetstream.KeyValue,
 
 // An already-absent key is the state this is trying to reach, so it is not an
 // error.
-func deleteBootstrapPayload(ctx context.Context, kv jetstream.KeyValue,
-	dbInstanceIdentifier string, opts ...jetstream.KVDeleteOpt) error {
-	err := kv.Delete(ctx, BootstrapPayloadKey(dbInstanceIdentifier), opts...)
-	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+func deleteBootstrapPayload(ctx context.Context, kv *kvstore.Bucket, dbInstanceIdentifier string) error {
+	if err := kv.Delete(ctx, BootstrapPayloadKey(dbInstanceIdentifier)); err != nil {
+		return fmt.Errorf("rds bootstrap: delete the payload for %s: %w", dbInstanceIdentifier, err)
+	}
+	return nil
+}
+
+// deleteBootstrapPayloadAt is deleteBootstrapPayload guarded on rev, for the
+// consumer that must remove only the payload it read.
+func deleteBootstrapPayloadAt(ctx context.Context, kv *kvstore.Bucket, dbInstanceIdentifier string, rev uint64) error {
+	if err := kv.CompareAndDelete(ctx, BootstrapPayloadKey(dbInstanceIdentifier), rev); err != nil {
 		return fmt.Errorf("rds bootstrap: delete the payload for %s: %w", dbInstanceIdentifier, err)
 	}
 	return nil
@@ -150,7 +157,7 @@ func deleteBootstrapPayload(ctx context.Context, kv jetstream.KeyValue,
 // Whether a staged payload is still waiting to be applied. Callers that only
 // need the yes/no — the modify gate, the reconciler's stale-payload sweep — use
 // this rather than decrypting.
-func bootstrapPending(ctx context.Context, kv jetstream.KeyValue, dbInstanceIdentifier string) (bool, error) {
+func bootstrapPending(ctx context.Context, kv *kvstore.Bucket, dbInstanceIdentifier string) (bool, error) {
 	envelope, _, err := readBootstrapPayload(ctx, kv, dbInstanceIdentifier)
 	return envelope != nil, err
 }
@@ -222,7 +229,7 @@ func (s *Service) openBootstrapPayload(envelope *BootstrapPayloadEnvelope, accou
 // Records that the staged password can no longer reach this datadir. Written
 // rather than inferred so the reason rides DescribeDBInstances, and idempotent
 // so a repeated fetch does not churn the record.
-func (s *Service) markBootstrapUnrecoverable(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) markBootstrapUnrecoverable(ctx context.Context, kv *kvstore.Bucket,
 	accountID, dbInstanceIdentifier, reason string) error {
 	changed := false
 	if err := s.updateInstance(ctx, kv, dbInstanceIdentifier, func(stored *DBInstanceRecord) {
@@ -250,7 +257,7 @@ func (s *Service) markBootstrapUnrecoverable(ctx context.Context, kv jetstream.K
 // password is not what stops the replacement working — replaceInstanceVM
 // revokes the data-volume format grant, and only the initial create can hold
 // one — so rebinding would move the failure rather than fix it.
-func (s *Service) discardPendingBootstrap(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) discardPendingBootstrap(ctx context.Context, kv *kvstore.Bucket,
 	accountID string, rec *DBInstanceRecord) error {
 	pending, err := bootstrapPending(ctx, kv, rec.DBInstanceIdentifier)
 	if err != nil || !pending {

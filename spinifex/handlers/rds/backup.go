@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // Automated backups: one snapshot per instance per day inside its
@@ -203,7 +203,7 @@ var backupCapableStatuses = []Status{StatusAvailable, StatusStopped}
 // succeeded since the window opened, reporting whether it took one. Called from
 // the leader-elected reconciler pass, which is what makes it cluster-singular;
 // the per-instance in-flight guard is what makes it safe anyway.
-func (s *Service) runBackupWindow(ctx context.Context, kv jetstream.KeyValue, rev uint64,
+func (s *Service) runBackupWindow(ctx context.Context, kv *kvstore.Bucket, rev uint64,
 	accountID string, rec *DBInstanceRecord) (bool, error) {
 	now := time.Now().UTC()
 	window, err := s.resolvedBackupWindow(rec)
@@ -267,7 +267,7 @@ func backupRetryDelay(failures int) time.Duration {
 // costs one duplicate snapshot at worst and is swept on schedule, while a stamped
 // backup with no index would be invisible to retention for the life of the
 // instance.
-func (s *Service) takeAutomatedBackup(ctx context.Context, kv jetstream.KeyValue, rev uint64,
+func (s *Service) takeAutomatedBackup(ctx context.Context, kv *kvstore.Bucket, rev uint64,
 	accountID string, rec *DBInstanceRecord, now time.Time) error {
 	record, err := s.snapshotDBInstance(ctx, kv, rev, accountID, rec, &validatedSnapshot{
 		DBSnapshotIdentifier: AutomatedSnapshotIdentifier(rec.DBInstanceIdentifier, now),
@@ -298,7 +298,7 @@ func (s *Service) takeAutomatedBackup(ctx context.Context, kv jetstream.KeyValue
 // Counts the failure and reports it against the DB instance, leaving its status
 // alone. The stamp is what paces the retry inside the window; the count is what
 // makes a backup that has been failing for days visible and testable.
-func (s *Service) recordBackupFailure(ctx context.Context, kv jetstream.KeyValue, accountID string,
+func (s *Service) recordBackupFailure(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, cause error) error {
 	now := time.Now().UTC()
 	slog.WarnContext(ctx, "rds: an automated backup failed; the DB instance is unaffected",
@@ -316,7 +316,7 @@ func (s *Service) recordBackupFailure(ctx context.Context, kv jetstream.KeyValue
 // A window this instance could not be backed up in, evented once and then paced
 // by the same backoff a failure is. Reported without incrementing the failure
 // count: nothing about the backup failed, the instance was busy elsewhere.
-func (s *Service) recordBackupDeferred(ctx context.Context, kv jetstream.KeyValue, accountID string,
+func (s *Service) recordBackupDeferred(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, opened time.Time, message string) error {
 	now := time.Now().UTC()
 	if rec.LastAutomatedBackupFailureAt == nil || rec.LastAutomatedBackupFailureAt.Before(opened) {
@@ -337,7 +337,7 @@ func (s *Service) recordBackupDeferred(ctx context.Context, kv jetstream.KeyValu
 // single drain through applyPendingModifications — so a deferred change is
 // applied by exactly the code an immediate one uses, and one instance's VM
 // replace does not hold up the whole fleet's pass.
-func (s *Service) runMaintenanceWindow(ctx context.Context, kv jetstream.KeyValue, rev uint64,
+func (s *Service) runMaintenanceWindow(ctx context.Context, kv *kvstore.Bucket, rev uint64,
 	accountID string, rec *DBInstanceRecord) (bool, error) {
 	pending := rec.PendingModifiedValues
 	if pending.empty() || pending.growingFilesystem() || rec.Status != StatusAvailable {
@@ -364,7 +364,7 @@ func (s *Service) runMaintenanceWindow(ctx context.Context, kv jetstream.KeyValu
 	rec.Status = StatusModifying
 	rec.UpdatedAt = now
 	if err := updateJSON(ctx, kv, DBInstanceKey(rec.DBInstanceIdentifier), rev, rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		if errors.Is(err, kvstore.ErrConflict) {
 			// Something else moved the record between the read and here; the next
 			// pass re-reads and the window is still open.
 			return false, nil

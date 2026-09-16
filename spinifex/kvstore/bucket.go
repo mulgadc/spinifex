@@ -248,6 +248,32 @@ func (b *Bucket) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// CompareAndDelete removes a key only if it is still at rev, returning
+// ErrConflict when it is not. Like Delete, an already-absent key is success:
+// the key being gone is the state the caller was asking for.
+//
+// This is the delete half of CompareAndSet, for a caller undoing a reservation
+// it made — it must remove its own write and not a replacement that landed on
+// top of it.
+func (b *Bucket) CompareAndDelete(ctx context.Context, key string, rev uint64) error {
+	kv, err := b.KV(ctx)
+	if err != nil {
+		return err
+	}
+	// Not through withKV: the revision is the caller's, so a replay against a
+	// reopened bucket would be guarded on a revision from the bucket it lost.
+	if err := kv.Delete(ctx, key, jetstream.LastRevision(rev)); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil
+		}
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+			return fmt.Errorf("%w: %s", ErrConflict, key)
+		}
+		return fmt.Errorf("kvstore: delete %s: %w", key, err)
+	}
+	return nil
+}
+
 // Purge is Delete for a key whose history must go with it, so a later Create
 // sees a key that never existed rather than one with a delete marker on top.
 func (b *Bucket) Purge(ctx context.Context, key string) error {

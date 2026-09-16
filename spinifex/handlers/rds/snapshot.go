@@ -13,9 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // The EC2 snapshot surface the RDS control plane drives. A DB snapshot is an
@@ -78,7 +78,7 @@ func (s *Service) CreateDBSnapshot(ctx context.Context, input *rds.CreateDBSnaps
 // rev is the revision the caller read the DB instance at: the CAS that moves it
 // into backing-up is what serialises the two kinds of snapshot against each other
 // and against a lifecycle op.
-func (s *Service) snapshotDBInstance(ctx context.Context, kv jetstream.KeyValue, rev uint64,
+func (s *Service) snapshotDBInstance(ctx context.Context, kv *kvstore.Bucket, rev uint64,
 	accountID string, rec *DBInstanceRecord, req *validatedSnapshot) (*DBSnapshotRecord, error) {
 	if s.deps.Snapshots == nil {
 		return nil, errors.New("rds: no snapshot service configured")
@@ -107,7 +107,7 @@ func (s *Service) snapshotDBInstance(ctx context.Context, kv jetstream.KeyValue,
 	record := newDBSnapshotRecord(accountID, rec, req)
 	key := DBSnapshotKey(req.DBSnapshotIdentifier)
 	if err := createJSON(ctx, kv, key, &record); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, kvstore.ErrExists) {
 			return nil, awserrors.Errorf(awserrors.ErrorDBSnapshotAlreadyExists,
 				"DB snapshot %s already exists", req.DBSnapshotIdentifier)
 		}
@@ -308,7 +308,7 @@ func (s *Service) DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnaps
 // data volume behind it. Shared with the retention sweep, which cannot go
 // through DeleteDBSnapshot: that rejects the rds: namespace automated snapshots
 // live in, so a customer can never delete one by hand.
-func (s *Service) removeDBSnapshot(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBSnapshotRecord) error {
+func (s *Service) removeDBSnapshot(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBSnapshotRecord) error {
 	if s.deps.Snapshots == nil {
 		return errors.New("rds: no snapshot service configured")
 	}
@@ -330,7 +330,7 @@ func (s *Service) removeDBSnapshot(ctx context.Context, kv jetstream.KeyValue, a
 	}
 	// Last: while it exists the snapshot is still nameable, and a retry re-runs
 	// the steps above, each of which tolerates work it has already done.
-	if err := kv.Delete(ctx, DBSnapshotKey(id)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := kv.Delete(ctx, DBSnapshotKey(id)); err != nil {
 		return fmt.Errorf("rds: delete the DB snapshot record for %s: %w", id, err)
 	}
 
@@ -343,7 +343,7 @@ func (s *Service) removeDBSnapshot(ctx context.Context, kv jetstream.KeyValue, a
 // the case where an instance restored from it is still running. That is
 // translated into an RDS fault naming the instance rather than surfaced as the
 // raw EC2 code, which says nothing a customer can act on.
-func (s *Service) deleteEC2Snapshot(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBSnapshotRecord) error {
+func (s *Service) deleteEC2Snapshot(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBSnapshotRecord) error {
 	if rec.SnapshotID == "" {
 		return nil
 	}
@@ -365,7 +365,7 @@ func (s *Service) deleteEC2Snapshot(ctx context.Context, kv jetstream.KeyValue, 
 // What the customer has to remove before the snapshot can go. A restored
 // instance is named; anything else is a volume outside RDS's own bookkeeping,
 // which is reported as such rather than guessed at.
-func (s *Service) describeSnapshotDependents(ctx context.Context, kv jetstream.KeyValue, dbSnapshotIdentifier string) string {
+func (s *Service) describeSnapshotDependents(ctx context.Context, kv *kvstore.Bucket, dbSnapshotIdentifier string) string {
 	ids, err := ListDBInstanceIDs(ctx, kv)
 	if err != nil {
 		slog.WarnContext(ctx, "rds: listing the instances restored from a snapshot failed",
@@ -392,7 +392,7 @@ func (s *Service) describeSnapshotDependents(ctx context.Context, kv jetstream.K
 // rather than taken from the retained record: that index is what DeleteVolume
 // enforces against, and a record written before another snapshot was taken would
 // otherwise read as "nothing holds it".
-func (s *Service) releaseRetainedVolume(ctx context.Context, kv jetstream.KeyValue, rec *DBSnapshotRecord) error {
+func (s *Service) releaseRetainedVolume(ctx context.Context, kv *kvstore.Bucket, rec *DBSnapshotRecord) error {
 	if rec.SourceVolumeID == "" {
 		return nil
 	}
@@ -408,7 +408,7 @@ func (s *Service) releaseRetainedVolume(ctx context.Context, kv jetstream.KeyVal
 // Deletes a retained data volume once nothing holds it, or records the holders it
 // still has. Reports whether the volume actually went, which is what lets the
 // reaper count the ones it reclaimed.
-func (s *Service) reclaimRetainedVolume(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) reclaimRetainedVolume(ctx context.Context, kv *kvstore.Bucket,
 	retained *RetainedVolumeRecord) (bool, error) {
 	holders, err := s.snapshotsHolding(ctx, retained.VolumeID)
 	if err != nil {
@@ -438,7 +438,7 @@ func (s *Service) reclaimRetainedVolume(ctx context.Context, kv jetstream.KeyVal
 	default:
 		return false, fmt.Errorf("rds: delete the retained data volume %s: %w", retained.VolumeID, err)
 	}
-	if err := kv.Delete(ctx, RetainedVolumeKey(retained.VolumeID)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := kv.Delete(ctx, RetainedVolumeKey(retained.VolumeID)); err != nil {
 		return false, fmt.Errorf("rds: clear the retained-volume record for %s: %w", retained.VolumeID, err)
 	}
 	slog.InfoContext(ctx, "rds: retained data volume reclaimed; its last snapshot is gone",
@@ -586,7 +586,7 @@ func newDBSnapshotRecord(accountID string, rec *DBInstanceRecord, req *validated
 }
 
 // Returns the record plus its revision, for callers that follow with a CAS.
-func (s *Service) getDBSnapshot(ctx context.Context, kv jetstream.KeyValue, id string) (*DBSnapshotRecord, uint64, error) {
+func (s *Service) getDBSnapshot(ctx context.Context, kv *kvstore.Bucket, id string) (*DBSnapshotRecord, uint64, error) {
 	var rec DBSnapshotRecord
 	rev, found, err := getJSONRevision(ctx, kv, DBSnapshotKey(id), &rec)
 	if err != nil {
@@ -601,7 +601,7 @@ func (s *Service) getDBSnapshot(ctx context.Context, kv jetstream.KeyValue, id s
 // Rejects a taken identifier before any work starts. A snapshot record outlives
 // the instance it came from, so a name can be held by a snapshot of an instance
 // that no longer exists.
-func (s *Service) checkDBSnapshotAvailable(ctx context.Context, kv jetstream.KeyValue, id string) error {
+func (s *Service) checkDBSnapshotAvailable(ctx context.Context, kv *kvstore.Bucket, id string) error {
 	var existing DBSnapshotRecord
 	found, err := getJSON(ctx, kv, DBSnapshotKey(id), &existing)
 	if err != nil {
@@ -615,10 +615,10 @@ func (s *Service) checkDBSnapshotAvailable(ctx context.Context, kv jetstream.Key
 
 // Withdraws a creating record whose snapshot never happened, on a context
 // detached from the caller's so an expired request deadline still clears it.
-func (s *Service) discardSnapshotRecord(ctx context.Context, kv jetstream.KeyValue, id string) {
+func (s *Service) discardSnapshotRecord(ctx context.Context, kv *kvstore.Bucket, id string) {
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer cancel()
-	if err := kv.Delete(rbCtx, DBSnapshotKey(id)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := kv.Delete(rbCtx, DBSnapshotKey(id)); err != nil {
 		slog.WarnContext(rbCtx, "rds: withdrawing the record of a snapshot that failed left it behind",
 			"dbSnapshot", id, "err", err)
 	}
@@ -628,7 +628,7 @@ func (s *Service) discardSnapshotRecord(ctx context.Context, kv jetstream.KeyVal
 // CAS, returning the status the instance goes back to. That write is the
 // per-instance guard: a second snapshot, an automated one or a lifecycle
 // op finds the instance already backing-up and is rejected rather than queued.
-func (s *Service) beginSnapshotOperation(ctx context.Context, kv jetstream.KeyValue, rev uint64,
+func (s *Service) beginSnapshotOperation(ctx context.Context, kv *kvstore.Bucket, rev uint64,
 	rec *DBInstanceRecord, dbSnapshotIdentifier string) (Status, error) {
 	legal := []Status{StatusAvailable, StatusStopped}
 	if !slices.Contains(legal, rec.Status) {
@@ -649,7 +649,7 @@ func (s *Service) beginSnapshotOperation(ctx context.Context, kv jetstream.KeyVa
 	rec.UpdatedAt = now
 
 	if err := updateJSON(ctx, kv, DBInstanceKey(rec.DBInstanceIdentifier), rev, rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		if errors.Is(err, kvstore.ErrConflict) {
 			return "", awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
 				"DB instance %s changed state concurrently; retry the snapshot", rec.DBInstanceIdentifier)
 		}
@@ -662,7 +662,7 @@ func (s *Service) beginSnapshotOperation(ctx context.Context, kv jetstream.KeyVa
 // leaves a usable instance rather than one stuck in backing-up. A delete
 // accepted while the snapshot ran owns the record by now, so the resume only
 // applies to an instance still in backing-up.
-func (s *Service) endSnapshotOperation(ctx context.Context, kv jetstream.KeyValue, id string, resume Status) {
+func (s *Service) endSnapshotOperation(ctx context.Context, kv *kvstore.Bucket, id string, resume Status) {
 	endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultTimeout)
 	defer cancel()
 	err := s.updateInstance(endCtx, kv, id, func(stored *DBInstanceRecord) {

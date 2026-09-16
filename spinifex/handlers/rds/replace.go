@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // The one primitive a class change, a storage grow that rides the same outage,
@@ -40,7 +40,7 @@ type replaceInput struct {
 // Only the VM's identity is written here — the class, the storage size and the
 // pending values belong to the caller that asked for the change, so a failure
 // part-way through leaves the request still recorded and retryable.
-func (s *Service) replaceInstanceVM(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord, in replaceInput) error {
+func (s *Service) replaceInstanceVM(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBInstanceRecord, in replaceInput) error {
 	if rec.ENIID == "" || rec.DataVolumeID == "" {
 		return fmt.Errorf("rds: DB instance %s has no persisted ENI and data volume to replace onto",
 			rec.DBInstanceIdentifier)
@@ -199,7 +199,7 @@ func (s *Service) launchReplacementVM(ctx context.Context, accountID string, rec
 // agent's IMDS credentials still resolve to this DB instance.
 func (s *Service) rewriteInstanceIndex(ctx context.Context, accountID string, rec *DBInstanceRecord, oldInstanceID, newInstanceID string) error {
 	if oldInstanceID != "" && oldInstanceID != newInstanceID {
-		if err := s.DeleteInstanceIndex(ctx, oldInstanceID); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+		if err := s.DeleteInstanceIndex(ctx, oldInstanceID); err != nil {
 			return fmt.Errorf("rds: drop the superseded instance index entry for %s: %w", rec.DBInstanceIdentifier, err)
 		}
 	}
@@ -226,7 +226,7 @@ func (s *Service) rollbackReplacementLaunch(
 	defer cancel()
 
 	var cleanupErrs []error
-	if err := s.DeleteInstanceIndex(cleanupCtx, launched.InstanceID); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := s.DeleteInstanceIndex(cleanupCtx, launched.InstanceID); err != nil {
 		cleanupErrs = append(cleanupErrs, fmt.Errorf("delete replacement instance index %s: %w", launched.InstanceID, err))
 	}
 	if oldInstanceID != "" {

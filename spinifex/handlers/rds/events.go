@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // The event ring is the only channel some facts have to the customer — a backup
@@ -118,7 +118,7 @@ func (s *Service) appendEvent(ctx context.Context, accountID, sourceType, source
 		if !found {
 			if err := createJSON(ctx, kv, key, &ring); err == nil {
 				return nil
-			} else if !errors.Is(err, jetstream.ErrKeyExists) {
+			} else if !errors.Is(err, kvstore.ErrExists) {
 				return err
 			}
 			// Another writer created the ring first; re-read and append to it.
@@ -130,7 +130,7 @@ func (s *Service) appendEvent(ctx context.Context, accountID, sourceType, source
 		}
 		// A revision mismatch is a lost race with another appender, not a
 		// duplicate: re-read the ring and append to what they wrote.
-		if !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		if !errors.Is(err, kvstore.ErrConflict) {
 			return err
 		}
 	}
@@ -277,7 +277,7 @@ func eventRecordLimit(input *rds.DescribeEventsInput) int {
 
 // A fully qualified read is one Get. Anything broader has to enumerate, because
 // a ring outlives the record that would otherwise name it.
-func eventRingKeys(ctx context.Context, kv jetstream.KeyValue, sourceType, sourceIdentifier string) ([]string, error) {
+func eventRingKeys(ctx context.Context, kv *kvstore.Bucket, sourceType, sourceIdentifier string) ([]string, error) {
 	if sourceType != "" && sourceIdentifier != "" {
 		return []string{EventRingKey(sourceType, sourceIdentifier)}, nil
 	}
@@ -285,11 +285,8 @@ func eventRingKeys(ctx context.Context, kv jetstream.KeyValue, sourceType, sourc
 	if sourceType != "" {
 		prefix += sourceType + "/"
 	}
-	keys, err := kv.Keys(ctx)
+	keys, err := bucketKeys(ctx, kv)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("rds: list event rings: %w", err)
 	}
 	matched := make([]string, 0, len(keys))

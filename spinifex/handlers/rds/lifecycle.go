@@ -13,10 +13,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // The DB VM's power state is driven over the per-instance EC2 command path
@@ -272,7 +272,7 @@ func uncleanStopMessage(ctx context.Context, engineName, operation string) strin
 // as written. from lists the statuses the operation is legal from, so a stop of
 // an already-stopping instance is rejected as a state error rather than racing
 // the stop already running.
-func (s *Service) beginTransition(ctx context.Context, accountID, id string, to Status, from ...Status) (*DBInstanceRecord, jetstream.KeyValue, error) {
+func (s *Service) beginTransition(ctx context.Context, accountID, id string, to Status, from ...Status) (*DBInstanceRecord, *kvstore.Bucket, error) {
 	if id == "" {
 		return nil, nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBInstanceIdentifier is required")
 	}
@@ -310,7 +310,7 @@ func (s *Service) beginTransition(ctx context.Context, accountID, id string, to 
 	rec.TransitionStartedAt = &now
 	rec.UpdatedAt = now
 	if err := updateJSON(ctx, kv, DBInstanceKey(id), rev, rec); err != nil {
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		if errors.Is(err, kvstore.ErrConflict) {
 			return nil, nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
 				"DB instance %s changed state concurrently; retry the operation", id)
 		}
@@ -321,7 +321,7 @@ func (s *Service) beginTransition(ctx context.Context, accountID, id string, to 
 
 // Lands the instance in its post-transition state and clears the transition
 // stamp, returning the record as written.
-func (s *Service) completeTransition(ctx context.Context, kv jetstream.KeyValue, id string, to Status) (*DBInstanceRecord, error) {
+func (s *Service) completeTransition(ctx context.Context, kv *kvstore.Bucket, id string, to Status) (*DBInstanceRecord, error) {
 	var stored *DBInstanceRecord
 	err := s.updateInstance(ctx, kv, id, func(rec *DBInstanceRecord) {
 		rec.Status = to
@@ -336,7 +336,7 @@ func (s *Service) completeTransition(ctx context.Context, kv jetstream.KeyValue,
 
 // Records why an operation failed and returns the error the caller surfaces, so
 // a failed transition cannot be left looking like one still in progress.
-func (s *Service) failTransition(ctx context.Context, kv jetstream.KeyValue, accountID string, rec *DBInstanceRecord, reason string) error {
+func (s *Service) failTransition(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBInstanceRecord, reason string) error {
 	if err := s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
 		stored.Status = StatusFailed
 		stored.FailureReason = reason
@@ -351,7 +351,7 @@ func (s *Service) failTransition(ctx context.Context, kv jetstream.KeyValue, acc
 
 // A read-modify-write under CAS, replayed on contention so a concurrent agent
 // heartbeat cannot make a lifecycle write disappear.
-func (s *Service) updateInstance(ctx context.Context, kv jetstream.KeyValue, id string, mutate func(*DBInstanceRecord)) error {
+func (s *Service) updateInstance(ctx context.Context, kv *kvstore.Bucket, id string, mutate func(*DBInstanceRecord)) error {
 	_, err := s.updateInstanceIf(ctx, kv, id, func(rec *DBInstanceRecord) bool {
 		mutate(rec)
 		return true
@@ -363,7 +363,7 @@ func (s *Service) updateInstance(ctx context.Context, kv jetstream.KeyValue, id 
 // seen the record it would overwrite — a lease claim, whose whole question is
 // whether someone else holds it. Reports whether the write happened; a mutate
 // that returns false leaves the record untouched and is not an error.
-func (s *Service) updateInstanceIf(ctx context.Context, kv jetstream.KeyValue, id string, mutate func(*DBInstanceRecord) bool) (bool, error) {
+func (s *Service) updateInstanceIf(ctx context.Context, kv *kvstore.Bucket, id string, mutate func(*DBInstanceRecord) bool) (bool, error) {
 	key := DBInstanceKey(id)
 	for range tagWriteAttempts {
 		rec, rev, err := s.getDBInstance(ctx, kv, id)
@@ -379,7 +379,7 @@ func (s *Service) updateInstanceIf(ctx context.Context, kv jetstream.KeyValue, i
 		if err == nil {
 			return true, nil
 		}
-		if !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		if !errors.Is(err, kvstore.ErrConflict) {
 			return false, err
 		}
 	}

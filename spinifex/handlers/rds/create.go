@@ -9,9 +9,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // The first VM behind a DB instance. Replacement and recovery increment it,
@@ -61,7 +61,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	rec := newDBInstanceRecord(accountID, req, placement, parameters)
 	rollbackRev, createErr := createJSONRevision(ctx, kv, key, &rec)
 	if createErr != nil {
-		if errors.Is(createErr, jetstream.ErrKeyExists) {
+		if errors.Is(createErr, kvstore.ErrExists) {
 			return nil, awserrors.Errorf(awserrors.ErrorDBInstanceAlreadyExists,
 				"DB instance %s already exists", req.Identifier)
 		}
@@ -192,7 +192,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 // Folds the launch results into the reserved record and returns it as written.
 // The endpoint is settled here because the ENI IP — and so the vanity name — is
 // only known now.
-func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, accountID,
+func (s *Service) recordLaunch(ctx context.Context, kv *kvstore.Bucket, key, accountID,
 	expectedResourceID string, launched *LaunchOutput, initialCreate bool) (*DBInstanceRecord, uint64, error) {
 	var rec DBInstanceRecord
 	rev, found, err := getJSONRevision(ctx, kv, key, &rec)
@@ -243,7 +243,7 @@ func (s *Service) recordLaunch(ctx context.Context, kv jetstream.KeyValue, key, 
 	return &rec, updatedRev, nil
 }
 
-func (s *Service) rollbackDBInstanceReservation(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) rollbackDBInstanceReservation(ctx context.Context, kv *kvstore.Bucket,
 	key, identifier, resourceID string, rev uint64) {
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer cancel()
@@ -264,11 +264,11 @@ func (s *Service) rollbackDBInstanceReservation(ctx context.Context, kv jetstrea
 
 	var rollbackErr error
 	for range rollbackDeleteAttempts {
-		rollbackErr = kv.Delete(rbCtx, key, jetstream.LastRevision(rev))
-		if rollbackErr == nil || errors.Is(rollbackErr, jetstream.ErrKeyNotFound) {
+		rollbackErr = kv.CompareAndDelete(rbCtx, key, rev)
+		if rollbackErr == nil {
 			return
 		}
-		if !errors.Is(rollbackErr, jetstream.ErrKeyRevisionMismatch) {
+		if !errors.Is(rollbackErr, kvstore.ErrConflict) {
 			break
 		}
 

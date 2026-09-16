@@ -191,15 +191,39 @@ func AccountBucketName(accountID string) string {
 	return KVBucketRDSAccountPrefix + accountID
 }
 
+// AccountBucketConfig describes one tenant's bucket. The name carries the
+// account, so a Bucket is per-tenant and the Service holds one per account
+// rather than one for the package.
+func AccountBucketConfig(accountID string) kvstore.Config {
+	bucket := AccountBucketName(accountID)
+	return kvstore.Config{
+		Name:    bucket,
+		History: KVBucketRDSAccountHistory,
+		Missing: "rds service: nil nats connection",
+		OnOpen: func(ctx context.Context, kv jetstream.KeyValue) error {
+			return migrate.DefaultRegistry.RunKV(ctx, bucket, kv, KVBucketRDSAccountVersion)
+		},
+	}
+}
+
+// SystemBucketConfig describes the cross-tenant bucket holding the instanceID →
+// DB instance reverse index.
+func SystemBucketConfig() kvstore.Config {
+	return kvstore.Config{
+		Name:    KVBucketRDSSystem,
+		History: KVBucketRDSSystemHistory,
+		Missing: "rds service: nil nats connection",
+		OnOpen: func(ctx context.Context, kv jetstream.KeyValue) error {
+			return migrate.DefaultRegistry.RunKV(ctx, KVBucketRDSSystem, kv, KVBucketRDSSystemVersion)
+		},
+	}
+}
+
 // Creates the bucket on first use; subsequent calls return the existing handle.
 func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
-	bucket := AccountBucketName(accountID)
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, bucket, KVBucketRDSAccountHistory)
+	kv, err := kvstore.NewBucket(js, AccountBucketConfig(accountID)).KV(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create RDS per-account KV bucket %s: %w", bucket, err)
-	}
-	if err := migrate.DefaultRegistry.RunKV(ctx, bucket, kv, KVBucketRDSAccountVersion); err != nil {
-		return nil, fmt.Errorf("migrate %s: %w", bucket, err)
+		return nil, fmt.Errorf("failed to create RDS per-account KV bucket %s: %w", AccountBucketName(accountID), err)
 	}
 	return kv, nil
 }
@@ -207,12 +231,9 @@ func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accou
 // Created lazily alongside the first DB instance rather than at daemon boot, so
 // a cluster with no RDS usage carries no bucket.
 func GetOrCreateSystemBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketRDSSystem, KVBucketRDSSystemHistory)
+	kv, err := kvstore.NewBucket(js, SystemBucketConfig()).KV(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create RDS system KV bucket %s: %w", KVBucketRDSSystem, err)
-	}
-	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketRDSSystem, kv, KVBucketRDSSystemVersion); err != nil {
-		return nil, fmt.Errorf("migrate %s: %w", KVBucketRDSSystem, err)
 	}
 	return kv, nil
 }
@@ -243,20 +264,30 @@ func AccountBucketNames(ctx context.Context, js jetstream.JetStream) ([]string, 
 	return names, nil
 }
 
-// AccountWatchBuckets returns every per-account bucket as a watchable handle,
-// for a reconciler that must be woken by a cluster change rather than poll for
-// it. The set is re-read on each call because a new account's bucket appears
+// AccountBuckets returns every per-account bucket as a typed handle, for the
+// cross-tenant passes — the reconciler, the backup sweep and the DNS desired
+// set. The set is re-read on each call because a new account's bucket appears
 // without notice: JetStream publishes no bucket-created event.
-func AccountWatchBuckets(ctx context.Context, js jetstream.JetStream) ([]*kvstore.Bucket, error) {
+//
+// The handles are unopened, so a bucket that cannot be reached surfaces from
+// the pass that reads it rather than costing every caller an open it may not
+// need.
+func AccountBuckets(ctx context.Context, js jetstream.JetStream) ([]*kvstore.Bucket, error) {
 	names, err := AccountBucketNames(ctx, js)
 	if err != nil {
 		return nil, err
 	}
 	buckets := make([]*kvstore.Bucket, 0, len(names))
 	for _, name := range names {
-		buckets = append(buckets, kvstore.NewBucket(js, kvstore.Config{Name: name, History: 1}))
+		buckets = append(buckets, kvstore.NewBucket(js, AccountBucketConfig(AccountIDFromBucketName(name))))
 	}
 	return buckets, nil
+}
+
+// AccountWatchBuckets is AccountBuckets for a reconciler that must be woken by
+// a cluster change rather than poll for it.
+func AccountWatchBuckets(ctx context.Context, js jetstream.JetStream) ([]*kvstore.Bucket, error) {
+	return AccountBuckets(ctx, js)
 }
 
 // The account a per-account bucket belongs to, for callers that enumerated
@@ -267,13 +298,13 @@ func AccountIDFromBucketName(bucket string) string {
 
 // The DB instance identifiers held in one account bucket. An empty bucket
 // yields no names rather than an error.
-func ListDBInstanceIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+func ListDBInstanceIDs(ctx context.Context, kv *kvstore.Bucket) ([]string, error) {
 	return listNames(ctx, kv, DBInstancesPrefix())
 }
 
 // Manual and automated snapshots alike: the type is on the record, so a listing
 // filtered by it still has to read every one.
-func ListDBSnapshotIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+func ListDBSnapshotIDs(ctx context.Context, kv *kvstore.Bucket) ([]string, error) {
 	names, err := listNames(ctx, kv, DBSnapshotsPrefix())
 	if err != nil {
 		return nil, err
@@ -286,7 +317,7 @@ func ListDBSnapshotIDs(ctx context.Context, kv jetstream.KeyValue) ([]string, er
 
 // Walks the .../meta keys, which is what makes a group's own record findable
 // among the per-parameter keys hanging off the same prefix.
-func ListDBParameterGroupNames(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+func ListDBParameterGroupNames(ctx context.Context, kv *kvstore.Bucket) ([]string, error) {
 	keys, err := bucketKeys(ctx, kv)
 	if err != nil {
 		return nil, err
@@ -308,7 +339,7 @@ func ListDBParameterGroupNames(ctx context.Context, kv jetstream.KeyValue) ([]st
 }
 
 // The stored overrides of one parameter group, keyed by parameter name.
-func ListDBParameterOverrides(ctx context.Context, kv jetstream.KeyValue, group string) (map[string]DBParameterRecord, error) {
+func ListDBParameterOverrides(ctx context.Context, kv *kvstore.Bucket, group string) (map[string]DBParameterRecord, error) {
 	prefix := DBParameterGroupParamsPrefix(group)
 	names, err := listNames(ctx, kv, prefix)
 	if err != nil {
@@ -333,7 +364,7 @@ func ListDBParameterOverrides(ctx context.Context, kv jetstream.KeyValue, group 
 // Every account's automated-backup index, grouped by DB instance, from one
 // bucket listing: the retention sweep needs every instance's set, and a Keys call
 // per instance would cost one listing each.
-func ListAutomatedBackups(ctx context.Context, kv jetstream.KeyValue) (map[string][]string, error) {
+func ListAutomatedBackups(ctx context.Context, kv *kvstore.Bucket) (map[string][]string, error) {
 	keys, err := bucketKeys(ctx, kv)
 	if err != nil {
 		return nil, err
@@ -370,7 +401,7 @@ func splitAutomatedBackupKey(key string) (string, string, bool) {
 
 // The leaf names directly under prefix. A nested key belongs to a sub-space and
 // is skipped rather than reported as a malformed name.
-func listNames(ctx context.Context, kv jetstream.KeyValue, prefix string) ([]string, error) {
+func listNames(ctx context.Context, kv *kvstore.Bucket, prefix string) ([]string, error) {
 	keys, err := bucketKeys(ctx, kv)
 	if err != nil {
 		return nil, err
@@ -391,7 +422,11 @@ func listNames(ctx context.Context, kv jetstream.KeyValue, prefix string) ([]str
 
 // An empty bucket yields no keys rather than an error, so a first-ever describe
 // answers with an empty list instead of failing.
-func bucketKeys(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+func bucketKeys(ctx context.Context, b *kvstore.Bucket) ([]string, error) {
+	kv, err := b.KV(ctx)
+	if err != nil {
+		return nil, err
+	}
 	keys, err := kv.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {

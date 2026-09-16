@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // The customer-account VPC surface CreateDBInstance reads to place the endpoint
@@ -33,7 +33,7 @@ type endpointPlacement struct {
 // back to the account's default VPC, mirroring AWS's own behaviour. The security
 // groups are validated against whichever VPC that resolved to, because an ENI
 // cannot carry a group from another one.
-func (s *Service) resolvePlacement(ctx context.Context, kv jetstream.KeyValue, accountID string, req *validatedCreate) (*endpointPlacement, error) {
+func (s *Service) resolvePlacement(ctx context.Context, kv *kvstore.Bucket, accountID string, req *validatedCreate) (*endpointPlacement, error) {
 	if s.deps.Network == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "RDS networking is not wired on this node")
 	}

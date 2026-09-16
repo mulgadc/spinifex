@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/vm"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // The retention sweep is a cluster-wide vm.Reaper rather than a reconciler tick,
@@ -49,7 +49,7 @@ func (r *BackupRetentionReaper) Sweep(ctx context.Context) (int, error) {
 	}
 	// A truncated listing must never read as "no accounts": that would leave every
 	// tenant's retention unenforced while looking like a clean pass.
-	buckets, err := AccountBucketNames(ctx, js)
+	buckets, err := AccountBuckets(ctx, js)
 	if err != nil {
 		return 0, fmt.Errorf("rds: enumerate account buckets: %w", err)
 	}
@@ -63,16 +63,10 @@ func (r *BackupRetentionReaper) Sweep(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return reaped, err
 		}
-		kv, err := js.KeyValue(ctx, bucket)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("open %s: %w", bucket, err))
-			continue
-		}
-		accountID := AccountIDFromBucketName(bucket)
-		swept, err := r.sweepAccount(ctx, kv, accountID, r.limit-reaped)
+		swept, err := r.sweepAccount(ctx, bucket, AccountIDFromBucketName(bucket.Name()), r.limit-reaped)
 		reaped += swept
 		if err != nil {
-			failures = append(failures, fmt.Errorf("sweep %s: %w", bucket, err))
+			failures = append(failures, fmt.Errorf("sweep %s: %w", bucket.Name(), err))
 		}
 	}
 	return reaped, errors.Join(failures...)
@@ -80,7 +74,7 @@ func (r *BackupRetentionReaper) Sweep(ctx context.Context) (int, error) {
 
 // One account: the over-retention automated snapshots of every instance, then the
 // retained volumes whose last snapshot is gone.
-func (r *BackupRetentionReaper) sweepAccount(ctx context.Context, kv jetstream.KeyValue,
+func (r *BackupRetentionReaper) sweepAccount(ctx context.Context, kv *kvstore.Bucket,
 	accountID string, budget int) (int, error) {
 	indexed, err := ListAutomatedBackups(ctx, kv)
 	if err != nil {
@@ -115,7 +109,7 @@ func (r *BackupRetentionReaper) sweepAccount(ctx context.Context, kv jetstream.K
 // available snapshot is never deleted while automated backups are on — if backup
 // creation has been failing for a week, strict retention would delete the whole
 // backup set at the exact moment a backup matters most.
-func (s *Service) sweepInstanceBackups(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) sweepInstanceBackups(ctx context.Context, kv *kvstore.Bucket,
 	accountID, dbInstanceIdentifier string, stamps []string, budget int) (int, error) {
 	var rec DBInstanceRecord
 	found, err := getJSON(ctx, kv, DBInstanceKey(dbInstanceIdentifier), &rec)
@@ -170,7 +164,7 @@ func (s *Service) sweepInstanceBackups(ctx context.Context, kv jetstream.KeyValu
 // replica reads the same way — and that branch removes a live instance's whole
 // backup set, newest included. The bucket listing is a second, independent read
 // path, so an identifier it still names fails this instance's sweep instead.
-func confirmDBInstanceGone(ctx context.Context, kv jetstream.KeyValue, dbInstanceIdentifier string) error {
+func confirmDBInstanceGone(ctx context.Context, kv *kvstore.Bucket, dbInstanceIdentifier string) error {
 	ids, err := ListDBInstanceIDs(ctx, kv)
 	if err != nil {
 		return err
@@ -187,7 +181,7 @@ func confirmDBInstanceGone(ctx context.Context, kv jetstream.KeyValue, dbInstanc
 // The index entries of one instance, oldest first. An entry whose snapshot record
 // is gone is a half-finished delete: the entry is removed so the index stops
 // naming it, and it counts as nothing reaped because no data went with it.
-func (s *Service) loadAutomatedBackups(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) loadAutomatedBackups(ctx context.Context, kv *kvstore.Bucket,
 	dbInstanceIdentifier string, stamps []string) ([]automatedBackup, error) {
 	slices.Sort(stamps)
 	entries := make([]automatedBackup, 0, len(stamps))
@@ -248,7 +242,7 @@ func newestAvailableBackup(entries []automatedBackup) string {
 // snapshot is still being read from — an instance restored from it is still
 // running — which is a skip rather than a failure: the next pass retries, and the
 // entry stays so it is not lost from the index.
-func (s *Service) deleteAutomatedBackup(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) deleteAutomatedBackup(ctx context.Context, kv *kvstore.Bucket,
 	accountID string, entry automatedBackup) (bool, error) {
 	err := s.removeDBSnapshot(ctx, kv, accountID, entry.snapshot)
 	switch {
@@ -276,10 +270,10 @@ func (s *Service) deleteAutomatedBackup(ctx context.Context, kv jetstream.KeyVal
 
 // Last, always: while the entry exists the snapshot is still findable by the
 // sweep, and every step above tolerates work it has already done.
-func (s *Service) dropAutomatedBackupIndex(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) dropAutomatedBackupIndex(ctx context.Context, kv *kvstore.Bucket,
 	dbInstanceIdentifier, stamp string) error {
 	key := AutomatedBackupKey(dbInstanceIdentifier, stamp)
-	if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := kv.Delete(ctx, key); err != nil {
 		return fmt.Errorf("rds: clear the automated-backup index entry %s: %w", key, err)
 	}
 	return nil
@@ -290,7 +284,7 @@ func (s *Service) dropAutomatedBackupIndex(ctx context.Context, kv jetstream.Key
 // BackupRetentionPeriod=0 modify, which turns the feature off, and the teardown
 // of the instance itself, whose automated backups would otherwise pin its data
 // volume after the instance is gone.
-func (s *Service) purgeAutomatedBackups(ctx context.Context, kv jetstream.KeyValue,
+func (s *Service) purgeAutomatedBackups(ctx context.Context, kv *kvstore.Bucket,
 	accountID, dbInstanceIdentifier string) error {
 	stamps, err := listNames(ctx, kv, AutomatedBackupsPrefix(dbInstanceIdentifier))
 	if err != nil {
@@ -313,7 +307,7 @@ func (s *Service) purgeAutomatedBackups(ctx context.Context, kv jetstream.KeyVal
 // deletes the volume inline on the last DeleteDBSnapshot, so this only ever fires
 // for a crash between those two steps — which is precisely what a KV-health-gated
 // cluster-wide sweep is for.
-func (s *Service) reclaimOrphanedVolumes(ctx context.Context, kv jetstream.KeyValue) (int, error) {
+func (s *Service) reclaimOrphanedVolumes(ctx context.Context, kv *kvstore.Bucket) (int, error) {
 	ids, err := listNames(ctx, kv, RetainedVolumesPrefix())
 	if err != nil {
 		return 0, err

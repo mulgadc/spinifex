@@ -11,9 +11,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Builds a new DB instance on a volume created from the snapshot. It is a fresh
@@ -76,7 +76,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 	rec := newRestoredDBInstanceRecord(accountID, req, placement, parameters, snapshot)
 	rollbackRev, createErr := createJSONRevision(ctx, kv, key, &rec)
 	if createErr != nil {
-		if errors.Is(createErr, jetstream.ErrKeyExists) {
+		if errors.Is(createErr, kvstore.ErrExists) {
 			return nil, awserrors.Errorf(awserrors.ErrorDBInstanceAlreadyExists,
 				"DB instance %s already exists", req.Identifier)
 		}

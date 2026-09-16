@@ -218,7 +218,7 @@ func TestWithModifyLease_CancelsWhenRenewalsFailUntilExpiry(t *testing.T) {
 	finished := make(chan error, 1)
 	go func() {
 		_, applyErr := h.svc.withModifyLease(t.Context(), kv, testDBID, func(ctx context.Context) error {
-			bucketDeleted <- js.DeleteKeyValue(ctx, kv.Bucket())
+			bucketDeleted <- js.DeleteKeyValue(ctx, kv.Name())
 			<-ctx.Done()
 			return context.Cause(ctx)
 		})

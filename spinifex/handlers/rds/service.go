@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -86,6 +87,13 @@ type Service struct {
 	// persisted only on change or on the slower floor.
 	livenessMu sync.Mutex
 	liveness   map[string]*agentLiveness
+
+	// buckets memoises one Bucket per account, plus the single system bucket.
+	// Resolution is per request, so without this every RDS call pays a bucket
+	// create round trip before it does any work.
+	bucketsMu sync.Mutex
+	buckets   map[string]*kvstore.Bucket
+	systemB   *kvstore.Bucket
 }
 
 type agentLiveness struct {
@@ -158,20 +166,48 @@ func (s *Service) js() (jetstream.JetStream, error) {
 	return jetstream.New(s.nc)
 }
 
-func (s *Service) bucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
+// bucket resolves accountID's bucket, memoised: the resolution used to bill a
+// stream create per RDS call, and a Bucket also carries the recovery a raw
+// handle cannot — a lost stream is reopened under the next read rather than
+// failing every call until the process restarts.
+func (s *Service) bucket(ctx context.Context, accountID string) (*kvstore.Bucket, error) {
 	js, err := s.js()
 	if err != nil {
 		return nil, err
 	}
-	return GetOrCreateAccountBucket(ctx, js, accountID)
+	s.bucketsMu.Lock()
+	b, ok := s.buckets[accountID]
+	if !ok {
+		b = kvstore.NewBucket(js, AccountBucketConfig(accountID))
+		if s.buckets == nil {
+			s.buckets = make(map[string]*kvstore.Bucket)
+		}
+		s.buckets[accountID] = b
+	}
+	s.bucketsMu.Unlock()
+	// Opened outside the lock, under the Bucket's own, so one account's slow
+	// first open does not hold every other account's resolution behind it.
+	if _, err := b.KV(ctx); err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
-func (s *Service) systemBucket(ctx context.Context) (jetstream.KeyValue, error) {
+func (s *Service) systemBucket(ctx context.Context) (*kvstore.Bucket, error) {
 	js, err := s.js()
 	if err != nil {
 		return nil, err
 	}
-	return GetOrCreateSystemBucket(ctx, js)
+	s.bucketsMu.Lock()
+	if s.systemB == nil {
+		s.systemB = kvstore.NewBucket(js, SystemBucketConfig())
+	}
+	b := s.systemB
+	s.bucketsMu.Unlock()
+	if _, err := b.KV(ctx); err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 // Both paths empty deliberately disables TLS; a partial configuration is an
@@ -200,83 +236,79 @@ func (s *Service) tlsAvailable() (bool, error) {
 	return caCert != nil && caKey != nil, nil
 }
 
+// The eight helpers below are the account bucket's record layer. They are
+// adapters over kvstore rather than a codec of their own: the JSON, the error
+// wrapping and the stream recovery belong to kvstore, and what stays here is
+// the not-found convention its callers are written against.
+
 // Returns (false, nil) when the key is absent.
-func getJSON(ctx context.Context, kv jetstream.KeyValue, key string, out any) (bool, error) {
-	entry, err := kv.Get(ctx, key)
-	if errors.Is(err, jetstream.ErrKeyNotFound) {
+func getJSON[T any](ctx context.Context, b *kvstore.Bucket, key string, out *T) (bool, error) {
+	v, _, err := kvstore.On[T](b).Get(ctx, key)
+	if errors.Is(err, kvstore.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	if err := json.Unmarshal(entry.Value(), out); err != nil {
-		return false, fmt.Errorf("unmarshal %s: %w", key, err)
-	}
+	*out = *v
 	return true, nil
 }
 
 // getJSON plus the entry revision, for callers that follow with a CAS update.
-func getJSONRevision(ctx context.Context, kv jetstream.KeyValue, key string, out any) (uint64, bool, error) {
-	entry, err := kv.Get(ctx, key)
-	if errors.Is(err, jetstream.ErrKeyNotFound) {
+func getJSONRevision[T any](ctx context.Context, b *kvstore.Bucket, key string, out *T) (uint64, bool, error) {
+	v, rev, err := kvstore.On[T](b).Get(ctx, key)
+	if errors.Is(err, kvstore.ErrNotFound) {
 		return 0, false, nil
 	}
 	if err != nil {
 		return 0, false, err
 	}
-	if err := json.Unmarshal(entry.Value(), out); err != nil {
-		return 0, false, fmt.Errorf("unmarshal %s: %w", key, err)
-	}
-	return entry.Revision(), true, nil
+	*out = *v
+	return rev, true, nil
 }
 
-func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) error {
-	data, err := json.Marshal(v)
+// getJSONRevisionAny is getJSONRevision for the one caller whose record type is
+// chosen at runtime from the ARN, so no type parameter can name it. The bytes
+// still come through kvstore; only the decode is dynamic.
+func getJSONRevisionAny(ctx context.Context, b *kvstore.Bucket, key string, out any) (uint64, bool, error) {
+	raw, rev, err := kvstore.On[json.RawMessage](b).Get(ctx, key)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return 0, false, nil
+	}
 	if err != nil {
-		return err
+		return 0, false, err
 	}
-	if _, err := kv.Put(ctx, key, data); err != nil {
-		return fmt.Errorf("put %s: %w", key, err)
+	if err := json.Unmarshal(*raw, out); err != nil {
+		return 0, false, fmt.Errorf("unmarshal %s: %w", key, err)
 	}
-	return nil
+	return rev, true, nil
+}
+
+func putJSON[T any](ctx context.Context, b *kvstore.Bucket, key string, v T) error {
+	return kvstore.On[T](b).Set(ctx, key, &v)
 }
 
 // Writes v at key only if nothing is stored there, so the key doubles as a
-// cluster-wide reservation. Returns jetstream.ErrKeyExists when it is taken.
-func createJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) error {
-	_, err := createJSONRevision(ctx, kv, key, v)
+// cluster-wide reservation. Returns kvstore.ErrExists when it is taken.
+func createJSON[T any](ctx context.Context, b *kvstore.Bucket, key string, v T) error {
+	_, err := createJSONRevision(ctx, b, key, v)
 	return err
 }
 
 // createJSON plus the created entry's revision, for callers that must undo only
 // the reservation they created rather than a concurrent replacement.
-func createJSONRevision(ctx context.Context, kv jetstream.KeyValue, key string, v any) (uint64, error) {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return 0, err
-	}
-	rev, err := kv.Create(ctx, key, data)
-	if err != nil {
-		return 0, err
-	}
-	return rev, nil
+func createJSONRevision[T any](ctx context.Context, b *kvstore.Bucket, key string, v T) (uint64, error) {
+	return kvstore.On[T](b).Create(ctx, key, &v)
 }
 
-// Writes v at key only if the stored entry is still at rev.
-func updateJSON(ctx context.Context, kv jetstream.KeyValue, key string, rev uint64, v any) error {
-	_, err := updateJSONRevision(ctx, kv, key, rev, v)
+// Writes v at key only if the stored entry is still at rev. Returns
+// kvstore.ErrConflict when another writer got there first.
+func updateJSON[T any](ctx context.Context, b *kvstore.Bucket, key string, rev uint64, v T) error {
+	_, err := updateJSONRevision(ctx, b, key, rev, v)
 	return err
 }
 
 // updateJSON plus the revision written by the successful CAS update.
-func updateJSONRevision(ctx context.Context, kv jetstream.KeyValue, key string, rev uint64, v any) (uint64, error) {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return 0, err
-	}
-	updatedRev, err := kv.Update(ctx, key, data, rev)
-	if err != nil {
-		return 0, fmt.Errorf("update %s: %w", key, err)
-	}
-	return updatedRev, nil
+func updateJSONRevision[T any](ctx context.Context, b *kvstore.Bucket, key string, rev uint64, v T) (uint64, error) {
+	return kvstore.On[T](b).CompareAndSet(ctx, key, &v, rev)
 }

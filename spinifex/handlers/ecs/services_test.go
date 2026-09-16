@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
@@ -226,6 +227,68 @@ func TestService_DescribeServices_EventsIsListNotNull(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `"events":[]`)
 	assert.NotContains(t, string(body), `"events":null`)
+}
+
+// TestService_DescribeServices_ProjectsCreatedAt covers a plain read-back
+// omission: ServiceRecord.CreatedAt and Deployment.CreatedAt/UpdatedAt were
+// already computed and persisted at creation, but serviceToAWS never echoed
+// them, so DescribeServices always answered "when was this written?" with
+// nothing — the one field a caller needs to tell a stale record from a fresh
+// one apart.
+func TestService_DescribeServices_ProjectsCreatedAt(t *testing.T) {
+	svc, _, _ := serviceTestRig(t)
+	before := time.Now().UTC()
+	out, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"),
+		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.Service.CreatedAt)
+	assert.False(t, out.Service.CreatedAt.Before(before))
+	require.Len(t, out.Service.Deployments, 1)
+	assert.NotNil(t, out.Service.Deployments[0].CreatedAt)
+	assert.NotNil(t, out.Service.Deployments[0].UpdatedAt)
+
+	// Persisted, not just echoed back from the call that wrote it.
+	desc, err := svc.DescribeServices(context.Background(), &ecs.DescribeServicesInput{
+		Cluster: aws.String("web"), Services: []*string{aws.String("web")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Services, 1)
+	require.NotNil(t, desc.Services[0].CreatedAt)
+	assert.Equal(t, out.Service.CreatedAt.Unix(), desc.Services[0].CreatedAt.Unix())
+}
+
+// TestService_ServiceToAWS_ZeroTimeProjectsAsAbsentKey guards the easy mistake
+// flagged alongside the createdAt request: a legacy record persisted before
+// these timestamp fields existed decodes with a zero time.Time, and must
+// project as an absent key. A non-nil zero time would marshal to the
+// 1970-01-01 epoch, which is worse than the omission it replaces — it reads
+// as a real (wrong) timestamp instead of "unknown".
+func TestService_ServiceToAWS_ZeroTimeProjectsAsAbsentKey(t *testing.T) {
+	svc, _ := newTestService(t)
+	rec := &ServiceRecord{
+		Name:               "legacy",
+		ARN:                ServiceARN(testRegion, testAccountID, "web", "legacy"),
+		Cluster:            "web",
+		Status:             ServiceStatusActive,
+		SchedulingStrategy: SchedulingStrategyReplica,
+		Deployments: []Deployment{{
+			ID: "d-1", Status: DeploymentStatusPrimary, RolloutState: RolloutStateInProgress,
+		}},
+	}
+	// CreatedAt/UpdatedAt intentionally left zero on both the record and its
+	// deployment, as a pre-existing KV entry would decode.
+	out := svc.serviceToAWS(testAccountID, rec)
+	assert.Nil(t, out.CreatedAt)
+	require.Len(t, out.Deployments, 1)
+	assert.Nil(t, out.Deployments[0].CreatedAt)
+	assert.Nil(t, out.Deployments[0].UpdatedAt)
+
+	body, err := jsonutil.BuildJSON(out)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), `"createdAt"`)
+	assert.NotContains(t, string(body), `"updatedAt"`)
 }
 
 // TestService_ListServices_EmptyIsPresentNotAbsent covers the ARN-list D-fix

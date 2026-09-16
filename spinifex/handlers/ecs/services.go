@@ -683,6 +683,19 @@ func loadBalancersFromAWS(in []*ecs.LoadBalancer) []LoadBalancerTarget {
 	return out
 }
 
+// awsTimeOrNil returns a pointer to t for projection onto an SDK timestamp
+// field, or nil for a zero time. A record written before the field existed
+// decodes with a zero time.Time, and must project as an absent key — jsonutil
+// drops a nil *time.Time member outright, whereas a non-nil zero time would
+// marshal as the 1970-01-01 epoch, which is worse than omitting it: it reads
+// as a real (wrong) timestamp instead of "unknown".
+func awsTimeOrNil(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return aws.Time(t)
+}
+
 func (s *Service) serviceToAWS(accountID string, r *ServiceRecord) *ecs.Service {
 	svc := &ecs.Service{
 		ServiceName:          aws.String(r.Name),
@@ -696,6 +709,7 @@ func (s *Service) serviceToAWS(accountID string, r *ServiceRecord) *ecs.Service 
 		TaskDefinition:       aws.String(r.TaskDefARN),
 		EnableECSManagedTags: aws.Bool(r.EnableECSManagedTags),
 		Tags:                 tagsToAWS(r.Tags),
+		CreatedAt:            awsTimeOrNil(r.CreatedAt),
 	}
 	if r.LaunchType != "" {
 		svc.LaunchType = aws.String(r.LaunchType)
@@ -739,6 +753,8 @@ func (s *Service) serviceToAWS(accountID string, r *ServiceRecord) *ecs.Service 
 			RunningCount:   aws.Int64(int64(d.RunningCount)),
 			PendingCount:   aws.Int64(int64(d.PendingCount)),
 			FailedTasks:    aws.Int64(int64(d.FailedTasks)),
+			CreatedAt:      awsTimeOrNil(d.CreatedAt),
+			UpdatedAt:      awsTimeOrNil(d.UpdatedAt),
 			RolloutState:   aws.String(d.RolloutState),
 			RolloutStateReason: func() *string {
 				if d.RolloutReason == "" {

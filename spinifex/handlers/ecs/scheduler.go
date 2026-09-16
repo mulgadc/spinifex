@@ -37,6 +37,17 @@ const (
 	sweepInterval        = 60 * time.Second
 	stoppedTaskRetention = 1 * time.Hour
 
+	// eniReleaseRetriesPerPass bounds how many owed-ENI releases one sweep pass
+	// attempts. Release is a 30s-budget NATS round trip, so a bucket full of them
+	// would otherwise stall the sweep — and everything behind it — for the fleet.
+	eniReleaseRetriesPerPass = 20
+
+	// eniReleaseBackoffBase/Max bound the retry spacing for a task whose ENI
+	// release keeps failing: it starts at 30s and doubles up to a 15m ceiling
+	// rather than hammering a control plane that is already struggling.
+	eniReleaseBackoffBase = 30 * time.Second
+	eniReleaseBackoffMax  = 15 * time.Minute
+
 	// convergeInterval is how often the leader re-asserts the instance-role
 	// policy. The document changes only across releases, so this trades a slower
 	// pickup after an upgrade for a fleet-wide write every reconcile tick.

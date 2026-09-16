@@ -402,6 +402,11 @@ type TaskRecord struct {
 	ENIPrivateIP    string `json:"eniPrivateIp,omitempty"`
 	ENIMacAddress   string `json:"eniMac,omitempty"`
 	ENISubnetID     string `json:"eniSubnetId,omitempty"`
+	// ENIReleaseAttempts / ENIReleaseNextTry are the stopped-task sweep's retry
+	// state once a release attempt has failed. Both stay zero on the common
+	// path, so an untroubled record serialises exactly as it always has.
+	ENIReleaseAttempts int       `json:"eniReleaseAttempts,omitempty"`
+	ENIReleaseNextTry  time.Time `json:"eniReleaseNextTry,omitzero"`
 	// ENIPublicIP / ENIEIPAllocationID hold the auto-assigned Elastic IP for an
 	// awsvpc task whose service has AssignPublicIp=ENABLED. Set on the RUNNING
 	// transition and released on STOPPED. Empty otherwise.

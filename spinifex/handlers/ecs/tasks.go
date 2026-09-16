@@ -117,7 +117,22 @@ func (s *Service) provisionTaskENI(ctx context.Context, kv jetstream.KeyValue, a
 	attachmentID, err := s.eni.Attach(ctx, accountID, rec.ContainerInstanceID, alloc.ENIID)
 	if err != nil {
 		s.reclaimTaskENI(ctx, accountID, rec)
-		rec.ENIID, rec.ENIMacAddress, rec.ENIPrivateIP, rec.ENISubnetID = "", "", "", ""
+		if rec.ENIID == "" {
+			// Release succeeded, so nothing is owed; RunTask's caller never
+			// persists a failed placement, so clearing here is the end of it.
+			rec.ENIMacAddress, rec.ENIPrivateIP, rec.ENISubnetID = "", "", ""
+		} else {
+			// Release failed: persist this record as STOPPED so the sweep
+			// retries it like any other owed ENI, rather than losing the
+			// only pointer when RunTask drops the record on the floor.
+			rec.LastStatus = TaskStatusStopped
+			rec.DesiredStatus = TaskStatusStopped
+			rec.StoppedReason = fmt.Sprintf("ENI attach failed: %s", err)
+			rec.StoppedAt = time.Now().UTC()
+			if perr := putJSON(ctx, kv, TaskKey(cluster, rec.TaskID), rec); perr != nil {
+				slog.ErrorContext(ctx, "ECS RunTask: persist ENI rollback failed", "task", rec.TaskID, "err", perr)
+			}
+		}
 		return rollback("RESOURCE:eni", err)
 	}
 	rec.ENIAttachmentID = attachmentID

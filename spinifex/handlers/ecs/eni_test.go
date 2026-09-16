@@ -26,6 +26,7 @@ type stubENI struct {
 	releaseCalls int
 	allocErr     error
 	attachErr    error
+	releaseErr   error
 	lastSubnet   string
 	lastSGs      []string
 	released     []string
@@ -58,6 +59,9 @@ func (s *stubENI) Attach(_ context.Context, _, _, _ string) (string, error) {
 
 func (s *stubENI) Release(_ context.Context, _ string, rec *TaskRecord) error {
 	s.releaseCalls++
+	if s.releaseErr != nil {
+		return s.releaseErr
+	}
 	s.released = append(s.released, rec.ENIID)
 	return nil
 }
@@ -166,6 +170,96 @@ func TestRunTask_Awsvpc_AttachFailure_RollsBack(t *testing.T) {
 	assert.Equal(t, 1, eni.releaseCalls)
 	assert.Contains(t, eni.released, "eni-stub")
 
+	di, err := svc.DescribeContainerInstances(context.Background(), &ecs.DescribeContainerInstancesInput{
+		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), aws.Int64Value(di.ContainerInstances[0].RunningTasksCount))
+}
+
+// singleTaskRecord returns the sole task record in cluster, or found=false when
+// none exists. Tests that never learn a taskID (a rolled-back RunTask returns
+// no ARN) use this to reach the record straight from KV.
+func singleTaskRecord(t *testing.T, svc *Service, cluster string) (TaskRecord, bool) {
+	t.Helper()
+	kv, err := svc.bucket(context.Background(), testAccountID)
+	require.NoError(t, err)
+	keys, err := keysWithPrefix(context.Background(), kv, TasksPrefix(cluster))
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(keys), 1, "test expects at most one task record")
+	if len(keys) == 0 {
+		return TaskRecord{}, false
+	}
+	var rec TaskRecord
+	found, err := getJSON(context.Background(), kv, keys[0], &rec)
+	require.NoError(t, err)
+	return rec, found
+}
+
+func TestReclaimTaskENI_ReleaseSucceeds_ClearsIdentity(t *testing.T) {
+	svc, _ := newTestService(t)
+	eni := &stubENI{}
+	svc.eni = eni
+	task := &TaskRecord{TaskID: "t-1", NetworkMode: NetworkModeAwsvpc, ENIID: "eni-1", ENIAttachmentID: "att-1"}
+
+	svc.reclaimTaskENI(context.Background(), testAccountID, task)
+
+	assert.Equal(t, 1, eni.releaseCalls)
+	assert.Empty(t, task.ENIID, "a successful release clears the identity")
+	assert.Empty(t, task.ENIAttachmentID)
+}
+
+func TestReclaimTaskENI_ReleaseFails_LeavesIdentity(t *testing.T) {
+	svc, _ := newTestService(t)
+	eni := &stubENI{releaseErr: errors.New("nats timeout")}
+	svc.eni = eni
+	task := &TaskRecord{TaskID: "t-1", NetworkMode: NetworkModeAwsvpc, ENIID: "eni-1", ENIAttachmentID: "att-1"}
+
+	svc.reclaimTaskENI(context.Background(), testAccountID, task)
+
+	assert.Equal(t, 1, eni.releaseCalls)
+	assert.Equal(t, "eni-1", task.ENIID, "a failed release is still owed, so the identity must survive for the sweep")
+	assert.Equal(t, "att-1", task.ENIAttachmentID)
+}
+
+func TestRunTask_Awsvpc_AttachFailure_ReleaseSucceeds_NoRecordPersisted(t *testing.T) {
+	svc, _ := newTestService(t)
+	eni := &stubENI{attachErr: errors.New("hot-plug timeout")}
+	svc.eni = eni
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	registerAwsvpcTaskDef(t, svc, "app", 128, 256)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+
+	out, err := svc.RunTask(context.Background(), awsvpcRunInput(), testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Failures, 1)
+
+	_, found := singleTaskRecord(t, svc, "web")
+	assert.False(t, found, "a release that succeeded leaves nothing for the sweep to find")
+}
+
+func TestRunTask_Awsvpc_AttachFailure_ReleaseFails_PersistsStoppedRecord(t *testing.T) {
+	svc, _ := newTestService(t)
+	eni := &stubENI{attachErr: errors.New("hot-plug timeout"), releaseErr: errors.New("release timeout")}
+	svc.eni = eni
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	registerAwsvpcTaskDef(t, svc, "app", 128, 256)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+
+	out, err := svc.RunTask(context.Background(), awsvpcRunInput(), testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Failures, 1)
+
+	rec, found := singleTaskRecord(t, svc, "web")
+	require.True(t, found, "a release that failed must leave a record so the sweep can retry it")
+	assert.Equal(t, TaskStatusStopped, rec.LastStatus)
+	assert.Equal(t, TaskStatusStopped, rec.DesiredStatus)
+	assert.Equal(t, "eni-stub", rec.ENIID, "the ENI identity must survive so the sweep owns the retry")
+	assert.False(t, rec.StoppedAt.IsZero())
+
+	// The reservation was already given back to the instance.
 	di, err := svc.DescribeContainerInstances(context.Background(), &ecs.DescribeContainerInstancesInput{
 		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},
 	}, testAccountID)

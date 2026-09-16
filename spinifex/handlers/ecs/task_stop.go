@@ -185,9 +185,10 @@ func (s *Service) forceStopTask(ctx context.Context, kv jetstream.KeyValue, acco
 	task.DesiredStatus = TaskStatusStopped
 	task.StoppedReason = reason
 	task.StoppedAt = now
-	// Release the auto-assigned EIP before persisting so the cleared public IP
-	// lands in this single write.
+	// Release the auto-assigned EIP and reclaim the ENI before persisting so the
+	// cleared fields land in this single write.
 	s.releaseTaskPublicIP(ctx, accountID, task)
+	s.reclaimTaskENI(ctx, accountID, task)
 	if perr := putJSON(ctx, kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
 		slog.ErrorContext(ctx, "ECS forceStopTask: persist failed", "task", task.TaskID, "err", perr)
 		return
@@ -195,7 +196,6 @@ func (s *Service) forceStopTask(ctx context.Context, kv jetstream.KeyValue, acco
 	s.deregisterServiceTargets(ctx, kv, accountID, task)
 	s.reclaimAssignInbox(ctx, kv, task.Cluster, task.ContainerInstanceID, task.TaskID)
 	s.reclaimStopInbox(ctx, kv, task.Cluster, task.ContainerInstanceID, task.TaskID)
-	s.reclaimTaskENI(ctx, accountID, task)
 	if rerr := s.releaseReservation(ctx, kv, task.Cluster, task.ContainerInstanceID, task.TaskID, task.ReservedCPU, task.ReservedMemoryMiB, task.GPU); rerr != nil {
 		slog.ErrorContext(ctx, "ECS forceStopTask: release reservation failed", "task", task.TaskID, "err", rerr)
 	}

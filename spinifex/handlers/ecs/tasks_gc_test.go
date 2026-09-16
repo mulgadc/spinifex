@@ -1,6 +1,8 @@
 package handlers_ecs
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -25,7 +27,7 @@ func TestSweepStoppedBucket_PrunesOnlyStale(t *testing.T) {
 	put("running", TaskStatusRunning, time.Time{})           // not stopped -> keep
 	put("nostamp", TaskStatusStopped, time.Time{})           // STOPPED but no timestamp -> keep (defensive)
 
-	pruned, due, err := svc.sweepStoppedBucket(t.Context(), kv, now, time.Hour)
+	pruned, due, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
 	require.NoError(t, err)
 	assert.Equal(t, 1, pruned)
 	// "fresh" is the only survivor with a clock on it, so the sweep must come back
@@ -42,4 +44,148 @@ func TestSweepStoppedBucket_PrunesOnlyStale(t *testing.T) {
 	assert.True(t, exists("fresh"), "recently STOPPED task should survive")
 	assert.True(t, exists("running"), "RUNNING task should survive")
 	assert.True(t, exists("nostamp"), "STOPPED task with no StoppedAt should survive")
+}
+
+func TestSweepStoppedBucket_RetriesOwedENI_Succeeds(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	eni := &stubENI{}
+	svc.eni = eni
+	now := time.Now().UTC()
+
+	rec := TaskRecord{
+		TaskID: "t-1", Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", "t-1"),
+		LastStatus: TaskStatusStopped, DesiredStatus: TaskStatusStopped,
+		NetworkMode: NetworkModeAwsvpc, ENIID: "eni-1", ENIAttachmentID: "att-1",
+		StoppedAt: now.Add(-2 * time.Hour), // well past retention
+	}
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec))
+
+	pruned, due, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 0, pruned, "an owed ENI is never pruned, however stale")
+	assert.Zero(t, due)
+	assert.Equal(t, 1, eni.releaseCalls)
+
+	var got TaskRecord
+	found, gerr := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &got)
+	require.NoError(t, gerr)
+	require.True(t, found)
+	assert.Empty(t, got.ENIID, "a successful retry clears the identity")
+	assert.Empty(t, got.ENIAttachmentID)
+	assert.Equal(t, 0, got.ENIReleaseAttempts)
+	assert.True(t, got.ENIReleaseNextTry.IsZero())
+}
+
+func TestSweepStoppedBucket_RetryFails_BacksOff(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	eni := &stubENI{releaseErr: errors.New("nats timeout")}
+	svc.eni = eni
+	now := time.Now().UTC()
+
+	rec := TaskRecord{
+		TaskID: "t-1", Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", "t-1"),
+		LastStatus: TaskStatusStopped, DesiredStatus: TaskStatusStopped,
+		NetworkMode: NetworkModeAwsvpc, ENIID: "eni-1",
+		StoppedAt: now.Add(-2 * time.Hour),
+	}
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec))
+
+	pruned, due, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 0, pruned)
+	assert.Equal(t, eniReleaseBackoffBase, due)
+
+	var got TaskRecord
+	found, gerr := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &got)
+	require.NoError(t, gerr)
+	require.True(t, found)
+	assert.Equal(t, "eni-1", got.ENIID, "a failed retry is still owed")
+	assert.Equal(t, 1, got.ENIReleaseAttempts)
+	assert.WithinDuration(t, now.Add(eniReleaseBackoffBase), got.ENIReleaseNextTry, time.Second)
+}
+
+func TestSweepStoppedBucket_RetryNotDueYet_Skipped(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	eni := &stubENI{}
+	svc.eni = eni
+	now := time.Now().UTC()
+
+	rec := TaskRecord{
+		TaskID: "t-1", Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", "t-1"),
+		LastStatus: TaskStatusStopped, DesiredStatus: TaskStatusStopped,
+		NetworkMode:       NetworkModeAwsvpc,
+		ENIID:             "eni-1",
+		StoppedAt:         now.Add(-2 * time.Hour),
+		ENIReleaseNextTry: now.Add(10 * time.Minute),
+	}
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec))
+
+	pruned, due, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 0, pruned)
+	assert.Equal(t, 0, eni.releaseCalls, "the next try has not arrived yet")
+	assert.Equal(t, 10*time.Minute, due)
+}
+
+func TestSweepStoppedBucket_HonoursPerPassCap(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	eni := &stubENI{releaseErr: errors.New("nats timeout")}
+	svc.eni = eni
+	now := time.Now().UTC()
+
+	total := eniReleaseRetriesPerPass + 2
+	for i := range total {
+		id := fmt.Sprintf("t-%d", i)
+		rec := TaskRecord{
+			TaskID: id, Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", id),
+			LastStatus: TaskStatusStopped, DesiredStatus: TaskStatusStopped,
+			NetworkMode: NetworkModeAwsvpc, ENIID: "eni-" + id,
+			StoppedAt: now.Add(-2 * time.Hour),
+		}
+		require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", id), &rec))
+	}
+
+	_, due, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, eniReleaseRetriesPerPass, eni.releaseCalls,
+		"a bucket full of due retries must not stall the sweep past its per-pass cap")
+	// The retried records back off to eniReleaseBackoffBase, which beats the
+	// sweepInterval fallback the capped-out overflow records ask for; either
+	// way the sweep must learn a deadline rather than falling through to none.
+	assert.Equal(t, eniReleaseBackoffBase, due)
+}
+
+// TestSweepStoppedBucket_CappedOverflow_AsksForSweepInterval isolates the
+// capped-out branch: every retry this pass succeeds (so none re-arms its own
+// backoff), leaving the overflow records as the only source of a deadline.
+func TestSweepStoppedBucket_CappedOverflow_AsksForSweepInterval(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	eni := &stubENI{}
+	svc.eni = eni
+	now := time.Now().UTC()
+
+	total := eniReleaseRetriesPerPass + 2
+	for i := range total {
+		id := fmt.Sprintf("t-%d", i)
+		rec := TaskRecord{
+			TaskID: id, Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", id),
+			LastStatus: TaskStatusStopped, DesiredStatus: TaskStatusStopped,
+			NetworkMode: NetworkModeAwsvpc, ENIID: "eni-" + id,
+			StoppedAt: now.Add(-2 * time.Hour),
+		}
+		require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", id), &rec))
+	}
+
+	_, due, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, eniReleaseRetriesPerPass, eni.releaseCalls)
+	assert.Equal(t, sweepInterval, due,
+		"the 2 records left over from the cap must still bring the sweep back soon")
+}
+
+func TestEniReleaseBackoff_DoublesThenCaps(t *testing.T) {
+	assert.Equal(t, eniReleaseBackoffBase, eniReleaseBackoff(1))
+	assert.Equal(t, 2*eniReleaseBackoffBase, eniReleaseBackoff(2))
+	assert.Equal(t, 4*eniReleaseBackoffBase, eniReleaseBackoff(3))
+	assert.Equal(t, eniReleaseBackoffMax, eniReleaseBackoff(100), "backoff must never exceed the cap")
 }

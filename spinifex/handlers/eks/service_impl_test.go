@@ -341,6 +341,66 @@ func TestAccessPolicy_AssociateRejectsUnsupportedPolicyAndScope(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
+// Namespace scope has no RBAC writer (Change 3): it must fail at association
+// time with a message naming accessScope.type, not read back as a durable
+// grant that never actually authorizes anything.
+func TestAccessPolicy_AssociateRejectsNamespaceScope(t *testing.T) {
+	svc := setupTestService(t)
+	seedTestCluster(t, svc, "c1")
+	_, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.AssociateAccessPolicy(context.Background(), &eks.AssociateAccessPolicyInput{
+		ClusterName:  aws.String("c1"),
+		PrincipalArn: aws.String(testPrincipalARN),
+		PolicyArn:    aws.String("arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"),
+		AccessScope:  &eks.AccessScope{Type: aws.String("namespace"), Namespaces: aws.StringSlice([]string{"team-a"})},
+	}, testAccountID)
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, code)
+	assert.Contains(t, message, "accessScope.type")
+}
+
+// DisassociateAccessPolicy already removes the association from the record;
+// this confirms the projection built on top of it reflects the removal too.
+func TestAccessPolicy_DisassociateRemovesProjectedGroup(t *testing.T) {
+	svc := setupTestService(t)
+	seedTestCluster(t, svc, "c1")
+	_, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	const viewPolicy = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+	_, err = svc.AssociateAccessPolicy(context.Background(), &eks.AssociateAccessPolicyInput{
+		ClusterName:  aws.String("c1"),
+		PrincipalArn: aws.String(testPrincipalARN),
+		PolicyArn:    aws.String(viewPolicy),
+		AccessScope:  &eks.AccessScope{Type: aws.String("cluster")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	js := testutil.NewJetStream(t, svc.deps.NATSConn)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	require.NoError(t, err)
+	rec, err := GetAccessEntryRecord(t.Context(), kv, "c1", testPrincipalARN)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"mulga:eks-view"}, effectiveGroups(rec))
+
+	_, err = svc.DisassociateAccessPolicy(context.Background(), &eks.DisassociateAccessPolicyInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN), PolicyArn: aws.String(viewPolicy),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rec, err = GetAccessEntryRecord(t.Context(), kv, "c1", testPrincipalARN)
+	require.NoError(t, err)
+	assert.Empty(t, effectiveGroups(rec))
+}
+
 func TestListAccessPolicies_ReturnsSupportedCatalogue(t *testing.T) {
 	svc := setupTestService(t)
 	out, err := svc.ListAccessPolicies(context.Background(), &eks.ListAccessPoliciesInput{}, testAccountID)

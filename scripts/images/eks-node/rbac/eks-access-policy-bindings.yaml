@@ -1,0 +1,50 @@
+# Static ClusterRoleBindings for the three AWS-managed EKS access policies
+# that have no default Kubernetes binding. AmazonEKSClusterAdminPolicy needs
+# no entry here: it maps to system:masters, which Kubernetes already binds to
+# cluster-admin. These exist from first boot, independent of any cluster or
+# access-entry association, so AssociateAccessPolicy's group projection has
+# something to bind to as soon as it names one of these groups.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mulga-eks-admin
+  labels:
+    app.kubernetes.io/managed-by: spinifex-eks
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: "mulga:eks-admin"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mulga-eks-edit
+  labels:
+    app.kubernetes.io/managed-by: spinifex-eks
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: "mulga:eks-edit"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mulga-eks-view
+  labels:
+    app.kubernetes.io/managed-by: spinifex-eks
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: "mulga:eks-view"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view

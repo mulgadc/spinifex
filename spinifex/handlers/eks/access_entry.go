@@ -34,6 +34,16 @@ var supportedAccessPolicies = map[string]string{
 	"arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy":         "view",
 }
 
+// accessPolicyGroups maps each supported policy ARN to the Kubernetes group
+// its cluster-scope association projects: system:masters for the cluster-admin
+// policy, a synthetic mulga: group bound by a static manifest for the rest.
+var accessPolicyGroups = map[string]string{
+	"arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy": "system:masters",
+	"arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy":        "mulga:eks-admin",
+	"arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy":         "mulga:eks-edit",
+	"arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy":         "mulga:eks-view",
+}
+
 // ErrAccessEntryNotFound is returned when no entry exists for the principal.
 // Callers translate it to ResourceNotFoundException at the service boundary.
 var ErrAccessEntryNotFound = errors.New("eks: access entry not found")

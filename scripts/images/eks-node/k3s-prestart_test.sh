@@ -32,12 +32,16 @@ reset_env() {
     COREDNS_SRC="${CASE}/coredns-mulga.yaml.src"
     COREDNS_SKIP="${CASE}/manifests/coredns.yaml.skip"
     COREDNS_DST="${CASE}/manifests/coredns-mulga.yaml"
+    ACCESS_POLICY_BINDINGS_SRC="${CASE}/eks-access-policy-bindings.yaml.src"
+    ACCESS_POLICY_BINDINGS_DST="${CASE}/manifests/eks-access-policy-bindings.yaml"
     TOKEN_WEBHOOK_KUBECONFIG="${CASE}/token-webhook.kubeconfig"
     WAIT_SECS=0
     STDERR="${CASE}/stderr"
     export BLOCK_MARKER K3S_CONFIG K3S_CONFIG_SKEL FIRST_BOOT_ENVFILE \
         KONN_AGENT_MANIFEST_SRC KONN_AGENT_MANIFEST_DST \
-        COREDNS_SRC COREDNS_SKIP COREDNS_DST TOKEN_WEBHOOK_KUBECONFIG WAIT_SECS
+        COREDNS_SRC COREDNS_SKIP COREDNS_DST \
+        ACCESS_POLICY_BINDINGS_SRC ACCESS_POLICY_BINDINGS_DST \
+        TOKEN_WEBHOOK_KUBECONFIG WAIT_SECS
     : > "${K3S_CONFIG}"
     printf 'server-ca\n' > "${TOKEN_WEBHOOK_KUBECONFIG}"
 }
@@ -121,6 +125,14 @@ invoke
 [ -f "${COREDNS_SKIP}" ] && pass "coredns: bundled CoreDNS suppressed" || fail "coredns: skip marker missing"
 [ "$(cat "${COREDNS_DST}" 2>/dev/null)" = "kind: DaemonSet" ] \
     && pass "coredns: DaemonSet staged" || fail "coredns: DaemonSet not staged"
+
+# --- Case 6b: EKS access-policy ClusterRoleBindings staged when bundle present ---
+reset_env access_policy_bindings
+printf 'kind: ClusterRoleBinding\n' > "${ACCESS_POLICY_BINDINGS_SRC}"
+invoke
+[ "${rc}" -eq 0 ] && pass "access-policy-bindings: exit 0" || fail "access-policy-bindings: expected exit 0 (rc=${rc})"
+[ "$(cat "${ACCESS_POLICY_BINDINGS_DST}" 2>/dev/null)" = "kind: ClusterRoleBinding" ] \
+    && pass "access-policy-bindings: manifest staged" || fail "access-policy-bindings: manifest not staged"
 
 # --- Case 7: token-webhook kubeconfig absent -> bounded wait, warns, exit 0 ---
 reset_env webhook_wait

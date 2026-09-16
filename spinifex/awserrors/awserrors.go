@@ -384,6 +384,10 @@ var (
 	ErrorResourceNotFound    = "ResourceNotFound"
 	ErrorEKSResourceInUse    = "ResourceInUseException"
 	ErrorEKSResourceNotFound = "ResourceNotFoundException"
+	// ErrorEKSInvalidParameter aliases ErrorECSInvalidParameter: real EKS and
+	// real ECS both use the restJson1 wire code "InvalidParameterException",
+	// so this gives EKS call sites their own name for the same registered code.
+	ErrorEKSInvalidParameter = ErrorECSInvalidParameter
 	// ErrorACMResourceInUse aliases ErrorEKSResourceInUse: real ACM's
 	// DeleteCertificate and real EKS's CreateCluster both legitimately use the
 	// wire code "ResourceInUseException", so this is a distinct, self-documenting

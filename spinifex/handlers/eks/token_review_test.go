@@ -107,6 +107,89 @@ func TestAuthenticate_FallsBackUIDToARN(t *testing.T) {
 	assert.Equal(t, testARN, res.UID)
 }
 
+func TestEffectiveGroups_EachPolicyProducesItsGroup(t *testing.T) {
+	cases := []struct {
+		policyARN string
+		want      string
+	}{
+		{"arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy", "system:masters"},
+		{"arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy", "mulga:eks-admin"},
+		{"arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy", "mulga:eks-edit"},
+		{"arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy", "mulga:eks-view"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			rec := &AccessEntryRecord{
+				AssociatedPolicies: []AssociatedAccessPolicy{
+					{PolicyARN: tc.policyARN, AccessScope: AccessScope{Type: accessScopeCluster}},
+				},
+			}
+			assert.Equal(t, []string{tc.want}, effectiveGroups(rec))
+		})
+	}
+}
+
+func TestEffectiveGroups_TwoAssociationsProduceBothGroups(t *testing.T) {
+	rec := &AccessEntryRecord{
+		AssociatedPolicies: []AssociatedAccessPolicy{
+			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
+			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
+		},
+	}
+	assert.Equal(t, []string{"mulga:eks-edit", "mulga:eks-view"}, effectiveGroups(rec))
+}
+
+// A creator seeded system:masters directly (CreateCluster bootstrap) who is
+// also associated to AmazonEKSClusterAdminPolicy must not see the group twice.
+func TestEffectiveGroups_DedupesSeededAndAssociatedClusterAdmin(t *testing.T) {
+	rec := &AccessEntryRecord{
+		KubernetesGroups: []string{"system:masters"},
+		AssociatedPolicies: []AssociatedAccessPolicy{
+			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
+		},
+	}
+	assert.Equal(t, []string{"system:masters"}, effectiveGroups(rec))
+}
+
+// Records written before namespace scope was rejected at association time may
+// still carry one; it must not silently widen to a cluster-scope grant.
+func TestEffectiveGroups_NamespaceScopeContributesNothing(t *testing.T) {
+	rec := &AccessEntryRecord{
+		AssociatedPolicies: []AssociatedAccessPolicy{
+			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy", AccessScope: AccessScope{Type: accessScopeNamespace, Namespaces: []string{"team-a"}}},
+		},
+	}
+	assert.Empty(t, effectiveGroups(rec))
+}
+
+func TestEffectiveGroups_UnrecognizedPolicyDoesNotPanic(t *testing.T) {
+	rec := &AccessEntryRecord{
+		AssociatedPolicies: []AssociatedAccessPolicy{
+			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/MadeUpPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
+		},
+	}
+	assert.NotPanics(t, func() { effectiveGroups(rec) })
+	assert.Empty(t, effectiveGroups(rec))
+}
+
+// End-to-end through Authenticate: an associated policy's group must reach the
+// TokenReview result, not just the internal helper.
+func TestAuthenticate_ProjectsAssociatedPolicyGroup(t *testing.T) {
+	lookup := func(arn string) (*AccessEntryRecord, error) {
+		return &AccessEntryRecord{
+			KubernetesUsername: testARN,
+			AssociatedPolicies: []AssociatedAccessPolicy{
+				{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
+			},
+		}, nil
+	}
+
+	res := Authenticate(validToken("https://sts.amazonaws.com/?Action=GetCallerIdentity"), okVerify, lookup)
+
+	require.True(t, res.Authenticated)
+	assert.Equal(t, []string{"mulga:eks-view"}, res.Groups)
+}
+
 func TestResolveTokenReview_NilConn(t *testing.T) {
 	_, err := ResolveTokenReview(context.Background(), nil, "111122223333", "alpha", "tok", time.Second)
 	require.Error(t, err)

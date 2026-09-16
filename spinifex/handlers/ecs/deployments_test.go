@@ -205,6 +205,118 @@ func TestDeployment_CircuitBreaker_RollsBackToLastGood(t *testing.T) {
 	assert.Equal(t, goodARN, rec.TaskDefARN)
 }
 
+// TestDeployment_Reconcile_RepeatedPassesDoNotGrowEventRing is the guard for
+// the hazard the ECS service-events plan calls out: the reconcile loop runs
+// repeatedly, so a naive unconditional append on every pass would fill the
+// ring with the same "reached a steady state" message and evict every
+// genuinely informative event before anyone reads it. Emission must be
+// edge-triggered on the rollout-state transition, not the reconcile pass.
+func TestDeployment_Reconcile_RepeatedPassesDoNotGrowEventRing(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"),
+		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+	driveRunning(t, svc, kv, "web", "web")
+	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
+
+	rec := reloadService(t, kv, "web", "web")
+	require.Len(t, rec.Events, 1)
+	assert.Contains(t, rec.Events[0].Message, "reached a steady state")
+
+	for range 20 {
+		require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
+	}
+	rec = reloadService(t, kv, "web", "web")
+	assert.Len(t, rec.Events, 1, "repeated reconcile over an unchanged steady service must not grow the ring")
+}
+
+// TestDeployment_SteadyState_EntersOnceLeavesAndReentersAppendsSecond covers
+// the edge-triggered emission requirement directly: entering steady state
+// appends exactly one event, and a rollout that leaves steady state (a new
+// task definition) and completes again appends a second, distinct entry.
+func TestDeployment_SteadyState_EntersOnceLeavesAndReentersAppendsSecond(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"),
+		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+	driveRunning(t, svc, kv, "web", "web")
+	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
+
+	rec := reloadService(t, kv, "web", "web")
+	require.Len(t, rec.Events, 1)
+
+	// A new task definition starts a fresh rollout: leaves steady state, and
+	// must not itself append (only entering/reaching steady state does).
+	registerTaskDef(t, svc, "app", 128, 256) // app:2
+	_, err = svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"), TaskDefinition: aws.String("app:2"),
+	}, testAccountID)
+	require.NoError(t, err)
+	rec = reloadService(t, kv, "web", "web")
+	require.Equal(t, RolloutStateInProgress, rec.primaryDeployment().RolloutState)
+	assert.Len(t, rec.Events, 1, "leaving steady state must not append an event")
+
+	// The new task comes up and the rollout completes: re-entering steady
+	// state appends a second, distinct event.
+	driveRunning(t, svc, kv, "web", "web")
+	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
+	rec = reloadService(t, kv, "web", "web")
+	require.Len(t, rec.Events, 2)
+	assert.Contains(t, rec.Events[0].Message, "reached a steady state")
+}
+
+// TestDeployment_CircuitBreaker_EventCarriesFailureReason covers the final
+// required transition: a circuit-breaker trip appends an event, and the event
+// carries the same failure reason recorded on the deployment.
+func TestDeployment_CircuitBreaker_EventCarriesFailureReason(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"),
+		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(1),
+		DeploymentConfiguration: &ecs.DeploymentConfiguration{
+			DeploymentCircuitBreaker: &ecs.DeploymentCircuitBreaker{
+				Enable: aws.Bool(true), Rollback: aws.Bool(false),
+			},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	driveRunning(t, svc, kv, "web", "web")
+	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
+
+	registerTaskDef(t, svc, "app", 128, 256) // app:2
+	_, err = svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"), TaskDefinition: aws.String("app:2"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	for range circuitBreakerFailureThreshold {
+		failPending(t, svc, kv, "web", "web")
+		require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
+	}
+
+	rec := reloadService(t, kv, "web", "web")
+	primary := rec.primaryDeployment()
+	require.NotNil(t, primary)
+	require.Equal(t, RolloutStateFailed, primary.RolloutState)
+	require.NotEmpty(t, rec.Events)
+	assert.Contains(t, rec.Events[0].Message, "deployment failed")
+	assert.Contains(t, rec.Events[0].Message, primary.RolloutReason)
+
+	// The DescribeServices projection carries the same event, newest first,
+	// alongside the earlier steady-state entry from the first deployment.
+	desc, err := svc.DescribeServices(context.Background(), &ecs.DescribeServicesInput{
+		Cluster: aws.String("web"), Services: []*string{aws.String("web")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Services, 1)
+	require.NotEmpty(t, desc.Services[0].Events)
+	assert.Contains(t, aws.StringValue(desc.Services[0].Events[0].Message), "deployment failed")
+}
+
 func TestDeployment_LegacyServiceSynthesizesPrimary(t *testing.T) {
 	svc, _, kv := serviceTestRig(t)
 	// A record written before deployment tracking existed: no Deployments slice.

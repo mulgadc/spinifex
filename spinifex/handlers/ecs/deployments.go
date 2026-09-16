@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -183,6 +184,9 @@ func updateRolloutState(svc *ServiceRecord, primary *Deployment, desired int) {
 			primary.RolloutReason = "ECS deployment completed."
 			primary.UpdatedAt = time.Now().UTC()
 			slog.Info("ECS deployment completed", "service", svc.Name, "deployment", primary.ID, "taskDef", primary.TaskDefARN)
+			// Guarded by the state check above, so this fires once per genuine
+			// entry into steady state, not once per reconcile pass.
+			appendServiceEvent(svc, fmt.Sprintf("(service %s) has reached a steady state.", svc.Name))
 		}
 		svc.LastGoodTaskDefARN = primary.TaskDefARN
 		svc.pruneCompletedDeployments()
@@ -207,6 +211,9 @@ func tripCircuitBreaker(svc *ServiceRecord, primary *Deployment) bool {
 	primary.UpdatedAt = time.Now().UTC()
 	slog.Warn("ECS deployment circuit breaker tripped", "service", svc.Name,
 		"deployment", primary.ID, "failedTasks", primary.FailedTasks)
+	// Guarded by the RolloutStateFailed check above, so this fires once per
+	// trip, not once per reconcile pass while the breaker stays tripped.
+	appendServiceEvent(svc, fmt.Sprintf("(service %s) deployment failed: %s", svc.Name, primary.RolloutReason))
 
 	if !svc.CircuitBreakerRollback || svc.LastGoodTaskDefARN == "" || svc.LastGoodTaskDefARN == primary.TaskDefARN {
 		return true

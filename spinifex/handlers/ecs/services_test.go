@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go/jetstream"
@@ -196,6 +197,35 @@ func TestService_DescribeAndList(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, miss.Services)
 	assert.Len(t, miss.Failures, 1)
+}
+
+// TestService_DescribeServices_EventsIsListNotNull covers clause A of the ECS
+// service-events plan: a service with no events must project events:[] on the
+// wire, not a missing/null key. The struct field alone cannot prove this — a
+// nil Go slice marshals identically to an empty one via encoding/json — so
+// this asserts on the bytes the SDK's own jsonutil marshaler produces, the
+// same marshaler the gateway uses to write the HTTP response body.
+func TestService_DescribeServices_EventsIsListNotNull(t *testing.T) {
+	svc, _, _ := serviceTestRig(t)
+	// DesiredCount>0 with no task driven to RUNNING: the rollout stays
+	// IN_PROGRESS, so no steady-state event has fired yet and Events is empty.
+	out, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"),
+		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Service.Events)
+
+	desc, err := svc.DescribeServices(context.Background(), &ecs.DescribeServicesInput{
+		Cluster: aws.String("web"), Services: []*string{aws.String("web")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Services, 1)
+
+	body, err := jsonutil.BuildJSON(desc.Services[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"events":[]`)
+	assert.NotContains(t, string(body), `"events":null`)
 }
 
 // TestService_ListServices_EmptyIsPresentNotAbsent covers the ARN-list D-fix

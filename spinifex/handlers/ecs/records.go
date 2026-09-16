@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
@@ -54,6 +55,11 @@ const (
 
 	CapacityProviderStatusActive   = "ACTIVE"
 	CapacityProviderStatusInactive = "INACTIVE"
+
+	// serviceEventRingCap bounds ServiceRecord.Events at roughly AWS's own
+	// retention window; the oldest entry is discarded once a new one pushes
+	// past it.
+	serviceEventRingCap = 100
 )
 
 // Deployment is one rollout of a service's task definition. A service has exactly
@@ -73,6 +79,15 @@ type Deployment struct {
 	RolloutReason   string    `json:"rolloutStateReason,omitempty"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+// ServiceEvent is one lifecycle event on a service, mirroring ecs.ServiceEvent.
+// Events are populated by appendServiceEvent at the rollout transitions AWS
+// itself reports, never by a level-triggered condition (see appendServiceEvent).
+type ServiceEvent struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+	Message   string    `json:"message"`
 }
 
 // ARN builders for the ECS resource shapes (ecs-v1.md §1). Region + accountID
@@ -406,8 +421,12 @@ type ServiceRecord struct {
 	CircuitBreakerRollback bool         `json:"deploymentCircuitBreakerRollback,omitempty"`
 	LastGoodTaskDefARN     string       `json:"lastGoodTaskDefArn,omitempty"`
 	Deployments            []Deployment `json:"deployments,omitempty"`
-	CreatedAt              time.Time    `json:"createdAt"`
-	UpdatedAt              time.Time    `json:"updatedAt"`
+	// Events is the service's lifecycle event ring, newest first, capped at
+	// serviceEventRingCap. Always projected as a list (never null) on Describe;
+	// see appendServiceEvent and serviceToAWS.
+	Events    []ServiceEvent `json:"events,omitempty"`
+	CreatedAt time.Time      `json:"createdAt"`
+	UpdatedAt time.Time      `json:"updatedAt"`
 }
 
 // primaryDeployment returns a pointer to the service's PRIMARY deployment, or nil
@@ -419,4 +438,25 @@ func (r *ServiceRecord) primaryDeployment() *Deployment {
 		}
 	}
 	return nil
+}
+
+// appendServiceEvent unconditionally records a lifecycle event, newest first,
+// discarding the oldest once the ring exceeds serviceEventRingCap.
+//
+// It does no de-duplication of its own: the reconcile loop runs repeatedly, so
+// a caller sitting behind a level-triggered condition (one that stays true
+// across many passes, rather than firing once on a transition) must guard its
+// own call, or the ring fills with one repeated message within seconds and
+// evicts every event that would actually help diagnose a stuck service. The
+// rollout-state transitions in deployments.go already carry that guard for
+// free, since they only run their append inside a state-change check.
+func appendServiceEvent(r *ServiceRecord, message string) {
+	r.Events = append([]ServiceEvent{{
+		ID:        uuid.NewV4().String(),
+		CreatedAt: time.Now().UTC(),
+		Message:   message,
+	}}, r.Events...)
+	if len(r.Events) > serviceEventRingCap {
+		r.Events = r.Events[:serviceEventRingCap]
+	}
 }

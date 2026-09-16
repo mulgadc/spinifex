@@ -6,6 +6,7 @@ package handlers_ecs
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -59,4 +60,33 @@ func TestServiceRecord_DecodesPreExistingJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(legacy), &rec))
 	assert.False(t, rec.EnableECSManagedTags)
 	assert.Empty(t, rec.Subnets)
+}
+
+// TestAppendServiceEvent_NewestFirst verifies each append lands at index 0, so
+// a caller (and the DescribeServices projection) can read the ring newest
+// first without a separate sort or reverse step.
+func TestAppendServiceEvent_NewestFirst(t *testing.T) {
+	var rec ServiceRecord
+	appendServiceEvent(&rec, "first")
+	appendServiceEvent(&rec, "second")
+	appendServiceEvent(&rec, "third")
+	require.Len(t, rec.Events, 3)
+	assert.Equal(t, "third", rec.Events[0].Message)
+	assert.Equal(t, "second", rec.Events[1].Message)
+	assert.Equal(t, "first", rec.Events[2].Message)
+}
+
+// TestAppendServiceEvent_CapsRingAndDropsOldest guards clause C of the plan:
+// the ring is capped at serviceEventRingCap, discarding the oldest entries
+// first, mirroring AWS's own roughly-100-event retention.
+func TestAppendServiceEvent_CapsRingAndDropsOldest(t *testing.T) {
+	var rec ServiceRecord
+	for i := range serviceEventRingCap + 5 {
+		appendServiceEvent(&rec, fmt.Sprintf("event %d", i))
+	}
+	require.Len(t, rec.Events, serviceEventRingCap)
+	// Newest is the last one appended; oldest retained is the 5th (events 0-4
+	// were pushed out once the ring exceeded its cap).
+	assert.Equal(t, fmt.Sprintf("event %d", serviceEventRingCap+4), rec.Events[0].Message)
+	assert.Equal(t, "event 5", rec.Events[serviceEventRingCap-1].Message)
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containerd/containerd/v2/pkg/cio"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -103,7 +104,7 @@ func TestWithSysctls(t *testing.T) {
 // for the life of the agent.
 func TestHeldStdin_ReadsEOFOnceReleased(t *testing.T) {
 	p := &containerdPuller{}
-	p.containerIOCreator("c1", true)
+	p.containerIOCreator("c1", true, false)
 
 	p.mu.Lock()
 	done := p.stdinDone["c1"]
@@ -139,7 +140,63 @@ func TestHeldStdin_ReadsEOFOnceReleased(t *testing.T) {
 // A non-interactive container uses cio.NullIO and registers nothing to release.
 func TestContainerIOCreator_NonInteractiveRegistersNothing(t *testing.T) {
 	p := &containerdPuller{}
-	p.containerIOCreator("c1", false)
+	p.containerIOCreator("c1", false, false)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.stdinDone) != 0 {
+		t.Fatalf("want no registered stdin channels, got %d", len(p.stdinDone))
+	}
+}
+
+// applyIOOpts resolves the cio options onto a Streams the way cio.NewCreator
+// does, which is the only way to observe what the creator was built with.
+func applyIOOpts(opts []cio.Opt) cio.Streams {
+	var s cio.Streams
+	for _, o := range opts {
+		o(&s)
+	}
+	return s
+}
+
+// A terminal container needs the terminal flag set on its FIFO set, else the
+// shim creates no console socket and runc refuses to start the container at all.
+// The terminal carries no separate stderr stream.
+func TestIOStreamOpts_TerminalRequestsAConsole(t *testing.T) {
+	s := applyIOOpts(ioStreamOpts(nil, true))
+	if !s.Terminal {
+		t.Error("terminal container: want Terminal set")
+	}
+	if s.Stderr != nil {
+		t.Errorf("terminal container: want no stderr stream, got %#v", s.Stderr)
+	}
+	if s.Stdout == nil {
+		t.Error("terminal container: want a stdout stream")
+	}
+}
+
+// A container with stdin but no terminal keeps both output streams and asks for
+// no console.
+func TestIOStreamOpts_NonTerminalKeepsStderr(t *testing.T) {
+	s := applyIOOpts(ioStreamOpts(heldStdin{}, false))
+	if s.Terminal {
+		t.Error("non-terminal container: want Terminal unset")
+	}
+	if s.Stderr == nil {
+		t.Error("non-terminal container: want a stderr stream")
+	}
+	if s.Stdin == nil {
+		t.Error("non-terminal interactive container: want a stdin stream")
+	}
+}
+
+// A terminal container that is not interactive still gets a creator rather than
+// cio.NullIO, and registers no stdin to release.
+func TestContainerIOCreator_TerminalWithoutInteractive(t *testing.T) {
+	p := &containerdPuller{}
+	if c := p.containerIOCreator("c1", false, true); c == nil {
+		t.Fatal("terminal container: want a creator")
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -154,7 +211,7 @@ func TestReleaseStdin_UnknownAndRepeatedAreSafe(t *testing.T) {
 	p := &containerdPuller{}
 	p.releaseStdin("never-registered")
 
-	p.containerIOCreator("c1", true)
+	p.containerIOCreator("c1", true, false)
 	p.releaseStdin("c1")
 	p.releaseStdin("c1")
 }

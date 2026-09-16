@@ -98,22 +98,40 @@ func (h heldStdin) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
-// containerIOCreator returns cio.NullIO for a non-interactive container (stdin
-// reads EOF immediately) or a creator holding stdin open until releaseStdin.
-// containerd copies stdin on a goroutine that exits only once the read returns,
-// so a reader that never returned would park it for the life of the agent.
-func (p *containerdPuller) containerIOCreator(containerID string, interactive bool) cio.Creator {
-	if !interactive {
+// ioStreamOpts describes the task IO for a container. A terminal container needs
+// a terminal FIFO set: oci.WithTTY alone puts Terminal in the OCI spec while the
+// shim creates no console socket, and runc refuses that pair outright. A
+// terminal carries no separate stderr, so that stream stays nil and the shim
+// merges it into the console.
+func ioStreamOpts(stdin io.Reader, terminal bool) []cio.Opt {
+	if terminal {
+		return []cio.Opt{cio.WithStreams(stdin, io.Discard, nil), cio.WithTerminal}
+	}
+	return []cio.Opt{cio.WithStreams(stdin, io.Discard, io.Discard)}
+}
+
+// containerIOCreator returns cio.NullIO for a container needing neither stdin
+// nor a terminal, else a creator carrying whichever it asked for. An interactive
+// container's stdin is held open until releaseStdin; containerd copies stdin on
+// a goroutine that exits only once the read returns, so a reader that never
+// returned would park it for the life of the agent. A terminal container that is
+// not interactive gets no stdin stream at all, which is what a nil reader means.
+func (p *containerdPuller) containerIOCreator(containerID string, interactive, terminal bool) cio.Creator {
+	if !interactive && !terminal {
 		return cio.NullIO
 	}
-	done := make(chan struct{})
-	p.mu.Lock()
-	if p.stdinDone == nil {
-		p.stdinDone = make(map[string]chan struct{})
+	var stdin io.Reader
+	if interactive {
+		done := make(chan struct{})
+		p.mu.Lock()
+		if p.stdinDone == nil {
+			p.stdinDone = make(map[string]chan struct{})
+		}
+		p.stdinDone[containerID] = done
+		p.mu.Unlock()
+		stdin = heldStdin{done: done}
 	}
-	p.stdinDone[containerID] = done
-	p.mu.Unlock()
-	return cio.NewCreator(cio.WithStreams(heldStdin{done: done}, io.Discard, io.Discard))
+	return cio.NewCreator(ioStreamOpts(stdin, terminal)...)
 }
 
 // releaseStdin closes a held stdin so containerd's copier goroutine exits. Safe
@@ -177,7 +195,8 @@ func (p *containerdPuller) Run(ctx context.Context, id string, spec RunSpec) (st
 	if spec.Privileged != nil && *spec.Privileged {
 		specOpts = append(specOpts, oci.WithPrivileged)
 	}
-	if spec.PseudoTerminal != nil && *spec.PseudoTerminal {
+	terminal := spec.PseudoTerminal != nil && *spec.PseudoTerminal
+	if terminal {
 		specOpts = append(specOpts, oci.WithTTY)
 	}
 	specOpts = append(specOpts, withSysctls(spec.SystemControls))
@@ -198,7 +217,7 @@ func (p *containerdPuller) Run(ctx context.Context, id string, spec RunSpec) (st
 	}
 
 	interactive := spec.Interactive != nil && *spec.Interactive
-	task, err := container.NewTask(ctx, p.containerIOCreator(id, interactive))
+	task, err := container.NewTask(ctx, p.containerIOCreator(id, interactive, terminal))
 	if err != nil {
 		p.releaseStdin(id)
 		_ = container.Delete(ctx, containerd.WithSnapshotCleanup)

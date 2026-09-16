@@ -651,7 +651,30 @@ func requestConditionKeys(r *http.Request, principal principalContext) iampolicy
 	if ip := utils.ClientIP(r.RemoteAddr); ip != "" {
 		keys[iampolicy.KeySourceIP] = ip
 	}
+	// Resolved from the credential record, never from anything the caller
+	// supplies, so unlike aws:username it is safe for a role session too.
+	if v, ok := principalTypeCondition(principal.principalType); ok {
+		keys[iampolicy.KeyPrincipalType] = v
+	}
 	return keys
+}
+
+// principalTypeCondition maps this gateway's internal principal-type spelling
+// to the canonical aws:PrincipalType value AWS documents, so a policy written
+// against the documented value applies here and at predastore identically. An
+// empty or unrecognized principal type reports false so the door omits the
+// key rather than supplying an empty string.
+func principalTypeCondition(principalType string) (string, bool) {
+	switch principalType {
+	case principalTypeUser:
+		return iampolicy.PrincipalTypeUser, true
+	case principalTypeAssumedRole:
+		return iampolicy.PrincipalTypeAssumedRole, true
+	case principalTypeRoot:
+		return iampolicy.PrincipalTypeAccount, true
+	default:
+		return "", false
+	}
 }
 
 // principalUserID resolves aws:userid: an IAM user's unique ID, the role ID and

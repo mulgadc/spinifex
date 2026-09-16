@@ -40,7 +40,35 @@ func TestRequestConditionKeys_PopulatesAvailableKeys(t *testing.T) {
 		iampolicy.KeyUsername:         "alice",
 		iampolicy.KeyUserID:           "AIDAALICE",
 		iampolicy.KeyPrincipalAccount: "000000000001",
+		iampolicy.KeyPrincipalType:    iampolicy.PrincipalTypeUser,
 	}, keys)
+}
+
+// Every principal type this door recognizes maps to the canonical AWS spelling,
+// and an unrecognized one omits the key rather than supplying an empty string.
+func TestRequestConditionKeys_PrincipalType(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	tests := []struct {
+		principalType string
+		want          string
+		omitted       bool
+	}{
+		{principalType: principalTypeUser, want: iampolicy.PrincipalTypeUser},
+		{principalType: principalTypeAssumedRole, want: iampolicy.PrincipalTypeAssumedRole},
+		{principalType: principalTypeRoot, want: iampolicy.PrincipalTypeAccount},
+		{principalType: "", omitted: true},
+	}
+	for _, tt := range tests {
+		keys := requestConditionKeys(r, principalContext{
+			identity: "alice", accountID: "000000000001", principalType: tt.principalType,
+		})
+		if tt.omitted {
+			assert.NotContains(t, keys, iampolicy.KeyPrincipalType, "principalType %q", tt.principalType)
+			continue
+		}
+		assert.Equal(t, tt.want, keys[iampolicy.KeyPrincipalType], "principalType %q", tt.principalType)
+	}
 }
 
 // A role session's aws:userid is the ID STS minted for it. Both halves come from

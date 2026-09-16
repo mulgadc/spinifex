@@ -25,6 +25,7 @@ var gatewayDoorKeys = []string{
 	iampolicy.KeyUserID,
 	iampolicy.KeyPrincipalAccount,
 	iampolicy.KeySourceIP,
+	iampolicy.KeyPrincipalType,
 }
 
 // Every condition key the evaluator names, so the write-path gate below covers
@@ -36,6 +37,7 @@ var allConditionKeys = []string{
 	iampolicy.KeyUsername,
 	iampolicy.KeyPrincipalAccount,
 	iampolicy.KeyUserID,
+	iampolicy.KeyPrincipalType,
 	// Deliberately outside the allowlist: there is no MFA in the stack, so the
 	// key could never be true. It is here to prove the validator says no.
 	"aws:MultiFactorAuthPresent",

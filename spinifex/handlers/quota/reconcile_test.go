@@ -81,9 +81,7 @@ func TestReconcileSkipsSystemAccount(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	// Park a non-zero value directly under the system key; AddVCPU would no-op it.
-	if _, err := s.usage.PutString(t.Context(), utils.GlobalAccountID, "42"); err != nil {
-		t.Fatalf("seed system counter: %v", err)
-	}
+	seedCounter(t, s, utils.GlobalAccountID, 42)
 
 	if err := s.Reconcile(context.Background(), accountList(utils.GlobalAccountID, testAccount),
 		staticTotals(map[string]int{utils.GlobalAccountID: 99, testAccount: 2}, true, nil)); err != nil {
@@ -188,9 +186,7 @@ func TestReconcileAccountTouchesOnlyThatAccount(t *testing.T) {
 func TestReconcileAccountSkipsSystemAccount(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
-	if _, err := s.usage.PutString(t.Context(), utils.GlobalAccountID, "42"); err != nil {
-		t.Fatalf("seed system counter: %v", err)
-	}
+	seedCounter(t, s, utils.GlobalAccountID, 42)
 	if err := s.ReconcileAccount(context.Background(), utils.GlobalAccountID,
 		staticTotals(map[string]int{utils.GlobalAccountID: 0}, true, nil)); err != nil {
 		t.Fatalf("ReconcileAccount: %v", err)
@@ -214,6 +210,15 @@ func TestReconcileDisabledNoop(t *testing.T) {
 	}
 	if err := nilService.ReconcileAccount(context.Background(), testAccount, nil); err != nil {
 		t.Fatalf("nil ReconcileAccount = %v, want nil", err)
+	}
+}
+
+// seedCounter writes a counter straight to the bucket, bypassing the CAS path
+// under test.
+func seedCounter(t *testing.T, s *Service, accountID string, value int) {
+	t.Helper()
+	if err := s.usage.Set(t.Context(), accountID, &value); err != nil {
+		t.Fatalf("seed counter %s: %v", accountID, err)
 	}
 }
 

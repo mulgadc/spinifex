@@ -3,6 +3,7 @@ package handlers_ec2_vpc
 import (
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -215,4 +216,40 @@ func TestCompareIPs_NilSortsFirst(t *testing.T) {
 
 func itoa(i int) string {
 	return strconv.Itoa(i)
+}
+
+// Concurrent allocations against one subnet must not hand the same address to
+// two callers, which is what the CAS loop exists to prevent.
+func TestIPAM_AllocateConcurrentNoDuplicates(t *testing.T) {
+	t.Parallel()
+	ipam := setupTestIPAM(t)
+
+	const allocations = 16
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		ips  = make(map[string]bool, allocations)
+		errs []error
+	)
+	for i := range allocations {
+		wg.Go(func() {
+			ip, err := ipam.AllocateIP(t.Context(), "subnet-1", "10.0.1.0/24",
+				PurposeENIPrimary, "eni-"+strconv.Itoa(i))
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			ips[ip] = true
+		})
+	}
+	wg.Wait()
+
+	require.Empty(t, errs)
+	assert.Len(t, ips, allocations)
+
+	entries, err := ipam.AllocatedIPs(t.Context(), "subnet-1")
+	require.NoError(t, err)
+	assert.Len(t, entries, allocations)
 }

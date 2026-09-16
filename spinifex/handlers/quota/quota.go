@@ -5,8 +5,10 @@
 package handlers_quota
 
 import (
+	"fmt"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -69,10 +71,10 @@ type Limits struct {
 // derive their usage from account-filtered Describe* calls and need no state.
 type Service struct {
 	limits Limits
-	// usage holds the per-account vCPU counters (key {accountID}). Nil when
-	// quotas are disabled, in which case Exempt short-circuits every check
-	// before the counter is touched.
-	usage jetstream.KeyValue
+	// usage holds the per-account vCPU counters (key {accountID}). Backed by a
+	// nil bucket when quotas are disabled, in which case Exempt short-circuits
+	// every check before the counter is touched.
+	usage *kvstore.Store[int]
 
 	// bedrockUsage resolves the stream-fed Bedrock token counter
 	// Nil until SetBedrockUsage is called, in which case
@@ -93,8 +95,25 @@ type Service struct {
 // New constructs a quota Service from the configured limits and the gateway-owned
 // account-usage KV bucket. usage may be nil when quotas are disabled; Exempt then
 // short-circuits every check before the counter is read.
+//
+// The store is built over the handle rather than over a JetStream client, so a
+// bucket the gateway could not open stays unopenable here instead of being
+// quietly recreated under a counter that enforces a cap.
 func New(limits Limits, usage jetstream.KeyValue) *Service {
-	return &Service{limits: limits, usage: usage, rpm: newRPMLimiter()}
+	return &Service{limits: limits, usage: kvstore.Over[int](nil, usage, usageConfig()), rpm: newRPMLimiter()}
+}
+
+// usageConfig describes the account-usage bucket as the vCPU counter reads it.
+// The bucket itself is created by the gateway, so only the CAS policy matters.
+func usageConfig() kvstore.Config {
+	return kvstore.Config{
+		Name:     KVBucketAccountUsage,
+		Attempts: vcpuCASRetries,
+		Missing:  "account usage KV bucket not configured",
+		Exhausted: func(key string, attempts int) error {
+			return fmt.Errorf("vcpu counter CAS exhausted for %s after %d attempts", key, attempts)
+		},
+	}
 }
 
 // SetOverrides attaches the per-account override bucket. Called once at wiring

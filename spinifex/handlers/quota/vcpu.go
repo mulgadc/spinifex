@@ -2,17 +2,15 @@ package handlers_quota
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // vcpuCASRetries bounds AddVCPU's retry on a revision conflict. Each retry
@@ -43,35 +41,14 @@ func (s *Service) CheckVCPU(ctx context.Context, accountID string, want int) err
 // value and a skip flag; skip leaves the counter untouched and never creates a
 // key. A revision conflict is retried; exhausting the bound is a hard error.
 func (s *Service) casVCPU(ctx context.Context, accountID string, next func(current int) (value int, skip bool)) error {
-	for range vcpuCASRetries {
-		current, revision, err := s.readVCPU(ctx, accountID)
-		if err != nil {
-			return err
-		}
-		value, skip := next(current)
+	return s.usage.Upsert(ctx, accountID, func(current *int) (bool, error) {
+		value, skip := next(*current)
 		if skip {
-			return nil
+			return false, nil
 		}
-		data, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		if revision == 0 {
-			_, err = s.usage.Create(ctx, accountID, data)
-		} else {
-			_, err = s.usage.Update(ctx, accountID, data, revision)
-		}
-		if err == nil {
-			return nil
-		}
-		// Create reports a lost race as ErrKeyExists, Update as
-		// ErrKeyRevisionMismatch — and only the latter holds on a replicated
-		// bucket, where the conflict carries a different API error code.
-		if !errors.Is(err, jetstream.ErrKeyExists) && !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-			return err
-		}
-	}
-	return fmt.Errorf("vcpu counter CAS exhausted for %s after %d attempts", accountID, vcpuCASRetries)
+		*current = value
+		return true, nil
+	})
 }
 
 // AddVCPU adds delta vCPUs to accountID's counter under CAS so concurrent grows
@@ -111,18 +88,17 @@ func (s *Service) setVCPUAt(ctx context.Context, accountID string, value int, si
 	if revision != sinceRevision || current == value {
 		return nil
 	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
+	// Single-shot rather than Upsert: the guard is the revision the caller
+	// observed, so a retry against the winner's revision is the write this
+	// deliberately drops.
 	if revision == 0 {
-		_, err = s.usage.Create(ctx, accountID, data)
+		_, err = s.usage.Create(ctx, accountID, &value)
 	} else {
-		_, err = s.usage.Update(ctx, accountID, data, revision)
+		err = s.usage.CompareAndSet(ctx, accountID, &value, revision)
 	}
 	// Losing the race is the guard working, not a failure: a charge got there
 	// first and the next pass recomputes against it.
-	if errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+	if errors.Is(err, kvstore.ErrExists) || errors.Is(err, kvstore.ErrConflict) {
 		return nil
 	}
 	return err
@@ -272,15 +248,12 @@ func instanceTypeFromReservations(reservations []*ec2.Reservation, instanceID st
 // it was read at. A missing key is the zero counter at revision 0, which AddVCPU
 // treats as a create.
 func (s *Service) readVCPU(ctx context.Context, accountID string) (count int, revision uint64, err error) {
-	entry, err := s.usage.Get(ctx, accountID)
+	value, revision, err := s.usage.Get(ctx, accountID)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, kvstore.ErrNotFound) {
 			return 0, 0, nil
 		}
 		return 0, 0, err
 	}
-	if err := json.Unmarshal(entry.Value(), &count); err != nil {
-		return 0, 0, fmt.Errorf("unmarshal vcpu counter for %s: %w", accountID, err)
-	}
-	return count, entry.Revision(), nil
+	return *value, revision, nil
 }

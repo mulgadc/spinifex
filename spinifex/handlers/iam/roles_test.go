@@ -158,6 +158,66 @@ func TestCreateRole_PermissionsBoundaryAbsent(t *testing.T) {
 	}
 }
 
+// The code alone cannot tell a caller which statement or element was refused,
+// so these assert the reason survives to the client, not only the code.
+func TestCreateRole_MalformedTrustPolicy_NamesTheReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		doc  string
+		want []string
+	}{
+		{
+			name: "condition-on-a-non-web-identity-action",
+			doc:  `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceAccount":"000000000001"}}}]}`,
+			want: []string{"statement 0", STSActionAssumeRoleWithWebIdentity},
+		},
+		{
+			name: "bad-effect",
+			doc:  `{"Version":"2012-10-17","Statement":[{"Effect":"Maybe","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`,
+			want: []string{"statement 0"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestIAMService(t)
+
+			_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+				RoleName:                 aws.String("reason-" + tc.name),
+				AssumeRolePolicyDocument: aws.String(tc.doc),
+			})
+			require.Error(t, err)
+			code, message, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorIAMMalformedPolicyDocument, code)
+			for _, want := range tc.want {
+				assert.Contains(t, message, want)
+			}
+			assert.Contains(t, message, "reason-"+tc.name)
+		})
+	}
+}
+
+func TestUpdateAssumeRolePolicy_MalformedTrustPolicy_NamesTheReason(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "update-reason")
+
+	_, err := svc.UpdateAssumeRolePolicy(testAccountID, &iam.UpdateAssumeRolePolicyInput{
+		RoleName:       aws.String("update-reason"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceAccount":"000000000001"}}}]}`),
+	})
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorIAMMalformedPolicyDocument, code)
+	assert.Contains(t, message, "update-reason")
+	assert.Contains(t, message, STSActionAssumeRoleWithWebIdentity)
+}
+
 func TestCreateRole_MalformedTrustPolicy_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

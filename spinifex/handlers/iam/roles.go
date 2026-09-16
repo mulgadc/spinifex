@@ -56,9 +56,12 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 		}
 	}
 
+	// Carry the reason: a bare code cannot tell a caller which statement or key
+	// was refused, and the gateway logs the returned error, so one message
+	// serves both the client and the operator.
 	if _, err := ValidateTrustPolicyDocument(*input.AssumeRolePolicyDocument); err != nil {
-		slog.Debug("CreateRole: invalid trust policy", "roleName", roleName, "err", err)
-		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
+			"trust policy for role %q: %w", roleName, err)
 	}
 
 	maxSession := defaultMaxSessionDuration
@@ -245,8 +248,8 @@ func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.Upd
 	roleName := *input.RoleName
 
 	if _, err := ValidateTrustPolicyDocument(*input.PolicyDocument); err != nil {
-		slog.Debug("UpdateAssumeRolePolicy: invalid trust policy", "roleName", roleName, "err", err)
-		return nil, errors.New(awserrors.ErrorIAMMalformedPolicyDocument)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
+			"trust policy for role %q: %w", roleName, err)
 	}
 
 	role, err := s.getRole(ctx, accountID, roleName)

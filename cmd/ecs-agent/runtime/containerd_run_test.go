@@ -2,8 +2,11 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"io"
 	"reflect"
 	"testing"
+	"time"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -93,4 +96,65 @@ func TestWithSysctls(t *testing.T) {
 	if s.Linux == nil || s.Linux.Sysctl["net.core.somaxconn"] != "1024" {
 		t.Errorf("want sysctl net.core.somaxconn=1024, got %+v", s.Linux)
 	}
+}
+
+// An interactive container's stdin read blocks until the container is released,
+// then reports EOF so containerd's copier goroutine exits instead of parking
+// for the life of the agent.
+func TestHeldStdin_ReadsEOFOnceReleased(t *testing.T) {
+	p := &containerdPuller{}
+	p.containerIOCreator("c1", true)
+
+	p.mu.Lock()
+	done := p.stdinDone["c1"]
+	p.mu.Unlock()
+	if done == nil {
+		t.Fatal("interactive container registered no stdin channel")
+	}
+
+	read := make(chan error, 1)
+	go func() {
+		_, err := heldStdin{done: done}.Read(make([]byte, 1))
+		read <- err
+	}()
+
+	select {
+	case err := <-read:
+		t.Fatalf("read returned before release: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	p.releaseStdin("c1")
+
+	select {
+	case err := <-read:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("want io.EOF after release, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("read did not return after release")
+	}
+}
+
+// A non-interactive container uses cio.NullIO and registers nothing to release.
+func TestContainerIOCreator_NonInteractiveRegistersNothing(t *testing.T) {
+	p := &containerdPuller{}
+	p.containerIOCreator("c1", false)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.stdinDone) != 0 {
+		t.Fatalf("want no registered stdin channels, got %d", len(p.stdinDone))
+	}
+}
+
+// Remove calls releaseStdin unconditionally and Stop falls through to Remove,
+// so an unknown container and a second release must both be no-ops.
+func TestReleaseStdin_UnknownAndRepeatedAreSafe(t *testing.T) {
+	p := &containerdPuller{}
+	p.releaseStdin("never-registered")
+
+	p.containerIOCreator("c1", true)
+	p.releaseStdin("c1")
+	p.releaseStdin("c1")
 }

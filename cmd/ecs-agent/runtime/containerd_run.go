@@ -88,26 +88,44 @@ func withSysctls(ctls []SystemControl) oci.SpecOpts {
 	}
 }
 
-// blockingStdin is an io.Reader that never returns, backing an interactive
-// container's stdin: reads block instead of hitting an immediate EOF, which is
-// the "stdin held open" behaviour interactive=true asks for. Nothing in this
-// agent attaches to a running container's stdin, so one reader shared by every
-// interactive container is enough — it never produces data for anyone to
-// demux.
-type blockingStdin struct{}
+// heldStdin backs an interactive container's stdin: reads block instead of
+// hitting an immediate EOF, which is the "stdin held open" behaviour
+// interactive=true asks for, until done closes and the read reports EOF.
+type heldStdin struct{ done <-chan struct{} }
 
-func (blockingStdin) Read([]byte) (int, error) {
-	select {}
+func (h heldStdin) Read([]byte) (int, error) {
+	<-h.done
+	return 0, io.EOF
 }
 
-// containerIOCreator returns cio.NullIO for a non-interactive container
-// (stdin reads EOF immediately, matching today's behaviour) or a creator that
-// keeps stdin open via blockingStdin when interactive is requested.
-func containerIOCreator(interactive bool) cio.Creator {
+// containerIOCreator returns cio.NullIO for a non-interactive container (stdin
+// reads EOF immediately) or a creator holding stdin open until releaseStdin.
+// containerd copies stdin on a goroutine that exits only once the read returns,
+// so a reader that never returned would park it for the life of the agent.
+func (p *containerdPuller) containerIOCreator(containerID string, interactive bool) cio.Creator {
 	if !interactive {
 		return cio.NullIO
 	}
-	return cio.NewCreator(cio.WithStreams(blockingStdin{}, io.Discard, io.Discard))
+	done := make(chan struct{})
+	p.mu.Lock()
+	if p.stdinDone == nil {
+		p.stdinDone = make(map[string]chan struct{})
+	}
+	p.stdinDone[containerID] = done
+	p.mu.Unlock()
+	return cio.NewCreator(cio.WithStreams(heldStdin{done: done}, io.Discard, io.Discard))
+}
+
+// releaseStdin closes a held stdin so containerd's copier goroutine exits. Safe
+// for a container that never held one, and safe to call more than once.
+func (p *containerdPuller) releaseStdin(containerID string) {
+	p.mu.Lock()
+	done, ok := p.stdinDone[containerID]
+	delete(p.stdinDone, containerID)
+	p.mu.Unlock()
+	if ok {
+		close(done)
+	}
 }
 
 var _ Runner = (*containerdPuller)(nil)
@@ -180,12 +198,14 @@ func (p *containerdPuller) Run(ctx context.Context, id string, spec RunSpec) (st
 	}
 
 	interactive := spec.Interactive != nil && *spec.Interactive
-	task, err := container.NewTask(ctx, containerIOCreator(interactive))
+	task, err := container.NewTask(ctx, p.containerIOCreator(id, interactive))
 	if err != nil {
+		p.releaseStdin(id)
 		_ = container.Delete(ctx, containerd.WithSnapshotCleanup)
 		return "", fmt.Errorf("create task %s: %w", id, err)
 	}
 	if err := task.Start(ctx); err != nil {
+		p.releaseStdin(id)
 		_, _ = task.Delete(ctx)
 		_ = container.Delete(ctx, containerd.WithSnapshotCleanup)
 		return "", fmt.Errorf("start task %s: %w", id, err)
@@ -265,6 +285,7 @@ func (p *containerdPuller) Stop(ctx context.Context, containerID string, timeout
 // Remove kills and deletes the container's task, then the container + snapshot.
 func (p *containerdPuller) Remove(ctx context.Context, containerID string) error {
 	ctx = namespaces.WithNamespace(ctx, ecsNamespace)
+	p.releaseStdin(containerID)
 	container, err := p.client.LoadContainer(ctx, containerID)
 	if err != nil {
 		return nil //nolint:nilerr // load failure means the container is already gone

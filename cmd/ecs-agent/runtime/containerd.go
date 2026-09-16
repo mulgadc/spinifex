@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	containerd "github.com/containerd/containerd/v2/client"
@@ -22,6 +23,11 @@ const servingProbeTimeout = 3 * time.Second
 // containerdPuller drives a real containerd daemon over its unix socket.
 type containerdPuller struct {
 	client *containerd.Client
+
+	// stdinDone holds one channel per interactive container, closed when that
+	// container is stopped or removed so its stdin reader returns EOF.
+	mu        sync.Mutex
+	stdinDone map[string]chan struct{}
 }
 
 var _ ImagePuller = (*containerdPuller)(nil)

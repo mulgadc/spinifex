@@ -1373,6 +1373,65 @@ func TestCreateRole_MalformedTrustPolicy_ConditionRejected_IpAddress(t *testing.
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
 }
 
+// TestCreateRole_TrustPolicy_SourceAccountAccepted pins mulga-yxd9p's (B): a
+// StringEquals condition on aws:SourceAccount for sts:AssumeRole is accepted
+// at write time, where before this change every Condition on that action was
+// refused outright regardless of key.
+func TestCreateRole_TrustPolicy_SourceAccountAccepted(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceAccount":"` + testAccountID + `"}}}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("with-sourceaccount"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	require.NoError(t, err)
+}
+
+// TestCreateRole_MalformedTrustPolicy_SourceArnRejected_NamesTheKey pins (C):
+// the ECS module's own aws:SourceArn condition is refused with a message
+// naming the key, not a bare MalformedPolicyDocument.
+func TestCreateRole_MalformedTrustPolicy_SourceArnRejected_NamesTheKey(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"ArnLike":{"aws:SourceArn":"arn:aws:ecs:ap-southeast-2:` + testAccountID + `:*"}}}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("with-sourcearn"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	require.Error(t, err)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorIAMMalformedPolicyDocument, code)
+	assert.Contains(t, message, "aws:SourceArn")
+	assert.Contains(t, message, "sts:AssumeRole")
+}
+
+// TestCreateRole_MalformedTrustPolicy_SourceArnUnderStringEquals_NamesTheKey
+// exercises the key-rejection branch directly: StringEquals is the supported
+// operator, so the refusal must come from the key itself, not the operator.
+func TestCreateRole_MalformedTrustPolicy_SourceArnUnderStringEquals_NamesTheKey(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceArn":"arn:aws:ecs:ap-southeast-2:` + testAccountID + `:*"}}}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("with-sourcearn-stringequals"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	require.Error(t, err)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorIAMMalformedPolicyDocument, code)
+	assert.Contains(t, message, "aws:SourceArn")
+	assert.Contains(t, message, "StringEquals")
+	assert.Contains(t, message, "sts:AssumeRole")
+}
+
 func TestCreateRole_TrustPolicy_EmptyConditionAccepted(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

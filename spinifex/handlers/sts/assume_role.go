@@ -206,6 +206,11 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 	}, nil
 }
 
+// assumeRoleConditionKeySourceAccount is the only condition key evaluated on the
+// sts:AssumeRole trust-policy path. validateWebIdentityCondition (handlers_iam)
+// is the write-time gate that must accept exactly this key for this action.
+const assumeRoleConditionKeySourceAccount = "aws:SourceAccount"
+
 // evalTrustPolicy implements AWS's explicit-deny-wins semantics: first pass scans all
 // Deny statements, second pass scans all Allows. A single-pass loop would skip a later
 // Deny and silently grant access.
@@ -214,6 +219,15 @@ func evalTrustPolicy(docJSON, callerARN string, principalSources []string) error
 	if err != nil {
 		// Docs are validated at write time; reaching here implies on-disk corruption.
 		return fmt.Errorf("stored trust policy invalid: %w", err)
+	}
+
+	// sourceAccount is the caller ARN's own account — available whenever the
+	// caller is an authenticated HTTPS SigV4 identity, and not caller-asserted.
+	// It is empty on the IMDS path, where principalSource is synthesised and
+	// there is no caller ARN to parse.
+	sourceAccount := ""
+	if caller, ok := parsePrincipalARN(callerARN); ok {
+		sourceAccount = caller.account
 	}
 
 	for _, stmt := range doc.Statement {
@@ -227,7 +241,7 @@ func evalTrustPolicy(docJSON, callerARN string, principalSources []string) error
 		if err != nil {
 			return err
 		}
-		if match {
+		if match && assumeRoleConditionsHold(stmt.Condition, sourceAccount) {
 			return errors.New(awserrors.ErrorAccessDenied)
 		}
 	}
@@ -243,12 +257,45 @@ func evalTrustPolicy(docJSON, callerARN string, principalSources []string) error
 		if err != nil {
 			return err
 		}
-		if match {
+		if match && assumeRoleConditionsHold(stmt.Condition, sourceAccount) {
 			return nil
 		}
 	}
 
 	return errors.New(awserrors.ErrorAccessDenied)
+}
+
+// assumeRoleConditionsHold evaluates a trust-policy Condition block on the
+// sts:AssumeRole path. Only StringEquals on aws:SourceAccount is supported —
+// the write-time gate accepts nothing wider for this action — and an unknown
+// key or operator fails closed rather than being silently ignored, the same
+// shape conditionsHold uses for AssumeRoleWithWebIdentity. No Condition holds
+// trivially, matching the pre-existing no-condition-arm behaviour.
+func assumeRoleConditionsHold(raw json.RawMessage, sourceAccount string) bool {
+	if !isCondRawNonEmpty(raw) {
+		return true
+	}
+	var ops map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &ops); err != nil {
+		return false
+	}
+	for op, kv := range ops {
+		if op != "StringEquals" {
+			// Validator rejects other operators at write time; reaching here means tampering.
+			return false
+		}
+		for key, expectedRaw := range kv {
+			if key != assumeRoleConditionKeySourceAccount {
+				// Unknown condition key — fail closed rather than silently ignore a stricter check.
+				return false
+			}
+			expected, ok := unmarshalStringOrArray(expectedRaw)
+			if !ok || sourceAccount == "" || !anyEquals(expected, []string{sourceAccount}) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func matchTrustAction(actions []string) bool {

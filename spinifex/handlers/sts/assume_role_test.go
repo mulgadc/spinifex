@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -655,6 +656,94 @@ func TestAssumeRole_ECSTasks_ExplicitDenyWins(t *testing.T) {
 		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-5"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+// ----- Trust-policy Condition evaluation on sts:AssumeRole (mulga-yxd9p, B) --
+
+// trustPolicyAllowingECSTasksWithSourceAccount is the shape terraform-aws-modules/ecs
+// writes: a Service principal plus an aws:SourceAccount confused-deputy condition.
+func trustPolicyAllowingECSTasksWithSourceAccount(accountID string) string {
+	return fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceAccount":%q}}}]}`, accountID)
+}
+
+// TestAssumeRole_SourceAccountCondition_MatchingAccountGrants pins that the new
+// condition arm on evalTrustPolicy does not merely tolerate a stored
+// aws:SourceAccount condition — it is evaluated, and a caller attributed to the
+// role's own account (the only shape serviceSourcesForCaller ever attributes) grants.
+func TestAssumeRole_SourceAccountCondition_MatchingAccountGrants(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-sa-match",
+		trustPolicyAllowingECSTasksWithSourceAccount(testCallerAccountID))
+
+	out, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-sa-1"))
+	require.NoError(t, err)
+	require.NotNil(t, out.Credentials)
+}
+
+// TestAssumeRole_SourceAccountCondition_NonMatchingAccountDenies is the
+// discriminating case: the condition names an account other than the caller's
+// own, so it must not be satisfied even though the Service principal matches.
+func TestAssumeRole_SourceAccountCondition_NonMatchingAccountDenies(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-sa-mismatch",
+		trustPolicyAllowingECSTasksWithSourceAccount(testCrossAccountID))
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-sa-2"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+// TestAssumeRole_SourceAccountCondition_DenyEvaluatedBeforeAllow pins that the
+// Deny pass still runs first when a condition is present: an unconditional
+// Allow is listed first, but a conditioned Deny matching the caller's account
+// must still win.
+func TestAssumeRole_SourceAccountCondition_DenyEvaluatedBeforeAllow(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[
+        {"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"},
+        {"Effect":"Deny","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceAccount":%q}}}
+    ]}`, testCallerAccountID)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-sa-deny-first", policy)
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-sa-3"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+// TestAssumeRoleConditionsHold_UnknownKeyFailsClosed unit-tests the evaluator
+// directly: the write-time gate never lets an unrecognised key reach this
+// function through CreateRole, so the only way to exercise the fail-closed
+// branch is a stored document the current gate would no longer accept —
+// exactly the corruption case evalTrustPolicy's own doc comment names.
+func TestAssumeRoleConditionsHold_UnknownKeyFailsClosed(t *testing.T) {
+	raw := json.RawMessage(`{"StringEquals":{"aws:PrincipalTag/team":"platform"}}`)
+	assert.False(t, assumeRoleConditionsHold(raw, testCallerAccountID),
+		"an unrecognised condition key must fail closed, not be silently ignored")
+}
+
+// TestAssumeRoleConditionsHold_NoConditionAlwaysHolds pins the pre-existing
+// no-condition-arm behaviour: an absent Condition must keep matching, exactly
+// as it did before this evaluator existed.
+func TestAssumeRoleConditionsHold_NoConditionAlwaysHolds(t *testing.T) {
+	assert.True(t, assumeRoleConditionsHold(nil, ""))
+	assert.True(t, assumeRoleConditionsHold(json.RawMessage(`{}`), ""))
+}
+
+// TestAssumeRole_ECSTasks_Regression_NoConditionStillGrants is the regression
+// the plan calls out by name: the ECS task-role attribution path this whole
+// change sits on top of must keep working for a trust policy that carries no
+// Condition at all.
+func TestAssumeRole_ECSTasks_Regression_NoConditionStillGrants(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-regression", trustPolicyAllowingECSTasks())
+
+	out, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-regression"))
+	require.NoError(t, err)
+	require.NotNil(t, out.Credentials)
 }
 
 func TestServiceSourcesForCaller(t *testing.T) {

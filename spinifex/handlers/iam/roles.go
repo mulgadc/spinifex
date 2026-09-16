@@ -673,12 +673,22 @@ func roleToSDK(r *Role) *iam.Role {
 	return out
 }
 
-// STSActionAssumeRoleWithWebIdentity is the only action that may carry a Condition block.
+// STSActionAssumeRoleWithWebIdentity is one of the two actions that may carry a Condition block.
 const STSActionAssumeRoleWithWebIdentity = "sts:AssumeRoleWithWebIdentity"
 
+// stsActionAssumeRole mirrors handlers_sts's unexported constant of the same value.
+// Duplicated rather than imported: handlers_sts imports this package, not the reverse.
+const stsActionAssumeRole = "sts:AssumeRole"
+
+// conditionKeySourceAccount is the only condition key accepted on the sts:AssumeRole
+// trust-policy path. handlers_sts.assumeRoleConditionsHold is the evaluator that must
+// accept exactly this key for this action — the two lists must never drift apart, or
+// a stored condition becomes a security control nothing enforces.
+const conditionKeySourceAccount = "aws:SourceAccount"
+
 // ValidateTrustPolicyDocument parses and validates an AssumeRolePolicyDocument JSON string.
-// Rejects NotPrincipal and NotAction at write time. Condition blocks are accepted only for
-// sts:AssumeRoleWithWebIdentity with StringEquals — any wider shape would be silently ignored at runtime.
+// Rejects NotPrincipal and NotAction at write time. Condition blocks are accepted only on the
+// two actions STS evaluates conditions for — any wider shape would be silently ignored at runtime.
 func ValidateTrustPolicyDocument(docJSON string) (*TrustPolicyDocument, error) {
 	if len(docJSON) > maxTrustPolicyDocumentSize {
 		return nil, fmt.Errorf("trust policy exceeds maximum size of %d bytes", maxTrustPolicyDocumentSize)
@@ -728,22 +738,55 @@ func ValidateTrustPolicyDocument(docJSON string) (*TrustPolicyDocument, error) {
 	return &doc, nil
 }
 
-// validateWebIdentityCondition gates Condition blocks to the IRSA case:
-// Action must be exactly sts:AssumeRoleWithWebIdentity and operator must be StringEquals only.
+// validateWebIdentityCondition gates Condition blocks to the two actions STS
+// evaluates conditions for: sts:AssumeRoleWithWebIdentity (the IRSA {iss}:sub /
+// {iss}:aud keys, StringEquals only) and sts:AssumeRole (aws:SourceAccount,
+// StringEquals only). Everything else is rejected at write time — accepting a
+// condition nothing evaluates would store a security control that never fires.
 func validateWebIdentityCondition(i int, stmt TrustStatement) error {
-	if len(stmt.Action) != 1 || stmt.Action[0] != STSActionAssumeRoleWithWebIdentity {
-		return fmt.Errorf("statement %d: trust policy Condition blocks are only supported on statements whose Action is exactly [%q]; v1 does not evaluate conditions for other actions", i, STSActionAssumeRoleWithWebIdentity)
+	var action string
+	if len(stmt.Action) == 1 {
+		action = stmt.Action[0]
 	}
-	var ops map[string]json.RawMessage
+	if action != STSActionAssumeRoleWithWebIdentity && action != stsActionAssumeRole {
+		return fmt.Errorf("statement %d: trust policy Condition blocks are only supported on statements whose Action is exactly [%q] or [%q]; v1 does not evaluate conditions for other actions", i, STSActionAssumeRoleWithWebIdentity, stsActionAssumeRole)
+	}
+
+	var ops map[string]map[string]json.RawMessage
 	if err := json.Unmarshal(stmt.Condition, &ops); err != nil {
-		return fmt.Errorf("statement %d: Condition must be a JSON object: %w", i, err)
+		return fmt.Errorf("statement %d: Condition must be a JSON object of operator to key/value: %w", i, err)
 	}
-	for op := range ops {
+
+	if action == STSActionAssumeRoleWithWebIdentity {
+		for op := range ops {
+			if op != "StringEquals" {
+				return fmt.Errorf("statement %d: Condition operator %q on action %q is not supported in this release; only StringEquals is supported", i, op, action)
+			}
+		}
+		return nil
+	}
+
+	// action == stsActionAssumeRole: the evaluator (handlers_sts.assumeRoleConditionsHold)
+	// enforces only aws:SourceAccount under StringEquals; name the offending
+	// operator, key and action rather than a bare "malformed" refusal.
+	for op, keys := range ops {
 		if op != "StringEquals" {
-			return fmt.Errorf("statement %d: Condition operator %q is not supported in this release; only StringEquals is supported", i, op)
+			return fmt.Errorf("statement %d: Condition operator %q on key %q for action %q is not supported in this release; only StringEquals is supported", i, op, conditionKeysJoined(keys), action)
+		}
+		for key := range keys {
+			if key != conditionKeySourceAccount {
+				return fmt.Errorf("statement %d: Condition key %q with operator %q for action %q is not supported in this release; only %q is supported — see docs/specs/platform/rfc0-7_aws-divergence.md", i, key, op, action, conditionKeySourceAccount)
+			}
 		}
 	}
 	return nil
+}
+
+// conditionKeysJoined names the keys under a rejected operator so the error
+// message identifies what was written, not just that the operator is wrong.
+func conditionKeysJoined(keys map[string]json.RawMessage) string {
+	names := slices.Sorted(maps.Keys(keys))
+	return strings.Join(names, ", ")
 }
 
 // isRawJSONNonEmpty reports whether a json.RawMessage carries a meaningful value.

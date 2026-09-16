@@ -2217,7 +2217,7 @@ func validateStatementRestrictions(i int, stmt Statement) error {
 	for op, keys := range stmt.Condition {
 		for key, values := range keys {
 			if !iampolicy.SupportedCondition(op, key) {
-				return fmt.Errorf("statement %d: Condition operator %q on key %q is not supported in this release", i, op, key)
+				return fmt.Errorf("statement %d: Condition operator %q on key %q is not supported in this release%s", i, op, key, unsupportedConditionKeyReason(key))
 			}
 			if err := validateConditionValues(i, op, key, values); err != nil {
 				return err
@@ -2225,6 +2225,20 @@ func validateStatementRestrictions(i int, stmt Statement) error {
 		}
 	}
 	return nil
+}
+
+// unsupportedConditionKeyReason names why a specific rejected key cannot be
+// enforced, for the keys that have a recorded divergence. Empty for any other
+// unsupported key, leaving the base message unchanged.
+func unsupportedConditionKeyReason(key string) string {
+	switch {
+	case key == "aws:SourceArn":
+		return "; no server-side binding exists from a caller's session to the ARN of the resource that invoked it — see docs/specs/platform/rfc0-7_aws-divergence.md"
+	case strings.HasPrefix(key, "aws:RequestTag/"):
+		return "; request-tag values are not resolved at any policy door yet — see docs/specs/platform/rfc0-7_aws-divergence.md"
+	default:
+		return ""
+	}
 }
 
 // validateConditionValues rejects leaf values the matcher can only ever compare

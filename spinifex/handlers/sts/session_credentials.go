@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
@@ -63,27 +64,35 @@ type SessionCredential struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
-// initSessionCredentialsBucket opens (or creates) the session-credentials KV bucket.
-// History is fixed at 1: credentials are write-once at mint and delete-once at expiry.
-func initSessionCredentialsBucket(ctx context.Context, js jetstream.JetStream, replicas int) (jetstream.KeyValue, error) {
-	// kvutil clamps replicas to a minimum of 1, so a zero clusterSize still creates.
-	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketSessionCredentials, 1, replicas)
-	if err != nil {
+// sessionCredentialsConfig describes the session-credentials bucket. History is
+// fixed at 1: credentials are write-once at mint and delete-once at expiry.
+func sessionCredentialsConfig(replicas int) kvstore.Config {
+	return kvstore.Config{
+		Name:     KVBucketSessionCredentials,
+		History:  1,
+		Replicas: replicas,
+		Missing:  "session credentials KV bucket not initialized",
+		OnOpen: func(ctx context.Context, kv jetstream.KeyValue) error {
+			return migrate.DefaultRegistry.RunKV(ctx, KVBucketSessionCredentials, kv, KVBucketSessionCredentialsVersion)
+		},
+	}
+}
+
+// initSessionCredentialsStore opens (or creates) the session-credentials bucket.
+func initSessionCredentialsStore(ctx context.Context, js jetstream.JetStream, replicas int) (*kvstore.Store[SessionCredential], error) {
+	// kvstore clamps replicas to a minimum of 1, so a zero clusterSize still creates.
+	store := kvstore.New[SessionCredential](js, sessionCredentialsConfig(replicas))
+	// Opened eagerly: a bucket that cannot be created must fail service
+	// construction, not the first AssumeRole that needs to mint into it.
+	if _, err := store.KV(ctx); err != nil {
 		return nil, fmt.Errorf("open session credentials bucket: %w", err)
 	}
-
-	if err := migrate.DefaultRegistry.RunKV(
-		ctx, KVBucketSessionCredentials, kv, KVBucketSessionCredentialsVersion,
-	); err != nil {
-		return nil, fmt.Errorf("migrate %s: %w", KVBucketSessionCredentials, err)
-	}
-
-	return kv, nil
+	return store, nil
 }
 
 // putSessionCredential persists a SessionCredential via CAS create, enforcing the ASIA-prefix
-// invariant. Returns jetstream.ErrKeyExists on collision so callers can retry.
-func putSessionCredential(ctx context.Context, bucket jetstream.KeyValue, cred *SessionCredential) error {
+// invariant. Returns kvstore.ErrExists on collision so callers can retry.
+func putSessionCredential(ctx context.Context, store *kvstore.Store[SessionCredential], cred *SessionCredential) error {
 	if cred == nil {
 		return errors.New("nil session credential")
 	}
@@ -91,11 +100,7 @@ func putSessionCredential(ctx context.Context, bucket jetstream.KeyValue, cred *
 		return fmt.Errorf("session AKID must start with %q, got %q",
 			SessionAccessKeyIDPrefix, cred.AccessKeyID)
 	}
-	data, err := json.Marshal(cred)
-	if err != nil {
-		return fmt.Errorf("marshal session credential: %w", err)
-	}
-	if _, err := bucket.Create(ctx, cred.AccessKeyID, data); err != nil {
+	if _, err := store.Create(ctx, cred.AccessKeyID, cred); err != nil {
 		return fmt.Errorf("store session credential: %w", err)
 	}
 	return nil
@@ -127,18 +132,14 @@ func (s *STSServiceImpl) LookupSessionCredential(accessKeyID string) (*SessionCr
 	if !strings.HasPrefix(accessKeyID, SessionAccessKeyIDPrefix) {
 		return nil, nil
 	}
-	entry, err := s.sessionsBucket.Get(ctx, accessKeyID)
+	cred, _, err := s.sessions.Get(ctx, accessKeyID)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, kvstore.ErrNotFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get session credential: %w", err)
 	}
-	var cred SessionCredential
-	if err := json.Unmarshal(entry.Value(), &cred); err != nil {
-		return nil, fmt.Errorf("unmarshal session credential: %w", err)
-	}
-	return &cred, nil
+	return cred, nil
 }
 
 // RunJanitor periodically removes expired session credentials. Idempotent; multiple
@@ -164,10 +165,20 @@ func (s *STSServiceImpl) RunJanitor(ctx context.Context) {
 
 // sweepExpired deletes all records whose ExpiresAt is past the grace period.
 // Per-key errors are logged and skipped; returns the delete count.
+//
+// Deliberately on the raw handle rather than Store.List: the sweep needs the key
+// to delete it, and one undecodable record must not stop it expiring every
+// other credential.
 func (s *STSServiceImpl) sweepExpired(ctx context.Context, now time.Time) int {
 	cutoff := now.Add(-janitorGracePeriod)
 
-	keys, err := kvutil.Keys(ctx, s.sessionsBucket)
+	bucket, err := s.sessions.KV(ctx)
+	if err != nil {
+		slog.Warn("STS janitor: open session credential bucket failed", "err", err)
+		return 0
+	}
+
+	keys, err := kvutil.Keys(ctx, bucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return 0
@@ -181,7 +192,7 @@ func (s *STSServiceImpl) sweepExpired(ctx context.Context, now time.Time) int {
 		if key == utils.VersionKey {
 			continue
 		}
-		entry, err := s.sessionsBucket.Get(ctx, key)
+		entry, err := bucket.Get(ctx, key)
 		if err != nil {
 			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
@@ -202,7 +213,7 @@ func (s *STSServiceImpl) sweepExpired(ctx context.Context, now time.Time) int {
 			continue
 		}
 
-		if err := s.sessionsBucket.Delete(ctx, key); err != nil {
+		if err := bucket.Delete(ctx, key); err != nil {
 			slog.Warn("STS janitor: delete expired session credential failed",
 				"key", key, "err", err)
 			continue

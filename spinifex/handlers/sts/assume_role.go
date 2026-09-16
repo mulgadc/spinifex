@@ -19,10 +19,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
-	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -553,8 +553,8 @@ func (s *STSServiceImpl) mintSession(ctx context.Context, env sessionEnvelope, d
 			ExpiresAt:         expiresAt,
 			CreatedAt:         now,
 		}
-		if err := putSessionCredential(ctx, s.sessionsBucket, cred); err != nil {
-			if errors.Is(err, jetstream.ErrKeyExists) {
+		if err := putSessionCredential(ctx, s.sessions, cred); err != nil {
+			if errors.Is(err, kvstore.ErrExists) {
 				continue
 			}
 			return nil, "", "", fmt.Errorf("persist session credential: %w", err)

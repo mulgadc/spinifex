@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -26,11 +27,11 @@ const masterKeySize = 32 // AES-256, must match handlers_iam.
 // change. RunJanitor is the exception: it already owns a real context and
 // threads it into the sweep.
 type STSServiceImpl struct {
-	natsConn       *nats.Conn
-	js             jetstream.JetStream
-	sessionsBucket jetstream.KeyValue
-	iamSvc         handlers_iam.IAMService
-	masterKey      []byte
+	natsConn  *nats.Conn
+	js        jetstream.JetStream
+	sessions  *kvstore.Store[SessionCredential]
+	iamSvc    handlers_iam.IAMService
+	masterKey []byte
 }
 
 var _ STSService = (*STSServiceImpl)(nil)
@@ -57,7 +58,7 @@ func NewSTSServiceImpl(ctx context.Context, natsConn *nats.Conn, iamSvc handlers
 		return nil, fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	sessionsBucket, err := initSessionCredentialsBucket(ctx, js, replicas)
+	sessions, err := initSessionCredentialsStore(ctx, js, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("init session credentials bucket: %w", err)
 	}
@@ -67,10 +68,10 @@ func NewSTSServiceImpl(ctx context.Context, natsConn *nats.Conn, iamSvc handlers
 		"replicas", replicas)
 
 	return &STSServiceImpl{
-		natsConn:       natsConn,
-		js:             js,
-		sessionsBucket: sessionsBucket,
-		iamSvc:         iamSvc,
-		masterKey:      masterKey,
+		natsConn:  natsConn,
+		js:        js,
+		sessions:  sessions,
+		iamSvc:    iamSvc,
+		masterKey: masterKey,
 	}, nil
 }

@@ -60,8 +60,8 @@ func TestNewSTSServiceImpl_RejectsWrongMasterKeySize(t *testing.T) {
 
 func TestNewSTSServiceImpl_InitializesBucket(t *testing.T) {
 	svc, _ := newTestSetup(t)
-	require.NotNil(t, svc.sessionsBucket)
-	assert.Equal(t, KVBucketSessionCredentials, svc.sessionsBucket.Bucket())
+	require.NotNil(t, svc.sessions)
+	assert.Equal(t, KVBucketSessionCredentials, svc.sessions.Name())
 }
 
 func TestNewSTSServiceImpl_NormalisesNegativeClusterSize(t *testing.T) {
@@ -116,7 +116,7 @@ func TestLookupSessionCredential_HitRoundTrips(t *testing.T) {
 		ExpiresAt:         now.Add(time.Hour),
 		CreatedAt:         now,
 	}
-	require.NoError(t, putSessionCredential(t.Context(), svc.sessionsBucket, cred))
+	require.NoError(t, putSessionCredential(t.Context(), svc.sessions, cred))
 
 	got, err := svc.LookupSessionCredential(cred.AccessKeyID)
 	require.NoError(t, err)
@@ -134,13 +134,13 @@ func TestLookupSessionCredential_UnmarshalFailureSurfacesError(t *testing.T) {
 	// the prefix is valid (so the lookup reaches the bucket) but the JSON
 	// body is garbage. This guards against the "lookup returns nil silently
 	// on parse failure" silent-failure mode.
-	_, err := svc.sessionsBucket.Put(t.Context(), akid, []byte("not json"))
+	_, err := sessionsKV(t, svc).Put(t.Context(), akid, []byte("not json"))
 	require.NoError(t, err)
 
 	got, err := svc.LookupSessionCredential(akid)
 	require.Error(t, err)
 	assert.Nil(t, got)
-	assert.Contains(t, err.Error(), "unmarshal session credential")
+	assert.Contains(t, err.Error(), "decode")
 }
 
 // Sanity check: the production marshaller round-trips through the lookup

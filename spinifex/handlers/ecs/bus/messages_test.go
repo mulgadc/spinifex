@@ -1,14 +1,15 @@
-package bus
+package bus_test
 
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
-// oldAssignContainer models an ecs-agent built before TFC-0040: the wire
-// shape AssignContainer had before this fix added user, readonlyRootFilesystem,
-// privileged, pseudoTerminal, interactive, systemControls, capAdd/capDrop,
-// startTimeout and stopTimeout. It is the AMI-baked agent's decode side.
+// oldAssignContainer models an ecs-agent built before the container-runtime
+// fields were added: the wire shape AssignContainer had before user,
+// readonlyRootFilesystem, privileged and the rest. The AMI-baked decode side.
 type oldAssignContainer struct {
 	Name         string            `json:"name"`
 	Image        string            `json:"image"`
@@ -18,26 +19,23 @@ type oldAssignContainer struct {
 	Essential    bool              `json:"essential"`
 	Command      []string          `json:"command,omitempty"`
 	Environment  map[string]string `json:"environment,omitempty"`
-	PortMappings []PortMapping     `json:"portMappings,omitempty"`
+	PortMappings []bus.PortMapping `json:"portMappings,omitempty"`
 	LogDriver    string            `json:"logDriver,omitempty"`
 }
 
-// TestAssignContainer_OlderAgentIgnoresUnknownFields verifies the wire
-// contract TFC-0040 depends on: an ecs-agent built before this change decodes
-// a current AssignContainer without error, silently dropping the fields it
-// does not know about, because json.Unmarshal ignores unknown fields by
-// default (PollAssignments never sets DisallowUnknownFields). An agent baked
-// into the ECS AMI must survive a daemon upgrade that adds fields.
+// An agent baked into the ECS AMI must survive a daemon upgrade that adds
+// fields: json.Unmarshal ignores unknown fields by default and PollAssignments
+// never sets DisallowUnknownFields.
 func TestAssignContainer_OlderAgentIgnoresUnknownFields(t *testing.T) {
 	ro := true
 	priv := true
 	start := int64(30)
-	current := AssignContainer{
+	current := bus.AssignContainer{
 		Name: "app", Image: "registry/app:1", Essential: true,
 		User:                   "1000",
 		ReadonlyRootFilesystem: &ro,
 		Privileged:             &priv,
-		SystemControls:         []SystemControl{{Namespace: "net.core.somaxconn", Value: "1024"}},
+		SystemControls:         []bus.SystemControl{{Namespace: "net.core.somaxconn", Value: "1024"}},
 		CapAdd:                 []string{"SYS_PTRACE"},
 		StartTimeout:           &start,
 	}

@@ -210,8 +210,7 @@ func TestRunTask_AssignCarriesGPU(t *testing.T) {
 	assert.Equal(t, 1, rec.GPU)
 }
 
-// TestRegisterTaskDefinition_EchoesRuntimeFields verifies that the enforced
-// container-runtime fields (TFC-0040) read back exactly as submitted: the
+// The enforced container-runtime fields read back exactly as submitted: the
 // read-back is the fix, not just acceptance at register time.
 func TestRegisterTaskDefinition_EchoesRuntimeFields(t *testing.T) {
 	svc, _ := newTestService(t)
@@ -268,9 +267,8 @@ func TestRegisterTaskDefinition_EchoesRuntimeFields(t *testing.T) {
 	assert.Equal(t, []string{"NET_RAW"}, aws.StringValueSlice(c.LinuxParameters.Capabilities.Drop))
 }
 
-// TestRegisterTaskDefinition_RuntimeFieldsOmittedWhenUnset verifies that a
-// task definition registered without any of the TFC-0040 fields reads back
-// byte-identical to today, so an existing revision does not churn.
+// A task definition registered without any of the new fields reads back
+// byte-identical to before, so an existing revision does not churn.
 func TestRegisterTaskDefinition_RuntimeFieldsOmittedWhenUnset(t *testing.T) {
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{

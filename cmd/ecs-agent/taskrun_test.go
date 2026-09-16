@@ -70,9 +70,8 @@ func TestRunTask_PullRunReportsRunning(t *testing.T) {
 	}
 }
 
-// TestRunTask_RuntimeFieldsCarriedToRunSpec verifies each TFC-0040 enforced
-// field maps onto RunSpec exactly, asserted through the fake runtime — the
-// mapping this fix exists to wire, without needing a real containerd.
+// Each enforced field maps onto RunSpec exactly, asserted through the fake
+// runtime — the mapping this change exists to wire, without a real containerd.
 func TestRunTask_RuntimeFieldsCarriedToRunSpec(t *testing.T) {
 	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
@@ -122,10 +121,9 @@ func TestRunTask_RuntimeFieldsCarriedToRunSpec(t *testing.T) {
 	}
 }
 
-// TestRunTask_NilRuntimeFieldsLeaveRunSpecUnset verifies that an assign
-// carrying none of the TFC-0040 fields (the pre-fix shape) leaves RunSpec's
-// new pointer fields nil rather than defaulting to a false that would be
-// indistinguishable from "explicitly not requested".
+// An assign carrying none of the new fields leaves RunSpec's pointer fields
+// nil rather than defaulting to a false indistinguishable from "explicitly
+// not requested".
 func TestRunTask_NilRuntimeFieldsLeaveRunSpecUnset(t *testing.T) {
 	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}

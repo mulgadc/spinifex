@@ -50,7 +50,9 @@ func NewExternalIPAM(ctx context.Context, js jetstream.JetStream, pools []extern
 		if err != nil {
 			return nil, err
 		}
-		kv = alloc.KV()
+		if kv, err = alloc.KV(ctx); err != nil {
+			return nil, err
+		}
 	}
 	return &ExternalIPAM{kv: kv, pools: pools, static: alloc, perPool: map[string]external.Allocator{}}, nil
 }

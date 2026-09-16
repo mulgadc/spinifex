@@ -144,6 +144,34 @@ func TestStaticPool_CASConflict(t *testing.T) {
 	}
 }
 
+// A launch asking for many public IPs at once is that many writers on one pool
+// key. The retry bound has to cover the whole contending set, not a guess at
+// timing: at the inherited five attempts this drops callers under load.
+func TestStaticPool_AllocateUnderHeavyContention(t *testing.T) {
+	pool := wanPool()
+	pool.RangeEnd = "192.168.1.200"
+	a := newStaticAllocator(t, []ExternalPoolConfig{pool})
+
+	const writers = 16
+	results := make([]netip.Addr, writers)
+	errs := make([]error, writers)
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Go(func() {
+			results[i], errs[i] = a.Allocate(t.Context(), AllocateRequest{PoolName: "wan"})
+		})
+	}
+	wg.Wait()
+
+	seen := make(map[string]bool, writers)
+	for i, err := range errs {
+		require.NoError(t, err, "concurrent allocation %d must not be dropped", i)
+		ip := results[i].String()
+		assert.False(t, seen[ip], "duplicate IP %s handed to two callers", ip)
+		seen[ip] = true
+	}
+}
+
 func TestStaticPool_ReleaseUnknown(t *testing.T) {
 	a := newStaticAllocator(t, []ExternalPoolConfig{wanPool()})
 	err := a.Release(context.Background(), "wan", mustAddr(t, "192.168.1.200"), "")

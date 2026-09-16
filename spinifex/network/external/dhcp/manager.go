@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"math/rand/v2"
 	"net"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"

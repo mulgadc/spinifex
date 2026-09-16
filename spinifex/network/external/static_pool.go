@@ -2,7 +2,6 @@ package external
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,7 +9,7 @@ import (
 	"net/netip"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -21,8 +20,12 @@ const (
 	// carries over with no manual migration.
 	KVBucketStaticPool        = "spinifex-external-ipam"
 	KVBucketStaticPoolVersion = 2
+	KVBucketStaticPoolHistory = 5
 
-	staticPoolCASRetries = 5
+	// One pool record is one key, so every concurrent allocation in a pool
+	// contends on it. A launch asking for sixteen public IPs is sixteen
+	// writers, and each round has exactly one winner.
+	staticPoolCASRetries = 25
 
 	// purposeIGWLRP duplicates handlers/ec2/vpc.PurposeIGWLRP so the
 	// allocator can reserve the gateway slot without importing handlers.
@@ -58,11 +61,29 @@ type PoolRecord struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
+// staticPoolConfig describes the pool bucket. The name and history are
+// unchanged from the pre-Q1 ExternalIPAM so existing cluster data carries over,
+// and the migration runs on every open rather than only the first.
+func staticPoolConfig() kvstore.Config {
+	return kvstore.Config{
+		Name:     KVBucketStaticPool,
+		History:  KVBucketStaticPoolHistory,
+		Attempts: staticPoolCASRetries,
+		Missing:  "external IPAM: no JetStream client configured",
+		OnOpen: func(ctx context.Context, kv jetstream.KeyValue) error {
+			return migrate.DefaultRegistry.RunKV(ctx, KVBucketStaticPool, kv, KVBucketStaticPoolVersion)
+		},
+		Exhausted: func(key string, attempts int) error {
+			return fmt.Errorf("external IPAM: pool %s contended after %d attempts", key, attempts)
+		},
+	}
+}
+
 // StaticPoolAllocator implements Allocator backed by a NATS JetStream KV
 // bucket. Bucket schema and CAS semantics are unchanged from the pre-Q1
 // ExternalIPAM.
 type StaticPoolAllocator struct {
-	kv    jetstream.KeyValue
+	store *kvstore.Store[PoolRecord]
 	pools []ExternalPoolConfig
 }
 
@@ -71,14 +92,7 @@ var _ Allocator = (*StaticPoolAllocator)(nil)
 // NewStaticPoolAllocator creates the KV bucket (if missing), runs pending
 // migrations, and seeds each pool's record.
 func NewStaticPoolAllocator(ctx context.Context, js jetstream.JetStream, pools []ExternalPoolConfig) (*StaticPoolAllocator, error) {
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketStaticPool, 5)
-	if err != nil {
-		return nil, fmt.Errorf("create external IPAM KV bucket: %w", err)
-	}
-	if err := migrate.DefaultRegistry.RunKV(ctx, KVBucketStaticPool, kv, KVBucketStaticPoolVersion); err != nil {
-		return nil, fmt.Errorf("migrate %s: %w", KVBucketStaticPool, err)
-	}
-	a := &StaticPoolAllocator{kv: kv, pools: pools}
+	a := &StaticPoolAllocator{store: kvstore.New[PoolRecord](js, staticPoolConfig()), pools: pools}
 	if err := a.initPools(ctx); err != nil {
 		return nil, fmt.Errorf("init external IPAM pools: %w", err)
 	}
@@ -88,12 +102,14 @@ func NewStaticPoolAllocator(ctx context.Context, js jetstream.JetStream, pools [
 // NewStaticPoolAllocatorWithKV is the test constructor — skips bucket
 // creation and migrations.
 func NewStaticPoolAllocatorWithKV(kv jetstream.KeyValue, pools []ExternalPoolConfig) *StaticPoolAllocator {
-	return &StaticPoolAllocator{kv: kv, pools: pools}
+	return &StaticPoolAllocator{store: kvstore.Over[PoolRecord](nil, kv, staticPoolConfig()), pools: pools}
 }
 
-// KV exposes the underlying bucket so callers that share the bucket
-// (notably ExternalIPAM facade tests) can construct sibling allocators.
-func (a *StaticPoolAllocator) KV() jetstream.KeyValue { return a.kv }
+// KV exposes the underlying bucket so callers that share it (the ExternalIPAM
+// facade and its tests) can construct sibling allocators over the same handle.
+func (a *StaticPoolAllocator) KV(ctx context.Context) (jetstream.KeyValue, error) {
+	return a.store.KV(ctx)
+}
 
 // Pools returns the allocator's pool list. Used by the ExternalIPAM
 // facade to satisfy pool-by-region lookups.
@@ -101,97 +117,86 @@ func (a *StaticPoolAllocator) Pools() []ExternalPoolConfig { return a.pools }
 
 // Allocate implements Allocator.
 func (a *StaticPoolAllocator) Allocate(ctx context.Context, req AllocateRequest) (netip.Addr, error) {
-	for attempt := range staticPoolCASRetries {
-		record, revision, err := a.getRecord(ctx, req.PoolName)
-		if err != nil {
-			return netip.Addr{}, fmt.Errorf("get external IPAM record: %w", err)
+	var ip string
+	err := a.store.Mutate(ctx, req.PoolName, func(record *PoolRecord) (bool, error) {
+		// A record written before the field existed decodes to a nil map, which
+		// the assignment below would panic on.
+		if record.Allocated == nil {
+			record.Allocated = map[string]ExternalIPAllocation{}
 		}
-
-		ip, err := nextAvailableIP(record)
+		next, err := nextAvailableIP(record)
 		if err != nil {
-			return netip.Addr{}, err
+			return false, err
 		}
-
-		record.Allocated[ip] = ExternalIPAllocation{
+		record.Allocated[next] = ExternalIPAllocation{
 			Purpose:      req.Purpose,
 			AllocationID: req.AllocationID,
 			ENIId:        req.ENIID,
 			InstanceId:   req.InstanceID,
 		}
-		record.Cursor = ip
-
-		data, err := json.Marshal(record)
-		if err != nil {
-			return netip.Addr{}, fmt.Errorf("marshal external IPAM record: %w", err)
-		}
-
-		if _, err := a.kv.Update(ctx, req.PoolName, data, revision); err != nil {
-			slog.Debug("external IPAM CAS conflict, retrying", "pool", req.PoolName, "attempt", attempt)
-			continue
-		}
-
-		addr, ok := netip.AddrFromSlice(net.ParseIP(ip).To4())
-		if !ok {
-			return netip.Addr{}, fmt.Errorf("parse allocated ip %q", ip)
-		}
-		slog.Info("external IPAM allocated IP", "pool", req.PoolName, "ip", ip, "purpose", req.Purpose)
-		return addr.Unmap(), nil
+		record.Cursor = next
+		ip = next
+		return true, nil
+	})
+	if err != nil {
+		return netip.Addr{}, err
 	}
-	return netip.Addr{}, fmt.Errorf("external IPAM allocation failed after CAS retries for pool %s", req.PoolName)
+
+	addr, ok := netip.AddrFromSlice(net.ParseIP(ip).To4())
+	if !ok {
+		return netip.Addr{}, fmt.Errorf("parse allocated ip %q", ip)
+	}
+	slog.InfoContext(ctx, "external IPAM allocated IP", "pool", req.PoolName, "ip", ip, "purpose", req.Purpose)
+	return addr.Unmap(), nil
 }
 
 // Release implements Allocator.
 func (a *StaticPoolAllocator) Release(ctx context.Context, poolName string, ip netip.Addr, ownerENIID string) error {
 	target := ip.String()
-	for attempt := range staticPoolCASRetries {
-		record, revision, err := a.getRecord(ctx, poolName)
-		if err != nil {
-			return fmt.Errorf("get external IPAM record for release: %w", err)
-		}
+	var released bool
+	err := a.store.Mutate(ctx, poolName, func(record *PoolRecord) (bool, error) {
+		// Reset per attempt: a retry that finds the IP already gone must not
+		// inherit the previous attempt's verdict.
+		released = false
 
 		alloc, ok := record.Allocated[target]
 		if !ok {
 			// An owner-scoped release of an already-freed IP is an idempotent
 			// no-op (a duplicated or stale teardown), not an error.
 			if ownerENIID != "" {
-				return nil
+				return false, nil
 			}
-			return fmt.Errorf("IP %s not allocated in pool %s", target, poolName)
+			return false, fmt.Errorf("IP %s not allocated in pool %s", target, poolName)
 		}
 		// Ownership guard: when a caller names an owner, only free the lease if
 		// it still belongs to that ENI. External IPs are recycled and GC/teardown
 		// sweeps re-emit releases, so a release for a prior owner must not free an
 		// IP since reassigned to a live instance (that would double-allocate).
 		if ownerENIID != "" && alloc.ENIId != "" && alloc.ENIId != ownerENIID {
-			slog.Info("external IPAM release skip — IP reassigned to a different ENI (stale release)",
+			slog.InfoContext(ctx, "external IPAM release skip — IP reassigned to a different ENI (stale release)",
 				"pool", poolName, "ip", target, "stale_owner_eni", ownerENIID, "current_owner_eni", alloc.ENIId)
-			return nil
+			return false, nil
 		}
 		if alloc.Purpose == purposeIGWLRP {
-			return fmt.Errorf("cannot release gateway IP %s in pool %s", target, poolName)
+			return false, fmt.Errorf("cannot release gateway IP %s in pool %s", target, poolName)
 		}
 
 		delete(record.Allocated, target)
-
-		data, err := json.Marshal(record)
-		if err != nil {
-			return fmt.Errorf("marshal external IPAM record: %w", err)
-		}
-
-		if _, err := a.kv.Update(ctx, poolName, data, revision); err != nil {
-			slog.Debug("external IPAM release CAS conflict, retrying", "pool", poolName, "attempt", attempt)
-			continue
-		}
-
-		slog.Info("external IPAM released IP", "pool", poolName, "ip", target)
-		return nil
+		released = true
+		return true, nil
+	})
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("external IPAM release failed after CAS retries for pool %s", poolName)
+	if released {
+		slog.InfoContext(ctx, "external IPAM released IP", "pool", poolName, "ip", target)
+	}
+	return nil
 }
 
 // GetPoolRecord returns the current pool record.
 func (a *StaticPoolAllocator) GetPoolRecord(ctx context.Context, poolName string) (*PoolRecord, error) {
-	rec, _, err := a.getRecord(ctx, poolName)
+	rec, _, err := a.store.Get(ctx, poolName)
 	return rec, err
 }
 
@@ -205,9 +210,9 @@ func (a *StaticPoolAllocator) initPools(ctx context.Context) error {
 }
 
 func (a *StaticPoolAllocator) initPool(ctx context.Context, pool ExternalPoolConfig) error {
-	chk, revision, err := a.getRecord(ctx, pool.Name)
+	chk, revision, err := a.store.Get(ctx, pool.Name)
 
-	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err != nil && !errors.Is(err, kvstore.ErrNotFound) {
 		return err
 	}
 
@@ -225,22 +230,21 @@ func (a *StaticPoolAllocator) initPool(ctx context.Context, pool ExternalPoolCon
 			chk.GwLrpRangeStart = pool.GwLrpRangeStart
 			chk.GwLrpRangeEnd = pool.GwLrpRangeEnd
 
-			data, err := json.Marshal(chk)
-			if err != nil {
-				return fmt.Errorf("marshal external IPAM record: %w", err)
-			}
-
-			if _, err := a.kv.Update(ctx, pool.Name, data, revision); err != nil {
-				slog.Warn("external IPAM update failed", "pool", pool.Name, "err", err)
+			// Losing the CAS is another node reconciling the same drift, which
+			// the Create branch below already treats as success for the same
+			// reason. Failing the boot over it would take this node down.
+			if _, err := a.store.CompareAndSet(ctx, pool.Name, chk, revision); err != nil &&
+				!errors.Is(err, kvstore.ErrConflict) {
+				slog.WarnContext(ctx, "external IPAM update failed", "pool", pool.Name, "err", err)
 				return err
 			}
 			return nil
 		}
-		slog.Debug("external IPAM pool already initialized", "pool", pool.Name)
+		slog.DebugContext(ctx, "external IPAM pool already initialized", "pool", pool.Name)
 		return nil
 	}
 
-	slog.Info("external IPAM pool not found, creating", "pool", pool.Name)
+	slog.InfoContext(ctx, "external IPAM pool not found, creating", "pool", pool.Name)
 
 	gwIP := pool.GatewayIP
 	if gwIP == "" {
@@ -263,33 +267,15 @@ func (a *StaticPoolAllocator) initPool(ctx context.Context, pool ExternalPoolCon
 		},
 	}
 
-	data, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("marshal pool record: %w", err)
-	}
-
-	if _, err := a.kv.Create(ctx, pool.Name, data); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
+	if _, err := a.store.Create(ctx, pool.Name, record); err != nil {
+		if errors.Is(err, kvstore.ErrExists) {
 			return nil
 		}
 		return fmt.Errorf("create pool KV entry: %w", err)
 	}
 
-	slog.Info("external IPAM pool initialized", "pool", pool.Name, "gateway_ip", gwIP)
+	slog.InfoContext(ctx, "external IPAM pool initialized", "pool", pool.Name, "gateway_ip", gwIP)
 	return nil
-}
-
-func (a *StaticPoolAllocator) getRecord(ctx context.Context, poolName string) (*PoolRecord, uint64, error) {
-	entry, err := a.kv.Get(ctx, poolName)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	var record PoolRecord
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return nil, 0, fmt.Errorf("unmarshal external IPAM record: %w", err)
-	}
-	return &record, entry.Revision(), nil
 }
 
 // nextAvailableIP picks the next unallocated address, skipping [GwLrpRangeStart,

@@ -249,6 +249,8 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 
 	slog.InfoContext(ctx, "CreateSecurityGroup completed", "groupId", groupId, "groupName", groupName, "vpcId", vpcId, "accountID", accountID)
 
+	s.projectRecordTags(ctx, accountID, groupId, record.Tags)
+
 	if err := s.requestSGEvent("vpc.create-sg", SGEvent{
 		GroupId:      groupId,
 		VpcId:        vpcId,

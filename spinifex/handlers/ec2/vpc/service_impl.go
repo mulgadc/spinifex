@@ -91,6 +91,11 @@ type VPCServiceImpl struct {
 	externalIPAM *ExternalIPAM
 	eipKV        jetstream.KeyValue
 
+	// Optional: injected after construction so create paths can project their
+	// stored tags into the central tag store. A nil value leaves create
+	// behaviour unchanged.
+	centralTags CentralTagWriter
+
 	// disableDefaultPublicIP seeds default subnets with MapPublicIpOnLaunch=false
 	// (non-pool external modes have no public IPs to assign). Zero value keeps
 	// the AWS-faithful default of true.
@@ -108,6 +113,12 @@ func (s *VPCServiceImpl) SetDefaultPublicIPMapping(enabled bool) {
 func (s *VPCServiceImpl) SetExternalIPAM(ipam *ExternalIPAM, eipKV jetstream.KeyValue) {
 	s.externalIPAM = ipam
 	s.eipKV = eipKV
+}
+
+// SetCentralTagWriter injects the central tag store writer so create paths
+// project their record tags into it. Nil leaves create behaviour unchanged.
+func (s *VPCServiceImpl) SetCentralTagWriter(w CentralTagWriter) {
+	s.centralTags = w
 }
 
 // localAZ returns the node's local availability zone, sourced from
@@ -280,6 +291,8 @@ func (s *VPCServiceImpl) CreateVpc(ctx context.Context, input *ec2.CreateVpcInpu
 	}
 
 	slog.InfoContext(ctx, "CreateVpc completed", "vpcId", vpcID, "cidrBlock", record.CidrBlock, "vni", vni, "accountID", accountID)
+
+	s.projectRecordTags(ctx, accountID, vpcID, record.Tags)
 
 	// Publish vpc.create event for vpcd topology translation
 	s.publishVPCEvent("vpc.create", record.VpcId, record.CidrBlock, record.VNI)
@@ -752,6 +765,8 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 
 	slog.InfoContext(ctx, "CreateSubnet completed", "subnetId", subnetID, "vpcId", vpcID, "cidrBlock", record.CidrBlock, "accountID", accountID)
 
+	s.projectRecordTags(ctx, accountID, subnetID, record.Tags)
+
 	// Publish vpc.create-subnet event for vpcd topology translation
 	s.publishSubnetEvent("vpc.create-subnet", record.SubnetId, record.VpcId, record.CidrBlock)
 
@@ -1054,6 +1069,20 @@ func (s *VPCServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID 
 		}
 	}
 	return nil
+}
+
+// projectRecordTags writes a create path's tags into the central tag store, the
+// create-direction counterpart to updateRecordTags, so DescribeTags agrees with
+// the resource's own describe from birth. A write failure is logged and
+// swallowed: failing the create over a tag index would be worse than the
+// divergence it repairs.
+func (s *VPCServiceImpl) projectRecordTags(ctx context.Context, accountID, resourceID string, tags map[string]string) {
+	if s.centralTags == nil || len(tags) == 0 {
+		return
+	}
+	if err := s.centralTags.PutResourceTags(ctx, accountID, resourceID, tags); err != nil {
+		slog.ErrorContext(ctx, "central tag store write failed", "resourceId", resourceID, "err", err)
+	}
 }
 
 // updateRecordTags applies mut to the tag map of the subnet-, vpc-, sg-, or

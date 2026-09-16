@@ -33,3 +33,10 @@ type VPCService interface {
 	UpdateSecurityGroupRuleDescriptionsIngress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsIngressInput, accountID string) (*ec2.UpdateSecurityGroupRuleDescriptionsIngressOutput, error)
 	UpdateSecurityGroupRuleDescriptionsEgress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsEgressInput, accountID string) (*ec2.UpdateSecurityGroupRuleDescriptionsEgressOutput, error)
 }
+
+// CentralTagWriter projects a create path's record tags into the central tag
+// store so DescribeTags agrees with the record from birth. Implemented by
+// handlers/ec2/tags.TagsServiceImpl.
+type CentralTagWriter interface {
+	PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error
+}

@@ -203,6 +203,8 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 
 	slog.InfoContext(ctx, "CreateNetworkInterface completed", "eniId", eniId, "subnetId", subnetId, "ip", privateIP, "accountID", accountID)
 
+	s.projectRecordTags(ctx, accountID, eniId, record.Tags)
+
 	// Send vpc.create-port synchronously so vpcd OVSDB errors surface to the
 	// caller. Fire-and-forget would let CreateNetworkInterface return success
 	// while the LSP joins zero port groups (NATS hiccup or vpcd OVSDB error),

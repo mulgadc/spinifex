@@ -170,8 +170,8 @@ func TestCreateRole_MalformedTrustPolicy_NamesTheReason(t *testing.T) {
 	}{
 		{
 			// sts:AssumeRole is itself one of the two actions Condition blocks are
-			// supported on (mulga-yxd9p part B, aws:SourceAccount); this exercises
-			// an action outside both, which must still be refused at write time.
+			// supported on, so this exercises an action outside both, which must
+			// still be refused at write time.
 			name: "condition-on-an-unsupported-action",
 			doc:  `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:GetSessionToken","Condition":{"StringEquals":{"aws:SourceAccount":"000000000001"}}}]}`,
 			want: []string{"statement 0", STSActionAssumeRoleWithWebIdentity},
@@ -1383,10 +1383,9 @@ func TestCreateRole_MalformedTrustPolicy_ConditionRejected_IpAddress(t *testing.
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
 }
 
-// TestCreateRole_TrustPolicy_SourceAccountAccepted pins mulga-yxd9p's (B): a
-// StringEquals condition on aws:SourceAccount for sts:AssumeRole is accepted
-// at write time, where before this change every Condition on that action was
-// refused outright regardless of key.
+// A StringEquals condition on aws:SourceAccount for sts:AssumeRole is accepted
+// at write time, where before every Condition on that action was refused
+// outright regardless of key.
 func TestCreateRole_TrustPolicy_SourceAccountAccepted(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
@@ -1399,8 +1398,7 @@ func TestCreateRole_TrustPolicy_SourceAccountAccepted(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestCreateRole_MalformedTrustPolicy_SourceArnRejected_NamesTheKey pins (C):
-// the ECS module's own aws:SourceArn condition is refused with a message
+// The ECS module's own aws:SourceArn condition is refused with a message
 // naming the key, not a bare MalformedPolicyDocument.
 func TestCreateRole_MalformedTrustPolicy_SourceArnRejected_NamesTheKey(t *testing.T) {
 	t.Parallel()

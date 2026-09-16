@@ -85,11 +85,13 @@ func TestClusterMetaToAWS_AccessConfig(t *testing.T) {
 		name          string
 		mutate        func(*ClusterMeta)
 		wantBootstrap bool
+		wantMode      string
 	}{
 		{
-			name:          "zero-value record predating the field defaults bootstrap-admin true",
+			name:          "zero-value record predating the field defaults bootstrap-admin true and mode API",
 			mutate:        func(m *ClusterMeta) {},
 			wantBootstrap: true,
+			wantMode:      eks.AuthenticationModeApi,
 		},
 		{
 			name: "caller explicitly requested bootstrap-admin true",
@@ -98,6 +100,7 @@ func TestClusterMetaToAWS_AccessConfig(t *testing.T) {
 				m.BootstrapClusterCreatorAdminPermissions = &v
 			},
 			wantBootstrap: true,
+			wantMode:      eks.AuthenticationModeApi,
 		},
 		{
 			name: "caller explicitly disabled bootstrap-admin",
@@ -106,6 +109,15 @@ func TestClusterMetaToAWS_AccessConfig(t *testing.T) {
 				m.BootstrapClusterCreatorAdminPermissions = &v
 			},
 			wantBootstrap: false,
+			wantMode:      eks.AuthenticationModeApi,
+		},
+		{
+			name: "cluster created with API_AND_CONFIG_MAP describes back the same mode",
+			mutate: func(m *ClusterMeta) {
+				m.AuthenticationMode = eks.AuthenticationModeApiAndConfigMap
+			},
+			wantBootstrap: true,
+			wantMode:      eks.AuthenticationModeApiAndConfigMap,
 		},
 	}
 	for _, tt := range tests {
@@ -116,7 +128,7 @@ func TestClusterMetaToAWS_AccessConfig(t *testing.T) {
 			out := clusterMetaToAWS(meta)
 
 			require.NotNil(t, out.AccessConfig)
-			assert.Equal(t, eks.AuthenticationModeApi, aws.StringValue(out.AccessConfig.AuthenticationMode))
+			assert.Equal(t, tt.wantMode, aws.StringValue(out.AccessConfig.AuthenticationMode))
 			assert.Equal(t, tt.wantBootstrap, aws.BoolValue(out.AccessConfig.BootstrapClusterCreatorAdminPermissions))
 		})
 	}

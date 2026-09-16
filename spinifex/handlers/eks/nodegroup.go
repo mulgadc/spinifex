@@ -1385,12 +1385,16 @@ func nodegroupRecordToAWS(rec *NodegroupRecord) *eks.Nodegroup {
 		}
 		out.UpdateConfig = cfg
 	}
+	// AWS always returns Health with an issues list, empty when nothing is
+	// wrong; a nil slice here would marshal the key away entirely.
+	issues := make([]*eks.Issue, 0, 1)
 	if rec.StatusReason != "" {
-		out.Health = &eks.NodegroupHealth{Issues: []*eks.Issue{{
+		issues = append(issues, &eks.Issue{
 			Code:        aws.String(eks.NodegroupIssueCodeNodeCreationFailure),
 			Message:     aws.String(rec.StatusReason),
 			ResourceIds: aws.StringSlice(rec.InstanceIDs),
-		}}}
+		})
 	}
+	out.Health = &eks.NodegroupHealth{Issues: issues}
 	return out
 }

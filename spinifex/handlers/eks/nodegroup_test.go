@@ -2,6 +2,7 @@ package handlers_eks
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/spinifex/arn"
@@ -1101,6 +1103,50 @@ func TestNodegroupRecordToAWS_LabelsAlwaysPresent(t *testing.T) {
 	})
 	require.NotNil(t, withLabels)
 	assert.Equal(t, map[string]*string{"team": aws.String("core")}, withLabels.Labels)
+}
+
+// TestNodegroupRecordToAWS_HealthAlwaysPresent pins Health as a non-nil object
+// with a zero-length issues list when healthy, and the NodeCreationFailure
+// issue when set, via jsonutil.BuildJSON so a dropped nil-slice key is caught.
+func TestNodegroupRecordToAWS_HealthAlwaysPresent(t *testing.T) {
+	healthy := nodegroupRecordToAWS(&NodegroupRecord{
+		ClusterName: "c1", Name: "ng1", Status: eks.NodegroupStatusActive,
+	})
+	require.NotNil(t, healthy)
+	require.NotNil(t, healthy.Health)
+	assert.NotNil(t, healthy.Health.Issues)
+	assert.Empty(t, healthy.Health.Issues)
+
+	healthyJSON, err := jsonutil.BuildJSON(healthy)
+	require.NoError(t, err)
+	var healthyDecoded map[string]any
+	require.NoError(t, json.Unmarshal(healthyJSON, &healthyDecoded))
+	health, ok := healthyDecoded["health"].(map[string]any)
+	require.True(t, ok, "health key must survive marshalling for a healthy node group")
+	issues, ok := health["issues"].([]any)
+	require.True(t, ok, "issues key must survive marshalling as an empty list, not be dropped")
+	assert.Empty(t, issues)
+
+	unhealthy := nodegroupRecordToAWS(&NodegroupRecord{
+		ClusterName: "c1", Name: "ng1", Status: eks.NodegroupStatusCreateFailed,
+		StatusReason: "capacity unavailable", InstanceIDs: []string{"i-aaa"},
+	})
+	require.NotNil(t, unhealthy)
+	require.NotNil(t, unhealthy.Health)
+	require.Len(t, unhealthy.Health.Issues, 1)
+	assert.Equal(t, eks.NodegroupIssueCodeNodeCreationFailure, aws.StringValue(unhealthy.Health.Issues[0].Code))
+	assert.Equal(t, "capacity unavailable", aws.StringValue(unhealthy.Health.Issues[0].Message))
+	assert.Equal(t, []string{"i-aaa"}, aws.StringValueSlice(unhealthy.Health.Issues[0].ResourceIds))
+
+	unhealthyJSON, err := jsonutil.BuildJSON(unhealthy)
+	require.NoError(t, err)
+	var unhealthyDecoded map[string]any
+	require.NoError(t, json.Unmarshal(unhealthyJSON, &unhealthyDecoded))
+	uHealth, ok := unhealthyDecoded["health"].(map[string]any)
+	require.True(t, ok)
+	uIssues, ok := uHealth["issues"].([]any)
+	require.True(t, ok)
+	require.Len(t, uIssues, 1)
 }
 
 // TestCreateNodegroup_CapturesLaunchTemplateCapacityTypeReleaseVersion proves

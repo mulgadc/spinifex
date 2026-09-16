@@ -81,26 +81,45 @@ func TestMissingOrchestrationDeps_IAMProviderSatisfiesGate(t *testing.T) {
 	require.Empty(t, f.svc.missingOrchestrationDeps())
 }
 
-// EKS only supports the API authentication mode here; CONFIG_MAP (and the
-// API_AND_CONFIG_MAP hybrid) must be rejected with InvalidParameterException.
+// Bare CONFIG_MAP consults only the aws-auth ConfigMap, which Spinifex has no
+// path for, so a cluster in that mode would have no working authentication at
+// all. The refusal must name accessConfig.authenticationMode so a Terraform
+// caller sees why, not a bare code.
 func TestValidateCreateClusterInput_RejectsConfigMapAuthMode(t *testing.T) {
 	in := createInput("alpha")
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
 		AuthenticationMode: aws.String(eks.AuthenticationModeConfigMap),
 	}
 	err := validateCreateClusterInput(in)
-	require.EqualError(t, err, awserrors.ErrorInvalidParameter)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameter, code)
+	assert.Contains(t, message, "accessConfig.authenticationMode")
 }
 
-// The API_AND_CONFIG_MAP hybrid still enables the unsupported aws-auth ConfigMap
-// path, so it must be rejected the same as plain CONFIG_MAP — the sibling test
-// only covers the CONFIG_MAP value.
-func TestValidateCreateClusterInput_RejectsAPIAndConfigMapAuthMode(t *testing.T) {
+// A junk authentication mode must be rejected the same way as CONFIG_MAP, and
+// must also name the parameter rather than surfacing a bare code.
+func TestValidateCreateClusterInput_RejectsJunkAuthMode(t *testing.T) {
+	in := createInput("alpha")
+	in.AccessConfig = &eks.CreateAccessConfigRequest{
+		AuthenticationMode: aws.String("NOT_A_REAL_MODE"),
+	}
+	err := validateCreateClusterInput(in)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameter, code)
+	assert.Contains(t, message, "accessConfig.authenticationMode")
+}
+
+// API_AND_CONFIG_MAP is both AWS's default since 1.23 and the terraform-aws-eks
+// module default. Its ConfigMap side grants nothing on Spinifex, exactly as it
+// would on real AWS with an empty aws-auth ConfigMap, so it must be accepted.
+func TestValidateCreateClusterInput_AcceptsAPIAndConfigMapAuthMode(t *testing.T) {
 	in := createInput("alpha")
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
 		AuthenticationMode: aws.String(eks.AuthenticationModeApiAndConfigMap),
 	}
-	require.EqualError(t, validateCreateClusterInput(in), awserrors.ErrorInvalidParameter)
+	require.NoError(t, validateCreateClusterInput(in))
 }
 
 func TestValidateCreateClusterInput_AcceptsAPIAuthMode(t *testing.T) {
@@ -108,6 +127,16 @@ func TestValidateCreateClusterInput_AcceptsAPIAuthMode(t *testing.T) {
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
 		AuthenticationMode: aws.String(eks.AuthenticationModeApi),
 	}
+	require.NoError(t, validateCreateClusterInput(in))
+}
+
+// An unset accessConfig (or an unset authenticationMode within it) must stay
+// valid — it defaults to API, exactly as an explicit "API" does.
+func TestValidateCreateClusterInput_AcceptsUnsetAuthMode(t *testing.T) {
+	in := createInput("alpha")
+	require.NoError(t, validateCreateClusterInput(in))
+
+	in.AccessConfig = &eks.CreateAccessConfigRequest{}
 	require.NoError(t, validateCreateClusterInput(in))
 }
 

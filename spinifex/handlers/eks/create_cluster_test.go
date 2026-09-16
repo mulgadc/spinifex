@@ -498,3 +498,41 @@ func TestCreateCluster_DescribeSurfacesReadbackConformanceFields(t *testing.T) {
 	assert.Equal(t, []string{eks.LogTypeApi}, aws.StringValueSlice(c.Logging.ClusterLogging[0].Types))
 	assert.True(t, aws.BoolValue(c.Logging.ClusterLogging[0].Enabled))
 }
+
+// A cluster created with accessConfig.authenticationMode = API_AND_CONFIG_MAP
+// must describe back with that same mode, not the platform's hardcoded API —
+// otherwise every subsequent terraform-aws-eks plan would show a permanent
+// diff on access_config.authentication_mode.
+func TestCreateCluster_EchoesRequestedAuthenticationMode(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	in := createInput("alpha")
+	in.AccessConfig = &eks.CreateAccessConfigRequest{
+		AuthenticationMode: aws.String(eks.AuthenticationModeApiAndConfigMap),
+	}
+
+	_, err := f.svc.CreateCluster(context.Background(), in, testAccountID, "")
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	out, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.Cluster.AccessConfig)
+	assert.Equal(t, eks.AuthenticationModeApiAndConfigMap, aws.StringValue(out.Cluster.AccessConfig.AuthenticationMode))
+}
+
+// A cluster created with no accessConfig at all must still describe back as
+// API — the AWS default, and the only mode a record predating this field can
+// mean.
+func TestCreateCluster_UnsetAuthenticationModeDescribesAsAPI(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	out, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.Cluster.AccessConfig)
+	assert.Equal(t, eks.AuthenticationModeApi, aws.StringValue(out.Cluster.AccessConfig.AuthenticationMode))
+}

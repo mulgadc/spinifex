@@ -94,6 +94,10 @@ type ClusterMeta struct {
 	// resolved default-true decision, so DescribeCluster echoes exactly what
 	// CreateCluster actually did. Nil predates this field and also defaults true.
 	BootstrapClusterCreatorAdminPermissions *bool `json:"bootstrapClusterCreatorAdminPermissions,omitempty"`
+	// AuthenticationMode is the requested accessConfig.authenticationMode
+	// ("API" or "API_AND_CONFIG_MAP"), stored verbatim; empty predates this
+	// field and also defaults to API, the only grant path Spinifex ever runs.
+	AuthenticationMode string `json:"authenticationMode,omitempty"`
 	// UpgradePolicy is the requested extended-support policy, stored verbatim;
 	// nil when the caller specified none (DescribeCluster then reports the
 	// AWS-standard default).

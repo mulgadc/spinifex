@@ -597,6 +597,7 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 		},
 		KubernetesNetworkConfig:                 clusterNetworkConfigFromInput(input.KubernetesNetworkConfig),
 		BootstrapClusterCreatorAdminPermissions: &bootstrapAdmin,
+		AuthenticationMode:                      requestedAuthenticationMode(input),
 		UpgradePolicy:                           clusterUpgradePolicyFromInput(input.UpgradePolicy),
 		Logging:                                 clusterLoggingFromInput(input.Logging),
 		Tags:                                    aws.StringValueMap(input.Tags),
@@ -1019,6 +1020,16 @@ func bootstrapCreatorAdmin(input *eks.CreateClusterInput) bool {
 		return true
 	}
 	return *input.AccessConfig.BootstrapClusterCreatorAdminPermissions
+}
+
+// requestedAuthenticationMode resolves accessConfig.authenticationMode from an
+// already-validated CreateCluster request, defaulting to API when omitted.
+// validateCreateClusterInput has rejected anything but "", API, and API_AND_CONFIG_MAP.
+func requestedAuthenticationMode(input *eks.CreateClusterInput) string {
+	if input.AccessConfig == nil {
+		return eks.AuthenticationModeApi
+	}
+	return deref(input.AccessConfig.AuthenticationMode, eks.AuthenticationModeApi)
 }
 
 // systemEgressEvent is the wire shape for vpc.add-system-egress /
@@ -2062,8 +2073,15 @@ func validateCreateClusterInput(input *eks.CreateClusterInput) error {
 	}
 	if input.AccessConfig != nil && input.AccessConfig.AuthenticationMode != nil {
 		mode := *input.AccessConfig.AuthenticationMode
-		if mode != "" && mode != eks.AuthenticationModeApi {
-			return errors.New(awserrors.ErrorInvalidParameter)
+		switch mode {
+		case "", eks.AuthenticationModeApi, eks.AuthenticationModeApiAndConfigMap:
+			// Spinifex has no aws-auth ConfigMap path, but that side of
+			// API_AND_CONFIG_MAP grants nothing here, so the cluster still runs
+			// as API. Bare CONFIG_MAP falls to the default: no working auth path.
+		default:
+			return awserrors.Errorf(awserrors.ErrorInvalidParameter,
+				"accessConfig.authenticationMode: %q is not a supported value, expected one of %q, %q",
+				mode, eks.AuthenticationModeApi, eks.AuthenticationModeApiAndConfigMap)
 		}
 	}
 	// AWS rejects disabling both public and private endpoint access — the
@@ -2411,10 +2429,14 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 	if meta.BootstrapClusterCreatorAdminPermissions != nil {
 		bootstrapAdmin = *meta.BootstrapClusterCreatorAdminPermissions
 	}
+	// Empty covers a record persisted before this field, or an unset request;
+	// both mean the AWS-default API mode.
+	authMode := meta.AuthenticationMode
+	if authMode == "" {
+		authMode = eks.AuthenticationModeApi
+	}
 	out.AccessConfig = &eks.AccessConfigResponse{
-		// Spinifex has no aws-auth ConfigMap path; API access-entry auth is the
-		// only mode it ever actually runs, regardless of what was requested.
-		AuthenticationMode:                      aws.String(eks.AuthenticationModeApi),
+		AuthenticationMode:                      aws.String(authMode),
 		BootstrapClusterCreatorAdminPermissions: aws.Bool(bootstrapAdmin),
 	}
 	out.PlatformVersion = aws.String(eksPlatformVersion)

@@ -302,6 +302,71 @@ func TestRegisterTaskDefinition_RuntimeFieldsOmittedWhenUnset(t *testing.T) {
 // refuses mountPoints=[] would break the terraform-aws-modules/ecs 5.12.1
 // stack, which sends exactly these empty/false values for fields it does not
 // otherwise use. Each requests nothing, so each must be accepted.
+// An empty collection the caller supplied must read back as an empty
+// collection, not as an absent field. Terraform treats absent and empty as
+// different, so omitting one forces a task-definition replacement on a plan
+// taken straight after a clean apply.
+func TestRegisterTaskDefinition_EchoesEmptyCollections(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Environment:     []*ecs.KeyValuePair{},
+			MountPoints:     []*ecs.MountPoint{},
+			VolumesFrom:     []*ecs.VolumeFrom{},
+			SystemControls:  []*ecs.SystemControl{},
+			LinuxParameters: &ecs.LinuxParameters{InitProcessEnabled: aws.Bool(false)},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	d, err := svc.DescribeTaskDefinition(context.Background(), &ecs.DescribeTaskDefinitionInput{
+		TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, d.TaskDefinition.ContainerDefinitions, 1)
+	c := d.TaskDefinition.ContainerDefinitions[0]
+
+	require.NotNil(t, c.Environment)
+	assert.Empty(t, c.Environment)
+	require.NotNil(t, c.MountPoints)
+	assert.Empty(t, c.MountPoints)
+	require.NotNil(t, c.VolumesFrom)
+	assert.Empty(t, c.VolumesFrom)
+	require.NotNil(t, c.SystemControls)
+	assert.Empty(t, c.SystemControls)
+	require.NotNil(t, c.LinuxParameters)
+	require.NotNil(t, c.LinuxParameters.InitProcessEnabled)
+	assert.False(t, aws.BoolValue(c.LinuxParameters.InitProcessEnabled))
+}
+
+// A container that supplied none of these fields must still read back with
+// them absent, so an existing revision registered before this change does not
+// gain fields and churn.
+func TestRegisterTaskDefinition_OmitsUnsuppliedCollections(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family: aws.String("app"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	d, err := svc.DescribeTaskDefinition(context.Background(), &ecs.DescribeTaskDefinitionInput{
+		TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	require.NoError(t, err)
+	c := d.TaskDefinition.ContainerDefinitions[0]
+
+	assert.Nil(t, c.Environment)
+	assert.Nil(t, c.MountPoints)
+	assert.Nil(t, c.VolumesFrom)
+	assert.Nil(t, c.SystemControls)
+	assert.Nil(t, c.LinuxParameters)
+}
+
 func TestRegisterTaskDefinition_AcceptsEmptyRuntimeFields(t *testing.T) {
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{

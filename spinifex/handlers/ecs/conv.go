@@ -99,12 +99,12 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 			Essential: aws.BoolValue(c.Essential),
 			Command:   awsStringSlice(c.Command),
 		}
+		if c.Environment != nil {
+			def.Environment = map[string]string{}
+		}
 		for _, e := range c.Environment {
 			if e == nil {
 				continue
-			}
-			if def.Environment == nil {
-				def.Environment = map[string]string{}
 			}
 			def.Environment[aws.StringValue(e.Name)] = aws.StringValue(e.Value)
 		}
@@ -133,6 +133,9 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 		def.Privileged = c.Privileged
 		def.PseudoTerminal = c.PseudoTerminal
 		def.Interactive = c.Interactive
+		if c.SystemControls != nil {
+			def.SystemControls = []bus.SystemControl{}
+		}
 		for _, sc := range c.SystemControls {
 			if sc == nil {
 				continue
@@ -142,9 +145,14 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []ContainerDef {
 				Value:     aws.StringValue(sc.Value),
 			})
 		}
-		if lp := c.LinuxParameters; lp != nil && lp.Capabilities != nil {
-			def.CapAdd = awsStringSlice(lp.Capabilities.Add)
-			def.CapDrop = awsStringSlice(lp.Capabilities.Drop)
+		def.MountPointsSet = c.MountPoints != nil
+		def.VolumesFromSet = c.VolumesFrom != nil
+		if lp := c.LinuxParameters; lp != nil {
+			def.InitProcessEnabled = lp.InitProcessEnabled
+			if lp.Capabilities != nil {
+				def.CapAdd = awsStringSlice(lp.Capabilities.Add)
+				def.CapDrop = awsStringSlice(lp.Capabilities.Drop)
+			}
 		}
 		def.StartTimeout = c.StartTimeout
 		def.StopTimeout = c.StopTimeout
@@ -186,6 +194,9 @@ func (c ContainerDef) toAWS() *ecs.ContainerDefinition {
 	for _, cmd := range c.Command {
 		cd.Command = append(cd.Command, aws.String(cmd))
 	}
+	if c.Environment != nil {
+		cd.Environment = []*ecs.KeyValuePair{}
+	}
 	for k, v := range c.Environment {
 		cd.Environment = append(cd.Environment, &ecs.KeyValuePair{Name: aws.String(k), Value: aws.String(v)})
 	}
@@ -219,21 +230,34 @@ func (c ContainerDef) toAWS() *ecs.ContainerDefinition {
 	cd.Privileged = c.Privileged
 	cd.PseudoTerminal = c.PseudoTerminal
 	cd.Interactive = c.Interactive
+	if c.SystemControls != nil {
+		cd.SystemControls = []*ecs.SystemControl{}
+	}
 	for _, sc := range c.SystemControls {
 		cd.SystemControls = append(cd.SystemControls, &ecs.SystemControl{
 			Namespace: aws.String(sc.Namespace),
 			Value:     aws.String(sc.Value),
 		})
 	}
-	if len(c.CapAdd) > 0 || len(c.CapDrop) > 0 {
-		caps := &ecs.KernelCapabilities{}
-		if len(c.CapAdd) > 0 {
-			caps.Add = aws.StringSlice(c.CapAdd)
+	if c.MountPointsSet {
+		cd.MountPoints = []*ecs.MountPoint{}
+	}
+	if c.VolumesFromSet {
+		cd.VolumesFrom = []*ecs.VolumeFrom{}
+	}
+	if len(c.CapAdd) > 0 || len(c.CapDrop) > 0 || c.InitProcessEnabled != nil {
+		lp := &ecs.LinuxParameters{InitProcessEnabled: c.InitProcessEnabled}
+		if len(c.CapAdd) > 0 || len(c.CapDrop) > 0 {
+			caps := &ecs.KernelCapabilities{}
+			if len(c.CapAdd) > 0 {
+				caps.Add = aws.StringSlice(c.CapAdd)
+			}
+			if len(c.CapDrop) > 0 {
+				caps.Drop = aws.StringSlice(c.CapDrop)
+			}
+			lp.Capabilities = caps
 		}
-		if len(c.CapDrop) > 0 {
-			caps.Drop = aws.StringSlice(c.CapDrop)
-		}
-		cd.LinuxParameters = &ecs.LinuxParameters{Capabilities: caps}
+		cd.LinuxParameters = lp
 	}
 	cd.StartTimeout = c.StartTimeout
 	cd.StopTimeout = c.StopTimeout

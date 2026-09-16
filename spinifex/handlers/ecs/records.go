@@ -205,10 +205,13 @@ type ContainerDef struct {
 	// GPU is the whole-GPU count from a resourceRequirements entry of type GPU
 	// (AWS ECS semantics; the value is a stringified integer). Device pinning and
 	// placement accounting land in later Epic C tasks.
-	GPU          int               `json:"gpu,omitempty"`
-	Essential    bool              `json:"essential"`
-	Command      []string          `json:"command,omitempty"`
-	Environment  map[string]string `json:"environment,omitempty"`
+	GPU       int      `json:"gpu,omitempty"`
+	Essential bool     `json:"essential"`
+	Command   []string `json:"command,omitempty"`
+	// Environment carries no omitempty so a caller-supplied empty collection
+	// stays distinguishable from an absent one: nil marshals to null and empty
+	// to {}, and describe re-emits whichever was stored.
+	Environment  map[string]string `json:"environment"`
 	PortMappings []bus.PortMapping `json:"portMappings,omitempty"`
 	// LogDriver / LogOptions capture the container's logConfiguration. Only the
 	// host-side json-file default is honored; any other driver is accepted for
@@ -228,10 +231,19 @@ type ContainerDef struct {
 	PseudoTerminal         *bool `json:"pseudoTerminal,omitempty"`
 	Interactive            *bool `json:"interactive,omitempty"`
 	// SystemControls are sysctl namespace/value pairs applied to the OCI spec.
-	SystemControls []bus.SystemControl `json:"systemControls,omitempty"`
+	// No omitempty, for the same presence reason as Environment.
+	SystemControls []bus.SystemControl `json:"systemControls"`
+	// MountPointsSet and VolumesFromSet record that the caller supplied an empty
+	// collection. A non-empty one is refused at registration, so only presence
+	// needs storing for describe to return [] instead of omitting the field.
+	MountPointsSet bool `json:"mountPointsSet,omitempty"`
+	VolumesFromSet bool `json:"volumesFromSet,omitempty"`
+	// InitProcessEnabled is stored only when supplied false; true is refused at
+	// registration, so a stored value is always false.
+	InitProcessEnabled *bool `json:"initProcessEnabled,omitempty"`
 	// CapAdd / CapDrop are linuxParameters.capabilities.add/drop. The rest of
-	// linuxParameters (devices, initProcessEnabled, sharedMemorySize, tmpfs) is
-	// refused at registration rather than stored, see validateContainerDefs.
+	// linuxParameters (devices, sharedMemorySize, tmpfs) is refused at
+	// registration rather than stored, see validateContainerDefs.
 	CapAdd  []string `json:"capAdd,omitempty"`
 	CapDrop []string `json:"capDrop,omitempty"`
 	// StartTimeout / StopTimeout are pointers because zero is a meaningful value

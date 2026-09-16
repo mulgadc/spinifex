@@ -817,27 +817,48 @@ func decompressGzip(src, tmpdir string) (string, error) {
 	return decompressToTemp(src, tmpdir, ".gz", gr)
 }
 
-// decompressXz shells out to the xz binary, decompressing straight to stdout (-c) so the
-// source is never touched and nothing is written beside it. No pure-Go xz decoder is already
-// a dependency of this module, and the existing .tar.xz branch already requires the xz binary
-// on the host (tar's -J flag invokes it internally), so this adds no new host requirement —
-// only makes the existing one explicit for the plain-.xz case.
+// decompressXz shells out to the xz binary, piping its decompressed stdout through
+// decompressToTemp via an io.Pipe so a plain .xz image gets the same sparse-hole handling as
+// the other codecs rather than a dense copy. No pure-Go xz decoder is already a dependency of
+// this module, and the existing .tar.xz branch already requires the xz binary on the host
+// (tar's -J flag invokes it internally), so this adds no new host requirement — only makes the
+// existing one explicit for the plain-.xz case.
 func decompressXz(src, tmpdir string) (string, error) {
-	outPath := filepath.Join(tmpdir, strings.TrimSuffix(filepath.Base(src), ".xz"))
-
-	out, err := os.Create(outPath)
-	if err != nil {
-		return "", err
-	}
-	defer out.Close()
-
 	var stderr bytes.Buffer
 	cmd := exec.Command("xz", "-dc", src)
-	cmd.Stdout = out
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("xz decompress %s: %w: %s", src, err, strings.TrimSpace(stderr.String()))
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("start xz for %s: %w", src, err)
+	}
+
+	// cmd.Stdout is not an *os.File, so exec.Cmd already runs its own copier goroutine from
+	// the child's real pipe into pw; Wait joins it. This goroutine closes pw with the
+	// process's exit error once Wait returns, so a Read past the end of the stream on pr
+	// surfaces that error instead of a bare EOF.
+	waitErrCh := make(chan error, 1)
+	go func() {
+		waitErr := cmd.Wait()
+		waitErrCh <- waitErr
+		pw.CloseWithError(waitErr)
+	}()
+
+	outPath, err := decompressToTemp(src, tmpdir, ".xz", pr)
+	if err != nil {
+		// decompressToTemp gave up before draining the pipe (e.g. a local write failure), so
+		// close the read end now — otherwise the copier goroutine above would stay blocked
+		// writing into it forever, wedging cmd.Wait() and leaking both goroutines.
+		pr.CloseWithError(err)
+	}
+	waitErr := <-waitErrCh
+
+	if waitErr != nil {
+		return "", fmt.Errorf("xz decompress %s: %w: %s", src, waitErr, strings.TrimSpace(stderr.String()))
+	}
+	if err != nil {
+		return "", fmt.Errorf("decompress %s: %w", src, err)
 	}
 
 	return outPath, nil

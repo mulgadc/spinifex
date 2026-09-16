@@ -3,6 +3,7 @@ package utils
 import (
 	"bytes"
 	"compress/gzip"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -370,9 +371,18 @@ func TestDecompressToTemp_WritesSparseHoles(t *testing.T) {
 		t.Fatal("decompressed content does not round-trip through the sparse writer")
 	}
 
-	info, err := os.Stat(outPath)
+	assertSparseOnDisk(t, outPath)
+}
+
+// assertSparseOnDisk skips (rather than fails) when the platform does not expose block-count
+// stat info, or when the test filesystem does not appear to support sparse files at all, since
+// neither is a real regression in the code under test.
+func assertSparseOnDisk(t *testing.T, path string) {
+	t.Helper()
+
+	info, err := os.Stat(path)
 	if err != nil {
-		t.Fatalf("stat output: %v", err)
+		t.Fatalf("stat %s: %v", path, err)
 	}
 	apparent := info.Size()
 
@@ -390,5 +400,94 @@ func TestDecompressToTemp_WritesSparseHoles(t *testing.T) {
 	// headroom avoids pinning an exact ratio that would vary with filesystem block size.
 	if onDisk > apparent/4 {
 		t.Errorf("on-disk size = %d bytes for %d apparent bytes, want the zero run to be sparse (< 25%% of apparent)", onDisk, apparent)
+	}
+}
+
+// TestDecompressXz_WritesSparseHoles covers the plain-.xz path specifically: it shells out to
+// the xz binary and pipes its stdout through decompressToTemp rather than calling it directly,
+// so this exercises that piping does not lose the sparse-hole behaviour. .raw.xz is what Talos
+// and Flatcar actually publish alongside .zst, so this is the format most likely hit in
+// practice.
+func TestDecompressXz_WritesSparseHoles(t *testing.T) {
+	if _, err := exec.LookPath("xz"); err != nil {
+		t.Skip("xz not found, skipping")
+	}
+
+	const zeroRun = 8 << 20
+	payload := append([]byte("MULGA-SPARSE-FIXTURE-HEADER"), make([]byte, zeroRun)...)
+	compressed := pipeCompress(t, "xz", []string{"-z", "-c"}, payload)
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "talos.raw.xz")
+	if err := os.WriteFile(srcPath, compressed, 0644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	srcBefore, err := os.ReadFile(srcPath)
+	if err != nil {
+		t.Fatalf("read source before decompress: %v", err)
+	}
+
+	outPath, err := decompressXz(srcPath, outDir)
+	if err != nil {
+		t.Fatalf("decompressXz: %v", err)
+	}
+
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatal("decompressed content does not round-trip through the piped xz decompressor")
+	}
+
+	assertSparseOnDisk(t, outPath)
+
+	srcAfter, err := os.ReadFile(srcPath)
+	if err != nil {
+		t.Fatalf("read source after decompress: %v", err)
+	}
+	if !bytes.Equal(srcBefore, srcAfter) {
+		t.Error("source artifact was modified during xz decompression")
+	}
+
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		t.Fatalf("read source dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(srcPath) {
+		t.Errorf("source dir contains %v, want only %q", entries, filepath.Base(srcPath))
+	}
+}
+
+// TestDecompressXz_TruncatedStreamSurfacesStderr guards the io.Pipe plumbing added for the
+// sparse fix: a Read past the end of a failed xz process must surface xz's own stderr, not a
+// bare io.EOF that would otherwise look like a clean, silently-truncated decompression.
+func TestDecompressXz_TruncatedStreamSurfacesStderr(t *testing.T) {
+	if _, err := exec.LookPath("xz"); err != nil {
+		t.Skip("xz not found, skipping")
+	}
+
+	compressed := pipeCompress(t, "xz", []string{"-z", "-c"}, rawFixture(t))
+	truncated := compressed[:len(compressed)/2]
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "corrupt.raw.xz")
+	if err := os.WriteFile(srcPath, truncated, 0644); err != nil {
+		t.Fatalf("write truncated source: %v", err)
+	}
+
+	_, err := decompressXz(srcPath, outDir)
+	if err == nil {
+		t.Fatal("expected an error decompressing a truncated xz stream")
+	}
+	if err.Error() == io.EOF.Error() {
+		t.Fatalf("error is a bare EOF, want the underlying xz stderr instead: %v", err)
+	}
+
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "end of input") && !strings.Contains(msg, "end of file") {
+		t.Errorf("err = %q, want it to surface xz's stderr about the truncated stream", err)
 	}
 }

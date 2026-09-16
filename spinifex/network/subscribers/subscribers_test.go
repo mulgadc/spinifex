@@ -686,3 +686,18 @@ func TestHandlePort_NilFlusherIsNoop(t *testing.T) {
 	sub.handleCreatePort(&nats.Msg{Data: mustJSON(t, evt)})
 	sub.handleDeletePort(&nats.Msg{Data: mustJSON(t, evt)})
 }
+
+// TestToPolicyRules_DropsIPv6 pins that an IPv6 rule never reaches the ACL
+// builder. It carries no CIDR and no SourceSG, so an ACL built from it would be
+// unspecified rather than narrow.
+func TestToPolicyRules_DropsIPv6(t *testing.T) {
+	t.Parallel()
+	out := toPolicyRules([]SGRule{
+		{IpProtocol: "-1", CidrIp: "0.0.0.0/0"},
+		{IpProtocol: "-1"},
+		{IpProtocol: "tcp", FromPort: 443, ToPort: 443, SourceSG: "sg-abc"},
+	})
+	require.Len(t, out, 2)
+	assert.Equal(t, "0.0.0.0/0", out[0].CIDR)
+	assert.Equal(t, "sg-abc", out[1].SourceSG)
+}

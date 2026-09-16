@@ -413,56 +413,59 @@ func TestRevokeSecurityGroupEgress_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestRevokeSecurityGroupEgress_IPv6OnlyIsNoOp asserts that revoking a
-// IPv6-only permission succeeds as a no-op; Terraform auto-revokes ::/0 IPv6
-// egress and must not abort when spinifex stores no IPv6 rules.
-func TestRevokeSecurityGroupEgress_IPv6OnlyIsNoOp(t *testing.T) {
+// TestRevokeSecurityGroupEgress_IPv6NotFound: an IPv6 rule that was never
+// authorized is missing in the ordinary way. The old silent no-op existed only
+// because authorize rejected IPv6, so a caller's state could never match what
+// was stored; with authorize working there is nothing left to paper over, and a
+// v6 revoke behaves exactly like the v4 revoke beside it.
+func TestRevokeSecurityGroupEgress_IPv6NotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	sgID := createTestSG(t, svc, vpcID, "ipv6-revoke-noop")
+	sgID := createTestSG(t, svc, vpcID, "ipv6-revoke-notfound")
 
 	allProto := "-1"
-	out, err := svc.RevokeSecurityGroupEgress(context.Background(), &ec2.RevokeSecurityGroupEgressInput{
+	_, err := svc.RevokeSecurityGroupEgress(context.Background(), &ec2.RevokeSecurityGroupEgressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &allProto,
 			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
 		}},
 	}, testAccountID)
-	require.NoError(t, err)
-	require.NotNil(t, out)
-	require.True(t, aws.BoolValue(out.Return))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidPermission.NotFound")
 }
 
-// TestRevokeSecurityGroupIngress_IPv6OnlyIsNoOp mirrors the egress no-op test
-// — the ingress path shares the same parsing code and must behave the same.
-func TestRevokeSecurityGroupIngress_IPv6OnlyIsNoOp(t *testing.T) {
+// TestRevokeSecurityGroupIngress_IPv6NotFound mirrors the egress case — the
+// ingress path shares the same parsing code and must behave the same.
+func TestRevokeSecurityGroupIngress_IPv6NotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	sgID := createTestSG(t, svc, vpcID, "ipv6-revoke-ingress-noop")
+	sgID := createTestSG(t, svc, vpcID, "ipv6-revoke-ingress-notfound")
 
 	allProto := "-1"
-	out, err := svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
+	_, err := svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: &allProto,
 			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
 		}},
 	}, testAccountID)
-	require.NoError(t, err)
-	require.NotNil(t, out)
-	require.True(t, aws.BoolValue(out.Return))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidPermission.NotFound")
 }
 
-// TestAuthorizeSecurityGroupEgress_IPv6Rejected asserts that authorizing
-// IPv6 sources is rejected; spinifex cannot program IPv6 OVN ACLs.
-func TestAuthorizeSecurityGroupEgress_IPv6Rejected(t *testing.T) {
+// TestAuthorizeSecurityGroupEgress_IPv6Accepted pins the whole of TFC-0001: the
+// module's default egress rule carries ::/0, the provider has already revoked
+// the group's own default egress by the time it is authorized, and rejecting it
+// left the group with no egress at all. The v4 half here is the group's default
+// rule, so only the v6 half is authorized.
+func TestAuthorizeSecurityGroupEgress_IPv6Accepted(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	sgID := createTestSG(t, svc, vpcID, "ipv6-authorize-rejected")
+	sgID := createTestSG(t, svc, vpcID, "ipv6-authorize-accepted")
 
 	allProto := "-1"
 	_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
@@ -472,8 +475,57 @@ func TestAuthorizeSecurityGroupEgress_IPv6Rejected(t *testing.T) {
 			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
 		}},
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroups, 1)
+	require.Len(t, out.SecurityGroups[0].IpPermissionsEgress, 1)
+	perm := out.SecurityGroups[0].IpPermissionsEgress[0]
+	require.Len(t, perm.IpRanges, 1)
+	require.Len(t, perm.Ipv6Ranges, 1)
+	assert.Equal(t, "0.0.0.0/0", aws.StringValue(perm.IpRanges[0].CidrIp))
+	assert.Equal(t, "::/0", aws.StringValue(perm.Ipv6Ranges[0].CidrIpv6))
+}
+
+// TestRevokeSecurityGroupEgress_IPv6RevokesOnlyIPv6 pins that the two families
+// are separately revocable. They share every other field, so a key that ignored
+// the family would take both out at once.
+func TestRevokeSecurityGroupEgress_IPv6RevokesOnlyIPv6(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "ipv6-revoke-scoped")
+
+	allProto := "-1"
+	_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &allProto,
+			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.RevokeSecurityGroupEgress(context.Background(), &ec2.RevokeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &allProto,
+			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroups[0].IpPermissionsEgress, 1)
+	perm := out.SecurityGroups[0].IpPermissionsEgress[0]
+	assert.Len(t, perm.IpRanges, 1)
+	assert.Empty(t, perm.Ipv6Ranges)
 }
 
 // TestRevokeSecurityGroupEgress_RuleNotFound: egress counterpart — revoking a
@@ -720,8 +772,9 @@ func TestIpPermissionsToSGRules_SourceSG(t *testing.T) {
 	assert.Equal(t, srcSG, rules[0].SourceSG)
 }
 
-// TestIpPermissionsToSGRules_IPv6OnlyAuthorize rejects authorize calls whose
-// only source is Ipv6Ranges (OVN ACL builder is IPv4-only).
+// TestIpPermissionsToSGRules_IPv6OnlyAuthorize accepts a permission whose only
+// source is Ipv6Ranges. The module's default egress rule is exactly this, and
+// rejecting it left the group with no egress at all.
 func TestIpPermissionsToSGRules_IPv6OnlyAuthorize(t *testing.T) {
 	t.Parallel()
 	allProto := "-1"
@@ -732,14 +785,16 @@ func TestIpPermissionsToSGRules_IPv6OnlyAuthorize(t *testing.T) {
 		},
 	}
 
-	_, err := ipPermissionsToSGRules(perms, sgParseAuthorize)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "IPv6")
+	rules, err := ipPermissionsToSGRules(perms, sgParseAuthorize)
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	assert.Equal(t, "::/0", rules[0].CidrIpv6)
+	assert.Empty(t, rules[0].CidrIp)
+	assert.NotEmpty(t, rules[0].RuleId)
 }
 
-// TestIpPermissionsToSGRules_IPv6OnlyRevoke tolerates IPv6-only permissions on
-// revoke (returns zero rules, no error), matching Terraform's auto-revoke of
-// the default ::/0 IPv6 egress rule.
+// TestIpPermissionsToSGRules_IPv6OnlyRevoke parses an IPv6-only permission on
+// revoke into the same rule authorize stored, so the revoke can match it.
 func TestIpPermissionsToSGRules_IPv6OnlyRevoke(t *testing.T) {
 	t.Parallel()
 	allProto := "-1"
@@ -752,12 +807,14 @@ func TestIpPermissionsToSGRules_IPv6OnlyRevoke(t *testing.T) {
 
 	rules, err := ipPermissionsToSGRules(perms, sgParseRevoke)
 	require.NoError(t, err)
-	assert.Empty(t, rules)
+	require.Len(t, rules, 1)
+	assert.Equal(t, "::/0", rules[0].CidrIpv6)
+	assert.Empty(t, rules[0].RuleId)
 }
 
-// TestIpPermissionsToSGRules_MixedV4V6Revoke keeps the v4 rule and drops the
-// v6 part on a mixed-source permission on revoke.
-func TestIpPermissionsToSGRules_MixedV4V6Revoke(t *testing.T) {
+// TestIpPermissionsToSGRules_MixedV4V6 splits a permission carrying both
+// families into one rule each, in both modes.
+func TestIpPermissionsToSGRules_MixedV4V6(t *testing.T) {
 	t.Parallel()
 	proto := "tcp"
 	perms := []*ec2.IpPermission{
@@ -770,10 +827,62 @@ func TestIpPermissionsToSGRules_MixedV4V6Revoke(t *testing.T) {
 		},
 	}
 
-	rules, err := ipPermissionsToSGRules(perms, sgParseRevoke)
-	require.NoError(t, err)
-	require.Len(t, rules, 1)
-	assert.Equal(t, "10.0.0.0/8", rules[0].CidrIp)
+	for _, mode := range []sgParseMode{sgParseAuthorize, sgParseRevoke} {
+		rules, err := ipPermissionsToSGRules(perms, mode)
+		require.NoError(t, err)
+		require.Len(t, rules, 2)
+		assert.Equal(t, "10.0.0.0/8", rules[0].CidrIp)
+		assert.Empty(t, rules[0].CidrIpv6)
+		assert.Equal(t, "::/0", rules[1].CidrIpv6)
+		assert.Empty(t, rules[1].CidrIp)
+	}
+}
+
+// TestSGRuleKey_AddressFamilyIsIdentity pins that ::/0 and 0.0.0.0/0 on the
+// same protocol and ports are distinct rules. They share every other field, so
+// a key omitting CidrIpv6 would collide them and a revoke of one would match
+// the other.
+func TestSGRuleKey_AddressFamilyIsIdentity(t *testing.T) {
+	t.Parallel()
+	v4 := SGRule{IpProtocol: "-1", CidrIp: "0.0.0.0/0"}
+	v6 := SGRule{IpProtocol: "-1", CidrIpv6: "::/0"}
+	assert.NotEqual(t, sgRuleKey(v4), sgRuleKey(v6))
+}
+
+// TestValidateSGRule_AddressFamiliesDoNotCross keeps each CIDR field to its own
+// family, so the family stays part of a rule's identity rather than something
+// the caller can smuggle past by choosing a field.
+func TestValidateSGRule_AddressFamiliesDoNotCross(t *testing.T) {
+	t.Parallel()
+	err := validateSGRule(SGRule{IpProtocol: "-1", CidrIp: "::/0"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CidrIpv6")
+
+	err = validateSGRule(SGRule{IpProtocol: "-1", CidrIpv6: "0.0.0.0/0"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CidrIp")
+
+	err = validateSGRule(SGRule{IpProtocol: "-1", CidrIpv6: "2001:db8::1/64"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "canonical")
+
+	require.NoError(t, validateSGRule(SGRule{IpProtocol: "-1", CidrIpv6: "::/0"}))
+}
+
+// TestSGRulesToIpPermissions_IPv6RoundTrip pins that a v6 rule comes back in
+// Ipv6Ranges rather than IpRanges, sharing the protocol and port grouping with
+// the v4 rule beside it.
+func TestSGRulesToIpPermissions_IPv6RoundTrip(t *testing.T) {
+	t.Parallel()
+	perms := sgRulesToIpPermissions([]SGRule{
+		{IpProtocol: "-1", CidrIp: "0.0.0.0/0"},
+		{IpProtocol: "-1", CidrIpv6: "::/0"},
+	})
+	require.Len(t, perms, 1)
+	require.Len(t, perms[0].IpRanges, 1)
+	require.Len(t, perms[0].Ipv6Ranges, 1)
+	assert.Equal(t, "0.0.0.0/0", *perms[0].IpRanges[0].CidrIp)
+	assert.Equal(t, "::/0", *perms[0].Ipv6Ranges[0].CidrIpv6)
 }
 
 func TestSGRulesToIpPermissions_Conversion(t *testing.T) {

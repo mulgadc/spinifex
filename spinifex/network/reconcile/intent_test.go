@@ -628,3 +628,22 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return b
 }
+
+// TestSGRulesToPolicyRules_DropsIPv6 pins that an IPv6 rule never reaches the
+// ACL builder. It carries no CIDR and no SourceSG, so an ACL built from it
+// would be unspecified rather than narrow, and no interface has an IPv6
+// address for it to match.
+func TestSGRulesToPolicyRules_DropsIPv6(t *testing.T) {
+	t.Parallel()
+	out := sgRulesToPolicyRules([]handlers_ec2_vpc.SGRule{
+		{IpProtocol: "-1", CidrIp: "0.0.0.0/0"},
+		{IpProtocol: "-1", CidrIpv6: "::/0"},
+		{IpProtocol: "tcp", FromPort: 443, ToPort: 443, SourceSG: "sg-abc"},
+	})
+	if len(out) != 2 {
+		t.Fatalf("want 2 policy rules, got %d: %+v", len(out), out)
+	}
+	if out[0].CIDR != "0.0.0.0/0" || out[1].SourceSG != "sg-abc" {
+		t.Fatalf("wrong rules survived: %+v", out)
+	}
+}

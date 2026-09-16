@@ -54,13 +54,14 @@ func normalizeIPProtocol(proto string) (string, error) {
 	return "", fmt.Errorf("invalid IpProtocol %q: supported values are tcp, udp, icmp, -1 (or 6, 17, 1)", proto)
 }
 
-// validateSGRule rejects CidrIp values that are non-canonical or IPv6 (OVN ACL
-// builder is IPv4-only), IpProtocol values the ACL builder cannot express, and
-// SourceSG values not matching the sg-ID format. At least one source must be
-// specified.
+// validateSGRule rejects CidrIp values that are non-canonical or IPv6, CidrIpv6
+// values that are non-canonical or IPv4, IpProtocol values the ACL builder
+// cannot express, and SourceSG values not matching the sg-ID format. At least
+// one source must be specified. The two CIDR fields stay strictly separated so
+// that address family remains part of a rule's identity.
 func validateSGRule(r SGRule) error {
-	if r.CidrIp == "" && r.SourceSG == "" {
-		return errors.New("rule must specify CidrIp or SourceSG")
+	if r.CidrIp == "" && r.CidrIpv6 == "" && r.SourceSG == "" {
+		return errors.New("rule must specify CidrIp, CidrIpv6 or SourceSG")
 	}
 	if !slices.Contains(canonicalIPProtocols, r.IpProtocol) {
 		return fmt.Errorf("invalid IpProtocol %q: must be one of %v", r.IpProtocol, canonicalIPProtocols)
@@ -71,10 +72,22 @@ func validateSGRule(r SGRule) error {
 			return fmt.Errorf("invalid CidrIp %q: %w", r.CidrIp, err)
 		}
 		if ipnet.IP.To4() == nil {
-			return fmt.Errorf("invalid CidrIp %q: IPv6 not supported", r.CidrIp)
+			return fmt.Errorf("invalid CidrIp %q: IPv6 belongs in CidrIpv6", r.CidrIp)
 		}
 		if ipnet.String() != r.CidrIp {
 			return fmt.Errorf("invalid CidrIp %q: not canonical (expected %q)", r.CidrIp, ipnet.String())
+		}
+	}
+	if r.CidrIpv6 != "" {
+		_, ipnet, err := net.ParseCIDR(r.CidrIpv6)
+		if err != nil {
+			return fmt.Errorf("invalid CidrIpv6 %q: %w", r.CidrIpv6, err)
+		}
+		if ipnet.IP.To4() != nil {
+			return fmt.Errorf("invalid CidrIpv6 %q: IPv4 belongs in CidrIp", r.CidrIpv6)
+		}
+		if ipnet.String() != r.CidrIpv6 {
+			return fmt.Errorf("invalid CidrIpv6 %q: not canonical (expected %q)", r.CidrIpv6, ipnet.String())
 		}
 	}
 	if r.SourceSG != "" && !sgIDRegex.MatchString(r.SourceSG) {
@@ -107,7 +120,11 @@ type SGRule struct {
 	FromPort   int64  `json:"from_port"`
 	ToPort     int64  `json:"to_port"`
 	CidrIp     string `json:"cidr_ip,omitempty"`
-	SourceSG   string `json:"source_sg,omitempty"` // Another SG ID for intra-SG rules
+	// CidrIpv6 is stored and projected but never reaches the ACL builder: no
+	// interface here has an IPv6 address, so the rule matches nothing, which is
+	// what an IPv6 rule does on AWS in a VPC with no IPv6 CIDR.
+	CidrIpv6 string `json:"cidr_ipv6,omitempty"`
+	SourceSG string `json:"source_sg,omitempty"` // Another SG ID for intra-SG rules
 	// Description is rule metadata, not identity: it is excluded from sgRuleKey
 	// so revoke/duplicate matching ignores it. The AWS Load Balancer Controller
 	// tags the node-SG rules it manages here and revokes them by this value.
@@ -840,6 +857,9 @@ func sgRuleToSecurityGroupRule(record *SecurityGroupRecord, rule SGRule, isEgres
 	if rule.CidrIp != "" {
 		out.CidrIpv4 = aws.String(rule.CidrIp)
 	}
+	if rule.CidrIpv6 != "" {
+		out.CidrIpv6 = aws.String(rule.CidrIpv6)
+	}
 	if rule.SourceSG != "" {
 		out.ReferencedGroupInfo = &ec2.ReferencedSecurityGroup{
 			GroupId: aws.String(rule.SourceSG),
@@ -1348,11 +1368,19 @@ func ipPermissionsToDescriptionTargets(perms []*ec2.IpPermission) ([]sgDescripti
 			targets = append(targets, sgDescriptionTarget{key: sgRuleKey(r), description: pair.Description})
 		}
 
-		if len(targets) == before {
-			if len(perm.Ipv6Ranges) > 0 {
-				return nil, errors.New("IPv6 rules are not supported")
+		for _, r6 := range perm.Ipv6Ranges {
+			if r6 == nil || r6.CidrIpv6 == nil {
+				continue
 			}
-			return nil, errors.New("IpPermission must specify at least one IpRange or UserIdGroupPair")
+			r := SGRule{IpProtocol: proto, FromPort: fromPort, ToPort: toPort, CidrIpv6: *r6.CidrIpv6}
+			if err := validateSGRule(r); err != nil {
+				return nil, err
+			}
+			targets = append(targets, sgDescriptionTarget{key: sgRuleKey(r), description: r6.Description})
+		}
+
+		if len(targets) == before {
+			return nil, errors.New("IpPermission must specify at least one IpRange, Ipv6Range or UserIdGroupPair")
 		}
 	}
 	return targets, nil
@@ -1375,9 +1403,8 @@ func (s *VPCServiceImpl) sgRecordToEC2(record *SecurityGroupRecord, accountID st
 	return sg
 }
 
-// sgParseMode selects how ipPermissionsToSGRules handles IPv6 sources.
-// Authorize rejects IPv6; Revoke silently skips it (Terraform auto-revokes
-// ::/0 IPv6 egress and must not abort on no-op).
+// sgParseMode selects whether ipPermissionsToSGRules mints a RuleId for each
+// parsed rule. Authorize does; Revoke matches on rule identity instead.
 type sgParseMode int
 
 const (
@@ -1387,8 +1414,7 @@ const (
 
 // ipPermissionsToSGRules converts AWS IpPermission slice to SGRule slice,
 // normalising IpProtocol to its canonical name and validating every
-// tenant-supplied CidrIp/SourceSG. IPv6-only permissions error in Authorize
-// mode and are silently skipped in Revoke mode.
+// tenant-supplied CidrIp/CidrIpv6/SourceSG.
 func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRule, error) {
 	var rules []SGRule
 	for _, perm := range perms {
@@ -1450,24 +1476,26 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 			appended = true
 		}
 
-		hasIPv6 := false
 		for _, r6 := range perm.Ipv6Ranges {
-			if r6 != nil && r6.CidrIpv6 != nil {
-				hasIPv6 = true
-				break
-			}
-		}
-		if hasIPv6 {
-			if mode == sgParseAuthorize {
-				return nil, errors.New("IPv6 rules are not supported")
-			}
-			if !appended {
+			if r6 == nil || r6.CidrIpv6 == nil {
 				continue
 			}
+			r := SGRule{IpProtocol: proto, FromPort: fromPort, ToPort: toPort, CidrIpv6: *r6.CidrIpv6}
+			if r6.Description != nil {
+				r.Description = *r6.Description
+			}
+			if err := validateSGRule(r); err != nil {
+				return nil, err
+			}
+			if mode == sgParseAuthorize {
+				r.RuleId = utils.GenerateResourceID("sgr")
+			}
+			rules = append(rules, r)
+			appended = true
 		}
 
 		if !appended {
-			return nil, errors.New("IpPermission must specify at least one IpRange or UserIdGroupPair")
+			return nil, errors.New("IpPermission must specify at least one IpRange, Ipv6Range or UserIdGroupPair")
 		}
 	}
 	return rules, nil
@@ -1501,6 +1529,13 @@ func sgRulesToIpPermissions(rules []SGRule) []*ec2.IpPermission {
 				ipRange.Description = aws.String(rule.Description)
 			}
 			perm.IpRanges = append(perm.IpRanges, ipRange)
+		}
+		if rule.CidrIpv6 != "" {
+			ipRange := &ec2.Ipv6Range{CidrIpv6: aws.String(rule.CidrIpv6)}
+			if rule.Description != "" {
+				ipRange.Description = aws.String(rule.Description)
+			}
+			perm.Ipv6Ranges = append(perm.Ipv6Ranges, ipRange)
 		}
 		if rule.SourceSG != "" {
 			pair := &ec2.UserIdGroupPair{GroupId: aws.String(rule.SourceSG)}
@@ -1555,7 +1590,7 @@ func removeSGRules(existing, toRemove []SGRule) []SGRule {
 
 // sgRuleKey returns a string key for deduplication/matching of SG rules.
 func sgRuleKey(r SGRule) string {
-	return fmt.Sprintf("%s:%d:%d:%s:%s", r.IpProtocol, r.FromPort, r.ToPort, r.CidrIp, r.SourceSG)
+	return fmt.Sprintf("%s:%d:%d:%s:%s:%s", r.IpProtocol, r.FromPort, r.ToPort, r.CidrIp, r.CidrIpv6, r.SourceSG)
 }
 
 // resolveRuleIDsToRemove maps SecurityGroupRuleIds to the matching rules in the

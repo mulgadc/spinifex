@@ -24,16 +24,22 @@ func (e SGEvent) toSpec() policy.SGSpec {
 	}
 }
 
+// toPolicyRules drops any rule with no IPv4 source. The ACL builder is
+// IPv4-only, and an IPv6 rule reaching it carries an empty CIDR and an empty
+// SourceSG, which is not a narrower ACL but an unspecified one.
 func toPolicyRules(in []SGRule) []policy.Rule {
-	out := make([]policy.Rule, len(in))
-	for i, r := range in {
-		out[i] = policy.Rule{
+	out := make([]policy.Rule, 0, len(in))
+	for _, r := range in {
+		if r.CidrIp == "" && r.SourceSG == "" {
+			continue
+		}
+		out = append(out, policy.Rule{
 			IPProtocol: r.IpProtocol,
 			FromPort:   r.FromPort,
 			ToPort:     r.ToPort,
 			CIDR:       r.CidrIp,
 			SourceSG:   r.SourceSG,
-		}
+		})
 	}
 	return out
 }

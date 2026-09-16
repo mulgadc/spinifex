@@ -288,7 +288,7 @@ func TestUpdateSecurityGroupRuleDescriptionsIngress_UnmatchedPermission(t *testi
 
 // TestUpdateSecurityGroupRuleDescriptions_UnresolvablePermission pins that a
 // permission naming no rule the store can hold is an error. Authorize rejects
-// all three of these, so no matching rule can exist to describe.
+// both of these, so no matching rule can exist to describe.
 func TestUpdateSecurityGroupRuleDescriptions_UnresolvablePermission(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
@@ -297,12 +297,6 @@ func TestUpdateSecurityGroupRuleDescriptions_UnresolvablePermission(t *testing.T
 	ruleID := authorizeIngressTCP(t, svc, sgID, 443, "10.0.0.0/24")
 
 	cases := map[string]*ec2.IpPermission{
-		"ipv6 only": {
-			IpProtocol: aws.String("tcp"),
-			FromPort:   aws.Int64(443),
-			ToPort:     aws.Int64(443),
-			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0"), Description: aws.String("v6")}},
-		},
 		"prefix list only": {
 			IpProtocol:    aws.String("tcp"),
 			FromPort:      aws.Int64(443),
@@ -328,6 +322,45 @@ func TestUpdateSecurityGroupRuleDescriptions_UnresolvablePermission(t *testing.T
 			assert.Nil(t, sgRuleByID(t, svc, testAccountID, ruleID).Description)
 		})
 	}
+}
+
+// TestUpdateSecurityGroupRuleDescriptionsIngress_IPv6 pins that the description
+// path reaches an IPv6 rule. It used to be unreachable because authorize
+// refused to store one, so an Ipv6Ranges permission could only ever be an
+// error; now it resolves like any other source.
+func TestUpdateSecurityGroupRuleDescriptionsIngress_IPv6(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "desc-ipv6")
+
+	perm := &ec2.IpPermission{
+		IpProtocol: aws.String("tcp"),
+		FromPort:   aws.Int64(443),
+		ToPort:     aws.Int64(443),
+		Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
+	}
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId:       aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{perm},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	perm.Ipv6Ranges[0].Description = aws.String("from anywhere v6")
+	_, err = svc.UpdateSecurityGroupRuleDescriptionsIngress(context.Background(), &ec2.UpdateSecurityGroupRuleDescriptionsIngressInput{
+		GroupId:       aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{perm},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroups[0].IpPermissions, 1)
+	ranges := out.SecurityGroups[0].IpPermissions[0].Ipv6Ranges
+	require.Len(t, ranges, 1)
+	assert.Equal(t, "from anywhere v6", aws.StringValue(ranges[0].Description))
 }
 
 // TestUpdateSecurityGroupRuleDescriptions_InvalidPermissionKeepsItsReason pins

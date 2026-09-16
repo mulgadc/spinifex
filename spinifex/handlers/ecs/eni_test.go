@@ -196,7 +196,7 @@ func singleTaskRecord(t *testing.T, svc *Service, cluster string) (TaskRecord, b
 	return rec, found
 }
 
-func TestReclaimTaskENI_ReleaseSucceeds_ClearsIdentity(t *testing.T) {
+func TestReclaimTaskENI_ReleaseSucceeds_MarksReleased(t *testing.T) {
 	svc, _ := newTestService(t)
 	eni := &stubENI{}
 	svc.eni = eni
@@ -205,8 +205,13 @@ func TestReclaimTaskENI_ReleaseSucceeds_ClearsIdentity(t *testing.T) {
 	svc.reclaimTaskENI(context.Background(), testAccountID, task)
 
 	assert.Equal(t, 1, eni.releaseCalls)
-	assert.Empty(t, task.ENIID, "a successful release clears the identity")
-	assert.Empty(t, task.ENIAttachmentID)
+	assert.Equal(t, "eni-1", task.ENIID, "the identity survives release as the forensic record")
+	assert.Equal(t, "att-1", task.ENIAttachmentID)
+	assert.True(t, task.ENIReleased, "a successful release marks the task released")
+
+	// A second call is a no-op: no repeat delete.
+	svc.reclaimTaskENI(context.Background(), testAccountID, task)
+	assert.Equal(t, 1, eni.releaseCalls, "an already-released record must not be released again")
 }
 
 func TestReclaimTaskENI_ReleaseFails_LeavesIdentity(t *testing.T) {
@@ -220,6 +225,7 @@ func TestReclaimTaskENI_ReleaseFails_LeavesIdentity(t *testing.T) {
 	assert.Equal(t, 1, eni.releaseCalls)
 	assert.Equal(t, "eni-1", task.ENIID, "a failed release is still owed, so the identity must survive for the sweep")
 	assert.Equal(t, "att-1", task.ENIAttachmentID)
+	assert.False(t, task.ENIReleased, "a failed release must not be marked released")
 }
 
 func TestRunTask_Awsvpc_AttachFailure_ReleaseSucceeds_NoRecordPersisted(t *testing.T) {
@@ -257,6 +263,7 @@ func TestRunTask_Awsvpc_AttachFailure_ReleaseFails_PersistsStoppedRecord(t *test
 	assert.Equal(t, TaskStatusStopped, rec.LastStatus)
 	assert.Equal(t, TaskStatusStopped, rec.DesiredStatus)
 	assert.Equal(t, "eni-stub", rec.ENIID, "the ENI identity must survive so the sweep owns the retry")
+	assert.False(t, rec.ENIReleased, "a failed release must not be marked released")
 	assert.False(t, rec.StoppedAt.IsZero())
 
 	// The reservation was already given back to the instance.
@@ -333,6 +340,32 @@ func TestRunTask_BridgeMode_NoENI(t *testing.T) {
 	require.Len(t, out.Tasks, 1)
 	assert.Equal(t, 0, eni.allocCalls)
 	assert.Empty(t, out.Tasks[0].Attachments)
+}
+
+// TestTaskToAWS_StoppedAwsvpc_ReleasedENI_ReportsDeletedAttachment pins the
+// regression this fix closes: a STOPPED awsvpc task whose ENI has already been
+// released must still carry its ElasticNetworkInterface attachment, with
+// Status DELETED rather than an empty attachments list.
+func TestTaskToAWS_StoppedAwsvpc_ReleasedENI_ReportsDeletedAttachment(t *testing.T) {
+	svc, _ := newTestService(t)
+	rec := &TaskRecord{
+		TaskID: "t-1", Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", "t-1"),
+		LastStatus: TaskStatusStopped, DesiredStatus: TaskStatusStopped,
+		NetworkMode:     NetworkModeAwsvpc,
+		ENIID:           "eni-1",
+		ENIAttachmentID: "att-1",
+		ENIPrivateIP:    "172.31.0.50",
+		ENIReleased:     true,
+	}
+
+	task := svc.taskToAWS(testAccountID, rec)
+
+	require.Len(t, task.Attachments, 1, "a released ENI must still be reported, not dropped")
+	att := task.Attachments[0]
+	assert.Equal(t, "ElasticNetworkInterface", aws.StringValue(att.Type))
+	assert.Equal(t, "eni-1", detailValue(att, "networkInterfaceId"))
+	assert.Equal(t, "172.31.0.50", detailValue(att, "privateIPv4Address"))
+	assert.Equal(t, "DELETED", aws.StringValue(att.Status))
 }
 
 func TestResolveNetworkMode(t *testing.T) {

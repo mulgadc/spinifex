@@ -70,8 +70,8 @@ func TestSweepStoppedBucket_RetriesOwedENI_Succeeds(t *testing.T) {
 	found, gerr := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &got)
 	require.NoError(t, gerr)
 	require.True(t, found)
-	assert.Empty(t, got.ENIID, "a successful retry clears the identity")
-	assert.Empty(t, got.ENIAttachmentID)
+	assert.Equal(t, "eni-1", got.ENIID, "the identity survives release as the forensic record")
+	assert.True(t, got.ENIReleased, "a successful retry marks the task released")
 	assert.Equal(t, 0, got.ENIReleaseAttempts)
 	assert.True(t, got.ENIReleaseNextTry.IsZero())
 }
@@ -181,6 +181,43 @@ func TestSweepStoppedBucket_CappedOverflow_AsksForSweepInterval(t *testing.T) {
 	assert.Equal(t, eniReleaseRetriesPerPass, eni.releaseCalls)
 	assert.Equal(t, sweepInterval, due,
 		"the 2 records left over from the cap must still bring the sweep back soon")
+}
+
+// TestSweepStoppedBucket_PrunesReleased_KeepsOwed pins the post-fix contract: a
+// released ENI is no longer "owed" and is pruned like any other stale STOPPED
+// record, while an unreleased one is refused however far past retention it is.
+func TestSweepStoppedBucket_PrunesReleased_KeepsOwed(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	now := time.Now().UTC()
+
+	released := TaskRecord{
+		TaskID: "released", Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", "released"),
+		LastStatus: TaskStatusStopped, DesiredStatus: TaskStatusStopped,
+		NetworkMode: NetworkModeAwsvpc, ENIID: "eni-released", ENIReleased: true,
+		StoppedAt: now.Add(-2 * time.Hour), // well past retention
+	}
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "released"), &released))
+
+	owed := TaskRecord{
+		TaskID: "owed", Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", "owed"),
+		LastStatus: TaskStatusStopped, DesiredStatus: TaskStatusStopped,
+		NetworkMode: NetworkModeAwsvpc, ENIID: "eni-owed", ENIReleased: false,
+		StoppedAt: now.Add(-2 * time.Hour), // also well past retention, but still owed
+	}
+	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "owed"), &owed))
+
+	pruned, _, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 1, pruned)
+
+	exists := func(id string) bool {
+		var rec TaskRecord
+		found, gerr := getJSON(t.Context(), kv, TaskKey("web", id), &rec)
+		require.NoError(t, gerr)
+		return found
+	}
+	assert.False(t, exists("released"), "a released ENI is no longer owed, so retention prunes it")
+	assert.True(t, exists("owed"), "an unreleased ENI is never pruned, however stale")
 }
 
 func TestEniReleaseBackoff_DoublesThenCaps(t *testing.T) {

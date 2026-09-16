@@ -49,8 +49,8 @@ func (sc *Scheduler) sweepStoppedTasks(ctx context.Context) (time.Duration, erro
 }
 
 // sweepStoppedBucket deletes STOPPED task records past retention and retries
-// the ENI release for any that still owe one. A missing StoppedAt or a
-// non-empty ENIID both block deletion; the latter until the release succeeds.
+// the ENI release for any that still owe one. A missing StoppedAt or an owed
+// (unreleased) ENI both block deletion; the latter until the release succeeds.
 func (s *Service) sweepStoppedBucket(ctx context.Context, kv jetstream.KeyValue, accountID string, now time.Time, retention time.Duration) (int, time.Duration, error) {
 	keys, err := keysWithPrefix(ctx, kv, "clusters/")
 	if err != nil {
@@ -71,7 +71,7 @@ func (s *Service) sweepStoppedBucket(ctx context.Context, kv jetstream.KeyValue,
 		if task.LastStatus != TaskStatusStopped || task.StoppedAt.IsZero() {
 			continue
 		}
-		if task.ENIID != "" {
+		if task.ENIID != "" && !task.ENIReleased {
 			due := !task.ENIReleaseNextTry.After(now)
 			switch {
 			case due && retried < eniReleaseRetriesPerPass:
@@ -79,7 +79,7 @@ func (s *Service) sweepStoppedBucket(ctx context.Context, kv jetstream.KeyValue,
 				// itself, so only a leftover success needs no further deadline.
 				retried++
 				s.retryTaskENIRelease(ctx, kv, k, accountID, &task, now)
-				if task.ENIID != "" && task.ENIReleaseNextTry.After(now) {
+				if !task.ENIReleased && task.ENIReleaseNextTry.After(now) {
 					next = reconciler.Earliest(next, task.ENIReleaseNextTry.Sub(now))
 				}
 			case due:
@@ -109,7 +109,7 @@ func (s *Service) sweepStoppedBucket(ctx context.Context, kv jetstream.KeyValue,
 // state, failure bumps the attempt count and backs off the next try.
 func (s *Service) retryTaskENIRelease(ctx context.Context, kv jetstream.KeyValue, key, accountID string, task *TaskRecord, now time.Time) {
 	s.reclaimTaskENI(ctx, accountID, task)
-	if task.ENIID == "" {
+	if task.ENIReleased {
 		task.ENIReleaseAttempts = 0
 		task.ENIReleaseNextTry = time.Time{}
 	} else {

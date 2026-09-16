@@ -405,8 +405,12 @@ type TaskRecord struct {
 	// ENIReleaseAttempts / ENIReleaseNextTry are the stopped-task sweep's retry
 	// state once a release attempt has failed. Both stay zero on the common
 	// path, so an untroubled record serialises exactly as it always has.
+	// ENIReleased marks that Release has already succeeded for this task's ENI,
+	// so a second sweep pass is a no-op rather than a repeat delete; ENIID itself
+	// is left in place afterwards as the forensic record DescribeTasks projects.
 	ENIReleaseAttempts int       `json:"eniReleaseAttempts,omitempty"`
 	ENIReleaseNextTry  time.Time `json:"eniReleaseNextTry,omitzero"`
+	ENIReleased        bool      `json:"eniReleased,omitempty"`
 	// ENIPublicIP / ENIEIPAllocationID hold the auto-assigned Elastic IP for an
 	// awsvpc task whose service has AssignPublicIp=ENABLED. Set on the RUNNING
 	// transition and released on STOPPED. Empty otherwise.

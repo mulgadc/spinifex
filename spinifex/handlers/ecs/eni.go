@@ -128,10 +128,11 @@ func eniCmdSubject(instanceID string) string {
 }
 
 // reclaimTaskENI releases an awsvpc task's ENI on the single-writer teardown
-// path. Success clears the identity; failure leaves it, so a non-empty ENIID
-// always means "still owed" and the stopped-task sweep is what retries it.
+// path. Success marks ENIReleased so a second call is a no-op; failure leaves
+// it unset, so the stopped-task sweep keeps retrying from it. ENIID itself is
+// never cleared: DescribeTasks still needs it for the stopped-task attachment.
 func (s *Service) reclaimTaskENI(ctx context.Context, accountID string, task *TaskRecord) {
-	if s.eni == nil || task == nil || task.NetworkMode != NetworkModeAwsvpc || task.ENIID == "" {
+	if s.eni == nil || task == nil || task.NetworkMode != NetworkModeAwsvpc || task.ENIID == "" || task.ENIReleased {
 		return
 	}
 	if err := s.eni.Release(ctx, accountID, task); err != nil {
@@ -139,8 +140,7 @@ func (s *Service) reclaimTaskENI(ctx context.Context, accountID string, task *Ta
 			"task", task.TaskID, "eni", task.ENIID, "err", err)
 		return
 	}
-	task.ENIID = ""
-	task.ENIAttachmentID = ""
+	task.ENIReleased = true
 }
 
 // isENINotFound reports whether err is an idempotent already-gone signal — a

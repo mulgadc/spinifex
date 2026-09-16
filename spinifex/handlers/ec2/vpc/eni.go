@@ -140,11 +140,21 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 
 	eniId := utils.GenerateResourceID("eni")
 
-	// Allocate IP from subnet
+	// Allocate IP from subnet, or claim the caller's requested address.
 	var privateIP string
 	if input.PrivateIpAddress != nil && *input.PrivateIpAddress != "" {
-		// TODO: validate the requested IP is in the subnet range and not already allocated
-		privateIP = *input.PrivateIpAddress
+		ip, err := s.ipam.ClaimIP(ctx, subnetId, subnet.CidrBlock, PurposeENIPrimary, eniId, *input.PrivateIpAddress)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrIPInUse):
+				return nil, errors.New(awserrors.ErrorInvalidIPAddressInUse)
+			case errors.Is(err, ErrIPOutOfRange):
+				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			default:
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+		}
+		privateIP = ip
 	} else {
 		ip, err := s.ipam.AllocateIP(ctx, subnetId, subnet.CidrBlock, PurposeENIPrimary, eniId)
 		if err != nil {

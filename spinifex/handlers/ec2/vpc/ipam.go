@@ -18,6 +18,13 @@ const (
 	KVBucketIPAMVersion = 2
 )
 
+// ErrIPOutOfRange means the requested address is not a usable host address in
+// the subnet: outside the CIDR, in the reserved head, or the broadcast address.
+var ErrIPOutOfRange = errors.New("ip address not usable in subnet")
+
+// ErrIPInUse means the requested address is already allocated in the subnet.
+var ErrIPInUse = errors.New("ip address already allocated")
+
 // IPEntry tags one IP allocation with its Purpose + owner (eni-, eipalloc-,
 // etc) so multi-VPC clusters can reclaim/audit by (owner, purpose).
 type IPEntry struct {
@@ -101,6 +108,92 @@ func (m *IPAM) AllocateIP(ctx context.Context, subnetId, cidrBlock, purpose, own
 	}
 
 	return "", fmt.Errorf("IPAM allocation failed after CAS retries for subnet %s", subnetId)
+}
+
+// ClaimIP reserves a caller-specified IP in the subnet, for a pinned address
+// request (e.g. RunInstances --private-ip-address). Validates the address is
+// inside the subnet, not reserved/broadcast, and not already allocated, then
+// uses the same CAS loop as AllocateIP so a concurrent claim of the same
+// address always leaves exactly one winner.
+func (m *IPAM) ClaimIP(ctx context.Context, subnetId, cidrBlock, purpose, ownerID, requestedIP string) (string, error) {
+	addr, err := netip.ParseAddr(requestedIP)
+	if err != nil {
+		return "", fmt.Errorf("%w: %q is not a valid IP address", ErrIPOutOfRange, requestedIP)
+	}
+
+	prefix, err := netip.ParsePrefix(cidrBlock)
+	if err != nil {
+		return "", fmt.Errorf("parse CIDR %q: %w", cidrBlock, err)
+	}
+
+	if !isClaimableAddr(prefix, addr) {
+		return "", fmt.Errorf("%w: %s is not a usable address in subnet %s", ErrIPOutOfRange, addr, cidrBlock)
+	}
+
+	ip := addr.String()
+
+	for attempt := range 5 {
+		record, revision, err := m.getRecord(ctx, subnetId)
+		if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+			return "", fmt.Errorf("get IPAM record: %w", err)
+		}
+
+		if record == nil {
+			record = &IPAMRecord{
+				SubnetId:  subnetId,
+				CidrBlock: cidrBlock,
+			}
+		}
+
+		for _, entry := range record.Allocated {
+			if entry.IP == ip {
+				return "", fmt.Errorf("%w: %s already allocated in subnet %s", ErrIPInUse, ip, subnetId)
+			}
+		}
+
+		record.Allocated = append(record.Allocated, IPEntry{IP: ip, Purpose: purpose, OwnerID: ownerID})
+
+		data, err := json.Marshal(record)
+		if err != nil {
+			return "", fmt.Errorf("marshal IPAM record: %w", err)
+		}
+
+		if revision == 0 {
+			_, err = m.kv.Create(ctx, subnetId, data)
+		} else {
+			_, err = m.kv.Update(ctx, subnetId, data, revision)
+		}
+
+		if err != nil {
+			slog.Debug("IPAM claim CAS conflict, retrying", "subnet", subnetId, "attempt", attempt)
+			continue // CAS conflict, retry: a concurrent writer may have taken this IP
+		}
+
+		slog.Info("IPAM claimed IP", "subnet", subnetId, "ip", ip, "purpose", purpose, "owner", ownerID)
+		return ip, nil
+	}
+
+	return "", fmt.Errorf("IPAM claim failed after CAS retries for subnet %s", subnetId)
+}
+
+// isClaimableAddr reports whether addr is a usable host address in prefix:
+// inside the prefix, outside the reserved head (network + 3 AWS-reserved
+// addresses), and not the broadcast (last) address.
+func isClaimableAddr(prefix netip.Prefix, addr netip.Addr) bool {
+	if !prefix.Contains(addr) {
+		return false
+	}
+
+	head := prefix.Masked().Addr()
+	for range 4 {
+		if addr == head {
+			return false
+		}
+		head = head.Next()
+	}
+
+	next := addr.Next()
+	return next.IsValid() && prefix.Contains(next)
 }
 
 // ReleaseIP releases a previously allocated IP address back to the subnet pool.

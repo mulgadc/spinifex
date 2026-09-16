@@ -1,8 +1,10 @@
 package handlers_ec2_vpc
 
 import (
+	"errors"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -204,6 +206,135 @@ func TestIPAM_InvalidCIDR(t *testing.T) {
 	_, err := ipam.AllocateIP(t.Context(), "subnet-bad", "not-a-cidr", PurposeENIPrimary, "eni-bad")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "parse CIDR")
+}
+
+func TestIPAM_ClaimIP_Success(t *testing.T) {
+	t.Parallel()
+	ipam := setupTestIPAM(t)
+
+	ip, err := ipam.ClaimIP(t.Context(), "subnet-claim", "10.0.30.0/24", PurposeENIPrimary, "eni-claim", "10.0.30.50")
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.30.50", ip)
+
+	ips, err := ipam.AllocatedIPs(t.Context(), "subnet-claim")
+	require.NoError(t, err)
+	require.Len(t, ips, 1)
+	assert.Equal(t, "10.0.30.50", ips[0].IP)
+	assert.Equal(t, PurposeENIPrimary, ips[0].Purpose)
+	assert.Equal(t, "eni-claim", ips[0].OwnerID)
+}
+
+func TestIPAM_ClaimIP_ThenSequentialAllocateSkipsIt(t *testing.T) {
+	t.Parallel()
+	ipam := setupTestIPAM(t)
+
+	_, err := ipam.ClaimIP(t.Context(), "subnet-claim-seq", "10.0.31.0/24", PurposeENIPrimary, "eni-claim", "10.0.31.4")
+	require.NoError(t, err)
+
+	ip, err := ipam.AllocateIP(t.Context(), "subnet-claim-seq", "10.0.31.0/24", PurposeENIPrimary, "eni-next")
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.31.5", ip)
+}
+
+func TestIPAM_ClaimIP_InvalidAddress(t *testing.T) {
+	t.Parallel()
+	ipam := setupTestIPAM(t)
+
+	_, err := ipam.ClaimIP(t.Context(), "subnet-claim-bad", "10.0.32.0/24", PurposeENIPrimary, "eni-claim", "not-an-ip")
+	assert.ErrorIs(t, err, ErrIPOutOfRange)
+}
+
+func TestIPAM_ClaimIP_OutsideSubnet(t *testing.T) {
+	t.Parallel()
+	ipam := setupTestIPAM(t)
+
+	_, err := ipam.ClaimIP(t.Context(), "subnet-claim-oor", "10.0.33.0/24", PurposeENIPrimary, "eni-claim", "172.31.0.50")
+	assert.ErrorIs(t, err, ErrIPOutOfRange)
+}
+
+func TestIPAM_ClaimIP_ReservedHead(t *testing.T) {
+	t.Parallel()
+	ipam := setupTestIPAM(t)
+
+	for _, ip := range []string{"10.0.34.0", "10.0.34.1", "10.0.34.2", "10.0.34.3"} {
+		_, err := ipam.ClaimIP(t.Context(), "subnet-claim-head", "10.0.34.0/24", PurposeENIPrimary, "eni-claim", ip)
+		assert.ErrorIsf(t, err, ErrIPOutOfRange, "reserved address %s should be rejected", ip)
+	}
+}
+
+func TestIPAM_ClaimIP_Broadcast(t *testing.T) {
+	t.Parallel()
+	ipam := setupTestIPAM(t)
+
+	_, err := ipam.ClaimIP(t.Context(), "subnet-claim-bcast", "10.0.35.0/24", PurposeENIPrimary, "eni-claim", "10.0.35.255")
+	assert.ErrorIs(t, err, ErrIPOutOfRange)
+}
+
+func TestIPAM_ClaimIP_AlreadyInUse(t *testing.T) {
+	t.Parallel()
+	ipam := setupTestIPAM(t)
+
+	_, err := ipam.ClaimIP(t.Context(), "subnet-claim-inuse", "10.0.36.0/24", PurposeENIPrimary, "eni-first", "10.0.36.10")
+	require.NoError(t, err)
+
+	_, err = ipam.ClaimIP(t.Context(), "subnet-claim-inuse", "10.0.36.0/24", PurposeENIPrimary, "eni-second", "10.0.36.10")
+	assert.ErrorIs(t, err, ErrIPInUse)
+}
+
+func TestIPAM_ClaimIP_AlreadyAllocatedByAllocateIP(t *testing.T) {
+	t.Parallel()
+	ipam := setupTestIPAM(t)
+
+	ip, err := ipam.AllocateIP(t.Context(), "subnet-claim-vs-alloc", "10.0.37.0/24", PurposeENIPrimary, "eni-first")
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.37.4", ip)
+
+	_, err = ipam.ClaimIP(t.Context(), "subnet-claim-vs-alloc", "10.0.37.0/24", PurposeENIPrimary, "eni-second", "10.0.37.4")
+	assert.ErrorIs(t, err, ErrIPInUse)
+}
+
+// TestIPAM_ClaimIP_ConcurrentRace proves the CAS loop, not a mock, rejects a
+// racing claim: many goroutines race for the same address against one live
+// JetStream KV bucket, and exactly one must win.
+func TestIPAM_ClaimIP_ConcurrentRace(t *testing.T) {
+	t.Parallel()
+	ipam := setupTestIPAM(t)
+
+	const subnetId = "subnet-claim-race"
+	const cidr = "10.0.38.0/24"
+	const contenders = 10
+
+	var wg sync.WaitGroup
+	results := make([]error, contenders)
+	for i := range contenders {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := ipam.ClaimIP(t.Context(), subnetId, cidr, PurposeENIPrimary, "eni-race", "10.0.38.50")
+			results[i] = err
+		}(i)
+	}
+	wg.Wait()
+
+	successes, inUseFailures := 0, 0
+	for _, err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrIPInUse):
+			inUseFailures++
+		default:
+			t.Fatalf("unexpected error from concurrent claim: %v", err)
+		}
+	}
+
+	assert.Equal(t, 1, successes, "exactly one concurrent claim should win the address")
+	assert.Equal(t, contenders-1, inUseFailures, "every losing racer should see the address already in use")
+
+	ips, err := ipam.AllocatedIPs(t.Context(), subnetId)
+	require.NoError(t, err)
+	require.Len(t, ips, 1, "the address must be recorded exactly once despite the race")
+	assert.Equal(t, "10.0.38.50", ips[0].IP)
 }
 
 func TestCompareIPs_NilSortsFirst(t *testing.T) {

@@ -34,7 +34,7 @@ func TestPlaceTask_Binpack_PicksTightest(t *testing.T) {
 		inst("b", 1000, 700),
 		inst("c", 1000, 400),
 	}
-	got, err := placeTask(instances, 100, 200, 0, "binpack:memory")
+	got, err := placeTask(instances, 100, 200, 0, 0, "binpack:memory")
 	require.NoError(t, err)
 	assert.Equal(t, "b", got.InstanceID)
 }
@@ -45,28 +45,28 @@ func TestPlaceTask_Spread_PicksWidest(t *testing.T) {
 		inst("b", 1000, 700), // 300
 		inst("c", 1000, 400), // 600
 	}
-	got, err := placeTask(instances, 100, 200, 0, StrategySpread)
+	got, err := placeTask(instances, 100, 200, 0, 0, StrategySpread)
 	require.NoError(t, err)
 	assert.Equal(t, "a", got.InstanceID)
 }
 
 func TestPlaceTask_Random_StableByID(t *testing.T) {
 	instances := []InstanceRecord{inst("z", 1000, 0), inst("a", 1000, 0), inst("m", 1000, 0)}
-	got, err := placeTask(instances, 100, 100, 0, StrategyRandom)
+	got, err := placeTask(instances, 100, 100, 0, 0, StrategyRandom)
 	require.NoError(t, err)
 	assert.Equal(t, "a", got.InstanceID)
 }
 
 func TestPlaceTask_NoCapacity(t *testing.T) {
 	instances := []InstanceRecord{inst("a", 100, 90)}
-	_, err := placeTask(instances, 0, 50, 0, StrategyBinpack)
+	_, err := placeTask(instances, 0, 50, 0, 0, StrategyBinpack)
 	assert.ErrorIs(t, err, ErrNoCapacity)
 }
 
 func TestPlaceTask_SkipsDraining(t *testing.T) {
 	d := inst("drain", 1000, 0)
 	d.Status = InstanceStatusDraining
-	_, err := placeTask([]InstanceRecord{d}, 0, 100, 0, StrategyBinpack)
+	_, err := placeTask([]InstanceRecord{d}, 0, 100, 0, 0, StrategyBinpack)
 	assert.ErrorIs(t, err, ErrNoCapacity)
 }
 
@@ -81,35 +81,35 @@ func TestNormalizeStrategy(t *testing.T) {
 
 func TestInstanceRecord_Fits(t *testing.T) {
 	r := inst("a", 1000, 600) // remaining mem 400, cpu 10000
-	assert.True(t, r.fits(100, 400, 0))
-	assert.False(t, r.fits(100, 401, 0))
+	assert.True(t, r.fits(100, 400, 0, 0))
+	assert.False(t, r.fits(100, 401, 0, 0))
 	r.Status = InstanceStatusDraining
-	assert.False(t, r.fits(0, 0, 0))
+	assert.False(t, r.fits(0, 0, 0, 0))
 }
 
 // --- GPU placement dimension (Epic C2) ---
 
 func TestInstanceRecord_Fits_GPU(t *testing.T) {
 	r := instGPU("a", 2, 1) // 1 GPU free
-	assert.True(t, r.fits(0, 0, 1))
-	assert.False(t, r.fits(0, 0, 2))
+	assert.True(t, r.fits(0, 0, 1, 0))
+	assert.False(t, r.fits(0, 0, 2, 0))
 }
 
 func TestInstanceRecord_Fits_GPU_IgnoredForNonGPUTasks(t *testing.T) {
 	// An instance with zero free GPU still fits a task that requests none.
 	r := instGPU("a", 1, 1)
-	assert.True(t, r.fits(0, 0, 0))
+	assert.True(t, r.fits(0, 0, 0, 0))
 }
 
 func TestPlaceTask_GPU_RejectsInsufficientInstances(t *testing.T) {
 	instances := []InstanceRecord{instGPU("a", 1, 1), instGPU("b", 2, 2)}
-	_, err := placeTask(instances, 0, 0, 1, StrategyBinpack)
+	_, err := placeTask(instances, 0, 0, 1, 0, StrategyBinpack)
 	assert.ErrorIs(t, err, ErrNoCapacity)
 }
 
 func TestPlaceTask_GPU_PicksInstanceWithCapacity(t *testing.T) {
 	instances := []InstanceRecord{instGPU("a", 1, 1), instGPU("b", 2, 0)}
-	got, err := placeTask(instances, 0, 0, 2, StrategyBinpack)
+	got, err := placeTask(instances, 0, 0, 2, 0, StrategyBinpack)
 	require.NoError(t, err)
 	assert.Equal(t, "b", got.InstanceID)
 }
@@ -117,7 +117,7 @@ func TestPlaceTask_GPU_PicksInstanceWithCapacity(t *testing.T) {
 func TestPlaceTask_GPU_NonGPUTaskUnaffectedByExhaustedGPU(t *testing.T) {
 	// A task requesting no GPU still places on an instance with zero free GPU.
 	instances := []InstanceRecord{instGPU("a", 1, 1)}
-	got, err := placeTask(instances, 0, 0, 0, StrategyBinpack)
+	got, err := placeTask(instances, 0, 0, 0, 0, StrategyBinpack)
 	require.NoError(t, err)
 	assert.Equal(t, "a", got.InstanceID)
 }

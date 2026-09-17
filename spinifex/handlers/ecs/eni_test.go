@@ -163,7 +163,11 @@ func TestRunTask_Awsvpc_AttachFailure_RollsBack(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, out.Tasks)
 	require.Len(t, out.Failures, 1)
-	assert.Equal(t, "RESOURCE:eni", aws.StringValue(out.Failures[0].Reason))
+	assert.Equal(t, "RESOURCE:ENI", aws.StringValue(out.Failures[0].Reason))
+	// The caller is told which resource failed, not what went wrong inside the
+	// server; the underlying error keeps its identifiers in the log.
+	assert.NotContains(t, aws.StringValue(out.Failures[0].Detail), "hot-plug timeout")
+	assert.NotContains(t, aws.StringValue(out.Failures[0].Detail), "eni-stub")
 
 	// ENI was allocated then released; reservation rolled back.
 	assert.Equal(t, 1, eni.allocCalls)

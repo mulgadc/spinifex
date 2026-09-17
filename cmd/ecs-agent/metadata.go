@@ -13,9 +13,10 @@ import (
 
 // instanceMetadata is the IMDS-derived identity of the host the agent runs on.
 type instanceMetadata struct {
-	AccountID  string
-	InstanceID string
-	AZ         string
+	AccountID    string
+	InstanceID   string
+	AZ           string
+	InstanceType string
 }
 
 // fetchInstanceMetadata reads the instance-id, AZ and account-id from IMDSv2
@@ -39,10 +40,14 @@ func fetchInstanceMetadata(client *http.Client, base string) (instanceMetadata, 
 		return instanceMetadata{}, fmt.Errorf("identity document: %w", err)
 	}
 
+	// The instance type comes off the identity document already in hand rather
+	// than a further meta-data read; the scheduler sizes the host's awsvpc ENI
+	// capacity from it.
 	return instanceMetadata{
-		AccountID:  doc.AccountID,
-		InstanceID: strings.TrimSpace(instanceID),
-		AZ:         strings.TrimSpace(az),
+		AccountID:    doc.AccountID,
+		InstanceID:   strings.TrimSpace(instanceID),
+		AZ:           strings.TrimSpace(az),
+		InstanceType: strings.TrimSpace(doc.InstanceType),
 	}, nil
 }
 

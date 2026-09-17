@@ -76,6 +76,10 @@ func (g *gatewayControlPlane) Register(id identity) error {
 			{Name: aws.String("MEMORY"), Type: aws.String("INTEGER"), IntegerValue: aws.Int64(int64(id.Capacity.MemoryMiB))},
 		},
 		VersionInfo: &ecs.VersionInfo{AgentVersion: aws.String(id.AgentVersion)},
+		// The built-in container-instance attributes AWS's own agent reports.
+		// The scheduler sizes the host's awsvpc ENI capacity from the instance
+		// type, so a registration without one is not ENI-gated.
+		Attributes: instanceAttributes(id),
 	}
 	if len(id.Capacity.GPUIDs) > 0 {
 		in.TotalResources = append(in.TotalResources, &ecs.Resource{

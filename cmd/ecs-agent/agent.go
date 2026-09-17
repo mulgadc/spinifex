@@ -89,6 +89,7 @@ func New(cfg config) (*Agent, error) {
 		ClusterName:  cfg.ClusterName,
 		InstanceID:   meta.InstanceID,
 		AZ:           meta.AZ,
+		InstanceType: meta.InstanceType,
 		Hostname:     host,
 		Capacity:     detectCapacity(discoverNvidiaGPUs(execCommandRunner)),
 		AgentVersion: version,

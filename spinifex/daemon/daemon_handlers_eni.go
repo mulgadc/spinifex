@@ -75,6 +75,10 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 	if err := d.vpcService.UpdateENI(accountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
 		r.AttachmentStatus = "attached"
 		r.HotPlugSlot = res.Slot
+		// The requested device index is a request; the free list decides where the
+		// device lands. Reporting the request would give every ENI on an instance
+		// the same index, which cannot happen on AWS.
+		r.DeviceIndex = int64(res.Slot)
 		r.AttachmentStateAt = time.Now()
 	}); err != nil {
 		slog.WarnContext(ctx, "AttachNetworkInterface: failed to mark attached state",
@@ -86,7 +90,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 		"mac":          record.MacAddress,
 		"attachmentId": attachmentID,
 		"hotPlugSlot":  res.Slot,
-		"deviceIndex":  deviceIndex,
+		"deviceIndex":  res.Slot,
 	})
 
 	respondWithJSON(d.node, msg, ec2.AttachNetworkInterfaceOutput{

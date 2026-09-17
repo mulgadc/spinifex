@@ -112,6 +112,7 @@ func generateForGeneration(gen cpuGeneration, arch string) map[string]*ec2.Insta
 				Hypervisor:                    aws.String("kvm"),
 				SupportedVirtualizationTypes:  []*string{aws.String("hvm")},
 				SupportedRootDeviceTypes:      []*string{aws.String("ebs")},
+				NetworkInfo:                   NetworkInfoForType(name),
 				PlacementGroupInfo: &ec2.PlacementGroupInfo{
 					SupportedStrategies: []*string{
 						aws.String("cluster"),
@@ -150,6 +151,7 @@ func generateSystemTypes(arch string) map[string]*ec2.InstanceTypeInfo {
 				Hypervisor:                    aws.String("kvm"),
 				SupportedVirtualizationTypes:  []*string{aws.String("hvm")},
 				SupportedRootDeviceTypes:      []*string{aws.String("ebs")},
+				NetworkInfo:                   NetworkInfoForType(name),
 			}
 		}
 	}
@@ -201,6 +203,7 @@ func GenerateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTy
 					Hypervisor:                    aws.String("kvm"),
 					SupportedVirtualizationTypes:  []*string{aws.String("hvm")},
 					SupportedRootDeviceTypes:      []*string{aws.String("ebs")},
+					NetworkInfo:                   NetworkInfoForType(name),
 					PlacementGroupInfo: &ec2.PlacementGroupInfo{
 						SupportedStrategies: []*string{
 							aws.String("cluster"),
@@ -279,6 +282,7 @@ func GenerateMIGTypes(profiles []MIGProfileSpec, arch string) map[string]*ec2.In
 			Hypervisor:                    aws.String("kvm"),
 			SupportedVirtualizationTypes:  []*string{aws.String("hvm")},
 			SupportedRootDeviceTypes:      []*string{aws.String("ebs")},
+			NetworkInfo:                   NetworkInfoForType(name),
 			PlacementGroupInfo: &ec2.PlacementGroupInfo{
 				SupportedStrategies: []*string{
 					aws.String("cluster"),

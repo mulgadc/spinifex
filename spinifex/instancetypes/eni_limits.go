@@ -1,6 +1,11 @@
 package instancetypes
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+)
 
 // defaultMaxENIs is the conservative fallback ENI cap for unrecognized types.
 const defaultMaxENIs = 4
@@ -55,4 +60,14 @@ func HotPlugENISlotsForType(instanceType string) int {
 		return 0
 	}
 	return n
+}
+
+// NetworkInfoForType reports an instance type's ENI cap for DescribeInstanceTypes,
+// from the same table the hot-plug slot allocator uses, so the advertised figure
+// cannot drift from the enforced one. Fields this stack does not implement, such
+// as secondary IPv4 addresses per interface, are left unset rather than guessed.
+func NetworkInfoForType(instanceType string) *ec2.NetworkInfo {
+	return &ec2.NetworkInfo{
+		MaximumNetworkInterfaces: aws.Int64(int64(MaxENIsForType(instanceType))),
+	}
 }

@@ -2,8 +2,11 @@ package handlers_ecs
 
 import (
 	"errors"
+	"math"
 	"sort"
 	"strings"
+
+	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 )
 
 // Placement strategy identifiers (ecs-v1.md Q15). Default is binpack:memory.
@@ -15,6 +18,12 @@ const (
 
 // ErrNoCapacity is returned when no ACTIVE instance can fit the task.
 var ErrNoCapacity = errors.New("no container instance has capacity for the task")
+
+// ErrNoENICapacity is returned when the only thing standing between the task and
+// an instance is an awsvpc network interface slot. It is separated from
+// ErrNoCapacity so the caller can say which resource bound, the way AWS does
+// with RESOURCE:ENI, instead of reporting a generic placement failure.
+var ErrNoENICapacity = errors.New("no container instance has a free network interface for the task")
 
 // remainingCPU/remainingMemory/remainingGPU report an instance's unreserved capacity.
 func (r *InstanceRecord) remainingCPU() int    { return r.TotalCPU - r.ReservedCPU }
@@ -32,12 +41,37 @@ func (r *InstanceRecord) remainingGPUIDs() []string {
 	return r.GPUIDs[r.ReservedGPU:]
 }
 
+// totalENIs is the instance's awsvpc task-ENI capacity: the hot-plug slots its
+// instance type carries, which is what the daemon pre-allocates PCIe root ports
+// for at boot. Derived rather than stored so a corrected limit table applies at
+// once. Zero means the instance type is not known — see remainingENIs.
+func (r *InstanceRecord) totalENIs() int {
+	if r.InstanceType == "" {
+		return 0
+	}
+	return instancetypes.HotPlugENISlotsForType(r.InstanceType)
+}
+
+// remainingENIs reports the instance's free task-ENI slots. An instance whose
+// type has not been reported is treated as unbounded: a recognised type always
+// has at least one slot, so zero can only mean unknown, and refusing every
+// awsvpc placement against an agent too old to report its type would turn a
+// mixed-version cluster into an outage.
+func (r *InstanceRecord) remainingENIs() int {
+	total := r.totalENIs()
+	if total == 0 {
+		return math.MaxInt
+	}
+	return total - r.ReservedENIs
+}
+
 // fits reports whether the instance is ACTIVE and has room for the reservation.
-func (r *InstanceRecord) fits(cpu, mem, gpu int) bool {
+func (r *InstanceRecord) fits(cpu, mem, gpu, eni int) bool {
 	if r.Status != InstanceStatusActive {
 		return false
 	}
-	return r.remainingCPU() >= cpu && r.remainingMemory() >= mem && r.remainingGPU() >= gpu
+	return r.remainingCPU() >= cpu && r.remainingMemory() >= mem &&
+		r.remainingGPU() >= gpu && r.remainingENIs() >= eni
 }
 
 // placeTask selects a container instance for a task reserving (cpu, mem, gpu)
@@ -49,14 +83,24 @@ func (r *InstanceRecord) fits(cpu, mem, gpu int) bool {
 // random: caller-stable first fit by instance ID. GPU is a fit gate only; it does
 // not participate in the memory-based sort (non-GPU tasks request gpu=0 and are
 // unaffected).
-func placeTask(instances []InstanceRecord, cpu, mem, gpu int, strategy string) (*InstanceRecord, error) {
+func placeTask(instances []InstanceRecord, cpu, mem, gpu, eni int, strategy string) (*InstanceRecord, error) {
 	candidates := make([]InstanceRecord, 0, len(instances))
 	for _, inst := range instances {
-		if inst.fits(cpu, mem, gpu) {
+		if inst.fits(cpu, mem, gpu, eni) {
 			candidates = append(candidates, inst)
 		}
 	}
 	if len(candidates) == 0 {
+		// An instance that would have taken the task but for its network
+		// interfaces makes this a distinct refusal, so the caller can name the
+		// resource that bound rather than report a bare placement failure.
+		if eni > 0 {
+			for _, inst := range instances {
+				if inst.fits(cpu, mem, gpu, 0) {
+					return nil, ErrNoENICapacity
+				}
+			}
+		}
 		return nil, ErrNoCapacity
 	}
 

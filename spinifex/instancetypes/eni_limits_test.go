@@ -59,3 +59,32 @@ func TestHotPlugENISlotsForType_NeverNegative(t *testing.T) {
 		t.Errorf("HotPlugENISlotsForType(zero-cap) = %d, want 0", got)
 	}
 }
+
+// DescribeInstanceTypes has to advertise the same cap the hot-plug slot
+// allocator enforces; a caller sizing an ASG against a different number would be
+// sized against nothing.
+func TestNetworkInfoForType_AgreesWithMaxENIs(t *testing.T) {
+	for _, name := range []string{"t3.micro", "m5.large", "m5.4xlarge", "m6g.xlarge", "unknown.type"} {
+		ni := NetworkInfoForType(name)
+		if ni == nil || ni.MaximumNetworkInterfaces == nil {
+			t.Fatalf("NetworkInfoForType(%q) reported no interface cap", name)
+		}
+		if got, want := int(*ni.MaximumNetworkInterfaces), MaxENIsForType(name); got != want {
+			t.Errorf("NetworkInfoForType(%q) = %d, MaxENIsForType = %d", name, got, want)
+		}
+	}
+}
+
+// Every generated type carries it, so no instance type reports a null
+// NetworkInfo the way they all did before.
+func TestDetectAndGenerate_EveryTypeCarriesNetworkInfo(t *testing.T) {
+	types := DetectAndGenerate(HostCPU{}, "x86_64", []GPUModel{{Family: "g5", Manufacturer: "NVIDIA", Name: "A10G", MemoryMiB: 24576}})
+	if len(types) == 0 {
+		t.Fatal("no instance types generated")
+	}
+	for name, it := range types {
+		if it.NetworkInfo == nil || it.NetworkInfo.MaximumNetworkInterfaces == nil {
+			t.Errorf("%s has no NetworkInfo", name)
+		}
+	}
+}

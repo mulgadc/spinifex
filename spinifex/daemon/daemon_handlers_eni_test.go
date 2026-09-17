@@ -436,3 +436,37 @@ func TestHandleDetachNetworkInterface_HotUnplugFails(t *testing.T) {
 	assert.Equal(t, "detaching", rec.AttachmentStatus, "AttachmentStatus stays detaching for reconciler pickup")
 	assert.False(t, rec.DetachInFlight, "DetachInFlight cleared so reconciler can re-claim")
 }
+
+// Two ENIs on one instance must not report the same device index: on AWS a
+// device index identifies the slot, so the caller's requested value is a request
+// and the record has to report the slot the device actually landed on.
+func TestHandleAttachNetworkInterface_DeviceIndexIsTheAllocatedSlot(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+
+	second, err := f.daemon.vpcService.CreateNetworkInterface(t.Context(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(f.subnetID),
+	}, testAccountID)
+	require.NoError(t, err)
+	secondID := *second.NetworkInterface.NetworkInterfaceId
+
+	// Both attaches ask for device index 1, which is what the ECS task ENI path
+	// sends for every task.
+	for _, eniID := range []string{f.eniID, secondID} {
+		cmd := spxtypes.EC2InstanceCommand{
+			ID:            f.vmInst.ID,
+			AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: eniID, DeviceIndex: 1},
+		}
+		driveHandler(t, f.daemon.natsConn, "test.attach.slot."+eniID, func(msg *nats.Msg) {
+			f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
+		})
+	}
+
+	first, err := f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
+	require.NoError(t, err)
+	other, err := f.daemon.vpcService.GetENIRecord(testAccountID, secondID)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(first.HotPlugSlot), first.DeviceIndex)
+	assert.Equal(t, int64(other.HotPlugSlot), other.DeviceIndex)
+	assert.NotEqual(t, first.DeviceIndex, other.DeviceIndex)
+}

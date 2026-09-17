@@ -62,6 +62,14 @@ func (s *Service) RegisterContainerInstance(ctx context.Context, input *ecs.Regi
 				r.TotalGPU = len(r.GPUIDs)
 			}
 		}
+		// An attribute the agent did not discover is absent rather than blank, so
+		// an empty value never overwrites what a previous registration reported.
+		if t := attributeValue(input.Attributes, AttrInstanceType); t != "" {
+			r.InstanceType = t
+		}
+		if az := attributeValue(input.Attributes, AttrAvailabilityZone); az != "" {
+			r.AZ = az
+		}
 		if len(input.Tags) > 0 {
 			r.Tags = tagsToMap(input.Tags)
 		}
@@ -178,8 +186,42 @@ func (s *Service) instanceToAWS(r *InstanceRecord) *ecs.ContainerInstance {
 		RegisteredResources:  registered,
 		RemainingResources:   remaining,
 		VersionInfo:          &ecs.VersionInfo{AgentVersion: aws.String(r.AgentVersion)},
+		Attributes:           instanceAttributes(r),
 		Tags:                 tagsToAWS(r.Tags),
 	}
+}
+
+// Built-in container-instance attribute names, spelled as AWS spells them.
+const (
+	AttrInstanceType     = "ecs.instance-type"
+	AttrAvailabilityZone = "ecs.availability-zone"
+)
+
+// attributeValue returns the value of the named attribute, or "" when the caller
+// did not report it.
+func attributeValue(attrs []*ecs.Attribute, name string) string {
+	for _, a := range attrs {
+		if a != nil && aws.StringValue(a.Name) == name {
+			return aws.StringValue(a.Value)
+		}
+	}
+	return ""
+}
+
+// instanceAttributes projects the built-in attributes back to a caller. Only
+// what the record actually holds is reported, so an unknown instance type reads
+// as absent rather than as an instance type of "".
+func instanceAttributes(r *InstanceRecord) []*ecs.Attribute {
+	var attrs []*ecs.Attribute
+	add := func(name, value string) {
+		if value == "" {
+			return
+		}
+		attrs = append(attrs, &ecs.Attribute{Name: aws.String(name), Value: aws.String(value)})
+	}
+	add(AttrInstanceType, r.InstanceType)
+	add(AttrAvailabilityZone, r.AZ)
+	return attrs
 }
 
 // --- Layer-2 bus event handlers (called by the scheduler) ---
@@ -294,7 +336,7 @@ func (s *Service) recordTaskState(ctx context.Context, msg *bus.TaskState) error
 		if perr := putJSON(ctx, kv, TaskKey(msg.ClusterName, msg.TaskID), &task); perr != nil {
 			slog.ErrorContext(ctx, "ECS task STOPPED: persist after EIP release failed", "task", msg.TaskID, "err", perr)
 		}
-		return s.releaseReservation(ctx, kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB, task.GPU)
+		return s.releaseReservation(ctx, kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB, task.GPU, eniReservationFor(task.NetworkMode))
 	}
 	return nil
 }
@@ -363,7 +405,7 @@ func (s *Service) recordDeploymentFailure(ctx context.Context, kv jetstream.KeyV
 }
 
 // releaseReservation returns a stopped task's capacity to its instance under CAS.
-func (s *Service) releaseReservation(ctx context.Context, kv jetstream.KeyValue, cluster, instanceID, taskID string, cpu, mem, gpu int) error {
+func (s *Service) releaseReservation(ctx context.Context, kv jetstream.KeyValue, cluster, instanceID, taskID string, cpu, mem, gpu, eni int) error {
 	for range reservePlacementRetries {
 		entry, err := kv.Get(ctx, InstanceKey(cluster, instanceID))
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -379,6 +421,7 @@ func (s *Service) releaseReservation(ctx context.Context, kv jetstream.KeyValue,
 		rec.ReservedCPU = max(rec.ReservedCPU-cpu, 0)
 		rec.ReservedMemoryMiB = max(rec.ReservedMemoryMiB-mem, 0)
 		rec.ReservedGPU = max(rec.ReservedGPU-gpu, 0)
+		rec.ReservedENIs = max(rec.ReservedENIs-eni, 0)
 		rec.PlacedTasks = slices.DeleteFunc(rec.PlacedTasks, func(v string) bool { return v == taskID })
 		data, merr := json.Marshal(&rec)
 		if merr != nil {

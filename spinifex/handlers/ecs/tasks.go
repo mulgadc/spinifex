@@ -57,16 +57,14 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 	if err != nil {
 		return nil, err
 	}
+	eni := eniReservationFor(mode)
 
 	out := &ecs.RunTaskOutput{}
 	for i := 0; i < count; i++ {
 		taskID := uuid.NewV4().String()
-		inst, err := s.reservePlacement(ctx, kv, cluster, taskID, cpu, mem, gpu, strategy)
+		inst, err := s.reservePlacement(ctx, kv, cluster, taskID, cpu, mem, gpu, eni, strategy)
 		if err != nil {
-			out.Failures = append(out.Failures, &ecs.Failure{
-				Reason: aws.String("RESOURCE:placement"),
-				Detail: aws.String(err.Error()),
-			})
+			out.Failures = append(out.Failures, placementFailure(err))
 			continue
 		}
 
@@ -93,21 +91,61 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 	return out, nil
 }
 
+// eniReservationFor reports how many task ENI slots a network mode costs an
+// instance. Only awsvpc hot-plugs one; bridge and host share the instance's own.
+func eniReservationFor(mode string) int {
+	if mode == NetworkModeAwsvpc {
+		return 1
+	}
+	return 0
+}
+
+// placementFailure converts a placement error into a RunTask failure, naming the
+// resource that bound. The detail is a fixed sentence rather than the wrapped
+// error: a caller acting on the failure needs to know which resource ran out,
+// and the internal identifiers and server error codes in the error text belong
+// in the log, where they are read by someone who can act on them.
+func placementFailure(err error) *ecs.Failure {
+	if errors.Is(err, ErrNoENICapacity) {
+		return &ecs.Failure{
+			Reason: aws.String(failureResourceENI),
+			Detail: aws.String("no container instance has a free network interface for this task"),
+		}
+	}
+	return &ecs.Failure{
+		Reason: aws.String("RESOURCE:placement"),
+		Detail: aws.String(err.Error()),
+	}
+}
+
+// failureResourceENI is the AWS reason for a task declined for want of an
+// awsvpc network interface. AWS spells the resource in upper case.
+const failureResourceENI = "RESOURCE:ENI"
+
 // provisionTaskENI allocates and hot-plugs an awsvpc task's ENI, stamping its
 // identity onto rec. On any failure it rolls back (releases a half-allocated ENI
 // and the placement reservation) and returns a RunTask failure for this task —
 // the caller skips it without leaking the ENI or the reserved capacity.
+//
+// Placement has already reserved the instance's ENI slot, so reaching a failure
+// here means something the reservation could not predict; the caller gets the
+// resource name and the log gets the reason.
 func (s *Service) provisionTaskENI(ctx context.Context, kv jetstream.KeyValue, accountID, cluster string, rec *TaskRecord, netCfg awsvpcConfig) *ecs.Failure {
-	rollback := func(reason string, err error) *ecs.Failure {
-		if rerr := s.releaseReservation(ctx, kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB, rec.GPU); rerr != nil {
+	rollback := func(stage string, err error) *ecs.Failure {
+		slog.ErrorContext(ctx, "ECS RunTask: task ENI "+stage+" failed",
+			"task", rec.TaskID, "instance", rec.ContainerInstanceID, "eni", rec.ENIID, "err", err)
+		if rerr := s.releaseReservation(ctx, kv, cluster, rec.ContainerInstanceID, rec.TaskID, rec.ReservedCPU, rec.ReservedMemoryMiB, rec.GPU, eniReservationFor(rec.NetworkMode)); rerr != nil {
 			slog.ErrorContext(ctx, "ECS RunTask: reservation rollback failed", "task", rec.TaskID, "err", rerr)
 		}
-		return &ecs.Failure{Reason: aws.String(reason), Detail: aws.String(err.Error())}
+		return &ecs.Failure{
+			Reason: aws.String(failureResourceENI),
+			Detail: aws.String("could not provision a network interface for this task"),
+		}
 	}
 
 	alloc, err := s.eni.Allocate(ctx, accountID, netCfg.firstSubnet(), netCfg.securityGroupPtrs())
 	if err != nil {
-		return rollback("RESOURCE:eni", err)
+		return rollback("allocate", err)
 	}
 	rec.ENIID = alloc.ENIID
 	rec.ENIMacAddress = alloc.MacAddress
@@ -133,7 +171,7 @@ func (s *Service) provisionTaskENI(ctx context.Context, kv jetstream.KeyValue, a
 				slog.ErrorContext(ctx, "ECS RunTask: persist ENI rollback failed", "task", rec.TaskID, "err", perr)
 			}
 		}
-		return rollback("RESOURCE:eni", err)
+		return rollback("attach", err)
 	}
 	rec.ENIAttachmentID = attachmentID
 	return nil
@@ -141,13 +179,13 @@ func (s *Service) provisionTaskENI(ctx context.Context, kv jetstream.KeyValue, a
 
 // reservePlacement bin-packs a task onto an ACTIVE instance and commits the
 // reservation under a KV CAS, retrying on contention.
-func (s *Service) reservePlacement(ctx context.Context, kv jetstream.KeyValue, cluster, taskID string, cpu, mem, gpu int, strategy string) (*InstanceRecord, error) {
+func (s *Service) reservePlacement(ctx context.Context, kv jetstream.KeyValue, cluster, taskID string, cpu, mem, gpu, eni int, strategy string) (*InstanceRecord, error) {
 	for range reservePlacementRetries {
 		instances, err := s.listInstanceRecords(ctx, kv, cluster)
 		if err != nil {
 			return nil, err
 		}
-		chosen, err := placeTask(instances, cpu, mem, gpu, strategy)
+		chosen, err := placeTask(instances, cpu, mem, gpu, eni, strategy)
 		if err != nil {
 			return nil, err
 		}
@@ -161,12 +199,13 @@ func (s *Service) reservePlacement(ctx context.Context, kv jetstream.KeyValue, c
 		if uerr := json.Unmarshal(entry.Value(), &live); uerr != nil {
 			return nil, uerr
 		}
-		if !live.fits(cpu, mem, gpu) {
+		if !live.fits(cpu, mem, gpu, eni) {
 			continue
 		}
 		live.ReservedCPU += cpu
 		live.ReservedMemoryMiB += mem
 		live.ReservedGPU += gpu
+		live.ReservedENIs += eni
 		live.PlacedTasks = append(live.PlacedTasks, taskID)
 		data, merr := json.Marshal(&live)
 		if merr != nil {

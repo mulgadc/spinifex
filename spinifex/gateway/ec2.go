@@ -144,13 +144,9 @@ func ec2HandlerWithReq[In any](handler func(ctx context.Context, input *In, gw *
 	}
 }
 
-// advertisedEndpoint returns this gateway's own reachable base URL for
-// DescribeRegions: the same host:port RegistryHost/RegistryPort already
-// advertise for ECR (concrete AWSGW bind host, else AdvertiseIP), so a
-// workload asking for its own Region's endpoint gets an address it can
-// actually dial rather than the gateway's own loopback. Falls back to
-// localhost:9999 only when no concrete host is configured at all, which is
-// also the only case where the caller and the gateway are the same host.
+// advertisedEndpoint returns this gateway's own dialable base URL, from the
+// same RegistryHost/RegistryPort that already advertise ECR. Falls back to
+// localhost only when no concrete host is configured.
 func (gw *GatewayConfig) advertisedEndpoint() string {
 	host := gw.RegistryHost
 	if host == "" {

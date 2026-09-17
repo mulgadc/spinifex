@@ -1,14 +1,12 @@
 name: E2E Nightly
 
+# Triggered nightly by a Cloudflare Worker that dispatches this workflow once on
+# `dev` and once on `main`, rather than by a `schedule:` here. GitHub registers a
+# schedule only from the default branch, so a cron in this file can never run
+# `main` and `dev` as separate nightlies, and it would always execute `main`'s
+# copy of this file — leaving a fix to the workflow itself untestable until it
+# had already shipped. A dispatch takes both the file and the source from its ref.
 on:
-  schedule:
-    # 14:00 UTC is midnight AEST (01:00 AEDT — cron has no DST), when the
-    # hypervisors are idle. Every day, not weeknights: a weekend gap is two runs
-    # of evidence lost on a suite whose remaining failures are a rate, not a bug.
-    # :17 rather than :00 because GitHub queues scheduled runs behind every other
-    # top-of-hour cron and drops them under load, which is why 2026-09-14 never
-    # fired and why every run in that window started 3h15m-3h45m late.
-    - cron: "17 14 * * *"
   workflow_dispatch:
     inputs:
       cells:
@@ -33,7 +31,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GIT_BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+  GIT_BRANCH: ${{ github.ref_name }}
   UBUNTU_GOLD_IMAGE: /mnt/disk1/gold-images/spinifex-image-builder-ubuntu-26.04.qcow2
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
@@ -822,12 +820,11 @@ jobs:
 
   # Bare-metal single-node suite. Doesn't fit the tofu matrix shape, so it
   # runs as a sibling job via the reusable e2e-baremetal workflow. Gated like a
-  # matrix cell ("cell 20"): every nightly cron, or dispatch with 20 selected
-  # (blank cells = all). Tests `dev` on schedule to match GIT_BRANCH above.
+  # matrix cell ("cell 20"): blank cells is the whole nightly, or name 20 to run
+  # it alone. A reusable call needs its own ref, since it cannot read GIT_BRANCH.
   baremetal:
     name: cell-20 (baremetal/pxe/real-hw)
     if: >-
-      github.event_name == 'schedule' ||
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',20,')
     permissions:
@@ -835,7 +832,7 @@ jobs:
       statuses: write
     uses: ./.github/workflows/e2e-baremetal.yml
     with:
-      ref: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+      ref: ${{ github.ref_name }}
       # A reusable-workflow call gets none of this workflow's context (env:
       # above, matrix.cell) for free — cell-20 needs its own attrs string.
       # There's no matrix leg here, just the one fixed baremetal cell.
@@ -855,7 +852,6 @@ jobs:
     needs: baremetal
     if: >-
       !cancelled() && (
-        github.event_name == 'schedule' ||
         inputs.cells == '' ||
         contains(format(',{0},', inputs.cells), ',28,')
       )
@@ -864,7 +860,7 @@ jobs:
       statuses: write
     uses: ./.github/workflows/e2e-baremetal.yml
     with:
-      ref: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+      ref: ${{ github.ref_name }}
       cell: "28"
       suites: diskperf
       otel-attrs: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=28,ci.matrix=baremetal/pxe/diskperf
@@ -881,7 +877,6 @@ jobs:
   iso-single:
     name: cell-21 (iso/dhcp/single)
     if: >-
-      github.event_name == 'schedule' ||
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',21,')
     runs-on: [self-hosted, ci-single]
@@ -1136,7 +1131,6 @@ jobs:
     needs: [iso-single]
     if: >-
       !cancelled() && (
-      github.event_name == 'schedule' ||
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',22,') )
     runs-on: [self-hosted, ci-multi]
@@ -1298,7 +1292,6 @@ jobs:
     needs: [matrix, baremetal, iso-single, iso-multi]
     if: >-
       !cancelled() && (
-      github.event_name == 'schedule' ||
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',23,') )
     runs-on: [self-hosted, ci-single]
@@ -1329,7 +1322,7 @@ jobs:
       - name: Resolve sibling refs
         id: siblings
         env:
-          BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+          BRANCH: ${{ github.ref_name }}
         run: bash .github/resolve-sibling-refs.sh
         working-directory: spinifex
 
@@ -1410,7 +1403,6 @@ jobs:
     needs: [matrix, baremetal, iso-single, iso-multi, performance]
     if: >-
       !cancelled() && (
-      github.event_name == 'schedule' ||
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',24,') )
     runs-on: [self-hosted, ci-single]
@@ -1454,7 +1446,7 @@ jobs:
       - name: Resolve sibling refs
         id: siblings
         env:
-          BRANCH: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+          BRANCH: ${{ github.ref_name }}
         run: bash .github/resolve-sibling-refs.sh
         working-directory: spinifex
 

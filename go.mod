@@ -25,7 +25,7 @@ require (
 	github.com/minio/highwayhash v1.0.4
 	github.com/mulgadc/bluebottle v1.20.1-0.20260916040751-5a5ca6f0fb33
 	github.com/mulgadc/northstar v1.20.1-0.20260917032839-357bbc94201d
-	github.com/mulgadc/predastore v1.20.0
+	github.com/mulgadc/predastore v1.20.1-0.20260917085631-c71fdbe94b91
 	github.com/mulgadc/viperblock v1.20.0
 	github.com/nats-io/nats-server/v2 v2.14.6
 	github.com/nats-io/nats.go v1.53.1

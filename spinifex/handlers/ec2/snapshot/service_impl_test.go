@@ -1310,17 +1310,30 @@ func TestAddSnapshotRefConcurrentNoLostUpdates(t *testing.T) {
 	assert.Len(t, snapshots, refs)
 }
 
-// An add landing after the last reference was removed keeps its key: the
-// empty-key delete is guarded on the revision the emptiness was read at.
-func TestDropEmptySnapshotRefsKeepsLaterAdd(t *testing.T) {
+// Removing the last reference takes the key with it, so a volume that has lost
+// every snapshot leaves nothing behind for volumeHasSnapshots to read.
+func TestRemoveSnapshotRefDropsTheEmptiedKey(t *testing.T) {
 	kv := setupTestNATSKV(t)
 	svc := newRefService(kv)
 
 	require.NoError(t, svc.addSnapshotRef(t.Context(), "vol-1", "snap-a"))
 	require.NoError(t, svc.removeSnapshotRef(t.Context(), "vol-1", "snap-a"))
-	require.NoError(t, svc.addSnapshotRef(t.Context(), "vol-1", "snap-b"))
 
-	// The key is empty at this revision only if nothing was added since; it was.
+	_, err := kv.Get(t.Context(), "vol-1")
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound, "the emptied index key must be gone")
+
+	has, err := svc.volumeHasSnapshots(t.Context(), "vol-1")
+	require.NoError(t, err)
+	assert.False(t, has)
+}
+
+// dropEmptySnapshotRefs leaves a key that is no longer empty alone, so a volume
+// that gained a snapshot after the check keeps its index.
+func TestDropEmptySnapshotRefsLeavesANonEmptyKey(t *testing.T) {
+	kv := setupTestNATSKV(t)
+	svc := newRefService(kv)
+
+	require.NoError(t, svc.addSnapshotRef(t.Context(), "vol-1", "snap-b"))
 	require.NoError(t, svc.dropEmptySnapshotRefs(t.Context(), "vol-1"))
 
 	entry, err := kv.Get(t.Context(), "vol-1")
@@ -1328,4 +1341,40 @@ func TestDropEmptySnapshotRefsKeepsLaterAdd(t *testing.T) {
 	var snapshots []string
 	require.NoError(t, json.Unmarshal(entry.Value(), &snapshots))
 	assert.Equal(t, []string{"snap-b"}, snapshots)
+}
+
+// The empty-key delete is guarded on the revision the emptiness was read at, so
+// an add landing between that read and the delete keeps its reference. An
+// unguarded delete drops it, and volumeHasSnapshots then reports no snapshots
+// for a volume that has one — which is what DeleteVolume gates on.
+func TestDropEmptySnapshotRefsDoesNotDropAConcurrentAdd(t *testing.T) {
+	kv := setupTestNATSKV(t)
+	svc := newRefService(kv)
+
+	// Repeated because the losing interleaving is a window, not a certainty.
+	for i := range 200 {
+		volume := "vol-" + strconv.Itoa(i)
+		_, err := kv.Put(t.Context(), volume, []byte("[]"))
+		require.NoError(t, err)
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var dropErr, addErr error
+		wg.Go(func() {
+			<-start
+			dropErr = svc.dropEmptySnapshotRefs(t.Context(), volume)
+		})
+		wg.Go(func() {
+			<-start
+			addErr = svc.addSnapshotRef(t.Context(), volume, "snap-b")
+		})
+		close(start)
+		wg.Wait()
+		require.NoError(t, dropErr)
+		require.NoError(t, addErr)
+
+		has, err := svc.volumeHasSnapshots(t.Context(), volume)
+		require.NoError(t, err)
+		assert.True(t, has, "iteration %d: the concurrent add was dropped by the empty-key delete", i)
+	}
 }

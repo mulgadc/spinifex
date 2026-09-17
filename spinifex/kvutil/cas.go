@@ -70,8 +70,11 @@ func retryCAS(ctx context.Context, cfg CASConfig, op, key string, attempt func()
 			return ctx.Err()
 		}
 	}
+	// The caller's error is wrapped around the last conflict rather than
+	// replacing it: the API error naming the condition is what tells a stale
+	// replica read apart from a genuine race.
 	if cfg.Exhausted != nil {
-		return cfg.Exhausted(key, attempts)
+		return fmt.Errorf("%w: %w", cfg.Exhausted(key, attempts), lastErr)
 	}
 	return fmt.Errorf("CAS %s exhausted %d attempts for key %s: %w", op, attempts, key, lastErr)
 }

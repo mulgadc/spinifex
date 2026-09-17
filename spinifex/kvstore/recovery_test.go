@@ -417,3 +417,31 @@ func TestBucket_DescriptionReachesTheCreatedBucket(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "a bucket that says what it is", status.(*jetstream.KeyValueBucketStatus).StreamInfo().Config.Description)
 }
+
+// A Store over a fixed handle cannot reopen, so a transient outage must leave
+// the handle it already has. Discarding it would end every later call with the
+// configured Missing reason, long after the stream came back.
+func TestBucket_FixedHandleSurvivesATransientOutage(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+
+	const bucket = "kvstore-fixed-handle-test"
+	cfg := jetstream.KeyValueConfig{Bucket: bucket, History: 1}
+	kv, err := js.CreateKeyValue(t.Context(), cfg)
+	require.NoError(t, err)
+
+	store := kvstore.Over[record](nil, kv, kvstore.Config{Name: bucket, Missing: "test: no JetStream client"})
+	require.NoError(t, store.Set(t.Context(), "acct-a/one", &record{Name: "one"}))
+
+	loseStream := func() { require.NoError(t, js.DeleteKeyValue(t.Context(), bucket)) }
+	loseStream()
+	_, _, err = store.Get(t.Context(), "acct-a/one")
+	require.Error(t, err, "the call meeting the lost stream still fails")
+
+	_, err = js.CreateKeyValue(t.Context(), cfg)
+	require.NoError(t, err)
+
+	err = store.Set(t.Context(), "acct-a/one", &record{Name: "two"})
+	require.NoError(t, err, "the store must work again once the stream is back")
+}

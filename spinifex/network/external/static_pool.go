@@ -61,6 +61,11 @@ type PoolRecord struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
+// errPoolContended means a pool key stayed contended for the whole retry
+// budget, which the boot-time drift reconcile tolerates and a caller asking for
+// an address does not.
+var errPoolContended = errors.New("external IPAM: pool contended")
+
 // staticPoolConfig describes the pool bucket. The name and history are
 // unchanged from the pre-Q1 ExternalIPAM so existing cluster data carries over,
 // and the migration runs on every open rather than only the first.
@@ -74,7 +79,7 @@ func staticPoolConfig() kvstore.Config {
 			return migrate.DefaultRegistry.RunKV(ctx, KVBucketStaticPool, kv, KVBucketStaticPoolVersion)
 		},
 		Exhausted: func(key string, attempts int) error {
-			return fmt.Errorf("external IPAM: pool %s contended after %d attempts", key, attempts)
+			return fmt.Errorf("%w: %s after %d attempts", errPoolContended, key, attempts)
 		},
 	}
 }
@@ -215,33 +220,26 @@ func rangesMatch(rec *PoolRecord, pool ExternalPoolConfig) bool {
 		rec.GwLrpRangeStart == pool.GwLrpRangeStart && rec.GwLrpRangeEnd == pool.GwLrpRangeEnd
 }
 
-// reconcileDrift commits the corrected ranges. Losing the CAS is only benign if
-// the winner stored the ranges this node wanted: an ordinary Allocate or Release
-// on the same key wins the same way and leaves the drift unfixed.
-func (a *StaticPoolAllocator) reconcileDrift(ctx context.Context, pool ExternalPoolConfig,
-	chk *PoolRecord, revision uint64) error {
-	_, err := a.store.CompareAndSet(ctx, pool.Name, chk, revision)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, kvstore.ErrConflict) {
-		slog.WarnContext(ctx, "external IPAM update failed", "pool", pool.Name, "err", err)
-		return err
-	}
-	// Failing the boot over a lost race would take this node down, so an
-	// unreconciled drift is reported rather than returned.
-	cur, _, getErr := a.store.Get(ctx, pool.Name)
-	if getErr != nil || !rangesMatch(cur, pool) {
-		slog.WarnContext(ctx, "external IPAM drift reconcile lost the CAS and the stored ranges still differ",
-			"pool", pool.Name,
-			"want_range", pool.RangeStart+"-"+pool.RangeEnd,
-			"want_gw_lrp_range", pool.GwLrpRangeStart+"-"+pool.GwLrpRangeEnd, "err", getErr)
-	}
-	return nil
+// reconcileDrift commits the corrected ranges under the store's retry budget. A
+// pool is one key, so an ordinary Allocate or Release wins this race routinely;
+// conceding to it would leave the drift unfixed until some later boot won.
+func (a *StaticPoolAllocator) reconcileDrift(ctx context.Context, pool ExternalPoolConfig) error {
+	return a.store.Mutate(ctx, pool.Name, func(rec *PoolRecord) (bool, error) {
+		// Re-checked per attempt: the winner of a lost race may already have
+		// stored the ranges this node wanted, which is nothing left to do.
+		if rangesMatch(rec, pool) {
+			return false, nil
+		}
+		rec.RangeStart = pool.RangeStart
+		rec.RangeEnd = pool.RangeEnd
+		rec.GwLrpRangeStart = pool.GwLrpRangeStart
+		rec.GwLrpRangeEnd = pool.GwLrpRangeEnd
+		return true, nil
+	})
 }
 
 func (a *StaticPoolAllocator) initPool(ctx context.Context, pool ExternalPoolConfig) error {
-	chk, revision, err := a.store.Get(ctx, pool.Name)
+	chk, _, err := a.store.Get(ctx, pool.Name)
 
 	if err != nil && !errors.Is(err, kvstore.ErrNotFound) {
 		return err
@@ -255,12 +253,18 @@ func (a *StaticPoolAllocator) initPool(ctx context.Context, pool ExternalPoolCon
 				"old_gw_lrp_range", chk.GwLrpRangeStart+"-"+chk.GwLrpRangeEnd,
 				"new_gw_lrp_range", pool.GwLrpRangeStart+"-"+pool.GwLrpRangeEnd)
 
-			chk.RangeStart = pool.RangeStart
-			chk.RangeEnd = pool.RangeEnd
-			chk.GwLrpRangeStart = pool.GwLrpRangeStart
-			chk.GwLrpRangeEnd = pool.GwLrpRangeEnd
-
-			return a.reconcileDrift(ctx, pool, chk, revision)
+			if err := a.reconcileDrift(ctx, pool); err != nil {
+				if !errors.Is(err, errPoolContended) {
+					return err
+				}
+				// Failing the boot over a key that stayed contended would take
+				// this node down, so an unreconciled drift is reported instead.
+				slog.WarnContext(ctx, "external IPAM drift reconcile stayed contended; the stored ranges still differ",
+					"pool", pool.Name,
+					"want_range", pool.RangeStart+"-"+pool.RangeEnd,
+					"want_gw_lrp_range", pool.GwLrpRangeStart+"-"+pool.GwLrpRangeEnd, "err", err)
+			}
+			return nil
 		}
 		slog.DebugContext(ctx, "external IPAM pool already initialized", "pool", pool.Name)
 		return nil

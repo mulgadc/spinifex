@@ -172,6 +172,43 @@ func TestStaticPool_AllocateUnderHeavyContention(t *testing.T) {
 	}
 }
 
+// A pool is one key, so the boot-time drift reconcile contends with every live
+// allocation on it. It must retry onto the winner rather than concede, which
+// would leave the configured ranges unstored until some later boot won the race.
+func TestStaticPool_DriftReconcileConvergesUnderContention(t *testing.T) {
+	narrow := wanPool()
+	narrow.RangeEnd = "192.168.1.180"
+	a := newStaticAllocator(t, []ExternalPoolConfig{narrow})
+
+	widened := narrow
+	widened.RangeEnd = "192.168.1.200"
+
+	const writers = 16
+	var wg sync.WaitGroup
+	for range writers {
+		wg.Go(func() {
+			_, _ = a.Allocate(t.Context(), AllocateRequest{PoolName: "wan"})
+		})
+	}
+	var driftErr error
+	wg.Go(func() { driftErr = a.reconcileDrift(t.Context(), widened) })
+	wg.Wait()
+	require.NoError(t, driftErr)
+
+	rec, err := a.GetPoolRecord(t.Context(), "wan")
+	require.NoError(t, err)
+	assert.Equal(t, "192.168.1.200", rec.RangeEnd, "the reconcile must land the configured range on the winner")
+}
+
+// A write that is not a lost race must surface with its cause rather than being
+// retried into a generic exhaustion, which is what the old loop did.
+func TestStaticPool_ReleaseSurfacesANonConflictError(t *testing.T) {
+	a := newStaticAllocator(t, []ExternalPoolConfig{wanPool()})
+	err := a.Release(t.Context(), "no-such-pool", mustAddr(t, "192.168.1.151"), "")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errPoolContended, "an absent pool is not contention")
+}
+
 func TestStaticPool_ReleaseUnknown(t *testing.T) {
 	a := newStaticAllocator(t, []ExternalPoolConfig{wanPool()})
 	err := a.Release(context.Background(), "wan", mustAddr(t, "192.168.1.200"), "")

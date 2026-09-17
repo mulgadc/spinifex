@@ -15,10 +15,13 @@ import (
 
 // vcpuCASRetries bounds AddVCPU's retry on a revision conflict. Each retry
 // implies another writer committed, so a single grow can conflict at most as
-// many times as there are concurrent grows on the account; the bound sits well
-// above any realistic in-flight launch burst and trips only as a circuit
-// breaker, never on genuine contention.
-const vcpuCASRetries = 100
+// many times as there are concurrent grows on the account, and this covers a
+// realistic in-flight launch burst.
+//
+// Sized against the backoff, not just the contending set: the retry pauses
+// between attempts, so the budget is a wall-clock one and the counter write
+// sits on the RunInstances response path.
+const vcpuCASRetries = 25
 
 // CheckVCPU rejects with ResourceLimitExceeded when charging want more vCPUs to
 // accountID would exceed the configured cap. It only reads the counter; the

@@ -180,13 +180,16 @@ func (b *Bucket) Reopen(ctx context.Context) (jetstream.KeyValue, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.kv = nil
+	// Checked before the handle is discarded. A Bucket over a fixed handle has
+	// nothing to resolve against, so dropping it would turn one transient
+	// outage into a permanent failure for every later call.
 	if b.js == nil {
 		if b.cfg.Missing == "" {
 			return nil, errors.New("kvstore: cannot reopen without a JetStream client")
 		}
 		return nil, errors.New(b.cfg.Missing)
 	}
+	b.kv = nil
 
 	// Another goroutine may already have repaired it, so reconnecting comes
 	// first and is the only step that is always safe.

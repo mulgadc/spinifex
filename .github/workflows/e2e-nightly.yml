@@ -1493,8 +1493,16 @@ jobs:
 
       # Leftovers from a run killed before its cleanup trap: a surviving node
       # holds its ports and fails this run somewhere unrelated.
+      #
+      # Under the host benchmark lock, because this pattern matches every
+      # predastore node on the runner and the predastore repository runs the
+      # same harnesses on the same machine. Holding the lock is what makes
+      # "still running" mean "stale" rather than "somebody else's benchmark":
+      # on 2026-09-16 this step killed a predastore run 32s into its workload.
       - name: Clear stale nodes
-        run: pkill -KILL -f '/bin/s3d -config' || true
+        run: |
+          flock -w 3600 "${PREDA_BENCH_LOCK:-/var/lock/predastore-bench.lock}" \
+            pkill -KILL -f '/bin/s3d -config' || true
 
       - name: Run fault injection
         working-directory: predastore
@@ -1514,10 +1522,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
+      # Under the lock for the same reason as "Clear stale nodes": by the time
+      # this runs the harness has released it, so another repository's benchmark
+      # can already have a cluster of its own up.
       - name: Clean up
         if: always()
         run: |
-          pkill -KILL -f '/bin/s3d -config' || true
+          flock -w 3600 "${PREDA_BENCH_LOCK:-/var/lock/predastore-bench.lock}" \
+            pkill -KILL -f '/bin/s3d -config' || true
           rm -rf "$STRESS_RESULTS_ROOT"
 
   # Reading a nightly meant opening every cell job, and the Actions UI does not

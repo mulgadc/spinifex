@@ -241,6 +241,7 @@ Every listener and outbound destination is controlled by one of these files. Cha
 | OVN packages (`ovn-central`, `ovn-host`) | `ovn-nb-db`, `ovn-sb-db` (via `ovs-vsctl set open_vswitch …`); `setup-ovn.sh --lan-addr` for the NB/SB client bind; `--encap-ip` for the Geneve endpoint | OVN DB bind addresses and the encap plane. |
 | Spinifex UI service | Built-in defaults: `host = "0.0.0.0"`, `port = 3000`. No `spinifex.toml` block today. | UI listener. |
 | `spx admin init` / `spx admin join` | `--port`, `--token-ttl`, `--no-telemetry` (or `SPX_NO_TELEMETRY=1`) | Formation port, token TTL, telemetry opt-out. |
+| Install attribution | `/etc/spinifex/campaign` (written by `setup.sh` from `INSTALL_SPINIFEX_CAMPAIGN`), `SPINIFEX_CAMPAIGN` | A code naming the published link the installer was fetched from, sent with the install telemetry above. Absent unless the installer came from `install.mulgadc.com/s/<code>`, and never sent when telemetry is off. Delete the file to drop it. |
 | Image catalogue (built-in) | Fixed URLs listed in [§2](#2-outbound-connections); not operator-configurable | Outbound HTTPS destinations for image downloads. |
 
 ## 6. Operator Checklist

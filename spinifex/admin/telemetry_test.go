@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -62,6 +64,58 @@ func TestSendTelemetry_PostsCorrectPayload(t *testing.T) {
 	assert.NotEmpty(t, received.Arch, "arch should be auto-filled")
 	assert.NotEmpty(t, received.OS, "os should be auto-filled")
 	assert.NotEmpty(t, received.Timestamp, "timestamp should be auto-filled")
+}
+
+func TestReadCampaign_FromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "campaign")
+
+	assert.Empty(t, readCampaignFrom(path), "a missing file means an unattributed install")
+
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"code", "rd-eks-baremetal\n", "rd-eks-baremetal"},
+		{"untrimmed", "  dt-egress-math  \n", "dt-egress-math"},
+		{"unmapped prefix is still a code", "eks-baremetal\n", "eks-baremetal"},
+		{"uppercase", "RD-eks\n", ""},
+		{"no prefix", "ekseksbaremetal\n", ""},
+		{"shell metacharacters", "rd-eks; rm -rf /\n", ""},
+		{"empty", "\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.NoError(t, os.WriteFile(path, []byte(tc.content), 0o600))
+			assert.Equal(t, tc.want, readCampaignFrom(path))
+		})
+	}
+}
+
+func TestReadCampaign_EnvOverridesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "campaign")
+	assert.NoError(t, os.WriteFile(path, []byte("rd-eks-baremetal\n"), 0o600))
+
+	t.Setenv("SPINIFEX_CAMPAIGN", "hn-cost-writeup")
+	assert.Equal(t, "hn-cost-writeup", readCampaignFrom(path))
+
+	t.Setenv("SPINIFEX_CAMPAIGN", "not a code")
+	assert.Empty(t, readCampaignFrom(path), "a malformed override is not silently replaced by the file")
+}
+
+func TestSendTelemetry_FillsCampaign(t *testing.T) {
+	var received TelemetryPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		assert.NoError(t, json.Unmarshal(body, &received))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	t.Setenv("SPINIFEX_CAMPAIGN", "rd-eks-baremetal")
+	SendTelemetry(context.Background(), TelemetryPayload{MachineID: "campaign-test", Event: "init", URL: server.URL})
+
+	assert.Equal(t, "rd-eks-baremetal", received.Campaign)
 }
 
 func TestSendTelemetry_RespectsTimeout(t *testing.T) {

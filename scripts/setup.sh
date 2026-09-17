@@ -9,6 +9,9 @@
 #   INSTALL_SPINIFEX_SKIP_APT  Set to 1 to skip apt dependency install
 #   INSTALL_SPINIFEX_SKIP_AWS  Set to 1 to skip AWS CLI install
 #   INSTALL_SPINIFEX_SKIP_NEWGRP  Set to 1 to skip newgrp exec at end (for callers like dev-install.sh)
+#   INSTALL_SPINIFEX_CAMPAIGN  Campaign code from install.mulgadc.com/s/<code>, recorded in
+#                              /etc/spinifex/campaign so `spx admin init` can report which
+#                              link brought the operator here. Ignored if it is not a code.
 #   ISO_BUILD                  Set to 1 when running inside a debootstrap chroot from the ISO
 #                              builder: skip handle_upgrade/restart/migrations/newgrp/print_summary,
 #                              skip systemctl daemon-reload + enable, short-circuit setup_sudo.
@@ -45,6 +48,11 @@ FIREWALL_APPLY="/usr/local/lib/spinifex/spinifex-firewall-apply"
 # install lands on a machine that was already doing something, where arming a
 # drop policy uninvited can cut off services we know nothing about.
 INSTALL_SPINIFEX_FIREWALL="${INSTALL_SPINIFEX_FIREWALL:-}"
+
+# Which published link this install came from. install.mulgadc.com assigns the
+# value when the script is fetched from /s/<code>, so a plain curl leaves it empty.
+INSTALL_SPINIFEX_CAMPAIGN="${INSTALL_SPINIFEX_CAMPAIGN:-}"
+CAMPAIGN_FILE="/etc/spinifex/campaign"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -913,6 +921,18 @@ create_directories() {
     $SUDO mkdir -p /etc/spinifex
     $SUDO chmod 0750 /etc/spinifex
     $SUDO chown "root:$SPINIFEX_GROUP" /etc/spinifex
+
+    # A code is written only when the installer was fetched from /s/<code>, and
+    # only when it looks like one, since the value arrives from the network.
+    if [ -n "$INSTALL_SPINIFEX_CAMPAIGN" ]; then
+        if printf '%s' "$INSTALL_SPINIFEX_CAMPAIGN" | grep -qE '^[a-z0-9]{2,4}-[a-z0-9][a-z0-9-]{0,39}$'; then
+            printf '%s\n' "$INSTALL_SPINIFEX_CAMPAIGN" | $SUDO tee "$CAMPAIGN_FILE" > /dev/null
+            $SUDO chmod 0640 "$CAMPAIGN_FILE"
+            $SUDO chown "root:$SPINIFEX_GROUP" "$CAMPAIGN_FILE"
+        else
+            warn "Ignoring malformed INSTALL_SPINIFEX_CAMPAIGN"
+        fi
+    fi
 
     $SUDO mkdir -p /var/lib/spinifex
     $SUDO chmod 0750 /var/lib/spinifex

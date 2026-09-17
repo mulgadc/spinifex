@@ -10,12 +10,18 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 )
 
 const defaultTelemetryURL = "https://install.mulgadc.com/install"
+
+// Written by setup.sh when the installer was fetched from install.mulgadc.com/s/<code>.
+const campaignFile = "/etc/spinifex/campaign"
+
+var campaignPattern = regexp.MustCompile(`^[a-z0-9]{2,4}-[a-z0-9][a-z0-9-]{0,39}$`)
 
 // TelemetryPayload is the JSON body sent to the telemetry endpoint.
 type TelemetryPayload struct {
@@ -33,7 +39,10 @@ type TelemetryPayload struct {
 	// Email is the operator's address from `spx admin init --email`. Used
 	// by install.mulgadc.com to notify of updates/security advisories.
 	// Empty for headless installs that didn't supply SPINIFEX_EMAIL.
-	Email     string `json:"email,omitempty"`
+	Email string `json:"email,omitempty"`
+	// Campaign is the code of the published link this install came from, read
+	// from /etc/spinifex/campaign. Empty for an install that was not attributed.
+	Campaign  string `json:"campaign,omitempty"`
 	Timestamp string `json:"timestamp"`
 
 	// URL overrides the telemetry endpoint (for testing only). Not serialized.
@@ -51,6 +60,9 @@ func SendTelemetry(ctx context.Context, payload TelemetryPayload) {
 	}
 	if payload.Timestamp == "" {
 		payload.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	}
+	if payload.Campaign == "" {
+		payload.Campaign = ReadCampaign()
 	}
 
 	url := payload.URL
@@ -79,6 +91,28 @@ func SendTelemetry(ctx context.Context, payload TelemetryPayload) {
 	defer resp.Body.Close()
 
 	slog.Debug("telemetry: sent", "status", resp.StatusCode, "event", payload.Event)
+}
+
+// ReadCampaign returns the campaign code recorded at install time, or "" when
+// the install was not attributed. SPINIFEX_CAMPAIGN overrides the file, which is
+// how a manually installed node can still be attributed.
+func ReadCampaign() string {
+	return readCampaignFrom(campaignFile)
+}
+
+func readCampaignFrom(path string) string {
+	campaign := strings.TrimSpace(os.Getenv("SPINIFEX_CAMPAIGN"))
+	if campaign == "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return ""
+		}
+		campaign = strings.TrimSpace(string(data))
+	}
+	if !campaignPattern.MatchString(campaign) {
+		return ""
+	}
+	return campaign
 }
 
 // ReadMachineID returns a stable anonymous identifier for this machine.

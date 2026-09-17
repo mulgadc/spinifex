@@ -32,8 +32,8 @@ var _ TagsService = (*TagsServiceImpl)(nil)
 // Ensure TagsServiceImpl can project instance record tags into the store.
 var _ handlers_ec2_instance.InstanceTagWriter = (*TagsServiceImpl)(nil)
 
-// Ensure TagsServiceImpl can project vpc/subnet/sg/eni record tags into the store.
-var _ handlers_ec2_vpc.CentralTagWriter = (*TagsServiceImpl)(nil)
+// Ensure TagsServiceImpl can both project and clear vpc/subnet/sg/eni record tags.
+var _ handlers_ec2_vpc.CentralTagStore = (*TagsServiceImpl)(nil)
 
 // TagsServiceImpl implements TagsService over a JetStream KV bucket, one entry
 // per resource, scoped by account in the key.
@@ -183,9 +183,10 @@ func (s *TagsServiceImpl) PutResourceTags(ctx context.Context, accountID, resour
 	return s.putTags(ctx, accountID, resourceID, tags)
 }
 
-// DeleteAllTags removes the stored tags for a resource. Used on instance
-// terminate so describe-tags stops reporting the instance while the terminated
-// record keeps its tags until TTL. Idempotent: an absent entry is not an error.
+// DeleteAllTags removes the stored tags for a resource, so describe-tags stops
+// reporting a resource that is gone. Instance terminate uses it while the
+// terminated record keeps its own tags until TTL; the vpc delete paths use it
+// to retire the entry outright. Idempotent: an absent entry is not an error.
 func (s *TagsServiceImpl) DeleteAllTags(ctx context.Context, accountID, resourceID string) error {
 	if err := s.deleteTagsEntry(ctx, accountID, resourceID); err != nil {
 		return err

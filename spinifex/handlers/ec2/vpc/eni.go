@@ -275,6 +275,10 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 	if err := s.eniKV.Delete(ctx, key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	// Both the public delete and the forced instance teardown land here, which
+	// is what covers an ENI reclaimed by a task or instance going away rather
+	// than by an API call.
+	s.clearRecordTags(ctx, accountID, eniId)
 
 	slog.InfoContext(ctx, "DeleteNetworkInterface completed", "eniId", eniId, "accountID", accountID)
 

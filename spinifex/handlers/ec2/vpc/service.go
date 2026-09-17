@@ -34,9 +34,11 @@ type VPCService interface {
 	UpdateSecurityGroupRuleDescriptionsEgress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsEgressInput, accountID string) (*ec2.UpdateSecurityGroupRuleDescriptionsEgressOutput, error)
 }
 
-// CentralTagWriter projects a create path's record tags into the central tag
-// store so DescribeTags agrees with the record from birth. Implemented by
+// CentralTagStore keeps the central tag index in step with this package's
+// records, so DescribeTags agrees with a resource's own describe for as long as
+// the resource exists and says nothing about it afterwards. Implemented by
 // handlers/ec2/tags.TagsServiceImpl.
-type CentralTagWriter interface {
+type CentralTagStore interface {
 	PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error
+	DeleteAllTags(ctx context.Context, accountID, resourceID string) error
 }

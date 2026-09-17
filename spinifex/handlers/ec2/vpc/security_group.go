@@ -302,6 +302,7 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 	if err := s.sgKV.Delete(ctx, key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	s.clearRecordTags(ctx, accountID, groupId)
 
 	slog.InfoContext(ctx, "DeleteSecurityGroup completed", "groupId", groupId, "accountID", accountID)
 
@@ -1714,6 +1715,11 @@ func (s *VPCServiceImpl) deleteSecurityGroupInternal(ctx context.Context, accoun
 	if err := s.sgKV.Delete(ctx, key); err != nil {
 		return fmt.Errorf("delete default security group: %w", err)
 	}
+	// The cascade from DeleteVpc reaches the default SG only through here, so
+	// without this the one group the caller never deletes by hand is the one
+	// that always leaks its tags.
+	s.clearRecordTags(ctx, accountID, groupId)
+
 	return s.requestSGEvent("vpc.delete-sg", SGEvent{
 		GroupId: groupId,
 		VpcId:   record.VpcId,

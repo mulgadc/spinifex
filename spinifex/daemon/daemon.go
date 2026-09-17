@@ -1651,9 +1651,10 @@ func (d *Daemon) startCluster() error {
 	// pools that hand out routable public IPs (pool mode always; nat mode only
 	// when a public pool rides alongside the transit segment).
 	d.vpcService.SetDefaultPublicIPMapping(d.hasPublicIPPools())
-	// Project vpc/subnet/sg/eni creation-time tags into the central tag store
-	// so describe-tags agrees with each resource's own describe from birth.
-	d.vpcService.SetCentralTagWriter(d.tagsService)
+	// Keep the central tag store in step with vpc/subnet/sg/eni records, so
+	// describe-tags agrees with each resource's own describe from birth and
+	// stops answering for it once it is deleted.
+	d.vpcService.SetCentralTagStore(d.tagsService)
 
 	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {
 		return handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(d.ctx, d.config, d.natsConn)

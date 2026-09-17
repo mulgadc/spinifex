@@ -92,9 +92,9 @@ type VPCServiceImpl struct {
 	eipKV        jetstream.KeyValue
 
 	// Optional: injected after construction so create paths can project their
-	// stored tags into the central tag store. A nil value leaves create
-	// behaviour unchanged.
-	centralTags CentralTagWriter
+	// stored tags into the central tag store and delete paths can clear them.
+	// A nil value leaves both unchanged.
+	centralTags CentralTagStore
 
 	// disableDefaultPublicIP seeds default subnets with MapPublicIpOnLaunch=false
 	// (non-pool external modes have no public IPs to assign). Zero value keeps
@@ -115,10 +115,11 @@ func (s *VPCServiceImpl) SetExternalIPAM(ipam *ExternalIPAM, eipKV jetstream.Key
 	s.eipKV = eipKV
 }
 
-// SetCentralTagWriter injects the central tag store writer so create paths
-// project their record tags into it. Nil leaves create behaviour unchanged.
-func (s *VPCServiceImpl) SetCentralTagWriter(w CentralTagWriter) {
-	s.centralTags = w
+// SetCentralTagStore injects the central tag store so create paths project
+// their record tags into it and delete paths clear them. Nil leaves both
+// unchanged.
+func (s *VPCServiceImpl) SetCentralTagStore(st CentralTagStore) {
+	s.centralTags = st
 }
 
 // localAZ returns the node's local availability zone, sourced from
@@ -494,6 +495,7 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	s.releaseDefaultVPCClaim(ctx, accountID, vpcID)
+	s.clearRecordTags(ctx, accountID, vpcID)
 
 	slog.InfoContext(ctx, "DeleteVpc completed", "vpcId", vpcID, "accountID", accountID)
 
@@ -817,6 +819,7 @@ func (s *VPCServiceImpl) DeleteSubnet(ctx context.Context, input *ec2.DeleteSubn
 	if err := s.subnetKV.Delete(ctx, key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	s.clearRecordTags(ctx, accountID, subnetID)
 
 	slog.InfoContext(ctx, "DeleteSubnet completed", "subnetId", subnetID, "accountID", accountID)
 
@@ -1082,6 +1085,25 @@ func (s *VPCServiceImpl) projectRecordTags(ctx context.Context, accountID, resou
 	}
 	if err := s.centralTags.PutResourceTags(ctx, accountID, resourceID, tags); err != nil {
 		slog.ErrorContext(ctx, "central tag store write failed", "resourceId", resourceID, "err", err)
+	}
+}
+
+// clearRecordTags drops a deleted resource's entry from the central tag store,
+// the delete-direction counterpart to projectRecordTags. On AWS a resource's
+// tags go with it; without this the index answers DescribeTags for resources
+// the caller can no longer describe, and a recycled id inherits them.
+//
+// Call it only once the record delete has succeeded. Clearing first would strip
+// the tags from a resource that then fails to delete and stays live. A failure
+// is logged and swallowed for the same reason the write side swallows one: the
+// resource is already gone, and failing the delete over the index would leave
+// the caller unable to retry something that has happened.
+func (s *VPCServiceImpl) clearRecordTags(ctx context.Context, accountID, resourceID string) {
+	if s.centralTags == nil {
+		return
+	}
+	if err := s.centralTags.DeleteAllTags(ctx, accountID, resourceID); err != nil {
+		slog.ErrorContext(ctx, "central tag store clear failed", "resourceId", resourceID, "err", err)
 	}
 }
 

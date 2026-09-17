@@ -1335,6 +1335,8 @@ github.com/mulgadc/northstar v1.20.0 h1:nkWTuJv1aagrJUQiZHruo7xzu9RBtLHEzrQGABEl
 github.com/mulgadc/northstar v1.20.0/go.mod h1:3GB49VUE9rA2idp88se5jAMv3ql1Oq9kIcT29WAZwDU=
 github.com/mulgadc/northstar v1.20.1-0.20260917012940-b6449d4fe6e1 h1:4MATIfH/gZOGe/w7+ZX2aqBJHRpGpQnCqlHSGBZV10Q=
 github.com/mulgadc/northstar v1.20.1-0.20260917012940-b6449d4fe6e1/go.mod h1:3GB49VUE9rA2idp88se5jAMv3ql1Oq9kIcT29WAZwDU=
+github.com/mulgadc/northstar v1.20.1-0.20260917032839-357bbc94201d h1:xYdO+KXrn+/aBLva3yuRly9MnKrSNSouGYleITgkoXE=
+github.com/mulgadc/northstar v1.20.1-0.20260917032839-357bbc94201d/go.mod h1:3GB49VUE9rA2idp88se5jAMv3ql1Oq9kIcT29WAZwDU=
 github.com/mulgadc/predastore v1.20.0 h1:BBk02ZWWbCGqy0PkYEXh5Yk5lbOUuDEcMS++voxSc6E=
 github.com/mulgadc/predastore v1.20.0/go.mod h1:YDPhz9EZLw3nrlSkpDSQkXArJIk9TB/kpcp1wfsfFnU=
 github.com/mulgadc/viperblock v1.20.0 h1:g17NkHQcXGSXBGp20UcAPrklzTGXdyERXdaldo1aKM4=

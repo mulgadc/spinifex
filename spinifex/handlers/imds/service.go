@@ -73,6 +73,7 @@ type IMDSServiceImpl struct {
 	now            func() time.Time
 	baseDomain     string
 	internalDomain string
+	servicesDomain string
 	caCert         *caCertCache
 }
 
@@ -80,9 +81,13 @@ type IMDSServiceImpl struct {
 // network/host import cycle. baseDomain and internalDomain are the cluster's
 // authoritative public and private (AWS-parity) DNS domains, used for
 // public-hostname and local-hostname so IMDS matches the records the DNS writer
-// publishes. resolverIPs are the WAN IPs of nodes running northstar: when
-// non-empty, each per-tap responder also serves the VPC DNS shim on
-// 169.254.169.253:53, relaying to northstar's unprivileged wildcard listener.
+// publishes. servicesDomain is the cluster's configured AWS.ServicesDomain,
+// served at services/domain: the slot an AWS SDK substitutes into
+// {service}.{region}.{domain} for default endpoint resolution. It must never
+// fall back to the literal amazonaws.com — see serveServicesDomain.
+// resolverIPs are the WAN IPs of nodes running northstar: when non-empty,
+// each per-tap responder also serves the VPC DNS shim on 169.254.169.253:53,
+// relaying to northstar's unprivileged wildcard listener.
 // caCertPath is the deployment CA served at /spinifex/ca.pem; empty 404s it.
 // localState and records back the local-first instance lookup: localState
 // reads this node's own VM state, records falls back to the shared instance
@@ -90,7 +95,7 @@ type IMDSServiceImpl struct {
 // nil, degrading that source to a miss rather than failing IMDS to start —
 // the caller (vpcd) owns their construction and availability.
 // ctx bounds the bucket opens only; each served request carries its own.
-func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState localStateReader, records recordLoader, listTaps listTapsFunc, baseDomain, internalDomain, caCertPath string, resolverIPs []string) (*IMDSServiceImpl, error) {
+func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState localStateReader, records recordLoader, listTaps listTapsFunc, baseDomain, internalDomain, servicesDomain, caCertPath string, resolverIPs []string) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -163,6 +168,7 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 		now:            time.Now,
 		baseDomain:     baseDomain,
 		internalDomain: internalDomain,
+		servicesDomain: servicesDomain,
 		caCert:         newCACertCache(caCertPath),
 	}
 	// Each per-tap responder serves the shared mux, threading its tap's ENI

@@ -96,6 +96,9 @@ func (f *fakePublicKeys) GetPublicKey(_ context.Context, _, _ string) (string, e
 const (
 	testVPC = "vpc-abc12345"
 	testIP  = "10.0.1.5"
+	// testServicesDomain stands in for the cluster's configured AWS.ServicesDomain
+	// (production default "services.internal"), never the literal amazonaws.com.
+	testServicesDomain = "services.internal"
 )
 
 func testENI() *eniFacts {
@@ -130,15 +133,16 @@ func withTapENI(h http.Handler, eni *eniFacts) http.Handler {
 func newTestService(res eniResolver, fIAM profileLookup, assumer stsAssumer) (*IMDSServiceImpl, time.Time) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	return &IMDSServiceImpl{
-		resolver:   res,
-		tokens:     newTokenStore(),
-		v1Allow:    newV1AllowCache(),
-		creds:      newCredCache(assumer),
-		iam:        fIAM,
-		roleMiss:   newRoleMissLogger(func() time.Time { return now }),
-		pubKeys:    &fakePublicKeys{},
-		now:        func() time.Time { return now },
-		baseDomain: "spx3.net",
+		resolver:       res,
+		tokens:         newTokenStore(),
+		v1Allow:        newV1AllowCache(),
+		creds:          newCredCache(assumer),
+		iam:            fIAM,
+		roleMiss:       newRoleMissLogger(func() time.Time { return now }),
+		pubKeys:        &fakePublicKeys{},
+		now:            func() time.Time { return now },
+		baseDomain:     "spx3.net",
+		servicesDomain: testServicesDomain,
 	}, now
 }
 
@@ -423,7 +427,7 @@ func TestHTTP_MetadataPaths(t *testing.T) {
 		{prefixMetaData + "public-hostname", "ec2-203-0-113-7.ap-southeast-2.compute.spx3.net"},
 		{prefixMetaData + "services", "domain\npartition"},
 		{prefixMetaData + "services/", "domain\npartition"},
-		{prefixMetaData + "services/domain", "amazonaws.com"},
+		{prefixMetaData + "services/domain", testServicesDomain},
 		{prefixMetaData + "services/partition", "aws"},
 		{pathUserData, "#!/bin/sh\necho hi"},
 	}
@@ -431,7 +435,44 @@ func TestHTTP_MetadataPaths(t *testing.T) {
 		rec := get(t, h, c.path, token)
 		assert.Equal(t, http.StatusOK, rec.Code, "path=%s", c.path)
 		assert.Equal(t, c.want, rec.Body.String(), "path=%s", c.path)
+		assert.NotContains(t, rec.Body.String(), "amazonaws.com", "path=%s must never serve the real-AWS domain", c.path)
 	}
+}
+
+// services/domain must serve the cluster's configured services domain, never
+// the AWS-parity literal amazonaws.com — an SDK's default endpoint resolution
+// substitutes this value into {service}.{region}.{domain}, and serving the
+// real AWS domain would silently route a guest that forgot its endpoint
+// override to genuine AWS. services/partition is unrelated and stays "aws"
+// unconditionally, matching AWS SDK partition tables.
+func TestHTTP_ServicesDomain(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+
+	rec := get(t, h, prefixMetaData+"services/domain", token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, testServicesDomain, rec.Body.String())
+	assert.NotEqual(t, "amazonaws.com", rec.Body.String())
+
+	rec = get(t, h, prefixMetaData+"services/partition", token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "aws", rec.Body.String())
+}
+
+// An empty configured services domain must fail closed with a 404, never fall
+// back to amazonaws.com: silently pointing a guest at real AWS is exactly the
+// failure mode this leaf exists to eliminate. LoadConfig guarantees a
+// non-empty value in production, so this only exercises the defensive branch.
+func TestHTTP_ServicesDomainEmpty404(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	svc.servicesDomain = ""
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+
+	rec := get(t, h, prefixMetaData+"services/domain", token)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "amazonaws.com")
 }
 
 // An instance with no public IP has no public hostname or public IPv4: both leaves

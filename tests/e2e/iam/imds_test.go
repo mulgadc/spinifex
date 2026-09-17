@@ -209,8 +209,8 @@ func runIMDS(t *testing.T, fix *Fixture) {
 		"instance-life-cycle must be on-demand (Spot not modelled)")
 	require.Equal(t, "aws", imdsGet(t, tgtX, tokenX, "/latest/meta-data/services/partition"),
 		"services/partition must be aws")
-	require.Equal(t, "amazonaws.com", imdsGet(t, tgtX, tokenX, "/latest/meta-data/services/domain"),
-		"services/domain must be amazonaws.com")
+	require.Equal(t, harness.NorthstarAWSInternalSuffix(fix.Env), imdsGet(t, tgtX, tokenX, "/latest/meta-data/services/domain"),
+		"services/domain must be the cluster's configured services domain, never amazonaws.com")
 
 	// public-hostname needs a public IP, else 404. In pool mode the probe subnet
 	// maps one on launch; in dev_networking it has none, so the two modes

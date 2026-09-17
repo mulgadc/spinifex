@@ -238,7 +238,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "services", prefixMetaData + "services/":
 		writeText(w, "domain\npartition")
 	case prefixMetaData + "services/domain":
-		writeText(w, "amazonaws.com")
+		s.serveServicesDomain(ctx, w)
 	case prefixMetaData + "services/partition":
 		writeText(w, "aws")
 	case prefixMetaData + "iam", prefixMetaData + "iam/":
@@ -326,6 +326,21 @@ func (s *IMDSServiceImpl) serveInstanceLifecycle(ctx context.Context, w http.Res
 		return
 	}
 	writeText(w, "on-demand")
+}
+
+// serveServicesDomain writes the cluster's configured services domain, the
+// slot an AWS SDK substitutes into {service}.{region}.{domain} for default
+// endpoint resolution. LoadConfig guarantees a non-empty value, so an empty
+// servicesDomain here means construction was bypassed; this must never fall
+// back to the literal amazonaws.com, which would silently route a guest that
+// forgot its endpoint override to real AWS, so it 404s instead.
+func (s *IMDSServiceImpl) serveServicesDomain(ctx context.Context, w http.ResponseWriter) {
+	if s.servicesDomain == "" {
+		slog.WarnContext(ctx, "IMDS: services/domain requested with no configured services domain, refusing to serve amazonaws.com")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	writeText(w, s.servicesDomain)
 }
 
 // serveInstanceField resolves the instance record and writes one of its

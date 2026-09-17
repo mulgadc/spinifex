@@ -147,6 +147,11 @@ type Config struct {
 	// internal_domain, default "compute.internal"). IMDS serves it as local-hostname
 	// so the guest's own name matches the record the DNS writer publishes.
 	NorthstarInternalDomain string
+	// ServicesDomain is the cluster's configured AWS.ServicesDomain (default
+	// "services.internal"). IMDS serves it at services/domain, the slot an AWS
+	// SDK substitutes into {service}.{region}.{domain} for default endpoint
+	// resolution — never the literal amazonaws.com.
+	ServicesDomain string
 	// ResolverNameservers are the WAN IPs of cluster nodes running northstar,
 	// used as the per-tap DNS shim's forward targets. When set, DHCP advertises
 	// the link-local VPC DNS address (169.254.169.253) instead of the upstream
@@ -567,6 +572,7 @@ func launchService(cfg *Config) error {
 		listTaps,
 		cfg.NorthstarBaseDomain,
 		cfg.NorthstarInternalDomain,
+		cfg.ServicesDomain,
 		cfg.CACert,
 		cfg.ResolverNameservers,
 	)

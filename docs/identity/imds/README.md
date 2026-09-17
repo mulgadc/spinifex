@@ -130,12 +130,14 @@ Commonly used paths under `/latest/meta-data/`:
 | `security-groups` | Security group names, one per line |
 | `placement/availability-zone` | Availability zone |
 | `placement/region` | Region (AZ with trailing letter stripped) |
-| `services/domain`, `services/partition` | `amazonaws.com` / `aws` |
+| `services/domain`, `services/partition` | The cluster's configured services domain (default `services.internal`) / `aws` |
 | `public-keys/0/openssh-key` | Launch key pair's SSH public key; 404 if no key pair or the key was deleted |
 | `iam/info` | Instance profile ARN and ID; 404 if no profile |
 | `iam/security-credentials/<role>` | Temporary role credentials (see below) |
 | `network/interfaces/macs/<mac>/...` | Primary interface subtree: `interface-id`, `owner-id`, `subnet-id`, `vpc-id`, `local-ipv4s`, `security-group-ids`, `subnet-ipv4-cidr-block`, `vpc-ipv4-cidr-block`, and more |
 | `block-device-mapping/` | `ami` and `root` (both name the boot device) plus one `ebsN` per additional attached EBS volume, numbered from 1 in attachment order |
+
+`services/domain` is the slot an AWS SDK's default endpoint resolution substitutes into `{service}.{region}.{domain}`. Real AWS varies this per partition: standard AWS returns `amazonaws.com`, China returns `amazonaws.com.cn`, and GovCloud differs again. Spinifex is effectively its own partition, so it returns its own configured domain here rather than `amazonaws.com` — an SDK left on default endpoint resolution now resolves a Spinifex-served name instead of silently reaching real AWS. `services/partition` still reports `aws`, since AWS SDKs carry hardcoded partition tables and a novel partition name would not match any of them. Note that this fixes **addressing**, not **trust**: a stock guest image does not trust the Spinifex CA, so a discovered HTTPS endpoint still needs `AWS_CA_BUNDLE` set or the CA installed.
 
 The `network/interfaces/macs/` subtree covers the **primary interface only**; querying another MAC returns 404 (multi-ENI metadata is deferred).
 

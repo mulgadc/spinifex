@@ -21,6 +21,18 @@ import (
 // path by which a normal lifecycle event reaches DNS.
 const DefaultReconcileInterval = reconciler.DefaultResync
 
+// DefaultComputeTimeout bounds how long one pass spends building the desired
+// set before it gives up the cycle. It exists because the pass holds a
+// cluster-wide lease that renews itself for as long as the holder lives, so a
+// single call that never returns takes DNS publishing down on every node until
+// someone restarts the daemon holding it.
+//
+// It is generous relative to the resync interval on purpose. This is here to
+// break a hang, not to police a slow pass: the enumeration it bounds reads
+// every account's KV across the cluster, and a pass abandoned for being slow
+// costs a cycle for nothing.
+const DefaultComputeTimeout = 2 * time.Minute
+
 // DesiredFunc returns the full desired managed record set built from the live
 // resource inventory across all tenants. The daemon supplies it by enumerating
 // instances, load balancers, and EKS clusters.
@@ -81,8 +93,11 @@ type Reconciler struct {
 	writer   *Writer
 	desired  DesiredFunc
 	interval time.Duration
-	holder   string
-	sources  []reconciler.Source
+	// computeTimeout bounds how long one pass spends building the desired set.
+	// A field rather than a constant so a test can shrink it.
+	computeTimeout time.Duration
+	holder         string
+	sources        []reconciler.Source
 }
 
 // NewReconciler builds the drift backstop. It is disabled (a no-op) when
@@ -93,11 +108,12 @@ type Reconciler struct {
 // watch.
 func NewReconciler(cfg *config.Config, nc *nats.Conn, writer *Writer, desired DesiredFunc, sources ...reconciler.Source) *Reconciler {
 	r := &Reconciler{
-		nc:       nc,
-		writer:   writer,
-		desired:  desired,
-		interval: DefaultReconcileInterval,
-		sources:  sources,
+		nc:             nc,
+		writer:         writer,
+		desired:        desired,
+		interval:       DefaultReconcileInterval,
+		computeTimeout: DefaultComputeTimeout,
+		sources:        sources,
 	}
 	if cfg != nil {
 		r.holder = cfg.Node
@@ -154,7 +170,7 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 		}
 		defer release()
 	}
-	batch, err := r.computeBatch()
+	batch, err := r.computeBatchBounded()
 	if err != nil {
 		// A corrupt zone is handled in readZone; anything reaching here left the
 		// desired state unapplied, so surface it rather than burying it in WARN.
@@ -171,6 +187,44 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 		return
 	}
 	slog.Debug("dns reconcile: converged", "changes", res.Applied, "zones", res.Zones)
+}
+
+// computeBatchBounded runs computeBatch with a deadline, so a pass that never
+// returns gives the cycle up instead of holding the cluster-wide lease forever.
+//
+// Only the read side is bounded. computeBatch has no side effects, so a
+// computation abandoned here writes nothing and the caller can release the
+// lease safely; the apply that follows stays inline under the lease, because a
+// batch written by a node that has stopped being leader is the one thing the
+// election exists to prevent.
+func (r *Reconciler) computeBatchBounded() ([]Change, error) {
+	type outcome struct {
+		batch []Change
+		err   error
+	}
+	// Buffered, so the abandoned goroutine can finish and exit rather than
+	// parking on a send nobody will ever receive.
+	done := make(chan outcome, 1)
+	go func() {
+		batch, err := r.computeBatch()
+		done <- outcome{batch, err}
+	}()
+
+	// Zero means the default, not "no time at all": the reconciler is also built
+	// as a struct literal, and a bound that expires before the pass starts would
+	// turn a missing field into a loop that never computes anything.
+	bound := r.computeTimeout
+	if bound <= 0 {
+		bound = DefaultComputeTimeout
+	}
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case res := <-done:
+		return res.batch, res.err
+	case <-timer.C:
+		return nil, fmt.Errorf("desired state not computed within %s", bound)
+	}
 }
 
 // computeBatch reads every zone holding prunable records and converges the

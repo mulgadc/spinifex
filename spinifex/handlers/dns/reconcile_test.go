@@ -8,6 +8,7 @@ import (
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	reconcilelock "github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
@@ -258,6 +259,52 @@ func TestReconciler_RunPerformsStartupPassThenStopsOnCancel(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after ctx was cancelled")
 	}
+}
+
+// A pass that never finishes must give the cycle up rather than hold the
+// cluster-wide lease, because the lease renews itself for as long as the holder
+// lives: one stuck pass used to stop DNS publishing on every node until someone
+// restarted the daemon holding it. The assertion is on the lease being
+// acquirable afterwards, not merely on the call returning, since it is the
+// leadership and not the pass that the rest of the cluster waits on.
+func TestReconcileOnce_AStuckPassSurrendersLeadership(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	endpoint, _ := fakeS3(t, "northstar")
+
+	blocked := make(chan struct{})
+	t.Cleanup(func() { close(blocked) })
+
+	r := &Reconciler{
+		enabled:    true,
+		baseDomain: testBase,
+		s3cfg: &nsconfig.S3Config{
+			Endpoint: endpoint, Bucket: "northstar", Region: "us-east-1",
+			AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET",
+		},
+		nc:             nc,
+		holder:         "stuck-node",
+		computeTimeout: 100 * time.Millisecond,
+		desired: func() DesiredSet {
+			<-blocked
+			return DesiredSet{}
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.reconcileOnce(t.Context())
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("reconcileOnce never returned: a stuck pass still holds the lease forever")
+	}
+
+	release, elected := reconcilelock.AcquireLeader(t.Context(), nc, KVBucketDNSReconcile, "next-node")
+	require.True(t, elected, "another node must be able to take the next cycle")
+	release()
 }
 
 // TestNewReconciler_RetainsItsWatchSources covers the wiring the daemon relies

@@ -137,6 +137,13 @@ func DeleteBucketIfExists(ctx context.Context, js jetstream.KeyValueManager, buc
 	return fmt.Errorf("delete KV bucket %s: %w", bucket, err)
 }
 
+// bucketListTimeout bounds one bucket listing. It is longer than the per-bucket
+// Keys bound because this listing pages over every stream in the cluster rather
+// than scanning one bucket, and it exists at all because a caller may hold a
+// context that lives as long as the process. A var, not a const, so a test can
+// shrink it.
+var bucketListTimeout = 10 * time.Second
+
 // BucketNames returns the name of every KV bucket, or an error if the listing
 // could not be completed. The lister closes its channel both when the listing
 // is complete and when the underlying stream-names request fails, so the
@@ -147,18 +154,31 @@ func DeleteBucketIfExists(ctx context.Context, js jetstream.KeyValueManager, buc
 //
 // The names are bucket names, already stripped of the KV_ stream prefix.
 func BucketNames(ctx context.Context, js jetstream.KeyValueManager) ([]string, error) {
-	lister := js.KeyValueStoreNames(ctx)
+	listCtx, cancel := context.WithTimeout(ctx, bucketListTimeout)
+	defer cancel()
 
-	// The lister goroutine blocks on an unbuffered send, so the channel is
-	// drained fully — an early return here would leak it until ctx expires.
+	lister := js.KeyValueStoreNames(listCtx)
+
+	// Selecting on the deadline rather than ranging the channel is what makes the
+	// bound real: a lost stream-names reply leaves the channel open with nothing
+	// ever sent on it, and a range parks here for the life of the process.
+	// Cancelling listCtx on the way out unblocks the lister's send, so the early
+	// return no longer leaks the goroutine it used to.
 	var names []string
-	for name := range lister.Name() {
-		names = append(names, name)
+	for {
+		select {
+		case name, open := <-lister.Name():
+			if !open {
+				if err := lister.Error(); err != nil {
+					return nil, fmt.Errorf("enumerate KV buckets: %w", err)
+				}
+				return names, nil
+			}
+			names = append(names, name)
+		case <-listCtx.Done():
+			return nil, fmt.Errorf("enumerate KV buckets: %w", listCtx.Err())
+		}
 	}
-	if err := lister.Error(); err != nil {
-		return nil, fmt.Errorf("enumerate KV buckets: %w", err)
-	}
-	return names, nil
 }
 
 // Keys lists a bucket's keys with the five-second bound used by the legacy API.

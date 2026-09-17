@@ -3,6 +3,7 @@ package kvutil
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -135,6 +136,46 @@ func TestBucketNames_SurfacesEnumerationFailure(t *testing.T) {
 	names, err := BucketNames(ctx, js)
 	require.Error(t, err, "a failed listing must not read as a complete one")
 	assert.Nil(t, names)
+}
+
+// hangingNamesLister never sends and never closes, which is what a lost
+// stream-names reply looks like from the caller's side.
+type hangingNamesLister struct{ names chan string }
+
+func (l *hangingNamesLister) Name() <-chan string { return l.names }
+func (l *hangingNamesLister) Error() error        { return nil }
+
+// hangingKVManager answers only the listing call. The embedded interface is nil
+// on purpose: anything else this test reaches should fail loudly rather than
+// quietly return a zero value.
+type hangingKVManager struct{ jetstream.KeyValueManager }
+
+func (m *hangingKVManager) KeyValueStoreNames(context.Context) jetstream.KeyValueNamesLister {
+	return &hangingNamesLister{names: make(chan string)}
+}
+
+// A listing that never completes must not park the caller for the life of the
+// process. The context passed here carries no deadline, which is what the EKS
+// desired-set builder passes, so the bound inside BucketNames is the only thing
+// that can end this call.
+func TestBucketNames_GivesUpOnAListingThatNeverCompletes(t *testing.T) {
+	restore := bucketListTimeout
+	bucketListTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { bucketListTimeout = restore })
+
+	done := make(chan error, 1)
+	go func() {
+		names, err := BucketNames(context.Background(), &hangingKVManager{})
+		assert.Nil(t, names, "a listing that did not finish must not read as a complete one")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(30 * time.Second):
+		t.Fatal("BucketNames never returned: the listing is still unbounded")
+	}
 }
 
 func TestKeys_ListsKeysAndSurfacesCancellation(t *testing.T) {

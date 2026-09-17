@@ -57,6 +57,10 @@ type instanceFacts struct {
 	amiLaunchIndex        int64
 	pendingTime           time.Time
 	userData              []byte
+	// blockDeviceNames holds device names from the instance's block device
+	// mappings, root/boot device first, in attachment order. Empty only for a
+	// resolution edge case — every real instance has at least a root volume.
+	blockDeviceNames []string
 }
 
 // instanceLookup resolves instance-only metadata fields by instance ID.

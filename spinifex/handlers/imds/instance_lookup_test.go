@@ -68,6 +68,9 @@ func testVM(id string) *vm.VM {
 			AmiLaunchIndex:  aws.Int64(0),
 			LaunchTime:      aws.Time(launch),
 			MetadataOptions: &ec2.InstanceMetadataOptionsResponse{HttpTokens: aws.String("optional")},
+			BlockDeviceMappings: []*ec2.InstanceBlockDeviceMapping{
+				{DeviceName: aws.String("/dev/vda")},
+			},
 		},
 	}
 }
@@ -91,6 +94,26 @@ func TestDescribe_LocalHit_ResolvesWithoutRecordSpace(t *testing.T) {
 	assert.Equal(t, int64(0), facts.amiLaunchIndex)
 	assert.Equal(t, "r-abc123", facts.reservationID)
 	assert.Equal(t, []byte("hello"), facts.userData)
+	assert.Equal(t, []string{"/dev/vda"}, facts.blockDeviceNames)
+}
+
+// TestBlockDeviceNames_MultipleVolumesOrderedAfterRoot proves the projection
+// preserves BlockDeviceMappings order — LaunchRunInstances always writes the
+// root volume first and AttachVolume appends afterward — and skips nil
+// entries and mappings with no device name, which IMDS has nothing to key by.
+func TestBlockDeviceNames_MultipleVolumesOrderedAfterRoot(t *testing.T) {
+	mappings := []*ec2.InstanceBlockDeviceMapping{
+		{DeviceName: aws.String("/dev/vda")},
+		nil,
+		{DeviceName: aws.String("/dev/vdb")},
+		{},
+		{DeviceName: aws.String("/dev/vdc")},
+	}
+	assert.Equal(t, []string{"/dev/vda", "/dev/vdb", "/dev/vdc"}, blockDeviceNames(mappings))
+}
+
+func TestBlockDeviceNames_Empty(t *testing.T) {
+	assert.Empty(t, blockDeviceNames(nil))
 }
 
 func TestDescribe_LocalMiss_FallsBackToRecordSpace(t *testing.T) {

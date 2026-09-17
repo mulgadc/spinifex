@@ -135,10 +135,11 @@ Commonly used paths under `/latest/meta-data/`:
 | `iam/info` | Instance profile ARN and ID; 404 if no profile |
 | `iam/security-credentials/<role>` | Temporary role credentials (see below) |
 | `network/interfaces/macs/<mac>/...` | Primary interface subtree: `interface-id`, `owner-id`, `subnet-id`, `vpc-id`, `local-ipv4s`, `security-group-ids`, `subnet-ipv4-cidr-block`, `vpc-ipv4-cidr-block`, and more |
+| `block-device-mapping/` | `ami` and `root` (both name the boot device) plus one `ebsN` per additional attached EBS volume, numbered from 1 in attachment order |
 
 The `network/interfaces/macs/` subtree covers the **primary interface only**; querying another MAC returns 404 (multi-ENI metadata is deferred).
 
-Paths that intentionally return **404**: `tags/instance/*`, `block-device-mapping/*`, `placement/{group-name,partition-number,availability-zone-id,host-id}`, `instance-action`, and `spot/{instance-action,termination-time}` (404 is the correct "no interruption scheduled" answer for spot pollers).
+Paths that intentionally return **404**: `tags/instance/*`, `placement/{group-name,partition-number,availability-zone-id,host-id}`, `instance-action`, and `spot/{instance-action,termination-time}` (404 is the correct "no interruption scheduled" answer for spot pollers).
 
 ## User Data
 

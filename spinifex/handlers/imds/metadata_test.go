@@ -1108,3 +1108,111 @@ func TestHTTP_RoleCredentialsWrongRole404(t *testing.T) {
 	rec := get(t, h, prefixSecurityCreds+"app-profile", token)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
+
+// ----- block-device-mapping ------------------------------------------------
+
+// A single-volume instance (the common case: root only) lists ami and root,
+// with no ebsN entries, in both the trailing-slash and bare forms the
+// aws-ebs-csi-driver's IMDS client requests.
+func TestHTTP_BlockDeviceMappingListing(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{blockDeviceNames: []string{"/dev/vda"}}}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+
+	for _, p := range []string{prefixMetaData + "block-device-mapping", prefixBlockDevMap} {
+		rec := get(t, h, p, token)
+		assert.Equal(t, http.StatusOK, rec.Code, "path=%s", p)
+		assert.Equal(t, "ami\nroot", rec.Body.String(), "path=%s", p)
+	}
+}
+
+// An instance with additional hot-plugged EBS volumes lists one ebsN per
+// attachment, numbered from 1 in attachment order after the root device.
+func TestHTTP_BlockDeviceMappingListing_MultipleVolumes(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{
+		blockDeviceNames: []string{"/dev/vda", "/dev/vdb", "/dev/vdc"},
+	}}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+
+	rec := get(t, h, prefixBlockDevMap, token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "ami\nroot\nebs1\nebs2", rec.Body.String())
+}
+
+// ami and root both answer the boot device; each ebsN answers the matching
+// attached volume's device name.
+func TestHTTP_BlockDeviceMappingLeaves(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{
+		blockDeviceNames: []string{"/dev/vda", "/dev/vdb", "/dev/vdc"},
+	}}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+
+	cases := []struct{ key, want string }{
+		{"ami", "/dev/vda"},
+		{"root", "/dev/vda"},
+		{"ebs1", "/dev/vdb"},
+		{"ebs2", "/dev/vdc"},
+	}
+	for _, c := range cases {
+		rec := get(t, h, prefixBlockDevMap+c.key, token)
+		assert.Equal(t, http.StatusOK, rec.Code, "key=%s", c.key)
+		assert.Equal(t, c.want, rec.Body.String(), "key=%s", c.key)
+	}
+}
+
+// An unknown key under block-device-mapping/ 404s, including an ebsN index
+// past the end of the attached volumes and ebs0 (AWS numbers from 1).
+func TestHTTP_BlockDeviceMappingUnknownKey404(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{
+		blockDeviceNames: []string{"/dev/vda", "/dev/vdb"},
+	}}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+
+	for _, key := range []string{"ebs0", "ebs2", "ebsX", "swap", "ephemeral0"} {
+		rec := get(t, h, prefixBlockDevMap+key, token)
+		assert.Equal(t, http.StatusNotFound, rec.Code, "key=%s", key)
+	}
+}
+
+// An instance with no resolved block devices 404s the whole subtree, both the
+// listing and any leaf — a resolution edge case, since every real instance has
+// at least a root volume.
+func TestHTTP_BlockDeviceMappingNoDevices404(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+
+	for _, p := range []string{prefixMetaData + "block-device-mapping", prefixBlockDevMap, prefixBlockDevMap + "root"} {
+		rec := get(t, h, p, token)
+		assert.Equal(t, http.StatusNotFound, rec.Code, "path=%s", p)
+	}
+}
+
+// block-device-mapping/ appears in the meta-data/ listing only once the
+// instance's block devices resolve, the same conditional-advertisement
+// pattern as public-keys/ and iam/.
+func TestHTTP_DirectoryListingBlockDeviceMapping(t *testing.T) {
+	withDevices := &fakeResolver{eni: testENI(), inst: &instanceFacts{blockDeviceNames: []string{"/dev/vda"}}}
+	svc, _ := newTestService(withDevices, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+	rec := get(t, h, pathMetaDataRoot, token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "block-device-mapping/")
+
+	noDevices := &fakeResolver{eni: testENI(), inst: &instanceFacts{}}
+	svc2, _ := newTestService(noDevices, &fakeIAM{}, &fakeAssumer{})
+	h2 := withTapENI(svc2.httpHandler(), testENI())
+	token2 := issueToken(t, h2)
+	rec2 := get(t, h2, pathMetaDataRoot, token2)
+	assert.Equal(t, http.StatusOK, rec2.Code)
+	assert.NotContains(t, rec2.Body.String(), "block-device-mapping/")
+}

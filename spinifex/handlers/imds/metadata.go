@@ -29,6 +29,7 @@ const (
 	prefixPublicKeys     = "/latest/meta-data/public-keys/"
 	pathPublicKeysDir    = "/latest/meta-data/public-keys"
 	prefixNetworkMacs    = "/latest/meta-data/network/interfaces/macs/"
+	prefixBlockDevMap    = "/latest/meta-data/block-device-mapping/"
 
 	prefixDynamic        = "/latest/dynamic"
 	pathIdentityDir      = "/latest/dynamic/instance-identity"
@@ -172,6 +173,11 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		return
 	}
 
+	if sub, ok := strings.CutPrefix(path, prefixBlockDevMap); ok {
+		s.serveBlockDeviceMapping(ctx, w, eni, sub) // sub: "", "ami", "root", "ebsN"
+		return
+	}
+
 	switch path {
 	case "/":
 		writeText(w, strings.Join(supportedVersions, "\n"))
@@ -207,6 +213,8 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		writeText(w, "macs/")
 	case prefixMetaData + "network/interfaces/macs":
 		writeText(w, eni.mac+"/")
+	case prefixMetaData + "block-device-mapping":
+		s.serveBlockDeviceMapping(ctx, w, eni, "")
 	case prefixMetaData + "security-groups":
 		writeText(w, strings.Join(s.resolver.resolveSGNames(ctx, eni.accountID, eni.securityGroupIDs), "\n"))
 	case prefixMetaData + "hostname", prefixMetaData + "local-hostname":
@@ -286,6 +294,9 @@ func (s *IMDSServiceImpl) serveMetaDataRoot(ctx context.Context, w http.Response
 	}
 	if inst.keyName != "" {
 		keys = append(keys, "public-keys/")
+	}
+	if len(inst.blockDeviceNames) > 0 {
+		keys = append(keys, "block-device-mapping/")
 	}
 	if inst.iamInstanceProfileArn != "" {
 		p, err := s.iam.ResolveInstanceProfile(ctx, eni.iamAccountID(), inst.iamInstanceProfileArn)
@@ -553,6 +564,44 @@ func (s *IMDSServiceImpl) serveNetworkInterface(ctx context.Context, w http.Resp
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// serveBlockDeviceMapping serves the block-device-mapping subtree: ami and root
+// both name the instance's boot device, matching real EC2 where both keys
+// answer the same device for an EBS-backed instance, and ebsN names the Nth
+// additional attached EBS volume — the numbering the aws-ebs-csi-driver's IMDS
+// client counts by scanning the listing body for the "ebs" substring. sub is
+// the path segment after the block-device-mapping/ prefix; empty lists the
+// keys. No resolved block devices 404s the whole subtree, a resolution edge
+// case since every real instance has at least a root volume.
+func (s *IMDSServiceImpl) serveBlockDeviceMapping(ctx context.Context, w http.ResponseWriter, eni *eniFacts, sub string) {
+	inst := s.instanceFor(ctx, w, eni)
+	if inst == nil {
+		return
+	}
+	if len(inst.blockDeviceNames) == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if sub == "" {
+		keys := []string{"ami", "root"}
+		for i := 1; i < len(inst.blockDeviceNames); i++ {
+			keys = append(keys, "ebs"+strconv.Itoa(i))
+		}
+		writeText(w, strings.Join(keys, "\n"))
+		return
+	}
+	if sub == "ami" || sub == "root" {
+		writeText(w, inst.blockDeviceNames[0])
+		return
+	}
+	if n, ok := strings.CutPrefix(sub, "ebs"); ok {
+		if idx, err := strconv.Atoi(n); err == nil && idx >= 1 && idx < len(inst.blockDeviceNames) {
+			writeText(w, inst.blockDeviceNames[idx])
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNotFound)
 }
 
 // macKeys lists exactly the leaf keys served under macs/<mac>/ so cloud-init's

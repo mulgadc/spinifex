@@ -14,18 +14,26 @@ import (
 
 func main() {
 	outputDir := flag.String("out", "", "write one publishable page per service into this directory")
+	jsonOutput := flag.String("json", "", "write a machine-readable coverage inventory to this file")
 	flag.Parse()
 
 	coverages, err := compareAll()
 	if err != nil {
 		fail(err)
 	}
-	if *outputDir == "" {
+	if *outputDir == "" && *jsonOutput == "" {
 		fmt.Print(awsmodel.RenderCoverageSummary(coverages))
 		return
 	}
-	if err := awsmodel.WritePages(*outputDir, coverages); err != nil {
-		fail(err)
+	if *outputDir != "" {
+		if err := awsmodel.WritePages(*outputDir, coverages); err != nil {
+			fail(err)
+		}
+	}
+	if *jsonOutput != "" {
+		if err := awsmodel.WriteCoverageJSON(*jsonOutput, coverages); err != nil {
+			fail(err)
+		}
 	}
 }
 

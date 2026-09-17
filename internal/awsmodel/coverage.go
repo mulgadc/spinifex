@@ -1,7 +1,9 @@
 package awsmodel
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
@@ -31,6 +33,42 @@ type OperationCoverage struct {
 	Extra       []string
 	Opaque      bool
 	Note        string
+}
+
+// CoverageJSONSchemaVersion identifies the generated coverage.json schema.
+// Increment it only for an incompatible change to the JSON document.
+const CoverageJSONSchemaVersion = 1
+
+// coverageJSON is the generated, machine-readable form of the operation
+// inventory. It deliberately reports dispatch state only: an operation in
+// implemented has a registered, non-stubbed and non-refused dispatcher, but
+// that alone does not establish behavioural AWS compatibility.
+type coverageJSON struct {
+	SchemaVersion int                     `json:"schema_version"`
+	ModelSource   coverageJSONModelSource `json:"model_source"`
+	Services      []coverageJSONService   `json:"services"`
+}
+
+type coverageJSONModelSource struct {
+	AWSSDKGoVersion string `json:"aws_sdk_go_version"`
+}
+
+type coverageJSONService struct {
+	Service    string                 `json:"service"`
+	APIVersion string                 `json:"api_version"`
+	Opaque     bool                   `json:"opaque"`
+	Note       string                 `json:"note"`
+	Operations coverageJSONOperations `json:"operations"`
+}
+
+type coverageJSONOperations struct {
+	Modelled    []string `json:"modelled"`
+	Registered  []string `json:"registered"`
+	Implemented []string `json:"implemented"`
+	Stubbed     []string `json:"stubbed"`
+	Unsupported []string `json:"unsupported"`
+	Missing     []string `json:"missing"`
+	Extra       []string `json:"extra"`
 }
 
 // CompareOperations compares one embedded service model with an authoritative
@@ -138,6 +176,60 @@ func RenderCoverageSummary(coverages []OperationCoverage) string {
 			coverage.ImplementedPercent(), len(coverage.Stubbed), len(coverage.Unsupported), len(coverage.Extra))
 	}
 	return report.String()
+}
+
+// RenderCoverageJSON renders a deterministic, versioned inventory suitable
+// for tools. The operation lists describe only the generated model-versus-
+// dispatch comparison; consumers must establish behavioural support from
+// their own evidence rather than inferring it from dispatch registration.
+func RenderCoverageJSON(coverages []OperationCoverage) (string, error) {
+	document := coverageJSON{
+		SchemaVersion: CoverageJSONSchemaVersion,
+		ModelSource: coverageJSONModelSource{
+			AWSSDKGoVersion: SourceSDKVersion,
+		},
+		Services: make([]coverageJSONService, 0, len(coverages)),
+	}
+	for _, coverage := range sortedCoverages(coverages) {
+		document.Services = append(document.Services, coverageJSONService{
+			Service:    string(coverage.Service),
+			APIVersion: coverage.APIVersion,
+			Opaque:     coverage.Opaque,
+			Note:       coverage.Note,
+			Operations: coverageJSONOperations{
+				Modelled:    copiedOperations(coverage.Modelled),
+				Registered:  copiedOperations(coverage.Registered),
+				Implemented: copiedOperations(coverage.Implemented),
+				Stubbed:     copiedOperations(coverage.Stubbed),
+				Unsupported: copiedOperations(coverage.Unsupported),
+				Missing:     copiedOperations(coverage.Missing),
+				Extra:       copiedOperations(coverage.Extra),
+			},
+		})
+	}
+	contents, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("awsmodel: marshal coverage JSON: %w", err)
+	}
+	return string(contents) + "\n", nil
+}
+
+// WriteCoverageJSON writes the generated machine-readable inventory to path.
+func WriteCoverageJSON(path string, coverages []OperationCoverage) error {
+	contents, err := RenderCoverageJSON(coverages)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		return fmt.Errorf("awsmodel: write coverage JSON: %w", err)
+	}
+	return nil
+}
+
+// copiedOperations represents an empty operation set as [] rather than null,
+// so consumers can use every array field without a special case.
+func copiedOperations(operations []string) []string {
+	return append([]string{}, operations...)
 }
 
 // RenderInternalReport renders the full comparison, including the operations

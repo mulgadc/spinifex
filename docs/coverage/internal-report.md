@@ -973,7 +973,7 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 
 ## s3
 
-`2006-03-01` — 19 of 99 modelled operations implemented (19.2%), 0 stubbed, 6 not applicable, 0 registered outside the pinned model.
+`2006-03-01` — 23 of 99 modelled operations implemented (23.2%), 0 stubbed, 6 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -987,7 +987,6 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 - `DeleteBucketOwnershipControls`
 - `DeleteBucketPolicy`
 - `DeleteBucketReplication`
-- `DeleteBucketTagging`
 - `DeleteBucketWebsite`
 - `DeleteObjectTagging`
 - `DeletePublicAccessBlock`
@@ -999,7 +998,6 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 - `GetBucketInventoryConfiguration`
 - `GetBucketLifecycle`
 - `GetBucketLifecycleConfiguration`
-- `GetBucketLocation`
 - `GetBucketLogging`
 - `GetBucketMetricsConfiguration`
 - `GetBucketNotification`
@@ -1008,7 +1006,6 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 - `GetBucketPolicy`
 - `GetBucketPolicyStatus`
 - `GetBucketReplication`
-- `GetBucketTagging`
 - `GetBucketVersioning`
 - `GetBucketWebsite`
 - `GetObjectAcl`
@@ -1040,7 +1037,6 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 - `PutBucketOwnershipControls`
 - `PutBucketPolicy`
 - `PutBucketReplication`
-- `PutBucketTagging`
 - `PutBucketVersioning`
 - `PutBucketWebsite`
 - `PutObjectAcl`

@@ -198,7 +198,7 @@ test-integration:
 	@echo "AWS operation coverage: $(AWS_MODEL_OPERATION_COVERAGE_DIR)"
 
 generate-aws-model-coverage:
-	@go run ./cmd/aws-model-coverage -out $(AWS_MODEL_OPERATION_COVERAGE_DIR)
+	@go run ./cmd/aws-model-coverage -out $(AWS_MODEL_OPERATION_COVERAGE_DIR) -json $(AWS_MODEL_OPERATION_COVERAGE_DIR)/coverage.json
 
 aws-model-coverage: generate-aws-model-coverage
 	@go run ./cmd/aws-model-coverage

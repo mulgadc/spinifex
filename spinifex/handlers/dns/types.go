@@ -20,23 +20,34 @@ const (
 	DefaultTTL uint32 = 60
 )
 
-// Action is the change verb (UPSERT replaces the RRset, DELETE withdraws it).
+// Action is the change verb (UPSERT replaces the RRset with one record, DELETE
+// withdraws it, UPSERT_SET replaces the RRset with the whole Values set).
 type Action string
 
 const (
 	ActionUpsert Action = "upsert"
 	ActionDelete Action = "delete"
+	// ActionUpsertSet replaces the RRset for (Name, Type) with every address in
+	// Values, rather than the single record ActionUpsert is limited to. Used
+	// only by the service-endpoint record class, whose desired answer is every
+	// cluster node's own gateway address rather than one resource's address
+	// that is the same answer from anywhere. Existing classes (EC2/ELB/EKS/RDS)
+	// keep ActionUpsert's single-record semantics unchanged.
+	ActionUpsertSet Action = "upsert_set"
 )
 
 // Change is one record-set mutation. Name is the fully-qualified record name;
-// Zone is its apex (the TOML object key, minus ".toml").
+// Zone is its apex (the TOML object key, minus ".toml"). Value carries the
+// address for ActionUpsert/ActionDelete; Values carries the full address set
+// for ActionUpsertSet and is otherwise unused.
 type Change struct {
-	Action Action `json:"action"`
-	Zone   string `json:"zone"`
-	Name   string `json:"name"`
-	Type   string `json:"type"`
-	Value  string `json:"value"`
-	TTL    uint32 `json:"ttl,omitempty"`
+	Action Action   `json:"action"`
+	Zone   string   `json:"zone"`
+	Name   string   `json:"name"`
+	Type   string   `json:"type"`
+	Value  string   `json:"value"`
+	Values []string `json:"values,omitempty"`
+	TTL    uint32   `json:"ttl,omitempty"`
 }
 
 // ChangeBatch groups the changes for one resource operation into a single

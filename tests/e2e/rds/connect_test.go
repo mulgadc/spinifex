@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -108,6 +109,25 @@ func TestConnectivity(t *testing.T) {
 		out := harness.PSQL(t, client, byName, fmt.Sprintf("SELECT note FROM %s WHERE id = 1;", connectTable))
 		assert.Equal(t, connectNote, strings.TrimSpace(out),
 			"the name and the address must reach the same database")
+	})
+
+	// The AWS service endpoints share nothing with the RDS instance under test
+	// except the guest's resolver: they are cluster-wide names published under
+	// AWS.InternalSuffix, so any DB instance's client VM proves them. A lookup
+	// from the runner would prove nothing here either, for the same reason as
+	// the endpoint name above — the runner's resolver is not the guest's.
+	t.Run("TheServiceEndpointNamesResolveInTheGuest", func(t *testing.T) {
+		suffix := harness.NorthstarAWSInternalSuffix(f.Env)
+		for _, svc := range config.AWSGWServiceNames {
+			name := fmt.Sprintf("%s.%s.%s", svc, f.Region, suffix)
+			t.Run(svc, func(t *testing.T) {
+				addrs := harness.ResolveInGuest(t, client, name)
+				require.NotEmpty(t, addrs, "%s must resolve to at least one gateway address", name)
+				for _, addr := range addrs {
+					assert.NotNil(t, net.ParseIP(addr), "%s must resolve to an IP literal, got %q", name, addr)
+				}
+			})
+		}
 	})
 
 	// Both the vanity name and the ENI address are in the serving

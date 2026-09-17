@@ -123,6 +123,47 @@ func TestRDSNameAndChanges(t *testing.T) {
 	assert.Empty(t, RDSChanges(ActionUpsert, "", "spx3.net", "10.0.5.20"))
 }
 
+func TestServiceEndpointNamesSharesTheAdminSANList(t *testing.T) {
+	got := ServiceEndpointNames("us-east-1", "spinifex.internal")
+	assert.Equal(t, []string{
+		"ecr.us-east-1.spinifex.internal",
+		"ec2.us-east-1.spinifex.internal",
+		"sts.us-east-1.spinifex.internal",
+		"elasticloadbalancing.us-east-1.spinifex.internal",
+		"ecs.us-east-1.spinifex.internal",
+		"eks.us-east-1.spinifex.internal",
+		"acm.us-east-1.spinifex.internal",
+	}, got)
+
+	assert.Nil(t, ServiceEndpointNames("", "spinifex.internal"))
+	assert.Nil(t, ServiceEndpointNames("us-east-1", ""))
+}
+
+func TestServiceEndpointChanges(t *testing.T) {
+	addrs := []string{"10.0.0.1", "10.0.0.2"}
+	changes := ServiceEndpointChanges("us-east-1", "spinifex.internal", addrs)
+	require.Len(t, changes, len(ServiceEndpointNames("us-east-1", "spinifex.internal")))
+
+	for _, c := range changes {
+		assert.Equal(t, ActionUpsertSet, c.Action, "the multi-node target needs the set-valued action")
+		assert.Equal(t, "spinifex.internal", c.Zone)
+		assert.Equal(t, "A", c.Type)
+		assert.Equal(t, addrs, c.Values)
+		assert.Empty(t, c.Value, "the single-value field is unused for a set-valued change")
+	}
+
+	names := make([]string, 0, len(changes))
+	for _, c := range changes {
+		names = append(names, c.Name)
+	}
+	assert.Contains(t, names, "ec2.us-east-1.spinifex.internal")
+	assert.Contains(t, names, "ecr.us-east-1.spinifex.internal")
+
+	assert.Empty(t, ServiceEndpointChanges("", "spinifex.internal", addrs))
+	assert.Empty(t, ServiceEndpointChanges("us-east-1", "", addrs))
+	assert.Empty(t, ServiceEndpointChanges("us-east-1", "spinifex.internal", nil))
+}
+
 func TestRelativeLabel(t *testing.T) {
 	assert.Empty(t, relativeLabel("spx3.net", "spx3.net"))
 	assert.Empty(t, relativeLabel("spx3.net.", "spx3.net"))

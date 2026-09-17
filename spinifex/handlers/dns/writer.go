@@ -160,6 +160,13 @@ func (w *Writer) applyZone(zone string, changes []Change) (bool, error) {
 			if cfg.UpsertRecord(label, rtype, nsconfig.ClassIN, c.Value, ttl) {
 				changed = true
 			}
+		case ActionUpsertSet:
+			if w.quotaEnabled && !recordSetExists(cfg, label, rtype) && !w.quotas.withinRecordQuota(len(cfg.Records)) {
+				return false, fmt.Errorf("zone %q at record quota (%d): cannot add %s", zone, w.quotas.RecordsPerHostedZone, c.Name)
+			}
+			if cfg.SetRecordSet(label, rtype, nsconfig.ClassIN, c.Values, ttl) {
+				changed = true
+			}
 		case ActionDelete:
 			if cfg.RemoveRecord(label, rtype, c.Value) {
 				changed = true
@@ -222,7 +229,7 @@ func recordSetExists(cfg nsconfig.ConfigArr, label string, rtype uint16) bool {
 
 func hasUpsert(changes []Change) bool {
 	return slices.ContainsFunc(changes, func(c Change) bool {
-		return c.Action == ActionUpsert
+		return c.Action == ActionUpsert || c.Action == ActionUpsertSet
 	})
 }
 

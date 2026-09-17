@@ -249,6 +249,109 @@ secret_key = "READONLY"
 	require.Contains(t, objects, "spx3.net.toml")
 }
 
+// TestBootstrapBaseZoneSeedsTheServiceEndpointSuffix covers the third zone:
+// AWS.InternalSuffix must be seeded alongside the base and private zones so
+// service-endpoint names resolve from first boot, and re-running must stay
+// idempotent like the other two.
+func TestBootstrapBaseZoneSeedsTheServiceEndpointSuffix(t *testing.T) {
+	endpoint, objects := fakeS3(t, "northstar")
+	tomlBody := fmt.Sprintf(`listen = "0.0.0.0:5300"
+default_domain = "spx3.net"
+[s3]
+endpoint = %q
+bucket = "northstar"
+region = "us-east-1"
+access_key = "READONLY"
+secret_key = "READONLY"
+`, endpoint)
+	configPath := filepath.Join(t.TempDir(), "northstar.toml")
+	require.NoError(t, os.WriteFile(configPath, []byte(tomlBody), 0o600))
+
+	cluster := &config.ClusterConfig{
+		Node: "node1",
+		AWS:  config.AWSConfig{InternalSuffix: "spinifex.internal"},
+		Nodes: map[string]config.Config{
+			"node1": {
+				Host:       "10.11.12.1",
+				Predastore: config.PredastoreConfig{AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET"},
+				Northstar:  config.NorthstarConfig{ConfigPath: configPath},
+			},
+		},
+	}
+
+	require.NoError(t, BootstrapBaseZone(configPath, cluster))
+	require.Contains(t, objects, "spinifex.internal.toml")
+	body := objects["spinifex.internal.toml"]
+	assert.Contains(t, body, `domain = "spinifex.internal"`)
+	assert.Contains(t, body, "10.11.12.1")
+
+	// Idempotent: a second run does not rewrite the zone.
+	require.NoError(t, BootstrapBaseZone(configPath, cluster))
+	assert.Equal(t, body, objects["spinifex.internal.toml"])
+}
+
+// TestBootstrapBaseZoneSuffixCollisionsDoNotDuplicate pins the three-way
+// guard: a suffix equal to either already-seeded zone must not seed a
+// duplicate object under a different logical slot.
+func TestBootstrapBaseZoneSuffixCollisionsDoNotDuplicate(t *testing.T) {
+	t.Run("suffix equals default domain", func(t *testing.T) {
+		endpoint, objects := fakeS3(t, "northstar")
+		tomlBody := fmt.Sprintf(`default_domain = "spx3.net"
+[s3]
+endpoint = %q
+bucket = "northstar"
+region = "us-east-1"
+access_key = "READONLY"
+secret_key = "READONLY"
+`, endpoint)
+		configPath := filepath.Join(t.TempDir(), "northstar.toml")
+		require.NoError(t, os.WriteFile(configPath, []byte(tomlBody), 0o600))
+
+		cluster := &config.ClusterConfig{
+			Node: "node1",
+			AWS:  config.AWSConfig{InternalSuffix: "spx3.net"},
+			Nodes: map[string]config.Config{
+				"node1": {
+					Host:       "10.11.12.1",
+					Predastore: config.PredastoreConfig{AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET"},
+					Northstar:  config.NorthstarConfig{ConfigPath: configPath},
+				},
+			},
+		}
+		require.NoError(t, BootstrapBaseZone(configPath, cluster))
+		require.Len(t, objects, 2, "base plus default-defaulted internal domain, no third duplicate for the colliding suffix")
+	})
+
+	t.Run("suffix equals internal domain", func(t *testing.T) {
+		endpoint, objects := fakeS3(t, "northstar")
+		tomlBody := fmt.Sprintf(`default_domain = "spx3.net"
+internal_domain = "compute.internal"
+[s3]
+endpoint = %q
+bucket = "northstar"
+region = "us-east-1"
+access_key = "READONLY"
+secret_key = "READONLY"
+`, endpoint)
+		configPath := filepath.Join(t.TempDir(), "northstar.toml")
+		require.NoError(t, os.WriteFile(configPath, []byte(tomlBody), 0o600))
+
+		cluster := &config.ClusterConfig{
+			Node: "node1",
+			AWS:  config.AWSConfig{InternalSuffix: "compute.internal"},
+			Nodes: map[string]config.Config{
+				"node1": {
+					Host:       "10.11.12.1",
+					Predastore: config.PredastoreConfig{AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET"},
+					Northstar:  config.NorthstarConfig{ConfigPath: configPath},
+				},
+			},
+		}
+		require.NoError(t, BootstrapBaseZone(configPath, cluster))
+		require.Len(t, objects, 2, "base plus internal domain, no third duplicate for the colliding suffix")
+	})
+}
+
 func TestNodeNames(t *testing.T) {
 	cluster := &config.ClusterConfig{Nodes: map[string]config.Config{"b": {}, "a": {}, "c": {}}}
 	assert.Equal(t, []string{"a", "b", "c"}, nodeNames(cluster))

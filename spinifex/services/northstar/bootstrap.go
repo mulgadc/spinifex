@@ -101,6 +101,21 @@ func BootstrapBaseZone(configPath string, cluster *config.ClusterConfig) error {
 			return err
 		}
 	}
+
+	// Seed the AWS internal-suffix zone (ec2.<region>.<suffix> and the other
+	// service-endpoint names) so it resolves from first boot rather than
+	// NXDOMAINing until the reconciler's on-demand materialisation runs. Guard
+	// is three-way now that there are three zones: skip only if the suffix
+	// collides with one already seeded above, not just the base domain.
+	suffix := strings.TrimSpace(cluster.AWS.InternalSuffix)
+	if suffix != "" && suffix != domain && suffix != internal {
+		if err := ensureZone(s3cfg, nsconfig.BaseZoneSeed{
+			Domain:      suffix,
+			Nameservers: nameservers,
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

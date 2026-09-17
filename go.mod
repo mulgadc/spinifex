@@ -24,7 +24,7 @@ require (
 	github.com/miekg/dns v1.1.73
 	github.com/minio/highwayhash v1.0.4
 	github.com/mulgadc/bluebottle v1.20.1-0.20260916040751-5a5ca6f0fb33
-	github.com/mulgadc/northstar v1.20.0
+	github.com/mulgadc/northstar v1.20.1-0.20260917012940-b6449d4fe6e1
 	github.com/mulgadc/predastore v1.20.0
 	github.com/mulgadc/viperblock v1.20.0
 	github.com/nats-io/nats-server/v2 v2.14.6

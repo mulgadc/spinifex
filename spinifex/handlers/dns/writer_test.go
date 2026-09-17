@@ -218,6 +218,40 @@ func TestWriterUpsertIsIdempotentAndDeletes(t *testing.T) {
 	assert.NotContains(t, objects["compute.internal.toml"], "ip-172-31-26-216")
 }
 
+// TestWriterUpsertSetMaterialisesAndReplacesTheWholeSet covers the
+// service-endpoint write path, distinct from every other class: it writes a
+// zone the writer has never seen (spinifex.internal, not the pre-seeded base
+// zone) and a multi-address RRset UpsertRecord alone cannot express.
+func TestWriterUpsertSetMaterialisesAndReplacesTheWholeSet(t *testing.T) {
+	w, objects := newTestWriter(t)
+
+	changes := ServiceEndpointChanges("us-east-1", "spinifex.internal", []string{"10.0.0.1", "10.0.0.2"})
+	res, err := w.ApplyBatch(&ChangeBatch{Changes: changes})
+	require.NoError(t, err)
+	assert.Equal(t, len(changes), res.Applied)
+
+	zone, ok := objects["spinifex.internal.toml"]
+	require.True(t, ok, "spinifex.internal zone materialised on demand")
+	assert.Contains(t, zone, `domain = "ec2.us-east-1."`)
+	assert.Contains(t, zone, `address = "10.0.0.1"`)
+	assert.Contains(t, zone, `address = "10.0.0.2"`)
+
+	// Re-publishing with one node dropped must replace the set, not leave the
+	// stale address behind the way a sequence of single-value UPSERTs would.
+	shrunk := ServiceEndpointChanges("us-east-1", "spinifex.internal", []string{"10.0.0.1"})
+	_, err = w.ApplyBatch(&ChangeBatch{Changes: shrunk})
+	require.NoError(t, err)
+	zone = objects["spinifex.internal.toml"]
+	assert.Contains(t, zone, `address = "10.0.0.1"`)
+	assert.NotContains(t, zone, `address = "10.0.0.2"`)
+
+	// Re-applying the identical set is a no-op on the zone body.
+	before := objects["spinifex.internal.toml"]
+	_, err = w.ApplyBatch(&ChangeBatch{Changes: shrunk})
+	require.NoError(t, err)
+	assert.Equal(t, before, objects["spinifex.internal.toml"])
+}
+
 func TestWriterDeleteMissingZoneNoop(t *testing.T) {
 	w, objects := newTestWriter(t)
 	// Delete a private record before any private zone exists → no zone created.

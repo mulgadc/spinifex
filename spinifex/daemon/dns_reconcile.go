@@ -3,6 +3,9 @@ package daemon
 import (
 	"context"
 	"log/slog"
+	"net"
+	"sort"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
@@ -104,7 +107,65 @@ func (d *Daemon) dnsDesiredSet() handlers_dns.DesiredSet {
 			ds.Prunable.RDS = true
 		}
 	}
+	if ch, ok := d.desiredServiceEndpointDNSChanges(); ok {
+		ds.Changes = append(ds.Changes, ch...)
+		ds.Prunable.ServiceEndpoint = true
+	}
 	return ds
+}
+
+// desiredServiceEndpointDNSChanges returns the set-valued UPSERT publishing
+// every AWS service endpoint name under AWS.InternalSuffix to the addresses of
+// every cluster node that can serve one, and whether the cluster topology used
+// to build it was readable. Unlike EC2/ELB/EKS/RDS, whose target is a single
+// resource address that answers the same from anywhere, a service endpoint's
+// natural target is a node address, so the desired value is a set rather than
+// one record — see handlers/dns.ServiceEndpointChanges.
+//
+// The cluster's own gossiped node config (d.clusterConfig.Nodes) is used
+// rather than any single node's live state, so whichever node's reconcile
+// wins this cycle's leader election computes the same full-cluster set; a
+// pass that only ever asserted its own address would erase every other node's
+// on the next cycle it won.
+func (d *Daemon) desiredServiceEndpointDNSChanges() ([]handlers_dns.Change, bool) {
+	if d.clusterConfig == nil {
+		return nil, false
+	}
+	suffix := strings.TrimSpace(d.clusterConfig.AWS.InternalSuffix)
+	if suffix == "" {
+		return nil, false
+	}
+
+	seen := map[string]bool{}
+	var addresses []string
+	for name, node := range d.clusterConfig.Nodes {
+		mgmtBridgeIP := ""
+		if name == d.clusterConfig.Node {
+			mgmtBridgeIP = d.mgmtBridgeIP
+		}
+		host := gatewayHostForNode(node, mgmtBridgeIP)
+		if host == "" {
+			continue
+		}
+		// resolveGatewayHost (and its per-node generalisation) can return a
+		// non-IP host; the writer supports only A records, so skip rather than
+		// write a malformed one.
+		ip := net.ParseIP(host)
+		if ip == nil {
+			continue
+		}
+		addr := ip.String()
+		if seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		addresses = append(addresses, addr)
+	}
+	// Deterministic order so an unchanged address set produces an unchanged
+	// zone body (the writer skips a no-op write) regardless of map iteration.
+	sort.Strings(addresses)
+
+	return handlers_dns.ServiceEndpointChanges(d.config.Region, suffix, addresses), true
 }
 
 // desiredEC2DNSChanges returns UPSERTs for every running instance in the

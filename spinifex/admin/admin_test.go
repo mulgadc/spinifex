@@ -762,7 +762,18 @@ func TestAWSGWServiceDNSNames(t *testing.T) {
 	assert.Equal(t, []string{
 		"ecr.us-east-1.spinifex.internal",
 		"*.dkr.ecr.us-east-1.spinifex.internal",
+		"ec2.us-east-1.spinifex.internal",
+		"sts.us-east-1.spinifex.internal",
+		"elasticloadbalancing.us-east-1.spinifex.internal",
+		"ecs.us-east-1.spinifex.internal",
+		"eks.us-east-1.spinifex.internal",
+		"acm.us-east-1.spinifex.internal",
 	}, got)
+
+	// SANs and DNS records must share one list so they can never drift.
+	for _, svc := range config.AWSGWServiceNames {
+		assert.Contains(t, got, svc+".us-east-1.spinifex.internal")
+	}
 
 	assert.Nil(t, AWSGWServiceDNSNames("", "spinifex.internal"))
 	assert.Nil(t, AWSGWServiceDNSNames("us-east-1", ""))

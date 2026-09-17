@@ -50,6 +50,12 @@ type PruneScope struct {
 	// VM manager does not qualify: pruning against it would delete the records
 	// of every instance running elsewhere.
 	EC2 bool
+
+	// ServiceEndpoint covers the AWS service-parity names published under
+	// AWS.InternalSuffix (ec2.{region}.{suffix} and friends). It is set
+	// whenever the cluster topology used to build the address set was
+	// readable, since that view is always cluster-wide by construction.
+	ServiceEndpoint bool
 }
 
 // Reconciler converges the zone toward the live inventory. On each pass it
@@ -75,7 +81,11 @@ type Reconciler struct {
 	// as well as the base domain because pruning one zone and not the other
 	// leaves every stale private record behind.
 	internalDomain string
-	nc             *nats.Conn
+	// serviceZone is AWS.InternalSuffix, the zone the service-endpoint class
+	// lands in. Distinct from both baseDomain and internalDomain, so pruning it
+	// needs its own read the same way internalDomain does for EC2.
+	serviceZone string
+	nc          *nats.Conn
 	// writer applies the converged batch. The reconcile owns the zone object on
 	// the node that won the election, so the batch never leaves this process.
 	writer   *Writer
@@ -91,7 +101,7 @@ type Reconciler struct {
 // changes should wake the loop. They are optional: with none supplied the loop
 // falls back to the interval alone, which is the behaviour that predates the
 // watch.
-func NewReconciler(cfg *config.Config, nc *nats.Conn, writer *Writer, desired DesiredFunc, sources ...reconciler.Source) *Reconciler {
+func NewReconciler(cfg *config.Config, cluster *config.ClusterConfig, nc *nats.Conn, writer *Writer, desired DesiredFunc, sources ...reconciler.Source) *Reconciler {
 	r := &Reconciler{
 		nc:       nc,
 		writer:   writer,
@@ -110,6 +120,9 @@ func NewReconciler(cfg *config.Config, nc *nats.Conn, writer *Writer, desired De
 	r.s3cfg = zoneCfg.s3
 	r.baseDomain = strings.TrimSpace(zoneCfg.server.DefaultDomain)
 	r.internalDomain = ResolveInternalDomain(cfg)
+	if cluster != nil {
+		r.serviceZone = strings.TrimSpace(cluster.AWS.InternalSuffix)
+	}
 	return r
 }
 
@@ -184,6 +197,9 @@ func (r *Reconciler) computeBatch() ([]Change, error) {
 	if ds.Prunable.EC2 {
 		zones = append(zones, privateZoneOrDefault(r.internalDomain))
 	}
+	if ds.Prunable.ServiceEndpoint && r.serviceZone != "" {
+		zones = append(zones, r.serviceZone)
+	}
 	for _, zone := range zones {
 		if _, seen := existing[zone]; seen || zone == "" {
 			continue
@@ -210,6 +226,16 @@ func (r *Reconciler) prunable(scope PruneScope) func(zone, label string) bool {
 		// producer writes the base domain.
 		if zone == private {
 			return scope.EC2 && strings.HasPrefix(label, ec2PrivateLabelPrefix)
+		}
+		// The service-endpoint zone is matched on zone identity alone, never on a
+		// label substring: a label like "ec2.<region>" would not collide with the
+		// "ec2-" EC2 prefix below today, but a substring match is one rename away
+		// from a collision, and zone identity can never drift into one. Guarded
+		// against a misconfigured suffix equal to the base domain so a collision
+		// there degrades to "service-endpoint records are never pruned" rather
+		// than silently disabling ELB/EKS/RDS/EC2 pruning on the shared zone.
+		if r.serviceZone != "" && r.serviceZone != r.baseDomain && r.serviceZone != private && zone == r.serviceZone {
+			return scope.ServiceEndpoint
 		}
 		if zone != r.baseDomain {
 			return false

@@ -203,7 +203,7 @@ func TestReconcilerBackendErrorStillAborts(t *testing.T) {
 // able to start the loop unconditionally. Without it the disabled reconciler
 // would enter the watch loop and block until shutdown instead of returning.
 func TestReconciler_RunReturnsWhenDisabled(t *testing.T) {
-	r := NewReconciler(nil, nil, nil, nil)
+	r := NewReconciler(nil, nil, nil, nil, nil)
 	require.False(t, r.Enabled())
 
 	done := make(chan struct{})
@@ -266,8 +266,8 @@ func TestReconciler_RunPerformsStartupPassThenStopsOnCancel(t *testing.T) {
 func TestNewReconciler_RetainsItsWatchSources(t *testing.T) {
 	bucket := kvstore.NewBucket(nil, kvstore.Config{Name: "b"})
 
-	assert.Empty(t, NewReconciler(nil, nil, nil, nil).sources)
-	assert.Len(t, NewReconciler(nil, nil, nil, nil,
+	assert.Empty(t, NewReconciler(nil, nil, nil, nil, nil).sources)
+	assert.Len(t, NewReconciler(nil, nil, nil, nil, nil,
 		reconciler.Fixed(bucket, "node.*"),
 		reconciler.Fixed(bucket, "lb.*"),
 	).sources, 2)

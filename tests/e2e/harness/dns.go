@@ -83,6 +83,24 @@ func NorthstarInternalDomain(env *Env) string {
 	return ""
 }
 
+// NorthstarAWSInternalSuffix returns the cluster's AWS service-endpoint suffix
+// (AWS.InternalSuffix), defaulting the same way config.LoadConfig does when a
+// node's stanza leaves it unset, since this harness reads raw TOML rather than
+// going through LoadConfig's viper defaults.
+func NorthstarAWSInternalSuffix(env *Env) string {
+	if env == nil || env.ConfigDir == "" {
+		return config.DefaultAWSInternalSuffix
+	}
+	cc, err := loadClusterConfig(filepath.Join(env.ConfigDir, "spinifex.toml"))
+	if err != nil {
+		return config.DefaultAWSInternalSuffix
+	}
+	if s := strings.TrimSpace(cc.AWS.InternalSuffix); s != "" {
+		return s
+	}
+	return config.DefaultAWSInternalSuffix
+}
+
 // RequireDNSEnabled fails when a fixture expected to provide Northstar DNS has
 // no authoritative base domain configured. It returns the configured domain.
 func RequireDNSEnabled(t *testing.T, env *Env) string {

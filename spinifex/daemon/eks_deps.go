@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -131,23 +132,34 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 // issuers, and the EKS NATS URL. Precedence: mgmt-dedicated AWSGW IP →
 // AdvertiseIP → br-mgmt IP → DevNetworking → AWSGW bind IP. Returns "".
 func (d *Daemon) resolveGatewayHost() string {
+	return gatewayHostForNode(*d.config, d.mgmtBridgeIP)
+}
+
+// gatewayHostForNode is resolveGatewayHost's precedence, factored out as a
+// pure function of one node's config plus a mgmt-bridge IP. resolveGatewayHost
+// supplies its own live-detected d.mgmtBridgeIP for the local node; the
+// service-endpoint desired-set builder calls this for every node in the
+// cluster (daemon/dns_reconcile.go), passing "" for peers since their
+// mgmt-bridge IP is host-local and never gossiped — the same limitation
+// NameserverSeeds and ResolverNameserverIPs already accept for peers.
+func gatewayHostForNode(node config.Config, mgmtBridgeIP string) string {
 	awsgwBindIP := ""
-	if d.config.AWSGW.Host != "" {
-		if h, _, splitErr := net.SplitHostPort(d.config.AWSGW.Host); splitErr == nil {
+	if node.AWSGW.Host != "" {
+		if h, _, splitErr := net.SplitHostPort(node.AWSGW.Host); splitErr == nil {
 			awsgwBindIP = h
 		}
 	}
-	advertiseIP := d.config.AdvertiseIP
+	advertiseIP := node.AdvertiseIP
 
 	switch {
-	case d.mgmtBridgeIP != "" && awsgwBindIP != "" && awsgwBindIP != "0.0.0.0" &&
+	case mgmtBridgeIP != "" && awsgwBindIP != "" && awsgwBindIP != "0.0.0.0" &&
 		!net.ParseIP(awsgwBindIP).IsLoopback() && awsgwBindIP != advertiseIP:
 		return awsgwBindIP
 	case advertiseIP != "" && advertiseIP != "0.0.0.0":
 		return advertiseIP
-	case d.mgmtBridgeIP != "":
-		return d.mgmtBridgeIP
-	case d.config.Daemon.DevNetworking:
+	case mgmtBridgeIP != "":
+		return mgmtBridgeIP
+	case node.Daemon.DevNetworking:
 		return "10.0.2.2"
 	case awsgwBindIP != "" && awsgwBindIP != "0.0.0.0":
 		return awsgwBindIP

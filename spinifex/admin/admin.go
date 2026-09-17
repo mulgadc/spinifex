@@ -213,18 +213,25 @@ func GenerateConfigFile(configPath string, configTemplate string, configSettings
 }
 
 // AWSGWServiceDNSNames builds the AWS-parity TLS SANs for the awsgw cert from
-// the cluster region and internal suffix: the exact ECR control-plane host and
-// the wildcard covering per-account registry hosts. Returns nil if either input
-// is empty so callers omit the SANs rather than emitting malformed names.
+// the cluster region and internal suffix: the ECR control-plane host, the
+// wildcard covering per-account registry hosts, and one name per service in
+// config.AWSGWServiceNames. Shares that list with handlers/dns's
+// ServiceEndpointNames so the SANs and the DNS records can never drift apart.
+// Returns nil if either input is empty so callers omit the SANs rather than
+// emitting malformed names.
 func AWSGWServiceDNSNames(region, suffix string) []string {
 	if region == "" || suffix == "" {
 		return nil
 	}
 	base := "ecr." + region + "." + suffix
-	return []string{
+	names := []string{
 		base,            // control plane: ecr.{region}.{suffix}
 		"*.dkr." + base, // registry: *.dkr.ecr.{region}.{suffix}
 	}
+	for _, svc := range config.AWSGWServiceNames {
+		names = append(names, svc+"."+region+"."+suffix)
+	}
+	return names
 }
 
 // GenerateCertificatesIfNeeded prepares the TLS material for a node. The CA is

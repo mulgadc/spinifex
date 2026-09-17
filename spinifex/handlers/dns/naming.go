@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 )
 
@@ -156,6 +157,54 @@ func RDSChanges(action Action, dnsName, baseDomain, eniIP string) []Change {
 		Type:   "A",
 		Value:  eniIP,
 	}}
+}
+
+// serviceEndpointECRName is ecr's own service-endpoint entry. It is not part
+// of config.AWSGWServiceNames because it also carries a wildcard registry SAN
+// that the other services don't share (admin.AWSGWServiceDNSNames), but it
+// shares this class's plain {service}.{region}.{suffix} shape for DNS.
+const serviceEndpointECRName = "ecr"
+
+// ServiceEndpointNames returns the {service}.{region}.{suffix} names for every
+// AWS service published in DNS under the internal suffix, sharing
+// config.AWSGWServiceNames with admin.AWSGWServiceDNSNames so the DNS records
+// and the cert SANs can never drift apart. Returns nil when region or suffix
+// is unavailable.
+func ServiceEndpointNames(region, suffix string) []string {
+	if region == "" || suffix == "" {
+		return nil
+	}
+	names := make([]string, 0, len(config.AWSGWServiceNames)+1)
+	names = append(names, serviceEndpointECRName+"."+region+"."+suffix)
+	for _, svc := range config.AWSGWServiceNames {
+		names = append(names, svc+"."+region+"."+suffix)
+	}
+	return names
+}
+
+// ServiceEndpointChanges builds the set-valued record-set changes publishing
+// every AWS service endpoint name to the given addresses. Unlike
+// ELBChanges/EKSChanges/RDSChanges, whose target is a single resource address
+// that answers the same from anywhere, a service endpoint's natural target is
+// every reachable cluster node's own gateway, so this emits ActionUpsertSet
+// rather than ActionUpsert. Returns no changes when region, suffix, or
+// addresses is unavailable.
+func ServiceEndpointChanges(region, suffix string, addresses []string) []Change {
+	if region == "" || suffix == "" || len(addresses) == 0 {
+		return nil
+	}
+	names := ServiceEndpointNames(region, suffix)
+	changes := make([]Change, 0, len(names))
+	for _, name := range names {
+		changes = append(changes, Change{
+			Action: ActionUpsertSet,
+			Zone:   suffix,
+			Name:   name,
+			Type:   "A",
+			Values: addresses,
+		})
+	}
+	return changes
 }
 
 // privateZoneOrDefault returns the configured internal domain or the

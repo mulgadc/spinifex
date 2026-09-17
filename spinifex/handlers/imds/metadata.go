@@ -566,14 +566,9 @@ func (s *IMDSServiceImpl) serveNetworkInterface(ctx context.Context, w http.Resp
 	}
 }
 
-// serveBlockDeviceMapping serves the block-device-mapping subtree: ami and root
-// both name the instance's boot device, matching real EC2 where both keys
-// answer the same device for an EBS-backed instance, and ebsN names the Nth
-// additional attached EBS volume — the numbering the aws-ebs-csi-driver's IMDS
-// client counts by scanning the listing body for the "ebs" substring. sub is
-// the path segment after the block-device-mapping/ prefix; empty lists the
-// keys. No resolved block devices 404s the whole subtree, a resolution edge
-// case since every real instance has at least a root volume.
+// serveBlockDeviceMapping serves the subtree: ami and root both name the boot
+// device, ebsN the Nth additional attached volume. sub is the segment after
+// the prefix; empty lists the keys.
 func (s *IMDSServiceImpl) serveBlockDeviceMapping(ctx context.Context, w http.ResponseWriter, eni *eniFacts, sub string) {
 	inst := s.instanceFor(ctx, w, eni)
 	if inst == nil {

@@ -147,10 +147,9 @@ func instanceFactsFromVM(v *vm.VM) *instanceFacts {
 	return facts
 }
 
-// blockDeviceNames projects BlockDeviceMappings device names in attachment
-// order for the IMDS block-device-mapping surface. LaunchRunInstances always
-// writes the root volume first and AttachVolume appends afterward, so index 0
-// is always the boot device. Nil entries and unset device names are skipped.
+// blockDeviceNames projects device names in attachment order. The root volume
+// is written first at launch and attachments append after it, so index 0 is
+// the boot device. Nil and unset names are skipped.
 func blockDeviceNames(mappings []*ec2.InstanceBlockDeviceMapping) []string {
 	names := make([]string, 0, len(mappings))
 	for _, m := range mappings {

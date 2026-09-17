@@ -384,6 +384,45 @@ func TestListAMIs_SkipsCorruptButStrictDoesNot(t *testing.T) {
 	require.ErrorIs(t, err, ErrCorruptDocument)
 }
 
+// TestFetchByIDs_BoundedAndPositionallyAligned covers what an explicit-ID
+// describe needs from the fan-out: reads overlap, the pool bound holds however
+// many IDs a caller names, and each result stays with the ID that produced it.
+func TestFetchByIDs_BoundedAndPositionallyAligned(t *testing.T) {
+	objects := objectstore.NewMemoryObjectStore()
+	store := NewStore(objects, "control-plane")
+	ctx := context.Background()
+
+	const documents = FetchConcurrency * 4
+	ids := make([]string, 0, documents)
+	for i := range documents {
+		id := fmt.Sprintf("ami-%02d", i)
+		ids = append(ids, id)
+		require.NoError(t, store.PutAMI(ctx, AMI{ImageID: id, Name: id}))
+	}
+	// One ID names no document, to pin that its error lands on its own result
+	// rather than failing the whole fan-out.
+	ids = append(ids, "ami-absent")
+
+	slow := &slowGetStore{ObjectStore: objects, delay: 20 * time.Millisecond}
+	measured := NewStore(slow, "control-plane")
+
+	start := time.Now()
+	results := FetchByIDs(ctx, ids, measured.GetAMI)
+	elapsed := time.Since(start)
+
+	require.Len(t, results, len(ids))
+	assert.Less(t, elapsed, time.Duration(len(ids))*20*time.Millisecond/2,
+		"named documents must be read concurrently, not one after the other")
+	assert.LessOrEqual(t, slow.peak(), int64(FetchConcurrency),
+		"a caller naming hundreds of IDs must not open hundreds of reads")
+	for i, id := range ids[:documents] {
+		require.NoError(t, results[i].Err)
+		assert.Equal(t, id, results[i].Document.ImageID)
+	}
+	assert.True(t, objectstore.IsNoSuchKeyError(results[documents].Err),
+		"the absent ID's own result carries its error")
+}
+
 // TestListVolumes_FetchesDocumentsConcurrently is the reason listDocuments has
 // a worker pool at all. A listing costs one object fetch per document, and
 // fetching them one at a time makes DescribeVolumes scale with the number of
@@ -415,7 +454,7 @@ func TestListVolumes_FetchesDocumentsConcurrently(t *testing.T) {
 	assert.Less(t, elapsed, serial/2,
 		"fetching %d documents took %s; serially it would be %s", documents, elapsed, serial)
 	assert.Equal(t, int64(documents), slow.gets.Load(), "every document must still be fetched")
-	assert.LessOrEqual(t, slow.peak(), int64(listFetchConcurrency),
+	assert.LessOrEqual(t, slow.peak(), int64(FetchConcurrency),
 		"the pool bound must hold: an unbounded fan-out over a large bucket is its own problem")
 }
 

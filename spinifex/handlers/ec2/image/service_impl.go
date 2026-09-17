@@ -138,134 +138,181 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 	return s.describeImages(ctx, input, accountID, parsedFilters)
 }
 
-// describeImages enumerates AMIs via Store.ListAMIs, then filters and renders
-// each document into the AWS SDK image shape.
+// describeImages renders the AWS SDK image shape for every AMI the caller may
+// see. Named IDs read their own documents; an unnamed request enumerates the
+// whole catalog via Store.ListAMIs, which is proportional to its own answer.
 func (s *ImageServiceImpl) describeImages(ctx context.Context, input *ec2.DescribeImagesInput, accountID string, parsedFilters map[string][]string) (*ec2.DescribeImagesOutput, error) {
+	encryptedAtRest := s.clusterEncryptionEnabled()
+
+	if len(input.ImageIds) > 0 {
+		return s.describeImagesByIDs(ctx, input, accountID, parsedFilters, encryptedAtRest)
+	}
+
 	amis, err := s.metadata.ListAMIs(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "DescribeImages: failed to list AMIs", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	encryptedAtRest := s.clusterEncryptionEnabled()
 	var images []*ec2.Image
-
 	for _, amiMeta := range amis {
 		if amiMeta.ImageID == "" {
 			continue
 		}
-
-		if len(input.ImageIds) > 0 {
-			found := false
-			for _, filterID := range input.ImageIds {
-				if filterID != nil && *filterID == amiMeta.ImageID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-
-		amiOwner := amiMeta.ImageOwnerAlias
-		isSystemAMI := amiOwner != "" && !utils.IsAccountID(amiOwner)
-
-		// Resolved up front so the owner filter below compares against the same
-		// value the OwnerId field reports, rather than the raw alias string a
-		// system AMI carries instead of a numeric account ID.
-		ownerID := amiOwner
-		if isSystemAMI {
-			ownerID = utils.GlobalAccountID
-		}
-
-		if !callerCanReadAMI(amiMeta, accountID) {
-			continue
-		}
-
-		if len(input.Owners) > 0 {
-			found := false
-			for _, owner := range input.Owners {
-				if owner == nil {
-					continue
-				}
-				switch *owner {
-				case "self":
-					if ownerID == accountID {
-						found = true
-					}
-				case "amazon", "system", "aws-marketplace":
-					if isSystemAMI {
-						found = true
-					}
-				default:
-					if ownerID == *owner {
-						found = true
-					}
-				}
-				if found {
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-
-		image := &ec2.Image{
-			ImageId:            aws.String(amiMeta.ImageID),
-			Name:               aws.String(amiMeta.Name),
-			Description:        aws.String(amiMeta.Description),
-			Architecture:       aws.String(amiMeta.Architecture),
-			PlatformDetails:    aws.String(amiMeta.PlatformDetails),
-			Platform:           utils.PlatformFromDetails(amiMeta.PlatformDetails),
-			CreationDate:       aws.String(amiMeta.CreationDate.UTC().Format("2006-01-02T15:04:05.000Z")),
-			RootDeviceType:     aws.String(amiMeta.RootDeviceType),
-			VirtualizationType: aws.String(amiMeta.Virtualization),
-			ImageOwnerAlias:    aws.String(amiMeta.ImageOwnerAlias),
-			OwnerId:            aws.String(ownerID),
-			Public:             aws.Bool(false),
-			State:              aws.String(amiImageState(amiMeta.State)),
-			ImageType:          aws.String("machine"),
-			Hypervisor:         aws.String("xen"),
-		}
-
-		// RegisterImage takes BootMode as an optional input, so an AMI can
-		// record none. The enum has no empty member: omit it, don't emit "".
-		if amiMeta.BootMode != "" {
-			image.BootMode = aws.String(amiMeta.BootMode)
-		}
-
-		if bdms := synthesizeRootBlockDeviceMapping(amiMeta, encryptedAtRest); bdms != nil {
-			image.RootDeviceName = aws.String("/dev/sda1")
-			image.BlockDeviceMappings = bdms
-		}
-
-		image.Tags = utils.MapToEC2Tags(amiMeta.Tags)
-
-		if len(parsedFilters) > 0 && !imageMatchesFilters(image, parsedFilters, amiMeta.Tags) {
-			continue
-		}
-
-		images = append(images, image)
-	}
-
-	if len(input.ImageIds) > 0 {
-		foundIDs := make(map[string]bool, len(images))
-		for _, img := range images {
-			if img.ImageId != nil {
-				foundIDs[*img.ImageId] = true
-			}
-		}
-		for _, reqID := range input.ImageIds {
-			if reqID != nil && !foundIDs[*reqID] {
-				return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
-			}
+		if image := renderVisibleImage(amiMeta, input, accountID, parsedFilters, encryptedAtRest); image != nil {
+			images = append(images, image)
 		}
 	}
 
 	slog.InfoContext(ctx, "DescribeImages completed", "count", len(images))
 	return &ec2.DescribeImagesOutput{Images: images}, nil
+}
+
+// describeImagesByIDs reads each named AMI's document directly. Enumerating
+// instead would scale with the unpartitioned AMI prefix, so with every other
+// tenant's image count.
+//
+// The key carries no tenant scoping, so every visibility rule is applied after
+// the fetch, in the order the enumerating path applies them.
+func (s *ImageServiceImpl) describeImagesByIDs(ctx context.Context, input *ec2.DescribeImagesInput, accountID string,
+	parsedFilters map[string][]string, encryptedAtRest bool) (*ec2.DescribeImagesOutput, error) {
+	// Only nil entries names nothing, which the enumerating path answers with an
+	// empty result rather than a missing ID.
+	imageIDs := utils.DistinctIDs(input.ImageIds)
+	if len(imageIDs) == 0 {
+		return &ec2.DescribeImagesOutput{}, nil
+	}
+
+	for _, imageID := range imageIDs {
+		// An ID no key can be built for names no document, which is also what
+		// the enumerating path reports for it.
+		if _, err := ebsmetadata.AMIKey(imageID); err != nil {
+			return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+		}
+	}
+
+	results := ebsmetadata.FetchByIDs(ctx, imageIDs, s.metadata.GetAMI)
+
+	// A read that failed once the deadline passed is not evidence the AMI is
+	// absent, which is the only other thing this path reports.
+	if err := ctx.Err(); err != nil {
+		slog.WarnContext(ctx, "DescribeImages gave up reading AMI documents", "requested", len(imageIDs), "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	images := make([]*ec2.Image, 0, len(imageIDs))
+	for i, result := range results {
+		if result.Err != nil {
+			if objectstore.IsNoSuchKeyError(result.Err) {
+				return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+			}
+			slog.ErrorContext(ctx, "DescribeImages: failed to read AMI document", "imageId", imageIDs[i], "err", result.Err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+
+		// The document is keyed by its own ID, and the enumerating path matches
+		// on this field. The comparison stays as an assertion.
+		if result.Document.ImageID != imageIDs[i] {
+			return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+		}
+
+		// A named ID no rule lets through is not-found, never an empty success.
+		image := renderVisibleImage(result.Document, input, accountID, parsedFilters, encryptedAtRest)
+		if image == nil {
+			return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+		}
+		images = append(images, image)
+	}
+
+	slog.InfoContext(ctx, "DescribeImages completed", "count", len(images))
+	return &ec2.DescribeImagesOutput{Images: images}, nil
+}
+
+// renderVisibleImage applies the DescribeImages visibility rules to one AMI
+// document and renders the SDK shape, or reports nil for a document the caller
+// must not see, an owner that does not match, or a filter that excludes it.
+func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput, accountID string,
+	parsedFilters map[string][]string, encryptedAtRest bool) *ec2.Image {
+	amiOwner := amiMeta.ImageOwnerAlias
+	isSystemAMI := amiOwner != "" && !utils.IsAccountID(amiOwner)
+
+	// Resolved up front so the owner filter below compares against the same
+	// value the OwnerId field reports, rather than the raw alias string a
+	// system AMI carries instead of a numeric account ID.
+	ownerID := amiOwner
+	if isSystemAMI {
+		ownerID = utils.GlobalAccountID
+	}
+
+	if !callerCanReadAMI(amiMeta, accountID) {
+		return nil
+	}
+
+	if len(input.Owners) > 0 {
+		found := false
+		for _, owner := range input.Owners {
+			if owner == nil {
+				continue
+			}
+			switch *owner {
+			case "self":
+				if ownerID == accountID {
+					found = true
+				}
+			case "amazon", "system", "aws-marketplace":
+				if isSystemAMI {
+					found = true
+				}
+			default:
+				if ownerID == *owner {
+					found = true
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			return nil
+		}
+	}
+
+	image := &ec2.Image{
+		ImageId:            aws.String(amiMeta.ImageID),
+		Name:               aws.String(amiMeta.Name),
+		Description:        aws.String(amiMeta.Description),
+		Architecture:       aws.String(amiMeta.Architecture),
+		PlatformDetails:    aws.String(amiMeta.PlatformDetails),
+		Platform:           utils.PlatformFromDetails(amiMeta.PlatformDetails),
+		CreationDate:       aws.String(amiMeta.CreationDate.UTC().Format("2006-01-02T15:04:05.000Z")),
+		RootDeviceType:     aws.String(amiMeta.RootDeviceType),
+		VirtualizationType: aws.String(amiMeta.Virtualization),
+		ImageOwnerAlias:    aws.String(amiMeta.ImageOwnerAlias),
+		OwnerId:            aws.String(ownerID),
+		Public:             aws.Bool(false),
+		State:              aws.String(amiImageState(amiMeta.State)),
+		ImageType:          aws.String("machine"),
+		Hypervisor:         aws.String("xen"),
+	}
+
+	// RegisterImage takes BootMode as an optional input, so an AMI can
+	// record none. The enum has no empty member: omit it, don't emit "".
+	if amiMeta.BootMode != "" {
+		image.BootMode = aws.String(amiMeta.BootMode)
+	}
+
+	if bdms := synthesizeRootBlockDeviceMapping(amiMeta, encryptedAtRest); bdms != nil {
+		image.RootDeviceName = aws.String("/dev/sda1")
+		image.BlockDeviceMappings = bdms
+	}
+
+	image.Tags = utils.MapToEC2Tags(amiMeta.Tags)
+
+	if len(parsedFilters) > 0 && !imageMatchesFilters(image, parsedFilters, amiMeta.Tags) {
+		return nil
+	}
+
+	return image
 }
 
 // amiImageState maps AMIMetadata.State to the ec2.Image state string. An

@@ -451,27 +451,19 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 
 	slog.InfoContext(ctx, "DescribeSnapshots request", "snapshotIds", input.SnapshotIds, "accountID", accountID)
 
-	snapshotIDFilter := make(map[string]bool)
-	for _, id := range input.SnapshotIds {
-		if id != nil {
-			snapshotIDFilter[*id] = true
-		}
-	}
-
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSnapshotsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSnapshots: invalid filter", "err", err)
 		return nil, err
 	}
 
+	if len(input.SnapshotIds) > 0 {
+		return s.describeSnapshotsByIDs(ctx, input, accountID, parsedFilters)
+	}
+
 	// The caller's prefix is the isolation and the whole answer: no other
-	// account's document is read, so none has to be filtered out afterwards.
-	// Named ids are matched against this listing rather than fetched directly —
-	// the listing already costs what the account owns.
-	//
-	// OwnerIds names either the caller, which the prefix already is, or another
-	// account, whose snapshots cannot be under it — so that case is empty without
-	// a read, and the tail below still reports a named id as not found.
+	// account's document is read, and OwnerIds either names the caller, whose
+	// prefix this is, or an account whose snapshots cannot be under it.
 	var configs []ebsmetadata.Snapshot
 	if ownerIDsIncludeCaller(input.OwnerIds, accountID) {
 		if strict {
@@ -499,10 +491,6 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 
 	var snapshots []*ec2.Snapshot
 	for _, cfg := range configs {
-		if len(snapshotIDFilter) > 0 && !snapshotIDFilter[cfg.SnapshotID] {
-			continue
-		}
-
 		if len(parsedFilters) > 0 && !snapshotMatchesFilters(cfg, parsedFilters) {
 			continue
 		}
@@ -510,20 +498,87 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 		snapshots = append(snapshots, snapshotConfigToEC2(cfg))
 	}
 
-	// Naming a specific, nonexistent snapshot ID is an error, unlike an
-	// unfiltered list or a --filters query that simply matches nothing.
-	if len(snapshotIDFilter) > 0 {
-		found := make(map[string]bool, len(snapshots))
-		for _, snap := range snapshots {
-			if snap.SnapshotId != nil {
-				found[*snap.SnapshotId] = true
-			}
+	slog.InfoContext(ctx, "DescribeSnapshots completed", "count", len(snapshots))
+
+	return &ec2.DescribeSnapshotsOutput{
+		Snapshots: snapshots,
+	}, nil
+}
+
+// describeSnapshotsByIDs reads each named snapshot's document directly, rather
+// than pay a fetch per snapshot the account owns however few it names.
+//
+// The key is scoped to the caller's account, so a cross-tenant ID reads a key
+// that does not exist and reports not-found — the same answer the listing path
+// gives, and for the same reason.
+func (s *SnapshotServiceImpl) describeSnapshotsByIDs(ctx context.Context, input *ec2.DescribeSnapshotsInput,
+	accountID string, parsedFilters map[string][]string) (*ec2.DescribeSnapshotsOutput, error) {
+	// Only nil entries names nothing, which the listing path answers with an
+	// empty result rather than a missing ID.
+	snapshotIDs := utils.DistinctIDs(input.SnapshotIds)
+	if len(snapshotIDs) == 0 {
+		return &ec2.DescribeSnapshotsOutput{}, nil
+	}
+
+	// OwnerIds naming only another account selects snapshots the caller's
+	// prefix cannot contain, so a named ID is absent without any read.
+	if !ownerIDsIncludeCaller(input.OwnerIds, accountID) {
+		return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+	}
+
+	// An untenanted caller has no prefix to read under; refuse here rather than
+	// report a snapshot that may well exist as absent.
+	if !utils.IsAccountID(accountID) {
+		slog.ErrorContext(ctx, "DescribeSnapshots refused a caller with no account", "accountID", accountID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	for _, snapshotID := range snapshotIDs {
+		// An ID no key can be built for names no document, which is also what
+		// the listing path reports for it.
+		if _, err := ebsmetadata.SnapshotKey(accountID, snapshotID); err != nil {
+			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 		}
-		for id := range snapshotIDFilter {
-			if !found[id] {
+	}
+
+	results := ebsmetadata.FetchByIDs(ctx, snapshotIDs, func(ctx context.Context, id string) (ebsmetadata.Snapshot, error) {
+		return s.metadata.GetSnapshot(ctx, accountID, id)
+	})
+
+	// A read that failed once the deadline passed is not evidence the snapshot
+	// is absent, which is the only other thing this path reports.
+	if err := ctx.Err(); err != nil {
+		slog.WarnContext(ctx, "DescribeSnapshots gave up reading snapshot documents",
+			"requested", len(snapshotIDs), "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	snapshots := make([]*ec2.Snapshot, 0, len(snapshotIDs))
+	for i, result := range results {
+		if result.Err != nil {
+			if objectstore.IsNoSuchKeyError(result.Err) {
 				return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 			}
+			// A named ID is never the unrelated document the tolerant listing's
+			// skip exists for, so an unreadable one fails both variants rather
+			// than reporting the snapshot as absent.
+			slog.ErrorContext(ctx, "DescribeSnapshots failed to read a named snapshot document",
+				"snapshotId", snapshotIDs[i], "accountID", accountID, "err", result.Err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
+
+		// The read was keyed by the ID inside the caller's prefix, so the
+		// document is theirs and is the one named. Both stay as assertions.
+		if result.Document.SnapshotID != snapshotIDs[i] || result.Document.OwnerID != accountID {
+			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+		}
+
+		// A named snapshot a filter excludes is not-found, as on the listing path.
+		if len(parsedFilters) > 0 && !snapshotMatchesFilters(result.Document, parsedFilters) {
+			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+		}
+
+		snapshots = append(snapshots, snapshotConfigToEC2(result.Document))
 	}
 
 	slog.InfoContext(ctx, "DescribeSnapshots completed", "count", len(snapshots))

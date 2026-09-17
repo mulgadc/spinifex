@@ -229,11 +229,11 @@ const (
 	amiPrefix      = "spinifex/ebsmetadata/v2/amis/"
 )
 
-// listFetchConcurrency bounds the object fetches a single listing may have in
-// flight. A listing costs one round trip per document, so fetching them one at
-// a time makes the call scale with the number of documents in the bucket rather
-// than with the answer's size.
-const listFetchConcurrency = 16
+// FetchConcurrency bounds the object fetches one metadata read may have in
+// flight, whether it is a listing or an explicit-ID fan-out. A fetch costs one
+// round trip per document, so fetching them one at a time makes the call scale
+// with the number of documents rather than with the answer's size.
+const FetchConcurrency = 16
 
 // listFetchTimeout bounds how long one document may hold up a listing. A
 // document whose shards no longer reassemble does not fail quickly — the read
@@ -316,7 +316,7 @@ func listDocuments[T any](
 	}
 
 	results := make([]fetched, len(keys))
-	slots := make(chan struct{}, listFetchConcurrency)
+	slots := make(chan struct{}, FetchConcurrency)
 	var wg sync.WaitGroup
 
 	for i, key := range keys {
@@ -357,6 +357,39 @@ func listDocuments[T any](
 		}
 	}
 	return documents, nil
+}
+
+// FetchResult is one document from an explicit-ID fan-out. Err is that ID's
+// own store error, so a failed read stays attributable to the ID that caused it.
+type FetchResult[T any] struct {
+	Document T
+	Err      error
+}
+
+// FetchByIDs reads one document per ID through get, bounded to the same
+// concurrency a listing uses and positionally aligned with ids so ordering and
+// per-ID errors do not depend on goroutine scheduling.
+//
+// No per-document timeout, unlike a listing: every named document is part of
+// the answer, so the caller's own deadline is the bound.
+func FetchByIDs[T any](ctx context.Context, ids []string, get func(context.Context, string) (T, error)) []FetchResult[T] {
+	results := make([]FetchResult[T], len(ids))
+	slots := make(chan struct{}, FetchConcurrency)
+	var wg sync.WaitGroup
+
+	for i, id := range ids {
+		wg.Add(1)
+		slots <- struct{}{}
+		go func(idx int, id string) {
+			defer wg.Done()
+			defer func() { <-slots }()
+
+			results[idx].Document, results[idx].Err = get(ctx, id)
+		}(i, id)
+	}
+	wg.Wait()
+
+	return results
 }
 
 func (s *Store) PutAMI(ctx context.Context, ami AMI) error {

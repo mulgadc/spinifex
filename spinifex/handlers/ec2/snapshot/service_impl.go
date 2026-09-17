@@ -2,7 +2,6 @@ package handlers_ec2_snapshot
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -835,7 +834,12 @@ func (s *SnapshotServiceImpl) removeSnapshotRef(ctx context.Context, volumeID, s
 		return nil
 	}
 
+	// A removal that finds nothing commits nothing: an identical record would
+	// still bump the revision, waking every watcher and costing the concurrent
+	// writers a CAS attempt each.
+	var removed, nowEmpty bool
 	err := s.snapRefs.Mutate(ctx, volumeID, func(snapshots *[]string) (bool, error) {
+		before := len(*snapshots)
 		filtered := (*snapshots)[:0]
 		for _, snap := range *snapshots {
 			if snap != snapshotID {
@@ -843,7 +847,9 @@ func (s *SnapshotServiceImpl) removeSnapshotRef(ctx context.Context, volumeID, s
 			}
 		}
 		*snapshots = filtered
-		return true, nil
+		removed = len(filtered) != before
+		nowEmpty = len(filtered) == 0
+		return removed, nil
 	})
 	if errors.Is(err, kvstore.ErrNotFound) {
 		return nil
@@ -852,43 +858,40 @@ func (s *SnapshotServiceImpl) removeSnapshotRef(ctx context.Context, volumeID, s
 		return fmt.Errorf("removeSnapshotRef: failed to drop %s from volume %s: %w", snapshotID, volumeID, err)
 	}
 
-	if err := s.dropEmptySnapshotRefs(ctx, volumeID); err != nil {
-		return err
+	// Still runs when nothing was removed, so a key left empty by a lost drop
+	// race is not stranded until the volume gains another snapshot.
+	if nowEmpty {
+		if err := s.dropEmptySnapshotRefs(ctx, volumeID); err != nil {
+			return err
+		}
 	}
 
-	slog.Info("removeSnapshotRef: removed snapshot ref", "volumeId", volumeID, "snapshotId", snapshotID)
+	if removed {
+		slog.Info("removeSnapshotRef: removed snapshot ref", "volumeId", volumeID, "snapshotId", snapshotID)
+	}
 	return nil
 }
 
 // dropEmptySnapshotRefs deletes a volume's index key once nothing references it,
 // so a volume that has lost its last snapshot leaves no key behind.
 //
-// Deliberately on the raw handle: the delete is guarded on the revision the
-// emptiness was observed at, so a CreateSnapshot landing in between keeps its
-// key rather than having it deleted out from under it. A revision-guarded
-// delete is the one operation Store does not express.
+// The delete is guarded on the revision the emptiness was read at, so a
+// CreateSnapshot landing in between keeps its key rather than having it deleted
+// out from under it.
 func (s *SnapshotServiceImpl) dropEmptySnapshotRefs(ctx context.Context, volumeID string) error {
-	kv, err := s.snapRefs.KV(ctx)
+	snapshots, rev, err := s.snapRefs.Get(ctx, volumeID)
 	if err != nil {
-		return fmt.Errorf("dropEmptySnapshotRefs: open bucket for %s: %w", volumeID, err)
-	}
-	entry, err := kv.Get(ctx, volumeID)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, kvstore.ErrNotFound) {
 			return nil
 		}
 		return fmt.Errorf("dropEmptySnapshotRefs: failed to get KV key %s: %w", volumeID, err)
 	}
-	var snapshots []string
-	if err := json.Unmarshal(entry.Value(), &snapshots); err != nil {
-		return fmt.Errorf("dropEmptySnapshotRefs: failed to unmarshal KV value for %s: %w", volumeID, err)
-	}
-	if len(snapshots) > 0 {
+	if len(*snapshots) > 0 {
 		return nil
 	}
-	err = kv.Delete(ctx, volumeID, jetstream.LastRevision(entry.Revision()))
 	// A lost race means a snapshot was added back, so the key has to stay.
-	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) && !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+	if err := s.snapRefs.CompareAndDelete(ctx, volumeID, rev); err != nil &&
+		!errors.Is(err, kvstore.ErrConflict) {
 		return fmt.Errorf("dropEmptySnapshotRefs: failed to delete KV key %s: %w", volumeID, err)
 	}
 	return nil

@@ -209,6 +209,37 @@ func (a *StaticPoolAllocator) initPools(ctx context.Context) error {
 	return nil
 }
 
+// rangesMatch reports whether rec already carries the ranges pool configures.
+func rangesMatch(rec *PoolRecord, pool ExternalPoolConfig) bool {
+	return rec.RangeStart == pool.RangeStart && rec.RangeEnd == pool.RangeEnd &&
+		rec.GwLrpRangeStart == pool.GwLrpRangeStart && rec.GwLrpRangeEnd == pool.GwLrpRangeEnd
+}
+
+// reconcileDrift commits the corrected ranges. Losing the CAS is only benign if
+// the winner stored the ranges this node wanted: an ordinary Allocate or Release
+// on the same key wins the same way and leaves the drift unfixed.
+func (a *StaticPoolAllocator) reconcileDrift(ctx context.Context, pool ExternalPoolConfig,
+	chk *PoolRecord, revision uint64) error {
+	_, err := a.store.CompareAndSet(ctx, pool.Name, chk, revision)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, kvstore.ErrConflict) {
+		slog.WarnContext(ctx, "external IPAM update failed", "pool", pool.Name, "err", err)
+		return err
+	}
+	// Failing the boot over a lost race would take this node down, so an
+	// unreconciled drift is reported rather than returned.
+	cur, _, getErr := a.store.Get(ctx, pool.Name)
+	if getErr != nil || !rangesMatch(cur, pool) {
+		slog.WarnContext(ctx, "external IPAM drift reconcile lost the CAS and the stored ranges still differ",
+			"pool", pool.Name,
+			"want_range", pool.RangeStart+"-"+pool.RangeEnd,
+			"want_gw_lrp_range", pool.GwLrpRangeStart+"-"+pool.GwLrpRangeEnd, "err", getErr)
+	}
+	return nil
+}
+
 func (a *StaticPoolAllocator) initPool(ctx context.Context, pool ExternalPoolConfig) error {
 	chk, revision, err := a.store.Get(ctx, pool.Name)
 
@@ -217,8 +248,7 @@ func (a *StaticPoolAllocator) initPool(ctx context.Context, pool ExternalPoolCon
 	}
 
 	if err == nil {
-		if chk.RangeStart != pool.RangeStart || chk.RangeEnd != pool.RangeEnd ||
-			chk.GwLrpRangeStart != pool.GwLrpRangeStart || chk.GwLrpRangeEnd != pool.GwLrpRangeEnd {
+		if !rangesMatch(chk, pool) {
 			slog.Info("external IPAM pool config drift, reconciling KV",
 				"pool", pool.Name,
 				"old_range", chk.RangeStart+"-"+chk.RangeEnd, "new_range", pool.RangeStart+"-"+pool.RangeEnd,
@@ -230,15 +260,7 @@ func (a *StaticPoolAllocator) initPool(ctx context.Context, pool ExternalPoolCon
 			chk.GwLrpRangeStart = pool.GwLrpRangeStart
 			chk.GwLrpRangeEnd = pool.GwLrpRangeEnd
 
-			// Losing the CAS is another node reconciling the same drift, which
-			// the Create branch below already treats as success for the same
-			// reason. Failing the boot over it would take this node down.
-			if _, err := a.store.CompareAndSet(ctx, pool.Name, chk, revision); err != nil &&
-				!errors.Is(err, kvstore.ErrConflict) {
-				slog.WarnContext(ctx, "external IPAM update failed", "pool", pool.Name, "err", err)
-				return err
-			}
-			return nil
+			return a.reconcileDrift(ctx, pool, chk, revision)
 		}
 		slog.DebugContext(ctx, "external IPAM pool already initialized", "pool", pool.Name)
 		return nil

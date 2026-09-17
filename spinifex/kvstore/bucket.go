@@ -40,6 +40,11 @@ type Config struct {
 	// as instance state is by the owning node's next write.
 	RecreateIfMissing bool
 
+	// AttachOnly opens an existing bucket and never creates one, for a caller
+	// reading buckets it did not make: one deleted between a listing and the
+	// read is then an error rather than a silently recreated empty bucket.
+	AttachOnly bool
+
 	// OnOpen runs after every successful open, including a recovery reopen, so
 	// a recreated bucket is re-stamped rather than left unversioned. Owners
 	// use it to run their schema migrations.
@@ -249,8 +254,11 @@ func (b *Bucket) Delete(ctx context.Context, key string) error {
 }
 
 // CompareAndDelete removes a key only if it is still at rev, returning
-// ErrConflict when it is not. Like Delete, an already-absent key is success:
-// the key being gone is the state the caller was asking for.
+// ErrConflict when it is not.
+//
+// Unlike Delete this is not idempotent: a guarded delete carries an expected
+// last sequence, and an absent, tombstoned or purged key fails that check, so
+// an already-gone key reports ErrConflict rather than success.
 //
 // This is the delete half of CompareAndSet, for a caller undoing a reservation
 // it made — it must remove its own write and not a replacement that landed on
@@ -263,9 +271,6 @@ func (b *Bucket) CompareAndDelete(ctx context.Context, key string, rev uint64) e
 	// Not through withKV: the revision is the caller's, so a replay against a
 	// reopened bucket would be guarded on a revision from the bucket it lost.
 	if err := kv.Delete(ctx, key, jetstream.LastRevision(rev)); err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil
-		}
 		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			return fmt.Errorf("%w: %s", ErrConflict, key)
 		}
@@ -374,6 +379,12 @@ func (b *Bucket) WatchFrom(ctx context.Context, filter string, revision uint64) 
 // open picks the kvutil helper matching the configured TTL and replica count.
 func (b *Bucket) open(ctx context.Context) (jetstream.KeyValue, error) {
 	switch {
+	case b.cfg.AttachOnly:
+		kv, err := b.js.KeyValue(ctx, b.cfg.Name)
+		if err != nil {
+			return nil, fmt.Errorf("open KV bucket %s: %w", b.cfg.Name, err)
+		}
+		return kv, nil
 	case b.cfg.TTL > 0:
 		return kvutil.GetOrCreateBucketWithOptions(ctx, b.js, kvutil.BucketOptions{
 			Name:        b.cfg.Name,

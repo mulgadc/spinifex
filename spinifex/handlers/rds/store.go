@@ -206,6 +206,18 @@ func AccountBucketConfig(accountID string) kvstore.Config {
 	}
 }
 
+// AccountBucketReadConfig describes one tenant's bucket for a cross-tenant pass
+// that only reads it. No OnOpen: a reconcile pass is not where a schema
+// migration should be discovered, and it would bill a version read per account.
+func AccountBucketReadConfig(accountID string) kvstore.Config {
+	return kvstore.Config{
+		Name:       AccountBucketName(accountID),
+		History:    KVBucketRDSAccountHistory,
+		Missing:    "rds service: nil nats connection",
+		AttachOnly: true,
+	}
+}
+
 // SystemBucketConfig describes the cross-tenant bucket holding the instanceID →
 // DB instance reverse index.
 func SystemBucketConfig() kvstore.Config {
@@ -271,7 +283,8 @@ func AccountBucketNames(ctx context.Context, js jetstream.JetStream) ([]string, 
 //
 // The handles are unopened, so a bucket that cannot be reached surfaces from
 // the pass that reads it rather than costing every caller an open it may not
-// need.
+// need. They attach and never create: these passes enumerate the buckets they
+// read, so an absent one means it was deleted under them, not that it is new.
 func AccountBuckets(ctx context.Context, js jetstream.JetStream) ([]*kvstore.Bucket, error) {
 	names, err := AccountBucketNames(ctx, js)
 	if err != nil {
@@ -279,7 +292,7 @@ func AccountBuckets(ctx context.Context, js jetstream.JetStream) ([]*kvstore.Buc
 	}
 	buckets := make([]*kvstore.Bucket, 0, len(names))
 	for _, name := range names {
-		buckets = append(buckets, kvstore.NewBucket(js, AccountBucketConfig(AccountIDFromBucketName(name))))
+		buckets = append(buckets, kvstore.NewBucket(js, AccountBucketReadConfig(AccountIDFromBucketName(name))))
 	}
 	return buckets, nil
 }

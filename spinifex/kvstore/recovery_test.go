@@ -196,6 +196,20 @@ func TestStore_CompareAndSetDoesNotReRun(t *testing.T) {
 	assert.ErrorContains(t, err, "acct-a/one")
 }
 
+// CompareAndDelete guards on the caller's revision, so replaying it against a
+// reopened bucket would delete under a revision from the bucket it lost.
+func TestBucket_CompareAndDeleteDoesNotReRun(t *testing.T) {
+	t.Parallel()
+	_, js, store := newRecoverableStore(t, kvstore.Config{RecreateIfMissing: true})
+	rev, err := store.Create(t.Context(), "acct-a/one", &record{Name: "one"})
+	require.NoError(t, err)
+	loseStream(t, js)
+
+	err = store.CompareAndDelete(t.Context(), "acct-a/one", rev)
+	require.Error(t, err, "a revision-guarded delete must not be replayed onto a reopened bucket")
+	assert.ErrorContains(t, err, "acct-a/one")
+}
+
 // TestBucket_OnOpenRunsOnEveryOpen covers the hook a recreated bucket depends
 // on: an unstamped, unmigrated bucket is not a recovered one.
 func TestBucket_OnOpenRunsOnEveryOpen(t *testing.T) {

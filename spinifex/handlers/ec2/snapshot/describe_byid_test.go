@@ -240,7 +240,46 @@ func TestDescribeSnapshotsByID_CorruptDocumentFailsBothVariants(t *testing.T) {
 	require.Error(t, strictErr)
 	assert.Equal(t, awserrors.ErrorServerInternal, tolerantErr.Error(),
 		"a named snapshot that cannot be decoded must not report as not-found")
-	assert.Equal(t, awserrors.ErrorServerInternal, strictErr.Error())
+	assert.ErrorIs(t, strictErr, ebsmetadata.ErrCorruptDocument,
+		"the strict variant must surface the cause on the fast path as it does on the listing path")
+}
+
+// A store failure anywhere in the fan-out outranks a missing ID, whatever order
+// the request named them in. Answering not-found here would tell a caller its
+// snapshot was deleted on the strength of a broken connection.
+func TestDescribeSnapshotsByID_StoreErrorOutranksAMissingID(t *testing.T) {
+	memory := objectstore.NewMemoryObjectStore()
+	store := &getFailingStore{MemoryObjectStore: memory, failKey: snapshotKey(t, byIDAccount, byIDSnapshot)}
+	svc := newByIDService(store)
+	putByIDSnapshot(t, memory, byIDSnapshotDoc(byIDSnapshot, byIDAccount))
+
+	input := &ec2.DescribeSnapshotsInput{
+		SnapshotIds: aws.StringSlice([]string{"snap-never-created", byIDSnapshot}),
+	}
+	_, tolerantErr := svc.DescribeSnapshots(t.Context(), input, byIDAccount)
+	_, strictErr := svc.DescribeSnapshotsStrict(t.Context(), input, byIDAccount)
+
+	require.Error(t, tolerantErr)
+	require.Error(t, strictErr)
+	assert.Equal(t, awserrors.ErrorServerInternal, tolerantErr.Error())
+	assert.Contains(t, strictErr.Error(), "connection reset by peer")
+}
+
+// The strict variant reports an untenanted caller as the listing path does,
+// rather than flattening the reason the read could not be attempted.
+func TestDescribeSnapshotsByID_UntenantedCallerIsInternalInBothVariants(t *testing.T) {
+	store := recordingstore.New()
+	svc := newByIDService(store)
+	input := &ec2.DescribeSnapshotsInput{SnapshotIds: aws.StringSlice([]string{byIDSnapshot})}
+
+	_, tolerantErr := svc.DescribeSnapshots(t.Context(), input, "")
+	_, strictErr := svc.DescribeSnapshotsStrict(t.Context(), input, "")
+
+	require.Error(t, tolerantErr)
+	require.Error(t, strictErr)
+	assert.Equal(t, awserrors.ErrorServerInternal, tolerantErr.Error())
+	assert.Contains(t, strictErr.Error(), "invalid EBS metadata account ID")
+	assert.Empty(t, store.Gets(), "an untenanted caller has no prefix to read under")
 }
 
 // getFailingStore fails the read of one key with an error that is not a missing

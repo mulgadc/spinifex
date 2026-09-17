@@ -297,6 +297,23 @@ func TestDescribeImagesByID_StoreErrorIsInternal(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
+// A store failure anywhere in the fan-out outranks a missing ID, whatever order
+// the request named them in. Answering not-found here would tell a caller its
+// image was deregistered on the strength of a broken connection.
+func TestDescribeImagesByID_StoreErrorOutranksAMissingID(t *testing.T) {
+	memory := objectstore.NewMemoryObjectStore()
+	store := &getFailingStore{MemoryObjectStore: memory, failKey: amiKey(t, byIDImage)}
+	svc := handlers_ec2_image.NewImageServiceImplWithStore(store, byIDBucket)
+	putByIDAMI(t, memory, byIDAMIDoc(byIDImage, byIDAccount))
+
+	_, err := svc.DescribeImages(t.Context(), &ec2.DescribeImagesInput{
+		ImageIds: aws.StringSlice([]string{"ami-never-registered", byIDImage}),
+	}, byIDAccount)
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
 // A caller that has already given up gets an error, never an empty result that
 // reads as "this image does not exist".
 func TestDescribeImagesByID_CancelledContextFails(t *testing.T) {

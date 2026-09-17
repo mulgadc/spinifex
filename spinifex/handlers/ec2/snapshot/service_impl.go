@@ -458,7 +458,7 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 	}
 
 	if len(input.SnapshotIds) > 0 {
-		return s.describeSnapshotsByIDs(ctx, input, accountID, parsedFilters)
+		return s.describeSnapshotsByIDs(ctx, input, accountID, parsedFilters, strict)
 	}
 
 	// The caller's prefix is the isolation and the whole answer: no other
@@ -511,8 +511,11 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 // The key is scoped to the caller's account, so a cross-tenant ID reads a key
 // that does not exist and reports not-found — the same answer the listing path
 // gives, and for the same reason.
+//
+// strict keeps the control-plane contract the listing path has: the underlying
+// metadata failure is returned rather than flattened to an opaque code.
 func (s *SnapshotServiceImpl) describeSnapshotsByIDs(ctx context.Context, input *ec2.DescribeSnapshotsInput,
-	accountID string, parsedFilters map[string][]string) (*ec2.DescribeSnapshotsOutput, error) {
+	accountID string, parsedFilters map[string][]string, strict bool) (*ec2.DescribeSnapshotsOutput, error) {
 	// Only nil entries names nothing, which the listing path answers with an
 	// empty result rather than a missing ID.
 	snapshotIDs := utils.DistinctIDs(input.SnapshotIds)
@@ -527,9 +530,14 @@ func (s *SnapshotServiceImpl) describeSnapshotsByIDs(ctx context.Context, input 
 	}
 
 	// An untenanted caller has no prefix to read under; refuse here rather than
-	// report a snapshot that may well exist as absent.
+	// report a snapshot that may well exist as absent. The key builder owns the
+	// wording, so the strict variant reports what the listing path reports.
 	if !utils.IsAccountID(accountID) {
+		_, keyErr := ebsmetadata.SnapshotKey(accountID, snapshotIDs[0])
 		slog.ErrorContext(ctx, "DescribeSnapshots refused a caller with no account", "accountID", accountID)
+		if strict {
+			return nil, fmt.Errorf("describe snapshots for %s: %w", accountID, keyErr)
+		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -553,18 +561,29 @@ func (s *SnapshotServiceImpl) describeSnapshotsByIDs(ctx context.Context, input 
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	snapshots := make([]*ec2.Snapshot, 0, len(snapshotIDs))
+	// A named ID is never the unrelated document the tolerant listing's skip
+	// exists for, so an unreadable one fails both variants. A failed read also
+	// outranks a missing one however the request ordered them.
+	var readErr error
 	for i, result := range results {
-		if result.Err != nil {
-			if objectstore.IsNoSuchKeyError(result.Err) {
-				return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
-			}
-			// A named ID is never the unrelated document the tolerant listing's
-			// skip exists for, so an unreadable one fails both variants rather
-			// than reporting the snapshot as absent.
+		if result.Err != nil && !objectstore.IsNoSuchKeyError(result.Err) {
 			slog.ErrorContext(ctx, "DescribeSnapshots failed to read a named snapshot document",
 				"snapshotId", snapshotIDs[i], "accountID", accountID, "err", result.Err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
+			readErr = result.Err
+		}
+	}
+	if readErr != nil {
+		if strict {
+			return nil, fmt.Errorf("describe snapshots for %s: %w", accountID, readErr)
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	snapshots := make([]*ec2.Snapshot, 0, len(snapshotIDs))
+	for i, result := range results {
+		// Every other store error was classified above, so this is a missing key.
+		if result.Err != nil {
+			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 		}
 
 		// The read was keyed by the ID inside the caller's prefix, so the

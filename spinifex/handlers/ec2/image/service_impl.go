@@ -200,14 +200,25 @@ func (s *ImageServiceImpl) describeImagesByIDs(ctx context.Context, input *ec2.D
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	// A failed read outranks a missing one however the request ordered them, so
+	// a broken store is never reported as a deregistered image, and every
+	// failure is logged rather than only the one that happens to come first.
+	var readErr error
+	for i, result := range results {
+		if result.Err != nil && !objectstore.IsNoSuchKeyError(result.Err) {
+			slog.ErrorContext(ctx, "DescribeImages: failed to read AMI document", "imageId", imageIDs[i], "err", result.Err)
+			readErr = result.Err
+		}
+	}
+	if readErr != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	images := make([]*ec2.Image, 0, len(imageIDs))
 	for i, result := range results {
+		// Every other store error was classified above, so this is a missing key.
 		if result.Err != nil {
-			if objectstore.IsNoSuchKeyError(result.Err) {
-				return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
-			}
-			slog.ErrorContext(ctx, "DescribeImages: failed to read AMI document", "imageId", imageIDs[i], "err", result.Err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
+			return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 		}
 
 		// The document is keyed by its own ID, and the enumerating path matches

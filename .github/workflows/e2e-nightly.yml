@@ -1,14 +1,12 @@
 name: E2E Nightly
 
+# Triggered nightly by a Cloudflare Worker that dispatches this workflow once on
+# `dev` and once on `main`, rather than by a `schedule:` here. GitHub registers a
+# schedule only from the default branch, so a cron in this file can never run
+# `main` and `dev` as separate nightlies, and it would always execute `main`'s
+# copy of this file — leaving a fix to the workflow itself untestable until it
+# had already shipped. A dispatch takes both the file and the source from its ref.
 on:
-  schedule:
-    # 14:00 UTC is midnight AEST (01:00 AEDT — cron has no DST), when the
-    # hypervisors are idle. Every day, not weeknights: a weekend gap is two runs
-    # of evidence lost on a suite whose remaining failures are a rate, not a bug.
-    # :17 rather than :00 because GitHub queues scheduled runs behind every other
-    # top-of-hour cron and drops them under load, which is why 2026-09-14 never
-    # fired and why every run in that window started 3h15m-3h45m late.
-    - cron: "17 14 * * *"
   workflow_dispatch:
     inputs:
       cells:

@@ -101,16 +101,13 @@ func eniReservationFor(mode string) int {
 }
 
 // placementFailure converts a placement error into a RunTask failure, naming the
-// resource that bound. The detail is a fixed sentence rather than the wrapped
-// error: a caller acting on the failure needs to know which resource ran out,
-// and the internal identifiers and server error codes in the error text belong
-// in the log, where they are read by someone who can act on them.
+// resource that bound. A capacity refusal carries the reason alone, as AWS does:
+// the reason already says which resource ran out, and the wrapped error's
+// internal identifiers and server error codes belong in the log, where they are
+// read by someone who can act on them.
 func placementFailure(err error) *ecs.Failure {
 	if errors.Is(err, ErrNoENICapacity) {
-		return &ecs.Failure{
-			Reason: aws.String(failureResourceENI),
-			Detail: aws.String("no container instance has a free network interface for this task"),
-		}
+		return &ecs.Failure{Reason: aws.String(failureResourceENI)}
 	}
 	return &ecs.Failure{
 		Reason: aws.String("RESOURCE:placement"),

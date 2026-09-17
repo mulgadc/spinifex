@@ -1,3 +1,7 @@
+// unexported, and the reservation they maintain is only observable from inside
+// the package before a task reaches the API surface.
+//
+//test:in-package — placeTask and InstanceRecord's slot arithmetic are
 package handlers_ecs
 
 import (
@@ -109,8 +113,10 @@ func TestRunTask_Awsvpc_ThirdTaskDeclinedAtPlacement(t *testing.T) {
 	// The point of moving the check to placement: no ENI is created for a task
 	// that cannot be placed, so an over-subscribed service stops churning them.
 	assert.Equal(t, allocsBefore, eni.allocCalls)
-	assert.NotContains(t, aws.StringValue(out.Failures[0].Detail), "ServerInternal")
-	assert.NotContains(t, aws.StringValue(out.Failures[0].Detail), "i-1")
+
+	// A capacity refusal is the reason alone, as AWS sends it, so a caller sees
+	// no internal identifier and no server error code.
+	assert.Nil(t, out.Failures[0].Detail)
 }
 
 func TestStartTask_Awsvpc_DeclinedWhenInstanceHasNoSlot(t *testing.T) {

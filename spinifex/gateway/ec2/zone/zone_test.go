@@ -51,30 +51,35 @@ func TestDescribeAvailabilityZones(t *testing.T) {
 
 func TestDescribeRegions(t *testing.T) {
 	tests := []struct {
-		name   string
-		region string
+		name     string
+		region   string
+		endpoint string
 	}{
 		{
-			name:   "Sydney",
-			region: "ap-southeast-2",
+			name:     "Sydney",
+			region:   "ap-southeast-2",
+			endpoint: "https://10.0.0.5:9999",
 		},
 		{
-			name:   "US East",
-			region: "us-east-1",
+			name:     "US East",
+			region:   "us-east-1",
+			endpoint: "https://gw.example.com:9999",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			input := &ec2.DescribeRegionsInput{}
-			output, err := DescribeRegions(input, tt.region)
+			output, err := DescribeRegions(input, tt.region, tt.endpoint)
 
 			require.NoError(t, err)
 			require.NotNil(t, output)
 			require.Len(t, output.Regions, 1)
 
 			region := output.Regions[0]
-			assert.Equal(t, "https://localhost:9999", *region.Endpoint)
+			// The endpoint is resolved by the caller and must be echoed back
+			// verbatim, never a literal this function invents itself.
+			assert.Equal(t, tt.endpoint, *region.Endpoint)
 			assert.Equal(t, tt.region, *region.RegionName)
 			assert.Equal(t, "opt-in-not-required", *region.OptInStatus)
 		})

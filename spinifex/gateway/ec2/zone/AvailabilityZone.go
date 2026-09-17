@@ -26,11 +26,15 @@ func DescribeAvailabilityZones(input *ec2.DescribeAvailabilityZonesInput, region
 	return output, nil
 }
 
-func DescribeRegions(input *ec2.DescribeRegionsInput, region string) (output *ec2.DescribeRegionsOutput, err error) {
+// DescribeRegions reports the current Region and the endpoint a caller can
+// actually dial. endpoint is resolved by the caller from the gateway's own
+// advertised host, never hardcoded here, so a workload doing endpoint
+// discovery through this API is never pointed at its own loopback.
+func DescribeRegions(input *ec2.DescribeRegionsInput, region string, endpoint string) (output *ec2.DescribeRegionsOutput, err error) {
 	output = &ec2.DescribeRegionsOutput{
 		Regions: []*ec2.Region{
 			{
-				Endpoint:    aws.String("https://localhost:9999"),
+				Endpoint:    aws.String(endpoint),
 				RegionName:  aws.String(region),
 				OptInStatus: aws.String("opt-in-not-required"),
 			},

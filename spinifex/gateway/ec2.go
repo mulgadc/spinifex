@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"uuid"
@@ -141,6 +142,28 @@ func ec2HandlerWithReq[In any](handler func(ctx context.Context, input *In, gw *
 			return xmlOutput, nil
 		},
 	}
+}
+
+// advertisedEndpoint returns this gateway's own reachable base URL for
+// DescribeRegions: the same host:port RegistryHost/RegistryPort already
+// advertise for ECR (concrete AWSGW bind host, else AdvertiseIP), so a
+// workload asking for its own Region's endpoint gets an address it can
+// actually dial rather than the gateway's own loopback. Falls back to
+// localhost:9999 only when no concrete host is configured at all, which is
+// also the only case where the caller and the gateway are the same host.
+func (gw *GatewayConfig) advertisedEndpoint() string {
+	host := gw.RegistryHost
+	if host == "" {
+		host = "localhost"
+	}
+	port := gw.RegistryPort
+	if port == "" {
+		port = "9999"
+	}
+	if port == "443" {
+		return "https://" + host
+	}
+	return "https://" + net.JoinHostPort(host, port)
 }
 
 var ec2Actions = map[string]ec2Action{
@@ -293,7 +316,7 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_image.ResetImageAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeRegions": ec2Handler(func(ctx context.Context, input *ec2.DescribeRegionsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_zone.DescribeRegions(input, gw.Region)
+		return gateway_ec2_zone.DescribeRegions(input, gw.Region, gw.advertisedEndpoint())
 	}),
 	"DescribeAvailabilityZones": ec2Handler(func(ctx context.Context, input *ec2.DescribeAvailabilityZonesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_zone.DescribeAvailabilityZones(input, gw.Region, gw.AZ)

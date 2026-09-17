@@ -21,7 +21,7 @@ func TestDesiredServiceEndpointDNSChanges_SpansEveryNode(t *testing.T) {
 		config:       &config.Config{Node: "node1", Region: "ap-southeast-2"},
 		clusterConfig: &config.ClusterConfig{
 			Node: "node1",
-			AWS:  config.AWSConfig{InternalSuffix: "spinifex.internal"},
+			AWS:  config.AWSConfig{ServicesDomain: "spinifex.internal"},
 			Nodes: map[string]config.Config{
 				"node1": {Node: "node1", AdvertiseIP: "203.0.113.10"},
 				"node2": {Node: "node2", AdvertiseIP: "203.0.113.20"},
@@ -46,7 +46,7 @@ func TestDesiredServiceEndpointDNSChanges_LocalNodeUsesLiveMgmtBridge(t *testing
 		config:       &config.Config{Node: "node1", Region: "us-east-1"},
 		clusterConfig: &config.ClusterConfig{
 			Node: "node1",
-			AWS:  config.AWSConfig{InternalSuffix: "spinifex.internal"},
+			AWS:  config.AWSConfig{ServicesDomain: "spinifex.internal"},
 			Nodes: map[string]config.Config{
 				// No AdvertiseIP, no AWSGW host: only the live mgmt-bridge IP
 				// (local-only) resolves this node's own address.
@@ -68,7 +68,7 @@ func TestDesiredServiceEndpointDNSChanges_SkipsNonIPHosts(t *testing.T) {
 		config: &config.Config{Node: "node1", Region: "us-east-1"},
 		clusterConfig: &config.ClusterConfig{
 			Node: "node1",
-			AWS:  config.AWSConfig{InternalSuffix: "spinifex.internal"},
+			AWS:  config.AWSConfig{ServicesDomain: "spinifex.internal"},
 			Nodes: map[string]config.Config{
 				"node1": {Node: "node1", AdvertiseIP: "not-an-ip-literal"},
 				"node2": {Node: "node2", AdvertiseIP: "203.0.113.20"},
@@ -110,7 +110,7 @@ func TestDNSDesiredSet_ServiceEndpointAuthorityFollowsTheRecords(t *testing.T) {
 		config: &config.Config{Node: "node1", Region: "us-east-1"},
 		clusterConfig: &config.ClusterConfig{
 			Node: "node1",
-			AWS:  config.AWSConfig{InternalSuffix: "spinifex.internal"},
+			AWS:  config.AWSConfig{ServicesDomain: "spinifex.internal"},
 			Nodes: map[string]config.Config{
 				"node1": {Node: "node1", AdvertiseIP: "203.0.113.10"},
 			},

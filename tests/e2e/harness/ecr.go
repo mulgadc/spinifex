@@ -10,13 +10,16 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/stretchr/testify/require"
 )
 
 // ECRRegistrySuffix is the internal DNS suffix the registry host is built from.
-// Defaults to the gateway's DefaultAWSInternalSuffix; override per cluster with
+// Defaults to the gateway's DefaultAWSServicesDomain; override per cluster with
 // SPINIFEX_ECR_SUFFIX.
-func ECRRegistrySuffix() string { return getenv("SPINIFEX_ECR_SUFFIX", "spinifex.internal") }
+func ECRRegistrySuffix() string {
+	return getenv("SPINIFEX_ECR_SUFFIX", config.DefaultAWSServicesDomain)
+}
 
 // ECRRegistryRegion is the region label in the registry host. Mirrors the AWS
 // client region.

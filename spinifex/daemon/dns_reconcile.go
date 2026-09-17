@@ -115,7 +115,7 @@ func (d *Daemon) dnsDesiredSet() handlers_dns.DesiredSet {
 }
 
 // desiredServiceEndpointDNSChanges returns the set-valued UPSERT publishing
-// every AWS service endpoint name under AWS.InternalSuffix to the addresses of
+// every AWS service endpoint name under AWS.ServicesDomain to the addresses of
 // every cluster node that can serve one, and whether the cluster topology used
 // to build it was readable. Unlike EC2/ELB/EKS/RDS, whose target is a single
 // resource address that answers the same from anywhere, a service endpoint's
@@ -131,7 +131,7 @@ func (d *Daemon) desiredServiceEndpointDNSChanges() ([]handlers_dns.Change, bool
 	if d.clusterConfig == nil {
 		return nil, false
 	}
-	suffix := strings.TrimSpace(d.clusterConfig.AWS.InternalSuffix)
+	suffix := strings.TrimSpace(d.clusterConfig.AWS.ServicesDomain)
 	if suffix == "" {
 		return nil, false
 	}

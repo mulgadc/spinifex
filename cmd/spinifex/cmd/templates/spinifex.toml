@@ -10,7 +10,7 @@ email = "{{.OperatorEmail}}"
 
 [aws]
 region = "{{.Region}}"
-internal_suffix = "spinifex.internal"
+services_domain = "services.internal"
 
 [network]
 ipsec_enabled = {{.IPSecEnabled}}

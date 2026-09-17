@@ -107,7 +107,7 @@ func BootstrapBaseZone(configPath string, cluster *config.ClusterConfig) error {
 	// NXDOMAINing until the reconciler's on-demand materialisation runs. Guard
 	// is three-way now that there are three zones: skip only if the suffix
 	// collides with one already seeded above, not just the base domain.
-	suffix := strings.TrimSpace(cluster.AWS.InternalSuffix)
+	suffix := strings.TrimSpace(cluster.AWS.ServicesDomain)
 	if suffix != "" && suffix != domain && suffix != internal {
 		if err := ensureZone(s3cfg, nsconfig.BaseZoneSeed{
 			Domain:      suffix,

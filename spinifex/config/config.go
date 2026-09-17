@@ -22,12 +22,17 @@ type ClusterConfig struct {
 }
 
 // Defaults for cluster-wide AWS-parity settings.
+//
+// DefaultAWSServicesDomain is role-named like its sibling zone compute.internal,
+// which holds per-instance hostnames: services.internal holds service
+// endpoints instead. Legacy clusters may still carry the old internal_suffix
+// key/value (spinifex.internal) in their config; see LoadConfig.
 const (
 	DefaultAWSRegion         = "us-east-1"
-	DefaultAWSInternalSuffix = "spinifex.internal"
+	DefaultAWSServicesDomain = "services.internal"
 )
 
-// AWSGWServiceNames lists every AWS service published under AWS.InternalSuffix
+// AWSGWServiceNames lists every AWS service published under AWS.ServicesDomain
 // in the shape {service}.{region}.{suffix}, minted both as a gateway cert SAN
 // (admin.AWSGWServiceDNSNames) and as a DNS A record (handlers/dns's
 // ServiceEndpointNames). One list feeds both so the SANs and the records can
@@ -44,11 +49,17 @@ var AWSGWServiceNames = []string{"ec2", "sts", "elasticloadbalancing", "ecs", "e
 const DefaultMgmtBridgeIP = "10.15.8.1"
 
 // AWSConfig holds cluster-wide AWS-parity settings shared across services.
-// Region scopes the default AWS region; InternalSuffix is the internal DNS
-// suffix used to build service endpoints (e.g. ecr.{region}.{suffix}).
+// Region scopes the default AWS region; ServicesDomain is the domain IMDS
+// serves at /latest/meta-data/services/domain, the slot an AWS SDK substitutes
+// into {service}.{region}.{domain} for default endpoint resolution (e.g.
+// ecr.{region}.{domain}).
 type AWSConfig struct {
-	Region         string `mapstructure:"region"`
-	InternalSuffix string `mapstructure:"internal_suffix"`
+	Region string `mapstructure:"region"`
+	// ServicesDomain replaces the legacy internal_suffix key; LoadConfig reads
+	// the old key as a fallback so upgraded clusters with internal_suffix
+	// baked into their config and gateway cert SANs keep resolving the same
+	// names.
+	ServicesDomain string `mapstructure:"services_domain"`
 }
 
 // ExternalPool defines a range of routable IPs that Spinifex manages for public subnets.
@@ -515,8 +526,10 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	// "explicitly false"; the install path's mode file resolves the unset case.
 
 	// Cluster-wide AWS-parity defaults so existing deployments keep working.
+	// aws.services_domain has no viper default: it must stay empty after
+	// Unmarshal when unset so the legacy internal_suffix fallback below and the
+	// final default backfill can tell "unset" apart from "explicitly set".
 	viper.SetDefault("aws.region", DefaultAWSRegion)
-	viper.SetDefault("aws.internal_suffix", DefaultAWSInternalSuffix)
 
 	// Try to load config file if it exists
 	if configPath != "" {
@@ -544,8 +557,18 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	if config.AWS.Region == "" {
 		config.AWS.Region = DefaultAWSRegion
 	}
-	if config.AWS.InternalSuffix == "" {
-		config.AWS.InternalSuffix = DefaultAWSInternalSuffix
+	// Precedence: services_domain, then the legacy internal_suffix key, then
+	// the default. A deployed cluster's /etc/spinifex/spinifex.toml may still
+	// carry internal_suffix, and its gateway cert SANs were built from that
+	// value, so an upgraded binary must keep reading it rather than silently
+	// falling through to DefaultAWSServicesDomain.
+	if config.AWS.ServicesDomain == "" {
+		if legacy := strings.TrimSpace(viper.GetString("aws.internal_suffix")); legacy != "" {
+			config.AWS.ServicesDomain = legacy
+		}
+	}
+	if config.AWS.ServicesDomain == "" {
+		config.AWS.ServicesDomain = DefaultAWSServicesDomain
 	}
 
 	// Rewrite 0.0.0.0 in Predastore.Host to 127.0.0.1 for the local node only (not a valid connect address).

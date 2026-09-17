@@ -63,7 +63,7 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 	internalSuffix := ""
 	clusterSize := 1
 	if d.clusterConfig != nil {
-		internalSuffix = d.clusterConfig.AWS.InternalSuffix
+		internalSuffix = d.clusterConfig.AWS.ServicesDomain
 		clusterSize = len(d.clusterConfig.Nodes)
 	}
 

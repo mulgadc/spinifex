@@ -239,7 +239,7 @@ func AWSGWServiceDNSNames(region, suffix string) []string {
 // peer certs, and CA-baked AMIs — so it is regenerated only when absent, never on
 // force. The CA-signed server cert is cheap to reissue, so force refreshes it to
 // pick up a changed bind IP / SANs while keeping the CA (and all trust) intact.
-func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, awsRegion, internalSuffix string) (caCertPath string) {
+func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, awsRegion, servicesDomain string) (caCertPath string) {
 	caCertPath = filepath.Join(configDir, "ca.pem")
 	caKeyPath := filepath.Join(configDir, "ca.key")
 	serverCertPath := filepath.Join(configDir, "server.pem")
@@ -267,7 +267,7 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, a
 	}
 
 	if force || !FileExists(serverCertPath) || !FileExists(serverKeyPath) {
-		extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
+		extraDNS := AWSGWServiceDNSNames(awsRegion, servicesDomain)
 		// Always pin the canonical mgmt-bridge IP; the control plane publishes to
 		// it regardless of whether br-mgmt is up when this cert is minted.
 		extraIPs := []string{bindIP, config.DefaultMgmtBridgeIP}
@@ -313,8 +313,8 @@ func TenantCAKeyPath(configDir string) string {
 
 // GenerateServerCertOnly generates a server certificate signed by an existing CA.
 // Used by joining nodes that receive the CA from the leader. awsRegion and
-// internalSuffix add the AWS-parity ECR SANs; empty values omit them.
-func GenerateServerCertOnly(configDir string, bindIP, awsRegion, internalSuffix string) error {
+// servicesDomain add the AWS-parity ECR SANs; empty values omit them.
+func GenerateServerCertOnly(configDir string, bindIP, awsRegion, servicesDomain string) error {
 	caCertPath := filepath.Join(configDir, "ca.pem")
 	caKeyPath := filepath.Join(configDir, "ca.key")
 	serverCertPath := filepath.Join(configDir, "server.pem")
@@ -324,7 +324,7 @@ func GenerateServerCertOnly(configDir string, bindIP, awsRegion, internalSuffix 
 		return fmt.Errorf("CA files not found in %s", configDir)
 	}
 
-	extraDNS := AWSGWServiceDNSNames(awsRegion, internalSuffix)
+	extraDNS := AWSGWServiceDNSNames(awsRegion, servicesDomain)
 	// Always pin the canonical mgmt-bridge IP (see GenerateCertificatesIfNeeded).
 	extraIPs := []string{bindIP, config.DefaultMgmtBridgeIP}
 	return GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS)

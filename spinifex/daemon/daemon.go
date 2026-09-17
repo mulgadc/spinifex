@@ -1809,7 +1809,7 @@ func (d *Daemon) startCluster() error {
 	// scheduler goroutine that owns the Layer-2 bus subscriptions and heartbeat
 	// reaper. The scheduler is disabled (handlers still serve) when JetStream is
 	// unavailable.
-	d.ecsService = handlers_ecs.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.InternalSuffix).WithDeps(d.buildECSServiceDeps())
+	d.ecsService = handlers_ecs.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.ServicesDomain).WithDeps(d.buildECSServiceDeps())
 	if js, jsErr := jetstream.New(d.natsConn); jsErr != nil {
 		slog.Warn("ECS scheduler disabled: JetStream unavailable", "err", jsErr)
 	} else if _, lbErr := handlers_ecs.InitLeaderBucket(d.ctx, js); lbErr != nil {

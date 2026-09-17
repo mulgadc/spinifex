@@ -250,7 +250,7 @@ secret_key = "READONLY"
 }
 
 // TestBootstrapBaseZoneSeedsTheServiceEndpointSuffix covers the third zone:
-// AWS.InternalSuffix must be seeded alongside the base and private zones so
+// AWS.ServicesDomain must be seeded alongside the base and private zones so
 // service-endpoint names resolve from first boot, and re-running must stay
 // idempotent like the other two.
 func TestBootstrapBaseZoneSeedsTheServiceEndpointSuffix(t *testing.T) {
@@ -269,7 +269,7 @@ secret_key = "READONLY"
 
 	cluster := &config.ClusterConfig{
 		Node: "node1",
-		AWS:  config.AWSConfig{InternalSuffix: "spinifex.internal"},
+		AWS:  config.AWSConfig{ServicesDomain: "spinifex.internal"},
 		Nodes: map[string]config.Config{
 			"node1": {
 				Host:       "10.11.12.1",
@@ -309,7 +309,7 @@ secret_key = "READONLY"
 
 		cluster := &config.ClusterConfig{
 			Node: "node1",
-			AWS:  config.AWSConfig{InternalSuffix: "spx3.net"},
+			AWS:  config.AWSConfig{ServicesDomain: "spx3.net"},
 			Nodes: map[string]config.Config{
 				"node1": {
 					Host:       "10.11.12.1",
@@ -338,7 +338,7 @@ secret_key = "READONLY"
 
 		cluster := &config.ClusterConfig{
 			Node: "node1",
-			AWS:  config.AWSConfig{InternalSuffix: "compute.internal"},
+			AWS:  config.AWSConfig{ServicesDomain: "compute.internal"},
 			Nodes: map[string]config.Config{
 				"node1": {
 					Host:       "10.11.12.1",

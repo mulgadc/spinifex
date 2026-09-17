@@ -342,7 +342,7 @@ func launchService(config *config.ClusterConfig) error {
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: load signing key: %w", err)
 	}
-	ecrAudience := "ecr." + nodeConfig.Region + "." + config.AWS.InternalSuffix
+	ecrAudience := "ecr." + nodeConfig.Region + "." + config.AWS.ServicesDomain
 
 	// The ECR registry is served on this gateway's own host:port; advertise both so
 	// docker login/tag/push reach it without DNS — the account comes from the auth
@@ -495,7 +495,7 @@ func launchService(config *config.ClusterConfig) error {
 		ExpectedNodes:           len(config.Nodes),
 		NodeIDs:                 nodeIDs,
 		Region:                  nodeConfig.Region,
-		InternalSuffix:          config.AWS.InternalSuffix,
+		InternalSuffix:          config.AWS.ServicesDomain,
 		RegistryPort:            registryPort,
 		RegistryHost:            registryHost,
 		AZ:                      nodeConfig.AZ,

@@ -113,7 +113,7 @@ func TestConnectivity(t *testing.T) {
 
 	// The AWS service endpoints share nothing with the RDS instance under test
 	// except the guest's resolver: they are cluster-wide names published under
-	// AWS.InternalSuffix, so any DB instance's client VM proves them. A lookup
+	// AWS.ServicesDomain, so any DB instance's client VM proves them. A lookup
 	// from the runner would prove nothing here either, for the same reason as
 	// the endpoint name above — the runner's resolver is not the guest's.
 	t.Run("TheServiceEndpointNamesResolveInTheGuest", func(t *testing.T) {

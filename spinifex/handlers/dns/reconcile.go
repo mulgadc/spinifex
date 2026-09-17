@@ -52,7 +52,7 @@ type PruneScope struct {
 	EC2 bool
 
 	// ServiceEndpoint covers the AWS service-parity names published under
-	// AWS.InternalSuffix (ec2.{region}.{suffix} and friends). It is set
+	// AWS.ServicesDomain (ec2.{region}.{suffix} and friends). It is set
 	// whenever the cluster topology used to build the address set was
 	// readable, since that view is always cluster-wide by construction.
 	ServiceEndpoint bool
@@ -81,7 +81,7 @@ type Reconciler struct {
 	// as well as the base domain because pruning one zone and not the other
 	// leaves every stale private record behind.
 	internalDomain string
-	// serviceZone is AWS.InternalSuffix, the zone the service-endpoint class
+	// serviceZone is AWS.ServicesDomain, the zone the service-endpoint class
 	// lands in. Distinct from both baseDomain and internalDomain, so pruning it
 	// needs its own read the same way internalDomain does for EC2.
 	serviceZone string
@@ -121,7 +121,7 @@ func NewReconciler(cfg *config.Config, cluster *config.ClusterConfig, nc *nats.C
 	r.baseDomain = strings.TrimSpace(zoneCfg.server.DefaultDomain)
 	r.internalDomain = ResolveInternalDomain(cfg)
 	if cluster != nil {
-		r.serviceZone = strings.TrimSpace(cluster.AWS.InternalSuffix)
+		r.serviceZone = strings.TrimSpace(cluster.AWS.ServicesDomain)
 	}
 	return r
 }

@@ -105,7 +105,7 @@ func TestLoadConfig_AWSDefaults(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	assert.Equal(t, DefaultAWSRegion, cfg.AWS.Region)
-	assert.Equal(t, DefaultAWSInternalSuffix, cfg.AWS.InternalSuffix)
+	assert.Equal(t, DefaultAWSServicesDomain, cfg.AWS.ServicesDomain)
 }
 
 func TestLoadConfig_AWSOverride(t *testing.T) {
@@ -118,7 +118,7 @@ node = "n1"
 
 [aws]
 region = "ap-southeast-2"
-internal_suffix = "dev.local"
+services_domain = "dev.local"
 
 [nodes.n1]
 region = "ap-southeast-2"
@@ -128,7 +128,57 @@ region = "ap-southeast-2"
 	cfg, err := LoadConfig(path)
 	require.NoError(t, err)
 	assert.Equal(t, "ap-southeast-2", cfg.AWS.Region)
-	assert.Equal(t, "dev.local", cfg.AWS.InternalSuffix)
+	assert.Equal(t, "dev.local", cfg.AWS.ServicesDomain)
+}
+
+// TestLoadConfig_AWSServicesDomain_LegacyFallback pins the upgrade path: a
+// deployed cluster's config still carries the legacy internal_suffix key, and
+// its gateway cert SANs were built from that exact value, so LoadConfig must
+// read it rather than silently falling through to DefaultAWSServicesDomain.
+func TestLoadConfig_AWSServicesDomain_LegacyFallback(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[aws]
+internal_suffix = "spinifex.internal"
+
+[nodes.n1]
+region = "us-east-1"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, "spinifex.internal", cfg.AWS.ServicesDomain)
+	assert.NotEqual(t, DefaultAWSServicesDomain, cfg.AWS.ServicesDomain)
+}
+
+// TestLoadConfig_AWSServicesDomain_PrecedesLegacy confirms that when both keys
+// are set, the new services_domain key wins over the legacy internal_suffix.
+func TestLoadConfig_AWSServicesDomain_PrecedesLegacy(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[aws]
+services_domain = "new.internal"
+internal_suffix = "spinifex.internal"
+
+[nodes.n1]
+region = "us-east-1"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, "new.internal", cfg.AWS.ServicesDomain)
 }
 
 func TestLoadConfig_NonexistentFile(t *testing.T) {

@@ -1439,7 +1439,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	// Generate SSL certificates (with bind IP in SANs for multi-node support)
-	certPath := admin.GenerateCertificatesIfNeeded(configDir, force, bindIP, region, config.DefaultAWSInternalSuffix)
+	certPath := admin.GenerateCertificatesIfNeeded(configDir, force, bindIP, region, config.DefaultAWSServicesDomain)
 
 	// Generate per-node IPsec peer cert when cluster-wide IPsec is enabled
 	// (default true). Reuses the cluster CA — no intermediate strongSwan PKI.
@@ -2423,7 +2423,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	}
 
 	// Generate server cert signed by CA with this node's bind IP
-	if err := admin.GenerateServerCertOnly(configDir, bindIP, region, config.DefaultAWSInternalSuffix); err != nil {
+	if err := admin.GenerateServerCertOnly(configDir, bindIP, region, config.DefaultAWSServicesDomain); err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
 		os.Exit(1)
 	}

@@ -97,6 +97,15 @@ func unmarshalClusterConfig(v *viper.Viper) (*config.ClusterConfig, error) {
 	if err := v.Unmarshal(&cc); err != nil {
 		return nil, err
 	}
+	// Mirror config.LoadConfig's legacy fallback: a cluster upgraded from an
+	// older release may still carry internal_suffix rather than
+	// services_domain, and this harness has to see the same value the daemon
+	// resolved rather than silently disagreeing with it.
+	if cc.AWS.ServicesDomain == "" {
+		if legacy := strings.TrimSpace(v.GetString("aws.internal_suffix")); legacy != "" {
+			cc.AWS.ServicesDomain = legacy
+		}
+	}
 	return &cc, nil
 }
 

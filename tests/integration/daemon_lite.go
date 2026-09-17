@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
 
@@ -108,7 +109,12 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 	}
 
 	keySvc := handlers_ec2_key.NewKeyServiceImplWithStore(memStore, cfg.Predastore.Bucket)
-	tagsSvc := handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore)
+
+	tagsJS, err := jetstream.New(nc)
+	require.NoError(t, err, "jetstream handle for the tag store")
+	tagsKV, err := handlers_ec2_tags.GetOrCreateTagsBucket(t.Context(), tagsJS)
+	require.NoError(t, err, "tag store bucket")
+	tagsSvc := handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore, tagsKV)
 
 	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct VPC service")

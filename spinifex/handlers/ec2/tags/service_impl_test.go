@@ -10,11 +10,25 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const testAccountID = "111111111111"
+
+// testTagsBucket returns a bucket backed by an embedded JetStream, so these
+// tests exercise the same compare-and-swap the cluster does rather than a stub
+// that cannot lose a race.
+func testTagsBucket(t *testing.T) jetstream.KeyValue {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	kv, err := GetOrCreateTagsBucket(t.Context(), js)
+	require.NoError(t, err)
+	return kv
+}
 
 // setupTestTagsService creates a tags service with in-memory storage for testing.
 func setupTestTagsService(t *testing.T) (*TagsServiceImpl, *objectstore.MemoryObjectStore) {
@@ -25,7 +39,7 @@ func setupTestTagsService(t *testing.T) (*TagsServiceImpl, *objectstore.MemoryOb
 		},
 	}
 
-	svc := NewTagsServiceImplWithStore(cfg, store)
+	svc := NewTagsServiceImplWithStore(cfg, store, testTagsBucket(t))
 	return svc, store
 }
 

@@ -1594,7 +1594,17 @@ func (d *Daemon) startCluster() error {
 	if err := d.configureEBSProvider(); err != nil {
 		return fmt.Errorf("configure EBS provider: %w", err)
 	}
-	d.tagsService = handlers_ec2_tags.NewTagsServiceImpl(d.config)
+	tagsKV, err := initServiceWithRetry("tags KV bucket", func() (jetstream.KeyValue, error) {
+		tagsJS, jsErr := jetstream.New(d.natsConn)
+		if jsErr != nil {
+			return nil, fmt.Errorf("jetstream handle: %w", jsErr)
+		}
+		return handlers_ec2_tags.GetOrCreateTagsBucket(d.ctx, tagsJS)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get tags KV bucket: %w", err)
+	}
+	d.tagsService = handlers_ec2_tags.NewTagsServiceImpl(d.config, tagsKV)
 
 	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*handlers_ec2_eigw.EgressOnlyIGWServiceImpl, error) {
 		return handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)

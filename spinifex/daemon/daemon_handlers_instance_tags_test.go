@@ -30,7 +30,7 @@ func tagTestDaemon(t *testing.T, instanceID string, initial map[string]string) *
 func tagTestDaemonWithStopped(t *testing.T, instanceID string, initial map[string]string) (*Daemon, *vmmock.StateStore) {
 	t.Helper()
 	d := createTestDaemon(t, sharedNATSURL)
-	d.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore())
+	d.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore(), testTagsKV(t))
 
 	stopped := vmmock.New()
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(

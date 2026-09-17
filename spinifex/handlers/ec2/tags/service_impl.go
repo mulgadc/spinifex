@@ -1,13 +1,15 @@
 package handlers_ec2_tags
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
-	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -17,8 +19,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Ensure TagsServiceImpl implements TagsService.
@@ -27,17 +31,22 @@ var _ TagsService = (*TagsServiceImpl)(nil)
 // Ensure TagsServiceImpl can project instance record tags into the store.
 var _ handlers_ec2_instance.InstanceTagWriter = (*TagsServiceImpl)(nil)
 
-// TagsServiceImpl implements TagsService with S3-backed storage.
-// Tags are stored per-account in S3 (tags/{accountID}/{resourceID}.json),
-// so account scoping is enforced at the storage layer.
+// TagsServiceImpl implements TagsService over a JetStream KV bucket, one entry
+// per resource, scoped by account in the key.
+//
+// The bucket replaced a per-resource S3 object because a tag write is a
+// read-modify-write of the whole set and the handler answers on a cluster-wide
+// queue group: only a compare-and-swap keeps two nodes from losing each other's
+// keys. The object store is still held to read resources written before the
+// move; nothing writes to it.
 type TagsServiceImpl struct {
 	config *config.Config
 	store  objectstore.ObjectStore
-	mutex  sync.RWMutex
+	kv     jetstream.KeyValue
 }
 
 // NewTagsServiceImpl creates a new tags service implementation.
-func NewTagsServiceImpl(cfg *config.Config) *TagsServiceImpl {
+func NewTagsServiceImpl(cfg *config.Config, kv jetstream.KeyValue) *TagsServiceImpl {
 	store := objectstore.NewS3ObjectStoreFromConfig(
 		cfg.Predastore.Host,
 		cfg.Predastore.Region,
@@ -48,14 +57,16 @@ func NewTagsServiceImpl(cfg *config.Config) *TagsServiceImpl {
 	return &TagsServiceImpl{
 		config: cfg,
 		store:  store,
+		kv:     kv,
 	}
 }
 
 // NewTagsServiceImplWithStore creates a tags service with a custom ObjectStore (for testing).
-func NewTagsServiceImplWithStore(cfg *config.Config, store objectstore.ObjectStore) *TagsServiceImpl {
+func NewTagsServiceImplWithStore(cfg *config.Config, store objectstore.ObjectStore, kv jetstream.KeyValue) *TagsServiceImpl {
 	return &TagsServiceImpl{
 		config: cfg,
 		store:  store,
+		kv:     kv,
 	}
 }
 
@@ -80,13 +91,41 @@ func getTagsPrefix(accountID string) string {
 	return "tags/" + accountID + "/"
 }
 
-// getResourceTags retrieves tags for a specific resource from S3.
-func (s *TagsServiceImpl) getResourceTags(ctx context.Context, accountID, resourceID string) (map[string]string, error) {
-	key := getTagsKey(accountID, resourceID)
+// decodeTags decodes a stored tag map into a non-nil map, so a stored JSON
+// "null" (which Unmarshal leaves untouched without error) yields an empty map
+// rather than a nil one a caller would panic on when indexing.
+func decodeTags(data []byte) (map[string]string, error) {
+	tags := make(map[string]string)
+	if len(data) == 0 {
+		return tags, nil
+	}
+	if err := json.Unmarshal(data, &tags); err != nil {
+		return nil, err
+	}
+	if tags == nil {
+		tags = make(map[string]string)
+	}
+	return tags, nil
+}
+
+func encodeTags(tags map[string]string) ([]byte, error) {
+	if tags == nil {
+		tags = make(map[string]string)
+	}
+	return json.Marshal(tags)
+}
+
+// legacyTags reads a resource's tags from the object store the tag index used
+// before it moved to KV. An absent object means the resource was never written
+// there, which is the ordinary case for anything tagged since.
+func (s *TagsServiceImpl) legacyTags(ctx context.Context, accountID, resourceID string) (map[string]string, error) {
+	if s.store == nil {
+		return make(map[string]string), nil
+	}
 
 	result, err := s.store.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.config.Predastore.Bucket),
-		Key:    aws.String(key),
+		Key:    aws.String(getTagsKey(accountID, resourceID)),
 	})
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
@@ -96,53 +135,20 @@ func (s *TagsServiceImpl) getResourceTags(ctx context.Context, accountID, resour
 	}
 	defer result.Body.Close()
 
-	// Decode into a non-nil map so a stored JSON "null" body (which Decode leaves
-	// untouched without error) yields an empty map, not a nil map that callers
-	// would panic on when indexing.
-	tags := make(map[string]string)
-	if err := json.NewDecoder(result.Body).Decode(&tags); err != nil {
+	data, err := io.ReadAll(result.Body)
+	if err != nil {
 		return nil, err
 	}
-
-	return tags, nil
+	return decodeTags(data)
 }
 
-// putResourceTags stores tags for a specific resource in S3.
-func (s *TagsServiceImpl) putResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error {
-	key := getTagsKey(accountID, resourceID)
-
-	data, err := json.Marshal(tags)
-	if err != nil {
-		return err
+// deleteLegacyTags removes a resource's pre-move object. Without it a resource
+// whose KV entry is deleted would have its old tags reappear from the fallback
+// read on the next describe.
+func (s *TagsServiceImpl) deleteLegacyTags(ctx context.Context, accountID, resourceID string) error {
+	if s.store == nil {
+		return nil
 	}
-
-	_, err = s.store.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(s.config.Predastore.Bucket),
-		Key:         aws.String(key),
-		Body:        bytes.NewReader(data),
-		ContentType: aws.String("application/json"),
-	})
-
-	return err
-}
-
-// PutResourceTags overwrites the stored tag set for a resource. Used to
-// project an instance record's tags (the source of truth) into the central
-// store so describe-tags agrees with describe-instances.
-func (s *TagsServiceImpl) PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	return s.putResourceTags(ctx, accountID, resourceID, tags)
-}
-
-// DeleteAllTags removes the stored tag object for a resource. Used on
-// instance terminate so describe-tags stops reporting the instance while the
-// terminated record keeps its tags until TTL. Idempotent: a missing object
-// is not an error.
-func (s *TagsServiceImpl) DeleteAllTags(ctx context.Context, accountID, resourceID string) error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	_, err := s.store.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.config.Predastore.Bucket),
 		Key:    aws.String(getTagsKey(accountID, resourceID)),
@@ -151,6 +157,36 @@ func (s *TagsServiceImpl) DeleteAllTags(ctx context.Context, accountID, resource
 		return err
 	}
 	return nil
+}
+
+// getResourceTags returns a resource's tags, preferring the KV entry and falling
+// back to the pre-move object for a resource not yet written since.
+func (s *TagsServiceImpl) getResourceTags(ctx context.Context, accountID, resourceID string) (map[string]string, error) {
+	tags, found, err := s.readKVTags(ctx, accountID, resourceID)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		return tags, nil
+	}
+	return s.legacyTags(ctx, accountID, resourceID)
+}
+
+// PutResourceTags overwrites the stored tag set for a resource. Used to
+// project an instance record's tags (the source of truth) into the central
+// store so describe-tags agrees with describe-instances.
+func (s *TagsServiceImpl) PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error {
+	return s.putTags(ctx, accountID, resourceID, tags)
+}
+
+// DeleteAllTags removes the stored tags for a resource. Used on instance
+// terminate so describe-tags stops reporting the instance while the terminated
+// record keeps its tags until TTL. Idempotent: an absent entry is not an error.
+func (s *TagsServiceImpl) DeleteAllTags(ctx context.Context, accountID, resourceID string) error {
+	if err := s.deleteTagsEntry(ctx, accountID, resourceID); err != nil {
+		return err
+	}
+	return s.deleteLegacyTags(ctx, accountID, resourceID)
 }
 
 // CreateTags adds or overwrites tags for the specified resources.
@@ -167,9 +203,6 @@ func (s *TagsServiceImpl) CreateTags(ctx context.Context, input *ec2.CreateTagsI
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	slog.InfoContext(ctx, "CreateTags request", "resources", len(input.Resources), "tags", len(input.Tags))
 
 	for _, resourceID := range input.Resources {
@@ -177,30 +210,69 @@ func (s *TagsServiceImpl) CreateTags(ctx context.Context, input *ec2.CreateTagsI
 			continue
 		}
 
-		// Get existing tags
-		existingTags, err := s.getResourceTags(ctx, accountID, *resourceID)
-		if err != nil {
-			slog.ErrorContext(ctx, "CreateTags failed to get existing tags", "resourceId", *resourceID, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-
-		// Add/update new tags
-		for _, tag := range input.Tags {
-			if tag.Key != nil && tag.Value != nil {
-				existingTags[*tag.Key] = *tag.Value
+		// The merge runs inside the CAS attempt, so a writer that loses the race
+		// re-reads the other writer's keys and adds its own on top of them.
+		err := s.mutateTags(ctx, accountID, *resourceID, func(tags map[string]string) {
+			for _, tag := range input.Tags {
+				if tag.Key != nil && tag.Value != nil {
+					tags[*tag.Key] = *tag.Value
+				}
 			}
-		}
-
-		// Save tags
-		if err := s.putResourceTags(ctx, accountID, *resourceID, existingTags); err != nil {
+		})
+		if err != nil {
 			slog.ErrorContext(ctx, "CreateTags failed to save tags", "resourceId", *resourceID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 
-		slog.InfoContext(ctx, "CreateTags applied", "resourceId", *resourceID, "tagCount", len(existingTags))
+		slog.InfoContext(ctx, "CreateTags applied", "resourceId", *resourceID, "tagCount", len(input.Tags))
 	}
 
 	return &ec2.CreateTagsOutput{}, nil
+}
+
+// taggedResourceIDs lists every resource the account has tags for, across both
+// the KV bucket and the objects written before the store moved.
+//
+// The two are unioned rather than read in preference order because a resource
+// migrated by a write since the move exists in both, and a resource never
+// touched since exists only in the object store. Sorting keeps a describe's
+// order stable between calls, which the KV listing does not guarantee on its
+// own.
+func (s *TagsServiceImpl) taggedResourceIDs(ctx context.Context, accountID string) ([]string, error) {
+	seen := make(map[string]struct{})
+
+	keys, err := kvutil.Keys(ctx, s.kv)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, fmt.Errorf("list tag keys: %w", err)
+	}
+	for _, key := range keys {
+		if resourceID, ok := resourceIDFromKVKey(key, accountID); ok {
+			seen[resourceID] = struct{}{}
+		}
+	}
+
+	if s.store != nil {
+		objects, _, lerr := objectstore.ListAll(ctx, s.store, &s3.ListObjectsV2Input{
+			Bucket: aws.String(s.config.Predastore.Bucket),
+			Prefix: aws.String(getTagsPrefix(accountID)),
+		})
+		if lerr != nil {
+			return nil, fmt.Errorf("list legacy tag objects: %w", lerr)
+		}
+		for _, obj := range objects {
+			if obj == nil || obj.Key == nil {
+				continue
+			}
+			resourceID := strings.TrimPrefix(*obj.Key, getTagsPrefix(accountID))
+			resourceID = strings.TrimSuffix(resourceID, ".json")
+			if resourceID == "" {
+				continue
+			}
+			seen[resourceID] = struct{}{}
+		}
+	}
+
+	return slices.Sorted(maps.Keys(seen)), nil
 }
 
 var describeTagsValidFilters = map[string]bool{
@@ -222,32 +294,17 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 		}
 	}
 
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
 	slog.InfoContext(ctx, "DescribeTags request")
 
 	var tags []*ec2.TagDescription
 
-	// List all tag files from S3 scoped to this account
-	objects, _, err := objectstore.ListAll(ctx, s.store, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.config.Predastore.Bucket),
-		Prefix: aws.String(getTagsPrefix(accountID)),
-	})
+	resourceIDs, err := s.taggedResourceIDs(ctx, accountID)
 	if err != nil {
-		slog.ErrorContext(ctx, "DescribeTags failed to list objects", "err", err)
+		slog.ErrorContext(ctx, "DescribeTags failed to list tagged resources", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Process each tag file
-	for _, obj := range objects {
-		if obj == nil || obj.Key == nil {
-			continue
-		}
-
-		// Extract resource ID from key (tags/{accountID}/i-xxx.json -> i-xxx)
-		resourceID := strings.TrimPrefix(*obj.Key, getTagsPrefix(accountID))
-		resourceID = strings.TrimSuffix(resourceID, ".json")
+	for _, resourceID := range resourceIDs {
 		resourceType := describeTagsResourceType(resourceID)
 
 		if !filterutil.MatchesAny(filters["resource-id"], resourceID) {
@@ -298,32 +355,26 @@ func (s *TagsServiceImpl) DeleteTags(ctx context.Context, input *ec2.DeleteTagsI
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	slog.InfoContext(ctx, "DeleteTags request", "resources", len(input.Resources), "tags", len(input.Tags))
+
+	remove := utils.RemoveTagsMut(input)
 
 	for _, resourceID := range input.Resources {
 		if resourceID == nil {
 			continue
 		}
 
-		// Get existing tags
-		existingTags, err := s.getResourceTags(ctx, accountID, *resourceID)
+		var remaining int
+		err := s.mutateTags(ctx, accountID, *resourceID, func(tags map[string]string) {
+			remove(tags)
+			remaining = len(tags)
+		})
 		if err != nil {
-			slog.ErrorContext(ctx, "DeleteTags failed to get existing tags", "resourceId", *resourceID, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-
-		utils.RemoveTagsMut(input)(existingTags)
-
-		// Save updated tags
-		if err := s.putResourceTags(ctx, accountID, *resourceID, existingTags); err != nil {
 			slog.ErrorContext(ctx, "DeleteTags failed to save tags", "resourceId", *resourceID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 
-		slog.InfoContext(ctx, "DeleteTags applied", "resourceId", *resourceID, "remainingTags", len(existingTags))
+		slog.InfoContext(ctx, "DeleteTags applied", "resourceId", *resourceID, "remainingTags", remaining)
 	}
 
 	return &ec2.DeleteTagsOutput{}, nil

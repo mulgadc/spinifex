@@ -42,12 +42,26 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // testAccountID is the default account ID used in daemon tests.
 const testAccountID = "123456789012"
+
+// testTagsKV returns a tag bucket on a JetStream of its own. The daemon tests'
+// shared NATS server runs without JetStream, and the tag store needs a real one
+// because its writes are compare-and-swap rather than plain puts. A server per
+// test also keeps one test's tags out of the next one's listing.
+func testTagsKV(t *testing.T) jetstream.KeyValue {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	kv, err := handlers_ec2_tags.GetOrCreateTagsBucket(t.Context(), js)
+	require.NoError(t, err)
+	return kv
+}
 
 // natsRequest sends a NATS request with the X-Account-ID header set.
 func natsRequest(nc *nats.Conn, subject string, data []byte, timeout time.Duration) (*nats.Msg, error) {
@@ -69,7 +83,7 @@ func createFullTestDaemonWithStore(t *testing.T, natsURL string) (*Daemon, *obje
 	daemon.imageService = handlers_ec2_image.NewImageServiceImplWithStore(memStore, cfg.Predastore.Bucket)
 	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, memStore, daemon.natsConn)
 	daemon.snapshotService = handlers_ec2_snapshot.NewSnapshotServiceImplWithStore(cfg, memStore, daemon.natsConn)
-	daemon.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore)
+	daemon.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore, testTagsKV(t))
 	wireTestEBSProvider(daemon, memStore)
 	initAccountServiceForTest(t, daemon)
 

@@ -303,6 +303,12 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 		ec2Instance.SetArchitecture(arch)
 	}
 
+	// Every image this platform serves boots from an EBS root at the same
+	// device, and DescribeImages already reports both. DescribeInstances left
+	// them null, so a caller comparing the two read a disagreement.
+	ec2Instance.SetRootDeviceName(ebsmetadata.RootDeviceName)
+	ec2Instance.SetRootDeviceType(ec2.DeviceTypeEbs)
+
 	// Stamp the metadata-options block so DescribeInstances reports the posture;
 	// the hop limit and the IMDSv1 opt-in are request-driven.
 	var hopLimit *int64
@@ -343,7 +349,7 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 
 // instanceTagsFromSpec extracts the instance-scoped tags from a RunInstances
 // TagSpecifications list. Only ResourceType "instance" applies to the launched
-// instance; volume/network-interface specs are handled elsewhere.
+// instance; the volume specs go to the root volume's metadata.
 func instanceTagsFromSpec(specs []*ec2.TagSpecification) []*ec2.Tag {
 	var tags []*ec2.Tag
 	for _, spec := range specs {
@@ -355,6 +361,28 @@ func instanceTagsFromSpec(specs []*ec2.TagSpecification) []*ec2.Tag {
 				continue
 			}
 			tags = append(tags, &ec2.Tag{Key: t.Key, Value: t.Value})
+		}
+	}
+	return tags
+}
+
+// volumeTagsFromSpec extracts the volume-scoped tags from a RunInstances
+// TagSpecifications list, in the shape ebsmetadata records them. Only the root
+// volume exists at launch, so they all land on it.
+func volumeTagsFromSpec(specs []*ec2.TagSpecification) map[string]string {
+	var tags map[string]string
+	for _, spec := range specs {
+		if spec == nil || aws.StringValue(spec.ResourceType) != ec2.ResourceTypeVolume {
+			continue
+		}
+		for _, t := range spec.Tags {
+			if t == nil || aws.StringValue(t.Key) == "" {
+				continue
+			}
+			if tags == nil {
+				tags = make(map[string]string, len(spec.Tags))
+			}
+			tags[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
 		}
 	}
 	return tags
@@ -1475,7 +1503,7 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 	deleteOnTermination := p.deleteOnTermination
 
 	// Step 1: Create or validate root volume
-	err := s.prepareRootVolume(ctx, input, imageId, size, p.iops, instance, deleteOnTermination)
+	err := s.prepareRootVolume(ctx, input, imageId, deviceName, size, p.iops, instance, deleteOnTermination)
 	if err != nil {
 		return nil, err
 	}
@@ -1505,7 +1533,7 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 
 // prepareRootVolume allocates the root volume through the EBS provider and
 // records the boot volume the launcher must attach.
-func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.RunInstancesInput, imageId string, size, iops int, instance *vm.VM, deleteOnTermination bool) error {
+func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.RunInstancesInput, imageId, deviceName string, size, iops int, instance *vm.VM, deleteOnTermination bool) error {
 	if s.ebsProvider == nil {
 		slog.ErrorContext(ctx, "no EBS provider configured", "op", "prepareRootVolume")
 		return errors.New(awserrors.ErrorServerInternal)
@@ -1517,18 +1545,22 @@ func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.
 		sizeBytes:           size,
 		iops:                iops,
 		deleteOnTermination: deleteOnTermination,
+		tags:                volumeTagsFromSpec(input.TagSpecifications),
 	}); err != nil {
 		return err
 	}
-	appendRootEBSRequest(instance, imageId, deleteOnTermination)
+	appendRootEBSRequest(instance, imageId, deviceName, deleteOnTermination)
 	return nil
 }
 
-// appendRootEBSRequest records the boot volume the launcher must attach.
-func appendRootEBSRequest(instance *vm.VM, volumeID string, deleteOnTermination bool) {
+// appendRootEBSRequest records the boot volume the launcher must attach. The
+// device name travels with it because the launcher writes it to the volume's
+// metadata, which is what DescribeVolumes reports as Attachments[].Device.
+func appendRootEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOnTermination bool) {
 	instance.EBSRequests.Mu.Lock()
 	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, spxtypes.EBSRequest{
 		Name:                volumeID,
+		DeviceName:          deviceName,
 		Boot:                true,
 		DeleteOnTermination: deleteOnTermination,
 	})
@@ -1544,6 +1576,7 @@ type rootVolumeSpec struct {
 	sizeBytes           int
 	iops                int
 	deleteOnTermination bool
+	tags                map[string]string
 }
 
 // createRootVolumeViaProvider allocates the root volume through the injected
@@ -1608,6 +1641,7 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 		VolumeType: spxtypes.VolumeTypeGP3, IOPS: rootVolumeIOPS(spec.iops),
 		Throughput: spxtypes.DefaultGP3Throughput, SnapshotID: amiConfig.SnapshotID,
 		DeleteOnTermination: spec.deleteOnTermination, Encrypted: mkey != nil,
+		Tags:           spec.tags,
 		ProviderHandle: created.Handle,
 	}); err != nil {
 		slog.ErrorContext(ctx, "Failed to persist root volume metadata", "volumeId", spec.volumeID, "err", err)

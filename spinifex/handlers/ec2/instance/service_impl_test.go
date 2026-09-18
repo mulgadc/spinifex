@@ -106,6 +106,47 @@ func TestRunInstance_ArchitecturePopulated(t *testing.T) {
 	}
 }
 
+func TestRunInstance_RootDeviceFieldsPopulated(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+
+	_, ec2Instance, err := svc.RunInstance(&ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-0abcdef1234567890"),
+		InstanceType: aws.String("t3.micro"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ebsmetadata.RootDeviceName, aws.StringValue(ec2Instance.RootDeviceName))
+	assert.Equal(t, ec2.DeviceTypeEbs, aws.StringValue(ec2Instance.RootDeviceType))
+}
+
+func TestVolumeTagsFromSpec(t *testing.T) {
+	specs := []*ec2.TagSpecification{
+		{ResourceType: aws.String("instance"), Tags: []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("node")}}},
+		{ResourceType: aws.String("volume"), Tags: []*ec2.Tag{
+			{Key: aws.String("Name"), Value: aws.String("root")},
+			{Key: aws.String("env"), Value: aws.String("test")},
+			{Key: aws.String(""), Value: aws.String("dropped")},
+		}},
+	}
+
+	assert.Equal(t, map[string]string{"Name": "root", "env": "test"}, volumeTagsFromSpec(specs))
+	assert.Nil(t, volumeTagsFromSpec(nil))
+	assert.Nil(t, volumeTagsFromSpec([]*ec2.TagSpecification{specs[0]}))
+}
+
+func TestAppendRootEBSRequest_RecordsDeviceName(t *testing.T) {
+	instance := &vm.VM{}
+	appendRootEBSRequest(instance, "vol-1", ebsmetadata.RootDeviceName, true)
+
+	require.Len(t, instance.EBSRequests.Requests, 1)
+	req := instance.EBSRequests.Requests[0]
+	assert.Equal(t, "vol-1", req.Name)
+	assert.Equal(t, ebsmetadata.RootDeviceName, req.DeviceName)
+	assert.True(t, req.Boot)
+	assert.True(t, req.DeleteOnTermination)
+}
+
 func TestRunInstance_WithIamInstanceProfile(t *testing.T) {
 	const profileARN = "arn:aws:iam::111122223333:instance-profile/app-profile"
 	svc := &InstanceServiceImpl{

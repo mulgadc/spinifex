@@ -88,7 +88,7 @@ func TestPrepareRootVolume_Provider_CreatesFromAMISnapshot(t *testing.T) {
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	input := &ec2.RunInstancesInput{ImageId: aws.String("ami-1")}
-	err := svc.prepareRootVolume(context.Background(), input, "vol-root", testRootVolumeBytes, 0,
+	err := svc.prepareRootVolume(context.Background(), input, "vol-root", ebsmetadata.RootDeviceName, testRootVolumeBytes, 0,
 		instance, false)
 	require.NoError(t, err)
 
@@ -100,8 +100,37 @@ func TestPrepareRootVolume_Provider_CreatesFromAMISnapshot(t *testing.T) {
 
 	require.Len(t, instance.EBSRequests.Requests, 1)
 	assert.Equal(t, "vol-root", instance.EBSRequests.Requests[0].Name)
+	assert.Equal(t, ebsmetadata.RootDeviceName, instance.EBSRequests.Requests[0].DeviceName,
+		"the launcher writes this to the volume's metadata, which DescribeVolumes reports as the attachment device")
 	assert.True(t, instance.EBSRequests.Requests[0].Boot, "the root volume must be marked bootable")
 	assert.False(t, instance.EBSRequests.Requests[0].DeleteOnTermination)
+}
+
+// TestPrepareRootVolume_Provider_AppliesVolumeTags locks that a launch-time
+// volume TagSpecification reaches the root volume's metadata document, which is
+// the only place DescribeVolumes reads tags from.
+func TestPrepareRootVolume_Provider_AppliesVolumeTags(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	seedProviderSnapshot(t, provider, "vol-origin", "snap-source")
+	store := objectstore.NewMemoryObjectStore()
+	svc := providerRootVolumeService(t, provider, rootVolumeAMILoader(), store)
+
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-1"),
+		TagSpecifications: []*ec2.TagSpecification{
+			{ResourceType: aws.String("instance"), Tags: []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("node")}}},
+			{ResourceType: aws.String("volume"), Tags: []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("root-disk")}}},
+		},
+	}
+	err := svc.prepareRootVolume(context.Background(), input, "vol-root", ebsmetadata.RootDeviceName,
+		testRootVolumeBytes, 0, &vm.VM{AccountID: testRootAccount}, true)
+	require.NoError(t, err)
+
+	doc, err := ebsmetadata.NewStore(store, testRootBucket).GetVolume(context.Background(), testRootAccount, "vol-root")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"Name": "root-disk"}, doc.Tags)
 }
 
 // TestPrepareRootVolume_Provider_WritesMetadataDocument locks the control-plane
@@ -117,7 +146,7 @@ func TestPrepareRootVolume_Provider_WritesMetadataDocument(t *testing.T) {
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 0, instance, true)
+		"vol-root", ebsmetadata.RootDeviceName, testRootVolumeBytes, 0, instance, true)
 	require.NoError(t, err)
 
 	doc, err := ebsmetadata.NewStore(store, testRootBucket).GetVolume(context.Background(), testRootAccount, "vol-root")
@@ -151,7 +180,7 @@ func TestPrepareRootVolume_Provider_HonoursRequestedIOPS(t *testing.T) {
 	svc := providerRootVolumeService(t, provider, rootVolumeAMILoader(), store)
 
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 5000, &vm.VM{AccountID: testRootAccount}, true)
+		"vol-root", ebsmetadata.RootDeviceName, testRootVolumeBytes, 5000, &vm.VM{AccountID: testRootAccount}, true)
 	require.NoError(t, err)
 
 	doc, err := ebsmetadata.NewStore(store, testRootBucket).GetVolume(context.Background(), testRootAccount, "vol-root")
@@ -190,7 +219,7 @@ func TestPrepareRootVolume_Provider_RollbackOnMetadataWriteFailure(t *testing.T)
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 0, instance, true)
+		"vol-root", ebsmetadata.RootDeviceName, testRootVolumeBytes, 0, instance, true)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Empty(t, instance.EBSRequests.Requests, "a failed launch must not claim a boot volume")
@@ -214,7 +243,7 @@ func TestPrepareRootVolume_Provider_RepeatIsIdempotent(t *testing.T) {
 
 	for range 2 {
 		instance := &vm.VM{AccountID: testRootAccount}
-		err := svc.prepareRootVolume(context.Background(), input, "vol-root", testRootVolumeBytes, 0,
+		err := svc.prepareRootVolume(context.Background(), input, "vol-root", ebsmetadata.RootDeviceName, testRootVolumeBytes, 0,
 			instance, true)
 		require.NoError(t, err)
 		require.Len(t, instance.EBSRequests.Requests, 1)
@@ -233,7 +262,7 @@ func TestPrepareRootVolume_Provider_AMIWithoutSnapshotFails(t *testing.T) {
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 0, instance, true)
+		"vol-root", ebsmetadata.RootDeviceName, testRootVolumeBytes, 0, instance, true)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Empty(t, instance.EBSRequests.Requests, "a failed launch must not claim a boot volume")
@@ -254,7 +283,7 @@ func TestPrepareRootVolume_Provider_UnknownAMIFails(t *testing.T) {
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-gone")},
-		"vol-root", testRootVolumeBytes, 0, instance, true)
+		"vol-root", ebsmetadata.RootDeviceName, testRootVolumeBytes, 0, instance, true)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 	assert.Empty(t, instance.EBSRequests.Requests)
@@ -275,7 +304,7 @@ func TestPrepareRootVolume_Provider_SourceVolumeUnresolvableFails(t *testing.T) 
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 0, instance, true)
+		"vol-root", ebsmetadata.RootDeviceName, testRootVolumeBytes, 0, instance, true)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Empty(t, instance.EBSRequests.Requests)
@@ -300,7 +329,7 @@ func TestPrepareRootVolume_Provider_CreateFailureIsFatal(t *testing.T) {
 
 	instance := &vm.VM{AccountID: testRootAccount}
 	err := svc.prepareRootVolume(context.Background(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")},
-		"vol-root", testRootVolumeBytes, 0, instance, true)
+		"vol-root", ebsmetadata.RootDeviceName, testRootVolumeBytes, 0, instance, true)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Empty(t, instance.EBSRequests.Requests)

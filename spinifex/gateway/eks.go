@@ -53,9 +53,21 @@ var eksRoutes = []eksRoute{
 		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.UpdateClusterConfig(ctx, gw.NATSConn, acct, p[0], b)
 		}},
-	{"POST", "/clusters/{clusterName}/update-version", "UpdateClusterVersion",
+	{"POST", "/clusters/{clusterName}/updates", "UpdateClusterVersion",
 		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.UpdateClusterVersion(ctx, gw.NATSConn, acct, p[0], b)
+		}},
+	// The update surface these two read is absent, so they refuse here rather
+	// than through a service method: a round-trip to reach a constant refusal
+	// is surface for its own sake. Left unregistered they would answer
+	// InvalidAction, which blames the caller's spelling for a routing gap.
+	{"GET", "/clusters/{clusterName}/updates", "ListUpdates",
+		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
+			return nil, errors.New(awserrors.ErrorNotImplemented)
+		}},
+	{"GET", "/clusters/{clusterName}/updates/{updateId}", "DescribeUpdate",
+		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
+			return nil, errors.New(awserrors.ErrorNotImplemented)
 		}},
 	// Control-plane VM broker: relays bootstrap/state POSTs onto eks.bus.*/eks.state.* NATS subjects.
 	// acct and callerARN are ignored; cluster account comes from the body.

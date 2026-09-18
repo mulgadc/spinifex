@@ -25,7 +25,9 @@ func TestLookupEKSAction_ResolvesKnownRoutes(t *testing.T) {
 		{"GET", "/clusters/alpha", "DescribeCluster", []string{"alpha"}},
 		{"DELETE", "/clusters/alpha", "DeleteCluster", []string{"alpha"}},
 		{"POST", "/clusters/alpha/update-config", "UpdateClusterConfig", []string{"alpha"}},
-		{"POST", "/clusters/alpha/update-version", "UpdateClusterVersion", []string{"alpha"}},
+		{"POST", "/clusters/alpha/updates", "UpdateClusterVersion", []string{"alpha"}},
+		{"GET", "/clusters/alpha/updates", "ListUpdates", []string{"alpha"}},
+		{"GET", "/clusters/alpha/updates/upd1", "DescribeUpdate", []string{"alpha", "upd1"}},
 		{"POST", "/clusters/alpha/node-groups", "CreateNodegroup", []string{"alpha"}},
 		{"GET", "/clusters/alpha/node-groups", "ListNodegroups", []string{"alpha"}},
 		{"GET", "/clusters/alpha/node-groups/ng1", "DescribeNodegroup", []string{"alpha", "ng1"}},
@@ -124,6 +126,8 @@ func TestLookupEKSAction_CoversAllActions(t *testing.T) {
 		"ListClusters":                       false,
 		"UpdateClusterConfig":                false,
 		"UpdateClusterVersion":               false,
+		"ListUpdates":                        false,
+		"DescribeUpdate":                     false,
 		"DeleteCluster":                      false,
 		"CreateNodegroup":                    false,
 		"DescribeNodegroup":                  false,
@@ -226,3 +230,27 @@ type awsCodeError struct{ code string }
 
 func (e *awsCodeError) Error() string { return e.code }
 func errAWS(code string) error        { return &awsCodeError{code: code} }
+
+// The update surface is absent, and the honest answer for an action that exists
+// and is not served is NotImplemented. Unregistered, these two answered
+// InvalidAction, which tells the caller they typed something that does not exist.
+func TestLookupEKSAction_UpdateReadsRefuseAsNotImplemented(t *testing.T) {
+	for _, path := range []string{"/clusters/alpha/updates", "/clusters/alpha/updates/upd1"} {
+		t.Run(path, func(t *testing.T) {
+			_, params, handler, ok := eksRouter.lookup(http.MethodGet, path)
+			require.True(t, ok)
+			out, err := handler(context.Background(), nil, "000000000001", "", params, nil)
+			assert.Nil(t, out)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
+		})
+	}
+}
+
+// update-version is the nodegroup pattern. The cluster action has never been
+// reachable at it on AWS, so keeping it registered would serve a path no caller
+// sends and hide the one they do.
+func TestLookupEKSAction_ClusterUpdateVersionIsNotAtTheNodegroupPath(t *testing.T) {
+	_, _, _, ok := eksRouter.lookup(http.MethodPost, "/clusters/alpha/update-version")
+	assert.False(t, ok)
+}

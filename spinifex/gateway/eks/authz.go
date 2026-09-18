@@ -49,6 +49,8 @@ var eksScopes = map[string][]resourceSource{
 	"DeleteCluster":        {sourceCluster},
 	"UpdateClusterConfig":  {sourceCluster},
 	"UpdateClusterVersion": {sourceCluster},
+	"ListUpdates":          {sourceCluster},
+	"DescribeUpdate":       {sourceCluster},
 	"ListClusters":         {sourceAny},
 
 	// Internal control-plane routes. The cluster's owning account is a path

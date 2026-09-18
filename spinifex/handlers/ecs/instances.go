@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -119,9 +120,25 @@ func (s *Service) DescribeContainerInstances(ctx context.Context, input *ecs.Des
 	return out, nil
 }
 
-// ListContainerInstances returns the ARNs of all container instances in a cluster.
+// instanceListStatuses are the values the status filter accepts. A registration
+// here is only ever ACTIVE or DRAINING; the other three are states AWS passes a
+// registration through, so they are valid to ask for and match nothing.
+var instanceListStatuses = map[string]bool{
+	InstanceStatusActive:   true,
+	InstanceStatusDraining: true,
+	"REGISTERING":          true,
+	"DEREGISTERING":        true,
+	"REGISTRATION_FAILED":  true,
+}
+
+// ListContainerInstances returns the ARNs of the container instances in a
+// cluster, narrowed to one registration status when the caller names one.
 func (s *Service) ListContainerInstances(ctx context.Context, input *ecs.ListContainerInstancesInput, accountID string) (*ecs.ListContainerInstancesOutput, error) {
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
+	status := aws.StringValue(input.Status)
+	if status != "" && !instanceListStatuses[status] {
+		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -132,6 +149,11 @@ func (s *Service) ListContainerInstances(ctx context.Context, input *ecs.ListCon
 	}
 	arns := make([]string, 0, len(recs))
 	for i := range recs {
+		// The record's status is what DescribeContainerInstances reports, so a
+		// filtered list and a describe of what it returns cannot disagree.
+		if status != "" && recs[i].Status != status {
+			continue
+		}
 		arns = append(arns, recs[i].ARN)
 	}
 	return &ecs.ListContainerInstancesOutput{ContainerInstanceArns: aws.StringSlice(arns)}, nil

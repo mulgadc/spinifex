@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"maps"
 	"strconv"
+	"sync"
 	"time"
 
 	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
@@ -28,7 +29,7 @@ func (a *Agent) pollAssignments(ctx context.Context, dispatched map[string]bool)
 	ticker := time.NewTicker(a.cfg.PollInterval)
 	defer ticker.Stop()
 
-	stopping := map[string]bool{}
+	reaps := newStopLedger()
 	var ackAssigns, ackStops []string
 	for {
 		select {
@@ -45,17 +46,18 @@ func (a *Agent) pollAssignments(ctx context.Context, dispatched map[string]bool)
 			ackStops = ackStops[:0]
 			for i := range stops {
 				sd := stops[i]
-				if !stopping[sd.TaskID] {
-					stopping[sd.TaskID] = true
+				switch {
+				case reaps.done(sd.TaskID):
+					ackStops = append(ackStops, sd.TaskID)
+				case reaps.begin(sd.TaskID):
 					slog.Info("ecs-agent: task stop requested", "task", sd.TaskID, "reason", sd.Reason)
-					go a.stopTask(ctx, sd)
+					go func() { reaps.end(sd.TaskID, a.stopTask(ctx, sd)) }()
 				}
-				ackStops = append(ackStops, sd.TaskID)
 			}
 			ackAssigns = ackAssigns[:0]
 			for i := range assigns {
 				as := assigns[i]
-				if !dispatched[as.TaskID] && !stopping[as.TaskID] {
+				if !dispatched[as.TaskID] && !reaps.seen(as.TaskID) {
 					dispatched[as.TaskID] = true
 					slog.Info("ecs-agent: task assigned", "task", as.TaskID, "containers", len(as.Containers))
 					go a.runTask(ctx, &as)
@@ -66,20 +68,74 @@ func (a *Agent) pollAssignments(ctx context.Context, dispatched map[string]bool)
 	}
 }
 
+// stopLedger tracks reaps in flight and reaps that reported STOPPED. The two
+// are separate because only the second may be acked: acking the first deletes a
+// directive that was never performed, and nothing re-posts it.
+type stopLedger struct {
+	mu       sync.Mutex
+	inflight map[string]bool
+	stopped  map[string]bool
+}
+
+func newStopLedger() *stopLedger {
+	return &stopLedger{inflight: map[string]bool{}, stopped: map[string]bool{}}
+}
+
+// begin claims a task for a reap, reporting false when one is already running.
+func (l *stopLedger) begin(taskID string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.inflight[taskID] {
+		return false
+	}
+	l.inflight[taskID] = true
+	return true
+}
+
+// end releases the claim, recording the task as stopped only if the reap got
+// that far. A failed reap leaves nothing behind, so the next poll redelivers
+// the directive and dispatches it again.
+func (l *stopLedger) end(taskID string, reported bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.inflight, taskID)
+	if reported {
+		l.stopped[taskID] = true
+	}
+}
+
+// done reports whether the task's reap reported STOPPED, which is the only
+// condition under which its directive may be acked.
+func (l *stopLedger) done(taskID string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.stopped[taskID]
+}
+
+// seen reports whether a stop for the task is in flight or complete, so an
+// assignment arriving alongside its own stop is never started.
+func (l *stopLedger) seen(taskID string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inflight[taskID] || l.stopped[taskID]
+}
+
 // stopTask reaps a task's containers on a control-plane stop directive: it
 // lists the runtime's containers, gracefully stops (SIGTERM, wait up to the
 // container's stopTimeout, then force kill + delete) the ones labeled with
 // this task, then reports the task STOPPED with the directive's reason.
 // Idempotent — a task with no live containers still reports STOPPED so the
-// scheduler releases its capacity.
-func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) {
+// scheduler releases its capacity. Reports whether it got as far as saying
+// STOPPED: a caller may only ack the directive when it did.
+func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) bool {
 	if a.runner == nil {
-		return
+		slog.Warn("ecs-agent: stop deferred, no container runtime", "task", sd.TaskID)
+		return false
 	}
 	containers, err := a.runner.List(ctx)
 	if err != nil {
 		slog.Warn("ecs-agent: stop list failed", "task", sd.TaskID, "err", err)
-		return
+		return false
 	}
 	statuses := make([]bus.ContainerStatus, 0)
 	for _, c := range containers {
@@ -99,6 +155,7 @@ func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) {
 	}
 	a.reportTaskState(&bus.Assign{TaskID: sd.TaskID}, bus.TaskStatusStopped, reason, statuses)
 	slog.Info("ecs-agent: task reaped", "task", sd.TaskID, "containers", len(statuses))
+	return true
 }
 
 // runTask pulls each container image, starts the containers, and reports task

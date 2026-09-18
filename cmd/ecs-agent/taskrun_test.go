@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -532,7 +533,7 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 	as := testAssign()
 	cp := &fakeCP{
 		pollReplies: [][]bus.Assign{{*as}, {*as}, nil},
-		stopReplies: [][]bus.StopDirective{{{TaskID: as.TaskID, Reason: "bye"}}},
+		stopPending: []bus.StopDirective{{TaskID: as.TaskID, Reason: "bye"}},
 	}
 	rt := &ctrruntime.FakePuller{Containers: []ctrruntime.Container{
 		{ID: "t-001-web", Running: true, Labels: map[string]string{"mulga.ecs.taskID": "t-001"}},
@@ -573,6 +574,122 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 	}
 	if !acked {
 		t.Errorf("stop %s was never acked; stopAcks=%v", as.TaskID, cp.stopAcks())
+	}
+}
+
+// countStopAcks reports how many polls carried taskID in their stop-ack list.
+func countStopAcks(acks [][]string, taskID string) int {
+	n := 0
+	for _, ack := range acks {
+		if slices.Contains(ack, taskID) {
+			n++
+		}
+	}
+	return n
+}
+
+// A reap that cannot run is never acked, so the directive stays in the gateway's
+// inbox and is redelivered and retried until the runtime comes back.
+func TestPollAssignments_UnperformableStopIsNotAckedAndRetried(t *testing.T) {
+	cp := &fakeCP{stopPending: []bus.StopDirective{{TaskID: "t-001", Reason: "bye"}}}
+	rt := &ctrruntime.FakePuller{ListErr: errors.New("containerd is down")}
+	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, rt, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.pollAssignments(ctx, map[string]bool{})
+
+	deadline := time.After(time.Second)
+	for rt.Lists() < 3 {
+		select {
+		case <-deadline:
+			t.Fatalf("failed reap was not retried; List calls=%d", rt.Lists())
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+	cancel()
+
+	if n := countStopAcks(cp.stopAcks(), "t-001"); n != 0 {
+		t.Errorf("a reap that never ran was acked %d times; stopAcks=%v", n, cp.stopAcks())
+	}
+	if stopped := countStatus(cp.taskStates(), "t-001", bus.TaskStatusStopped); stopped != 0 {
+		t.Errorf("a reap that never ran reported STOPPED %d times", stopped)
+	}
+}
+
+// Once the runtime recovers, the redelivered directive is reaped, reported
+// STOPPED and acked exactly once, which deletes it from the inbox.
+func TestPollAssignments_RecoveredStopIsAckedExactlyOnce(t *testing.T) {
+	cp := &fakeCP{stopPending: []bus.StopDirective{{TaskID: "t-001", Reason: "bye"}}}
+	rt := &ctrruntime.FakePuller{
+		ListErr:    errors.New("containerd is down"),
+		ListErrFor: 1,
+		Containers: []ctrruntime.Container{
+			{ID: "t-001-web", Running: true, Labels: map[string]string{"mulga.ecs.taskID": "t-001"}},
+		},
+	}
+	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, rt, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.pollAssignments(ctx, map[string]bool{})
+
+	deadline := time.After(2 * time.Second)
+	for countStopAcks(cp.stopAcks(), "t-001") == 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("recovered reap was never acked; states=%+v stopAcks=%v", cp.taskStates(), cp.stopAcks())
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	if n := countStopAcks(cp.stopAcks(), "t-001"); n != 1 {
+		t.Errorf("stop acked %d times, want exactly 1; stopAcks=%v", n, cp.stopAcks())
+	}
+	if stopped := countStatus(cp.taskStates(), "t-001", bus.TaskStatusStopped); stopped != 1 {
+		t.Errorf("task reported STOPPED %d times, want exactly 1", stopped)
+	}
+	if reaped := rt.Reaped(); len(reaped) != 1 || reaped[0] != "t-001-web" {
+		t.Errorf("want t-001-web reaped once, got %+v", reaped)
+	}
+}
+
+// A task whose reap completed is never started again by an assign the gateway
+// is still redelivering.
+func TestPollAssignments_StoppedTaskIsNotRerunByRedeliveredAssign(t *testing.T) {
+	as := testAssign()
+	cp := &fakeCP{
+		pollReplies: [][]bus.Assign{{*as}, {*as}, {*as}, {*as}, {*as}, {*as}},
+		stopPending: []bus.StopDirective{{TaskID: as.TaskID, Reason: "bye"}},
+	}
+	rt := &ctrruntime.FakePuller{Containers: []ctrruntime.Container{
+		{ID: "t-001-web", Running: true, Labels: map[string]string{"mulga.ecs.taskID": "t-001"}},
+	}}
+	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, rt, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.pollAssignments(ctx, map[string]bool{})
+
+	deadline := time.After(time.Second)
+	for countStopAcks(cp.stopAcks(), as.TaskID) == 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("stop never completed; states=%+v", cp.taskStates())
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+	// Let the remaining scripted assigns arrive after the reap has finished.
+	time.Sleep(40 * time.Millisecond)
+	cancel()
+
+	if runs := rt.RunCalls(); len(runs) != 0 {
+		t.Errorf("stopped task was started by a redelivered assign: %+v", runs)
+	}
+	if running := countStatus(cp.taskStates(), as.TaskID, bus.TaskStatusRunning); running != 0 {
+		t.Errorf("stopped task reported RUNNING %d times", running)
 	}
 }
 

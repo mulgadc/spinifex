@@ -34,11 +34,14 @@ type FakePuller struct {
 	StopTimeouts []time.Duration
 	StopErr      error
 
-	// List bookkeeping: Containers is replayed by List; ListErr forces a failure;
-	// Listed records that List was called.
+	// List bookkeeping: Containers is replayed by List; ListErr forces a failure,
+	// limited to the first ListErrFor calls when that is non-zero, so a test can
+	// model a runtime that recovers. Listed and ListCalls record the calls.
 	Containers []Container
 	ListErr    error
+	ListErrFor int
 	Listed     bool
+	ListCalls  int
 }
 
 var (
@@ -130,13 +133,36 @@ func (f *FakePuller) Waits() []string {
 	return append([]string(nil), f.Waited...)
 }
 
+// RunCalls returns a copy of the specs passed to Run, for assertions made while
+// the agent's goroutines may still be live.
+func (f *FakePuller) RunCalls() []RunSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]RunSpec(nil), f.Runs...)
+}
+
+// Reaped returns a copy of the container IDs passed to Stop.
+func (f *FakePuller) Reaped() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.Stopped...)
+}
+
 // List replays the programmed container set (or error).
 func (f *FakePuller) List(_ context.Context) ([]Container, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Listed = true
-	if f.ListErr != nil {
+	f.ListCalls++
+	if f.ListErr != nil && (f.ListErrFor == 0 || f.ListCalls <= f.ListErrFor) {
 		return nil, f.ListErr
 	}
 	return f.Containers, nil
+}
+
+// Lists reports how many times List was called.
+func (f *FakePuller) Lists() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ListCalls
 }

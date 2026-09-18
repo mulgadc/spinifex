@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ type fakeCP struct {
 	pollStopAcks [][]string
 	pollReplies  [][]bus.Assign
 	stopReplies  [][]bus.StopDirective
+	stopPending  []bus.StopDirective
 	pollCalls    int
 
 	registerErr bool
@@ -72,6 +74,12 @@ func (f *fakeCP) PollAssignments(_, _ string, ackAssigns, ackStops []string) ([]
 	if f.pollCalls < len(f.stopReplies) {
 		stops = f.stopReplies[f.pollCalls]
 	}
+	// stopPending is the durable inbox the gateway keeps: an acked directive is
+	// deleted, and everything still in it is redelivered on every poll.
+	f.stopPending = slices.DeleteFunc(f.stopPending, func(sd bus.StopDirective) bool {
+		return slices.Contains(ackStops, sd.TaskID)
+	})
+	stops = slices.Concat(stops, f.stopPending)
 	f.pollCalls++
 	return out, stops, nil
 }

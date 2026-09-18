@@ -82,6 +82,52 @@ func floorVolumeSizeToAMI(ctx context.Context, loader AMIMetaLoader, imageID str
 	return int(amiSize)
 }
 
+// isEphemeralMapping reports whether a mapping names an instance store device
+// rather than an EBS volume. These carry a VirtualName and no Ebs block, so the
+// launch path neither creates nor owes them a volume.
+func isEphemeralMapping(bdm *ec2.BlockDeviceMapping) bool {
+	return bdm != nil && bdm.Ebs == nil && aws.StringValue(bdm.VirtualName) != ""
+}
+
+// SelectRootBlockDeviceMapping returns the index of the mapping addressing the
+// root device, which is the one naming ebsmetadata.RootDeviceName. Position
+// decides only when no mapping names it, so a caller addressing a device this
+// platform's images do not have still gets the volume they sized.
+func SelectRootBlockDeviceMapping(mappings []*ec2.BlockDeviceMapping) int {
+	first := -1
+	for i, bdm := range mappings {
+		if bdm == nil || isEphemeralMapping(bdm) {
+			continue
+		}
+		if aws.StringValue(bdm.DeviceName) == ebsmetadata.RootDeviceName {
+			return i
+		}
+		if first < 0 {
+			first = i
+		}
+	}
+	return first
+}
+
+// UnservedBlockDeviceMappings names the EBS mappings the launch path will not
+// create a volume for. Only the root is served, so any other mapping is a
+// request the platform cannot meet and must refuse rather than discard.
+func UnservedBlockDeviceMappings(mappings []*ec2.BlockDeviceMapping) []string {
+	root := SelectRootBlockDeviceMapping(mappings)
+	var unserved []string
+	for i, bdm := range mappings {
+		if i == root || bdm == nil || isEphemeralMapping(bdm) {
+			continue
+		}
+		name := aws.StringValue(bdm.DeviceName)
+		if name == "" {
+			name = "(unnamed)"
+		}
+		unserved = append(unserved, name)
+	}
+	return unserved
+}
+
 // parseVolumeParams extracts volume parameters from RunInstancesInput,
 // applying defaults and resolving AMI-based image IDs.
 func parseVolumeParams(input *ec2.RunInstancesInput) volumeParams {
@@ -91,8 +137,8 @@ func parseVolumeParams(input *ec2.RunInstancesInput) volumeParams {
 		deleteOnTermination: true, // matches AWS RunInstances behavior
 	}
 
-	if len(input.BlockDeviceMappings) > 0 {
-		bdm := input.BlockDeviceMappings[0]
+	if root := SelectRootBlockDeviceMapping(input.BlockDeviceMappings); root >= 0 {
+		bdm := input.BlockDeviceMappings[root]
 		if bdm.DeviceName != nil {
 			p.deviceName = *bdm.DeviceName
 		}

@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -239,6 +240,41 @@ func TestParseRunInstances(t *testing.T) {
 		input := defaults
 		input.PrivateIpAddress = aws.String("172.31.0.50")
 		assert.NoError(t, ValidateRunInstancesInput(&input))
+	})
+
+	t.Run("RootOnlyBlockDeviceMappingIsValid", func(t *testing.T) {
+		t.Parallel()
+		input := defaults
+		input.BlockDeviceMappings = []*ec2.BlockDeviceMapping{
+			{DeviceName: aws.String(ebsmetadata.RootDeviceName), Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(8)}},
+		}
+		assert.NoError(t, ValidateRunInstancesInput(&input))
+	})
+
+	t.Run("EphemeralBlockDeviceMappingIsValid", func(t *testing.T) {
+		t.Parallel()
+		input := defaults
+		input.BlockDeviceMappings = []*ec2.BlockDeviceMapping{
+			{DeviceName: aws.String(ebsmetadata.RootDeviceName), Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(8)}},
+			{DeviceName: aws.String("/dev/sdb"), VirtualName: aws.String("ephemeral0")},
+		}
+		assert.NoError(t, ValidateRunInstancesInput(&input))
+	})
+
+	t.Run("AdditionalEBSBlockDeviceMappingIsRefusedByName", func(t *testing.T) {
+		t.Parallel()
+		input := defaults
+		input.BlockDeviceMappings = []*ec2.BlockDeviceMapping{
+			{DeviceName: aws.String("/dev/sdf"), Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4)}},
+			{DeviceName: aws.String(ebsmetadata.RootDeviceName), Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(8)}},
+		}
+		err := ValidateRunInstancesInput(&input)
+		require.Error(t, err)
+		code, message, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+		assert.Contains(t, message, "BlockDeviceMappings")
+		assert.Contains(t, message, "/dev/sdf")
 	})
 
 	for _, test := range tests {

@@ -85,6 +85,11 @@ type Snapshot struct {
 	ProviderHandle   string            `json:"provider_handle,omitempty"`
 }
 
+// RootDeviceName is the device every image this platform serves reports as its
+// root. DescribeImages returns it, so it is also the name a caller's root block
+// device mapping carries, and the name that says which mapping is the root.
+const RootDeviceName = "/dev/sda1"
+
 // AMI is the control-plane record used for EC2 image operations.
 type AMI struct {
 	SchemaVersion   uint16            `json:"schema_version"`

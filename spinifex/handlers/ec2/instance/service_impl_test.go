@@ -485,7 +485,7 @@ func TestPrepareRunInstances_ProjectsPlacementGroup(t *testing.T) {
 }
 
 func TestParseVolumeParams_MultipleBlockDeviceMappings(t *testing.T) {
-	// parseVolumeParams only uses the first block device mapping
+	// The root mapping is the one naming the AMI root device, not the first.
 	input := &ec2.RunInstancesInput{
 		ImageId: aws.String("ami-multi"),
 		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
@@ -508,10 +508,85 @@ func TestParseVolumeParams_MultipleBlockDeviceMappings(t *testing.T) {
 	}
 
 	p := parseVolumeParams(input)
-	// First mapping wins for root volume
 	assert.Equal(t, 30*1024*1024*1024, p.size)
 	assert.Equal(t, "/dev/sda1", p.deviceName)
 	assert.Equal(t, "gp3", p.volumeType)
+}
+
+func TestParseVolumeParams_RootMappingSelectedByName(t *testing.T) {
+	// The data mapping is listed first, as the ec2-instance Terraform module
+	// emits it; the root must still be the one naming the AMI root device.
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-order"),
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
+			{
+				DeviceName: aws.String("/dev/sdf"),
+				Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4)},
+			},
+			{
+				DeviceName: aws.String(ebsmetadata.RootDeviceName),
+				Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(8), VolumeType: aws.String("gp3")},
+			},
+		},
+	}
+
+	p := parseVolumeParams(input)
+	assert.Equal(t, 8*1024*1024*1024, p.size)
+	assert.Equal(t, ebsmetadata.RootDeviceName, p.deviceName)
+	assert.Equal(t, "gp3", p.volumeType)
+}
+
+func TestParseVolumeParams_SingleNonRootMappingStillLaunches(t *testing.T) {
+	// ECS and EKS both launch with one mapping named /dev/vda, which is not the
+	// AMI root device name. Position decides when nothing names the root.
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-vda"),
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
+			{
+				DeviceName: aws.String("/dev/vda"),
+				Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(20)},
+			},
+		},
+	}
+
+	p := parseVolumeParams(input)
+	assert.Equal(t, 20*1024*1024*1024, p.size)
+	assert.Equal(t, "/dev/vda", p.deviceName)
+	assert.Empty(t, UnservedBlockDeviceMappings(input.BlockDeviceMappings))
+}
+
+func TestUnservedBlockDeviceMappings(t *testing.T) {
+	root := &ec2.BlockDeviceMapping{
+		DeviceName: aws.String(ebsmetadata.RootDeviceName),
+		Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(8)},
+	}
+	data := &ec2.BlockDeviceMapping{
+		DeviceName: aws.String("/dev/sdf"),
+		Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4)},
+	}
+	ephemeral := &ec2.BlockDeviceMapping{
+		DeviceName:  aws.String("/dev/sdb"),
+		VirtualName: aws.String("ephemeral0"),
+	}
+
+	tests := []struct {
+		name     string
+		mappings []*ec2.BlockDeviceMapping
+		want     []string
+	}{
+		{name: "none", mappings: nil},
+		{name: "root only", mappings: []*ec2.BlockDeviceMapping{root}},
+		{name: "data after root", mappings: []*ec2.BlockDeviceMapping{root, data}, want: []string{"/dev/sdf"}},
+		{name: "data before root", mappings: []*ec2.BlockDeviceMapping{data, root}, want: []string{"/dev/sdf"}},
+		{name: "ephemeral ignored", mappings: []*ec2.BlockDeviceMapping{root, ephemeral}},
+		{name: "ephemeral only", mappings: []*ec2.BlockDeviceMapping{ephemeral}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, UnservedBlockDeviceMappings(tt.mappings))
+		})
+	}
 }
 
 func TestParseVolumeParams_Io1WithIops(t *testing.T) {

@@ -261,12 +261,24 @@ func TestParseRunInstances(t *testing.T) {
 		assert.NoError(t, ValidateRunInstancesInput(&input))
 	})
 
-	t.Run("AdditionalEBSBlockDeviceMappingIsRefusedByName", func(t *testing.T) {
+	t.Run("AdditionalEBSBlockDeviceMappingIsValid", func(t *testing.T) {
 		t.Parallel()
 		input := defaults
 		input.BlockDeviceMappings = []*ec2.BlockDeviceMapping{
 			{DeviceName: aws.String("/dev/sdf"), Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4)}},
 			{DeviceName: aws.String(ebsmetadata.RootDeviceName), Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(8)}},
+		}
+		assert.NoError(t, ValidateRunInstancesInput(&input))
+	})
+
+	// A data volume is created empty, so a mapping naming a snapshot or naming
+	// no size asks for something the launch cannot give it.
+	t.Run("DataMappingNamingASnapshotIsRefusedByName", func(t *testing.T) {
+		t.Parallel()
+		input := defaults
+		input.BlockDeviceMappings = []*ec2.BlockDeviceMapping{
+			{DeviceName: aws.String(ebsmetadata.RootDeviceName), Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(8)}},
+			{DeviceName: aws.String("/dev/sdf"), Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4), SnapshotId: aws.String("snap-1")}},
 		}
 		err := ValidateRunInstancesInput(&input)
 		require.Error(t, err)
@@ -274,6 +286,21 @@ func TestParseRunInstances(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
 		assert.Contains(t, message, "BlockDeviceMappings")
+		assert.Contains(t, message, "/dev/sdf")
+	})
+
+	t.Run("DataMappingWithNoSizeIsRefusedByName", func(t *testing.T) {
+		t.Parallel()
+		input := defaults
+		input.BlockDeviceMappings = []*ec2.BlockDeviceMapping{
+			{DeviceName: aws.String(ebsmetadata.RootDeviceName), Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(8)}},
+			{DeviceName: aws.String("/dev/sdf"), Ebs: &ec2.EbsBlockDevice{}},
+		}
+		err := ValidateRunInstancesInput(&input)
+		require.Error(t, err)
+		code, message, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
 		assert.Contains(t, message, "/dev/sdf")
 	})
 

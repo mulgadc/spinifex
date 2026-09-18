@@ -82,6 +82,45 @@ func floorVolumeSizeToAMI(ctx context.Context, loader AMIMetaLoader, imageID str
 	return int(amiSize)
 }
 
+// dataVolumeParams describes one non-root EBS mapping: an empty volume the
+// launch creates and attaches at the device name the caller named.
+type dataVolumeParams struct {
+	deviceName          string
+	sizeGiB             int64
+	iops                int64
+	deleteOnTermination bool
+}
+
+// parseDataVolumeParams returns the EBS mappings that are not the root, in the
+// order the caller gave them. An instance store mapping names no volume, and a
+// mapping with no Ebs block sizes nothing, so neither is one of them.
+func parseDataVolumeParams(input *ec2.RunInstancesInput) []dataVolumeParams {
+	root := SelectRootBlockDeviceMapping(input.BlockDeviceMappings)
+	var out []dataVolumeParams
+	for i, bdm := range input.BlockDeviceMappings {
+		if i == root || bdm == nil || bdm.Ebs == nil || isEphemeralMapping(bdm) {
+			continue
+		}
+		p := dataVolumeParams{
+			deviceName: aws.StringValue(bdm.DeviceName),
+			// A volume attached at launch is deleted with the instance unless
+			// the caller says otherwise, as AWS does.
+			deleteOnTermination: true,
+		}
+		if bdm.Ebs.VolumeSize != nil {
+			p.sizeGiB = *bdm.Ebs.VolumeSize
+		}
+		if bdm.Ebs.Iops != nil {
+			p.iops = *bdm.Ebs.Iops
+		}
+		if bdm.Ebs.DeleteOnTermination != nil {
+			p.deleteOnTermination = *bdm.Ebs.DeleteOnTermination
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // isEphemeralMapping reports whether a mapping names an instance store device
 // rather than an EBS volume. These carry a VirtualName and no Ebs block, so the
 // launch path neither creates nor owes them a volume.
@@ -109,21 +148,26 @@ func SelectRootBlockDeviceMapping(mappings []*ec2.BlockDeviceMapping) int {
 	return first
 }
 
-// UnservedBlockDeviceMappings names the EBS mappings the launch path will not
-// create a volume for. Only the root is served, so any other mapping is a
-// request the platform cannot meet and must refuse rather than discard.
+// UnservedBlockDeviceMappings names the non-root EBS mappings the launch path
+// cannot serve, with the reason. A data volume is created empty, so a mapping
+// naming a snapshot is refused rather than served as a blank volume.
 func UnservedBlockDeviceMappings(mappings []*ec2.BlockDeviceMapping) []string {
 	root := SelectRootBlockDeviceMapping(mappings)
 	var unserved []string
 	for i, bdm := range mappings {
-		if i == root || bdm == nil || isEphemeralMapping(bdm) {
+		if i == root || bdm == nil || bdm.Ebs == nil || isEphemeralMapping(bdm) {
 			continue
 		}
 		name := aws.StringValue(bdm.DeviceName)
 		if name == "" {
 			name = "(unnamed)"
 		}
-		unserved = append(unserved, name)
+		switch {
+		case aws.StringValue(bdm.Ebs.SnapshotId) != "":
+			unserved = append(unserved, name+" (names a snapshot)")
+		case aws.Int64Value(bdm.Ebs.VolumeSize) < 1:
+			unserved = append(unserved, name+" (names no size)")
+		}
 	}
 	return unserved
 }
@@ -180,6 +224,7 @@ type InstanceServiceImpl struct {
 	resourceMgr       InstanceTypeAllocator
 	stoppedStore      StoppedInstanceStore
 	volumeDeleter     VolumeDeleter
+	volumeCreator     VolumeCreator
 	eniDeleter        ENIDeleter
 	ipReleaser        PublicIPReleaser
 	tagWriter         InstanceTagWriter
@@ -199,6 +244,12 @@ type InstanceServiceImpl struct {
 // control-plane storage engine.
 func (s *InstanceServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
 	s.ebsProvider = provider
+}
+
+// SetVolumeCreator injects the volume service a launch uses for the volumes it
+// names beyond the root device.
+func (s *InstanceServiceImpl) SetVolumeCreator(vc VolumeCreator) {
+	s.volumeCreator = vc
 }
 
 // EBSProvider returns the injected provider boundary, or nil on the legacy
@@ -1518,7 +1569,8 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 		}
 	}
 
-	// Return volume info for the root volume only (EFI is internal)
+	// The EFI store is internal, so it is not reported; every volume the
+	// request named is.
 	volumeInfos := []VolumeInfo{
 		{
 			VolumeId:            imageId,
@@ -1528,7 +1580,110 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 		},
 	}
 
+	// Step 3: Create a volume for each remaining EBS mapping.
+	data, err := s.prepareDataVolumes(ctx, input, instance)
+	if err != nil {
+		return nil, err
+	}
+	volumeInfos = append(volumeInfos, data...)
+
 	return volumeInfos, nil
+}
+
+// prepareDataVolumes creates an empty volume for every EBS mapping that is not
+// the root and records each as a non-boot request the launcher attaches. A
+// failure unwinds the volumes this call created, so a refused launch leaves none.
+func (s *InstanceServiceImpl) prepareDataVolumes(ctx context.Context, input *ec2.RunInstancesInput, instance *vm.VM) ([]VolumeInfo, error) {
+	params := parseDataVolumeParams(input)
+	if len(params) == 0 {
+		return nil, nil
+	}
+	if s.volumeCreator == nil {
+		slog.ErrorContext(ctx, "no volume creator configured", "op", "prepareDataVolumes")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	var infos []VolumeInfo
+	unwind := func() {
+		for _, info := range infos {
+			if _, err := s.volumeCreator.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
+				VolumeId: aws.String(info.VolumeId),
+			}, instance.AccountID); err != nil {
+				slog.WarnContext(ctx, "rollback delete of launch data volume failed",
+					"volumeId", info.VolumeId, "err", err)
+			}
+		}
+	}
+
+	for _, p := range params {
+		created, err := s.createDataVolume(ctx, input, instance.AccountID, p)
+		if err != nil {
+			unwind()
+			return nil, err
+		}
+		volumeID := aws.StringValue(created.VolumeId)
+		appendDataEBSRequest(instance, volumeID, p.deviceName, p.deleteOnTermination)
+		infos = append(infos, VolumeInfo{
+			VolumeId:            volumeID,
+			DeviceName:          p.deviceName,
+			AttachTime:          time.Now(),
+			DeleteOnTermination: p.deleteOnTermination,
+		})
+	}
+	return infos, nil
+}
+
+// createDataVolume allocates one empty volume through the volume service, so
+// the launch path reuses its validation and metadata write, then records the
+// mapping's DeleteOnTermination, which CreateVolume has no field for.
+func (s *InstanceServiceImpl) createDataVolume(ctx context.Context, input *ec2.RunInstancesInput, accountID string, p dataVolumeParams) (*ec2.Volume, error) {
+	create := &ec2.CreateVolumeInput{
+		AvailabilityZone:  aws.String(s.config.AZ),
+		Size:              aws.Int64(p.sizeGiB),
+		VolumeType:        aws.String(spxtypes.VolumeTypeGP3),
+		TagSpecifications: volumeTagSpecifications(input.TagSpecifications),
+	}
+	if p.iops > 0 {
+		create.Iops = aws.Int64(p.iops)
+	}
+	created, err := s.volumeCreator.CreateVolume(ctx, create, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "launch data volume creation failed",
+			"deviceName", p.deviceName, "sizeGiB", p.sizeGiB, "err", err)
+		return nil, err
+	}
+	if created == nil || aws.StringValue(created.VolumeId) == "" {
+		slog.ErrorContext(ctx, "launch data volume creation returned no volume", "deviceName", p.deviceName)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if !p.deleteOnTermination {
+		return created, nil
+	}
+	meta, err := s.metadata.GetVolume(ctx, accountID, aws.StringValue(created.VolumeId))
+	if err != nil {
+		slog.ErrorContext(ctx, "launch data volume metadata read failed",
+			"volumeId", aws.StringValue(created.VolumeId), "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	meta.DeleteOnTermination = true
+	if err := s.metadata.PutVolume(ctx, meta); err != nil {
+		slog.ErrorContext(ctx, "launch data volume metadata write failed",
+			"volumeId", aws.StringValue(created.VolumeId), "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return created, nil
+}
+
+// volumeTagSpecifications returns the volume tag specifications from a launch
+// request, which AWS applies to every volume the launch creates.
+func volumeTagSpecifications(specs []*ec2.TagSpecification) []*ec2.TagSpecification {
+	var out []*ec2.TagSpecification
+	for _, spec := range specs {
+		if spec != nil && aws.StringValue(spec.ResourceType) == ec2.ResourceTypeVolume {
+			out = append(out, spec)
+		}
+	}
+	return out
 }
 
 // prepareRootVolume allocates the root volume through the EBS provider and
@@ -1562,6 +1717,19 @@ func appendRootEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOn
 		Name:                volumeID,
 		DeviceName:          deviceName,
 		Boot:                true,
+		DeleteOnTermination: deleteOnTermination,
+	})
+	instance.EBSRequests.Mu.Unlock()
+}
+
+// appendDataEBSRequest records a non-boot volume the launcher must attach at
+// the device name the request named, which is what DescribeVolumes reports as
+// Attachments[].Device.
+func appendDataEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOnTermination bool) {
+	instance.EBSRequests.Mu.Lock()
+	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, spxtypes.EBSRequest{
+		Name:                volumeID,
+		DeviceName:          deviceName,
 		DeleteOnTermination: deleteOnTermination,
 	})
 	instance.EBSRequests.Mu.Unlock()

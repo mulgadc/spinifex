@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
@@ -74,10 +73,11 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	// The launch path creates the root volume and nothing else, so a mapping
-	// for any other device is refused by name rather than silently dropped.
+	// A volume the launch creates beyond the root is empty and sized by the
+	// request, so a mapping asking for anything else is refused by name rather
+	// than served as something it did not ask for.
 	if unserved := handlers_ec2_instance.UnservedBlockDeviceMappings(input.BlockDeviceMappings); len(unserved) > 0 {
-		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "BlockDeviceMappings: only the root device %s is created at launch; cannot attach %s", ebsmetadata.RootDeviceName, strings.Join(unserved, ", "))
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "BlockDeviceMappings: cannot create %s", strings.Join(unserved, ", "))
 	}
 
 	return err

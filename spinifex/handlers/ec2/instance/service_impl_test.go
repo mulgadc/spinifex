@@ -609,6 +609,14 @@ func TestUnservedBlockDeviceMappings(t *testing.T) {
 		DeviceName:  aws.String("/dev/sdb"),
 		VirtualName: aws.String("ephemeral0"),
 	}
+	fromSnapshot := &ec2.BlockDeviceMapping{
+		DeviceName: aws.String("/dev/sdg"),
+		Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4), SnapshotId: aws.String("snap-1")},
+	}
+	unsized := &ec2.BlockDeviceMapping{
+		DeviceName: aws.String("/dev/sdh"),
+		Ebs:        &ec2.EbsBlockDevice{},
+	}
 
 	tests := []struct {
 		name     string
@@ -617,10 +625,12 @@ func TestUnservedBlockDeviceMappings(t *testing.T) {
 	}{
 		{name: "none", mappings: nil},
 		{name: "root only", mappings: []*ec2.BlockDeviceMapping{root}},
-		{name: "data after root", mappings: []*ec2.BlockDeviceMapping{root, data}, want: []string{"/dev/sdf"}},
-		{name: "data before root", mappings: []*ec2.BlockDeviceMapping{data, root}, want: []string{"/dev/sdf"}},
+		{name: "sized data after root", mappings: []*ec2.BlockDeviceMapping{root, data}},
+		{name: "sized data before root", mappings: []*ec2.BlockDeviceMapping{data, root}},
 		{name: "ephemeral ignored", mappings: []*ec2.BlockDeviceMapping{root, ephemeral}},
 		{name: "ephemeral only", mappings: []*ec2.BlockDeviceMapping{ephemeral}},
+		{name: "data naming a snapshot", mappings: []*ec2.BlockDeviceMapping{root, fromSnapshot}, want: []string{"/dev/sdg (names a snapshot)"}},
+		{name: "data naming no size", mappings: []*ec2.BlockDeviceMapping{root, unsized}, want: []string{"/dev/sdh (names no size)"}},
 	}
 
 	for _, tt := range tests {

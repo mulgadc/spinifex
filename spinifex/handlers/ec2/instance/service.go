@@ -124,6 +124,14 @@ type VolumeDeleter interface {
 	DetachVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error
 }
 
+// VolumeCreator creates the volumes a launch names beyond the root device, and
+// deletes them again when the launch fails. Implemented by handlers/ec2/volume's
+// VolumeServiceImpl.
+type VolumeCreator interface {
+	CreateVolume(ctx context.Context, input *ec2.CreateVolumeInput, accountID string) (*ec2.Volume, error)
+	DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, accountID string) (*ec2.DeleteVolumeOutput, error)
+}
+
 // ENIDeleter deletes ENIs. Implemented by handlers/ec2/vpc's VPCServiceImpl.
 type ENIDeleter interface {
 	DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)

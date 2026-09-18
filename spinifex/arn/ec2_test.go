@@ -20,6 +20,7 @@ func TestEC2TypeForID(t *testing.T) {
 		{"vpc-abc123", arn.EC2VPC, true},
 		{"subnet-abc123", arn.EC2Subnet, true},
 		{"sg-abc123", arn.EC2SecurityGroup, true},
+		{"sgr-abc123", arn.EC2SecurityGroupRule, true},
 		{"rtb-abc123", arn.EC2RouteTable, true},
 		{"igw-abc123", arn.EC2InternetGateway, true},
 		{"eigw-abc123", arn.EC2EgressOnlyInternetGateway, true},

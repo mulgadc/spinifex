@@ -21,6 +21,7 @@ const (
 	EC2VPC                       EC2ResourceType = "vpc"
 	EC2Subnet                    EC2ResourceType = "subnet"
 	EC2SecurityGroup             EC2ResourceType = "security-group"
+	EC2SecurityGroupRule         EC2ResourceType = "security-group-rule"
 	EC2RouteTable                EC2ResourceType = "route-table"
 	EC2InternetGateway           EC2ResourceType = "internet-gateway"
 	EC2EgressOnlyInternetGateway EC2ResourceType = "egress-only-internet-gateway"
@@ -52,6 +53,7 @@ var ec2IDPrefixes = []struct {
 	{"vpc-", EC2VPC},
 	{"subnet-", EC2Subnet},
 	{"sg-", EC2SecurityGroup},
+	{"sgr-", EC2SecurityGroupRule},
 	{"rtb-", EC2RouteTable},
 	{"igw-", EC2InternetGateway},
 	{"eigw-", EC2EgressOnlyInternetGateway},

@@ -428,11 +428,11 @@ func eksUncased() map[string]string {
 		"AssociateAccessPolicy", "AssociateIdentityProviderConfig", "CreateAccessEntry", "CreateAddon",
 		"CreateCluster", "CreateNodegroup", "DeleteAccessEntry", "DeleteAddon", "DeleteCluster",
 		"DeleteNodegroup", "DescribeAccessEntry", "DescribeAddon", "DescribeAddonVersions",
-		"DescribeCluster", "DescribeIdentityProviderConfig", "DescribeNodegroup",
+		"DescribeCluster", "DescribeIdentityProviderConfig", "DescribeNodegroup", "DescribeUpdate",
 		"DisassociateAccessPolicy", "DisassociateIdentityProviderConfig", "GetRecoveryDirective",
 		"ListAccessEntries", "ListAccessPolicies", "ListAddons", "ListAssociatedAccessPolicies",
 		"ListClusters", "ListIdentityProviderConfigs", "ListInternalAddons", "ListNodegroups",
-		"PublishInternal", "UpdateAccessEntry", "UpdateAddon", "UpdateClusterConfig",
+		"ListUpdates", "PublishInternal", "UpdateAccessEntry", "UpdateAddon", "UpdateClusterConfig",
 		"UpdateClusterVersion", "UpdateNodegroupConfig", "UpdateNodegroupVersion", "WebhookTokenReview",
 	} {
 		uncased[action] = byName

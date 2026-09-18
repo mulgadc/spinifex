@@ -1107,10 +1107,13 @@ func (s *VPCServiceImpl) clearRecordTags(ctx context.Context, accountID, resourc
 	}
 }
 
-// updateRecordTags applies mut to the tag map of the subnet-, vpc-, sg-, or
-// eni-scoped record identified by resourceID. Other resource ids are a no-op.
+// updateRecordTags applies mut to the tag map of the subnet-, vpc-, sg-, sgr-,
+// or eni-scoped record identified by resourceID. Other resource ids are a
+// no-op.
 func (s *VPCServiceImpl) updateRecordTags(ctx context.Context, accountID, resourceID string, mut func(map[string]string)) error {
 	switch {
+	case strings.HasPrefix(resourceID, "sgr-"):
+		return s.updateSGRuleTags(ctx, accountID, resourceID, mut)
 	case strings.HasPrefix(resourceID, "subnet-"):
 		return utils.UpdateKVRecordTags(ctx, s.subnetKV, accountID, resourceID, func(r *SubnetRecord) {
 			if r.Tags == nil {

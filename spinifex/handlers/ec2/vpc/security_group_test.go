@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -2361,4 +2362,142 @@ func TestSecurityGroupRule_DescriptionRoundTrips(t *testing.T) {
 	// With the cross-ref gone the backend SG tears down cleanly — no orphan.
 	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{GroupId: aws.String(backendSG)}, testAccountID)
 	require.NoError(t, err, "backend SG must delete once its node-SG reference is revoked")
+}
+
+func TestAuthorizeSecurityGroupIngress_StoresRuleTags(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "rule-tags-sg")
+
+	out, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(80),
+			ToPort:     aws.Int64(80),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("192.168.1.33/32")}},
+		}},
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String(ec2.ResourceTypeSecurityGroupRule),
+			Tags:         []*ec2.Tag{{Key: aws.String("terraform-aws-modules"), Value: aws.String("alb")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroupRules, 1)
+	ruleID := aws.StringValue(out.SecurityGroupRules[0].SecurityGroupRuleId)
+	assert.Equal(t, map[string]string{"terraform-aws-modules": "alb"},
+		filterutil.EC2TagsToMap(out.SecurityGroupRules[0].Tags), "authorize must echo the tags it stored")
+
+	desc, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
+		SecurityGroupRuleIds: []*string{aws.String(ruleID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.SecurityGroupRules, 1)
+	assert.Equal(t, map[string]string{"terraform-aws-modules": "alb"},
+		filterutil.EC2TagsToMap(desc.SecurityGroupRules[0].Tags))
+}
+
+func TestDescribeSecurityGroupRules_FiltersByTag(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "rule-tag-filter-sg")
+
+	tagged, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"), FromPort: aws.Int64(443), ToPort: aws.Int64(443),
+			IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+		}},
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String(ec2.ResourceTypeSecurityGroupRule),
+			Tags:         []*ec2.Tag{{Key: aws.String("owner"), Value: aws.String("alb")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	taggedID := aws.StringValue(tagged.SecurityGroupRules[0].SecurityGroupRuleId)
+
+	_, err = svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"), FromPort: aws.Int64(8080), ToPort: aws.Int64(8080),
+			IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	byValue, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("tag:owner"), Values: []*string{aws.String("alb")}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, byValue.SecurityGroupRules, 1)
+	assert.Equal(t, taggedID, aws.StringValue(byValue.SecurityGroupRules[0].SecurityGroupRuleId))
+
+	byKey, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("tag-key"), Values: []*string{aws.String("owner")}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, byKey.SecurityGroupRules, 1)
+	assert.Equal(t, taggedID, aws.StringValue(byKey.SecurityGroupRules[0].SecurityGroupRuleId))
+}
+
+func TestDescribeSecurityGroupRules_AllProtocolReportsMinusOnePorts(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "all-proto-sg")
+
+	out, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("-1"),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.1.0.0/16")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroupRules, 1)
+	assert.Equal(t, int64(-1), aws.Int64Value(out.SecurityGroupRules[0].FromPort))
+	assert.Equal(t, int64(-1), aws.Int64Value(out.SecurityGroupRules[0].ToPort))
+}
+
+func TestApplyRecordTags_ReachesASecurityGroupRule(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "rule-createtags-sg")
+
+	out, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"), FromPort: aws.Int64(22), ToPort: aws.Int64(22),
+			IpRanges: []*ec2.IpRange{{CidrIp: aws.String("192.168.1.33/32")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	ruleID := aws.StringValue(out.SecurityGroupRules[0].SecurityGroupRuleId)
+
+	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
+		Resources: []*string{aws.String(ruleID)},
+		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("ssh")}},
+	}, testAccountID))
+
+	desc, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
+		SecurityGroupRuleIds: []*string{aws.String(ruleID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.SecurityGroupRules, 1)
+	assert.Equal(t, map[string]string{"Name": "ssh"},
+		filterutil.EC2TagsToMap(desc.SecurityGroupRules[0].Tags))
+
+	require.NoError(t, svc.RemoveRecordTags(&ec2.DeleteTagsInput{
+		Resources: []*string{aws.String(ruleID)},
+		Tags:      []*ec2.Tag{{Key: aws.String("Name")}},
+	}, testAccountID))
+
+	desc, err = svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
+		SecurityGroupRuleIds: []*string{aws.String(ruleID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, desc.SecurityGroupRules[0].Tags)
 }

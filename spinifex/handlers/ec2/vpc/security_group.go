@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"regexp"
 	"slices"
@@ -28,6 +29,10 @@ var sgIDRegex = regexp.MustCompile(`^sg-[0-9a-f]{17}$`)
 // Exported so the EC2 gateway can validate SecurityGroupRuleIds without
 // re-implementing the format check.
 var SGRuleIDRegex = regexp.MustCompile(`^sgr-[0-9a-f]{17}$`)
+
+// allProtocols is the IpProtocol value naming every protocol, which is also
+// the port value AWS reports for such a rule.
+const allProtocols = "-1"
 
 // canonicalIPProtocols are the only values the OVN ACL builder can express.
 // Anything else must be rejected: the builder emits no L4 predicate for an
@@ -129,6 +134,10 @@ type SGRule struct {
 	// so revoke/duplicate matching ignores it. The AWS Load Balancer Controller
 	// tags the node-SG rules it manages here and revokes them by this value.
 	Description string `json:"description,omitempty"`
+	// Tags are excluded from sgRuleKey for the same reason as Description: two
+	// rules with identical permissions are the same rule whatever they are
+	// labelled.
+	Tags map[string]string `json:"tags,omitempty"`
 }
 
 // SecurityGroupRecord represents a stored security group.
@@ -811,13 +820,11 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 }
 
 // sgRuleMatchesFilters applies the DescribeSecurityGroupRules filter set to a
-// single rule. Rule-level tags are not yet persisted, so tag:* and tag-key
-// filters always return false.
+// single rule.
 func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
-			// rule.Tags is not yet populated; any tag:* filter excludes every rule.
-			return false
+			continue
 		}
 		switch name {
 		case "group-id":
@@ -829,8 +836,9 @@ func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[
 				return false
 			}
 		case "tag-key":
-			// rule.Tags is not yet populated; tag-key excludes every rule.
-			return false
+			if !sgRuleMatchesTagKey(rule.Tags, values) {
+				return false
+			}
 		default:
 			// Unreachable: ParseFilters rejects names not in the valid set.
 			// Logs an error if a future map entry lacks a matching case.
@@ -838,21 +846,121 @@ func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[
 			return false
 		}
 	}
-	return true
+	return filterutil.MatchesTags(filters, rule.Tags)
+}
+
+// updateSGRuleTags applies mut to the tags of the rule named by ruleID, which
+// lives inside its parent group's record rather than a record of its own. The
+// parent is found by scanning the account's groups: a rule id carries no
+// pointer back to the group holding it.
+func (s *VPCServiceImpl) updateSGRuleTags(ctx context.Context, accountID, ruleID string, mut func(map[string]string)) error {
+	prefix := accountID + "."
+	keys, err := s.sgKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		slog.ErrorContext(ctx, "updateSGRuleTags: key listing failed", "ruleId", ruleID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	for _, key := range keys {
+		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := s.sgKV.Get(ctx, key)
+		if err != nil {
+			slog.ErrorContext(ctx, "updateSGRuleTags: SG read failed", "key", key, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		var record SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			slog.ErrorContext(ctx, "updateSGRuleTags: SG unmarshal failed", "key", key, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+
+		rule := findSGRuleByID(record.IngressRules, ruleID)
+		if rule == nil {
+			rule = findSGRuleByID(record.EgressRules, ruleID)
+		}
+		if rule == nil {
+			continue
+		}
+		if rule.Tags == nil {
+			rule.Tags = map[string]string{}
+		}
+		mut(rule.Tags)
+
+		data, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("failed to marshal security group record: %w", err)
+		}
+		// Compare-and-swap on the revision read above: a concurrent authorize on
+		// the same group would otherwise lose its rule to this write.
+		if _, err := s.sgKV.Update(ctx, key, data, entry.Revision()); err != nil {
+			slog.ErrorContext(ctx, "updateSGRuleTags: SG write failed", "key", key, "ruleId", ruleID, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		return nil
+	}
+	return nil
+}
+
+// findSGRuleByID returns a pointer into rules so a caller can mutate the stored
+// rule in place.
+func findSGRuleByID(rules []SGRule, ruleID string) *SGRule {
+	for i := range rules {
+		if rules[i].RuleId == ruleID {
+			return &rules[i]
+		}
+	}
+	return nil
+}
+
+// sgRuleMatchesTagKey reports whether the rule carries any of the named tag
+// keys, whatever their values.
+func sgRuleMatchesTagKey(tags map[string]string, keys []string) bool {
+	for key := range tags {
+		if filterutil.MatchesAny(keys, key) {
+			return true
+		}
+	}
+	return false
+}
+
+// applySGRuleTags stamps the security-group-rule TagSpecification onto every
+// rule an authorize call creates. AWS tags the rules the call creates and no
+// others, so this runs on the new rules alone.
+func applySGRuleTags(rules []SGRule, specs []*ec2.TagSpecification) []SGRule {
+	tags := utils.ExtractTags(specs, ec2.ResourceTypeSecurityGroupRule)
+	if len(tags) == 0 {
+		return rules
+	}
+	for i := range rules {
+		rules[i].Tags = maps.Clone(tags)
+	}
+	return rules
 }
 
 // sgRuleToSecurityGroupRule flattens a stored SGRule into the AWS API shape.
 // accountID supplies GroupOwnerId and ReferencedGroupInfo.UserId; VpcId is
 // derived from the parent record (same-VPC references are enforced on write).
 func sgRuleToSecurityGroupRule(record *SecurityGroupRecord, rule SGRule, isEgress bool, accountID string) *ec2.SecurityGroupRule {
+	// An all-protocol rule has no ports to report. AWS answers -1 for both;
+	// reporting the stored zeroes offers a caller two ports it never sent.
+	fromPort, toPort := rule.FromPort, rule.ToPort
+	if rule.IpProtocol == allProtocols {
+		fromPort, toPort = -1, -1
+	}
 	out := &ec2.SecurityGroupRule{
 		SecurityGroupRuleId: aws.String(rule.RuleId),
 		GroupId:             aws.String(record.GroupId),
 		GroupOwnerId:        aws.String(accountID),
 		IsEgress:            aws.Bool(isEgress),
 		IpProtocol:          aws.String(rule.IpProtocol),
-		FromPort:            aws.Int64(rule.FromPort),
-		ToPort:              aws.Int64(rule.ToPort),
+		FromPort:            aws.Int64(fromPort),
+		ToPort:              aws.Int64(toPort),
+		Tags:                utils.MapToEC2Tags(rule.Tags),
 	}
 	if rule.Description != "" {
 		out.Description = aws.String(rule.Description)
@@ -901,6 +1009,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 		slog.WarnContext(ctx, "AuthorizeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
+	newRules = applySGRuleTags(newRules, input.TagSpecifications)
 	if err := s.validateSGRuleReferences(ctx, accountID, record.VpcId, newRules); err != nil {
 		return nil, err
 	}
@@ -924,6 +1033,10 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 	}
 	if _, err := s.sgKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	for _, nr := range newRules {
+		s.projectRecordTags(ctx, accountID, nr.RuleId, nr.Tags)
 	}
 
 	slog.InfoContext(ctx, "AuthorizeSecurityGroupIngress completed", "groupId", groupId, "newRules", len(newRules), "accountID", accountID)
@@ -976,6 +1089,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 		slog.WarnContext(ctx, "AuthorizeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
+	newRules = applySGRuleTags(newRules, input.TagSpecifications)
 	if err := s.validateSGRuleReferences(ctx, accountID, record.VpcId, newRules); err != nil {
 		return nil, err
 	}
@@ -999,6 +1113,10 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 	}
 	if _, err := s.sgKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	for _, nr := range newRules {
+		s.projectRecordTags(ctx, accountID, nr.RuleId, nr.Tags)
 	}
 
 	slog.InfoContext(ctx, "AuthorizeSecurityGroupEgress completed", "groupId", groupId, "newRules", len(newRules), "accountID", accountID)
@@ -1058,6 +1176,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(ctx context.Context, input *
 	if err := assertRulesPresent(record.IngressRules, revokeRules); err != nil {
 		return nil, err
 	}
+	revokedIDs := removedSGRuleIDs(record.IngressRules, revokeRules)
 	record.IngressRules = removeSGRules(record.IngressRules, revokeRules)
 
 	data, err := json.Marshal(record)
@@ -1066,6 +1185,10 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(ctx context.Context, input *
 	}
 	if _, err := s.sgKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	for _, id := range revokedIDs {
+		s.clearRecordTags(ctx, accountID, id)
 	}
 
 	slog.InfoContext(ctx, "RevokeSecurityGroupIngress completed", "groupId", groupId, "revokedRules", len(revokeRules), "accountID", accountID)
@@ -1120,6 +1243,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *e
 	if err := assertRulesPresent(record.EgressRules, revokeRules); err != nil {
 		return nil, err
 	}
+	revokedIDs := removedSGRuleIDs(record.EgressRules, revokeRules)
 	record.EgressRules = removeSGRules(record.EgressRules, revokeRules)
 
 	data, err := json.Marshal(record)
@@ -1128,6 +1252,10 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *e
 	}
 	if _, err := s.sgKV.Update(ctx, key, data, entry.Revision()); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	for _, id := range revokedIDs {
+		s.clearRecordTags(ctx, accountID, id)
 	}
 
 	slog.InfoContext(ctx, "RevokeSecurityGroupEgress completed", "groupId", groupId, "revokedRules", len(revokeRules), "accountID", accountID)
@@ -1573,6 +1701,24 @@ func assertRulesPresent(existing, toRevoke []SGRule) error {
 		}
 	}
 	return nil
+}
+
+// removedSGRuleIDs names the stored rules a revoke will drop. A revoke request
+// carries permissions rather than IDs, so the IDs whose tag entries have to go
+// with them can only be read off the stored rules before they are removed.
+func removedSGRuleIDs(existing, toRemove []SGRule) []string {
+	removeSet := make(map[string]bool, len(toRemove))
+	for _, r := range toRemove {
+		removeSet[sgRuleKey(r)] = true
+	}
+
+	var ids []string
+	for _, r := range existing {
+		if removeSet[sgRuleKey(r)] {
+			ids = append(ids, r.RuleId)
+		}
+	}
+	return ids
 }
 
 // removeSGRules removes matching rules from the existing set.

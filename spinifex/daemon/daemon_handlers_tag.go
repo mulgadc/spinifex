@@ -30,7 +30,7 @@ type recordTagMirror interface {
 }
 
 // recordTagMirrors collects the initialized services owning centrally-stored
-// records: vpc covers vpc/subnet/sg/eni, the rest own their prefix.
+// records: vpc covers vpc/subnet/sg/sgr/eni, the rest own their prefix.
 func (d *Daemon) recordTagMirrors() []recordTagMirror {
 	var mirrors []recordTagMirror
 	if d.vpcService != nil {

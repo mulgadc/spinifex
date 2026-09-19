@@ -14,18 +14,23 @@ type heartbeater struct {
 	cp       controlPlane
 	id       identity
 	interval time.Duration
+	// runtimeReady reports whether a container runtime is resolved, so a beat
+	// advertises capacity only while there is something to run it with. nil
+	// means always ready.
+	runtimeReady func() bool
 }
 
-func newHeartbeater(cp controlPlane, id identity, interval time.Duration) *heartbeater {
+func newHeartbeater(cp controlPlane, id identity, interval time.Duration, runtimeReady func() bool) *heartbeater {
 	if interval <= 0 {
 		interval = defaultHeartbeat
 	}
-	return &heartbeater{cp: cp, id: id, interval: interval}
+	return &heartbeater{cp: cp, id: id, interval: interval, runtimeReady: runtimeReady}
 }
 
 // beat re-registers the instance once, refreshing its LastSeen.
 func (h *heartbeater) beat() error {
-	return h.cp.Register(h.id)
+	ready := h.runtimeReady == nil || h.runtimeReady()
+	return h.cp.Register(advertisedIdentity(h.id, ready))
 }
 
 // Run beats every interval until ctx is cancelled. A failed beat is logged and

@@ -3,6 +3,7 @@ package handlers_ecs
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
@@ -335,4 +336,74 @@ func TestDeployment_LegacyServiceSynthesizesPrimary(t *testing.T) {
 	require.NotNil(t, primary)
 	assert.Equal(t, "legacy-dep", primary.ID)
 	assert.Equal(t, defaultMinimumHealthyPercent, reloaded.MinimumHealthyPercent)
+}
+
+// TestLaunchBackoff_WidensWithFailuresAndCaps is the arithmetic on its own: no
+// hold while the circuit breaker is still counting, then doubling, then a cap so
+// a long-dead deployment does not wait forever to be retried.
+func TestLaunchBackoff_WidensWithFailuresAndCaps(t *testing.T) {
+	for failures := range circuitBreakerFailureThreshold {
+		assert.Zero(t, launchBackoff(failures), "held off at %d failures, below the breaker threshold", failures)
+	}
+	assert.Equal(t, launchBackoffBase, launchBackoff(circuitBreakerFailureThreshold))
+	assert.Equal(t, 2*launchBackoffBase, launchBackoff(circuitBreakerFailureThreshold+1))
+	assert.Equal(t, 4*launchBackoffBase, launchBackoff(circuitBreakerFailureThreshold+2))
+	assert.Equal(t, launchBackoffCap, launchBackoff(circuitBreakerFailureThreshold+20))
+	assert.Equal(t, launchBackoffCap, launchBackoff(1_000_000))
+}
+
+// A deployment whose tasks keep dying on start stops relaunching on every pass.
+// AWS leaves the deployment circuit breaker off by default, so without this a
+// service whose node cannot run containers churns tasks forever — which is how
+// one env accumulated hundreds of STOPPED tasks at one every thirty seconds.
+func TestDeployment_RepeatedStartFailuresBackOffWithoutTheCircuitBreaker(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"),
+		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Fail every task the reconciler launches. The breaker is off, so nothing
+	// else brakes this.
+	for range circuitBreakerFailureThreshold {
+		failPending(t, svc, kv, "web", "web")
+		require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
+	}
+
+	rec := reloadService(t, kv, "web", "web")
+	primary := rec.primaryDeployment()
+	require.NotNil(t, primary)
+	require.GreaterOrEqual(t, primary.FailedTasks, circuitBreakerFailureThreshold)
+	require.False(t, primary.NextLaunchAt.IsZero(), "no backoff recorded after repeated start failures")
+	assert.True(t, primary.NextLaunchAt.After(time.Now().UTC()), "backoff deadline is already in the past")
+
+	// The service is below its desired count and would otherwise launch, but the
+	// deadline holds the pass off.
+	failPending(t, svc, kv, "web", "web")
+	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
+	assert.Zero(t, liveServiceTasks(t, svc, kv, "web", "web"), "reconcile launched a task while the deployment was backed off")
+
+	// Once it passes, launching resumes: the backoff is a brake, not a stop.
+	rec = reloadService(t, kv, "web", "web")
+	rec.primaryDeployment().NextLaunchAt = time.Now().UTC().Add(-time.Second)
+	require.NoError(t, putJSON(t.Context(), kv, ServiceKey("web", "web"), rec))
+	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
+
+	assert.Positive(t, liveServiceTasks(t, svc, kv, "web", "web"), "backoff never released the deployment")
+}
+
+// liveServiceTasks counts a service's tasks that have not stopped, which is what
+// the reconciler is trying to hold at the desired count.
+func liveServiceTasks(t *testing.T, svc *Service, kv jetstream.KeyValue, cluster, name string) int {
+	t.Helper()
+	tasks, err := svc.listServiceTasks(t.Context(), kv, cluster, name)
+	require.NoError(t, err)
+	n := 0
+	for i := range tasks {
+		if tasks[i].LastStatus != TaskStatusStopped {
+			n++
+		}
+	}
+	return n
 }

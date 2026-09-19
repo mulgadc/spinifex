@@ -25,13 +25,13 @@ func testAssign() *bus.Assign {
 }
 
 func newRunAgent(cp controlPlane, rt *ctrruntime.FakePuller) *Agent {
-	return newAgent(config{}, testIdentity(), cp, rt, rt, nil)
+	return newAgent(config{}, testIdentity(), cp, rt, nil)
 }
 
 // runTask with no runtime reports the task STOPPED instead of crashing.
 func TestRunTask_NoRuntimeReportsStopped(t *testing.T) {
 	cp := &fakeCP{}
-	a := newAgent(config{}, testIdentity(), cp, nil, nil, nil)
+	a := newAgent(config{}, testIdentity(), cp, nil, nil)
 	a.runTask(context.Background(), testAssign())
 
 	st := cp.taskStates()
@@ -252,7 +252,7 @@ func TestRunTask_GPUCarriedToRunSpec(t *testing.T) {
 func TestRunTask_GPUPinsAndReportsUUIDs(t *testing.T) {
 	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
-	a := newAgent(config{}, testIdentityWithGPUs("GPU-aaa", "GPU-bbb"), cp, rt, rt, nil)
+	a := newAgent(config{}, testIdentityWithGPUs("GPU-aaa", "GPU-bbb"), cp, rt, nil)
 	as := testAssign()
 	as.Containers = append(as.Containers, bus.AssignContainer{
 		Name: "trainer", Image: "registry/trainer:1", GPU: 1,
@@ -296,7 +296,7 @@ func TestRunTask_GPUPinsAndReportsUUIDs(t *testing.T) {
 func TestRunTask_GPUIDsReachRunSpec(t *testing.T) {
 	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
-	a := newAgent(config{}, testIdentityWithGPUs("GPU-aaa", "GPU-bbb"), cp, rt, rt, nil)
+	a := newAgent(config{}, testIdentityWithGPUs("GPU-aaa", "GPU-bbb"), cp, rt, nil)
 	as := testAssign()
 	as.Containers = append(as.Containers, bus.AssignContainer{
 		Name: "trainer", Image: "registry/trainer:1", GPU: 1,
@@ -361,7 +361,7 @@ func TestStopTask_ReleasesGPUsBackToLedger(t *testing.T) {
 			"mulga.ecs.taskID": "t-001", "mulga.ecs.containerName": "trainer",
 		}},
 	}}
-	a := newAgent(config{}, testIdentityWithGPUs("GPU-aaa"), cp, rt, rt, nil)
+	a := newAgent(config{}, testIdentityWithGPUs("GPU-aaa"), cp, rt, nil)
 	if _, err := a.gpu.Pin(gpuKey("t-001", "trainer"), 1); err != nil {
 		t.Fatalf("seed pin: %v", err)
 	}
@@ -439,7 +439,7 @@ func TestPollAssignments_DispatchesOnceAndAcks(t *testing.T) {
 		nil,   // poll 3: gateway dropped it after the ack
 	}}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
-	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, rt, nil)
+	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go a.pollAssignments(ctx, map[string]bool{})
@@ -538,7 +538,7 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 	rt := &ctrruntime.FakePuller{Containers: []ctrruntime.Container{
 		{ID: "t-001-web", Running: true, Labels: map[string]string{"mulga.ecs.taskID": "t-001"}},
 	}}
-	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, rt, nil)
+	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go a.pollAssignments(ctx, map[string]bool{})
@@ -593,7 +593,7 @@ func countStopAcks(acks [][]string, taskID string) int {
 func TestPollAssignments_UnperformableStopIsNotAckedAndRetried(t *testing.T) {
 	cp := &fakeCP{stopPending: []bus.StopDirective{{TaskID: "t-001", Reason: "bye"}}}
 	rt := &ctrruntime.FakePuller{ListErr: errors.New("containerd is down")}
-	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, rt, nil)
+	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -628,7 +628,7 @@ func TestPollAssignments_RecoveredStopIsAckedExactlyOnce(t *testing.T) {
 			{ID: "t-001-web", Running: true, Labels: map[string]string{"mulga.ecs.taskID": "t-001"}},
 		},
 	}
-	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, rt, nil)
+	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -667,7 +667,7 @@ func TestPollAssignments_StoppedTaskIsNotRerunByRedeliveredAssign(t *testing.T) 
 	rt := &ctrruntime.FakePuller{Containers: []ctrruntime.Container{
 		{ID: "t-001-web", Running: true, Labels: map[string]string{"mulga.ecs.taskID": "t-001"}},
 	}}
-	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, rt, nil)
+	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -696,7 +696,7 @@ func TestPollAssignments_StoppedTaskIsNotRerunByRedeliveredAssign(t *testing.T) 
 // stopTask with no runtime is a no-op: nothing to reap, no state reported.
 func TestStopTask_NilRunnerNoOp(t *testing.T) {
 	cp := &fakeCP{}
-	a := newAgent(config{}, testIdentity(), cp, nil, nil, nil)
+	a := newAgent(config{}, testIdentity(), cp, nil, nil)
 	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "x"})
 	if len(cp.taskStates()) != 0 {
 		t.Fatalf("nil runner should report no state, got %+v", cp.taskStates())
@@ -807,7 +807,7 @@ func (sentinelResolver) Authorize(context.Context, string) (string, string, stri
 // exec-role resolver is built.
 func TestPullResolver(t *testing.T) {
 	fake := sentinelResolver{}
-	a := newAgent(config{Region: "us-east-1"}, testIdentity(), &fakeCP{}, nil, nil, fake)
+	a := newAgent(config{Region: "us-east-1"}, testIdentity(), &fakeCP{}, nil, fake)
 
 	if got := a.pullResolver(&bus.Assign{TaskID: "t1"}); got != fake {
 		t.Fatalf("no execution role: want instance resolver fallback")

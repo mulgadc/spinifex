@@ -30,9 +30,12 @@ type Agent struct {
 	cfg      config
 	id       identity
 	cp       controlPlane
-	puller   ctrruntime.ImagePuller
-	runner   ctrruntime.Runner
 	resolver ctrruntime.Resolver
+
+	// rt holds the container runtime, which is resolved by a loop rather than
+	// once at boot. Empty until the containerd socket answers, and emptied again
+	// if it stops answering.
+	rt *runtimeGate
 
 	reg *registrar
 	hb  *heartbeater
@@ -48,26 +51,34 @@ type Agent struct {
 	// nvidia-smi discovery.
 	gpu *gpuLedger
 
+	// dialRuntime connects to the container runtime. nil in unit tests, which
+	// drive the gate directly.
+	dialRuntime func() (ctrruntime.Runtime, error)
+
 	closers []func() error
 }
 
 // newAgent assembles an Agent from already-built seams. Tests use this directly
-// with fakes; New builds the production seams and delegates here. runner may be
-// nil when containerd is unavailable; the assign path then reports the task
-// STOPPED rather than crashing.
-func newAgent(cfg config, id identity, cp controlPlane, puller ctrruntime.ImagePuller, runner ctrruntime.Runner, resolver ctrruntime.Resolver) *Agent {
-	return &Agent{
+// with fakes; New builds the production seams and delegates here. rt may be nil
+// when containerd is unavailable; the assign path then reports the task STOPPED
+// rather than crashing, and the watch loop keeps dialling for it.
+func newAgent(cfg config, id identity, cp controlPlane, rt ctrruntime.Runtime, resolver ctrruntime.Resolver) *Agent {
+	gate := newRuntimeGate(rt)
+	a := &Agent{
 		cfg:      cfg,
 		id:       id,
 		cp:       cp,
-		puller:   puller,
-		runner:   runner,
 		resolver: resolver,
-		reg:      newRegistrar(cp, id),
-		hb:       newHeartbeater(cp, id, cfg.Heartbeat),
+		rt:       gate,
 		netns:    newTaskNetns(execNetRunner{}),
 		gpu:      newGPULedger(id.Capacity.GPUIDs),
 	}
+	// Registration reports the host's capacity only while a runtime is there to
+	// use it, so an agent that cannot run a container advertises none and takes
+	// no placement.
+	a.reg = newRegistrar(cp, id, gate.available)
+	a.hb = newHeartbeater(cp, id, cfg.Heartbeat, gate.available)
+	return a
 }
 
 // New builds an Agent from config: it resolves the host identity from IMDS,
@@ -98,13 +109,12 @@ func New(cfg config) (*Agent, error) {
 	creds := credentials.NewIMDSProvider(imdsClient, cfg.IMDSBase)
 	resolver := newLazyECRResolver(creds, cfg.Region, cfg.GatewayURL, cfg.GatewayCA)
 
-	var puller ctrruntime.ImagePuller
-	var runner ctrruntime.Runner
-	if rt, perr := ctrruntime.New(cfg.ContainerdSocket); perr != nil {
-		slog.Warn("ecs-agent: containerd unavailable at boot, image pulls disabled", "err", perr)
-	} else {
-		puller = rt
-		runner = rt
+	// A dial that fails here is not fatal and not final: the node starts the
+	// container daemon and the agent back to back, so the socket is often not
+	// accepting yet. Run's watch loop keeps dialling.
+	rt, perr := ctrruntime.New(cfg.ContainerdSocket)
+	if perr != nil {
+		slog.Warn("ecs-agent: containerd unavailable at boot, will keep retrying", "err", perr)
 	}
 
 	cp, err := newGatewayControlPlane(cfg, creds)
@@ -112,12 +122,10 @@ func New(cfg config) (*Agent, error) {
 		return nil, fmt.Errorf("build gateway control-plane: %w", err)
 	}
 
-	a := newAgent(cfg, id, cp, puller, runner, resolver)
+	a := newAgent(cfg, id, cp, rt, resolver)
 	a.cred = newCredEndpoint(creds, cfg.Region, cfg.GatewayURL, cfg.GatewayCA,
 		cfg.CredEndpointIP, cfg.CredEndpointPort, execNetRunner{})
-	if puller != nil {
-		a.closers = append(a.closers, puller.Close)
-	}
+	a.dialRuntime = func() (ctrruntime.Runtime, error) { return ctrruntime.New(cfg.ContainerdSocket) }
 	return a, nil
 }
 
@@ -138,6 +146,12 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	go a.hb.Run(ctx)
 
+	// Keeps the runtime current for the life of the process: dials while there
+	// is none, and drops one that stops answering.
+	if a.dialRuntime != nil {
+		go a.rt.watch(ctx, a.dialRuntime, a.cfg.RuntimeRetry)
+	}
+
 	// Re-adopt containers still running from before this restart, then poll with
 	// their tasks pre-seeded so re-delivered assignments are acked, not re-run.
 	go a.pollAssignments(ctx, a.reconcile(ctx))
@@ -157,6 +171,7 @@ func (a *Agent) Stop() error {
 			firstErr = err
 		}
 	}
+	a.rt.clear()
 	return firstErr
 }
 

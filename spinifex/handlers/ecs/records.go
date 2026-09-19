@@ -53,6 +53,13 @@ const (
 	// primary deployment's task launches stop before ever reaching RUNNING.
 	circuitBreakerFailureThreshold = 3
 
+	// launchBackoff bounds: past circuitBreakerFailureThreshold the wait doubles
+	// from the base on each further failed task, up to the cap. The shift bound
+	// keeps the doubling inside a duration for a long-failing deployment.
+	launchBackoffBase     = 15 * time.Second
+	launchBackoffCap      = 5 * time.Minute
+	launchBackoffMaxShift = 16
+
 	CapacityProviderStatusActive   = "ACTIVE"
 	CapacityProviderStatusInactive = "INACTIVE"
 
@@ -66,19 +73,23 @@ const (
 // one PRIMARY deployment plus zero or more ACTIVE (superseded, draining) ones
 // while a rolling update is in flight; steady state is a single PRIMARY.
 type Deployment struct {
-	ID              string    `json:"id"`
-	Status          string    `json:"status"`
-	TaskDefARN      string    `json:"taskDefArn"`
-	TaskDefFamily   string    `json:"taskDefFamily"`
-	TaskDefRevision int       `json:"taskDefRevision"`
-	DesiredCount    int       `json:"desiredCount"`
-	RunningCount    int       `json:"runningCount"`
-	PendingCount    int       `json:"pendingCount"`
-	FailedTasks     int       `json:"failedTasks"`
-	RolloutState    string    `json:"rolloutState"`
-	RolloutReason   string    `json:"rolloutStateReason,omitempty"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ID              string `json:"id"`
+	Status          string `json:"status"`
+	TaskDefARN      string `json:"taskDefArn"`
+	TaskDefFamily   string `json:"taskDefFamily"`
+	TaskDefRevision int    `json:"taskDefRevision"`
+	DesiredCount    int    `json:"desiredCount"`
+	RunningCount    int    `json:"runningCount"`
+	PendingCount    int    `json:"pendingCount"`
+	FailedTasks     int    `json:"failedTasks"`
+	RolloutState    string `json:"rolloutState"`
+	RolloutReason   string `json:"rolloutStateReason,omitempty"`
+	// NextLaunchAt holds off the next launch attempt after tasks have failed to
+	// start, so a deployment that cannot run anywhere backs off instead of
+	// relaunching on every reconcile pass. Zero means launch now.
+	NextLaunchAt time.Time `json:"nextLaunchAt,omitzero"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // ServiceEvent is one lifecycle event on a service, mirroring ecs.ServiceEvent.

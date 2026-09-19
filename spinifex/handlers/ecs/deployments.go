@@ -195,6 +195,26 @@ func updateRolloutState(svc *ServiceRecord, primary *Deployment, desired int) {
 	primary.RolloutState = RolloutStateInProgress
 }
 
+// launchBackoff returns how long to hold off the next launch for a deployment
+// with failures behind it, doubling from a base and capped. It reads the same
+// counter and the same threshold as the circuit breaker, but applies whether or
+// not the breaker is enabled: AWS leaves it off by default, so an unbraked
+// service relaunches a task that cannot start on every pass, forever.
+//
+// Below the threshold there is no hold, so an enabled breaker still sees its
+// failures at full speed and trips exactly when it did before.
+func launchBackoff(failures int) time.Duration {
+	if failures < circuitBreakerFailureThreshold {
+		return 0
+	}
+	// Bounded before the shift so a long-failing deployment cannot overflow it.
+	d := launchBackoffBase << min(failures-circuitBreakerFailureThreshold, launchBackoffMaxShift)
+	if d > launchBackoffCap {
+		return launchBackoffCap
+	}
+	return d
+}
+
 // tripCircuitBreaker fails a PRIMARY deployment whose task launches have failed
 // past the threshold when the breaker is enabled, optionally rolling back to the
 // last-good task definition. Returns true when it acted so the caller can persist

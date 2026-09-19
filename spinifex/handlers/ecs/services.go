@@ -379,10 +379,16 @@ func (s *Service) reconcileService(ctx context.Context, kv jetstream.KeyValue, a
 		minCount := ceilPercent(desired, svc.MinimumHealthyPercent)
 
 		primaryActive := primary.RunningCount + primary.PendingCount
-		if primaryActive < desired && primary.RolloutState != RolloutStateFailed {
+		now := time.Now().UTC()
+		if primaryActive < desired && primary.RolloutState != RolloutStateFailed && !now.Before(primary.NextLaunchAt) {
 			n := min(desired-primaryActive, max(maxCount-(running+pending), 0))
 			if n > 0 {
 				s.launchDeploymentTasks(ctx, accountID, svc, primary, n)
+				// Set from the failures already behind this deployment, so the first
+				// launch is immediate and each repeat start failure widens the gap.
+				if d := launchBackoff(primary.FailedTasks); d > 0 {
+					primary.NextLaunchAt = now.Add(d)
+				}
 			} else {
 				// Wants more tasks than desired but the maximumPercent ceiling leaves
 				// no room this pass (AWS's "unable to place a task"). Unlike the

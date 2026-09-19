@@ -24,10 +24,11 @@ import (
 // agent falls back to its pre-reconcile behaviour (poll + run).
 func (a *Agent) reconcile(ctx context.Context) map[string]bool {
 	adopted := map[string]bool{}
-	if a.runner == nil {
+	runner := a.rt.get()
+	if runner == nil {
 		return adopted
 	}
-	containers, err := a.runner.List(ctx)
+	containers, err := runner.List(ctx)
 	if err != nil {
 		slog.Warn("ecs-agent: reconcile list failed", "err", err)
 		return adopted
@@ -96,9 +97,13 @@ func (a *Agent) reconcile(ctx context.Context) map[string]bool {
 // is STOPPED, so the scheduler stops counting a task this instance is not
 // running and its service can place a replacement.
 func (a *Agent) reportStoppedTask(ctx context.Context, as *bus.Assign, dead []ctrruntime.Container) {
+	runner := a.rt.get()
 	statuses := make([]bus.ContainerStatus, 0, len(dead))
 	for _, c := range dead {
-		if err := a.runner.Remove(ctx, c.ID); err != nil {
+		if runner == nil {
+			break
+		}
+		if err := runner.Remove(ctx, c.ID); err != nil {
 			slog.Warn("ecs-agent: reconcile remove failed", "task", as.TaskID, "container", c.ID, "err", err)
 		}
 		statuses = append(statuses, bus.ContainerStatus{

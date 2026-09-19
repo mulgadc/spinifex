@@ -12,7 +12,7 @@ func TestAgent_RunRegistersThenStopsOnContext(t *testing.T) {
 	cp := &fakeCP{}
 	cfg := config{Heartbeat: 5 * time.Millisecond, PollInterval: 5 * time.Millisecond}
 	puller := &ctrruntime.FakePuller{}
-	a := newAgent(cfg, testIdentity(), cp, puller, puller, nil)
+	a := newAgent(cfg, testIdentity(), cp, puller, nil)
 	a.closers = append(a.closers, puller.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())

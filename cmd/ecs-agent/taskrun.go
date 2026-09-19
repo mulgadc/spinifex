@@ -128,11 +128,12 @@ func (l *stopLedger) seen(taskID string) bool {
 // scheduler releases its capacity. Reports whether it got as far as saying
 // STOPPED: a caller may only ack the directive when it did.
 func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) bool {
-	if a.runner == nil {
+	runner := a.rt.get()
+	if runner == nil {
 		slog.Warn("ecs-agent: stop deferred, no container runtime", "task", sd.TaskID)
 		return false
 	}
-	containers, err := a.runner.List(ctx)
+	containers, err := runner.List(ctx)
 	if err != nil {
 		slog.Warn("ecs-agent: stop list failed", "task", sd.TaskID, "err", err)
 		return false
@@ -142,7 +143,7 @@ func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) bool {
 		if c.Labels[labelTaskID] != sd.TaskID {
 			continue
 		}
-		if rerr := a.runner.Stop(ctx, c.ID, containerStopTimeout(c.Labels)); rerr != nil {
+		if rerr := runner.Stop(ctx, c.ID, containerStopTimeout(c.Labels)); rerr != nil {
 			slog.Warn("ecs-agent: stop failed", "task", sd.TaskID, "container", c.ID, "err", rerr)
 		}
 		statuses = append(statuses, bus.ContainerStatus{
@@ -162,7 +163,8 @@ func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) bool {
 // state on the bus. A missing runtime or any per-container failure reports the
 // task STOPPED with a reason; success reports RUNNING and waits for exit.
 func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
-	if a.puller == nil || a.runner == nil {
+	rt := a.rt.get()
+	if rt == nil {
 		a.reportTaskState(as, bus.TaskStatusStopped, "containerd unavailable on agent", nil)
 		return
 	}
@@ -184,7 +186,7 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 		// container's time-to-RUNNING from the same starting point.
 		runCtx, cancel := containerStartCtx(ctx, c.StartTimeout)
 
-		if _, err := a.puller.Pull(runCtx, ctrruntime.PullSpec{Ref: c.Image}, resolver); err != nil {
+		if _, err := rt.Pull(runCtx, ctrruntime.PullSpec{Ref: c.Image}, resolver); err != nil {
 			cancel()
 			slog.Error("ecs-agent: pull failed", "task", as.TaskID, "image", c.Image, "err", err)
 			a.teardownTaskNetns(as)
@@ -215,7 +217,7 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 			CapAdd:                 c.CapAdd,
 			CapDrop:                c.CapDrop,
 		}
-		id, err := a.runner.Run(runCtx, cid, spec)
+		id, err := rt.Run(runCtx, cid, spec)
 		cancel()
 		if err != nil {
 			slog.Error("ecs-agent: run failed", "task", as.TaskID, "container", c.Name, "err", err)
@@ -236,7 +238,12 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 // waitContainer blocks until a container exits, then reports the task STOPPED
 // with the exit code. v1 stops the whole task when its first container exits.
 func (a *Agent) waitContainer(ctx context.Context, as *bus.Assign, name, containerID string) {
-	status, err := a.runner.Wait(ctx, containerID)
+	runner := a.rt.get()
+	if runner == nil {
+		slog.Warn("ecs-agent: cannot wait on container, no container runtime", "task", as.TaskID, "container", name)
+		return
+	}
+	status, err := runner.Wait(ctx, containerID)
 	if err != nil {
 		slog.Warn("ecs-agent: wait container failed", "task", as.TaskID, "container", name, "err", err)
 		return

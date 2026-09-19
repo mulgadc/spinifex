@@ -136,3 +136,89 @@ func TestRegister_DoesNotUndoOperatorDrain(t *testing.T) {
 	after := instanceStatus(t, svc, "web", "i-1")
 	assert.Equal(t, InstanceStatusDraining, after.Status, "operator drain must survive agent re-register")
 }
+
+// An agent that cannot resolve a container runtime registers no capacity. That
+// is the same condition as an agent that stopped answering, so the instance is
+// drained involuntarily and the scheduler stops placing tasks it could only
+// fail to start.
+func TestRegister_NoCapacityDrainsTheInstance(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	registerTaskDef(t, svc, "app", 128, 256)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+
+	// The runtime goes away: the next registration reports nothing to run with.
+	registerInstance(t, svc, "web", "i-1", 0, 0)
+
+	drained := instanceStatus(t, svc, "web", "i-1")
+	assert.Equal(t, InstanceStatusDraining, drained.Status)
+	assert.True(t, drained.Reaped, "a runtime-less instance is an involuntary drain, not an operator one")
+	assert.Zero(t, drained.TotalCPU)
+	assert.Zero(t, drained.TotalMemoryMiB)
+
+	out, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{
+		Cluster:        aws.String("web"),
+		TaskDefinition: aws.String("app"),
+		Count:          aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Tasks, "a task was placed on an instance with no runtime")
+	assert.NotEmpty(t, out.Failures)
+
+	// The instance is visibly drained through the API rather than only in the
+	// node's log, which is what an operator has to go on.
+	di, err := svc.DescribeContainerInstances(context.Background(), &ecs.DescribeContainerInstancesInput{
+		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, di.ContainerInstances, 1)
+	assert.Equal(t, InstanceStatusDraining, aws.StringValue(di.ContainerInstances[0].Status))
+	assert.False(t, aws.BoolValue(di.ContainerInstances[0].AgentConnected))
+}
+
+// The runtime coming back is a registration carrying real capacity again, which
+// clears the drain without the agent or the instance being restarted.
+func TestRegister_CapacityReturningClearsTheDrain(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	registerTaskDef(t, svc, "app", 128, 256)
+	registerInstance(t, svc, "web", "i-1", 0, 0)
+	require.Equal(t, InstanceStatusDraining, instanceStatus(t, svc, "web", "i-1").Status)
+
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+
+	back := instanceStatus(t, svc, "web", "i-1")
+	assert.Equal(t, InstanceStatusActive, back.Status)
+	assert.False(t, back.Reaped)
+	assert.Equal(t, 1024, back.TotalCPU)
+
+	out, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{
+		Cluster:        aws.String("web"),
+		TaskDefinition: aws.String("app"),
+		Count:          aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.Tasks, 1)
+}
+
+// An operator drain is deliberate, so a capacity-carrying registration must not
+// undo it. Only the involuntary drain this path sets is cleared by a register.
+func TestRegister_DoesNotClearAnOperatorDrain(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+
+	_, err = svc.UpdateContainerInstancesState(context.Background(), &ecs.UpdateContainerInstancesStateInput{
+		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},
+		Status: aws.String(InstanceStatusDraining),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.False(t, instanceStatus(t, svc, "web", "i-1").Reaped)
+
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+
+	assert.Equal(t, InstanceStatusDraining, instanceStatus(t, svc, "web", "i-1").Status)
+}

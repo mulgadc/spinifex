@@ -55,7 +55,7 @@ func TestReconcile_AdoptsRunningLabeledContainer(t *testing.T) {
 			adoptedContainer("t-001", "web", "default", "t-001", testTaskRole, "52:54:00:de:ad:01", true),
 		},
 	}
-	a := newAgent(config{}, testIdentity(), cp, rt, rt, nil)
+	a := newAgent(config{}, testIdentity(), cp, rt, nil)
 	a.cred = newCredEndpoint(nil, "us-east-1", "https://gw", "", "127.0.0.1", 0, nil)
 
 	adopted := a.reconcile(context.Background())
@@ -84,7 +84,7 @@ func TestReconcile_ReportsTaskWhoseContainerDied(t *testing.T) {
 			adoptedContainer("t-dead", "web", "default", "t-dead", testTaskRole, "52:54:00:de:ad:02", false),
 		},
 	}
-	a := newAgent(config{}, testIdentity(), cp, rt, rt, nil)
+	a := newAgent(config{}, testIdentity(), cp, rt, nil)
 	a.cred = newCredEndpoint(nil, "us-east-1", "https://gw", "", "127.0.0.1", 0, nil)
 
 	adopted := a.reconcile(context.Background())
@@ -116,7 +116,7 @@ func TestReconcile_PartiallyDeadTaskStaysRunning(t *testing.T) {
 			adoptedContainer("t-mixed", "sidecar", "default", "t-mixed", testTaskRole, "52:54:00:de:ad:03", false),
 		},
 	}
-	a := newAgent(config{}, testIdentity(), cp, rt, rt, nil)
+	a := newAgent(config{}, testIdentity(), cp, rt, nil)
 	a.cred = newCredEndpoint(nil, "us-east-1", "https://gw", "", "127.0.0.1", 0, nil)
 
 	a.reconcile(context.Background())
@@ -145,7 +145,7 @@ func TestPollAssignments_SeededTaskNotRerun(t *testing.T) {
 		nil,
 	}}
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
-	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, rt, nil)
+	a := newAgent(config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go a.pollAssignments(ctx, map[string]bool{"t-001": true})
@@ -197,7 +197,7 @@ func TestReconcile_IgnoresOtherClusterContainers(t *testing.T) {
 			adoptedContainer("t-ok", "web", "default", "", "", "", true),
 		},
 	}
-	a := newAgent(config{}, testIdentity(), cp, rt, rt, nil)
+	a := newAgent(config{}, testIdentity(), cp, rt, nil)
 
 	adopted := a.reconcile(context.Background())
 
@@ -213,13 +213,13 @@ func TestReconcile_IgnoresOtherClusterContainers(t *testing.T) {
 
 // A nil runner or a List error degrades to an empty set without panicking.
 func TestReconcile_DegradesGracefully(t *testing.T) {
-	noRunner := newAgent(config{}, testIdentity(), &fakeCP{}, nil, nil, nil)
+	noRunner := newAgent(config{}, testIdentity(), &fakeCP{}, nil, nil)
 	if got := noRunner.reconcile(context.Background()); len(got) != 0 {
 		t.Errorf("nil runner: adopted = %v, want empty", got)
 	}
 
 	rt := &ctrruntime.FakePuller{ListErr: errors.New("boom")}
-	listErr := newAgent(config{}, testIdentity(), &fakeCP{}, rt, rt, nil)
+	listErr := newAgent(config{}, testIdentity(), &fakeCP{}, rt, nil)
 	if got := listErr.reconcile(context.Background()); len(got) != 0 {
 		t.Errorf("list error: adopted = %v, want empty", got)
 	}

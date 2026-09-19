@@ -33,6 +33,7 @@ type config struct {
 	ContainerdSocket string
 	Heartbeat        time.Duration
 	PollInterval     time.Duration
+	RuntimeRetry     time.Duration
 	CredEndpointIP   string
 	CredEndpointPort int
 }
@@ -73,6 +74,12 @@ func loadConfig(envFile string) config {
 	if v := get("ECS_POLL_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			cfg.PollInterval = d
+		}
+	}
+	cfg.RuntimeRetry = defaultRuntimeRetry
+	if v := get("ECS_RUNTIME_RETRY"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.RuntimeRetry = d
 		}
 	}
 	cfg.CredEndpointIP = get("ECS_CRED_ENDPOINT_IP")

@@ -34,6 +34,30 @@ func (s *Service) listInstanceRecords(ctx context.Context, kv jetstream.KeyValue
 	return out, nil
 }
 
+// applyRuntimeCapacity records the capacity a registration reported and derives
+// the instance's availability from it. A host reporting no CPU and no memory has
+// no container runtime to place on, which is the same condition as an agent that
+// stopped answering: it drains involuntarily so the scheduler skips it, and the
+// next registration carrying real capacity restores it. An operator drain
+// (Reaped false) is never cleared here.
+func applyRuntimeCapacity(r *InstanceRecord, cpu, memoryMiB int) {
+	r.TotalCPU = cpu
+	r.TotalMemoryMiB = memoryMiB
+	if cpu == 0 && memoryMiB == 0 {
+		if r.Status != InstanceStatusDraining {
+			slog.Warn("ECS: container instance reported no capacity, draining until a runtime is available",
+				"instance_id", r.InstanceID, "cluster", r.Cluster)
+		}
+		r.Status = InstanceStatusDraining
+		r.Reaped = true
+		return
+	}
+	if r.Status == InstanceStatusDraining && r.Reaped {
+		r.Status = InstanceStatusActive
+		r.Reaped = false
+	}
+}
+
 // RegisterContainerInstance is the AWS-API registration path. In 4e the agent
 // normally registers over the Layer-2 bus; this keeps API parity by writing the
 // same record shape from an explicit call.
@@ -48,12 +72,17 @@ func (s *Service) RegisterContainerInstance(ctx context.Context, input *ecs.Regi
 		return nil, err
 	}
 	rec, err := s.upsertInstance(ctx, kv, accountID, cluster, instanceID, func(r *InstanceRecord) {
+		// CPU and memory are read together, because it is the pair being zero that
+		// says the host has no runtime. A registration that omits either leaves the
+		// previously reported capacity alone.
+		cpu, memoryMiB := r.TotalCPU, r.TotalMemoryMiB
+		var sawCPU, sawMemory bool
 		for _, res := range input.TotalResources {
 			switch aws.StringValue(res.Name) {
 			case "CPU":
-				r.TotalCPU = int(aws.Int64Value(res.IntegerValue))
+				cpu, sawCPU = int(aws.Int64Value(res.IntegerValue)), true
 			case "MEMORY":
-				r.TotalMemoryMiB = int(aws.Int64Value(res.IntegerValue))
+				memoryMiB, sawMemory = int(aws.Int64Value(res.IntegerValue)), true
 			case "GPU":
 				// AWS reports GPU as a STRINGSET of device UUIDs; the count is the
 				// capacity, the UUIDs are the placeholder inventory (Epic C3 populates
@@ -73,10 +102,12 @@ func (s *Service) RegisterContainerInstance(ctx context.Context, input *ecs.Regi
 		if len(input.Tags) > 0 {
 			r.Tags = tagsToMap(input.Tags)
 		}
-		// The agent heartbeats by re-registering. A re-register from a reaped
-		// (involuntarily drained) instance proves the agent is back, so restore
-		// it to ACTIVE. An operator drain (Reaped=false) is left untouched.
-		if r.Status == InstanceStatusDraining && r.Reaped {
+		// The agent heartbeats by re-registering, so the capacity it reports is
+		// also the liveness signal: real capacity restores a reaped instance, and
+		// none drains it.
+		if sawCPU && sawMemory {
+			applyRuntimeCapacity(r, cpu, memoryMiB)
+		} else if r.Status == InstanceStatusDraining && r.Reaped {
 			r.Status = InstanceStatusActive
 			r.Reaped = false
 		}
@@ -278,11 +309,9 @@ func (s *Service) recordRegister(ctx context.Context, msg *bus.RegisterInstance)
 		r.AZ = msg.AZ
 		r.Hostname = msg.Hostname
 		r.AgentVersion = msg.AgentVersion
-		r.TotalCPU = msg.Capacity.CPU
-		r.TotalMemoryMiB = msg.Capacity.MemoryMiB
 		r.TotalGPU = msg.Capacity.GPU
 		r.GPUIDs = msg.Capacity.GPUIDs
-		r.Status = InstanceStatusActive
+		applyRuntimeCapacity(r, msg.Capacity.CPU, msg.Capacity.MemoryMiB)
 	})
 	return err
 }

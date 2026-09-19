@@ -1121,7 +1121,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 			slog.InfoContext(ctx, "LaunchRunInstances: launch did not reach running state", "instanceId", instance.ID)
 			continue
 		}
-		s.vmMgr.UpdateGuestDeviceNames(instance)
+		s.vmMgr.LogGuestDeviceMap(instance)
 
 		successCount++
 		slog.InfoContext(ctx, "LaunchRunInstances: launched instance", "instanceId", instance.ID)
@@ -1204,7 +1204,7 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 		}
 	}
 
-	s.vmMgr.UpdateGuestDeviceNames(instance)
+	s.vmMgr.LogGuestDeviceMap(instance)
 
 	slog.InfoContext(ctx, "StartInstance: started", "instanceId", instance.ID)
 	return nil
@@ -2628,8 +2628,7 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Discover actual guest device names via QMP query-block.
-	s.vmMgr.UpdateGuestDeviceNames(instance)
+	s.vmMgr.LogGuestDeviceMap(instance)
 
 	slog.InfoContext(ctx, "Started stopped instance from shared KV", "instanceId", instance.ID)
 	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil

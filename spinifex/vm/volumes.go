@@ -219,19 +219,18 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		return "", fmt.Errorf("QMP device_add: %w", err)
 	}
 
-	// Discover guest device. query-block may not include the device
-	// immediately after device_add; queryGuestDeviceMapWait retries.
-	guestDevice := device // fallback to AWS API name
+	// Wait for the guest to register the device before reporting the attach
+	// complete. The path it lands on is logged for an operator correlating a
+	// volume against what the guest sees; the recorded name is the API one.
 	deviceMap, qmpErr := queryGuestDeviceMapWait(ctx, instance.QMPClient, instance.ID, deviceID)
 	if qmpErr != nil {
-		slog.WarnContext(ctx, "AttachVolume: failed to query guest device map, using API device name",
+		slog.WarnContext(ctx, "AttachVolume: failed to query guest device map",
 			"volumeId", volumeID, "err", qmpErr)
 	} else if gd, ok := deviceMap[deviceID]; ok {
-		guestDevice = gd
 		slog.InfoContext(ctx, "AttachVolume: discovered guest device",
-			"volumeId", volumeID, "qemuDevice", deviceID, "guestDevice", guestDevice)
+			"volumeId", volumeID, "qemuDevice", deviceID, "guestDevice", gd)
 	} else {
-		slog.ErrorContext(ctx, "AttachVolume: device not found in QMP device map after retries, using API device name",
+		slog.ErrorContext(ctx, "AttachVolume: device not found in QMP device map after retries",
 			"volumeId", volumeID, "qemuDevice", deviceID, "deviceMap", deviceMap)
 	}
 
@@ -251,18 +250,16 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	}
 	instance.EBSRequests.Mu.Unlock()
 
-	// BlockDeviceMappings[].DeviceName carries the in-guest path so
-	// callers who SSH into the VM and `lsblk` see names that match
-	// DescribeInstances. UpdateGuestDeviceNames re-applies this convention on
-	// every Launch/Start, so using the API name here would be silently overwritten
-	// on the next start.
+	// The name the caller asked for, which is what AWS reports and what
+	// DescribeVolumes attachment filters match on. The guest's own path for the
+	// same disk is a separate thing and is logged above, not recorded here.
 	m.UpdateState(id, func(v *VM) {
 		if v.Instance == nil {
 			return
 		}
 		now := time.Now()
 		mapping := &ec2.InstanceBlockDeviceMapping{}
-		mapping.SetDeviceName(guestDevice)
+		mapping.SetDeviceName(device)
 		mapping.Ebs = &ec2.EbsInstanceBlockDevice{}
 		mapping.Ebs.SetVolumeId(volumeID)
 		mapping.Ebs.SetAttachTime(now)
@@ -277,7 +274,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 
 	slog.InfoContext(ctx, "Volume attached successfully",
 		"volumeId", volumeID, "instanceId", instance.ID,
-		"apiDevice", device, "guestDevice", guestDevice)
+		"apiDevice", device, "guestDevice", deviceMap[deviceID])
 
 	return device, nil
 }

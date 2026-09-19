@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
@@ -362,4 +364,66 @@ func TestFreeHotplugEBSPort(t *testing.T) {
 		}
 		assert.Equal(t, 0, freeHotplugEBSPort(full))
 	})
+}
+
+// TestLogGuestDeviceMap_LeavesBlockDeviceMappingsAlone guards the read-back the
+// Terraform AWS provider depends on. DeviceName is ForceNew on
+// aws_instance.ebs_block_device, so a launch or start that rewrote the
+// requested name with the guest's own path destroyed and recreated the
+// instance on every plan. The guest path is logged, never recorded.
+func TestLogGuestDeviceMap_LeavesBlockDeviceMappingsAlone(t *testing.T) {
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		if cmd.Execute == "query-block" {
+			return map[string]any{
+				"return": []qmp.BlockDevice{
+					{
+						Device:   "os",
+						Inserted: &qmp.BlockInserted{},
+						QDev:     "/machine/peripheral-anon/device[0]/virtio-backend",
+					},
+					{
+						Device:   "",
+						Inserted: &qmp.BlockInserted{},
+						QDev:     "/machine/peripheral/vdisk-vol-1/hotplug-ebs1/virtio-backend",
+					},
+				},
+			}
+		}
+		return nil
+	})
+	defer cancel()
+
+	m := NewManagerWithDeps(Deps{})
+	instance := &VM{
+		ID:     "i-1",
+		Status: StateRunning,
+		Instance: &ec2.Instance{
+			BlockDeviceMappings: []*ec2.InstanceBlockDeviceMapping{
+				{
+					DeviceName: aws.String("/dev/sda1"),
+					Ebs:        &ec2.EbsInstanceBlockDevice{VolumeId: aws.String("vol-root")},
+				},
+				{
+					DeviceName: aws.String("/dev/sdf"),
+					Ebs:        &ec2.EbsInstanceBlockDevice{VolumeId: aws.String("vol-1")},
+				},
+			},
+		},
+		QMPClient: qmpClient,
+	}
+	instance.EBSRequests.Requests = []types.EBSRequest{
+		{Name: "vol-root", Boot: true},
+		{Name: "vol-1", DeviceName: "/dev/sdf"},
+	}
+	m.Insert(instance)
+
+	m.LogGuestDeviceMap(instance)
+
+	v, ok := m.Get("i-1")
+	require.True(t, ok)
+	require.Len(t, v.Instance.BlockDeviceMappings, 2)
+	assert.Equal(t, "/dev/sda1", aws.StringValue(v.Instance.BlockDeviceMappings[0].DeviceName),
+		"the root mapping must still name the device the AMI declares, not /dev/vda")
+	assert.Equal(t, "/dev/sdf", aws.StringValue(v.Instance.BlockDeviceMappings[1].DeviceName),
+		"a data mapping must still name the device the caller asked for, not /dev/vdb")
 }

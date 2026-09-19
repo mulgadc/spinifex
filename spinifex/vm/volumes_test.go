@@ -1149,8 +1149,8 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 // The QMP responder returns a query-block payload where vdisk-vol-1
 // maps to /dev/vdc (the third virtio slot after os + cloudinit), so the
 // test can distinguish the API name from the guest name in every assertion.
-// BlockDeviceMappings still carries the guest device name;
-// only the volume-metadata path uses the API name.
+// BlockDeviceMappings carries the API name too: the guest path is logged
+// for an operator, never recorded as the device the caller asked for.
 func TestAttachVolume_PersistsAPIDeviceNameInVolumeMetadata(t *testing.T) {
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		if cmd.Execute == "query-block" {
@@ -1213,8 +1213,8 @@ func TestAttachVolume_PersistsAPIDeviceNameInVolumeMetadata(t *testing.T) {
 		"AttachVolume must append exactly one BlockDeviceMapping")
 	bdm := v.Instance.BlockDeviceMappings[0]
 	require.NotNil(t, bdm.DeviceName)
-	assert.Equal(t, "/dev/vdc", *bdm.DeviceName,
-		"BlockDeviceMappings[].DeviceName must carry the guest virtio path so `lsblk` inside the VM matches DescribeInstances")
+	assert.Equal(t, "/dev/sdf", *bdm.DeviceName,
+		"BlockDeviceMappings[].DeviceName must carry the API-form name the caller asked for (/dev/sdf), not the in-guest path (/dev/vdc) — a name that never reads back as it was sent forces replacement on every plan")
 	require.NotNil(t, bdm.Ebs)
 	require.NotNil(t, bdm.Ebs.VolumeId)
 	assert.Equal(t, "vol-1", *bdm.Ebs.VolumeId)

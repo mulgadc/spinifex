@@ -129,13 +129,13 @@ func buildDeviceMap(devices []qmp.BlockDevice) map[string]string {
 	return result
 }
 
-// UpdateGuestDeviceNames queries the running VM's QMP to discover actual
-// guest device paths and updates the instance's BlockDeviceMappings
-// accordingly. Persists running state on success. No-op when QMPClient is
-// nil. Errors are logged; callers do not need to react.
-func (m *Manager) UpdateGuestDeviceNames(instance *VM) {
+// LogGuestDeviceMap records the guest paths QEMU assigned, for an operator
+// correlating a volume against what the guest sees. It is diagnostic only:
+// BlockDeviceMappings[].DeviceName carries the name the caller asked for, as
+// AWS reports it. No-op when QMPClient is nil.
+func (m *Manager) LogGuestDeviceMap(instance *VM) {
 	if instance.QMPClient == nil {
-		slog.Warn("UpdateGuestDeviceNames: QMPClient is nil, cannot discover guest device names",
+		slog.Warn("LogGuestDeviceMap: QMPClient is nil, cannot discover guest device names",
 			"instanceId", instance.ID)
 		return
 	}
@@ -143,49 +143,12 @@ func (m *Manager) UpdateGuestDeviceNames(instance *VM) {
 	// Reconnect/restore path runs outside any request; not request-scoped.
 	deviceMap, err := queryGuestDeviceMap(context.Background(), instance.QMPClient, instance.ID)
 	if err != nil {
-		slog.Warn("Failed to query guest device map, BlockDeviceMappings will use API names",
+		slog.Warn("Failed to query guest device map",
 			"instanceId", instance.ID, "err", err)
 		return
 	}
 
-	// Build volume ID → guest device path mapping from EBSRequests.
-	// Collect under EBSRequests lock, then release before acquiring the
-	// manager lock to maintain consistent lock ordering.
-	instance.EBSRequests.Mu.Lock()
-	volToGuest := make(map[string]string, len(instance.EBSRequests.Requests))
-	for _, req := range instance.EBSRequests.Requests {
-		var qemuID string
-		if req.Boot {
-			qemuID = "os"
-		} else {
-			qemuID = fmt.Sprintf("vdisk-%s", req.Name)
-		}
-		if gd, ok := deviceMap[qemuID]; ok {
-			volToGuest[req.Name] = gd
-		}
-	}
-	instance.EBSRequests.Mu.Unlock()
-
-	m.UpdateState(instance.ID, func(v *VM) {
-		if v.Instance == nil {
-			return
-		}
-		for _, bdm := range v.Instance.BlockDeviceMappings {
-			if bdm.Ebs == nil || bdm.Ebs.VolumeId == nil || bdm.DeviceName == nil {
-				continue
-			}
-			if gd, ok := volToGuest[*bdm.Ebs.VolumeId]; ok {
-				bdm.DeviceName = &gd
-			}
-		}
-	})
-
-	if err := m.writeRunningState(); err != nil {
-		slog.Error("Failed to persist state after guest device name update",
-			"instanceId", instance.ID, "err", err)
-	}
-
-	slog.Info("Updated guest device names", "instanceId", instance.ID, "deviceMap", deviceMap)
+	slog.Info("Guest device map", "instanceId", instance.ID, "deviceMap", deviceMap)
 }
 
 // extractPCIIndex parses the device index from a QDev path.

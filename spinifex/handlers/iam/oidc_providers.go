@@ -168,8 +168,11 @@ func (s *IAMServiceImpl) GetOpenIDConnectProvider(accountID string, input *iam.G
 	if err != nil {
 		return nil, err
 	}
+	// The scheme is kept, unlike AWS, which strips it. A caller comparing the
+	// read against what it sent parses this value, and an issuer carrying a port
+	// is not parseable without a scheme. The ARN keeps the stripped form.
 	return &iam.GetOpenIDConnectProviderOutput{
-		Url:            aws.String(strings.TrimPrefix(record.Url, "https://")),
+		Url:            aws.String(record.Url),
 		ClientIDList:   aws.StringSlice(record.ClientIDList),
 		ThumbprintList: aws.StringSlice(record.ThumbprintList),
 		CreateDate:     aws.Time(parseCreatedAt(record.CreatedAt)),

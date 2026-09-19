@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 
@@ -84,11 +85,44 @@ func TestGetOpenIDConnectProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if aws.StringValue(got.Url) != strings.TrimPrefix(testIssuer, "https://") {
-		t.Fatalf("Url = %q, want %q", aws.StringValue(got.Url), strings.TrimPrefix(testIssuer, "https://"))
+	if aws.StringValue(got.Url) != testIssuer {
+		t.Fatalf("Url = %q, want %q", aws.StringValue(got.Url), testIssuer)
 	}
 	if len(got.ClientIDList) != 1 || aws.StringValue(got.ClientIDList[0]) != "sts.amazonaws.com" {
 		t.Fatalf("ClientIDList = %v", aws.StringValueSlice(got.ClientIDList))
+	}
+}
+
+// TestGetOpenIDConnectProvider_UrlIsParseableWithAPort reproduces what a caller
+// does with the returned URL: parse it, force the https scheme, and compare
+// against what it sent. Stripping the scheme from an issuer carrying a port
+// makes the value unparseable, so the comparison can never succeed.
+func TestGetOpenIDConnectProvider_UrlIsParseableWithAPort(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	acct := "000000000001"
+	created, err := svc.CreateOpenIDConnectProvider(acct, &iam.CreateOpenIDConnectProviderInput{
+		Url:          aws.String(testIssuer),
+		ClientIDList: aws.StringSlice([]string{"sts.amazonaws.com"}),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := svc.GetOpenIDConnectProvider(acct, &iam.GetOpenIDConnectProviderInput{
+		OpenIDConnectProviderArn: created.OpenIDConnectProviderArn,
+	})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	readBack, err := url.Parse(aws.StringValue(got.Url))
+	if err != nil {
+		t.Fatalf("returned Url is not parseable: %v", err)
+	}
+	readBack.Scheme = "https"
+	if readBack.String() != testIssuer {
+		t.Fatalf("read-back URL = %q, want %q", readBack.String(), testIssuer)
 	}
 }
 

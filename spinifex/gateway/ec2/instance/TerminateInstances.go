@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -97,11 +98,25 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 				utils.InjectTraceContext(ctx, terminateReqMsg.Header)
 				terminateMsg, terminateErr := natsConn.RequestMsg(terminateReqMsg, 30*time.Second)
 				if terminateErr == nil {
-					if _, parseErr := utils.ValidateErrorPayload(terminateMsg.Data); parseErr == nil {
+					responseError, parseErr := utils.ValidateErrorPayload(terminateMsg.Data)
+					if parseErr == nil {
 						slog.InfoContext(ctx, "TerminateInstances: Stopped instance terminated via ec2.terminate", "instance_id", instanceID)
 						stateChanges = append(stateChanges, newStateChange(instanceID, 32, "shutting-down", 80, "stopped"))
 						continue
 					}
+
+					// Only a genuine absence may fall through to the idempotent
+					// branch below. Any other refusal is a terminate that did not
+					// happen, so returning success for it strands a record the
+					// caller has been told is gone.
+					code := aws.StringValue(responseError.Code)
+					if code != awserrors.ErrorInvalidInstanceIDNotFound {
+						slog.ErrorContext(ctx, "TerminateInstances: ec2.terminate refused the instance",
+							"instance_id", instanceID, "code", code)
+						return nil, errors.New(code)
+					}
+					slog.InfoContext(ctx, "TerminateInstances: instance is not a stopped instance, checking the terminated bucket",
+						"instance_id", instanceID)
 				}
 
 				// Idempotent terminate (rule #1): no daemon owns the instance and it

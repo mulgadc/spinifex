@@ -246,3 +246,54 @@ func TestTerminateInstances_MixedRunningAndStopped(t *testing.T) {
 	assert.Equal(t, int64(80), *output.TerminatingInstances[1].PreviousState.Code)
 	assert.Equal(t, "stopped", *output.TerminatingInstances[1].PreviousState.Name)
 }
+
+// A refusal that is not an absence means the terminate did not happen, so
+// reporting "terminated" for it would strand a record the caller believes is
+// gone and leave a Terraform destroy waiting on it forever.
+func TestTerminateInstances_RefusalIsNotReportedAsTerminated(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+
+	instanceID := "i-refused-term"
+
+	nc.QueueSubscribe("ec2.terminate", "spinifex-workers", func(msg *nats.Msg) {
+		msg.Respond([]byte(`{"code":"` + awserrors.ErrorIncorrectInstanceState + `","message":"wrong state"}`))
+	})
+	// A reachable terminated bucket that does not hold the instance is what
+	// makes the idempotent-absence branch look applicable when it is not.
+	nc.Subscribe("ec2.DescribeTerminatedInstances", func(msg *nats.Msg) {
+		msg.Respond([]byte(`{"Reservations":[]}`))
+	})
+
+	output, err := TerminateInstances(context.Background(), &ec2.TerminateInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, nc, "123456789012")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+	assert.Nil(t, output)
+}
+
+// A genuine absence still converges: the stopped bucket does not hold the
+// instance and neither does the terminated bucket, so the terminate is a no-op
+// on something already gone.
+func TestTerminateInstances_AbsentInstanceStaysIdempotent(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+
+	instanceID := "i-absent-term"
+
+	nc.QueueSubscribe("ec2.terminate", "spinifex-workers", func(msg *nats.Msg) {
+		msg.Respond([]byte(`{"code":"` + awserrors.ErrorInvalidInstanceIDNotFound + `","message":"not found"}`))
+	})
+	nc.Subscribe("ec2.DescribeTerminatedInstances", func(msg *nats.Msg) {
+		msg.Respond([]byte(`{"Reservations":[]}`))
+	})
+
+	output, err := TerminateInstances(context.Background(), &ec2.TerminateInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, nc, "123456789012")
+
+	require.NoError(t, err)
+	require.Len(t, output.TerminatingInstances, 1)
+	assert.Equal(t, int64(48), *output.TerminatingInstances[0].CurrentState.Code)
+	assert.Equal(t, "terminated", *output.TerminatingInstances[0].CurrentState.Name)
+}

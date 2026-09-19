@@ -1277,3 +1277,30 @@ func TestReconnectInstance(t *testing.T) {
 				"classifyRestoredInstances logs and continues without re-reconnect")
 	})
 }
+
+// An instance left in StateError is not relaunched, but the operator is told to
+// retry or terminate it — which needs the per-instance command topic bound, or
+// the terminate never reaches a responder and the record is stranded for good.
+func TestClassifyRestoredInstances_ErrorStateStillAnnouncesForCommands(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	var announced []string
+	m := NewManager()
+	m.SetDeps(Deps{
+		NodeID:        "test-node",
+		StateStore:    newFakeStateStore(),
+		Resources:     newFakeResourceController(),
+		InstanceTypes: fakeInstanceTypeResolver{"t3.micro": {VCPUs: 1, MemoryMiB: 1024, Architecture: "x86_64"}},
+		Hooks: ManagerHooks{
+			OnInstanceRecovering: func(v *VM) { announced = append(announced, v.ID) },
+		},
+	})
+	v := &VM{ID: "i-errored", Status: StateError, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+	m.Replace(map[string]*VM{v.ID: v})
+
+	toLaunch := m.classifyRestoredInstances()
+
+	assert.Empty(t, toLaunch, "an instance in error state must not be relaunched")
+	assert.Equal(t, StateError, v.Status, "classify must leave the error state alone")
+	assert.Equal(t, []string{v.ID}, announced,
+		"ec2.cmd.<id> must be bound for an error-state instance or terminate can never reach it")
+}

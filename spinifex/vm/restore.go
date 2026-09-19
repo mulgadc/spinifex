@@ -143,10 +143,15 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 		// Recovery-failed instances stay in StateError until the operator
 		// explicitly retries or terminates. Skip relaunch and resource
 		// re-allocation; resources were already released by stopCleanup
-		// when MarkRecoveryFailed fired on the previous daemon run.
+		// when MarkRecoveryFailed fired on the previous daemon run. The
+		// per-instance command topic is still bound, because an operator who
+		// cannot reach the instance cannot retry or terminate it either.
 		if instance.Status == StateError {
 			slog.Warn("Instance in error state; skipping recovery relaunch (operator must retry or terminate)",
 				"instance", instance.ID, "managedBy", instance.ManagedBy, "instanceType", instance.InstanceType)
+			if m.deps.Hooks.OnInstanceRecovering != nil {
+				m.deps.Hooks.OnInstanceRecovering(instance)
+			}
 			continue
 		}
 

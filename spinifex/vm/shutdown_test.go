@@ -1259,13 +1259,10 @@ func TestMarkRecoveryFailed_NoOpOnTerminal(t *testing.T) {
 	}
 }
 
-// TestClassifyRestoredInstances_StateErrorSkipsRelaunch verifies the
-// restore-side companion fix: an instance already in StateError (from a
-// prior recovery failure) must NOT be queued for relaunch and must NOT
-// have its resources re-allocated. Without this, every daemon restart
-// would re-trigger the failing recovery loop and eventually re-destroy
-// volumes once the loop hit the terminateCleanup path.
-func TestClassifyRestoredInstances_StateErrorSkipsRelaunch(t *testing.T) {
+// recoveryFailedManager builds a manager holding one instance left in
+// StateError by a failed recovery, with health counters the caller controls.
+func recoveryFailedManager(t *testing.T, health InstanceHealthState, hooks ManagerHooks) (*Manager, *countingResourceController, *VM) {
+	t.Helper()
 	m := NewManager()
 	rc := &countingResourceController{}
 	m.SetDeps(Deps{
@@ -1273,6 +1270,7 @@ func TestClassifyRestoredInstances_StateErrorSkipsRelaunch(t *testing.T) {
 		StateStore:    newFakeStateStore(),
 		InstanceTypes: fakeInstanceTypeResolver{"t3.micro": {VCPUs: 2, MemoryMiB: 1024}},
 		Resources:     rc,
+		Hooks:         hooks,
 	})
 
 	code := "Server.RecoveryFailed"
@@ -1281,18 +1279,86 @@ func TestClassifyRestoredInstances_StateErrorSkipsRelaunch(t *testing.T) {
 		ID:           "i-recovery-error",
 		Status:       StateError,
 		InstanceType: "t3.micro",
+		Health:       health,
 		Instance:     &ec2.Instance{StateReason: &ec2.StateReason{Code: &code, Message: &msg}},
 	}
 	m.Insert(v)
+	return m, rc, v
+}
+
+// TestClassifyRestoredInstances_StateErrorRetriesWithinTheWindow covers the
+// usual cause of a failed recovery: a dependency that was not ready at boot and
+// is ready by the next attempt. The instance relaunches, spending one restart.
+func TestClassifyRestoredInstances_StateErrorRetriesWithinTheWindow(t *testing.T) {
+	m, rc, v := recoveryFailedManager(t, InstanceHealthState{
+		CrashCount:     1,
+		FirstCrashTime: time.Now(),
+	}, ManagerHooks{})
 
 	toLaunch := m.classifyRestoredInstances()
 
-	assert.Empty(t, toLaunch, "StateError instance must not be queued for relaunch")
+	assert.Len(t, toLaunch, 1, "a recovery-failed instance with budget left must be relaunched")
+	assert.Equal(t, StatePending, m.Status(v), "the retry must leave StateError")
+	assert.Equal(t, 1, rc.allocations,
+		"the relaunch needs the resources stopCleanup released")
+	assert.Equal(t, 1, v.Health.RestartCount, "the retry must be counted")
+}
+
+// TestClassifyRestoredInstances_StateErrorStopsAfterTheWindow is the other half:
+// an instance that keeps failing stops relaunching, so a broken instance cannot
+// consume a restart on every daemon start. It stays in StateError for the
+// operator, and the command topic is still announced so they can reach it.
+func TestClassifyRestoredInstances_StateErrorStopsAfterTheWindow(t *testing.T) {
+	var announced []string
+	m, rc, v := recoveryFailedManager(t, InstanceHealthState{
+		CrashCount:     MaxRestartsInWindow + 1,
+		FirstCrashTime: time.Now(),
+	}, ManagerHooks{OnInstanceRecovering: func(inst *VM) { announced = append(announced, inst.ID) }})
+
+	toLaunch := m.classifyRestoredInstances()
+
+	assert.Empty(t, toLaunch, "a recovery-failed instance out of budget must not be relaunched")
 	assert.Zero(t, rc.allocations,
-		"StateError instance must not re-allocate resources (already released by stopCleanup)")
+		"a skipped instance must not re-allocate resources (already released by stopCleanup)")
 	_, ok := m.Get(v.ID)
-	assert.True(t, ok, "StateError instance must stay in the local map for operator action")
+	assert.True(t, ok, "the instance must stay in the local map for operator action")
 	assert.Equal(t, StateError, m.Status(v), "status must be preserved")
+	assert.Equal(t, []string{v.ID}, announced,
+		"the command topic must still be bound, or the operator cannot retry or terminate")
+}
+
+// TestClassifyRestoredInstances_StateErrorRetriesAfterTheWindowExpires proves
+// the bound is a window and not a permanent ceiling: an instance that failed
+// long ago is retried again rather than written off forever.
+func TestClassifyRestoredInstances_StateErrorRetriesAfterTheWindowExpires(t *testing.T) {
+	m, _, v := recoveryFailedManager(t, InstanceHealthState{
+		CrashCount:     MaxRestartsInWindow + 1,
+		FirstCrashTime: time.Now().Add(-2 * RestartWindow),
+	}, ManagerHooks{})
+
+	toLaunch := m.classifyRestoredInstances()
+
+	assert.Len(t, toLaunch, 1, "an expired window must allow the instance to be retried")
+	assert.Equal(t, StatePending, m.Status(v), "the retry must leave StateError")
+}
+
+// TestMarkRecoveryFailed_CountsAgainstTheRestartWindow wires the two halves
+// together: without this count the retry above has nothing to bound it, and a
+// permanently-broken instance would relaunch on every restart forever.
+func TestMarkRecoveryFailed_CountsAgainstTheRestartWindow(t *testing.T) {
+	m, _, _, _, _ := shutdownTestManager(t)
+	instance := &VM{
+		ID:       "i-counted",
+		Status:   StateRunning,
+		Instance: &ec2.Instance{},
+	}
+	m.Insert(instance)
+
+	m.MarkRecoveryFailed(instance, "recovery_launch_failed")
+
+	assert.Equal(t, 1, instance.Health.CrashCount, "a failed recovery must count like a crash")
+	assert.False(t, instance.Health.FirstCrashTime.IsZero(), "the window must have a start")
+	assert.Equal(t, "recovery_launch_failed", instance.Health.LastCrashReason)
 }
 
 // countingResourceController counts how often Allocate fires so a test

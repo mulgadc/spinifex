@@ -40,6 +40,31 @@ func RestartBackoff(restartCount int) time.Duration {
 	return delay
 }
 
+// recordCrash counts one failure against the restart window. Both a QEMU crash
+// and a failed startup recovery spend the same budget, because both leave the
+// instance in StateError with the manager owed a restart.
+func recordCrash(v *VM, reason string, now time.Time) {
+	v.Health.CrashCount++
+	v.Health.LastCrashTime = now
+	v.Health.LastCrashReason = reason
+	if v.Health.FirstCrashTime.IsZero() {
+		v.Health.FirstCrashTime = now
+	}
+}
+
+// rollRestartWindow expires a stale window and reports whether the instance has
+// restart budget left inside the current one. A window that has run out is what
+// makes StateError terminal rather than a state the manager retries out of.
+func rollRestartWindow(v *VM, now time.Time) bool {
+	if !v.Health.FirstCrashTime.IsZero() && now.Sub(v.Health.FirstCrashTime) > RestartWindow {
+		slog.Info("Crash window expired, resetting counters", "instance", v.ID)
+		v.Health.CrashCount = 1
+		v.Health.FirstCrashTime = now
+		v.Health.RestartCount = 0
+	}
+	return v.Health.CrashCount <= MaxRestartsInWindow
+}
+
 // ClassifyCrashReason extracts a human-readable crash reason from cmd.Wait()'s
 // error, distinguishing OOM kills, segfaults, aborts, and other signals.
 func ClassifyCrashReason(waitErr error) string {
@@ -104,14 +129,7 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 	}
 
 	now := time.Now()
-	m.UpdateState(instance.ID, func(v *VM) {
-		v.Health.CrashCount++
-		v.Health.LastCrashTime = now
-		v.Health.LastCrashReason = reason
-		if v.Health.FirstCrashTime.IsZero() {
-			v.Health.FirstCrashTime = now
-		}
-	})
+	m.UpdateState(instance.ID, func(v *VM) { recordCrash(v, reason, now) })
 
 	if m.deps.Resources != nil && instance.InstanceType != "" {
 		slog.Info("Deallocating resources for crashed instance",
@@ -164,19 +182,12 @@ func (m *Manager) MaybeRestart(instance *VM) {
 		exceeded     bool
 	)
 	m.UpdateState(instance.ID, func(v *VM) {
-		health := &v.Health
-		if !health.FirstCrashTime.IsZero() && now.Sub(health.FirstCrashTime) > RestartWindow {
-			slog.Info("Crash window expired, resetting counters", "instance", v.ID)
-			health.CrashCount = 1
-			health.FirstCrashTime = now
-			health.RestartCount = 0
-		}
-		if health.CrashCount > MaxRestartsInWindow {
+		if !rollRestartWindow(v, now) {
 			exceeded = true
-			crashCount = health.CrashCount
+			crashCount = v.Health.CrashCount
 			return
 		}
-		restartCount = health.RestartCount
+		restartCount = v.Health.RestartCount
 	})
 	if exceeded {
 		slog.Error("Instance exceeded max restarts in window, leaving in error state",

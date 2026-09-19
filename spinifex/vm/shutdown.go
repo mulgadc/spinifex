@@ -333,6 +333,11 @@ func (m *Manager) MarkRecoveryFailed(instance *VM, reason string) {
 			return
 		}
 	}
+	// Counted like a crash so the next restore can retry this instance against a
+	// budget that runs out, rather than either never retrying or retrying forever.
+	now := time.Now()
+	m.UpdateState(instance.ID, func(v *VM) { recordCrash(v, reason, now) })
+
 	slog.Error("Instance marked recovery_failed; volumes and ENIs preserved for operator action",
 		"instanceId", instance.ID, "reason", reason)
 

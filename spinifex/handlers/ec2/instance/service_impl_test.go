@@ -2415,6 +2415,106 @@ func TestStartStoppedInstance_NotFoundButRunningLocally(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }
 
+// TestStartStoppedInstance_LocalErrorRecordIsStarted is the failed-recovery
+// case: the shared KV never holds a StateError record, so the old membership
+// check read the dead local record as proof the instance was already running
+// and refused the only remedy the operator had. The record's state decides now,
+// and an error-state record is startable.
+func TestStartStoppedInstance_LocalErrorRecordIsStarted(t *testing.T) {
+	id := "i-recovery-failed"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	mgr := vm.NewManager()
+	var transitions []vm.InstanceState
+	mgr.SetDeps(vm.Deps{
+		NodeID: "test-node",
+		// Mounting is a no-op so the launch reaches the manager's unwired
+		// resolver and fails deterministically without a qemu process.
+		VolumeMounter: raceVolumeMounter{},
+		TransitionState: func(v *vm.VM, to vm.InstanceState) error {
+			transitions = append(transitions, to)
+			v.Status = to
+			return nil
+		},
+	})
+	mgr.Insert(&vm.VM{ID: id, Status: vm.StateError, AccountID: "acc", InstanceType: "t3.micro"})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        mgr,
+	}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+
+	// The launch itself cannot succeed without a hypervisor behind it; what
+	// matters is that the start was attempted rather than refused as running.
+	if err != nil {
+		assert.NotEqual(t, awserrors.ErrorIncorrectInstanceState, err.Error(),
+			"an error-state record must not be reported as already running")
+	}
+	assert.Contains(t, transitions, vm.StatePending,
+		"the instance must be moved out of error state for the launch")
+}
+
+// TestStartStoppedInstance_LocalStoppedRecordIsRefused holds the other side of
+// the same check. A claim inserts the instance locally before it launches, so a
+// local stopped record with nothing in the store is a start already under way,
+// and starting it again would put two launches on one volume.
+func TestStartStoppedInstance_LocalStoppedRecordIsRefused(t *testing.T) {
+	id := "i-mid-claim"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	mgr := vm.NewManager()
+	mgr.Insert(&vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: "t3.micro"})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        mgr,
+	}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+// TestStartStoppedInstance_LocalTerminatedRecordIsNotFound keeps the third case
+// separate: a terminated record is gone, not busy and not startable.
+func TestStartStoppedInstance_LocalTerminatedRecordIsNotFound(t *testing.T) {
+	id := "i-gone"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	mgr := vm.NewManager()
+	mgr.Insert(&vm.VM{ID: id, Status: vm.StateTerminated, AccountID: "acc"})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        mgr,
+	}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+// TestStartStoppedInstance_LocalRecordOfAnotherAccount holds the visibility
+// rule on the local path too: reading another account's record must answer the
+// same way an absent one does.
+func TestStartStoppedInstance_LocalRecordOfAnotherAccount(t *testing.T) {
+	id := "i-someone-elses"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	mgr := vm.NewManager()
+	mgr.Insert(&vm.VM{ID: id, Status: vm.StateError, AccountID: "owner-acc"})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        mgr,
+	}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "other-acc")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
 func TestStartStoppedInstance_NotStopped(t *testing.T) {
 	id := "i-running"
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{

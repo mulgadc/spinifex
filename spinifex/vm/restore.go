@@ -140,14 +140,14 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 			instance.Status = StatePending
 		}
 
-		// Recovery-failed instances stay in StateError until the operator
-		// explicitly retries or terminates. Skip relaunch and resource
-		// re-allocation; resources were already released by stopCleanup
-		// when MarkRecoveryFailed fired on the previous daemon run. The
-		// per-instance command topic is still bound, because an operator who
-		// cannot reach the instance cannot retry or terminate it either.
-		if instance.Status == StateError {
-			slog.Warn("Instance in error state; skipping recovery relaunch (operator must retry or terminate)",
+		// A recovery-failed instance is retried while its restart window still
+		// allows one: the usual cause is a dependency that was not ready at
+		// boot, which is over by the next attempt. Once the budget is spent it
+		// stays in StateError for the operator. Either way the per-instance
+		// command topic is bound, because an operator who cannot reach the
+		// instance cannot retry or terminate it either.
+		if instance.Status == StateError && !m.resumeRecoveryFailed(instance) {
+			slog.Warn("Instance in error state and out of restart budget; skipping recovery relaunch (operator must retry or terminate)",
 				"instance", instance.ID, "managedBy", instance.ManagedBy, "instanceType", instance.InstanceType)
 			if m.deps.Hooks.OnInstanceRecovering != nil {
 				m.deps.Hooks.OnInstanceRecovering(instance)
@@ -242,6 +242,22 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 	}
 
 	return toLaunch
+}
+
+// resumeRecoveryFailed returns an instance in StateError to Pending so this
+// restore relaunches it, spending one restart from the same window a crash
+// restart spends. Returns false when the window has run out, which is what
+// keeps a genuinely broken instance from relaunching on every daemon start.
+func (m *Manager) resumeRecoveryFailed(instance *VM) bool {
+	if !rollRestartWindow(instance, time.Now()) {
+		return false
+	}
+	instance.Health.RestartCount++
+	instance.Status = StatePending
+	slog.Info("Retrying recovery-failed instance",
+		"instance", instance.ID, "restartCount", instance.Health.RestartCount,
+		"failures", instance.Health.CrashCount, "lastReason", instance.Health.LastCrashReason)
+	return true
 }
 
 // markUnschedulable flips an instance to Stopped with InsufficientInstanceCapacity

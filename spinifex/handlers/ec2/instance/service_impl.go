@@ -2475,6 +2475,41 @@ func (s *InstanceServiceImpl) StoppedInstanceNode(instanceID string) string {
 	return instance.LastNode
 }
 
+// startLocalRecord answers a start for an instance this node holds locally but
+// the stopped store does not, reading the record's state rather than its mere
+// presence. Only an error-state record is started here: it is what a failed
+// recovery leaves behind, it never reaches the stopped store, and refusing it
+// as "already running" is what dead-ends the instance.
+//
+// Every other state stays a refusal. A local record in any startable state is
+// a claim another caller is part-way through — it inserts the instance before
+// it launches — so starting it here would put two launches on one volume.
+func (s *InstanceServiceImpl) startLocalRecord(ctx context.Context, local *vm.VM, accountID string) (*StartStoppedInstanceOutput, error) {
+	if !IsInstanceVisible(accountID, local.AccountID) {
+		slog.WarnContext(ctx, "StartStoppedInstance: instance not visible",
+			"instanceId", local.ID, "callerAccount", accountID, "ownerAccount", local.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	status := s.vmMgr.Status(local)
+	switch status {
+	case vm.StateError:
+		slog.InfoContext(ctx, "StartStoppedInstance: starting an error-state record the stopped store does not hold",
+			"instanceId", local.ID)
+		if err := s.StartInstance(ctx, local, spxtypes.EC2InstanceCommand{ID: local.ID}); err != nil {
+			return nil, err
+		}
+		return &StartStoppedInstanceOutput{Status: "running", InstanceID: local.ID}, nil
+	case vm.StateTerminated:
+		slog.WarnContext(ctx, "StartStoppedInstance: local record is terminated", "instanceId", local.ID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	default:
+		slog.WarnContext(ctx, "StartStoppedInstance: instance already being started locally",
+			"instanceId", local.ID, "status", string(status))
+		return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+	}
+}
+
 // StartStoppedInstance picks up a stopped instance from shared KV, re-launches
 // it on this daemon node, then removes it from shared KV.
 func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error) {
@@ -2500,15 +2535,11 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if instance == nil {
-		// Disambiguate a genuinely-absent record from a local race: if this
-		// node's vmMgr already shows the instance running, a winning claim
-		// started it here between another caller's checks and this Load, so
-		// the correct taxonomy is IncorrectInstanceState, not NotFound. A
-		// cross-node winner is invisible to this node's vmMgr and still
-		// falls through to NotFound.
-		if _, ok := s.vmMgr.Get(input.InstanceID); ok {
-			slog.WarnContext(ctx, "StartStoppedInstance: instance already running locally", "instanceId", input.InstanceID)
-			return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+		// No shared record, but this node may still hold a local one, and what
+		// that record says decides the answer. A cross-node winner is invisible
+		// here and falls through to NotFound.
+		if local, ok := s.vmMgr.Get(input.InstanceID); ok {
+			return s.startLocalRecord(ctx, local, accountID)
 		}
 		slog.WarnContext(ctx, "StartStoppedInstance: instance not found in shared KV", "instanceId", input.InstanceID)
 		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)

@@ -1278,9 +1278,10 @@ func TestReconnectInstance(t *testing.T) {
 	})
 }
 
-// An instance left in StateError is not relaunched, but the operator is told to
-// retry or terminate it — which needs the per-instance command topic bound, or
-// the terminate never reaches a responder and the record is stranded for good.
+// An instance left in StateError with its restart budget spent is not
+// relaunched, but the operator is told to retry or terminate it — which needs
+// the per-instance command topic bound, or the terminate never reaches a
+// responder and the record is stranded for good.
 func TestClassifyRestoredInstances_ErrorStateStillAnnouncesForCommands(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	var announced []string
@@ -1294,7 +1295,13 @@ func TestClassifyRestoredInstances_ErrorStateStillAnnouncesForCommands(t *testin
 			OnInstanceRecovering: func(v *VM) { announced = append(announced, v.ID) },
 		},
 	})
-	v := &VM{ID: "i-errored", Status: StateError, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
+	v := &VM{
+		ID:           "i-errored",
+		Status:       StateError,
+		InstanceType: "t3.micro",
+		Health:       InstanceHealthState{CrashCount: MaxRestartsInWindow + 1, FirstCrashTime: time.Now()},
+		Instance:     &ec2.Instance{},
+	}
 	m.Replace(map[string]*VM{v.ID: v})
 
 	toLaunch := m.classifyRestoredInstances()

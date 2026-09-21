@@ -1,6 +1,4 @@
 //test:in-package — drives ResourceManager.canAllocateLocked and builds
-// capacityReservation records directly; both are unexported, and the
-// exported paths cannot set up a partly-carved GPU pool.
 package daemon
 
 import (

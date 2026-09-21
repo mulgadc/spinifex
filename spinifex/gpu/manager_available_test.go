@@ -1,6 +1,4 @@
 //test:in-package — reuses the in-package sysfs and MIG fixtures
-// (buildManagerSysfs, newMIGDevice, makeMdevDir) that the rest of the
-// manager suite is built on.
 package gpu
 
 import (

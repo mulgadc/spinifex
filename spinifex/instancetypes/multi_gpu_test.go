@@ -1,6 +1,4 @@
 //test:in-package — pins instanceFamilyDefs and gpuCountPerType against each
-// other. Both are unexported by design: the point of the pin is that a size
-// added without a count fails before the type is ever generated.
 package instancetypes
 
 import (

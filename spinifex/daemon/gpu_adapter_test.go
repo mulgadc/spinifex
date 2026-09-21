@@ -1,6 +1,4 @@
 //test:in-package — daemonGPUClaimer and its Daemon field are unexported;
-// the adapter exists to keep the gpu package out of the instance service,
-// so there is no exported surface to drive it through.
 package daemon
 
 import (

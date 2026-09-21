@@ -1091,12 +1091,31 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 			instance.Instance.BlockDeviceMappings = append(instance.Instance.BlockDeviceMappings, mapping)
 		}
 
-		if s.gpuClaimer != nil && instancetypes.IsGPUType(instanceType) {
+		if instancetypes.IsGPUType(instanceType) {
+			// Admission gates on the daemon's GPU manager, which is a different
+			// field wired at a different moment. Booting a GPU type without a
+			// claimer would hand the customer a running, GPU-less instance.
+			if s.gpuClaimer == nil {
+				slog.ErrorContext(ctx, "LaunchRunInstances: GPU type admitted with no GPU claimer wired",
+					"instanceId", instance.ID, "instanceType", aws.StringValue(instanceType.InstanceType))
+				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
+				continue
+			}
 			profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
 			gpuCount := instancetypes.GPUCountForType(aws.StringValue(instanceType.InstanceType))
 			attachments, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName, gpuCount)
 			if gpuErr != nil {
 				slog.ErrorContext(ctx, "LaunchRunInstances: GPU claim failed", "instanceId", instance.ID, "count", gpuCount, "err", gpuErr)
+				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
+				continue
+			}
+			if len(attachments) != gpuCount {
+				slog.ErrorContext(ctx, "LaunchRunInstances: GPU claim returned the wrong count",
+					"instanceId", instance.ID, "requested", gpuCount, "got", len(attachments))
+				if releaseErr := s.gpuClaimer.Release(instance.ID); releaseErr != nil {
+					slog.ErrorContext(ctx, "LaunchRunInstances: GPU release after short claim failed",
+						"instanceId", instance.ID, "err", releaseErr)
+				}
 				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
 				continue
 			}
@@ -2597,7 +2616,18 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	// instance was admitted against. A record holding a different number was
 	// written by a build that took the count from somewhere else.
 	gpuClaimed := false
-	if s.gpuClaimer != nil && instancetypes.IsGPUType(instanceType) {
+	if instancetypes.IsGPUType(instanceType) {
+		// Admission gates on the daemon's GPU manager, which is a different
+		// field wired at a different moment. Starting a GPU type without a
+		// claimer would hand the customer a running, GPU-less instance.
+		if s.gpuClaimer == nil {
+			slog.ErrorContext(ctx, "StartStoppedInstance: GPU type admitted with no GPU claimer wired",
+				"instanceId", input.InstanceID, "instanceType", instance.InstanceType)
+			s.resourceMgr.Deallocate(instanceType)
+			s.vmMgr.Delete(instance.ID)
+			s.restoreClaimedStoppedInstance(ctx, instance)
+			return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		}
 		profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
 		gpuCount := instancetypes.GPUCountForType(instance.InstanceType)
 		if recorded := len(instance.GPUAttachments); recorded > 0 && recorded != gpuCount {
@@ -2606,6 +2636,15 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 				"recorded", recorded, "reclaiming", gpuCount)
 		}
 		attachments, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName, gpuCount)
+		if gpuErr == nil && len(attachments) != gpuCount {
+			slog.ErrorContext(ctx, "StartStoppedInstance: GPU claim returned the wrong count",
+				"instanceId", input.InstanceID, "requested", gpuCount, "got", len(attachments))
+			if relErr := s.gpuClaimer.Release(instance.ID); relErr != nil {
+				slog.ErrorContext(ctx, "StartStoppedInstance: GPU release after short claim failed",
+					"instanceId", input.InstanceID, "err", relErr)
+			}
+			gpuErr = errors.New("GPU claim returned fewer GPUs than the instance type requires")
+		}
 		if gpuErr != nil {
 			slog.ErrorContext(ctx, "StartStoppedInstance: GPU claim failed", "instanceId", input.InstanceID, "count", gpuCount, "err", gpuErr)
 			s.resourceMgr.Deallocate(instanceType)

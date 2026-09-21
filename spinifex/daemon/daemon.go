@@ -2749,8 +2749,11 @@ func (d *Daemon) applyGPUConfig(enabled bool) {
 		}
 		mgr, models, migProfiles := buildGPUPool(probe.Devices, d.config.Daemon)
 		d.gpuManager = mgr
-		d.resourceMgr.reloadGPUTypes(models, migProfiles, mgr)
+		// Claimer before types: reloadGPUTypes starts advertising GPU types and
+		// admitting against them, and a launch landing before the claimer is
+		// wired would otherwise boot without the GPUs it was admitted for.
 		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
+		d.resourceMgr.reloadGPUTypes(models, migProfiles, mgr)
 		slog.Info("GPU passthrough enabled via config reload", "gpus", len(probe.Devices))
 		return
 	}
@@ -2939,7 +2942,11 @@ func (rm *ResourceManager) admissibleGPUInstances(instanceTypeName string) int {
 	}
 	if instancetypes.IsMIGType(instanceTypeName) {
 		profile := instancetypes.MIGProfileFromType(instanceTypeName)
-		return rm.gpuManager.AvailableSlices(profile) / gpusNeeded
+		// The un-carved budget is shared with every other profile, so this is
+		// the right answer for one type in isolation and an over-count when the
+		// listing asks about several. Reserving pool entries is what fixes that.
+		free := rm.gpuManager.AvailableSlices(profile) + rm.gpuManager.FreeMIGGPUs()
+		return free / gpusNeeded
 	}
 	return rm.gpuManager.AvailableWhole() / gpusNeeded
 }

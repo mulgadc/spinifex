@@ -600,12 +600,23 @@ func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry)
 	return nil
 }
 
-func resolveVMGPUs(attachments []gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) []types.VMGPUInfo {
+// resolveVMGPUs resolves every attachment it can. A short list is reported
+// rather than passed off as complete: at one GPU an unresolved attachment
+// showed as no GPU at all, but at eight a quietly shortened list is a
+// plausible wrong answer.
+func resolveVMGPUs(instanceID string, attachments []gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) []types.VMGPUInfo {
 	gpus := make([]types.VMGPUInfo, 0, len(attachments))
 	for _, attachment := range attachments {
 		if info := resolveVMGPU(attachment, byMdev, byPCI); info != nil {
 			gpus = append(gpus, *info)
+			continue
 		}
+		slog.Warn("VM GPU attachment has no pool entry",
+			"instanceId", instanceID, "pci", attachment.PCIAddress, "mdev", attachment.MdevPath)
+	}
+	if len(gpus) != len(attachments) {
+		slog.Warn("VM holds GPU attachments that did not resolve",
+			"instanceId", instanceID, "attached", len(attachments), "resolved", len(gpus))
 	}
 	return gpus
 }
@@ -632,7 +643,7 @@ func (d *Daemon) handleNodeVMs(msg *nats.Msg) string {
 		if v.Instance != nil && v.Instance.LaunchTime != nil {
 			info.LaunchTime = v.Instance.LaunchTime.Unix()
 		}
-		info.GPUs = resolveVMGPUs(v.GPUAttachments, poolByMdev, poolByPCI)
+		info.GPUs = resolveVMGPUs(v.ID, v.GPUAttachments, poolByMdev, poolByPCI)
 		vms = append(vms, info)
 	})
 

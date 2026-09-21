@@ -85,9 +85,12 @@ func GPUVendorForType(instanceType string) string {
 	return ""
 }
 
-// IsGPUTypeName reports whether instanceType belongs to a known GPU family.
+// IsGPUTypeName reports whether instanceType is GPU-backed. gpu.* and mig.*
+// qualify even though GPUVendorForType cannot name their vendor: the vendor
+// comes from discovery, so callers needing one must handle an empty answer.
 func IsGPUTypeName(instanceType string) bool {
-	return GPUVendorForType(instanceType) != ""
+	return IsBuiltinGPUType(instanceType) || IsMIGType(instanceType) ||
+		GPUVendorForType(instanceType) != ""
 }
 
 // cpuGeneration represents a specific CPU microarchitecture generation

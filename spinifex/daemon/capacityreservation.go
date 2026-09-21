@@ -84,7 +84,8 @@ func (rm *ResourceManager) CancelReservation(id, accountID string) (*capacityRes
 // at create moves to allocated* and ConsumedCount bumps, so schedulable capacity
 // is unchanged by construction. Errors: unknown/foreign id ->
 // InvalidCapacityReservationId.NotFound; type mismatch -> InvalidParameterValue;
-// already full -> ReservationCapacityExceeded.
+// already full -> ReservationCapacityExceeded; no free GPU ->
+// InsufficientInstanceCapacity.
 func (rm *ResourceManager) AllocateFromReservation(crID, accountID string, it *ec2.InstanceTypeInfo) error {
 	rm.mu.Lock()
 	rec, ok := rm.reservations[crID]
@@ -99,6 +100,14 @@ func (rm *ResourceManager) AllocateFromReservation(crID, accountID string, it *e
 	if rec.ConsumedCount >= rec.TotalInstanceCount {
 		rm.mu.Unlock()
 		return errors.New(awserrors.ErrorReservationCapacityExceeded)
+	}
+	// Re-checked under the write lock, as the general path does: a reservation
+	// counts vCPU and memory slots and reserves no pool entry, so two targeted
+	// launches can both clear ReservationAvailable and only one find a GPU.
+	if instancetypes.IsGPUType(it) &&
+		rm.admissibleGPUInstances(aws.StringValue(it.InstanceType)) < 1 {
+		rm.mu.Unlock()
+		return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 	rm.reservedCRVCPU -= rec.VCPUPerInstance
 	rm.reservedCRMem -= rec.MemGBPerInstance

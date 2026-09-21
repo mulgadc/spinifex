@@ -253,6 +253,14 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 	minSize, maxSize, desired := scalingFromInput(input.ScalingConfig)
 
 	gpuEnabled, gpuVendor := gpuFieldsForInstanceTypes(instanceTypes)
+	if gpuEnabled && gpuVendor == "" {
+		// Caught here rather than at launch: without a vendor there is no GPU
+		// AMI to resolve, and the nodegroup would otherwise reach Ready with
+		// the GPUs passed through, no driver, and every GPU pod Pending.
+		slog.ErrorContext(ctx, "createNodegroup: GPU instance types name no GPU vendor",
+			"cluster", cluster, "nodegroup", ng, "instanceTypes", instanceTypes)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
 
 	amiType := aws.StringValue(input.AmiType)
 	if amiType == "" {

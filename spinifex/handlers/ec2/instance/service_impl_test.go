@@ -2828,6 +2828,67 @@ func TestStartStoppedInstance_ReclaimsTheInstanceTypeGPUCount(t *testing.T) {
 	}
 }
 
+// A GPU type that cannot be given its GPUs must not start. Admission gates on
+// the daemon's GPU manager, a different field wired at a different moment, so
+// neither a missing claimer nor a short claim is caught anywhere else — and
+// both would otherwise return a running, GPU-less instance.
+func TestStartStoppedInstance_RefusesWhenGPUsCannotBeGuaranteed(t *testing.T) {
+	tests := []struct {
+		name         string
+		claimer      GPUClaimer
+		wantReleased bool
+	}{
+		{name: "no claimer wired", claimer: nil},
+		{
+			name:         "claim returns fewer GPUs than the type requires",
+			claimer:      &fakeGPUClaimer{attachments: []gpu.GPUAttachment{{PCIAddress: "0000:01:00.0"}}},
+			wantReleased: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+			const id, itype = "i-multi-gpu", "g5.12xlarge"
+			store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+				id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
+			}}
+			instanceType := &ec2.InstanceTypeInfo{
+				InstanceType: aws.String(itype),
+				GpuInfo: &ec2.GpuInfo{Gpus: []*ec2.GpuDeviceInfo{{
+					Count: aws.Int64(int64(instancetypes.GPUCountForType(itype))),
+				}}},
+			}
+			prov := &fakeResourceCapacityProvider{
+				instanceTypes: map[string]*ec2.InstanceTypeInfo{itype: instanceType},
+			}
+			svc := &InstanceServiceImpl{
+				stoppedStore: store,
+				resourceMgr:  prov,
+				vmMgr:        vm.NewManagerWithDeps(vm.Deps{VolumeMounter: raceVolumeMounter{}}),
+				gpuClaimer:   test.claimer,
+			}
+
+			_, err := svc.StartStoppedInstance(
+				context.Background(),
+				&StartStoppedInstanceInput{InstanceID: id},
+				"acc",
+			)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error(),
+				"a GPU that cannot be claimed is a capacity refusal, not a launch")
+
+			if test.wantReleased {
+				claimer, ok := test.claimer.(*fakeGPUClaimer)
+				require.True(t, ok)
+				assert.Equal(t, []string{id}, claimer.released,
+					"the partial claim must not be left holding pool entries")
+			}
+		})
+	}
+}
+
 // --- PrepareRunInstances / ec2.cmd dispatch tests ---------------------------
 
 type fakeAMILoader struct {

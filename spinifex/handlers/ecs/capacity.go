@@ -107,7 +107,14 @@ func (s *Service) ProvisionCapacity(ctx context.Context, input *ProvisionCapacit
 
 	var amiID string
 	if instancetypes.IsGPUTypeName(instanceType) {
-		amiID, err = lookupECSGPUNodeAMI(ctx, s.deps.Images, accountID, instancetypes.GPUVendorForType(instanceType))
+		// Refusing beats the non-GPU AMI: that boots a container instance with
+		// the GPUs passed through and no driver, which registers no GPU
+		// resource and strands every GPU task as PENDING with nothing logged.
+		vendor := instancetypes.GPUVendorForType(instanceType)
+		if vendor == "" {
+			return nil, fmt.Errorf("ecs: instance type %s does not name a GPU vendor, so its GPU node AMI cannot be resolved", instanceType)
+		}
+		amiID, err = lookupECSGPUNodeAMI(ctx, s.deps.Images, accountID, vendor)
 	} else {
 		amiID, err = lookupECSNodeAMI(ctx, s.deps.Images, accountID)
 	}

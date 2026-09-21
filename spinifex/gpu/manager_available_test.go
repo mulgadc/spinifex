@@ -31,14 +31,18 @@ func TestAvailableWholeAndSlicesCountSeparately(t *testing.T) {
 	assert.Zero(t, m.AvailableSlices("7g.80gb"), "a profile with no slices carved is not available")
 }
 
-// An un-carved MIG-capable GPU yields at least one slice of any profile, but
-// the carve happens at claim time so its full yield is not known yet.
-func TestAvailableSlicesCountsUncarvedGPUsAsOne(t *testing.T) {
+// An un-carved MIG-capable GPU carves into exactly one profile at claim time,
+// so it belongs to a budget shared across profiles rather than to any one of
+// them. Folding it into AvailableSlices offered the same GPU to every profile
+// at once, and the loser failed at claim time having been promised capacity.
+func TestFreeMIGGPUsAreSharedAcrossProfiles(t *testing.T) {
 	m := NewManager(nil)
 	m.AddMIGGPU(newMIGDevice("0000:01:00.0"))
 	m.AddMIGGPU(newMIGDevice("0000:02:00.0"))
 
-	assert.Equal(t, 2, m.AvailableSlices("1g.10gb"))
+	assert.Zero(t, m.AvailableSlices("1g.10gb"), "nothing is carved yet")
+	assert.Zero(t, m.AvailableSlices("7g.80gb"), "nor for any other profile")
+	assert.Equal(t, 2, m.FreeMIGGPUs(), "both GPUs are carvable, once each")
 	assert.Zero(t, m.AvailableWhole(), "a MIG-capable GPU held for carving is not offerable whole")
 	assert.Zero(t, m.Available(), "freeMIGGPUs are not pool entries yet")
 }

@@ -245,6 +245,11 @@ func (m *Manager) Release(instanceID string) error {
 			continue
 		}
 
+		// Scoped to this entry, not the whole release: an instance can hold
+		// several GPUs, and one that unbound cleanly stays available however
+		// its siblings fared.
+		var entryErr error
+
 		for _, member := range entry.groupMembers {
 			orig := entry.memberDrivers[member.PCIAddress]
 			if orig == "vfio-pci" {
@@ -258,6 +263,9 @@ func (m *Manager) Release(instanceID string) error {
 			if err := unbindVFIO(m.sysfsRoot, member.PCIAddress, orig); err != nil {
 				slog.Error("GPU release failed for IOMMU group member",
 					"instance", instanceID, "pci", member.PCIAddress, "err", err)
+				if entryErr == nil {
+					entryErr = err
+				}
 				if firstErr == nil {
 					firstErr = err
 				}
@@ -268,7 +276,7 @@ func (m *Manager) Release(instanceID string) error {
 		entry.groupMembers = nil
 		entry.memberDrivers = nil
 
-		if firstErr != nil {
+		if entryErr != nil {
 			entry.Available = false
 			slog.Error("GPU marked unavailable after failed release — operator action required",
 				"gpu", entry.Device.PCIAddress)
@@ -418,14 +426,13 @@ func (m *Manager) AvailableWhole() int {
 	return n
 }
 
-// AvailableSlices returns how many MIG slices of the given profile can be
-// claimed right now: the free carved slices, plus one per un-carved MIG-capable
-// GPU. One per GPU rather than the profile's full yield because the carve
-// happens at claim time and its yield is not known until then.
+// AvailableSlices returns how many already-carved MIG slices of the given
+// profile can be claimed right now. Un-carved GPUs are deliberately excluded:
+// they belong to FreeMIGGPUs, whose budget is shared across every profile.
 func (m *Manager) AvailableSlices(profileName string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	n := len(m.freeMIGGPUs)
+	n := 0
 	for _, e := range m.pool {
 		if e.Available && e.InstanceID == "" && e.MIGInstance != nil &&
 			e.MIGInstance.Profile.Name == profileName {
@@ -433,6 +440,15 @@ func (m *Manager) AvailableSlices(profileName string) int {
 		}
 	}
 	return n
+}
+
+// FreeMIGGPUs returns the un-carved MIG-capable GPUs. Each carves at claim time
+// into exactly one profile, so this budget is shared across every mig.* type:
+// add it once per admission decision, never once per profile.
+func (m *Manager) FreeMIGGPUs() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.freeMIGGPUs)
 }
 
 // AllocatedCount returns the number of GPUs currently claimed by instances.

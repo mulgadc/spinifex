@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -132,6 +133,54 @@ func TestReservationAvailable_GatesOnFreeGPUs(t *testing.T) {
 		mgr.MarkFailed(devices[i].PCIAddress)
 	}
 	assert.Zero(t, rm.ReservationAvailable("cr-gpu", "acct-a", gpuType))
+}
+
+// ReservationAvailable answers under the read lock and reserves nothing, so two
+// targeted launches can both clear it. AllocateFromReservation re-checks under
+// the write lock, as the general path does — otherwise the loser consumes a
+// reservation slot and then dies at claim time with no GPU to take.
+func TestAllocateFromReservation_RechecksFreeGPUs(t *testing.T) {
+	gpuType := gpuTypeForTest("gpu.4x4c", 4)
+	devices := make([]gpu.GPUDevice, 4)
+	for i := range devices {
+		devices[i] = gpu.GPUDevice{PCIAddress: string(rune('a' + i)), IOMMUGroup: i}
+	}
+	mgr := gpu.NewManager(devices)
+
+	rm := &ResourceManager{
+		hostVCPU:      64,
+		hostMemGB:     256.0,
+		gpuManager:    mgr,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"gpu.4x4c": gpuType},
+		reservations:  make(map[string]*capacityReservation),
+	}
+	require.NoError(t, rm.CreateReservation(&capacityReservation{
+		ID:                    "cr-gpu",
+		AccountID:             "acct-a",
+		InstanceType:          "gpu.4x4c",
+		AvailabilityZone:      "ap-southeast-2a",
+		TotalInstanceCount:    3,
+		VCPUPerInstance:       2,
+		MemGBPerInstance:      1.0,
+		InstanceMatchCriteria: "open",
+		Tenancy:               "default",
+		InstancePlatform:      "Linux/UNIX",
+		CreateDate:            time.Now(),
+	}))
+
+	require.NoError(t, rm.AllocateFromReservation("cr-gpu", "acct-a", gpuType),
+		"the first launch takes the node's only four GPUs")
+
+	// The GPUs leave the pool between the two calls — claimed by the winner of
+	// the race, failed, or dropped by a SIGHUP rebuild. Two slots still remain.
+	for i := range devices {
+		mgr.MarkFailed(devices[i].PCIAddress)
+	}
+
+	err := rm.AllocateFromReservation("cr-gpu", "acct-a", gpuType)
+	require.Error(t, err, "free slots do not conjure a GPU")
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error(),
+		"the reservation is not what ran out")
 }
 
 // A non-GPU reservation keeps answering on slots alone.

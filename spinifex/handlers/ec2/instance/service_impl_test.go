@@ -4822,3 +4822,35 @@ func TestPrepareRunInstances_PreCreatedENIAttachErrorSurfaced(t *testing.T) {
 	assert.Equal(t, 1, eni.attachCalls)
 	assert.Equal(t, 0, eni.createCalls)
 }
+
+// TestDescribeInstanceAttribute_UserDataUnsetCarriesNoValue pins the shape AWS
+// returns for an instance launched without user data: the attribute is present
+// and its Value is absent. The Terraform provider reads user_data only when
+// Value is non-nil, so an empty string makes it record the hash of "" and
+// propose a change on every plan.
+func TestDescribeInstanceAttribute_UserDataUnsetCarriesNoValue(t *testing.T) {
+	const id = "i-userdata-unset"
+	const owner = "000000000000"
+
+	for _, tc := range []struct {
+		name  string
+		input *ec2.RunInstancesInput
+	}{
+		{name: "no RunInstancesInput", input: nil},
+		{name: "nil UserData", input: &ec2.RunInstancesInput{}},
+		{name: "empty UserData", input: &ec2.RunInstancesInput{UserData: aws.String("")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := &vm.VM{ID: id, AccountID: owner, RunInstancesInput: tc.input}
+			svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+
+			out, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+				InstanceId: aws.String(id),
+				Attribute:  aws.String(ec2.InstanceAttributeNameUserData),
+			}, owner)
+			require.NoError(t, err)
+			require.NotNil(t, out.UserData, "AWS returns the attribute itself even when it holds nothing")
+			assert.Nil(t, out.UserData.Value, "an instance with no user data carries no Value, not an empty one")
+		})
+	}
+}

@@ -3092,12 +3092,12 @@ func (s *InstanceServiceImpl) DescribeInstanceAttribute(ctx context.Context, inp
 
 	case ec2.InstanceAttributeNameUserData:
 		// AWS returns user-data base64-encoded; RunInstancesInput.UserData is the
-		// canonical base64 store, set at launch and kept in sync by Modify.
-		var val string
-		if instance.RunInstancesInput != nil && instance.RunInstancesInput.UserData != nil {
-			val = *instance.RunInstancesInput.UserData
+		// canonical base64 store, set at launch and kept in sync by Modify. An
+		// instance with no user data carries no Value at all, not an empty one.
+		output.UserData = &ec2.AttributeValue{}
+		if instance.RunInstancesInput != nil && aws.StringValue(instance.RunInstancesInput.UserData) != "" {
+			output.UserData.Value = aws.String(*instance.RunInstancesInput.UserData)
 		}
-		output.UserData = &ec2.AttributeValue{Value: &val}
 
 	case ec2.InstanceAttributeNameDisableApiTermination:
 		// Read under the manager lock so we serialise with a concurrent

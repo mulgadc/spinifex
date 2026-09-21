@@ -688,6 +688,13 @@ func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64
 		if typeCap.VCPU == 0 || typeCap.MemoryGB == 0 {
 			continue
 		}
+		// The gpu.* shapes are sized so CPU and memory never bind first, so
+		// without this the census reports a GPU type as available on a node
+		// whose every GPU is claimed. Host selection and reservation creation
+		// both size themselves from this figure.
+		if instancetypes.IsGPUType(it) {
+			typeCap.Available = min(typeCap.Available, rm.admissibleGPUInstances(name))
+		}
 		caps = append(caps, typeCap)
 	}
 	return totalVCPU, totalMemGB, reservedVCPU, reservedMemGB, allocVCPU, allocMemGB, caps

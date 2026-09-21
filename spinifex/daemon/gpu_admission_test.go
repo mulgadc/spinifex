@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -181,6 +182,47 @@ func TestAllocateFromReservation_RechecksFreeGPUs(t *testing.T) {
 	require.Error(t, err, "free slots do not conjure a GPU")
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error(),
 		"the reservation is not what ran out")
+}
+
+// The node census sized GPU types on host CPU and memory alone, which for the
+// gpu.* shapes is never the binding constraint. EKS host selection and
+// CreateCapacityReservation both size themselves from this figure.
+func TestGetResourceStats_GPUTypesAreGatedOnGPUs(t *testing.T) {
+	gpuType := gpuTypeForTest("gpu.4x4c", 4)
+	devices := []gpu.GPUDevice{
+		{PCIAddress: "a", IOMMUGroup: 0},
+		{PCIAddress: "b", IOMMUGroup: 1},
+		{PCIAddress: "c", IOMMUGroup: 2},
+		{PCIAddress: "d", IOMMUGroup: 3},
+	}
+	mgr := gpu.NewManager(devices)
+	rm := &ResourceManager{
+		hostVCPU:      64,
+		hostMemGB:     256.0,
+		gpuManager:    mgr,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"gpu.4x4c": gpuType},
+		reservations:  make(map[string]*capacityReservation),
+	}
+
+	capFor := func() types.InstanceTypeCap {
+		t.Helper()
+		_, _, _, _, _, _, caps := rm.GetResourceStats()
+		for _, c := range caps {
+			if c.Name == "gpu.4x4c" {
+				return c
+			}
+		}
+		t.Fatal("gpu.4x4c missing from the census")
+		return types.InstanceTypeCap{}
+	}
+
+	assert.Equal(t, 1, capFor().Available, "four GPUs back one four-GPU instance")
+
+	for i := range devices {
+		mgr.MarkFailed(devices[i].PCIAddress)
+	}
+	assert.Zero(t, capFor().Available,
+		"a node with no free GPU must not advertise a GPU type as schedulable")
 }
 
 // A non-GPU reservation keeps answering on slots alone.

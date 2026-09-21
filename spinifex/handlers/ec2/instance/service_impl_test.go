@@ -376,7 +376,7 @@ func TestParseVolumeParams_Defaults(t *testing.T) {
 	p := parseVolumeParams(input)
 
 	assert.Equal(t, 4*1024*1024*1024, p.size, "default size should be 4GB")
-	assert.Equal(t, "/dev/vda", p.deviceName, "default device should be /dev/vda")
+	assert.Equal(t, ebsmetadata.RootDeviceName, p.deviceName, "default device should be the name the AMI declares")
 	assert.True(t, p.deleteOnTermination, "deleteOnTermination should default to true")
 	assert.Empty(t, p.volumeType)
 	assert.Zero(t, p.iops)
@@ -454,7 +454,7 @@ func TestParseVolumeParams_PartialEbs(t *testing.T) {
 	p := parseVolumeParams(input)
 
 	assert.Equal(t, 8*1024*1024*1024, p.size)
-	assert.Equal(t, "/dev/vda", p.deviceName, "device should stay at default")
+	assert.Equal(t, ebsmetadata.RootDeviceName, p.deviceName, "device should stay at default")
 	assert.Empty(t, p.volumeType, "volumeType should stay empty")
 	assert.Zero(t, p.iops, "iops should stay zero")
 	assert.True(t, p.deleteOnTermination, "deleteOnTermination should stay at default")

@@ -177,7 +177,7 @@ func UnservedBlockDeviceMappings(mappings []*ec2.BlockDeviceMapping) []string {
 func parseVolumeParams(input *ec2.RunInstancesInput) volumeParams {
 	p := volumeParams{
 		size:                4 * 1024 * 1024 * 1024, // 4GB default
-		deviceName:          "/dev/vda",
+		deviceName:          ebsmetadata.RootDeviceName,
 		deleteOnTermination: true, // matches AWS RunInstances behavior
 	}
 

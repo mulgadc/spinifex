@@ -23,6 +23,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/nats-io/nats.go/jetstream"
@@ -664,7 +665,7 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 	}
 	if rec.DiskSize > 0 {
 		runInput.BlockDeviceMappings = []*ec2.BlockDeviceMapping{{
-			DeviceName: aws.String("/dev/vda"),
+			DeviceName: aws.String(ebsmetadata.RootDeviceName),
 			Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(rec.DiskSize)},
 		}}
 	}

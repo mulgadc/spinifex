@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -132,7 +133,7 @@ func (s *Service) ProvisionCapacity(ctx context.Context, input *ProvisionCapacit
 		UserData:           aws.String(userData),
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(profileARN)},
 		BlockDeviceMappings: []*ec2.BlockDeviceMapping{{
-			DeviceName: aws.String("/dev/vda"),
+			DeviceName: aws.String(ebsmetadata.RootDeviceName),
 			Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(diskSize)},
 		}},
 		TagSpecifications: []*ec2.TagSpecification{{

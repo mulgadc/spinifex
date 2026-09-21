@@ -34,6 +34,54 @@ const (
 
 const defaultRequestTimeout = 30 * time.Second
 
+// dataMovementTimeout bounds the subjects whose duration is a function of the
+// volume rather than of the control plane. Matches unmountSealTimeout, this
+// codebase's existing budget for an EBS operation the caller cannot bound.
+const dataMovementTimeout = 180 * time.Second
+
+// dataMovementSubjects names every subject that references or moves real data.
+// Everything absent answers from state already held and keeps the caller's
+// timeout, so a subject added without a deliberate decision stays fast.
+var dataMovementSubjects = map[string]struct{}{
+	CreateVolumeSubject: {},
+	ExpandVolumeSubject: {},
+	CopySnapshotSubject: {},
+}
+
+// timeoutFor sizes a request to the work its subject names. The per-volume
+// snapshot create and the owner-routed variants carry no constant, so they are
+// matched by prefix and by verb.
+func (p *NATSProvider) timeoutFor(subject string) time.Duration {
+	if movesData(subject) {
+		return max(p.requestTimeout, dataMovementTimeout)
+	}
+	return p.requestTimeout
+}
+
+// movesData answers for the named subjects, for the per-volume snapshot create
+// prefix, and for the owner-routed variants, none of which carry a constant.
+func movesData(subject string) bool {
+	if _, ok := dataMovementSubjects[subject]; ok {
+		return true
+	}
+	if strings.HasPrefix(subject, SnapshotCreateSubjectPrefix) {
+		return true
+	}
+	_, verb, ok := ParseOwnerSubject(subject)
+	return ok && isDataMovementVerb(verb)
+}
+
+// isDataMovementVerb answers for the owner-routed subjects. volume.describe is
+// the one owner verb that reads state rather than moving data.
+func isDataMovementVerb(verb string) bool {
+	switch verb {
+	case verbSnapshotCreate, verbSnapshotCopy, verbVolumeExpand:
+		return true
+	default:
+		return false
+	}
+}
+
 // SnapshotSubject addresses a create by source volume so the owning node can
 // serve it. The create verb is its own token: a bare volume ID here would
 // collide with DeleteSnapshotSubject and make the wildcard unsubscribable.
@@ -418,7 +466,7 @@ func (p *NATSProvider) request(ctx context.Context, subject string, input, outpu
 	ctx, span := startClientSpan(ctx, subject, request.Header)
 	defer span.End()
 
-	requestCtx, cancel := context.WithTimeout(ctx, p.requestTimeout)
+	requestCtx, cancel := context.WithTimeout(ctx, p.timeoutFor(subject))
 	defer cancel()
 	msg, err := p.conn.RequestMsgWithContext(requestCtx, request)
 	if err != nil {

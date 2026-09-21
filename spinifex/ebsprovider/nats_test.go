@@ -596,3 +596,51 @@ func TestResponseErrorRejectsZeroSchemaVersion(t *testing.T) {
 	err = responseError(SchemaVersion, &ProviderError{Code: ErrorCodeVolumeInUse, Message: "in use"})
 	require.ErrorIs(t, err, ErrVolumeInUse)
 }
+
+// TestTimeoutForSizesEachSubjectToItsWork pins every subject in the contract to
+// a class. A subject that moves or references real data must not inherit a
+// budget set by calls that answer from memory.
+func TestTimeoutForSizesEachSubjectToItsWork(t *testing.T) {
+	const callerTimeout = 30 * time.Second
+	p := NewNATSProvider(nil, callerTimeout)
+
+	snapshotCreate, err := SnapshotSubject("vol-1")
+	require.NoError(t, err)
+	ownerCopy, err := SnapshotCopyOwnerSubject("vol-1")
+	require.NoError(t, err)
+	ownerExpand, err := ExpandVolumeOwnerSubject("vol-1")
+	require.NoError(t, err)
+	ownerCreate, err := SnapshotCreateOwnerSubject("vol-1")
+	require.NoError(t, err)
+	ownerDescribe, err := GetVolumeOwnerSubject("vol-1")
+	require.NoError(t, err)
+
+	slow := []string{
+		CreateVolumeSubject, ExpandVolumeSubject, CopySnapshotSubject,
+		snapshotCreate, ownerCopy, ownerExpand, ownerCreate,
+	}
+	for _, subject := range slow {
+		assert.Equal(t, dataMovementTimeout, p.timeoutFor(subject),
+			"%s moves data, so it must not inherit a describe's budget", subject)
+	}
+
+	fast := []string{
+		CapabilitiesSubject, GetVolumeSubject, ListVolumesSubject,
+		DeleteVolumeSubject, DeleteSnapshotSubject, ListSnapshotsSubject,
+		ownerDescribe,
+	}
+	for _, subject := range fast {
+		assert.Equal(t, callerTimeout, p.timeoutFor(subject),
+			"%s answers from state already held, so it keeps the caller's timeout", subject)
+	}
+}
+
+// TestTimeoutForNeverShortensTheCallersBudget covers a caller that already asks
+// for longer than the data-movement floor.
+func TestTimeoutForNeverShortensTheCallersBudget(t *testing.T) {
+	p := NewNATSProvider(nil, 10*time.Minute)
+
+	assert.Equal(t, 10*time.Minute, p.timeoutFor(CreateVolumeSubject),
+		"a caller asking for longer than the floor must keep its own budget")
+	assert.Equal(t, 10*time.Minute, p.timeoutFor(GetVolumeSubject))
+}

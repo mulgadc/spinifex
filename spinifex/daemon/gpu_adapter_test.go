@@ -1,3 +1,6 @@
+//test:in-package — daemonGPUClaimer and its Daemon field are unexported;
+// the adapter exists to keep the gpu package out of the instance service,
+// so there is no exported surface to drive it through.
 package daemon
 
 import (
@@ -37,10 +40,10 @@ func TestDaemonGPUClaimerClaimsRequestedCount(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, attachments, 2)
 	assert.NotEqual(t, attachments[0].MdevPath, attachments[1].MdevPath)
-	assert.Zero(t, claimer.Available())
+	assert.Zero(t, mgr.AvailableSlices("1g.10gb"))
 
 	require.NoError(t, claimer.Release("i-two-gpu"))
-	assert.Equal(t, 2, claimer.Available())
+	assert.Equal(t, 2, mgr.AvailableSlices("1g.10gb"))
 }
 
 func TestDaemonGPUClaimerRollsBackPartialClaim(t *testing.T) {
@@ -50,5 +53,5 @@ func TestDaemonGPUClaimerRollsBackPartialClaim(t *testing.T) {
 	attachments, err := claimer.Claim("i-too-many", "1g.10gb", 2)
 	require.Error(t, err)
 	assert.Nil(t, attachments)
-	assert.Equal(t, 1, claimer.Available())
+	assert.Equal(t, 1, mgr.AvailableSlices("1g.10gb"))
 }

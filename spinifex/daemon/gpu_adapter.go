@@ -23,14 +23,6 @@ func (g *daemonGPUClaimer) manager() *gpu.Manager {
 	return g.d.gpuManager
 }
 
-func (g *daemonGPUClaimer) Available() int {
-	mgr := g.manager()
-	if mgr == nil {
-		return 0
-	}
-	return mgr.Available()
-}
-
 func (g *daemonGPUClaimer) Claim(instanceID, profileName string, count int) ([]gpu.GPUAttachment, error) {
 	if count < 1 {
 		return nil, fmt.Errorf("GPU claim count must be positive: %d", count)

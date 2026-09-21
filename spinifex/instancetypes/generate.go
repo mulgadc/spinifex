@@ -158,9 +158,23 @@ func generateSystemTypes(arch string) map[string]*ec2.InstanceTypeInfo {
 	return types
 }
 
-// GenerateGPUTypes returns InstanceTypeInfo entries for each GPU model with GpuInfo populated.
+// GenerateGPUTypes returns InstanceTypeInfo entries for each GPU model with
+// GpuInfo populated, plus the built-in gpu.* family. models carries one entry
+// per whole GPU on the node, so a node that resolved more than one distinct
+// model offers no type above a count of 1.
 func GenerateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTypeInfo {
 	types := make(map[string]*ec2.InstanceTypeInfo)
+	if len(models) == 0 {
+		return types
+	}
+
+	maxGPUsPerInstance := MaxGPUsPerInstance
+	if !gpuModelsHomogeneous(models) {
+		maxGPUsPerInstance = 1
+		slog.Warn("node holds more than one distinct GPU model, offering single-GPU types only",
+			"models", len(models))
+	}
+
 	seen := make(map[string]bool)
 
 	for _, model := range models {
@@ -175,46 +189,102 @@ func GenerateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTy
 			}
 			for _, size := range def.sizes {
 				name := fmt.Sprintf("%s.%s", def.name, size.suffix)
-				gpuCount := int64(GPUCountForType(name))
-				types[name] = &ec2.InstanceTypeInfo{
-					InstanceType: aws.String(name),
-					VCpuInfo: &ec2.VCpuInfo{
-						DefaultVCpus: aws.Int64(int64(size.vcpus)),
-					},
-					MemoryInfo: &ec2.MemoryInfo{
-						SizeInMiB: aws.Int64(int64(size.memoryGB * 1024)),
-					},
-					ProcessorInfo: &ec2.ProcessorInfo{
-						SupportedArchitectures: []*string{aws.String(arch)},
-					},
-					GpuInfo: &ec2.GpuInfo{
-						Gpus: []*ec2.GpuDeviceInfo{{
-							Count:        aws.Int64(gpuCount),
-							Manufacturer: aws.String(model.Manufacturer),
-							Name:         aws.String(model.Name),
-							MemoryInfo: &ec2.GpuDeviceMemoryInfo{
-								SizeInMiB: aws.Int64(model.MemoryMiB),
-							},
-						}},
-						TotalGpuMemoryInMiB: aws.Int64(model.MemoryMiB * gpuCount),
-					},
-					CurrentGeneration:             aws.Bool(def.currentGen),
-					BurstablePerformanceSupported: aws.Bool(false),
-					Hypervisor:                    aws.String("kvm"),
-					SupportedVirtualizationTypes:  []*string{aws.String("hvm")},
-					SupportedRootDeviceTypes:      []*string{aws.String("ebs")},
-					NetworkInfo:                   NetworkInfoForType(name),
-					PlacementGroupInfo: &ec2.PlacementGroupInfo{
-						SupportedStrategies: []*string{
-							aws.String("cluster"),
-							aws.String("spread"),
-						},
-					},
+				if !gpuTypeOffered(name, maxGPUsPerInstance) {
+					continue
 				}
+				types[name] = gpuInstanceTypeInfo(name, size, model, arch, def.currentGen)
 			}
 		}
 	}
+
+	// gpu.* is no model's family, so GenerateGPUTypes cannot reach it by the
+	// match above. It advertises whichever model the node resolved.
+	maps.Copy(types, generateBuiltinGPUTypes(models[0], arch, maxGPUsPerInstance))
 	return types
+}
+
+// gpuModelsHomogeneous reports whether every discovered GPU advertises the same
+// name and VRAM. Those are the figures that reach GpuInfo, so two devices that
+// advertise identically can be handed out interchangeably — which also spares a
+// legitimate mixed-SKU H100 node, where SXM and PCIe differ only by PCI ID.
+func gpuModelsHomogeneous(models []GPUModel) bool {
+	for _, m := range models[1:] {
+		if m.Name != models[0].Name || m.MemoryMiB != models[0].MemoryMiB {
+			return false
+		}
+	}
+	return true
+}
+
+// gpuTypeOffered reports whether a node handing at most maxGPUsPerInstance GPUs
+// to one instance can offer this type, logging by name when it cannot. An
+// operator who sees a type silently absent has no thread to pull.
+func gpuTypeOffered(name string, maxGPUsPerInstance int) bool {
+	required := GPUCountForType(name)
+	if required <= maxGPUsPerInstance {
+		return true
+	}
+	slog.Info("GPU instance type not offered",
+		"instanceType", name, "gpus_required", required,
+		"gpus_offerable", maxGPUsPerInstance)
+	return false
+}
+
+// generateBuiltinGPUTypes emits the gpu.* family for the node's resolved GPU
+// model. Every figure but the model itself is static, so the family is
+// identical on every node that discovers the same hardware.
+func generateBuiltinGPUTypes(model GPUModel, arch string, maxGPUsPerInstance int) map[string]*ec2.InstanceTypeInfo {
+	types := make(map[string]*ec2.InstanceTypeInfo, len(builtinGPUSizes))
+	for _, size := range builtinGPUSizes {
+		name := builtinGPUPrefix + size.suffix
+		if !gpuTypeOffered(name, maxGPUsPerInstance) {
+			continue
+		}
+		types[name] = gpuInstanceTypeInfo(name, size, model, arch, true)
+	}
+	return types
+}
+
+// gpuInstanceTypeInfo builds one GPU InstanceTypeInfo. The vCPU and memory
+// figures come from the size, the GPU count from the type name, and the model,
+// VRAM and manufacturer from discovery.
+func gpuInstanceTypeInfo(name string, size instanceSize, model GPUModel, arch string, currentGen bool) *ec2.InstanceTypeInfo {
+	gpuCount := int64(GPUCountForType(name))
+	return &ec2.InstanceTypeInfo{
+		InstanceType: aws.String(name),
+		VCpuInfo: &ec2.VCpuInfo{
+			DefaultVCpus: aws.Int64(int64(size.vcpus)),
+		},
+		MemoryInfo: &ec2.MemoryInfo{
+			SizeInMiB: aws.Int64(int64(size.memoryGB * 1024)),
+		},
+		ProcessorInfo: &ec2.ProcessorInfo{
+			SupportedArchitectures: []*string{aws.String(arch)},
+		},
+		GpuInfo: &ec2.GpuInfo{
+			Gpus: []*ec2.GpuDeviceInfo{{
+				Count:        aws.Int64(gpuCount),
+				Manufacturer: aws.String(model.Manufacturer),
+				Name:         aws.String(model.Name),
+				MemoryInfo: &ec2.GpuDeviceMemoryInfo{
+					SizeInMiB: aws.Int64(model.MemoryMiB),
+				},
+			}},
+			TotalGpuMemoryInMiB: aws.Int64(model.MemoryMiB * gpuCount),
+		},
+		CurrentGeneration:             aws.Bool(currentGen),
+		BurstablePerformanceSupported: aws.Bool(false),
+		Hypervisor:                    aws.String("kvm"),
+		SupportedVirtualizationTypes:  []*string{aws.String("hvm")},
+		SupportedRootDeviceTypes:      []*string{aws.String("ebs")},
+		NetworkInfo:                   NetworkInfoForType(name),
+		PlacementGroupInfo: &ec2.PlacementGroupInfo{
+			SupportedStrategies: []*string{
+				aws.String("cluster"),
+				aws.String("spread"),
+			},
+		},
+	}
 }
 
 // IsGPUType returns true if the instance type has GPU resources.

@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 )
 
 // capacityReservation is an in-memory On-Demand Capacity Reservation pinned to
@@ -136,6 +137,10 @@ func (rm *ResourceManager) ReleaseToReservation(crID string, it *ec2.InstanceTyp
 // (Total - Consumed), or 0 when the reservation is unknown, owned by another
 // account, or for a different instance type. The daemon handler's up-front check
 // turns those zero cases into precise errors before the launch loop.
+//
+// A GPU type is additionally gated on free GPUs, mirroring admitLocked. A
+// reservation is a counter over vCPU and memory slots and reserves no pool
+// entry, so its free slots say nothing about whether a GPU is there to claim.
 func (rm *ResourceManager) ReservationAvailable(crID, accountID string, it *ec2.InstanceTypeInfo) int {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
@@ -143,7 +148,11 @@ func (rm *ResourceManager) ReservationAvailable(crID, accountID string, it *ec2.
 	if !ok || rec.AccountID != accountID || rec.InstanceType != aws.StringValue(it.InstanceType) {
 		return 0
 	}
-	return rec.TotalInstanceCount - rec.ConsumedCount
+	free := rec.TotalInstanceCount - rec.ConsumedCount
+	if instancetypes.IsGPUType(it) {
+		free = min(free, rm.admissibleGPUInstances(aws.StringValue(it.InstanceType)))
+	}
+	return free
 }
 
 // ValidateReservationTarget is the owning daemon's up-front semantic check for a

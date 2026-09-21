@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -388,14 +389,19 @@ func TestCanAllocateLocked_MIGvsWholeGPU(t *testing.T) {
 	}
 
 	// Host with 8 schedulable vCPUs and 32 GiB schedulable memory (after
-	// reserve), and a GPU pool with 5 free slots — plenty for the GPU-slot
-	// gate so these assertions exercise the cpu/mem gate in isolation.
+	// reserve), and a GPU pool with 5 free whole GPUs and 5 MIG-capable ones —
+	// plenty for either GPU gate, so these assertions exercise the cpu/mem gate
+	// in isolation.
+	mgr := gpu.NewManager(make([]gpu.GPUDevice, 5))
+	for i := range 5 {
+		mgr.AddMIGGPU(gpu.GPUDevice{PCIAddress: fmt.Sprintf("0000:8%d:00.0", i)})
+	}
 	rm := &ResourceManager{
 		hostVCPU:     10,
 		hostMemGB:    34.0,
 		reservedVCPU: 2,
 		reservedMem:  2.0,
-		gpuManager:   gpu.NewManager(make([]gpu.GPUDevice, 5)),
+		gpuManager:   mgr,
 	}
 
 	migType := &ec2.InstanceTypeInfo{

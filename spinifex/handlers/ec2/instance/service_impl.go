@@ -604,31 +604,6 @@ func (s *InstanceServiceImpl) deleteCentralInstanceTags(ctx context.Context, ins
 	}
 }
 
-// gpuCountForRunInstances returns the instance type's advertised GPU count,
-// overridden by Spinifex's Type=gpu ElasticInferenceAccelerator extension.
-// The extension lets operators partition a homogeneous GPU pool without
-// defining a synthetic instance type for every count.
-func gpuCountForRunInstances(input *ec2.RunInstancesInput, instanceType *ec2.InstanceTypeInfo) (int, error) {
-	gpuType := instancetypes.IsGPUType(instanceType)
-	count := 0
-	if gpuType {
-		count = instancetypes.GPUCountForType(aws.StringValue(instanceType.InstanceType))
-	}
-
-	overrideSeen := false
-	for _, accelerator := range input.ElasticInferenceAccelerators {
-		if accelerator == nil || aws.StringValue(accelerator.Type) != "gpu" {
-			continue
-		}
-		if !gpuType || overrideSeen || accelerator.Count == nil || *accelerator.Count < 1 {
-			return 0, errors.New(awserrors.ErrorInvalidParameterValue)
-		}
-		overrideSeen = true
-		count = int(*accelerator.Count)
-	}
-	return count, nil
-}
-
 // PrepareRunInstances validates input, allocates capacity, creates VM metadata,
 // auto-creates the primary ENI, and auto-assigns a public IP when needed.
 // Does NOT touch vmMgr or NATS — callers insert VMs then call LaunchRunInstances.
@@ -665,11 +640,6 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	if !exists {
 		slog.ErrorContext(ctx, "PrepareRunInstances: invalid instance type", "InstanceType", *input.InstanceType)
 		return nil, nil, nil, errors.New(awserrors.ErrorInvalidInstanceType)
-	}
-
-	gpuCount, err := gpuCountForRunInstances(input, instanceType)
-	if err != nil {
-		return nil, nil, nil, err
 	}
 
 	if input.ImageId == nil || *input.ImageId == "" {
@@ -719,13 +689,6 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		// Targeted launch: confined to the reservation. Cap at its free slots so
 		// the overflow never spills onto the node's general capacity.
 		allocatableCount = min(s.resourceMgr.ReservationAvailable(reservationID, accountID, instanceType), maxCount)
-	}
-	if gpuCount > 0 {
-		if s.gpuClaimer == nil {
-			allocatableCount = 0
-		} else {
-			allocatableCount = min(allocatableCount, s.gpuClaimer.Available()/gpuCount)
-		}
 	}
 	if allocatableCount < minCount {
 		errCode := awserrors.ErrorInsufficientInstanceCapacity
@@ -1130,12 +1093,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances 
 
 		if s.gpuClaimer != nil && instancetypes.IsGPUType(instanceType) {
 			profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
-			gpuCount, gpuCountErr := gpuCountForRunInstances(input, instanceType)
-			if gpuCountErr != nil {
-				slog.ErrorContext(ctx, "LaunchRunInstances: invalid GPU count", "instanceId", instance.ID, "err", gpuCountErr)
-				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
-				continue
-			}
+			gpuCount := instancetypes.GPUCountForType(aws.StringValue(instanceType.InstanceType))
 			attachments, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName, gpuCount)
 			if gpuErr != nil {
 				slog.ErrorContext(ctx, "LaunchRunInstances: GPU claim failed", "instanceId", instance.ID, "count", gpuCount, "err", gpuErr)
@@ -2635,13 +2593,18 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	instance.DesiredState = vm.DesiredRunning
 	s.vmMgr.Insert(instance)
 
-	// Reclaim the number of GPUs the stopped instance previously held. Legacy
-	// records from before multi-GPU attachment tracking fall back to the count
-	// advertised by the instance type.
+	// Reclaim the GPU count the instance type advertises, which is what the
+	// instance was admitted against. A record holding a different number was
+	// written by a build that took the count from somewhere else.
 	gpuClaimed := false
 	if s.gpuClaimer != nil && instancetypes.IsGPUType(instanceType) {
 		profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
-		gpuCount := max(len(instance.GPUAttachments), instancetypes.GPUCountForType(instance.InstanceType))
+		gpuCount := instancetypes.GPUCountForType(instance.InstanceType)
+		if recorded := len(instance.GPUAttachments); recorded > 0 && recorded != gpuCount {
+			slog.WarnContext(ctx, "StartStoppedInstance: recorded GPU count differs from the instance type",
+				"instanceId", input.InstanceID, "instanceType", instance.InstanceType,
+				"recorded", recorded, "reclaiming", gpuCount)
+		}
 		attachments, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName, gpuCount)
 		if gpuErr != nil {
 			slog.ErrorContext(ctx, "StartStoppedInstance: GPU claim failed", "instanceId", input.InstanceID, "count", gpuCount, "err", gpuErr)

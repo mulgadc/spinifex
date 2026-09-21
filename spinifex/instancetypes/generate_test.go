@@ -461,9 +461,10 @@ func TestGPUModelForVendorDevice_Unknown(t *testing.T) {
 func TestGenerateGPUTypes_NVIDIAa10g(t *testing.T) {
 	types := GenerateGPUTypes([]GPUModel{NVIDIAa10g}, "x86_64")
 
-	// g5 has 5 single-GPU sizes: xlarge, 2xlarge, 4xlarge, 8xlarge, 16xlarge
-	assert.Len(t, types, 5)
-	for _, name := range []string{"g5.xlarge", "g5.2xlarge", "g5.4xlarge", "g5.8xlarge", "g5.16xlarge"} {
+	// Every g5 size, plus the built-in gpu.* family.
+	assert.Len(t, types, len(g5Sizes)+len(builtinGPUSizes))
+	for _, name := range []string{"g5.xlarge", "g5.2xlarge", "g5.4xlarge", "g5.8xlarge",
+		"g5.12xlarge", "g5.16xlarge", "g5.24xlarge", "g5.48xlarge"} {
 		assert.True(t, hasFamily(types, name), "expected %s", name)
 	}
 
@@ -485,7 +486,8 @@ func TestGenerateGPUTypes_NVIDIAa10g(t *testing.T) {
 func TestGenerateGPUTypes_DeduplicatesSameFamily(t *testing.T) {
 	// Two GPUs of the same model (same family) should produce only one set of types.
 	types := GenerateGPUTypes([]GPUModel{NVIDIAa10g, NVIDIAa10g}, "x86_64")
-	assert.Len(t, types, 5, "duplicate GPU model should not double the type count")
+	assert.Len(t, types, len(g5Sizes)+len(builtinGPUSizes),
+		"duplicate GPU model should not double the type count")
 }
 
 func TestGenerateGPUTypes_EmptyModels(t *testing.T) {

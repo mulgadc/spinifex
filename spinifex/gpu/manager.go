@@ -387,13 +387,48 @@ func (m *Manager) AddMIGInstances(device GPUDevice, instances []MIGInstance) {
 	}
 }
 
-// Available returns the count of GPUs that can be claimed right now.
+// Available returns the count of pool entries that can be claimed right now,
+// whole GPUs and MIG slices alike. Admission must not use it: a node with two
+// whole GPUs and fourteen carved slices answers 16, which would admit two
+// 8-GPU instances against two GPUs. Use AvailableWhole or AvailableSlices.
 func (m *Manager) Available() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n := 0
 	for _, e := range m.pool {
 		if e.Available && e.InstanceID == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// AvailableWhole returns the count of whole GPUs that can be claimed right now.
+// A GPU carved into MIG slices is not one of them, and neither is an un-carved
+// MIG-capable GPU held in freeMIGGPUs.
+func (m *Manager) AvailableWhole() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, e := range m.pool {
+		if e.Available && e.InstanceID == "" && e.MIGInstance == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// AvailableSlices returns how many MIG slices of the given profile can be
+// claimed right now: the free carved slices, plus one per un-carved MIG-capable
+// GPU. One per GPU rather than the profile's full yield because the carve
+// happens at claim time and its yield is not known until then.
+func (m *Manager) AvailableSlices(profileName string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := len(m.freeMIGGPUs)
+	for _, e := range m.pool {
+		if e.Available && e.InstanceID == "" && e.MIGInstance != nil &&
+			e.MIGInstance.Profile.Name == profileName {
 			n++
 		}
 	}

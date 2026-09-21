@@ -136,22 +136,20 @@ aws ec2 run-instances \
   --key-name spinifex-key
 ```
 
-Spinifex claims the GPU count advertised by the instance type. Multi-GPU types
-such as `g7e.12xlarge` therefore attach every advertised device atomically. To
-override that count for a homogeneous local GPU pool, use the Spinifex
-`Type=gpu` extension:
+### Multi-GPU Instances
+
+The GPU count comes from the instance type, exactly as it does in EC2. AWS multi-GPU types pair eight GPUs with a very large host — `p4d.24xlarge` is 96 vCPU and 1152 GiB, — so an edge rig with eight cards and 256 GiB cannot admit them even though it has the GPUs. For those hosts Spinifex offers its own `gpu.*` family, which is not an EC2 family:
 
 ```bash
 aws ec2 run-instances \
   --image-id $GPU_AMI \
-  --instance-type g5.2xlarge \
-  --elastic-inference-accelerator Type=gpu,Count=3 \
+  --instance-type gpu.8x4c \
   --key-name spinifex-key
 ```
 
-The launch fails with `InsufficientInstanceCapacity` rather than attaching only
-part of the requested GPU set. The admin Nodes page and instance detail page
-list every attached whole GPU or MIG slice.
+`gpu.<count>x<vcpu>c` is that many GPUs at that many vCPU each, so `gpu.8x4c` is eight GPUs on 32 vCPU and 128 GiB. Counts run in three tiers — `2c`, `4c` and `8c` — all at 4 GiB of memory per vCPU. The GPU model and VRAM reported in `DescribeInstanceTypes` are whatever the node discovered, so a `gpu.8x4c` on an 8×RTX 3090 box advertises eight RTX 3090s at 24 GiB each.
+
+A node holding more than one distinct GPU model offers single-GPU types only, and logs each withheld type by name. Two devices count as the same model when their reported name and VRAM match, which keeps a mixed-SKU H100 node fully usable.
 
 To verify the GPU is visible from inside the instance, SSH in and run:
 

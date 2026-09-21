@@ -73,7 +73,6 @@ type InstanceTypeAllocator interface {
 // for MIG slices it carries an mdev path. Claims are all-or-nothing. A nil
 // claimer means no GPU passthrough.
 type GPUClaimer interface {
-	Available() int
 	Claim(instanceID, profileName string, count int) ([]gpu.GPUAttachment, error)
 	Release(instanceID string) error
 }

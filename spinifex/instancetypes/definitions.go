@@ -1,6 +1,8 @@
 package instancetypes
 
 import (
+	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -69,6 +71,11 @@ func GPUModelForVendorDevice(vendorID, deviceID string) *GPUModel {
 // a GPU instance type's family prefix (e.g. "g5.xlarge" -> "g5"), or "" if
 // instanceType is not a known GPU family.
 func GPUVendorForType(instanceType string) string {
+	// gpu.* and mig.* name a shape and a profile, not a family, so the vendor
+	// is not in the name — it comes from whatever the node discovered.
+	if IsBuiltinGPUType(instanceType) || IsMIGType(instanceType) {
+		return ""
+	}
 	family, _, _ := strings.Cut(instanceType, ".")
 	for i := range knownGPUModels {
 		if knownGPUModels[i].Family == family {
@@ -199,38 +206,50 @@ var memorySizes = []instanceSize{
 // memorySizesSmall is memorySizes without 12xlarge and 24xlarge (older/ARM families).
 var memorySizesSmall = slices.Clone(memorySizes[:6])
 
-// g4dnSizes are the single-GPU G4dn instance sizes (1x NVIDIA T4 each).
+// g4dnSizes are the G4dn instance sizes (NVIDIA T4). 12xlarge carries 4 GPUs,
+// every other size one. g4dn.metal is bare metal and is not offered.
 var g4dnSizes = []instanceSize{
 	{"xlarge", 4, 16},
 	{"2xlarge", 8, 32},
 	{"4xlarge", 16, 64},
 	{"8xlarge", 32, 128},
+	{"12xlarge", 48, 192},
 	{"16xlarge", 64, 256},
 }
 
-// g4adSizes are the single-GPU G4ad instance sizes (1x AMD Radeon Pro V520 each).
+// g4adSizes are the G4ad instance sizes (AMD Radeon Pro V520). 8xlarge carries
+// 2 GPUs and 16xlarge 4.
 var g4adSizes = []instanceSize{
 	{"xlarge", 4, 16},
 	{"2xlarge", 8, 32},
 	{"4xlarge", 16, 64},
+	{"8xlarge", 32, 128},
+	{"16xlarge", 64, 256},
 }
 
-// g5Sizes are the single-GPU G5 instance sizes (1x NVIDIA A10G each).
+// g5Sizes are the G5 instance sizes (NVIDIA A10G). 12xlarge and 24xlarge carry
+// 4 GPUs and 48xlarge 8; every other size one.
 var g5Sizes = []instanceSize{
 	{"xlarge", 4, 16},
 	{"2xlarge", 8, 32},
 	{"4xlarge", 16, 64},
 	{"8xlarge", 32, 128},
+	{"12xlarge", 48, 192},
 	{"16xlarge", 64, 256},
+	{"24xlarge", 96, 384},
+	{"48xlarge", 192, 768},
 }
 
-// g6Sizes are the single-GPU G6 instance sizes (1x NVIDIA L4 each).
+// g6Sizes are the G6 instance sizes (NVIDIA L4), which mirror g5 exactly.
 var g6Sizes = []instanceSize{
 	{"xlarge", 4, 16},
 	{"2xlarge", 8, 32},
 	{"4xlarge", 16, 64},
 	{"8xlarge", 32, 128},
+	{"12xlarge", 48, 192},
 	{"16xlarge", 64, 256},
+	{"24xlarge", 96, 384},
+	{"48xlarge", 192, 768},
 }
 
 // gr6Sizes are the single-GPU Gr6 instance sizes (1x NVIDIA L4, memory-optimized).
@@ -248,10 +267,69 @@ var g7eSizes = []instanceSize{
 	{"12xlarge", 48, 512},
 }
 
-// gpuCountPerType overrides the default of 1 GPU for multi-GPU instance sizes.
-var gpuCountPerType = map[string]int{
-	"g7e.12xlarge": 2,
+// builtinGPUFamily is the one non-AWS GPU family Spinifex defines, for the host
+// shapes AWS does not sell. A bare "gpu" is not an EC2 family name, so the
+// prefix is reserved and cannot collide with a real type.
+const builtinGPUFamily = "gpu"
+const builtinGPUPrefix = builtinGPUFamily + "."
+
+const MaxGPUsPerInstance = 8
+
+// builtinGPUTiers are the vCPU-per-GPU ratios the gpu.* family offers.
+var builtinGPUTiers = []int{2, 4, 8}
+
+// builtinGPUMemPerVCPUGB is AWS's general-purpose vCPU:memory ratio, applied to
+// every tier so no gpu.* shape is one EC2 would find unfamiliar.
+const builtinGPUMemPerVCPUGB = 4
+
+func IsBuiltinGPUType(instanceType string) bool {
+	return strings.HasPrefix(instanceType, builtinGPUPrefix)
 }
+
+// builtinGPUSizes and builtinGPUCounts describe the gpu.* family: the name
+// gpu.<count>x<vcpu>c is that many GPUs at that many vCPU each.
+var builtinGPUSizes, builtinGPUCounts = func() ([]instanceSize, map[string]int) {
+	sizes := make([]instanceSize, 0, MaxGPUsPerInstance*len(builtinGPUTiers))
+	counts := make(map[string]int, MaxGPUsPerInstance*len(builtinGPUTiers))
+	for _, perGPU := range builtinGPUTiers {
+		for n := 1; n <= MaxGPUsPerInstance; n++ {
+			vcpus := n * perGPU
+			suffix := fmt.Sprintf("%dx%dc", n, perGPU)
+			sizes = append(sizes, instanceSize{suffix, vcpus, float64(vcpus * builtinGPUMemPerVCPUGB)})
+			counts[builtinGPUPrefix+suffix] = n
+		}
+	}
+	return sizes, counts
+}()
+
+// gpuCountPerType overrides the default of 1 GPU for multi-GPU instance sizes.
+// Every figure for an AWS family is that family's real EC2 GPU count.
+var gpuCountPerType = func() map[string]int {
+	m := map[string]int{
+		"g4dn.12xlarge": 4,
+		"g4ad.8xlarge":  2,
+		"g4ad.16xlarge": 4,
+		"g5.12xlarge":   4,
+		"g5.24xlarge":   4,
+		"g5.48xlarge":   8,
+		"g6.12xlarge":   4,
+		"g6.24xlarge":   4,
+		"g6.48xlarge":   8,
+		"g6e.12xlarge":  4,
+		"g6e.24xlarge":  4,
+		"g6e.48xlarge":  8,
+		"g7e.12xlarge":  2,
+		"p3.8xlarge":    4,
+		"p3.16xlarge":   8,
+		"p3dn.24xlarge": 8,
+		"p4d.24xlarge":  8,
+		"p4de.24xlarge": 8,
+		"p5.48xlarge":   8,
+		"p5e.48xlarge":  8,
+	}
+	maps.Copy(m, builtinGPUCounts)
+	return m
+}()
 
 // GPUCountForType returns the number of GPUs required by the given instance type.
 // Returns 1 for all single-GPU and non-GPU types.
@@ -262,49 +340,63 @@ func GPUCountForType(instanceType string) int {
 	return 1
 }
 
-// g6eSizes are the single-GPU G6e instance sizes (1x NVIDIA L40S each).
+// g6eSizes are the G6e instance sizes (NVIDIA L40S). 12xlarge and 24xlarge
+// carry 4 GPUs and 48xlarge 8; every other size one.
 var g6eSizes = []instanceSize{
 	{"xlarge", 4, 32},
 	{"2xlarge", 8, 64},
 	{"4xlarge", 16, 128},
 	{"8xlarge", 32, 256},
+	{"12xlarge", 48, 384},
 	{"16xlarge", 64, 512},
+	{"24xlarge", 96, 768},
+	{"48xlarge", 192, 1536},
 }
 
-// p3Sizes are the single-GPU P3 instance sizes (1x NVIDIA V100 16 GiB each).
-// P3 8xlarge and larger have multiple GPUs and are excluded.
+// p3Sizes are the P3 instance sizes (NVIDIA V100 SXM2 16 GiB). 8xlarge carries
+// 4 GPUs and 16xlarge 8.
 var p3Sizes = []instanceSize{
 	{"2xlarge", 8, 61},
+	{"8xlarge", 32, 244},
+	{"16xlarge", 64, 488},
 }
 
-// p3dnSizes are the single-GPU P3dn instance sizes (1x NVIDIA V100 32 GiB each).
-// P3dn 24xlarge has 8 GPUs and is excluded.
+// p3dnSizes are the P3dn instance sizes (NVIDIA V100 SXM2 32 GiB). 24xlarge is
+// the only size AWS sells and carries 8 GPUs; 2xlarge is a Spinifex single-GPU
+// size kept for hosts that cannot meet the 24xlarge shape.
 var p3dnSizes = []instanceSize{
 	{"2xlarge", 8, 61},
+	{"24xlarge", 96, 768},
 }
 
-// p4dSizes are the single-GPU P4d instance sizes (1x NVIDIA A100 SXM4 40 GiB each).
-// P4d 24xlarge has 8 GPUs and is excluded.
+// p4dSizes are the P4d instance sizes (NVIDIA A100 SXM4 40 GiB). 24xlarge is
+// the only size AWS sells and carries 8 GPUs; xlarge is a Spinifex single-GPU
+// size kept for hosts that cannot meet the 24xlarge shape.
 var p4dSizes = []instanceSize{
 	{"xlarge", 4, 32},
+	{"24xlarge", 96, 1152},
 }
 
-// p4deSizes are the single-GPU P4de instance sizes (1x NVIDIA A100 SXM4 80 GiB each).
-// P4de 24xlarge has 8 GPUs and is excluded.
+// p4deSizes are the P4de instance sizes (NVIDIA A100 SXM4 80 GiB), shaped
+// exactly as p4d; xlarge is the Spinifex single-GPU size.
 var p4deSizes = []instanceSize{
 	{"xlarge", 4, 32},
+	{"24xlarge", 96, 1152},
 }
 
-// p5Sizes are the single-GPU P5 instance sizes (1x NVIDIA H100 SXM5 80 GiB each).
-// P5 48xlarge has 8 GPUs and is excluded.
+// p5Sizes are the P5 instance sizes (NVIDIA H100 SXM5 80 GiB). 48xlarge is the
+// only size AWS sells and carries 8 GPUs; 4xlarge is the Spinifex single-GPU
+// size.
 var p5Sizes = []instanceSize{
 	{"4xlarge", 16, 256},
+	{"48xlarge", 192, 2048},
 }
 
-// p5eSizes are the single-GPU P5e instance sizes (1x NVIDIA H200 SXM5 141 GiB each).
-// P5e 48xlarge has 8 GPUs and is excluded.
+// p5eSizes are the P5e instance sizes (NVIDIA H200 SXM5 141 GiB), shaped
+// exactly as p5; 4xlarge is the Spinifex single-GPU size.
 var p5eSizes = []instanceSize{
 	{"4xlarge", 16, 256},
+	{"48xlarge", 192, 2048},
 }
 
 // systemSizes defines internal-only instance types for system VMs (LB, NAT GW, etc.).
@@ -369,6 +461,10 @@ var instanceFamilyDefs = []instanceFamilyDef{
 	{name: "p4de", sizes: p4deSizes, currentGen: true},
 	{name: "p5", sizes: p5Sizes, currentGen: true},
 	{name: "p5e", sizes: p5eSizes, currentGen: true},
+
+	// Non-AWS GPU family for host shapes AWS does not sell; emitted by
+	// GenerateBuiltinGPUTypes rather than by matching a model's family.
+	{name: builtinGPUFamily, sizes: builtinGPUSizes, currentGen: true},
 
 	// Memory Optimized (1:8 vCPU:memory)
 	{name: "r4", sizes: memorySizesSmall, currentGen: false},

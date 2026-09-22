@@ -31,19 +31,58 @@ func TestAvailableWholeAndSlicesCountSeparately(t *testing.T) {
 	assert.Zero(t, m.AvailableSlices("7g.80gb"), "a profile with no slices carved is not available")
 }
 
-// An un-carved GPU carves into exactly one profile, so it belongs to a shared
-// budget. Folding it into AvailableSlices offered the same GPU to every profile
-// at once, and the loser failed at claim time having been promised capacity.
+// Each un-carved GPU contributes one conservative slot to a single profile's
+// admission decision. Counts for different profiles must not be added together.
 func TestFreeMIGGPUsAreSharedAcrossProfiles(t *testing.T) {
 	m := NewManager(nil)
 	m.AddMIGGPU(newMIGDevice("0000:01:00.0"))
 	m.AddMIGGPU(newMIGDevice("0000:02:00.0"))
 
-	assert.Zero(t, m.AvailableSlices("1g.10gb"), "nothing is carved yet")
-	assert.Zero(t, m.AvailableSlices("7g.80gb"), "nor for any other profile")
-	assert.Equal(t, 2, m.FreeMIGGPUs(), "both GPUs are carvable, once each")
+	assert.Equal(t, 2, m.AvailableSlices("1g.10gb"), "both GPUs are carvable, once each")
+	assert.Equal(t, 2, m.AvailableSlices("7g.80gb"), "the same budget backs either profile, not both")
 	assert.Zero(t, m.AvailableWhole(), "a MIG-capable GPU held for carving is not offerable whole")
 	assert.Zero(t, m.Available(), "freeMIGGPUs are not pool entries yet")
+}
+
+func TestAvailableSlicesIncludesCarvableGPUsOnce(t *testing.T) {
+	m := NewManager(nil)
+	m.pool = []gpuEntry{
+		{Available: true, MIGInstance: &MIGInstance{Profile: MIGProfile{Name: "1g.10gb"}}},
+		{Available: true, InstanceID: "i-busy", MIGInstance: &MIGInstance{Profile: MIGProfile{Name: "1g.10gb"}}},
+		{Available: false, MIGInstance: &MIGInstance{Profile: MIGProfile{Name: "1g.10gb"}}},
+		{Available: true, MIGInstance: &MIGInstance{Profile: MIGProfile{Name: "7g.80gb"}}},
+		{Available: true},
+	}
+	m.AddMIGGPU(newMIGDevice("0000:01:00.0"))
+	assert.Equal(t, 2, m.AvailableSlices("1g.10gb"))
+	assert.Equal(t, 2, m.AvailableSlices("7g.80gb"))
+	assert.Equal(t, 1, m.AvailableSlices("3g.40gb"))
+}
+
+func TestAvailableSlicesSnapshotsPoolTransitions(t *testing.T) {
+	dev := newMIGDevice("0000:01:00.0")
+	m := NewManager(nil)
+	m.AddMIGGPU(dev)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 1000 {
+			m.mu.Lock()
+			m.freeMIGGPUs = nil
+			m.pool = []gpuEntry{{Device: dev, Available: true,
+				MIGInstance: &MIGInstance{Profile: MIGProfile{Name: "7g.80gb"}},
+			}}
+			m.mu.Unlock()
+			m.mu.Lock()
+			m.pool = nil
+			m.freeMIGGPUs = []GPUDevice{dev}
+			m.mu.Unlock()
+		}
+	}()
+	for range 1000 {
+		assert.Equal(t, 1, m.AvailableSlices("7g.80gb"), "a GPU must not be counted in both pools")
+	}
+	<-done
 }
 
 // The whole-GPU claim path already skips slices; only the arithmetic was wrong.

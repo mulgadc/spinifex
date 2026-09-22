@@ -425,13 +425,13 @@ func (m *Manager) AvailableWhole() int {
 	return n
 }
 
-// AvailableSlices returns how many already-carved MIG slices of the given
-// profile can be claimed right now. Un-carved GPUs are deliberately excluded:
-// they belong to FreeMIGGPUs, whose budget is shared across every profile.
+// AvailableSlices counts free slices of this profile plus one per un-carved
+// GPU in a single snapshot. The un-carved budget is shared across profiles:
+// this answers for one type in isolation, not a sum across different types.
 func (m *Manager) AvailableSlices(profileName string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	n := 0
+	n := len(m.freeMIGGPUs)
 	for _, e := range m.pool {
 		if e.Available && e.InstanceID == "" && e.MIGInstance != nil &&
 			e.MIGInstance.Profile.Name == profileName {
@@ -439,15 +439,6 @@ func (m *Manager) AvailableSlices(profileName string) int {
 		}
 	}
 	return n
-}
-
-// FreeMIGGPUs returns the un-carved MIG-capable GPUs. Each carves at claim time
-// into exactly one profile, so this budget is shared across every mig.* type:
-// add it once per admission decision, never once per profile.
-func (m *Manager) FreeMIGGPUs() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.freeMIGGPUs)
 }
 
 // AllocatedCount returns the number of GPUs currently claimed by instances.

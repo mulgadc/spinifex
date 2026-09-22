@@ -245,6 +245,11 @@ func (m *Manager) Release(instanceID string) error {
 			continue
 		}
 
+		// Scoped to this entry, not the whole release: an instance can hold
+		// several GPUs, and one that unbound cleanly stays available however
+		// its siblings fared.
+		var entryErr error
+
 		for _, member := range entry.groupMembers {
 			orig := entry.memberDrivers[member.PCIAddress]
 			if orig == "vfio-pci" {
@@ -258,6 +263,9 @@ func (m *Manager) Release(instanceID string) error {
 			if err := unbindVFIO(m.sysfsRoot, member.PCIAddress, orig); err != nil {
 				slog.Error("GPU release failed for IOMMU group member",
 					"instance", instanceID, "pci", member.PCIAddress, "err", err)
+				if entryErr == nil {
+					entryErr = err
+				}
 				if firstErr == nil {
 					firstErr = err
 				}
@@ -268,7 +276,7 @@ func (m *Manager) Release(instanceID string) error {
 		entry.groupMembers = nil
 		entry.memberDrivers = nil
 
-		if firstErr != nil {
+		if entryErr != nil {
 			entry.Available = false
 			slog.Error("GPU marked unavailable after failed release — operator action required",
 				"gpu", entry.Device.PCIAddress)
@@ -387,13 +395,46 @@ func (m *Manager) AddMIGInstances(device GPUDevice, instances []MIGInstance) {
 	}
 }
 
-// Available returns the count of GPUs that can be claimed right now.
+// Available counts free whole GPUs and free MIG slices alike. Admission must
+// use AvailableWhole or AvailableSlices instead: two whole GPUs and fourteen
+// carved slices answer 16, which would admit two 8-GPU instances against two.
 func (m *Manager) Available() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n := 0
 	for _, e := range m.pool {
 		if e.Available && e.InstanceID == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// AvailableWhole returns the count of whole GPUs that can be claimed right now.
+// A GPU carved into MIG slices is not one of them, and neither is an un-carved
+// MIG-capable GPU held in freeMIGGPUs.
+func (m *Manager) AvailableWhole() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, e := range m.pool {
+		if e.Available && e.InstanceID == "" && e.MIGInstance == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// AvailableSlices counts free slices of this profile plus one per un-carved
+// GPU in a single snapshot. The un-carved budget is shared across profiles:
+// this answers for one type in isolation, not a sum across different types.
+func (m *Manager) AvailableSlices(profileName string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := len(m.freeMIGGPUs)
+	for _, e := range m.pool {
+		if e.Available && e.InstanceID == "" && e.MIGInstance != nil &&
+			e.MIGInstance.Profile.Name == profileName {
 			n++
 		}
 	}

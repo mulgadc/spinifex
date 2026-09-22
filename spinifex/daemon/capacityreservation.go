@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 )
 
 // capacityReservation is an in-memory On-Demand Capacity Reservation pinned to
@@ -83,7 +84,8 @@ func (rm *ResourceManager) CancelReservation(id, accountID string) (*capacityRes
 // at create moves to allocated* and ConsumedCount bumps, so schedulable capacity
 // is unchanged by construction. Errors: unknown/foreign id ->
 // InvalidCapacityReservationId.NotFound; type mismatch -> InvalidParameterValue;
-// already full -> ReservationCapacityExceeded.
+// already full -> ReservationCapacityExceeded; no free GPU ->
+// InsufficientInstanceCapacity.
 func (rm *ResourceManager) AllocateFromReservation(crID, accountID string, it *ec2.InstanceTypeInfo) error {
 	rm.mu.Lock()
 	rec, ok := rm.reservations[crID]
@@ -98,6 +100,13 @@ func (rm *ResourceManager) AllocateFromReservation(crID, accountID string, it *e
 	if rec.ConsumedCount >= rec.TotalInstanceCount {
 		rm.mu.Unlock()
 		return errors.New(awserrors.ErrorReservationCapacityExceeded)
+	}
+	// Re-checked under the write lock, as the general path does: two targeted
+	// launches can both clear ReservationAvailable and only one find a GPU.
+	if instancetypes.IsGPUType(it) &&
+		rm.admissibleGPUInstances(aws.StringValue(it.InstanceType)) < 1 {
+		rm.mu.Unlock()
+		return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 	rm.reservedCRVCPU -= rec.VCPUPerInstance
 	rm.reservedCRMem -= rec.MemGBPerInstance
@@ -136,6 +145,8 @@ func (rm *ResourceManager) ReleaseToReservation(crID string, it *ec2.InstanceTyp
 // (Total - Consumed), or 0 when the reservation is unknown, owned by another
 // account, or for a different instance type. The daemon handler's up-front check
 // turns those zero cases into precise errors before the launch loop.
+// A GPU type is additionally gated on free GPUs: a reservation reserves no pool
+// entry, so its free slots say nothing about whether a GPU is there to claim.
 func (rm *ResourceManager) ReservationAvailable(crID, accountID string, it *ec2.InstanceTypeInfo) int {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
@@ -143,7 +154,11 @@ func (rm *ResourceManager) ReservationAvailable(crID, accountID string, it *ec2.
 	if !ok || rec.AccountID != accountID || rec.InstanceType != aws.StringValue(it.InstanceType) {
 		return 0
 	}
-	return rec.TotalInstanceCount - rec.ConsumedCount
+	free := rec.TotalInstanceCount - rec.ConsumedCount
+	if instancetypes.IsGPUType(it) {
+		free = min(free, rm.admissibleGPUInstances(aws.StringValue(it.InstanceType)))
+	}
+	return free
 }
 
 // ValidateReservationTarget is the owning daemon's up-front semantic check for a

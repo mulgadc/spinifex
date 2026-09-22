@@ -240,14 +240,17 @@ function NodesTable({ nodes }: { nodes: NodeInfo[] }) {
   )
 }
 
-export function formatVMGPU(gpu: VMInfo["gpu"]): string {
-  if (!gpu) {
+export function formatVMGPUs(gpus: VMInfo["gpus"]): string {
+  if (!gpus?.length) {
     return "-"
   }
-  if (gpu.profile) {
-    return `${gpu.profile} ${formatVRAMMiB(gpu.vram_mib)}`
-  }
-  return `${gpu.model} ${formatVRAMMiB(gpu.vram_mib)}`
+  return gpus
+    .map((gpu) =>
+      gpu.profile
+        ? `${gpu.profile} ${formatVRAMMiB(gpu.vram_mib)}`
+        : `${gpu.model} ${formatVRAMMiB(gpu.vram_mib)}`,
+    )
+    .join(", ")
 }
 
 function VMsTable({ vms }: { vms: VMInfo[] }) {
@@ -281,7 +284,7 @@ function VMsTable({ vms }: { vms: VMInfo[] }) {
               <td className="py-1.5 pr-4 font-mono">{vm.instance_type}</td>
               <td className="py-1.5 pr-4">{vm.vcpu}</td>
               <td className="py-1.5 pr-4">{formatMemory(vm.memory_gb)}</td>
-              <td className="py-1.5 pr-4 font-mono">{formatVMGPU(vm.gpu)}</td>
+              <td className="py-1.5 pr-4 font-mono">{formatVMGPUs(vm.gpus)}</td>
               <td className="py-1.5 pr-4 font-mono">{vm.node}</td>
               <td className="py-1.5">
                 {vm.launch_time > 0 ? formatAge(vm.launch_time) : "-"}

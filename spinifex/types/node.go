@@ -27,7 +27,7 @@ type GPUInfo struct {
 	Slices     []GPUSliceInfo `json:"slices,omitempty"`
 }
 
-// VMGPUInfo describes the GPU attached to a VM.
+// VMGPUInfo describes one GPU attached to a VM.
 type VMGPUInfo struct {
 	Model      string `json:"model"`
 	VRAMMiB    int64  `json:"vram_mib"`
@@ -93,8 +93,8 @@ type VMInfo struct {
 	// ManagedBy is the Spinifex platform component that owns this VM
 	// (e.g. "elbv2"). Empty for customer VMs. The UI uses this to filter
 	// system-managed resources out of customer-facing listings.
-	ManagedBy string     `json:"managed_by,omitempty"`
-	GPU       *VMGPUInfo `json:"gpu,omitempty"`
+	ManagedBy string      `json:"managed_by,omitempty"`
+	GPUs      []VMGPUInfo `json:"gpus,omitempty"`
 	// Health is a display label for instance health: "ok", "impaired",
 	// "recovering", or "-" for non-running VMs. CrashCount is the lifetime
 	// crash tally within the current restart window.

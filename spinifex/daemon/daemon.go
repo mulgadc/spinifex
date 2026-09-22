@@ -597,15 +597,7 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 		// GPU types are capacity-gated by GPU pool size, not host CPU/memory.
 		// The GPU is the scarce resource; CPU/memory on GPU-class hardware is abundant.
 		if instancetypes.IsGPUType(it) {
-			availGPU := 0
-			if rm.gpuManager != nil {
-				availGPU = rm.gpuManager.Available()
-			}
-			gpusNeeded := instancetypes.GPUCountForType(name)
-			count := 0
-			if gpusNeeded > 0 {
-				count = availGPU / gpusNeeded
-			}
+			count := rm.admissibleGPUInstances(name)
 			if showCapacity {
 				for range count {
 					infos = append(infos, it)
@@ -695,6 +687,12 @@ func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64
 		typeCap := resourceStatsForType(remainingVCPU, remainingMem, it)
 		if typeCap.VCPU == 0 || typeCap.MemoryGB == 0 {
 			continue
+		}
+		// CPU and memory never bind first on a gpu.* shape, so without this the
+		// census calls a GPU type schedulable on a node with no free GPU. EKS
+		// host selection and reservation creation both read this figure.
+		if instancetypes.IsGPUType(it) {
+			typeCap.Available = min(typeCap.Available, rm.admissibleGPUInstances(name))
 		}
 		caps = append(caps, typeCap)
 	}
@@ -2757,8 +2755,11 @@ func (d *Daemon) applyGPUConfig(enabled bool) {
 		}
 		mgr, models, migProfiles := buildGPUPool(probe.Devices, d.config.Daemon)
 		d.gpuManager = mgr
-		d.resourceMgr.reloadGPUTypes(models, migProfiles, mgr)
+		// Claimer before types: reloadGPUTypes starts advertising GPU types and
+		// admitting against them, and a launch landing before the claimer is
+		// wired would otherwise boot without the GPUs it was admitted for.
 		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
+		d.resourceMgr.reloadGPUTypes(models, migProfiles, mgr)
 		slog.Info("GPU passthrough enabled via config reload", "gpus", len(probe.Devices))
 		return
 	}
@@ -2914,11 +2915,8 @@ func (rm *ResourceManager) admitLocked(instanceType *ec2.InstanceTypeInfo, count
 
 	requiresGPU := instancetypes.IsGPUType(instanceType)
 	availGPU := 0
-	if requiresGPU && rm.gpuManager != nil {
-		gpusNeeded := instancetypes.GPUCountForType(instanceTypeName)
-		if gpusNeeded > 0 {
-			availGPU = rm.gpuManager.Available() / gpusNeeded
-		}
+	if requiresGPU {
+		availGPU = rm.admissibleGPUInstances(instanceTypeName)
 	}
 
 	budget := canAllocateCount(
@@ -2934,6 +2932,24 @@ func (rm *ResourceManager) admitLocked(instanceType *ec2.InstanceTypeInfo, count
 		return n, "live-memory"
 	}
 	return n, "budget"
+}
+
+// admissibleGPUInstances returns how many instances of a GPU type the free pool
+// can back. Whole GPUs and MIG slices count separately, so a node with free
+// slices and no free whole GPU refuses a whole-GPU type rather than failing it.
+func (rm *ResourceManager) admissibleGPUInstances(instanceTypeName string) int {
+	if rm.gpuManager == nil {
+		return 0
+	}
+	gpusNeeded := instancetypes.GPUCountForType(instanceTypeName)
+	if gpusNeeded <= 0 {
+		return 0
+	}
+	if instancetypes.IsMIGType(instanceTypeName) {
+		profile := instancetypes.MIGProfileFromType(instanceTypeName)
+		return rm.gpuManager.AvailableSlices(profile) / gpusNeeded
+	}
+	return rm.gpuManager.AvailableWhole() / gpusNeeded
 }
 
 // liveMemGate clamps n by current MemAvailable, catching overcommit that the

@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
@@ -2318,19 +2319,23 @@ func TestTerminateStoppedInstance_ReleaseAttachedENIs(t *testing.T) {
 // --- StartStoppedInstance tests ---
 
 type fakeGPUClaimer struct {
-	claimed    []string
-	released   []string
-	claimErr   error
-	attachment gpu.GPUAttachment
+	claimed     []string
+	claimCounts []int
+	released    []string
+	claimErr    error
+	attachments []gpu.GPUAttachment
 }
 
-func (f *fakeGPUClaimer) Claim(instanceID, _ string) (*gpu.GPUAttachment, error) {
+func (f *fakeGPUClaimer) Claim(instanceID, _ string, count int) ([]gpu.GPUAttachment, error) {
 	f.claimed = append(f.claimed, instanceID)
+	f.claimCounts = append(f.claimCounts, count)
 	if f.claimErr != nil {
 		return nil, f.claimErr
 	}
-	att := f.attachment
-	return &att, nil
+	if f.attachments != nil {
+		return append([]gpu.GPUAttachment(nil), f.attachments...), nil
+	}
+	return make([]gpu.GPUAttachment, count), nil
 }
 
 func (f *fakeGPUClaimer) Release(instanceID string) error {
@@ -2759,6 +2764,131 @@ func TestStartStoppedInstance_ConcurrentClaimRace(t *testing.T) {
 	assert.False(t, stillInMgr, "a failed Run must not leave the VM in the manager map")
 }
 
+// A restart reclaims the count the instance type advertises, which is what the
+// instance was admitted against. A record holding some other number — the only
+// source of one was the withdrawn launch override — does not move the count.
+func TestStartStoppedInstance_ReclaimsTheInstanceTypeGPUCount(t *testing.T) {
+	tests := []struct {
+		name      string
+		itype     string
+		recorded  int
+		wantClaim int
+	}{
+		{name: "multi-GPU type", itype: "g5.12xlarge", recorded: 4, wantClaim: 4},
+		{name: "record disagrees with the type", itype: "g5.2xlarge", recorded: 3, wantClaim: 1},
+		{name: "legacy record with no attachments", itype: "g5.12xlarge", recorded: 0, wantClaim: 4},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+			id := "i-multi-gpu"
+			attachments := make([]gpu.GPUAttachment, test.recorded)
+			for i := range attachments {
+				attachments[i] = gpu.GPUAttachment{PCIAddress: fmt.Sprintf("0000:0%d:00.0", i+1)}
+			}
+			store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+				id: {
+					ID:             id,
+					Status:         vm.StateStopped,
+					AccountID:      "acc",
+					InstanceType:   test.itype,
+					GPUAttachments: attachments,
+				},
+			}}
+			instanceType := &ec2.InstanceTypeInfo{
+				InstanceType: aws.String(test.itype),
+				GpuInfo: &ec2.GpuInfo{Gpus: []*ec2.GpuDeviceInfo{{
+					Count: aws.Int64(int64(instancetypes.GPUCountForType(test.itype))),
+				}}},
+			}
+			prov := &fakeResourceCapacityProvider{
+				instanceTypes: map[string]*ec2.InstanceTypeInfo{test.itype: instanceType},
+			}
+			claimer := &fakeGPUClaimer{}
+			mgr := vm.NewManagerWithDeps(vm.Deps{VolumeMounter: raceVolumeMounter{}})
+			svc := &InstanceServiceImpl{
+				stoppedStore: store,
+				resourceMgr:  prov,
+				vmMgr:        mgr,
+				gpuClaimer:   claimer,
+			}
+
+			_, err := svc.StartStoppedInstance(
+				context.Background(),
+				&StartStoppedInstanceInput{InstanceID: id},
+				"acc",
+			)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+			assert.Equal(t, []int{test.wantClaim}, claimer.claimCounts)
+			assert.Equal(t, []string{id}, claimer.released)
+		})
+	}
+}
+
+// A GPU type that cannot be given its GPUs must not start. Admission gates on
+// the daemon's GPU manager, a different field wired at a different moment, so
+// neither a missing claimer nor a short claim is caught anywhere else — and
+// both would otherwise return a running, GPU-less instance.
+func TestStartStoppedInstance_RefusesWhenGPUsCannotBeGuaranteed(t *testing.T) {
+	tests := []struct {
+		name         string
+		claimer      GPUClaimer
+		wantReleased bool
+	}{
+		{name: "no claimer wired", claimer: nil},
+		{
+			name:         "claim returns fewer GPUs than the type requires",
+			claimer:      &fakeGPUClaimer{attachments: []gpu.GPUAttachment{{PCIAddress: "0000:01:00.0"}}},
+			wantReleased: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+			const id, itype = "i-multi-gpu", "g5.12xlarge"
+			store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+				id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
+			}}
+			instanceType := &ec2.InstanceTypeInfo{
+				InstanceType: aws.String(itype),
+				GpuInfo: &ec2.GpuInfo{Gpus: []*ec2.GpuDeviceInfo{{
+					Count: aws.Int64(int64(instancetypes.GPUCountForType(itype))),
+				}}},
+			}
+			prov := &fakeResourceCapacityProvider{
+				instanceTypes: map[string]*ec2.InstanceTypeInfo{itype: instanceType},
+			}
+			svc := &InstanceServiceImpl{
+				stoppedStore: store,
+				resourceMgr:  prov,
+				vmMgr:        vm.NewManagerWithDeps(vm.Deps{VolumeMounter: raceVolumeMounter{}}),
+				gpuClaimer:   test.claimer,
+			}
+
+			_, err := svc.StartStoppedInstance(
+				context.Background(),
+				&StartStoppedInstanceInput{InstanceID: id},
+				"acc",
+			)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error(),
+				"a GPU that cannot be claimed is a capacity refusal, not a launch")
+
+			if test.wantReleased {
+				claimer, ok := test.claimer.(*fakeGPUClaimer)
+				require.True(t, ok)
+				assert.Equal(t, []string{id}, claimer.released,
+					"the partial claim must not be left holding pool entries")
+			}
+		})
+	}
+}
+
 // --- PrepareRunInstances / ec2.cmd dispatch tests ---------------------------
 
 type fakeAMILoader struct {
@@ -2944,6 +3074,46 @@ func TestPrepareRunInstances_InsufficientCapacity(t *testing.T) {
 	}, "acc", "")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
+// ElasticInferenceAccelerators is a real EC2 parameter for Elastic Inference,
+// whose types are eia1.*/eia2.*. It carries no Spinifex meaning: the GPU count
+// comes from the instance type, so Type=gpu,Count=3 neither succeeds as an
+// override nor gates capacity.
+func TestPrepareRunInstances_ElasticInferenceAcceleratorIsNotAGPUOverride(t *testing.T) {
+	instanceType := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("g5.2xlarge"),
+		GpuInfo: &ec2.GpuInfo{Gpus: []*ec2.GpuDeviceInfo{{
+			Count: aws.Int64(1),
+		}}},
+	}
+	types := map[string]*ec2.InstanceTypeInfo{"g5.2xlarge": instanceType}
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+		gpuClaimer:  &fakeGPUClaimer{},
+	}
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("g5.2xlarge"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+		ElasticInferenceAccelerators: []*ec2.ElasticInferenceAccelerator{{
+			Type: aws.String("gpu"), Count: aws.Int64(3),
+		}},
+	}, "acc", "")
+	require.NoError(t, err)
+	assert.Len(t, instances, 2)
+	assert.Equal(t, 1, instancetypes.GPUCountForType("g5.2xlarge"),
+		"the count must stay a lookup on the type name")
 }
 
 func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {

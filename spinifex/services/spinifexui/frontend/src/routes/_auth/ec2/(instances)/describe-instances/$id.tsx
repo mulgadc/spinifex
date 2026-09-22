@@ -331,7 +331,7 @@ function InstanceDetail() {
         <IamRolePanel instanceId={instance.InstanceId} />
 
         {/* GPU */}
-        {isAdmin && <GpuDetailCard gpu={vmInfo?.gpu} />}
+        {isAdmin && <GpuDetailCard gpus={vmInfo?.gpus} />}
 
         {/* Block Device Mappings */}
         {instance.BlockDeviceMappings &&

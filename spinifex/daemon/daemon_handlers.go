@@ -600,6 +600,26 @@ func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry)
 	return nil
 }
 
+// resolveVMGPUs resolves every attachment it can, reporting a short list rather
+// than passing it off as complete. One unresolved attachment used to read as no
+// GPU at all; eight make a shortened list a plausible wrong answer.
+func resolveVMGPUs(instanceID string, attachments []gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) []types.VMGPUInfo {
+	gpus := make([]types.VMGPUInfo, 0, len(attachments))
+	for _, attachment := range attachments {
+		if info := resolveVMGPU(attachment, byMdev, byPCI); info != nil {
+			gpus = append(gpus, *info)
+			continue
+		}
+		slog.Warn("VM GPU attachment has no pool entry",
+			"instanceId", instanceID, "pci", attachment.PCIAddress, "mdev", attachment.MdevPath)
+	}
+	if len(gpus) != len(attachments) {
+		slog.Warn("VM holds GPU attachments that did not resolve",
+			"instanceId", instanceID, "attached", len(attachments), "resolved", len(gpus))
+	}
+	return gpus
+}
+
 // handleNodeVMs responds with the list of VMs running on this node.
 // Used by the CLI: spx get vms.
 func (d *Daemon) handleNodeVMs(msg *nats.Msg) string {
@@ -622,9 +642,7 @@ func (d *Daemon) handleNodeVMs(msg *nats.Msg) string {
 		if v.Instance != nil && v.Instance.LaunchTime != nil {
 			info.LaunchTime = v.Instance.LaunchTime.Unix()
 		}
-		if len(v.GPUAttachments) > 0 {
-			info.GPU = resolveVMGPU(v.GPUAttachments[0], poolByMdev, poolByPCI)
-		}
+		info.GPUs = resolveVMGPUs(v.ID, v.GPUAttachments, poolByMdev, poolByPCI)
 		vms = append(vms, info)
 	})
 

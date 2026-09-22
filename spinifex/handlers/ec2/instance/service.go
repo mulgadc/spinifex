@@ -68,11 +68,12 @@ type InstanceTypeAllocator interface {
 	InstanceTypes() map[string]*ec2.InstanceTypeInfo
 }
 
-// GPUClaimer binds a GPU for a starting instance and returns an attachment
-// descriptor. For whole-GPU passthrough the descriptor carries the PCI address;
-// for MIG slices it carries the mdev path. nil claimer means no GPU passthrough.
+// GPUClaimer binds GPUs for a starting instance and returns their attachment
+// descriptors. For whole-GPU passthrough each descriptor carries a PCI address;
+// for MIG slices it carries an mdev path. Claims are all-or-nothing. A nil
+// claimer means no GPU passthrough.
 type GPUClaimer interface {
-	Claim(instanceID, profileName string) (*gpu.GPUAttachment, error)
+	Claim(instanceID, profileName string, count int) ([]gpu.GPUAttachment, error)
 	Release(instanceID string) error
 }
 

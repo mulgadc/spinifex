@@ -73,7 +73,7 @@ interface VMInfo {
   node: string
   launch_time: number
   managed_by?: string
-  gpu?: VMGPUInfo
+  gpus?: VMGPUInfo[]
 }
 
 interface GetVMsOutput {

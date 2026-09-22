@@ -133,31 +133,37 @@ func TestHandleNodeStatus_MIG(t *testing.T) {
 	assert.Empty(t, byGI[2].InstanceID, "unclaimed slice is free")
 }
 
-func TestHandleNodeVMs_GPUAttachment_WholeGPU(t *testing.T) {
+func TestHandleNodeVMs_GPUAttachments_WholeGPU(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 	instanceType := getTestInstanceType(t)
 
-	dev := gpu.GPUDevice{PCIAddress: "0000:01:00.0", Model: "NVIDIA A10", MemoryMiB: 23028, IOMMUGroup: -1}
-	mgr := gpu.NewManager([]gpu.GPUDevice{dev})
-	require.NoError(t, mgr.ReclaimByAddress(dev.PCIAddress, "i-gpu-vm"))
+	first := gpu.GPUDevice{PCIAddress: "0000:01:00.0", Model: "NVIDIA A10", MemoryMiB: 23028, IOMMUGroup: -1}
+	second := gpu.GPUDevice{PCIAddress: "0000:02:00.0", Model: "NVIDIA A10", MemoryMiB: 23028, IOMMUGroup: -1}
+	mgr := gpu.NewManager([]gpu.GPUDevice{first, second})
+	require.NoError(t, mgr.ReclaimByAddress(first.PCIAddress, "i-gpu-vm"))
+	require.NoError(t, mgr.ReclaimByAddress(second.PCIAddress, "i-gpu-vm"))
 	daemon.gpuManager = mgr
 
 	daemon.vmMgr.Insert(&vm.VM{
-		ID:             "i-gpu-vm",
-		Status:         vm.StateRunning,
-		InstanceType:   instanceType,
-		GPUAttachments: []gpu.GPUAttachment{{PCIAddress: dev.PCIAddress}},
+		ID:           "i-gpu-vm",
+		Status:       vm.StateRunning,
+		InstanceType: instanceType,
+		GPUAttachments: []gpu.GPUAttachment{
+			{PCIAddress: first.PCIAddress},
+			{PCIAddress: second.PCIAddress},
+		},
 	})
 
 	resp := gpuVMsRequest(t, daemon, "spinifex.node.vms.gpuwhole")
 
 	require.Len(t, resp.VMs, 1)
-	require.NotNil(t, resp.VMs[0].GPU)
-	assert.Equal(t, "NVIDIA A10", resp.VMs[0].GPU.Model)
-	assert.Equal(t, int64(23028), resp.VMs[0].GPU.VRAMMiB)
-	assert.Equal(t, dev.PCIAddress, resp.VMs[0].GPU.PCIAddress)
-	assert.Empty(t, resp.VMs[0].GPU.Profile)
-	assert.Empty(t, resp.VMs[0].GPU.MdevPath)
+	require.Len(t, resp.VMs[0].GPUs, 2)
+	assert.Equal(t, "NVIDIA A10", resp.VMs[0].GPUs[0].Model)
+	assert.Equal(t, int64(23028), resp.VMs[0].GPUs[0].VRAMMiB)
+	assert.Equal(t, first.PCIAddress, resp.VMs[0].GPUs[0].PCIAddress)
+	assert.Equal(t, second.PCIAddress, resp.VMs[0].GPUs[1].PCIAddress)
+	assert.Empty(t, resp.VMs[0].GPUs[0].Profile)
+	assert.Empty(t, resp.VMs[0].GPUs[0].MdevPath)
 }
 
 func TestHandleNodeVMs_GPUAttachment_MIG(t *testing.T) {
@@ -185,13 +191,12 @@ func TestHandleNodeVMs_GPUAttachment_MIG(t *testing.T) {
 
 	resp := gpuVMsRequest(t, daemon, "spinifex.node.vms.gpumig")
 
-	require.Len(t, resp.VMs, 1)
-	require.NotNil(t, resp.VMs[0].GPU)
-	assert.Equal(t, dev.Model, resp.VMs[0].GPU.Model)
-	assert.Equal(t, int64(24576), resp.VMs[0].GPU.VRAMMiB)
-	assert.Equal(t, "1g.24gb", resp.VMs[0].GPU.Profile)
-	assert.Equal(t, mdevPath, resp.VMs[0].GPU.MdevPath)
-	assert.Empty(t, resp.VMs[0].GPU.PCIAddress)
+	require.Len(t, resp.VMs[0].GPUs, 1)
+	assert.Equal(t, dev.Model, resp.VMs[0].GPUs[0].Model)
+	assert.Equal(t, int64(24576), resp.VMs[0].GPUs[0].VRAMMiB)
+	assert.Equal(t, "1g.24gb", resp.VMs[0].GPUs[0].Profile)
+	assert.Equal(t, mdevPath, resp.VMs[0].GPUs[0].MdevPath)
+	assert.Empty(t, resp.VMs[0].GPUs[0].PCIAddress)
 }
 
 func TestHandleNodeVMs_GPUAttachment_Absent(t *testing.T) {
@@ -207,5 +212,5 @@ func TestHandleNodeVMs_GPUAttachment_Absent(t *testing.T) {
 	resp := gpuVMsRequest(t, daemon, "spinifex.node.vms.nogpu")
 
 	require.Len(t, resp.VMs, 1)
-	assert.Nil(t, resp.VMs[0].GPU)
+	assert.Empty(t, resp.VMs[0].GPUs)
 }

@@ -395,10 +395,9 @@ func (m *Manager) AddMIGInstances(device GPUDevice, instances []MIGInstance) {
 	}
 }
 
-// Available returns the count of pool entries that can be claimed right now,
-// whole GPUs and MIG slices alike. Admission must not use it: a node with two
-// whole GPUs and fourteen carved slices answers 16, which would admit two
-// 8-GPU instances against two GPUs. Use AvailableWhole or AvailableSlices.
+// Available counts free whole GPUs and free MIG slices alike. Admission must
+// use AvailableWhole or AvailableSlices instead: two whole GPUs and fourteen
+// carved slices answer 16, which would admit two 8-GPU instances against two.
 func (m *Manager) Available() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

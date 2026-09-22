@@ -101,8 +101,7 @@ func (rm *ResourceManager) AllocateFromReservation(crID, accountID string, it *e
 		rm.mu.Unlock()
 		return errors.New(awserrors.ErrorReservationCapacityExceeded)
 	}
-	// Re-checked under the write lock, as the general path does: a reservation
-	// counts vCPU and memory slots and reserves no pool entry, so two targeted
+	// Re-checked under the write lock, as the general path does: two targeted
 	// launches can both clear ReservationAvailable and only one find a GPU.
 	if instancetypes.IsGPUType(it) &&
 		rm.admissibleGPUInstances(aws.StringValue(it.InstanceType)) < 1 {
@@ -146,9 +145,7 @@ func (rm *ResourceManager) ReleaseToReservation(crID string, it *ec2.InstanceTyp
 // (Total - Consumed), or 0 when the reservation is unknown, owned by another
 // account, or for a different instance type. The daemon handler's up-front check
 // turns those zero cases into precise errors before the launch loop.
-//
-// A GPU type is additionally gated on free GPUs, mirroring admitLocked. A
-// reservation is a counter over vCPU and memory slots and reserves no pool
+// A GPU type is additionally gated on free GPUs: a reservation reserves no pool
 // entry, so its free slots say nothing about whether a GPU is there to claim.
 func (rm *ResourceManager) ReservationAvailable(crID, accountID string, it *ec2.InstanceTypeInfo) int {
 	rm.mu.RLock()

@@ -688,10 +688,9 @@ func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64
 		if typeCap.VCPU == 0 || typeCap.MemoryGB == 0 {
 			continue
 		}
-		// The gpu.* shapes are sized so CPU and memory never bind first, so
-		// without this the census reports a GPU type as available on a node
-		// whose every GPU is claimed. Host selection and reservation creation
-		// both size themselves from this figure.
+		// CPU and memory never bind first on a gpu.* shape, so without this the
+		// census calls a GPU type schedulable on a node with no free GPU. EKS
+		// host selection and reservation creation both read this figure.
 		if instancetypes.IsGPUType(it) {
 			typeCap.Available = min(typeCap.Available, rm.admissibleGPUInstances(name))
 		}
@@ -2935,10 +2934,9 @@ func (rm *ResourceManager) admitLocked(instanceType *ec2.InstanceTypeInfo, count
 	return n, "budget"
 }
 
-// admissibleGPUInstances returns how many instances of a GPU type the free GPU
-// pool can back. Whole GPUs and MIG slices are counted separately: a node with
-// free slices and no free whole GPU must refuse a whole-GPU type at admission
-// rather than fail it at claim time.
+// admissibleGPUInstances returns how many instances of a GPU type the free pool
+// can back. Whole GPUs and MIG slices count separately, so a node with free
+// slices and no free whole GPU refuses a whole-GPU type rather than failing it.
 func (rm *ResourceManager) admissibleGPUInstances(instanceTypeName string) int {
 	if rm.gpuManager == nil {
 		return 0

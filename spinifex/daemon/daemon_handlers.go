@@ -600,10 +600,9 @@ func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry)
 	return nil
 }
 
-// resolveVMGPUs resolves every attachment it can. A short list is reported
-// rather than passed off as complete: at one GPU an unresolved attachment
-// showed as no GPU at all, but at eight a quietly shortened list is a
-// plausible wrong answer.
+// resolveVMGPUs resolves every attachment it can, reporting a short list rather
+// than passing it off as complete. One unresolved attachment used to read as no
+// GPU at all; eight make a shortened list a plausible wrong answer.
 func resolveVMGPUs(instanceID string, attachments []gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) []types.VMGPUInfo {
 	gpus := make([]types.VMGPUInfo, 0, len(attachments))
 	for _, attachment := range attachments {

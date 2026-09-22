@@ -13,9 +13,8 @@ import (
 )
 
 // A multi-GPU instance releasing with one bad device must lose only that one.
-// firstErr used to be scoped to the whole release, so the first failure
-// condemned every GPU processed after it — unreachable while an instance held
-// one GPU, and a node-emptying event once it could hold eight.
+// firstErr was scoped to the whole release, so the first failure condemned
+// every GPU after it — harmless at one GPU per instance, node-emptying at eight.
 func TestManagerRelease_FailureIsScopedToTheFailingGPU(t *testing.T) {
 	root := t.TempDir()
 	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "nvidia", 7)

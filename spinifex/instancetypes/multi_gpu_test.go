@@ -21,10 +21,8 @@ var gpuFamilies = []string{
 }
 
 // wantGPUCounts pins the GPU count of every size of every GPU family. A size
-// added without a count, or a count added without a size, fails this test —
-// which is the only way a wrong figure surfaces before a customer sizes a
-// workload from it. AWS figures are the real EC2 ones; a Spinifex-invented
-// size is marked.
+// added without a count, or a count without a size, fails here — otherwise a
+// wrong figure surfaces only when a customer sizes a workload from it.
 var wantGPUCounts = map[string]int{
 	"g4dn.xlarge":   1,
 	"g4dn.2xlarge":  1,

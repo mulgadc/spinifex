@@ -71,11 +71,8 @@ func GPUModelForVendorDevice(vendorID, deviceID string) *GPUModel {
 // a GPU instance type's family prefix (e.g. "g5.xlarge" -> "g5"), or "" if
 // instanceType is not a known GPU family.
 func GPUVendorForType(instanceType string) string {
-	// gpu.* and mig.* name a shape and a profile, not a family, so the vendor
-	// is not in the name — it comes from whatever the node discovered.
-	if IsBuiltinGPUType(instanceType) || IsMIGType(instanceType) {
-		return ""
-	}
+	// gpu.* and mig.* fall through to "": neither names a family, so no
+	// knownGPUModels entry matches and the vendor comes from discovery instead.
 	family, _, _ := strings.Cut(instanceType, ".")
 	for i := range knownGPUModels {
 		if knownGPUModels[i].Family == family {

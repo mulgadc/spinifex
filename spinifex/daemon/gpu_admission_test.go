@@ -136,10 +136,9 @@ func TestReservationAvailable_GatesOnFreeGPUs(t *testing.T) {
 	assert.Zero(t, rm.ReservationAvailable("cr-gpu", "acct-a", gpuType))
 }
 
-// ReservationAvailable answers under the read lock and reserves nothing, so two
-// targeted launches can both clear it. AllocateFromReservation re-checks under
-// the write lock, as the general path does — otherwise the loser consumes a
-// reservation slot and then dies at claim time with no GPU to take.
+// ReservationAvailable reserves nothing, so two targeted launches can both
+// clear it. Without the write-lock re-check the loser consumes a reservation
+// slot and then dies at claim time with no GPU to take.
 func TestAllocateFromReservation_RechecksFreeGPUs(t *testing.T) {
 	gpuType := gpuTypeForTest("gpu.4x4c", 4)
 	devices := make([]gpu.GPUDevice, 4)

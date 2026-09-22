@@ -31,9 +31,8 @@ func TestAvailableWholeAndSlicesCountSeparately(t *testing.T) {
 	assert.Zero(t, m.AvailableSlices("7g.80gb"), "a profile with no slices carved is not available")
 }
 
-// An un-carved MIG-capable GPU carves into exactly one profile at claim time,
-// so it belongs to a budget shared across profiles rather than to any one of
-// them. Folding it into AvailableSlices offered the same GPU to every profile
+// An un-carved GPU carves into exactly one profile, so it belongs to a shared
+// budget. Folding it into AvailableSlices offered the same GPU to every profile
 // at once, and the loser failed at claim time having been promised capacity.
 func TestFreeMIGGPUsAreSharedAcrossProfiles(t *testing.T) {
 	m := NewManager(nil)

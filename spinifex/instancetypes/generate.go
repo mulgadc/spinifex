@@ -158,10 +158,9 @@ func generateSystemTypes(arch string) map[string]*ec2.InstanceTypeInfo {
 	return types
 }
 
-// GenerateGPUTypes returns InstanceTypeInfo entries for each GPU model with
-// GpuInfo populated, plus the built-in gpu.* family. models carries one entry
-// per whole GPU on the node, so a node that resolved more than one distinct
-// model offers no type above a count of 1.
+// GenerateGPUTypes returns InstanceTypeInfo entries for each GPU model plus the
+// built-in gpu.* family. models carries one entry per whole GPU, so a node
+// resolving more than one distinct model offers no type above a count of 1.
 func GenerateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTypeInfo {
 	types := make(map[string]*ec2.InstanceTypeInfo)
 	if len(models) == 0 {
@@ -203,10 +202,9 @@ func GenerateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTy
 	return types
 }
 
-// gpuModelsHomogeneous reports whether every discovered GPU advertises the same
-// name and VRAM. Those are the figures that reach GpuInfo, so two devices that
-// advertise identically can be handed out interchangeably — which also spares a
-// legitimate mixed-SKU H100 node, where SXM and PCIe differ only by PCI ID.
+// gpuModelsHomogeneous reports whether every GPU advertises the same name and
+// VRAM. Those reach GpuInfo, so devices advertising identically are
+// interchangeable — which spares a mixed-SKU H100 node differing only by PCI ID.
 func gpuModelsHomogeneous(models []GPUModel) bool {
 	for _, m := range models[1:] {
 		if m.Name != models[0].Name || m.MemoryMiB != models[0].MemoryMiB {

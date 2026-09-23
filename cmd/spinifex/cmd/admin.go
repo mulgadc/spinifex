@@ -479,9 +479,13 @@ func amiVolumeSizeGiB(sizeBytes int64) uint64 {
 }
 
 // validateChecksumFlags rejects --checksum combinations that would otherwise be silently ignored.
-func validateChecksumFlags(checksumPath, localFile string, skipVerify bool) error {
-	if checksumPath == "" {
+// An explicitly empty --checksum (e.g. an unset shell variable) must not fall through to an unverified import.
+func validateChecksumFlags(checksumPath string, checksumSet bool, localFile string, skipVerify bool) error {
+	if !checksumSet {
 		return nil
+	}
+	if strings.TrimSpace(checksumPath) == "" {
+		return errors.New("--checksum requires a sums file path")
 	}
 	if localFile == "" {
 		return errors.New("--checksum requires --file")
@@ -599,7 +603,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	}
 
 	checksumPath, _ := cmd.Flags().GetString("checksum")
-	if err := validateChecksumFlags(checksumPath, localFile, skipVerify); err != nil {
+	if err := validateChecksumFlags(checksumPath, cmd.Flags().Changed("checksum"), localFile, skipVerify); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

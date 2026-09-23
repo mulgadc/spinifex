@@ -1296,12 +1296,15 @@ func TestValidateChecksumFlags(t *testing.T) {
 	tests := []struct {
 		name       string
 		checksum   string
+		unset      bool
 		file       string
 		skipVerify bool
 		wantErr    string
 	}{
-		{name: "no checksum", file: "img.raw"},
+		{name: "no checksum", unset: true, file: "img.raw"},
 		{name: "checksum with file", checksum: "SHA256SUMS", file: "img.raw"},
+		{name: "empty checksum value", checksum: "", file: "img.raw", wantErr: "--checksum requires a sums file path"},
+		{name: "blank checksum value", checksum: "  ", file: "img.raw", wantErr: "--checksum requires a sums file path"},
 		{name: "checksum without file", checksum: "SHA256SUMS", wantErr: "--checksum requires --file"},
 		{name: "checksum with skip-verify", checksum: "SHA256SUMS", file: "img.raw", skipVerify: true,
 			wantErr: "mutually exclusive"},
@@ -1309,7 +1312,7 @@ func TestValidateChecksumFlags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateChecksumFlags(tt.checksum, tt.file, tt.skipVerify)
+			err := validateChecksumFlags(tt.checksum, !tt.unset, tt.file, tt.skipVerify)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 				return

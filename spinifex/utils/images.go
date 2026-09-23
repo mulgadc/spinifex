@@ -137,6 +137,9 @@ func ReadExpectedDigest(sumsPath, imageName string) (algo, digest string, err er
 	}
 
 	digest, err = parseSumsFile(body, imageName)
+	if errors.Is(err, ErrChecksumNotFound) && bytes.Contains(body, []byte("/"+imageName)) {
+		return "", "", fmt.Errorf("%w (the sums file names it with a directory prefix; entries must name the bare filename)", err)
+	}
 	if err != nil {
 		return "", "", err
 	}

@@ -1692,6 +1692,8 @@ func TestReadExpectedDigest(t *testing.T) {
 			body: h512 + "  " + image + "\n", wantAlgo: "sha512", wantDigest: h512},
 		{name: "renamed image in multi-entry file", sumsName: "SHA512SUMS", imageName: "renamed.tar.xz",
 			body: h512 + "  " + image + "\n" + other + "  other.iso\n", wantErr: ErrChecksumNotFound, wantErrMsg: "renamed.tar.xz"},
+		{name: "path-prefixed entry names the prefix", sumsName: "image.sha512",
+			body: h512 + "  ./" + image + "\n", wantErr: ErrChecksumNotFound, wantErrMsg: "directory prefix"},
 		{name: "renamed image with bare digest", sumsName: "image.sha512", imageName: "renamed.tar.xz",
 			body: h512 + "\n", wantAlgo: "sha512", wantDigest: h512},
 		{name: "sha1 length unsupported", sumsName: "checksums.txt",

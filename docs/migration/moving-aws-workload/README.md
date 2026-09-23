@@ -74,10 +74,8 @@ provider "aws" {
     s3                 = "https://localhost:8443"
   }
 
-  skip_credentials_validation = true
-  skip_metadata_api_check     = true
-  skip_requesting_account_id  = true
-  skip_region_validation      = true
+  skip_metadata_api_check = true
+  skip_region_validation  = true
 }
 ```
 
@@ -91,16 +89,16 @@ aws s3 sync s3://local-bucket/ s3://cloud-bucket/ --source-region spinifex --reg
 
 ## Terraform Provider Errors
 
-Ensure all four skip flags are set in your provider configuration:
+Ensure these two skip flags are set in your provider configuration:
 
 ```hcl
-skip_credentials_validation = true
-skip_metadata_api_check     = true
-skip_requesting_account_id  = true
-skip_region_validation      = true
+skip_metadata_api_check = true
+skip_region_validation  = true
 ```
 
-Without these, Terraform will try to validate credentials and metadata against real AWS endpoints.
+Without them, Terraform queries the EC2 instance metadata service for credentials and rejects a region name AWS does not know.
+
+Leave `skip_credentials_validation` and `skip_requesting_account_id` unset, and point the `sts` endpoint at Spinifex. The provider then learns the account ID from `GetCallerIdentity` as it does on AWS. With the account ID blank, a security group rule that references a group in the same account reads back as `<account>/sg-...` and never reaches a clean plan.
 
 ## S3 Signature Errors
 

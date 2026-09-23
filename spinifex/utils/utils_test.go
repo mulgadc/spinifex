@@ -1612,23 +1612,22 @@ func TestParseSumsFile(t *testing.T) {
 
 	t.Run("bsd 4-field line", func(t *testing.T) {
 		body := []byte("SHA256 (" + target + ") = " + targetHex + "\n")
-		got, bsdAlgo, err := parseSumsFile(body, target)
+		got, err := parseSumsFile(body, target)
 		require.NoError(t, err)
 		assert.Equal(t, targetHex, got)
-		assert.Equal(t, "sha256", bsdAlgo)
 	})
 
 	t.Run("bsd missing equals separator skipped", func(t *testing.T) {
 		// Malformed line — third field is not "=". Must not match.
 		body := []byte("SHA256 (" + target + ") - " + targetHex + "\n")
-		_, _, err := parseSumsFile(body, target)
+		_, err := parseSumsFile(body, target)
 		assert.ErrorIs(t, err, ErrChecksumNotFound)
 	})
 
 	t.Run("bsd missing parens skipped", func(t *testing.T) {
 		// Without parens the filename field is ambiguous; reject by not matching.
 		body := []byte("SHA256 " + target + " = " + targetHex + "\n")
-		_, _, err := parseSumsFile(body, target)
+		_, err := parseSumsFile(body, target)
 		assert.ErrorIs(t, err, ErrChecksumNotFound)
 	})
 
@@ -1643,7 +1642,7 @@ iQIzBAEBCAAdFiEEnK6Ehq8eQ0z6yqv7tQAaIQAaIQAAaIQFAmJabcdEFGhijklm
 =ABCD
 -----END PGP SIGNATURE-----
 `)
-		_, _, err := parseSumsFile(body, target)
+		_, err := parseSumsFile(body, target)
 		assert.ErrorIs(t, err, ErrChecksumNotFound)
 	})
 
@@ -1653,7 +1652,7 @@ iQIzBAEBCAAdFiEEnK6Ehq8eQ0z6yqv7tQAaIQAaIQAAaIQFAmJabcdEFGhijklm
 		body := []byte("# header\n" +
 			targetHex + "  some-other.iso\n" +
 			"SHA256 (" + target + ") = " + targetHex + "\n")
-		got, _, err := parseSumsFile(body, target)
+		got, err := parseSumsFile(body, target)
 		require.NoError(t, err)
 		assert.Equal(t, targetHex, got)
 	})
@@ -1689,12 +1688,8 @@ func TestReadExpectedDigest(t *testing.T) {
 			body: h256 + "  " + image + "\n", wantAlgo: "sha256", wantDigest: h256},
 		{name: "uppercase hex normalised", sumsName: "SHA512SUMS",
 			body: strings.ToUpper(h512) + "  " + image + "\n", wantAlgo: "sha512", wantDigest: h512},
-		{name: "SHA256SUMS holding sha512 digest", sumsName: "SHA256SUMS",
-			body: h512 + "  " + image + "\n", wantErr: ErrMalformedChecksum},
-		{name: "sha512 extension holding sha256 digest", sumsName: image + ".sha512",
-			body: h256 + "\n", wantErr: ErrMalformedChecksum},
-		{name: "bsd SHA512 line with sha256 digest", sumsName: "CHECKSUM",
-			body: "SHA512 (" + image + ") = " + h256 + "\n", wantErr: ErrMalformedChecksum},
+		{name: "sums file name does not decide the algorithm", sumsName: "SHA256SUMS",
+			body: h512 + "  " + image + "\n", wantAlgo: "sha512", wantDigest: h512},
 		{name: "renamed image in multi-entry file", sumsName: "SHA512SUMS", imageName: "renamed.tar.xz",
 			body: h512 + "  " + image + "\n" + other + "  other.iso\n", wantErr: ErrChecksumNotFound, wantErrMsg: "renamed.tar.xz"},
 		{name: "renamed image with bare digest", sumsName: "image.sha512", imageName: "renamed.tar.xz",

@@ -111,7 +111,7 @@ func HashImageFile(imagePath, algo string) (string, error) {
 }
 
 // ReadExpectedDigest reads a local sums file and returns the algorithm and lowercase hex digest for imageName.
-// The algorithm is inferred from the digest length; the file's name and BSD prefix only cross-check it.
+// The algorithm is inferred from the digest length, never from the file's name.
 func ReadExpectedDigest(sumsPath, imageName string) (algo, digest string, err error) {
 	// Stat before open: opening a FIFO would block until a writer appears.
 	info, err := os.Stat(sumsPath)
@@ -136,16 +136,13 @@ func ReadExpectedDigest(sumsPath, imageName string) (algo, digest string, err er
 		return "", "", fmt.Errorf("%w: sums file exceeds %d byte limit", ErrMalformedChecksum, sumsFileMaxSize)
 	}
 
-	digest, bsdAlgo, err := parseSumsFile(body, imageName)
+	digest, err = parseSumsFile(body, imageName)
 	if err != nil {
 		return "", "", err
 	}
 	digest = strings.ToLower(digest)
 	algo, err = algoForDigest(digest)
 	if err != nil {
-		return "", "", err
-	}
-	if err := crossCheckDigestAlgo(algo, bsdAlgo, algoFromSumsName(filepath.Base(sumsPath))); err != nil {
 		return "", "", err
 	}
 	return algo, digest, nil
@@ -166,28 +163,6 @@ func algoForDigest(digest string) (string, error) {
 	default:
 		return "", fmt.Errorf("%w: digest length %d", ErrUnsupportedChecksumType, len(digest))
 	}
-}
-
-// crossCheckDigestAlgo refuses a sums file whose name or BSD prefix names a different algorithm than its digest length.
-// It adds no security, since the digest is compared by its own bytes; it may be removed.
-func crossCheckDigestAlgo(algo, bsdAlgo, nameAlgo string) error {
-	for _, named := range []string{bsdAlgo, nameAlgo} {
-		if named != "" && named != algo {
-			return fmt.Errorf("%w: sums file names %s but digest length is %s", ErrMalformedChecksum, named, algo)
-		}
-	}
-	return nil
-}
-
-// algoFromSumsName returns the algorithm a sums file's basename names, or "" when it names none.
-func algoFromSumsName(base string) string {
-	base = strings.ToLower(base)
-	for _, algo := range []string{"sha256", "sha512"} {
-		if base == algo+"sums" || strings.HasSuffix(base, "."+algo) {
-			return algo
-		}
-	}
-	return ""
 }
 
 func newHasher(checksumType string) (hash.Hash, error) {
@@ -266,17 +241,17 @@ func fetchExpectedDigest(checksumURL, filename string) (string, error) {
 		return "", fmt.Errorf("%w: sums file exceeds %d byte limit", ErrChecksumFetchFailed, sumsFileMaxSize)
 	}
 
-	digest, _, err := parseSumsFile(body, filename)
+	digest, err := parseSumsFile(body, filename)
 	if err != nil {
 		return "", err
 	}
 	return digest, nil
 }
 
-// parseSumsFile returns the hex digest matching filename (case-sensitive), plus the lowercase algorithm a BSD line names.
+// parseSumsFile scans a sums file and returns the hex digest matching filename (case-sensitive).
 // Accepts GNU coreutils text/binary, BSD-style, and bare single-token (Alpine .sha512) formats.
 // GPG cleartext-signed armor is tolerated: its body lines always appear in pairs, keeping bareCount ≥ 2.
-func parseSumsFile(body []byte, filename string) (digest, bsdAlgo string, err error) {
+func parseSumsFile(body []byte, filename string) (string, error) {
 	var bareDigest string
 	bareCount := 0
 	scanner := bufio.NewScanner(bytes.NewReader(body))
@@ -294,7 +269,7 @@ func parseSumsFile(body []byte, filename string) (digest, bsdAlgo string, err er
 		case 2:
 			name := strings.TrimPrefix(fields[1], "*")
 			if name == filename {
-				return fields[0], "", nil
+				return fields[0], nil
 			}
 		case 4:
 			// BSD-style: "<algo> (<name>) = <hex>". The "=" guard rejects PGP armor lines that happen to tokenise to 4 fields.
@@ -304,22 +279,22 @@ func parseSumsFile(body []byte, filename string) (digest, bsdAlgo string, err er
 				continue
 			}
 			if name == filename {
-				return fields[3], strings.ToLower(fields[0]), nil
+				return fields[3], nil
 			}
 		default:
 			// Skip unrecognised shapes; signed sums files may have trailing commentary.
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", "", fmt.Errorf("%w: scan sums file: %w", ErrChecksumFetchFailed, err)
+		return "", fmt.Errorf("%w: scan sums file: %w", ErrChecksumFetchFailed, err)
 	}
 
 	// Alpine single-file fallback: accept only if exactly one bare-digest line in the file.
 	if bareCount == 1 {
-		return bareDigest, "", nil
+		return bareDigest, nil
 	}
 
-	return "", "", fmt.Errorf("%w: %s", ErrChecksumNotFound, filename)
+	return "", fmt.Errorf("%w: %s", ErrChecksumNotFound, filename)
 }
 
 // hashImageFile streams imagePath through hasher and returns lowercase hex.

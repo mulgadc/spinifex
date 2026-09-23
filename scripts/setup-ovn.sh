@@ -942,20 +942,28 @@ NETWORK
             echo "  wrote $NAT_NETDEV + $NAT_NETWORK + $NAT_OVS_NETWORK (transit veth persists on reboot)"
 
             # Kernel egress: masquerade the transit /24 out any uplink and
-            # accept forwarded transit traffic even under FORWARD-policy DROP.
-            # vpcd re-ensures these on every start; installing here too means
-            # the wiring is testable before services run.
-            sudo iptables -t nat -C POSTROUTING -s "$NAT_TRANSIT_CIDR" ! -d "$NAT_TRANSIT_CIDR" \
-                -m comment --comment "spinifex-nat-egress" -j MASQUERADE 2>/dev/null || \
-            sudo iptables -t nat -A POSTROUTING -s "$NAT_TRANSIT_CIDR" ! -d "$NAT_TRANSIT_CIDR" \
+            # accept forwarded transit traffic. vpcd re-ensures these on every
+            # start; installing here too means the wiring is testable before
+            # services run.
+            #
+            # Insert at the head, never append: Ubuntu ships a catch-all REJECT
+            # in FORWARD, and an appended ACCEPT sits behind it and never
+            # matches. Drain first so an already-appended copy is repositioned
+            # rather than left stranded. Every spec carries our comment, so
+            # only our own rules are ever deleted.
+            nat_egress_rule() { # nat_egress_rule <table> <chain> <spec...>
+                local table="$1" chain="$2"; shift 2
+                local i
+                for i in 1 2 3 4 5 6 7 8; do
+                    sudo iptables -t "$table" -D "$chain" "$@" 2>/dev/null || break
+                done
+                sudo iptables -t "$table" -I "$chain" 1 "$@"
+            }
+            nat_egress_rule nat POSTROUTING -s "$NAT_TRANSIT_CIDR" ! -d "$NAT_TRANSIT_CIDR" \
                 -m comment --comment "spinifex-nat-egress" -j MASQUERADE
-            sudo iptables -C FORWARD -i spx-nat-host -s "$NAT_TRANSIT_CIDR" \
-                -m comment --comment "spinifex-nat-egress" -j ACCEPT 2>/dev/null || \
-            sudo iptables -A FORWARD -i spx-nat-host -s "$NAT_TRANSIT_CIDR" \
+            nat_egress_rule filter FORWARD -i spx-nat-host -s "$NAT_TRANSIT_CIDR" \
                 -m comment --comment "spinifex-nat-egress" -j ACCEPT
-            sudo iptables -C FORWARD -o spx-nat-host -m conntrack --ctstate RELATED,ESTABLISHED \
-                -m comment --comment "spinifex-nat-egress" -j ACCEPT 2>/dev/null || \
-            sudo iptables -A FORWARD -o spx-nat-host -m conntrack --ctstate RELATED,ESTABLISHED \
+            nat_egress_rule filter FORWARD -o spx-nat-host -m conntrack --ctstate RELATED,ESTABLISHED \
                 -m comment --comment "spinifex-nat-egress" -j ACCEPT
             echo "  installed masquerade + forward rules for $NAT_TRANSIT_CIDR (comment: spinifex-nat-egress)"
             ;;

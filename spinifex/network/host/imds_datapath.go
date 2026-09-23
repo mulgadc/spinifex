@@ -42,10 +42,14 @@ func shortENIID(eniID string) string {
 	return fmt.Sprintf("%08x", h.Sum32())
 }
 
+// IMDSEndpointPrefix tags every per-tap IMDS endpoint, so one wildcarded
+// firewall rule covers them all.
+const IMDSEndpointPrefix = "ime-"
+
 // IMDSEndpointName returns the per-tap endpoint port on IMDSBridge — the
 // SO_BINDTODEVICE target the responder binds. "ime-" + 8-char short ENI = 12
 // chars, within the 15-char IFNAMSIZ limit.
-func IMDSEndpointName(eniID string) string { return "ime-" + shortENIID(eniID) }
+func IMDSEndpointName(eniID string) string { return IMDSEndpointPrefix + shortENIID(eniID) }
 
 // IMDSPatchPort returns the IMDSBridge end of the per-tap patch to br-int.
 // "imp-" + 8-char short ENI = 12 chars.

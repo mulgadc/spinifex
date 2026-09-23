@@ -8,9 +8,14 @@ import (
 
 const natEgressComment = "spinifex-nat-egress"
 
+// maxDuplicateRules caps the drain loop. iptables has no delete-all, and a
+// chain holding more copies than this has a problem no reconcile should paper
+// over.
+const maxDuplicateRules = 8
+
 // natEgressRules are the kernel rules giving routed-NAT VMs outbound WAN:
 // masquerade the transit /24 out any uplink, and accept forwarded transit
-// traffic even when the FORWARD policy is DROP (Docker/firewalld hosts).
+// traffic even when FORWARD would otherwise refuse it.
 var natEgressRules = []struct {
 	table string
 	chain string
@@ -32,15 +37,29 @@ func natRuleArgs(op, table, chain string, spec []string) []string {
 	return append(args, spec...)
 }
 
-// EnsureNATEgressRules idempotently installs the routed-NAT egress rules:
-// probe with -C, append with -A only when missing. vpcd calls this on every
+// natInsertArgs builds an insert at the head of the chain.
+func natInsertArgs(table, chain string, spec []string) []string {
+	args := []string{"-t", table, "-I", chain, "1"}
+	return append(args, spec...)
+}
+
+// EnsureNATEgressRules installs the routed-NAT egress rules at the head of
+// their chains, removing any existing copies first. vpcd calls this on every
 // start, so rules survive reboots without iptables-persistent.
+//
+// Appending is not enough and probing with -C is worse than useless: Ubuntu
+// ships a catch-all REJECT in FORWARD, so an appended ACCEPT never matches,
+// and a rule an earlier build appended still satisfies -C — which would leave
+// a broken host broken across an upgrade. Every spec carries our comment, so
+// the drain only ever deletes our own rules.
 func EnsureNATEgressRules(ctx context.Context, r Runner) error {
 	for _, rule := range natEgressRules {
-		if _, err := r.Run(ctx, "iptables", natRuleArgs("-C", rule.table, rule.chain, rule.spec)...); err == nil {
-			continue
+		for range maxDuplicateRules {
+			if _, err := r.Run(ctx, "iptables", natRuleArgs("-D", rule.table, rule.chain, rule.spec)...); err != nil {
+				break
+			}
 		}
-		if out, err := r.Run(ctx, "iptables", natRuleArgs("-A", rule.table, rule.chain, rule.spec)...); err != nil {
+		if out, err := r.Run(ctx, "iptables", natInsertArgs(rule.table, rule.chain, rule.spec)...); err != nil {
 			return fmt.Errorf("install NAT egress rule (%s %s): %s: %w", rule.table, rule.chain, string(out), err)
 		}
 		slog.Info("host: installed NAT egress rule", "table", rule.table, "chain", rule.chain)

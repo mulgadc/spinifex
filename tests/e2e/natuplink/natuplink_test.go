@@ -186,6 +186,29 @@ func phaseHostWiring(t *testing.T) {
 		out, err := exec.Command("sudo", append([]string{"-n", "iptables"}, args...)...).CombinedOutput()
 		assert.NoErrorf(t, err, "iptables %s missing: %s", strings.Join(args, " "), string(out))
 	}
+
+	// -C says the rule exists, never where. Ubuntu ships a catch-all REJECT in
+	// FORWARD, so a present-but-appended ACCEPT is dead and guests lose egress
+	// with every rule reporting healthy.
+	harness.Step(t, "NAT egress FORWARD rules precede any catch-all reject")
+	fwdOut, err := exec.Command("sudo", "-n", "iptables", "-t", "filter", "-S", "FORWARD").CombinedOutput()
+	require.NoErrorf(t, err, "iptables -S FORWARD: %s", string(fwdOut))
+	firstDeny, lastAccept := -1, -1
+	for i, line := range strings.Split(strings.TrimSpace(string(fwdOut)), "\n") {
+		switch {
+		case strings.HasPrefix(line, "-A FORWARD") && strings.Contains(line, "spinifex-nat-egress"):
+			lastAccept = i
+		case strings.HasPrefix(line, "-A FORWARD") && !strings.Contains(line, "-j LIBVIRT") &&
+			(strings.Contains(line, "-j REJECT") || strings.Contains(line, "-j DROP")):
+			if firstDeny < 0 {
+				firstDeny = i
+			}
+		}
+	}
+	if firstDeny >= 0 {
+		assert.Lessf(t, lastAccept, firstDeny,
+			"spinifex-nat-egress ACCEPT rules must sit above the first REJECT/DROP in FORWARD\n%s", string(fwdOut))
+	}
 }
 
 // --- Phase 2: config ---------------------------------------------------------

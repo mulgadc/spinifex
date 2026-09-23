@@ -74,6 +74,9 @@ func installIMDSDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error
 	if err := EnsureIMDSBridge(ctx, r); err != nil {
 		return err
 	}
+	if err := EnsureIMDSInputRule(ctx, r); err != nil {
+		return err
+	}
 	if err := clearIMDSFlowsByCookie(ctx, r, imdsFlowCookie(d.Endpoint)); err != nil {
 		return err
 	}

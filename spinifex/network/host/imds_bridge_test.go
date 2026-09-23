@@ -113,3 +113,45 @@ func TestClearIMDSFlowsByCookie(t *testing.T) {
 		t.Errorf("expected cookie-scoped del-flows; calls: %v", s.calls)
 	}
 }
+
+// Oracle's cloud image ships a catch-all REJECT in INPUT, so an appended
+// accept never matches and every guest silently loses IMDS and VPC DNS.
+func TestEnsureIMDSInputRuleInsertsAtTheHeadOfINPUT(t *testing.T) {
+	r := newStubRunner()
+	r.expect("iptables -t filter -C", nil, errors.New("no match"))
+	r.expect("iptables -t filter -I", nil, nil)
+
+	if err := EnsureIMDSInputRule(context.Background(), r); err != nil {
+		t.Fatalf("EnsureIMDSInputRule: %v", err)
+	}
+	want := "iptables -t filter -I INPUT 1 -i " + IMDSEndpointPrefix +
+		"+ -m comment --comment spinifex-imds -j ACCEPT"
+	if !r.called(want) {
+		t.Errorf("missing insert:\n  want %q\n  got  %v", want, r.calls)
+	}
+}
+
+// Re-inserting on every launch would blip IMDS for guests already running, so
+// a rule that is already there is left alone.
+func TestEnsureIMDSInputRuleLeavesAnExistingRuleAlone(t *testing.T) {
+	r := newStubRunner()
+	r.expect("iptables -t filter -C", nil, nil)
+
+	if err := EnsureIMDSInputRule(context.Background(), r); err != nil {
+		t.Fatalf("EnsureIMDSInputRule: %v", err)
+	}
+	for _, c := range r.calls {
+		if strings.Contains(c, " -I ") {
+			t.Errorf("re-inserted an existing rule: %q", c)
+		}
+	}
+}
+
+// One wildcard rule has to cover every per-instance endpoint; a per-device rule
+// would leak one INPUT entry per launch.
+func TestIMDSInputRuleWildcardMatchesEveryEndpointName(t *testing.T) {
+	name := IMDSEndpointName("eni-0123456789abcdef0")
+	if !strings.HasPrefix(name, IMDSEndpointPrefix) {
+		t.Fatalf("endpoint %q does not carry prefix %q", name, IMDSEndpointPrefix)
+	}
+}

@@ -253,7 +253,7 @@ if command -v nft >/dev/null 2>&1; then
     fi
 fi
 if command -v iptables-save >/dev/null 2>&1 && ! $DRY_RUN; then
-    for marker in spinifex-nat-egress spinifex-eip-ingress; do
+    for marker in spinifex-nat-egress spinifex-eip-ingress spinifex-imds; do
         while read -r table rule; do
             [ -n "$rule" ] || continue
             # shellcheck disable=SC2086
@@ -263,7 +263,7 @@ if command -v iptables-save >/dev/null 2>&1 && ! $DRY_RUN; then
             $0 ~ m && /^-A/ { sub(/^-A /, ""); print t, $0 }')
     done
 elif $DRY_RUN; then
-    echo "  would remove iptables rules commented spinifex-nat-egress / spinifex-eip-ingress"
+    echo "  would remove iptables rules commented spinifex-nat-egress / spinifex-eip-ingress / spinifex-imds"
 fi
 
 # ---------------------------------------------------------------------------

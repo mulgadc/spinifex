@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -1337,6 +1339,79 @@ func TestSourceDigestMode(t *testing.T) {
 			assert.Equal(t, tt.want, sourceDigestMode(tt.localFile, tt.checksum, tt.skipVerify))
 		})
 	}
+}
+
+func TestImportSourceResolveDigest(t *testing.T) {
+	imgBytes := []byte("import-source-fixture")
+	sum := sha256.Sum256(imgBytes)
+	imgHex := hex.EncodeToString(sum[:])
+	dir := t.TempDir()
+	img := filepath.Join(dir, "image.raw")
+	require.NoError(t, os.WriteFile(img, imgBytes, 0o600))
+	sums := filepath.Join(dir, "SHA256SUMS")
+
+	t.Run("operator verified", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{
+			imageFile: img, localFile: img,
+			checksumPath: sums, checksumAlgo: "sha256", expectedDigest: imgHex,
+		}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: imgHex, Verification: ebsmetadata.DigestOperator,
+			Source: "SHA256SUMS", Filename: "image.raw",
+		}, got)
+		assert.Contains(t, out.String(), "Verified image checksum (sha256)")
+		assert.Empty(t, errOut.String())
+	})
+
+	t.Run("operator mismatch names the file and sums file", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		_, err := importSource{
+			imageFile: img, localFile: img,
+			checksumPath: sums, checksumAlgo: "sha256", expectedDigest: strings.Repeat("0", 64),
+		}.resolveDigest(&out, &errOut)
+		require.ErrorIs(t, err, utils.ErrChecksumMismatch)
+		assert.Contains(t, errOut.String(), "file:     "+img)
+		assert.Contains(t, errOut.String(), "checksum: "+sums)
+		assert.Contains(t, errOut.String(), imgHex)
+		assert.FileExists(t, img, "the operator's file must be left in place")
+	})
+
+	t.Run("local file without checksum is recorded unverified", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{imageFile: img, localFile: img}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: imgHex, Verification: ebsmetadata.DigestUnverified, Filename: "image.raw",
+		}, got)
+		assert.Equal(t, "Importing "+img+" without checksum validation (pass --checksum <sums-file> to verify)\n",
+			errOut.String())
+	})
+
+	t.Run("catalog skip-verify is recorded unverified", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{imageFile: img, imageName: "debian-13-x86_64", skipVerify: true}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.DigestUnverified, got.Verification)
+		assert.Equal(t, imgHex, got.Value)
+		assert.Contains(t, errOut.String(), "--skip-verify set")
+	})
+
+	t.Run("catalog entry without checksum is refused", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		_, err := importSource{imageFile: img, imageName: "debian-13-x86_64"}.resolveDigest(&out, &errOut)
+		require.Error(t, err)
+		assert.Contains(t, errOut.String(), "missing Checksum/ChecksumType")
+	})
+
+	t.Run("unreadable image fails the unverified hash", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		missing := filepath.Join(dir, "missing.raw")
+		_, err := importSource{imageFile: missing, localFile: missing}.resolveDigest(&out, &errOut)
+		require.Error(t, err)
+		assert.Contains(t, errOut.String(), "Could not hash image")
+	})
 }
 
 func TestImagesDescribeCmd_FlagSchema(t *testing.T) {

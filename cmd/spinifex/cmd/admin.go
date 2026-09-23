@@ -618,7 +618,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 				fmt.Fprintf(os.Stderr, "Catalog entry %q is missing Checksum/ChecksumType; refusing import.\n", imageName)
 				os.Exit(1)
 			}
-			if err := utils.VerifyImageChecksum(imageFile, image.Checksum, image.ChecksumType); err != nil {
+			if _, err := utils.VerifyImageChecksum(imageFile, image.Checksum, image.ChecksumType); err != nil {
 				printChecksumError(os.Stderr, imageFile, imageName, image, err)
 				os.Exit(1)
 			}

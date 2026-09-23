@@ -50,6 +50,31 @@ func TestVolumeRoundTripsEncryptedAndModification(t *testing.T) {
 	assert.Equal(t, *want.Modification, *got.Modification)
 }
 
+func TestAMIRoundTripsSourceDigest(t *testing.T) {
+	want := AMI{
+		ImageID: "ami-1", Name: "debian-13",
+		SourceDigest: &ImageDigest{
+			Algorithm: "sha512", Value: "abc123", Verification: DigestOperator,
+			Source: "SHA512SUMS", Filename: "debian-13-generic-amd64.tar.xz",
+		},
+	}
+	data, err := MarshalAMI(want)
+	require.NoError(t, err)
+	got, err := UnmarshalAMI(data)
+	require.NoError(t, err)
+	require.NotNil(t, got.SourceDigest)
+	assert.Equal(t, *want.SourceDigest, *got.SourceDigest)
+}
+
+// TestAMIWithoutSourceDigestStillDecodes guards AMIs written before the field
+// existed. The version is hard-coded so a SchemaVersion bump fails here.
+func TestAMIWithoutSourceDigestStillDecodes(t *testing.T) {
+	got, err := UnmarshalAMI([]byte(`{"schema_version":2,"image_id":"ami-1"}`))
+	require.NoError(t, err)
+	assert.Equal(t, "ami-1", got.ImageID)
+	assert.Nil(t, got.SourceDigest)
+}
+
 func TestMetadataRejectsUnknownSchemaVersion(t *testing.T) {
 	_, err := UnmarshalAMI([]byte(`{"schema_version":99,"image_id":"ami-1"}`))
 	require.Error(t, err)

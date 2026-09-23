@@ -108,8 +108,26 @@ type AMI struct {
 	Distro          string            `json:"distro,omitempty"`
 	DistroFamily    string            `json:"distro_family,omitempty"`
 	Tags            map[string]string `json:"tags,omitempty"`
+	SourceDigest    *ImageDigest      `json:"source_digest,omitempty"`
 	State           string            `json:"state,omitempty"`
 }
+
+// ImageDigest identifies the artifact an AMI was imported from, not the
+// volume's current bytes; Verification says who vouched for it.
+type ImageDigest struct {
+	Algorithm    string `json:"algorithm"`
+	Value        string `json:"value"`
+	Verification string `json:"verification"`
+	Source       string `json:"source,omitempty"`
+	Filename     string `json:"filename"`
+}
+
+// ImageDigest.Verification values.
+const (
+	DigestOperator   = "operator"
+	DigestCatalog    = "catalog"
+	DigestUnverified = "unverified"
+)
 
 // VolumeKey keys a volume document under its owning account, so a listing of
 // one account's prefix cannot reach another account's document. accountID comes

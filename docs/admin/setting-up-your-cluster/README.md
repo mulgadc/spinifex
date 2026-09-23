@@ -76,8 +76,6 @@ spx admin images import --name ubuntu-26.04-x86_64
 spx admin images import --file ~/images/ubuntu-26.04-server-cloudimg-amd64.img --checksum ~/images/SHA256SUMS --distro ubuntu --version 26.04 --arch x86_64 --boot-mode uefi
 ```
 
-`--checksum` takes the sums file the image was published with and refuses the import on a mismatch. Without it the import proceeds unverified and says so.
-
 Verify the import and note the AMI ID:
 
 ```bash

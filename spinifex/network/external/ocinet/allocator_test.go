@@ -1,4 +1,4 @@
-package ocinet
+package ocinet_test
 
 import (
 	"context"
@@ -13,14 +13,15 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
 )
 
 // newTestAllocator wires a fake OCI and an in-memory store, with a poll ladder
 // that does not sleep so the async-assignment tests stay fast.
-func newTestAllocator(t *testing.T, fake *oci.Fake) (*PoolAllocator, *MemStore) {
+func newTestAllocator(t *testing.T, fake *oci.Fake) (*ocinet.PoolAllocator, *ocinet.MemStore) {
 	t.Helper()
-	store := NewMemStore()
-	a, err := New(fake, store, Config{
+	store := ocinet.NewMemStore()
+	a, err := ocinet.New(fake, store, ocinet.Config{
 		Pool:          external.ExternalPoolConfig{Name: "oci-wan", Source: external.SourceOCI},
 		VNICID:        "ocid1.vnic.oc1..vnic1",
 		CompartmentID: "ocid1.compartment.oc1..comp1",
@@ -57,7 +58,7 @@ func TestAllocateCreatesThePairAndReturnsThePublicAddress(t *testing.T) {
 
 	require.Len(t, fake.PrivateIPs(), 1)
 	require.Len(t, fake.PublicIPs(), 1)
-	assert.Equal(t, DisplayNamePrefix+"eipalloc-1", fake.PrivateIPs()[0].DisplayName,
+	assert.Equal(t, ocinet.DisplayNamePrefix+"eipalloc-1", fake.PrivateIPs()[0].DisplayName,
 		"objects must carry the prefix or reconcile cannot tell them from the operator's")
 }
 
@@ -171,19 +172,19 @@ func TestPoolMismatchIsRefused(t *testing.T) {
 }
 
 func TestNewRejectsIncompleteConfig(t *testing.T) {
-	store := NewMemStore()
+	store := ocinet.NewMemStore()
 	fake := oci.NewFake()
 
-	_, err := New(nil, store, Config{VNICID: "v", CompartmentID: "c"})
+	_, err := ocinet.New(nil, store, ocinet.Config{VNICID: "v", CompartmentID: "c"})
 	require.Error(t, err)
 
-	_, err = New(fake, nil, Config{VNICID: "v", CompartmentID: "c"})
+	_, err = ocinet.New(fake, nil, ocinet.Config{VNICID: "v", CompartmentID: "c"})
 	require.Error(t, err)
 
-	_, err = New(fake, store, Config{CompartmentID: "c"})
+	_, err = ocinet.New(fake, store, ocinet.Config{CompartmentID: "c"})
 	require.ErrorContains(t, err, "vnic_id")
 
-	_, err = New(fake, store, Config{VNICID: "v"})
+	_, err = ocinet.New(fake, store, ocinet.Config{VNICID: "v"})
 	require.ErrorContains(t, err, "compartment_id")
 }
 

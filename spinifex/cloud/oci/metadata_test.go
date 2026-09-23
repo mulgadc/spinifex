@@ -1,4 +1,4 @@
-package oci
+package oci_test
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/cloud/oci"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,7 +28,7 @@ const instanceDoc = `{
   "availabilityDomain":"RgrR:AP-SYDNEY-1-AD-1","shape":"VM.Standard.E6.Flex"
 }`
 
-func testMetadata(t *testing.T) (*MetadataClient, *[]string) {
+func testMetadata(t *testing.T) (*oci.MetadataClient, *[]string) {
 	t.Helper()
 	var auth []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +43,7 @@ func testMetadata(t *testing.T) (*MetadataClient, *[]string) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &MetadataClient{BaseURL: srv.URL, HTTP: srv.Client()}, &auth
+	return &oci.MetadataClient{BaseURL: srv.URL, HTTP: srv.Client()}, &auth
 }
 
 func TestVNICsDecodesTheMetadataDocument(t *testing.T) {
@@ -71,20 +72,22 @@ func TestInstanceCarriesTheCompartment(t *testing.T) {
 // IMDS reports MACs uppercase and the kernel reports them lowercase, so a byte
 // comparison of the two never matches and every resolve would fail.
 func TestMACMatchingIsCaseInsensitive(t *testing.T) {
-	assert.Equal(t, normalizeMAC("02:00:17:01:7E:71"), normalizeMAC("02:00:17:01:7e:71"))
-	assert.NotEqual(t, normalizeMAC("02:00:17:01:7E:71"), normalizeMAC("02:00:17:00:ef:07"))
+	assert.Equal(t, oci.NormalizeMAC("02:00:17:01:7E:71"), oci.NormalizeMAC("02:00:17:01:7e:71"))
+	assert.NotEqual(t, oci.NormalizeMAC("02:00:17:01:7E:71"), oci.NormalizeMAC("02:00:17:00:ef:07"))
 }
 
-func TestMetadataErrorsCarryThePath(t *testing.T) {
-	md, _ := testMetadata(t)
+// A metadata read that fails has to say which document and why: on a non-OCI
+// host this is the error an operator sees, and "404" alone explains nothing.
+func TestMetadataErrorsCarryThePathAndStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	md := &oci.MetadataClient{BaseURL: srv.URL, HTTP: srv.Client()}
 
 	_, err := md.VNICs(context.Background())
-	require.NoError(t, err)
-
-	var out any
-	err = md.get(context.Background(), "/nope/", &out)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "/nope/")
+	assert.Contains(t, err.Error(), "/vnics/")
 	assert.Contains(t, err.Error(), "404")
 }
 
@@ -97,7 +100,7 @@ func TestMatchVNICResolvesTheClonedMACToTheExternalVNIC(t *testing.T) {
 	vnics, err := md.VNICs(context.Background())
 	require.NoError(t, err)
 
-	got, err := matchVNICByMAC(vnics, "02:00:17:01:7e:71", "br-wan")
+	got, err := oci.MatchVNICByMAC(vnics, "02:00:17:01:7e:71", "br-wan")
 	require.NoError(t, err)
 	assert.Equal(t, "10.200.0.29", got.PrivateIP)
 	assert.Equal(t, vnics[1].VNICID, got.VNICID)
@@ -108,7 +111,7 @@ func TestMatchVNICNamesTheAttachedMACsWhenItCannotMatch(t *testing.T) {
 	vnics, err := md.VNICs(context.Background())
 	require.NoError(t, err)
 
-	_, err = matchVNICByMAC(vnics, "aa:bb:cc:dd:ee:ff", "eth9")
+	_, err = oci.MatchVNICByMAC(vnics, "aa:bb:cc:dd:ee:ff", "eth9")
 	require.Error(t, err)
 	// The operator's next move is comparing MACs, so the error has to show them.
 	assert.Contains(t, err.Error(), "eth9")
@@ -118,7 +121,7 @@ func TestMatchVNICNamesTheAttachedMACsWhenItCannotMatch(t *testing.T) {
 func TestResolveVNICRejectsAnUnknownInterface(t *testing.T) {
 	md, _ := testMetadata(t)
 
-	_, err := ResolveVNICByInterface(context.Background(), md, "definitely-not-a-nic")
+	_, err := oci.ResolveVNICByInterface(context.Background(), md, "definitely-not-a-nic")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "definitely-not-a-nic")
 }

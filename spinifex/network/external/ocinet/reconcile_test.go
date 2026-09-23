@@ -1,4 +1,4 @@
-package ocinet
+package ocinet_test
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
 )
 
 // A crash between creating the OCI objects and writing the binding leaves a
@@ -22,9 +23,9 @@ func TestReconcileCollectsALeakedPairFromAnInterruptedAllocate(t *testing.T) {
 
 	// Simulate the crash: the objects exist and carry our prefix, but the
 	// binding was never written.
-	priv, err := fake.AssignPrivateIP(ctx, "ocid1.vnic.oc1..vnic1", netip.Addr{}, DisplayNamePrefix+"eipalloc-lost")
+	priv, err := fake.AssignPrivateIP(ctx, "ocid1.vnic.oc1..vnic1", netip.Addr{}, ocinet.DisplayNamePrefix+"eipalloc-lost")
 	require.NoError(t, err)
-	_, err = fake.CreatePublicIP(ctx, "ocid1.compartment.oc1..comp1", priv.ID, DisplayNamePrefix+"eipalloc-lost")
+	_, err = fake.CreatePublicIP(ctx, "ocid1.compartment.oc1..comp1", priv.ID, ocinet.DisplayNamePrefix+"eipalloc-lost")
 	require.NoError(t, err)
 	require.Len(t, fake.PublicIPs(), 1)
 
@@ -121,7 +122,7 @@ func TestReconcileCollectsALeakedPrivateIPWithNoPublicIP(t *testing.T) {
 	fake := oci.NewFake()
 	a, _ := newTestAllocator(t, fake)
 
-	priv, err := fake.AssignPrivateIP(ctx, "ocid1.vnic.oc1..vnic1", netip.Addr{}, DisplayNamePrefix+"eipalloc-half")
+	priv, err := fake.AssignPrivateIP(ctx, "ocid1.vnic.oc1..vnic1", netip.Addr{}, ocinet.DisplayNamePrefix+"eipalloc-half")
 	require.NoError(t, err)
 
 	res, err := a.Reconcile(ctx)

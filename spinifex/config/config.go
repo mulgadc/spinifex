@@ -688,10 +688,16 @@ func validateClusterConfig(cc *ClusterConfig) error {
 			if p.GwLrpRangeStart != "" || p.GwLrpRangeEnd != "" {
 				return fmt.Errorf("config: [[network.external_pools]] %q: gw_lrp_range_start/gw_lrp_range_end not allowed with source=\"oci\" (an OCI address per VPC gateway would exhaust the 50-per-region public IP quota)", p.Name)
 			}
-			// Every OCI address costs a registration and bills, so a pool that
-			// no datapath can reach is a bill for nothing.
-			if cc.Network.ExternalMode != "pool" && cc.Network.ExternalMode != "nat" {
-				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"oci\" requires [network] external_mode = \"pool\" or \"nat\"", p.Name)
+			// Pool mode puts a per-VPC gateway MAC and a per-NAT-rule external
+			// MAC on the uplink and ARPs for the address. An OCI VNIC accepts
+			// exactly one MAC, its own, and delivers every inbound frame to it
+			// regardless of which of its addresses the packet is for — so a
+			// pool-mode guest's egress is dropped and its ingress never reaches
+			// OVN. Routed mode keeps the address on the host, where it already
+			// wears the VNIC's MAC. Refusing here costs a config error; not
+			// refusing costs a day of tcpdump.
+			if cc.Network.ExternalMode != "nat" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"oci\" requires [network] external_mode = \"nat\" (routed); OCI VNICs accept only their own MAC, so pool mode's per-VPC gateway MACs are dropped by the provider", p.Name)
 			}
 			continue
 		default:

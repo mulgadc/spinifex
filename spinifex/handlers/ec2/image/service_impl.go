@@ -890,6 +890,7 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 		CreationDate:    time.Now().UTC(),
 		BootMode:        srcMeta.BootMode,
 		Tags:            tags,
+		SourceDigest:    srcMeta.SourceDigest,
 		// Zero-copy: the new config shares the source's already-durable
 		// snapshot, so the image is complete as soon as this is written.
 		State: "available",

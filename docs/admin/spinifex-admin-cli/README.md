@@ -109,7 +109,7 @@ spx admin images list
 spx admin images import --name debian-13-arm64
 ```
 
-Catalog imports verify the image against the catalog-declared SHA-256/SHA-512 digest before extraction. Use `--file` to import operator-supplied media (verification skipped — operator is responsible for integrity), or `--force` to re-download after a checksum mismatch.
+Catalog imports verify the image against the catalog-declared SHA-256/SHA-512 digest before extraction. Use `--file` with `--checksum <sums-file>` to import operator-supplied media verified against the sums file it was published with, or `--force` to re-download after a checksum mismatch. A `--file` import without `--checksum` proceeds unverified and prints a notice. Every import records the source file's digest on the AMI; `spx admin images describe --image-id <ami>` shows it.
 
 ### EKS node image
 

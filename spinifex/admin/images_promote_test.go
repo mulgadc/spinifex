@@ -17,7 +17,18 @@ import (
 func TestPromoteSystemImage_HappyPath(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-user-001"
-	putAMI(t, store, id, "my-app", testRemoveAccountID, "snap-user-001")
+	digest := &ebsmetadata.ImageDigest{
+		Algorithm: "sha256", Value: "abc123", Verification: ebsmetadata.DigestOperator,
+		Source: "SHA256SUMS", Filename: "my-app.raw",
+	}
+	require.NoError(t, ebsmetadata.NewStore(store, testRemoveBucket).PutAMI(t.Context(), ebsmetadata.AMI{
+		ImageID:         id,
+		Name:            "my-app",
+		ImageOwnerAlias: testRemoveAccountID,
+		SnapshotID:      "snap-user-001",
+		VolumeSizeGiB:   8,
+		SourceDigest:    digest,
+	}))
 
 	result, err := PromoteSystemImage(store, testRemoveBucket, PromoteImageOpts{ImageID: id})
 	require.NoError(t, err)
@@ -30,6 +41,7 @@ func TestPromoteSystemImage_HappyPath(t *testing.T) {
 	// Other fields must be preserved.
 	assert.Equal(t, "my-app", meta.Name)
 	assert.Equal(t, "snap-user-001", meta.SnapshotID)
+	assert.Equal(t, digest, meta.SourceDigest)
 }
 
 // A promoted AMI's readers derive the snapshot account from the alias, so the

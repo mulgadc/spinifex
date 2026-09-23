@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -9,11 +11,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/northstar/pkg/backend"
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -1286,6 +1290,185 @@ func TestAMIVolumeSizeGiB(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateChecksumFlags(t *testing.T) {
+	tests := []struct {
+		name       string
+		checksum   string
+		unset      bool
+		file       string
+		skipVerify bool
+		wantErr    string
+	}{
+		{name: "no checksum", unset: true, file: "img.raw"},
+		{name: "checksum with file", checksum: "SHA256SUMS", file: "img.raw"},
+		{name: "empty checksum value", checksum: "", file: "img.raw", wantErr: "--checksum requires a sums file path"},
+		{name: "blank checksum value", checksum: "  ", file: "img.raw", wantErr: "--checksum requires a sums file path"},
+		{name: "checksum without file", checksum: "SHA256SUMS", wantErr: "--checksum requires --file"},
+		{name: "checksum with skip-verify", checksum: "SHA256SUMS", file: "img.raw", skipVerify: true,
+			wantErr: "mutually exclusive"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateChecksumFlags(tt.checksum, !tt.unset, tt.file, tt.skipVerify)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestSourceDigestMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		localFile  string
+		checksum   string
+		skipVerify bool
+		want       string
+	}{
+		{name: "file with checksum", localFile: "img.raw", checksum: "SHA256SUMS", want: ebsmetadata.DigestOperator},
+		{name: "catalog download verified", want: ebsmetadata.DigestCatalog},
+		{name: "catalog download skip-verify", skipVerify: true, want: ebsmetadata.DigestUnverified},
+		{name: "file without checksum", localFile: "img.raw", want: ebsmetadata.DigestUnverified},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sourceDigestMode(tt.localFile, tt.checksum, tt.skipVerify))
+		})
+	}
+}
+
+func TestImportSourceResolveDigest(t *testing.T) {
+	imgBytes := []byte("import-source-fixture")
+	sum := sha256.Sum256(imgBytes)
+	imgHex := hex.EncodeToString(sum[:])
+	dir := t.TempDir()
+	img := filepath.Join(dir, "image.raw")
+	require.NoError(t, os.WriteFile(img, imgBytes, 0o600))
+	sums := filepath.Join(dir, "SHA256SUMS")
+
+	t.Run("operator verified", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{
+			imageFile: img, localFile: img,
+			checksumPath: sums, checksumAlgo: "sha256", expectedDigest: imgHex,
+		}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: imgHex, Verification: ebsmetadata.DigestOperator,
+			Source: "SHA256SUMS", Filename: "image.raw",
+		}, got)
+		assert.Contains(t, out.String(), "Verified image checksum (sha256)")
+		assert.Empty(t, errOut.String())
+	})
+
+	t.Run("operator mismatch names the file and sums file", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		_, err := importSource{
+			imageFile: img, localFile: img,
+			checksumPath: sums, checksumAlgo: "sha256", expectedDigest: strings.Repeat("0", 64),
+		}.resolveDigest(&out, &errOut)
+		require.ErrorIs(t, err, utils.ErrChecksumMismatch)
+		assert.Contains(t, errOut.String(), "file:     "+img)
+		assert.Contains(t, errOut.String(), "checksum: "+sums)
+		assert.Contains(t, errOut.String(), imgHex)
+		assert.FileExists(t, img, "the operator's file must be left in place")
+	})
+
+	t.Run("local file without checksum is recorded unverified", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{imageFile: img, localFile: img}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: imgHex, Verification: ebsmetadata.DigestUnverified, Filename: "image.raw",
+		}, got)
+		assert.Equal(t, "Importing "+img+" without checksum validation (pass --checksum <sums-file> to verify)\n",
+			errOut.String())
+	})
+
+	t.Run("catalog skip-verify is recorded unverified", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{imageFile: img, imageName: "debian-13-x86_64", skipVerify: true}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.DigestUnverified, got.Verification)
+		assert.Equal(t, imgHex, got.Value)
+		assert.Contains(t, errOut.String(), "--skip-verify set")
+	})
+
+	t.Run("catalog entry without checksum is refused", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		_, err := importSource{imageFile: img, imageName: "debian-13-x86_64"}.resolveDigest(&out, &errOut)
+		require.Error(t, err)
+		assert.Contains(t, errOut.String(), "missing Checksum/ChecksumType")
+	})
+
+	t.Run("unreadable image fails the unverified hash", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		missing := filepath.Join(dir, "missing.raw")
+		_, err := importSource{imageFile: missing, localFile: missing}.resolveDigest(&out, &errOut)
+		require.Error(t, err)
+		assert.Contains(t, errOut.String(), "Could not hash image")
+	})
+}
+
+func TestImagesDescribeCmd_FlagSchema(t *testing.T) {
+	imageIDFlag := imagesDescribeCmd.Flags().Lookup("image-id")
+	require.NotNil(t, imageIDFlag, "--image-id must be defined")
+	assert.Equal(t, []string{"true"}, imageIDFlag.Annotations[cobraRequiredAnnotation],
+		"--image-id must be marked required")
+}
+
+func TestPrintAMIDescription(t *testing.T) {
+	base := ebsmetadata.AMI{
+		ImageID:         "ami-1",
+		Name:            "ami-debian-13-x86_64",
+		ImageOwnerAlias: "system",
+		CreationDate:    time.Date(2026, 9, 23, 1, 2, 3, 0, time.UTC),
+		BootMode:        "uefi",
+		Architecture:    "x86_64",
+	}
+
+	t.Run("digest recorded", func(t *testing.T) {
+		meta := base
+		meta.SourceDigest = &ebsmetadata.ImageDigest{
+			Algorithm: "sha512", Value: "abc123", Verification: ebsmetadata.DigestOperator,
+			Source: "SHA512SUMS", Filename: "debian-13-generic-amd64.tar.xz",
+		}
+		var buf bytes.Buffer
+		printAMIDescription(&buf, meta)
+		out := buf.String()
+		assert.Contains(t, out, "Image ID:       ami-1")
+		assert.Contains(t, out, "Created:        2026-09-23T01:02:03Z")
+		assert.Contains(t, out, "Boot mode:      uefi")
+		assert.Contains(t, out, "Source digest:  sha512:abc123")
+		assert.Contains(t, out, "Verification:   operator (SHA512SUMS)")
+		assert.Contains(t, out, "Source file:    debian-13-generic-amd64.tar.xz")
+	})
+
+	t.Run("unverified digest has no source", func(t *testing.T) {
+		meta := base
+		meta.SourceDigest = &ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: "def456", Verification: ebsmetadata.DigestUnverified,
+			Filename: "image.raw",
+		}
+		var buf bytes.Buffer
+		printAMIDescription(&buf, meta)
+		assert.Contains(t, buf.String(), "Verification:   unverified\n")
+	})
+
+	t.Run("digest not recorded", func(t *testing.T) {
+		var buf bytes.Buffer
+		printAMIDescription(&buf, base)
+		out := buf.String()
+		assert.Contains(t, out, "Source digest:  not recorded (imported before digest recording)")
+		assert.NotContains(t, out, "Verification:")
+	})
 }
 
 func TestCheckJoinPreconditions(t *testing.T) {

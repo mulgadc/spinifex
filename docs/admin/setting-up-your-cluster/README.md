@@ -73,7 +73,7 @@ spx admin images import --name ubuntu-26.04-x86_64
 ### Option B: Import a local image file
 
 ```bash
-spx admin images import --file ~/images/ubuntu-26.04.img --distro ubuntu --version 26.04 --arch x86_64 --boot-mode uefi
+spx admin images import --file ~/images/ubuntu-26.04-server-cloudimg-amd64.img --checksum ~/images/SHA256SUMS --distro ubuntu --version 26.04 --arch x86_64 --boot-mode uefi
 ```
 
 Verify the import and note the AMI ID:

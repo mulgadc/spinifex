@@ -161,3 +161,35 @@ func TestCreateImageFromInstance_Provider_UsesEbsMetadataVolumeSize(t *testing.T
 	require.NoError(t, err)
 	assert.Equal(t, uint64(20), ami.VolumeSizeGiB, "the AMI's volume size must come from the ebsmetadata document")
 }
+
+// An image of a running disk is no longer the imported artifact, so it must
+// not inherit the source AMI's digest even though it inherits other fields.
+func TestCreateImageFromInstance_DoesNotInheritSourceDigest(t *testing.T) {
+	svc, _, provider := setupProviderSnapshotImageService(t)
+	doc := seedProviderVolume(t, svc, provider, "vol-digest001", 8)
+	require.NoError(t, svc.MetadataStore().PutAMI(context.Background(), ebsmetadata.AMI{
+		ImageID:         "ami-src-digest",
+		Name:            "imported",
+		ImageOwnerAlias: "system",
+		BootMode:        "uefi",
+		SourceDigest: &ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: "abc123", Verification: ebsmetadata.DigestOperator, Filename: "img.raw",
+		},
+	}))
+
+	out, err := svc.CreateImageFromInstance(CreateImageParams{
+		Input: &ec2.CreateImageInput{
+			InstanceId: aws.String("i-digest001"),
+			Name:       aws.String("from-instance"),
+		},
+		RootVolumeID:  doc.VolumeID,
+		SourceImageID: "ami-src-digest",
+		IsRunning:     false,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	ami, err := svc.MetadataStore().GetAMI(context.Background(), aws.StringValue(out.ImageId))
+	require.NoError(t, err)
+	assert.Equal(t, "uefi", ami.BootMode, "the source AMI must have been read")
+	assert.Nil(t, ami.SourceDigest)
+}

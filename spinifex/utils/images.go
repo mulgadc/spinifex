@@ -41,6 +41,7 @@ var (
 	ErrChecksumNotFound        = errors.New("checksum entry for image filename not found")
 	ErrUnsupportedChecksumType = errors.New("unsupported checksum type")
 	ErrChecksumFetchFailed     = errors.New("checksum fetch failed")
+	ErrMalformedChecksum       = errors.New("malformed checksum")
 )
 
 // checksumExtraRootCAs is a test-only hook for httptest TLS servers; nil in production.
@@ -50,32 +51,28 @@ var checksumExtraRootCAs *x509.CertPool
 var checksumFetchTimeout = 30 * time.Second
 
 // VerifyImageChecksum fetches the sums file at checksumURL, finds the entry for imagePath's basename,
-// hashes the file with checksumType ("sha256" or "sha512"), and compares digests.
+// hashes the file with checksumType ("sha256" or "sha512"), compares digests and returns the actual one.
 // Fails closed: non-HTTPS, non-2xx, oversized response, or digest mismatch all return a wrapped error.
-func VerifyImageChecksum(imagePath, checksumURL, checksumType string) error {
+func VerifyImageChecksum(imagePath, checksumURL, checksumType string) (string, error) {
 	hasher, err := newHasher(checksumType)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	expected, err := fetchExpectedDigest(checksumURL, filepath.Base(imagePath))
 	if err != nil {
 		slog.Error("image checksum fetch failed", "source", checksumURL, "err", err)
-		return err
+		return "", err
 	}
 
 	// Catch algorithm mismatch before ConstantTimeCompare; a length mismatch would look like tampering.
 	if len(expected) != hasher.Size()*2 {
-		return fmt.Errorf("%w: digest length %d from sums file does not match %s output length %d",
+		return "", fmt.Errorf("%w: digest length %d from sums file does not match %s output length %d",
 			ErrChecksumFetchFailed, len(expected), checksumType, hasher.Size()*2)
 	}
 
-	actual, err := hashImageFile(imagePath, hasher)
-	if err != nil {
-		return fmt.Errorf("hash image file: %w", err)
-	}
-
-	if subtle.ConstantTimeCompare([]byte(expected), []byte(actual)) != 1 {
+	actual, err := VerifyImageDigest(imagePath, checksumType, expected)
+	if errors.Is(err, ErrChecksumMismatch) {
 		slog.Error("image checksum mismatch",
 			"image", imagePath,
 			"algorithm", checksumType,
@@ -83,10 +80,92 @@ func VerifyImageChecksum(imagePath, checksumURL, checksumType string) error {
 			"actual", actual,
 			"source", checksumURL,
 		)
-		return fmt.Errorf("%w: expected %s got %s", ErrChecksumMismatch, expected, actual)
+	}
+	return actual, err
+}
+
+// VerifyImageDigest hashes imagePath with algo and compares it with the expected hex digest.
+// The actual digest is returned on mismatch too, so callers can report it.
+func VerifyImageDigest(imagePath, algo, expected string) (string, error) {
+	actual, err := HashImageFile(imagePath, algo)
+	if err != nil {
+		return "", err
+	}
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(actual)) != 1 {
+		return actual, fmt.Errorf("%w: expected %s got %s", ErrChecksumMismatch, expected, actual)
+	}
+	return actual, nil
+}
+
+// HashImageFile returns the lowercase hex digest of imagePath under algo ("sha256" or "sha512").
+func HashImageFile(imagePath, algo string) (string, error) {
+	hasher, err := newHasher(algo)
+	if err != nil {
+		return "", err
+	}
+	actual, err := hashImageFile(imagePath, hasher)
+	if err != nil {
+		return "", fmt.Errorf("hash image file: %w", err)
+	}
+	return actual, nil
+}
+
+// ReadExpectedDigest reads a local sums file and returns the algorithm and lowercase hex digest for imageName.
+// The algorithm is inferred from the digest length, never from the file's name.
+func ReadExpectedDigest(sumsPath, imageName string) (algo, digest string, err error) {
+	// Stat before open: opening a FIFO would block until a writer appears.
+	info, err := os.Stat(sumsPath)
+	if err != nil {
+		return "", "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", "", fmt.Errorf("%w: %s is not a regular file", ErrMalformedChecksum, sumsPath)
 	}
 
-	return nil
+	f, err := os.Open(sumsPath)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+
+	body, err := io.ReadAll(io.LimitReader(f, sumsFileMaxSize+1))
+	if err != nil {
+		return "", "", fmt.Errorf("read sums file: %w", err)
+	}
+	if len(body) > sumsFileMaxSize {
+		return "", "", fmt.Errorf("%w: sums file exceeds %d byte limit", ErrMalformedChecksum, sumsFileMaxSize)
+	}
+
+	digest, err = parseSumsFile(body, imageName)
+	if errors.Is(err, ErrChecksumNotFound) && bytes.Contains(body, []byte("/"+imageName)) {
+		return "", "", fmt.Errorf("%w (the sums file names it with a directory prefix; entries must name the bare filename)", err)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	digest = strings.ToLower(digest)
+	algo, err = algoForDigest(digest)
+	if err != nil {
+		return "", "", err
+	}
+	return algo, digest, nil
+}
+
+// algoForDigest infers the hash algorithm from a lowercase hex digest's length.
+func algoForDigest(digest string) (string, error) {
+	for _, c := range digest {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", fmt.Errorf("%w: digest contains non-hex character %q", ErrMalformedChecksum, c)
+		}
+	}
+	switch len(digest) {
+	case sha256.Size * 2:
+		return "sha256", nil
+	case sha512.Size * 2:
+		return "sha512", nil
+	default:
+		return "", fmt.Errorf("%w: digest length %d", ErrUnsupportedChecksumType, len(digest))
+	}
 }
 
 func newHasher(checksumType string) (hash.Hash, error) {

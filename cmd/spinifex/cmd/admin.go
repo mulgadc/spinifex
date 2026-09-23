@@ -200,6 +200,15 @@ takes effect immediately. Prompts for confirmation unless --yes is passed.`,
 	Run: runimagesPromoteCmd,
 }
 
+var imagesDescribeCmd = &cobra.Command{
+	Use:   "describe",
+	Short: "Show an AMI's metadata and source digest",
+	Long: `Print an AMI's control-plane metadata, including the digest of the
+artifact it was imported from and who verified it. The digest describes the
+imported source file, not the volume's current contents.`,
+	Run: runimagesDescribeCmd,
+}
+
 var volumesCmd = &cobra.Command{
 	Use:   "volumes",
 	Short: "Inspect block storage volumes",
@@ -294,7 +303,7 @@ spx admin images import --name debian-13-x86_64
 spx admin images list
 
 // Manually import a path
-spx admin images import --file /path/to/image --distro debian --version 13 --arch x86_64
+spx admin images import --file /path/to/image --checksum /path/to/SHA512SUMS --distro debian --version 13 --arch x86_64
 
 -> x <-
 */
@@ -328,6 +337,7 @@ func init() {
 	imagesCmd.AddCommand(imagesListCmd)
 	imagesCmd.AddCommand(imagesRemoveCmd)
 	imagesCmd.AddCommand(imagesPromoteCmd)
+	imagesCmd.AddCommand(imagesDescribeCmd)
 
 	adminCmd.AddCommand(volumesCmd)
 	volumesCmd.AddCommand(volumesOrphansCmd)
@@ -427,6 +437,7 @@ func init() {
 	imagesImportCmd.Flags().StringSlice("tag", nil, "Tag to apply to the imported AMI as key=value (repeatable; e.g. --tag spinifex:managed-by=elbv2)")
 	imagesImportCmd.Flags().Bool("force", false, "Force command execution (overwrites existing files)")
 	imagesImportCmd.Flags().Bool("skip-verify", false, "Skip catalog-image checksum verification (INSECURE; operator assumes integrity responsibility)")
+	imagesImportCmd.Flags().String("checksum", "", "Sums file to verify a --file image against (SHA256SUMS, SHA512SUMS, <image>.sha256/.sha512)")
 
 	imagesRemoveCmd.Flags().String("image-id", "", "AMI ID to remove (required)")
 	imagesRemoveCmd.Flags().Bool("force", false, "Bypass dependency, ownership and config-corrupt checks (salvage mode)")
@@ -436,6 +447,9 @@ func init() {
 	imagesPromoteCmd.Flags().String("image-id", "", "AMI ID to promote to system image (required)")
 	imagesPromoteCmd.Flags().Bool("yes", false, "Skip interactive confirmation prompt")
 	_ = imagesPromoteCmd.MarkFlagRequired("image-id")
+
+	imagesDescribeCmd.Flags().String("image-id", "", "AMI ID to describe (required)")
+	_ = imagesDescribeCmd.MarkFlagRequired("image-id")
 }
 
 const bytesPerGiB = 1024 * 1024 * 1024
@@ -462,6 +476,91 @@ func amiVolumeSizeGiB(sizeBytes int64) uint64 {
 		return 0
 	}
 	return safecast.Int64ToUint64((sizeBytes + bytesPerGiB - 1) / bytesPerGiB)
+}
+
+// validateChecksumFlags rejects --checksum combinations that would otherwise be silently ignored.
+// An explicitly empty --checksum (e.g. an unset shell variable) must not fall through to an unverified import.
+func validateChecksumFlags(checksumPath string, checksumSet bool, localFile string, skipVerify bool) error {
+	if !checksumSet {
+		return nil
+	}
+	if strings.TrimSpace(checksumPath) == "" {
+		return errors.New("--checksum requires a sums file path")
+	}
+	if localFile == "" {
+		return errors.New("--checksum requires --file")
+	}
+	if skipVerify {
+		return errors.New("--checksum and --skip-verify are mutually exclusive")
+	}
+	return nil
+}
+
+// importSource is the file an import is about to extract, and what it is to be verified against.
+type importSource struct {
+	imageFile, imageName, localFile            string
+	image                                      utils.Images
+	checksumPath, checksumAlgo, expectedDigest string
+	skipVerify                                 bool
+}
+
+// resolveDigest verifies or hashes the source before extract and returns the digest to record.
+// Upstream digests are of the artifact as supplied. Failures are reported to errOut before
+// returning; the file is left in place, and a catalog download recovers with --force.
+func (src importSource) resolveDigest(out, errOut io.Writer) (ebsmetadata.ImageDigest, error) {
+	digest := ebsmetadata.ImageDigest{Filename: filepath.Base(src.imageFile)}
+	switch sourceDigestMode(src.localFile, src.checksumPath, src.skipVerify) {
+	case ebsmetadata.DigestCatalog:
+		if src.image.Checksum == "" || src.image.ChecksumType == "" {
+			fmt.Fprintf(errOut, "Catalog entry %q is missing Checksum/ChecksumType; refusing import.\n", src.imageName)
+			return digest, errors.New("catalog entry has no checksum")
+		}
+		actual, err := utils.VerifyImageChecksum(src.imageFile, src.image.Checksum, src.image.ChecksumType)
+		if err != nil {
+			printChecksumError(errOut, src.imageFile, src.imageName, src.image, err)
+			return digest, err
+		}
+		fmt.Fprintf(out, "✅ Verified image checksum (%s)\n", src.image.ChecksumType)
+		digest.Algorithm, digest.Value, digest.Source = src.image.ChecksumType, actual, src.image.Checksum
+		digest.Verification = ebsmetadata.DigestCatalog
+	case ebsmetadata.DigestOperator:
+		actual, err := utils.VerifyImageDigest(src.localFile, src.checksumAlgo, src.expectedDigest)
+		if err != nil {
+			fmt.Fprintf(errOut, "Image integrity verification failed: %v\n", err)
+			fmt.Fprintf(errOut, "  file:     %s\n", src.localFile)
+			fmt.Fprintf(errOut, "  checksum: %s\n", src.checksumPath)
+			return digest, err
+		}
+		fmt.Fprintf(out, "✅ Verified image checksum (%s) against %s\n", src.checksumAlgo, src.checksumPath)
+		digest.Algorithm, digest.Value, digest.Source = src.checksumAlgo, actual, filepath.Base(src.checksumPath)
+		digest.Verification = ebsmetadata.DigestOperator
+	default:
+		if src.localFile != "" {
+			fmt.Fprintf(errOut, "Importing %s without checksum validation (pass --checksum <sums-file> to verify)\n", src.localFile)
+		} else {
+			fmt.Fprintf(errOut, "⚠️  --skip-verify set: checksum verification skipped for %s\n", src.imageName)
+		}
+		actual, err := utils.HashImageFile(src.imageFile, "sha256")
+		if err != nil {
+			fmt.Fprintf(errOut, "Could not hash image: %v\n", err)
+			return digest, err
+		}
+		digest.Algorithm, digest.Value = "sha256", actual
+		digest.Verification = ebsmetadata.DigestUnverified
+	}
+	return digest, nil
+}
+
+// sourceDigestMode picks how an import's source digest is obtained.
+func sourceDigestMode(localFile, checksumPath string, skipVerify bool) string {
+	switch {
+	case localFile != "" && checksumPath != "":
+		return ebsmetadata.DigestOperator
+	case localFile != "" || skipVerify:
+		return ebsmetadata.DigestUnverified
+	default:
+		return ebsmetadata.DigestCatalog
+	}
 }
 
 func runimagesImportCmd(cmd *cobra.Command, args []string) {
@@ -501,6 +600,20 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	if imageName == "" && localFile == "" {
 		fmt.Fprintf(os.Stderr, "Either --name or --file is required to import an image\n")
 		os.Exit(1)
+	}
+
+	checksumPath, _ := cmd.Flags().GetString("checksum")
+	if err := validateChecksumFlags(checksumPath, cmd.Flags().Changed("checksum"), localFile, skipVerify); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	var checksumAlgo, expectedDigest string
+	if checksumPath != "" {
+		checksumAlgo, expectedDigest, err = utils.ReadExpectedDigest(checksumPath, filepath.Base(localFile))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Could not read checksum from %s: %v\n", checksumPath, err)
+			os.Exit(1)
+		}
 	}
 
 	if imageName != "" {
@@ -589,8 +702,8 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Next, if the file is selected to download, fetch it, extract disk image, and save to path
-	if imageName != "" && localFile == "" {
+	// Next, if the file is selected to download, fetch it and save to path
+	if localFile == "" {
 		// Download the file to the image path
 		filename := path.Base(image.URL)
 		imageFile = fmt.Sprintf("%s/%s", imagePath, filename)
@@ -606,24 +719,20 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 				os.Exit(1)
 			}
 		}
+	}
 
-		// Verify before extract: the catalog digest is of the artifact as it
-		// sits on the mirror (.tar.xz/.img/.raw). Also catches a poisoned
-		// cache on the re-run path — failure leaves the file on disk so the
-		// operator can inspect; recover with --force.
-		if skipVerify {
-			fmt.Fprintf(os.Stderr, "⚠️  --skip-verify set: checksum verification skipped for %s\n", imageName)
-		} else {
-			if image.Checksum == "" || image.ChecksumType == "" {
-				fmt.Fprintf(os.Stderr, "Catalog entry %q is missing Checksum/ChecksumType; refusing import.\n", imageName)
-				os.Exit(1)
-			}
-			if err := utils.VerifyImageChecksum(imageFile, image.Checksum, image.ChecksumType); err != nil {
-				printChecksumError(os.Stderr, imageFile, imageName, image, err)
-				os.Exit(1)
-			}
-			fmt.Printf("✅ Verified image checksum (%s)\n", image.ChecksumType)
-		}
+	sourceDigest, err := importSource{
+		imageFile:      imageFile,
+		imageName:      imageName,
+		localFile:      localFile,
+		image:          image,
+		checksumPath:   checksumPath,
+		checksumAlgo:   checksumAlgo,
+		expectedDigest: expectedDigest,
+		skipVerify:     skipVerify,
+	}.resolveDigest(os.Stdout, os.Stderr)
+	if err != nil {
+		os.Exit(1)
 	}
 
 	// Next, validate if the image is raw, tar, gz, xv, etc. We need to upload the raw image
@@ -669,6 +778,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		BootMode:        image.BootMode,
 		Distro:          image.Distro,
 		DistroFamily:    utils.DistroFamily(image.Distro),
+		SourceDigest:    &sourceDigest,
 	}
 
 	// Copy catalog-provided tags (e.g. spinifex:managed-by for system AMIs)
@@ -739,6 +849,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Printf("✅ Image import complete. Image-ID (AMI): %s\n", volumeId)
+	fmt.Printf("✅ Source digest: %s:%s (%s)\n", sourceDigest.Algorithm, sourceDigest.Value, sourceDigest.Verification)
 }
 
 // registerImportedAMISnapshot writes the EC2 control plane's snapshot document
@@ -999,6 +1110,62 @@ func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Printf("✅ Promoted %s to system image (owner: %s).\n", imageID, admin.SystemOwnerAlias)
+}
+
+func runimagesDescribeCmd(cmd *cobra.Command, args []string) {
+	imageID, _ := cmd.Flags().GetString("image-id")
+
+	cfgFile, _ := cmd.Flags().GetString("config")
+	if cfgFile == "" {
+		cfgFile = DefaultConfigFile()
+	}
+
+	appConfig, err := config.LoadConfig(cfgFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error loading config file:", err)
+		os.Exit(1)
+	}
+
+	node := appConfig.Nodes[appConfig.Node]
+	store := objectstore.NewS3ObjectStoreFromConfig(
+		node.Predastore.Host,
+		node.Predastore.Region,
+		node.Predastore.AccessKey,
+		node.Predastore.SecretKey,
+	)
+
+	meta, err := admin.GetAMIMetadata(store, node.Predastore.Bucket, imageID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to describe AMI:", err)
+		os.Exit(1)
+	}
+
+	printAMIDescription(os.Stdout, meta)
+}
+
+// printAMIDescription writes an AMI's metadata and source digest for an operator.
+func printAMIDescription(w io.Writer, meta ebsmetadata.AMI) {
+	fmt.Fprintf(w, "Image ID:       %s\n", meta.ImageID)
+	fmt.Fprintf(w, "Name:           %s\n", meta.Name)
+	fmt.Fprintf(w, "Owner:          %s\n", meta.ImageOwnerAlias)
+	if !meta.CreationDate.IsZero() {
+		fmt.Fprintf(w, "Created:        %s\n", meta.CreationDate.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+	fmt.Fprintf(w, "Boot mode:      %s\n", meta.BootMode)
+	fmt.Fprintf(w, "Architecture:   %s\n", meta.Architecture)
+
+	d := meta.SourceDigest
+	if d == nil {
+		fmt.Fprintln(w, "Source digest:  not recorded (imported before digest recording)")
+		return
+	}
+	fmt.Fprintf(w, "Source digest:  %s:%s\n", d.Algorithm, d.Value)
+	if d.Source != "" {
+		fmt.Fprintf(w, "Verification:   %s (%s)\n", d.Verification, d.Source)
+	} else {
+		fmt.Fprintf(w, "Verification:   %s\n", d.Verification)
+	}
+	fmt.Fprintf(w, "Source file:    %s\n", d.Filename)
 }
 
 // List remote images available.

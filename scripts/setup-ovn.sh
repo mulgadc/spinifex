@@ -202,10 +202,58 @@ fi
 WAN_BRIDGE_MODE=""  # "existing", "veth", "direct", or ""
 LINUX_BRIDGE=""     # Set when WAN_BRIDGE_MODE="veth" — the Linux bridge behind the veth pair
 
+# True when $1 names an existing Linux (not OVS) bridge.
+is_linux_bridge() {
+    [ -d "/sys/class/net/$1/bridge" ]
+}
+
+# Prints the bridge $1 is enslaved to, or nothing.
+iface_master() {
+    local m
+    m=$(ip -o link show "$1" 2>/dev/null | sed -n 's/.* master \([^ ]*\) .*/\1/p')
+    printf '%s' "$m"
+}
+
 detect_wan_bridge() {
     # If --wan-bridge was explicitly given, use it
     if [ -n "$WAN_BRIDGE" ]; then
+        # A Linux bridge of this name is the veth case, not the OVS-bridge case,
+        # and it is checked first because it is the only arm that can silently
+        # produce a broken datapath. An OVS bridge cannot take over the name of
+        # an existing Linux bridge: ovs-vsctl exits 0, OVSDB accepts the rows,
+        # and ofproto then refuses with "could not add network device br-wan to
+        # ofproto (File exists)" — visible only in `ovs-vsctl show`. The
+        # auto-detect path below has always handled this correctly by building a
+        # veth pair; it was simply unreachable whenever the operator named the
+        # bridge, which is exactly what they must do when the default route is
+        # on a physical NIC.
+        if is_linux_bridge "$WAN_BRIDGE"; then
+            LINUX_BRIDGE="$WAN_BRIDGE"
+            WAN_BRIDGE="br-ext"
+            WAN_BRIDGE_MODE="veth"
+            echo "  $LINUX_BRIDGE is a Linux bridge — linking it to OVS br-ext via a veth pair"
+            if [ -n "$WAN_IFACE" ]; then
+                echo "  ignoring --wan-iface=$WAN_IFACE: $LINUX_BRIDGE already owns its ports"
+                WAN_IFACE=""
+            fi
+            return
+        fi
+
         if [ -n "$WAN_IFACE" ]; then
+            # Enslaving an interface that another bridge already owns fails the
+            # same silent way. Refuse rather than build something that reports
+            # success and cannot forward.
+            local master
+            master=$(iface_master "$WAN_IFACE")
+            if [ -n "$master" ]; then
+                echo "ERROR: $WAN_IFACE is already enslaved to bridge '$master'."
+                echo "  Adding it to an OVS bridge as well cannot work — ovs-vsctl will"
+                echo "  exit 0 and the datapath will refuse the device."
+                echo "  Either detach it first, or point --wan-bridge at '$master' to"
+                echo "  link that bridge to OVS with a veth pair:"
+                echo "     $0 --management --wan-bridge=$master"
+                exit 1
+            fi
             WAN_BRIDGE_MODE="direct"
         elif sudo ovs-vsctl br-exists "$WAN_BRIDGE" 2>/dev/null; then
             WAN_BRIDGE_MODE="existing"
@@ -580,6 +628,30 @@ else
     # enough for any ovn-nbctl without an explicit --db to confirm against the
     # wrong database — a `--wait=hv` there can never be acknowledged and burns
     # its whole timeout instead.
+    #
+    # Refuse to demote a node this script previously set up as a management
+    # node. --management is the only record of the role and is re-asserted on
+    # every run, so a re-run that forgets it silently takes the cluster's
+    # database away. The symptom lands three layers off: nothing listens on
+    # 6641, and vpcd crash-loops on "connection refused" with no hint that this
+    # script caused it. Seen on mulga-poc at 15,061 restarts.
+    #
+    # The signal is /etc/default/ovn-central, not the presence of a database:
+    # the ovn-central *package* creates DBs on install, so every compute node
+    # has them and testing for them would refuse every legitimate compute node.
+    # Only the --management path below writes OVN_CTL_OPTS to that file.
+    if [ -f /etc/default/ovn-central ] && grep -q '^OVN_CTL_OPTS=' /etc/default/ovn-central 2>/dev/null; then
+        echo "ERROR: this node was configured as a management node by a previous run"
+        echo "  (/etc/default/ovn-central holds OVN_CTL_OPTS), but --management was"
+        echo "  not given. Re-running without it stops and disables ovn-central and"
+        echo "  takes the control plane down."
+        echo ""
+        echo "  If this is a management node, re-run with --management."
+        echo "  If it is genuinely being demoted to a compute node:"
+        echo "     sudo rm -f /etc/default/ovn-central"
+        exit 1
+    fi
+
     if systemctl is-enabled ovn-central >/dev/null 2>&1 ||
         systemctl is-active ovn-central >/dev/null 2>&1; then
         sudo systemctl stop ovn-central ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb 2>/dev/null || true
@@ -888,6 +960,29 @@ NETWORK
             echo "  installed masquerade + forward rules for $NAT_TRANSIT_CIDR (comment: spinifex-nat-egress)"
             ;;
     esac
+
+    # --- Prove the bridge actually came up ---
+    #
+    # ovs-vsctl reports on the database, not the datapath. `add-br` and
+    # `add-port` exit 0 whenever OVSDB accepts the row, and ofproto can refuse
+    # the device afterwards for reasons ovs-vsctl never sees — a name already
+    # taken by a Linux bridge, an interface another bridge already owns. The
+    # error is recorded per-interface and surfaces only here. Without this scan
+    # the script reports a successful setup and vpcd fails minutes later with a
+    # message that points somewhere else entirely.
+    if [ -n "$WAN_BRIDGE_MODE" ] && command -v ovs-vsctl >/dev/null 2>&1; then
+        OVS_ERRORS=$(sudo ovs-vsctl --columns=name,error --format=table list Interface 2>/dev/null \
+            | awk 'NR>2 && $0 ~ /could not|error/ && $0 !~ /\[\]/' || true)
+        if [ -n "$OVS_ERRORS" ]; then
+            echo ""
+            echo "ERROR: OVS accepted the configuration but the datapath refused it:"
+            echo "$OVS_ERRORS" | sed 's/^/  /'
+            echo ""
+            echo "  The bridge exists in OVSDB and cannot forward. Nothing downstream"
+            echo "  will work, and vpcd will fail with an unrelated-looking error."
+            exit 1
+        fi
+    fi
 
     # --- DHCP: obtain gateway IP for OVN SNAT ---
     if [ "$EXTERNAL_DHCP" = true ] && [ "$WAN_BRIDGE_MODE" = "nat" ]; then
@@ -1246,9 +1341,16 @@ for unit in openvswitch-switch:/var/run/openvswitch/db.sock \
     WAIT_GLOB="${unit#*:}"
     OVERRIDE_DIR="/etc/systemd/system/${UNIT}.service.d"
     sudo mkdir -p "$OVERRIDE_DIR"
+    # `ExecStartPost=-` so a failure here cannot stop the unit. This drop-in goes
+    # into another package's service, and tightening a socket mode is hardening,
+    # not a liveness requirement — it must never be the reason openvswitch-switch
+    # or ovn-controller will not start. Without the dash, removing the helper
+    # (an uninstall, a partial re-run that has not reached this step yet) takes
+    # OVS down across the whole host with `Failed at step EXEC`, which reads as
+    # an OVS fault and is nothing of the sort.
     sudo tee "$OVERRIDE_DIR/spinifex-perms.conf" >/dev/null <<OVERRIDE
 [Service]
-ExecStartPost=$PERMS_HELPER "$WAIT_GLOB"
+ExecStartPost=-$PERMS_HELPER "$WAIT_GLOB"
 OVERRIDE
     echo "  systemd override: ${UNIT}.service.d/spinifex-perms.conf"
 done

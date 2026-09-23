@@ -358,8 +358,16 @@ fi
 # tree holding its own keys and configs. It is not user data — it is wreckage
 # from a misdetected layout — and leaving it invites a later dev-mode run to
 # adopt it.
-DEV_ROOT="$(getent passwd spinifex | cut -d: -f6)/spinifex"
-if [ -n "${DEV_ROOT#/spinifex}" ] && [ -d "$DEV_ROOT" ]; then
+#
+# `|| true` is load bearing. setup.sh creates the *group* spinifex and the eight
+# spinifex-* service users, never a user named spinifex — that account comes from
+# the ISO's interactive login. So on any curl|bash-installed node `getent passwd
+# spinifex` exits 2, and under `set -euo pipefail` that took the whole script
+# down at the last step, after the wipe had already happened. Prod and dev-prod
+# are ISO-installed, which is why it stayed hidden.
+DEV_HOME="$(getent passwd spinifex | cut -d: -f6 || true)"
+DEV_ROOT="${DEV_HOME}/spinifex"
+if [ -n "$DEV_HOME" ] && [ -d "$DEV_ROOT" ]; then
     log "removing the dev-layout fallback tree at $DEV_ROOT"
     run sudo rm -rf "$DEV_ROOT"
 fi

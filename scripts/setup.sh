@@ -33,6 +33,7 @@ IPSEC_STATE_HELPER="/usr/local/lib/spinifex/spinifex-set-ipsec-state"
 # the only component that knows every node's resolved planes.
 FIREWALL_DIR="/etc/spinifex/firewall"
 FIREWALL_RULES="${FIREWALL_DIR}/spinifex.nft"
+# shellcheck disable=SC2034  # part of the firewall dir layout; written by install-node.sh
 FIREWALL_PEERS="${FIREWALL_DIR}/peers.nft"
 FIREWALL_LOCAL="${FIREWALL_DIR}/local.nft"
 FIREWALL_OPEN="${FIREWALL_DIR}/open-ports.nft"
@@ -895,6 +896,17 @@ install_files() {
         $SUDO install -m 0755 "$EXTRACT_DIR/setup.sh" /usr/local/share/spinifex/setup.sh
         info "  /usr/local/share/spinifex/setup.sh"
     fi
+
+    # Teardown scripts. An install delivered by `curl | bash` with no way to
+    # undo it is a gap in the product, not just in our tooling, and node-reset.sh
+    # ships alongside because uninstall-spx.sh delegates its state teardown to it
+    # rather than reimplementing the QEMU and JetStream waits.
+    for teardown in node-reset.sh uninstall-spx.sh; do
+        if [ -f "$EXTRACT_DIR/$teardown" ]; then
+            $SUDO install -m 0755 "$EXTRACT_DIR/$teardown" "/usr/local/share/spinifex/$teardown"
+            info "  /usr/local/share/spinifex/$teardown"
+        fi
+    done
 
     # microVM kernel + initramfs
     $SUDO install -d /usr/share/spinifex/microvm

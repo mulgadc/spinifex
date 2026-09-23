@@ -29,6 +29,8 @@ trap 'rm -rf "$STAGING"' EXIT
 cp "$PROJECT_ROOT/bin/spx" "$STAGING/spx"
 cp "$MULGA_ROOT/viperblock/lib/nbdkit-viperblock-plugin.so" "$STAGING/"
 cp "$PROJECT_ROOT/scripts/setup-ovn.sh" "$STAGING/"
+cp "$PROJECT_ROOT/scripts/node-reset.sh" "$STAGING/"
+cp "$PROJECT_ROOT/scripts/uninstall-spx.sh" "$STAGING/"
 mkdir -p "$STAGING/systemd"
 cp "$PROJECT_ROOT/build/systemd/"* "$STAGING/systemd/"
 mkdir -p "$STAGING/scripts"

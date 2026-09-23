@@ -32,6 +32,11 @@ type ExternalPoolConfig struct {
 	OCIVNICIface     string
 	OCISubnetID      string
 	OCIPublicIPPool  string
+	// OCIConfigFile and OCIConfigProfile select the API-key credentials.
+	// v1 authenticates from a config file rather than as an instance
+	// principal: no dynamic group, no IAM policy, and no metadata read.
+	OCIConfigFile    string
+	OCIConfigProfile string
 }
 
 // IsDHCP reports whether the pool sources IPs from an upstream DHCP server.

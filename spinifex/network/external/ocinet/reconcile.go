@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/cloud/oci"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
 // ReconcileResult reports what a pass found, so a caller can log it and a test
@@ -47,8 +48,12 @@ func (a *PoolAllocator) Reconcile(ctx context.Context) (ReconcileResult, error) 
 	if err != nil {
 		return res, fmt.Errorf("ocinet reconcile: list private ips on %s: %w", a.cfg.VNICID, err)
 	}
+	// A pool that has never allocated has no record, which is an empty binding
+	// set rather than a failure — and the reconcile still has work to do, since
+	// the leak this pass exists to find is precisely an OCI object created
+	// before its binding was written.
 	rec, err := a.store.Get(ctx, a.cfg.Pool.Name)
-	if err != nil {
+	if err != nil && !errors.Is(err, kvstore.ErrNotFound) {
 		return res, fmt.Errorf("ocinet reconcile: read bindings: %w", err)
 	}
 

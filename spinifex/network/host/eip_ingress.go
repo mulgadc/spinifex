@@ -116,11 +116,16 @@ func EnsureEIPIngress(ctx context.Context, r Runner, eip, gwLrpIP, poolGateway, 
 		}
 	}
 
+	// Insert at the head, never append: a distro's catch-all REJECT in FORWARD
+	// (Oracle's cloud image ships one) precedes anything appended, so the EIP
+	// is reachable on the wire and dropped by the host. Probe first rather than
+	// drain-and-reinsert as the egress rules do — this runs on every bind and
+	// reconcile, and re-inserting would blip a live EIP.
 	for _, spec := range eipForwardRules(eip) {
 		if _, err := r.Run(ctx, "iptables", natRuleArgs("-C", "filter", "FORWARD", spec)...); err == nil {
 			continue
 		}
-		if out, err := r.Run(ctx, "iptables", natRuleArgs("-A", "filter", "FORWARD", spec)...); err != nil {
+		if out, err := r.Run(ctx, "iptables", natInsertArgs("filter", "FORWARD", spec)...); err != nil {
 			return fmt.Errorf("install EIP FORWARD rule for %s: %s: %w", eip, string(out), err)
 		}
 	}

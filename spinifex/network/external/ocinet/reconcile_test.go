@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/spinifex/spinifex/cloud/oci"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
 )
@@ -36,9 +37,10 @@ func TestReconcileCollectsALeakedPairFromAnInterruptedAllocate(t *testing.T) {
 	assert.Empty(t, fake.PrivateIPs(), "leaked private IP was not collected")
 	assert.Empty(t, fake.PublicIPs(), "leaked reserved public IP was not collected — this one bills")
 
-	rec, err := store.Get(ctx, "oci-wan")
-	require.NoError(t, err)
-	assert.Empty(t, rec.Bindings)
+	// The leak this pass collects is an OCI pair created before its binding was
+	// ever written, so the pool still holds no record afterwards.
+	_, err = store.Get(ctx, "oci-wan")
+	require.ErrorIs(t, err, kvstore.ErrNotFound)
 }
 
 // The safety property of the whole pass. mulga-poc carries operator-created
@@ -130,4 +132,24 @@ func TestReconcileCollectsALeakedPrivateIPWithNoPublicIP(t *testing.T) {
 
 	assert.Equal(t, []string{priv.ID}, res.Collected)
 	assert.Empty(t, fake.PrivateIPs())
+}
+
+// A pool that has never allocated has no record. That is an empty binding set,
+// not a failure — and the pass still has to run, since the leak it exists to
+// find is an OCI object created before its binding was ever written.
+func TestReconcileOnAPoolThatHasNeverAllocated(t *testing.T) {
+	fake := oci.NewFake()
+	alloc, store := newTestAllocator(t, fake)
+
+	if _, err := store.Get(context.Background(), "oci-wan"); err == nil {
+		t.Fatal("precondition: expected no record for a pool that never allocated")
+	}
+
+	res, err := alloc.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("Reconcile on an empty pool: %v", err)
+	}
+	if len(res.Collected) != 0 || len(res.Stale) != 0 {
+		t.Errorf("expected nothing to collect: %+v", res)
+	}
 }

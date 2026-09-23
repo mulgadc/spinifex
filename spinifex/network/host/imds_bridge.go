@@ -72,6 +72,61 @@ func RemoveIMDSInputRule(ctx context.Context, r Runner) {
 	}
 }
 
+// imdsRemapComment tags the DNAT rules so an operator can find them and the
+// uninstaller can remove them.
+const imdsRemapComment = "spinifex-imds-remap"
+
+// imdsRemapSpecs are the PREROUTING DNATs that let a host serve IMDS and VPC
+// DNS on addresses of its own while guests keep addressing the standard pair.
+// Scoped to the ime- endpoints by interface wildcard, so nothing the host
+// originates is touched — which is the entire point, since the host's own
+// 169.254.169.254 is the cloud's metadata service.
+//
+// conntrack reverses the translation on the reply, so the guest sees the answer
+// sourced from the address it sent to and needs no knowledge of the remap.
+func imdsRemapSpecs() [][]string {
+	if !imdsHostAddrsRemapped() {
+		return nil
+	}
+	specs := make([][]string, 0, len(imdsCaptureAddrs))
+	for i, guestAddr := range imdsCaptureAddrs {
+		specs = append(specs, []string{
+			"-i", IMDSEndpointPrefix + "+", "-d", guestAddr,
+			"-m", "comment", "--comment", imdsRemapComment,
+			"-j", "DNAT", "--to-destination", imdsHostAddrs[i],
+		})
+	}
+	return specs
+}
+
+// EnsureIMDSRemapRules installs the DNATs when the endpoint addresses have been
+// moved, and is a no-op otherwise — which is every bare-metal deployment.
+//
+// Inserted at the head and probed with -C first, for the reasons
+// EnsureIMDSInputRule gives: a cloud image's nat table is not ours, and
+// re-inserting per launch would blip IMDS for guests already running.
+func EnsureIMDSRemapRules(ctx context.Context, r Runner) error {
+	for _, spec := range imdsRemapSpecs() {
+		if _, err := r.Run(ctx, "iptables", natRuleArgs("-C", "nat", "PREROUTING", spec)...); err == nil {
+			continue
+		}
+		if out, err := r.Run(ctx, "iptables", natInsertArgs("nat", "PREROUTING", spec)...); err != nil {
+			return fmt.Errorf("install IMDS remap rule: %s: %w", string(out), err)
+		}
+		slog.Info("host: installed IMDS remap rule", "guest_addr", spec[3], "host_addr", spec[len(spec)-1])
+	}
+	return nil
+}
+
+// RemoveIMDSRemapRules drops the DNATs; a missing rule is not an error.
+func RemoveIMDSRemapRules(ctx context.Context, r Runner) {
+	for _, spec := range imdsRemapSpecs() {
+		if _, err := r.Run(ctx, "iptables", natRuleArgs("-D", "nat", "PREROUTING", spec)...); err != nil {
+			slog.Debug("host: IMDS remap rule not present on delete", "err", err)
+		}
+	}
+}
+
 // RemoveIMDSBridge deletes the IMDS bridge and every flow on it. Idempotent:
 // --if-exists tolerates an already-absent bridge.
 func RemoveIMDSBridge(ctx context.Context, r Runner) error {

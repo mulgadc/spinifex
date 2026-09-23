@@ -155,3 +155,88 @@ func TestIMDSInputRuleWildcardMatchesEveryEndpointName(t *testing.T) {
 		t.Fatalf("endpoint %q does not carry prefix %q", name, IMDSEndpointPrefix)
 	}
 }
+
+// withIMDSHostAddrs moves the endpoint addresses for one test and restores
+// them, so a remapped case cannot leak into the default-path tests.
+func withIMDSHostAddrs(t *testing.T, meta, dns string) {
+	t.Helper()
+	prev := imdsHostAddrs
+	t.Cleanup(func() { imdsHostAddrs = prev })
+	SetIMDSHostAddrs(meta, dns)
+}
+
+// The default is no remap at all: a bare-metal host owns .254/.253 outright
+// and a DNAT there would be pure overhead.
+func TestEnsureIMDSRemapRulesInstallsNothingByDefault(t *testing.T) {
+	r := newStubRunner()
+
+	if err := EnsureIMDSRemapRules(context.Background(), r); err != nil {
+		t.Fatalf("EnsureIMDSRemapRules: %v", err)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("expected no rules on an unremapped host; calls: %v", r.calls)
+	}
+}
+
+// The guest must keep addressing 169.254.169.254 whatever the host binds, so
+// the DNAT matches the standard address and rewrites to the endpoint's.
+func TestEnsureIMDSRemapRulesTranslatesTheGuestFacingPair(t *testing.T) {
+	withIMDSHostAddrs(t, "169.254.42.254", "169.254.42.253")
+	r := newStubRunner()
+	r.expect("iptables -t nat -C", nil, errors.New("no match"))
+	r.expect("iptables -t nat -I", nil, nil)
+	r.expect("iptables -t nat -C", nil, errors.New("no match"))
+	r.expect("iptables -t nat -I", nil, nil)
+
+	if err := EnsureIMDSRemapRules(context.Background(), r); err != nil {
+		t.Fatalf("EnsureIMDSRemapRules: %v", err)
+	}
+	for _, want := range []string{
+		"iptables -t nat -I PREROUTING 1 -i " + IMDSEndpointPrefix +
+			"+ -d " + imdsMetaAddr + " -m comment --comment spinifex-imds-remap -j DNAT --to-destination 169.254.42.254",
+		"iptables -t nat -I PREROUTING 1 -i " + IMDSEndpointPrefix +
+			"+ -d " + imdsDNSAddr + " -m comment --comment spinifex-imds-remap -j DNAT --to-destination 169.254.42.253",
+	} {
+		if !r.called(want) {
+			t.Errorf("missing rule:\n  want %q\n  got  %v", want, r.calls)
+		}
+	}
+}
+
+// Half a remap binds one address the host has already taken, so an incomplete
+// pair is ignored rather than half-applied.
+func TestSetIMDSHostAddrsIgnoresAHalfPair(t *testing.T) {
+	withIMDSHostAddrs(t, "169.254.42.254", "169.254.42.253")
+	SetIMDSHostAddrs("169.254.42.1", "")
+
+	meta, dns := IMDSHostAddrs()
+	if meta != "169.254.42.254" || dns != "169.254.42.253" {
+		t.Errorf("half a pair was applied: meta=%q dns=%q", meta, dns)
+	}
+}
+
+// The endpoint owns the bind addresses; the flows still match what the guest
+// sends, or the demux would never fire.
+func TestIMDSEndpointOwnsTheHostAddressesNotTheGuestOnes(t *testing.T) {
+	withIMDSHostAddrs(t, "169.254.42.254", "169.254.42.253")
+	r := newStubRunner()
+	for range 7 {
+		r.expect("", nil, nil)
+	}
+
+	d := IMDSTapDatapath{
+		Tap: "tap0", Endpoint: "ime-abcd1234", EndpointMAC: "02:00:00:00:00:01",
+		GuestMAC: "02:00:00:00:00:02", GatewayMAC: "02:00:00:00:00:03",
+	}
+	if err := ensureIMDSEndpoint(context.Background(), r, d); err != nil {
+		t.Fatalf("ensureIMDSEndpoint: %v", err)
+	}
+	if !r.called("ip addr replace 169.254.42.254/32 dev ime-abcd1234") {
+		t.Errorf("endpoint did not take the remapped metadata address; calls: %v", r.calls)
+	}
+	for _, c := range r.calls {
+		if strings.Contains(c, "addr replace "+imdsMetaAddr) {
+			t.Errorf("endpoint took %s, shadowing the host's own metadata route: %q", imdsMetaAddr, c)
+		}
+	}
+}

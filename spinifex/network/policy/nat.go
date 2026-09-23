@@ -173,6 +173,28 @@ func WithSNATExemptSet(setName string, cidrs []string) Option {
 	}
 }
 
+// DatapathResolver maps an external IP to the address that actually rides the
+// wire. Everywhere but OCI the two are the same and the resolver returns its
+// input; on OCI an allocation is a pair whose public half is NAT'd upstream and
+// never appears on any interface, so a dnat_and_snat or a host /32 built from
+// it matches nothing.
+//
+// It sits here rather than at each publisher because this is the only place
+// every path converges: the launch commit, the reconciler's re-assert and the
+// orphan prune all reach OVN through natManager, and a mapping applied at some
+// of them would have the prune sweeping the rules the others installed.
+type DatapathResolver func(ctx context.Context, externalIP string) (string, error)
+
+// WithDatapathResolver installs the external-IP → on-wire-address mapping.
+// Unset means identity, which is every deployment that is not on OCI.
+func WithDatapathResolver(r DatapathResolver) Option {
+	return func(m *natManager) {
+		if r != nil {
+			m.datapath = r
+		}
+	}
+}
+
 type natManager struct {
 	ovn           ovn.Client
 	mode          NATMode
@@ -182,6 +204,7 @@ type natManager struct {
 	exemptSetName string
 	exemptCIDRs   []string
 	hostBinder    *HostEIPBinder
+	datapath      DatapathResolver
 }
 
 var _ NATManager = (*natManager)(nil)
@@ -198,6 +221,7 @@ func NewNATManager(client ovn.Client, mode NATMode, opts ...Option) (NATManager,
 		barrier:    func() error { return nil },
 		neigh:      func(string) error { return nil },
 		neighPrime: func(EIPSpec) error { return nil },
+		datapath:   func(_ context.Context, ip string) (string, error) { return ip, nil },
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -222,6 +246,17 @@ func (m *natManager) exemptSetUUID(ctx context.Context) (*string, error) {
 func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	router := topology.VPCRouter(eip.VPCID)
 
+	// Everything below works in datapath addresses, so the row, the idempotency
+	// lookups, the predecessor scrub and the host bind all agree. The public
+	// address survives only as the external-ID stamp, which is where an operator
+	// reads back what the instance is reachable on.
+	publicIP := eip.ExternalIP
+	dpIP, err := m.datapath(ctx, publicIP)
+	if err != nil {
+		return fmt.Errorf("resolve datapath address for EIP %s: %w", publicIP, err)
+	}
+	eip.ExternalIP = dpIP
+
 	exemptUUID, err := m.exemptSetUUID(ctx)
 	if err != nil {
 		return err
@@ -233,7 +268,7 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		LogicalIP:  eip.LogicalIP,
 		ExternalIDs: map[string]string{
 			"spinifex:vpc_id":    eip.VPCID,
-			"spinifex:public_ip": eip.ExternalIP,
+			"spinifex:public_ip": publicIP,
 		},
 	}
 	// Stamp the owning ENI port so DeleteEIP can owner-scope a stale delete.
@@ -408,6 +443,13 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 	if externalIP == "" {
 		return nil
 	}
+	// The row and the host plumbing were both written in datapath addresses, so
+	// a delete naming the public half would find neither.
+	dpIP, err := m.datapath(ctx, externalIP)
+	if err != nil {
+		return fmt.Errorf("resolve datapath address for EIP %s: %w", externalIP, err)
+	}
+	externalIP = dpIP
 	// Scope the delete to the (external_ip, logical_ip) pair and, when known, the
 	// owning ENI port. External IPs are recycled from the pool as instances come
 	// and go, and vpc.delete-nat is fire-and-forget plus re-emitted by the GC
@@ -463,6 +505,13 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 }
 
 func (m *natManager) PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, error) {
+	// Intent is built from AWS records and so names public addresses, while the
+	// rows and host bindings hold datapath ones. Compared unmapped, every OCI
+	// address looks orphaned and the sweep would blackhole every live instance.
+	live, err := m.datapathLive(ctx, live)
+	if err != nil {
+		return 0, err
+	}
 	nats, err := m.ovn.ListNATs(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("list NATs for orphan EIP prune: %w", err)
@@ -505,6 +554,27 @@ func (m *natManager) PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, e
 			"logical_port", port, "rows_removed", removed)
 	}
 	return pruned, m.pruneHostEIPs(live)
+}
+
+// datapathLive rewrites the prune's wanted-address set into datapath addresses.
+// Ports are untouched — a logical port name is the same on either side.
+//
+// A resolver failure aborts the prune rather than degrading to the unmapped
+// set: a half-mapped comparison deletes the rules for exactly the addresses it
+// could not resolve, which is the worst available outcome.
+func (m *natManager) datapathLive(ctx context.Context, live LiveEIPs) (LiveEIPs, error) {
+	mapped := LiveEIPs{
+		Ports:       live.Ports,
+		ExternalIPs: make(map[string]struct{}, len(live.ExternalIPs)),
+	}
+	for ip := range live.ExternalIPs {
+		dpIP, err := m.datapath(ctx, ip)
+		if err != nil {
+			return LiveEIPs{}, fmt.Errorf("resolve datapath address for %s during orphan prune: %w", ip, err)
+		}
+		mapped.ExternalIPs[dpIP] = struct{}{}
+	}
+	return mapped, nil
 }
 
 // pruneHostEIPs removes host plumbing for every external IP intent no longer

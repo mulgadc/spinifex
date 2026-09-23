@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/common/auth"
@@ -60,6 +63,54 @@ func NewInstancePrincipalClient() (Client, error) {
 		return nil, fmt.Errorf("oci virtual network client: %w", err)
 	}
 	return &apiClient{net: c}, nil
+}
+
+// DefaultConfigFile is where the OCI CLI and SDK both look for API-key
+// credentials, and where a v1 OCI deployment is expected to provide them.
+const DefaultConfigFile = "~/.oci/config"
+
+// DefaultConfigProfile is the profile name used when none is configured. The
+// CLI's own default, so a config file written by `oci setup config` works
+// unmodified.
+const DefaultConfigProfile = "DEFAULT"
+
+// NewConfigFileClient authenticates from an API-key config file — the same
+// ~/.oci/config the oci CLI uses.
+//
+// This is the v1 path, deliberately in preference to instance principal. It
+// needs no dynamic group and no IAM policy written by a tenancy admin, and it
+// never reads the instance metadata service, which matters because Spinifex's
+// own per-instance IMDS endpoints claim 169.254.169.254 on the host and take
+// the cloud's own metadata service with it.
+func NewConfigFileClient(path, profile string) (Client, error) {
+	if path == "" {
+		path = DefaultConfigFile
+	}
+	if profile == "" {
+		profile = DefaultConfigProfile
+	}
+	expanded, err := expandHome(path)
+	if err != nil {
+		return nil, err
+	}
+	provider, err := common.ConfigurationProviderFromFileWithProfile(expanded, profile, "")
+	if err != nil {
+		return nil, fmt.Errorf("oci config file %s (profile %s): %w", expanded, profile, err)
+	}
+	return NewClientWithProvider(provider)
+}
+
+// expandHome resolves a leading ~ so operators can configure the conventional
+// path rather than an absolute one that differs per service user.
+func expandHome(path string) (string, error) {
+	if !strings.HasPrefix(path, "~") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("oci config path %q: %w", path, err)
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~")), nil
 }
 
 // NewClientWithProvider builds a client from an explicit configuration

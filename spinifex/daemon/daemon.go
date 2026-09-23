@@ -1359,6 +1359,12 @@ func (d *Daemon) startLocal() error {
 		}
 	}
 
+	// Before any tap is attached: the endpoint addresses and vpcd's binds have
+	// to agree, and both read the same config keys.
+	if d.clusterConfig != nil {
+		host.SetIMDSHostAddrs(d.clusterConfig.Network.IMDSHostMetaIP, d.clusterConfig.Network.IMDSHostDNSIP)
+	}
+
 	// Initialise OVS network plumber (no NATS dep).
 	if d.networkPlumber == nil {
 		d.networkPlumber = host.NewOVSPlumber()
@@ -1443,6 +1449,8 @@ func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, any
 			OCIVNICIface:     p.OCIVNICIface,
 			OCISubnetID:      p.OCISubnetID,
 			OCIPublicIPPool:  p.OCIPublicIPPool,
+			OCIConfigFile:    p.OCIConfigFile,
+			OCIConfigProfile: p.OCIConfigProfile,
 		})
 		if p.Source == "dhcp" {
 			anyDHCP = true

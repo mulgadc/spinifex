@@ -95,7 +95,10 @@ type IMDSServiceImpl struct {
 // nil, degrading that source to a miss rather than failing IMDS to start —
 // the caller (vpcd) owns their construction and availability.
 // ctx bounds the bucket opens only; each served request carries its own.
-func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState localStateReader, records recordLoader, listTaps listTapsFunc, baseDomain, internalDomain, servicesDomain, caCertPath string, resolverIPs []string) (*IMDSServiceImpl, error) {
+func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState localStateReader, records recordLoader, listTaps listTapsFunc, baseDomain, internalDomain, servicesDomain, caCertPath string, resolverIPs []string, bind HostBindAddrs) (*IMDSServiceImpl, error) {
+	if bind.Meta == "" || bind.DNS == "" {
+		return nil, errors.New("IMDS host bind addresses required (use DefaultHostBindAddrs)")
+	}
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -173,14 +176,19 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 	}
 	// Each per-tap responder serves the shared mux, threading its tap's ENI
 	// identity into every request via BaseContext.
-	svc.tapResp = newTapResponderManager(svc.httpHandler(), svc.resolver.resolveENIByID, bindTapListener)
+	svc.tapResp = newTapResponderManager(svc.httpHandler(), svc.resolver.resolveENIByID, tapListenerBinder(bind.Meta))
 	if len(resolverIPs) > 0 {
 		targets := make([]string, 0, len(resolverIPs))
 		for _, ip := range resolverIPs {
 			targets = append(targets, net.JoinHostPort(ip, northstarResolverPort))
 		}
-		svc.tapResp.enableDNS(bindTapDNS, newDNSForwarder(targets))
-		slog.Info("IMDS: VPC DNS shim enabled", "addr", VPCDNSServerIP, "backends", targets)
+		svc.tapResp.enableDNS(tapDNSBinder(bind.DNS), newDNSForwarder(targets))
+		slog.Info("IMDS: VPC DNS shim enabled", "addr", bind.DNS, "backends", targets)
+	}
+	if bind.Remapped() {
+		slog.Info("IMDS: serving on remapped host addresses; guests still address the standard ones",
+			"meta_bind", bind.Meta, "dns_bind", bind.DNS,
+			"guest_meta", MetaDataServerIP, "guest_dns", VPCDNSServerIP)
 	}
 
 	slog.Info("IMDS service initialized", "eni_bucket", kvBucketENIs)

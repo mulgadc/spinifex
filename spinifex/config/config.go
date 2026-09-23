@@ -90,6 +90,8 @@ type ExternalPool struct {
 	OCIVNICIface     string `mapstructure:"oci_vnic_iface"`     // Host interface to resolve the VNIC OCID from, instead of oci_vnic_id
 	OCISubnetID      string `mapstructure:"oci_subnet_id"`      // Subnet OCID the private IPs come from (optional; defaults to the VNIC's)
 	OCIPublicIPPool  string `mapstructure:"oci_public_ip_pool"` // Public IP pool OCID for BYOIP (optional)
+	OCIConfigFile    string `mapstructure:"oci_config_file"`    // API-key config file (optional; defaults to ~/.oci/config)
+	OCIConfigProfile string `mapstructure:"oci_config_profile"` // Profile within that file (optional; defaults to DEFAULT)
 }
 
 // DefaultUnderlayMTU is the standard Ethernet payload, and the assumption a
@@ -124,6 +126,16 @@ type NetworkConfig struct {
 	// operator workaround for a tenant with a legitimate need until per-account
 	// exceptions exist.
 	EgressBlockExemptVPCs []string `mapstructure:"egress_block_exempt_vpcs"`
+	// IMDSHostMetaIP and IMDSHostDNSIP move the IMDS endpoint's own addresses
+	// off 169.254.169.254 / .253, for a node that needs those for itself.
+	// A cloud guest does — they are its metadata service and its resolver — and
+	// an endpoint /32 shadows the route to both, so the node loses DNS and its
+	// cloud API for as long as any guest runs. Guests are unaffected: they keep
+	// addressing the standard pair and a DNAT on the endpoint rewrites it.
+	//
+	// Set both or neither. Pick addresses the host has no route to.
+	IMDSHostMetaIP string `mapstructure:"imds_host_meta_ip"`
+	IMDSHostDNSIP  string `mapstructure:"imds_host_dns_ip"`
 }
 
 // DefaultBlockedWANPorts mirrors AWS's out-of-the-box outbound mail block:
@@ -642,7 +654,7 @@ func validateClusterConfig(cc *ClusterConfig) error {
 	}
 	var ranges []poolRange
 	for _, p := range cc.Network.ExternalPools {
-		if p.Source != "oci" && (p.OCICompartmentID != "" || p.OCIVNICID != "" || p.OCIVNICIface != "" || p.OCISubnetID != "" || p.OCIPublicIPPool != "") {
+		if p.Source != "oci" && (p.OCICompartmentID != "" || p.OCIVNICID != "" || p.OCIVNICIface != "" || p.OCISubnetID != "" || p.OCIPublicIPPool != "" || p.OCIConfigFile != "" || p.OCIConfigProfile != "") {
 			return fmt.Errorf("config: [[network.external_pools]] %q: oci_* keys are only valid with source=\"oci\"", p.Name)
 		}
 		switch p.DHCPMAC {

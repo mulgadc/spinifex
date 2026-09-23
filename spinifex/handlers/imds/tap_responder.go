@@ -328,12 +328,15 @@ func deviceIfindex(dev string) (int, error) {
 	return iface.Index, nil
 }
 
-// bindTapListener opens 169.254.169.254:80 on the tap's endpoint via SO_BINDTODEVICE
-// — the per-tap serving socket. No netns/CAP_SYS_ADMIN: the endpoint is in the root
-// netns on br-imds and owns .254, so the bind targets the address the guest does.
-func bindTapListener(ctx context.Context, endpoint string) (net.Listener, error) {
-	lc := net.ListenConfig{Control: bindToDeviceControl(endpoint)}
-	return lc.Listen(ctx, "tcp4", net.JoinHostPort(MetaDataServerIP, "80"))
+// tapListenerBinder opens bindIP:80 on the tap's endpoint via SO_BINDTODEVICE
+// — the per-tap serving socket. No netns/CAP_SYS_ADMIN: the endpoint is in the
+// root netns on br-imds and owns the address, so the bind targets what the
+// guest addresses, or what the host's DNAT rewrites it to.
+func tapListenerBinder(bindIP string) tapListenFunc {
+	return func(ctx context.Context, endpoint string) (net.Listener, error) {
+		lc := net.ListenConfig{Control: bindToDeviceControl(endpoint)}
+		return lc.Listen(ctx, "tcp4", net.JoinHostPort(bindIP, "80"))
+	}
 }
 
 // bindToDeviceControl returns a ListenConfig.Control that scopes the socket to

@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Predastore implements **26 operations** in the S3 `2006-03-01` API model.
+Predastore implements **23 operations** in the S3 `2006-03-01` API model.
 
 ### Predastore serves this endpoint
 
@@ -45,18 +45,15 @@ That behaviour is measured separately, against the `ceph/s3-tests` suite Ceph RG
 | `DeleteObjects` |
 | `GetBucketLocation` |
 | `GetBucketTagging` |
-| `GetBucketVersioning` |
 | `GetObject` |
 | `HeadBucket` |
 | `HeadObject` |
 | `ListBuckets` |
 | `ListMultipartUploads` |
-| `ListObjectVersions` |
 | `ListObjects` |
 | `ListObjectsV2` |
 | `ListParts` |
 | `PutBucketTagging` |
-| `PutBucketVersioning` |
 | `PutObject` |
 | `UploadPart` |
 | `UploadPartCopy` |

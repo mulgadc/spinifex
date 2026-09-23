@@ -60,8 +60,12 @@ func newEIPStubRunner(routeGet string) *stubRunner {
 	r.expect("ip neigh replace proxy", nil, nil)
 	r.expect("sysctl -w", nil, nil)
 	r.expect("arping", nil, nil)
-	r.expect("iptables -t filter -C", []byte("iptables: No chain/target/match by that name."), fmt.Errorf("exit 1"))
-	r.expect("iptables -t filter -A", nil, nil)
+	// Two rules, each probed then inserted at the head — a distro's catch-all
+	// REJECT in FORWARD precedes anything appended.
+	for range 2 {
+		r.expect("iptables -t filter -C", []byte("iptables: No chain/target/match by that name."), fmt.Errorf("exit 1"))
+		r.expect("iptables -t filter -I", nil, nil)
+	}
 	return r
 }
 
@@ -75,8 +79,8 @@ func TestEnsureEIPIngress_FullPlumbing(t *testing.T) {
 		"ip neigh replace proxy 192.168.1.200 dev eth0",
 		"sysctl -w net.ipv4.neigh.eth0.proxy_delay=0",
 		"arping -U -c 2 -I eth0 192.168.1.200",
-		"iptables -t filter -A FORWARD -i " + NATTransitHostEnd + " -s 192.168.1.200/32",
-		"iptables -t filter -A FORWARD -o " + NATTransitHostEnd + " -d 192.168.1.200/32",
+		"iptables -t filter -I FORWARD 1 -i " + NATTransitHostEnd + " -s 192.168.1.200/32",
+		"iptables -t filter -I FORWARD 1 -o " + NATTransitHostEnd + " -d 192.168.1.200/32",
 	} {
 		if !r.called(want) {
 			t.Errorf("missing call:\n  want %q\n  got  %v", want, r.calls)

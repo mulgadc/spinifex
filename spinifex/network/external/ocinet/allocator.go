@@ -9,11 +9,17 @@
 // StaticPoolAllocator rather than replacing it.
 //
 // One allocation is two OCI objects. A secondary private IP on the VNIC is what
-// rides the wire and what the host configures on the interface; a RESERVED
-// public IP attached to it is what the internet reaches and what AWS calls the
-// Elastic IP. Allocate returns the public address, because that is the address
-// AWS semantics are about — the private half is carried in the binding record
-// for the host plumbing and the release path.
+// rides the wire; a RESERVED public IP attached to it is what the internet
+// reaches and what AWS calls the Elastic IP. Allocate returns the public
+// address, because that is the address AWS semantics are about — the private
+// half is carried in the binding record, and Lookup is how vpcd finds it when
+// it programs the OVN NAT rule and the host ingress route.
+//
+// The host does not configure the private address on an interface. Owning it
+// would make the host terminate the guest's traffic — an SSH to the public
+// address would reach the node, not the instance. It is routed instead: a /32
+// via the VPC gateway LRP over the transit veth, which is what EnsureEIPIngress
+// already installs for a routed-mode EIP.
 package ocinet
 
 import (
@@ -27,6 +33,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/cloud/oci"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 )
 
@@ -290,6 +297,9 @@ func (a *PoolAllocator) Release(ctx context.Context, poolName string, ip netip.A
 // them.
 func (a *PoolAllocator) BindingFor(ctx context.Context, ip netip.Addr) (Binding, bool, error) {
 	rec, err := a.store.Get(ctx, a.cfg.Pool.Name)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return Binding{}, false, nil
+	}
 	if err != nil {
 		return Binding{}, false, err
 	}

@@ -11,9 +11,17 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 )
 
-// FromPoolConfig builds a live allocator for one source="oci" pool: instance
-// principal auth, the VNIC resolved from the host interface when the config
-// names one rather than an OCID, and the JetStream-backed bindings store.
+// FromPoolConfig builds a live allocator for one source="oci" pool: API-key
+// auth from an ~/.oci/config profile, the VNIC resolved from the host interface
+// when the config names one rather than an OCID, and the JetStream-backed
+// bindings store.
+//
+// v1 authenticates from the config file rather than as an instance principal.
+// It needs no dynamic group and no IAM policy from a tenancy admin, and it
+// reads no instance metadata — which matters, because Spinifex's own IMDS
+// endpoints claim 169.254.169.254 on the host and take the cloud's metadata
+// service down with it. Configure oci_vnic_id rather than oci_vnic_iface for
+// the same reason: resolving by interface is a metadata lookup.
 //
 // It does not reconcile. The caller decides when that pass runs, because it
 // deletes OCI objects and a startup path that does so before the store is
@@ -23,7 +31,7 @@ func FromPoolConfig(ctx context.Context, js jetstream.JetStream, pool external.E
 		return nil, fmt.Errorf("ocinet: pool %q has source %q, not %q", pool.Name, pool.Source, external.SourceOCI)
 	}
 
-	client, err := oci.NewInstancePrincipalClient()
+	client, err := oci.NewConfigFileClient(pool.OCIConfigFile, pool.OCIConfigProfile)
 	if err != nil {
 		return nil, fmt.Errorf("ocinet: pool %q: %w", pool.Name, err)
 	}

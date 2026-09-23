@@ -1032,6 +1032,8 @@ var vpcdStartCmd = &cobra.Command{
 			UnderlayMTU:             clusterConfig.Network.UnderlayMTU,
 			BlockedWANPorts:         clusterConfig.Network.ResolvedBlockedWANPorts(),
 			EgressBlockExemptVPCs:   clusterConfig.Network.EgressBlockExemptVPCs,
+			IMDSHostMetaIP:          clusterConfig.Network.IMDSHostMetaIP,
+			IMDSHostDNSIP:           clusterConfig.Network.IMDSHostDNSIP,
 		})
 		if err != nil {
 			return fmt.Errorf("create vpcd service: %w", err)

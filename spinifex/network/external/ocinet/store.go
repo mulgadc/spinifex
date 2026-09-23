@@ -52,9 +52,12 @@ func NewKVStoreOver(kv jetstream.KeyValue) *KVStore {
 	return &KVStore{store: kvstore.Over[Record](nil, kv, bucketConfig())}
 }
 
-// Mutate implements Store.
+// Mutate implements Store. Upsert rather than Mutate: the first allocation on
+// a pool is what creates its record, and Mutate reports ErrNotFound for an
+// absent key — so every pool would fail its own first allocation, after OCI
+// had already created and billed the pair.
 func (s *KVStore) Mutate(ctx context.Context, poolName string, fn func(*Record) (bool, error)) error {
-	return s.store.Mutate(ctx, poolName, func(rec *Record) (bool, error) {
+	return s.store.Upsert(ctx, poolName, func(rec *Record) (bool, error) {
 		// A record written before the field existed, or a freshly created one,
 		// decodes to a nil map that the callers below would panic assigning to.
 		if rec.Bindings == nil {
@@ -64,8 +67,10 @@ func (s *KVStore) Mutate(ctx context.Context, poolName string, fn func(*Record) 
 	})
 }
 
-// Get implements Store. A pool with no record yet reads as empty rather than as
-// an error: the first Allocate is the thing that creates it.
+// Get implements Store. A pool with no record yet reports kvstore.ErrNotFound,
+// which callers read as an empty binding set — surfacing it rather than hiding
+// it keeps a bucket that has gone missing distinguishable from a pool that has
+// simply never allocated.
 func (s *KVStore) Get(ctx context.Context, poolName string) (Record, error) {
 	rec, _, err := s.store.Get(ctx, poolName)
 	if err != nil {
@@ -107,10 +112,15 @@ func (m *MemStore) Mutate(_ context.Context, poolName string, fn func(*Record) (
 	return nil
 }
 
-// Get implements Store.
+// Get implements Store, including the not-found error the KV store returns for
+// a pool that has never allocated. Returning an empty record instead made the
+// fake disagree with the real store on the one case every pool starts in.
 func (m *MemStore) Get(_ context.Context, poolName string) (Record, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, ok := m.records[poolName]; !ok {
+		return Record{}, fmt.Errorf("%w: %s", kvstore.ErrNotFound, poolName)
+	}
 	return m.copyLocked(poolName), nil
 }
 

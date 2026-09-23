@@ -21,6 +21,7 @@ import (
 	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
@@ -166,6 +167,12 @@ type Config struct {
 	// UnderlayMTU is the fabric MTU between nodes; the advertised guest MTU is
 	// derived from it.
 	UnderlayMTU int
+	// IMDSHostMetaIP and IMDSHostDNSIP move the per-tap responder's binds off
+	// 169.254.169.254 / .253 on a host that needs those addresses for itself.
+	// Empty means bind the guest-facing pair, which is every bare-metal node.
+	// The daemon reads the same keys to configure the endpoint and its DNAT.
+	IMDSHostMetaIP string
+	IMDSHostDNSIP  string
 	// BlockedWANPorts are TCP destination ports dropped for guest egress to
 	// public destinations (AWS-parity outbound-SMTP block). Empty disables it.
 	BlockedWANPorts []int
@@ -456,6 +463,20 @@ func launchService(cfg *Config) error {
 		return err
 	}
 
+	// The IMDS firewall rules are wildcarded over every ime- endpoint and so
+	// belong here, once per start, rather than per launch in the daemon — which
+	// holds neither CAP_NET_ADMIN nor an iptables sudo grant, by design.
+	// Re-ensured every start so they survive a reboot or a firewall flush.
+	host.SetIMDSHostAddrs(cfg.IMDSHostMetaIP, cfg.IMDSHostDNSIP)
+	if err := host.EnsureIMDSInputRule(ctx, host.NewExecRunner()); err != nil {
+		slog.Error("vpcd: IMDS input rule install failed", "err", err)
+		return err
+	}
+	if err := host.EnsureIMDSRemapRules(ctx, host.NewExecRunner()); err != nil {
+		slog.Error("vpcd: IMDS remap rule install failed", "err", err)
+		return err
+	}
+
 	if bridgeMode == BridgeModeNAT {
 		// Re-ensure kernel egress rules on every start so they survive reboots
 		// and firewall flushes without iptables-persistent.
@@ -515,6 +536,12 @@ func launchService(cfg *Config) error {
 		}
 	}
 	sgMgr := policy.NewSecurityGroupManager(liveClient, egressPolicy)
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return fmt.Errorf("get JetStream context: %w", err)
+	}
+
 	natOpts := []policy.Option{
 		policy.WithFlowsBarrier(flowsBarrier),
 		policy.WithNeighFlusher(neighFlusher(wanBridge)),
@@ -527,16 +554,17 @@ func launchService(cfg *Config) error {
 	if natMode == policy.NATModeRouted && publicPool != nil {
 		natOpts = append(natOpts, policy.WithHostEIPBinder(hostEIPBinder(publicPool)))
 	}
+	if ociPools := ociPoolNames(cfg.ExternalPools); len(ociPools) > 0 {
+		lookup := ocinet.NewLookup(ocinet.NewKVStore(js), ociPools)
+		natOpts = append(natOpts, policy.WithDatapathResolver(lookup.DatapathIP))
+		slog.Info("vpcd: OCI address pairs in use; NAT rules and host routes follow the private half",
+			"pools", ociPools)
+	}
 	natMgr, err := policy.NewNATManager(liveClient, natMode, natOpts...)
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
 	}
 	routeMgr := policy.NewRouteManager(liveClient)
-
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return fmt.Errorf("get JetStream context: %w", err)
-	}
 
 	// vpcd holds the network capabilities needed for IMDS; STS/IAM stay in awsgw over NATS.
 	imdsCtx, cancelIMDS := context.WithCancel(ctx)
@@ -575,6 +603,7 @@ func launchService(cfg *Config) error {
 		cfg.ServicesDomain,
 		cfg.CACert,
 		cfg.ResolverNameservers,
+		handlers_imds.NewHostBindAddrs(cfg.IMDSHostMetaIP, cfg.IMDSHostDNSIP),
 	)
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)
@@ -954,6 +983,18 @@ func selectExternalPools(externalMode string, pools []external.ExternalPoolConfi
 		}
 	}
 	return igwPool, publicPool
+}
+
+// ociPoolNames lists the pools whose addresses are OCI pairs, and so need the
+// public half mapped to a private one before it reaches OVN or a host route.
+func ociPoolNames(pools []external.ExternalPoolConfig) []string {
+	var names []string
+	for _, p := range pools {
+		if p.IsOCI() {
+			names = append(names, p.Name)
+		}
+	}
+	return names
 }
 
 // hostEIPBinder builds the routed-mode host plumbing hooks for EIPs on the

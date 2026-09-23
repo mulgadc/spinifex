@@ -12,6 +12,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/cloud/oci"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
 )
@@ -107,9 +108,8 @@ func TestAllocateRollsBackThePrivateIPWhenThePublicIPFails(t *testing.T) {
 
 	assert.Empty(t, fake.PrivateIPs(), "private IP was not rolled back")
 	assert.Empty(t, fake.PublicIPs())
-	rec, err := store.Get(ctx, "oci-wan")
-	require.NoError(t, err)
-	assert.Empty(t, rec.Bindings, "a failed allocate must leave no binding")
+	_, err = store.Get(ctx, "oci-wan")
+	require.ErrorIs(t, err, kvstore.ErrNotFound, "a failed allocate must leave no record at all")
 }
 
 func TestReleaseDeletesBothObjectsAndDropsTheBinding(t *testing.T) {

@@ -65,6 +65,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
@@ -1436,12 +1437,48 @@ func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, any
 			AZ:              p.AZ,
 			GwLrpRangeStart: p.GwLrpRangeStart,
 			GwLrpRangeEnd:   p.GwLrpRangeEnd,
+
+			OCICompartmentID: p.OCICompartmentID,
+			OCIVNICID:        p.OCIVNICID,
+			OCIVNICIface:     p.OCIVNICIface,
+			OCISubnetID:      p.OCISubnetID,
+			OCIPublicIPPool:  p.OCIPublicIPPool,
 		})
 		if p.Source == "dhcp" {
 			anyDHCP = true
 		}
 	}
 	return pools, anyDHCP
+}
+
+// installOCIAllocators builds one OCI allocator per source="oci" pool and
+// reconciles it against OCI before it serves anything. The reconcile is on the
+// startup path on purpose: Allocate creates OCI objects before writing its
+// record, so a crash in between leaves a reserved public IP that bills and
+// holds one of the 50 per-region slots with nothing referencing it, and this
+// pass is the only thing that ever finds it.
+func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js jetstream.JetStream) error {
+	for _, p := range ipam.PoolsWithSource(external.SourceOCI) {
+		alloc, err := ocinet.FromPoolConfig(d.ctx, js, p)
+		if err != nil {
+			return fmt.Errorf("build OCI allocator for pool %q: %w", p.Name, err)
+		}
+		if err := ipam.InstallAllocator(p.Name, alloc); err != nil {
+			return err
+		}
+		// A reconcile failure is not fatal: it leaks money, not correctness,
+		// and refusing to start would take EIPs down over a transient API
+		// error. It is logged at Error so it is never silently skipped.
+		res, err := alloc.Reconcile(d.ctx)
+		if err != nil {
+			slog.Error("OCI allocator reconcile failed; leaked addresses may be billing",
+				"pool", p.Name, "err", err)
+			continue
+		}
+		slog.Info("OCI allocator ready", "pool", p.Name,
+			"collected", len(res.Collected), "stale_bindings", len(res.Stale), "skipped", res.Skipped)
+	}
+	return nil
 }
 
 // hasPublicIPPools reports whether the cluster can allocate routable public
@@ -1690,6 +1727,9 @@ func (d *Daemon) startCluster() error {
 				if dhcpErr := ipam.EnableDHCP(dhcp.NewNATSClient(d.natsConn, 0)); dhcpErr != nil {
 					return nil, fmt.Errorf("enable DHCP allocator: %w", dhcpErr)
 				}
+			}
+			if ociErr := d.installOCIAllocators(ipam, js); ociErr != nil {
+				return nil, ociErr
 			}
 			return ipam, nil
 		})

@@ -24,6 +24,14 @@ type ExternalPoolConfig struct {
 	AZ              string
 	GwLrpRangeStart string
 	GwLrpRangeEnd   string
+	// OCICompartmentID, OCIVNICID and OCIVNICIface identify where the provider
+	// creates addresses (Source="oci"). Exactly one of the VNIC fields is set;
+	// the interface name is resolved to an OCID against IMDS at startup.
+	OCICompartmentID string
+	OCIVNICID        string
+	OCIVNICIface     string
+	OCISubnetID      string
+	OCIPublicIPPool  string
 }
 
 // IsDHCP reports whether the pool sources IPs from an upstream DHCP server.
@@ -31,11 +39,21 @@ func (p *ExternalPoolConfig) IsDHCP() bool {
 	return p != nil && p.Source == SourceDHCP
 }
 
+// IsOCI reports whether the pool sources IPs from the Oracle Cloud API.
+func (p *ExternalPoolConfig) IsOCI() bool {
+	return p != nil && p.Source == SourceOCI
+}
+
 const (
 	// SourceStatic is the default pool source (inline range math, KV-backed).
 	SourceStatic = "static"
 	// SourceDHCP delegates allocation to vpcd's DHCPManager.
 	SourceDHCP = "dhcp"
+	// SourceOCI delegates allocation to the Oracle Cloud API. An OCI VNIC
+	// drops any source address that is not a registered private IP object on
+	// it, so the addresses have to be created through the provider rather than
+	// computed from a range.
+	SourceOCI = "oci"
 
 	// DHCPMACDerived leases with deterministic per-client-id 02:xx MACs.
 	DHCPMACDerived = "derived"

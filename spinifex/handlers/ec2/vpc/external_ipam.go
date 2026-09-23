@@ -27,17 +27,19 @@ const (
 )
 
 // ExternalIPAM is the AWS-facing entry point for external IP allocation,
-// dispatching to StaticPoolAllocator or dhcp.DHCPPoolAllocator per pool name.
+// dispatching per pool name to the static allocator or to whatever the wiring
+// installed for that pool.
 type ExternalIPAM struct {
 	kv      jetstream.KeyValue
 	pools   []external.ExternalPoolConfig
 	static  *external.StaticPoolAllocator
-	perPool map[string]external.Allocator // dhcp overrides; static pools fall through to `static`
+	perPool map[string]external.Allocator // installed overrides; static pools fall through to `static`
 }
 
 // NewExternalIPAM creates a new ExternalIPAM. Static pools wire through
-// external.StaticPoolAllocator; DHCP-sourced pools wait for EnableDHCP
-// to install the per-pool dhcp.DHCPPoolAllocator.
+// external.StaticPoolAllocator; every other source waits for the wiring to
+// call InstallAllocator, because their allocators need dependencies this
+// package must not construct.
 func NewExternalIPAM(ctx context.Context, js jetstream.JetStream, pools []external.ExternalPoolConfig) (*ExternalIPAM, error) {
 	staticPools := filterStatic(pools)
 	var (
@@ -63,6 +65,40 @@ func NewExternalIPAMWithKV(kv jetstream.KeyValue, pools []external.ExternalPoolC
 	return &ExternalIPAM{kv: kv, pools: pools, static: alloc, perPool: map[string]external.Allocator{}}
 }
 
+// InstallAllocator routes one pool to a non-static allocator. Every source
+// other than static needs a dependency this package must not construct — a
+// NATS client for DHCP, an authenticated API client for OCI — so the wiring
+// hands the built allocator in rather than naming the source here.
+// Idempotent: a repeated call replaces the entry.
+func (m *ExternalIPAM) InstallAllocator(poolName string, a external.Allocator) error {
+	if m == nil {
+		return errors.New("ExternalIPAM InstallAllocator: nil IPAM")
+	}
+	if poolName == "" {
+		return errors.New("ExternalIPAM InstallAllocator: empty pool name")
+	}
+	if a == nil {
+		return fmt.Errorf("ExternalIPAM InstallAllocator: nil allocator for pool %q", poolName)
+	}
+	m.perPool[poolName] = a
+	return nil
+}
+
+// PoolsWithSource returns the configured pools using the given source, so the
+// wiring can build one allocator per pool without reaching into m.pools.
+func (m *ExternalIPAM) PoolsWithSource(source string) []external.ExternalPoolConfig {
+	if m == nil {
+		return nil
+	}
+	var out []external.ExternalPoolConfig
+	for _, p := range m.pools {
+		if p.Source == source {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // EnableDHCP installs a DHCPPoolAllocator for every pool with
 // Source="dhcp". client is the daemon-side NATS wrapper that fans out
 // to vpcd. Idempotent — repeated calls overwrite existing dhcp entries.
@@ -70,11 +106,10 @@ func (m *ExternalIPAM) EnableDHCP(client *dhcp.NATSClient) error {
 	if client == nil {
 		return errors.New("ExternalIPAM EnableDHCP: nil NATSClient")
 	}
-	for _, p := range m.pools {
-		if p.Source != external.SourceDHCP {
-			continue
+	for _, p := range m.PoolsWithSource(external.SourceDHCP) {
+		if err := m.InstallAllocator(p.Name, dhcp.NewDHCPPoolAllocator(client, p)); err != nil {
+			return err
 		}
-		m.perPool[p.Name] = dhcp.NewDHCPPoolAllocator(client, p)
 	}
 	return nil
 }
@@ -154,7 +189,7 @@ func (m *ExternalIPAM) allocatorFor(poolName string) (external.Allocator, error)
 		return a, nil
 	}
 	if m.static == nil {
-		return nil, fmt.Errorf("no allocator for pool %q (static disabled, dhcp not enabled)", poolName)
+		return nil, fmt.Errorf("no allocator for pool %q (static disabled and no allocator installed for it)", poolName)
 	}
 	return m.static, nil
 }

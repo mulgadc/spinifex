@@ -65,7 +65,7 @@ type AWSConfig struct {
 // ExternalPool defines a range of routable IPs that Spinifex manages for public subnets.
 type ExternalPool struct {
 	Name       string   `mapstructure:"name"`        // Pool identifier (e.g., "wan", "dc1-primary")
-	Source     string   `mapstructure:"source"`      // IP source: "static" (default) or "dhcp"
+	Source     string   `mapstructure:"source"`      // IP source: "static" (default), "dhcp" or "oci"
 	BindBridge string   `mapstructure:"bind_bridge"` // Linux bridge for DHCP DORA (source=dhcp only)
 	DHCPMAC    string   `mapstructure:"dhcp_mac"`    // DHCP client MAC strategy: "derived" (default) or "interface" (source=dhcp only)
 	RangeStart string   `mapstructure:"range_start"` // First IP in range (static source only)
@@ -80,6 +80,16 @@ type ExternalPool struct {
 	// Must NOT overlap [RangeStart, RangeEnd] — link-local 169.254/16 is rejected by upstream routers.
 	GwLrpRangeStart string `mapstructure:"gw_lrp_range_start"`
 	GwLrpRangeEnd   string `mapstructure:"gw_lrp_range_end"`
+
+	// OCI identifies the VNIC and compartment the provider allocates against
+	// (source=oci only). An OCI VNIC drops any source address that is not a
+	// registered private IP object on it, so the addresses are created through
+	// the provider rather than computed from a range.
+	OCICompartmentID string `mapstructure:"oci_compartment_id"` // Compartment OCID the public IPs are created in
+	OCIVNICID        string `mapstructure:"oci_vnic_id"`        // VNIC OCID carrying the addresses
+	OCIVNICIface     string `mapstructure:"oci_vnic_iface"`     // Host interface to resolve the VNIC OCID from, instead of oci_vnic_id
+	OCISubnetID      string `mapstructure:"oci_subnet_id"`      // Subnet OCID the private IPs come from (optional; defaults to the VNIC's)
+	OCIPublicIPPool  string `mapstructure:"oci_public_ip_pool"` // Public IP pool OCID for BYOIP (optional)
 }
 
 // DefaultUnderlayMTU is the standard Ethernet payload, and the assumption a
@@ -632,6 +642,9 @@ func validateClusterConfig(cc *ClusterConfig) error {
 	}
 	var ranges []poolRange
 	for _, p := range cc.Network.ExternalPools {
+		if p.Source != "oci" && (p.OCICompartmentID != "" || p.OCIVNICID != "" || p.OCIVNICIface != "" || p.OCISubnetID != "" || p.OCIPublicIPPool != "") {
+			return fmt.Errorf("config: [[network.external_pools]] %q: oci_* keys are only valid with source=\"oci\"", p.Name)
+		}
 		switch p.DHCPMAC {
 		case "", "derived", "interface":
 		default:
@@ -656,8 +669,33 @@ func validateClusterConfig(cc *ClusterConfig) error {
 				return fmt.Errorf("config: [[network.external_pools]] %q: gw_lrp_range_start/gw_lrp_range_end not allowed with source=\"dhcp\" (gateway LRP IP is DORA'd per VPC)", p.Name)
 			}
 			continue
+		case "oci":
+			if p.OCICompartmentID == "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"oci\" requires oci_compartment_id", p.Name)
+			}
+			// One or the other, never both: an OCID and an interface name that
+			// disagree would send allocations to a VNIC the datapath is not on,
+			// and the addresses would be silently unreachable.
+			if (p.OCIVNICID == "") == (p.OCIVNICIface == "") {
+				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"oci\" requires exactly one of oci_vnic_id or oci_vnic_iface", p.Name)
+			}
+			if p.BindBridge != "" || p.DHCPMAC != "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: bind_bridge/dhcp_mac are only valid with source=\"dhcp\"", p.Name)
+			}
+			if p.RangeStart != "" || p.RangeEnd != "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: range_start/range_end not allowed with source=\"oci\" (OCI picks the address)", p.Name)
+			}
+			if p.GwLrpRangeStart != "" || p.GwLrpRangeEnd != "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: gw_lrp_range_start/gw_lrp_range_end not allowed with source=\"oci\" (an OCI address per VPC gateway would exhaust the 50-per-region public IP quota)", p.Name)
+			}
+			// Every OCI address costs a registration and bills, so a pool that
+			// no datapath can reach is a bill for nothing.
+			if cc.Network.ExternalMode != "pool" && cc.Network.ExternalMode != "nat" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"oci\" requires [network] external_mode = \"pool\" or \"nat\"", p.Name)
+			}
+			continue
 		default:
-			return fmt.Errorf("config: [[network.external_pools]] %q: source=%q unsupported; use \"static\" or \"dhcp\"", p.Name, p.Source)
+			return fmt.Errorf("config: [[network.external_pools]] %q: source=%q unsupported; use \"static\", \"dhcp\" or \"oci\"", p.Name, p.Source)
 		}
 		if p.RangeStart == "" || p.RangeEnd == "" {
 			continue

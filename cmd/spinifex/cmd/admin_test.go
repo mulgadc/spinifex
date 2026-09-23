@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/northstar/pkg/backend"
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
@@ -1336,6 +1337,60 @@ func TestSourceDigestMode(t *testing.T) {
 			assert.Equal(t, tt.want, sourceDigestMode(tt.localFile, tt.checksum, tt.skipVerify))
 		})
 	}
+}
+
+func TestImagesDescribeCmd_FlagSchema(t *testing.T) {
+	imageIDFlag := imagesDescribeCmd.Flags().Lookup("image-id")
+	require.NotNil(t, imageIDFlag, "--image-id must be defined")
+	assert.Equal(t, []string{"true"}, imageIDFlag.Annotations[cobraRequiredAnnotation],
+		"--image-id must be marked required")
+}
+
+func TestPrintAMIDescription(t *testing.T) {
+	base := ebsmetadata.AMI{
+		ImageID:         "ami-1",
+		Name:            "ami-debian-13-x86_64",
+		ImageOwnerAlias: "system",
+		CreationDate:    time.Date(2026, 9, 23, 1, 2, 3, 0, time.UTC),
+		BootMode:        "uefi",
+		Architecture:    "x86_64",
+	}
+
+	t.Run("digest recorded", func(t *testing.T) {
+		meta := base
+		meta.SourceDigest = &ebsmetadata.ImageDigest{
+			Algorithm: "sha512", Value: "abc123", Verification: ebsmetadata.DigestOperator,
+			Source: "SHA512SUMS", Filename: "debian-13-generic-amd64.tar.xz",
+		}
+		var buf bytes.Buffer
+		printAMIDescription(&buf, meta)
+		out := buf.String()
+		assert.Contains(t, out, "Image ID:       ami-1")
+		assert.Contains(t, out, "Created:        2026-09-23T01:02:03Z")
+		assert.Contains(t, out, "Boot mode:      uefi")
+		assert.Contains(t, out, "Source digest:  sha512:abc123")
+		assert.Contains(t, out, "Verification:   operator (SHA512SUMS)")
+		assert.Contains(t, out, "Source file:    debian-13-generic-amd64.tar.xz")
+	})
+
+	t.Run("unverified digest has no source", func(t *testing.T) {
+		meta := base
+		meta.SourceDigest = &ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: "def456", Verification: ebsmetadata.DigestUnverified,
+			Filename: "image.raw",
+		}
+		var buf bytes.Buffer
+		printAMIDescription(&buf, meta)
+		assert.Contains(t, buf.String(), "Verification:   unverified\n")
+	})
+
+	t.Run("digest not recorded", func(t *testing.T) {
+		var buf bytes.Buffer
+		printAMIDescription(&buf, base)
+		out := buf.String()
+		assert.Contains(t, out, "Source digest:  not recorded (imported before digest recording)")
+		assert.NotContains(t, out, "Verification:")
+	})
 }
 
 func TestCheckJoinPreconditions(t *testing.T) {

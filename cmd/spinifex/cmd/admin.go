@@ -200,6 +200,15 @@ takes effect immediately. Prompts for confirmation unless --yes is passed.`,
 	Run: runimagesPromoteCmd,
 }
 
+var imagesDescribeCmd = &cobra.Command{
+	Use:   "describe",
+	Short: "Show an AMI's metadata and source digest",
+	Long: `Print an AMI's control-plane metadata, including the digest of the
+artifact it was imported from and who verified it. The digest describes the
+imported source file, not the volume's current contents.`,
+	Run: runimagesDescribeCmd,
+}
+
 var volumesCmd = &cobra.Command{
 	Use:   "volumes",
 	Short: "Inspect block storage volumes",
@@ -328,6 +337,7 @@ func init() {
 	imagesCmd.AddCommand(imagesListCmd)
 	imagesCmd.AddCommand(imagesRemoveCmd)
 	imagesCmd.AddCommand(imagesPromoteCmd)
+	imagesCmd.AddCommand(imagesDescribeCmd)
 
 	adminCmd.AddCommand(volumesCmd)
 	volumesCmd.AddCommand(volumesOrphansCmd)
@@ -437,6 +447,9 @@ func init() {
 	imagesPromoteCmd.Flags().String("image-id", "", "AMI ID to promote to system image (required)")
 	imagesPromoteCmd.Flags().Bool("yes", false, "Skip interactive confirmation prompt")
 	_ = imagesPromoteCmd.MarkFlagRequired("image-id")
+
+	imagesDescribeCmd.Flags().String("image-id", "", "AMI ID to describe (required)")
+	_ = imagesDescribeCmd.MarkFlagRequired("image-id")
 }
 
 const bytesPerGiB = 1024 * 1024 * 1024
@@ -1068,6 +1081,62 @@ func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Printf("✅ Promoted %s to system image (owner: %s).\n", imageID, admin.SystemOwnerAlias)
+}
+
+func runimagesDescribeCmd(cmd *cobra.Command, args []string) {
+	imageID, _ := cmd.Flags().GetString("image-id")
+
+	cfgFile, _ := cmd.Flags().GetString("config")
+	if cfgFile == "" {
+		cfgFile = DefaultConfigFile()
+	}
+
+	appConfig, err := config.LoadConfig(cfgFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error loading config file:", err)
+		os.Exit(1)
+	}
+
+	node := appConfig.Nodes[appConfig.Node]
+	store := objectstore.NewS3ObjectStoreFromConfig(
+		node.Predastore.Host,
+		node.Predastore.Region,
+		node.Predastore.AccessKey,
+		node.Predastore.SecretKey,
+	)
+
+	meta, err := admin.GetAMIMetadata(store, node.Predastore.Bucket, imageID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to describe AMI:", err)
+		os.Exit(1)
+	}
+
+	printAMIDescription(os.Stdout, meta)
+}
+
+// printAMIDescription writes an AMI's metadata and source digest for an operator.
+func printAMIDescription(w io.Writer, meta ebsmetadata.AMI) {
+	fmt.Fprintf(w, "Image ID:       %s\n", meta.ImageID)
+	fmt.Fprintf(w, "Name:           %s\n", meta.Name)
+	fmt.Fprintf(w, "Owner:          %s\n", meta.ImageOwnerAlias)
+	if !meta.CreationDate.IsZero() {
+		fmt.Fprintf(w, "Created:        %s\n", meta.CreationDate.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+	fmt.Fprintf(w, "Boot mode:      %s\n", meta.BootMode)
+	fmt.Fprintf(w, "Architecture:   %s\n", meta.Architecture)
+
+	d := meta.SourceDigest
+	if d == nil {
+		fmt.Fprintln(w, "Source digest:  not recorded (imported before digest recording)")
+		return
+	}
+	fmt.Fprintf(w, "Source digest:  %s:%s\n", d.Algorithm, d.Value)
+	if d.Source != "" {
+		fmt.Fprintf(w, "Verification:   %s (%s)\n", d.Verification, d.Source)
+	} else {
+		fmt.Fprintf(w, "Verification:   %s\n", d.Verification)
+	}
+	fmt.Fprintf(w, "Source file:    %s\n", d.Filename)
 }
 
 // List remote images available.

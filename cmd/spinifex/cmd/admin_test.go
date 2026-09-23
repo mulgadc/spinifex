@@ -14,6 +14,7 @@ import (
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -1284,6 +1285,55 @@ func TestAMIVolumeSizeGiB(t *testing.T) {
 				assert.GreaterOrEqual(t, int64(got)*giB, tt.bytes,
 					"volume must be large enough to hold the image")
 			}
+		})
+	}
+}
+
+func TestValidateChecksumFlags(t *testing.T) {
+	tests := []struct {
+		name       string
+		checksum   string
+		file       string
+		skipVerify bool
+		wantErr    string
+	}{
+		{name: "no checksum", file: "img.raw"},
+		{name: "checksum with file", checksum: "SHA256SUMS", file: "img.raw"},
+		{name: "checksum without file", checksum: "SHA256SUMS", wantErr: "--checksum requires --file"},
+		{name: "checksum with skip-verify", checksum: "SHA256SUMS", file: "img.raw", skipVerify: true,
+			wantErr: "mutually exclusive"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateChecksumFlags(tt.checksum, tt.file, tt.skipVerify)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestSourceDigestMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		localFile  string
+		checksum   string
+		skipVerify bool
+		want       string
+	}{
+		{name: "file with checksum", localFile: "img.raw", checksum: "SHA256SUMS", want: ebsmetadata.DigestOperator},
+		{name: "catalog download verified", want: ebsmetadata.DigestCatalog},
+		{name: "catalog download skip-verify", skipVerify: true, want: ebsmetadata.DigestUnverified},
+		{name: "file without checksum", localFile: "img.raw", want: ebsmetadata.DigestUnverified},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sourceDigestMode(tt.localFile, tt.checksum, tt.skipVerify))
 		})
 	}
 }

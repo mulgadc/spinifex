@@ -146,12 +146,11 @@ Repositories can be managed as code with the standard `aws_ecr_repository` resou
 
 ```hcl
 provider "aws" {
-  region                      = "ap-southeast-2"
-  skip_credentials_validation = true
-  skip_requesting_account_id  = true
+  region = "ap-southeast-2"
 
   endpoints {
     ecr = "https://<your-spinifex-gateway>"
+    sts = "https://<your-spinifex-gateway>"
   }
 }
 

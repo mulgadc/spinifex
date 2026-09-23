@@ -72,13 +72,18 @@ curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
   -o awscliv2.zip
 ```
 
-Mirror the cloud image you intend to run as guest VMs:
+Mirror the cloud image you intend to run as guest VMs, together with the sums file it was published with. Keep the upstream filename, because the import looks the image up in the sums file by name:
 
 ```bash
 mkdir -p images
-curl -fsSL "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2" \
-  -o images/debian-13-amd64.qcow2
+cd images
+curl -fsSLO "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+curl -fsSLO "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS"
+sha512sum -c --ignore-missing SHA512SUMS
+cd ..
 ```
+
+The sums file only proves the image matches it; a sums file fetched over the same channel as the image can be tampered with alongside it. Where the vendor publishes a signature for the sums file (for example Ubuntu's `SHA256SUMS.gpg`), download it too and check it with `gpg --verify` against the vendor's signing key on this connected machine.
 
 ## Step 3. Assemble Transfer Media
 
@@ -88,7 +93,7 @@ cp spinifex-${TAG}-linux-${ARCH}.tar.gz /media/spinifex-deploy/tarball/
 cp setup.sh /media/spinifex-deploy/
 cp /var/cache/apt/archives/*.deb /media/spinifex-deploy/apt-packages/
 cp awscliv2.zip /media/spinifex-deploy/aws/
-cp images/*.qcow2 /media/spinifex-deploy/images/
+cp images/*.qcow2 images/SHA512SUMS /media/spinifex-deploy/images/
 ```
 
 ## Step 4. Install on the Air-Gapped Target
@@ -139,12 +144,15 @@ sudo systemctl start spinifex.target
 
 ## Step 8. Import Cloud Images
 
-Register the pre-staged image with Spinifex:
+Register the pre-staged image with Spinifex, verifying it against the sums file carried across with it:
 
 ```bash
-sudo spx admin images import --file /mnt/usb/images/debian-13-amd64.qcow2 \
+sudo spx admin images import --file /mnt/usb/images/debian-13-genericcloud-amd64.qcow2 \
+  --checksum /mnt/usb/images/SHA512SUMS \
   --distro debian --version 13 --arch x86_64 --boot-mode uefi
 ```
+
+A digest mismatch exits before anything is written to storage. On success the import prints the verified digest, which `spx admin images describe --image-id <ami>` shows again later.
 
 ## Step 9. Verify
 
@@ -185,4 +193,4 @@ sudo INSTALL_SPINIFEX_TARBALL=/mnt/usb/tarball/spinifex-...tar.gz \
 
 ### Image Import Fails
 
-`spx admin images import --file` requires the distro/version/arch/boot-mode flags so the image registers in the catalogue. If the import succeeds but `aws ec2 describe-images` returns empty, check `journalctl -u spinifex-daemon -f` for predastore upload errors.
+`spx admin images import --file` requires the distro/version/arch/boot-mode flags so the image registers in the catalogue. A `checksum entry for image filename not found` error means the image was renamed after download; restore the upstream filename so it matches its line in the sums file. If the import succeeds but `aws ec2 describe-images` returns empty, check `journalctl -u spinifex-daemon -f` for predastore upload errors.

@@ -149,7 +149,7 @@ Spinifex nodes initiate a small, fixed set of outbound connections.
 
 **Update checks and metadata.** Spinifex does not check for updates and does not consume a cloud metadata service (`169.254.169.254` is served *by* the cluster to guest VMs). Node software updates come from the operator's OS package channel. The install-telemetry endpoint above is the only vendor-operated destination contacted by a node; closed-egress deployments should disable it and record the opt-out in the security plan.
 
-**Air-gapped deployments.** The image URLs above are the only destinations needed for the standard image catalogue. Mirror them locally and use `spx admin images import --file` with pre-staged files. Telemetry must also be disabled. See [Air-Gapped Install](/docs/install-airgapped).
+**Air-gapped deployments.** The image URLs above are the only destinations needed for the standard image catalogue. Mirror them locally with their sums files and use `spx admin images import --file <image> --checksum <sums-file>` with the pre-staged files. Telemetry must also be disabled. See [Air-Gapped Install](/docs/install-airgapped).
 
 ## 3. Cross-Node (Internal) Connections
 
@@ -226,7 +226,7 @@ Notes that make the difference between this working and locking you out:
 - **`output` is deliberately untouched.** The metadata service's reply path egresses through per-instance policy routing; filtering `output` breaks it in ways that are hard to attribute.
 - **On a single-NIC node the cluster and encap sets are the node's public addresses**, because the planes collapse. The rules are still correct, but they are no longer a boundary — an upstream ACL is the only real control there.
 
-Port 4432 must be closed outside the bootstrap window; `spx admin join` opens it transiently. Outbound egress can be limited to the image-catalogue hostnames in [§2](#2-outbound-connections) plus the operator's OS package repositories; on air-gapped nodes, block all outbound HTTPS and use `spx admin images import --file`.
+Port 4432 must be closed outside the bootstrap window; `spx admin join` opens it transiently. Outbound egress can be limited to the image-catalogue hostnames in [§2](#2-outbound-connections) plus the operator's OS package repositories; on air-gapped nodes, block all outbound HTTPS and use `spx admin images import --file <image> --checksum <sums-file>`.
 
 ## 5. Configuration Surface
 

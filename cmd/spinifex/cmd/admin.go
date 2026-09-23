@@ -303,7 +303,7 @@ spx admin images import --name debian-13-x86_64
 spx admin images list
 
 // Manually import a path
-spx admin images import --file /path/to/image --distro debian --version 13 --arch x86_64
+spx admin images import --file /path/to/image --checksum /path/to/SHA512SUMS --distro debian --version 13 --arch x86_64
 
 -> x <-
 */

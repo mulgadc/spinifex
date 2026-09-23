@@ -648,7 +648,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## eks
 
-`2017-11-01` — 34 of 56 modelled operations implemented (60.7%), 0 stubbed, 0 not applicable, 4 registered outside the pinned model.
+`2017-11-01` — 36 of 56 modelled operations implemented (64.3%), 0 stubbed, 0 not applicable, 4 registered outside the pinned model.
 
 ### Not implemented
 
@@ -665,12 +665,10 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 - `DescribeFargateProfile`
 - `DescribeInsight`
 - `DescribePodIdentityAssociation`
-- `DescribeUpdate`
 - `ListEksAnywhereSubscriptions`
 - `ListFargateProfiles`
 - `ListInsights`
 - `ListPodIdentityAssociations`
-- `ListUpdates`
 - `RegisterCluster`
 - `UpdateEksAnywhereSubscription`
 - `UpdatePodIdentityAssociation`
@@ -973,7 +971,7 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 
 ## s3
 
-`2006-03-01` — 23 of 99 modelled operations implemented (23.2%), 0 stubbed, 6 not applicable, 0 registered outside the pinned model.
+`2006-03-01` — 26 of 99 modelled operations implemented (26.3%), 0 stubbed, 6 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1006,7 +1004,6 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 - `GetBucketPolicy`
 - `GetBucketPolicyStatus`
 - `GetBucketReplication`
-- `GetBucketVersioning`
 - `GetBucketWebsite`
 - `GetObjectAcl`
 - `GetObjectAttributes`
@@ -1021,7 +1018,6 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 - `ListBucketInventoryConfigurations`
 - `ListBucketMetricsConfigurations`
 - `ListDirectoryBuckets`
-- `ListObjectVersions`
 - `PutBucketAcl`
 - `PutBucketAnalyticsConfiguration`
 - `PutBucketCors`
@@ -1037,7 +1033,6 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 - `PutBucketOwnershipControls`
 - `PutBucketPolicy`
 - `PutBucketReplication`
-- `PutBucketVersioning`
 - `PutBucketWebsite`
 - `PutObjectAcl`
 - `PutObjectLegalHold`

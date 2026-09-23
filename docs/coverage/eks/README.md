@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **34 operations** in the EKS `2017-11-01` API model.
+Spinifex implements **36 operations** in the EKS `2017-11-01` API model.
 
 ### Operations
 
@@ -40,6 +40,7 @@ Spinifex implements **34 operations** in the EKS `2017-11-01` API model.
 | `DescribeCluster` |
 | `DescribeIdentityProviderConfig` |
 | `DescribeNodegroup` |
+| `DescribeUpdate` |
 | `DisassociateAccessPolicy` |
 | `DisassociateIdentityProviderConfig` |
 | `ListAccessEntries` |
@@ -50,6 +51,7 @@ Spinifex implements **34 operations** in the EKS `2017-11-01` API model.
 | `ListIdentityProviderConfigs` |
 | `ListNodegroups` |
 | `ListTagsForResource` |
+| `ListUpdates` |
 | `TagResource` |
 | `UntagResource` |
 | `UpdateAccessEntry` |

@@ -1769,6 +1769,10 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 	})
 
 	// Source AMI with non-default fields that must propagate.
+	digest := &ebsmetadata.ImageDigest{
+		Algorithm: "sha512", Value: "abc123", Verification: ebsmetadata.DigestCatalog,
+		Source: "https://example.test/SHA512SUMS", Filename: "arm.tar.xz",
+	}
 	putTestAMIConfigWithSnapshot(t, store, "ami-arm001", "arm-source", testAccountID, "snap-arm001", ebsmetadata.AMI{
 		Architecture:    "arm64",
 		PlatformDetails: "Linux/UNIX (arm64)",
@@ -1777,6 +1781,7 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 		RootDeviceType:  "ebs",
 		Description:     "arm source",
 		BootMode:        "uefi",
+		SourceDigest:    digest,
 	})
 
 	before := time.Now()
@@ -1791,6 +1796,7 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 	assert.Equal(t, uint64(32), newMeta.VolumeSizeGiB)
 	assert.Equal(t, "ebs", newMeta.RootDeviceType)
 	assert.Equal(t, "uefi", newMeta.BootMode, "CopyImage must propagate BootMode from source")
+	assert.Equal(t, digest, newMeta.SourceDigest, "a zero-copy share still holds the source artifact")
 	assert.False(t, newMeta.CreationDate.Before(before), "CreationDate must be refreshed on copy, not inherited")
 }
 

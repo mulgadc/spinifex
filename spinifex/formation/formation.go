@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
+	"github.com/mulgadc/spinifex/spinifex/admin"
 )
 
 // NodeInfo describes a node participating in cluster formation.
@@ -63,16 +64,14 @@ type StatusResponse struct {
 // NetworkConfig holds the cluster-wide external networking configuration
 // propagated from the init node to joining nodes during formation.
 type NetworkConfig struct {
-	ExternalMode   string   `json:"external_mode"`
-	PoolName       string   `json:"pool_name"`
-	PoolSource     string   `json:"pool_source,omitempty"`
-	PoolBindBridge string   `json:"pool_bind_bridge,omitempty"`
-	PoolStart      string   `json:"pool_start,omitempty"`
-	PoolEnd        string   `json:"pool_end,omitempty"`
-	PoolGateway    string   `json:"pool_gateway"`
-	PoolGatewayIP  string   `json:"pool_gateway_ip,omitempty"`
-	PoolPrefixLen  int      `json:"pool_prefix_len"`
-	PoolDNSServers []string `json:"pool_dns_servers,omitempty"`
+	ExternalMode string `json:"external_mode"`
+
+	// Pools is every [[network.external_pools]] entry the init node rendered, in
+	// order. A list rather than one flattened pool because routed NAT has two —
+	// the transit segment and any public pool — and the transit pool carries a
+	// gateway-LRP range that has no equivalent in pool mode.
+	Pools          []admin.PoolData `json:"pools,omitempty"`
+	PoolDNSServers []string         `json:"pool_dns_servers,omitempty"`
 
 	// IPSecEnabled propagates the cluster-wide intra-AZ IPsec toggle so the
 	// joining node provisions strongSwan and flips OVS ipsec_encapsulation to

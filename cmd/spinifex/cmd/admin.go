@@ -1343,9 +1343,11 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// the transit segment claims externalGateway below.
 	natPublicGateway := externalGateway
 	if externalMode == "nat" {
+		// Measured on three nodes: every node claims every EIP, nodes disagree on
+		// the VPC's gateway LRP, and only the gateway chassis reaches its guests.
 		if nodes >= 2 {
-			fmt.Fprintf(os.Stderr, "❌ Error: --external-mode=nat is single-node only (v1); use --nodes=1\n")
-			os.Exit(1)
+			fmt.Fprintf(os.Stderr, "⚠️  --external-mode=nat on %d nodes is EXPERIMENTAL and the external datapath is known broken.\n", nodes)
+			fmt.Fprintf(os.Stderr, "   The cluster forms and guest-to-guest traffic works; EIPs and default egress do not.\n")
 		}
 		if !natPublicPool && (externalBindBridge != "" || gatewayIP != "") {
 			fmt.Fprintf(os.Stderr, "❌ Error: --external-bind-bridge/--gateway-ip require --external-pool or --external-source in --external-mode=nat\n")
@@ -1675,14 +1677,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			bootstrapSubnetId := utils.GenerateResourceID("subnet")
 			bootstrapIgwId := utils.GenerateResourceID("igw")
 			networkConfig.ExternalMode = externalMode
-			networkConfig.PoolName = "wan"
-			networkConfig.PoolSource = externalSource
-			networkConfig.PoolBindBridge = externalBindBridge
-			networkConfig.PoolStart = poolStart
-			networkConfig.PoolEnd = poolEnd
-			networkConfig.PoolGateway = externalGateway
-			networkConfig.PoolGatewayIP = gatewayIP
-			networkConfig.PoolPrefixLen = externalPrefixLen
+			networkConfig.Pools = externalPools
 			networkConfig.PoolDNSServers = dnsServers
 			networkConfig.BootstrapAccountId = admin.DefaultAccountID()
 			networkConfig.BootstrapVpcId = bootstrapVpcId
@@ -3200,17 +3195,7 @@ func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkCon
 	settings.ExternalMode = nc.ExternalMode
 	settings.PoolDNSServers = nc.PoolDNSServers
 	if nc.ExternalMode != "" {
-		settings.Pools = []admin.PoolData{{
-			Name:       nc.PoolName,
-			Source:     nc.PoolSource,
-			BindBridge: nc.PoolBindBridge,
-			Start:      nc.PoolStart,
-			End:        nc.PoolEnd,
-			Gateway:    nc.PoolGateway,
-			GatewayIP:  nc.PoolGatewayIP,
-			PrefixLen:  nc.PoolPrefixLen,
-			DNSServers: nc.PoolDNSServers,
-		}}
+		settings.Pools = nc.Pools
 	}
 
 	settings.BootstrapAccountId = nc.BootstrapAccountId

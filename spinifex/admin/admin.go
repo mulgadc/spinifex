@@ -148,21 +148,23 @@ type ConfigSettings struct {
 }
 
 // PoolData is one [[network.external_pools]] block rendered into spinifex.toml.
+// The json tags are load bearing: formation sends these to every joiner, so a
+// renamed field silently drops a pool rather than failing to compile.
 type PoolData struct {
-	Name       string   // Pool name (e.g., "wan", "nat-transit")
-	Source     string   // IP source: "static" or "dhcp"
-	BindBridge string   // Linux bridge / interface for upstream DORA (source=dhcp only)
-	Start      string   // First IP in range (static only)
-	End        string   // Last IP in range (static only)
-	Gateway    string   // WAN gateway IP
-	GatewayIP  string   // Explicit SNAT IP (overrides default of first IP in range)
-	PrefixLen  int      // Subnet prefix length (default 24)
-	DNSServers []string // DNS servers for VM DHCP (auto-detected from host)
-	DHCPMAC    string   // DHCP client MAC strategy: "derived" (default) or "interface"
+	Name       string   `json:"name"`                  // Pool name (e.g., "wan", "nat-transit")
+	Source     string   `json:"source,omitempty"`      // IP source: "static" or "dhcp"
+	BindBridge string   `json:"bind_bridge,omitempty"` // Linux bridge / interface for upstream DORA (source=dhcp only)
+	Start      string   `json:"start,omitempty"`       // First IP in range (static only)
+	End        string   `json:"end,omitempty"`         // Last IP in range (static only)
+	Gateway    string   `json:"gateway,omitempty"`     // WAN gateway IP
+	GatewayIP  string   `json:"gateway_ip,omitempty"`  // Explicit SNAT IP (overrides default of first IP in range)
+	PrefixLen  int      `json:"prefix_len,omitempty"`  // Subnet prefix length (default 24)
+	DNSServers []string `json:"dns_servers,omitempty"` // DNS servers for VM DHCP (auto-detected from host)
+	DHCPMAC    string   `json:"dhcp_mac,omitempty"`    // DHCP client MAC strategy: "derived" (default) or "interface"
 	// GwLrpRangeStart/End reserve gateway-LRP IPs for OVN routers. When empty
 	// the allocator auto-derives the top 16 host IPs of the pool subnet.
-	GwLrpRangeStart string
-	GwLrpRangeEnd   string
+	GwLrpRangeStart string `json:"gw_lrp_range_start,omitempty"`
+	GwLrpRangeEnd   string `json:"gw_lrp_range_end,omitempty"`
 }
 
 // PredastoreNodeConfig describes a single Predastore node for multi-node config generation.

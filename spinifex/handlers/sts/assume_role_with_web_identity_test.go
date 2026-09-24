@@ -524,8 +524,7 @@ func TestAssumeRoleWithWebIdentity_RejectsSessionPolicies(t *testing.T) {
 		WebIdentityToken: aws.String(token),
 		Policy:           aws.String(`{"Version":"2012-10-17","Statement":[]}`),
 	})
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorPackedPolicyTooLarge, err.Error())
+	requireUnsupportedSessionInput(t, err, "Session policies are not supported")
 }
 
 func TestAssumeRoleWithWebIdentity_RejectsBadRoleARN(t *testing.T) {

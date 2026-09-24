@@ -45,7 +45,8 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
 	if aws.StringValue(input.Policy) != "" || len(input.PolicyArns) > 0 {
-		return nil, errors.New(awserrors.ErrorPackedPolicyTooLarge)
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError,
+			"Session policies are not supported in this release; omit Policy and PolicyArns")
 	}
 
 	// Only the account is taken here: webIdentityKeyFunc needs it before the

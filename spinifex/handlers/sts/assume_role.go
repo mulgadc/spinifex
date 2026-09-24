@@ -87,10 +87,12 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 	}
 
 	if aws.StringValue(input.Policy) != "" || len(input.PolicyArns) > 0 {
-		return nil, errors.New(awserrors.ErrorPackedPolicyTooLarge)
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError,
+			"Session policies are not supported in this release; omit Policy and PolicyArns")
 	}
 	if len(input.Tags) > 0 || len(input.TransitiveTagKeys) > 0 {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError,
+			"Session tags are not supported in this release; omit Tags and TransitiveTagKeys")
 	}
 	if aws.StringValue(input.SerialNumber) != "" || aws.StringValue(input.TokenCode) != "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -191,7 +193,7 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 		return nil, err
 	}
 
-	return &sts.AssumeRoleOutput{
+	out := &sts.AssumeRoleOutput{
 		Credentials: &sts.Credentials{
 			AccessKeyId:     aws.String(cred.AccessKeyID),
 			SecretAccessKey: aws.String(plainSecret),
@@ -203,7 +205,11 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 			Arn:           aws.String(cred.AssumedRoleARN),
 		},
 		PackedPolicySize: aws.Int64(0),
-	}, nil
+	}
+	if cred.SourceIdentity != "" {
+		out.SourceIdentity = aws.String(cred.SourceIdentity)
+	}
+	return out, nil
 }
 
 // assumeRoleConditionKeySourceAccount is the only condition key evaluated on the

@@ -32,6 +32,7 @@ type VPCService interface {
 	RevokeSecurityGroupEgress(ctx context.Context, input *ec2.RevokeSecurityGroupEgressInput, accountID string) (*ec2.RevokeSecurityGroupEgressOutput, error)
 	UpdateSecurityGroupRuleDescriptionsIngress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsIngressInput, accountID string) (*ec2.UpdateSecurityGroupRuleDescriptionsIngressOutput, error)
 	UpdateSecurityGroupRuleDescriptionsEgress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsEgressInput, accountID string) (*ec2.UpdateSecurityGroupRuleDescriptionsEgressOutput, error)
+	ModifySecurityGroupRules(ctx context.Context, input *ec2.ModifySecurityGroupRulesInput, accountID string) (*ec2.ModifySecurityGroupRulesOutput, error)
 }
 
 // CentralTagStore keeps the central tag index in step with this package's

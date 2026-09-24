@@ -21,7 +21,7 @@ Pinned model source: `aws-sdk-go v1.55.8`.
 
 ## ec2
 
-`2016-11-15` — 125 of 625 modelled operations implemented (20.0%), 0 stubbed, 39 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 126 of 625 modelled operations implemented (20.2%), 0 stubbed, 39 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -409,7 +409,6 @@ Pinned model source: `aws-sdk-go v1.55.8`.
 - `ModifyManagedPrefixList`
 - `ModifyPrivateDnsNameOptions`
 - `ModifyReservedInstances`
-- `ModifySecurityGroupRules`
 - `ModifySnapshotAttribute`
 - `ModifySnapshotTier`
 - `ModifySpotFleetRequest`

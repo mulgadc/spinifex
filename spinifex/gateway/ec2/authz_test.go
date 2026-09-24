@@ -182,6 +182,7 @@ func TestResourceARNs(t *testing.T) {
 			[]string{ec2arn("security-group", "sg-1")}},
 		{"UpdateSecurityGroupRuleDescriptionsEgress", map[string]string{"GroupId": "sg-1"},
 			[]string{ec2arn("security-group", "sg-1")}},
+		{"ModifySecurityGroupRules", map[string]string{"GroupId": "sg-1"}, []string{ec2arn("security-group", "sg-1")}},
 
 		// Addresses.
 		{"AllocateAddress", map[string]string{"Domain": "vpc"}, []string{ec2arn("elastic-ip", "*")}},
@@ -392,6 +393,7 @@ var ec2Inputs = map[string]any{
 	"ReplaceIamInstanceProfileAssociation":       &ec2.ReplaceIamInstanceProfileAssociationInput{},
 	"ReplaceRoute":                               &ec2.ReplaceRouteInput{},
 	"ReplaceRouteTableAssociation":               &ec2.ReplaceRouteTableAssociationInput{},
+	"ModifySecurityGroupRules":                   &ec2.ModifySecurityGroupRulesInput{},
 	"RequestSpotInstances":                       &ec2.RequestSpotInstancesInput{},
 	"ResetImageAttribute":                        &ec2.ResetImageAttributeInput{},
 	"RevokeSecurityGroupEgress":                  &ec2.RevokeSecurityGroupEgressInput{},

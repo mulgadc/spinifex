@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **125 operations** in the EC2 `2016-11-15` API model.
+Spinifex implements **126 operations** in the EC2 `2016-11-15` API model.
 
 ### Spot Instances Are a Mock
 
@@ -132,6 +132,7 @@ Spot Instance Requests are a mock over the on-demand `RunInstances` path. A requ
 | `ModifyInstanceMetadataOptions` |
 | `ModifyLaunchTemplate` |
 | `ModifyNetworkInterfaceAttribute` |
+| `ModifySecurityGroupRules` |
 | `ModifySubnetAttribute` |
 | `ModifyVolume` |
 | `ModifyVpcAttribute` |

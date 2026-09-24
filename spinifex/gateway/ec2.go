@@ -575,6 +575,9 @@ var ec2Actions = map[string]ec2Action{
 	"UpdateSecurityGroupRuleDescriptionsEgress": ec2Handler(func(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsEgressInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_vpc.UpdateSecurityGroupRuleDescriptionsEgress(ctx, input, gw.NATSConn, accountID)
 	}),
+	"ModifySecurityGroupRules": ec2Handler(func(ctx context.Context, input *ec2.ModifySecurityGroupRulesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_vpc.ModifySecurityGroupRules(ctx, input, gw.NATSConn, accountID)
+	}),
 	"AllocateAddress": ec2Handler(func(ctx context.Context, input *ec2.AllocateAddressInput, gw *GatewayConfig, accountID string) (any, error) {
 		if err := gw.Quota.EnforceEIPs(ctx, gw.NATSConn, accountID, 1); err != nil {
 			return nil, err

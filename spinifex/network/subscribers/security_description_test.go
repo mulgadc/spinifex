@@ -73,3 +73,43 @@ func TestUpdateSG_DescriptionDoesNotChangeACLSet(t *testing.T) {
 	assert.Equal(t, before, aclFingerprints(t, withDescriptions),
 		"a description change must rebuild an identical ACL set")
 }
+
+// TestUpdateSG_ModifiedRuleMatchesAuthorizedRule pins that the dataplane cannot
+// tell a modify from an authorize: a rule edited in place under its old ID
+// commits the same ACL set as a fresh rule with the same content.
+func TestUpdateSG_ModifiedRuleMatchesAuthorizedRule(t *testing.T) {
+	const beforeModify = `{
+		"group_id": "sg-mod", "vpc_id": "vpc-1",
+		"ingress_rules": [
+			{"rule_id": "sgr-aaaaaaaaaaaaaaaaa", "ip_protocol": "tcp", "from_port": 8080, "to_port": 8080, "cidr_ip": "192.0.2.0/24"}
+		],
+		"egress_rules": [
+			{"rule_id": "sgr-ccccccccccccccccc", "ip_protocol": "-1", "from_port": 0, "to_port": 0, "cidr_ip": "0.0.0.0/0"}
+		]
+	}`
+	const afterModify = `{
+		"group_id": "sg-mod", "vpc_id": "vpc-1",
+		"ingress_rules": [
+			{"rule_id": "sgr-aaaaaaaaaaaaaaaaa", "ip_protocol": "tcp", "from_port": 8081, "to_port": 8081, "cidr_ip": "198.51.100.0/24"}
+		],
+		"egress_rules": [
+			{"rule_id": "sgr-ccccccccccccccccc", "ip_protocol": "-1", "from_port": 0, "to_port": 0, "cidr_ip": "0.0.0.0/0"}
+		]
+	}`
+	const freshlyAuthorized = `{
+		"group_id": "sg-mod", "vpc_id": "vpc-1",
+		"ingress_rules": [
+			{"rule_id": "sgr-ddddddddddddddddd", "ip_protocol": "tcp", "from_port": 8081, "to_port": 8081, "cidr_ip": "198.51.100.0/24"}
+		],
+		"egress_rules": [
+			{"rule_id": "sgr-ccccccccccccccccc", "ip_protocol": "-1", "from_port": 0, "to_port": 0, "cidr_ip": "0.0.0.0/0"}
+		]
+	}`
+
+	modified := aclFingerprints(t, afterModify)
+	require.NotEmpty(t, modified)
+	assert.Equal(t, aclFingerprints(t, freshlyAuthorized), modified,
+		"a modified rule must commit the same ACL set as an authorized one with its content")
+	assert.NotEqual(t, aclFingerprints(t, beforeModify), modified,
+		"a modify must change the committed ACL set")
+}

@@ -36,6 +36,8 @@ func sgReachabilityEgressRounds() int {
 //     everything below it; failure here is fatal in the ordinary Go-test sense.
 //   - Deny probes the pre-authorize state. Authorize doesn't need Deny to have
 //     passed to be meaningful on its own, so there is no gate between them.
+//   - ModifyRule is API-only and edits a throwaway rule on the dedicated SG,
+//     never tcp/22, so no later stage depends on it.
 //   - Authorize is the hard dependency for every later stage: Resolver,
 //     WANEgress, and the egress round-trip all need a working SSH session, so
 //     Authorize's failure aborts the rest of the scenario rather than let four
@@ -108,6 +110,10 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 	if !authorizeOK {
 		t.Fatalf("Authorize stage failed; skipping every later stage that depends on tcp/22 ingress being open")
 	}
+
+	t.Run("ModifyRule", func(t *testing.T) {
+		runSGModifyRule(t, fix, sgID)
+	})
 
 	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 
@@ -244,4 +250,80 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 			})
 		})
 	}
+}
+
+// runSGModifyRule edits a throwaway ingress rule in place and asserts the
+// modify kept its SecurityGroupRuleId while replacing its content.
+func runSGModifyRule(t *testing.T, fix *Fixture, sgID string) {
+	const oldPort, newPort = int64(8080), int64(8081)
+	const oldCIDR, newCIDR = "192.0.2.0/24", "198.51.100.0/24"
+
+	harness.Step(t, "authorizing throwaway rule tcp/%d from %s", oldPort, oldCIDR)
+	out, err := fix.AWS.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(oldPort),
+			ToPort:     aws.Int64(oldPort),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(oldCIDR)}},
+		}},
+	})
+	require.NoError(t, err, "authorize throwaway rule")
+	require.Len(t, out.SecurityGroupRules, 1)
+	ruleID := aws.StringValue(out.SecurityGroupRules[0].SecurityGroupRuleId)
+	revoked := false
+	t.Cleanup(func() {
+		if revoked {
+			return
+		}
+		if _, err := fix.AWS.EC2.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+			GroupId:              aws.String(sgID),
+			SecurityGroupRuleIds: []*string{aws.String(ruleID)},
+		}); err != nil {
+			t.Logf("WARNING: cleanup failed to revoke %s on %s: %v", ruleID, sgID, err)
+		}
+	})
+
+	harness.Step(t, "modifying %s to tcp/%d from %s", ruleID, newPort, newCIDR)
+	_, err = fix.AWS.EC2.ModifySecurityGroupRules(&ec2.ModifySecurityGroupRulesInput{
+		GroupId: aws.String(sgID),
+		SecurityGroupRules: []*ec2.SecurityGroupRuleUpdate{{
+			SecurityGroupRuleId: aws.String(ruleID),
+			SecurityGroupRule: &ec2.SecurityGroupRuleRequest{
+				IpProtocol: aws.String("tcp"),
+				FromPort:   aws.Int64(newPort),
+				ToPort:     aws.Int64(newPort),
+				CidrIpv4:   aws.String(newCIDR),
+			},
+		}},
+	})
+	require.NoError(t, err, "ModifySecurityGroupRules")
+
+	desc, err := fix.AWS.EC2.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(sgID)}}},
+	})
+	require.NoError(t, err, "DescribeSecurityGroupRules")
+	var found bool
+	for _, r := range desc.SecurityGroupRules {
+		if aws.BoolValue(r.IsEgress) {
+			continue
+		}
+		assert.Falsef(t, aws.Int64Value(r.FromPort) == oldPort || aws.StringValue(r.CidrIpv4) == oldCIDR,
+			"rule %s still carries the pre-modify content", aws.StringValue(r.SecurityGroupRuleId))
+		if aws.StringValue(r.SecurityGroupRuleId) == ruleID {
+			found = true
+			assert.Equal(t, newPort, aws.Int64Value(r.FromPort))
+			assert.Equal(t, newPort, aws.Int64Value(r.ToPort))
+			assert.Equal(t, newCIDR, aws.StringValue(r.CidrIpv4))
+		}
+	}
+	require.Truef(t, found, "rule %s is gone after the modify; its ID must survive", ruleID)
+
+	harness.Step(t, "revoking %s by ID", ruleID)
+	_, err = fix.AWS.EC2.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+		GroupId:              aws.String(sgID),
+		SecurityGroupRuleIds: []*string{aws.String(ruleID)},
+	})
+	require.NoError(t, err, "revoke modified rule by ID")
+	revoked = true
 }

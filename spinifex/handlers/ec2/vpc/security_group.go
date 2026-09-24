@@ -1517,6 +1517,274 @@ func ipPermissionsToDescriptionTargets(perms []*ec2.IpPermission) ([]sgDescripti
 	return targets, nil
 }
 
+// ModifySecurityGroupRules replaces the body of stored rules in place, keeping
+// each rule's SecurityGroupRuleId and tags. Every update is validated before
+// anything is written, so one bad update leaves the whole group untouched.
+func (s *VPCServiceImpl) ModifySecurityGroupRules(ctx context.Context, input *ec2.ModifySecurityGroupRulesInput, accountID string) (*ec2.ModifySecurityGroupRulesOutput, error) {
+	if input == nil || aws.StringValue(input.GroupId) == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.SecurityGroupRules) == 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorMissingParameter, "The request must contain the parameter securityGroupRules")
+	}
+
+	groupId := *input.GroupId
+	key := utils.AccountKey(accountID, groupId)
+
+	entry, err := s.sgKV.Get(ctx, key)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+	}
+
+	var record SecurityGroupRecord
+	if err := json.Unmarshal(entry.Value(), &record); err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := s.requireVPCExists(ctx, accountID, record.VpcId); err != nil {
+		return nil, err
+	}
+
+	modified, err := applySGRuleModifications(&record, input.SecurityGroupRules)
+	if err != nil {
+		slog.WarnContext(ctx, "ModifySecurityGroupRules: invalid update", "groupId", groupId, "err", err)
+		return nil, err
+	}
+	if err := s.validateSGRuleReferences(ctx, accountID, record.VpcId, modified); err != nil {
+		return nil, err
+	}
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal security group record: %w", err)
+	}
+	if _, err := s.sgKV.Update(ctx, key, data, entry.Revision()); err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.InfoContext(ctx, "ModifySecurityGroupRules completed", "groupId", groupId, "modifiedRules", len(modified), "accountID", accountID)
+
+	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
+		GroupId:      groupId,
+		VpcId:        record.VpcId,
+		IngressRules: record.IngressRules,
+		EgressRules:  record.EgressRules,
+	}); err != nil {
+		slog.ErrorContext(ctx, "ModifySecurityGroupRules: vpcd request failed", "groupId", groupId, "err", err)
+		return nil, err
+	}
+
+	return &ec2.ModifySecurityGroupRulesOutput{Return: aws.Bool(true)}, nil
+}
+
+// sgRuleModification is one resolved update: the side and index of the stored
+// rule it replaces, and the rule that replaces it.
+type sgRuleModification struct {
+	egress bool
+	index  int
+	rule   SGRule
+}
+
+// applySGRuleModifications resolves and validates every update, then writes
+// the new bodies into record. It returns the modified rules, and on error
+// leaves record untouched.
+func applySGRuleModifications(record *SecurityGroupRecord, updates []*ec2.SecurityGroupRuleUpdate) ([]SGRule, error) {
+	seen := make(map[string]bool, len(updates))
+	mods := make([]sgRuleModification, 0, len(updates))
+	for _, u := range updates {
+		if u == nil || u.SecurityGroupRuleId == nil {
+			return nil, awserrors.Errorf(awserrors.ErrorMissingParameter, "The request must contain the parameter securityGroupRuleId")
+		}
+		id := *u.SecurityGroupRuleId
+		if SGRuleIDIsMalformed(id) {
+			return nil, sgRuleIDLookupError(id)
+		}
+		if seen[id] {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"Duplicated security group rule ID '%s'. The same security group rule ID must not appear multiple times.", id)
+		}
+		seen[id] = true
+
+		mod := sgRuleModification{index: slices.IndexFunc(record.IngressRules, func(r SGRule) bool { return r.RuleId == id })}
+		stored := record.IngressRules
+		if mod.index < 0 {
+			mod.egress = true
+			mod.index = slices.IndexFunc(record.EgressRules, func(r SGRule) bool { return r.RuleId == id })
+			stored = record.EgressRules
+		}
+		if mod.index < 0 {
+			return nil, sgRuleIDLookupError(id)
+		}
+		current := stored[mod.index]
+
+		rule, err := sgRuleRequestToSGRule(u.SecurityGroupRule)
+		if err != nil {
+			return nil, err
+		}
+		if want, have := sgRuleSourceField(rule), sgRuleSourceField(current); want != have {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"Invalid rule type for security group rule '%s'. You may not specify %s for an existing %s rule.", id, want, have)
+		}
+		rule.RuleId = current.RuleId
+		rule.Tags = current.Tags
+		mod.rule = rule
+		mods = append(mods, mod)
+	}
+
+	for _, egress := range []bool{false, true} {
+		if err := checkSGRuleModificationDuplicates(record, mods, egress); err != nil {
+			return nil, err
+		}
+	}
+
+	ingress, egressRules := slices.Clone(record.IngressRules), slices.Clone(record.EgressRules)
+	modified := make([]SGRule, 0, len(mods))
+	for _, m := range mods {
+		if m.egress {
+			egressRules[m.index] = m.rule
+		} else {
+			ingress[m.index] = m.rule
+		}
+		modified = append(modified, m.rule)
+	}
+	record.IngressRules, record.EgressRules = ingress, egressRules
+	return modified, nil
+}
+
+// checkSGRuleModificationDuplicates rejects new contents that collide with each
+// other or with a rule on the same side the request leaves alone. Excluding
+// the rules being modified lets a rule keep its own content and two rules swap.
+func checkSGRuleModificationDuplicates(record *SecurityGroupRecord, mods []sgRuleModification, egress bool) error {
+	rules := record.IngressRules
+	if egress {
+		rules = record.EgressRules
+	}
+
+	replaced := make(map[int]bool)
+	newKeys := make(map[string]bool)
+	for _, m := range mods {
+		if m.egress != egress {
+			continue
+		}
+		replaced[m.index] = true
+		k := sgRuleKey(m.rule)
+		if newKeys[k] {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "The same permission must not appear multiple times")
+		}
+		newKeys[k] = true
+	}
+
+	for i, r := range rules {
+		if !replaced[i] && newKeys[sgRuleKey(r)] {
+			return errors.New(awserrors.ErrorInvalidPermissionDuplicate)
+		}
+	}
+	return nil
+}
+
+// sgRuleRequestToSGRule parses a SecurityGroupRuleRequest into a full rule.
+// It is stricter than the authorize path: the protocol is required and tcp/udp
+// need both ports, as AWS requires for a modify.
+func sgRuleRequestToSGRule(req *ec2.SecurityGroupRuleRequest) (SGRule, error) {
+	if req == nil {
+		return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "No value specified for securityGroupRule.")
+	}
+
+	if strings.TrimSpace(aws.StringValue(req.IpProtocol)) == "" {
+		return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Invalid value 'null' for protocol. VPC security group rules must specify protocols explicitly.")
+	}
+	proto, err := normalizeIPProtocol(*req.IpProtocol)
+	if err != nil {
+		return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+	}
+
+	r := SGRule{IpProtocol: proto, Description: aws.StringValue(req.Description)}
+	switch proto {
+	case "tcp", "udp":
+		if req.FromPort == nil || req.ToPort == nil {
+			return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"Invalid value for portRange. Must specify both from and to ports with TCP/UDP.")
+		}
+		r.FromPort, r.ToPort = *req.FromPort, *req.ToPort
+	case allProtocols:
+		// Stored as 0/0, the form authorize stores for the no-ports case, so the
+		// rule's sgRuleKey matches Terraform's and the default egress rule's.
+		noPorts := req.FromPort == nil && req.ToPort == nil
+		allPorts := req.FromPort != nil && req.ToPort != nil && *req.FromPort == -1 && *req.ToPort == -1
+		if !noPorts && !allPorts {
+			return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"You may not specify all protocols and specific ports. Please specify each protocol and port range combination individually, or all protocols and no port range.")
+		}
+	default:
+		r.FromPort, r.ToPort = aws.Int64Value(req.FromPort), aws.Int64Value(req.ToPort)
+	}
+
+	sources := 0
+	for _, src := range []*string{req.CidrIpv4, req.CidrIpv6, req.ReferencedGroupId, req.PrefixListId} {
+		if aws.StringValue(src) != "" {
+			sources++
+		}
+	}
+	switch {
+	case sources == 0:
+		return SGRule{}, awserrors.Errorf(awserrors.ErrorMissingParameter,
+			"The request must contain exactly one of: cidrIp, cidrIpv6, prefixListId, or referencedGroupId")
+	case sources > 1:
+		return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
+			"Only one of cidrIp, cidrIpv6, prefixListId, or referencedGroupId can be specified")
+	case aws.StringValue(req.PrefixListId) != "":
+		return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidPrefixListIDNotFound,
+			"The prefix list ID '%s' does not exist", *req.PrefixListId)
+	}
+
+	r.CidrIp = aws.StringValue(req.CidrIpv4)
+	r.CidrIpv6 = aws.StringValue(req.CidrIpv6)
+	r.SourceSG = aws.StringValue(req.ReferencedGroupId)
+	if r.SourceSG != "" && !sgIDRegex.MatchString(r.SourceSG) {
+		return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidGroupIdMalformed, "Invalid id: %q", r.SourceSG)
+	}
+	if err := validateSGRule(r); err != nil {
+		return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+	}
+	return r, nil
+}
+
+// sgRuleSourceField names a rule's source type by its API field, since a
+// modify may not move a rule from one source type to another.
+func sgRuleSourceField(r SGRule) string {
+	switch {
+	case r.CidrIpv6 != "":
+		return "CidrIpv6"
+	case r.SourceSG != "":
+		return "ReferencedGroupId"
+	default:
+		return "CidrIpv4"
+	}
+}
+
+// sgRuleIDMaxSuffix is the longest suffix AWS accepts after "sgr-" before it
+// calls a rule ID malformed rather than unknown.
+const sgRuleIDMaxSuffix = 17
+
+// SGRuleIDIsMalformed reports whether AWS rejects id as malformed: it lacks the
+// lowercase "sgr-" prefix or has too long a suffix. Looser than SGRuleIDRegex,
+// because AWS answers NotFound for a short or non-hex suffix such as sgr-xyz.
+func SGRuleIDIsMalformed(id string) bool {
+	suffix, ok := strings.CutPrefix(id, "sgr-")
+	return !ok || len(suffix) > sgRuleIDMaxSuffix
+}
+
+// sgRuleIDLookupError is the error AWS returns for a rule ID that resolves to
+// no stored rule: Malformed or NotFound by SGRuleIDIsMalformed.
+func sgRuleIDLookupError(id string) error {
+	if SGRuleIDIsMalformed(id) {
+		return awserrors.Errorf(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed, "Invalid id: %q", id)
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound,
+		"The security group rule ID '%s' does not exist", id)
+}
+
 // sgRecordToEC2 converts a SecurityGroupRecord to an EC2 SecurityGroup.
 func (s *VPCServiceImpl) sgRecordToEC2(record *SecurityGroupRecord, accountID string) *ec2.SecurityGroup {
 	sg := &ec2.SecurityGroup{

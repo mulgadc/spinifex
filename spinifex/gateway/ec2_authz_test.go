@@ -205,6 +205,22 @@ func TestEC2Request_UpdateSecurityGroupRuleDescriptionsIsGroupScoped(t *testing.
 	}
 }
 
+// TestEC2Request_ModifySecurityGroupRulesIsGroupScoped pins that the modify
+// names the group it mutates, so a policy fencing one security group applies.
+func TestEC2Request_ModifySecurityGroupRulesIsGroupScoped(t *testing.T) {
+	gw := scopedPolicyGateway(
+		statement("Allow", "ec2:*", "*"),
+		statement("Deny", "ec2:ModifySecurityGroupRules", "arn:aws:ec2:*:*:security-group/sg-prod"),
+	)
+
+	const update = "&SecurityGroupRule.1.SecurityGroupRuleId=sgr-0123456789abcdef0" +
+		"&SecurityGroupRule.1.SecurityGroupRule.IpProtocol=tcp" +
+		"&SecurityGroupRule.1.SecurityGroupRule.FromPort=22&SecurityGroupRule.1.SecurityGroupRule.ToPort=22" +
+		"&SecurityGroupRule.1.SecurityGroupRule.CidrIpv4=10.0.0.0/24"
+	assertDenied(t, dispatchEC2(t, gw, "Action=ModifySecurityGroupRules&GroupId=sg-prod"+update))
+	assertPermitted(t, dispatchEC2(t, gw, "Action=ModifySecurityGroupRules&GroupId=sg-dev"+update))
+}
+
 func TestEC2Request_RejectsOversizedResourceList(t *testing.T) {
 	var body strings.Builder
 	body.WriteString("Action=TerminateInstances")

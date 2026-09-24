@@ -116,3 +116,7 @@ func (s *NATSVPCService) UpdateSecurityGroupRuleDescriptionsIngress(ctx context.
 func (s *NATSVPCService) UpdateSecurityGroupRuleDescriptionsEgress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsEgressInput, accountID string) (*ec2.UpdateSecurityGroupRuleDescriptionsEgressOutput, error) {
 	return utils.NATSRequest[ec2.UpdateSecurityGroupRuleDescriptionsEgressOutput](ctx, s.natsConn, "ec2.UpdateSecurityGroupRuleDescriptionsEgress", input, 30*time.Second, accountID)
 }
+
+func (s *NATSVPCService) ModifySecurityGroupRules(ctx context.Context, input *ec2.ModifySecurityGroupRulesInput, accountID string) (*ec2.ModifySecurityGroupRulesOutput, error) {
+	return utils.NATSRequest[ec2.ModifySecurityGroupRulesOutput](ctx, s.natsConn, "ec2.ModifySecurityGroupRules", input, 30*time.Second, accountID)
+}

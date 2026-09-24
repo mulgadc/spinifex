@@ -20,8 +20,10 @@
 #   --dhcp               Obtain gateway IP via DHCP on the WAN bridge interface
 #   --nat-uplink         Routed NAT mode: no WAN NIC is bridged. Creates br-ext
 #                        with a transit veth (spx-nat-host 100.127.0.1/24) and
-#                        host masquerade rules; VMs get outbound-only WAN over
-#                        any uplink (ethernet, WiFi, cellular, PPP). Pair with
+#                        host masquerade rules; VMs reach the WAN over any
+#                        uplink (ethernet, WiFi, cellular, PPP), and EIPs work
+#                        once a public pool is configured. This is the only
+#                        mode that works on a cloud VNIC. Pair with
 #                        `spx admin init --external-mode=nat`.
 #   --mgmt-bridge=NAME   OVS bridge for system-instance control plane (default: br-mgmt)
 #   --mgmt-cidr=CIDR     IPv4 CIDR to assign on the mgmt bridge (default: 10.15.8.1/24)
@@ -102,7 +104,7 @@
 #   # No WAN bridge (overlay-only, no public subnet):
 #   ./scripts/setup-ovn.sh --management --encap-ip=10.0.0.1
 #
-#   # Non-bridgeable uplink (WiFi/cellular) — routed NAT, outbound-only VMs:
+#   # Non-bridgeable uplink (WiFi/cellular) — routed NAT:
 #   ./scripts/setup-ovn.sh --management --nat-uplink
 #
 #   # Standalone management node, NB/SB client listeners also on the LAN plane:
@@ -322,7 +324,7 @@ detect_wan_bridge() {
     echo "     ./scripts/setup-ovn.sh --management --encap-ip=$wan_ip"
     echo ""
     echo "  4. Non-bridgeable uplink (WiFi/cellular/PPP) — routed NAT mode"
-    echo "     (VMs get outbound-only internet, no public IPs):"
+    echo "     (add a public pool for EIPs; without one, VMs get egress only):"
     echo "     ./scripts/setup-ovn.sh --management --nat-uplink"
     echo "     then: spx admin init --external-mode=nat"
     echo "============================================================"

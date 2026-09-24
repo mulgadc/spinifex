@@ -246,10 +246,12 @@ oci network vnic get --vnic-id <vnic-ocid> --query 'data."subnet-id"' --raw-outp
 
 ```bash
 curl -sfL https://install.mulgadc.com | bash
-sudo /usr/local/share/spinifex/setup-ovn.sh --management --wan-bridge=br-wan
+sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
 ```
 
 **`--management` is load-bearing.** Omitting it takes the compute-node branch, which stops *and disables* `ovn-central` — silently, leaving a node with no record of what it was meant to be.
+
+**`--nat-uplink`, not `--wan-bridge=br-wan`.** The two are mutually exclusive, and only `--nat-uplink` creates the `spx-nat` transit veth that routed mode runs on; `--wan-bridge` takes the veth-to-`br-ext` branch and deletes `spx-nat` on the way. `host.Routed.EnsureUplinkPort` then refuses with *"not on OVS — run setup-ovn.sh --nat-uplink"*. `br-wan` still exists and still holds the addresses — in routed mode nothing is bridged into `br-ext`, which is the whole point of it.
 
 ```bash
 sudo spx admin init --node node1 --nodes 1 --region ap-southeast-2 \

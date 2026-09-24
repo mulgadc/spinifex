@@ -1,3 +1,6 @@
+//test:in-package — parseIPRule is unexported, and the stub Runner these tests
+//drive lives in host_test.go alongside every other test in this package.
+
 package host
 
 import (

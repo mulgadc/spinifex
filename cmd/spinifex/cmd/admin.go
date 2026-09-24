@@ -1283,7 +1283,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	detected, err := admin.DetectNetwork()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  Network auto-detection failed: %v\n", err)
-		fmt.Fprintf(os.Stderr, "   Use --external-mode=nat for outbound-only VMs on a non-bridgeable uplink, or specify --external-* flags manually.\n")
+		fmt.Fprintf(os.Stderr, "   Use --external-mode=nat on a non-bridgeable uplink, or specify --external-* flags manually.\n")
 	} else {
 		detectedNet = detected
 
@@ -1321,7 +1321,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			if externalMode == "" && !cmd.Flags().Changed("external-mode") {
 				if isNonBridgeableUplink(detected.WAN.Name) {
 					fmt.Fprintf(os.Stderr, "\n❌ Detected WAN interface %s cannot be bridged (WiFi/cellular/PPP).\n", detected.WAN.Name)
-					fmt.Fprintf(os.Stderr, "   Use routed NAT mode instead (outbound-only VM networking):\n")
+					fmt.Fprintf(os.Stderr, "   Use routed NAT mode instead:\n")
 					fmt.Fprintf(os.Stderr, "     ./scripts/setup-ovn.sh --management --nat-uplink\n")
 					fmt.Fprintf(os.Stderr, "     spx admin init --external-mode=nat\n")
 					os.Exit(1)
@@ -1835,7 +1835,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 				fmt.Printf("  Public pool:   dhcp via %s\n", externalBindBridge)
 			}
 		} else {
-			fmt.Printf("\n📡 External networking: nat (routed, outbound-only — no public IPs/EIPs)\n")
+			fmt.Printf("\n📡 External networking: nat (routed; no public pool configured yet)\n")
 		}
 		fmt.Printf("  Transit:       %s via %s (host masquerades out any uplink)\n", host.NATTransitCIDR, host.NATTransitHostEnd)
 		fmt.Printf("  Host setup:    ./scripts/setup-ovn.sh --nat-uplink (run before starting services)\n")

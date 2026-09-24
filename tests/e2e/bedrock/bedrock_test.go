@@ -22,17 +22,17 @@ const (
 	modelBogus         = "does.not-exist-v1:0"
 )
 
-// TestGetFoundationModel asserts ResourceNotFoundException for an unknown
-// model ID. v1 ships no provider-tier entry that resolves unconditionally
+// TestGetFoundationModel asserts ValidationException for an unknown model ID,
+// as AWS returns. v1 ships no provider-tier entry that resolves unconditionally
 // (modelAnthropic is not in the catalog at all — it returns the same
-// ResourceNotFoundException as a genuinely unknown ID), so the positive,
+// ValidationException as a genuinely unknown ID), so the positive,
 // known-model path is covered separately by TestGetFoundationModelSelfHost,
 // which is gated on a real weights snapshot being staged.
 func TestGetFoundationModel(t *testing.T) {
 	f := requireBedrockFixture(t)
 
 	t.Run("unknown model", func(t *testing.T) {
-		harness.ExpectError(t, "ResourceNotFoundException", func() error {
+		harness.ExpectError(t, "ValidationException", func() error {
 			_, e := f.AWS.Bedrock.GetFoundationModel(&bedrock.GetFoundationModelInput{
 				ModelIdentifier: aws.String(modelBogus),
 			})
@@ -41,7 +41,7 @@ func TestGetFoundationModel(t *testing.T) {
 	})
 
 	t.Run("provider-tier model ID is absent from v1", func(t *testing.T) {
-		harness.ExpectError(t, "ResourceNotFoundException", func() error {
+		harness.ExpectError(t, "ValidationException", func() error {
 			_, e := f.AWS.Bedrock.GetFoundationModel(&bedrock.GetFoundationModelInput{
 				ModelIdentifier: aws.String(modelAnthropic),
 			})

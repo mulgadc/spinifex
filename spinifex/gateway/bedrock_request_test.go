@@ -126,12 +126,12 @@ func TestBedrockRequest_DenyByDefault(t *testing.T) {
 		assert.Empty(t, out.ModelSummaries)
 	})
 
-	t.Run("describe reports not found", func(t *testing.T) {
+	t.Run("describe reports it as unknown", func(t *testing.T) {
 		req := bedrockRequestWithAccount(http.MethodGet, "/foundation-models/"+bedrockTestLlamaModelID, "")
 		w := httptest.NewRecorder()
 		err := gw.Bedrock_Request(w, req)
 		require.Error(t, err)
-		assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+		assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationException))
 	})
 
 	// Every runtime verb must refuse, not just the one that happens to be
@@ -187,7 +187,7 @@ func TestBedrockRequest_GetFoundationModel(t *testing.T) {
 	assert.Equal(t, bedrockTestLlamaModelID, *out.ModelDetails.ModelId)
 }
 
-func TestBedrockRequest_GetFoundationModel_NotFound(t *testing.T) {
+func TestBedrockRequest_GetFoundationModel_UnknownModel(t *testing.T) {
 	ts := newVLLMStub(t)
 	gw := newBedrockRequestGateway(t, ts.URL)
 
@@ -195,7 +195,7 @@ func TestBedrockRequest_GetFoundationModel_NotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	err := gw.Bedrock_Request(w, req)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorResourceNotFoundException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationException))
 }
 
 func TestBedrockRequest_UnknownRouteReturnsInvalidAction(t *testing.T) {
@@ -249,7 +249,7 @@ func TestBedrockRuntimeRequest_MalformedBodyReturnsValidationException(t *testin
 	w := httptest.NewRecorder()
 	err := gw.BedrockRuntime_Request(w, req)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorValidationException, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationException))
 }
 
 func TestBedrockRuntimeRequest_InvokeModel(t *testing.T) {

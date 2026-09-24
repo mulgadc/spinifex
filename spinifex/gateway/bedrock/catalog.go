@@ -463,8 +463,7 @@ func LookupServingSpec(modelID string) (spec ServingSpec, found, selfHost bool) 
 // An unknown model and an ungranted one are deliberately distinguishable here
 // (ResourceNotFoundException vs AccessDeniedException) because the caller has
 // already been told the model exists by its own catalog listing; the describe
-// path collapses both to ResourceNotFoundException instead, where that is not
-// true.
+// path collapses both to ValidationException instead, where that is not true.
 func grantedCatalogEntry(ctx context.Context, accountID, modelID string, access AccessResolver) (catalogEntry, error) {
 	entry, ok := lookupCatalogEntry(modelID)
 	if !ok {
@@ -496,18 +495,13 @@ func ListFoundationModels(ctx context.Context, accountID string, resolver Creden
 	return &bedrock.ListFoundationModelsOutput{ModelSummaries: summaries}, nil
 }
 
-// GetFoundationModel looks up a single model by exact modelId, gated by the
-// caller's grant. An ungranted model, and a self-host model with no resolvable
-// weights snapshot, are both reported as ResourceNotFoundException rather than
-// AccessDeniedException so describe agrees with list: a model the account
-// cannot see does not exist as far as this API is concerned, and the error does
-// not confirm the model's existence to an account probing for it. A weights
-// resolve error is an internal fault, not a not-found verdict, and is surfaced
-// (and logged) as such.
+// GetFoundationModel describes one model. Unknown, ungranted and unservable
+// models all fail with AWS's ValidationException so describe agrees with list
+// and never confirms a hidden model exists; a weights resolve error is a fault.
 func GetFoundationModel(ctx context.Context, accountID string, modelID string, access AccessResolver) (*bedrock.GetFoundationModelOutput, error) {
 	entry, ok := lookupCatalogEntry(modelID)
 	if !ok {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "The provided model identifier is invalid.")
 	}
 	// Grant first: an ungranted account must not learn whether the model is
 	// servable, only that it is not there.
@@ -516,7 +510,7 @@ func GetFoundationModel(ctx context.Context, accountID string, modelID string, a
 		return nil, err
 	}
 	if !granted {
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "The provided model identifier is invalid.")
 	}
 	if entry.Provider == tierSelfHost {
 		_, resolvable, err := currentWeightsResolver().Resolve(ctx, entry.ModelID)
@@ -525,7 +519,7 @@ func GetFoundationModel(ctx context.Context, accountID string, modelID string, a
 			return nil, fmt.Errorf("resolve weights for %s: %w", entry.ModelID, err)
 		}
 		if !resolvable {
-			return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException, "The provided model identifier is invalid.")
 		}
 	}
 	return &bedrock.GetFoundationModelOutput{ModelDetails: entry.toDetails()}, nil

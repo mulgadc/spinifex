@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -125,11 +126,11 @@ func TestGetFoundationModel_KnownModelWithResolvableWeights(t *testing.T) {
 	assert.Equal(t, selfHostTestModel, *out.ModelDetails.ModelId)
 }
 
-func TestGetFoundationModel_SelfHostWithUnresolvableWeightsReturnsNotFound(t *testing.T) {
+func TestGetFoundationModel_SelfHostWithUnresolvableWeightsMatchesUnknown(t *testing.T) {
 	withWeightsResolver(t, stubWeightsResolver{ok: map[string]bool{}})
 	_, err := GetFoundationModel(context.Background(), "000000000001", selfHostTestModel, grantAll{})
 	require.Error(t, err)
-	assert.Equal(t, "ResourceNotFoundException", err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationException))
 }
 
 // TestListFoundationModels_GrantDoesNotOverrideCredentialTier keeps the two
@@ -163,26 +164,29 @@ func TestGetFoundationModel_KnownGrantedModel(t *testing.T) {
 	assert.Equal(t, selfHostTestModel, *out.ModelDetails.ModelId)
 }
 
-func TestGetFoundationModel_UnknownModelReturnsNotFound(t *testing.T) {
+func TestGetFoundationModel_UnknownModelReturnsValidation(t *testing.T) {
 	_, err := GetFoundationModel(context.Background(), "000000000001", "does-not-exist", grantAll{})
 	require.Error(t, err)
-	assert.Equal(t, "ResourceNotFoundException", err.Error())
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorValidationException, code)
+	assert.Equal(t, "The provided model identifier is invalid.", message)
 }
 
-// TestGetFoundationModel_UngrantedModelReturnsNotFound pins describe to the
-// same answer as list: an ungranted model is reported as absent rather than
-// forbidden, so the error cannot be used to confirm the model exists.
-func TestGetFoundationModel_UngrantedModelReturnsNotFound(t *testing.T) {
+// TestGetFoundationModel_UngrantedModelMatchesUnknown pins describe to the
+// same answer as list: an ungranted model gets the unknown-model error rather
+// than a denial, so the error cannot be used to confirm the model exists.
+func TestGetFoundationModel_UngrantedModelMatchesUnknown(t *testing.T) {
 	_, err := GetFoundationModel(context.Background(), "000000000001", selfHostTestModel, grantSet{})
 	require.Error(t, err)
-	assert.Equal(t, "ResourceNotFoundException", err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationException))
 }
 
-func TestGetFoundationModel_WeightsResolveErrorIsNotResourceNotFound(t *testing.T) {
+func TestGetFoundationModel_WeightsResolveErrorIsNotValidation(t *testing.T) {
 	withWeightsResolver(t, errWeightsResolver{})
 	_, err := GetFoundationModel(context.Background(), "000000000001", selfHostTestModel, grantAll{})
 	require.Error(t, err)
-	assert.NotEqual(t, "ResourceNotFoundException", err.Error())
+	assert.False(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationException))
 }
 
 func TestListFoundationModels_WeightsResolveErrorPropagates(t *testing.T) {

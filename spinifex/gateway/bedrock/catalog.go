@@ -501,7 +501,7 @@ func ListFoundationModels(ctx context.Context, accountID string, resolver Creden
 func GetFoundationModel(ctx context.Context, accountID string, modelID string, access AccessResolver) (*bedrock.GetFoundationModelOutput, error) {
 	entry, ok := lookupCatalogEntry(modelID)
 	if !ok {
-		return nil, errInvalidModelIdentifier()
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "The provided model identifier is invalid.")
 	}
 	// Grant first: an ungranted account must not learn whether the model is
 	// servable, only that it is not there.
@@ -510,7 +510,7 @@ func GetFoundationModel(ctx context.Context, accountID string, modelID string, a
 		return nil, err
 	}
 	if !granted {
-		return nil, errInvalidModelIdentifier()
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "The provided model identifier is invalid.")
 	}
 	if entry.Provider == tierSelfHost {
 		_, resolvable, err := currentWeightsResolver().Resolve(ctx, entry.ModelID)
@@ -519,14 +519,8 @@ func GetFoundationModel(ctx context.Context, accountID string, modelID string, a
 			return nil, fmt.Errorf("resolve weights for %s: %w", entry.ModelID, err)
 		}
 		if !resolvable {
-			return nil, errInvalidModelIdentifier()
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException, "The provided model identifier is invalid.")
 		}
 	}
 	return &bedrock.GetFoundationModelOutput{ModelDetails: entry.toDetails()}, nil
-}
-
-// errInvalidModelIdentifier is GetFoundationModel's answer for any model the
-// caller cannot see, worded as AWS words it.
-func errInvalidModelIdentifier() error {
-	return awserrors.Errorf(awserrors.ErrorValidationException, "The provided model identifier is invalid.")
 }

@@ -1,3 +1,6 @@
+//test:in-package — reuses nat_test.go's in-package seedRouter and findNAT
+//fixtures, which drive the same mock NB client these cases assert against.
+
 package policy
 
 import (

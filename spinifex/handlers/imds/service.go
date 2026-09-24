@@ -97,7 +97,7 @@ type IMDSServiceImpl struct {
 // ctx bounds the bucket opens only; each served request carries its own.
 func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState localStateReader, records recordLoader, listTaps listTapsFunc, baseDomain, internalDomain, servicesDomain, caCertPath string, resolverIPs []string, bind HostBindAddrs) (*IMDSServiceImpl, error) {
 	if bind.Meta == "" || bind.DNS == "" {
-		return nil, errors.New("IMDS host bind addresses required (use DefaultHostBindAddrs)")
+		return nil, errors.New("IMDS host bind addresses required (use NewHostBindAddrs)")
 	}
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")

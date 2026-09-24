@@ -60,6 +60,12 @@ func newEIPStubRunner(routeGet string) *stubRunner {
 	r.expect("ip neigh replace proxy", nil, nil)
 	r.expect("sysctl -w", nil, nil)
 	r.expect("arping", nil, nil)
+	// A host with no policy routing, so there is no uplink rule to mirror.
+	r.expect("ip -4 -o addr show scope global", []byte(plainAddrShow), nil)
+	r.expect("ip rule show", []byte(plainRuleShow), nil)
+	r.expect("ip route del", nil, nil)
+	r.expect("ip neigh del proxy", nil, nil)
+	r.expect("iptables -t filter -D", nil, nil)
 	// Two rules, each probed then inserted at the head — a distro's catch-all
 	// REJECT in FORWARD precedes anything appended.
 	for range 2 {
@@ -125,6 +131,8 @@ func TestEnsureEIPIngress_NoGatewaySkipsUplinkPlumbing(t *testing.T) {
 	r := newStubRunner()
 	r.expect("ip route replace", nil, nil)
 	r.expect("iptables -t filter -C", nil, nil)
+	r.expect("ip -4 -o addr show scope global", []byte(plainAddrShow), nil)
+	r.expect("ip rule show", []byte(plainRuleShow), nil)
 	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "", ""); err != nil {
 		t.Fatalf("EnsureEIPIngress: %v", err)
 	}

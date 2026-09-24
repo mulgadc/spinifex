@@ -130,6 +130,14 @@ func EnsureEIPIngress(ctx context.Context, r Runner, eip, gwLrpIP, poolGateway, 
 		}
 	}
 
+	// A reply leaves with the EIP as its source, so on a host that source-routes
+	// its uplink the EIP needs the same rule. Without it the reply takes the
+	// default route, and a cloud VNIC that enforces its registered addresses
+	// drops it — ingress reaches the guest and nothing comes back.
+	if err := EnsureEIPSourceRoute(ctx, r, eip); err != nil {
+		return fmt.Errorf("EnsureEIPIngress %s: %w", eip, err)
+	}
+
 	slog.Info("EIP ingress installed", "eip", eip, "gw_lrp_ip", gwLrpIP, "uplink", uplink, "src", srcIP)
 	return nil
 }
@@ -189,6 +197,10 @@ func RemoveEIPIngress(ctx context.Context, r Runner, eip, poolGateway, uplinkHin
 		if _, err := r.Run(ctx, "iptables", natRuleArgs("-D", "filter", "FORWARD", spec)...); err != nil {
 			slog.Debug("host: EIP FORWARD rule not present on delete", "eip", eip, "err", err)
 		}
+	}
+
+	if err := RemoveEIPSourceRoute(ctx, r, eip); err != nil {
+		slog.Debug("host: EIP source route not removed", "eip", eip, "err", err)
 	}
 
 	slog.Info("EIP ingress removed", "eip", eip)

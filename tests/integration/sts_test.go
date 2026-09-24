@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -200,14 +201,16 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 		RoleSessionName: aws.String("reject-policy"),
 		Policy:          aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
 	})
-	requireAWSErrorCode(t, err, "PackedPolicyTooLarge")
+	requireAWSErrorCode(t, err, "ValidationError")
+	assert.Contains(t, err.Error(), "Session policies are not supported")
 
 	_, err = stsCli.AssumeRole(&sts.AssumeRoleInput{
 		RoleArn:         aws.String(roleARN),
 		RoleSessionName: aws.String("reject-tags"),
 		Tags:            []*sts.Tag{{Key: aws.String("team"), Value: aws.String("eng")}},
 	})
-	requireAWSErrorCode(t, err, "InvalidParameterValue")
+	requireAWSErrorCode(t, err, "ValidationError")
+	assert.Contains(t, err.Error(), "Session tags are not supported")
 
 	_, err = stsCli.AssumeRole(&sts.AssumeRoleInput{
 		RoleArn:         aws.String(roleARN),

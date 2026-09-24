@@ -337,8 +337,7 @@ func TestAssumeRole_RejectsSessionPolicies(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
-			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorPackedPolicyTooLarge, err.Error())
+			requireUnsupportedSessionInput(t, err, "Session policies are not supported")
 		})
 	}
 }
@@ -371,10 +370,39 @@ func TestAssumeRole_RejectsSessionTags(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
-			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+			requireUnsupportedSessionInput(t, err, "Session tags are not supported")
 		})
 	}
+}
+
+// requireUnsupportedSessionInput pins both the code and the message, since the
+// defect being guarded is a misleading message under a plausible code.
+func requireUnsupportedSessionInput(t *testing.T, err error, wantMessage string) {
+	t.Helper()
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, awserrors.ErrorValidationError, code)
+	assert.Contains(t, message, wantMessage)
+}
+
+func TestAssumeRole_EchoesSourceIdentity(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	caller := testCallerARN()
+	role := createRoleInAccount(t, svc, testCallerAccountID, "srcid", trustPolicyAllowingUser(caller))
+
+	input := basicAssumeRoleInput(*role.Arn, "sess")
+	input.SourceIdentity = aws.String("alice@example.com")
+	out, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName, input)
+	require.NoError(t, err)
+	assert.Equal(t, "alice@example.com", aws.StringValue(out.SourceIdentity))
+	assert.Equal(t, int64(0), aws.Int64Value(out.PackedPolicySize))
+
+	out, err = svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess-none"))
+	require.NoError(t, err)
+	assert.Nil(t, out.SourceIdentity, "no SourceIdentity requested, none echoed")
+	assert.NotNil(t, out.PackedPolicySize, "AWS returns PackedPolicySize on every AssumeRole")
 }
 
 func TestAssumeRole_RejectsMFA(t *testing.T) {

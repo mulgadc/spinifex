@@ -434,11 +434,24 @@ Both releases ship `SELinux: enforcing`, unlike the Debian and Ubuntu images. Th
 
 ## 9. Troubleshooting
 
+### Quotas — raise these before they bite
+
+**Spinifex enforces no limit of its own.** It attempts the allocation and reports what OCI says, so the ceiling you hit is always your tenancy's, never a number baked into the software. That means a quota is raised with Oracle, not reconfigured here, and there is nothing to restart afterwards.
+
+| Quota | Default | Scope | Raise it when |
+| --- | --- | --- | --- |
+| Reserved public IPs | 50 | **Per region, whole tenancy** — shared by every node | Before a cluster, not after. It does not grow with node count, so it is the first wall. |
+| Secondary private IPs per VNIC | 64 | Per VNIC, so per node | Not raisable — it is a hard per-VNIC limit. Add nodes, or wait for multi-VNIC pools. |
+
+§4.4 has the commands that read your real numbers. To raise the first: Console → Governance & Administration → Limits, Quotas and Usage → "Request a service limit increase". Cite the exact limit name from `oci limits definition list`, not a name from documentation.
+
+**`InsufficientAddressCapacity` on `allocate-address` is what exhaustion looks like.** It is the AWS error code for "out of addresses" and Spinifex returns it for either quota above, mapped from OCI's own refusal. On a cluster the regional one is the likelier of the two.
+
+**A detached reserved public IP still bills.** `disassociate-address` returns the address to `AVAILABLE` without deleting it, exactly as an unassociated AWS EIP behaves, and it keeps consuming your regional quota as well as your bill. `release-address` is what frees both.
+
+### Everything else
+
 **`RunInstances` returns `ServerInternal`.** Check the daemon journal for the real error — `journalctl -u spinifex-daemon --since -10m`. An OCI allocation failure surfaces this way.
-
-**`InsufficientAddressCapacity` on `allocate-address`.** You have hit either the regional reserved-public-IP quota (default 50) or the per-VNIC secondary private IP limit (64). Check both — §4.4 has the commands. The first is tenancy-wide and shared across every node, so on a cluster it is the likelier of the two, and it is the only one a support ticket can raise.
-
-**A detached reserved public IP still bills.** `disassociate-address` returns the address to `AVAILABLE` without deleting it, exactly as an unassociated AWS EIP behaves. Release what you are not holding deliberately.
 
 **Instance launches but the public address is unreachable.** In order:
 1. `sudo ovn-nbctl lr-nat-list <router>` — is there a `dnat_and_snat` row, and does it hold the *private* address?

@@ -136,7 +136,10 @@ type PoolAllocator struct {
 	localPorts func(context.Context) (map[string]struct{}, error)
 }
 
-var _ external.Allocator = (*PoolAllocator)(nil)
+var (
+	_ external.Allocator    = (*PoolAllocator)(nil)
+	_ external.OwnerTracker = (*PoolAllocator)(nil)
+)
 
 // New constructs an allocator bound to a single pool.
 func New(client oci.Client, store Store, cfg Config) (*PoolAllocator, error) {
@@ -298,6 +301,38 @@ func (a *PoolAllocator) Release(ctx context.Context, poolName string, ip netip.A
 	slog.InfoContext(ctx, "ocinet released external IP",
 		"pool", a.cfg.Pool.Name, "public_ip", key, "private_ip", released.PrivateAddr)
 	return nil
+}
+
+// BindOwner records which ENI an already-allocated address is attached to.
+//
+// Allocate learns the owner only when one exists at the time — true for an
+// auto-assigned address, never for an EIP, which is allocated bare and attached
+// by a later AssociateAddress. Without this the binding of every EIP names no
+// ENI, so ClaimLocalAddresses cannot tell which node should hold it and the
+// address stays wherever the allocating node happened to put it.
+//
+// An empty eniID clears the owner, which is the state a disassociate leaves: the
+// address is still allocated and still billing, but no guest answers on it and
+// no node should claim it.
+func (a *PoolAllocator) BindOwner(ctx context.Context, poolName string, ip netip.Addr, eniID string) error {
+	if poolName != "" && poolName != a.cfg.Pool.Name {
+		return fmt.Errorf("ocinet: pool mismatch (got %q, bound to %q)", poolName, a.cfg.Pool.Name)
+	}
+	if !ip.IsValid() {
+		return errors.New("ocinet: invalid ip")
+	}
+	key := ip.String()
+	return a.store.Mutate(ctx, a.cfg.Pool.Name, func(rec *Record) (bool, error) {
+		b, ok := rec.Bindings[key]
+		// An address this pool never allocated is not ours to annotate, and an
+		// unchanged owner is not worth a KV write on every re-association.
+		if !ok || b.ENIID == eniID {
+			return false, nil
+		}
+		b.ENIID = eniID
+		rec.Bindings[key] = b
+		return true, nil
+	})
 }
 
 // BindingFor returns the OCI pair behind an allocated public address. The host

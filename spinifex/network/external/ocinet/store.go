@@ -93,6 +93,9 @@ type MemStore struct {
 	// mutateErr, when set, fails every Mutate. Lets a test drive the paths
 	// where OCI has already been changed and only the record write fails.
 	mutateErr error
+	// writes counts committed mutations, so a test can assert that a pass which
+	// changes nothing costs no write.
+	writes int
 }
 
 var _ Store = (*MemStore)(nil)
@@ -121,8 +124,16 @@ func (m *MemStore) Mutate(_ context.Context, poolName string, fn func(*Record) (
 	}
 	if changed {
 		m.records[poolName] = rec
+		m.writes++
 	}
 	return nil
+}
+
+// Writes returns how many mutations have committed.
+func (m *MemStore) Writes() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.writes
 }
 
 // Get implements Store, including the not-found error the KV store returns for

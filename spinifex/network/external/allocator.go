@@ -16,6 +16,20 @@ type AllocateRequest struct {
 	InstanceID   string
 }
 
+// OwnerTracker is an Allocator that also needs to hear about associations made
+// after the address was allocated. An EIP is allocated with no ENI and attached
+// later, so an allocator whose behaviour depends on the owner cannot learn it
+// from Allocate alone.
+//
+// Only OCI needs this: the address is delivered to one VNIC, so the owning ENI
+// is what decides which node that must be. A static or DHCP address is on the
+// wire everywhere its node can reach, and those allocators do not implement it.
+type OwnerTracker interface {
+	// BindOwner records eniID as the current owner of ip in poolName. An empty
+	// eniID clears the owner, which is what a disassociate leaves behind.
+	BindOwner(ctx context.Context, poolName string, ip netip.Addr, eniID string) error
+}
+
 // Allocator hands out a single external IP per AWS identity from a named
 // pool. Implementations: StaticPoolAllocator (range math + KV CAS) and
 // DHCPPoolAllocator (RFC 2131 DORA via vpcd, Q4).

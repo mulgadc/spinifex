@@ -17,7 +17,7 @@ tags:
 
 ## Overview
 
-The platform serves **391 operations** across the AWS APIs below. Every page names the operations its service implements from the pinned model, generated from the dispatch tables on each build rather than written by hand.
+The platform serves **388 operations** across the AWS APIs below. Every page names the operations its service implements from the pinned model, generated from the dispatch tables on each build rather than written by hand.
 
 | Service | Operations |
 |---|---:|
@@ -29,6 +29,6 @@ The platform serves **391 operations** across the AWS APIs below. Every page nam
 | [ELBv2](/coverage/elbv2) | 34 |
 | [IAM](/coverage/iam) | 76 |
 | [RDS](/coverage/rds) | 26 |
-| [S3](/coverage/s3) | 26 |
+| [S3](/coverage/s3) | 23 |
 | [STS](/coverage/sts) | 5 |
-| **Total** | **391** |
+| **Total** | **388** |

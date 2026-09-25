@@ -258,6 +258,8 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	s.bindPoolOwner(ctx, record.PoolName, record.PublicIp, eniID)
+
 	// Publish vpc.add-nat event (fire-and-forget).
 	s.publishNATEvent("vpc.add-nat", vpcID, record.PublicIp, privateIP, eniID, macAddr)
 
@@ -299,6 +301,7 @@ func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.Dis
 		s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIp, record.PrivateIp, record.ENIId, macAddr)
 	}
 
+	poolName, publicIP := record.PoolName, record.PublicIp
 	clearAssociation(record)
 
 	data, err := json.Marshal(record)
@@ -308,10 +311,29 @@ func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.Dis
 	if _, err := s.eipKV.Update(ctx, key, data, revision); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	s.bindPoolOwner(ctx, poolName, publicIP, "")
 
 	slog.InfoContext(ctx, "DisassociateAddress completed", "associationId", associationID, "accountID", accountID)
 
 	return &ec2.DisassociateAddressOutput{}, nil
+}
+
+// bindPoolOwner tells the pool which ENI now holds publicIP, empty for none.
+// Most pools have nothing to do with it; a pool whose addresses are delivered
+// to one node needs it, because an EIP is allocated with no ENI and this is the
+// only point the owner is ever known.
+//
+// Logged rather than returned: the association itself has already been written
+// and is what AWS answers on, so failing the call here would report an error for
+// an association that did happen. The pool's own reconcile converges it.
+func (s *EIPServiceImpl) bindPoolOwner(ctx context.Context, poolName, publicIP, eniID string) {
+	if poolName == "" || publicIP == "" {
+		return
+	}
+	if err := s.externalIPAM.BindOwner(ctx, poolName, publicIP, eniID); err != nil {
+		slog.WarnContext(ctx, "failed to record the EIP owner with its pool",
+			"pool", poolName, "publicIp", publicIP, "eniId", eniID, "err", err)
+	}
 }
 
 // clearAssociation reverts a record to the unassociated "allocated" state. The
@@ -352,7 +374,7 @@ func (s *EIPServiceImpl) DisassociateByENI(ctx context.Context, accountID, eniID
 		// as part of tearing that ENI down, so the interface may already be gone.
 		s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIp, record.PrivateIp, eniID, record.MacAddress)
 
-		publicIP, allocationID := record.PublicIp, record.AllocationId
+		publicIP, allocationID, poolName := record.PublicIp, record.AllocationId, record.PoolName
 		clearAssociation(record)
 
 		data, err := json.Marshal(record)
@@ -362,6 +384,7 @@ func (s *EIPServiceImpl) DisassociateByENI(ctx context.Context, accountID, eniID
 		if _, err := s.eipKV.Update(ctx, m.key, data, m.revision); err != nil {
 			return false, errors.New(awserrors.ErrorServerInternal)
 		}
+		s.bindPoolOwner(ctx, poolName, publicIP, "")
 
 		slog.InfoContext(ctx, "DisassociateByENI completed",
 			"eniId", eniID, "publicIp", publicIP, "allocationId", allocationID, "accountID", accountID)

@@ -171,6 +171,33 @@ func (m *ExternalIPAM) ReleaseIP(ctx context.Context, poolName, ip, ownerENIID s
 	return alloc.Release(ctx, poolName, addr, ownerENIID)
 }
 
+// BindOwner tells a pool which ENI an already-allocated address is attached to,
+// for the allocators that need it. An EIP is allocated bare and associated
+// later, so this is the only point at which an OCI pool can learn where the
+// address has to be delivered. An empty eniID records the disassociate.
+//
+// A pool whose allocator does not track owners is a success with nothing to do:
+// for a static or DHCP address the association lives in the EIP record alone,
+// and failing here would break EIPs on every non-OCI pool.
+func (m *ExternalIPAM) BindOwner(ctx context.Context, poolName, ip, eniID string) error {
+	if m == nil {
+		return errors.New("external IPAM unavailable on this node")
+	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return fmt.Errorf("parse owner bind IP %q: %w", ip, err)
+	}
+	alloc, err := m.allocatorFor(poolName)
+	if err != nil {
+		return err
+	}
+	tracker, ok := alloc.(external.OwnerTracker)
+	if !ok {
+		return nil
+	}
+	return tracker.BindOwner(ctx, poolName, addr, eniID)
+}
+
 // GetPoolRecord returns the current IPAM record for a pool. DHCP-sourced
 // pools have no static record — the per-AZ lease bucket is authoritative.
 func (m *ExternalIPAM) GetPoolRecord(poolName string) (*ExternalIPAMRecord, error) {

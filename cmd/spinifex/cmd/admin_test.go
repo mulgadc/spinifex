@@ -1426,7 +1426,36 @@ func TestImportSourceResolveDigest(t *testing.T) {
 		var out, errOut bytes.Buffer
 		_, err := importSource{imageFile: img, imageName: "debian-13-x86_64"}.resolveDigest(&out, &errOut)
 		require.Error(t, err)
-		assert.Contains(t, errOut.String(), "missing Checksum/ChecksumType")
+		assert.Contains(t, errOut.String(), "missing Checksum/ChecksumDigest/ChecksumType")
+	})
+
+	// Oracle publishes its digests inline on a web page and ships no sums file,
+	// so a pinned digest is the only way its entries can import verified.
+	t.Run("catalog pinned digest verifies without fetching a sums file", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{
+			imageFile: img, imageName: "oracle-10.1-x86_64",
+			image: utils.Images{ChecksumType: "sha256", ChecksumDigest: imgHex},
+		}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: imgHex, Source: catalogPinnedDigestSource,
+			Verification: ebsmetadata.DigestCatalog, Filename: "image.raw",
+		}, got)
+		assert.Contains(t, out.String(), "pinned catalog digest")
+	})
+
+	t.Run("catalog pinned digest mismatch is refused and names the url", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		wrong := strings.Repeat("a", 64)
+		_, err := importSource{
+			imageFile: img, imageName: "oracle-10.1-x86_64",
+			image: utils.Images{ChecksumType: "sha256", ChecksumDigest: wrong, URL: "https://example.invalid/ol.qcow2"},
+		}.resolveDigest(&out, &errOut)
+		require.ErrorIs(t, err, utils.ErrChecksumMismatch)
+		assert.Contains(t, errOut.String(), catalogPinnedDigestSource)
+		assert.Contains(t, errOut.String(), "https://example.invalid/ol.qcow2")
+		assert.FileExists(t, img, "the downloaded file must be left in place")
 	})
 
 	t.Run("unreadable image fails the unverified hash", func(t *testing.T) {

@@ -496,6 +496,10 @@ func validateChecksumFlags(checksumPath string, checksumSet bool, localFile stri
 	return nil
 }
 
+// catalogPinnedDigestSource records that the expected digest came from this
+// binary's catalog, so a recorded digest never reads as a fetched sums file.
+const catalogPinnedDigestSource = "catalog:pinned"
+
 // importSource is the file an import is about to extract, and what it is to be verified against.
 type importSource struct {
 	imageFile, imageName, localFile            string
@@ -511,9 +515,22 @@ func (src importSource) resolveDigest(out, errOut io.Writer) (ebsmetadata.ImageD
 	digest := ebsmetadata.ImageDigest{Filename: filepath.Base(src.imageFile)}
 	switch sourceDigestMode(src.localFile, src.checksumPath, src.skipVerify) {
 	case ebsmetadata.DigestCatalog:
-		if src.image.Checksum == "" || src.image.ChecksumType == "" {
-			fmt.Fprintf(errOut, "Catalog entry %q is missing Checksum/ChecksumType; refusing import.\n", src.imageName)
+		if src.image.ChecksumType == "" || (src.image.Checksum == "" && src.image.ChecksumDigest == "") {
+			fmt.Fprintf(errOut, "Catalog entry %q is missing Checksum/ChecksumDigest/ChecksumType; refusing import.\n", src.imageName)
 			return digest, errors.New("catalog entry has no checksum")
+		}
+		// A pinned digest is checked against this file rather than a sums file
+		// fetched from the same host that served the image.
+		if src.image.ChecksumDigest != "" {
+			actual, err := utils.VerifyImageDigest(src.imageFile, src.image.ChecksumType, src.image.ChecksumDigest)
+			if err != nil {
+				printChecksumError(errOut, src.imageFile, src.imageName, src.image, err)
+				return digest, err
+			}
+			fmt.Fprintf(out, "✅ Verified image checksum (%s) against the pinned catalog digest\n", src.image.ChecksumType)
+			digest.Algorithm, digest.Value, digest.Source = src.image.ChecksumType, actual, catalogPinnedDigestSource
+			digest.Verification = ebsmetadata.DigestCatalog
+			return digest, nil
 		}
 		actual, err := utils.VerifyImageChecksum(src.imageFile, src.image.Checksum, src.image.ChecksumType)
 		if err != nil {
@@ -3899,7 +3916,12 @@ func resolveIfaceIP(iface string) string {
 func printChecksumError(w io.Writer, imageFile, imageName string, image utils.Images, err error) {
 	fmt.Fprintf(w, "Image integrity verification failed: %v\n", err)
 	fmt.Fprintf(w, "  file:     %s\n", imageFile)
-	fmt.Fprintf(w, "  source:   %s\n", image.Checksum)
+	if image.ChecksumDigest != "" {
+		fmt.Fprintf(w, "  source:   %s (%s)\n", catalogPinnedDigestSource, image.ChecksumDigest)
+		fmt.Fprintf(w, "  url:      %s\n", image.URL)
+	} else {
+		fmt.Fprintf(w, "  source:   %s\n", image.Checksum)
+	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "The cached file was left in place. To re-download and retry:")
 	fmt.Fprintf(w, "  spx admin images import --name %s --force\n", imageName)

@@ -1344,10 +1344,13 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	natPublicGateway := externalGateway
 	if externalMode == "nat" {
 		// Measured on three nodes: every node claims every EIP, nodes disagree on
-		// the VPC's gateway LRP, and only the gateway chassis reaches its guests.
+		// the VPC's gateway LRP, and every external packet leaves via the
+		// gateway chassis, so a public IP works only if it is held there.
 		if nodes >= 2 {
-			fmt.Fprintf(os.Stderr, "⚠️  --external-mode=nat on %d nodes is EXPERIMENTAL and the external datapath is known broken.\n", nodes)
-			fmt.Fprintf(os.Stderr, "   The cluster forms and guest-to-guest traffic works; EIPs and default egress do not.\n")
+			fmt.Fprintf(os.Stderr, "⚠️  --external-mode=nat on %d nodes is EXPERIMENTAL.\n", nodes)
+			fmt.Fprintf(os.Stderr, "   Cluster formation, guest-to-guest traffic and default egress work.\n")
+			fmt.Fprintf(os.Stderr, "   Public IPs are not distributed: all external traffic leaves via the VPC's gateway chassis,\n")
+			fmt.Fprintf(os.Stderr, "   so on a cloud host every external address must be registered on that node's uplink.\n")
 		}
 		if !natPublicPool && (externalBindBridge != "" || gatewayIP != "") {
 			fmt.Fprintf(os.Stderr, "❌ Error: --external-bind-bridge/--gateway-ip require --external-pool or --external-source in --external-mode=nat\n")

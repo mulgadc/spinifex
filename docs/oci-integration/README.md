@@ -29,7 +29,7 @@ Three properties of an OCI virtual network shape everything below.
 
 Spinifex **refuses** `source = "oci"` on a pool unless the node is in `nat` mode, and the refusal names this reason.
 
-**Routed mode is currently capped at a single node** (`--nodes=1`). A multi-node Spinifex cluster on OCI is not yet supported.
+**Multi-node is experimental.** `spx admin init --external-mode=nat --nodes=3` warns and proceeds. A three-node OCI cluster has been formed and measured: formation, guest-to-guest traffic and default egress all work, and public IPs work subject to §5.3's `oci_vnic_id` constraint. The EIP datapath is not yet distributed, so **every external packet for a VPC leaves via that VPC's gateway chassis** and every OCI address must be registered on that one node's VNIC.
 
 ---
 
@@ -281,6 +281,7 @@ dns_servers        = ["169.254.169.253"]
 Notes on the keys:
 
 - **Exactly one of `oci_vnic_id` and `oci_vnic_iface`**, never both — the config is rejected if you set both or neither. Two that disagreed would send allocations to a VNIC the datapath is not on, and OCI would drop the traffic without a word. `oci_vnic_iface` resolves through instance metadata **by MAC**, so naming either `br-wan` or the physical interface resolves to the same VNIC.
+- **On a multi-node cluster, every node must set `oci_vnic_id` to the *gateway chassis's* VNIC** — not its own. `oci_vnic_iface` resolves locally and is therefore correct only on a single node. Traffic for a VPC leaves via its gateway chassis, OCI drops any frame whose source is not registered on the VNIC it leaves by, and the allocator runs per node: without the pin, an instance on node3 gets an address created on node3's VNIC while its packets leave node2's. The symptom is a guest whose public IP is silently dead in both directions while its default egress is fine.
 - `oci_compartment_id` is the only other required key. `oci_subnet_id` is optional and defaults to the VNIC's own subnet; set it only when you want private IPs from a different subnet. `oci_config_file` defaults to `~/.oci/config` and `oci_config_profile` to `DEFAULT` — **on a node both need setting**, because the daemon cannot read a home directory (§4.5).
 - `oci_public_ip_pool` takes a BYOIP pool OCID. Accepted today so BYOIP is a config change later rather than a code change; see §9.
 - `range_start`, `range_end`, `gw_lrp_range_*`, `bind_bridge` and `dhcp_mac` are **rejected** on an OCI pool. OCI owns the addresses; a range you wrote would be fiction.
@@ -397,10 +398,10 @@ ip route show | grep spx-nat-host              # route to the PRIVATE address
 
 ## 9. Limits in this version
 
-- **Single node only.** Routed mode is capped at `--nodes=1`, and routed mode is the only viable OCI datapath.
+- **Multi-node is experimental, and public IPs are pinned to one node.** The EIP datapath is centralised on the VPC's gateway chassis, so every node's pool must set `oci_vnic_id` to that node's `br-wan` VNIC. A gateway-chassis change leaves every address on the wrong VNIC and all public IPs stop working until the pools are repointed and `spinifex-vpcd` restarted.
 - **Operator-provisioned API key**, not instance principal. The key is on the node's disk and its rotation is your responsibility.
 - **One VNIC per pool.** A pool cannot grow past the per-VNIC secondary private IP limit.
 - **IPv4 only.** IPv6 on OCI is materially simpler — no pools, prefixes assign directly to VCNs — but is not implemented.
 - **No BYOIP.** The integration accepts a public IP pool OCID in config so BYOIP becomes a config change rather than a code change, but the RIR validation and Oracle's own validation window both precede any use of it.
-- **No EIP failover between nodes**, which follows from single-node.
+- **No EIP failover between nodes**, which follows from the centralised EIP datapath above.
 - **OCI Block Volumes are not an EBS provider.** They back `/var/lib/spinifex` and therefore viperblock, which captures most of the performance benefit, but there is no native OCI block provider.

@@ -1,3 +1,6 @@
+//test:in-package — skipForeignEIP is unexported and is the gate that keeps
+// one node from claiming another node's EIP.
+
 package vpcd
 
 import (

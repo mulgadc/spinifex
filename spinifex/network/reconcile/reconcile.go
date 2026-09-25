@@ -39,6 +39,10 @@ type Reconciler interface {
 	// deciding and abandons the sweep if that read fails, and a stale row there
 	// is a released public address still delivering traffic.
 	ReconcileApplyOnly(ctx context.Context, intent IntentState) error
+	// ReconcileHostEIPs plumbs this node's host-side EIP state — routes,
+	// proxy-ARP, filter rules — from freshly read intent. Unlike the two above
+	// it runs on every node, because what it writes is node-local.
+	ReconcileHostEIPs(ctx context.Context) error
 }
 
 // GatewayClaimVerifier confirms ovn-controller has claimed the SB chassisredirect
@@ -273,6 +277,20 @@ func (r *reconciler) Reconcile(ctx context.Context, intent IntentState) error {
 // ReconcileApplyOnly is documented on the Reconciler interface.
 func (r *reconciler) ReconcileApplyOnly(ctx context.Context, intent IntentState) error {
 	return r.reconcile(ctx, intent, false)
+}
+
+// ReconcileHostEIPs is documented on the Reconciler interface. Intent is
+// re-read rather than passed in: a stale list would prune the routes of a
+// guest launched since, and a failed read must abandon the pass, not shrink it.
+func (r *reconciler) ReconcileHostEIPs(ctx context.Context) error {
+	if r.reloadIntent == nil {
+		return nil
+	}
+	intent, err := r.reloadIntent(ctx)
+	if err != nil {
+		return fmt.Errorf("re-read intent for host EIP pass: %w", err)
+	}
+	return r.nat.BindHostEIPs(ctx, r.floatingIPSpecs(intent))
 }
 
 // reconcile applies intent. pruneTopology gates the port-group and ENI-port

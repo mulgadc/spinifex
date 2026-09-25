@@ -66,6 +66,12 @@ type NATManager interface {
 	// (owner undeterminable). Returns the number of rows removed.
 	PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, error)
 
+	// BindHostEIPs installs the host-side plumbing for every EIP this node
+	// owns and prunes what specs no longer asks for. specs must be the whole
+	// intent, since anything missing from it is pruned. No-op outside routed
+	// mode.
+	BindHostEIPs(ctx context.Context, specs []EIPSpec) error
+
 	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
 	AddNATGateway(ctx context.Context, gw NATGWSpec) error
 
@@ -407,6 +413,43 @@ func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec) error {
 		return fmt.Errorf("bind host EIP %s (next hop %q): %w", eip.ExternalIP, gwLrpIP, err)
 	}
 	return nil
+}
+
+// BindHostEIPs is documented on the NATManager interface.
+//
+// The NB rows are one writer's job, but routes and proxy-ARP are per node and
+// Bind already leaves alone an EIP whose ENI is on another chassis, so two
+// nodes never contend for the same one. Running this only where the NB writes
+// run left a node that never won the reconcile lease with no route to its own
+// guests.
+func (m *natManager) BindHostEIPs(ctx context.Context, specs []EIPSpec) error {
+	if m.mode != NATModeRouted || m.hostBinder == nil {
+		return nil
+	}
+	live := LiveEIPs{ExternalIPs: make(map[string]struct{}, len(specs))}
+	var errs []error
+	incomplete := false
+	for _, eip := range specs {
+		dpIP, err := m.datapath(ctx, eip.ExternalIP)
+		if err != nil {
+			// live is now short an address that is still wanted, so the sweep
+			// below would read it as stale and tear its plumbing down.
+			incomplete = true
+			errs = append(errs, fmt.Errorf("resolve datapath address for EIP %s: %w", eip.ExternalIP, err))
+			continue
+		}
+		eip.ExternalIP = dpIP
+		live.ExternalIPs[dpIP] = struct{}{}
+		if err := m.bindHostEIP(ctx, eip); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if !incomplete {
+		if err := m.pruneHostEIPs(live); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // primeReachability programs the host neigh entry to the MAC owning the EIP on

@@ -1,3 +1,6 @@
+//test:in-package — exercises parseOVSInterfaceRows, the unexported parser
+// HasLocalPort's verdict rests on, against raw ovs-vsctl JSON.
+
 package host
 
 import (

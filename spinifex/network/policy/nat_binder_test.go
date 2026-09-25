@@ -298,3 +298,108 @@ func TestNATManager_AddEIP_OtherModesAreUnmoved(t *testing.T) {
 		})
 	}
 }
+
+// listingBinder adds List to recordedBinder so the prune half of BindHostEIPs
+// can be exercised.
+type listingBinder struct {
+	recordedBinder
+
+	bound []string
+}
+
+func (b *listingBinder) listHooks() HostEIPBinder {
+	h := b.hooks()
+	h.Unbind = func(externalIP string) error {
+		b.unbinds = append(b.unbinds, externalIP)
+		return nil
+	}
+	h.List = func() ([]string, error) { return b.bound, nil }
+	return h
+}
+
+// Every node has to plumb its own guests. Leader-gating this left the node that
+// never won the reconcile lease with no route to the guest it was running,
+// which is two of three guests dark on a three-node cluster.
+func TestNATManager_BindHostEIPs_BindsEveryIntentEIPAndPrunesTheRest(t *testing.T) {
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	seedGatewayPortIP(t, m, "vpc-1", "100.127.0.10", nil)
+	b := &listingBinder{bound: []string{"192.168.1.200", "192.168.1.201", "192.168.1.250"}}
+	mgr, err := NewNATManager(m, NATModeRouted, WithHostEIPBinder(b.listHooks()))
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.BindHostEIPs(context.Background(), []EIPSpec{
+		{VPCID: "vpc-1", ExternalIP: "192.168.1.200", LogicalIP: "10.0.1.5",
+			PortName: "port-eni-1", MAC: "52:54:00:aa:bb:cc"},
+		{VPCID: "vpc-1", ExternalIP: "192.168.1.201", LogicalIP: "10.0.1.6",
+			PortName: "port-eni-2", MAC: "52:54:00:aa:bb:dd"},
+	}))
+
+	assert.Equal(t, []string{"192.168.1.200 via ", "192.168.1.201 via "}, b.binds,
+		"a distributed EIP binds on-link, with no gateway LRP next hop")
+	assert.Equal(t, []string{"192.168.1.250"}, b.unbinds,
+		"only the binding intent no longer asks for is swept")
+}
+
+// BindHostEIPs writes no NB rows, so it must leave the OVN state it reads
+// alone — the leader-gated pass is still the only writer of dnat_and_snat.
+func TestNATManager_BindHostEIPs_WritesNoNATRows(t *testing.T) {
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	seedGatewayPortIP(t, m, "vpc-1", "100.127.0.10", nil)
+	b := &listingBinder{}
+	mgr, err := NewNATManager(m, NATModeRouted, WithHostEIPBinder(b.listHooks()))
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.BindHostEIPs(context.Background(), []EIPSpec{
+		{VPCID: "vpc-1", ExternalIP: "192.168.1.200", LogicalIP: "10.0.1.5",
+			PortName: "port-eni-1", MAC: "52:54:00:aa:bb:cc"},
+	}))
+
+	nat, err := m.FindNATByExternalIP(context.Background(), "dnat_and_snat", "192.168.1.200")
+	require.NoError(t, err)
+	assert.Nil(t, nat, "BindHostEIPs must not create a NAT row")
+}
+
+// A resolver failure leaves the wanted set short of an address that is still
+// live, so sweeping against it would tear down plumbing a guest is using.
+func TestNATManager_BindHostEIPs_SkipsThePruneWhenIntentCouldNotBeResolved(t *testing.T) {
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	seedGatewayPortIP(t, m, "vpc-1", "100.127.0.10", nil)
+	b := &listingBinder{bound: []string{"10.200.0.57"}}
+	mgr, err := NewNATManager(m, NATModeRouted,
+		WithHostEIPBinder(b.listHooks()),
+		WithDatapathResolver(func(_ context.Context, _ string) (string, error) {
+			return "", fmt.Errorf("OCI: private IP lookup failed")
+		}))
+	require.NoError(t, err)
+
+	err = mgr.BindHostEIPs(context.Background(), []EIPSpec{
+		{VPCID: "vpc-1", ExternalIP: "192.168.1.200", LogicalIP: "10.0.1.5",
+			PortName: "port-eni-1", MAC: "52:54:00:aa:bb:cc"},
+	})
+	require.Error(t, err)
+	assert.Empty(t, b.unbinds, "an unresolved intent must not drive a prune")
+}
+
+// Pool and static deployments keep the host out of the EIP path entirely, so
+// this pass must stay inert there however often it runs.
+func TestNATManager_BindHostEIPs_IsInertOutsideRoutedMode(t *testing.T) {
+	for _, mode := range []NATMode{NATModeDistributed, NATModeCentralized} {
+		t.Run(mode.String(), func(t *testing.T) {
+			m := mock.New()
+			seedRouter(t, m, "vpc-1")
+			b := &listingBinder{bound: []string{"192.168.1.250"}}
+			mgr, err := NewNATManager(m, mode, WithHostEIPBinder(b.listHooks()))
+			require.NoError(t, err)
+
+			require.NoError(t, mgr.BindHostEIPs(context.Background(), []EIPSpec{
+				{VPCID: "vpc-1", ExternalIP: "192.168.1.200", LogicalIP: "10.0.1.5",
+					PortName: "port-eni-1", MAC: "52:54:00:aa:bb:cc"},
+			}))
+			assert.Empty(t, b.binds)
+			assert.Empty(t, b.unbinds)
+		})
+	}
+}

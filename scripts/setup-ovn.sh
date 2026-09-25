@@ -50,6 +50,15 @@
 #                        (which is every node — the ovn-central package starts
 #                        one on install). DISCARDS ALL LOGICAL NETWORK STATE:
 #                        safe on a fresh node, destroys every VPC on a live one.
+#   --teardown           Remove the host wiring this script builds — veth pairs,
+#                        systemd-networkd persistence, routed-NAT egress rules,
+#                        the OVS bridges and the ovn-* external_ids — and exit.
+#                        The way back to a node this script can be re-run on
+#                        cleanly, because a second run only unpicks the mode it
+#                        is switching away from. Leaves the NB/SB databases and
+#                        every VPC in them, /etc/spinifex, and the system-id;
+#                        erasing those is node-reset.sh and uninstall-spx.sh.
+#   --dry-run            Print what --teardown would do and change nothing.
 #
 # Cluster Sizing — which DB topology to run:
 #
@@ -144,6 +153,10 @@ OVN_DBDIR="${OVN_DBDIR:-/var/lib/ovn}"
 # system-id themselves before / after invoking setup-ovn.sh — they
 # don't need this script to do it for them.
 NODE_NAME=""
+# --teardown removes the host wiring this script builds, so a re-run starts
+# from a clean node instead of compounding whatever the last run left.
+TEARDOWN=false
+DRY_RUN=false
 
 # Parse arguments
 for arg in "$@"; do
@@ -164,6 +177,8 @@ for arg in "$@"; do
         --db-cluster-remote-addr=*) DB_CLUSTER_REMOTE_ADDR="${arg#*=}" ;;
         --recreate-db)      RECREATE_DB=true ;;
         --node-name=*)      NODE_NAME="${arg#*=}" ;;
+        --teardown)         TEARDOWN=true ;;
+        --dry-run)          DRY_RUN=true ;;
         --help|-h)
             sed -n '3,/^set -e/{/^set -e/!p}' "$0"
             exit 0
@@ -174,6 +189,127 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# --- Teardown ---
+#
+# Removes the host wiring this script builds and nothing else. A node that has
+# been set up twice with different --wan-bridge values carries both shapes at
+# once, and the second run cannot unpick the first: it rips down only the mode
+# it is switching away from, and only when it gets far enough to know the mode.
+# This is the way back to a node the script can be run on cleanly.
+#
+# What it deliberately leaves: the NB/SB databases and every logical network in
+# them, /etc/spinifex, the OVS system-id, and the packages. Erasing those is
+# node-reset.sh and uninstall-spx.sh, and a teardown that took the control
+# plane's state with it could not be used to re-run this script.
+run() {
+    if [ "$DRY_RUN" = true ]; then
+        echo "  would run: $*"
+        return 0
+    fi
+    "$@"
+}
+
+# True when $1 names an existing Linux (not OVS) bridge.
+is_linux_bridge() {
+    [ -d "/sys/class/net/$1/bridge" ]
+}
+
+# Prints the bridge $1 is enslaved to, or nothing.
+iface_master() {
+    local m
+    m=$(ip -o link show "$1" 2>/dev/null | sed -n 's/.* master \([^ ]*\) .*/\1/p')
+    printf '%s' "$m"
+}
+
+teardown() {
+    echo "Tearing down the OVN host wiring built by this script"
+    [ "$DRY_RUN" = true ] && echo "  (dry run — nothing is changed)"
+    echo ""
+
+    echo "Step 1: Removing veth pairs..."
+    # Deleting one end deletes the peer, so the OVS port has to go first or it
+    # is left in OVSDB naming a device the kernel no longer has.
+    for pair in "veth-wan-ovs veth-wan-br" "spx-nat-ovs spx-nat-host"; do
+        set -- $pair
+        if command -v ovs-vsctl >/dev/null 2>&1; then
+            run sudo ovs-vsctl --if-exists del-port "$1" 2>/dev/null || true
+        fi
+        if ip link show "$2" >/dev/null 2>&1; then
+            run sudo ip link del "$2" 2>/dev/null || true
+            echo "  removed veth pair: $2 ↔ $1"
+        fi
+    done
+
+    echo ""
+    echo "Step 2: Removing systemd-networkd persistence..."
+    for f in /etc/systemd/network/05-spinifex-ovs-internal.network \
+        /etc/systemd/network/10-spinifex-mgmt.network \
+        /etc/systemd/network/14-spinifex-br-wan.netdev \
+        /etc/systemd/network/15-spinifex-veth-wan.netdev \
+        /etc/systemd/network/15-spinifex-veth-wan.network \
+        /etc/systemd/network/16-spinifex-veth-wan-ovs.network \
+        /etc/systemd/network/17-spinifex-nat.netdev \
+        /etc/systemd/network/17-spinifex-nat.network \
+        /etc/systemd/network/18-spinifex-nat-ovs.network; do
+        if [ -f "$f" ]; then
+            run sudo rm -f "$f"
+            echo "  removed $f"
+        fi
+    done
+    run sudo networkctl reload 2>/dev/null || true
+
+    echo ""
+    echo "Step 3: Removing routed-NAT egress rules..."
+    # Drain by comment rather than by rule text: the rules were built from a
+    # CIDR and an uplink this run may not know, and deleting by spec would miss
+    # any installed against a different uplink.
+    if command -v iptables >/dev/null 2>&1; then
+        for table_chain in "nat POSTROUTING" "filter FORWARD"; do
+            set -- $table_chain
+            while iptables -t "$1" -S "$2" 2>/dev/null | grep -q 'spinifex-nat-egress'; do
+                rule=$(iptables -t "$1" -S "$2" 2>/dev/null | grep -m1 'spinifex-nat-egress' | sed 's/^-A /-D /')
+                [ -n "$rule" ] || break
+                # shellcheck disable=SC2086
+                run sudo iptables -t "$1" $rule 2>/dev/null || break
+                echo "  removed $1/$2 rule (spinifex-nat-egress)"
+                [ "$DRY_RUN" = true ] && break
+            done
+        done
+    fi
+
+    echo ""
+    echo "Step 4: Removing OVS bridges and external_ids..."
+    if command -v ovs-vsctl >/dev/null 2>&1; then
+        # br-ext and br-int are this script's; a bridge the operator named with
+        # --wan-bridge is removed too, unless it is a Linux bridge, which this
+        # script never created and must not delete.
+        for br in br-ext br-int "$MGMT_BRIDGE" "$WAN_BRIDGE"; do
+            [ -n "$br" ] || continue
+            if is_linux_bridge "$br"; then
+                echo "  left $br alone: it is a Linux bridge, not ours to delete"
+                continue
+            fi
+            if sudo ovs-vsctl br-exists "$br" 2>/dev/null; then
+                run sudo ovs-vsctl --if-exists del-br "$br"
+                echo "  removed OVS bridge: $br"
+            fi
+        done
+        for key in ovn-bridge-mappings ovn-remote ovn-encap-ip ovn-encap-type; do
+            run sudo ovs-vsctl remove Open_vSwitch . external_ids "$key" 2>/dev/null || true
+        done
+        echo "  cleared ovn-bridge-mappings, ovn-remote, ovn-encap-ip, ovn-encap-type"
+    fi
+
+    echo ""
+    echo "Teardown complete. The NB/SB databases, /etc/spinifex and the OVS"
+    echo "system-id are untouched — re-run this script to wire the node again."
+}
+
+if [ "$TEARDOWN" = true ]; then
+    teardown
+    exit 0
+fi
 
 # OVSDB RAFT clustering runs the NB/SB DBs, so it only applies to management
 # (DB) nodes. A remote addr without a local addr is meaningless (nothing to
@@ -203,18 +339,6 @@ fi
 # Determine the WAN bridge name and how to set it up.
 WAN_BRIDGE_MODE=""  # "existing", "veth", "direct", or ""
 LINUX_BRIDGE=""     # Set when WAN_BRIDGE_MODE="veth" — the Linux bridge behind the veth pair
-
-# True when $1 names an existing Linux (not OVS) bridge.
-is_linux_bridge() {
-    [ -d "/sys/class/net/$1/bridge" ]
-}
-
-# Prints the bridge $1 is enslaved to, or nothing.
-iface_master() {
-    local m
-    m=$(ip -o link show "$1" 2>/dev/null | sed -n 's/.* master \([^ ]*\) .*/\1/p')
-    printf '%s' "$m"
-}
 
 detect_wan_bridge() {
     # If --wan-bridge was explicitly given, use it
@@ -882,6 +1006,11 @@ NETWORK
             # the masquerade rule below is the only host-side NAT state.
             NAT_TRANSIT_CIDR="100.127.0.0/24"
             NAT_TRANSIT_GW_CIDR="100.127.0.1/24"
+            # Same on every node. OVN keeps one MAC binding for the transit
+            # nexthop cluster-wide, so a random per-node MAC sends every
+            # chassis's egress to whichever node seeded it; the pair is
+            # node-local, so one address everywhere is unambiguous.
+            NAT_TRANSIT_HOST_MAC="02:00:64:7f:00:01"
 
             if ! sudo ovs-vsctl br-exists "$WAN_BRIDGE" 2>/dev/null; then
                 sudo ovs-vsctl --may-exist add-br "$WAN_BRIDGE"
@@ -896,6 +1025,7 @@ NETWORK
             else
                 echo "  veth pair already exists: spx-nat-host ↔ spx-nat-ovs"
             fi
+            sudo ip link set spx-nat-host address "$NAT_TRANSIT_HOST_MAC"
             sudo ip addr replace "$NAT_TRANSIT_GW_CIDR" dev spx-nat-host
 
             # Add the OVS end to br-ext
@@ -916,6 +1046,7 @@ NETWORK
 [NetDev]
 Name=spx-nat-host
 Kind=veth
+MACAddress=$NAT_TRANSIT_HOST_MAC
 
 [Peer]
 Name=spx-nat-ovs

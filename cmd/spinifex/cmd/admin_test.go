@@ -752,6 +752,7 @@ func TestApplyNetworkConfig_PropagatesPoolBindBridge(t *testing.T) {
 	require.Len(t, settings.Pools, 1)
 	assert.Equal(t, "dhcp", settings.Pools[0].Source)
 	assert.Equal(t, "br-wan", settings.Pools[0].BindBridge)
+	assert.Empty(t, settings.BridgeMode, "bridged modes stay auto-detected, only nat is pinned")
 }
 
 // Routed NAT renders two pools, and the transit one carries a gateway-LRP range
@@ -770,6 +771,8 @@ func TestApplyNetworkConfig_PropagatesEveryPool(t *testing.T) {
 	}
 	applyNetworkConfig(settings, nc)
 	require.Len(t, settings.Pools, 2)
+	assert.Equal(t, "nat", settings.BridgeMode,
+		"a joiner that loses bridge_mode falls back to autodetection for a mode init pinned")
 	assert.Equal(t, "nat-transit", settings.Pools[0].Name)
 	assert.Equal(t, "100.127.0.16", settings.Pools[0].GwLrpRangeStart)
 	assert.Equal(t, "100.127.0.254", settings.Pools[0].GwLrpRangeEnd)

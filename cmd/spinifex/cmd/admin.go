@@ -3214,6 +3214,9 @@ func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkCon
 	settings.IPSecEnabled = nc.IPSecEnabled
 	settings.ExternalMode = nc.ExternalMode
 	settings.PoolDNSServers = nc.PoolDNSServers
+	// Derived from the mode rather than carried in NetworkConfig, so the leader
+	// and every joiner pin the same value from the same rule as single-node init.
+	settings.BridgeMode = bridgeModeFor(nc.ExternalMode)
 	if nc.ExternalMode != "" {
 		settings.Pools = nc.Pools
 	}

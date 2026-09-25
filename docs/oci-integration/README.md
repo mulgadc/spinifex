@@ -283,7 +283,7 @@ Notes on the keys:
 - **Exactly one of `oci_vnic_id` and `oci_vnic_iface`**, never both — the config is rejected if you set both or neither. Two that disagreed would send allocations to a VNIC the datapath is not on, and OCI would drop the traffic without a word. `oci_vnic_iface` resolves through instance metadata **by MAC**, so naming either `br-wan` or the physical interface resolves to the same VNIC.
 - **On a multi-node cluster, every node must set `oci_vnic_id` to the *gateway chassis's* VNIC** — not its own. `oci_vnic_iface` resolves locally and is therefore correct only on a single node. Traffic for a VPC leaves via its gateway chassis, OCI drops any frame whose source is not registered on the VNIC it leaves by, and the allocator runs per node: without the pin, an instance on node3 gets an address created on node3's VNIC while its packets leave node2's. The symptom is a guest whose public IP is silently dead in both directions while its default egress is fine.
 - `oci_compartment_id` is the only other required key. `oci_subnet_id` is optional and defaults to the VNIC's own subnet; set it only when you want private IPs from a different subnet. `oci_config_file` defaults to `~/.oci/config` and `oci_config_profile` to `DEFAULT` — **on a node both need setting**, because the daemon cannot read a home directory (§4.5).
-- `oci_public_ip_pool` takes a BYOIP pool OCID. Accepted today so BYOIP is a config change later rather than a code change; see §9.
+- `oci_public_ip_pool` takes a BYOIP pool OCID. Accepted today so BYOIP is a config change later rather than a code change; see §10.
 - `range_start`, `range_end`, `gw_lrp_range_*`, `bind_bridge` and `dhcp_mac` are **rejected** on an OCI pool. OCI owns the addresses; a range you wrote would be fiction.
 - Leave the `nat-transit` pool alone. In routed mode the per-VPC gateway router addresses come from the RFC 6598 transit range, not from OCI — **only EIPs consume an OCI address.** Fifty VPCs and three EIPs cost three reserved public IPs, not fifty-three.
 
@@ -376,7 +376,45 @@ ip route show | grep spx-nat-host              # route to the PRIVATE address
 
 ---
 
-## 8. Troubleshooting
+## 8. Oracle Linux as a guest image
+
+Spinifex ships four Oracle Linux entries in its image catalog, so a customer on OCI can run the same distro their Oracle support contract covers. They import exactly like any other AMI — nothing about them is OCI-specific, and they run equally well on bare metal:
+
+| Catalog name | Release | Arch | Kernel |
+| --- | --- | --- | --- |
+| `oracle-10.1-x86_64` | Oracle Linux 10.1 | x86_64 | UEK 8 |
+| `oracle-10.1-arm64` | Oracle Linux 10.1 | arm64 | UEK 8 |
+| `oracle-9.8-x86_64` | Oracle Linux 9.8 | x86_64 | UEK 7 |
+| `oracle-9.8-arm64` | Oracle Linux 9.8 | arm64 | UEK 7 |
+
+```bash
+sudo spx admin images import --name oracle-10.1-x86_64 --config /etc/spinifex/spinifex.toml
+aws ec2 describe-images --query 'Images[].[Name,State,BootMode]' --output text
+```
+
+All four boot **UEFI**, so launch them into a shape that boots UEFI — a BIOS-only instance type will not come up and the failure looks like a hung boot rather than a rejected image.
+
+### The login user is `cloud-user`, not `opc`
+
+```bash
+ssh -i path/to/key.pem cloud-user@<public-ip>
+```
+
+**This is the one that catches people.** `opc` is the default user on the images Oracle publishes *into OCI itself*; these are the generic **KVM cloud images** from `yum.oracle.com`, whose cloud-init `default_user` is `cloud-user`. Verified on both releases: `opc`, `oracle` and `ec2-user` are all refused. The Spinifex UI's instance detail page shows the right user per AMI, so read it there rather than guessing from the distro.
+
+### Why these four pin a checksum digest inline
+
+Every other catalog entry verifies against the publisher's sums file. Oracle ships none — the digests are published as HTML on `yum.oracle.com/oracle-linux-templates.html` — so these four carry `ChecksumDigest` in `spinifex/utils/images.go` instead. That is safe **only** because each URL names an immutable build (`b291`, `b293`, `b178`, `b182`) and Oracle never moves one. A new point release is a new URL and a new digest, never an edit to an existing entry.
+
+On arm64 Oracle publishes a `-kvm-cloud-` build alongside a plain `-kvm-` one. The catalog takes `-kvm-cloud-`: it is the one with cloud-init, and so the one that matches x86_64's `-kvm-`. The plain arm64 build imports fine and then has no datasource, which surfaces as an instance with no key and no metadata rather than as an import error.
+
+### SELinux is enforcing
+
+Both releases ship `SELinux: enforcing`, unlike the Debian and Ubuntu images. That is the upstream default and Spinifex does not change it. It does not affect networking, IMDS or cloud-init — all verified working — but a workload that has only ever run on Debian may meet it for the first time here.
+
+---
+
+## 9. Troubleshooting
 
 **`RunInstances` returns `ServerInternal`.** Check the daemon journal for the real error — `journalctl -u spinifex-daemon --since -10m`. An OCI allocation failure surfaces this way.
 
@@ -396,7 +434,7 @@ ip route show | grep spx-nat-host              # route to the PRIVATE address
 
 ---
 
-## 9. Limits in this version
+## 10. Limits in this version
 
 - **Multi-node is experimental, and public IPs are pinned to one node.** The EIP datapath is centralised on the VPC's gateway chassis, so every node's pool must set `oci_vnic_id` to that node's `br-wan` VNIC. A gateway-chassis change leaves every address on the wrong VNIC and all public IPs stop working until the pools are repointed and `spinifex-vpcd` restarted.
 - **Operator-provisioned API key**, not instance principal. The key is on the node's disk and its rotation is your responsibility.

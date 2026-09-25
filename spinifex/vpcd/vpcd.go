@@ -1053,6 +1053,14 @@ func hostEIPBinder(pool *external.ExternalPoolConfig) policy.HostEIPBinder {
 			defer cancel()
 			return host.ListEIPIngress(ctx, runner)
 		},
+		// The same authority skipForeignEIP uses, asked again at prune time: a
+		// guest can move after the bind, and nothing else would take the route
+		// and proxy-ARP off the node it left.
+		Owns: func(portName string) (bool, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return host.HasLocalPort(ctx, runner, portName)
+		},
 	}
 }
 

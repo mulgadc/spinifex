@@ -150,6 +150,12 @@ type HostEIPBinder struct {
 	Bind   func(eip EIPSpec, gwLrpIP string) error
 	Unbind func(externalIP string) error
 	List   func() ([]string, error)
+	// Owns reports whether portName is on this chassis. Bind asks the same
+	// question before plumbing anything; the prune has to ask it again because a
+	// guest can move to another node long after the bind, leaving this host with
+	// a route and a proxy-ARP entry for an address it can no longer serve. Nil
+	// keeps the older behaviour of pruning on cluster-wide intent alone.
+	Owns func(portName string) (bool, error)
 }
 
 // WithHostEIPBinder injects the routed-mode host plumbing hooks fired on EIP
@@ -427,6 +433,11 @@ func (m *natManager) BindHostEIPs(ctx context.Context, specs []EIPSpec) error {
 		return nil
 	}
 	live := LiveEIPs{ExternalIPs: make(map[string]struct{}, len(specs))}
+	// Addresses still wanted cluster-wide whose guest is not on this chassis.
+	// Bind skips them; without the same test the sweep below reads them as
+	// wanted and leaves this node holding a route and proxy-ARP for a guest that
+	// has moved, which on a shared segment answers ARP for someone else's guest.
+	foreign := map[string]struct{}{}
 	var errs []error
 	incomplete := false
 	for _, eip := range specs {
@@ -440,12 +451,15 @@ func (m *natManager) BindHostEIPs(ctx context.Context, specs []EIPSpec) error {
 		}
 		eip.ExternalIP = dpIP
 		live.ExternalIPs[dpIP] = struct{}{}
+		if m.foreignToThisChassis(eip) {
+			foreign[dpIP] = struct{}{}
+		}
 		if err := m.bindHostEIP(ctx, eip); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	if !incomplete {
-		if err := m.pruneHostEIPs(live); err != nil {
+		if err := m.pruneHostEIPs(live, foreign); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -647,7 +661,32 @@ func (m *natManager) PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, e
 			"reason", reason, "external_ip", n.ExternalIP, "logical_ip", n.LogicalIP,
 			"logical_port", port, "rows_removed", removed)
 	}
-	return pruned, m.pruneHostEIPs(live)
+	// No chassis filter here: this sweep is leader-gated and cluster-wide, while
+	// "has the guest moved off this node" is a per-node question that
+	// BindHostEIPs asks on every node on its own loop.
+	return pruned, m.pruneHostEIPs(live, nil)
+}
+
+// foreignToThisChassis reports whether an EIP's guest has left this node, the
+// same question Bind asks and by the same authority. Only a distributed EIP is
+// answerable: a centralised one hairpins through the gateway chassis and every
+// node legitimately plumbs it.
+//
+// An unanswerable question is not a yes. An unreadable local OVS is a lost
+// signal, and tearing down a live address on a guess is worse than leaving a
+// stale route the next pass can still remove.
+func (m *natManager) foreignToThisChassis(eip EIPSpec) bool {
+	if m.hostBinder == nil || m.hostBinder.Owns == nil ||
+		eip.PortName == "" || eip.MAC == "" || !m.distributes(eip) {
+		return false
+	}
+	local, err := m.hostBinder.Owns(eip.PortName)
+	if err != nil {
+		slog.Warn("policy: cannot tell whether an EIP's guest is still on this chassis; leaving its host binding alone",
+			"external_ip", eip.ExternalIP, "logical_port", eip.PortName, "err", err)
+		return false
+	}
+	return !local
 }
 
 // datapathLive rewrites the prune's wanted-address set into datapath addresses.
@@ -675,7 +714,7 @@ func (m *natManager) datapathLive(ctx context.Context, live LiveEIPs) (LiveEIPs,
 // asks for. The NAT row is not the record of that plumbing — AddEIP's
 // predecessor scrub, a lost teardown or a crash mid-delete each leave a route
 // and its proxy-ARP behind with no row left to find them by.
-func (m *natManager) pruneHostEIPs(live LiveEIPs) error {
+func (m *natManager) pruneHostEIPs(live LiveEIPs, foreign map[string]struct{}) error {
 	if m.mode != NATModeRouted || m.hostBinder == nil || m.hostBinder.List == nil {
 		return nil
 	}
@@ -685,12 +724,18 @@ func (m *natManager) pruneHostEIPs(live LiveEIPs) error {
 	}
 	kept := make([]string, 0, len(bound))
 	for _, eip := range bound {
-		if _, wanted := live.ExternalIPs[eip]; wanted {
+		_, wanted := live.ExternalIPs[eip]
+		_, elsewhere := foreign[eip]
+		if wanted && !elsewhere {
 			kept = append(kept, eip)
 			continue
 		}
-		m.releaseHostEIP(eip, "host binding for an external IP absent from intent")
-		slog.Info("policy: pruned stale host EIP ingress", "external_ip", eip)
+		reason := "host binding for an external IP absent from intent"
+		if elsewhere {
+			reason = "owning guest has moved to another chassis"
+		}
+		m.releaseHostEIP(eip, reason)
+		slog.Info("policy: pruned stale host EIP ingress", "external_ip", eip, "reason", reason)
 	}
 	// The keep decision was silent, so a route that outlived its address could not
 	// be told from one the sweep never saw. Both sides are logged now.

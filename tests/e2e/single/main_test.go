@@ -82,7 +82,7 @@ func requireSingleNodeFixture(t *testing.T) *Fixture {
 			Harness: h,
 			TmpDir:  tmpDir,
 		}
-		fix.PoolMode = detectPoolMode(env)
+		fix.PublicPool = detectPublicPool(env)
 		// admin init leaves the default SG closed (AWS parity); the e2e suite
 		// drives SSH + ICMP probes from the test runner's external IP, so open
 		// both on the default VPC's default SG once per process. Idempotent —
@@ -108,7 +108,7 @@ type Fixture struct {
 	AWS      *harness.AWSClient
 	Harness  *harness.Fixture // memoized Ensure* fixture; spans the whole process.
 	TmpDir   string           // package-scoped scratch dir; survives every Test* in the package.
-	PoolMode bool             // gates 8b / 8d
+	PublicPool bool           // public addresses can be allocated; gates 8b / 8d
 }
 
 // ArtifactDir returns the artifact directory for the *currently running* test.
@@ -121,11 +121,12 @@ func (f *Fixture) ArtifactDir(t *testing.T) string {
 	return harness.ArtifactDir(t, f.Env)
 }
 
-// detectPoolMode reads external_mode from spinifex.toml. Defaults to false
-// (dev_networking) which is the single-node CI fixture. Only external_mode
-// "pool" enables Phase 8b/8d — nat clusters have no EIP/NAT-GW support, so
-// AllocateAddress returns UnsupportedOperation and those phases must skip.
-func detectPoolMode(env *harness.Env) bool {
+// detectPublicPool reports whether this cluster can hand out public
+// addresses. Both external_mode "pool" and external_mode "nat" with a
+// non-transit pool configured do: routed NAT carries EIPs, so gating on the
+// mode name alone skipped the egress and SMTP phases on a cluster that
+// supports every call they make.
+func detectPublicPool(env *harness.Env) bool {
 	cfg := os.ExpandEnv("$HOME/spinifex/config/spinifex.toml")
 	if env.ConfigDir != "" {
 		cfg = filepath.Join(env.ConfigDir, "spinifex.toml")
@@ -136,25 +137,27 @@ func detectPoolMode(env *harness.Env) bool {
 	}
 	defer f.Close()
 
+	mode, section, hasPool := "", "", false
 	scanner := bufio.NewScanner(f)
-	inNetwork := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "[") {
-			inNetwork = line == "[network]"
+			section = line
 			continue
 		}
-		if !inNetwork {
+		_, rhs, ok := strings.Cut(line, "=")
+		if !ok {
 			continue
 		}
-		if !strings.HasPrefix(line, "external_mode") {
-			continue
-		}
-		// external_mode = "pool" — quoted value; only "pool" gates 8b/8d.
-		if _, rhs, ok := strings.Cut(line, "="); ok {
-			val := strings.Trim(strings.TrimSpace(rhs), "\"'")
-			return val == "pool"
+		val := strings.Trim(strings.TrimSpace(rhs), "\"'")
+		switch {
+		case section == "[network]" && strings.HasPrefix(line, "external_mode"):
+			mode = val
+		// The transit pool is routed NAT's own plumbing, not addresses a
+		// customer can allocate, so it is not evidence of a public pool.
+		case section == "[[network.external_pools]]" && strings.HasPrefix(line, "name") && val != "nat-transit":
+			hasPool = true
 		}
 	}
-	return false
+	return mode == "pool" || (mode == "nat" && hasPool)
 }

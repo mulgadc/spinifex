@@ -278,6 +278,29 @@ jobs:
              rc=\${PIPESTATUS[0]}; echo '::endgroup::'; \
              if [ \$rc -ne 0 ]; then echo 'natuplink: FAILED' >> '${ARTIFACT_DIR}/suite-status.txt'; fi; exit \$rc"
 
+      # natuplink proves a guest with a public IP reaches the internet. The two
+      # surfaces it never touches are a private subnet's isolation and its NAT
+      # gateway, and TestVPCEgressPaths is the authority on both — it skipped in
+      # nat mode until the fixture learned that routed NAT carries EIPs too.
+      - name: Run VPC Egress Paths in NAT mode
+        if: matrix.extra == 'nat-single'
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          INVENTORY=$(tofu output -json inventory)
+          WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} \
+            "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/e2e-tests/_bin; \
+             echo '::group::suite single/TestVPCEgressPaths'; \
+             date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-vpcegress-nat.start'; \
+             GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+               ARTIFACT_DIR='${ARTIFACT_DIR}' \
+               ./single.test -test.v -test.timeout=30m -test.run '^TestVPCEgressPaths\$' \
+               2>&1 | tee '${ARTIFACT_DIR}/test-vpcegress-nat.log'; \
+             rc=\${PIPESTATUS[0]}; echo '::endgroup::'; \
+             if [ \$rc -ne 0 ]; then echo 'vpcegress-nat: FAILED' >> '${ARTIFACT_DIR}/suite-status.txt'; fi; exit \$rc"
+
       - name: Run Multi Node E2E
         if: matrix.topo == 'real-multi' && matrix.suite == '' && matrix.extra == ''
         working-directory: mulga/scripts/tofu-cluster

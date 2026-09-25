@@ -47,8 +47,8 @@ func guestConnectProbe(host string, port, timeoutSec int) string {
 //   - SMTPBlocked is the assertion under test and depends on Control having
 //     proven egress is otherwise alive.
 func runWANEgressSMTPBlock(t *testing.T, fix *Fixture) {
-	if !fix.PoolMode {
-		t.Skip("WAN egress SMTP block scenario requires pool-mode networking (real WAN egress)")
+	if !fix.PublicPool {
+		t.Skip("WAN egress SMTP block scenario needs a public address on the guest (real WAN egress)")
 	}
 	harness.Phase(t, "Single — Platform egress ACL blocks outbound SMTP (25/465/587) to public destinations, AWS parity")
 

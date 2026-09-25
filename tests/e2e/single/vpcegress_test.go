@@ -83,8 +83,8 @@ func vpcEgressNATRounds() int {
 //     answer on its original address — ordering it last is what lets this
 //     scenario reuse the guest at all instead of needing a disposable one.
 func runVPCEgressPaths(t *testing.T, fix *Fixture) {
-	if !fix.PoolMode {
-		t.Skip("VPC egress paths scenario requires pool-mode networking")
+	if !fix.PublicPool {
+		t.Skip("VPC egress paths scenario needs a pool of public addresses to allocate from")
 	}
 	harness.Phase(t, "Single — Three ways in and out: public subnet, NAT Gateway, and Elastic IP egress around one VPC")
 

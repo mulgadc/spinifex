@@ -21,7 +21,7 @@ The largest suite, 25 top-level tests. Notable entry points:
 
 - **`TestVPCEgressPaths`** — **the authority on subnet egress semantics.** One VPC with a public and a private subnet, sharing two guests across four stages: `PublicSubnetEgress` (IGW egress works), `RouteBeforeSubnet` (a regression guard for an IGW route installed on the main route table before the subnet exists), the NAT Gateway rounds, and `EIPFlip` (associating an Elastic IP onto a running instance).
   - **`NATBaseline` hard-fails if a private-subnet guest reaches the internet with no NAT Gateway.** `NATGatewayUp` then proves egress appears and `NATGatewayDown` that it disappears. `SPINIFEX_VPCEGRESS_NAT_ROUNDS` repeats the up/down cycle for a soak run.
-  - **This is AWS parity for private subnets, and it is proven in pool mode only** — the nat-mode cell runs `natuplink`, which never creates a private subnet.
+  - **This is AWS parity for private subnets.** It ran in pool mode only until 2026-09-26: the fixture gated it on `external_mode = "pool"`, on the stale premise that nat clusters have no EIPs. They do when a public pool is configured, so the gate is now "can this cluster allocate public addresses" and the nat-single cell runs this test beside `natuplink`, which never creates a private subnet.
 - `TestSGPolicyDatapath`, `TestSGReachabilityPolicy` — security groups as an actual datapath, not just API state.
 - `TestWANEgressSMTPBlock` — egress port blocking.
 - `TestInstanceMetadata` — IMDS from inside a guest.

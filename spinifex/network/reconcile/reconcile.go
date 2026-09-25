@@ -290,7 +290,7 @@ func (r *reconciler) ReconcileHostEIPs(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("re-read intent for host EIP pass: %w", err)
 	}
-	return r.nat.BindHostEIPs(ctx, r.floatingIPSpecs(intent))
+	return r.nat.BindHostEIPs(ctx, r.hostBindSpecs(intent))
 }
 
 // reconcile applies intent. pruneTopology gates the port-group and ENI-port

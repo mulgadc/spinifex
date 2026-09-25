@@ -161,6 +161,8 @@ Both support the same AWS features: public subnets, Elastic IPs, security groups
 
 ## `nat` — Shared SNAT (Simple)
 
+**`nat` is a supported mode, not a fallback.** It is covered by the nightly e2e suite (cells 19 and 30, single- and multi-node) and it is the only mode a cloud-hosted node can run, so the OCI deployment depends on it. Read "specialised" below as "fewer deployments need it", never as "less finished".
+
 **Start with `pool` unless one of the reasons below applies.** Pool mode is the default, is what most of this document describes, and is what the AWS feature set was built against. `nat` is the specialised mode: it exists for uplinks that cannot be bridged, and it reaches AWS parity through host-side plumbing rather than by putting VM addresses on the wire.
 
 Reach for `nat` when the uplink refuses to carry anything but its own MAC and its own addresses — WiFi and WWAN, and **any cloud-hosted node**, where the VNIC drops a frame whose source address is not registered to it. On such a host `nat` is not a preference, it is the only mode that works at all; pool mode's localnet needs to announce VM addresses by ARP and a cloud VNIC will not carry them. See [oci-integration](../../oci-integration/README.md).
@@ -248,6 +250,12 @@ gateway     = "192.168.1.1"
 prefix_len  = 24
 ```
 
+### NAT gateways in NAT mode
+
+`CreateNatGateway` works here too, and draws its public address from the same public pool an EIP does. On the OVN side it is an `snat` row on the VPC router rewriting the private subnet's CIDR to that address — not the `dnat_and_snat` an EIP gets — so it is centralised on the VPC's gateway chassis by construction and there is no port or MAC to bind it to.
+
+**That address needs the same host plumbing as an EIP**, and on a routed-NAT node it is the host that delivers it: the `/32` route steering it into OVN, the proxy-ARP entry answering for it on the uplink, and the FORWARD accepts. Without them an egressing private instance leaves with a source address the host holds no route back to, while the masquerade rule — which matches the transit `100.127.0.0/24` alone — never sees the packet. Spinifex binds it when the gateway is created and re-asserts it on the host EIP pass, so no operator step is involved; `ip route show dev spx-nat-host` should list the gateway's public address alongside any EIPs.
+
 ### NAT mode on more than one node
 
 `spx admin init --external-mode=nat --nodes N` works for N > 1, and each public IP is delivered by the node running its instance rather than by one gateway node. Three things make that true, and all three are automatic:
@@ -280,6 +288,7 @@ VPC networking is overlay-only. No external connectivity. Instances can only com
 | Admin must reserve IP range       | Yes             | No            | Only static pool  | No       |
 | Needs router DHCP                 | No              | Yes           | Optional          | No       |
 | Works on a non-bridgeable uplink  | No              | No            | Yes               | n/a      |
+| NAT gateways                      | Yes             | Yes           | With public pool  | No       |
 | More than one node                | Yes             | Yes           | Yes               | Yes      |
 
 If you start with `nat` and later need public subnets: on a bridgeable uplink switch to `pool` and define a range (or use `source = "dhcp"`); on a routed-NAT node just add a public pool alongside `nat-transit` — no data migration needed.

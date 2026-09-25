@@ -711,7 +711,8 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 	} else if existing != nil && existing.ExternalIP == gw.PublicIP {
 		slog.Info("policy: AddNATGateway idempotent skip — rule already current",
 			"router", router, "public_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR)
-		return nil
+		// Host state is volatile even when the OVN row survives a reboot.
+		return m.bindNATGatewayHost(ctx, gw)
 	} else if existing != nil {
 		// Same subnet CIDR, different public IP (e.g. a dropped delete then a recreate
 		// with a new EIP). Scrub the stale row(s) so the new EIP does not leak egress
@@ -731,7 +732,24 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 		slog.Warn("policy: AddNATGateway flows barrier failed",
 			"public_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR, "err", err)
 	}
-	return nil
+	return m.bindNATGatewayHost(ctx, gw)
+}
+
+// bindNATGatewayHost plumbs the routed-mode host state for a NAT gateway's
+// public address: the same /32 route into OVN, proxy-ARP and FORWARD accepts
+// an EIP gets. Without it a private guest's egress leaves with a source the
+// host has no route back to, and the masquerade rule matches the transit /24
+// alone, so nothing rewrites it either.
+//
+// The address is centralised by construction — SNAT on the VPC router owns it,
+// not any one port — so the spec carries no port or MAC and the bind resolves
+// the gateway LRP as its next hop. Fired here as well as from the host EIP
+// pass so a fresh gateway is not dark until the next tick.
+func (m *natManager) bindNATGatewayHost(ctx context.Context, gw NATGWSpec) error {
+	if gw.PublicIP == "" {
+		return nil
+	}
+	return m.bindHostEIP(ctx, EIPSpec{VPCID: gw.VPCID, ExternalIP: gw.PublicIP})
 }
 
 func (m *natManager) DeleteNATGateway(ctx context.Context, vpcID, subnetCIDR string) error {

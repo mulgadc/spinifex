@@ -810,6 +810,45 @@ func (r *reconciler) floatingIPSpecs(intent IntentState) []policy.EIPSpec {
 	return specs
 }
 
+// hostBindSpecs is every public address this node must plumb host state for:
+// the floating IPs above, plus each NAT gateway's public address.
+//
+// A NAT gateway's address needs the same /32 route into OVN and the same
+// proxy-ARP on the uplink as an EIP, and got neither: its OVN snat row was the
+// only thing installed, so an egressing packet left with a source the host
+// held no route back to and the masquerade rule — which matches the transit
+// /24 alone — never saw. It is centralised by construction, carrying no port
+// or MAC, so it takes the gateway-LRP path and every node plumbs it.
+//
+// Kept apart from floatingIPSpecs deliberately: that set is the complete list
+// of addresses allowed to hold a dnat_and_snat row, and a NAT gateway holds an
+// snat instead. Widening it would stop the sweep reclaiming a stale row on an
+// address later reused as a gateway's.
+func (r *reconciler) hostBindSpecs(intent IntentState) []policy.EIPSpec {
+	specs := r.floatingIPSpecs(intent)
+
+	seen := make(map[string]struct{}, len(specs))
+	for _, s := range specs {
+		seen[s.ExternalIP] = struct{}{}
+	}
+	// One NAT gateway emits a spec per associated subnet, so the same address
+	// arrives repeatedly; bind it once.
+	for _, gw := range intent.NATGWs {
+		if gw.PublicIP == "" {
+			continue
+		}
+		if _, dup := seen[gw.PublicIP]; dup {
+			continue
+		}
+		seen[gw.PublicIP] = struct{}{}
+		specs = append(specs, policy.EIPSpec{
+			VPCID:      gw.VPCID,
+			ExternalIP: gw.PublicIP,
+		})
+	}
+	return specs
+}
+
 // pruneOrphanEIPs sweeps dnat_and_snat rows intent no longer accounts for.
 // vpc.delete-nat is fire-and-forget and can be lost, so a row survives its own
 // teardown in two shapes: the whole ENI went away (VPC torn down, instance

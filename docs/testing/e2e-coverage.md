@@ -28,11 +28,15 @@ The largest suite, 25 top-level tests. Notable entry points:
 - `TestStopStart`, `TestEarlyRebootLiveness`, `TestGuestChurnDurability`, `TestSnapshotLifecycle`, `TestSnapshotBackedLaunch`, `TestCreateImage`, `TestVolumeLifecycle`, `TestSpotInstanceLifecycle`, `TestLaunchTemplateBoot`.
 - `TestNegativeErrorPaths` — the `8a`–`8h` AWS error-shape cases (malformed AMI ID, invalid instance type, volume in use, detach-root forbidden, and so on).
 
-### `natuplink` — routed NAT (`external_mode = "nat"`), single node only
+### `natuplink` — routed NAT (`external_mode = "nat"`), one node or three
 
-Runs **on** the node, shelling out to `ip`/`iptables`/`ovn-nbctl` locally. Skips unless `spinifex.toml` says `external_mode = "nat"` and `env.Mode == ModeSingle`. Nine sequential phases: host wiring (transit veth, `ip_forward`, NAT egress rules), config, the EIP surface (enabled or disabled depending on whether a public pool exists), default-subnet public IP mapping, OVN gateway and SNAT on the transit net, instance egress **proven via the serial console**, host-to-guest Tier 1 ingress, a second VPC getting a unique transit gateway IP, and the EIP ingress lifecycle.
+Runs **on** a node, shelling out to `ip`/`iptables`/`ovn-nbctl` locally. Skips unless `spinifex.toml` says `external_mode = "nat"`. Nine sequential phases: host wiring (transit veth, `ip_forward`, NAT egress rules), config, the EIP surface (enabled or disabled depending on whether a public pool exists), default-subnet public IP mapping, OVN gateway and SNAT on the transit net, instance egress **proven via the serial console**, host-to-guest Tier 1 ingress, a second VPC getting a unique transit gateway IP, and the EIP ingress lifecycle.
 
-**Its package header says nat mode has "no inbound path to VMs". That is stale** — phases 3 and 9 exercise EIP ingress whenever a public pool is configured, and the nightly cell configures one.
+**Phase 9 has two shapes.** On one node it is the EIP lifecycle: allocate, associate, host delivery plumbing, a TCP handshake to the address, a vpcd restart that must replay the plumbing, and disassociate tearing it down. On a cluster it is the distributed lane instead — a guest on every node, each public IP plumbed by the node running its guest and by **no other**, every transit veth carrying the one cluster-wide MAC, each `dnat_and_snat` row carrying `external_mac` and `logical_port`, inbound proven by a handshake and outbound by each guest's own console. **That lane is the regression guard for the two defects that made routed NAT work on one node only**, and neither is visible to a single-node run.
+
+Phases 7 and 8 are gated on a cluster by what the datapath can actually do: the transit segment is a localnet, so host-to-guest Tier 1 ingress only exists where the VPC's gateway router port and the guest are both on this host. The VPC ingress route itself is installed on every node, so phase 8 checks it unconditionally.
+
+Two nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 20).
 
 ### `multinode` — behaviour that only exists on more than one node
 

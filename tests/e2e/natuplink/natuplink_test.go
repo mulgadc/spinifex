@@ -1,18 +1,26 @@
 //go:build e2e
 
-// Package natuplink is the routed-NAT (external_mode = "nat") single-node
-// suite. It runs ON the spinifex node itself (like the single suite): the
-// host-wiring and OVN phases shell out to ip/iptables/ovn-nbctl locally,
-// and instance egress is proven via the serial console because nat mode
-// has no inbound path to VMs (outbound-only by design).
+// Package natuplink is the routed-NAT (external_mode = "nat") suite. It runs
+// ON the spinifex node itself (like the single suite): the host-wiring and OVN
+// phases shell out to ip/iptables/ovn-nbctl locally, and default egress is
+// proven via the serial console since an instance with no public IP has no
+// inbound path. Routed mode does carry public IPs when a public pool is
+// configured, and phase 9 walks that ingress path.
 //
-// The node must be provisioned with `setup-ovn.sh --management --nat-uplink`
-// followed by `spx admin init --external-mode=nat`; the suite skips unless
-// spinifex.toml carries external_mode = "nat".
+// On a multi-node cluster phase 9 becomes the distributed lane instead: one
+// guest per node, each public IP delivered by the node running its guest and by
+// no other. The two phases that need host-to-guest delivery over the transit
+// veth run only where that is possible, since ext-shared is a localnet and the
+// segment does not leave the chassis holding the VPC's gateway router port.
+//
+// Every node must be provisioned with `setup-ovn.sh --nat-uplink` followed by
+// `spx admin init --external-mode=nat`; the suite skips unless spinifex.toml
+// carries external_mode = "nat".
 package natuplink
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -20,12 +28,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,9 +44,14 @@ import (
 const (
 	transitCIDR      = "100.127.0.0/24"
 	transitGatewayIP = "100.127.0.1"
-	transitHostEnd   = "spx-nat-host"
-	transitOVSEnd    = "spx-nat-ovs"
 	uplinkBridge     = "br-ext"
+
+	// Taken from the package the daemon uses, not copied: the transit MAC in
+	// particular is one address cluster-wide, and a stale duplicate here would
+	// assert the wrong one everywhere at once.
+	transitHostEnd = host.NATTransitHostEnd
+	transitOVSEnd  = host.NATTransitOVSEnd
+	transitHostMAC = host.NATTransitHostMAC
 
 	egressOKMarker   = "NAT-E2E-EGRESS-OK"
 	egressFailMarker = "NAT-E2E-EGRESS-FAIL"
@@ -82,6 +97,9 @@ type fixture struct {
 	// publicPool is true when spinifex.toml carries a non-transit pool —
 	// the Tier 2 (EIP / public IP) lane is exercised only then.
 	publicPool bool
+	// cluster is nil on a single node and is what distinguishes the two
+	// shapes of phase 9: the lifecycle on one host, or delivery across all.
+	cluster *harness.Cluster
 }
 
 // TestNATUplink runs the routed-NAT lane end to end. Phases are sequential:
@@ -89,8 +107,8 @@ type fixture struct {
 // phases read state the earlier phases prove exists.
 func TestNATUplink(t *testing.T) {
 	env := harness.LoadEnv(t)
-	if env.Mode != harness.ModeSingle {
-		t.Skipf("natuplink suite is single-node only (mode=%s)", env.Mode)
+	if env.Mode != harness.ModeSingle && env.Mode != harness.ModeMultinode {
+		t.Skipf("natuplink suite runs on single and multinode clusters (mode=%s)", env.Mode)
 	}
 	cfgPath := configPath(env)
 	if mode := readExternalMode(t, cfgPath); mode != "nat" {
@@ -115,6 +133,12 @@ func TestNATUplink(t *testing.T) {
 		configTOML: cfgPath,
 		publicPool: hasPublicPool(t, cfgPath),
 	}
+	if env.Mode == harness.ModeMultinode {
+		cluster, cerr := harness.ClusterFromEnv()
+		require.NoError(t, cerr, "multinode run needs SPINIFEX_NODES/SSH_USER/SSH_KEY")
+		fix.cluster = cluster
+		harness.Detail(t, "nodes", len(cluster.Nodes))
+	}
 
 	harness.Phase(t, "NAT Uplink — Phase 1: host wiring")
 	phaseHostWiring(t)
@@ -136,20 +160,38 @@ func TestNATUplink(t *testing.T) {
 	harness.Phase(t, "NAT Uplink — Phase 5: OVN gateway + SNAT on transit net")
 	defaultGwIP := phaseOVNGateway(t, fix, def.VPCID)
 
+	// ext-shared is a localnet, so the transit segment never leaves the node:
+	// only the chassis holding the VPC's gateway router port can reach the
+	// gateway LRP. On one node that is always this host.
+	gwLocal := fix.cluster == nil || localIsGatewayChassis(t, def.VPCID)
+
 	harness.Phase(t, "NAT Uplink — Phase 6: instance boots and reaches WAN outbound")
 	probe := phaseInstanceEgress(t, fix, def)
 
-	harness.Phase(t, "NAT Uplink — Phase 7: host reaches instance private IP (Tier 1 ingress)")
-	phaseHostIngress(t, fix, def, probe)
+	// Tier 1 ingress needs both ends here: the gateway LRP is reachable from
+	// its own chassis alone, and the guest has to be one this host is running.
+	switch {
+	case gwLocal && (fix.cluster == nil || hostsInstanceLocally(t, fix, probe.instanceID)):
+		harness.Phase(t, "NAT Uplink — Phase 7: host reaches instance private IP (Tier 1 ingress)")
+		phaseHostIngress(t, fix, def, probe)
+	case gwLocal:
+		t.Logf("Phase 7 (Tier 1 host ingress) skipped: %s is running on another node", probe.instanceID)
+	default:
+		t.Log("Phase 7 (Tier 1 host ingress) skipped: the gateway router port for this VPC is on another chassis")
+	}
 
 	harness.Phase(t, "NAT Uplink — Phase 8: second VPC gets a unique transit gateway IP")
 	phaseUniqueTransitIP(t, fix, defaultGwIP)
 
-	if fix.publicPool {
+	switch {
+	case !fix.publicPool:
+		t.Log("Phase 9 (Tier 2 EIP ingress) skipped: no public pool in config")
+	case fix.cluster != nil:
+		harness.Phase(t, "NAT Uplink — Phase 9: every node delivers its own guests' public IPs")
+		phaseDistributedEIPs(t, fix, def)
+	default:
 		harness.Phase(t, "NAT Uplink — Phase 9: EIP ingress lifecycle (Tier 2)")
 		phaseEIPIngress(t, fix, def, probe)
-	} else {
-		t.Log("Phase 9 (Tier 2 EIP ingress) skipped: no public pool in config")
 	}
 }
 
@@ -384,25 +426,7 @@ func phaseInstanceEgress(t *testing.T, fix *fixture, def harness.VPCInfo) egress
 	assert.NotEmptyf(t, aws.StringValue(inst.PrivateIpAddress),
 		"instance %s missing private IP", instanceID)
 
-	harness.Step(t, "wait for egress verdict on serial console")
-	var console string
-	// Registered before the wait so a budget overrun — which Fatals inside
-	// EventuallyErr — still leaves the last console read behind.
-	harness.OnFailure(t, func() {
-		harness.DumpFile(t, fix.artifacts, "egress-console.log", []byte(console))
-	})
-	harness.EventuallyErr(t, func() error {
-		console = consoleOutput(t, fix, instanceID)
-		if strings.Contains(console, egressOKMarker) || strings.Contains(console, egressFailMarker) {
-			return nil
-		}
-		return fmt.Errorf("no egress marker on console yet (%d bytes)", len(console))
-	}, egressVerdictBudget, 10*time.Second)
-
-	if strings.Contains(console, egressFailMarker) {
-		t.Fatalf("guest reported %s — outbound WAN unreachable through routed NAT (console saved to artifacts)", egressFailMarker)
-	}
-	harness.Step(t, "guest reported %s", egressOKMarker)
+	awaitEgressVerdict(t, fix, instanceID)
 
 	var sgID string
 	if len(inst.SecurityGroups) > 0 {
@@ -545,6 +569,9 @@ func phaseUniqueTransitIP(t *testing.T, fix *fixture, defaultGwIP string) {
 		return nil
 	}, 2*time.Minute, 3*time.Second)
 
+	// Every node installs this route, not only the gateway chassis: the nexthop
+	// is the same transit address everywhere, and a node that never held the
+	// gateway port still has to reach the VPC the day it takes it over.
 	harness.Step(t, "host ingress route for second VPC installed on attach")
 	harness.EventuallyErr(t, func() error {
 		out, _ := exec.Command("ip", "route", "show", secondVPCCIDR).CombinedOutput()
@@ -566,15 +593,13 @@ func phaseUniqueTransitIP(t *testing.T, fix *fixture, defaultGwIP string) {
 func phaseEIPIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egressProbe) {
 	t.Helper()
 
-	gwIP := gatewayLRPIP(t, def.VPCID)
-	require.NotEmpty(t, gwIP, "gateway LRP IP")
-
 	harness.Step(t, "auto-assigned public IP %s has host delivery plumbing", probe.publicIP)
 	require.NotEmpty(t, probe.publicIP, "phase 6 probe carries no public IP")
 	harness.EventuallyErr(t, func() error {
-		return eipHostPlumbing(probe.publicIP, gwIP)
+		return eipHostPlumbing(probe.publicIP)
 	}, 2*time.Minute, 3*time.Second)
 	assertDNATExempt(t, probe.publicIP)
+	assertDistributedEIP(t, probe.publicIP)
 
 	harness.Step(t, "allocate + associate a fresh EIP")
 	// e2e:allow-create — scratch EIP owned end to end by this phase.
@@ -597,9 +622,10 @@ func phaseEIPIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egre
 
 	harness.Step(t, "host delivery plumbing lands for %s", eip)
 	harness.EventuallyErr(t, func() error {
-		return eipHostPlumbing(eip, gwIP)
+		return eipHostPlumbing(eip)
 	}, 2*time.Minute, 3*time.Second)
 	assertDNATExempt(t, eip)
+	assertDistributedEIP(t, eip)
 
 	// EC2 releases an instance's auto-assigned public IPv4 when an EIP is
 	// associated: "that public IPv4 address is released back into Amazon's pool
@@ -637,7 +663,7 @@ func phaseEIPIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egre
 		t.Logf("skipping reconcile-replay check — cannot restart spinifex-vpcd: %s", string(out))
 	} else {
 		harness.EventuallyErr(t, func() error {
-			return eipHostPlumbing(eip, gwIP)
+			return eipHostPlumbing(eip)
 		}, 3*time.Minute, 5*time.Second)
 	}
 
@@ -657,15 +683,176 @@ func phaseEIPIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egre
 	require.NoError(t, eipHostPlumbingGone(probe.publicIP))
 }
 
+// --- Phase 9 (multi-node): every node delivers its own guests ----------------
+
+// spreadGuest is one phase-9 guest and the node its QEMU process runs on.
+type spreadGuest struct {
+	instanceID string
+	publicIP   string
+	node       harness.Node
+}
+
+// phaseDistributedEIPs proves what a single-node run cannot see: with a guest
+// on every node, each public IP is delivered by the node running that guest and
+// by no other. It guards the two defects that made routed NAT work on one node
+// only — a per-node transit MAC against OVN's single cluster-wide binding for
+// the nexthop, and host EIP plumbing that ran on the reconcile leader alone.
+func phaseDistributedEIPs(t *testing.T, fix *fixture, def harness.VPCInfo) {
+	t.Helper()
+	nodes := fix.cluster.Nodes
+	ssh := harness.NewPeerSSH()
+
+	harness.Step(t, "every node's transit veth carries the shared MAC %s", transitHostMAC)
+	for _, n := range nodes {
+		link := nodeCmd(t, ssh, n, "ip -o link show dev "+transitHostEnd)
+		assert.Containsf(t, strings.ToLower(link), transitHostMAC,
+			"%s: OVN holds one MAC binding for %s cluster-wide, so a node keeping its own address receives none of the egress that binding points at\n%s",
+			n.Name, transitGatewayIP, link)
+	}
+
+	for _, g := range launchSpreadGuests(t, fix, def, len(nodes)) {
+		harness.Step(t, "%s on %s carries public IP %s", g.instanceID, g.node.Name, g.publicIP)
+		assertDistributedEIP(t, g.publicIP)
+		assertSoleEIPHolder(t, ssh, nodes, g)
+
+		harness.Step(t, "TCP handshake to %s:22 — inbound over %s", g.publicIP, g.node.Name)
+		harness.EventuallyErr(t, func() error {
+			return sshHandshake(g.publicIP)
+		}, 2*time.Minute, 5*time.Second)
+
+		awaitEgressVerdict(t, fix, g.instanceID)
+	}
+}
+
+// launchSpreadGuests boots one egress-probing guest per node in a spread
+// placement group and returns each with the node running it. Colocation fails
+// the phase: two guests on one node prove nothing about the second node's
+// datapath, which is the whole subject here.
+func launchSpreadGuests(t *testing.T, fix *fixture, def harness.VPCInfo, count int) []spreadGuest {
+	t.Helper()
+
+	instType, arch := harness.DiscoverNanoInstanceType(t, fix.harness)
+	amiID := harness.DiscoverUbuntuAMI(t, fix.harness, arch)
+	keyName, _ := harness.EnsureKeyPair(t, fix.harness)
+	harness.Detail(t, "type", instType, "ami", amiID, "key", keyName, "count", count)
+
+	harness.Step(t, "create spread placement group + %d egress-probe guests", count)
+	pgName := "natuplink-spread"
+	// e2e:allow-create — scratch placement group owned end to end by this phase.
+	_, err := fix.aws.EC2.CreatePlacementGroup(&ec2.CreatePlacementGroupInput{
+		GroupName: aws.String(pgName), Strategy: aws.String("spread"),
+	})
+	require.NoError(t, err, "create-placement-group %s", pgName)
+	t.Cleanup(func() {
+		_, _ = fix.aws.EC2.DeletePlacementGroup(&ec2.DeletePlacementGroupInput{GroupName: aws.String(pgName)})
+	})
+
+	// e2e:allow-create — throwaway probe VMs; the egress-probe user-data makes them unshareable.
+	runOut, err := fix.aws.EC2.RunInstances(&ec2.RunInstancesInput{
+		ImageId:      aws.String(amiID),
+		InstanceType: aws.String(instType),
+		KeyName:      aws.String(keyName),
+		SubnetId:     aws.String(def.SubnetID),
+		MinCount:     aws.Int64(int64(count)),
+		MaxCount:     aws.Int64(int64(count)),
+		Placement:    &ec2.Placement{GroupName: aws.String(pgName)},
+		UserData:     aws.String(base64.StdEncoding.EncodeToString([]byte(egressUserData))),
+	})
+	require.NoError(t, err, "run-instances x%d", count)
+	require.Lenf(t, runOut.Instances, count, "run-instances returned %d instances", len(runOut.Instances))
+
+	ids := make([]string, 0, count)
+	for _, inst := range runOut.Instances {
+		ids = append(ids, aws.StringValue(inst.InstanceId))
+	}
+	t.Cleanup(func() {
+		_, _ = fix.aws.EC2.TerminateInstances(&ec2.TerminateInstancesInput{InstanceIds: aws.StringSlice(ids)})
+		harness.WaitForInstanceTerminated(t, fix.aws, ids, 5*time.Minute)
+	})
+
+	guests := make([]spreadGuest, 0, count)
+	owner := make(map[string]string, count)
+	sgIDs := make(map[string]struct{}, 1)
+	for _, id := range ids {
+		inst := harness.WaitForInstanceState(t, fix.aws, id, "running")
+		publicIP := aws.StringValue(inst.PublicIpAddress)
+		require.NotEmptyf(t, publicIP, "instance %s must auto-assign a public IP (MapPublicIpOnLaunch)", id)
+		for _, sg := range inst.SecurityGroups {
+			sgIDs[aws.StringValue(sg.GroupId)] = struct{}{}
+		}
+		node := harness.InstanceHostingNode(t, fix.cluster, id)
+		require.NotNilf(t, node, "no node runs a QEMU process for %s", id)
+		require.Emptyf(t, owner[node.Name],
+			"spread placement failed: %s and %s both landed on %s", id, owner[node.Name], node.Name)
+		owner[node.Name] = id
+		harness.Detail(t, "instance", id, "node", node.Name, "public_ip", publicIP)
+		guests = append(guests, spreadGuest{instanceID: id, publicIP: publicIP, node: *node})
+	}
+
+	harness.Step(t, "open SSH from anywhere on %d security group(s)", len(sgIDs))
+	perms := []*ec2.IpPermission{{
+		IpProtocol: aws.String("tcp"), FromPort: aws.Int64(22), ToPort: aws.Int64(22),
+		IpRanges: []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+	}}
+	for sgID := range sgIDs {
+		_, err := fix.aws.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId: aws.String(sgID), IpPermissions: perms,
+		})
+		require.NoError(t, err, "authorize-security-group-ingress %s", sgID)
+		t.Cleanup(func() {
+			_, _ = fix.aws.EC2.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+				GroupId: aws.String(sgID), IpPermissions: perms,
+			})
+		})
+	}
+	return guests
+}
+
+// assertSoleEIPHolder proves g's public IP is plumbed on g's node and nowhere
+// else. Two nodes holding the same address answer ARP for it from two places,
+// which delivers the guest's traffic to the wrong host about half the time.
+func assertSoleEIPHolder(t *testing.T, ssh *harness.PeerSSH, nodes []harness.Node, g spreadGuest) {
+	t.Helper()
+	routes := make(map[string]string, len(nodes))
+	harness.EventuallyErr(t, func() error {
+		holders := make([]string, 0, 1)
+		for _, n := range nodes {
+			route := strings.TrimSpace(nodeCmd(t, ssh, n, "ip route show "+g.publicIP+"/32"))
+			routes[n.Name] = route
+			if route != "" {
+				holders = append(holders, n.Name)
+			}
+		}
+		if len(holders) != 1 || holders[0] != g.node.Name {
+			return fmt.Errorf("public IP %s plumbed by %v, want [%s] alone", g.publicIP, holders, g.node.Name)
+		}
+		return nil
+	}, 2*time.Minute, 5*time.Second)
+
+	route := routes[g.node.Name]
+	assert.Containsf(t, route, "dev "+transitHostEnd,
+		"%s: EIP route must point into OVN\n%s", g.node.Name, route)
+	assert.NotContainsf(t, route, "via ",
+		"%s: a distributed EIP is answered on-link by its own node, not forwarded to a gateway LRP\n%s",
+		g.node.Name, route)
+
+	proxy := nodeCmd(t, ssh, g.node, "ip neigh show proxy")
+	assert.Containsf(t, proxy, g.publicIP,
+		"%s must answer ARP for %s on its uplink\n%s", g.node.Name, g.publicIP, proxy)
+}
+
 // eipHostPlumbing returns nil when the full Tier 2 host state for eip is in
-// place: the /32 route into OVN via the gateway LRP, a proxy-ARP neighbor on
-// the uplink, and both per-EIP FORWARD accepts.
-func eipHostPlumbing(eip, gwIP string) error {
+// place: the /32 route into OVN, a proxy-ARP neighbor on the uplink, and both
+// per-EIP FORWARD accepts. The route is on-link — a distributed EIP is answered
+// by this node's own transit veth, so no gateway LRP is in the path.
+func eipHostPlumbing(eip string) error {
 	out, _ := exec.Command("ip", "route", "show", eip+"/32").CombinedOutput()
-	route := string(out)
-	if !strings.Contains(route, "via "+gwIP) || !strings.Contains(route, "dev "+transitHostEnd) {
-		return fmt.Errorf("EIP route for %s missing (want via %s dev %s): %q",
-			eip, gwIP, transitHostEnd, strings.TrimSpace(route))
+	route := strings.TrimSpace(string(out))
+	if !strings.Contains(route, "dev "+transitHostEnd) {
+		return fmt.Errorf("EIP route for %s missing (want dev %s): %q", eip, transitHostEnd, route)
+	}
+	if strings.Contains(route, "via ") {
+		return fmt.Errorf("EIP route for %s is forwarded to a gateway LRP, not answered on-link: %q", eip, route)
 	}
 	out, _ = exec.Command("ip", "neigh", "show", "proxy").CombinedOutput()
 	if !strings.Contains(string(out), eip) {
@@ -716,11 +903,119 @@ func assertDNATExempt(t *testing.T, eip string) {
 	require.NotEmptyf(t, exemptRef, "dnat_and_snat for %s missing or has no exempted_ext_ips ref", eip)
 }
 
-// sshHandshake dials hostPort:22 and reads the SSH banner prefix.
-func sshHandshake(host string) error {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, "22"), 5*time.Second)
+// assertDistributedEIP checks the NAT row for eip is the distributed kind.
+// external_mac and logical_port are what let the chassis running the guest
+// answer for the address itself; without them the row is centralised and only
+// the gateway chassis can deliver it.
+func assertDistributedEIP(t *testing.T, eip string) {
+	t.Helper()
+	var row string
+	harness.EventuallyErr(t, func() error {
+		row = harness.OvnNbctl(t, "--format=csv", "--no-headings", "--data=bare",
+			"--columns=external_mac,logical_port", "find", "nat",
+			"type=dnat_and_snat", "external_ip="+eip)
+		if row == "" {
+			return fmt.Errorf("no dnat_and_snat row for %s yet", eip)
+		}
+		if lines := strings.Split(row, "\n"); len(lines) != 1 {
+			return fmt.Errorf("%d dnat_and_snat rows for %s, want 1:\n%s", len(lines), eip, row)
+		}
+		mac, port, _ := strings.Cut(row, ",")
+		if strings.TrimSpace(mac) == "" || strings.TrimSpace(port) == "" {
+			return fmt.Errorf("dnat_and_snat for %s is centralised (external_mac=%q logical_port=%q)",
+				eip, strings.TrimSpace(mac), strings.TrimSpace(port))
+		}
+		return nil
+	}, time.Minute, 3*time.Second)
+	harness.Detail(t, "eip", eip, "external_mac,logical_port", row)
+}
+
+// localIsGatewayChassis reports whether this host holds the VPC's active
+// gateway router port. Every node carries a gateway_chassis row for every VPC,
+// so the row alone means nothing — the highest priority is the one OVN uses,
+// and only that chassis reaches the gateway LRP over the transit veth, since
+// ext-shared is a localnet and the segment stops at the node.
+func localIsGatewayChassis(t *testing.T, vpcID string) bool {
+	t.Helper()
+	rows := harness.OvnNbctl(t, "--format=csv", "--no-headings", "--data=bare",
+		"--columns=name,chassis_name,priority", "list", "gateway_chassis")
+	best, gwChassis := -1, ""
+	for _, row := range strings.Split(rows, "\n") {
+		fields := strings.Split(strings.TrimSpace(row), ",")
+		if len(fields) != 3 || !strings.Contains(fields[0], vpcID) {
+			continue
+		}
+		prio, err := strconv.Atoi(fields[2])
+		if err != nil || prio <= best {
+			continue
+		}
+		best, gwChassis = prio, fields[1]
+	}
+	local := localChassis(t)
+	harness.Detail(t, "vpc", vpcID, "gateway_chassis", gwChassis, "local_chassis", local)
+	return gwChassis != "" && gwChassis == local
+}
+
+// localChassis is this host's OVN chassis name, which the multi-node bootstrap
+// pins to the cluster node label so it compares with harness.Node.Name.
+func localChassis(t *testing.T) string {
+	t.Helper()
+	return strings.Trim(harness.OvsVsctl(t, "get", "Open_vSwitch", ".", "external_ids:system-id"), `"`)
+}
+
+// hostsInstanceLocally reports whether this host runs the instance's QEMU.
+func hostsInstanceLocally(t *testing.T, fix *fixture, instanceID string) bool {
+	t.Helper()
+	node := harness.InstanceHostingNode(t, fix.cluster, instanceID)
+	if node == nil {
+		return false
+	}
+	harness.Detail(t, "instance", instanceID, "node", node.Name, "local_chassis", localChassis(t))
+	return node.Name == localChassis(t)
+}
+
+// awaitEgressVerdict blocks until the guest prints its egress marker on the
+// serial console — the only channel back from a routed-NAT guest — and fails on
+// the negative one. The console is saved either way a failure arrives.
+func awaitEgressVerdict(t *testing.T, fix *fixture, instanceID string) {
+	t.Helper()
+	harness.Step(t, "wait for egress verdict from %s on the serial console", instanceID)
+	var console string
+	// Registered before the wait so a budget overrun — which Fatals inside
+	// EventuallyErr — still leaves the last console read behind.
+	harness.OnFailure(t, func() {
+		harness.DumpFile(t, fix.artifacts, "egress-console-"+instanceID+".log", []byte(console))
+	})
+	harness.EventuallyErr(t, func() error {
+		console = consoleOutput(t, fix, instanceID)
+		if strings.Contains(console, egressOKMarker) || strings.Contains(console, egressFailMarker) {
+			return nil
+		}
+		return fmt.Errorf("no egress marker on console yet (%d bytes)", len(console))
+	}, egressVerdictBudget, 10*time.Second)
+
+	if strings.Contains(console, egressFailMarker) {
+		t.Fatalf("guest %s reported %s — outbound WAN unreachable through routed NAT (console saved to artifacts)",
+			instanceID, egressFailMarker)
+	}
+	harness.Step(t, "guest %s reported %s", instanceID, egressOKMarker)
+}
+
+// nodeCmd runs cmd on a cluster node over SSH and fails the test on error.
+func nodeCmd(t *testing.T, ssh *harness.PeerSSH, n harness.Node, cmd string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := ssh.Run(ctx, n.Addr, cmd)
+	require.NoErrorf(t, err, "%s: %s", n.Name, cmd)
+	return string(out)
+}
+
+// sshHandshake dials addr:22 and reads the SSH banner prefix.
+func sshHandshake(addr string) error {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(addr, "22"), 5*time.Second)
 	if err != nil {
-		return fmt.Errorf("dial %s:22: %w", host, err)
+		return fmt.Errorf("dial %s:22: %w", addr, err)
 	}
 	defer conn.Close()
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))

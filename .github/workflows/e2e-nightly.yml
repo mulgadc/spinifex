@@ -279,7 +279,7 @@ jobs:
              if [ \$rc -ne 0 ]; then echo 'natuplink: FAILED' >> '${ARTIFACT_DIR}/suite-status.txt'; fi; exit \$rc"
 
       - name: Run Multi Node E2E
-        if: matrix.topo == 'real-multi' && matrix.suite == ''
+        if: matrix.topo == 'real-multi' && matrix.suite == '' && matrix.extra == ''
         working-directory: mulga/scripts/tofu-cluster
         run: |
           set -euo pipefail
@@ -313,6 +313,40 @@ jobs:
                rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
                if [ \$rc -ne 0 ]; then echo \"\$SUITE: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; FAIL=1; fi; \
              done; exit \$FAIL"
+
+      # The same suite as the nat-single cell, run against three nodes: there it
+      # proves routed NAT works at all, here that each node delivers its own
+      # guests' public IPs and no others — which one node cannot show.
+      - name: Run NAT Uplink Multi E2E
+        if: matrix.extra == 'nat-multi'
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set -euo pipefail
+          INVENTORY=$(tofu output -json inventory)
+          NODE1_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+
+          NODES_CSV=""
+          NODE_COUNT=$(echo "$INVENTORY" | jq '.nodes | length')
+          for i in $(seq 0 $((NODE_COUNT - 1))); do
+            ip=$(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip")
+            NODES_CSV="${NODES_CSV:+$NODES_CSV,}$ip"
+          done
+
+          ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${NODE1_IP} \
+            "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/e2e-tests/_bin; \
+             if [ ! -f natuplink.test ]; then echo 'natuplink.test not in tests tar (branch predates suite) — skipping'; exit 0; fi; \
+             echo '::group::suite natuplink'; \
+             date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-natuplink.start'; \
+             GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=multinode \
+               SPINIFEX_NODES='${NODES_CSV}' SPINIFEX_NODE_IPS='${NODES_CSV}' \
+               SPINIFEX_SSH_USER=tf-user SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
+               ARTIFACT_DIR='${ARTIFACT_DIR}' \
+               ./natuplink.test -test.v -test.timeout=30m \
+               2>&1 | tee '${ARTIFACT_DIR}/test-natuplink.log'; \
+             rc=\${PIPESTATUS[0]}; echo '::endgroup::'; \
+             if [ \$rc -ne 0 ]; then echo 'natuplink: FAILED' >> '${ARTIFACT_DIR}/suite-status.txt'; fi; exit \$rc"
 
       # The dedicated suite cells only. Resolved once here rather than in each
       # step below, which would repeat the same three lines five times.

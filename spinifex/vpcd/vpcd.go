@@ -759,6 +759,12 @@ func launchService(cfg *Config) error {
 		FreshIntent: func(ctx context.Context) (reconcile.IntentState, error) {
 			return reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
 		},
+		// Local OVS is the only liveness signal the orphan sweep has that does not
+		// come through KV, so it is what stops an unreadable ENI bucket reading as
+		// an empty one and taking every running guest's port with it.
+		LocalPorts: func(ctx context.Context) (map[string]struct{}, error) {
+			return host.ListLocalPorts(ctx, host.NewExecRunner())
+		},
 		MarkIGWAttached: func(ctx context.Context, recordKey, vpcID string) error {
 			kv, err := js.KeyValue(ctx, handlers_ec2_igw.KVBucketIGW)
 			if err != nil {

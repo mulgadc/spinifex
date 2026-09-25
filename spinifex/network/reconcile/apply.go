@@ -110,6 +110,21 @@ func eniIDFromPort(lspName string) string {
 	return strings.TrimPrefix(lspName, "port-")
 }
 
+// errEmptyIntentSweep marks a sweep declined because the keep set it would have
+// deleted against was wholly empty. Recorded on the pass so the refusal is
+// visible as an unconverged class rather than only as a log line.
+var errEmptyIntentSweep = errors.New("intent holds no records of this class; sweep would delete every live row")
+
+// pluggedPorts lists the guest LSPs with a live tap on this host. An unwired
+// hook returns an empty set, not an error: callers with no OVS (unit tests) then
+// fall back to the empty-intent refusal alone.
+func (r *reconciler) pluggedPorts(ctx context.Context) (map[string]struct{}, error) {
+	if r.localPorts == nil {
+		return nil, nil
+	}
+	return r.localPorts(ctx)
+}
+
 // reloadForPrune re-reads intent for an orphan sweep to compare against. Every
 // sweep matches live OVN rows against the start-of-pass snapshot, which the apply
 // phase can leave tens of seconds behind KV, so a resource created mid-pass looks
@@ -289,6 +304,7 @@ func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual Ac
 	for groupID := range fresh.SGs {
 		wantPGs[topology.SecurityGroupPortGroup(groupID)] = struct{}{}
 	}
+	orphanPGs := make([]string, 0, len(actual.PortGroups))
 	for pgName := range actual.PortGroups {
 		if !portGroupIsManaged(pgName) {
 			continue
@@ -296,6 +312,17 @@ func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual Ac
 		if _, ok := wantPGs[pgName]; ok {
 			continue
 		}
+		orphanPGs = append(orphanPGs, pgName)
+	}
+	// Same shape as the ENI port sweep: every VPC has a default SG, so no SGs at
+	// all alongside live port groups is an unreadable bucket, not a real state.
+	if len(orphanPGs) > 0 && len(wantPGs) == 0 {
+		slog.Error("reconcile/apply: refusing orphan port group sweep — intent holds no SGs at all",
+			"live_port_groups", len(orphanPGs))
+		res.fail(classSG, "orphan-prune", errEmptyIntentSweep)
+		return
+	}
+	for _, pgName := range orphanPGs {
 		if err := r.topology.DeleteSGPortGroupByName(ctx, pgName); err != nil {
 			slog.Warn("reconcile/apply: orphan DeleteSGPortGroupByName failed", "pg", pgName, "err", err)
 			res.fail(classSG, pgName, err)
@@ -417,6 +444,18 @@ func (r *reconciler) pruneOrphanPorts(ctx context.Context, intent IntentState, r
 		res.fail(classPort, "orphan-prune", err)
 		return
 	}
+	// Local OVS is the one liveness signal that does not come through the KV read
+	// path this sweep is otherwise entirely driven by, so it is what catches a
+	// read that failed rather than genuinely returning nothing. Skip the sweep if
+	// it cannot be read: the fallback is deleting on intent alone.
+	plugged, err := r.pluggedPorts(ctx)
+	if err != nil {
+		slog.Warn("reconcile/apply: local OVS port list failed; skipping orphan ENI port prune", "err", err)
+		res.fail(classPort, "orphan-prune", err)
+		return
+	}
+
+	orphans := make([]int, 0, len(lsps))
 	for i := range lsps {
 		eniID := lsps[i].ExternalIDs["spinifex:eni_id"]
 		if eniID == "" {
@@ -428,6 +467,27 @@ func (r *reconciler) pruneOrphanPorts(ctx context.Context, intent IntentState, r
 		if _, ok := fresh.Ports[eniID]; ok {
 			continue
 		}
+		// A tap on this host means a running guest, which no absence from intent
+		// can outvote.
+		if _, live := plugged[lsps[i].Name]; live {
+			slog.Warn("reconcile/apply: ENI absent from intent but its tap is plugged in here; keeping the port",
+				"port", lsps[i].Name, "eni_id", eniID)
+			continue
+		}
+		orphans = append(orphans, i)
+	}
+	// A failed read is indistinguishable from an empty bucket — a wedged KV
+	// returned no keys while writes were still landing, and this swept every
+	// guest. Every port orphaned at once against no ENIs at all is that, not a
+	// fleet that vanished; leaking a stale row is the recoverable half.
+	if len(orphans) > 0 && len(intent.Ports) == 0 && len(fresh.Ports) == 0 {
+		slog.Error("reconcile/apply: refusing orphan ENI port sweep — intent holds no ENIs at all",
+			"live_guest_ports", len(orphans))
+		res.fail(classPort, "orphan-prune", errEmptyIntentSweep)
+		return
+	}
+	for _, i := range orphans {
+		eniID := lsps[i].ExternalIDs["spinifex:eni_id"]
 		spec := topology.PortSpec{PortID: eniID, SubnetID: lsps[i].ExternalIDs["spinifex:subnet_id"]}
 		if err := r.topology.DeletePort(ctx, spec); err != nil {
 			slog.Warn("reconcile/apply: orphan ENI DeletePort failed", "port", lsps[i].Name, "err", err)

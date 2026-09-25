@@ -647,3 +647,64 @@ func TestSGRulesToPolicyRules_DropsIPv6(t *testing.T) {
 		t.Fatalf("wrong rules survived: %+v", out)
 	}
 }
+
+// A read failure and an unparseable record are different faults and get
+// different answers: a failed Get fails the pass, because a dropped record
+// narrows intent and the orphan sweeps read that as permission to delete live
+// rows. A record that does not unmarshal is a poison record, not an unhealthy
+// store, so it is skipped — failing on it would wedge reconcile forever.
+func TestLoadIntentFromKV_PoisonRecordIsSkippedNotFatal(t *testing.T) {
+	js := startKV(t)
+
+	good := handlers_ec2_vpc.VPCRecord{
+		VpcId: "vpc-good", CidrBlock: "10.0.0.0/16", State: "available", VNI: 100, AZ: "us-east-1a", CreatedAt: time.Now(),
+	}
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-good":   mustJSON(t, good),
+		"acct/vpc-poison": []byte("{not json"),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	if _, ok := intent.VPCs["vpc-good"]; !ok {
+		t.Errorf("readable VPC dropped because a sibling record was unparseable")
+	}
+	if len(intent.VPCs) != 1 {
+		t.Errorf("VPCs = %d, want only the readable one", len(intent.VPCs))
+	}
+}
+
+// An ENI whose VPC never loaded must not silently vanish from intent — that is
+// the amplifier that turns one unreadable VPC into every guest port in it being
+// swept. Its VPC failing to read now fails the pass instead.
+func TestLoadIntentFromKV_ENIsFollowTheirVPC(t *testing.T) {
+	js := startKV(t)
+
+	vpc := handlers_ec2_vpc.VPCRecord{
+		VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", State: "available", VNI: 100, AZ: "us-east-1a", CreatedAt: time.Now(),
+	}
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{"acct/vpc-a": mustJSON(t, vpc)})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketENIs, map[string][]byte{
+		"acct/eni-local": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+			NetworkInterfaceId: "eni-local", VpcId: "vpc-a", SubnetId: "subnet-a",
+			PrivateIpAddress: "10.0.1.10", MacAddress: "02:00:00:00:00:01",
+		}),
+		"acct/eni-foreign": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+			NetworkInterfaceId: "eni-foreign", VpcId: "vpc-absent", SubnetId: "subnet-z",
+			PrivateIpAddress: "10.9.1.10", MacAddress: "02:00:00:00:00:02",
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	if _, ok := intent.Ports["eni-local"]; !ok {
+		t.Errorf("ENI in a loaded VPC missing from intent")
+	}
+	if _, ok := intent.Ports["eni-foreign"]; ok {
+		t.Errorf("ENI in an unknown VPC admitted to intent")
+	}
+}

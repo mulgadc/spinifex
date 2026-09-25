@@ -31,3 +31,24 @@ func HasLocalPort(ctx context.Context, r Runner, portName string) (bool, error) 
 	}
 	return false, nil
 }
+
+// ListLocalPorts returns every OVN logical port bound to an interface on this
+// host, keyed by LSP name. The same authority HasLocalPort uses, listed once
+// instead of probed per port, for callers deciding about many ports at a time.
+func ListLocalPorts(ctx context.Context, r Runner) (map[string]struct{}, error) {
+	out, err := r.Run(ctx, "ovs-vsctl", "--format=json", "--columns=name,external_ids", "list", "Interface")
+	if err != nil {
+		return nil, fmt.Errorf("list OVS interfaces: %s: %w", string(out), err)
+	}
+	rows, err := parseOVSInterfaceRows(out)
+	if err != nil {
+		return nil, err
+	}
+	ports := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		if id := row.externalIDs["iface-id"]; id != "" {
+			ports[id] = struct{}{}
+		}
+	}
+	return ports, nil
+}

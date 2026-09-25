@@ -188,6 +188,21 @@ func aclUUIDSet(m *mock.Client) map[string]struct{} {
 	return out
 }
 
+// orphanPGIntent seeds one real SG alongside the orphan. A wholly empty SG set
+// is the signature of an unreadable bucket, which the sweep now refuses, so a
+// fixture with no SGs would prove the refusal rather than the prune.
+func orphanPGIntent() IntentState {
+	return IntentState{
+		VPCs:    map[string]topology.VPCSpec{"vpc-a": {VPCID: "vpc-a", CIDR: netip.MustParsePrefix("10.0.0.0/16"), VNI: 100}},
+		Subnets: map[string]topology.SubnetSpec{},
+		Ports:   map[string]topology.PortSpec{},
+		SGs:     map[string]policy.SGSpec{"sg-a": {GroupID: "sg-a", VPCID: "vpc-a"}},
+		IGWs:    map[string]external.IGWSpec{},
+		EIPs:    map[string]policy.EIPSpec{},
+		NATGWs:  map[string]policy.NATGWSpec{},
+	}
+}
+
 func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
@@ -196,22 +211,35 @@ func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {
 		t.Fatalf("seed orphan port group: %v", err)
 	}
 
-	intent := IntentState{
-		VPCs:    map[string]topology.VPCSpec{},
-		Subnets: map[string]topology.SubnetSpec{},
-		Ports:   map[string]topology.PortSpec{},
-		SGs:     map[string]policy.SGSpec{},
-		IGWs:    map[string]external.IGWSpec{},
-		EIPs:    map[string]policy.EIPSpec{},
-		NATGWs:  map[string]policy.NATGWSpec{},
-	}
-
-	if err := rec.Reconcile(ctx, intent); err != nil {
+	if err := rec.Reconcile(ctx, orphanPGIntent()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
 	if _, ok := m.PortGroups["sg_orphan"]; ok {
 		t.Errorf("orphan port group not removed")
+	}
+	if _, ok := m.PortGroups[topology.SecurityGroupPortGroup("sg-a")]; !ok {
+		t.Errorf("live port group swept alongside the orphan")
+	}
+}
+
+// A sweep that would delete every managed port group is refused: intent holding
+// no SGs at all is an unreadable bucket, not a VPC without a default SG.
+func TestReconcile_OrphanPortGroupPruneRefusedOnEmptyIntent(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	if err := m.CreatePortGroup(ctx, "sg_orphan", nil); err != nil {
+		t.Fatalf("seed orphan port group: %v", err)
+	}
+
+	empty := orphanPGIntent()
+	empty.SGs = map[string]policy.SGSpec{}
+	if err := rec.Reconcile(ctx, empty); !errors.Is(err, ErrPassIncomplete) {
+		t.Fatalf("Reconcile err = %v, want ErrPassIncomplete", err)
+	}
+	if _, ok := m.PortGroups["sg_orphan"]; !ok {
+		t.Errorf("port group swept against an empty SG intent")
 	}
 }
 
@@ -225,15 +253,7 @@ func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
 		t.Fatalf("seed orphan port group: %v", err)
 	}
 
-	intent := IntentState{
-		VPCs:    map[string]topology.VPCSpec{},
-		Subnets: map[string]topology.SubnetSpec{},
-		Ports:   map[string]topology.PortSpec{},
-		SGs:     map[string]policy.SGSpec{},
-		IGWs:    map[string]external.IGWSpec{},
-		EIPs:    map[string]policy.EIPSpec{},
-		NATGWs:  map[string]policy.NATGWSpec{},
-	}
+	intent := orphanPGIntent()
 
 	if err := rec.ReconcileApplyOnly(ctx, intent); err != nil {
 		t.Fatalf("ReconcileApplyOnly: %v", err)

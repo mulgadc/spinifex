@@ -571,6 +571,23 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 	return nil
 }
 
+// ErrEmptyEIPIntent reports a sweep declined because the live set it would have
+// deleted against was wholly empty — the signature of an unreadable intent, not
+// of a node that genuinely holds no ports and no addresses.
+var ErrEmptyEIPIntent = errors.New("EIP intent holds no ports or external IPs; sweep would delete every live row")
+
+// countStampedDNATs counts dnat_and_snat rows this sweep could delete: stamped
+// with an owning port, so their absence from intent is a real signal.
+func countStampedDNATs(nats []nbdb.NAT) int {
+	n := 0
+	for i := range nats {
+		if nats[i].Type == "dnat_and_snat" && nats[i].ExternalIDs["spinifex:logical_port"] != "" {
+			n++
+		}
+	}
+	return n
+}
+
 func (m *natManager) PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, error) {
 	// Intent is built from AWS records and so names public addresses, while the
 	// rows and host bindings hold datapath ones. Compared unmapped, every OCI
@@ -582,6 +599,16 @@ func (m *natManager) PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, e
 	nats, err := m.ovn.ListNATs(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("list NATs for orphan EIP prune: %w", err)
+	}
+	// An empty live set is indistinguishable from a failed intent read, and every
+	// stamped row orphaned at once is that rather than a node whose guests and
+	// EIPs all vanished together. Leaking a stale row is the recoverable half.
+	if len(live.Ports) == 0 && len(live.ExternalIPs) == 0 {
+		if stamped := countStampedDNATs(nats); stamped > 0 {
+			slog.Error("policy: refusing orphan EIP sweep — intent holds no ports or external IPs at all",
+				"live_dnat_rows", stamped)
+			return 0, ErrEmptyEIPIntent
+		}
 	}
 	pruned := 0
 	for i := range nats {

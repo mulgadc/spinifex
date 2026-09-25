@@ -130,6 +130,13 @@ type Config struct {
 	// Optional: nil leaves the start-of-pass snapshot as the sole liveness source
 	// (unit tests, or callers with no store).
 	FreshIntent func(ctx context.Context) (IntentState, error)
+	// LocalPorts returns the LSP names plugged into OVS on this host, keyed by
+	// external_ids:iface-id. A port with a live tap belongs to a running guest and
+	// can never be an orphan, whatever intent says — which is the one liveness
+	// signal that does not go through the KV read path the orphan sweep is
+	// otherwise entirely driven by. Optional: nil leaves intent as the sole source
+	// and the sweep falls back to refusing a wholly-empty one.
+	LocalPorts func(ctx context.Context) (map[string]struct{}, error)
 	// MarkIGWAttached reports a confirmed IGW attachment back to the control
 	// plane, so DescribeInternetGateways stops claiming an attachment exists
 	// before one does. Called with the record key and VPC carried on the IGW
@@ -152,6 +159,7 @@ type reconciler struct {
 	ipsecEnabled bool
 	underlayMTU  int
 	reloadIntent func(ctx context.Context) (IntentState, error)
+	localPorts   func(ctx context.Context) (map[string]struct{}, error)
 	markAttached func(ctx context.Context, recordKey, vpcID string) error
 
 	// Guest ports that burned their convergence deadline, so a port whose guest
@@ -214,6 +222,7 @@ func New(cfg Config) (Reconciler, error) {
 		ipsecEnabled: !cfg.IPSecDisabled,
 		underlayMTU:  cfg.UnderlayMTU,
 		reloadIntent: cfg.FreshIntent,
+		localPorts:   cfg.LocalPorts,
 		markAttached: cfg.MarkIGWAttached,
 	}, nil
 }

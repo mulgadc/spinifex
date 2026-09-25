@@ -46,17 +46,40 @@ func uplinkSourceRuleFor(ctx context.Context, r Runner, eip string) (eipSourceRu
 
 	var found []eipSourceRule
 	var owners []string
+	var byTable []eipSourceRule
+	var byTableOwners []string
 	for line := range strings.SplitSeq(string(out), "\n") {
 		prio, from, table, ok := parseIPRule(line)
 		if !ok {
 			continue
 		}
 		prefix, held := prefixes[from]
-		if !held || from == eip || !prefix.Contains(addr) {
+		if !held || from == eip {
 			continue
 		}
-		found = append(found, eipSourceRule{Table: table, Priority: prio})
-		owners = append(owners, from+" -> table "+table)
+		if prefix.Contains(addr) {
+			found = append(found, eipSourceRule{Table: table, Priority: prio})
+			owners = append(owners, from+" -> table "+table)
+			continue
+		}
+		// The address alone does not always carry the subnet. A cloud host that
+		// must keep the uplink out of the main routing table holds it as a /32
+		// and puts the on-link route in the source-routing table instead, so
+		// the prefix contains nothing but itself. The table is then the only
+		// place that records which interface owns the EIP's subnet.
+		covers, cerr := tableRoutesOnLink(ctx, r, table, addr)
+		if cerr != nil {
+			return eipSourceRule{}, false, cerr
+		}
+		if covers {
+			byTable = append(byTable, eipSourceRule{Table: table, Priority: prio})
+			byTableOwners = append(byTableOwners, from+" -> table "+table)
+		}
+	}
+	// Only fall back when the address prefixes named nobody, so a host that
+	// already resolved this the direct way keeps its existing answer.
+	if len(found) == 0 {
+		found, owners = byTable, byTableOwners
 	}
 
 	switch len(found) {
@@ -95,6 +118,36 @@ func hostPrefixes(ctx context.Context, r Runner) (map[string]netip.Prefix, error
 		}
 	}
 	return prefixes, nil
+}
+
+// tableRoutesOnLink reports whether table holds a scope-link route covering
+// addr — that is, whether the interface this table steers to owns the address's
+// subnet. Only on-link routes count: a default route covers every address and
+// would make every source-routing table an equally good answer.
+func tableRoutesOnLink(ctx context.Context, r Runner, table string, addr netip.Addr) (bool, error) {
+	out, err := r.Run(ctx, "ip", "route", "show", "table", table)
+	if err != nil {
+		// A rule naming a table with no routes is not an error here; it simply
+		// tells us nothing about who owns the subnet.
+		return false, nil
+	}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if !strings.Contains(line, "scope link") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		prefix, perr := netip.ParsePrefix(fields[0])
+		if perr != nil {
+			continue
+		}
+		if prefix.Contains(addr) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // parseIPRule pulls the priority, source address and table out of one line of

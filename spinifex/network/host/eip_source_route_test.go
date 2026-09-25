@@ -161,3 +161,65 @@ func TestParseIPRule(t *testing.T) {
 		})
 	}
 }
+
+// The OCI cluster holds br-wan's address as a /32, because both VNICs sit in
+// one subnet and a /23 there would put the subnet's on-link route in the main
+// table and take it off the primary VNIC. The prefix then contains nothing but
+// itself, so the address can no longer say who owns the EIP's subnet — table
+// 200's on-link route is the only record of it, and without this the reply
+// leaves by the primary VNIC and OCI drops it.
+const (
+	ociSlash32AddrShow = `2: enp0s9    inet 10.200.1.244/23 brd 10.200.1.255 scope global enp0s9\       valid_lft forever preferred_lft forever
+3: br-wan    inet 10.200.0.204/32 scope global br-wan\       valid_lft forever preferred_lft forever
+`
+	ociSlash32RuleShow = `0:	from all lookup local
+1000:	from 10.200.0.204 lookup 200 proto static
+32766:	from all lookup main
+32767:	from all lookup default
+`
+	ociTable200 = `default via 10.200.0.1 dev br-wan proto static
+10.200.0.0/23 dev br-wan proto static scope link
+`
+)
+
+func TestEnsureEIPSourceRoute_UplinkHeldAsASlash32(t *testing.T) {
+	r := newSourceRouteRunner(ociSlash32AddrShow, ociSlash32RuleShow)
+	r.expect("ip route show table 200", []byte(ociTable200), nil)
+
+	if err := EnsureEIPSourceRoute(context.Background(), r, "10.200.0.106"); err != nil {
+		t.Fatalf("EnsureEIPSourceRoute: %v", err)
+	}
+	want := "ip rule add from 10.200.0.106/32 lookup 200 priority 1000"
+	if !r.called(want) {
+		t.Errorf("missing call:\n  want %q\n  got  %v", want, r.calls)
+	}
+}
+
+// Only on-link routes identify the owner. A table holding nothing but a default
+// route covers every address, and mirroring on that would pin replies to an
+// interface that does not hold the address.
+func TestEnsureEIPSourceRoute_DefaultRouteAloneDoesNotClaimTheSubnet(t *testing.T) {
+	r := newSourceRouteRunner(ociSlash32AddrShow, ociSlash32RuleShow)
+	r.expect("ip route show table 200", []byte("default via 10.200.0.1 dev br-wan proto static\n"), nil)
+
+	if err := EnsureEIPSourceRoute(context.Background(), r, "10.200.0.106"); err != nil {
+		t.Fatalf("EnsureEIPSourceRoute: %v", err)
+	}
+	if r.called("ip rule add") {
+		t.Errorf("mirrored a rule on a table that only has a default route: %v", r.calls)
+	}
+}
+
+// An address that does carry its subnet must keep resolving the direct way, so
+// prod and dev-prod are unaffected by the table fallback.
+func TestEnsureEIPSourceRoute_AddressPrefixStillWinsWhenItCovers(t *testing.T) {
+	r := newSourceRouteRunner(ociAddrShow, ociRuleShow)
+	r.expect("ip route show table 200", []byte(""), fmt.Errorf("should not be consulted"))
+
+	if err := EnsureEIPSourceRoute(context.Background(), r, "10.200.1.207"); err != nil {
+		t.Fatalf("EnsureEIPSourceRoute: %v", err)
+	}
+	if !r.called("ip rule add from 10.200.1.207/32 lookup 200 priority 1000") {
+		t.Errorf("address-prefix match stopped working: %v", r.calls)
+	}
+}

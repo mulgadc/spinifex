@@ -278,7 +278,7 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		natRule.ExternalIDs["spinifex:logical_port"] = eip.PortName
 	}
 	natRule.ExemptedExtIps = exemptUUID
-	distributed := m.mode == NATModeDistributed && eip.PortName != "" && eip.MAC != ""
+	distributed := m.distributes(eip)
 	if distributed {
 		mac := eip.MAC
 		port := eip.PortName
@@ -368,6 +368,23 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	return m.bindHostEIP(ctx, eip)
 }
 
+// distributes reports whether OVN processes this rule on the instance's own
+// chassis rather than on the VPC's gateway chassis.
+//
+// Routed mode qualifies for the same reason pool mode does: OVN's ARP
+// responder answers for the external IP on the external segment using the
+// per-rule external MAC. Routed mode's external segment is the spx-nat veth
+// pair, which is per node, so only the node running the instance can answer —
+// the topology gates what the rule would otherwise have to.
+func (m *natManager) distributes(eip EIPSpec) bool {
+	switch m.mode {
+	case NATModeDistributed, NATModeRouted:
+		return eip.PortName != "" && eip.MAC != ""
+	default:
+		return false
+	}
+}
+
 // bindHostEIP fires the routed-mode host plumbing hook for an EIP. No-op in
 // other modes or when no binder is configured. Errors are returned so a
 // half-plumbed EIP surfaces to the caller (reconcile retries the bind).
@@ -375,12 +392,19 @@ func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec) error {
 	if m.mode != NATModeRouted || m.hostBinder == nil {
 		return nil
 	}
-	gwLrpIP := m.gatewayPortIP(ctx, eip.VPCID)
-	if gwLrpIP == "" {
-		return fmt.Errorf("bind host EIP %s: gateway LRP IP unknown for %s (IGW attached?)", eip.ExternalIP, eip.VPCID)
+	// A distributed EIP answers ARP on the local transit veth, so the host
+	// reaches it on-link and no gateway LRP is involved. Demanding one here is
+	// what stopped a non-gateway node ever binding an EIP: the address it would
+	// have found belongs to a segment only the gateway chassis can reach.
+	var gwLrpIP string
+	if !m.distributes(eip) {
+		gwLrpIP = m.gatewayPortIP(ctx, eip.VPCID)
+		if gwLrpIP == "" {
+			return fmt.Errorf("bind host EIP %s: gateway LRP IP unknown for %s (IGW attached?)", eip.ExternalIP, eip.VPCID)
+		}
 	}
 	if err := m.hostBinder.Bind(eip, gwLrpIP); err != nil {
-		return fmt.Errorf("bind host EIP %s via %s: %w", eip.ExternalIP, gwLrpIP, err)
+		return fmt.Errorf("bind host EIP %s (next hop %q): %w", eip.ExternalIP, gwLrpIP, err)
 	}
 	return nil
 }

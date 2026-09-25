@@ -1007,7 +1007,15 @@ func hostEIPBinder(pool *external.ExternalPoolConfig) policy.HostEIPBinder {
 		Bind: func(eip policy.EIPSpec, gwLrpIP string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			return host.EnsureEIPIngress(ctx, runner, eip.ExternalIP, gwLrpIP, gateway, uplinkHint)
+			if skip, err := skipForeignEIP(ctx, runner, eip); err != nil || skip {
+				return err
+			}
+			return host.EnsureEIPIngress(ctx, runner, host.EIPIngress{
+				EIP:         eip.ExternalIP,
+				GwLrpIP:     gwLrpIP,
+				PoolGateway: gateway,
+				UplinkHint:  uplinkHint,
+			})
 		},
 		Unbind: func(externalIP string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1020,6 +1028,31 @@ func hostEIPBinder(pool *external.ExternalPoolConfig) policy.HostEIPBinder {
 			return host.ListEIPIngress(ctx, runner)
 		},
 	}
+}
+
+// skipForeignEIP reports whether this EIP belongs to an instance on another
+// chassis, and so is not this node's to plumb.
+//
+// Only a distributed EIP is skippable: it is reachable solely through the
+// chassis its ENI is bound to, so a route installed anywhere else points at a
+// MAC that will never answer. A centralised EIP hairpins through the gateway
+// chassis and every node plumbs it, which is the behaviour before this gate.
+// Local OVS is asked rather than the Southbound DB — the question is about
+// this host, and nothing else can answer it wrongly.
+func skipForeignEIP(ctx context.Context, runner host.Runner, eip policy.EIPSpec) (bool, error) {
+	if eip.PortName == "" || eip.MAC == "" {
+		return false, nil
+	}
+	local, err := host.HasLocalPort(ctx, runner, eip.PortName)
+	if err != nil {
+		return false, fmt.Errorf("check local binding for %s: %w", eip.PortName, err)
+	}
+	if local {
+		return false, nil
+	}
+	slog.Debug("vpcd: EIP belongs to an instance on another chassis, leaving it alone",
+		"eip", eip.ExternalIP, "port", eip.PortName)
+	return true, nil
 }
 
 // neighFlusher builds the ARP-flush hook for AddEIP/DeleteEIP so recycled IPs re-resolve L2 immediately.

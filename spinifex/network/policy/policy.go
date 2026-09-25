@@ -23,9 +23,10 @@ const (
 	// owns SNAT/DNAT and its LRP takes a real pool address.
 	NATModeCentralized
 
-	// NATModeRouted is centralised-shaped: gateway chassis SNATs the VPC CIDR
-	// to its transit LRP IP; the host masquerades egress. Required by
-	// UplinkModeRouted. Outbound-only — no EIP/public-IP support.
+	// NATModeRouted SNATs the VPC CIDR to the gateway chassis's transit LRP IP
+	// and lets the host masquerade egress. Required by UplinkModeRouted. EIPs
+	// are distributed like NATModeDistributed's, processed on the instance's
+	// own chassis; only default egress is centralised.
 	NATModeRouted
 )
 

@@ -190,3 +190,111 @@ func TestNATManager_AddEIP_NonRoutedNeverBinds(t *testing.T) {
 		assert.Empty(t, b.unbinds, "mode %v must not touch host EIP plumbing", mode)
 	}
 }
+
+// Routed mode distributes an EIP the same way pool mode does, and for the same
+// reason: OVN's ARP responder answers for the external IP on the external
+// segment using the per-rule external MAC. In routed mode that segment is the
+// per-node transit veth, so answering it can only be the node running the
+// instance.
+func TestNATManager_AddEIP_Routed_DistributedWhenPortAndMACAreKnown(t *testing.T) {
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	seedGatewayPortIP(t, m, "vpc-1", "100.127.0.10", nil)
+	b := &recordedBinder{}
+	mgr, err := NewNATManager(m, NATModeRouted, WithHostEIPBinder(b.hooks()))
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.AddEIP(context.Background(), EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "192.168.1.200", LogicalIP: "10.0.1.5",
+		PortName: "port-eni-1", MAC: "52:54:00:aa:bb:cc",
+	}))
+
+	row := findNAT(m, "dnat_and_snat", "10.0.1.5")
+	require.NotNil(t, row)
+	require.NotNil(t, row.ExternalMAC, "a distributed rule carries the ENI MAC")
+	assert.Equal(t, "52:54:00:aa:bb:cc", *row.ExternalMAC)
+	require.NotNil(t, row.LogicalPort, "a distributed rule carries the owning ENI port")
+	assert.Equal(t, "port-eni-1", *row.LogicalPort)
+
+	// The bind must name no next hop. A gateway LRP address lives on one
+	// chassis's transit veth, so routing through it is exactly what made every
+	// non-gateway node's EIPs unreachable.
+	require.Len(t, b.binds, 1)
+	assert.Equal(t, "192.168.1.200 via ", b.binds[0])
+}
+
+// A distributed EIP needs no gateway LRP, so a VPC whose IGW has not yet
+// produced one still binds. Before this, the missing address failed the bind on
+// every node including the one running the instance.
+func TestNATManager_AddEIP_Routed_DistributedBindsWithoutAGatewayLRP(t *testing.T) {
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	b := &recordedBinder{}
+	mgr, err := NewNATManager(m, NATModeRouted, WithHostEIPBinder(b.hooks()))
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.AddEIP(context.Background(), EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "192.168.1.200", LogicalIP: "10.0.1.5",
+		PortName: "port-eni-1", MAC: "52:54:00:aa:bb:cc",
+	}))
+	require.Len(t, b.binds, 1)
+	assert.Equal(t, "192.168.1.200 via ", b.binds[0])
+}
+
+// An EIP with no MAC — a record written before the ENI was known, or an ENI
+// that never reported one — stays centralised and keeps demanding its next hop.
+// The two shapes coexist so a cluster part-way through an upgrade is never in a
+// state neither side handles.
+func TestNATManager_AddEIP_Routed_NoMACStaysCentralised(t *testing.T) {
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	seedGatewayPortIP(t, m, "vpc-1", "100.127.0.10", nil)
+	b := &recordedBinder{}
+	mgr, err := NewNATManager(m, NATModeRouted, WithHostEIPBinder(b.hooks()))
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.AddEIP(context.Background(), EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "192.168.1.200", LogicalIP: "10.0.1.5",
+		PortName: "port-eni-1",
+	}))
+
+	row := findNAT(m, "dnat_and_snat", "10.0.1.5")
+	require.NotNil(t, row)
+	assert.Nil(t, row.ExternalMAC, "no MAC means no distributed rule")
+	require.Len(t, b.binds, 1)
+	assert.Equal(t, "192.168.1.200 via 100.127.0.10", b.binds[0])
+}
+
+// The constraint this change is held to: distributing the routed path must not
+// move pool or static mode. NATModeDistributed and NATModeCentralized are
+// asserted here against the same input, so a later edit to the shared predicate
+// that widened either of them would fail rather than ship.
+func TestNATManager_AddEIP_OtherModesAreUnmoved(t *testing.T) {
+	eip := EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "192.168.1.200", LogicalIP: "10.0.1.5",
+		PortName: "port-eni-1", MAC: "52:54:00:aa:bb:cc",
+	}
+	for _, tc := range []struct {
+		name            string
+		mode            NATMode
+		wantDistributed bool
+	}{
+		{"pool and veth uplinks stay distributed", NATModeDistributed, true},
+		{"centralised stays centralised", NATModeCentralized, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := mock.New()
+			seedRouter(t, m, "vpc-1")
+			b := &recordedBinder{}
+			mgr, err := NewNATManager(m, tc.mode, WithHostEIPBinder(b.hooks()))
+			require.NoError(t, err)
+			require.NoError(t, mgr.AddEIP(context.Background(), eip))
+
+			row := findNAT(m, "dnat_and_snat", "10.0.1.5")
+			require.NotNil(t, row)
+			assert.Equal(t, tc.wantDistributed, row.ExternalMAC != nil,
+				"external_mac presence must not change outside routed mode")
+			assert.Empty(t, b.binds, "only routed mode plumbs host state")
+		})
+	}
+}

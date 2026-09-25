@@ -36,7 +36,7 @@ Runs **on** a node, shelling out to `ip`/`iptables`/`ovn-nbctl` locally. Skips u
 
 Phases 7 and 8 are gated on a cluster by what the datapath can actually do: the transit segment is a localnet, so host-to-guest Tier 1 ingress only exists where the VPC's gateway router port and the guest are both on this host. The VPC ingress route itself is installed on every node, so phase 8 checks it unconditionally.
 
-Two nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 20).
+Two nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 30). Cell 20 is the bare-metal job and is not in the permutation matrix at all, which is why the multi-node NAT cell is numbered past the end rather than filling a gap.
 
 ### `multinode` — behaviour that only exists on more than one node
 

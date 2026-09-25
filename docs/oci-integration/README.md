@@ -185,10 +185,28 @@ Allow group SpinifexOperators to read   vcns        in compartment <compartment-
 
 ### 4.4 Quotas to check before you size a deployment
 
-Two limits bound how many EIPs a node can hand out, and both are worth confirming against your tenancy rather than taking from documentation:
+Two limits bound how many EIPs a node can hand out, and they do not scale the same way:
 
-- **Reserved public IPs per region.** Default is 50. A cluster that hands out EIPs freely reaches this quickly, and a raise is a support ticket, not a setting.
-- **Secondary private IPs per VNIC.** Current documentation says 64; older CLI reference says 32. The per-VNIC limit is the ceiling on one pool until multi-VNIC support lands.
+- **Reserved public IPs per region — default 50.** This is a **regional** ceiling shared by the whole tenancy, so it does not grow with node count: a four-node cluster still has 50. It is therefore the limit you hit first. A raise is a support request, not a setting: Console → Governance & Administration → Limits, Quotas and Usage → "Request a service limit increase".
+- **Secondary private IPs per VNIC — 64.** Per node, so this one does scale with the cluster. It is the ceiling on one pool until multi-VNIC support lands.
+
+Read the real numbers rather than trusting either figure. List the limit definitions first — the exact name is what a raise request has to cite:
+
+```bash
+oci limits definition list --service-name vcn --compartment-id <tenancy-ocid>
+oci limits value list       --service-name vcn --compartment-id <tenancy-ocid>
+oci limits resource-availability get --service-name vcn \
+    --limit-name <name-from-above> --compartment-id <tenancy-ocid>
+```
+
+**These calls need a grant the node does not have, and must not be given.** Limits and usage are tenancy-level, which cannot be compartment-scoped the way §4.3 insists the node's policy is. Create a **second, read-only principal** for an operator or a reporting job and keep it off every node:
+
+```
+Allow group SpinifexReporting to read limits        in tenancy
+Allow group SpinifexReporting to read usage-reports in tenancy
+```
+
+The second verb is what Cost Analysis and `oci usage-api usage-summary request-summarized-usages` read. Adding either to `SpinifexOperators` would hand every node tenancy-wide read, which is exactly what §4.3 refuses.
 
 ### 4.5 Install the credentials on the node
 
@@ -418,7 +436,9 @@ Both releases ship `SELinux: enforcing`, unlike the Debian and Ubuntu images. Th
 
 **`RunInstances` returns `ServerInternal`.** Check the daemon journal for the real error — `journalctl -u spinifex-daemon --since -10m`. An OCI allocation failure surfaces this way.
 
-**`InsufficientAddressCapacity` on `allocate-address`.** You have hit either the regional reserved-public-IP quota (default 50) or the per-VNIC secondary private IP limit. Check both; only the first can be raised by a ticket.
+**`InsufficientAddressCapacity` on `allocate-address`.** You have hit either the regional reserved-public-IP quota (default 50) or the per-VNIC secondary private IP limit (64). Check both — §4.4 has the commands. The first is tenancy-wide and shared across every node, so on a cluster it is the likelier of the two, and it is the only one a support ticket can raise.
+
+**A detached reserved public IP still bills.** `disassociate-address` returns the address to `AVAILABLE` without deleting it, exactly as an unassociated AWS EIP behaves. Release what you are not holding deliberately.
 
 **Instance launches but the public address is unreachable.** In order:
 1. `sudo ovn-nbctl lr-nat-list <router>` — is there a `dnat_and_snat` row, and does it hold the *private* address?

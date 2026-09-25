@@ -89,6 +89,14 @@ func (f *Fake) PublicIPs() []PublicIP {
 	return out
 }
 
+// FailOp stages err for the next call to op. Locked, so a test may stage one
+// against a Fake that a loop under test is already calling.
+func (f *Fake) FailOp(op string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.FailWith[op] = err
+}
+
 // take returns and clears a staged failure for op.
 func (f *Fake) take(op string) error {
 	if err, ok := f.FailWith[op]; ok {
@@ -140,6 +148,30 @@ func (f *Fake) AssignPrivateIP(_ context.Context, vnicID string, addr netip.Addr
 		DisplayName: displayName,
 	}
 	f.privateIPs[p.ID] = p
+	return p, nil
+}
+
+func (f *Fake) MovePrivateIP(_ context.Context, privateIPID, vnicID string) (PrivateIP, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.take("MovePrivateIP"); err != nil {
+		return PrivateIP{}, err
+	}
+	p, ok := f.privateIPs[privateIPID]
+	if !ok {
+		return PrivateIP{}, &APIError{Op: "MovePrivateIP", StatusCode: 404, Message: "no such private ip", kind: ErrNotFound}
+	}
+	if p.IsPrimary {
+		return PrivateIP{}, &APIError{
+			Op: "MovePrivateIP", StatusCode: 409, kind: ErrConflict,
+			Message: "cannot reassign the primary private ip",
+		}
+	}
+	// The OCID and the address survive the move, which is the whole point: an
+	// attached public IP references this object, so it follows without being
+	// touched.
+	p.VNICID = vnicID
+	f.privateIPs[privateIPID] = p
 	return p, nil
 }
 

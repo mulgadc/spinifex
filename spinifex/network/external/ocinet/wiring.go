@@ -9,6 +9,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 )
 
 // FromPoolConfig builds a live allocator for one source="oci" pool: API-key
@@ -56,6 +57,11 @@ func FromPoolConfig(ctx context.Context, js jetstream.JetStream, pool external.E
 		Pool:          pool,
 		VNICID:        vnicID,
 		CompartmentID: compartmentID,
+		// Local OVS decides which addresses this node should hold, so the
+		// affinity pass asks the host rather than any shared record.
+		LocalPorts: func(ctx context.Context) (map[string]struct{}, error) {
+			return host.ListLocalPorts(ctx, host.NewExecRunner())
+		},
 	})
 }
 

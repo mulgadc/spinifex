@@ -21,6 +21,12 @@ type Client interface {
 	// the zero Addr to let OCI choose from the subnet, which is the normal
 	// case — we do not pick addresses, OCI does.
 	AssignPrivateIP(ctx context.Context, vnicID string, addr netip.Addr, displayName string) (PrivateIP, error)
+	// MovePrivateIP reassigns an existing secondary private IP to vnicID,
+	// which must be in the same subnet. One call, applied server-side, and the
+	// OCID survives it — so the reserved public IP attached to this private IP
+	// stays attached and the customer's address never changes. Detaching and
+	// re-creating would lose both.
+	MovePrivateIP(ctx context.Context, privateIPID, vnicID string) (PrivateIP, error)
 	// UnassignPrivateIP deletes a secondary private IP. Deleting a primary is
 	// refused by OCI, which is the behaviour we want.
 	UnassignPrivateIP(ctx context.Context, privateIPID string) error
@@ -136,6 +142,17 @@ func (c *apiClient) AssignPrivateIP(ctx context.Context, vnicID string, addr net
 	resp, err := c.net.CreatePrivateIp(ctx, core.CreatePrivateIpRequest{CreatePrivateIpDetails: details})
 	if err != nil {
 		return PrivateIP{}, wrap("AssignPrivateIP", err)
+	}
+	return toPrivateIP(resp.PrivateIp)
+}
+
+func (c *apiClient) MovePrivateIP(ctx context.Context, privateIPID, vnicID string) (PrivateIP, error) {
+	resp, err := c.net.UpdatePrivateIp(ctx, core.UpdatePrivateIpRequest{
+		PrivateIpId:            &privateIPID,
+		UpdatePrivateIpDetails: core.UpdatePrivateIpDetails{VnicId: &vnicID},
+	})
+	if err != nil {
+		return PrivateIP{}, wrap("MovePrivateIP", err)
 	}
 	return toPrivateIP(resp.PrivateIp)
 }

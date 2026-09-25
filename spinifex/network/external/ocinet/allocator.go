@@ -94,6 +94,13 @@ type Config struct {
 	// CompartmentID is where reserved public IPs are created.
 	CompartmentID string
 
+	// LocalPorts returns the OVN logical ports with a live tap on this host.
+	// It is how ClaimLocalAddresses knows which addresses belong here, and the
+	// same authority the host EIP binder uses for the same question. Nil
+	// disables the affinity pass, which is correct for a single-node cluster
+	// and for tests that only exercise allocate and release.
+	LocalPorts func(ctx context.Context) (map[string]struct{}, error)
+
 	// Schedule and Budget override the poll ladder; zero values take the
 	// package defaults. Tests set them to keep runtime down.
 	Schedule []time.Duration
@@ -123,9 +130,10 @@ type PoolAllocator struct {
 	store  Store
 	cfg    Config
 
-	schedule []time.Duration
-	budget   time.Duration
-	sleep    func(context.Context, time.Duration) error
+	schedule   []time.Duration
+	budget     time.Duration
+	sleep      func(context.Context, time.Duration) error
+	localPorts func(context.Context) (map[string]struct{}, error)
 }
 
 var _ external.Allocator = (*PoolAllocator)(nil)
@@ -145,12 +153,13 @@ func New(client oci.Client, store Store, cfg Config) (*PoolAllocator, error) {
 		return nil, fmt.Errorf("ocinet: pool %q missing compartment_id", cfg.Pool.Name)
 	}
 	a := &PoolAllocator{
-		client:   client,
-		store:    store,
-		cfg:      cfg,
-		schedule: cfg.Schedule,
-		budget:   cfg.Budget,
-		sleep:    cfg.Sleep,
+		client:     client,
+		store:      store,
+		cfg:        cfg,
+		schedule:   cfg.Schedule,
+		budget:     cfg.Budget,
+		sleep:      cfg.Sleep,
+		localPorts: cfg.LocalPorts,
 	}
 	if len(a.schedule) == 0 {
 		a.schedule = assignSchedule

@@ -1,4 +1,4 @@
-package policy
+package policy_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/mock"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
+	"github.com/mulgadc/spinifex/spinifex/network/policy"
 )
 
 // An empty live set is what a failed intent read looks like from here, and the
@@ -15,7 +16,7 @@ import (
 // NAT gateway's snat is one of them.
 func TestPruneOrphanEIPs_RefusesAnEmptyLiveSet(t *testing.T) {
 	m := mock.New()
-	nm, err := NewNATManager(m, NATModeDistributed)
+	nm, err := policy.NewNATManager(m, policy.NATModeDistributed)
 	if err != nil {
 		t.Fatalf("NewNATManager: %v", err)
 	}
@@ -30,10 +31,10 @@ func TestPruneOrphanEIPs_RefusesAnEmptyLiveSet(t *testing.T) {
 		t.Fatalf("AddNAT: %v", err)
 	}
 
-	empty := LiveEIPs{Ports: map[string]struct{}{}, ExternalIPs: map[string]struct{}{}}
+	empty := policy.LiveEIPs{Ports: map[string]struct{}{}, ExternalIPs: map[string]struct{}{}}
 	pruned, err := nm.PruneOrphanEIPs(ctx, empty)
-	if !errors.Is(err, ErrEmptyEIPIntent) {
-		t.Fatalf("PruneOrphanEIPs err = %v, want ErrEmptyEIPIntent", err)
+	if !errors.Is(err, policy.ErrEmptyEIPIntent) {
+		t.Fatalf("PruneOrphanEIPs err = %v, want policy.ErrEmptyEIPIntent", err)
 	}
 	if pruned != 0 {
 		t.Errorf("pruned = %d, want 0", pruned)
@@ -51,7 +52,7 @@ func TestPruneOrphanEIPs_RefusesAnEmptyLiveSet(t *testing.T) {
 // is just an idle node and the sweep proceeds normally.
 func TestPruneOrphanEIPs_EmptyLiveSetIsFineWithNoStampedRows(t *testing.T) {
 	m := mock.New()
-	nm, err := NewNATManager(m, NATModeDistributed)
+	nm, err := policy.NewNATManager(m, policy.NATModeDistributed)
 	if err != nil {
 		t.Fatalf("NewNATManager: %v", err)
 	}
@@ -65,7 +66,7 @@ func TestPruneOrphanEIPs_EmptyLiveSetIsFineWithNoStampedRows(t *testing.T) {
 		t.Fatalf("AddNAT snat: %v", err)
 	}
 
-	empty := LiveEIPs{Ports: map[string]struct{}{}, ExternalIPs: map[string]struct{}{}}
+	empty := policy.LiveEIPs{Ports: map[string]struct{}{}, ExternalIPs: map[string]struct{}{}}
 	if _, err := nm.PruneOrphanEIPs(ctx, empty); err != nil {
 		t.Fatalf("PruneOrphanEIPs: %v", err)
 	}

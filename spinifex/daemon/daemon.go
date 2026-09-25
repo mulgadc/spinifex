@@ -1485,8 +1485,42 @@ func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js je
 		}
 		slog.Info("OCI allocator ready", "pool", p.Name,
 			"collected", len(res.Collected), "stale_bindings", len(res.Stale), "skipped", res.Skipped)
+		go d.runOCIAffinityLoop(alloc, p.Name)
 	}
 	return nil
+}
+
+// ociAffinityInterval is how often a node checks that OCI delivers its guests'
+// addresses to it. A guest that has just started elsewhere is dark until the
+// pass runs, so it is short relative to a boot — the address is back before the
+// guest has finished coming up.
+const ociAffinityInterval = 15 * time.Second
+
+// runOCIAffinityLoop keeps OCI's idea of where an address lives in step with
+// where its guest actually runs. Every node runs its own, like the host EIP
+// loop and for the same reason: the question is about this host's guests, and a
+// node that never wins the reconcile lease would otherwise never claim the
+// addresses of the instances it is running.
+func (d *Daemon) runOCIAffinityLoop(alloc *ocinet.PoolAllocator, poolName string) {
+	ticker := time.NewTicker(ociAffinityInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		res, err := alloc.ClaimLocalAddresses(d.ctx)
+		if err != nil {
+			slog.Error("OCI address affinity pass failed; a guest here may be unreachable on its public address",
+				"pool", poolName, "err", err)
+			continue
+		}
+		if len(res.Claimed) > 0 {
+			slog.Info("OCI addresses moved to this node", "pool", poolName,
+				"claimed", res.Claimed, "local_bindings", res.Local)
+		}
+	}
 }
 
 // hasPublicIPPools reports whether the cluster can allocate routable public

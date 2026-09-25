@@ -1,3 +1,7 @@
+//test:in-package — drives the unexported pruneOrphanPorts and pruneOrphanEIPs
+// against errEmptyIntentSweep and the reconciler's own localPorts hook, none of
+// which the package exports.
+
 package reconcile
 
 // The orphan sweeps read absence from intent as permission to delete, and a

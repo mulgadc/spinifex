@@ -90,6 +90,9 @@ func (s *KVStore) Get(ctx context.Context, poolName string) (Record, error) {
 type MemStore struct {
 	mu      sync.Mutex
 	records map[string]Record
+	// mutateErr, when set, fails every Mutate. Lets a test drive the paths
+	// where OCI has already been changed and only the record write fails.
+	mutateErr error
 }
 
 var _ Store = (*MemStore)(nil)
@@ -97,10 +100,20 @@ var _ Store = (*MemStore)(nil)
 // NewMemStore returns an empty in-memory store.
 func NewMemStore() *MemStore { return &MemStore{records: map[string]Record{}} }
 
+// FailMutate makes every subsequent Mutate return err.
+func (m *MemStore) FailMutate(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mutateErr = err
+}
+
 // Mutate implements Store.
 func (m *MemStore) Mutate(_ context.Context, poolName string, fn func(*Record) (bool, error)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.mutateErr != nil {
+		return m.mutateErr
+	}
 	rec := m.copyLocked(poolName)
 	changed, err := fn(&rec)
 	if err != nil {

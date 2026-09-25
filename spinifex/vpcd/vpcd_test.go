@@ -300,21 +300,21 @@ func stubDetectProbes(t *testing.T, links []string) {
 
 func TestDetectBridgeMode_VethWins(t *testing.T) {
 	stubDetectProbes(t, []string{"veth-wan-ovs"})
-	if got := detectBridgeMode("enp0s3"); got != BridgeModeVeth {
+	if got := detectBridgeMode("enp0s3", ""); got != BridgeModeVeth {
 		t.Errorf("want %q, got %q", BridgeModeVeth, got)
 	}
 }
 
 func TestDetectBridgeMode_FallthroughDirect(t *testing.T) {
 	stubDetectProbes(t, nil)
-	if got := detectBridgeMode("enp0s3"); got != BridgeModeDirect {
+	if got := detectBridgeMode("enp0s3", ""); got != BridgeModeDirect {
 		t.Errorf("want %q, got %q", BridgeModeDirect, got)
 	}
 }
 
 func TestResolveBridgeConfig_UsesExplicitMode(t *testing.T) {
 	stubDetectProbes(t, nil)
-	mode, br := resolveBridgeConfig(BridgeModeVeth, "enp0s3")
+	mode, br := resolveBridgeConfig(BridgeModeVeth, "enp0s3", "")
 	if mode != BridgeModeVeth || br != "br-wan" {
 		t.Errorf("got (%q,%q), want (%q,br-wan)", mode, br, BridgeModeVeth)
 	}
@@ -322,21 +322,21 @@ func TestResolveBridgeConfig_UsesExplicitMode(t *testing.T) {
 
 func TestResolveBridgeConfig_AutoDetects(t *testing.T) {
 	stubDetectProbes(t, []string{"veth-wan-ovs"})
-	mode, _ := resolveBridgeConfig("", "enp0s3")
+	mode, _ := resolveBridgeConfig("", "enp0s3", "")
 	if mode != BridgeModeVeth {
 		t.Errorf("want auto-detect veth, got %q", mode)
 	}
 }
 
 func TestResolveBridgeConfig_EmptyStaysEmptyWithNoIface(t *testing.T) {
-	mode, _ := resolveBridgeConfig("", "")
+	mode, _ := resolveBridgeConfig("", "", "")
 	if mode != "" {
 		t.Errorf("empty mode + no iface should stay empty; got %q", mode)
 	}
 }
 
 func TestResolveBridgeConfig_DefaultsBindBridge(t *testing.T) {
-	_, br := resolveBridgeConfig(BridgeModeDirect, "enp0s3")
+	_, br := resolveBridgeConfig(BridgeModeDirect, "enp0s3", "")
 	if br != "br-wan" {
 		t.Errorf("WAN bridge should default to br-wan, got %q", br)
 	}

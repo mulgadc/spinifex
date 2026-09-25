@@ -1343,14 +1343,14 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// the transit segment claims externalGateway below.
 	natPublicGateway := externalGateway
 	if externalMode == "nat" {
-		// Measured on three nodes: every node claims every EIP, nodes disagree on
-		// the VPC's gateway LRP, and every external packet leaves via the
-		// gateway chassis, so a public IP works only if it is held there.
+		// Verified on three OCI nodes 2026-09-26: each node delivers its own
+		// instances' public IPs, inbound and outbound. Still flagged because no
+		// nightly cell covers multi-node nat yet.
 		if nodes >= 2 {
-			fmt.Fprintf(os.Stderr, "⚠️  --external-mode=nat on %d nodes is EXPERIMENTAL.\n", nodes)
-			fmt.Fprintf(os.Stderr, "   Cluster formation, guest-to-guest traffic and default egress work.\n")
-			fmt.Fprintf(os.Stderr, "   Public IPs are not distributed: all external traffic leaves via the VPC's gateway chassis,\n")
-			fmt.Fprintf(os.Stderr, "   so on a cloud host every external address must be registered on that node's uplink.\n")
+			fmt.Fprintf(os.Stderr, "⚠️  --external-mode=nat on %d nodes is NEW.\n", nodes)
+			fmt.Fprintf(os.Stderr, "   Public IPs are delivered by the node running the instance; default egress stays on the VPC's gateway chassis.\n")
+			fmt.Fprintf(os.Stderr, "   Verified by hand on three nodes, but not yet covered by a nightly cell.\n")
+			fmt.Fprintf(os.Stderr, "   Check with: ip route show dev spx-nat-host — exactly one node should hold each public address.\n")
 		}
 		if !natPublicPool && (externalBindBridge != "" || gatewayIP != "") {
 			fmt.Fprintf(os.Stderr, "❌ Error: --external-bind-bridge/--gateway-ip require --external-pool or --external-source in --external-mode=nat\n")

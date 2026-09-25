@@ -456,7 +456,7 @@ func launchService(cfg *Config) error {
 
 	flowsBarrier := newFlowsBarrier(cfg.OVNNBAddr)
 
-	bridgeMode, wanBridge := resolveBridgeConfig(cfg.BridgeMode, cfg.ExternalInterface)
+	bridgeMode, wanBridge := resolveBridgeConfig(cfg.BridgeMode, cfg.ExternalInterface, cfg.ExternalMode)
 	slog.Info("External bridge mode", "mode", bridgeMode, "wan_bridge", wanBridge)
 	if err := verifyBridgeMode(bridgeMode, cfg.ExternalInterface, wanBridge); err != nil {
 		slog.Error("vpcd: bridge mode sanity check failed", "err", err)
@@ -967,10 +967,17 @@ func pickGatewayAllocator(pool *external.ExternalPoolConfig, ovnClient ovn.Clien
 
 // resolveBridgeConfig picks bridge mode (auto-detecting when unset) and the WAN
 // bridge: "br-wan" for bridged modes, the transit veth host end for nat mode.
-func resolveBridgeConfig(cfgBridgeMode, externalIface string) (string, string) {
+func resolveBridgeConfig(cfgBridgeMode, externalIface, externalMode string) (string, string) {
 	bridgeMode := cfgBridgeMode
 	if bridgeMode == "" && externalIface != "" {
-		bridgeMode = detectBridgeMode(externalIface)
+		bridgeMode = detectBridgeMode(externalIface, externalMode)
+	} else if bridgeMode != "" {
+		// An explicit value is obeyed, but it is as capable of being wrong as a
+		// guess and nothing else ever checks it against the wiring.
+		if ev := readBridgeEvidence(); mustBeNAT(bridgeMode) != ev.natTransit {
+			slog.Error("vpcd: configured bridge_mode does not match the uplink wiring",
+				append(ev.attrs(), "bridge_mode", bridgeMode, "external_iface", externalIface)...)
+		}
 	}
 	if bridgeMode == BridgeModeNAT {
 		return bridgeMode, host.NATTransitHostEnd
@@ -1099,22 +1106,77 @@ var ifaceExists = func(name string) bool {
 	return exec.Command("ip", "link", "show", name).Run() == nil
 }
 
-// detectBridgeMode infers bridge mode: nat when spx-nat-ovs exists, veth when
-// veth-wan-ovs exists, direct otherwise.
-// Each branch logs at Info/Warn so `journalctl | grep bridge` shows the full detection trail.
-func detectBridgeMode(externalIface string) string {
-	if ifaceExists(host.NATTransitOVSEnd) {
-		slog.Info("vpcd: detected routed-NAT transit veth", "mode", BridgeModeNAT)
-		return BridgeModeNAT
+// mustBeNAT reports whether a bridge mode requires the routed-NAT transit veth.
+func mustBeNAT(bridgeMode string) bool { return bridgeMode == BridgeModeNAT }
+
+// wanVethOVSEnd is the OVS end of the pair that links a Linux WAN bridge to
+// br-ext. Its presence is what distinguishes veth mode from direct.
+const wanVethOVSEnd = "veth-wan-ovs"
+
+// bridgeEvidence is what the kernel says about the two veths bridge mode is
+// inferred from. Kept as a value so the detection can report what it saw
+// alongside what it concluded.
+type bridgeEvidence struct {
+	natTransit bool
+	wanVeth    bool
+}
+
+func (e bridgeEvidence) attrs() []any {
+	return []any{host.NATTransitOVSEnd, e.natTransit, wanVethOVSEnd, e.wanVeth}
+}
+
+// mode is the bridge mode the evidence alone implies, and whether the two
+// signals contradict each other. Both veths present is a node that has been set
+// up twice in different modes, which is the state --teardown exists for.
+func (e bridgeEvidence) mode() (string, bool) {
+	switch {
+	case e.natTransit && e.wanVeth:
+		return BridgeModeNAT, true
+	case e.natTransit:
+		return BridgeModeNAT, false
+	case e.wanVeth:
+		return BridgeModeVeth, false
+	default:
+		return BridgeModeDirect, false
 	}
-	if ifaceExists("veth-wan-ovs") {
-		slog.Info("vpcd: detected veth pair linking Linux bridge to OVS", "mode", BridgeModeVeth)
-		return BridgeModeVeth
+}
+
+// readBridgeEvidence asks the kernel which uplink veths exist.
+func readBridgeEvidence() bridgeEvidence {
+	return bridgeEvidence{
+		natTransit: ifaceExists(host.NATTransitOVSEnd),
+		wanVeth:    ifaceExists(wanVethOVSEnd),
 	}
-	slog.Warn("vpcd: no veth interface found, assuming direct bridge mode",
-		"external_iface", externalIface, "checked_veth", "veth-wan-ovs",
-		"mode", BridgeModeDirect)
-	return BridgeModeDirect
+}
+
+// detectBridgeMode infers bridge mode from the uplink veths, and reports the
+// evidence rather than only the verdict — a wrong answer here misroutes every
+// external packet, and the old log line named only the branch it took.
+//
+// externalMode is what the operator asked for, and is checked against the
+// evidence rather than overriding it: the veths are what the datapath actually
+// uses, so a disagreement is a broken node and saying so beats silently
+// picking one. Passing "" skips that check.
+func detectBridgeMode(externalIface, externalMode string) string {
+	ev := readBridgeEvidence()
+	mode, conflict := ev.mode()
+
+	if conflict {
+		slog.Error("vpcd: both uplink veths exist — this node has been set up in two modes; run setup-ovn.sh --teardown and set it up once",
+			append(ev.attrs(), "external_iface", externalIface, "using_mode", mode)...)
+	}
+	if mismatch := externalMode != "" && (externalMode == "nat") != (mode == BridgeModeNAT); mismatch {
+		slog.Error("vpcd: external_mode and the uplink wiring disagree — the datapath follows the wiring, so external traffic will not behave as configured",
+			append(ev.attrs(), "external_mode", externalMode, "detected_mode", mode,
+				"fix", "re-run setup-ovn.sh for external_mode, or correct external_mode")...)
+	}
+	if mode == BridgeModeDirect {
+		slog.Warn("vpcd: no uplink veth found, assuming the WAN NIC is an OVS port",
+			append(ev.attrs(), "external_iface", externalIface, "mode", mode)...)
+		return mode
+	}
+	slog.Info("vpcd: bridge mode detected", append(ev.attrs(), "external_iface", externalIface, "mode", mode)...)
+	return mode
 }
 
 // portToBr returns the OVS bridge owning port, or "" if not in OVSDB.

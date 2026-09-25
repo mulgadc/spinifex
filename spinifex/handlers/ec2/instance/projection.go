@@ -52,8 +52,18 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 	// Public IP and its derived DNS names exist only while the instance runs; a
 	// stopped instance has released the public IP, so the KV path leaves them
 	// unset. Mirrors the records the control-plane writer publishes to northstar.
+	if !cfg.IncludeRuntimeNetwork {
+		// Cleared, not merely left alone: launch stamps the auto-assigned address
+		// onto the stored instance, so a stopped instance kept reporting an
+		// address that had been released and may already belong to someone else.
+		instanceCopy.PublicIpAddress = nil
+		instanceCopy.PublicDnsName = nil
+	}
 	if cfg.IncludeRuntimeNetwork {
-		if v.PublicIP != "" && instanceCopy.PublicIpAddress == nil {
+		// The runtime address wins over the launch stamp. Associating an EIP
+		// replaces what an instance is reachable on, and filling only a nil field
+		// could never express that — the stamp is always present.
+		if v.PublicIP != "" {
 			instanceCopy.PublicIpAddress = aws.String(v.PublicIP)
 		}
 
@@ -172,7 +182,12 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 			// force-new, so leaving Association unset reports false for an instance
 			// that has a public IP and every plan proposes a destroy/recreate.
 			isPrimaryNIC := nicCopy.Attachment != nil && nicCopy.Attachment.DeviceIndex != nil && *nicCopy.Attachment.DeviceIndex == 0
-			if cfg.IncludeRuntimeNetwork && isPrimaryNIC && v.PublicIP != "" {
+			switch {
+			case !cfg.IncludeRuntimeNetwork:
+				// Same reason the instance-level address is cleared: the stored
+				// association is the launch-time one and outlives the address.
+				nicCopy.Association = nil
+			case isPrimaryNIC && v.PublicIP != "":
 				nicCopy.Association = &ec2.InstanceNetworkInterfaceAssociation{
 					PublicIp:      aws.String(v.PublicIP),
 					PublicDnsName: aws.String(publicDNS),

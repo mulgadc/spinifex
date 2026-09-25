@@ -1269,6 +1269,9 @@ func (d *Daemon) subscribeAll() error {
 		natsSub{"ec2.DisassociateAddress", handleNATSRequest(d.node, d.eipService.DisassociateAddress), "spinifex-workers"},
 		natsSub{"ec2.DescribeAddresses", handleNATSRequest(d.node, d.eipService.DescribeAddresses), "spinifex-workers"},
 		natsSub{"ec2.DescribeAddressesAttribute", handleNATSRequest(d.node, d.eipService.DescribeAddressesAttribute), "spinifex-workers"},
+		// Fan-out, no queue group: the association has to reach the node running
+		// the instance, which is rarely the one that served the request.
+		natsSub{handlers_ec2_eip.SubjectENIPublicIPChanged, d.handleENIPublicIPChanged, ""},
 		// vpcd holds the leases, but the records naming those addresses live
 		// here, so the reconcile request flows daemon-ward.
 		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},

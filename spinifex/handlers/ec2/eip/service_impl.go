@@ -40,6 +40,21 @@ type EIPServiceImpl struct {
 	allocSF singleflight.Group
 }
 
+// SubjectENIPublicIPChanged carries an EIP association to every daemon, because
+// the node that serves AssociateAddress is load-balanced and is rarely the one
+// running the instance. Fan-out with no queue group: the node holding the
+// instance is the only one that acts, and every other ignores it.
+const SubjectENIPublicIPChanged = "ec2.eni.public-ip-changed"
+
+// ENIPublicIPChanged is the payload on SubjectENIPublicIPChanged. An empty
+// PublicIP is a disassociate.
+type ENIPublicIPChanged struct {
+	InstanceID string `json:"instance_id"`
+	ENIID      string `json:"eni_id"`
+	PublicIP   string `json:"public_ip"`
+	PoolName   string `json:"pool_name,omitempty"`
+}
+
 // natEvent is the payload published to vpc.add-nat / vpc.delete-nat topics.
 type natEvent struct {
 	VpcId      string `json:"vpc_id"`
@@ -259,6 +274,8 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 	}
 
 	s.bindPoolOwner(ctx, record.PoolName, record.PublicIp, eniID)
+	s.stampENIPublicIP(ctx, accountID, eniID, record.PublicIp, record.PoolName)
+	s.announcePublicIP(ctx, instanceID, eniID, record.PublicIp, record.PoolName)
 
 	// Publish vpc.add-nat event (fire-and-forget).
 	s.publishNATEvent("vpc.add-nat", vpcID, record.PublicIp, privateIP, eniID, macAddr)
@@ -302,6 +319,7 @@ func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.Dis
 	}
 
 	poolName, publicIP := record.PoolName, record.PublicIp
+	eniID, instanceID := record.ENIId, record.InstanceId
 	clearAssociation(record)
 
 	data, err := json.Marshal(record)
@@ -312,6 +330,8 @@ func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.Dis
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	s.bindPoolOwner(ctx, poolName, publicIP, "")
+	s.stampENIPublicIP(ctx, accountID, eniID, "", "")
+	s.announcePublicIP(ctx, instanceID, eniID, "", "")
 
 	slog.InfoContext(ctx, "DisassociateAddress completed", "associationId", associationID, "accountID", accountID)
 
@@ -333,6 +353,57 @@ func (s *EIPServiceImpl) bindPoolOwner(ctx context.Context, poolName, publicIP, 
 	if err := s.externalIPAM.BindOwner(ctx, poolName, publicIP, eniID); err != nil {
 		slog.WarnContext(ctx, "failed to record the EIP owner with its pool",
 			"pool", poolName, "publicIp", publicIP, "eniId", eniID, "err", err)
+	}
+}
+
+// announcePublicIP tells every daemon that eniID's public address changed, so
+// the one running the instance can report it. Best-effort: the EIP and ENI
+// records are already written and are what the next reconcile reads, so a lost
+// announcement costs a stale DescribeInstances until then, not correctness.
+func (s *EIPServiceImpl) announcePublicIP(ctx context.Context, instanceID, eniID, publicIP, poolName string) {
+	if s.natsConn == nil || instanceID == "" {
+		return
+	}
+	payload, err := json.Marshal(ENIPublicIPChanged{
+		InstanceID: instanceID, ENIID: eniID, PublicIP: publicIP, PoolName: poolName,
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "failed to encode the public-IP change announcement",
+			"instanceId", instanceID, "err", err)
+		return
+	}
+	if err := s.natsConn.Publish(SubjectENIPublicIPChanged, payload); err != nil {
+		slog.WarnContext(ctx, "failed to announce the public-IP change",
+			"instanceId", instanceID, "eniId", eniID, "publicIp", publicIP, "err", err)
+	}
+}
+
+// eniPublicIPStamper is the ENI-record write the EIP service needs. Narrowed to
+// this one method rather than widening VPCService, which every other consumer
+// would then have to implement.
+type eniPublicIPStamper interface {
+	UpdateENIPublicIP(accountID, eniID, publicIP, poolName string) error
+}
+
+// stampENIPublicIP records the address on the ENI, empty to clear it. The ENI
+// record is what IMDS serves and what the network reconcile reads, so without
+// this an associated EIP was visible only on the EIP record and the interface
+// still advertised whatever launch assigned it.
+//
+// Logged rather than returned, like bindPoolOwner: the association is already
+// written and answered on, so failing here would report an error for something
+// that did happen.
+func (s *EIPServiceImpl) stampENIPublicIP(ctx context.Context, accountID, eniID, publicIP, poolName string) {
+	if eniID == "" {
+		return
+	}
+	stamper, ok := s.vpcService.(eniPublicIPStamper)
+	if !ok {
+		return
+	}
+	if err := stamper.UpdateENIPublicIP(accountID, eniID, publicIP, poolName); err != nil {
+		slog.WarnContext(ctx, "failed to stamp the public IP on the ENI record",
+			"eniId", eniID, "publicIp", publicIP, "err", err)
 	}
 }
 
@@ -385,6 +456,7 @@ func (s *EIPServiceImpl) DisassociateByENI(ctx context.Context, accountID, eniID
 			return false, errors.New(awserrors.ErrorServerInternal)
 		}
 		s.bindPoolOwner(ctx, poolName, publicIP, "")
+		// No ENI stamp to clear: this runs while that ENI is being deleted.
 
 		slog.InfoContext(ctx, "DisassociateByENI completed",
 			"eniId", eniID, "publicIp", publicIP, "allocationId", allocationID, "accountID", accountID)

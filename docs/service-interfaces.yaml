@@ -86,6 +86,9 @@ services:
       # Cluster coordination subjects.
       - "ec2.ReserveClusterNode"
       - "ec2.FinalizeClusterInstances"
+      # An EIP association reaches whichever node holds the instance, which is
+      # rarely the node that served the request (fan-out, no queue group).
+      - "ec2.eni.public-ip-changed"
       - "spinifex.node.status"
       - "spinifex.node.vms"
       - "spinifex.nodes.discover"
@@ -168,6 +171,8 @@ services:
       - "ebs.config.*"
       # → predastore (S3 / AMI / keypair store)
       - "s3.*"
+      # → every daemon, so the one holding the instance reports the new address
+      - "ec2.eni.public-ip-changed"
       # IAM lifecycle event
       - "iam.account.created"
       # → the in-guest rds-agent: set-password and the like, published on the

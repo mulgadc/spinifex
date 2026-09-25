@@ -478,6 +478,13 @@ func launchService(cfg *Config) error {
 	}
 
 	if bridgeMode == BridgeModeNAT {
+		// OVN carries one MAC binding for the transit nexthop cluster-wide, so a
+		// node whose veth kept a random address receives none of the egress that
+		// binding points at. Re-asserted here because the veth outlives a deploy.
+		if err := host.EnsureTransitHostMAC(ctx, host.NewExecRunner()); err != nil {
+			slog.Error("vpcd: transit host MAC could not be set", "err", err)
+			return err
+		}
 		// Re-ensure kernel egress rules on every start so they survive reboots
 		// and firewall flushes without iptables-persistent.
 		if err := host.EnsureNATEgressRules(ctx, host.NewExecRunner()); err != nil {

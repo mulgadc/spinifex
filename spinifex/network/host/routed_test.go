@@ -13,7 +13,8 @@ func TestRouted_EnsureUplinkPort(t *testing.T) {
 	r.expect("ovs-vsctl port-to-br spx-nat-ovs", []byte("br-ext\n"), nil)
 	rd := newStubReader()
 	rd.macs[NATTransitOVSEnd] = mustMAC(t, "02:aa:bb:cc:dd:ee")
-	rd.macs[NATTransitHostEnd] = mustMAC(t, NATTransitHostMAC)
+	r.expect("ip -o link show dev "+NATTransitHostEnd,
+		[]byte("5: "+NATTransitHostEnd+": <BROADCAST> mtu 1500 link/ether "+NATTransitHostMAC+" brd ff:ff:ff:ff:ff:ff"), nil)
 	rd.cidrs[NATTransitHostEnd] = netip.MustParsePrefix(NATTransitGatewayCIDR)
 
 	w := &Routed{UplinkBridge: "br-ext", Runner: r, Reader: rd}
@@ -36,42 +37,48 @@ func TestRouted_EnsureUplinkPort(t *testing.T) {
 // so a node whose veth kept its random MAC receives none of the egress that
 // binding points at. Measured on three nodes: two of three guests were
 // unreachable until every host end carried the same address.
-func TestRouted_EnsureUplinkPort_CorrectsTransitMAC(t *testing.T) {
-	r := newStubRunner()
-	r.expect("ovs-vsctl port-to-br spx-nat-ovs", []byte("br-ext\n"), nil)
-	r.expect("ip link set "+NATTransitHostEnd+" address", nil, nil)
-	rd := newStubReader()
-	rd.macs[NATTransitOVSEnd] = mustMAC(t, "02:aa:bb:cc:dd:ee")
-	rd.macs[NATTransitHostEnd] = mustMAC(t, "ee:81:c7:35:f7:b9")
-	rd.cidrs[NATTransitHostEnd] = netip.MustParsePrefix(NATTransitGatewayCIDR)
+func TestEnsureTransitHostMAC(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		have      string
+		wantWrite bool
+	}{
+		{"a veth made before the MAC was pinned", "ee:81:c7:35:f7:b9", true},
+		{"already on the shared address", NATTransitHostMAC, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newStubRunner()
+			r.expect("ip -o link show dev "+NATTransitHostEnd, linkShow(tc.have), nil)
+			r.expect("ip link set "+NATTransitHostEnd+" address", nil, nil)
 
-	w := &Routed{UplinkBridge: "br-ext", Runner: r, Reader: rd}
-	if _, err := w.EnsureUplinkPort(context.Background()); err != nil {
-		t.Fatalf("EnsureUplinkPort: %v", err)
-	}
-	want := "ip link set " + NATTransitHostEnd + " address " + NATTransitHostMAC
-	if !r.called(want) {
-		t.Errorf("expected %q, calls: %v", want, r.calls)
+			if err := EnsureTransitHostMAC(context.Background(), r); err != nil {
+				t.Fatalf("EnsureTransitHostMAC: %v", err)
+			}
+			wrote := r.called("ip link set " + NATTransitHostEnd + " address " + NATTransitHostMAC)
+			if wrote != tc.wantWrite {
+				t.Errorf("wrote MAC = %v, want %v (calls: %v)", wrote, tc.wantWrite, r.calls)
+			}
+		})
 	}
 }
 
 // A host end that cannot be given the shared MAC is a node nothing can reach
-// through, so reporting the uplink as verified would hide it behind a datapath
-// failure with no control-plane signal at all.
-func TestRouted_EnsureUplinkPort_TransitMACFailureIsFatal(t *testing.T) {
+// through, so continuing would hide it behind a datapath failure with no
+// control-plane signal at all.
+func TestEnsureTransitHostMACFailureSurfaces(t *testing.T) {
 	r := newStubRunner()
-	r.expect("ovs-vsctl port-to-br spx-nat-ovs", []byte("br-ext\n"), nil)
+	r.expect("ip -o link show dev "+NATTransitHostEnd, linkShow("ee:81:c7:35:f7:b9"), nil)
 	r.expect("ip link set "+NATTransitHostEnd+" address", []byte("RTNETLINK: busy"), errors.New("exit 2"))
-	rd := newStubReader()
-	rd.macs[NATTransitOVSEnd] = mustMAC(t, "02:aa:bb:cc:dd:ee")
-	rd.macs[NATTransitHostEnd] = mustMAC(t, "ee:81:c7:35:f7:b9")
-	rd.cidrs[NATTransitHostEnd] = netip.MustParsePrefix(NATTransitGatewayCIDR)
 
-	w := &Routed{UplinkBridge: "br-ext", Runner: r, Reader: rd}
-	_, err := w.EnsureUplinkPort(context.Background())
+	err := EnsureTransitHostMAC(context.Background(), r)
 	if err == nil || !strings.Contains(err.Error(), NATTransitHostMAC) {
 		t.Fatalf("expected a MAC-set failure naming %s, got: %v", NATTransitHostMAC, err)
 	}
+}
+
+func linkShow(mac string) []byte {
+	return []byte("5: " + NATTransitHostEnd + ": <BROADCAST,MULTICAST,UP> mtu 1500 link/ether " +
+		mac + " brd ff:ff:ff:ff:ff:ff\n")
 }
 
 func TestRouted_EnsureUplinkPort_WrongBridge(t *testing.T) {

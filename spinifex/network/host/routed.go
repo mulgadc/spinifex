@@ -98,7 +98,7 @@ func (r *Routed) EnsureUplinkPort(ctx context.Context) (net.HardwareAddr, error)
 		return nil, fmt.Errorf("host.Routed: %q has %s, expected %s", NATTransitHostEnd, cidr, want)
 	}
 
-	if err := r.ensureTransitHostMAC(ctx); err != nil {
+	if err := EnsureTransitHostMAC(ctx, r.runner()); err != nil {
 		return nil, err
 	}
 
@@ -112,22 +112,26 @@ func (r *Routed) EnsureUplinkPort(ctx context.Context) (net.HardwareAddr, error)
 	return mac, nil
 }
 
-// ensureTransitHostMAC makes the host end carry the cluster-wide transit MAC.
-// setup-ovn.sh sets it at creation; this repairs a veth made before that, which
-// a node cannot be reached through until it is corrected.
-func (r *Routed) ensureTransitHostMAC(ctx context.Context) error {
-	have, err := r.reader().LinkMAC(NATTransitHostEnd)
-	if err != nil {
-		return fmt.Errorf("read MAC for %q: %w", NATTransitHostEnd, err)
+// EnsureTransitHostMAC makes the host end carry the cluster-wide transit MAC.
+// setup-ovn.sh sets it at creation; this repairs a veth made before that, and
+// until it is corrected the node's own guests are unreachable.
+func EnsureTransitHostMAC(ctx context.Context, r Runner) error {
+	if r == nil {
+		r = NewExecRunner()
 	}
-	if have.String() == NATTransitHostMAC {
+	out, err := r.Run(ctx, "ip", "-o", "link", "show", "dev", NATTransitHostEnd)
+	if err != nil {
+		return fmt.Errorf("ip -o link show dev %s: %s: %w", NATTransitHostEnd, string(out), err)
+	}
+	have := parseLinkEtherMAC(string(out))
+	if have == NATTransitHostMAC {
 		return nil
 	}
-	if out, err := r.runner().Run(ctx, "ip", "link", "set", NATTransitHostEnd, "address", NATTransitHostMAC); err != nil {
+	if out, err := r.Run(ctx, "ip", "link", "set", NATTransitHostEnd, "address", NATTransitHostMAC); err != nil {
 		return fmt.Errorf("set %q MAC to %s: %s: %w", NATTransitHostEnd, NATTransitHostMAC, string(out), err)
 	}
-	slog.Info("host.Routed: transit host MAC corrected",
-		"dev", NATTransitHostEnd, "was", have.String(), "now", NATTransitHostMAC)
+	slog.Info("host: transit host MAC corrected",
+		"dev", NATTransitHostEnd, "was", have, "now", NATTransitHostMAC)
 	return nil
 }
 

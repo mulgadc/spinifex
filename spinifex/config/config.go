@@ -100,7 +100,7 @@ const DefaultUnderlayMTU = 1500
 
 // NetworkConfig holds cluster-wide external network settings.
 type NetworkConfig struct {
-	ExternalMode  string         `mapstructure:"external_mode"`  // "pool" or "" (disabled)
+	ExternalMode  string         `mapstructure:"external_mode"`  // "pool", "nat" or "" (disabled)
 	ExternalPools []ExternalPool `mapstructure:"external_pools"` // One or more IP pools
 	// IPSecEnabled toggles OVN native IPsec (AES-256-GCM) on every node. Default true; disable only for trusted lab topologies.
 	IPSecEnabled bool `mapstructure:"ipsec_enabled"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -152,4 +153,77 @@ func TestReconcileOnAPoolThatHasNeverAllocated(t *testing.T) {
 	if len(res.Collected) != 0 || len(res.Stale) != 0 {
 		t.Errorf("expected nothing to collect: %+v", res)
 	}
+}
+
+// newPeerAllocator builds a second node's allocator over the same store: one
+// KV record per pool, one VNIC per node, which is the shape a multi-node
+// cluster actually has.
+func newPeerAllocator(t *testing.T, fake *oci.Fake, store ocinet.Store, vnicID string) *ocinet.PoolAllocator {
+	t.Helper()
+	a, err := ocinet.New(fake, store, ocinet.Config{
+		Pool:          external.ExternalPoolConfig{Name: "oci-wan", Source: external.SourceOCI},
+		VNICID:        vnicID,
+		CompartmentID: "ocid1.compartment.oc1..comp1",
+		Schedule:      []time.Duration{time.Millisecond},
+		Budget:        time.Second,
+		Sleep:         func(context.Context, time.Duration) error { return nil },
+	})
+	require.NoError(t, err)
+	return a
+}
+
+// The record is one key per pool and so cluster-wide, while the live list is
+// one VNIC. A peer's binding therefore looks exactly like a binding whose
+// objects OCI has lost, and dropping it makes every node delete its peers'
+// addresses on startup — after which direction 1 on the owning node collects
+// the now-unclaimed objects as leaks and a running instance loses its address.
+func TestReconcileLeavesAnotherNodesBindingAlone(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	node1, store := newTestAllocator(t, fake)
+	node2 := newPeerAllocator(t, fake, store, "ocid1.vnic.oc1..vnic2")
+
+	ip, err := node1.Allocate(ctx, external.AllocateRequest{PoolName: "oci-wan", AllocationID: "eipalloc-1"})
+	require.NoError(t, err)
+
+	res, err := node2.Reconcile(ctx)
+	require.NoError(t, err)
+
+	assert.Empty(t, res.Stale, "node2 dropped node1's binding")
+	assert.Empty(t, res.Collected, "node2 collected node1's address")
+
+	rec, err := store.Get(ctx, "oci-wan")
+	require.NoError(t, err)
+	assert.Contains(t, rec.Bindings, ip.String(), "node1's binding did not survive node2's reconcile")
+
+	// The destructive half: with the binding gone, node1's own next pass would
+	// see an unclaimed object carrying our prefix and delete it.
+	res, err = node1.Reconcile(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, res.Collected, "node1 collected its own live address as a leak")
+	assert.Len(t, fake.PublicIPs(), 1, "the reserved public IP of a running instance was deleted")
+}
+
+// A node must still drop its own stale bindings, or an interrupted Release
+// leaves an address reported to a customer as theirs forever.
+func TestReconcileStillDropsItsOwnStaleBinding(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	node1, store := newTestAllocator(t, fake)
+	node2 := newPeerAllocator(t, fake, store, "ocid1.vnic.oc1..vnic2")
+
+	ip, err := node1.Allocate(ctx, external.AllocateRequest{PoolName: "oci-wan", AllocationID: "eipalloc-1"})
+	require.NoError(t, err)
+	for _, p := range fake.PrivateIPs() {
+		require.NoError(t, fake.UnassignPrivateIP(ctx, p.ID))
+	}
+
+	// node2 is not the owner, so it must not be the one to decide.
+	res, err := node2.Reconcile(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, res.Stale)
+
+	res, err = node1.Reconcile(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{ip.String()}, res.Stale)
 }

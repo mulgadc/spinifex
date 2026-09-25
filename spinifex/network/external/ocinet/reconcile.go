@@ -91,11 +91,29 @@ func (a *PoolAllocator) Reconcile(ctx context.Context) (ReconcileResult, error) 
 	for _, p := range live {
 		byID[p.ID] = struct{}{}
 	}
+	// Only this node's own bindings are this node's to judge. The record is one
+	// key per pool and therefore cluster-wide, while `live` is one VNIC — so a
+	// binding held by another node looks exactly like a binding whose objects
+	// OCI has lost. Dropping those makes every node delete its peers' addresses
+	// on startup, and direction 1 on the owning node then collects the now
+	// unclaimed objects as leaks: a live address is destroyed under a running
+	// instance. A binding naming no VNIC cannot be attributed, so it is left
+	// alone rather than guessed at.
 	var stale []string
+	var foreign int
 	for key, b := range rec.Bindings {
-		if _, ok := byID[b.PrivateIPID]; !ok {
-			stale = append(stale, key)
+		if _, ok := byID[b.PrivateIPID]; ok {
+			continue
 		}
+		if b.VNICID != a.cfg.VNICID {
+			foreign++
+			continue
+		}
+		stale = append(stale, key)
+	}
+	if foreign > 0 {
+		slog.DebugContext(ctx, "ocinet reconcile left other nodes' bindings alone",
+			"pool", a.cfg.Pool.Name, "vnic_id", a.cfg.VNICID, "foreign", foreign)
 	}
 	if len(stale) > 0 {
 		err = a.store.Mutate(ctx, a.cfg.Pool.Name, func(r *Record) (bool, error) {
@@ -109,6 +127,11 @@ func (a *PoolAllocator) Reconcile(ctx context.Context) (ReconcileResult, error) 
 					continue
 				}
 				if _, still := byID[b.PrivateIPID]; still {
+					continue
+				}
+				// Re-check ownership too: the re-allocation may have been to
+				// another node's VNIC, which is a live address elsewhere.
+				if b.VNICID != a.cfg.VNICID {
 					continue
 				}
 				delete(r.Bindings, key)

@@ -387,35 +387,38 @@ assert_ecs_quickstart() {
 # first, which is outside what this harness builds. So the assertion is that the
 # cluster is ACTIVE, the node group is ACTIVE, and every worker registered with
 # the API server as Ready — the part that proves EKS on this cluster works.
-assert_eks_quickstart() {
-    local name desired budget=900 status
+#
+# Shared by every EKS workbook: they differ in what they layer on top, and all
+# three stand or fall on the same three facts underneath.
+assert_eks_cluster_ready() {
+    local label="$1" name desired budget=900 status
     name=$(tofu output -raw cluster_name)
     desired=$(tofu output -raw node_desired_size)
 
     while [ "$budget" -gt 0 ]; do
         status=$(aws eks describe-cluster --name "$name" --query 'cluster.status' --output text 2>/dev/null)
         [ "$status" = "ACTIVE" ] && break
-        [ "$status" = "FAILED" ] && { log "  eks-quickstart: cluster ${name} FAILED"; return 1; }
+        [ "$status" = "FAILED" ] && { log "  ${label}: cluster ${name} FAILED"; return 1; }
         sleep 15
         budget=$((budget - 15))
     done
     if [ "$status" != "ACTIVE" ]; then
-        log "  eks-quickstart: cluster ${name} still ${status:-unknown} after 900s"
+        log "  ${label}: cluster ${name} still ${status:-unknown} after 900s"
         return 1
     fi
-    log "  eks-quickstart: cluster ${name} ACTIVE"
+    log "  ${label}: cluster ${name} ACTIVE"
 
     if ! command -v kubectl >/dev/null 2>&1; then
         local kver
         kver=$(curl -fsSL https://dl.k8s.io/release/stable.txt 2>/dev/null || echo v1.32.0)
         curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/${kver}/bin/linux/amd64/kubectl" &&
             sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl || {
-            log "  eks-quickstart: kubectl unavailable, cannot check node readiness"
+            log "  ${label}: kubectl unavailable, cannot check node readiness"
             return 1
         }
     fi
     aws eks update-kubeconfig --name "$name" >/dev/null 2>&1 || {
-        log "  eks-quickstart: update-kubeconfig failed"
+        log "  ${label}: update-kubeconfig failed"
         return 1
     }
 
@@ -428,11 +431,28 @@ assert_eks_quickstart() {
         budget=$((budget - 15))
     done
     if [ "${ready:-0}" -lt "$desired" ] 2>/dev/null; then
-        log "  eks-quickstart: ${ready:-0}/${desired} workers Ready after 600s"
+        log "  ${label}: ${ready:-0}/${desired} workers Ready after 600s"
         kubectl get nodes 2>&1 | sed 's|^|    |' || true
         return 1
     fi
-    log "  eks-quickstart: ${ready}/${desired} workers Ready"
+    log "  ${label}: ${ready}/${desired} workers Ready"
+}
+
+assert_eks_quickstart() {
+    assert_eks_cluster_ready eks-quickstart
+}
+
+# Same cluster assertion, over a harder network: these two put their workers in
+# private subnets behind a NAT gateway, so a worker only registers if its egress
+# to the cluster endpoint and to ECR survives the whole NAT path. A worker that
+# never reaches Ready here, with eks-quickstart passing, is a NAT gateway fault
+# and not an EKS one.
+assert_eks_https_ingress() {
+    assert_eks_cluster_ready eks-https-ingress
+}
+
+assert_eks_gitops_argocd() {
+    assert_eks_cluster_ready eks-gitops-argocd
 }
 
 # Workbooks whose describe path has to round-trip every attribute their config
@@ -532,10 +552,18 @@ run_workbook() {
         eks-*) instance_type=$(detect_instance_type 2 4096) ;;
     esac
 
+    # Workbooks name the worker size differently — the EKS ones that split
+    # public and private subnets call it node_instance_type. Read the name from
+    # the config rather than keeping a list here: tofu rejects a -var for an
+    # undeclared variable outright, so a stale list fails the apply in seconds
+    # and reads like a product defect.
+    local size_var=instance_type
+    grep -qE '^variable "node_instance_type"' main.tf 2>/dev/null && size_var=node_instance_type
+
     local apply_args=(
         -input=false -no-color
         "-var=spinifex_endpoint=https://${WAN_IP}:9999"
-        "-var=instance_type=${instance_type}"
+        "-var=${size_var}=${instance_type}"
     )
 
     # ecs-quickstart's gateway_url is required and has no default: the container

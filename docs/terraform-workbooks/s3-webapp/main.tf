@@ -46,15 +46,15 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 5.0"
+      version = "6.66.0"
     }
     tls = {
       source  = "hashicorp/tls"
-      version = ">= 4.0"
+      version = "4.4.1"
     }
     local = {
       source  = "hashicorp/local"
-      version = ">= 2.0"
+      version = "2.9.1"
     }
   }
 }
@@ -126,6 +126,12 @@ provider "aws" {
 
   skip_metadata_api_check = true
   skip_region_validation  = true
+
+  # Both, not either: an account ID sends the bucket tag read to S3 Control at
+  # https://{account}.{endpoint}, which cannot resolve against an IP, and the
+  # credentials check supplies one even when the account lookup is skipped.
+  skip_requesting_account_id  = true
+  skip_credentials_validation = true
 }
 
 # ---------------------------------------------------------------------------
@@ -162,6 +168,15 @@ data "aws_ami" "ubuntu" {
 
 resource "aws_s3_bucket" "uploads" {
   bucket = var.bucket_name
+
+  # The webapp uploads into this bucket, so a destroy of a bucket that has been
+  # used fails BucketNotEmpty without this.
+  force_destroy = true
+
+  tags = {
+    Name    = var.bucket_name
+    Example = "s3-webapp"
+  }
 }
 
 # ---------------------------------------------------------------------------

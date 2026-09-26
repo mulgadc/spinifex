@@ -100,6 +100,24 @@ Without them, Terraform queries the EC2 instance metadata service for credential
 
 Leave `skip_credentials_validation` and `skip_requesting_account_id` unset, and point the `sts` endpoint at Spinifex. The provider then learns the account ID from `GetCallerIdentity` as it does on AWS. With the account ID blank, a security group rule that references a group in the same account reads back as `<account>/sg-...` and never reaches a clean plan.
 
+### Tagged S3 buckets need both flags set
+
+There is one exception, and it applies to a provider block that manages an `aws_s3_bucket` with tags. AWS provider 6.x reads bucket tags through S3 Control, whose endpoint puts the account ID in the hostname — so the provider dials `https://000000000001.<your-endpoint>`, which cannot resolve when your endpoint is an IP address:
+
+```
+Error: listing tags for S3 (Simple Storage) Bucket (uploads): operation error S3 Control:
+ListTagsForResource, ... dial tcp: lookup 000000000001.10.0.0.10: no such host
+```
+
+Set both flags in that provider block. With no account ID the provider reads tags through S3 `GetBucketTagging` instead, which Spinifex serves:
+
+```hcl
+skip_requesting_account_id  = true
+skip_credentials_validation = true
+```
+
+Both are needed — `skip_requesting_account_id` on its own has no effect, because the credentials check calls `sts:GetCallerIdentity` and supplies the account ID before the account lookup is ever skipped. If the same configuration also needs the account ID, for `aws_ecr_repository` or a security group rule that references another group, put the bucket in a second, aliased provider block rather than setting the flags globally.
+
 ## S3 Signature Errors
 
 Spinifex uses AWS Signature V4. Ensure your AWS CLI is version 2.0 or higher:

@@ -329,7 +329,22 @@ assert_s3_webapp() {
     fi
     rm -f "$tmp"
 
-    curl -sf "http://${ip}/" | grep -q "$sentinel"
+    curl -sf "http://${ip}/" | grep -q "$sentinel" || return 1
+
+    # The bucket carries tags, and a clean plan over them is the gate: the AWS
+    # provider reads them through S3 Control at https://{account}.{endpoint},
+    # a name no IP endpoint can resolve, so this is what catches that regressing.
+    local bucket tags
+    bucket=$(tofu output -raw bucket_name)
+    tags=$(aws s3api get-bucket-tagging --bucket "$bucket" \
+        --endpoint-url "https://${WAN_IP}:8443" --output text 2>&1) || {
+        log "  s3-webapp: get-bucket-tagging failed for ${bucket}: ${tags}"
+        return 1
+    }
+    grep -q "s3-webapp" <<<"$tags" || {
+        log "  s3-webapp: bucket ${bucket} did not carry the tags Terraform set: ${tags}"
+        return 1
+    }
 }
 
 # A container instance registers only after its agent has booted, read IMDS, and
@@ -647,10 +662,10 @@ log "Using instance_type=${INSTANCE_TYPE}"
 # ~15 minutes against the ~7 the other four share, and note that its assertion
 # needs roughly 2 GiB of free guest memory for the two VMs.
 #
-# WORKBOOKS selects the list, and KEEP_GOING=1 runs the rest after a failure.
-# The nightly uses neither: it wants the default order and an early abort, so a
-# broken cluster does not spend an hour proving the same thing five times. Both
-# are for running this by hand against a cluster you are qualifying.
+# WORKBOOKS selects the list. A failure no longer aborts the rest: s3-webapp
+# failing says nothing about whether RDS works, and four nights of rds-quickstart
+# coverage were lost that way. STOP_ON_FAIL=1 restores the early abort for a
+# cluster you already know is broken and do not want to spend an hour on.
 SUITE_RC=0
 for workbook in ${WORKBOOKS:-nginx-alb bastion-private-subnet nginx-webserver s3-webapp rds-quickstart}; do
     tname="TestTofuWorkbook_${workbook//-/_}"
@@ -661,11 +676,11 @@ for workbook in ${WORKBOOKS:-nginx-alb bastion-private-subnet nginx-webserver s3
     else
         printf -- '--- FAIL: %s (%d.00s)\n' "$tname" "$((SECONDS - wb_start))"
         SUITE_RC=1
-        if [ "${KEEP_GOING:-0}" != "1" ]; then
-            log "FAIL ${workbook} — aborting remaining workbooks"
+        if [ "${STOP_ON_FAIL:-0}" = "1" ]; then
+            log "FAIL ${workbook} — aborting remaining workbooks (STOP_ON_FAIL=1)"
             break
         fi
-        log "FAIL ${workbook} — continuing (KEEP_GOING=1)"
+        log "FAIL ${workbook} — continuing with the remaining workbooks"
     fi
 done
 

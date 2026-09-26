@@ -856,22 +856,25 @@ Measured on 2026-09-26 against a three-node cluster of `VM.Standard.E6.Flex` ins
 | `bastion-private-subnet` | Public and private subnets, NAT egress, a bastion, SSH hop to a private host | **Passed** (117s) |
 | `rds-quickstart` | DB subnet group, parameter group, `aws_db_instance` (PostgreSQL), client instance, connection | **Passed** (296s) |
 | `ecs-quickstart` | ECS cluster, task definition, service, container instances, ALB with a healthy target | **Passed** (166s) |
-| `eks-quickstart` | EKS control plane, managed node group, `kubectl` against the cluster, nodes `Ready` | **Passed** (256s) |
-| `nginx-alb` | Application Load Balancer across two subnets, two backends, health checks | Not yet re-run on this build |
+| `eks-quickstart` | EKS control plane, managed node group, `kubectl` against the cluster, nodes `Ready` | **Passed** (259s) |
+| `nginx-alb` | Application Load Balancer across two subnets, two backends, health checks | **Passed** (123s) |
 | `s3-webapp` | S3 bucket, IAM role and instance profile, IMDS-fetched credentials, upload from the guest | **Failed** — `mulga-ape26` |
 | `demo-app` | Container image for the EKS workbooks, pushed to ECR | Not yet tested on OCI |
 | `eks-https-ingress` | AWS Load Balancer Controller addon, ACM certificate, HTTPS Ingress | Not yet tested on OCI |
 | `eks-gitops-argocd` | Argo CD addon, EBS-CSI PersistentVolume, GitOps sync | Not yet tested on OCI |
 
-RDS, ECS and EKS all pass, which is the answer to the question this section exists to ask. An EKS control plane and a managed node group come up, `kubectl get nodes` reports them `Ready`, and none of it knows it is running on someone else's cloud.
+Six of the seven pass. RDS, ECS and EKS are the answer to the question this section exists to ask: an EKS control plane and a managed node group come up, `kubectl get nodes` reports them `Ready`, a PostgreSQL instance accepts connections, and an ECS service runs behind a load balancer with a healthy target. None of it knows it is running on someone else's cloud.
 
 `s3-webapp` fails on the read-back rather than the create: the AWS provider issues an **S3 Control** `ListTagsForResource` for the bucket, an endpoint nothing serves, and the SDK builds its hostname by prefixing the account ID onto the host — which cannot resolve against an IP. The bucket, the IAM role and the instance are all created correctly first. This is not OCI-specific; it is tracked as `mulga-ape26`.
 
-`eks-quickstart` also failed once in this session, with `NodeCreationFailure: create interrupted by daemon restart`, after having passed on the same cluster forty minutes earlier. A daemon restart mid-create is terminal for a node group today, with no retry — `mulga-skfof`.
+Two things bit during the run that are worth knowing before you hit them, neither of which is a reason the workbooks do not work:
 
-### Two defects this exercise found, both now fixed
+- A `spinifex-daemon` restart while a node group is creating is terminal for that node group — `NodeCreationFailure: create interrupted by daemon restart`, with no retry (`mulga-skfof`).
+- A `terraform destroy` immediately followed by a `terraform apply` of the same EKS cluster name can fail with `ResourceInUseException` while `DescribeCluster` and `ListClusters` both report the cluster gone, so there is nothing to wait on (`mulga-4erx3`). Leave a minute between the two.
 
-Neither would have been visible on a single node, and both made *every* `terraform apply` hang forever on `aws_internet_gateway.igw: Still creating...` with every service reporting healthy.
+### Three defects this exercise found, all now fixed
+
+None of them would have been visible on a single node, and each on its own made *every* `terraform apply` hang forever on `aws_internet_gateway.igw: Still creating...` with every service reporting healthy. They stack: fixing the reconciler pair alone leaves the cluster just as stuck, because northd never creates the port the reconciler is waiting to see claimed.
 
 - **`ovn-northd` was dialling only its local OVSDB socket** (`mulga-848of`). A RAFT follower does not forward writes, so northd stopped translating Northbound intent into Southbound flows the moment database leadership moved to another node. `SB_Global.nb_cfg` sat seventeen transactions behind `NB_Global.nb_cfg` and no VPC created after that point ever got its chassisredirect port. The `--ovn-remote` list in [Step 4](#three-nodes) is what prevents it, and the `nb_cfg` comparison there is what detects it.
 - **The gateway datapath probe ran on the wrong node, then aimed at the wrong address** (`mulga-gop5m`, `mulga-cftrh`). The probe is host-local, but ran wherever the reconcile lease happened to land; and on OCI it targeted the cloud-NAT'd public IP, which is on no interface anywhere. Both are fixed in the reconciler — see `docs/development/bugs/multi-node-gateway-convergence.md`.

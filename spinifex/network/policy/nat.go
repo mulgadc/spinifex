@@ -697,6 +697,8 @@ func (m *natManager) foreignToThisChassis(eip EIPSpec) bool {
 	if eip.NATGateway {
 		return m.gatewayElsewhere(eip)
 	}
+	// A guest EIP is located by its port, never by the gateway chassis: asking
+	// the wrong authority takes every address off every node but one.
 	if m.hostBinder == nil || m.hostBinder.Owns == nil ||
 		eip.PortName == "" || eip.MAC == "" || !m.distributes(eip) {
 		return false
@@ -716,7 +718,7 @@ func (m *natManager) foreignToThisChassis(eip EIPSpec) bool {
 // it — and where the address shares the nodes' own subnet, as on OCI, it
 // outranks the connected route and swallows node-to-node traffic.
 func (m *natManager) gatewayElsewhere(eip EIPSpec) bool {
-	if m.hostBinder == nil || m.hostBinder.GatewayElsewhere == nil || eip.VPCID == "" {
+	if !eip.NATGateway || m.hostBinder == nil || m.hostBinder.GatewayElsewhere == nil || eip.VPCID == "" {
 		return false
 	}
 	elsewhere, err := m.hostBinder.GatewayElsewhere(eip.VPCID)

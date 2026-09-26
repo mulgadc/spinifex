@@ -77,6 +77,8 @@ func TestBindHostEIPsIsUnchangedForABinderThatCannotAnswerTheGateway(t *testing.
 
 // The gateway test keys on the NAT gateway marker, not on the absent port: a
 // centralised guest EIP is also portless and every node still plumbs it.
+// Asking the gateway authority about a guest takes every address off every node
+// but the one chassis that happens to hold the gateway.
 func TestBindHostEIPsLeavesACentralisedGuestEIPOutOfTheGatewayTest(t *testing.T) {
 	b := &listingBinder{bound: []string{"192.168.1.200"}}
 	mgr := routedManager(t, gatewayOn(b, true))
@@ -84,5 +86,19 @@ func TestBindHostEIPsLeavesACentralisedGuestEIPOutOfTheGatewayTest(t *testing.T)
 	require.NoError(t, mgr.BindHostEIPs(context.Background(), []EIPSpec{
 		{VPCID: "vpc-1", ExternalIP: "192.168.1.200", LogicalIP: "10.0.1.5"},
 	}))
+	assert.NotEmpty(t, b.binds, "a centralised guest EIP was skipped as a foreign gateway")
 	assert.Empty(t, b.unbinds, "a centralised guest EIP was pruned as a foreign gateway")
+}
+
+// The same for a distributed guest EIP on the node running it, which is the
+// shape every guest with a public address has.
+func TestBindHostEIPsBindsADistributedGuestEIPOffTheGatewayChassis(t *testing.T) {
+	b := &listingBinder{}
+	h := ownedBy(b, "port-eni-1")
+	h.GatewayElsewhere = func(string) (bool, error) { return true, nil }
+	mgr := routedManager(t, h)
+
+	require.NoError(t, mgr.BindHostEIPs(context.Background(), movedGuest()))
+	assert.Equal(t, []string{"192.168.1.200 via "}, b.binds,
+		"the node running the guest skipped its EIP because the VPC gateway is elsewhere")
 }

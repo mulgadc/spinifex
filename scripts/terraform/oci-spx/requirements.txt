@@ -1,0 +1,2 @@
+# Dependencies used only by scripts/oci_env.py in its isolated .venv.
+oci>=2.160.0,<3.0.0

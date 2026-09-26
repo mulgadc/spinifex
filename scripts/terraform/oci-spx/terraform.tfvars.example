@@ -1,0 +1,12 @@
+# Example non-secret overrides. Copy to the untracked terraform.auto.tfvars.
+
+# Restrict who may reach a node's SSH and Spinifex service ports from the internet.
+node_client_cidr_allow_list = ["203.0.113.10/32"]
+
+# 1 for the single-node replica, 3 for a cluster.
+node_count = 1
+
+# Bare metal is preferred; this is what we test on until the quota is raised.
+compute_shape         = "VM.Standard.E6.Flex"
+compute_ocpus         = 8
+compute_memory_in_gbs = 32

@@ -1,3 +1,8 @@
+// Builds an InstanceServiceImpl field by field so the allocator, the releaser
+// and the ENI creator are all fakes, which is the only way to see what a start
+// did to the address before the launch it then fails.
+//
+//test:in-package — every dependency it substitutes is an unexported field.
 package handlers_ec2_instance
 
 import (

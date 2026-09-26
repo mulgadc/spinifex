@@ -1,3 +1,8 @@
+// Drives Stop and StopAll against shutdownTestManager, whose fakes are
+// unexported, and turns on DesiredState — the field that separates an operator
+// stop from a host drain and decides whether the address is released.
+//
+//test:in-package — no exported seam reaches Manager.stopOne.
 package vm
 
 import (

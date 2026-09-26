@@ -1462,6 +1462,15 @@ func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, any
 	return pools, anyDHCP
 }
 
+// ovnSBAddr is this node's OVN Southbound address, empty when unconfigured,
+// which leaves the local socket.
+func (d *Daemon) ovnSBAddr() string {
+	if d.clusterConfig == nil {
+		return ""
+	}
+	return d.clusterConfig.Nodes[d.clusterConfig.Node].VPCD.OVNSBAddr
+}
+
 // installOCIAllocators builds one OCI allocator per source="oci" pool and
 // reconciles it against OCI before it serves anything. The reconcile is on the
 // startup path on purpose: Allocate creates OCI objects before writing its
@@ -1470,7 +1479,7 @@ func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, any
 // pass is the only thing that ever finds it.
 func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js jetstream.JetStream) error {
 	for _, p := range ipam.PoolsWithSource(external.SourceOCI) {
-		alloc, err := ocinet.FromPoolConfig(d.ctx, js, p)
+		alloc, err := ocinet.FromPoolConfig(d.ctx, js, p, d.ovnSBAddr())
 		if err != nil {
 			return fmt.Errorf("build OCI allocator for pool %q: %w", p.Name, err)
 		}

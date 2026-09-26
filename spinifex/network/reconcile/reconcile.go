@@ -153,6 +153,13 @@ type Config struct {
 	// public half is NAT'd upstream and is on no interface anywhere, so probing
 	// it reports a working gateway as dead. Optional: nil means identity.
 	DatapathIP policy.DatapathResolver
+
+	// BindGatewayVPC records which VPC's gateway answers on an external IP. A
+	// NAT gateway's address is never attached to an ENI, so on OCI nothing else
+	// says which node it has to be delivered to, and the answer is the gateway
+	// chassis this pass is what decides. Optional: nil is every environment
+	// where an address is on the wire from any node.
+	BindGatewayVPC func(ctx context.Context, externalIP, vpcID string) error
 }
 
 type reconciler struct {
@@ -173,6 +180,7 @@ type reconciler struct {
 	localPorts   func(ctx context.Context) (map[string]struct{}, error)
 	markAttached func(ctx context.Context, recordKey, vpcID string) error
 	datapathIP   policy.DatapathResolver
+	bindGateway  func(ctx context.Context, externalIP, vpcID string) error
 
 	// Guest ports that burned their convergence deadline, so a port whose guest
 	// is gone stops paying the full nudge sequence every cycle.
@@ -241,6 +249,7 @@ func New(cfg Config) (Reconciler, error) {
 		localPorts:   cfg.LocalPorts,
 		markAttached: cfg.MarkIGWAttached,
 		datapathIP:   datapathIP,
+		bindGateway:  cfg.BindGatewayVPC,
 	}, nil
 }
 

@@ -43,20 +43,29 @@ type ClaimResult struct {
 // private IPs are on our own VNIC costs one call per pass and is authoritative,
 // so a record that has drifted — an address moved in the console — is repaired
 // rather than believed.
+//
+// A NAT gateway's address has no tap to look for, and the same reasoning gives
+// the same answer from a different local fact: it is a logical router's SNAT
+// source, so it belongs on the VPC's gateway chassis, and whether that is this
+// node is something the chassisredirect port binding says locally.
 func (a *PoolAllocator) ClaimLocalAddresses(ctx context.Context) (ClaimResult, error) {
 	var res ClaimResult
-	if a.localPorts == nil {
+	if a.localPorts == nil && a.localGateway == nil {
 		return res, nil
 	}
 
-	plugged, err := a.localPorts(ctx)
-	if err != nil {
-		return res, fmt.Errorf("ocinet affinity: list local OVS ports: %w", err)
+	var plugged map[string]struct{}
+	if a.localPorts != nil {
+		var err error
+		plugged, err = a.localPorts(ctx)
+		if err != nil {
+			return res, fmt.Errorf("ocinet affinity: list local OVS ports: %w", err)
+		}
 	}
-	// No taps at all is a node running no guests, which owns no addresses. It is
-	// also what a broken OVS looks like, so there is nothing to claim either way
-	// and the pass costs no API call.
-	if len(plugged) == 0 {
+	// No taps and no gateway is a node carrying nothing, which owns no
+	// addresses. It is also what a broken OVS looks like, so there is nothing to
+	// claim either way and the pass costs no API call.
+	if len(plugged) == 0 && a.localGateway == nil {
 		return res, nil
 	}
 
@@ -70,12 +79,14 @@ func (a *PoolAllocator) ClaimLocalAddresses(ctx context.Context) (ClaimResult, e
 
 	mine := make(map[string]struct{})
 	for key, b := range rec.Bindings {
-		// An unassociated EIP has no guest and so no node; leaving it where it
-		// was allocated is correct until an associate gives it an owner.
-		if b.ENIID == "" || b.PrivateIPID == "" {
+		if b.PrivateIPID == "" {
 			continue
 		}
-		if _, local := plugged[topology.Port(b.ENIID)]; !local {
+		local, err := a.ownsBinding(ctx, b, plugged)
+		if err != nil {
+			return res, err
+		}
+		if !local {
 			continue
 		}
 		res.Local++
@@ -102,9 +113,10 @@ func (a *PoolAllocator) ClaimLocalAddresses(ctx context.Context) (ClaimResult, e
 			return res, fmt.Errorf("ocinet affinity: move %s (%s) to %s: %w",
 				b.PrivateAddr, b.PrivateIPID, a.cfg.VNICID, err)
 		}
-		slog.WarnContext(ctx, "ocinet claimed an address whose guest runs here",
+		slog.WarnContext(ctx, "ocinet claimed an address whose datapath runs here",
 			"pool", a.cfg.Pool.Name, "public_ip", key, "private_ip", b.PrivateAddr,
-			"eni_id", b.ENIID, "from_vnic", b.VNICID, "to_vnic", moved.VNICID)
+			"eni_id", b.ENIID, "gateway_vpc_id", b.GatewayVPCID,
+			"from_vnic", b.VNICID, "to_vnic", moved.VNICID)
 
 		if err := a.recordVNIC(ctx, key, b.PrivateIPID, moved.VNICID); err != nil {
 			return res, err
@@ -112,6 +124,29 @@ func (a *PoolAllocator) ClaimLocalAddresses(ctx context.Context) (ClaimResult, e
 		res.Claimed = append(res.Claimed, key)
 	}
 	return res, nil
+}
+
+// ownsBinding answers whether this node is where b's traffic is handled, and so
+// whose VNIC OCI has to deliver it to.
+//
+// A guest address belongs where its tap is plugged. A NAT gateway's belongs on
+// the VPC's gateway chassis: it is the SNAT source for a logical router, so the
+// node that forwards is the node OCI must see it leave from. An address that is
+// neither — a bare EIP nobody has associated yet — has no node, and leaving it
+// where it was allocated is correct until something claims it.
+func (a *PoolAllocator) ownsBinding(ctx context.Context, b Binding, plugged map[string]struct{}) (bool, error) {
+	if b.ENIID != "" {
+		_, local := plugged[topology.Port(b.ENIID)]
+		return local, nil
+	}
+	if b.GatewayVPCID == "" || a.localGateway == nil {
+		return false, nil
+	}
+	local, err := a.localGateway(ctx, b.GatewayVPCID)
+	if err != nil {
+		return false, fmt.Errorf("ocinet affinity: gateway chassis for %s: %w", b.GatewayVPCID, err)
+	}
+	return local, nil
 }
 
 // heldPrivateIPIDs is the set of private IP OCIDs OCI currently carries on this

@@ -564,9 +564,11 @@ func launchService(cfg *Config) error {
 	// Also handed to the reconciler, whose EIP datapath probe has to ARP the same
 	// on-wire address the NAT rule is built from.
 	var datapathIP policy.DatapathResolver
+	var bindGatewayVPC func(ctx context.Context, externalIP, vpcID string) error
 	if ociPools := ociPoolNames(cfg.ExternalPools); len(ociPools) > 0 {
 		lookup := ocinet.NewLookup(ocinet.NewKVStore(js), ociPools)
 		datapathIP = lookup.DatapathIP
+		bindGatewayVPC = lookup.BindGateway
 		natOpts = append(natOpts, policy.WithDatapathResolver(datapathIP))
 		slog.Info("vpcd: OCI address pairs in use; NAT rules and host routes follow the private half",
 			"pools", ociPools)
@@ -745,20 +747,21 @@ func launchService(cfg *Config) error {
 	}()
 
 	rec, err := reconcile.New(reconcile.Config{
-		OVN:           liveClient,
-		SG:            sgMgr,
-		NAT:           natMgr,
-		Routes:        routeMgr,
-		IGW:           igwMgr,
-		Topology:      topoMgr,
-		LocalAZ:       cfg.AZ,
-		NodeHostname:  holder,
-		Chassis:       chassisNames,
-		GatewayClaim:  host.NewGatewayClaimProber(cfg.OVNSBAddr),
-		DNSServer:     resolverDNSServer(cfg),
-		IPSecDisabled: !cfg.IPSecEnabled,
-		UnderlayMTU:   cfg.UnderlayMTU,
-		DatapathIP:    datapathIP,
+		OVN:            liveClient,
+		SG:             sgMgr,
+		NAT:            natMgr,
+		Routes:         routeMgr,
+		IGW:            igwMgr,
+		Topology:       topoMgr,
+		LocalAZ:        cfg.AZ,
+		NodeHostname:   holder,
+		Chassis:        chassisNames,
+		GatewayClaim:   host.NewGatewayClaimProber(cfg.OVNSBAddr),
+		DNSServer:      resolverDNSServer(cfg),
+		IPSecDisabled:  !cfg.IPSecEnabled,
+		UnderlayMTU:    cfg.UnderlayMTU,
+		DatapathIP:     datapathIP,
+		BindGatewayVPC: bindGatewayVPC,
 		// Re-read intent at prune time so a guest launched during a long apply
 		// phase is not mistaken for an orphan and its dnat_and_snat swept.
 		FreshIntent: func(ctx context.Context) (reconcile.IntentState, error) {

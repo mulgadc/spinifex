@@ -10,6 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
 // FromPoolConfig builds a live allocator for one source="oci" pool: API-key
@@ -27,7 +28,9 @@ import (
 // It does not reconcile. The caller decides when that pass runs, because it
 // deletes OCI objects and a startup path that does so before the store is
 // readable would collect live addresses.
-func FromPoolConfig(ctx context.Context, js jetstream.JetStream, pool external.ExternalPoolConfig) (*PoolAllocator, error) {
+// sbAddr is the OVN Southbound address the gateway-chassis question is asked
+// of; empty uses the local socket.
+func FromPoolConfig(ctx context.Context, js jetstream.JetStream, pool external.ExternalPoolConfig, sbAddr string) (*PoolAllocator, error) {
 	if !pool.IsOCI() {
 		return nil, fmt.Errorf("ocinet: pool %q has source %q, not %q", pool.Name, pool.Source, external.SourceOCI)
 	}
@@ -61,6 +64,13 @@ func FromPoolConfig(ctx context.Context, js jetstream.JetStream, pool external.E
 		// affinity pass asks the host rather than any shared record.
 		LocalPorts: func(ctx context.Context) (map[string]struct{}, error) {
 			return host.ListLocalPorts(ctx, host.NewExecRunner())
+		},
+		// The same question for an address with no guest behind it: a NAT
+		// gateway's belongs wherever its VPC's chassisredirect port is claimed,
+		// which the local ovn-controller's own binding answers.
+		LocalGateway: func(ctx context.Context, vpcID string) (bool, error) {
+			return host.NewGatewayClaimProber(sbAddr).
+				GatewayPortLocal(ctx, topology.GatewayChassisRedirectPort(vpcID))
 		},
 	})
 }

@@ -1127,7 +1127,10 @@ func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, spec policy.EI
 	}
 }
 
-// applyNATGWs runs every intent NAT gateway through NATManager.AddNATGateway.
+// applyNATGWs runs every intent NAT gateway through NATManager.AddNATGateway,
+// and records which VPC each gateway's address serves. The address is the SNAT
+// source for a logical router rather than a guest, so this is the only thing
+// that says which node it has to be delivered to.
 func (r *reconciler) applyNATGWs(ctx context.Context, intent IntentState, _ ActualState, res *passResult) {
 	for _, spec := range intent.NATGWs {
 		if err := r.nat.AddNATGateway(ctx, spec); err != nil {
@@ -1135,6 +1138,20 @@ func (r *reconciler) applyNATGWs(ctx context.Context, intent IntentState, _ Actu
 				"natgw_id", spec.NATGatewayID, "subnet_cidr", spec.SubnetCIDR, "err", err)
 			res.fail(classNATGW, spec.NATGatewayID, err)
 		}
+		r.bindGatewayVPC(ctx, spec)
+	}
+}
+
+// bindGatewayVPC tells the address pool which VPC's gateway answers on a NAT
+// gateway's address. Logged rather than failed: the OVN rule is already in and
+// is what forwards, and the next pass writes it again.
+func (r *reconciler) bindGatewayVPC(ctx context.Context, spec policy.NATGWSpec) {
+	if r.bindGateway == nil || spec.PublicIP == "" || spec.VPCID == "" {
+		return
+	}
+	if err := r.bindGateway(ctx, spec.PublicIP, spec.VPCID); err != nil {
+		slog.Warn("reconcile/apply: recording the NAT gateway's VPC with its pool failed",
+			"natgw_id", spec.NATGatewayID, "public_ip", spec.PublicIP, "vpc_id", spec.VPCID, "err", err)
 	}
 }
 

@@ -63,3 +63,38 @@ func (l *Lookup) DatapathIP(ctx context.Context, externalIP string) (string, err
 	}
 	return externalIP, nil
 }
+
+// BindGateway records vpcID as the VPC whose NAT gateway answers on externalIP,
+// so the affinity pass knows which node the address belongs on.
+//
+// A NAT gateway's address is the one external address never attached to an ENI:
+// it is a logical router's SNAT source, not a guest's. Without this the affinity
+// pass has nothing to place it by and leaves it on whichever node served
+// AllocateAddress, which OCI then refuses to let it leave from anywhere else.
+//
+// Written from the reconcile pass rather than from CreateNatGateway because the
+// answer is the gateway chassis, which reconcile is what decides. Idempotent:
+// an unchanged VPC is not a write, so the steady state costs one read.
+func (l *Lookup) BindGateway(ctx context.Context, externalIP, vpcID string) error {
+	if l == nil || externalIP == "" {
+		return nil
+	}
+	for _, pool := range l.pools {
+		err := l.store.Mutate(ctx, pool, func(rec *Record) (bool, error) {
+			b, ok := rec.Bindings[externalIP]
+			if !ok || b.GatewayVPCID == vpcID {
+				return false, nil
+			}
+			b.GatewayVPCID = vpcID
+			rec.Bindings[externalIP] = b
+			return true, nil
+		})
+		if errors.Is(err, kvstore.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("ocinet: record gateway VPC for %s in pool %q: %w", externalIP, pool, err)
+		}
+	}
+	return nil
+}

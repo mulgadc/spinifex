@@ -79,6 +79,10 @@ type Binding struct {
 	AllocationID string `json:"allocation_id,omitempty"`
 	ENIID        string `json:"eni_id,omitempty"`
 	InstanceID   string `json:"instance_id,omitempty"`
+	// GatewayVPCID names the VPC whose gateway chassis must carry this address,
+	// set when a NAT gateway consumes it. Such an address is never attached to
+	// an ENI, so it is the only thing that says which node it belongs on.
+	GatewayVPCID string `json:"gateway_vpc_id,omitempty"`
 	// VNICID is the VNIC currently carrying the private IP, and so the node
 	// the address lives on. A private IP can be reassigned to another VNIC in
 	// the same subnet without losing its public IP, which is how an address
@@ -104,6 +108,12 @@ type Config struct {
 	// disables the affinity pass, which is correct for a single-node cluster
 	// and for tests that only exercise allocate and release.
 	LocalPorts func(ctx context.Context) (map[string]struct{}, error)
+
+	// LocalGateway reports whether this host is the gateway chassis for a VPC.
+	// It is the same question LocalPorts answers for a guest, asked of a NAT
+	// gateway, which has no tap to look for. Nil leaves gateway addresses where
+	// they were allocated, which is correct on a single node.
+	LocalGateway func(ctx context.Context, vpcID string) (bool, error)
 
 	// Schedule and Budget override the poll ladder; zero values take the
 	// package defaults. Tests set them to keep runtime down.
@@ -134,10 +144,11 @@ type PoolAllocator struct {
 	store  Store
 	cfg    Config
 
-	schedule   []time.Duration
-	budget     time.Duration
-	sleep      func(context.Context, time.Duration) error
-	localPorts func(context.Context) (map[string]struct{}, error)
+	schedule     []time.Duration
+	budget       time.Duration
+	sleep        func(context.Context, time.Duration) error
+	localPorts   func(context.Context) (map[string]struct{}, error)
+	localGateway func(context.Context, string) (bool, error)
 }
 
 var (
@@ -160,13 +171,14 @@ func New(client oci.Client, store Store, cfg Config) (*PoolAllocator, error) {
 		return nil, fmt.Errorf("ocinet: pool %q missing compartment_id", cfg.Pool.Name)
 	}
 	a := &PoolAllocator{
-		client:     client,
-		store:      store,
-		cfg:        cfg,
-		schedule:   cfg.Schedule,
-		budget:     cfg.Budget,
-		sleep:      cfg.Sleep,
-		localPorts: cfg.LocalPorts,
+		client:       client,
+		store:        store,
+		cfg:          cfg,
+		schedule:     cfg.Schedule,
+		budget:       cfg.Budget,
+		sleep:        cfg.Sleep,
+		localPorts:   cfg.LocalPorts,
+		localGateway: cfg.LocalGateway,
 	}
 	if len(a.schedule) == 0 {
 		a.schedule = assignSchedule

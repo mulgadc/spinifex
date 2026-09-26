@@ -295,6 +295,7 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DescribeVolumes":                        unscoped,
 	"DescribeVolumesModifications":           unscoped,
 	"DescribeVpcAttribute":                   unscoped,
+	"DescribeVpcEndpoints":                   unscoped,
 	"DescribeVpcs":                           unscoped,
 }
 

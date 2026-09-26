@@ -1,7 +1,7 @@
 ---
 title: "Setting Up Your Cluster"
 seoTitle: "Set Up Your First Spinifex Cluster — Spinifex Docs"
-description: "Import an AMI, create an SSH key pair and a VPC with a public subnet, then launch your first EC2 instance and connect to it on a fresh Spinifex cluster."
+description: "Import an AMI and the RDS, ECS and EKS base images, create an SSH key pair and a VPC with a public subnet, then launch your first EC2 instance on a fresh Spinifex cluster."
 category: "Admin"
 tags:
   - setup
@@ -17,11 +17,12 @@ resources:
 
 # Setting Up Your Cluster
 
-> Import an AMI, create a VPC with a public subnet, and launch your first instance.
+> Import an AMI and the system base images, create a VPC with a public subnet, and launch your first instance.
 
 ## Table of Contents
 
 - [1. Import an AMI](#1-import-an-ami)
+  - [Option C: Import the system base images](#option-c-import-the-system-base-images)
 - [2. Create an SSH Key](#2-create-an-ssh-key)
 - [3. Create a VPC and Public Subnet](#3-create-a-vpc-and-public-subnet)
 - [4. Launch an Instance](#4-launch-an-instance)
@@ -35,7 +36,7 @@ resources:
 
 ## Overview
 
-This guide walks through the first steps on a freshly installed cluster: importing an AMI, creating an SSH key and a VPC with a public subnet, launching an instance, and connecting to it.
+This guide walks through the first steps on a freshly installed cluster: importing an AMI and the system base images RDS, ECS and EKS need, creating an SSH key and a VPC with a public subnet, launching an instance, and connecting to it.
 
 ## Instructions
 
@@ -81,6 +82,41 @@ Verify the import and note the AMI ID:
 ```bash
 AMI_ID=$(aws ec2 describe-images --query 'Images[0].ImageId' --output text)
 ```
+
+### Option C: Import the system base images
+
+**RDS, ECS and EKS each launch from an image of their own, and none of them is imported for you.** Until these are in the catalog, `CreateDBInstance`, `CreateCluster` and `CreateNodegroup` all fail at the point they go looking for a node image — so a cluster without them has those three services present in the API and unusable in practice. Import them once, now, and the install is functional from the start.
+
+Run these one at a time rather than in parallel, so predastore is not taking four concurrent uploads:
+
+```bash
+for img in spinifex-rds-postgres spinifex-rds-mariadb spinifex-ecs-node spinifex-eks-node; do
+    sudo spx admin images import --name "$img" --config /etc/spinifex/spinifex.toml
+done
+```
+
+| Image | Serves | Contents |
+| --- | --- | --- |
+| `spinifex-rds-postgres` | RDS, `--engine postgres` | Alpine 3.24.1 + PostgreSQL 18 + `rds-init` |
+| `spinifex-rds-mariadb` | RDS, `--engine mariadb` | Alpine 3.24.1 + MariaDB 11.8 + `rds-init` |
+| `spinifex-ecs-node` | ECS container instances | Alpine 3.21.7 + containerd + ecs-agent |
+| `spinifex-eks-node` | EKS control plane and nodegroups | Alpine 3.21.7 + K3s v1.32.5 + eks-token-webhook |
+
+All four boot **BIOS**, unlike the distro images, which boot UEFI. That is a property of how they are built and nothing you need to pass.
+
+If you run GPU workloads, add `spinifex-ecs-node-gpu` and `spinifex-eks-node-gpu` as well — Ubuntu 26.04 with the NVIDIA driver, selected automatically for a GPU instance type. They boot UEFI and they are large, so import them only if you have GPUs.
+
+> [!IMPORTANT]
+> **These register under generic names, and that is correct.** `describe-images` shows `spinifex-eks-node` and `spinifex-ecs-node` both as `ami-alpine-3.21.7-x86_64`, and the two RDS images both as `ami-alpine-3.24.1-x86_64`. Nothing resolves them by name: ECS and EKS find theirs by the `spinifex:managed-by=ecs|eks` tag, and RDS by `spinifex:managed-by=rds` plus the `engine` and `engine-version` tags. **Verify the tags, not the names** — four rows with duplicate-looking names is what success looks like:
+>
+> ```bash
+> aws ec2 describe-images \
+>   --filters 'Name=tag-key,Values=spinifex:managed-by' \
+>   --query 'Images[].[ImageId,State,Tags[?Key==`spinifex:managed-by`].Value|[0],Tags[?Key==`engine`].Value|[0]]' \
+>   --output text
+> ```
+
+`spx admin images list --config /etc/spinifex/spinifex.toml` on a node shows the whole catalog, including the images not imported here.
 
 ## 2. Create an SSH Key
 

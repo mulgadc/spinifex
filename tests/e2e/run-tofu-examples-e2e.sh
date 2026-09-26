@@ -332,6 +332,109 @@ assert_s3_webapp() {
     curl -sf "http://${ip}/" | grep -q "$sentinel"
 }
 
+# A container instance registers only after its agent has booted, read IMDS, and
+# reached the gateway, so the service reaching its desired count proves the whole
+# ECS path rather than just that CreateService was accepted. The ALB check is the
+# same shape as nginx-alb's: .elb.spinifex.local does not resolve here, so the
+# public address comes from describe-load-balancers.
+assert_ecs_quickstart() {
+    local cluster service name ip tg_arn
+    cluster=$(tofu output -raw cluster_arn)
+    cluster=${cluster##*/}
+    service=$(tofu output -raw service_name)
+
+    local budget=420 running desired
+    while [ "$budget" -gt 0 ]; do
+        read -r running desired <<<"$(aws ecs describe-services --cluster "$cluster" --services "$service" \
+            --query 'services[0].[runningCount,desiredCount]' --output text 2>/dev/null)"
+        if [ -n "${desired:-}" ] && [ "$desired" != "None" ] && [ "$running" = "$desired" ] && [ "$running" != "0" ]; then
+            break
+        fi
+        sleep 10
+        budget=$((budget - 10))
+    done
+    if [ "$budget" -le 0 ]; then
+        log "  ecs-quickstart: service ${service} never reached its desired count (${running:-?}/${desired:-?})"
+        aws ecs list-container-instances --cluster "$cluster" --output text 2>&1 | sed 's|^|    |' || true
+        return 1
+    fi
+    log "  ecs-quickstart: service ${service} running ${running}/${desired}"
+
+    name=$(tofu output -raw alb_name)
+    ip=$(aws elbv2 describe-load-balancers --names "$name" \
+        --query 'LoadBalancers[0].AvailabilityZones[].LoadBalancerAddresses[].IpAddress' \
+        --output text 2>/dev/null | awk '{print $1}')
+    if [ -z "$ip" ] || [ "$ip" = "None" ]; then
+        log "  ecs-quickstart: no public IP for ${name}"
+        return 1
+    fi
+    tg_arn=$(aws elbv2 describe-target-groups --names "${cluster}-tg" \
+        --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null)
+    if [ -n "$tg_arn" ] && [ "$tg_arn" != "None" ]; then
+        wait_for_alb_healthy "$tg_arn" 300 || {
+            log "  ecs-quickstart: no healthy targets after 300s"
+            return 1
+        }
+    fi
+    wait_for_http_200 "http://${ip}/" 300 || {
+        log "  ecs-quickstart: ALB ${ip} never returned 200"
+        return 1
+    }
+}
+
+# The cluster module stops at a running control plane and worker node group; the
+# demo app lives in the nested workloads/ module and needs an image pushed to ECR
+# first, which is outside what this harness builds. So the assertion is that the
+# cluster is ACTIVE, the node group is ACTIVE, and every worker registered with
+# the API server as Ready — the part that proves EKS on this cluster works.
+assert_eks_quickstart() {
+    local name desired budget=900 status
+    name=$(tofu output -raw cluster_name)
+    desired=$(tofu output -raw node_desired_size)
+
+    while [ "$budget" -gt 0 ]; do
+        status=$(aws eks describe-cluster --name "$name" --query 'cluster.status' --output text 2>/dev/null)
+        [ "$status" = "ACTIVE" ] && break
+        [ "$status" = "FAILED" ] && { log "  eks-quickstart: cluster ${name} FAILED"; return 1; }
+        sleep 15
+        budget=$((budget - 15))
+    done
+    if [ "$status" != "ACTIVE" ]; then
+        log "  eks-quickstart: cluster ${name} still ${status:-unknown} after 900s"
+        return 1
+    fi
+    log "  eks-quickstart: cluster ${name} ACTIVE"
+
+    if ! command -v kubectl >/dev/null 2>&1; then
+        local kver
+        kver=$(curl -fsSL https://dl.k8s.io/release/stable.txt 2>/dev/null || echo v1.32.0)
+        curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/${kver}/bin/linux/amd64/kubectl" &&
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl || {
+            log "  eks-quickstart: kubectl unavailable, cannot check node readiness"
+            return 1
+        }
+    fi
+    aws eks update-kubeconfig --name "$name" >/dev/null 2>&1 || {
+        log "  eks-quickstart: update-kubeconfig failed"
+        return 1
+    }
+
+    budget=600
+    local ready
+    while [ "$budget" -gt 0 ]; do
+        ready=$(kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready"' | wc -l)
+        [ "$ready" -ge "$desired" ] 2>/dev/null && break
+        sleep 15
+        budget=$((budget - 15))
+    done
+    if [ "${ready:-0}" -lt "$desired" ] 2>/dev/null; then
+        log "  eks-quickstart: ${ready:-0}/${desired} workers Ready after 600s"
+        kubectl get nodes 2>&1 | sed 's|^|    |' || true
+        return 1
+    fi
+    log "  eks-quickstart: ${ready}/${desired} workers Ready"
+}
+
 # Workbooks whose describe path has to round-trip every attribute their config
 # sets. A second plan on these must be empty; a diff is a describe response that
 # failed to echo back a field Terraform sent, which makes the provider unusable
@@ -386,13 +489,15 @@ require_rds_image() {
 
 # Pick an instance type available on this cluster. Workbooks default to
 # t3.small (Intel); on AMD-only hosts t3 isn't registered, so we query and
-# fall back to the smallest type with ≥2 vCPU / ≥1 GiB RAM (matches the
-# nginx-alb README's documented approach).
+# fall back to the smallest type meeting the floor (matches the nginx-alb
+# README's documented approach). Defaults to 2 vCPU / 1 GiB; callers that need
+# more headroom, such as an EKS worker, pass their own.
 detect_instance_type() {
+    local vcpus="${1:-2}" mib="${2:-1024}"
     local endpoint="https://${WAN_IP}:9999"
     local picked
     picked=$(aws --endpoint-url "$endpoint" ec2 describe-instance-types \
-        --query "sort_by(InstanceTypes[?VCpuInfo.DefaultVCpus==\`2\` && MemoryInfo.SizeInMiB>=\`1024\`], &MemoryInfo.SizeInMiB)[0].InstanceType" \
+        --query "sort_by(InstanceTypes[?VCpuInfo.DefaultVCpus>=\`${vcpus}\` && MemoryInfo.SizeInMiB>=\`${mib}\`], &MemoryInfo.SizeInMiB)[0].InstanceType" \
         --output text 2>/dev/null || true)
     if [ -z "$picked" ] || [ "$picked" = "None" ]; then
         picked=$(aws --endpoint-url "$endpoint" ec2 describe-instance-types \
@@ -419,11 +524,26 @@ run_workbook() {
     cd "$path"
     rm -rf .terraform terraform.tfstate* .terraform.lock.hcl
 
+    # EKS workers run a kubelet, a container runtime and the demo pods, so the
+    # smallest type the cluster offers is not enough; the workbook's own default
+    # is t3.medium and 4 GiB is the floor that boots reliably.
+    local instance_type="$INSTANCE_TYPE"
+    case "$example" in
+        eks-*) instance_type=$(detect_instance_type 2 4096) ;;
+    esac
+
     local apply_args=(
         -input=false -no-color
         "-var=spinifex_endpoint=https://${WAN_IP}:9999"
-        "-var=instance_type=${INSTANCE_TYPE}"
+        "-var=instance_type=${instance_type}"
     )
+
+    # ecs-quickstart's gateway_url is required and has no default: the container
+    # instances read it from their own user-data, so it must be the address a
+    # guest can reach, never 127.0.0.1.
+    if [ "$example" = "ecs-quickstart" ]; then
+        apply_args+=("-var=gateway_url=https://${WAN_IP}:9999")
+    fi
 
     # s3-webapp has three required-no-default vars. The s3_access/secret keys are
     # the operator creds the provider uses to create the bucket + IAM role on
@@ -492,8 +612,13 @@ log "Using instance_type=${INSTANCE_TYPE}"
 # launches the client, then the client's own boot and an apt-get. Budget it at
 # ~15 minutes against the ~7 the other four share, and note that its assertion
 # needs roughly 2 GiB of free guest memory for the two VMs.
+#
+# WORKBOOKS selects the list, and KEEP_GOING=1 runs the rest after a failure.
+# The nightly uses neither: it wants the default order and an early abort, so a
+# broken cluster does not spend an hour proving the same thing five times. Both
+# are for running this by hand against a cluster you are qualifying.
 SUITE_RC=0
-for workbook in nginx-alb bastion-private-subnet nginx-webserver s3-webapp rds-quickstart; do
+for workbook in ${WORKBOOKS:-nginx-alb bastion-private-subnet nginx-webserver s3-webapp rds-quickstart}; do
     tname="TestTofuWorkbook_${workbook//-/_}"
     wb_start=$SECONDS
     echo "=== RUN   ${tname}"
@@ -501,9 +626,12 @@ for workbook in nginx-alb bastion-private-subnet nginx-webserver s3-webapp rds-q
         printf -- '--- PASS: %s (%d.00s)\n' "$tname" "$((SECONDS - wb_start))"
     else
         printf -- '--- FAIL: %s (%d.00s)\n' "$tname" "$((SECONDS - wb_start))"
-        log "FAIL ${workbook} — aborting remaining workbooks"
         SUITE_RC=1
-        break
+        if [ "${KEEP_GOING:-0}" != "1" ]; then
+            log "FAIL ${workbook} — aborting remaining workbooks"
+            break
+        fi
+        log "FAIL ${workbook} — continuing (KEEP_GOING=1)"
     fi
 done
 

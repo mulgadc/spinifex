@@ -561,9 +561,13 @@ func launchService(cfg *Config) error {
 	if natMode == policy.NATModeRouted && publicPool != nil {
 		natOpts = append(natOpts, policy.WithHostEIPBinder(hostEIPBinder(publicPool)))
 	}
+	// Also handed to the reconciler, whose EIP datapath probe has to ARP the same
+	// on-wire address the NAT rule is built from.
+	var datapathIP policy.DatapathResolver
 	if ociPools := ociPoolNames(cfg.ExternalPools); len(ociPools) > 0 {
 		lookup := ocinet.NewLookup(ocinet.NewKVStore(js), ociPools)
-		natOpts = append(natOpts, policy.WithDatapathResolver(lookup.DatapathIP))
+		datapathIP = lookup.DatapathIP
+		natOpts = append(natOpts, policy.WithDatapathResolver(datapathIP))
 		slog.Info("vpcd: OCI address pairs in use; NAT rules and host routes follow the private half",
 			"pools", ociPools)
 	}
@@ -754,6 +758,7 @@ func launchService(cfg *Config) error {
 		DNSServer:     resolverDNSServer(cfg),
 		IPSecDisabled: !cfg.IPSecEnabled,
 		UnderlayMTU:   cfg.UnderlayMTU,
+		DatapathIP:    datapathIP,
 		// Re-read intent at prune time so a guest launched during a long apply
 		// phase is not mistaken for an orphan and its dnat_and_snat swept.
 		FreshIntent: func(ctx context.Context) (reconcile.IntentState, error) {

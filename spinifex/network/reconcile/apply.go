@@ -578,8 +578,9 @@ func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID, eipIP stri
 			bound = false
 		}
 	}
-	claimed := r.ensureGatewayClaimed(ctx, topology.GatewayChassisRedirectPort(vpcID))
-	forwarding := r.ensureGatewayDatapath(ctx, vpcID, gatewayLRPIP(lrp), eipIP)
+	crPortName := topology.GatewayChassisRedirectPort(vpcID)
+	claimed := r.ensureGatewayClaimed(ctx, crPortName)
+	forwarding := r.ensureGatewayDatapath(ctx, vpcID, crPortName, gatewayLRPIP(lrp), eipIP)
 	return bound && claimed && forwarding
 }
 
@@ -612,10 +613,36 @@ func gatewayLRPIP(lrp *nbdb.LogicalRouterPort) string {
 // stays green even when the EIP datapath is dead. Fall back to the LRP IP when the
 // VPC has no EIP. On a miss repair the uplink + recompute, then re-probe until a
 // short deadline. Reports whether the datapath was observed forwarding; an
-// unwired verifier or unresolved probe target gates the check off and passes.
-func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, gwIP, eipIP string) bool {
+// unwired verifier, an unresolved probe target or a gateway on another chassis
+// gates the check off and passes.
+func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, crPortName, gwIP, eipIP string) bool {
 	if r.gwClaim == nil || (gwIP == "" && eipIP == "") {
 		return true
+	}
+	// Both probes leave from this host's own uplink, so off the gateway chassis
+	// they answer about the wrong node. Probing anyway is worse than not probing:
+	// a repair would be aimed at a datapath this node does not own.
+	local, err := r.gwClaim.GatewayPortLocal(ctx, crPortName)
+	if err != nil {
+		slog.Warn("reconcile/apply: gateway chassis locality check failed", "vpc_id", vpcID, "port", crPortName, "err", err)
+		return true
+	}
+	if !local {
+		slog.Info("reconcile/apply: gateway is on another chassis; skipping host-local datapath probe",
+			"vpc_id", vpcID, "port", crPortName)
+		return true
+	}
+	// The probe ARPs its target, so it has to name the address that is on the
+	// wire — the same mapping the NAT rule is built from. On OCI the public half
+	// of an allocation is on no interface anywhere and never answers.
+	if eipIP != "" && r.datapathIP != nil {
+		wire, err := r.datapathIP(ctx, eipIP)
+		if err != nil {
+			slog.Warn("reconcile/apply: resolving EIP datapath address failed; skipping datapath probe",
+				"vpc_id", vpcID, "eip", eipIP, "err", err)
+			return true
+		}
+		eipIP = wire
 	}
 	target := eipIP
 	if target == "" {

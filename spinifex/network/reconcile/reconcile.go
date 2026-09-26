@@ -52,6 +52,10 @@ type GatewayClaimVerifier interface {
 	// GatewayPortClaimed reports whether the SB Port_Binding for crPortName (the
 	// chassisredirect port) has a non-empty chassis.
 	GatewayPortClaimed(ctx context.Context, crPortName string) (bool, error)
+	// GatewayPortLocal reports whether crPortName is claimed by *this* chassis.
+	// The datapath probes below are host-local — a ping and an ARP off this
+	// node's own uplink — so on any node but the gateway's they measure nothing.
+	GatewayPortLocal(ctx context.Context, crPortName string) (bool, error)
 	// NudgeRecompute asks the local ovn-controller to re-evaluate logical flows.
 	NudgeRecompute(ctx context.Context) error
 	// GatewayReachable reports whether the external datapath actually forwards to
@@ -142,6 +146,13 @@ type Config struct {
 	// before one does. Called with the record key and VPC carried on the IGW
 	// spec. Optional: nil leaves the record untouched.
 	MarkIGWAttached func(ctx context.Context, recordKey, vpcID string) error
+
+	// DatapathIP maps an external IP to the address that rides the wire, the
+	// same mapping the NAT manager applies. The EIP datapath probe ARPs its
+	// target, so on OCI it has to ask about the private half of the pair: the
+	// public half is NAT'd upstream and is on no interface anywhere, so probing
+	// it reports a working gateway as dead. Optional: nil means identity.
+	DatapathIP policy.DatapathResolver
 }
 
 type reconciler struct {
@@ -161,6 +172,7 @@ type reconciler struct {
 	reloadIntent func(ctx context.Context) (IntentState, error)
 	localPorts   func(ctx context.Context) (map[string]struct{}, error)
 	markAttached func(ctx context.Context, recordKey, vpcID string) error
+	datapathIP   policy.DatapathResolver
 
 	// Guest ports that burned their convergence deadline, so a port whose guest
 	// is gone stops paying the full nudge sequence every cycle.
@@ -207,6 +219,10 @@ func New(cfg Config) (Reconciler, error) {
 	if dnsServer == "" {
 		dnsServer = topology.FormatDNSServerList(nil)
 	}
+	datapathIP := cfg.DatapathIP
+	if datapathIP == nil {
+		datapathIP = func(_ context.Context, ip string) (string, error) { return ip, nil }
+	}
 	return &reconciler{
 		ovn:          cfg.OVN,
 		sg:           cfg.SG,
@@ -224,6 +240,7 @@ func New(cfg Config) (Reconciler, error) {
 		reloadIntent: cfg.FreshIntent,
 		localPorts:   cfg.LocalPorts,
 		markAttached: cfg.MarkIGWAttached,
+		datapathIP:   datapathIP,
 	}, nil
 }
 

@@ -624,6 +624,8 @@ if [ "$MANAGEMENT" = true ]; then
             OVN_REMOTE_NB="${OVN_REMOTE//:6642/:6641}"
             OVN_CTL_OPTS="$OVN_CTL_OPTS --ovn-northd-nb-db=$OVN_REMOTE_NB --ovn-northd-sb-db=$OVN_REMOTE"
             echo "  ovn-northd: NB=$OVN_REMOTE_NB SB=$OVN_REMOTE (RAFT member list)"
+        else
+            NORTHD_LOCAL_ONLY=true
         fi
 
         if [ -n "$OVN_DB_LISTEN_OPTS" ]; then
@@ -708,6 +710,38 @@ EOF
             fi
         done
         echo "  DB storage:       clustered (NB + SB verified)"
+    fi
+
+    # An OVSDB RAFT follower does not proxy writes — it answers "not cluster
+    # leader; trying another server" — so a northd whose client list names one
+    # member works only while it shares a node with the leader. When it does not,
+    # NB->SB translation stops dead: nothing is logged above info, every service
+    # stays active, and the only evidence is SB_Global.nb_cfg falling behind
+    # NB_Global.nb_cfg. Derive the list from the live membership rather than
+    # trusting the caller to have passed --ovn-remote.
+    if [ "${NORTHD_LOCAL_ONLY:-false}" = true ] && [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
+        NB_MEMBERS=$(sudo ovs-appctl -t /var/run/ovn/ovnnb_db.ctl \
+            cluster/status OVN_Northbound 2>/dev/null \
+            | grep -oE 'at tcp:[0-9.]+:' | sed 's/^at tcp://; s/:$//' | sort -u)
+        NB_LIST=""
+        SB_LIST=""
+        for addr in $NB_MEMBERS; do
+            NB_LIST="${NB_LIST:+$NB_LIST,}tcp:$addr:6641"
+            SB_LIST="${SB_LIST:+$SB_LIST,}tcp:$addr:6642"
+        done
+        if [ "$(printf '%s\n' "$NB_MEMBERS" | grep -c .)" -gt 1 ]; then
+            sudo sed -i "s|\"\$| --ovn-northd-nb-db=$NB_LIST --ovn-northd-sb-db=$SB_LIST\"|" \
+                /etc/default/ovn-central
+            sudo systemctl restart ovn-northd
+            echo "  ovn-northd: NB=$NB_LIST SB=$SB_LIST (derived from RAFT membership)"
+        else
+            echo "  NOTE: this node is the only NB RAFT member, so ovn-northd is pointed at" >&2
+            echo "        itself. Once the other members join, re-run this script here (or" >&2
+            echo "        pass --ovn-remote with the full member list) — otherwise northd" >&2
+            echo "        silently stops translating NB to SB the first time NB leadership" >&2
+            echo "        moves off this node, and every VPC created after that never" >&2
+            echo "        attaches its internet gateway." >&2
+        fi
     fi
 
     # Wait for the Southbound DB to be serving before ovn-controller (Step 5)

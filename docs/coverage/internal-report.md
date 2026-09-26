@@ -21,7 +21,7 @@ Pinned model source: `aws-sdk-go v1.55.8`.
 
 ## ec2
 
-`2016-11-15` — 126 of 625 modelled operations implemented (20.2%), 0 stubbed, 39 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 127 of 625 modelled operations implemented (20.3%), 0 stubbed, 39 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -287,7 +287,6 @@ Pinned model source: `aws-sdk-go v1.55.8`.
 - `DescribeVpcEndpointServiceConfigurations`
 - `DescribeVpcEndpointServicePermissions`
 - `DescribeVpcEndpointServices`
-- `DescribeVpcEndpoints`
 - `DescribeVpcPeeringConnections`
 - `DescribeVpnConnections`
 - `DescribeVpnGateways`

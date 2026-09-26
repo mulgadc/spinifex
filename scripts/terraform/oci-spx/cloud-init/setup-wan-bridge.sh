@@ -9,8 +9,9 @@ BRIDGE="${BRIDGE:-br-wan}"
 MTU="${MTU:-9000}"
 IMDS="${IMDS:-http://169.254.169.254/opc/v2}"
 
-# A file of our own. 50-cloud-init.yaml belongs to cloud-init, which rewrites it,
-# so anything added there is lost. netplan merges every file in the directory.
+# A file of our own. 50-cloud-init.yaml belongs to cloud-init, so anything added
+# there is lost when it re-renders. netplan merges every file in the directory,
+# which is also why strip_cloud_init_secondary below has work to do.
 NETPLAN_FILE="${NETPLAN_FILE:-/etc/netplan/60-spinifex-wan.yaml}"
 
 log() { printf '[spinifex-wan-bridge] %s\n' "$*"; }
@@ -131,6 +132,56 @@ EOF
     chmod 0600 "$NETPLAN_FILE"
 }
 
+# cloud-init renders 50-cloud-init.yaml from the datasource's network config, so
+# whether the secondary VNIC appears there depends on whether it was attached when
+# that ran — a race Terraform loses on some nodes and wins on others. When it does
+# appear it carries the VNIC address as a /PREFIX, and netplan merges both files:
+# the bridge gets its /32 and the member keeps the prefixed address, whose metric-0
+# on-link route takes the whole subnet off the primary VNIC. Every packet between
+# nodes then leaves the wrong VNIC and OCI drops it. The stanza also matches on the
+# MAC the bridge later clones, so once the bridge exists netplan refuses the whole
+# directory with "Cannot find unique matching interface".
+#
+# Overriding it from 60- cannot work for the same reason, so remove it, and stop
+# cloud-init re-rendering the file on a later boot. The primary VNIC's own stanza
+# stays exactly as cloud-init wrote it.
+STRIPPED=0
+
+strip_cloud_init_secondary() {
+    local file=/etc/netplan/50-cloud-init.yaml
+    [ -f "$file" ] || return 0
+
+    local removed
+    removed="$(MAC="$WAN_MAC" python3 - "$file" <<'PY'
+import os, sys, yaml
+
+path, mac = sys.argv[1], os.environ["MAC"].lower()
+with open(path) as fh:
+    cfg = yaml.safe_load(fh) or {}
+
+eths = cfg.get("network", {}).get("ethernets", {})
+drop = [n for n, e in eths.items()
+        if str((e or {}).get("match", {}).get("macaddress", "")).lower() == mac]
+if not drop:
+    sys.exit(0)
+
+for name in drop:
+    del eths[name]
+with open(path, "w") as fh:
+    yaml.safe_dump(cfg, fh, default_flow_style=False, sort_keys=False)
+print(", ".join(drop))
+PY
+    )" || die "could not edit $file"
+
+    if [ -n "$removed" ]; then
+        log "removed the secondary VNIC stanza for $removed from $file"
+        STRIPPED=1
+    fi
+
+    printf 'network: {config: disabled}\n' > /etc/cloud/cloud.cfg.d/99-spinifex-network.cfg
+    chmod 0644 /etc/cloud/cloud.cfg.d/99-spinifex-network.cfg
+}
+
 main() {
     wait_for_secondary
 
@@ -138,11 +189,13 @@ main() {
     iface="$(iface_for_mac "$WAN_MAC")" || die "no interface carries $WAN_MAC"
     log "bridging $iface into $BRIDGE"
 
+    strip_cloud_init_secondary
+
     local previous=""
     [ -f "$NETPLAN_FILE" ] && previous="$(cat "$NETPLAN_FILE")"
     write_netplan "$iface"
 
-    if [ "$previous" = "$(cat "$NETPLAN_FILE")" ] && ip link show "$BRIDGE" >/dev/null 2>&1; then
+    if [ "$STRIPPED" = 0 ] && [ "$previous" = "$(cat "$NETPLAN_FILE")" ] && ip link show "$BRIDGE" >/dev/null 2>&1; then
         log "$BRIDGE is already configured and unchanged"
         return 0
     fi

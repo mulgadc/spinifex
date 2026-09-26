@@ -139,6 +139,12 @@ curl -k https://localhost:8443/
 aws s3 ls --profile spinifex --endpoint-url https://localhost:8443
 ```
 
+### `ListTagsForResource ... no such host` After the Bucket Is Created
+
+The bucket was created and the failure is on the read-back of its tags. AWS provider 6.x reads bucket tags through S3 Control, whose endpoint carries the account ID in the hostname, so the provider dials `https://000000000001.<your-endpoint>` — a name that cannot resolve against an IP address.
+
+This workbook's provider block already sets `skip_requesting_account_id` and `skip_credentials_validation`, which is what keeps the provider on S3 `GetBucketTagging`. If you copied the block into your own configuration, carry both across: `skip_requesting_account_id` on its own has no effect, because the credentials check supplies the account ID before the account lookup is skipped.
+
 ### Flask App Not Starting
 
 SSH into the instance and check the service:

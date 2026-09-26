@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="614" viewBox="0 0 900 614">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a0a"/>
+      <stop offset="100%" style="stop-color:#0d1117"/>
+    </linearGradient>
+    <linearGradient id="oci-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#f59e0b1f"/>
+      <stop offset="100%" style="stop-color:#f59e0b08"/>
+    </linearGradient>
+    <linearGradient id="node-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#27272a88"/>
+      <stop offset="100%" style="stop-color:#27272a22"/>
+    </linearGradient>
+    <linearGradient id="overlay-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#a855f71f"/>
+      <stop offset="100%" style="stop-color:#a855f708"/>
+    </linearGradient>
+    <linearGradient id="store-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#eab3081f"/>
+      <stop offset="100%" style="stop-color:#eab30808"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="614" fill="url(#bg)" rx="12"/>
+
+  <text x="24" y="30" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#a1a1aa" letter-spacing="2.5" font-weight="600">SPINIFEX ON OCI · three nodes</text>
+  <text x="876" y="30" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#71717a" text-anchor="end">one availability zone · allocation is node-local</text>
+
+  <!-- Internet -->
+  <g transform="translate(378, 44)">
+    <rect width="144" height="26" rx="13" fill="#3f3f4666" stroke="#71717a" stroke-width="1" stroke-opacity="0.7"/>
+    <text x="72" y="18" font-family="'Segoe UI', sans-serif" font-size="12" fill="#e4e4e7" text-anchor="middle" font-weight="600">Internet</text>
+  </g>
+  <line x1="450" y1="70" x2="450" y2="86" stroke="#71717a" stroke-width="1.2"/>
+
+  <!-- OCI VCN edge -->
+  <g transform="translate(150, 86)">
+    <rect width="600" height="56" rx="10" fill="url(#oci-grad)" stroke="#f59e0b" stroke-width="1.2" stroke-opacity="0.6"/>
+    <text x="18" y="23" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#fbbf24" font-weight="700">OCI VCN edge · Internet Gateway</text>
+    <text x="18" y="42" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#fcd34d">reserved public IPs, 1:1-NATed to secondary private IPs — per VNIC, per node</text>
+  </g>
+
+  <!-- subnet bar -->
+  <line x1="60" y1="164" x2="840" y2="164" stroke="#f59e0b" stroke-width="1" stroke-opacity="0.45" stroke-dasharray="5,4"/>
+  <text x="60" y="158" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#a16207">subnet 10.200.0.0/23 — every node, on both VNICs</text>
+  <line x1="450" y1="142" x2="450" y2="164" stroke="#f59e0b" stroke-width="1.1" stroke-opacity="0.6"/>
+  <line x1="171" y1="164" x2="171" y2="182" stroke="#f59e0b" stroke-width="1.1" stroke-opacity="0.6"/>
+  <line x1="449" y1="164" x2="449" y2="182" stroke="#f59e0b" stroke-width="1.1" stroke-opacity="0.6"/>
+  <line x1="727" y1="164" x2="727" y2="182" stroke="#f59e0b" stroke-width="1.1" stroke-opacity="0.6"/>
+
+  <!-- node 1 -->
+  <g transform="translate(40, 182)">
+    <rect width="262" height="242" rx="11" fill="url(#node-grad)" stroke="#71717a" stroke-width="1.2" stroke-opacity="0.7"/>
+    <text x="16" y="24" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#e4e4e7" font-weight="700">node1</text>
+    <text x="246" y="24" font-family="'Segoe UI', sans-serif" font-size="9.5" fill="#a1a1aa" text-anchor="end">FAULT-DOMAIN-1</text>
+    <line x1="16" y1="34" x2="246" y2="34" stroke="#52525b" stroke-opacity="0.5" stroke-width="0.5"/>
+
+    <rect x="16" y="44" width="110" height="42" rx="6" fill="#a855f714" stroke="#a855f7" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="61" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#c084fc" font-weight="700">VNIC 0 · .10</text>
+    <text x="26" y="77" font-family="'Segoe UI', sans-serif" font-size="9" fill="#d8b4fe">host plane</text>
+
+    <rect x="136" y="44" width="110" height="42" rx="6" fill="#58a6ff14" stroke="#58a6ff" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="146" y="61" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#58a6ff" font-weight="700">VNIC 1 · .11</text>
+    <text x="146" y="77" font-family="'Segoe UI', sans-serif" font-size="9" fill="#93c5fd">br-wan · .40</text>
+
+    <rect x="16" y="96" width="230" height="58" rx="6" fill="#2dd4bf14" stroke="#2dd4bf" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="114" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#99f6e4">awsgw · ui · predastore</text>
+    <text x="26" y="130" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#99f6e4">nats · vpcd · daemon</text>
+    <text x="26" y="146" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#5eead4">ovn-central (raft)</text>
+
+    <rect x="16" y="164" width="230" height="30" rx="6" fill="#22c55e14" stroke="#22c55e" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="184" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#bbf7d0">i-aaa  ⇄  EIP .40</text>
+
+    <rect x="16" y="202" width="230" height="26" rx="6" fill="url(#store-grad)" stroke="#eab308" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="220" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#fde68a">iSCSI vol → /var/lib/spinifex</text>
+  </g>
+
+  <!-- node 2 -->
+  <g transform="translate(318, 182)">
+    <rect width="262" height="242" rx="11" fill="url(#node-grad)" stroke="#71717a" stroke-width="1.2" stroke-opacity="0.7"/>
+    <text x="16" y="24" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#e4e4e7" font-weight="700">node2</text>
+    <text x="246" y="24" font-family="'Segoe UI', sans-serif" font-size="9.5" fill="#a1a1aa" text-anchor="end">FAULT-DOMAIN-2</text>
+    <line x1="16" y1="34" x2="246" y2="34" stroke="#52525b" stroke-opacity="0.5" stroke-width="0.5"/>
+
+    <rect x="16" y="44" width="110" height="42" rx="6" fill="#a855f714" stroke="#a855f7" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="61" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#c084fc" font-weight="700">VNIC 0 · .20</text>
+    <text x="26" y="77" font-family="'Segoe UI', sans-serif" font-size="9" fill="#d8b4fe">host plane</text>
+
+    <rect x="136" y="44" width="110" height="42" rx="6" fill="#58a6ff14" stroke="#58a6ff" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="146" y="61" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#58a6ff" font-weight="700">VNIC 1 · .21</text>
+    <text x="146" y="77" font-family="'Segoe UI', sans-serif" font-size="9" fill="#93c5fd">br-wan · .41</text>
+
+    <rect x="16" y="96" width="230" height="58" rx="6" fill="#2dd4bf14" stroke="#2dd4bf" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="114" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#99f6e4">awsgw · ui · predastore</text>
+    <text x="26" y="130" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#99f6e4">nats · vpcd · daemon</text>
+    <text x="26" y="146" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#5eead4">ovn-central (raft)</text>
+
+    <rect x="16" y="164" width="230" height="30" rx="6" fill="#22c55e14" stroke="#22c55e" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="184" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#bbf7d0">i-bbb  ⇄  EIP .41</text>
+
+    <rect x="16" y="202" width="230" height="26" rx="6" fill="url(#store-grad)" stroke="#eab308" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="220" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#fde68a">iSCSI vol → /var/lib/spinifex</text>
+  </g>
+
+  <!-- node 3 -->
+  <g transform="translate(596, 182)">
+    <rect width="262" height="242" rx="11" fill="url(#node-grad)" stroke="#71717a" stroke-width="1.2" stroke-opacity="0.7"/>
+    <text x="16" y="24" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#e4e4e7" font-weight="700">node3</text>
+    <text x="246" y="24" font-family="'Segoe UI', sans-serif" font-size="9.5" fill="#a1a1aa" text-anchor="end">FAULT-DOMAIN-3</text>
+    <line x1="16" y1="34" x2="246" y2="34" stroke="#52525b" stroke-opacity="0.5" stroke-width="0.5"/>
+
+    <rect x="16" y="44" width="110" height="42" rx="6" fill="#a855f714" stroke="#a855f7" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="61" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#c084fc" font-weight="700">VNIC 0 · .30</text>
+    <text x="26" y="77" font-family="'Segoe UI', sans-serif" font-size="9" fill="#d8b4fe">host plane</text>
+
+    <rect x="136" y="44" width="110" height="42" rx="6" fill="#58a6ff14" stroke="#58a6ff" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="146" y="61" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#58a6ff" font-weight="700">VNIC 1 · .31</text>
+    <text x="146" y="77" font-family="'Segoe UI', sans-serif" font-size="9" fill="#93c5fd">br-wan · .42</text>
+
+    <rect x="16" y="96" width="230" height="58" rx="6" fill="#2dd4bf14" stroke="#2dd4bf" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="114" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#99f6e4">awsgw · ui · predastore</text>
+    <text x="26" y="130" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#99f6e4">nats · vpcd · daemon</text>
+    <text x="26" y="146" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#5eead4">ovn-central (raft)</text>
+
+    <rect x="16" y="164" width="230" height="30" rx="6" fill="#22c55e14" stroke="#22c55e" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="184" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#bbf7d0">i-ccc  ⇄  EIP .42</text>
+
+    <rect x="16" y="202" width="230" height="26" rx="6" fill="url(#store-grad)" stroke="#eab308" stroke-opacity="0.45" stroke-width="0.7"/>
+    <text x="26" y="220" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#fde68a">iSCSI vol → /var/lib/spinifex</text>
+  </g>
+
+  <!-- east-west plane -->
+  <line x1="171" y1="424" x2="171" y2="446" stroke="#a855f7" stroke-width="1.1" stroke-opacity="0.55"/>
+  <line x1="449" y1="424" x2="449" y2="446" stroke="#a855f7" stroke-width="1.1" stroke-opacity="0.55"/>
+  <line x1="727" y1="424" x2="727" y2="446" stroke="#a855f7" stroke-width="1.1" stroke-opacity="0.55"/>
+
+  <g transform="translate(40, 446)">
+    <rect width="818" height="60" rx="10" fill="url(#overlay-grad)" stroke="#a855f7" stroke-width="1.2" stroke-opacity="0.6"/>
+    <text x="18" y="24" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#c084fc" font-weight="700">East-west, all of it over VNIC 0 — inside the VCN</text>
+    <text x="800" y="24" font-family="'Segoe UI', sans-serif" font-size="10" fill="#d8b4fe" text-anchor="end">size this plane, not the external one</text>
+    <line x1="18" y1="34" x2="800" y2="34" stroke="#a855f7" stroke-opacity="0.3" stroke-width="0.5"/>
+    <text x="18" y="52" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#d8b4fe">Geneve overlay (UDP 6081)   ·   predastore RS(2,1) shards   ·   NATS / JetStream   ·   OVN raft</text>
+  </g>
+
+  <!-- the move -->
+  <g transform="translate(40, 520)">
+    <rect width="818" height="72" rx="10" fill="#DC262612" stroke="#DC2626" stroke-width="1.1" stroke-opacity="0.5"/>
+    <text x="18" y="24" font-family="'SF Mono', ui-monospace, monospace" font-size="11.5" fill="#F87171" font-weight="700">A guest that moves takes its address with it</text>
+    <text x="18" y="44" font-family="'Segoe UI', sans-serif" font-size="10.5" fill="#FCA5A5">node2 → node3: node3's next affinity pass reassigns the private half from VNIC 1 .21 to VNIC 1 .31 in one UpdatePrivateIp call.</text>
+    <text x="18" y="62" font-family="'Segoe UI', sans-serif" font-size="10.5" fill="#FCA5A5">The OCID and the reserved public IP are never touched, so the customer's address does not change.</text>
+  </g>
+</svg>

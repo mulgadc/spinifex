@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="626" viewBox="0 0 900 626">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a0a"/>
+      <stop offset="100%" style="stop-color:#0d1117"/>
+    </linearGradient>
+    <linearGradient id="host-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#27272a88"/>
+      <stop offset="100%" style="stop-color:#27272a22"/>
+    </linearGradient>
+    <linearGradient id="oci-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#f59e0b1f"/>
+      <stop offset="100%" style="stop-color:#f59e0b08"/>
+    </linearGradient>
+    <linearGradient id="vnic0-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#a855f71f"/>
+      <stop offset="100%" style="stop-color:#a855f708"/>
+    </linearGradient>
+    <linearGradient id="vnic1-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#58a6ff1f"/>
+      <stop offset="100%" style="stop-color:#58a6ff08"/>
+    </linearGradient>
+    <linearGradient id="cp-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#2dd4bf1f"/>
+      <stop offset="100%" style="stop-color:#2dd4bf08"/>
+    </linearGradient>
+    <linearGradient id="vpc-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#22c55e1f"/>
+      <stop offset="100%" style="stop-color:#22c55e08"/>
+    </linearGradient>
+    <linearGradient id="store-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#eab3081f"/>
+      <stop offset="100%" style="stop-color:#eab30808"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="626" fill="url(#bg)" rx="12"/>
+
+  <text x="24" y="30" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#a1a1aa" letter-spacing="2.5" font-weight="600">SPINIFEX ON OCI · single node</text>
+  <text x="876" y="30" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#71717a" text-anchor="end">the whole AWS surface inside one OCI instance</text>
+
+  <!-- Internet -->
+  <g transform="translate(378, 46)">
+    <rect width="144" height="26" rx="13" fill="#3f3f4666" stroke="#71717a" stroke-width="1" stroke-opacity="0.7"/>
+    <text x="72" y="18" font-family="'Segoe UI', sans-serif" font-size="12" fill="#e4e4e7" text-anchor="middle" font-weight="600">Internet</text>
+  </g>
+  <line x1="450" y1="72" x2="450" y2="92" stroke="#71717a" stroke-width="1.2"/>
+
+  <!-- OCI VCN edge -->
+  <g transform="translate(170, 92)">
+    <rect width="560" height="64" rx="10" fill="url(#oci-grad)" stroke="#f59e0b" stroke-width="1.2" stroke-opacity="0.6"/>
+    <text x="18" y="24" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#fbbf24" font-weight="700">OCI VCN edge · Internet Gateway</text>
+    <text x="18" y="44" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#fcd34d">RESERVED public IP</text>
+    <text x="150" y="44" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#f59e0b">— 1:1 NAT —</text>
+    <text x="246" y="44" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#fcd34d">secondary private IP on VNIC 1</text>
+    <text x="542" y="24" font-family="'Segoe UI', sans-serif" font-size="10" fill="#fcd34d" text-anchor="end">never on the wire</text>
+  </g>
+  <line x1="450" y1="156" x2="450" y2="178" stroke="#71717a" stroke-width="1.2"/>
+  <text x="462" y="172" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#71717a">subnet 10.200.0.0/23</text>
+
+  <!-- ═══ OCI instance ═══════════════════════════════ -->
+  <rect x="40" y="178" width="820" height="424" rx="12" fill="url(#host-grad)" stroke="#71717a" stroke-width="1.2" stroke-opacity="0.7"/>
+  <text x="58" y="202" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#e4e4e7" font-weight="700" letter-spacing="1">BM.Standard.E5.192 — ONE OCI INSTANCE</text>
+  <text x="842" y="202" font-family="'Segoe UI', sans-serif" font-size="10" fill="#a1a1aa" text-anchor="end">external_mode = "nat"</text>
+  <line x1="40" y1="214" x2="860" y2="214" stroke="#52525b" stroke-opacity="0.5" stroke-width="0.5"/>
+
+  <!-- VNIC 0 -->
+  <g transform="translate(64, 228)">
+    <rect width="372" height="96" rx="10" fill="url(#vnic0-grad)" stroke="#a855f7" stroke-width="1.2" stroke-opacity="0.6"/>
+    <text x="18" y="24" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#c084fc" font-weight="700">VNIC 0 · 10.200.0.10</text>
+    <text x="354" y="24" font-family="'Segoe UI', sans-serif" font-size="10" fill="#d8b4fe" text-anchor="end">host plane</text>
+    <line x1="18" y1="34" x2="354" y2="34" stroke="#a855f7" stroke-opacity="0.3" stroke-width="0.5"/>
+    <text x="18" y="54" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#d8b4fe">SSH · advertise address · AWS gateway</text>
+    <text x="18" y="72" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#d8b4fe">Geneve encap endpoint (UDP 6081)</text>
+    <text x="18" y="88" font-family="'Segoe UI', sans-serif" font-size="10" fill="#a78bfa">not bridged — netplan owns it</text>
+  </g>
+
+  <!-- VNIC 1 -->
+  <g transform="translate(464, 228)">
+    <rect width="372" height="96" rx="10" fill="url(#vnic1-grad)" stroke="#58a6ff" stroke-width="1.2" stroke-opacity="0.6"/>
+    <text x="18" y="24" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#58a6ff" font-weight="700">VNIC 1 · 10.200.0.11</text>
+    <text x="354" y="24" font-family="'Segoe UI', sans-serif" font-size="10" fill="#93c5fd" text-anchor="end">external datapath</text>
+    <line x1="18" y1="34" x2="354" y2="34" stroke="#58a6ff" stroke-opacity="0.3" stroke-width="0.5"/>
+    <text x="18" y="54" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#93c5fd">br-wan (Linux bridge · netplan · MAC cloned)</text>
+    <text x="18" y="72" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#93c5fd">secondaries .40 .41 .42 ← the EIPs</text>
+    <text x="18" y="88" font-family="'Segoe UI', sans-serif" font-size="10" fill="#60a5fa">registered with OCI by the allocator</text>
+  </g>
+
+  <!-- transit veth between VNIC1 and the control plane -->
+  <g transform="translate(650, 328)">
+    <line x1="0" y1="0" x2="0" y2="26" stroke="#DC2626" stroke-width="1.4" stroke-dasharray="4,3" opacity="0.8"/>
+    <polygon points="-5,26 0,36 5,26" fill="#DC2626" opacity="0.85"/>
+    <text x="14" y="22" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#F87171">spx-nat transit veth · 100.127.0.0/24 · MASQUERADE</text>
+  </g>
+  <line x1="250" y1="324" x2="250" y2="364" stroke="#a855f7" stroke-width="1.2" stroke-opacity="0.5"/>
+
+  <!-- Control plane -->
+  <g transform="translate(64, 364)">
+    <rect width="772" height="62" rx="10" fill="url(#cp-grad)" stroke="#2dd4bf" stroke-width="1.2" stroke-opacity="0.6"/>
+    <text x="18" y="24" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#5eead4" font-weight="700">Spinifex control plane</text>
+    <text x="754" y="24" font-family="'Segoe UI', sans-serif" font-size="10" fill="#99f6e4" text-anchor="end">OVN br-int · br-ext · br-imds</text>
+    <line x1="18" y1="34" x2="754" y2="34" stroke="#2dd4bf" stroke-opacity="0.3" stroke-width="0.5"/>
+    <text x="18" y="52" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#99f6e4">awsgw :9999   ui :3000   predastore :8443   nats · daemon · vpcd · viperblock · northstar</text>
+  </g>
+  <line x1="450" y1="426" x2="450" y2="446" stroke="#2dd4bf" stroke-width="1.2" stroke-opacity="0.5"/>
+
+  <!-- Tenant VPCs -->
+  <g transform="translate(64, 446)">
+    <rect width="530" height="138" rx="10" fill="url(#vpc-grad)" stroke="#22c55e" stroke-width="1.2" stroke-opacity="0.6"/>
+    <text x="18" y="24" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#4ade80" font-weight="700">Tenant VPCs — the AWS surface, entirely inside this host</text>
+    <line x1="18" y1="34" x2="512" y2="34" stroke="#22c55e" stroke-opacity="0.3" stroke-width="0.5"/>
+
+    <g font-family="'SF Mono', ui-monospace, monospace" font-size="10.5">
+      <rect x="18" y="46" width="236" height="78" rx="7" fill="#22c55e14" stroke="#22c55e" stroke-opacity="0.4" stroke-width="0.6"/>
+      <text x="32" y="64" fill="#86efac" font-weight="700">vpc-a · 10.0.0.0/16</text>
+      <text x="32" y="84" fill="#bbf7d0">i-aaa  10.0.1.5  ⇄ EIP .40</text>
+      <text x="32" y="104" fill="#bbf7d0">i-bbb  10.0.1.6  (private)</text>
+      <text x="32" y="118" font-size="9.5" fill="#4ade80">egress via routed NAT</text>
+
+      <rect x="276" y="46" width="236" height="78" rx="7" fill="#22c55e14" stroke="#22c55e" stroke-opacity="0.4" stroke-width="0.6"/>
+      <text x="290" y="64" fill="#86efac" font-weight="700">vpc-b · 10.1.0.0/16</text>
+      <text x="290" y="84" fill="#bbf7d0">i-ccc  10.1.1.5  ⇄ EIP .41</text>
+      <text x="290" y="104" fill="#bbf7d0">sg · route tables · IGW</text>
+      <text x="290" y="118" font-size="9.5" fill="#4ade80">tenant-isolated on br-int</text>
+    </g>
+  </g>
+
+  <!-- Storage -->
+  <g transform="translate(618, 446)">
+    <rect width="218" height="138" rx="10" fill="url(#store-grad)" stroke="#eab308" stroke-width="1.2" stroke-opacity="0.6"/>
+    <text x="16" y="24" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#facc15" font-weight="700">Block volume</text>
+    <line x1="16" y1="34" x2="202" y2="34" stroke="#eab308" stroke-opacity="0.3" stroke-width="0.5"/>
+    <g font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#fde68a">
+      <text x="16" y="54">OCI block volume</text>
+      <text x="16" y="72">attached over iSCSI</text>
+      <text x="16" y="90">/var/lib/spinifex</text>
+      <text x="16" y="108">defaults,_netdev,nofail</text>
+    </g>
+    <text x="16" y="126" font-family="'Segoe UI', sans-serif" font-size="9.5" fill="#eab308">viperblock · predastore · JetStream</text>
+  </g>
+</svg>

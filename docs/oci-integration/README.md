@@ -795,7 +795,7 @@ Credentials come from the `[spinifex]` profile that `spx admin init` writes into
 
 ### What we tested, and what happened
 
-Measured on 2026-09-26 against a three-node cluster of `VM.Standard.E6.Flex` instances in `ap-sydney-1`, running `spinifex v1.20.0-107`. Each workbook is a full `apply`, a functional assertion against the thing it built, and a `destroy`.
+Measured on 2026-09-26 against a three-node cluster of `VM.Standard.E6.Flex` instances in `ap-sydney-1`, running `spinifex v1.20.0-113`. Each workbook is a full `apply`, a functional assertion against the thing it built, and a `destroy`.
 
 | Workbook | What it exercises | Result |
 | --- | --- | --- |
@@ -806,11 +806,13 @@ Measured on 2026-09-26 against a three-node cluster of `VM.Standard.E6.Flex` ins
 | `eks-quickstart` | EKS control plane, managed node group, `kubectl` against the cluster, nodes `Ready` | **Passed** (259s) |
 | `nginx-alb` | Application Load Balancer across two subnets, two backends, health checks | **Passed** (123s) |
 | `s3-webapp` | S3 bucket, IAM role and instance profile, IMDS-fetched credentials, upload from the guest | **Failed** — see below |
-| `demo-app` | Container image for the EKS workbooks, pushed to ECR | Not yet tested on OCI |
-| `eks-https-ingress` | AWS Load Balancer Controller addon, ACM certificate, HTTPS Ingress | Not yet tested on OCI |
-| `eks-gitops-argocd` | Argo CD addon, EBS-CSI PersistentVolume, GitOps sync | Not yet tested on OCI |
+| `demo-app` | Container image for the EKS workbooks, pushed to ECR | **Passed** |
+| `eks-https-ingress` | Private-subnet workers behind a NAT gateway, LBC addon, ACM certificate, HTTPS Ingress | **Passed** (252s) |
+| `eks-gitops-argocd` | Private-subnet workers, Argo CD addon, EBS-CSI PersistentVolume, GitOps sync | **Passed** (225s) |
 
-Six of the seven pass. RDS, ECS and EKS are the answer to the question this section exists to ask: an EKS control plane and a managed node group come up, `kubectl get nodes` reports them `Ready`, a PostgreSQL instance accepts connections, and an ECS service runs behind a load balancer with a healthy target. None of it knows it is running on someone else's cloud.
+Nine of the ten pass. RDS, ECS and EKS are the answer to the question this section exists to ask: an EKS control plane and a managed node group come up, `kubectl get nodes` reports them `Ready`, a PostgreSQL instance accepts connections, and an ECS service runs behind a load balancer with a healthy target. None of it knows it is running on someone else's cloud.
+
+The last two are the harder network. Their workers sit in private subnets and reach the cluster endpoint and ECR through a NAT gateway, so a worker registering `Ready` is the proof that the whole NAT path works — which on OCI it did not until three defects in the gateway's address handling were fixed. If those two pass and `eks-quickstart` also passes, NAT egress is sound.
 
 `s3-webapp` fails on the read-back rather than the create: the AWS provider issues an **S3 Control** `ListTagsForResource` for the bucket, an endpoint nothing serves, and the SDK builds its hostname by prefixing the account ID onto the host — which cannot resolve against an IP. The bucket, the IAM role and the instance are all created correctly first. This is not OCI-specific — it fails the same way on bare metal — and it is a known defect we are fixing. Until then, either pin the AWS provider to 5.x or set `skip_requesting_account_id = true` in the provider block, and buckets apply cleanly.
 

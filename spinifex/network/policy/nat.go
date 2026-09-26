@@ -766,6 +766,17 @@ func (m *natManager) releaseHostEIP(externalIP, reason string) {
 func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 	router := topology.VPCRouter(gw.VPCID)
 
+	// The SNAT source and the host bind both have to name the address that rides
+	// the wire, the same way an EIP does. Where the public half is NAT'd upstream
+	// it is on no interface anywhere, so egress leaves with a source the cloud
+	// drops and the host EIP sweep prunes the bind straight back off as foreign.
+	publicIP := gw.PublicIP
+	dpIP, err := m.datapath(ctx, publicIP)
+	if err != nil {
+		return fmt.Errorf("resolve datapath address for NAT gateway %s: %w", publicIP, err)
+	}
+	gw.PublicIP = dpIP
+
 	snatRule := &nbdb.NAT{
 		Type:       "snat",
 		ExternalIP: gw.PublicIP,
@@ -773,6 +784,9 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 		ExternalIDs: map[string]string{
 			"spinifex:vpc_id":         gw.VPCID,
 			"spinifex:nat_gateway_id": gw.NATGatewayID,
+			// The row holds the on-wire half, so the public one survives here as
+			// the address an operator reads the NAT gateway back as.
+			"spinifex:public_ip": publicIP,
 		},
 	}
 	// Reconcile the existing row, keyed on (router, subnet CIDR) — DeleteNAT's key —

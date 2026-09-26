@@ -34,15 +34,13 @@ resources:
 - [Deploying](#deploying)
   - [Step 1. Set your Terraform inputs](#step-1-set-your-terraform-inputs)
   - [Step 2. Build the infrastructure](#step-2-build-the-infrastructure)
-  - [Step 3. Confirm what cloud-init did](#step-3-confirm-what-cloud-init-did)
-  - [Step 4. Install Spinifex and set up OVN](#step-4-install-spinifex-and-set-up-ovn)
-  - [Step 5. Form the cluster](#step-5-form-the-cluster)
-  - [Step 6. Configure Spinifex for OCI, start and verify](#step-6-configure-spinifex-for-oci-start-and-verify)
-  - [Step 7. Set Up Your Cluster](#step-7-set-up-your-cluster)
-- [Terraform and the AWS provider, after the cluster is up](#terraform-and-the-aws-provider-after-the-cluster-is-up)
-- [The `169.254.169.254` collision](#the-169254169254-collision)
+  - [Step 3. Install Spinifex and set up OVN](#step-3-install-spinifex-and-set-up-ovn)
+  - [Step 4. Form the cluster](#step-4-form-the-cluster)
+  - [Step 5. Configure Spinifex for OCI, start and verify](#step-5-configure-spinifex-for-oci-start-and-verify)
+  - [Step 6. Set up your cluster](#step-6-set-up-your-cluster)
+  - [Step 7. Run your existing Terraform against the cluster](#step-7-run-your-existing-terraform-against-the-cluster)
+  - [Step 8. Oracle Linux as a guest image](#step-8-oracle-linux-as-a-guest-image)
 - [Verify end to end](#verify-end-to-end)
-- [Oracle Linux as a guest image](#oracle-linux-as-a-guest-image)
 - [Troubleshooting](#troubleshooting)
 - [Limits in this version](#limits-in-this-version)
 
@@ -414,58 +412,7 @@ Read `nodes` twice, because the two addresses in each entry are used for differe
 > [!WARNING]
 > Never commit the state file, a plan file, or key material. `.gitignore` covers `terraform.tfstate*`, `*.tfplan`, `*.auto.tfvars`, `terraform.tfvars` and `*.pem`.
 
-## Step 3. Confirm what cloud-init did
-
-Terraform's cloud-init does the host jobs that would otherwise be manual — the iSCSI volume, `br-wan` and its source routing, and the firewall. **Check every node before installing anything**, because all three failures below are silent and expensive later:
-
-```bash
-ssh -i ~/.ssh/oci-spx ubuntu@<node-public-ip> '
-  cloud-init status                  # done
-  sudo iscsiadm -m session           # a session to 169.254.2.2:3260
-  findmnt /var/lib/spinifex          # mounted by UUID, with _netdev
-  grep spinifex /etc/fstab           # the entry that makes it survive a reboot
-  ip -br addr show br-wan            # UP, holding the second VNIC address as /32
-  ip rule show | grep 200            # source-routing rule for that address
-  ip route show table 200            # default via the VCN router, on br-wan
-  ip route show default              # still on the PRIMARY interface
-  ls -l /dev/kvm                     # present, or stop here
-'
-```
-
-A healthy node answers like this — `spinifex-node-01` from the three-node apply above:
-
-```text
-status: done
-tcp: [1] 169.254.2.2:3260,1 iqn.2015-12.com.oracleiaas:9f46b980-...-0bf96417aee1 (non-flash)
-TARGET            SOURCE    FSTYPE OPTIONS
-/var/lib/spinifex /dev/sdb  ext4   rw,relatime,stripe=256
-UUID=583c7d9e-0bec-444a-a798-eb2710fa9eaa /var/lib/spinifex ext4 defaults,_netdev,nofail 0 2
-br-wan   UP   10.200.1.31/32 fe80::17ff:fe02:6340/64
-1000:	from 10.200.1.31 lookup 200 proto static
-default via 10.200.0.1 dev br-wan proto static
-10.200.0.0/23 dev br-wan proto static scope link
-default via 10.200.0.1 dev enp0s9 proto dhcp src 10.200.1.249 metric 100
-crw-rw---- 1 root kvm 10, 232 Sep 26 03:57 /dev/kvm
-```
-
-**`_netdev` is not optional and this is where to notice it missing.** An OCI block volume is iSCSI. Without `_netdev` the mount is attempted before `iscsid` has a session, and the boot either hangs or silently lands the whole stack on the small boot disk — which looks identical to a working install until the disk fills. Verify with `findmnt`, never `ls`.
-
-**The default route stays on the *primary* VNIC.** `br-wan` carries its address as a `/32` and its own default route in **table 200**, reached by a source-routing rule. That is not a quirk of the bridge — it is how two VNICs share one subnet without the second stealing the first one's traffic, and it is what satisfies OCI's per-VNIC source check for the addresses `br-wan` will come to hold. `ip route show default` on a healthy node names the primary interface, and `br-wan`'s address appears in `ip rule` instead.
-
-**`br-wan`'s address is not one you chose.** It is the second VNIC's own private IP, assigned by OCI. In the output above the primary is `10.200.1.249` and `br-wan` is `10.200.1.31` — both in `10.200.0.0/23`, both real OCI objects, and neither predictable before the apply.
-
-**On a cluster, prove the nodes can reach each other before you form one.** Every node is in one subnet with a security list that allows the whole VCN, so this should be uninteresting — and when it is not, the symptom arrives much later as a storage fault rather than a network one:
-
-```bash
-# From each node, to the other two private addresses.
-ping -c2 -W2 10.200.0.201
-ip -br addr show enp1s0        # the bridge MEMBER must hold no address
-ip route show | grep 10.200    # one link route for the subnet, on the primary VNIC
-```
-
-A member interface still carrying the VNIC address as a `/23` is the failure to look for. The kernel derives an on-link route from it at metric 0, which beats the primary VNIC's, and every packet to another node then leaves the wrong VNIC and is dropped by OCI's source check. The node still forms a cluster and still reports `Ready`, because formation runs on connections it opened outbound; what breaks is everything another node initiates, and it surfaces as `predastore … the stripe is short one holder` on the first AMI import. `sudo /usr/local/sbin/spinifex-setup-wan-bridge` repairs it in place.
-
-## Step 4. Install Spinifex and set up OVN
+## Step 3. Install Spinifex and set up OVN
 
 Spinifex installs the same way here as anywhere else. Run this **on every node**:
 
@@ -571,7 +518,7 @@ echo "NB $(sudo ovn-nbctl --no-leader-only get NB_Global . nb_cfg) / SB $(sudo o
 
 The two numbers must be equal, or within one of each other on a busy cluster. A gap that does not close within a few seconds means the active `ovn-northd` cannot write to the Northbound leader, and `/var/log/ovn/ovn-northd.log` will be looping on `clustered database server is not cluster leader; trying another server`. The fix is the `--ovn-remote` list above.
 
-## Step 5. Form the cluster
+## Step 4. Form the cluster
 
 Everything here is Spinifex's own formation, unchanged from bare metal except for two flags that OCI requires:
 
@@ -680,7 +627,7 @@ external_mode = "nat"
 
 The join token expires 30 minutes after init; `--token-ttl 2h` if provisioning is slower than that.
 
-## Step 6. Configure Spinifex for OCI, start and verify
+## Step 5. Configure Spinifex for OCI, start and verify
 
 **This is the step that is genuinely OCI-specific**, and it is identical on one node or three. Do all of it on **every** node before starting anything.
 
@@ -805,7 +752,7 @@ sudo journalctl -u spinifex-vpcd --since -5m | grep -i ocinet
 > [!NOTE]
 > On a cold cluster start you may instead see `OCI allocator reconcile failed … nats: no responders available for request` on some nodes. That is vpcd racing JetStream's KV at boot; the startup reconcile is skipped and not retried. It is harmless on a new cluster where nothing has been allocated, and it is tracked — restart `spinifex-vpcd` on that node to run it. The `resolved the external VNIC` line above is still the one that decides whether allocation works.
 
-## Step 7. Set Up Your Cluster
+## Step 6. Set up your cluster
 
 The cluster is running, but it holds nothing yet — no machine images, no networks, no instances.
 
@@ -813,7 +760,7 @@ Continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to import a
 
 ---
 
-## Terraform and the AWS provider, after the cluster is up
+## Step 7. Run your existing Terraform against the cluster
 
 This is the part worth pausing on. Everything above builds infrastructure **on** OCI using the OCI provider. Everything from here uses the **AWS** provider — unmodified, from the OpenTofu or Terraform registry — pointed at your own cluster. The same `aws_vpc`, `aws_instance`, `aws_db_instance`, `aws_ecs_service` and `aws_eks_cluster` resources a team already has in git apply against Spinifex on an OCI tenancy, with no rewriting and no OCI-specific module.
 
@@ -844,7 +791,7 @@ provider "aws" {
 
 Credentials come from the `[spinifex]` profile that `spx admin init` writes into `~/.aws/credentials` on node 1.
 
-> **Use the node's private address, not its OCI reserved public IP.** The node certificate carries no SAN for the public address, because that address is never on the wire — OCI NATs it to a private one. An `aws` or `terraform` call to `https://<public IP>:9999` fails TLS verification with *hostname doesn't match*. Tracked as `mulga-9mhsd`; until it is fixed, run Terraform from a node or from something inside the VCN.
+> **Use the node's private address, not its OCI reserved public IP.** The node certificate carries no SAN for the public address, because that address is never on the wire — OCI NATs it to a private one. An `aws` or `terraform` call to `https://<public IP>:9999` fails TLS verification with *hostname doesn't match*. Until that is fixed, run Terraform from a node, or from anything else inside the VCN.
 
 ### What we tested, and what happened
 
@@ -858,51 +805,59 @@ Measured on 2026-09-26 against a three-node cluster of `VM.Standard.E6.Flex` ins
 | `ecs-quickstart` | ECS cluster, task definition, service, container instances, ALB with a healthy target | **Passed** (166s) |
 | `eks-quickstart` | EKS control plane, managed node group, `kubectl` against the cluster, nodes `Ready` | **Passed** (259s) |
 | `nginx-alb` | Application Load Balancer across two subnets, two backends, health checks | **Passed** (123s) |
-| `s3-webapp` | S3 bucket, IAM role and instance profile, IMDS-fetched credentials, upload from the guest | **Failed** — `mulga-ape26` |
+| `s3-webapp` | S3 bucket, IAM role and instance profile, IMDS-fetched credentials, upload from the guest | **Failed** — see below |
 | `demo-app` | Container image for the EKS workbooks, pushed to ECR | Not yet tested on OCI |
 | `eks-https-ingress` | AWS Load Balancer Controller addon, ACM certificate, HTTPS Ingress | Not yet tested on OCI |
 | `eks-gitops-argocd` | Argo CD addon, EBS-CSI PersistentVolume, GitOps sync | Not yet tested on OCI |
 
 Six of the seven pass. RDS, ECS and EKS are the answer to the question this section exists to ask: an EKS control plane and a managed node group come up, `kubectl get nodes` reports them `Ready`, a PostgreSQL instance accepts connections, and an ECS service runs behind a load balancer with a healthy target. None of it knows it is running on someone else's cloud.
 
-`s3-webapp` fails on the read-back rather than the create: the AWS provider issues an **S3 Control** `ListTagsForResource` for the bucket, an endpoint nothing serves, and the SDK builds its hostname by prefixing the account ID onto the host — which cannot resolve against an IP. The bucket, the IAM role and the instance are all created correctly first. This is not OCI-specific; it is tracked as `mulga-ape26`.
+`s3-webapp` fails on the read-back rather than the create: the AWS provider issues an **S3 Control** `ListTagsForResource` for the bucket, an endpoint nothing serves, and the SDK builds its hostname by prefixing the account ID onto the host — which cannot resolve against an IP. The bucket, the IAM role and the instance are all created correctly first. This is not OCI-specific — it fails the same way on bare metal — and it is a known defect we are fixing. Until then, either pin the AWS provider to 5.x or set `skip_requesting_account_id = true` in the provider block, and buckets apply cleanly.
 
 Two things bit during the run that are worth knowing before you hit them, neither of which is a reason the workbooks do not work:
 
-- A `spinifex-daemon` restart while a node group is creating is terminal for that node group — `NodeCreationFailure: create interrupted by daemon restart`, with no retry (`mulga-skfof`).
-- A `terraform destroy` immediately followed by a `terraform apply` of the same EKS cluster name can fail with `ResourceInUseException` while `DescribeCluster` and `ListClusters` both report the cluster gone, so there is nothing to wait on (`mulga-4erx3`). Leave a minute between the two.
-
-### Three defects this exercise found, all now fixed
-
-None of them would have been visible on a single node, and each on its own made *every* `terraform apply` hang forever on `aws_internet_gateway.igw: Still creating...` with every service reporting healthy. They stack: fixing the reconciler pair alone leaves the cluster just as stuck, because northd never creates the port the reconciler is waiting to see claimed.
-
-- **`ovn-northd` was dialling only its local OVSDB socket** (`mulga-848of`). A RAFT follower does not forward writes, so northd stopped translating Northbound intent into Southbound flows the moment database leadership moved to another node. `SB_Global.nb_cfg` sat seventeen transactions behind `NB_Global.nb_cfg` and no VPC created after that point ever got its chassisredirect port. The `--ovn-remote` list in [Step 4](#three-nodes) is what prevents it, and the `nb_cfg` comparison there is what detects it.
-- **The gateway datapath probe ran on the wrong node, then aimed at the wrong address** (`mulga-gop5m`, `mulga-cftrh`). The probe is host-local, but ran wherever the reconcile lease happened to land; and on OCI it targeted the cloud-NAT'd public IP, which is on no interface anywhere. Both are fixed in the reconciler — see `docs/development/bugs/multi-node-gateway-convergence.md`.
+- A `spinifex-daemon` restart while a node group is creating is terminal for that node group — `NodeCreationFailure: create interrupted by daemon restart`, with no retry.
+- A `terraform destroy` immediately followed by a `terraform apply` of the same EKS cluster name can fail with `ResourceInUseException` while `DescribeCluster` and `ListClusters` both report the cluster gone, so there is nothing to wait on. Leave a minute between the two.
 
 ---
 
-## The `169.254.169.254` collision
+## Step 8. Oracle Linux as a guest image
 
-Spinifex serves guest instance metadata on `169.254.169.254` and VPC DNS on `169.254.169.253`, because that is what an AWS-compatible guest expects. **OCI uses `169.254.169.254` for its own instance metadata**, and the host needs it — the identity certificate and the iSCSI boot path both depend on it.
+Spinifex ships four Oracle Linux entries in its image catalog, so a customer on OCI can run the same distro their Oracle support contract covers. They import exactly like any other AMI — nothing about them is OCI-specific, and they run equally well on bare metal:
 
-Without the remap, the first guest launch puts `169.254.169.254/32` on a per-tap endpoint, `ip route get 169.254.169.254` starts returning `local … dev lo`, and the host's own metadata service stops answering.
-
-**The guest keeps addressing `169.254.169.254`.** That is not negotiable — it is what AWS compatibility means. The remap is entirely host-side, and it is safe because the IMDS datapath is OpenFlow-steered rather than routed: the ARP responder, the ingress demux and the egress flow all match the guest-facing addresses and are untouched. Only two things change:
-
-1. The per-tap `ime-` endpoint takes the host-side pair from config instead of the guest-facing pair.
-2. A PREROUTING DNAT on `-i ime-+` translates the guest-facing pair to the host-side pair. Conntrack un-NATs the reply, so nothing on the return path needs to know.
-
-Pick any unused link-local pair. `169.254.42.254` / `169.254.42.253` is the tested choice. **Set both keys or neither** — a half-configured pair is ignored, and the node behaves as if the remap were off.
-
-Verify after the first guest launches:
+| Catalog name | Release | Arch | Kernel |
+| --- | --- | --- | --- |
+| `oracle-10.1-x86_64` | Oracle Linux 10.1 | x86_64 | UEK 8 |
+| `oracle-10.1-arm64` | Oracle Linux 10.1 | arm64 | UEK 8 |
+| `oracle-9.8-x86_64` | Oracle Linux 9.8 | x86_64 | UEK 7 |
+| `oracle-9.8-arm64` | Oracle Linux 9.8 | arm64 | UEK 7 |
 
 ```bash
-ip route get 169.254.169.254                 # must be your real NIC, not lo
-curl -sH 'Authorization: Bearer Oracle' -o /dev/null -w '%{http_code}\n' \
-     http://169.254.169.254/opc/v2/instance/ # must be 200
-ip -br addr show | grep ime-                 # endpoint holds 169.254.42.x, not .169.x
-sudo iptables -t nat -S | grep spinifex-imds-remap
+sudo spx admin images import --name oracle-10.1-x86_64 --config /etc/spinifex/spinifex.toml
+aws ec2 describe-images --query 'Images[].[Name,State,BootMode]' --output text
 ```
+
+All four boot **UEFI**, so launch them into a shape that boots UEFI — a BIOS-only instance type will not come up, and the failure looks like a hung boot rather than a rejected image.
+
+### The login user is `cloud-user`, not `opc`
+
+```bash
+ssh -i path/to/key.pem cloud-user@<public-ip>
+```
+
+**This is the one that catches people.** `opc` is the default user on the images Oracle publishes *into OCI itself*; these are the generic **KVM cloud images** from `yum.oracle.com`, whose cloud-init `default_user` is `cloud-user`. Verified on both releases: `opc`, `oracle` and `ec2-user` are all refused. The Spinifex UI's instance detail page shows the right user per AMI, so read it there rather than guessing from the distro.
+
+### Why these four pin a checksum digest inline
+
+Every other catalog entry verifies against the publisher's sums file. Oracle ships none — the digests are published as HTML on `yum.oracle.com/oracle-linux-templates.html` — so these four carry `ChecksumDigest` in `spinifex/utils/images.go` instead. That is safe **only** because each URL names an immutable build (`b291`, `b293`, `b178`, `b182`) and Oracle never moves one. A new point release is a new URL and a new digest, never an edit to an existing entry.
+
+On arm64 Oracle publishes a `-kvm-cloud-` build alongside a plain `-kvm-` one. The catalog takes `-kvm-cloud-`: it is the one with cloud-init, and so the one that matches x86_64's `-kvm-`. The plain arm64 build imports fine and then has no datasource, which surfaces as an instance with no key and no metadata rather than as an import error.
+
+### SELinux is enforcing
+
+Both releases ship `SELinux: enforcing`, unlike the Debian and Ubuntu images. That is the upstream default and Spinifex does not change it. It does not affect networking, IMDS or cloud-init — all verified working — but a workload that has only ever run on Debian may meet it for the first time here.
+
+---
 
 ---
 
@@ -958,44 +913,6 @@ ip route show | grep spx-nat-host              # route to the PRIVATE address
 
 ---
 
-## Oracle Linux as a guest image
-
-Spinifex ships four Oracle Linux entries in its image catalog, so a customer on OCI can run the same distro their Oracle support contract covers. They import exactly like any other AMI — nothing about them is OCI-specific, and they run equally well on bare metal:
-
-| Catalog name | Release | Arch | Kernel |
-| --- | --- | --- | --- |
-| `oracle-10.1-x86_64` | Oracle Linux 10.1 | x86_64 | UEK 8 |
-| `oracle-10.1-arm64` | Oracle Linux 10.1 | arm64 | UEK 8 |
-| `oracle-9.8-x86_64` | Oracle Linux 9.8 | x86_64 | UEK 7 |
-| `oracle-9.8-arm64` | Oracle Linux 9.8 | arm64 | UEK 7 |
-
-```bash
-sudo spx admin images import --name oracle-10.1-x86_64 --config /etc/spinifex/spinifex.toml
-aws ec2 describe-images --query 'Images[].[Name,State,BootMode]' --output text
-```
-
-All four boot **UEFI**, so launch them into a shape that boots UEFI — a BIOS-only instance type will not come up, and the failure looks like a hung boot rather than a rejected image.
-
-### The login user is `cloud-user`, not `opc`
-
-```bash
-ssh -i path/to/key.pem cloud-user@<public-ip>
-```
-
-**This is the one that catches people.** `opc` is the default user on the images Oracle publishes *into OCI itself*; these are the generic **KVM cloud images** from `yum.oracle.com`, whose cloud-init `default_user` is `cloud-user`. Verified on both releases: `opc`, `oracle` and `ec2-user` are all refused. The Spinifex UI's instance detail page shows the right user per AMI, so read it there rather than guessing from the distro.
-
-### Why these four pin a checksum digest inline
-
-Every other catalog entry verifies against the publisher's sums file. Oracle ships none — the digests are published as HTML on `yum.oracle.com/oracle-linux-templates.html` — so these four carry `ChecksumDigest` in `spinifex/utils/images.go` instead. That is safe **only** because each URL names an immutable build (`b291`, `b293`, `b178`, `b182`) and Oracle never moves one. A new point release is a new URL and a new digest, never an edit to an existing entry.
-
-On arm64 Oracle publishes a `-kvm-cloud-` build alongside a plain `-kvm-` one. The catalog takes `-kvm-cloud-`: it is the one with cloud-init, and so the one that matches x86_64's `-kvm-`. The plain arm64 build imports fine and then has no datasource, which surfaces as an instance with no key and no metadata rather than as an import error.
-
-### SELinux is enforcing
-
-Both releases ship `SELinux: enforcing`, unlike the Debian and Ubuntu images. That is the upstream default and Spinifex does not change it. It does not affect networking, IMDS or cloud-init — all verified working — but a workload that has only ever run on Debian may meet it for the first time here.
-
----
-
 ## Troubleshooting
 
 ### Addresses and quotas
@@ -1021,15 +938,50 @@ Both releases ship `SELinux: enforcing`, unlike the Debian and Ubuntu images. Th
 
 **An address went dark after a guest moved node.** The affinity pass should have claimed it within 15 seconds. Check the new node's daemon journal for `ocinet affinity`, then confirm with step 4 above which VNIC OCI thinks holds the private half.
 
+### A node that was fine and then was not
+
+Terraform's cloud-init does the host jobs on each node — the iSCSI volume, `br-wan` and its source routing, the firewall. When one of them did not take, the symptom arrives much later and rarely looks like a networking or storage problem. This one command answers all of it:
+
+```bash
+ssh -i ~/.ssh/oci-spx ubuntu@<node-public-ip> '
+  cloud-init status                  # done
+  sudo iscsiadm -m session           # a session to 169.254.2.2:3260
+  findmnt /var/lib/spinifex          # mounted by UUID, with _netdev
+  ip -br addr show br-wan            # UP, second VNIC address as a /32
+  ip -br addr show enp1s0            # the bridge MEMBER holds NO address
+  ip route show default              # still on the PRIMARY interface
+  ls -l /dev/kvm                     # present
+'
+```
+
+Three answers are worth knowing in advance, because each looks wrong and is not:
+
+- **`br-wan` holds a `/32` and the default route is on the other interface.** That is how two VNICs share one subnet without the second stealing the first one's traffic, and it is what satisfies OCI's per-VNIC source check. `br-wan`'s address appears in `ip rule` instead of in the default route.
+- **`br-wan`'s address is not one you chose.** It is the second VNIC's own private IP, assigned by OCI, and not predictable before the apply.
+- **`enp1s0` carrying an address is the one real fault here.** The kernel derives an on-link route from it that beats the primary VNIC's, so every packet to another node leaves the wrong VNIC and OCI drops it. The node still forms a cluster and still reports `Ready` — formation uses outbound connections — and it surfaces later as `predastore … the stripe is short one holder` on the first AMI import. `sudo /usr/local/sbin/spinifex-setup-wan-bridge` repairs it in place.
+
 ### Host
 
 **`RunInstances` returns `ServerInternal`.** Check the daemon journal for the real error — `journalctl -u spinifex-daemon --since -10m`. An OCI allocation failure surfaces this way.
 
-**Guests boot but cloud-init hangs on metadata.** That is [the `169.254.169.254` collision](#the-169254169254-collision). `ip route get 169.254.169.254` returning `dev lo` is the signature.
-
-**The host loses its own metadata service after a guest terminates.** A known teardown leak: an `ime-` endpoint can survive guest termination still holding its address. With the remap configured this is harmless; without it, the host's metadata route is captured. Remove the stale OVS port by hand and configure the remap.
-
 **The stack ends up on the boot disk and the node fills.** The data volume was mounted without `_netdev` and lost the race with `iscsid`. `findmnt /var/lib/spinifex` is the check; `ls` cannot tell the difference.
+
+### Guests cannot reach instance metadata
+
+**Guests boot but cloud-init hangs on metadata**, or the host stops answering its own. OCI uses `169.254.169.254` for its instance metadata, and so does every AWS-compatible guest — the host and the guests want the same address.
+
+Spinifex resolves this by moving the *host* side of the per-guest metadata link to a different link-local pair, so guests keep asking `169.254.169.254` exactly as they do on AWS. [Step 5](#step-5-configure-spinifex-for-oci-start-and-verify) sets `imds_host_meta_ip` and `imds_host_dns_ip` for you. **Set both or neither** — a half-configured pair is ignored and the node behaves as if the remap were off, which is what this symptom looks like.
+
+Check it after your first guest launches:
+
+```bash
+ip route get 169.254.169.254                 # your real NIC, not lo
+curl -sH 'Authorization: Bearer Oracle' -o /dev/null -w '%{http_code}\n' \
+     http://169.254.169.254/opc/v2/instance/ # 200
+ip -br addr show | grep ime-                 # holds 169.254.42.x, not .169.x
+```
+
+`ip route get 169.254.169.254` returning `dev lo` is the signature of a missing remap. The same signature can appear after a guest terminates, from a leftover `ime-` endpoint still holding the address; with the remap configured it is harmless, and removing the stale OVS port clears it.
 
 ---
 

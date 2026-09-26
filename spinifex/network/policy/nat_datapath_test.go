@@ -138,3 +138,48 @@ func TestNATManager_PruneOrphanEIPs_ResolverFailureAbortsTheSweep(t *testing.T) 
 	assert.NotNil(t, findNAT(m, "dnat_and_snat", "172.31.0.4"),
 		"an unresolvable sweep must change nothing")
 }
+
+// A NAT gateway's SNAT source is the same kind of address an EIP is, so it needs
+// the same mapping. Carrying the public half means every private-subnet guest
+// egresses with a source the cloud drops, while the gateway reports available.
+func TestNATManager_AddNATGateway_RowCarriesTheDatapathAddress(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeRouted,
+		WithDatapathResolver(pairResolver("203.0.113.9", "10.200.0.183")))
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddNATGateway(ctx, NATGWSpec{
+		VPCID: "vpc-1", NATGatewayID: "nat-abc",
+		PublicIP: "203.0.113.9", SubnetCIDR: "10.0.1.0/24",
+	}))
+
+	row := findNAT(m, "snat", "10.0.1.0/24")
+	require.NotNil(t, row)
+	assert.Equal(t, "10.200.0.183", row.ExternalIP,
+		"SNAT must rewrite to the address the cloud actually accepts as a source")
+	assert.Equal(t, "203.0.113.9", row.ExternalIDs["spinifex:public_ip"],
+		"the public half is what an operator reads the NAT gateway back as")
+}
+
+// A resolver that cannot answer must fail the call rather than fall through to
+// the public address, which would install a rule that silently drops egress.
+func TestNATManager_AddNATGateway_ResolverErrorFails(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeRouted,
+		WithDatapathResolver(func(context.Context, string) (string, error) {
+			return "", errors.New("lookup unavailable")
+		}))
+	require.NoError(t, err)
+
+	err = nm.AddNATGateway(ctx, NATGWSpec{
+		VPCID: "vpc-1", NATGatewayID: "nat-abc",
+		PublicIP: "203.0.113.9", SubnetCIDR: "10.0.1.0/24",
+	})
+	require.Error(t, err)
+	assert.Nil(t, findNAT(m, "snat", "10.0.1.0/24"),
+		"no rule at all beats a rule pointing at an address that is on no wire")
+}

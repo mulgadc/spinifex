@@ -250,10 +250,13 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 		if keyIsVersion(key) {
 			continue
 		}
+		// Fail the pass; skipping narrows localVPCs, which drops every ENI in the
+		// VPC, which the port sweep reads as permission to delete every live
+		// guest's port. Unmarshal failures below stay skips — poison record, not
+		// an unhealthy store.
 		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			slog.Warn("reconcile/intent: VPC read failed", "key", key, "err", err)
-			continue
+			return nil, fmt.Errorf("read VPC %s: %w", key, err)
 		}
 		var rec handlers_ec2_vpc.VPCRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
@@ -297,8 +300,7 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 		}
 		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			slog.Warn("reconcile/intent: subnet read failed", "key", key, "err", err)
-			continue
+			return fmt.Errorf("read subnet %s: %w", key, err)
 		}
 		var rec handlers_ec2_vpc.SubnetRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
@@ -341,8 +343,7 @@ func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]s
 		}
 		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			slog.Warn("reconcile/intent: SG read failed", "key", key, "err", err)
-			continue
+			return fmt.Errorf("read security group %s: %w", key, err)
 		}
 		var rec handlers_ec2_vpc.SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
@@ -381,8 +382,7 @@ func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string
 		}
 		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			slog.Warn("reconcile/intent: ENI read failed", "key", key, "err", err)
-			continue
+			return fmt.Errorf("read ENI %s: %w", key, err)
 		}
 		var rec handlers_ec2_vpc.ENIRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
@@ -499,8 +499,7 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		}
 		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			slog.Warn("reconcile/intent: IGW read failed", "key", key, "err", err)
-			continue
+			return fmt.Errorf("read IGW %s: %w", key, err)
 		}
 		var rec handlers_ec2_igw.IGWRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
@@ -542,8 +541,7 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		}
 		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			slog.Warn("reconcile/intent: EIP read failed", "key", key, "err", err)
-			continue
+			return fmt.Errorf("read EIP %s: %w", key, err)
 		}
 		var rec handlers_ec2_eip.EIPRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
@@ -592,8 +590,7 @@ func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[
 		}
 		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			slog.Warn("reconcile/intent: route table read failed", "key", key, "err", err)
-			continue
+			return nil, fmt.Errorf("read route table %s: %w", key, err)
 		}
 		var rec handlers_ec2_routetable.RouteTableRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
@@ -641,8 +638,7 @@ func loadNATGWs(
 		}
 		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			slog.Warn("reconcile/intent: NAT GW read failed", "key", key, "err", err)
-			continue
+			return fmt.Errorf("read NAT gateway %s: %w", key, err)
 		}
 		var rec handlers_ec2_natgw.NatGatewayRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {

@@ -738,21 +738,45 @@ func TestSpinifexTomlTemplate_ExternalPoolStaticSource(t *testing.T) {
 	assert.Contains(t, content, `gateway     = "192.168.1.1"`)
 }
 
-// Formation joiners must receive PoolBindBridge from the init node so the
+// Formation joiners must receive BindBridge from the init node so the
 // cluster-wide config reaches every chassis intact.
 func TestApplyNetworkConfig_PropagatesPoolBindBridge(t *testing.T) {
 	settings := &admin.ConfigSettings{}
 	nc := &formation.NetworkConfig{
-		ExternalMode:   "pool",
-		PoolName:       "wan",
-		PoolSource:     "dhcp",
-		PoolBindBridge: "br-wan",
-		PoolPrefixLen:  24,
+		ExternalMode: "pool",
+		Pools: []admin.PoolData{{
+			Name: "wan", Source: "dhcp", BindBridge: "br-wan", PrefixLen: 24,
+		}},
 	}
 	applyNetworkConfig(settings, nc)
 	require.Len(t, settings.Pools, 1)
 	assert.Equal(t, "dhcp", settings.Pools[0].Source)
 	assert.Equal(t, "br-wan", settings.Pools[0].BindBridge)
+	assert.Empty(t, settings.BridgeMode, "bridged modes stay auto-detected, only nat is pinned")
+}
+
+// Routed NAT renders two pools, and the transit one carries a gateway-LRP range
+// that pool mode has no equivalent for. A joiner that received only the first,
+// or lost the range, would allocate VPC gateway addresses from nowhere.
+func TestApplyNetworkConfig_PropagatesEveryPool(t *testing.T) {
+	settings := &admin.ConfigSettings{}
+	nc := &formation.NetworkConfig{
+		ExternalMode: "nat",
+		Pools: []admin.PoolData{
+			{Name: "nat-transit", Gateway: "100.127.0.1", PrefixLen: 24,
+				GwLrpRangeStart: "100.127.0.16", GwLrpRangeEnd: "100.127.0.254"},
+			{Name: "wan", Source: "static", Start: "192.168.1.150", End: "192.168.1.200",
+				Gateway: "192.168.1.1", PrefixLen: 24},
+		},
+	}
+	applyNetworkConfig(settings, nc)
+	require.Len(t, settings.Pools, 2)
+	assert.Equal(t, "nat", settings.BridgeMode,
+		"a joiner that loses bridge_mode falls back to autodetection for a mode init pinned")
+	assert.Equal(t, "nat-transit", settings.Pools[0].Name)
+	assert.Equal(t, "100.127.0.16", settings.Pools[0].GwLrpRangeStart)
+	assert.Equal(t, "100.127.0.254", settings.Pools[0].GwLrpRangeEnd)
+	assert.Equal(t, "wan", settings.Pools[1].Name)
 }
 
 func renderSingleNodePredastore(t *testing.T, settings admin.ConfigSettings) string {
@@ -1405,7 +1429,36 @@ func TestImportSourceResolveDigest(t *testing.T) {
 		var out, errOut bytes.Buffer
 		_, err := importSource{imageFile: img, imageName: "debian-13-x86_64"}.resolveDigest(&out, &errOut)
 		require.Error(t, err)
-		assert.Contains(t, errOut.String(), "missing Checksum/ChecksumType")
+		assert.Contains(t, errOut.String(), "missing Checksum/ChecksumDigest/ChecksumType")
+	})
+
+	// Oracle publishes its digests inline on a web page and ships no sums file,
+	// so a pinned digest is the only way its entries can import verified.
+	t.Run("catalog pinned digest verifies without fetching a sums file", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{
+			imageFile: img, imageName: "oracle-10.1-x86_64",
+			image: utils.Images{ChecksumType: "sha256", ChecksumDigest: imgHex},
+		}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: imgHex, Source: catalogPinnedDigestSource,
+			Verification: ebsmetadata.DigestCatalog, Filename: "image.raw",
+		}, got)
+		assert.Contains(t, out.String(), "pinned catalog digest")
+	})
+
+	t.Run("catalog pinned digest mismatch is refused and names the url", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		wrong := strings.Repeat("a", 64)
+		_, err := importSource{
+			imageFile: img, imageName: "oracle-10.1-x86_64",
+			image: utils.Images{ChecksumType: "sha256", ChecksumDigest: wrong, URL: "https://example.invalid/ol.qcow2"},
+		}.resolveDigest(&out, &errOut)
+		require.ErrorIs(t, err, utils.ErrChecksumMismatch)
+		assert.Contains(t, errOut.String(), catalogPinnedDigestSource)
+		assert.Contains(t, errOut.String(), "https://example.invalid/ol.qcow2")
+		assert.FileExists(t, img, "the downloaded file must be left in place")
 	})
 
 	t.Run("unreadable image fails the unverified hash", func(t *testing.T) {

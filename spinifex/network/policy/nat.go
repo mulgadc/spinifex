@@ -27,6 +27,10 @@ type EIPSpec struct {
 	LogicalIP  string
 	PortName   string
 	MAC        string
+	// NATGateway marks an address belonging to a NAT gateway rather than an
+	// ENI. It has no port to locate it by, so the VPC's gateway chassis is what
+	// says which node's host state it belongs in.
+	NATGateway bool
 }
 
 // NATGWSpec is a NAT Gateway SNAT rule keyed by (snat, SubnetCIDR).
@@ -65,6 +69,12 @@ type NATManager interface {
 	// host state for each. Rows with no stamped logical port are left untouched
 	// (owner undeterminable). Returns the number of rows removed.
 	PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, error)
+
+	// BindHostEIPs installs the host-side plumbing for every EIP this node
+	// owns and prunes what specs no longer asks for. specs must be the whole
+	// intent, since anything missing from it is pruned. No-op outside routed
+	// mode.
+	BindHostEIPs(ctx context.Context, specs []EIPSpec) error
 
 	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
 	AddNATGateway(ctx context.Context, gw NATGWSpec) error
@@ -144,6 +154,18 @@ type HostEIPBinder struct {
 	Bind   func(eip EIPSpec, gwLrpIP string) error
 	Unbind func(externalIP string) error
 	List   func() ([]string, error)
+	// Owns reports whether portName is on this chassis. Bind asks the same
+	// question before plumbing anything; the prune has to ask it again because a
+	// guest can move to another node long after the bind, leaving this host with
+	// a route and a proxy-ARP entry for an address it can no longer serve. Nil
+	// keeps the older behaviour of pruning on cluster-wide intent alone.
+	Owns func(portName string) (bool, error)
+	// GatewayElsewhere is Owns for an address with no port: it reports whether
+	// another chassis holds the VPC's gateway, which is where a NAT gateway's
+	// datapath runs. True only when some other node has claimed it, so an
+	// unclaimed gateway leaves the binding alone. Nil keeps the older behaviour
+	// of every node plumbing every NAT gateway.
+	GatewayElsewhere func(vpcID string) (bool, error)
 }
 
 // WithHostEIPBinder injects the routed-mode host plumbing hooks fired on EIP
@@ -173,6 +195,28 @@ func WithSNATExemptSet(setName string, cidrs []string) Option {
 	}
 }
 
+// DatapathResolver maps an external IP to the address that actually rides the
+// wire. Everywhere but OCI the two are the same and the resolver returns its
+// input; on OCI an allocation is a pair whose public half is NAT'd upstream and
+// never appears on any interface, so a dnat_and_snat or a host /32 built from
+// it matches nothing.
+//
+// It sits here rather than at each publisher because this is the only place
+// every path converges: the launch commit, the reconciler's re-assert and the
+// orphan prune all reach OVN through natManager, and a mapping applied at some
+// of them would have the prune sweeping the rules the others installed.
+type DatapathResolver func(ctx context.Context, externalIP string) (string, error)
+
+// WithDatapathResolver installs the external-IP → on-wire-address mapping.
+// Unset means identity, which is every deployment that is not on OCI.
+func WithDatapathResolver(r DatapathResolver) Option {
+	return func(m *natManager) {
+		if r != nil {
+			m.datapath = r
+		}
+	}
+}
+
 type natManager struct {
 	ovn           ovn.Client
 	mode          NATMode
@@ -182,6 +226,7 @@ type natManager struct {
 	exemptSetName string
 	exemptCIDRs   []string
 	hostBinder    *HostEIPBinder
+	datapath      DatapathResolver
 }
 
 var _ NATManager = (*natManager)(nil)
@@ -198,6 +243,7 @@ func NewNATManager(client ovn.Client, mode NATMode, opts ...Option) (NATManager,
 		barrier:    func() error { return nil },
 		neigh:      func(string) error { return nil },
 		neighPrime: func(EIPSpec) error { return nil },
+		datapath:   func(_ context.Context, ip string) (string, error) { return ip, nil },
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -222,6 +268,17 @@ func (m *natManager) exemptSetUUID(ctx context.Context) (*string, error) {
 func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	router := topology.VPCRouter(eip.VPCID)
 
+	// Everything below works in datapath addresses, so the row, the idempotency
+	// lookups, the predecessor scrub and the host bind all agree. The public
+	// address survives only as the external-ID stamp, which is where an operator
+	// reads back what the instance is reachable on.
+	publicIP := eip.ExternalIP
+	dpIP, err := m.datapath(ctx, publicIP)
+	if err != nil {
+		return fmt.Errorf("resolve datapath address for EIP %s: %w", publicIP, err)
+	}
+	eip.ExternalIP = dpIP
+
 	exemptUUID, err := m.exemptSetUUID(ctx)
 	if err != nil {
 		return err
@@ -233,7 +290,7 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		LogicalIP:  eip.LogicalIP,
 		ExternalIDs: map[string]string{
 			"spinifex:vpc_id":    eip.VPCID,
-			"spinifex:public_ip": eip.ExternalIP,
+			"spinifex:public_ip": publicIP,
 		},
 	}
 	// Stamp the owning ENI port so DeleteEIP can owner-scope a stale delete.
@@ -243,7 +300,7 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		natRule.ExternalIDs["spinifex:logical_port"] = eip.PortName
 	}
 	natRule.ExemptedExtIps = exemptUUID
-	distributed := m.mode == NATModeDistributed && eip.PortName != "" && eip.MAC != ""
+	distributed := m.distributes(eip)
 	if distributed {
 		mac := eip.MAC
 		port := eip.PortName
@@ -333,6 +390,23 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	return m.bindHostEIP(ctx, eip)
 }
 
+// distributes reports whether OVN processes this rule on the instance's own
+// chassis rather than on the VPC's gateway chassis.
+//
+// Routed mode qualifies for the same reason pool mode does: OVN's ARP
+// responder answers for the external IP on the external segment using the
+// per-rule external MAC. Routed mode's external segment is the spx-nat veth
+// pair, which is per node, so only the node running the instance can answer —
+// the topology gates what the rule would otherwise have to.
+func (m *natManager) distributes(eip EIPSpec) bool {
+	switch m.mode {
+	case NATModeDistributed, NATModeRouted:
+		return eip.PortName != "" && eip.MAC != ""
+	default:
+		return false
+	}
+}
+
 // bindHostEIP fires the routed-mode host plumbing hook for an EIP. No-op in
 // other modes or when no binder is configured. Errors are returned so a
 // half-plumbed EIP surfaces to the caller (reconcile retries the bind).
@@ -340,14 +414,74 @@ func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec) error {
 	if m.mode != NATModeRouted || m.hostBinder == nil {
 		return nil
 	}
-	gwLrpIP := m.gatewayPortIP(ctx, eip.VPCID)
-	if gwLrpIP == "" {
-		return fmt.Errorf("bind host EIP %s: gateway LRP IP unknown for %s (IGW attached?)", eip.ExternalIP, eip.VPCID)
+	// A NAT gateway has no port for the binder's own locality test to find, so
+	// ask the gateway chassis instead; every other node plumbing it is what
+	// hijacks traffic on a cloud that puts the address in the nodes' subnet.
+	if m.gatewayElsewhere(eip) {
+		slog.Debug("policy: NAT gateway runs on another chassis, leaving its host binding alone",
+			"external_ip", eip.ExternalIP, "vpc_id", eip.VPCID)
+		return nil
+	}
+	// A distributed EIP answers ARP on the local transit veth, so the host
+	// reaches it on-link and no gateway LRP is involved. Demanding one here is
+	// what stopped a non-gateway node ever binding an EIP: the address it would
+	// have found belongs to a segment only the gateway chassis can reach.
+	var gwLrpIP string
+	if !m.distributes(eip) {
+		gwLrpIP = m.gatewayPortIP(ctx, eip.VPCID)
+		if gwLrpIP == "" {
+			return fmt.Errorf("bind host EIP %s: gateway LRP IP unknown for %s (IGW attached?)", eip.ExternalIP, eip.VPCID)
+		}
 	}
 	if err := m.hostBinder.Bind(eip, gwLrpIP); err != nil {
-		return fmt.Errorf("bind host EIP %s via %s: %w", eip.ExternalIP, gwLrpIP, err)
+		return fmt.Errorf("bind host EIP %s (next hop %q): %w", eip.ExternalIP, gwLrpIP, err)
 	}
 	return nil
+}
+
+// BindHostEIPs is documented on the NATManager interface.
+//
+// The NB rows are one writer's job, but routes and proxy-ARP are per node and
+// Bind already leaves alone an EIP whose ENI is on another chassis, so two
+// nodes never contend for the same one. Running this only where the NB writes
+// run left a node that never won the reconcile lease with no route to its own
+// guests.
+func (m *natManager) BindHostEIPs(ctx context.Context, specs []EIPSpec) error {
+	if m.mode != NATModeRouted || m.hostBinder == nil {
+		return nil
+	}
+	live := LiveEIPs{ExternalIPs: make(map[string]struct{}, len(specs))}
+	// Addresses still wanted cluster-wide whose guest is not on this chassis.
+	// Bind skips them; without the same test the sweep below reads them as
+	// wanted and leaves this node holding a route and proxy-ARP for a guest that
+	// has moved, which on a shared segment answers ARP for someone else's guest.
+	foreign := map[string]struct{}{}
+	var errs []error
+	incomplete := false
+	for _, eip := range specs {
+		dpIP, err := m.datapath(ctx, eip.ExternalIP)
+		if err != nil {
+			// live is now short an address that is still wanted, so the sweep
+			// below would read it as stale and tear its plumbing down.
+			incomplete = true
+			errs = append(errs, fmt.Errorf("resolve datapath address for EIP %s: %w", eip.ExternalIP, err))
+			continue
+		}
+		eip.ExternalIP = dpIP
+		live.ExternalIPs[dpIP] = struct{}{}
+		if m.foreignToThisChassis(eip) {
+			foreign[dpIP] = struct{}{}
+		}
+		if err := m.bindHostEIP(ctx, eip); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if !incomplete {
+		if err := m.pruneHostEIPs(live, foreign); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // primeReachability programs the host neigh entry to the MAC owning the EIP on
@@ -408,6 +542,13 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 	if externalIP == "" {
 		return nil
 	}
+	// The row and the host plumbing were both written in datapath addresses, so
+	// a delete naming the public half would find neither.
+	dpIP, err := m.datapath(ctx, externalIP)
+	if err != nil {
+		return fmt.Errorf("resolve datapath address for EIP %s: %w", externalIP, err)
+	}
+	externalIP = dpIP
 	// Scope the delete to the (external_ip, logical_ip) pair and, when known, the
 	// owning ENI port. External IPs are recycled from the pool as instances come
 	// and go, and vpc.delete-nat is fire-and-forget plus re-emitted by the GC
@@ -462,10 +603,44 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 	return nil
 }
 
+// ErrEmptyEIPIntent reports a sweep declined because the live set it would have
+// deleted against was wholly empty — the signature of an unreadable intent, not
+// of a node that genuinely holds no ports and no addresses.
+var ErrEmptyEIPIntent = errors.New("EIP intent holds no ports or external IPs; sweep would delete every live row")
+
+// countStampedDNATs counts dnat_and_snat rows this sweep could delete: stamped
+// with an owning port, so their absence from intent is a real signal.
+func countStampedDNATs(nats []nbdb.NAT) int {
+	n := 0
+	for i := range nats {
+		if nats[i].Type == "dnat_and_snat" && nats[i].ExternalIDs["spinifex:logical_port"] != "" {
+			n++
+		}
+	}
+	return n
+}
+
 func (m *natManager) PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, error) {
+	// Intent is built from AWS records and so names public addresses, while the
+	// rows and host bindings hold datapath ones. Compared unmapped, every OCI
+	// address looks orphaned and the sweep would blackhole every live instance.
+	live, err := m.datapathLive(ctx, live)
+	if err != nil {
+		return 0, err
+	}
 	nats, err := m.ovn.ListNATs(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("list NATs for orphan EIP prune: %w", err)
+	}
+	// An empty live set is indistinguishable from a failed intent read, and every
+	// stamped row orphaned at once is that rather than a node whose guests and
+	// EIPs all vanished together. Leaking a stale row is the recoverable half.
+	if len(live.Ports) == 0 && len(live.ExternalIPs) == 0 {
+		if stamped := countStampedDNATs(nats); stamped > 0 {
+			slog.Error("policy: refusing orphan EIP sweep — intent holds no ports or external IPs at all",
+				"live_dnat_rows", stamped)
+			return 0, ErrEmptyEIPIntent
+		}
 	}
 	pruned := 0
 	for i := range nats {
@@ -504,14 +679,83 @@ func (m *natManager) PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, e
 			"reason", reason, "external_ip", n.ExternalIP, "logical_ip", n.LogicalIP,
 			"logical_port", port, "rows_removed", removed)
 	}
-	return pruned, m.pruneHostEIPs(live)
+	// No chassis filter here: this sweep is leader-gated and cluster-wide, while
+	// "has the guest moved off this node" is a per-node question that
+	// BindHostEIPs asks on every node on its own loop.
+	return pruned, m.pruneHostEIPs(live, nil)
+}
+
+// foreignToThisChassis reports whether an EIP's guest has left this node, the
+// same question Bind asks and by the same authority. Only a distributed EIP is
+// answerable: a centralised one hairpins through the gateway chassis and every
+// node legitimately plumbs it.
+//
+// An unanswerable question is not a yes. An unreadable local OVS is a lost
+// signal, and tearing down a live address on a guess is worse than leaving a
+// stale route the next pass can still remove.
+func (m *natManager) foreignToThisChassis(eip EIPSpec) bool {
+	if eip.NATGateway {
+		return m.gatewayElsewhere(eip)
+	}
+	// A guest EIP is located by its port, never by the gateway chassis: asking
+	// the wrong authority takes every address off every node but one.
+	if m.hostBinder == nil || m.hostBinder.Owns == nil ||
+		eip.PortName == "" || eip.MAC == "" || !m.distributes(eip) {
+		return false
+	}
+	local, err := m.hostBinder.Owns(eip.PortName)
+	if err != nil {
+		slog.Warn("policy: cannot tell whether an EIP's guest is still on this chassis; leaving its host binding alone",
+			"external_ip", eip.ExternalIP, "logical_port", eip.PortName, "err", err)
+		return false
+	}
+	return !local
+}
+
+// gatewayElsewhere answers foreignToThisChassis for a NAT gateway address. Its
+// traffic is SNAT'd on the VPC's gateway chassis and leaves that node's uplink,
+// so anywhere else the /32 route points into a datapath that will never carry
+// it — and where the address shares the nodes' own subnet, as on OCI, it
+// outranks the connected route and swallows node-to-node traffic.
+func (m *natManager) gatewayElsewhere(eip EIPSpec) bool {
+	if !eip.NATGateway || m.hostBinder == nil || m.hostBinder.GatewayElsewhere == nil || eip.VPCID == "" {
+		return false
+	}
+	elsewhere, err := m.hostBinder.GatewayElsewhere(eip.VPCID)
+	if err != nil {
+		slog.Warn("policy: cannot tell which chassis a NAT gateway runs on; leaving its host binding alone",
+			"external_ip", eip.ExternalIP, "vpc_id", eip.VPCID, "err", err)
+		return false
+	}
+	return elsewhere
+}
+
+// datapathLive rewrites the prune's wanted-address set into datapath addresses.
+// Ports are untouched — a logical port name is the same on either side.
+//
+// A resolver failure aborts the prune rather than degrading to the unmapped
+// set: a half-mapped comparison deletes the rules for exactly the addresses it
+// could not resolve, which is the worst available outcome.
+func (m *natManager) datapathLive(ctx context.Context, live LiveEIPs) (LiveEIPs, error) {
+	mapped := LiveEIPs{
+		Ports:       live.Ports,
+		ExternalIPs: make(map[string]struct{}, len(live.ExternalIPs)),
+	}
+	for ip := range live.ExternalIPs {
+		dpIP, err := m.datapath(ctx, ip)
+		if err != nil {
+			return LiveEIPs{}, fmt.Errorf("resolve datapath address for %s during orphan prune: %w", ip, err)
+		}
+		mapped.ExternalIPs[dpIP] = struct{}{}
+	}
+	return mapped, nil
 }
 
 // pruneHostEIPs removes host plumbing for every external IP intent no longer
 // asks for. The NAT row is not the record of that plumbing — AddEIP's
 // predecessor scrub, a lost teardown or a crash mid-delete each leave a route
 // and its proxy-ARP behind with no row left to find them by.
-func (m *natManager) pruneHostEIPs(live LiveEIPs) error {
+func (m *natManager) pruneHostEIPs(live LiveEIPs, foreign map[string]struct{}) error {
 	if m.mode != NATModeRouted || m.hostBinder == nil || m.hostBinder.List == nil {
 		return nil
 	}
@@ -521,12 +765,18 @@ func (m *natManager) pruneHostEIPs(live LiveEIPs) error {
 	}
 	kept := make([]string, 0, len(bound))
 	for _, eip := range bound {
-		if _, wanted := live.ExternalIPs[eip]; wanted {
+		_, wanted := live.ExternalIPs[eip]
+		_, elsewhere := foreign[eip]
+		if wanted && !elsewhere {
 			kept = append(kept, eip)
 			continue
 		}
-		m.releaseHostEIP(eip, "host binding for an external IP absent from intent")
-		slog.Info("policy: pruned stale host EIP ingress", "external_ip", eip)
+		reason := "host binding for an external IP absent from intent"
+		if elsewhere {
+			reason = "owning guest has moved to another chassis"
+		}
+		m.releaseHostEIP(eip, reason)
+		slog.Info("policy: pruned stale host EIP ingress", "external_ip", eip, "reason", reason)
 	}
 	// The keep decision was silent, so a route that outlived its address could not
 	// be told from one the sweep never saw. Both sides are logged now.
@@ -557,6 +807,17 @@ func (m *natManager) releaseHostEIP(externalIP, reason string) {
 func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 	router := topology.VPCRouter(gw.VPCID)
 
+	// The SNAT source and the host bind both have to name the address that rides
+	// the wire, the same way an EIP does. Where the public half is NAT'd upstream
+	// it is on no interface anywhere, so egress leaves with a source the cloud
+	// drops and the host EIP sweep prunes the bind straight back off as foreign.
+	publicIP := gw.PublicIP
+	dpIP, err := m.datapath(ctx, publicIP)
+	if err != nil {
+		return fmt.Errorf("resolve datapath address for NAT gateway %s: %w", publicIP, err)
+	}
+	gw.PublicIP = dpIP
+
 	snatRule := &nbdb.NAT{
 		Type:       "snat",
 		ExternalIP: gw.PublicIP,
@@ -564,6 +825,9 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 		ExternalIDs: map[string]string{
 			"spinifex:vpc_id":         gw.VPCID,
 			"spinifex:nat_gateway_id": gw.NATGatewayID,
+			// The row holds the on-wire half, so the public one survives here as
+			// the address an operator reads the NAT gateway back as.
+			"spinifex:public_ip": publicIP,
 		},
 	}
 	// Reconcile the existing row, keyed on (router, subnet CIDR) — DeleteNAT's key —
@@ -574,7 +838,8 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 	} else if existing != nil && existing.ExternalIP == gw.PublicIP {
 		slog.Info("policy: AddNATGateway idempotent skip — rule already current",
 			"router", router, "public_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR)
-		return nil
+		// Host state is volatile even when the OVN row survives a reboot.
+		return m.bindNATGatewayHost(ctx, gw)
 	} else if existing != nil {
 		// Same subnet CIDR, different public IP (e.g. a dropped delete then a recreate
 		// with a new EIP). Scrub the stale row(s) so the new EIP does not leak egress
@@ -594,7 +859,24 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 		slog.Warn("policy: AddNATGateway flows barrier failed",
 			"public_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR, "err", err)
 	}
-	return nil
+	return m.bindNATGatewayHost(ctx, gw)
+}
+
+// bindNATGatewayHost plumbs the routed-mode host state for a NAT gateway's
+// public address: the same /32 route into OVN, proxy-ARP and FORWARD accepts
+// an EIP gets. Without it a private guest's egress leaves with a source the
+// host has no route back to, and the masquerade rule matches the transit /24
+// alone, so nothing rewrites it either.
+//
+// The address is centralised by construction — SNAT on the VPC router owns it,
+// not any one port — so the spec carries no port or MAC and the bind resolves
+// the gateway LRP as its next hop. Fired here as well as from the host EIP
+// pass so a fresh gateway is not dark until the next tick.
+func (m *natManager) bindNATGatewayHost(ctx context.Context, gw NATGWSpec) error {
+	if gw.PublicIP == "" {
+		return nil
+	}
+	return m.bindHostEIP(ctx, EIPSpec{VPCID: gw.VPCID, ExternalIP: gw.PublicIP, NATGateway: true})
 }
 
 func (m *natManager) DeleteNATGateway(ctx context.Context, vpcID, subnetCIDR string) error {

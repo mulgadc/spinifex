@@ -1178,3 +1178,157 @@ func TestResolvedBlockedWANPorts(t *testing.T) {
 	custom := []int{25, 2525}
 	assert.Equal(t, custom, NetworkConfig{BlockedPortsWAN: &custom}.ResolvedBlockedWANPorts())
 }
+
+// ociPoolTOML builds a config whose OCI pool body is the caller's, so each
+// rejection test differs only by the thing it is testing.
+func ociPoolTOML(externalMode, poolBody string) string {
+	return `
+node = "n1"
+
+[network]
+external_mode = "` + externalMode + `"
+
+[[network.external_pools]]
+name = "wan"
+` + poolBody + `
+
+[nodes.n1]
+region = "ap-southeast-2"
+`
+}
+
+func loadOCIPool(t *testing.T, externalMode, poolBody string) (*ClusterConfig, error) {
+	t.Helper()
+	resetViper(t)
+	path := filepath.Join(t.TempDir(), "spinifex.toml")
+	require.NoError(t, os.WriteFile(path, []byte(ociPoolTOML(externalMode, poolBody)), 0600))
+	return LoadConfig(path)
+}
+
+func TestLoadConfig_NetworkPoolOCISourceAccepted(t *testing.T) {
+	cfg, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+oci_vnic_iface = "br-wan"
+gateway = "10.200.0.1"
+prefix_len = 24
+`)
+	require.NoError(t, err)
+	require.Len(t, cfg.Network.ExternalPools, 1)
+	p := cfg.Network.ExternalPools[0]
+	assert.Equal(t, "oci", p.Source)
+	assert.Equal(t, "ocid1.compartment.oc1..c1", p.OCICompartmentID)
+	assert.Equal(t, "br-wan", p.OCIVNICIface)
+}
+
+func TestLoadConfig_NetworkPoolOCIAcceptsAVNICOCID(t *testing.T) {
+	cfg, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+oci_vnic_id = "ocid1.vnic.oc1.ap-sydney-1.v1"
+`)
+	require.NoError(t, err)
+	assert.Equal(t, "ocid1.vnic.oc1.ap-sydney-1.v1", cfg.Network.ExternalPools[0].OCIVNICID)
+}
+
+func TestLoadConfig_NetworkPoolOCIRequiresCompartment(t *testing.T) {
+	_, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_vnic_iface = "br-wan"
+`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "oci_compartment_id")
+}
+
+// An OCID and an interface name that disagree would send allocations to a VNIC
+// the datapath is not on, and OCI would drop the traffic silently.
+func TestLoadConfig_NetworkPoolOCIRejectsBothVNICKeys(t *testing.T) {
+	_, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+oci_vnic_id = "ocid1.vnic.oc1.ap-sydney-1.v1"
+oci_vnic_iface = "br-wan"
+`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one of oci_vnic_id or oci_vnic_iface")
+}
+
+func TestLoadConfig_NetworkPoolOCIRejectsNeitherVNICKey(t *testing.T) {
+	_, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one of oci_vnic_id or oci_vnic_iface")
+}
+
+func TestLoadConfig_NetworkPoolOCIRejectsRange(t *testing.T) {
+	_, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+oci_vnic_iface = "br-wan"
+range_start = "10.200.0.100"
+range_end = "10.200.0.110"
+`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "range_start")
+}
+
+// One OCI address per VPC gateway would exhaust the 50-per-region public IP
+// quota after fifty VPCs, for addresses no customer ever sees.
+func TestLoadConfig_NetworkPoolOCIRejectsGwLrpRange(t *testing.T) {
+	_, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+oci_vnic_iface = "br-wan"
+gw_lrp_range_start = "10.200.0.200"
+gw_lrp_range_end = "10.200.0.210"
+`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gw_lrp_range_start")
+}
+
+func TestLoadConfig_NetworkPoolOCIRejectsDHCPKeys(t *testing.T) {
+	_, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+oci_vnic_iface = "br-wan"
+bind_bridge = "br-wan"
+`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bind_bridge")
+}
+
+// Pool mode puts a per-VPC gateway MAC on the uplink and ARPs for the address.
+// An OCI VNIC accepts only its own MAC, so a pool-mode guest's egress is
+// dropped and its ingress never reaches OVN — silently, and only once a guest
+// boots. Refusing at config time is the whole point.
+func TestLoadConfig_NetworkPoolOCIRequiresRoutedMode(t *testing.T) {
+	for _, mode := range []string{"", "pool"} {
+		_, err := loadOCIPool(t, mode, `
+source = "oci"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+oci_vnic_iface = "br-wan"
+`)
+		require.Error(t, err, "external_mode=%q must be refused for source=oci", mode)
+		assert.Contains(t, err.Error(), "external_mode")
+		assert.Contains(t, err.Error(), "MAC", "the refusal must say why, or it reads as arbitrary")
+	}
+}
+
+func TestLoadConfig_OCIKeysRejectedOnANonOCIPool(t *testing.T) {
+	_, err := loadOCIPool(t, "pool", `
+source = "static"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+range_start = "10.200.0.100"
+range_end = "10.200.0.110"
+`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "oci_* keys are only valid")
+}
+
+func TestLoadConfig_UnknownSourceErrorNamesOCI(t *testing.T) {
+	_, err := loadOCIPool(t, "pool", `source = "magic"`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"oci"`)
+}

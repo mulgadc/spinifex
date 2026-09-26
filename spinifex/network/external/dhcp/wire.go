@@ -111,6 +111,12 @@ type releaseWireRequest struct {
 	ClientID string `json:"client_id,omitempty"`
 	PoolName string `json:"pool_name,omitempty"`
 	IP       string `json:"ip,omitempty"`
+	// OwnerScoped marks a release made on behalf of an interface that is going
+	// away, rather than one made by the address's own owner. Such a release must
+	// never free an EIP: the lease is the only thing holding the address, and a
+	// DHCP server gives no guarantee of handing it back. Absent on an older
+	// caller, which reads as false and keeps the previous behaviour.
+	OwnerScoped bool `json:"owner_scoped,omitempty"`
 }
 
 // Code is machine-readable and lets callers branch on a condition without

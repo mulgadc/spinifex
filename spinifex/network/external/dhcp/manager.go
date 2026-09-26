@@ -598,6 +598,16 @@ func (m *Manager) handleReleaseMsg(msg *nats.Msg) {
 		entry, err := m.store.LookupByIP(ctx, req.PoolName, req.IP)
 		switch {
 		case err == nil:
+			// An EIP's lease is the only thing holding the address — a DHCP
+			// server promises nothing about handing it back — so a release made
+			// for a departing interface must leave it renewing. Only the
+			// address's own owner, which names no interface, may free it.
+			if req.OwnerScoped && entry.Purpose == PurposeEIP {
+				slog.Info("dhcp manager: release skip — address belongs to an Elastic IP allocation",
+					"pool", req.PoolName, "ip", req.IP, "client_id", entry.Lease.ClientID)
+				_ = msg.Respond(emptyReleaseReply)
+				return
+			}
 			clientID = entry.Lease.ClientID
 		case errors.Is(err, jetstream.ErrKeyNotFound):
 			// Answering SUCCESS here told the caller the address was freed when

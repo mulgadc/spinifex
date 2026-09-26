@@ -1122,6 +1122,14 @@ func (s *VPCServiceImpl) validateSGAttachment(ctx context.Context, accountID str
 	return nil
 }
 
+// ENIHasEIP reports whether an Elastic IP is associated with eniID. It is the
+// one question three different moments in an instance's life have to ask: an
+// ENI delete may not return an EIP-backed address to the pool, a stop may not
+// reclaim one, and a start must not auto-assign a second address beside one.
+func (s *VPCServiceImpl) ENIHasEIP(ctx context.Context, accountID, eniID string) (bool, error) {
+	return s.isEIPOwned(ctx, eniID, accountID)
+}
+
 // isEIPOwned checks whether the given ENI's public IP is owned by an Elastic IP.
 // Returns (true, nil) if an EIP record references this ENI, (false, nil) if none
 // match, or (false, err) if the KV store could not be read.

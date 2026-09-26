@@ -161,6 +161,12 @@ Both support the same AWS features: public subnets, Elastic IPs, security groups
 
 ## `nat` — Shared SNAT (Simple)
 
+**`nat` is a supported mode, not a fallback.** It is covered by the nightly e2e suite (cells 19 and 30, single- and multi-node) and it is the only mode a cloud-hosted node can run, so the OCI deployment depends on it. Read "specialised" below as "fewer deployments need it", never as "less finished".
+
+**Start with `pool` unless one of the reasons below applies.** Pool mode is the default, is what most of this document describes, and is what the AWS feature set was built against. `nat` is the specialised mode: it exists for uplinks that cannot be bridged, and it reaches AWS parity through host-side plumbing rather than by putting VM addresses on the wire.
+
+Reach for `nat` when the uplink refuses to carry anything but its own MAC and its own addresses — WiFi and WWAN, and **any cloud-hosted node**, where the VNIC drops a frame whose source address is not registered to it. On such a host `nat` is not a preference, it is the only mode that works at all; pool mode's localnet needs to announce VM addresses by ARP and a cloud VNIC will not carry them. See [oci-integration](../../oci-integration/README.md).
+
 All VMs share a single external IP for outbound SNAT. By default there are no public IPs, no Elastic IPs, and no inbound from WAN — all subnets behave as private subnets with internet access. On routed-NAT nodes, adding a public pool restores full public IP parity (see below).
 
 > **Limitation (routed-NAT v1):** System instances (ECS/EKS/load-balancer
@@ -244,6 +250,24 @@ gateway     = "192.168.1.1"
 prefix_len  = 24
 ```
 
+### NAT gateways in NAT mode
+
+`CreateNatGateway` works here too, and draws its public address from the same public pool an EIP does. On the OVN side it is an `snat` row on the VPC router rewriting the private subnet's CIDR to that address — not the `dnat_and_snat` an EIP gets — so it is centralised on the VPC's gateway chassis by construction and there is no port or MAC to bind it to.
+
+**That address needs the same host plumbing as an EIP**, and on a routed-NAT node it is the host that delivers it: the `/32` route steering it into OVN, the proxy-ARP entry answering for it on the uplink, and the FORWARD accepts. Without them an egressing private instance leaves with a source address the host holds no route back to, while the masquerade rule — which matches the transit `100.127.0.0/24` alone — never sees the packet. Spinifex binds it when the gateway is created and re-asserts it on the host EIP pass, so no operator step is involved; `ip route show dev spx-nat-host` should list the gateway's public address alongside any EIPs.
+
+### NAT mode on more than one node
+
+`spx admin init --external-mode=nat --nodes N` works for N > 1, and each public IP is delivered by the node running its instance rather than by one gateway node. Three things make that true, and all three are automatic:
+
+- The `dnat_and_snat` row carries `external_mac` and `logical_port`, so OVN processes it on the instance's own chassis — the same mechanism pool mode has always used. It is safe here because `ext-shared` is a localnet, so the transit veth is node-local and only the node running the instance can answer for the address on it.
+- Each node installs a host `/32` for its own instances' addresses and leaves the rest alone, asking local OVS which ENIs are plugged in here. Run `ip route show dev spx-nat-host` on each node: exactly one node should hold each public address.
+- Every node's `spx-nat-host` carries the same MAC, `02:00:64:7f:00:01`. OVN keeps one MAC binding for the transit next hop across the whole cluster, so a per-node address would send every chassis's return traffic to whichever node wrote the binding last. `setup-ovn.sh` sets it and vpcd re-asserts it on every start.
+
+Default egress — an instance with no public IP — is still centralised on the VPC's gateway chassis, which is unchanged and is what the gateway LRP's transit address is for.
+
+**On a cloud host the address must also be registered on that node's VNIC.** The allocator runs per node and registers on the local VNIC, which is the right one exactly because the traffic now leaves there. `oci_vnic_iface` is the setting; `oci_vnic_id` is only needed to pin a pool to a specific VNIC and should not be set for this.
+
 **Caveat — reaching an EIP from the spinifex host itself.** Host-sourced traffic enters OVN from the transit net, which is exempt from NAT (that is what makes the jumpbox pattern work) — so a host connection to an EIP that carries the transit source IP would skip DNAT. Spinifex stamps the EIP route with the uplink's LAN IP as source to avoid this, but if no uplink address can be determined, connect to the instance's **private IP** from the host instead. Other machines on the LAN are unaffected.
 
 ## Disabled (Empty/Omitted)
@@ -263,6 +287,9 @@ VPC networking is overlay-only. No external connectivity. Instances can only com
 | DescribeInstances shows public IP | Yes             | Yes           | With public pool  | No       |
 | Admin must reserve IP range       | Yes             | No            | Only static pool  | No       |
 | Needs router DHCP                 | No              | Yes           | Optional          | No       |
+| Works on a non-bridgeable uplink  | No              | No            | Yes               | n/a      |
+| NAT gateways                      | Yes             | Yes           | With public pool  | No       |
+| More than one node                | Yes             | Yes           | Yes               | Yes      |
 
 If you start with `nat` and later need public subnets: on a bridgeable uplink switch to `pool` and define a range (or use `source = "dhcp"`); on a routed-NAT node just add a public pool alongside `nat-transit` — no data migration needed.
 
@@ -460,8 +487,8 @@ external_mode = "pool"    # "pool", "nat", or "" (disabled)
 
 | Value          | Behavior                                                          |
 | -------------- | ----------------------------------------------------------------- |
-| `"pool"`       | Full public networking — public subnets, auto-assign, Elastic IPs |
-| `"nat"`        | Outbound-only SNAT — all VMs share one external IP                |
+| `"pool"`       | **Default.** Full public networking — public subnets, auto-assign, Elastic IPs |
+| `"nat"`        | Outbound-only SNAT — all VMs share one external IP. Add a public pool for full parity. For uplinks that cannot be bridged, including every cloud host |
 | `""` / omitted | Overlay-only — no external connectivity                           |
 
 ## IP Pools: network.external_pools

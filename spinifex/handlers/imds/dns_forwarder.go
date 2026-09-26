@@ -305,23 +305,25 @@ func (tb *tokenBucket) allow() bool {
 	return tb.limiter.AllowN(tb.now(), 1)
 }
 
-// bindTapDNS opens the DNS shim sockets — UDP and TCP 169.254.169.253:53 on the
-// tap's endpoint via SO_BINDTODEVICE. Like the .254 HTTP bind, no netns is
-// involved: the endpoint owns .253, and the per-tap demux flow already steers
-// guest queries here, so binding it lights up the reserved co-tenant slot.
-func bindTapDNS(ctx context.Context, endpoint string) (net.PacketConn, net.Listener, error) {
-	lc := net.ListenConfig{Control: bindToDeviceControl(endpoint)}
-	addr := net.JoinHostPort(VPCDNSServerIP, "53")
-	pc, err := lc.ListenPacket(ctx, "udp4", addr)
-	if err != nil {
-		return nil, nil, err
+// tapDNSBinder opens the DNS shim sockets — UDP and TCP bindIP:53 on the tap's
+// endpoint via SO_BINDTODEVICE. Like the HTTP bind, no netns is involved: the
+// endpoint owns the address, and the per-tap demux flow already steers guest
+// queries here, so binding it lights up the reserved co-tenant slot.
+func tapDNSBinder(bindIP string) dnsListenFunc {
+	return func(ctx context.Context, endpoint string) (net.PacketConn, net.Listener, error) {
+		lc := net.ListenConfig{Control: bindToDeviceControl(endpoint)}
+		addr := net.JoinHostPort(bindIP, "53")
+		pc, err := lc.ListenPacket(ctx, "udp4", addr)
+		if err != nil {
+			return nil, nil, err
+		}
+		ln, err := lc.Listen(ctx, "tcp4", addr)
+		if err != nil {
+			_ = pc.Close()
+			return nil, nil, err
+		}
+		return pc, ln, nil
 	}
-	ln, err := lc.Listen(ctx, "tcp4", addr)
-	if err != nil {
-		_ = pc.Close()
-		return nil, nil, err
-	}
-	return pc, ln, nil
 }
 
 // servfail rewrites a query header in place into a minimal SERVFAIL response, so

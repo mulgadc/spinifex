@@ -51,13 +51,13 @@ func TestVerifyBridgeMode_UnknownModeListsNAT(t *testing.T) {
 
 func TestDetectBridgeMode_NATWinsOverVeth(t *testing.T) {
 	stubDetectProbes(t, []string{host.NATTransitOVSEnd, "veth-wan-ovs"})
-	if got := detectBridgeMode("enp0s3"); got != BridgeModeNAT {
+	if got := detectBridgeMode("enp0s3", ""); got != BridgeModeNAT {
 		t.Errorf("want %q, got %q", BridgeModeNAT, got)
 	}
 }
 
 func TestResolveBridgeConfig_NATUsesTransitHostEnd(t *testing.T) {
-	mode, br := resolveBridgeConfig(BridgeModeNAT, "")
+	mode, br := resolveBridgeConfig(BridgeModeNAT, "", "")
 	if mode != BridgeModeNAT || br != host.NATTransitHostEnd {
 		t.Errorf("got (%q,%q), want (%q,%q)", mode, br, BridgeModeNAT, host.NATTransitHostEnd)
 	}

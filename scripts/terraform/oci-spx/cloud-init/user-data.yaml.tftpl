@@ -1,0 +1,50 @@
+#cloud-config
+# Brings the node to the state a bare-metal Spinifex node is in after imaging.
+# Installing Spinifex itself is the deploy path's job, not cloud-init's.
+
+write_files:
+  - path: /usr/local/sbin/spinifex-mount-data-volume
+    owner: root:root
+    permissions: "0750"
+    content: |
+      ${indent(6, mount_script)}
+
+  - path: /usr/local/sbin/spinifex-setup-wan-bridge
+    owner: root:root
+    permissions: "0750"
+    content: |
+      ${indent(6, wan_bridge_script)}
+
+  - path: /usr/local/sbin/spinifex-open-service-ports
+    owner: root:root
+    permissions: "0750"
+    content: |
+      ${indent(6, service_ports_script)}
+
+  # The secondary VNIC is attached after the instance reaches RUNNING, so it can
+  # arrive late. This unit retries on the next boot if the first attempt missed it,
+  # and stops running once the netplan file it writes exists.
+  - path: /etc/systemd/system/spinifex-wan-bridge.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Spinifex WAN bridge over the secondary OCI VNIC
+      Wants=network-online.target
+      After=network-online.target
+      ConditionPathExists=!/etc/netplan/60-spinifex-wan.yaml
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      Environment=BRIDGE=${wan_bridge_name}
+      Environment=MTU=${wan_bridge_mtu}
+      ExecStart=/usr/local/sbin/spinifex-setup-wan-bridge
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - [/usr/local/sbin/spinifex-mount-data-volume, "${data_device}", "${data_mountpoint}"]
+  - [/usr/local/sbin/spinifex-open-service-ports, "${peer_cidr}", ${service_ports}]
+  - [systemctl, enable, --now, spinifex-wan-bridge.service]

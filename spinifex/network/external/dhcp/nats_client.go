@@ -101,11 +101,13 @@ func (c *NATSClient) RequestRelease(ctx context.Context, clientID string) error 
 // RequestReleaseByIP releases the lease that holds (poolName, ip).
 // Used by DHCPPoolAllocator.Release, whose external.Allocator signature
 // only carries the IP — vpcd looks up the client-id from the lease store.
-func (c *NATSClient) RequestReleaseByIP(ctx context.Context, poolName, ip string) error {
+// ownerScoped marks a release made for a departing interface rather than by the
+// address's owner, which vpcd refuses for an EIP.
+func (c *NATSClient) RequestReleaseByIP(ctx context.Context, poolName, ip string, ownerScoped bool) error {
 	if ip == "" {
 		return errors.New("dhcp NATSClient: ip required")
 	}
-	return c.requestRelease(ctx, releaseWireRequest{PoolName: poolName, IP: ip})
+	return c.requestRelease(ctx, releaseWireRequest{PoolName: poolName, IP: ip, OwnerScoped: ownerScoped})
 }
 
 func (c *NATSClient) requestRelease(ctx context.Context, req releaseWireRequest) error {

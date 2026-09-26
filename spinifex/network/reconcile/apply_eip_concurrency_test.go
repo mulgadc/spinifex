@@ -53,6 +53,9 @@ func (f *concurrentClaimVerifier) whenLiveSeen() time.Time {
 func (f *concurrentClaimVerifier) GatewayPortClaimed(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (f *concurrentClaimVerifier) GatewayPortLocal(context.Context, string) (bool, error) {
+	return true, nil
+}
 func (f *concurrentClaimVerifier) GatewayReachable(context.Context, string) (bool, error) {
 	return true, nil
 }

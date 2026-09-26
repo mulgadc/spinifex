@@ -188,6 +188,21 @@ func aclUUIDSet(m *mock.Client) map[string]struct{} {
 	return out
 }
 
+// orphanPGIntent seeds one real SG alongside the orphan. A wholly empty SG set
+// is the signature of an unreadable bucket, which the sweep now refuses, so a
+// fixture with no SGs would prove the refusal rather than the prune.
+func orphanPGIntent() IntentState {
+	return IntentState{
+		VPCs:    map[string]topology.VPCSpec{"vpc-a": {VPCID: "vpc-a", CIDR: netip.MustParsePrefix("10.0.0.0/16"), VNI: 100}},
+		Subnets: map[string]topology.SubnetSpec{},
+		Ports:   map[string]topology.PortSpec{},
+		SGs:     map[string]policy.SGSpec{"sg-a": {GroupID: "sg-a", VPCID: "vpc-a"}},
+		IGWs:    map[string]external.IGWSpec{},
+		EIPs:    map[string]policy.EIPSpec{},
+		NATGWs:  map[string]policy.NATGWSpec{},
+	}
+}
+
 func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
@@ -196,22 +211,35 @@ func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {
 		t.Fatalf("seed orphan port group: %v", err)
 	}
 
-	intent := IntentState{
-		VPCs:    map[string]topology.VPCSpec{},
-		Subnets: map[string]topology.SubnetSpec{},
-		Ports:   map[string]topology.PortSpec{},
-		SGs:     map[string]policy.SGSpec{},
-		IGWs:    map[string]external.IGWSpec{},
-		EIPs:    map[string]policy.EIPSpec{},
-		NATGWs:  map[string]policy.NATGWSpec{},
-	}
-
-	if err := rec.Reconcile(ctx, intent); err != nil {
+	if err := rec.Reconcile(ctx, orphanPGIntent()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
 	if _, ok := m.PortGroups["sg_orphan"]; ok {
 		t.Errorf("orphan port group not removed")
+	}
+	if _, ok := m.PortGroups[topology.SecurityGroupPortGroup("sg-a")]; !ok {
+		t.Errorf("live port group swept alongside the orphan")
+	}
+}
+
+// A sweep that would delete every managed port group is refused: intent holding
+// no SGs at all is an unreadable bucket, not a VPC without a default SG.
+func TestReconcile_OrphanPortGroupPruneRefusedOnEmptyIntent(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	if err := m.CreatePortGroup(ctx, "sg_orphan", nil); err != nil {
+		t.Fatalf("seed orphan port group: %v", err)
+	}
+
+	empty := orphanPGIntent()
+	empty.SGs = map[string]policy.SGSpec{}
+	if err := rec.Reconcile(ctx, empty); !errors.Is(err, ErrPassIncomplete) {
+		t.Fatalf("Reconcile err = %v, want ErrPassIncomplete", err)
+	}
+	if _, ok := m.PortGroups["sg_orphan"]; !ok {
+		t.Errorf("port group swept against an empty SG intent")
 	}
 }
 
@@ -225,15 +253,7 @@ func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
 		t.Fatalf("seed orphan port group: %v", err)
 	}
 
-	intent := IntentState{
-		VPCs:    map[string]topology.VPCSpec{},
-		Subnets: map[string]topology.SubnetSpec{},
-		Ports:   map[string]topology.PortSpec{},
-		SGs:     map[string]policy.SGSpec{},
-		IGWs:    map[string]external.IGWSpec{},
-		EIPs:    map[string]policy.EIPSpec{},
-		NATGWs:  map[string]policy.NATGWSpec{},
-	}
+	intent := orphanPGIntent()
 
 	if err := rec.ReconcileApplyOnly(ctx, intent); err != nil {
 		t.Fatalf("ReconcileApplyOnly: %v", err)
@@ -1185,6 +1205,96 @@ func TestFloatingIPSpecs(t *testing.T) {
 	// No public IP -> no spec for that port.
 	if len(specs) != 3 {
 		t.Errorf("want 3 specs (2 EIP + 1 auto), got %d: %+v", len(specs), specs)
+	}
+
+	// A NAT gateway's address holds an snat, never a dnat_and_snat, so it must
+	// not reach this set: the prune treats it as the complete list of addresses
+	// allowed to hold one.
+	intent.NATGWs = map[string]policy.NATGWSpec{
+		"nat-1|10.99.2.0/24": {VPCID: "vpc-a", NATGatewayID: "nat-1", PublicIP: "192.168.1.240", SubnetCIDR: "10.99.2.0/24"},
+	}
+	for _, s := range r.floatingIPSpecs(intent) {
+		if s.ExternalIP == "192.168.1.240" {
+			t.Errorf("NAT gateway address leaked into floatingIPSpecs: %+v", s)
+		}
+	}
+}
+
+// A NAT gateway's public address needs the same host plumbing as an EIP — the
+// /32 route into OVN, proxy-ARP on the uplink and the FORWARD accepts — and had
+// none, so an egressing private guest left with a source the host held no route
+// back to and the masquerade rule, which matches the transit /24 alone, never saw.
+func TestHostBindSpecs_CarriesNATGatewayAddresses(t *testing.T) {
+	r := &reconciler{}
+
+	intent := IntentState{
+		EIPs: map[string]policy.EIPSpec{
+			"172.31.0.9": {VPCID: "vpc-a", ExternalIP: "192.168.1.200", LogicalIP: "172.31.0.9", PortName: topology.Port("eni-eip")},
+		},
+		NATGWs: map[string]policy.NATGWSpec{
+			// One gateway, two associated subnets: the same address arrives
+			// twice and must be bound once.
+			"nat-1|10.99.2.0/24": {VPCID: "vpc-a", NATGatewayID: "nat-1", PublicIP: "192.168.1.240", SubnetCIDR: "10.99.2.0/24"},
+			"nat-1|10.99.3.0/24": {VPCID: "vpc-a", NATGatewayID: "nat-1", PublicIP: "192.168.1.240", SubnetCIDR: "10.99.3.0/24"},
+			// A second gateway in another VPC.
+			"nat-2|10.98.1.0/24": {VPCID: "vpc-b", NATGatewayID: "nat-2", PublicIP: "192.168.1.241", SubnetCIDR: "10.98.1.0/24"},
+			// Not yet allocated an address.
+			"nat-3|10.97.1.0/24": {VPCID: "vpc-b", NATGatewayID: "nat-3", SubnetCIDR: "10.97.1.0/24"},
+		},
+	}
+
+	counts := map[string]int{}
+	byExternal := map[string]policy.EIPSpec{}
+	for _, s := range r.hostBindSpecs(intent) {
+		counts[s.ExternalIP]++
+		byExternal[s.ExternalIP] = s
+	}
+
+	if counts["192.168.1.200"] != 1 {
+		t.Errorf("user EIP bound %d times, want 1", counts["192.168.1.200"])
+	}
+	if counts["192.168.1.240"] != 1 {
+		t.Errorf("NAT gateway address bound %d times, want 1 despite two subnets", counts["192.168.1.240"])
+	}
+	if counts["192.168.1.241"] != 1 {
+		t.Errorf("second NAT gateway address bound %d times, want 1", counts["192.168.1.241"])
+	}
+	if len(counts) != 3 {
+		t.Errorf("want 3 addresses (1 EIP + 2 NAT gateways), got %d: %+v", len(counts), counts)
+	}
+
+	// Centralised by construction: no port and no MAC, so bindHostEIP resolves
+	// the gateway LRP as the next hop and every node plumbs it.
+	gw := byExternal["192.168.1.240"]
+	if gw.PortName != "" || gw.MAC != "" {
+		t.Errorf("NAT gateway spec must carry no port identity, got %+v", gw)
+	}
+	if gw.VPCID != "vpc-a" {
+		t.Errorf("NAT gateway spec VPCID = %q, want vpc-a", gw.VPCID)
+	}
+}
+
+// An address serving as both a user EIP and a NAT gateway's is bound once, and
+// keeps the EIP's port identity so it stays on the distributed path.
+func TestHostBindSpecs_DedupesAgainstAnExistingEIP(t *testing.T) {
+	r := &reconciler{}
+	mac, _ := net.ParseMAC("02:00:00:00:00:01")
+
+	specs := r.hostBindSpecs(IntentState{
+		EIPs: map[string]policy.EIPSpec{
+			"172.31.0.9": {VPCID: "vpc-a", ExternalIP: "192.168.1.240", LogicalIP: "172.31.0.9",
+				PortName: topology.Port("eni-eip"), MAC: mac.String()},
+		},
+		NATGWs: map[string]policy.NATGWSpec{
+			"nat-1|10.99.2.0/24": {VPCID: "vpc-a", NATGatewayID: "nat-1", PublicIP: "192.168.1.240", SubnetCIDR: "10.99.2.0/24"},
+		},
+	})
+
+	if len(specs) != 1 {
+		t.Fatalf("want 1 spec, got %d: %+v", len(specs), specs)
+	}
+	if specs[0].PortName != topology.Port("eni-eip") {
+		t.Errorf("the EIP's port identity must survive the merge, got %+v", specs[0])
 	}
 }
 

@@ -27,18 +27,94 @@ func NewGatewayClaimProber(sbAddr string) *GatewayClaimProber {
 // non-empty chassis. Uses the chassisredirect (cr-) port — the bare LRP stays
 // chassis-less. Unclaimed binding means flows are not installed and EIPs unreachable.
 func (p *GatewayClaimProber) GatewayPortClaimed(_ context.Context, crPortName string) (bool, error) {
+	chassis, err := p.boundChassis(crPortName)
+	if err != nil {
+		return false, err
+	}
+	return chassis != "", nil
+}
+
+// GatewayPortLocal reports whether the chassisredirect port is claimed by this
+// host. The datapath probes are host-local — a ping and an ARP off this node's
+// own uplink — so anywhere but the gateway chassis they measure a segment the
+// gateway is not on. Under routed NAT that segment carries the same
+// 100.127.0.1/24 on every node, so a remote probe does not merely fail to
+// inform: it reports a healthy gateway as dead.
+func (p *GatewayClaimProber) GatewayPortLocal(_ context.Context, crPortName string) (bool, error) {
+	chassis, err := p.boundChassis(crPortName)
+	if err != nil || chassis == "" {
+		return false, err
+	}
+	local, err := p.localChassis()
+	if err != nil {
+		return false, err
+	}
+	// The binding holds the Chassis row's UUID while system-id is its name, so
+	// resolve one to the other rather than comparing across identifiers.
+	name, err := p.chassisName(chassis)
+	if err != nil {
+		return false, err
+	}
+	return name != "" && name == local, nil
+}
+
+// GatewayPortElsewhere reports whether the chassisredirect port is claimed by
+// some other host. An unclaimed port is not elsewhere: nothing holds it, so the
+// question is unanswered rather than answered no, and a caller deciding whether
+// to tear host state down must keep what it has.
+func (p *GatewayClaimProber) GatewayPortElsewhere(_ context.Context, crPortName string) (bool, error) {
+	chassis, err := p.boundChassis(crPortName)
+	if err != nil || chassis == "" {
+		return false, err
+	}
+	local, err := p.localChassis()
+	if err != nil {
+		return false, err
+	}
+	name, err := p.chassisName(chassis)
+	if err != nil {
+		return false, err
+	}
+	return name != "" && name != local, nil
+}
+
+// boundChassis returns the SB Chassis UUID a logical port is bound to, empty if
+// unbound. Output() not CombinedOutput(): sudo PAM noise on stderr would be
+// misread as a non-empty chassis value.
+func (p *GatewayClaimProber) boundChassis(crPortName string) (string, error) {
+	out, err := utils.SudoCommand("ovn-sbctl", p.sbArgs("--bare", "--columns=chassis", "find", "Port_Binding", "logical_port="+crPortName)...).Output()
+	if err != nil {
+		return "", fmt.Errorf("ovn-sbctl find Port_Binding %s: %w", crPortName, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// localChassis returns this host's OVN chassis name, which ovn-controller takes
+// from the OVSDB external_ids:system-id it registered with.
+func (p *GatewayClaimProber) localChassis() (string, error) {
+	out, err := utils.SudoCommand("ovs-vsctl", "--if-exists", "get", "Open_vSwitch", ".", "external_ids:system-id").Output()
+	if err != nil {
+		return "", fmt.Errorf("ovs-vsctl get system-id: %w", err)
+	}
+	return strings.Trim(strings.TrimSpace(string(out)), `"`), nil
+}
+
+// chassisName resolves an SB Chassis row UUID to its name.
+func (p *GatewayClaimProber) chassisName(uuid string) (string, error) {
+	out, err := utils.SudoCommand("ovn-sbctl", p.sbArgs("--bare", "--columns=name", "list", "Chassis", uuid)...).Output()
+	if err != nil {
+		return "", fmt.Errorf("ovn-sbctl list Chassis %s: %w", uuid, err)
+	}
+	return strings.Trim(strings.TrimSpace(string(out)), `"`), nil
+}
+
+// sbArgs prefixes ovn-sbctl arguments with the database selection.
+func (p *GatewayClaimProber) sbArgs(rest ...string) []string {
 	args := []string{"--no-leader-only"}
 	if p.sbAddr != "" {
 		args = append(args, "--db="+p.sbAddr)
 	}
-	args = append(args, "--bare", "--columns=chassis", "find", "Port_Binding", "logical_port="+crPortName)
-	// Output() not CombinedOutput(): sudo PAM noise on stderr would be
-	// misread as a non-empty chassis value.
-	out, err := utils.SudoCommand("ovn-sbctl", args...).Output()
-	if err != nil {
-		return false, fmt.Errorf("ovn-sbctl find Port_Binding %s: %w", crPortName, err)
-	}
-	return strings.TrimSpace(string(out)) != "", nil
+	return append(args, rest...)
 }
 
 // GuestPortUp reports whether the SB Port_Binding for a guest ENI LSP is up —

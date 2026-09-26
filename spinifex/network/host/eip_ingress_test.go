@@ -60,14 +60,24 @@ func newEIPStubRunner(routeGet string) *stubRunner {
 	r.expect("ip neigh replace proxy", nil, nil)
 	r.expect("sysctl -w", nil, nil)
 	r.expect("arping", nil, nil)
-	r.expect("iptables -t filter -C", []byte("iptables: No chain/target/match by that name."), fmt.Errorf("exit 1"))
-	r.expect("iptables -t filter -A", nil, nil)
+	// A host with no policy routing, so there is no uplink rule to mirror.
+	r.expect("ip -4 -o addr show scope global", []byte(plainAddrShow), nil)
+	r.expect("ip rule show", []byte(plainRuleShow), nil)
+	r.expect("ip route del", nil, nil)
+	r.expect("ip neigh del proxy", nil, nil)
+	r.expect("iptables -t filter -D", nil, nil)
+	// Two rules, each probed then inserted at the head — a distro's catch-all
+	// REJECT in FORWARD precedes anything appended.
+	for range 2 {
+		r.expect("iptables -t filter -C", []byte("iptables: No chain/target/match by that name."), fmt.Errorf("exit 1"))
+		r.expect("iptables -t filter -I", nil, nil)
+	}
 	return r
 }
 
 func TestEnsureEIPIngress_FullPlumbing(t *testing.T) {
 	r := newEIPStubRunner(wiredRouteGet)
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1", ""); err != nil {
+	if err := EnsureEIPIngress(context.Background(), r, EIPIngress{EIP: "192.168.1.200", GwLrpIP: "100.127.0.10", PoolGateway: "192.168.1.1"}); err != nil {
 		t.Fatalf("EnsureEIPIngress: %v", err)
 	}
 	for _, want := range []string{
@@ -75,8 +85,8 @@ func TestEnsureEIPIngress_FullPlumbing(t *testing.T) {
 		"ip neigh replace proxy 192.168.1.200 dev eth0",
 		"sysctl -w net.ipv4.neigh.eth0.proxy_delay=0",
 		"arping -U -c 2 -I eth0 192.168.1.200",
-		"iptables -t filter -A FORWARD -i " + NATTransitHostEnd + " -s 192.168.1.200/32",
-		"iptables -t filter -A FORWARD -o " + NATTransitHostEnd + " -d 192.168.1.200/32",
+		"iptables -t filter -I FORWARD 1 -i " + NATTransitHostEnd + " -s 192.168.1.200/32",
+		"iptables -t filter -I FORWARD 1 -o " + NATTransitHostEnd + " -d 192.168.1.200/32",
 	} {
 		if !r.called(want) {
 			t.Errorf("missing call:\n  want %q\n  got  %v", want, r.calls)
@@ -86,7 +96,7 @@ func TestEnsureEIPIngress_FullPlumbing(t *testing.T) {
 
 func TestEnsureEIPIngress_WiFiUplink(t *testing.T) {
 	r := newEIPStubRunner(wifiRouteGet)
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1", ""); err != nil {
+	if err := EnsureEIPIngress(context.Background(), r, EIPIngress{EIP: "192.168.1.200", GwLrpIP: "100.127.0.10", PoolGateway: "192.168.1.1"}); err != nil {
 		t.Fatalf("EnsureEIPIngress: %v", err)
 	}
 	if !r.called("ip neigh replace proxy 192.168.1.200 dev wlan0") {
@@ -100,7 +110,7 @@ func TestEnsureEIPIngress_WiFiUplink(t *testing.T) {
 func TestEnsureEIPIngress_IdempotentSkipsExistingRules(t *testing.T) {
 	r := newEIPStubRunner(wiredRouteGet)
 	r.expect("iptables -t filter -C", nil, nil)
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1", ""); err != nil {
+	if err := EnsureEIPIngress(context.Background(), r, EIPIngress{EIP: "192.168.1.200", GwLrpIP: "100.127.0.10", PoolGateway: "192.168.1.1"}); err != nil {
 		t.Fatalf("EnsureEIPIngress: %v", err)
 	}
 	if r.called("iptables -t filter -A") {
@@ -112,7 +122,7 @@ func TestEnsureEIPIngress_ArpingFailureNonFatal(t *testing.T) {
 	r := newEIPStubRunner(wiredRouteGet)
 	r.expect("arping", []byte("arping: command not found"), fmt.Errorf("exit 127"))
 	r.expect("sysctl -w", []byte("permission denied"), fmt.Errorf("exit 1"))
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "192.168.1.1", ""); err != nil {
+	if err := EnsureEIPIngress(context.Background(), r, EIPIngress{EIP: "192.168.1.200", GwLrpIP: "100.127.0.10", PoolGateway: "192.168.1.1"}); err != nil {
 		t.Fatalf("arping/sysctl failures must be non-fatal: %v", err)
 	}
 }
@@ -121,7 +131,9 @@ func TestEnsureEIPIngress_NoGatewaySkipsUplinkPlumbing(t *testing.T) {
 	r := newStubRunner()
 	r.expect("ip route replace", nil, nil)
 	r.expect("iptables -t filter -C", nil, nil)
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "", ""); err != nil {
+	r.expect("ip -4 -o addr show scope global", []byte(plainAddrShow), nil)
+	r.expect("ip rule show", []byte(plainRuleShow), nil)
+	if err := EnsureEIPIngress(context.Background(), r, EIPIngress{EIP: "192.168.1.200", GwLrpIP: "100.127.0.10"}); err != nil {
 		t.Fatalf("EnsureEIPIngress: %v", err)
 	}
 	if !r.called("ip route replace 192.168.1.200/32 via 100.127.0.10 dev " + NATTransitHostEnd) {
@@ -138,7 +150,7 @@ func TestEnsureEIPIngress_NoGatewaySkipsUplinkPlumbing(t *testing.T) {
 func TestEnsureEIPIngress_UplinkHintForDHCPPool(t *testing.T) {
 	r := newEIPStubRunner("")
 	r.expect("ip -4 -o addr show", []byte("3: wlan0    inet 192.168.1.87/24 brd 192.168.1.255 scope global dynamic wlan0\n"), nil)
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "100.127.0.10", "", "wlan0"); err != nil {
+	if err := EnsureEIPIngress(context.Background(), r, EIPIngress{EIP: "192.168.1.200", GwLrpIP: "100.127.0.10", UplinkHint: "wlan0"}); err != nil {
 		t.Fatalf("EnsureEIPIngress: %v", err)
 	}
 	if r.called("ip route get") {
@@ -154,14 +166,52 @@ func TestEnsureEIPIngress_UplinkHintForDHCPPool(t *testing.T) {
 
 func TestEnsureEIPIngress_ValidatesArgs(t *testing.T) {
 	r := newStubRunner()
-	if err := EnsureEIPIngress(context.Background(), r, "", "100.127.0.10", "", ""); err == nil {
+	if err := EnsureEIPIngress(context.Background(), r, EIPIngress{EIP: "", GwLrpIP: "100.127.0.10"}); err == nil {
 		t.Error("empty eip: expected error")
-	}
-	if err := EnsureEIPIngress(context.Background(), r, "192.168.1.200", "", "", ""); err == nil {
-		t.Error("empty gwLrpIP: expected error")
 	}
 	if len(r.calls) != 0 {
 		t.Errorf("validation failures must not run commands: %v", r.calls)
+	}
+}
+
+// A distributed rule is processed on the instance's own chassis and answers ARP
+// on that node's transit veth, so the EIP is on-link. Naming a next hop would
+// point at a gateway LRP that may live on another chassis entirely, which is
+// exactly what made every non-gateway node's EIPs unreachable.
+func TestEnsureEIPIngress_DistributedRouteIsOnLink(t *testing.T) {
+	r := newEIPStubRunner(wiredRouteGet)
+	in := EIPIngress{EIP: "192.168.1.200", PoolGateway: "192.168.1.1"}
+	if err := EnsureEIPIngress(context.Background(), r, in); err != nil {
+		t.Fatalf("EnsureEIPIngress: %v", err)
+	}
+	if !r.called("ip route replace 192.168.1.200/32 dev " + NATTransitHostEnd + " src 192.168.1.42") {
+		t.Errorf("distributed EIP must route on-link: %v", r.calls)
+	}
+	if strings.Contains(strings.Join(r.calls, " "), " via ") {
+		t.Errorf("distributed EIP must name no next hop: %v", r.calls)
+	}
+	// Ingress from the LAN is unchanged by distribution: the host still has to
+	// answer ARP for the EIP and still has to forward it.
+	for _, want := range []string{
+		"ip neigh replace proxy 192.168.1.200 dev eth0",
+		"iptables -t filter -I FORWARD 1 -i " + NATTransitHostEnd + " -s 192.168.1.200/32",
+	} {
+		if !r.called(want) {
+			t.Errorf("missing call:\n  want %q\n  got  %v", want, r.calls)
+		}
+	}
+}
+
+// The two shapes coexist: a centralised rule keeps its next hop, so a cluster
+// part-way through an upgrade is never in a state neither side handles.
+func TestEnsureEIPIngress_CentralisedRouteKeepsItsNextHop(t *testing.T) {
+	r := newEIPStubRunner(wiredRouteGet)
+	in := EIPIngress{EIP: "192.168.1.200", GwLrpIP: "100.127.0.10", PoolGateway: "192.168.1.1"}
+	if err := EnsureEIPIngress(context.Background(), r, in); err != nil {
+		t.Fatalf("EnsureEIPIngress: %v", err)
+	}
+	if !r.called("ip route replace 192.168.1.200/32 via 100.127.0.10 dev " + NATTransitHostEnd) {
+		t.Errorf("centralised EIP must route via the gateway LRP: %v", r.calls)
 	}
 }
 

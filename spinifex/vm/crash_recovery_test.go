@@ -25,12 +25,13 @@ type gpuBackedCleaner struct {
 	mgr *gpu.Manager
 }
 
-func (c *gpuBackedCleaner) DeleteVolumes(*VM) error            { return nil }
-func (c *gpuBackedCleaner) CleanupMgmtNetwork(*VM)             {}
-func (c *gpuBackedCleaner) ReleasePublicIP(*VM) error          { return nil }
-func (c *gpuBackedCleaner) DetachAndDeleteENI(*VM) error       { return nil }
-func (c *gpuBackedCleaner) RemoveFromPlacementGroup(*VM) error { return nil }
-func (c *gpuBackedCleaner) RemoveFromSpotRequest(*VM) error    { return nil }
+func (c *gpuBackedCleaner) DeleteVolumes(*VM) error                       { return nil }
+func (c *gpuBackedCleaner) CleanupMgmtNetwork(*VM)                        {}
+func (c *gpuBackedCleaner) ReleasePublicIP(*VM) error                     { return nil }
+func (c *gpuBackedCleaner) ReleaseAutoAssignedPublicIP(*VM) (bool, error) { return false, nil }
+func (c *gpuBackedCleaner) DetachAndDeleteENI(*VM) error                  { return nil }
+func (c *gpuBackedCleaner) RemoveFromPlacementGroup(*VM) error            { return nil }
+func (c *gpuBackedCleaner) RemoveFromSpotRequest(*VM) error               { return nil }
 
 func (c *gpuBackedCleaner) ReleaseGPU(v *VM) error {
 	if c.mgr == nil || len(v.GPUAttachments) == 0 {

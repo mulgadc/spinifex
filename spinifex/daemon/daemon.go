@@ -65,6 +65,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
@@ -1268,6 +1269,9 @@ func (d *Daemon) subscribeAll() error {
 		natsSub{"ec2.DisassociateAddress", handleNATSRequest(d.node, d.eipService.DisassociateAddress), "spinifex-workers"},
 		natsSub{"ec2.DescribeAddresses", handleNATSRequest(d.node, d.eipService.DescribeAddresses), "spinifex-workers"},
 		natsSub{"ec2.DescribeAddressesAttribute", handleNATSRequest(d.node, d.eipService.DescribeAddressesAttribute), "spinifex-workers"},
+		// Fan-out, no queue group: the association has to reach the node running
+		// the instance, which is rarely the one that served the request.
+		natsSub{handlers_ec2_eip.SubjectENIPublicIPChanged, d.handleENIPublicIPChanged, ""},
 		// vpcd holds the leases, but the records naming those addresses live
 		// here, so the reconcile request flows daemon-ward.
 		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},
@@ -1358,6 +1362,12 @@ func (d *Daemon) startLocal() error {
 		}
 	}
 
+	// Before any tap is attached: the endpoint addresses and vpcd's binds have
+	// to agree, and both read the same config keys.
+	if d.clusterConfig != nil {
+		host.SetIMDSHostAddrs(d.clusterConfig.Network.IMDSHostMetaIP, d.clusterConfig.Network.IMDSHostDNSIP)
+	}
+
 	// Initialise OVS network plumber (no NATS dep).
 	if d.networkPlumber == nil {
 		d.networkPlumber = host.NewOVSPlumber()
@@ -1436,12 +1446,93 @@ func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, any
 			AZ:              p.AZ,
 			GwLrpRangeStart: p.GwLrpRangeStart,
 			GwLrpRangeEnd:   p.GwLrpRangeEnd,
+
+			OCICompartmentID: p.OCICompartmentID,
+			OCIVNICID:        p.OCIVNICID,
+			OCIVNICIface:     p.OCIVNICIface,
+			OCISubnetID:      p.OCISubnetID,
+			OCIPublicIPPool:  p.OCIPublicIPPool,
+			OCIConfigFile:    p.OCIConfigFile,
+			OCIConfigProfile: p.OCIConfigProfile,
 		})
 		if p.Source == "dhcp" {
 			anyDHCP = true
 		}
 	}
 	return pools, anyDHCP
+}
+
+// ovnSBAddr is this node's OVN Southbound address, empty when unconfigured,
+// which leaves the local socket.
+func (d *Daemon) ovnSBAddr() string {
+	if d.clusterConfig == nil {
+		return ""
+	}
+	return d.clusterConfig.Nodes[d.clusterConfig.Node].VPCD.OVNSBAddr
+}
+
+// installOCIAllocators builds one OCI allocator per source="oci" pool and
+// reconciles it against OCI before it serves anything. The reconcile is on the
+// startup path on purpose: Allocate creates OCI objects before writing its
+// record, so a crash in between leaves a reserved public IP that bills and
+// holds one of the 50 per-region slots with nothing referencing it, and this
+// pass is the only thing that ever finds it.
+func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js jetstream.JetStream) error {
+	for _, p := range ipam.PoolsWithSource(external.SourceOCI) {
+		alloc, err := ocinet.FromPoolConfig(d.ctx, js, p, d.ovnSBAddr())
+		if err != nil {
+			return fmt.Errorf("build OCI allocator for pool %q: %w", p.Name, err)
+		}
+		if err := ipam.InstallAllocator(p.Name, alloc); err != nil {
+			return err
+		}
+		// A reconcile failure is not fatal: it leaks money, not correctness,
+		// and refusing to start would take EIPs down over a transient API
+		// error. It is logged at Error so it is never silently skipped.
+		res, err := alloc.Reconcile(d.ctx)
+		if err != nil {
+			slog.Error("OCI allocator reconcile failed; leaked addresses may be billing",
+				"pool", p.Name, "err", err)
+			continue
+		}
+		slog.Info("OCI allocator ready", "pool", p.Name,
+			"collected", len(res.Collected), "stale_bindings", len(res.Stale), "skipped", res.Skipped)
+		go d.runOCIAffinityLoop(alloc, p.Name)
+	}
+	return nil
+}
+
+// ociAffinityInterval is how often a node checks that OCI delivers its guests'
+// addresses to it. A guest that has just started elsewhere is dark until the
+// pass runs, so it is short relative to a boot — the address is back before the
+// guest has finished coming up.
+const ociAffinityInterval = 15 * time.Second
+
+// runOCIAffinityLoop keeps OCI's idea of where an address lives in step with
+// where its guest actually runs. Every node runs its own, like the host EIP
+// loop and for the same reason: the question is about this host's guests, and a
+// node that never wins the reconcile lease would otherwise never claim the
+// addresses of the instances it is running.
+func (d *Daemon) runOCIAffinityLoop(alloc *ocinet.PoolAllocator, poolName string) {
+	ticker := time.NewTicker(ociAffinityInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		res, err := alloc.ClaimLocalAddresses(d.ctx)
+		if err != nil {
+			slog.Error("OCI address affinity pass failed; a guest here may be unreachable on its public address",
+				"pool", poolName, "err", err)
+			continue
+		}
+		if len(res.Claimed) > 0 {
+			slog.Info("OCI addresses moved to this node", "pool", poolName,
+				"claimed", res.Claimed, "local_bindings", res.Local)
+		}
+	}
 }
 
 // hasPublicIPPools reports whether the cluster can allocate routable public
@@ -1690,6 +1781,9 @@ func (d *Daemon) startCluster() error {
 				if dhcpErr := ipam.EnableDHCP(dhcp.NewNATSClient(d.natsConn, 0)); dhcpErr != nil {
 					return nil, fmt.Errorf("enable DHCP allocator: %w", dhcpErr)
 				}
+			}
+			if ociErr := d.installOCIAllocators(ipam, js); ociErr != nil {
+				return nil, ociErr
 			}
 			return ipam, nil
 		})

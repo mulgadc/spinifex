@@ -368,7 +368,11 @@ type Images struct {
 	URL          string    `json:"url"`
 	Checksum     string    `json:"checksum"`
 	ChecksumType string    `json:"checksum_type"`
-	BootMode     string    `json:"boot_mode"`
+	// ChecksumDigest pins the expected hex digest here instead of naming a sums
+	// file in Checksum. Only valid for an immutable URL: a "latest" URL whose
+	// bytes change would fail every import until someone edited this file.
+	ChecksumDigest string `json:"checksum_digest,omitempty"`
+	BootMode       string `json:"boot_mode"`
 	// Tags are copied onto the imported AMI's metadata for UI filtering (e.g. spinifex:managed-by).
 	Tags map[string]string `json:"tags,omitempty"`
 }
@@ -379,6 +383,7 @@ var distroFamilies = map[string]string{
 	"ubuntu": "debian",
 	"rocky":  "rhel",
 	"rhel":   "rhel",
+	"oracle": "rhel",
 	"alma":   "rhel",
 	"fedora": "rhel",
 	"centos": "rhel",
@@ -508,6 +513,67 @@ var AvailableImages = map[string]Images{
 		Checksum:     "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base.latest.aarch64.qcow2.CHECKSUM",
 		ChecksumType: "sha256",
 		BootMode:     "uefi",
+	},
+
+	// Oracle publishes these digests inline on yum.oracle.com/oracle-linux-templates.html
+	// and ships no sums file, so all four pin ChecksumDigest. Safe here and only
+	// here: the URLs name a build (b291, b293, b178, b182) and never move.
+	// aarch64 has a -kvm-cloud- build alongside the plain -kvm- one; the cloud
+	// build is the cloud-init image and is the one that matches x86_64's -kvm-.
+	"oracle-10.1-x86_64": {
+		Name:           "oracle-10.1-x86_64",
+		Description:    "Oracle Linux 10.1 x86_64 KVM cloud image (UEK 8, cloud-init)",
+		Distro:         "oracle",
+		Version:        "10.1",
+		Arch:           "x86_64",
+		Platform:       "Linux/UNIX",
+		CreatedAt:      time.Date(2026, 5, 27, 0, 0, 0, 0, time.UTC),
+		URL:            "https://yum.oracle.com/templates/OracleLinux/OL10/u1/x86_64/OL10U1_x86_64-kvm-b291.qcow2",
+		ChecksumType:   "sha256",
+		ChecksumDigest: "8e59326c4bf7cfa58a6cac404db8ed583fe3a5f4c460e2b73c64988785bb4f0f",
+		BootMode:       "uefi",
+	},
+
+	"oracle-10.1-arm64": {
+		Name:           "oracle-10.1-arm64",
+		Description:    "Oracle Linux 10.1 arm64 KVM cloud image (UEK 8, cloud-init)",
+		Distro:         "oracle",
+		Version:        "10.1",
+		Arch:           "arm64",
+		Platform:       "Linux/UNIX",
+		CreatedAt:      time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC),
+		URL:            "https://yum.oracle.com/templates/OracleLinux/OL10/u1/aarch64/OL10U1_aarch64-kvm-cloud-b178.qcow2",
+		ChecksumType:   "sha256",
+		ChecksumDigest: "e203063e0e8b2752a896787ecc44fc506527055ec819b1422a297d60ad968b20",
+		BootMode:       "uefi",
+	},
+
+	"oracle-9.8-x86_64": {
+		Name:           "oracle-9.8-x86_64",
+		Description:    "Oracle Linux 9.8 x86_64 KVM cloud image (UEK, cloud-init)",
+		Distro:         "oracle",
+		Version:        "9.8",
+		Arch:           "x86_64",
+		Platform:       "Linux/UNIX",
+		CreatedAt:      time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC),
+		URL:            "https://yum.oracle.com/templates/OracleLinux/OL9/u8/x86_64/OL9U8_x86_64-kvm-b293.qcow2",
+		ChecksumType:   "sha256",
+		ChecksumDigest: "b12103391327abee8090686759c0d62dac9a7af2bf0f45fdf6b0d085a0fbb52b",
+		BootMode:       "uefi",
+	},
+
+	"oracle-9.8-arm64": {
+		Name:           "oracle-9.8-arm64",
+		Description:    "Oracle Linux 9.8 arm64 KVM cloud image (UEK, cloud-init)",
+		Distro:         "oracle",
+		Version:        "9.8",
+		Arch:           "arm64",
+		Platform:       "Linux/UNIX",
+		CreatedAt:      time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC),
+		URL:            "https://yum.oracle.com/templates/OracleLinux/OL9/u8/aarch64/OL9U8_aarch64-kvm-cloud-b182.qcow2",
+		ChecksumType:   "sha256",
+		ChecksumDigest: "4793c3ec49d9f8b27a932d3bd88ec45d08249c5195faa3b0fac876ab0d5f5856",
+		BootMode:       "uefi",
 	},
 
 	"ubuntu-26.04-nvidia-gpu-x86_64": {

@@ -77,14 +77,23 @@ func vpcEgressNATRounds() int {
 //     NATGatewayUp succeeded — tearing down a gateway that was never
 //     fully provisioned would produce misleading failures rather than
 //     useful signal.
+//   - StopStartAddress runs second to last, on the same public guest, while it
+//     still holds the address its launch borrowed from the pool. A stop returns
+//     that address and the start takes a different one, so it has to come after
+//     every stage that reaches the guest on the original and before EIPFlip
+//     replaces it with an address the customer owns. It rebinds pubIP and
+//     bastionTgt to what the guest came back on.
 //   - EIPFlip runs last and reuses the same public guest as the EIP subject.
 //     Associating an Elastic IP rewrites the instance's public IP, which
 //     would corrupt every stage above that still expects the guest to
 //     answer on its original address — ordering it last is what lets this
 //     scenario reuse the guest at all instead of needing a disposable one.
+//     Its StopStartKeepsTheEIP step stops and restarts that guest, which is
+//     safe for the same reason and only while the EIP is still associated:
+//     the address the guest returns on is the allocation's, not the pool's.
 func runVPCEgressPaths(t *testing.T, fix *Fixture) {
-	if !fix.PoolMode {
-		t.Skip("VPC egress paths scenario requires pool-mode networking")
+	if !fix.PublicPool {
+		t.Skip("VPC egress paths scenario needs a pool of public addresses to allocate from")
 	}
 	harness.Phase(t, "Single — Three ways in and out: public subnet, NAT Gateway, and Elastic IP egress around one VPC")
 
@@ -671,6 +680,73 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		})
 	}
 
+	// --- StopStartAddress: the auto-assigned address across a stop, before any EIP ---
+
+	// AWS takes an auto-assigned public address back when an instance stops and
+	// hands it a different one on the start. This is the only stage that sees
+	// that, so it runs while the guest still holds the address its launch
+	// borrowed and before EIPFlip replaces it with one the customer owns.
+	t.Run("StopStartAddress", func(t *testing.T) {
+		harness.SkipIfNoOVN(t)
+
+		harness.Step(t, "stop-instances %s (holding %s)", pubInstanceID, pubIP)
+		_, err := c.EC2.StopInstances(&ec2.StopInstancesInput{
+			InstanceIds: []*string{aws.String(pubInstanceID)},
+		})
+		require.NoError(t, err, "stop-instances")
+		stopped := harness.WaitForInstanceState(t, c, pubInstanceID, "stopped")
+
+		// A stopped instance has no datapath and no address, which is what
+		// distinguishes a borrowed address from an Elastic IP: the EIP stage
+		// above asserts the opposite for the same guest.
+		require.Emptyf(t, aws.StringValue(stopped.PublicIpAddress),
+			"stopped instance still reports public address %s — it was never returned to the pool",
+			aws.StringValue(stopped.PublicIpAddress))
+		harness.Detail(t, "stopped_public_ip", "released")
+
+		harness.Step(t, "start-instances %s", pubInstanceID)
+		_, err = c.EC2.StartInstances(&ec2.StartInstancesInput{
+			InstanceIds: []*string{aws.String(pubInstanceID)},
+		})
+		require.NoError(t, err, "start-instances")
+		started := harness.WaitForInstanceState(t, c, pubInstanceID, "running")
+
+		newIP := aws.StringValue(started.PublicIpAddress)
+		require.NotEmptyf(t, newIP,
+			"instance %s came back with no public address — the subnet auto-assigns one and the start did not take it",
+			pubInstanceID)
+		harness.Detail(t, "restarted_public_ip", newIP)
+
+		// A pool we number hands out the address after the cursor, so the one
+		// just returned is the last it would pick. A DHCP server is free to
+		// renew the same lease for the same client, so there the only honest
+		// assertion is that an address came back at all.
+		if fix.PublicPoolSource == "static" {
+			assert.NotEqualf(t, pubIP, newIP,
+				"restart returned the same address %s — the stop did not release it, or the pool re-handed it", pubIP)
+		}
+
+		harness.Step(t, "ssh to guest via %s after restart", newIP)
+		if !trySSHReady(newIP, 22, keyPath, sshReadyBudget) {
+			harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
+				fmt.Sprintf("StopStartAddress SSH timeout — was=%s now=%s instance=%s", pubIP, newIP, pubInstanceID),
+				harness.VPCDiagnosticsOpts{
+					ExternalIP:  newIP,
+					LogicalIP:   pubPrivIP,
+					ArtifactDir: fix.ArtifactDir(t),
+				})
+			t.Fatalf("guest unreachable via %s within %s after restart (see diagnostics above)", newIP, sshReadyBudget)
+		}
+		out := runSSH(t, harness.SSHTarget{User: "ubuntu", Host: newIP, Port: 22, KeyPath: keyPath}, "id")
+		require.Containsf(t, out, "ubuntu", "ssh after restart did not report ubuntu\n%s", out)
+		harness.Detail(t, "datapath", "reachable_on_new_address_ok")
+
+		// Every later stage reaching this guest must use the address it is
+		// actually on, so the stale one is replaced rather than left behind.
+		pubIP = newIP
+		bastionTgt = harness.SSHTarget{User: "ubuntu", Host: newIP, Port: 22, KeyPath: keyPath}
+	})
+
 	// --- EIPFlip: last, on the same public guest ---
 
 	t.Run("EIPFlip", func(t *testing.T) {
@@ -727,6 +803,68 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		idOut := runSSH(t, tgt, "id")
 		require.Containsf(t, idOut, "ubuntu", "ssh via EIP id did not report ubuntu\n%s", idOut)
 		harness.Detail(t, "datapath", "eip_reachable_ok")
+
+		// An Elastic IP outlives the instance it is attached to, so a stop must
+		// leave the allocation, the association and the address itself intact —
+		// and a start must bring the same address back, not a new one. On a DHCP
+		// pool this is also the only outside view of the lease still renewing.
+		t.Run("StopStartKeepsTheEIP", func(t *testing.T) {
+			harness.Step(t, "stop-instances %s", pubInstanceID)
+			_, err := c.EC2.StopInstances(&ec2.StopInstancesInput{
+				InstanceIds: []*string{aws.String(pubInstanceID)},
+			})
+			require.NoError(t, err, "stop-instances")
+			harness.WaitForInstanceState(t, c, pubInstanceID, "stopped")
+
+			harness.Step(t, "verify EIP %s survives the stop", eipIP)
+			addrOut, err := c.EC2.DescribeAddresses(&ec2.DescribeAddressesInput{
+				AllocationIds: []*string{aws.String(allocID)},
+			})
+			require.NoError(t, err, "describe-addresses while stopped")
+			require.Lenf(t, addrOut.Addresses, 1,
+				"allocation %s vanished while the instance was stopped — the customer's Elastic IP went back to the pool", allocID)
+			stopped := addrOut.Addresses[0]
+			assert.Equal(t, eipIP, aws.StringValue(stopped.PublicIp), "the allocation changed address across a stop")
+			assert.Equal(t, eipAssocID, aws.StringValue(stopped.AssociationId), "the association was dropped by the stop")
+			assert.Equal(t, pubInstanceID, aws.StringValue(stopped.InstanceId), "the association no longer names the instance")
+
+			// A stopped instance has no datapath, so it reports no address even
+			// though the allocation above still holds it. The two views disagree
+			// on purpose, and only the allocation is the customer's property.
+			stoppedInst, err := c.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
+				InstanceIds: []*string{aws.String(pubInstanceID)},
+			})
+			require.NoError(t, err, "describe-instances while stopped")
+			require.NotEmpty(t, stoppedInst.Reservations)
+			require.NotEmpty(t, stoppedInst.Reservations[0].Instances)
+			assert.Empty(t, aws.StringValue(stoppedInst.Reservations[0].Instances[0].PublicIpAddress),
+				"a stopped instance still reports a public address")
+
+			harness.Step(t, "start-instances %s", pubInstanceID)
+			_, err = c.EC2.StartInstances(&ec2.StartInstancesInput{
+				InstanceIds: []*string{aws.String(pubInstanceID)},
+			})
+			require.NoError(t, err, "start-instances")
+			started := harness.WaitForInstanceState(t, c, pubInstanceID, "running")
+
+			require.Equalf(t, eipIP, aws.StringValue(started.PublicIpAddress),
+				"instance came back on a different address than the Elastic IP associated to it")
+
+			harness.Step(t, "ssh to guest via EIP %s after restart", eipIP)
+			if !trySSHReady(eipIP, 22, keyPath, sshReadyBudget) {
+				harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
+					fmt.Sprintf("EIP SSH timeout after restart — eip=%s instance=%s", eipIP, pubInstanceID),
+					harness.VPCDiagnosticsOpts{
+						ExternalIP:  eipIP,
+						LogicalIP:   aws.StringValue(started.PrivateIpAddress),
+						ArtifactDir: fix.ArtifactDir(t),
+					})
+				t.Fatalf("guest unreachable via EIP %s within %s after restart (see diagnostics above)", eipIP, sshReadyBudget)
+			}
+			out := runSSH(t, harness.SSHTarget{User: "ubuntu", Host: eipIP, Port: 22, KeyPath: keyPath}, "id")
+			require.Containsf(t, out, "ubuntu", "ssh via EIP after restart did not report ubuntu\n%s", out)
+			harness.Detail(t, "datapath", "eip_reachable_after_restart_ok")
+		})
 
 		harness.Step(t, "disassociate-address %s", eipAssocID)
 		_, err = c.EC2.DisassociateAddress(&ec2.DisassociateAddressInput{AssociationId: aws.String(eipAssocID)})

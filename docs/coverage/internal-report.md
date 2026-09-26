@@ -21,7 +21,7 @@ Pinned model source: `aws-sdk-go v1.55.8`.
 
 ## ec2
 
-`2016-11-15` — 126 of 625 modelled operations implemented (20.2%), 0 stubbed, 39 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 127 of 625 modelled operations implemented (20.3%), 0 stubbed, 39 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -287,7 +287,6 @@ Pinned model source: `aws-sdk-go v1.55.8`.
 - `DescribeVpcEndpointServiceConfigurations`
 - `DescribeVpcEndpointServicePermissions`
 - `DescribeVpcEndpointServices`
-- `DescribeVpcEndpoints`
 - `DescribeVpcPeeringConnections`
 - `DescribeVpnConnections`
 - `DescribeVpnGateways`
@@ -970,7 +969,7 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 
 ## s3
 
-`2006-03-01` — 26 of 99 modelled operations implemented (26.3%), 0 stubbed, 6 not applicable, 0 registered outside the pinned model.
+`2006-03-01` — 23 of 99 modelled operations implemented (23.2%), 0 stubbed, 6 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1003,6 +1002,7 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 - `GetBucketPolicy`
 - `GetBucketPolicyStatus`
 - `GetBucketReplication`
+- `GetBucketVersioning`
 - `GetBucketWebsite`
 - `GetObjectAcl`
 - `GetObjectAttributes`
@@ -1017,6 +1017,7 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 - `ListBucketInventoryConfigurations`
 - `ListBucketMetricsConfigurations`
 - `ListDirectoryBuckets`
+- `ListObjectVersions`
 - `PutBucketAcl`
 - `PutBucketAnalyticsConfiguration`
 - `PutBucketCors`
@@ -1032,6 +1033,7 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 - `PutBucketOwnershipControls`
 - `PutBucketPolicy`
 - `PutBucketReplication`
+- `PutBucketVersioning`
 - `PutBucketWebsite`
 - `PutObjectAcl`
 - `PutObjectLegalHold`

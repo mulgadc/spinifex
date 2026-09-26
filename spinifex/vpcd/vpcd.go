@@ -21,6 +21,7 @@ import (
 	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
@@ -166,6 +167,12 @@ type Config struct {
 	// UnderlayMTU is the fabric MTU between nodes; the advertised guest MTU is
 	// derived from it.
 	UnderlayMTU int
+	// IMDSHostMetaIP and IMDSHostDNSIP move the per-tap responder's binds off
+	// 169.254.169.254 / .253 on a host that needs those addresses for itself.
+	// Empty means bind the guest-facing pair, which is every bare-metal node.
+	// The daemon reads the same keys to configure the endpoint and its DNAT.
+	IMDSHostMetaIP string
+	IMDSHostDNSIP  string
 	// BlockedWANPorts are TCP destination ports dropped for guest egress to
 	// public destinations (AWS-parity outbound-SMTP block). Empty disables it.
 	BlockedWANPorts []int
@@ -449,14 +456,35 @@ func launchService(cfg *Config) error {
 
 	flowsBarrier := newFlowsBarrier(cfg.OVNNBAddr)
 
-	bridgeMode, wanBridge := resolveBridgeConfig(cfg.BridgeMode, cfg.ExternalInterface)
+	bridgeMode, wanBridge := resolveBridgeConfig(cfg.BridgeMode, cfg.ExternalInterface, cfg.ExternalMode)
 	slog.Info("External bridge mode", "mode", bridgeMode, "wan_bridge", wanBridge)
 	if err := verifyBridgeMode(bridgeMode, cfg.ExternalInterface, wanBridge); err != nil {
 		slog.Error("vpcd: bridge mode sanity check failed", "err", err)
 		return err
 	}
 
+	// The IMDS firewall rules are wildcarded over every ime- endpoint and so
+	// belong here, once per start, rather than per launch in the daemon — which
+	// holds neither CAP_NET_ADMIN nor an iptables sudo grant, by design.
+	// Re-ensured every start so they survive a reboot or a firewall flush.
+	host.SetIMDSHostAddrs(cfg.IMDSHostMetaIP, cfg.IMDSHostDNSIP)
+	if err := host.EnsureIMDSInputRule(ctx, host.NewExecRunner()); err != nil {
+		slog.Error("vpcd: IMDS input rule install failed", "err", err)
+		return err
+	}
+	if err := host.EnsureIMDSRemapRules(ctx, host.NewExecRunner()); err != nil {
+		slog.Error("vpcd: IMDS remap rule install failed", "err", err)
+		return err
+	}
+
 	if bridgeMode == BridgeModeNAT {
+		// OVN carries one MAC binding for the transit nexthop cluster-wide, so a
+		// node whose veth kept a random address receives none of the egress that
+		// binding points at. Re-asserted here because the veth outlives a deploy.
+		if err := host.EnsureTransitHostMAC(ctx, host.NewExecRunner()); err != nil {
+			slog.Error("vpcd: transit host MAC could not be set", "err", err)
+			return err
+		}
 		// Re-ensure kernel egress rules on every start so they survive reboots
 		// and firewall flushes without iptables-persistent.
 		if err := host.EnsureNATEgressRules(ctx, host.NewExecRunner()); err != nil {
@@ -515,6 +543,12 @@ func launchService(cfg *Config) error {
 		}
 	}
 	sgMgr := policy.NewSecurityGroupManager(liveClient, egressPolicy)
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return fmt.Errorf("get JetStream context: %w", err)
+	}
+
 	natOpts := []policy.Option{
 		policy.WithFlowsBarrier(flowsBarrier),
 		policy.WithNeighFlusher(neighFlusher(wanBridge)),
@@ -525,18 +559,25 @@ func launchService(cfg *Config) error {
 			append([]string{host.NATTransitCIDR}, cfg.NATExemptCIDRs...)))
 	}
 	if natMode == policy.NATModeRouted && publicPool != nil {
-		natOpts = append(natOpts, policy.WithHostEIPBinder(hostEIPBinder(publicPool)))
+		natOpts = append(natOpts, policy.WithHostEIPBinder(hostEIPBinder(publicPool, cfg.OVNSBAddr)))
+	}
+	// Also handed to the reconciler, whose EIP datapath probe has to ARP the same
+	// on-wire address the NAT rule is built from.
+	var datapathIP policy.DatapathResolver
+	var bindGatewayVPC func(ctx context.Context, externalIP, vpcID string) error
+	if ociPools := ociPoolNames(cfg.ExternalPools); len(ociPools) > 0 {
+		lookup := ocinet.NewLookup(ocinet.NewKVStore(js), ociPools)
+		datapathIP = lookup.DatapathIP
+		bindGatewayVPC = lookup.BindGateway
+		natOpts = append(natOpts, policy.WithDatapathResolver(datapathIP))
+		slog.Info("vpcd: OCI address pairs in use; NAT rules and host routes follow the private half",
+			"pools", ociPools)
 	}
 	natMgr, err := policy.NewNATManager(liveClient, natMode, natOpts...)
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
 	}
 	routeMgr := policy.NewRouteManager(liveClient)
-
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return fmt.Errorf("get JetStream context: %w", err)
-	}
 
 	// vpcd holds the network capabilities needed for IMDS; STS/IAM stay in awsgw over NATS.
 	imdsCtx, cancelIMDS := context.WithCancel(ctx)
@@ -575,6 +616,7 @@ func launchService(cfg *Config) error {
 		cfg.ServicesDomain,
 		cfg.CACert,
 		cfg.ResolverNameservers,
+		handlers_imds.NewHostBindAddrs(cfg.IMDSHostMetaIP, cfg.IMDSHostDNSIP),
 	)
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)
@@ -705,23 +747,31 @@ func launchService(cfg *Config) error {
 	}()
 
 	rec, err := reconcile.New(reconcile.Config{
-		OVN:           liveClient,
-		SG:            sgMgr,
-		NAT:           natMgr,
-		Routes:        routeMgr,
-		IGW:           igwMgr,
-		Topology:      topoMgr,
-		LocalAZ:       cfg.AZ,
-		NodeHostname:  holder,
-		Chassis:       chassisNames,
-		GatewayClaim:  host.NewGatewayClaimProber(cfg.OVNSBAddr),
-		DNSServer:     resolverDNSServer(cfg),
-		IPSecDisabled: !cfg.IPSecEnabled,
-		UnderlayMTU:   cfg.UnderlayMTU,
+		OVN:            liveClient,
+		SG:             sgMgr,
+		NAT:            natMgr,
+		Routes:         routeMgr,
+		IGW:            igwMgr,
+		Topology:       topoMgr,
+		LocalAZ:        cfg.AZ,
+		NodeHostname:   holder,
+		Chassis:        chassisNames,
+		GatewayClaim:   host.NewGatewayClaimProber(cfg.OVNSBAddr),
+		DNSServer:      resolverDNSServer(cfg),
+		IPSecDisabled:  !cfg.IPSecEnabled,
+		UnderlayMTU:    cfg.UnderlayMTU,
+		DatapathIP:     datapathIP,
+		BindGatewayVPC: bindGatewayVPC,
 		// Re-read intent at prune time so a guest launched during a long apply
 		// phase is not mistaken for an orphan and its dnat_and_snat swept.
 		FreshIntent: func(ctx context.Context) (reconcile.IntentState, error) {
 			return reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
+		},
+		// Local OVS is the only liveness signal the orphan sweep has that does not
+		// come through KV, so it is what stops an unreadable ENI bucket reading as
+		// an empty one and taking every running guest's port with it.
+		LocalPorts: func(ctx context.Context) (map[string]struct{}, error) {
+			return host.ListLocalPorts(ctx, host.NewExecRunner())
 		},
 		MarkIGWAttached: func(ctx context.Context, recordKey, vpcID string) error {
 			kv, err := js.KeyValue(ctx, handlers_ec2_igw.KVBucketIGW)
@@ -765,6 +815,12 @@ func launchService(cfg *Config) error {
 	// recovery must run on every node. Backstops the bring-up settle pass for runtime
 	// SB re-bootstraps (snapshot install / compaction) with no deploy in flight.
 	go runOVNControllerWatchdog(loopCtx, newOVNWatchdog(host.NewGatewayClaimProber(cfg.OVNSBAddr)))
+
+	// Host-side EIP plumbing, on every node. The drift loop above is leader-gated
+	// because it writes the shared NB DB; routes and proxy-ARP are this host's
+	// own, and a node that never wins the lease would otherwise have no path to
+	// the guests it is running.
+	go runHostEIPLoop(loopCtx, rec)
 
 	slog.Info("vpcd service started, waiting for VPC lifecycle events",
 		"subscriptions", len(subs))
@@ -925,10 +981,17 @@ func pickGatewayAllocator(pool *external.ExternalPoolConfig, ovnClient ovn.Clien
 
 // resolveBridgeConfig picks bridge mode (auto-detecting when unset) and the WAN
 // bridge: "br-wan" for bridged modes, the transit veth host end for nat mode.
-func resolveBridgeConfig(cfgBridgeMode, externalIface string) (string, string) {
+func resolveBridgeConfig(cfgBridgeMode, externalIface, externalMode string) (string, string) {
 	bridgeMode := cfgBridgeMode
 	if bridgeMode == "" && externalIface != "" {
-		bridgeMode = detectBridgeMode(externalIface)
+		bridgeMode = detectBridgeMode(externalIface, externalMode)
+	} else if bridgeMode != "" {
+		// An explicit value is obeyed, but it is as capable of being wrong as a
+		// guess and nothing else ever checks it against the wiring.
+		if ev := readBridgeEvidence(); mustBeNAT(bridgeMode) != ev.natTransit {
+			slog.Error("vpcd: configured bridge_mode does not match the uplink wiring",
+				append(ev.attrs(), "bridge_mode", bridgeMode, "external_iface", externalIface)...)
+		}
 	}
 	if bridgeMode == BridgeModeNAT {
 		return bridgeMode, host.NATTransitHostEnd
@@ -956,17 +1019,38 @@ func selectExternalPools(externalMode string, pools []external.ExternalPoolConfi
 	return igwPool, publicPool
 }
 
+// ociPoolNames lists the pools whose addresses are OCI pairs, and so need the
+// public half mapped to a private one before it reaches OVN or a host route.
+func ociPoolNames(pools []external.ExternalPoolConfig) []string {
+	var names []string
+	for _, p := range pools {
+		if p.IsOCI() {
+			names = append(names, p.Name)
+		}
+	}
+	return names
+}
+
 // hostEIPBinder builds the routed-mode host plumbing hooks for EIPs on the
 // public pool: /32 route into OVN plus proxy-ARP on the uplink. Static pools
 // locate the uplink via the pool gateway; dhcp pools via their bind bridge.
-func hostEIPBinder(pool *external.ExternalPoolConfig) policy.HostEIPBinder {
+func hostEIPBinder(pool *external.ExternalPoolConfig, sbAddr string) policy.HostEIPBinder {
 	runner := host.NewExecRunner()
+	prober := host.NewGatewayClaimProber(sbAddr)
 	gateway, uplinkHint := pool.Gateway, pool.BindBridge
 	return policy.HostEIPBinder{
 		Bind: func(eip policy.EIPSpec, gwLrpIP string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			return host.EnsureEIPIngress(ctx, runner, eip.ExternalIP, gwLrpIP, gateway, uplinkHint)
+			if skip, err := skipForeignEIP(ctx, runner, eip); err != nil || skip {
+				return err
+			}
+			return host.EnsureEIPIngress(ctx, runner, host.EIPIngress{
+				EIP:         eip.ExternalIP,
+				GwLrpIP:     gwLrpIP,
+				PoolGateway: gateway,
+				UplinkHint:  uplinkHint,
+			})
 		},
 		Unbind: func(externalIP string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -978,7 +1062,47 @@ func hostEIPBinder(pool *external.ExternalPoolConfig) policy.HostEIPBinder {
 			defer cancel()
 			return host.ListEIPIngress(ctx, runner)
 		},
+		// The same authority skipForeignEIP uses, asked again at prune time: a
+		// guest can move after the bind, and nothing else would take the route
+		// and proxy-ARP off the node it left.
+		Owns: func(portName string) (bool, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return host.HasLocalPort(ctx, runner, portName)
+		},
+		// A NAT gateway has no port, so locality is the VPC's gateway chassis:
+		// its SNAT runs there and its egress leaves that node's uplink.
+		GatewayElsewhere: func(vpcID string) (bool, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return prober.GatewayPortElsewhere(ctx, topology.GatewayChassisRedirectPort(vpcID))
+		},
 	}
+}
+
+// skipForeignEIP reports whether this EIP belongs to an instance on another
+// chassis, and so is not this node's to plumb.
+//
+// Only a distributed EIP is skippable: it is reachable solely through the
+// chassis its ENI is bound to, so a route installed anywhere else points at a
+// MAC that will never answer. A centralised EIP hairpins through the gateway
+// chassis and every node plumbs it, which is the behaviour before this gate.
+// Local OVS is asked rather than the Southbound DB — the question is about
+// this host, and nothing else can answer it wrongly.
+func skipForeignEIP(ctx context.Context, runner host.Runner, eip policy.EIPSpec) (bool, error) {
+	if eip.PortName == "" || eip.MAC == "" {
+		return false, nil
+	}
+	local, err := host.HasLocalPort(ctx, runner, eip.PortName)
+	if err != nil {
+		return false, fmt.Errorf("check local binding for %s: %w", eip.PortName, err)
+	}
+	if local {
+		return false, nil
+	}
+	slog.Debug("vpcd: EIP belongs to an instance on another chassis, leaving it alone",
+		"eip", eip.ExternalIP, "port", eip.PortName)
+	return true, nil
 }
 
 // neighFlusher builds the ARP-flush hook for AddEIP/DeleteEIP so recycled IPs re-resolve L2 immediately.
@@ -1012,22 +1136,77 @@ var ifaceExists = func(name string) bool {
 	return exec.Command("ip", "link", "show", name).Run() == nil
 }
 
-// detectBridgeMode infers bridge mode: nat when spx-nat-ovs exists, veth when
-// veth-wan-ovs exists, direct otherwise.
-// Each branch logs at Info/Warn so `journalctl | grep bridge` shows the full detection trail.
-func detectBridgeMode(externalIface string) string {
-	if ifaceExists(host.NATTransitOVSEnd) {
-		slog.Info("vpcd: detected routed-NAT transit veth", "mode", BridgeModeNAT)
-		return BridgeModeNAT
+// mustBeNAT reports whether a bridge mode requires the routed-NAT transit veth.
+func mustBeNAT(bridgeMode string) bool { return bridgeMode == BridgeModeNAT }
+
+// wanVethOVSEnd is the OVS end of the pair that links a Linux WAN bridge to
+// br-ext. Its presence is what distinguishes veth mode from direct.
+const wanVethOVSEnd = "veth-wan-ovs"
+
+// bridgeEvidence is what the kernel says about the two veths bridge mode is
+// inferred from. Kept as a value so the detection can report what it saw
+// alongside what it concluded.
+type bridgeEvidence struct {
+	natTransit bool
+	wanVeth    bool
+}
+
+func (e bridgeEvidence) attrs() []any {
+	return []any{host.NATTransitOVSEnd, e.natTransit, wanVethOVSEnd, e.wanVeth}
+}
+
+// mode is the bridge mode the evidence alone implies, and whether the two
+// signals contradict each other. Both veths present is a node that has been set
+// up twice in different modes, which is the state --teardown exists for.
+func (e bridgeEvidence) mode() (string, bool) {
+	switch {
+	case e.natTransit && e.wanVeth:
+		return BridgeModeNAT, true
+	case e.natTransit:
+		return BridgeModeNAT, false
+	case e.wanVeth:
+		return BridgeModeVeth, false
+	default:
+		return BridgeModeDirect, false
 	}
-	if ifaceExists("veth-wan-ovs") {
-		slog.Info("vpcd: detected veth pair linking Linux bridge to OVS", "mode", BridgeModeVeth)
-		return BridgeModeVeth
+}
+
+// readBridgeEvidence asks the kernel which uplink veths exist.
+func readBridgeEvidence() bridgeEvidence {
+	return bridgeEvidence{
+		natTransit: ifaceExists(host.NATTransitOVSEnd),
+		wanVeth:    ifaceExists(wanVethOVSEnd),
 	}
-	slog.Warn("vpcd: no veth interface found, assuming direct bridge mode",
-		"external_iface", externalIface, "checked_veth", "veth-wan-ovs",
-		"mode", BridgeModeDirect)
-	return BridgeModeDirect
+}
+
+// detectBridgeMode infers bridge mode from the uplink veths, and reports the
+// evidence rather than only the verdict — a wrong answer here misroutes every
+// external packet, and the old log line named only the branch it took.
+//
+// externalMode is what the operator asked for, and is checked against the
+// evidence rather than overriding it: the veths are what the datapath actually
+// uses, so a disagreement is a broken node and saying so beats silently
+// picking one. Passing "" skips that check.
+func detectBridgeMode(externalIface, externalMode string) string {
+	ev := readBridgeEvidence()
+	mode, conflict := ev.mode()
+
+	if conflict {
+		slog.Error("vpcd: both uplink veths exist — this node has been set up in two modes; run setup-ovn.sh --teardown and set it up once",
+			append(ev.attrs(), "external_iface", externalIface, "using_mode", mode)...)
+	}
+	if mismatch := externalMode != "" && (externalMode == "nat") != (mode == BridgeModeNAT); mismatch {
+		slog.Error("vpcd: external_mode and the uplink wiring disagree — the datapath follows the wiring, so external traffic will not behave as configured",
+			append(ev.attrs(), "external_mode", externalMode, "detected_mode", mode,
+				"fix", "re-run setup-ovn.sh for external_mode, or correct external_mode")...)
+	}
+	if mode == BridgeModeDirect {
+		slog.Warn("vpcd: no uplink veth found, assuming the WAN NIC is an OVS port",
+			append(ev.attrs(), "external_iface", externalIface, "mode", mode)...)
+		return mode
+	}
+	slog.Info("vpcd: bridge mode detected", append(ev.attrs(), "external_iface", externalIface, "mode", mode)...)
+	return mode
 }
 
 // portToBr returns the OVS bridge owning port, or "" if not in OVSDB.

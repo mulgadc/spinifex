@@ -170,8 +170,14 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 		// map at StateStopped so Restore relaunches it on the next boot. Do
 		// not migrate to the operator-stopped shared bucket or fire
 		// OnInstanceDown; QEMU is already down and resources released.
+		//
+		// The address is kept for the same reason. A drain is not a customer
+		// stop, and Restore brings the instance back on the same address rather
+		// than changing it under a guest nobody asked to move.
 		return false, sealErr
 	}
+
+	m.releaseAutoAssignedPublicIP(instance)
 
 	if !m.MigrateStoppedToSharedKV(instance) {
 		// Either StateStore unavailable / write failed (instance stays in
@@ -520,6 +526,32 @@ func (m *Manager) stopCleanup(instance *VM) error {
 	}
 
 	return sealErr
+}
+
+// releaseAutoAssignedPublicIP returns the instance's auto-assigned address to
+// its pool on an operator stop, matching AWS: the free address is borrowed for
+// as long as the instance runs, and the start that follows takes a new one.
+// An Elastic IP is refused by the cleaner and the VM keeps it, so the only
+// state cleared here is state the pool no longer backs.
+func (m *Manager) releaseAutoAssignedPublicIP(instance *VM) {
+	if m.deps.InstanceCleaner == nil || instance.PublicIP == "" {
+		return
+	}
+	released, err := m.deps.InstanceCleaner.ReleaseAutoAssignedPublicIP(instance)
+	if err != nil {
+		slog.Warn("Failed to release auto-assigned public IP on stop",
+			"instanceId", instance.ID, "ip", instance.PublicIP, "err", err)
+	}
+	if !released {
+		return
+	}
+	// Written under the manager lock so the record migrated to the stopped
+	// bucket a moment later cannot still advertise the address.
+	m.UpdateState(instance.ID, func(v *VM) {
+		v.PublicIP = ""
+		v.PublicIPPool = ""
+		v.AutoAssignPublicIP = true
+	})
 }
 
 // terminateCleanup is stopCleanup plus the AWS-resource cleanup that

@@ -12,6 +12,19 @@ Node installation, dev-environment lifecycle, guest image builds, and verificati
 | `dev-install.sh` | Full local dev setup through the production installer: builds from source, packs a tarball, runs `setup.sh`, initialises the cluster, and starts services under systemd. |
 | `clone-deps.sh` | Clones or updates the viperblock and predastore checkouts alongside spinifex for cross-repo development. |
 
+## Teardown
+
+Both ship to `/usr/local/share/spinifex/` on every node, so they are available on a host installed with `curl … | bash` and not only from a checkout. They differ in what they take away:
+
+| Script | What it does |
+|---|---|
+| `node-reset.sh` | Clears **state** and leaves the node installed: stops services, destroys guests, wipes `/etc/spinifex`, `/var/lib/spinifex`, `/var/log/spinifex` and the OVN databases, and removes the OVS bridges. The node is then ready for a fresh `spx admin init`. `--keep-data` preserves `/var/lib/spinifex`; `SPX_RESET_CONFIRM=reset` runs it unattended. |
+| `uninstall-spx.sh` | Removes the **software** — the inverse of `setup.sh`. Delegates the state teardown above to `node-reset.sh` rather than reimplementing it, then removes the binary, the nbdkit plugin, the systemd units and slices, the service users, the sudoers grant, the sysctl/logrotate/chrony/udev drop-ins, the `systemd-networkd` units, the host firewall policy and its loaded nft table, and the Spinifex CA from the host trust store. Verifies afterwards and exits non-zero naming anything that survived. |
+
+`uninstall-spx.sh` keeps `/var/lib/spinifex` and every apt package by default — uninstalling software should not destroy data, and a `curl … | bash` install lands on hosts that were already using openvswitch, libvirt and chrony. `--purge-data` and `--purge-deps` opt into each, and both confirm separately even under `--yes` (`SPX_PURGE_CONFIRM=destroy` for unattended data removal). `--dry-run` prints the whole plan and touches nothing.
+
+**It refuses on a multi-node cluster, and `--yes` does not override that.** Uninstalling one node of a running cluster strands its guests and leaves the survivors reconciling against a chassis that will never answer. Run `spx admin cluster shutdown` first, then the uninstaller on each node.
+
 ## Dev environment
 
 | Script | What it does |

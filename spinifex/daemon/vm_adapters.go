@@ -768,7 +768,9 @@ func (a *instanceCleanerAdapter) CleanupMgmtNetwork(instance *vm.VM) {
 
 // ReleasePublicIP publishes vpc.delete-nat for the OVN dnat_and_snat rule
 // and releases the public IP back to the external IPAM pool. No-op when
-// the instance has no public IP.
+// the instance has no public IP. Terminate calls it for whatever the instance
+// holds; the stop path calls it only once it has established the address is
+// not an Elastic IP.
 func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) error {
 	if instance.PublicIP == "" || instance.PublicIPPool == "" || a.d.externalIPAM == nil {
 		return nil
@@ -800,13 +802,57 @@ func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) error {
 				"instanceId", instance.ID, "err", err)
 			return nil
 		}
-		slog.Warn("Failed to release public IP on termination",
+		slog.Warn("Failed to release public IP",
 			"ip", instance.PublicIP, "pool", instance.PublicIPPool, "err", err)
 		return err
 	}
-	slog.Info("Released public IP on termination",
+	slog.Info("Released public IP",
 		"ip", instance.PublicIP, "instanceId", instance.ID)
 	return nil
+}
+
+// ReleaseAutoAssignedPublicIP returns an auto-assigned address to its pool when
+// the instance stops, as AWS does. Three things can be holding the address and
+// only one of them may be reclaimed here: an EIP allocated through the EIP
+// service (PublicIPAllocID), an EIP associated to this ENI after the fact, or
+// the address the launch borrowed. The first two are the customer's and stay.
+func (a *instanceCleanerAdapter) ReleaseAutoAssignedPublicIP(instance *vm.VM) (bool, error) {
+	if instance.PublicIP == "" || instance.PublicIPPool == "" || a.d.externalIPAM == nil {
+		return false, nil
+	}
+	if instance.PublicIPAllocID != "" {
+		return false, nil
+	}
+	ctx := context.Background()
+	if instance.ENIId != "" && a.d.vpcService != nil {
+		owned, err := a.d.vpcService.ENIHasEIP(ctx, instance.AccountID, instance.ENIId)
+		if err != nil {
+			// Keeping the address costs a pool slot until terminate; releasing one
+			// we could not prove is ours destroys a customer's Elastic IP.
+			return false, fmt.Errorf("check EIP association for %s: %w", instance.ENIId, err)
+		}
+		if owned {
+			slog.Info("Stop kept the public address — it belongs to an Elastic IP",
+				"instanceId", instance.ID, "ip", instance.PublicIP, "eni", instance.ENIId)
+			return false, nil
+		}
+	}
+
+	if err := a.ReleasePublicIP(instance); err != nil {
+		return false, err
+	}
+
+	// The reconciler rebuilds the NAT rule from the ENI record, so leaving the
+	// address on it puts back the rule the release just took down.
+	if instance.ENIId != "" && a.d.vpcService != nil {
+		if err := a.d.vpcService.UpdateENIPublicIP(instance.AccountID, instance.ENIId, "", ""); err != nil {
+			slog.Warn("Failed to clear ENI public IP on stop",
+				"instanceId", instance.ID, "eni", instance.ENIId, "err", err)
+		}
+	}
+	slog.Info("Released auto-assigned public IP on stop",
+		"instanceId", instance.ID, "ip", instance.PublicIP, "pool", instance.PublicIPPool)
+	return true, nil
 }
 
 // DetachAndDeleteENI detaches the auto-created ENI from the instance and

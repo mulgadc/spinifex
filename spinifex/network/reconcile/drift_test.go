@@ -39,6 +39,10 @@ func (s *stubReconciler) ReconcileApplyOnly(ctx context.Context, intent IntentSt
 	return s.Reconcile(ctx, intent)
 }
 
+// Deliberately not counted: the host EIP pass runs on its own loop, and folding
+// it into the drift count would hide whether the leader gate still holds.
+func (s *stubReconciler) ReconcileHostEIPs(context.Context) error { return nil }
+
 func (s *stubReconciler) callCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

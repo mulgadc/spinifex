@@ -14,6 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/klauspost/compress/zstd"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // resolveServingAMI filters purely on these two tags and never on the image
@@ -489,5 +491,62 @@ func TestDecompressXz_TruncatedStreamSurfacesStderr(t *testing.T) {
 	msg := strings.ToLower(err.Error())
 	if !strings.Contains(msg, "end of input") && !strings.Contains(msg, "end of file") {
 		t.Errorf("err = %q, want it to surface xz's stderr about the truncated stream", err)
+	}
+}
+
+// Oracle publishes its checksums inline on yum.oracle.com/oracle-linux-templates.html
+// and ships no sums file, so these four are the catalog's only pinned-digest
+// entries. The pin is what makes a verified import possible at all here.
+func TestAvailableImages_OracleLinux(t *testing.T) {
+	cases := []struct {
+		name, version, arch, urlSub, digest string
+	}{
+		{"oracle-10.1-x86_64", "10.1", "x86_64", "OL10U1_x86_64-kvm-b291.qcow2",
+			"8e59326c4bf7cfa58a6cac404db8ed583fe3a5f4c460e2b73c64988785bb4f0f"},
+		{"oracle-10.1-arm64", "10.1", "arm64", "OL10U1_aarch64-kvm-cloud-b178.qcow2",
+			"e203063e0e8b2752a896787ecc44fc506527055ec819b1422a297d60ad968b20"},
+		{"oracle-9.8-x86_64", "9.8", "x86_64", "OL9U8_x86_64-kvm-b293.qcow2",
+			"b12103391327abee8090686759c0d62dac9a7af2bf0f45fdf6b0d085a0fbb52b"},
+		{"oracle-9.8-arm64", "9.8", "arm64", "OL9U8_aarch64-kvm-cloud-b182.qcow2",
+			"4793c3ec49d9f8b27a932d3bd88ec45d08249c5195faa3b0fac876ab0d5f5856"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			img, ok := AvailableImages[tc.name]
+			require.True(t, ok, "catalog must contain %q", tc.name)
+			assert.Equal(t, tc.name, img.Name)
+			assert.Equal(t, "oracle", img.Distro)
+			assert.Equal(t, tc.version, img.Version)
+			assert.Equal(t, tc.arch, img.Arch)
+			assert.Equal(t, "uefi", img.BootMode)
+			assert.Equal(t, "sha256", img.ChecksumType)
+			assert.Equal(t, tc.digest, img.ChecksumDigest)
+			assert.Empty(t, img.Checksum, "Oracle publishes no sums file; the digest is pinned instead")
+			assert.Contains(t, img.URL, tc.urlSub)
+			// The build number in the URL is what makes pinning safe: Oracle
+			// adds a new build beside the old one rather than replacing it.
+			assert.Equal(t, "rhel", DistroFamily(img.Distro))
+		})
+	}
+}
+
+// Every entry must name exactly one source of truth for its digest. Neither
+// set means resolveDigest refuses the import; both set means the pinned value
+// silently wins and the sums file is never read.
+func TestAvailableImages_EachEntryHasExactlyOneChecksumSource(t *testing.T) {
+	for name, img := range AvailableImages {
+		t.Run(name, func(t *testing.T) {
+			hasURL, hasPinned := img.Checksum != "", img.ChecksumDigest != ""
+			assert.NotEqualf(t, hasURL, hasPinned,
+				"exactly one of Checksum (sums file URL) or ChecksumDigest must be set; got url=%q pinned=%q",
+				img.Checksum, img.ChecksumDigest)
+			assert.NotEmpty(t, img.ChecksumType, "ChecksumType is required")
+			assert.NotEmpty(t, img.URL, "URL is required")
+			if hasPinned {
+				assert.NotContains(t, strings.ToLower(img.URL), "latest",
+					"a pinned digest needs an immutable URL; a 'latest' alias re-points under it")
+				assert.Len(t, img.ChecksumDigest, 64, "sha256 digests are 64 hex characters")
+			}
+		})
 	}
 }

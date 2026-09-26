@@ -8,6 +8,8 @@ package reconcile
 
 import (
 	"context"
+	"net"
+	"net/netip"
 	"slices"
 	"testing"
 
@@ -19,8 +21,19 @@ func TestScenario_OrphanPrune_Live(t *testing.T) {
 	rec, cli := newLiveReconciler(t)
 	ctx := context.Background()
 
+	// A survivor of each class, because a sweep against an intent holding none at
+	// all is refused as an unreadable bucket rather than run.
+	full := func() IntentState {
+		s := freshIntent(t)
+		mac, _ := net.ParseMAC("02:00:00:00:00:02")
+		s.SGs["sg-keep"] = policy.SGSpec{GroupID: "sg-keep", VPCID: "vpc-a"}
+		s.Ports["eni-keep"] = topology.PortSpec{PortID: "eni-keep", SubnetID: "subnet-a", VPCID: "vpc-a",
+			PrivateIP: netip.MustParseAddr("10.0.1.11"), MAC: mac, SGIDs: []string{"sg-keep"}}
+		return s
+	}
+
 	// 1. Converge the full state and capture the ENI LSP UUID.
-	if err := rec.Reconcile(ctx, freshIntent(t)); err != nil {
+	if err := rec.Reconcile(ctx, full()); err != nil {
 		t.Fatalf("Reconcile (create): %v", err)
 	}
 	pgName := topology.SecurityGroupPortGroup("sg-a")
@@ -33,10 +46,10 @@ func TestScenario_OrphanPrune_Live(t *testing.T) {
 		t.Fatalf("precondition: SG port group absent after create: %v", err)
 	}
 
-	// 2. Intent with the ENI and SG removed (VPC + subnet retained).
-	reduced := freshIntent(t)
-	reduced.Ports = map[string]topology.PortSpec{}
-	reduced.SGs = map[string]policy.SGSpec{}
+	// 2. Intent with eni-a and sg-a removed (VPC, subnet and the survivors retained).
+	reduced := full()
+	delete(reduced.Ports, "eni-a")
+	delete(reduced.SGs, "sg-a")
 
 	// 3. ReconcileApplyOnly must NOT prune (startup-race guard).
 	if err := rec.ReconcileApplyOnly(ctx, reduced); err != nil {

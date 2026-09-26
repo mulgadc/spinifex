@@ -215,14 +215,20 @@ type recordingInstanceCleaner struct {
 	removeFromPlacement []string
 	removeFromSpot      []string
 	releaseGPU          []string
+	releaseAutoAssigned []string
+
+	// releaseAutoAssignedOK is what ReleaseAutoAssignedPublicIP reports: false is
+	// an Elastic IP the cleaner refuses to free, true an auto-assigned address.
+	releaseAutoAssignedOK bool
 
 	// Injectable per-method errors so tests can drive failed-teardown marks.
-	deleteVolumesErr   error
-	releasePublicIPErr error
-	detachENIErr       error
-	removePlacementErr error
-	removeSpotErr      error
-	releaseGPUErr      error
+	deleteVolumesErr       error
+	releasePublicIPErr     error
+	releaseAutoAssignedErr error
+	detachENIErr           error
+	removePlacementErr     error
+	removeSpotErr          error
+	releaseGPUErr          error
 }
 
 func (c *recordingInstanceCleaner) DeleteVolumes(v *VM) error {
@@ -243,6 +249,16 @@ func (c *recordingInstanceCleaner) ReleasePublicIP(v *VM) error {
 	defer c.mu.Unlock()
 	c.releasePublicIP = append(c.releasePublicIP, v.ID)
 	return c.releasePublicIPErr
+}
+
+// ReleaseAutoAssignedPublicIP records the stop-time release and reports what
+// releaseAutoAssigned was set to, so a test can stand in for either an
+// auto-assigned address or an Elastic IP the cleaner refuses to free.
+func (c *recordingInstanceCleaner) ReleaseAutoAssignedPublicIP(v *VM) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.releaseAutoAssigned = append(c.releaseAutoAssigned, v.ID)
+	return c.releaseAutoAssignedOK, c.releaseAutoAssignedErr
 }
 
 func (c *recordingInstanceCleaner) DetachAndDeleteENI(v *VM) error {

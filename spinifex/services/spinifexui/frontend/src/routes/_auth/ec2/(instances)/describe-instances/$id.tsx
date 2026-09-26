@@ -40,6 +40,7 @@ import { CreateImageDialog } from "../../-components/create-image-dialog"
 import { GpuDetailCard } from "../../-components/gpu-detail-card"
 import { IamRolePanel } from "../../-components/iam-role-panel"
 import { InstanceActions } from "../../-components/instance-actions"
+import { SSHAccessCard } from "../../-components/ssh-access-card"
 
 export const Route = createFileRoute(
   "/_auth/ec2/(instances)/describe-instances/$id",
@@ -210,6 +211,9 @@ function InstanceDetail() {
           instanceId={instance.InstanceId}
           state={instance.State?.Name}
         />
+
+        {/* SSH Access — only a running instance has a listening sshd */}
+        {isRunning && <SSHAccessCard image={image} instance={instance} />}
 
         {/* Console Output */}
         {showConsole && consoleOutput !== null && (

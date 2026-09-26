@@ -82,7 +82,7 @@ func requireSingleNodeFixture(t *testing.T) *Fixture {
 			Harness: h,
 			TmpDir:  tmpDir,
 		}
-		fix.PoolMode = detectPoolMode(env)
+		fix.PublicPool, fix.PublicPoolSource = detectPublicPool(env)
 		// admin init leaves the default SG closed (AWS parity); the e2e suite
 		// drives SSH + ICMP probes from the test runner's external IP, so open
 		// both on the default VPC's default SG once per process. Idempotent —
@@ -104,11 +104,17 @@ func requireSingleNodeFixture(t *testing.T) *Fixture {
 // memoized on Harness (harness.Fixture) and surfaced via the package-local
 // need* helpers / harness.Ensure* + harness.Discover*.
 type Fixture struct {
-	Env      *harness.Env
-	AWS      *harness.AWSClient
-	Harness  *harness.Fixture // memoized Ensure* fixture; spans the whole process.
-	TmpDir   string           // package-scoped scratch dir; survives every Test* in the package.
-	PoolMode bool             // gates 8b / 8d
+	Env        *harness.Env
+	AWS        *harness.AWSClient
+	Harness    *harness.Fixture // memoized Ensure* fixture; spans the whole process.
+	TmpDir     string           // package-scoped scratch dir; survives every Test* in the package.
+	PublicPool bool             // public addresses can be allocated; gates 8b / 8d
+
+	// PublicPoolSource is the first non-transit pool's source ("static",
+	// "dhcp", "oci"), empty when there is none. A stop returns an auto-assigned
+	// address whatever the source, but only a pool we number ourselves can be
+	// asserted to hand out a different one on the start that follows.
+	PublicPoolSource string
 }
 
 // ArtifactDir returns the artifact directory for the *currently running* test.
@@ -121,40 +127,55 @@ func (f *Fixture) ArtifactDir(t *testing.T) string {
 	return harness.ArtifactDir(t, f.Env)
 }
 
-// detectPoolMode reads external_mode from spinifex.toml. Defaults to false
-// (dev_networking) which is the single-node CI fixture. Only external_mode
-// "pool" enables Phase 8b/8d — nat clusters have no EIP/NAT-GW support, so
-// AllocateAddress returns UnsupportedOperation and those phases must skip.
-func detectPoolMode(env *harness.Env) bool {
+// detectPublicPool reports whether this cluster can hand out public
+// addresses, and where the first customer-facing pool gets them from. Both
+// external_mode "pool" and external_mode "nat" with a non-transit pool
+// configured can: routed NAT carries EIPs, so gating on the mode name alone
+// skipped the egress and SMTP phases on a cluster that supports every call
+// they make.
+func detectPublicPool(env *harness.Env) (bool, string) {
 	cfg := os.ExpandEnv("$HOME/spinifex/config/spinifex.toml")
 	if env.ConfigDir != "" {
 		cfg = filepath.Join(env.ConfigDir, "spinifex.toml")
 	}
 	f, err := os.Open(cfg)
 	if err != nil {
-		return false
+		return false, ""
 	}
 	defer f.Close()
 
+	mode, section, source := "", "", ""
+	hasPool, inTransit := false, false
 	scanner := bufio.NewScanner(f)
-	inNetwork := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "[") {
-			inNetwork = line == "[network]"
+			section = line
+			// A new table means a new pool, and its source has not been read
+			// yet — carrying the previous one over would mislabel it.
+			inTransit = false
 			continue
 		}
-		if !inNetwork {
+		_, rhs, ok := strings.Cut(line, "=")
+		if !ok {
 			continue
 		}
-		if !strings.HasPrefix(line, "external_mode") {
-			continue
-		}
-		// external_mode = "pool" — quoted value; only "pool" gates 8b/8d.
-		if _, rhs, ok := strings.Cut(line, "="); ok {
-			val := strings.Trim(strings.TrimSpace(rhs), "\"'")
-			return val == "pool"
+		val := strings.Trim(strings.TrimSpace(rhs), "\"'")
+		switch {
+		case section == "[network]" && strings.HasPrefix(line, "external_mode"):
+			mode = val
+		// The transit pool is routed NAT's own plumbing, not addresses a
+		// customer can allocate, so it is not evidence of a public pool.
+		case section == "[[network.external_pools]]" && strings.HasPrefix(line, "name"):
+			inTransit = val == "nat-transit"
+			hasPool = hasPool || !inTransit
+		case section == "[[network.external_pools]]" && strings.HasPrefix(line, "source") && !inTransit && source == "":
+			source = val
 		}
 	}
-	return false
+	// An omitted source is the static default, and only a real pool has one.
+	if hasPool && source == "" {
+		source = "static"
+	}
+	return mode == "pool" || (mode == "nat" && hasPool), source
 }

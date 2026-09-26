@@ -7,54 +7,74 @@ import (
 	"testing"
 )
 
-func TestEnsureNATEgressRules_InstallsAllWhenMissing(t *testing.T) {
+func TestEnsureNATEgressRules_InstallsAllAtTheHeadOfTheChain(t *testing.T) {
 	r := newStubRunner()
-	r.expect("iptables -t nat -C", nil, fmt.Errorf("no match"))
-	r.expect("iptables -t filter -C", nil, fmt.Errorf("no match"))
-	r.expect("iptables -t nat -A", nil, nil)
-	r.expect("iptables -t filter -A", nil, nil)
+	r.expect("iptables -t nat -D", nil, fmt.Errorf("no match"))
+	r.expect("iptables -t filter -D", nil, fmt.Errorf("no match"))
+	r.expect("iptables -t nat -I", nil, nil)
+	r.expect("iptables -t filter -I", nil, nil)
 
 	if err := EnsureNATEgressRules(context.Background(), r); err != nil {
 		t.Fatalf("EnsureNATEgressRules: %v", err)
 	}
-	wantAppends := []string{
-		"iptables -t nat -A POSTROUTING -s " + NATTransitCIDR + " ! -d " + NATTransitCIDR +
+	// Position 1, not -A: Ubuntu ships a catch-all REJECT in FORWARD that an
+	// appended ACCEPT sits uselessly behind.
+	wantInserts := []string{
+		"iptables -t nat -I POSTROUTING 1 -s " + NATTransitCIDR + " ! -d " + NATTransitCIDR +
 			" -m comment --comment spinifex-nat-egress -j MASQUERADE",
-		"iptables -t filter -A FORWARD -i " + NATTransitHostEnd + " -s " + NATTransitCIDR +
+		"iptables -t filter -I FORWARD 1 -i " + NATTransitHostEnd + " -s " + NATTransitCIDR +
 			" -m comment --comment spinifex-nat-egress -j ACCEPT",
-		"iptables -t filter -A FORWARD -o " + NATTransitHostEnd + " -m conntrack --ctstate RELATED,ESTABLISHED" +
+		"iptables -t filter -I FORWARD 1 -o " + NATTransitHostEnd + " -m conntrack --ctstate RELATED,ESTABLISHED" +
 			" -m comment --comment spinifex-nat-egress -j ACCEPT",
 	}
-	for _, want := range wantAppends {
+	for _, want := range wantInserts {
 		if !r.called(want) {
-			t.Errorf("missing append call:\n  want %q\n  got  %v", want, r.calls)
+			t.Errorf("missing insert call:\n  want %q\n  got  %v", want, r.calls)
 		}
-	}
-}
-
-func TestEnsureNATEgressRules_SkipsWhenPresent(t *testing.T) {
-	r := newStubRunner()
-	r.expect("iptables -t nat -C", nil, nil)
-	r.expect("iptables -t filter -C", nil, nil)
-
-	if err := EnsureNATEgressRules(context.Background(), r); err != nil {
-		t.Fatalf("EnsureNATEgressRules: %v", err)
 	}
 	for _, c := range r.calls {
 		if strings.Contains(c, " -A ") {
-			t.Errorf("unexpected append when rule present: %q", c)
+			t.Errorf("appended instead of inserted: %q", c)
 		}
 	}
 }
 
-func TestEnsureNATEgressRules_AppendFailure(t *testing.T) {
+// A rule an earlier build appended satisfies -C, so probing would leave it
+// stranded behind the REJECT forever. Ensure has to delete and re-insert.
+func TestEnsureNATEgressRules_RepositionsAnAlreadyPresentRule(t *testing.T) {
 	r := newStubRunner()
-	r.expect("iptables -t nat -C", nil, fmt.Errorf("no match"))
-	r.expect("iptables -t nat -A", []byte("iptables: permission denied"), fmt.Errorf("exit 4"))
+	r.expect("iptables -t nat -D", nil, nil)
+	r.expect("iptables -t filter -D", nil, nil)
+	r.expect("iptables -t nat -I", nil, nil)
+	r.expect("iptables -t filter -I", nil, nil)
+
+	if err := EnsureNATEgressRules(context.Background(), r); err != nil {
+		t.Fatalf("EnsureNATEgressRules: %v", err)
+	}
+	if !r.called("iptables -t filter -I FORWARD 1 -i " + NATTransitHostEnd + " -s " + NATTransitCIDR +
+		" -m comment --comment spinifex-nat-egress -j ACCEPT") {
+		t.Errorf("present rule was not re-inserted: %v", r.calls)
+	}
+	// A delete that keeps succeeding must not loop forever.
+	var deletes int
+	for _, c := range r.calls {
+		if strings.Contains(c, " -D ") {
+			deletes++
+		}
+	}
+	if deletes > len(natEgressRules)*maxDuplicateRules {
+		t.Errorf("drain loop is unbounded: %d deletes", deletes)
+	}
+}
+
+func TestEnsureNATEgressRules_InsertFailure(t *testing.T) {
+	r := newStubRunner()
+	r.expect("iptables -t nat -D", nil, fmt.Errorf("no match"))
+	r.expect("iptables -t nat -I", []byte("iptables: permission denied"), fmt.Errorf("exit 4"))
 
 	err := EnsureNATEgressRules(context.Background(), r)
 	if err == nil || !strings.Contains(err.Error(), "permission denied") {
-		t.Fatalf("expected append failure error, got: %v", err)
+		t.Fatalf("expected insert failure error, got: %v", err)
 	}
 }
 

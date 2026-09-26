@@ -39,6 +39,10 @@ type Reconciler interface {
 	// deciding and abandons the sweep if that read fails, and a stale row there
 	// is a released public address still delivering traffic.
 	ReconcileApplyOnly(ctx context.Context, intent IntentState) error
+	// ReconcileHostEIPs plumbs this node's host-side EIP state — routes,
+	// proxy-ARP, filter rules — from freshly read intent. Unlike the two above
+	// it runs on every node, because what it writes is node-local.
+	ReconcileHostEIPs(ctx context.Context) error
 }
 
 // GatewayClaimVerifier confirms ovn-controller has claimed the SB chassisredirect
@@ -48,6 +52,10 @@ type GatewayClaimVerifier interface {
 	// GatewayPortClaimed reports whether the SB Port_Binding for crPortName (the
 	// chassisredirect port) has a non-empty chassis.
 	GatewayPortClaimed(ctx context.Context, crPortName string) (bool, error)
+	// GatewayPortLocal reports whether crPortName is claimed by *this* chassis.
+	// The datapath probes below are host-local — a ping and an ARP off this
+	// node's own uplink — so on any node but the gateway's they measure nothing.
+	GatewayPortLocal(ctx context.Context, crPortName string) (bool, error)
 	// NudgeRecompute asks the local ovn-controller to re-evaluate logical flows.
 	NudgeRecompute(ctx context.Context) error
 	// GatewayReachable reports whether the external datapath actually forwards to
@@ -126,11 +134,32 @@ type Config struct {
 	// Optional: nil leaves the start-of-pass snapshot as the sole liveness source
 	// (unit tests, or callers with no store).
 	FreshIntent func(ctx context.Context) (IntentState, error)
+	// LocalPorts returns the LSP names plugged into OVS on this host, keyed by
+	// external_ids:iface-id. A port with a live tap belongs to a running guest and
+	// can never be an orphan, whatever intent says — which is the one liveness
+	// signal that does not go through the KV read path the orphan sweep is
+	// otherwise entirely driven by. Optional: nil leaves intent as the sole source
+	// and the sweep falls back to refusing a wholly-empty one.
+	LocalPorts func(ctx context.Context) (map[string]struct{}, error)
 	// MarkIGWAttached reports a confirmed IGW attachment back to the control
 	// plane, so DescribeInternetGateways stops claiming an attachment exists
 	// before one does. Called with the record key and VPC carried on the IGW
 	// spec. Optional: nil leaves the record untouched.
 	MarkIGWAttached func(ctx context.Context, recordKey, vpcID string) error
+
+	// DatapathIP maps an external IP to the address that rides the wire, the
+	// same mapping the NAT manager applies. The EIP datapath probe ARPs its
+	// target, so on OCI it has to ask about the private half of the pair: the
+	// public half is NAT'd upstream and is on no interface anywhere, so probing
+	// it reports a working gateway as dead. Optional: nil means identity.
+	DatapathIP policy.DatapathResolver
+
+	// BindGatewayVPC records which VPC's gateway answers on an external IP. A
+	// NAT gateway's address is never attached to an ENI, so on OCI nothing else
+	// says which node it has to be delivered to, and the answer is the gateway
+	// chassis this pass is what decides. Optional: nil is every environment
+	// where an address is on the wire from any node.
+	BindGatewayVPC func(ctx context.Context, externalIP, vpcID string) error
 }
 
 type reconciler struct {
@@ -148,7 +177,10 @@ type reconciler struct {
 	ipsecEnabled bool
 	underlayMTU  int
 	reloadIntent func(ctx context.Context) (IntentState, error)
+	localPorts   func(ctx context.Context) (map[string]struct{}, error)
 	markAttached func(ctx context.Context, recordKey, vpcID string) error
+	datapathIP   policy.DatapathResolver
+	bindGateway  func(ctx context.Context, externalIP, vpcID string) error
 
 	// Guest ports that burned their convergence deadline, so a port whose guest
 	// is gone stops paying the full nudge sequence every cycle.
@@ -195,6 +227,10 @@ func New(cfg Config) (Reconciler, error) {
 	if dnsServer == "" {
 		dnsServer = topology.FormatDNSServerList(nil)
 	}
+	datapathIP := cfg.DatapathIP
+	if datapathIP == nil {
+		datapathIP = func(_ context.Context, ip string) (string, error) { return ip, nil }
+	}
 	return &reconciler{
 		ovn:          cfg.OVN,
 		sg:           cfg.SG,
@@ -210,7 +246,10 @@ func New(cfg Config) (Reconciler, error) {
 		ipsecEnabled: !cfg.IPSecDisabled,
 		underlayMTU:  cfg.UnderlayMTU,
 		reloadIntent: cfg.FreshIntent,
+		localPorts:   cfg.LocalPorts,
 		markAttached: cfg.MarkIGWAttached,
+		datapathIP:   datapathIP,
+		bindGateway:  cfg.BindGatewayVPC,
 	}, nil
 }
 
@@ -273,6 +312,20 @@ func (r *reconciler) Reconcile(ctx context.Context, intent IntentState) error {
 // ReconcileApplyOnly is documented on the Reconciler interface.
 func (r *reconciler) ReconcileApplyOnly(ctx context.Context, intent IntentState) error {
 	return r.reconcile(ctx, intent, false)
+}
+
+// ReconcileHostEIPs is documented on the Reconciler interface. Intent is
+// re-read rather than passed in: a stale list would prune the routes of a
+// guest launched since, and a failed read must abandon the pass, not shrink it.
+func (r *reconciler) ReconcileHostEIPs(ctx context.Context) error {
+	if r.reloadIntent == nil {
+		return nil
+	}
+	intent, err := r.reloadIntent(ctx)
+	if err != nil {
+		return fmt.Errorf("re-read intent for host EIP pass: %w", err)
+	}
+	return r.nat.BindHostEIPs(ctx, r.hostBindSpecs(intent))
 }
 
 // reconcile applies intent. pruneTopology gates the port-group and ENI-port

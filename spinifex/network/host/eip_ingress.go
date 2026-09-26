@@ -74,32 +74,55 @@ func eipForwardRules(eip string) [][]string {
 	}
 }
 
-// EnsureEIPIngress makes an EIP reachable from the uplink LAN in routed-NAT
-// mode: a /32 host route steers the EIP into OVN via the VPC gateway LRP's
-// transit IP, a proxy-ARP neighbor entry answers ARP for the EIP on the
-// uplink (L3 only — same MAC, so WiFi-safe), and per-EIP FORWARD accepts
-// cover DROP-policy hosts. The route carries `src <uplink-IP>` so host-local
-// traffic to the EIP still DNATs (host source would match the exempt set).
-// Idempotent; call on every EIP bind and reconcile pass.
-func EnsureEIPIngress(ctx context.Context, r Runner, eip, gwLrpIP, poolGateway, uplinkHint string) error {
-	if eip == "" {
-		return fmt.Errorf("EnsureEIPIngress: eip required")
-	}
-	if gwLrpIP == "" {
-		return fmt.Errorf("EnsureEIPIngress: gwLrpIP required")
-	}
+// EIPIngress is one EIP's host-side plumbing request in routed-NAT mode.
+type EIPIngress struct {
+	// EIP is the address as it appears on the transit segment.
+	EIP string
 
-	uplink, srcIP, err := resolveUplink(ctx, r, poolGateway, uplinkHint)
+	// GwLrpIP is the VPC gateway LRP's transit address, the next hop for a
+	// centralised rule. Empty means the rule is distributed: OVN answers ARP
+	// for the EIP on this node's own transit veth with the instance's ENI MAC,
+	// so the route is on-link and no VPC-wide address is involved.
+	GwLrpIP string
+
+	// PoolGateway and UplinkHint locate the LAN-facing interface that has to
+	// proxy-ARP for the EIP. Static pools route toward the gateway; dhcp pools
+	// DORA on the uplink itself and name it directly.
+	PoolGateway string
+	UplinkHint  string
+}
+
+// EnsureEIPIngress makes an EIP reachable from the uplink LAN in routed-NAT
+// mode: a /32 host route steers the EIP into OVN across the transit veth, a
+// proxy-ARP neighbor entry answers ARP for the EIP on the uplink (L3 only —
+// same MAC, so WiFi-safe), and per-EIP FORWARD accepts cover DROP-policy
+// hosts. The route carries `src <uplink-IP>` so host-local traffic to the EIP
+// still DNATs (host source would match the exempt set).
+// Idempotent; call on every EIP bind and reconcile pass.
+func EnsureEIPIngress(ctx context.Context, r Runner, in EIPIngress) error {
+	if in.EIP == "" {
+		return fmt.Errorf("EnsureEIPIngress: EIP required")
+	}
+	eip := in.EIP
+
+	uplink, srcIP, err := resolveUplink(ctx, r, in.PoolGateway, in.UplinkHint)
 	if err != nil {
 		return fmt.Errorf("EnsureEIPIngress %s: %w", eip, err)
 	}
 
-	routeArgs := []string{"route", "replace", eip + "/32", "via", gwLrpIP, "dev", NATTransitHostEnd}
+	// A distributed rule is answered on this node's transit segment, so the
+	// EIP is on-link and naming a next hop would send it to a gateway LRP that
+	// may be on another chassis entirely. A centralised rule still hops there.
+	routeArgs := []string{"route", "replace", eip + "/32"}
+	if in.GwLrpIP != "" {
+		routeArgs = append(routeArgs, "via", in.GwLrpIP)
+	}
+	routeArgs = append(routeArgs, "dev", NATTransitHostEnd)
 	if srcIP != "" {
 		routeArgs = append(routeArgs, "src", srcIP)
 	}
 	if out, err := r.Run(ctx, "ip", routeArgs...); err != nil {
-		return fmt.Errorf("install EIP route %s via %s: %s: %w", eip, gwLrpIP, string(out), err)
+		return fmt.Errorf("install EIP route %s (next hop %q): %s: %w", eip, in.GwLrpIP, string(out), err)
 	}
 
 	if uplink != "" {
@@ -116,16 +139,30 @@ func EnsureEIPIngress(ctx context.Context, r Runner, eip, gwLrpIP, poolGateway, 
 		}
 	}
 
+	// Insert at the head, never append: a distro's catch-all REJECT in FORWARD
+	// (Oracle's cloud image ships one) precedes anything appended, so the EIP
+	// is reachable on the wire and dropped by the host. Probe first rather than
+	// drain-and-reinsert as the egress rules do — this runs on every bind and
+	// reconcile, and re-inserting would blip a live EIP.
 	for _, spec := range eipForwardRules(eip) {
 		if _, err := r.Run(ctx, "iptables", natRuleArgs("-C", "filter", "FORWARD", spec)...); err == nil {
 			continue
 		}
-		if out, err := r.Run(ctx, "iptables", natRuleArgs("-A", "filter", "FORWARD", spec)...); err != nil {
+		if out, err := r.Run(ctx, "iptables", natInsertArgs("filter", "FORWARD", spec)...); err != nil {
 			return fmt.Errorf("install EIP FORWARD rule for %s: %s: %w", eip, string(out), err)
 		}
 	}
 
-	slog.Info("EIP ingress installed", "eip", eip, "gw_lrp_ip", gwLrpIP, "uplink", uplink, "src", srcIP)
+	// A reply leaves with the EIP as its source, so on a host that source-routes
+	// its uplink the EIP needs the same rule. Without it the reply takes the
+	// default route, and a cloud VNIC that enforces its registered addresses
+	// drops it — ingress reaches the guest and nothing comes back.
+	if err := EnsureEIPSourceRoute(ctx, r, eip); err != nil {
+		return fmt.Errorf("EnsureEIPIngress %s: %w", eip, err)
+	}
+
+	slog.Info("EIP ingress installed", "eip", eip, "gw_lrp_ip", in.GwLrpIP,
+		"distributed", in.GwLrpIP == "", "uplink", uplink, "src", srcIP)
 	return nil
 }
 
@@ -184,6 +221,10 @@ func RemoveEIPIngress(ctx context.Context, r Runner, eip, poolGateway, uplinkHin
 		if _, err := r.Run(ctx, "iptables", natRuleArgs("-D", "filter", "FORWARD", spec)...); err != nil {
 			slog.Debug("host: EIP FORWARD rule not present on delete", "eip", eip, "err", err)
 		}
+	}
+
+	if err := RemoveEIPSourceRoute(ctx, r, eip); err != nil {
+		slog.Debug("host: EIP source route not removed", "eip", eip, "err", err)
 	}
 
 	slog.Info("EIP ingress removed", "eip", eip)

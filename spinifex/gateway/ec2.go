@@ -482,6 +482,14 @@ var ec2Actions = map[string]ec2Action{
 	"DescribeVpcAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeVpcAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_vpc.DescribeVpcAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
+	// No VPC endpoint can exist here, because CreateVpcEndpoint is not served, so
+	// the empty list is the true answer rather than a stand-in for one. It has to
+	// be answered all the same: the Terraform AWS provider calls this on every VPC
+	// delete to sweep GuardDuty-managed endpoints, and an InvalidAction there fails
+	// the destroy and strands the VPC.
+	"DescribeVpcEndpoints": ec2Handler(func(_ context.Context, _ *ec2.DescribeVpcEndpointsInput, _ *GatewayConfig, _ string) (any, error) {
+		return ec2.DescribeVpcEndpointsOutput{VpcEndpoints: []*ec2.VpcEndpoint{}}, nil
+	}),
 	"CreateSubnet": ec2Handler(func(ctx context.Context, input *ec2.CreateSubnetInput, gw *GatewayConfig, accountID string) (any, error) {
 		if err := gw.Quota.EnforceSubnets(ctx, gw.NATSConn, accountID, 1); err != nil {
 			return nil, err

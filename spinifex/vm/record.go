@@ -74,6 +74,9 @@ type InstanceStatus struct {
 	PublicIPPool    string `json:"public_ip_pool,omitempty"`
 	PublicIPAllocID string `json:"public_ip_alloc_id,omitempty"`
 	PublicIPAssocID string `json:"public_ip_assoc_id,omitempty"`
+	// AutoAssignPublicIP marks that the stop released an auto-assigned address,
+	// so the start that picks this record up must take a new one.
+	AutoAssignPublicIP bool `json:"auto_assign_public_ip,omitempty"`
 
 	DevMAC  string `json:"dev_mac,omitempty"`
 	MgmtMAC string `json:"mgmt_mac,omitempty"`
@@ -138,6 +141,7 @@ func (v *VM) Record() *InstanceRecord {
 			PublicIPPool:                    v.PublicIPPool,
 			PublicIPAllocID:                 v.PublicIPAllocID,
 			PublicIPAssocID:                 v.PublicIPAssocID,
+			AutoAssignPublicIP:              v.AutoAssignPublicIP,
 			DevMAC:                          v.DevMAC,
 			MgmtMAC:                         v.MgmtMAC,
 			MgmtIP:                          v.MgmtIP,
@@ -193,6 +197,7 @@ func VMFromRecord(r *InstanceRecord) *VM {
 		PublicIPPool:                    r.Status.PublicIPPool,
 		PublicIPAllocID:                 r.Status.PublicIPAllocID,
 		PublicIPAssocID:                 r.Status.PublicIPAssocID,
+		AutoAssignPublicIP:              r.Status.AutoAssignPublicIP,
 		DevMAC:                          r.Status.DevMAC,
 		MgmtMAC:                         r.Status.MgmtMAC,
 		MgmtIP:                          r.Status.MgmtIP,

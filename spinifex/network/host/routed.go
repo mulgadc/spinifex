@@ -32,6 +32,12 @@ const (
 
 	// NATTransitOVSEnd is the veth peer attached to the OVS uplink bridge.
 	NATTransitOVSEnd = "spx-nat-ovs"
+
+	// NATTransitHostMAC is the same on every node: OVN holds one MAC binding for
+	// the transit nexthop cluster-wide, so a per-node MAC sends every chassis's
+	// egress to whichever node seeded it. The veth pair is node-local, so one
+	// address everywhere is unambiguous.
+	NATTransitHostMAC = "02:00:64:7f:00:01"
 )
 
 // Routed implements Wiring for the routed-NAT model: no WAN NIC is bridged;
@@ -92,6 +98,10 @@ func (r *Routed) EnsureUplinkPort(ctx context.Context) (net.HardwareAddr, error)
 		return nil, fmt.Errorf("host.Routed: %q has %s, expected %s", NATTransitHostEnd, cidr, want)
 	}
 
+	if err := EnsureTransitHostMAC(ctx, r.runner()); err != nil {
+		return nil, err
+	}
+
 	mac, err := r.reader().LinkMAC(NATTransitOVSEnd)
 	if err != nil {
 		return nil, fmt.Errorf("read MAC for %q: %w", NATTransitOVSEnd, err)
@@ -100,6 +110,29 @@ func (r *Routed) EnsureUplinkPort(ctx context.Context) (net.HardwareAddr, error)
 		"ovs_end", NATTransitOVSEnd, "host_end", NATTransitHostEnd,
 		"uplink_bridge", r.UplinkBridge, "transit", NATTransitGatewayCIDR, "mac", mac.String())
 	return mac, nil
+}
+
+// EnsureTransitHostMAC makes the host end carry the cluster-wide transit MAC.
+// setup-ovn.sh sets it at creation; this repairs a veth made before that, and
+// until it is corrected the node's own guests are unreachable.
+func EnsureTransitHostMAC(ctx context.Context, r Runner) error {
+	if r == nil {
+		r = NewExecRunner()
+	}
+	out, err := r.Run(ctx, "ip", "-o", "link", "show", "dev", NATTransitHostEnd)
+	if err != nil {
+		return fmt.Errorf("ip -o link show dev %s: %s: %w", NATTransitHostEnd, string(out), err)
+	}
+	have := parseLinkEtherMAC(string(out))
+	if have == NATTransitHostMAC {
+		return nil
+	}
+	if out, err := r.Run(ctx, "ip", "link", "set", NATTransitHostEnd, "address", NATTransitHostMAC); err != nil {
+		return fmt.Errorf("set %q MAC to %s: %s: %w", NATTransitHostEnd, NATTransitHostMAC, string(out), err)
+	}
+	slog.Info("host: transit host MAC corrected",
+		"dev", NATTransitHostEnd, "was", have, "now", NATTransitHostMAC)
+	return nil
 }
 
 // UplinkMode returns UplinkModeRouted (routed NAT).

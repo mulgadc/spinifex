@@ -496,6 +496,10 @@ func validateChecksumFlags(checksumPath string, checksumSet bool, localFile stri
 	return nil
 }
 
+// catalogPinnedDigestSource records that the expected digest came from this
+// binary's catalog, so a recorded digest never reads as a fetched sums file.
+const catalogPinnedDigestSource = "catalog:pinned"
+
 // importSource is the file an import is about to extract, and what it is to be verified against.
 type importSource struct {
 	imageFile, imageName, localFile            string
@@ -511,9 +515,22 @@ func (src importSource) resolveDigest(out, errOut io.Writer) (ebsmetadata.ImageD
 	digest := ebsmetadata.ImageDigest{Filename: filepath.Base(src.imageFile)}
 	switch sourceDigestMode(src.localFile, src.checksumPath, src.skipVerify) {
 	case ebsmetadata.DigestCatalog:
-		if src.image.Checksum == "" || src.image.ChecksumType == "" {
-			fmt.Fprintf(errOut, "Catalog entry %q is missing Checksum/ChecksumType; refusing import.\n", src.imageName)
+		if src.image.ChecksumType == "" || (src.image.Checksum == "" && src.image.ChecksumDigest == "") {
+			fmt.Fprintf(errOut, "Catalog entry %q is missing Checksum/ChecksumDigest/ChecksumType; refusing import.\n", src.imageName)
 			return digest, errors.New("catalog entry has no checksum")
+		}
+		// A pinned digest is checked against this file rather than a sums file
+		// fetched from the same host that served the image.
+		if src.image.ChecksumDigest != "" {
+			actual, err := utils.VerifyImageDigest(src.imageFile, src.image.ChecksumType, src.image.ChecksumDigest)
+			if err != nil {
+				printChecksumError(errOut, src.imageFile, src.imageName, src.image, err)
+				return digest, err
+			}
+			fmt.Fprintf(out, "✅ Verified image checksum (%s) against the pinned catalog digest\n", src.image.ChecksumType)
+			digest.Algorithm, digest.Value, digest.Source = src.image.ChecksumType, actual, catalogPinnedDigestSource
+			digest.Verification = ebsmetadata.DigestCatalog
+			return digest, nil
 		}
 		actual, err := utils.VerifyImageChecksum(src.imageFile, src.image.Checksum, src.image.ChecksumType)
 		if err != nil {
@@ -1283,7 +1300,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	detected, err := admin.DetectNetwork()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  Network auto-detection failed: %v\n", err)
-		fmt.Fprintf(os.Stderr, "   Use --external-mode=nat for outbound-only VMs on a non-bridgeable uplink, or specify --external-* flags manually.\n")
+		fmt.Fprintf(os.Stderr, "   Use --external-mode=nat on a non-bridgeable uplink, or specify --external-* flags manually.\n")
 	} else {
 		detectedNet = detected
 
@@ -1321,7 +1338,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			if externalMode == "" && !cmd.Flags().Changed("external-mode") {
 				if isNonBridgeableUplink(detected.WAN.Name) {
 					fmt.Fprintf(os.Stderr, "\n❌ Detected WAN interface %s cannot be bridged (WiFi/cellular/PPP).\n", detected.WAN.Name)
-					fmt.Fprintf(os.Stderr, "   Use routed NAT mode instead (outbound-only VM networking):\n")
+					fmt.Fprintf(os.Stderr, "   Use routed NAT mode instead:\n")
 					fmt.Fprintf(os.Stderr, "     ./scripts/setup-ovn.sh --management --nat-uplink\n")
 					fmt.Fprintf(os.Stderr, "     spx admin init --external-mode=nat\n")
 					os.Exit(1)
@@ -1343,9 +1360,14 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// the transit segment claims externalGateway below.
 	natPublicGateway := externalGateway
 	if externalMode == "nat" {
+		// Verified on three OCI nodes 2026-09-26: each node delivers its own
+		// instances' public IPs, inbound and outbound. Still flagged because no
+		// nightly cell covers multi-node nat yet.
 		if nodes >= 2 {
-			fmt.Fprintf(os.Stderr, "❌ Error: --external-mode=nat is single-node only (v1); use --nodes=1\n")
-			os.Exit(1)
+			fmt.Fprintf(os.Stderr, "⚠️  --external-mode=nat on %d nodes is NEW.\n", nodes)
+			fmt.Fprintf(os.Stderr, "   Public IPs are delivered by the node running the instance; default egress stays on the VPC's gateway chassis.\n")
+			fmt.Fprintf(os.Stderr, "   Verified by hand on three nodes, but not yet covered by a nightly cell.\n")
+			fmt.Fprintf(os.Stderr, "   Check with: ip route show dev spx-nat-host — exactly one node should hold each public address.\n")
 		}
 		if !natPublicPool && (externalBindBridge != "" || gatewayIP != "") {
 			fmt.Fprintf(os.Stderr, "❌ Error: --external-bind-bridge/--gateway-ip require --external-pool or --external-source in --external-mode=nat\n")
@@ -1675,14 +1697,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			bootstrapSubnetId := utils.GenerateResourceID("subnet")
 			bootstrapIgwId := utils.GenerateResourceID("igw")
 			networkConfig.ExternalMode = externalMode
-			networkConfig.PoolName = "wan"
-			networkConfig.PoolSource = externalSource
-			networkConfig.PoolBindBridge = externalBindBridge
-			networkConfig.PoolStart = poolStart
-			networkConfig.PoolEnd = poolEnd
-			networkConfig.PoolGateway = externalGateway
-			networkConfig.PoolGatewayIP = gatewayIP
-			networkConfig.PoolPrefixLen = externalPrefixLen
+			networkConfig.Pools = externalPools
 			networkConfig.PoolDNSServers = dnsServers
 			networkConfig.BootstrapAccountId = admin.DefaultAccountID()
 			networkConfig.BootstrapVpcId = bootstrapVpcId
@@ -1835,7 +1850,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 				fmt.Printf("  Public pool:   dhcp via %s\n", externalBindBridge)
 			}
 		} else {
-			fmt.Printf("\n📡 External networking: nat (routed, outbound-only — no public IPs/EIPs)\n")
+			fmt.Printf("\n📡 External networking: nat (routed; no public pool configured yet)\n")
 		}
 		fmt.Printf("  Transit:       %s via %s (host masquerades out any uplink)\n", host.NATTransitCIDR, host.NATTransitHostEnd)
 		fmt.Printf("  Host setup:    ./scripts/setup-ovn.sh --nat-uplink (run before starting services)\n")
@@ -3199,18 +3214,11 @@ func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkCon
 	settings.IPSecEnabled = nc.IPSecEnabled
 	settings.ExternalMode = nc.ExternalMode
 	settings.PoolDNSServers = nc.PoolDNSServers
+	// Derived from the mode rather than carried in NetworkConfig, so the leader
+	// and every joiner pin the same value from the same rule as single-node init.
+	settings.BridgeMode = bridgeModeFor(nc.ExternalMode)
 	if nc.ExternalMode != "" {
-		settings.Pools = []admin.PoolData{{
-			Name:       nc.PoolName,
-			Source:     nc.PoolSource,
-			BindBridge: nc.PoolBindBridge,
-			Start:      nc.PoolStart,
-			End:        nc.PoolEnd,
-			Gateway:    nc.PoolGateway,
-			GatewayIP:  nc.PoolGatewayIP,
-			PrefixLen:  nc.PoolPrefixLen,
-			DNSServers: nc.PoolDNSServers,
-		}}
+		settings.Pools = nc.Pools
 	}
 
 	settings.BootstrapAccountId = nc.BootstrapAccountId
@@ -3911,7 +3919,12 @@ func resolveIfaceIP(iface string) string {
 func printChecksumError(w io.Writer, imageFile, imageName string, image utils.Images, err error) {
 	fmt.Fprintf(w, "Image integrity verification failed: %v\n", err)
 	fmt.Fprintf(w, "  file:     %s\n", imageFile)
-	fmt.Fprintf(w, "  source:   %s\n", image.Checksum)
+	if image.ChecksumDigest != "" {
+		fmt.Fprintf(w, "  source:   %s (%s)\n", catalogPinnedDigestSource, image.ChecksumDigest)
+		fmt.Fprintf(w, "  url:      %s\n", image.URL)
+	} else {
+		fmt.Fprintf(w, "  source:   %s\n", image.Checksum)
+	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "The cached file was left in place. To re-download and retry:")
 	fmt.Fprintf(w, "  spx admin images import --name %s --force\n", imageName)

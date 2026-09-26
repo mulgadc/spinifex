@@ -143,5 +143,16 @@
     "extra": "",
     "suite": "storagefault",
     "timeout_minutes": 100
+  },
+  {
+    "cell": 30,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "nat",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "nat-multi",
+    "suite": ""
   }
 ]

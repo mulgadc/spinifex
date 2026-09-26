@@ -18,9 +18,15 @@
 # The first host is the init node; the rest join it.
 #
 # Options:
-#   --external-pool A-B      Public IP range for instances (required)
-#   --external-gateway IP    Gateway for that range (required)
-#   --external-prefix-len N  Prefix length of the range's subnet (required)
+#   --external-mode M        pool (default) or nat. pool bridges a WAN NIC and
+#                            needs the three flags below. nat routes through the
+#                            spx-nat veth and takes none of them — it is the only
+#                            mode a cloud VNIC can carry, and its public
+#                            addresses come from a provider pool added to
+#                            spinifex.toml, not from this script.
+#   --external-pool A-B      Public IP range for instances (required in pool mode)
+#   --external-gateway IP    Gateway for that range (required in pool mode)
+#   --external-prefix-len N  Prefix length of the range's subnet (required in pool mode)
 #   --external-iface NAME    WAN NIC for br-external (default: auto-detected)
 #   --node-names A,B,C       Cluster node names (default: node1..nodeN)
 #   --lan-bridge NAME        Bridge carrying internal cluster traffic
@@ -67,6 +73,7 @@ SSH_USER="${SSH_USER:-spinifex}"
 IDENTITY=""
 HOSTS=()
 NODE_NAMES=()
+EXT_MODE="pool"
 EXT_POOL=""
 EXT_GATEWAY=""
 EXT_PREFIX=""
@@ -111,6 +118,7 @@ FIREWALL_PEERS="/etc/spinifex/firewall/peers.nft"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --external-mode)       EXT_MODE="$2"; shift 2 ;;
         --external-pool)       EXT_POOL="$2"; shift 2 ;;
         --external-gateway)    EXT_GATEWAY="$2"; shift 2 ;;
         --external-prefix-len) EXT_PREFIX="$2"; shift 2 ;;
@@ -138,7 +146,7 @@ while [[ $# -gt 0 ]]; do
         --no-firewall)  MANAGE_FIREWALL=false; shift ;;
         --yes|-y)   ASSUME_YES=true; shift ;;
         --dry-run)  DRY_RUN=true; shift ;;
-        -h|--help)  sed -n '2,61p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,67p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*)         echo "ERROR: unknown option: $1" >&2; exit 2 ;;
         *)          HOSTS+=("$1"); shift ;;
     esac
@@ -164,13 +172,30 @@ if [ "$N" -eq 2 ]; then
     log "         for a fault-tolerant deployment."
 fi
 
-for required in "--external-pool:$EXT_POOL" "--external-gateway:$EXT_GATEWAY" "--external-prefix-len:$EXT_PREFIX"; do
-    [ -n "${required#*:}" ] || fail "${required%%:*} is required.
+case "$EXT_MODE" in
+    pool|nat) ;;
+    *) fail "--external-mode must be pool or nat, got: $EXT_MODE" ;;
+esac
+
+# Routed mode's own addresses are the fixed transit /24 the veth carries, and any
+# public addresses come from a pool in spinifex.toml — a provider pool on a cloud
+# host. There is nothing for these three flags to describe, so passing them is a
+# misunderstanding worth naming rather than ignoring.
+if [ "$EXT_MODE" = "nat" ]; then
+    for unused in "--external-pool:$EXT_POOL" "--external-gateway:$EXT_GATEWAY" "--external-prefix-len:$EXT_PREFIX"; do
+        [ -z "${unused#*:}" ] || fail "${unused%%:*} is a pool-mode flag and --external-mode=nat ignores it.
+       Routed mode addresses instances from the transit /24; public addresses come
+       from a [[network.external_pools]] entry in spinifex.toml."
+    done
+else
+    for required in "--external-pool:$EXT_POOL" "--external-gateway:$EXT_GATEWAY" "--external-prefix-len:$EXT_PREFIX"; do
+        [ -n "${required#*:}" ] || fail "${required%%:*} is required in --external-mode=pool.
        Instances get their public addresses from this range, and there is no safe
        default to guess. Example:
          --external-pool 216.218.163.101-216.218.163.110 \\
          --external-gateway 216.218.163.97 --external-prefix-len 27"
-done
+    done
+fi
 
 case "$IPSEC" in
     on)  IPSEC_ENABLED=true ;;
@@ -178,9 +203,11 @@ case "$IPSEC" in
     *)   fail "--ipsec must be on or off, got: $IPSEC" ;;
 esac
 
-[[ "$EXT_POOL" =~ ^[0-9.]+-[0-9.]+$ ]] || fail "--external-pool must be START-END, got: $EXT_POOL"
-[[ "$EXT_PREFIX" =~ ^[0-9]+$ ]] && [ "$EXT_PREFIX" -ge 1 ] && [ "$EXT_PREFIX" -le 32 ] ||
-    fail "--external-prefix-len must be 1-32, got: $EXT_PREFIX"
+if [ "$EXT_MODE" = "pool" ]; then
+    [[ "$EXT_POOL" =~ ^[0-9.]+-[0-9.]+$ ]] || fail "--external-pool must be START-END, got: $EXT_POOL"
+    [[ "$EXT_PREFIX" =~ ^[0-9]+$ ]] && [ "$EXT_PREFIX" -ge 1 ] && [ "$EXT_PREFIX" -le 32 ] ||
+        fail "--external-prefix-len must be 1-32, got: $EXT_PREFIX"
+fi
 
 AZ="${AZ:-${REGION}a}"
 
@@ -337,7 +364,11 @@ for i in $(seq 0 $((N - 1))); do
         "$role" "${HOSTS[$i]}" "${NODE_NAMES[$i]}" "${WAN_IPS[$i]}" "${LAN_IPS[$i]}" "${VPC_IPS[$i]}"
 done
 echo ""
-echo "  Instance pool: $EXT_POOL via $EXT_GATEWAY/$EXT_PREFIX"
+if [ "$EXT_MODE" = "nat" ]; then
+    echo "  External: routed nat — transit /24 on spx-nat, public addresses from spinifex.toml"
+else
+    echo "  Instance pool: $EXT_POOL via $EXT_GATEWAY/$EXT_PREFIX"
+fi
 echo ""
 if $WIPE; then
     echo "  --wipe: this DESTROYS, on ALL $N hosts INCLUDING ${HOSTS[0]}:"
@@ -505,6 +536,12 @@ done
 # --recreate-db means no stale chassis row survives to be orphaned by it.
 log "building the OVN database ($([ "$DB_NODES" -eq 3 ] && echo "RAFT across 3" || echo standalone))"
 
+# Without this, setup-ovn.sh auto-detects the uplink, finds a physical NIC it
+# refuses to bridge, and stops with a menu. Routed mode wants none of that: the
+# transit veth is the uplink, and --nat-uplink is what builds and keeps it.
+OVN_UPLINK_ARGS=""
+[ "$EXT_MODE" = "nat" ] && OVN_UPLINK_ARGS="--nat-uplink"
+
 if [ "$DB_NODES" -eq 3 ]; then
     # Computed before the database nodes are built, not after, because they need
     # it too. setup-ovn.sh writes ovn-northd's NB/SB connections from this list
@@ -520,7 +557,7 @@ if [ "$DB_NODES" -eq 3 ]; then
         --db-cluster-local-addr=${LAN_IPS[0]} \
         --lan-addr=${LAN_IPS[0]} \
         --ovn-remote=$OVN_REMOTE \
-        --recreate-db \
+        --recreate-db $OVN_UPLINK_ARGS \
         --encap-ip=${VPC_IPS[0]}" || fail "${HOSTS[0]}: could not create the OVN database cluster"
     log "  ${HOSTS[0]} created the database cluster"
 
@@ -531,14 +568,14 @@ if [ "$DB_NODES" -eq 3 ]; then
             --db-cluster-remote-addr=${LAN_IPS[0]} \
             --lan-addr=${LAN_IPS[$i]} \
             --ovn-remote=$OVN_REMOTE \
-            --recreate-db \
+            --recreate-db $OVN_UPLINK_ARGS \
             --encap-ip=${VPC_IPS[$i]}" || fail "${HOSTS[$i]}: could not join the OVN database cluster"
         log "  ${HOSTS[$i]} joined the database cluster"
     done
 else
     on "${HOSTS[0]}" "sudo $SETUP_OVN --management \
         --node-name=${NODE_NAMES[0]} \
-        --lan-addr=${LAN_IPS[0]} \
+        --lan-addr=${LAN_IPS[0]} $OVN_UPLINK_ARGS \
         --encap-ip=${VPC_IPS[0]}" || fail "${HOSTS[0]}: setup-ovn.sh failed"
     log "  ${HOSTS[0]} is running a standalone database"
 
@@ -549,7 +586,7 @@ fi
 for i in $(seq "$DB_NODES" $((N - 1))); do
     on "${HOSTS[$i]}" "sudo $SETUP_OVN \
         --node-name=${NODE_NAMES[$i]} \
-        --ovn-remote=$OVN_REMOTE \
+        --ovn-remote=$OVN_REMOTE $OVN_UPLINK_ARGS \
         --encap-ip=${VPC_IPS[$i]}" || fail "${HOSTS[$i]}: setup-ovn.sh failed"
     log "  ${HOSTS[$i]} attached as a compute node"
 done
@@ -574,12 +611,16 @@ init_args=(
     --region "$REGION"
     --az "$AZ"
     --token-ttl "$TOKEN_TTL"
-    --external-mode=pool
-    --external-source=static
-    --external-pool="$EXT_POOL"
-    --external-gateway="$EXT_GATEWAY"
-    --external-prefix-len="$EXT_PREFIX"
+    --external-mode="$EXT_MODE"
 )
+if [ "$EXT_MODE" = "pool" ]; then
+    init_args+=(
+        --external-source=static
+        --external-pool="$EXT_POOL"
+        --external-gateway="$EXT_GATEWAY"
+        --external-prefix-len="$EXT_PREFIX"
+    )
+fi
 [ -n "$EXT_IFACE" ] && init_args+=(--external-iface="$EXT_IFACE")
 [ -n "$EMAIL" ] && init_args+=(--email="$EMAIL")
 
@@ -931,4 +972,8 @@ if $RUN_SMOKE; then
 fi
 
 echo ""
-log "cluster formed: $N nodes, pool $EXT_POOL"
+if [ "$EXT_MODE" = "nat" ]; then
+    log "cluster formed: $N nodes, routed nat"
+else
+    log "cluster formed: $N nodes, pool $EXT_POOL"
+fi

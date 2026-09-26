@@ -30,6 +30,13 @@ func TestAccountScoping(t *testing.T) {
 	runAccountScoping(t, requireSingleNodeFixture(t))
 }
 
+// Reaches the public internet rather than the cluster: it asks whether the
+// upstreams our image catalog names are still publishing what it claims.
+func TestImageCatalogReachable(t *testing.T) {
+	t.Parallel()
+	runImageCatalogReachable(t, requireSingleNodeFixture(t))
+}
+
 // --- Sequential: singleton VM lifecycle ---
 
 // TestClusterStatsCLI exercises the spx cluster CLI; its get-vms baseline is

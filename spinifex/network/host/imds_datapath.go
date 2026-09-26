@@ -21,8 +21,45 @@ const (
 )
 
 // imdsCaptureAddrs are the link-local addresses demuxed to the per-tap endpoint.
-// Kept in one place so the endpoint addresses and the ingress flows stay in sync.
+// Guest-facing and fixed: the ARP responder and the ingress demux flows match
+// these whatever the host binds, because they are what the guest addresses.
 var imdsCaptureAddrs = []string{imdsMetaAddr, imdsDNSAddr}
+
+// imdsHostAddrs are the addresses actually configured on each endpoint, and so
+// what the responder binds. Equal to imdsCaptureAddrs unless the host has a use
+// of its own for them — see SetIMDSHostAddrs.
+var imdsHostAddrs = []string{imdsMetaAddr, imdsDNSAddr}
+
+// SetIMDSHostAddrs moves the endpoint's own addresses off the guest-facing
+// pair, for a host that needs 169.254.169.254 and .253 for itself. A cloud
+// guest does: those are its metadata service and its resolver, and a /32 on an
+// ime- endpoint shadows the route to both, so the node loses DNS and its cloud
+// API for as long as any guest is running.
+//
+// Guests are unaffected. They keep addressing .254/.253, the OVS flows keep
+// matching on that, and a DNAT on the endpoint's ingress rewrites the
+// destination — conntrack un-NATs the reply, so the guest never sees the
+// substitution.
+//
+// Process-wide and set once at startup, before any tap is attached: both the
+// daemon (which configures the endpoint) and vpcd (which binds the socket) read
+// it from the same config key, and a change under a running tap would leave the
+// endpoint and the responder disagreeing about the address.
+func SetIMDSHostAddrs(meta, dns string) {
+	if meta == "" || dns == "" {
+		return
+	}
+	imdsHostAddrs = []string{meta, dns}
+}
+
+// IMDSHostAddrs returns the endpoint-side metadata and DNS addresses.
+func IMDSHostAddrs() (meta, dns string) { return imdsHostAddrs[0], imdsHostAddrs[1] }
+
+// imdsHostAddrsRemapped reports whether the endpoint serves on addresses other
+// than the ones guests send to, and so needs the DNAT that hides the move.
+func imdsHostAddrsRemapped() bool {
+	return imdsHostAddrs[0] != imdsMetaAddr || imdsHostAddrs[1] != imdsDNSAddr
+}
 
 // Per-tap OpenFlow priorities on IMDSBridge. The ARP responder, demux
 // (.254/.253 interception) and egress sit above the forward flows so IMDS
@@ -42,10 +79,14 @@ func shortENIID(eniID string) string {
 	return fmt.Sprintf("%08x", h.Sum32())
 }
 
+// IMDSEndpointPrefix tags every per-tap IMDS endpoint, so one wildcarded
+// firewall rule covers them all.
+const IMDSEndpointPrefix = "ime-"
+
 // IMDSEndpointName returns the per-tap endpoint port on IMDSBridge — the
 // SO_BINDTODEVICE target the responder binds. "ime-" + 8-char short ENI = 12
 // chars, within the 15-char IFNAMSIZ limit.
-func IMDSEndpointName(eniID string) string { return "ime-" + shortENIID(eniID) }
+func IMDSEndpointName(eniID string) string { return IMDSEndpointPrefix + shortENIID(eniID) }
 
 // IMDSPatchPort returns the IMDSBridge end of the per-tap patch to br-int.
 // "imp-" + 8-char short ENI = 12 chars.
@@ -196,7 +237,7 @@ func ensureIMDSEndpoint(ctx context.Context, r Runner, d IMDSTapDatapath) error 
 	// `replace` is idempotent — adds the /32 if absent, no-op if the endpoint
 	// already owns it (a recovery/stop re-attach reuses a surviving endpoint).
 	// `add` errored on the duplicate, and its kernel message varies by version.
-	for _, addr := range imdsCaptureAddrs {
+	for _, addr := range imdsHostAddrs {
 		if _, err := r.Run(ctx, "ip", "addr", "replace", addr+"/32", "dev", d.Endpoint); err != nil {
 			return fmt.Errorf("add %s to IMDS endpoint %s: %w", addr, d.Endpoint, err)
 		}

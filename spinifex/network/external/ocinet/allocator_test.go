@@ -120,7 +120,9 @@ func TestReleaseDeletesBothObjectsAndDropsTheBinding(t *testing.T) {
 	ip, err := a.Allocate(ctx, external.AllocateRequest{PoolName: "oci-wan", AllocationID: "eipalloc-1", ENIID: "eni-1"})
 	require.NoError(t, err)
 
-	require.NoError(t, a.Release(ctx, "oci-wan", ip, "eni-1"))
+	// Unscoped, as ReleaseAddress is: an owner-scoped release may not free an
+	// EIP, which TestAnOwnerScopedReleaseWillNotFreeAnEIPPair covers.
+	require.NoError(t, a.Release(ctx, "oci-wan", ip, ""))
 
 	assert.Empty(t, fake.PrivateIPs(), "private IP outlived its release")
 	assert.Empty(t, fake.PublicIPs(), "reserved public IP outlived its release — this one bills")
@@ -137,7 +139,11 @@ func TestReleaseWithAStaleOwnerIsANoOp(t *testing.T) {
 	fake := oci.NewFake()
 	a, store := newTestAllocator(t, fake)
 
-	ip, err := a.Allocate(ctx, external.AllocateRequest{PoolName: "oci-wan", AllocationID: "eipalloc-1", ENIID: "eni-current"})
+	// Auto-assigned, so the stale-owner guard is what decides this and not the
+	// EIP refusal next to it.
+	ip, err := a.Allocate(ctx, external.AllocateRequest{
+		PoolName: "oci-wan", Purpose: "eni-public", ENIID: "eni-current", InstanceID: "i-1",
+	})
 	require.NoError(t, err)
 
 	require.NoError(t, a.Release(ctx, "oci-wan", ip, "eni-previous"))

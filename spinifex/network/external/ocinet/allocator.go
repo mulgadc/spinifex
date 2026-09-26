@@ -44,6 +44,10 @@ import (
 // where whoever is wondering what created an address will actually look.
 const DisplayNamePrefix = "spinifex-"
 
+// purposeEIP duplicates handlers/ec2/vpc.PurposeEIP so the allocator can tell
+// an Elastic IP from an auto-assigned address without importing handlers.
+const purposeEIP = "eip"
+
 // assignSchedule is the poll ladder for an address to reach ASSIGNED. OCI
 // assignment is asynchronous: CreatePublicIp returns ASSIGNING and the address
 // is not reachable until it settles. Shaped like the DHCP manager's DORA ladder
@@ -285,6 +289,18 @@ func (a *PoolAllocator) Release(ctx context.Context, poolName string, ip netip.A
 			slog.InfoContext(ctx, "ocinet release skip — address reassigned to a different ENI (stale release)",
 				"pool", a.cfg.Pool.Name, "public_ip", key,
 				"stale_owner_eni", ownerENIID, "current_owner_eni", b.ENIID)
+			return false, nil
+		}
+		// Only an unscoped release — ReleaseAddress, which names no interface —
+		// may free an EIP. Here the address is a reserved public IP object, so
+		// freeing one on instance teardown destroys it at the provider and the
+		// customer cannot get it back.
+		// AllocationID is set only for an EIP, so it stands in when a caller
+		// allocated without naming a purpose.
+		if ownerENIID != "" && (b.Purpose == purposeEIP || b.AllocationID != "") {
+			slog.InfoContext(ctx, "ocinet release skip — address belongs to an Elastic IP allocation",
+				"pool", a.cfg.Pool.Name, "public_ip", key,
+				"allocation_id", b.AllocationID, "owner_eni", ownerENIID)
 			return false, nil
 		}
 		delete(rec.Bindings, key)

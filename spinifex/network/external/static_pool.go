@@ -31,6 +31,10 @@ const (
 	// allocator can reserve the gateway slot without importing handlers.
 	// The string value is frozen by migration 002 — do not change it.
 	purposeIGWLRP = "igw-lrp"
+
+	// purposeEIP duplicates handlers/ec2/vpc.PurposeEIP, for the same reason
+	// and under the same freeze.
+	purposeEIP = "eip"
 )
 
 // ExternalIPAllocation describes how an external IP is being used.
@@ -184,6 +188,19 @@ func (a *StaticPoolAllocator) Release(ctx context.Context, poolName string, ip n
 		}
 		if alloc.Purpose == purposeIGWLRP {
 			return false, fmt.Errorf("cannot release gateway IP %s in pool %s", target, poolName)
+		}
+		// An EIP outlives every interface it is ever associated with, so only an
+		// unscoped release — ReleaseAddress, which has no interface to name — may
+		// free one. The ownership guard above cannot cover this: an EIP is
+		// allocated bare and associated later, so the stored ENI is empty and the
+		// guard never fires. Without this, terminating an instance hands the
+		// customer's Elastic IP back to the pool.
+		// AllocationID is set only for an EIP, so it stands in when a caller
+		// allocated without naming a purpose.
+		if ownerENIID != "" && (alloc.Purpose == purposeEIP || alloc.AllocationID != "") {
+			slog.InfoContext(ctx, "external IPAM release skip — address belongs to an Elastic IP allocation",
+				"pool", poolName, "ip", target, "allocation_id", alloc.AllocationID, "owner_eni", ownerENIID)
+			return false, nil
 		}
 
 		delete(record.Allocated, target)

@@ -114,3 +114,27 @@ func TestAnEIPBecomesClaimableOnceItsOwnerIsRecorded(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, thisVNIC, got.VNICID, "OCI still delivers the EIP to another node")
 }
+
+// On OCI the address is a reserved public IP object, so an owner-scoped release
+// of one does not merely return it to a pool — it destroys it at the provider
+// and the customer cannot get it back.
+func TestAnOwnerScopedReleaseWillNotFreeAnEIPPair(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	a, store := newTestAllocator(t, fake)
+
+	ip, err := a.Allocate(ctx, external.AllocateRequest{
+		PoolName: "oci-wan", Purpose: "eip", AllocationID: "eipalloc-1",
+	})
+	require.NoError(t, err)
+	require.NoError(t, a.BindOwner(ctx, "oci-wan", ip, "eni-1"))
+
+	// What instance teardown does once the EIP is what the instance holds.
+	require.NoError(t, a.Release(ctx, "oci-wan", ip, "eni-1"))
+
+	assert.Len(t, fake.PublicIPs(), 1,
+		"terminating an instance destroyed a customer's reserved public IP")
+	rec, err := store.Get(ctx, "oci-wan")
+	require.NoError(t, err)
+	assert.Len(t, rec.Bindings, 1)
+}

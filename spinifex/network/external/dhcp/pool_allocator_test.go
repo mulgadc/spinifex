@@ -141,7 +141,7 @@ func TestDHCPPoolAllocatorReleaseUncodedErrorIsNotTerminal(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	client := dhcp.NewNATSClient(nc, 3*time.Second)
-	err = client.RequestReleaseByIP(context.Background(), "wan", "198.51.100.99")
+	err = client.RequestReleaseByIP(context.Background(), "wan", "198.51.100.99", false)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, dhcp.ErrLeaseNotTracked)
 	assert.Contains(t, err.Error(), "upstream unreachable")

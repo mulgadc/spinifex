@@ -422,10 +422,16 @@ assert_eks_cluster_ready() {
         return 1
     }
 
+    # Count agents, not every node. The control plane is three K3s servers, so
+    # an unfiltered count reaches a one-worker cluster's desired size before any
+    # worker joins — the assertion passes on exactly the failure it exists to
+    # catch. Node-group workers boot as k3s-agent and carry no control-plane
+    # role label (scripts/images/eks-node/eks-node-role.sh).
     budget=600
     local ready
     while [ "$budget" -gt 0 ]; do
-        ready=$(kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready"' | wc -l)
+        ready=$(kubectl get nodes --no-headers -l '!node-role.kubernetes.io/control-plane' 2>/dev/null |
+            awk '$2=="Ready"' | wc -l)
         [ "$ready" -ge "$desired" ] 2>/dev/null && break
         sleep 15
         budget=$((budget - 15))

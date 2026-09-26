@@ -27,6 +27,10 @@ type EIPSpec struct {
 	LogicalIP  string
 	PortName   string
 	MAC        string
+	// NATGateway marks an address belonging to a NAT gateway rather than an
+	// ENI. It has no port to locate it by, so the VPC's gateway chassis is what
+	// says which node's host state it belongs in.
+	NATGateway bool
 }
 
 // NATGWSpec is a NAT Gateway SNAT rule keyed by (snat, SubnetCIDR).
@@ -156,6 +160,12 @@ type HostEIPBinder struct {
 	// a route and a proxy-ARP entry for an address it can no longer serve. Nil
 	// keeps the older behaviour of pruning on cluster-wide intent alone.
 	Owns func(portName string) (bool, error)
+	// GatewayElsewhere is Owns for an address with no port: it reports whether
+	// another chassis holds the VPC's gateway, which is where a NAT gateway's
+	// datapath runs. True only when some other node has claimed it, so an
+	// unclaimed gateway leaves the binding alone. Nil keeps the older behaviour
+	// of every node plumbing every NAT gateway.
+	GatewayElsewhere func(vpcID string) (bool, error)
 }
 
 // WithHostEIPBinder injects the routed-mode host plumbing hooks fired on EIP
@@ -402,6 +412,14 @@ func (m *natManager) distributes(eip EIPSpec) bool {
 // half-plumbed EIP surfaces to the caller (reconcile retries the bind).
 func (m *natManager) bindHostEIP(ctx context.Context, eip EIPSpec) error {
 	if m.mode != NATModeRouted || m.hostBinder == nil {
+		return nil
+	}
+	// A NAT gateway has no port for the binder's own locality test to find, so
+	// ask the gateway chassis instead; every other node plumbing it is what
+	// hijacks traffic on a cloud that puts the address in the nodes' subnet.
+	if m.gatewayElsewhere(eip) {
+		slog.Debug("policy: NAT gateway runs on another chassis, leaving its host binding alone",
+			"external_ip", eip.ExternalIP, "vpc_id", eip.VPCID)
 		return nil
 	}
 	// A distributed EIP answers ARP on the local transit veth, so the host
@@ -676,6 +694,9 @@ func (m *natManager) PruneOrphanEIPs(ctx context.Context, live LiveEIPs) (int, e
 // signal, and tearing down a live address on a guess is worse than leaving a
 // stale route the next pass can still remove.
 func (m *natManager) foreignToThisChassis(eip EIPSpec) bool {
+	if eip.NATGateway {
+		return m.gatewayElsewhere(eip)
+	}
 	if m.hostBinder == nil || m.hostBinder.Owns == nil ||
 		eip.PortName == "" || eip.MAC == "" || !m.distributes(eip) {
 		return false
@@ -687,6 +708,24 @@ func (m *natManager) foreignToThisChassis(eip EIPSpec) bool {
 		return false
 	}
 	return !local
+}
+
+// gatewayElsewhere answers foreignToThisChassis for a NAT gateway address. Its
+// traffic is SNAT'd on the VPC's gateway chassis and leaves that node's uplink,
+// so anywhere else the /32 route points into a datapath that will never carry
+// it — and where the address shares the nodes' own subnet, as on OCI, it
+// outranks the connected route and swallows node-to-node traffic.
+func (m *natManager) gatewayElsewhere(eip EIPSpec) bool {
+	if m.hostBinder == nil || m.hostBinder.GatewayElsewhere == nil || eip.VPCID == "" {
+		return false
+	}
+	elsewhere, err := m.hostBinder.GatewayElsewhere(eip.VPCID)
+	if err != nil {
+		slog.Warn("policy: cannot tell which chassis a NAT gateway runs on; leaving its host binding alone",
+			"external_ip", eip.ExternalIP, "vpc_id", eip.VPCID, "err", err)
+		return false
+	}
+	return elsewhere
 }
 
 // datapathLive rewrites the prune's wanted-address set into datapath addresses.
@@ -835,7 +874,7 @@ func (m *natManager) bindNATGatewayHost(ctx context.Context, gw NATGWSpec) error
 	if gw.PublicIP == "" {
 		return nil
 	}
-	return m.bindHostEIP(ctx, EIPSpec{VPCID: gw.VPCID, ExternalIP: gw.PublicIP})
+	return m.bindHostEIP(ctx, EIPSpec{VPCID: gw.VPCID, ExternalIP: gw.PublicIP, NATGateway: true})
 }
 
 func (m *natManager) DeleteNATGateway(ctx context.Context, vpcID, subnetCIDR string) error {

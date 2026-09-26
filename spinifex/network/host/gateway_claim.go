@@ -58,6 +58,26 @@ func (p *GatewayClaimProber) GatewayPortLocal(_ context.Context, crPortName stri
 	return name != "" && name == local, nil
 }
 
+// GatewayPortElsewhere reports whether the chassisredirect port is claimed by
+// some other host. An unclaimed port is not elsewhere: nothing holds it, so the
+// question is unanswered rather than answered no, and a caller deciding whether
+// to tear host state down must keep what it has.
+func (p *GatewayClaimProber) GatewayPortElsewhere(_ context.Context, crPortName string) (bool, error) {
+	chassis, err := p.boundChassis(crPortName)
+	if err != nil || chassis == "" {
+		return false, err
+	}
+	local, err := p.localChassis()
+	if err != nil {
+		return false, err
+	}
+	name, err := p.chassisName(chassis)
+	if err != nil {
+		return false, err
+	}
+	return name != "" && name != local, nil
+}
+
 // boundChassis returns the SB Chassis UUID a logical port is bound to, empty if
 // unbound. Output() not CombinedOutput(): sudo PAM noise on stderr would be
 // misread as a non-empty chassis value.

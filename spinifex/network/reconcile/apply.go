@@ -931,6 +931,7 @@ func (r *reconciler) hostBindSpecs(intent IntentState) []policy.EIPSpec {
 		specs = append(specs, policy.EIPSpec{
 			VPCID:      gw.VPCID,
 			ExternalIP: gw.PublicIP,
+			NATGateway: true,
 		})
 	}
 	return specs
@@ -992,7 +993,12 @@ func (r *reconciler) addLive(live policy.LiveEIPs, intent IntentState) {
 			live.Ports[e.PortName] = struct{}{}
 		}
 	}
-	for _, spec := range r.floatingIPSpecs(intent) {
+	// hostBindSpecs, not floatingIPSpecs: the set also gates the host-ingress
+	// sweep this prune runs, and a NAT gateway's address holds host state with
+	// no ENI and no dnat_and_snat row behind it. Built from the narrower set it
+	// read as absent from intent, so every drift pass tore down the ingress of
+	// every live NAT gateway and left it dark until the next host EIP tick.
+	for _, spec := range r.hostBindSpecs(intent) {
 		live.ExternalIPs[spec.ExternalIP] = struct{}{}
 	}
 }

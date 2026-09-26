@@ -559,7 +559,7 @@ func launchService(cfg *Config) error {
 			append([]string{host.NATTransitCIDR}, cfg.NATExemptCIDRs...)))
 	}
 	if natMode == policy.NATModeRouted && publicPool != nil {
-		natOpts = append(natOpts, policy.WithHostEIPBinder(hostEIPBinder(publicPool)))
+		natOpts = append(natOpts, policy.WithHostEIPBinder(hostEIPBinder(publicPool, cfg.OVNSBAddr)))
 	}
 	// Also handed to the reconciler, whose EIP datapath probe has to ARP the same
 	// on-wire address the NAT rule is built from.
@@ -1034,8 +1034,9 @@ func ociPoolNames(pools []external.ExternalPoolConfig) []string {
 // hostEIPBinder builds the routed-mode host plumbing hooks for EIPs on the
 // public pool: /32 route into OVN plus proxy-ARP on the uplink. Static pools
 // locate the uplink via the pool gateway; dhcp pools via their bind bridge.
-func hostEIPBinder(pool *external.ExternalPoolConfig) policy.HostEIPBinder {
+func hostEIPBinder(pool *external.ExternalPoolConfig, sbAddr string) policy.HostEIPBinder {
 	runner := host.NewExecRunner()
+	prober := host.NewGatewayClaimProber(sbAddr)
 	gateway, uplinkHint := pool.Gateway, pool.BindBridge
 	return policy.HostEIPBinder{
 		Bind: func(eip policy.EIPSpec, gwLrpIP string) error {
@@ -1068,6 +1069,13 @@ func hostEIPBinder(pool *external.ExternalPoolConfig) policy.HostEIPBinder {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			return host.HasLocalPort(ctx, runner, portName)
+		},
+		// A NAT gateway has no port, so locality is the VPC's gateway chassis:
+		// its SNAT runs there and its egress leaves that node's uplink.
+		GatewayElsewhere: func(vpcID string) (bool, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return prober.GatewayPortElsewhere(ctx, topology.GatewayChassisRedirectPort(vpcID))
 		},
 	}
 }

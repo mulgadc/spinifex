@@ -157,6 +157,13 @@ type VM struct {
 	PublicIPAllocID string `json:"public_ip_alloc_id,omitempty"`
 	PublicIPAssocID string `json:"public_ip_assoc_id,omitempty"`
 
+	// AutoAssignPublicIP records that a stop returned an auto-assigned address to
+	// its pool, so the start that follows must take a new one. It carries the
+	// launch-time decision across a stop, which is where the subnet attribute
+	// that made it is no longer the right thing to ask: changing it must not
+	// retroactively add or remove an address from an instance already launched.
+	AutoAssignPublicIP bool `json:"auto_assign_public_ip,omitempty"`
+
 	// DevMAC is the MAC for the dev/hostfwd NIC (DEV_NETWORKING mode), used by
 	// appendDevHostfwdNIC to give the user-mode NIC a stable address.
 	DevMAC string `json:"dev_mac,omitempty"`

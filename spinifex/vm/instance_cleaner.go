@@ -18,6 +18,13 @@ type InstanceCleaner interface {
 	// instance has a public IP allocated. Returns the IPAM release error.
 	ReleasePublicIP(v *VM) error
 
+	// ReleaseAutoAssignedPublicIP gives an auto-assigned address back to its pool
+	// the way AWS does when an instance stops. An Elastic IP is the customer's
+	// and is left untouched, so the implementation is what tells the two apart.
+	// Reports whether the address was released; false leaves the VM holding it.
+	// Called only on an operator Stop, never on a host drain or a Terminate.
+	ReleaseAutoAssignedPublicIP(v *VM) (bool, error)
+
 	// DetachAndDeleteENI detaches and force-deletes the primary ENI (bypassing
 	// the in-use guard for the owning instance). NotFound is tolerated. Called
 	// only on Terminate. Returns the delete error.

@@ -222,6 +222,7 @@ func populatedVM() *vm.VM {
 		PublicIPPool:                    "pool-1",
 		PublicIPAllocID:                 "eipalloc-1",
 		PublicIPAssocID:                 "eipassoc-1",
+		AutoAssignPublicIP:              true,
 		DevMAC:                          "02:00:00:00:00:01",
 		MgmtMAC:                         "02:a0:00:00:00:01",
 		MgmtIP:                          "10.255.0.5",

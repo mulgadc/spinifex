@@ -188,6 +188,11 @@ type ENIInfo struct {
 	MacAddress         string
 	Status             string
 	SecurityGroupIDs   []string
+	// PublicIpAddress / PublicIpPool are the address the interface is currently
+	// reachable on. The record outlives a stop, so a start reads them to find an
+	// Elastic IP associated while the instance was down.
+	PublicIpAddress string
+	PublicIpPool    string
 	// DeleteOnTermination mirrors the stored ENIRecord field, defaulted true
 	// when unset. Read by the terminate sweep to decide detach-only vs delete.
 	DeleteOnTermination bool
@@ -205,6 +210,11 @@ type ENICreator interface {
 	AttachENI(ctx context.Context, accountID, eniID, instanceID string, deviceIndex int64) (string, error)
 	DetachENI(ctx context.Context, accountID, eniID string) error
 	UpdateENIPublicIP(ctx context.Context, accountID, eniID, publicIP, poolName string) error
+	// ENIHasEIP reports whether an Elastic IP is associated with the ENI. A
+	// start must not auto-assign an address beside one the customer already
+	// owns: the EIP is what the instance is reachable on, and a second address
+	// is one they never asked for and would be billed for on some providers.
+	ENIHasEIP(ctx context.Context, accountID, eniID string) (bool, error)
 	// ListInstanceENIs returns every ENI currently attached to instanceID.
 	// Used by the terminate sweep for post-launch attachments the launch-time
 	// ENIId scalar on vm.VM never carries.

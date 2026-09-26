@@ -54,6 +54,8 @@ func (a *daemonENICreator) GetENI(_ context.Context, accountID, eniID string) (*
 		MacAddress:         rec.MacAddress,
 		Status:             rec.Status,
 		SecurityGroupIDs:   rec.SecurityGroupIds,
+		PublicIpAddress:    rec.PublicIpAddress,
+		PublicIpPool:       rec.PublicIpPool,
 		DeleteOnTermination: rec.DeleteOnTermination == nil ||
 			*rec.DeleteOnTermination,
 	}, nil
@@ -73,6 +75,10 @@ func (a *daemonENICreator) DetachENI(ctx context.Context, accountID, eniID strin
 
 func (a *daemonENICreator) UpdateENIPublicIP(_ context.Context, accountID, eniID, publicIP, poolName string) error {
 	return a.d.vpcService.UpdateENIPublicIP(accountID, eniID, publicIP, poolName)
+}
+
+func (a *daemonENICreator) ENIHasEIP(ctx context.Context, accountID, eniID string) (bool, error) {
+	return a.d.vpcService.ENIHasEIP(ctx, accountID, eniID)
 }
 
 func (a *daemonENICreator) ListInstanceENIs(_ context.Context, accountID, instanceID string) ([]handlers_ec2_instance.ENIInfo, error) {

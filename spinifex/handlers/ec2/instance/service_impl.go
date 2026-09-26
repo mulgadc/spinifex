@@ -2658,8 +2658,29 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 			"count", len(attachments), "attachments", attachments)
 	}
 
+	// Before Run, so a pool with nothing left refuses the start instead of
+	// booting a guest the customer cannot reach.
+	addressAllocated, err := s.reassignAutoAssignedPublicIP(ctx, instance)
+	if err != nil {
+		slog.ErrorContext(ctx, "StartStoppedInstance: public IP allocation failed — refusing the start",
+			"instanceId", input.InstanceID, "err", err)
+		if gpuClaimed {
+			if relErr := s.gpuClaimer.Release(instance.ID); relErr != nil {
+				slog.ErrorContext(ctx, "StartStoppedInstance: GPU release failed after address allocation failure",
+					"instanceId", input.InstanceID, "err", relErr)
+			}
+		}
+		s.resourceMgr.Deallocate(instanceType)
+		s.vmMgr.Delete(instance.ID)
+		s.restoreClaimedStoppedInstance(ctx, instance)
+		return nil, errors.New(awserrors.ValidErrorCodeFromError(err))
+	}
+
 	if err := s.vmMgr.Run(ctx, instance); err != nil {
 		slog.ErrorContext(ctx, "StartStoppedInstance: vmMgr.Run failed", "instanceId", input.InstanceID, "err", err)
+		if addressAllocated {
+			s.rollbackStartPublicIP(ctx, instance)
+		}
 		if gpuClaimed {
 			if relErr := s.gpuClaimer.Release(instance.ID); relErr != nil {
 				slog.ErrorContext(ctx, "StartStoppedInstance: GPU release failed after launch failure",
@@ -2879,6 +2900,110 @@ func (s *InstanceServiceImpl) allocatePublicIP(ctx context.Context, eniID, insta
 		az = s.config.AZ
 	}
 	return s.ipAllocator.AllocateIP(ctx, region, az, handlers_ec2_vpc.PurposeENIPublic, "", eniID, instanceID)
+}
+
+// reassignAutoAssignedPublicIP gives a starting instance the fresh address AWS
+// would. The one it had went back to its pool when it stopped, so an address is
+// taken here and stamped everywhere the datapath reads it.
+//
+// It does nothing unless the stop actually released one, which is what keeps an
+// instance that never had a public address, one holding an Elastic IP, and one
+// stopped by a build that predates this from being handed an address on start.
+// An exhausted pool is returned as an error so the caller refuses the start
+// rather than booting a guest the customer cannot reach.
+//
+// allocated reports whether an address came out of the pool here, which is the
+// only case a later failure may hand back: an Elastic IP adopted below is the
+// customer's and a rollback must not touch it.
+func (s *InstanceServiceImpl) reassignAutoAssignedPublicIP(ctx context.Context, instance *vm.VM) (allocated bool, err error) {
+	if !instance.AutoAssignPublicIP || instance.PublicIP != "" || instance.ENIId == "" {
+		return false, nil
+	}
+	// The flag is cleared only once the instance is holding an address, so a
+	// refused start stays owed one and the retry does not bring it up with none.
+	eni, err := s.eniInfoForStart(ctx, instance)
+	if err != nil {
+		return false, err
+	}
+
+	// An Elastic IP associated while the instance was stopped is what it comes
+	// back on. Auto-assigning here would hand the customer a second address they
+	// never asked for, so adopt the EIP instead and take nothing from the pool.
+	if s.eniCreator != nil {
+		owned, eipErr := s.eniCreator.ENIHasEIP(ctx, instance.AccountID, instance.ENIId)
+		if eipErr != nil {
+			return false, fmt.Errorf("check EIP association for %s: %w", instance.ENIId, eipErr)
+		}
+		if owned {
+			instance.PublicIP = eni.PublicIpAddress
+			instance.PublicIPPool = eni.PublicIpPool
+			instance.AutoAssignPublicIP = false
+			slog.InfoContext(ctx, "StartStoppedInstance: instance starts on the Elastic IP associated to its interface",
+				"instanceId", instance.ID, "eniId", instance.ENIId, "publicIp", instance.PublicIP)
+			return false, nil
+		}
+	}
+
+	publicIP, poolName, err := s.allocatePublicIP(ctx, instance.ENIId, instance.ID)
+	if err != nil {
+		return false, fmt.Errorf("allocate public IP for %s: %w", instance.ID, err)
+	}
+	if updateErr := s.eniCreator.UpdateENIPublicIP(ctx, instance.AccountID, instance.ENIId, publicIP, poolName); updateErr != nil {
+		// The reconciler builds the NAT rule from this record, so an address the
+		// instance holds but the record does not is an address nothing routes.
+		slog.WarnContext(ctx, "StartStoppedInstance: failed to update ENI with public IP",
+			"instanceId", instance.ID, "eniId", instance.ENIId, "err", updateErr)
+	}
+	if natErr := utils.AddNAT(s.natsConn, eni.VpcID, publicIP, eni.PrivateIpAddress,
+		topology.Port(instance.ENIId), eni.MacAddress); natErr != nil {
+		// Neutralise before releasing in case the timeout committed the rule.
+		utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", eni.VpcID, publicIP, eni.PrivateIpAddress,
+			topology.Port(instance.ENIId), eni.MacAddress)
+		s.releaseAutoAssignedPublicIP(ctx, instance.AccountID, instance.ENIId, publicIP, poolName)
+		return false, natErr
+	}
+
+	instance.PublicIP = publicIP
+	instance.PublicIPPool = poolName
+	instance.AutoAssignPublicIP = false
+	slog.InfoContext(ctx, "StartStoppedInstance: auto-assigned a new public IP",
+		"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName)
+	return true, nil
+}
+
+// eniInfoForStart reads the interface a start is bringing back up. The stored
+// instance carries the launch-time copy, which a cross-node start and an EIP
+// associated while stopped both outdate, so the record is read fresh.
+func (s *InstanceServiceImpl) eniInfoForStart(ctx context.Context, instance *vm.VM) (*ENIInfo, error) {
+	if s.eniCreator == nil {
+		return nil, fmt.Errorf("no ENI service on this node: %w", errors.New(awserrors.ErrorServerInternal))
+	}
+	eni, err := s.eniCreator.GetENI(ctx, instance.AccountID, instance.ENIId)
+	if err != nil {
+		return nil, fmt.Errorf("read ENI %s: %w", instance.ENIId, err)
+	}
+	return eni, nil
+}
+
+// rollbackStartPublicIP returns the address a start took when the launch that
+// followed failed, so a refused start does not cost the pool a slot per attempt.
+// The instance goes back to the stopped store still marked for re-assignment.
+func (s *InstanceServiceImpl) rollbackStartPublicIP(ctx context.Context, instance *vm.VM) {
+	if instance.PublicIP == "" || instance.PublicIPPool == "" {
+		return
+	}
+	vpcID := ""
+	privateIP := ""
+	if instance.Instance != nil {
+		vpcID = aws.StringValue(instance.Instance.VpcId)
+		privateIP = aws.StringValue(instance.Instance.PrivateIpAddress)
+	}
+	utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", vpcID, instance.PublicIP, privateIP,
+		topology.Port(instance.ENIId), instance.ENIMac)
+	s.releaseAutoAssignedPublicIP(ctx, instance.AccountID, instance.ENIId, instance.PublicIP, instance.PublicIPPool)
+	instance.PublicIP = ""
+	instance.PublicIPPool = ""
+	instance.AutoAssignPublicIP = true
 }
 
 // rollbackAutoAssignedPublicIP unwinds a failed auto-assign: clears the ENI

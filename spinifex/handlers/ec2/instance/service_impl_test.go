@@ -3497,6 +3497,12 @@ type fakeENICreator struct {
 	detachErr       error                // returned by every DetachENI call when set
 	instanceENIs    map[string][]ENIInfo // keyed by instanceID, for ListInstanceENIs
 	listENIsErr     error
+	eniHasEIP       bool  // what ENIHasEIP reports for every ENI
+	eniHasEIPErr    error // when set, ENIHasEIP fails instead
+}
+
+func (f *fakeENICreator) ENIHasEIP(_ context.Context, _, _ string) (bool, error) {
+	return f.eniHasEIP, f.eniHasEIPErr
 }
 
 func (f *fakeENICreator) GetDefaultSubnet(_ context.Context, _ string) (*SubnetInfo, error) {

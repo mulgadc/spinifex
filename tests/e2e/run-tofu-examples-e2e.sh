@@ -616,11 +616,14 @@ run_workbook() {
 
     if ! tofu apply -auto-approve "${apply_args[@]}"; then
         log "  FAIL ${example}: tofu apply"
-        tofu destroy -auto-approve "${apply_args[@]}" >/dev/null 2>&1 || true
+        # Bounded like the teardown below: this one only tidies up after a
+        # workbook that has already failed, so it must not hold the suite open.
+        timeout "${DESTROY_TIMEOUT:-900}" tofu destroy -auto-approve "${apply_args[@]}" >/dev/null 2>&1 || true
         return 1
     fi
 
-    local rc=0
+    local rc=0 destroy_log
+    destroy_log=$(mktemp)
     if assert_"${example//-/_}" && assert_clean_plan "$example" "${apply_args[@]}"; then
         log "  PASS ${example}"
     else
@@ -631,8 +634,18 @@ run_workbook() {
         rc=1
     fi
 
-    tofu destroy -auto-approve "${apply_args[@]}" >/dev/null 2>&1 || \
-        log "  WARN ${example}: tofu destroy failed"
+    # The teardown is part of what the workbook proves: a customer who cannot
+    # remove what they created is as stuck as one who could not create it. It
+    # was a WARN, and a bucket that could never be emptied passed for weeks.
+    #
+    # Bounded because the failure mode is a wedge rather than an error — the
+    # provider retries DeleteBucket against a bucket it cannot empty forever.
+    if ! timeout "${DESTROY_TIMEOUT:-900}" tofu destroy -auto-approve "${apply_args[@]}" > "$destroy_log" 2>&1; then
+        log "  FAIL ${example}: tofu destroy"
+        sed 's|^|    |' "$destroy_log" | tail -40
+        rc=1
+    fi
+    rm -f "$destroy_log"
 
     cd "$SCRIPT_DIR"
     return "$rc"

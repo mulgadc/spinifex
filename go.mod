@@ -27,8 +27,8 @@ require (
 	github.com/mulgadc/northstar v1.20.1-0.20260917032839-357bbc94201d
 	github.com/mulgadc/predastore v1.20.1-0.20260918222809-019dd349cf1f
 	github.com/mulgadc/viperblock v1.20.0
-	github.com/nats-io/nats-server/v2 v2.14.7
-	github.com/nats-io/nats.go v1.53.1
+	github.com/nats-io/nats-server/v2 v2.15.0
+	github.com/nats-io/nats.go v1.54.0
 	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/oracle/oci-go-sdk/v65 v65.126.0
 	github.com/ovn-kubernetes/libovsdb v0.8.1

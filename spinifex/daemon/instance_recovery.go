@@ -61,7 +61,7 @@ type recoveryCandidate struct {
 // add failover state and no safety: the claim is a CAS on the instance record,
 // so several nodes racing one instance already resolve to one winner.
 func (d *Daemon) startInstanceRecovery() {
-	if !d.config.Recovery.Enabled {
+	if d.clusterConfig == nil || !d.clusterConfig.Recovery.Enabled {
 		slog.Info("Instance recovery is disabled", "node", d.node)
 		return
 	}

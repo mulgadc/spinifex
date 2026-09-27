@@ -198,29 +198,26 @@ func TestTheSettleWindowReleasesWhenItExpires(t *testing.T) {
 // different kind of "not here": not asked for, not wired up, and not a cluster
 // big enough for recovery to mean anything.
 func TestWhatStopsTheLoopStarting(t *testing.T) {
-	three := &config.ClusterConfig{
-		Nodes: map[string]config.Config{"node-1": {}, "node-2": {}, "node-3": {}},
-	}
+	threeNodes := map[string]config.Config{"node-1": {}, "node-2": {}, "node-3": {}}
 
 	tests := []struct {
 		name  string
 		build func() *Daemon
 	}{
 		{"off by default", func() *Daemon {
-			return &Daemon{node: "node-1", config: &config.Config{}, clusterConfig: three}
+			return &Daemon{node: "node-1", clusterConfig: &config.ClusterConfig{Nodes: threeNodes}}
 		}},
 		{"no JetStream to read records from", func() *Daemon {
-			cfg := &config.Config{}
+			cfg := &config.ClusterConfig{Nodes: threeNodes}
 			cfg.Recovery.Enabled = true
-			return &Daemon{node: "node-1", config: cfg, clusterConfig: three}
+			return &Daemon{node: "node-1", clusterConfig: cfg}
 		}},
 		{"too few nodes to move a guest between", func() *Daemon {
-			cfg := &config.Config{}
+			cfg := &config.ClusterConfig{Nodes: map[string]config.Config{"node-1": {}, "node-2": {}}}
 			cfg.Recovery.Enabled = true
 			return &Daemon{
 				node:            "node-1",
-				config:          cfg,
-				clusterConfig:   &config.ClusterConfig{Nodes: map[string]config.Config{"node-1": {}, "node-2": {}}},
+				clusterConfig:   cfg,
 				jsManager:       &JetStreamManager{},
 				instanceService: &handlers_ec2_instance.InstanceServiceImpl{},
 			}

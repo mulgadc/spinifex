@@ -18,6 +18,7 @@ type ClusterConfig struct {
 	Network   NetworkConfig     `mapstructure:"network"`   // cluster-wide external network settings
 	Bootstrap BootstrapConfig   `mapstructure:"bootstrap"` // default VPC IDs for OVN reconciliation
 	AWS       AWSConfig         `mapstructure:"aws"`       // cluster-wide AWS-parity settings (region, endpoint suffix)
+	Recovery  RecoveryConfig    `mapstructure:"recovery"`  // automatic instance recovery after a host failure
 	Nodes     map[string]Config `mapstructure:"nodes"`     // full config for every node
 }
 
@@ -187,7 +188,6 @@ type Config struct {
 	ACM         ACMConfig         `json:"ACM" mapstructure:"acm"`
 	Bedrock     BedrockConfig     `json:"Bedrock" mapstructure:"bedrock"`
 	OchreVector OchreVectorConfig `json:"OchreVector" mapstructure:"ochre_vector"`
-	Recovery    RecoveryConfig    `json:"Recovery" mapstructure:"recovery"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -253,11 +253,11 @@ const (
 
 // RecoveryConfig turns automatic instance recovery on.
 //
-// It defaults off, and that is the absence of a mechanism rather than
-// timidity: nothing in the product compares a config value across nodes or
-// refuses to start on a mismatch, so a cluster part-way through an upgrade
-// would be deciding this per node. Turning it on once, deliberately, after
-// every node carries the code is the honest version of the same guarantee.
+// It is cluster-wide rather than per node, because a node that has it off is
+// not opting out of anything: recovery is something survivors do to a dead
+// node's instances, so a per-node setting would read as a promise it cannot
+// keep. It defaults off so that turning it on is deliberate, once every node
+// carries the code.
 type RecoveryConfig struct {
 	Enabled bool `json:"Enabled" mapstructure:"enabled"`
 }

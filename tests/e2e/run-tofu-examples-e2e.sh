@@ -621,9 +621,7 @@ run_workbook() {
     fi
 
     local rc=0
-    if assert_"${example//-/_}" && assert_clean_plan "$example" "${apply_args[@]}"; then
-        log "  PASS ${example}"
-    else
+    if ! assert_"${example//-/_}" || ! assert_clean_plan "$example" "${apply_args[@]}"; then
         log "  FAIL ${example}: assertion"
         # Capture OVN state while VMs still exist — the EXIT trap fires after
         # destroy, by which point port groups, address sets, and ACLs are gone.
@@ -631,8 +629,19 @@ run_workbook() {
         rc=1
     fi
 
-    tofu destroy -auto-approve "${apply_args[@]}" >/dev/null 2>&1 || \
-        log "  WARN ${example}: tofu destroy failed"
+    # A destroy that does not complete fails the workbook rather than warning
+    # about it. A provider that cannot delete what it created is the same class
+    # of defect as one that cannot create it, and what it leaves behind is the
+    # next run's mystery rather than this one's. The output is kept for the same
+    # reason: this is a verdict now, so it needs its evidence.
+    if ! tofu destroy -auto-approve "${apply_args[@]}"; then
+        log "  FAIL ${example}: tofu destroy left resources behind"
+        rc=1
+    fi
+
+    if [ "$rc" -eq 0 ]; then
+        log "  PASS ${example}"
+    fi
 
     cd "$SCRIPT_DIR"
     return "$rc"

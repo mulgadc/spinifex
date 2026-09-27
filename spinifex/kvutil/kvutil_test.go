@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -31,13 +32,13 @@ func streamReplicas(t *testing.T, js jetstream.JetStream, bucket string) int {
 	return info.Config.Replicas
 }
 
-func TestGetOrCreateBucket_CreatesAtDefaultReplicas(t *testing.T) {
+func TestGetOrCreateBucket_CreatesAtTheClusterReplicaCount(t *testing.T) {
 	js := startJetStream(t)
 
 	kv, err := GetOrCreateBucket(t.Context(), js, "regression-bucket", 5)
 	require.NoError(t, err)
 	require.NotNil(t, kv)
-	assert.Equal(t, 1, streamReplicas(t, js, "regression-bucket"))
+	assert.Equal(t, 1, streamReplicas(t, js, "regression-bucket"), "one embedded server is a one-node cluster")
 }
 
 // TestGetOrCreateBucket_OpensExisting covers the second-boot path: a bucket that
@@ -58,28 +59,60 @@ func TestGetOrCreateBucket_OpensExisting(t *testing.T) {
 	assert.Equal(t, "value", string(entry.Value()))
 }
 
-func TestGetOrCreateBucketWithReplicas_ClampsBelowOne(t *testing.T) {
-	js := startJetStream(t)
+// TestReplicas_TracksTheClusterSize covers the whole of the rule: a bucket is
+// replicated across every node, up to JetStream's own ceiling of five, and a
+// process that never declared a cluster size refuses to create one at all.
+func TestReplicas_TracksTheClusterSize(t *testing.T) {
+	t.Cleanup(func() { clustersize.Declare(0) })
 
-	kv, err := GetOrCreateBucketWithReplicas(t.Context(), js, "clamped-zero", 1, 0)
-	require.NoError(t, err)
-	require.NotNil(t, kv)
-	assert.Equal(t, 1, streamReplicas(t, js, "clamped-zero"))
+	for _, tc := range []struct {
+		nodes int
+		want  int
+	}{
+		{1, 1},
+		{3, 3},
+		{4, 4},
+		{5, 5},
+		{10, 5},
+		{64, 5},
+	} {
+		clustersize.Declare(tc.nodes)
+		got, err := clustersize.Replicas()
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got, "%d nodes", tc.nodes)
+	}
 
-	kv, err = GetOrCreateBucketWithReplicas(t.Context(), js, "clamped-negative", 1, -3)
-	require.NoError(t, err)
-	require.NotNil(t, kv)
-	assert.Equal(t, 1, streamReplicas(t, js, "clamped-negative"))
+	clustersize.Declare(0)
+	_, err := clustersize.Replicas()
+	require.ErrorIs(t, err, clustersize.ErrUndeclared)
 }
 
-// TestGetOrCreateBucketWithReplicas_SurfacesCreateFailure pins the reason the
-// open is scoped to "bucket exists": a create that fails for any other reason
-// must report that reason, not the "bucket not found" a blind reopen produces.
-func TestGetOrCreateBucketWithReplicas_SurfacesCreateFailure(t *testing.T) {
+// TestGetOrCreateBucket_RefusesWhenClusterSizeIsUndeclared pins the fail-closed
+// choice: an undeclared size must not fall back to one replica, because one
+// replica on a multi-node cluster is the outage this package exists to prevent.
+func TestGetOrCreateBucket_RefusesWhenClusterSizeIsUndeclared(t *testing.T) {
+	js := startJetStream(t)
+	clustersize.Declare(0)
+	t.Cleanup(func() { clustersize.Declare(1) })
+
+	_, err := GetOrCreateBucket(t.Context(), js, "undeclared", 1)
+	require.ErrorIs(t, err, clustersize.ErrUndeclared)
+
+	_, err = js.KeyValue(t.Context(), "undeclared")
+	require.ErrorIs(t, err, jetstream.ErrBucketNotFound, "a refused create must not leave a bucket behind")
+}
+
+// TestGetOrCreateBucket_SurfacesCreateFailure pins the reason the open is scoped
+// to "bucket exists": a create that fails for any other reason must report that
+// reason, not the "bucket not found" a blind reopen produces.
+func TestGetOrCreateBucket_SurfacesCreateFailure(t *testing.T) {
 	js := startJetStream(t)
 
-	// The embedded single-node server rejects Replicas > 1.
-	_, err := GetOrCreateBucketWithReplicas(t.Context(), js, "over-replicated", 1, 3)
+	// The embedded single-node server rejects a three-node replica count.
+	clustersize.Declare(3)
+	t.Cleanup(func() { clustersize.Declare(1) })
+
+	_, err := GetOrCreateBucket(t.Context(), js, "over-replicated", 1)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, jetstream.ErrBucketNotFound)
 	assert.Contains(t, err.Error(), "create KV bucket over-replicated")

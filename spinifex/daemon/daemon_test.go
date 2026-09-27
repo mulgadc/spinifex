@@ -740,7 +740,7 @@ func TestDaemon_BootAllocation(t *testing.T) {
 	defer nc.Close()
 
 	daemon.natsConn = nc
-	daemon.jsManager, err = NewJetStreamManager(nc, 1)
+	daemon.jsManager, err = NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = daemon.jsManager.InitKVBucket()
 	require.NoError(t, err)
@@ -1692,7 +1692,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 
 	// A real terminated-instance KV, so Sweep can list/update/(not yet)purge
 	// the record exactly as production does.
-	jsManager, err := NewJetStreamManager(daemon.natsConn, 1)
+	jsManager, err := NewJetStreamManager(daemon.natsConn)
 	require.NoError(t, err)
 	require.NoError(t, jsManager.InitTerminatedInstanceBucket())
 	daemon.stateStore = newStateStoreAdapter(jsManager, daemon.persistState)
@@ -4545,7 +4545,7 @@ func newEBSProviderTestDaemon(t *testing.T, provider string) *Daemon {
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	jsManager, err := NewJetStreamManager(nc, 1)
+	jsManager, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 
 	ctx := context.Background()

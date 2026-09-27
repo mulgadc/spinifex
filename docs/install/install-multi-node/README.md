@@ -30,6 +30,7 @@ resources:
 
 - [Overview](#overview)
 - [Cluster sizing](#cluster-sizing)
+- [How the cluster's own state is replicated](#how-the-clusters-own-state-is-replicated)
 - [Hardware](#hardware)
 - [Network requirements](#network-requirements)
 - [Prerequisites](#prerequisites)
@@ -65,10 +66,60 @@ A Spinifex cluster distributes services across multiple servers for high availab
 | **VPC networking** — OVN | Control-plane databases run clustered, surviving the loss of any one node. |
 | **Object storage** — Predastore (S3) | Objects are erasure coded `RS(2,1)`, surviving the loss of any one node's shards. |
 | **Block storage** — Viperblock (EBS) | Volumes are stored in Predastore, so they inherit the same durability. |
+| **Cluster state** — NATS JetStream | Every key-value bucket is replicated onto all three nodes, so the control plane keeps its own state through the loss of any one. |
 
 On one or two servers none of that holds. OVN runs standalone on the first node, and the storage metadata quorum has no majority to lose. If that node goes down, running instances keep full networking — but nothing can *change*: no new VPCs, no launches, no security group edits. See [OVN control plane on multi-node clusters](/docs/vpc-networking#ovn-control-plane-on-multi-node-clusters).
 
 Servers beyond the third run the full set of services — storage, gateway and networking agents — and add their capacity to the pool. What they do not do is join the OVN database cluster, which stays at three members, so write latency there stays flat as the cluster grows.
+
+### How the cluster's own state is replicated
+
+Guest data has an obvious home: volumes live in Viperblock, objects in Predastore, both erasure coded across the cluster. The control plane's *own* state has a less obvious one, and it matters just as much. Every instance record, every VPC and subnet, the node roster, IAM users and access keys, quotas, DNS records and the leases reconcilers hold are all kept in **NATS JetStream key-value buckets**, replicated by Raft across the servers you installed. A cluster that has lost its state has lost the ability to describe, launch, terminate or route anything, even while every guest is still running.
+
+**A bucket is replicated across as many nodes as the cluster has, up to five.** That number is decided once, by the `--nodes` count you give `spx admin init` in Step 4, and every service on every node reads it back out of `/etc/spinifex/spinifex.toml` before it creates anything.
+
+| Servers | Replicas per bucket | Quorum | Survives |
+|---|---|---|---|
+| 1 | 1 | 1 | nothing — a single node is a single point of failure by definition |
+| 3 | 3 | 2 | any 1 node lost |
+| 4 | 4 | 3 | any 1 node lost |
+| 5 | 5 | 3 | any 2 nodes lost |
+| 10 | 5 | 3 | any 2 of the 5 nodes holding each bucket |
+
+Five is JetStream's own ceiling on a stream's replica count, not a choice of ours. Past five servers the buckets stay at five and NATS spreads which five nodes hold each one, so the cluster keeps growing while the cost of a write does not.
+
+#### Worked example — three servers
+
+Say you ran Step 4 with `--nodes 3` on `node1`, `node2` and `node3`. Every KV bucket the cluster creates is a three-member Raft group, one member per server:
+
+```
+KV bucket "spinifex-instance-state"        KV bucket "spinifex-vpcd-reconcile"
+┌──────────┬──────────┬──────────┐         ┌──────────┬──────────┬──────────┐
+│  node1   │  node2   │  node3   │         │  node1   │  node2   │  node3   │
+│  leader  │ follower │ follower │         │ follower │  leader  │ follower │
+└──────────┴──────────┴──────────┘         └──────────┴──────────┴──────────┘
+        quorum = 2 of 3                            quorum = 2 of 3
+```
+
+Three things follow from that picture, and they are the whole reason three servers is the floor:
+
+- **A write is only acknowledged once a majority has it.** Launching an instance is not confirmed to the caller until at least two of the three servers have the record on disk. Losing one server afterwards cannot lose that instance.
+- **Losing a node costs an election, not the data.** If `node1` goes down, `node2` and `node3` are still a majority. They elect a new leader for the buckets `node1` led — seconds on a healthy cluster — and the API keeps answering throughout. No bucket becomes unreadable, because no bucket lived only on `node1`.
+- **Leader leases keep working, which is what keeps the cluster self-healing.** The reconcilers that repair VPC state, enforce quotas and publish DNS each hold a lease in a bucket of their own (`spinifex-vpcd-reconcile`, `spinifex-quota-reconcile`, `spinifex-dns-reconcile`, and the ECS and RDS leader buckets). Acquiring a lease is a write, so a lease bucket without a quorum cannot be acquired by anyone — every reconciler sharing it would stop cluster-wide at exactly the moment a node had failed and there was repair work to do. On three replicas the survivors take the leases over instead.
+
+Contrast that with a bucket on **one** replica. It lives on one server, chosen by JetStream and recorded in no configuration file you can inspect. Stopping, rebooting or partitioning that one server makes the bucket return `nats: no responders available for request` on *every* node at once. A single-node event becomes a cluster-wide outage, and which node it was is not something you decided or can see from the config.
+
+#### Growing an existing cluster
+
+Adding a fourth server does not, on its own, re-replicate the buckets that already exist — the nodes that hold them are perfectly healthy, so nothing prompts a change. Spinifex raises them for you at the next service start: each service checks every bucket it opens against the cluster's current node count and raises any that are short. It never lowers one.
+
+To do it immediately rather than waiting for a restart, run the audit with `--repair` from any node:
+
+```bash
+sudo spx admin kv replicas --repair
+```
+
+It changes nothing about a bucket except the replica count, never lowers one, and is safe to run twice or on a healthy cluster.
 
 ### Hardware
 
@@ -252,6 +303,8 @@ sudo spx admin init --force \
 
 `--nodes 3` is the number of servers init waits for. Set it to your total node count if you are building a larger cluster.
 
+It is also what decides how many nodes the cluster's JetStream state is replicated across, so it is worth getting right rather than raising later — see [How the cluster's own state is replicated](#how-the-clusters-own-state-is-replicated). Every joining server takes the count from server 1, so it is chosen once, here.
+
 IPsec encrypts the Geneve overlay between servers and is on by default. Joining servers take the setting from server 1, so it is chosen once, on init. On servers that share a trusted private link, `--ipsec=false` leaves the overlay unencrypted in exchange for considerably higher throughput between instances.
 
 The init output displays the join command including the token:
@@ -360,7 +413,35 @@ The top table is per-node CPU, memory and GPU usage. The bottom table is what th
 
 If capacity looks like a single server rather than the sum of your nodes, the others have not joined.
 
-**3. The AWS API answers.**
+**3. The cluster's own state is replicated across every node.**
+
+```bash
+sudo spx admin kv replicas
+```
+
+```
+spinifex@node1:~$ sudo spx admin kv replicas
+BUCKET                         REPLICAS  WANT  STATUS  HELD BY
+spinifex-cluster-state         3         3     ok      node1,node2,node3
+spinifex-dns-reconcile         3         3     ok      node2,node1,node3
+spinifex-iam                   3         3     ok      node3,node1,node2
+spinifex-instance-state        3         3     ok      node1,node2,node3
+spinifex-quota-reconcile       3         3     ok      node2,node3,node1
+spinifex-terminated-instances  3         3     ok      node3,node2,node1
+spinifex-vpcd-reconcile        3         3     ok      node2,node1,node3
+
+47 buckets, 0 under-replicated
+```
+
+What to check:
+
+- **`0 under-replicated`.** Anything else means a bucket lives on fewer nodes than depend on it — see [Buckets report as under-replicated](#buckets-report-as-under-replicated). The command exits 1 in that case, so it can gate a deployment without parsing anything.
+- **`WANT` equals your node count**, capped at five. If it says 1 on a three-server cluster, the node the command ran on is not configured for three — check `--nodes` in Step 4 and the `[nodes.*]` sections of that host's `/etc/spinifex/spinifex.toml`.
+- **`HELD BY` names as many distinct servers as `REPLICAS`.** The first name is the current leader for that bucket, and leadership is expected to be spread across the cluster rather than parked on one node.
+
+Run it on every node, not just one. It reads cluster-global Raft metadata, so all of them should give the same answer; one that disagrees is not fully part of the cluster.
+
+**4. The AWS API answers.**
 
 ```bash
 export AWS_PROFILE=spinifex
@@ -402,6 +483,28 @@ Turn the firewall off on **every** node and retry the join, then re-arm once the
 The node has its own cluster configuration — normal for anything installed from the ISO, which initializes a single-node cluster at first boot. Joining replaces that node's CA and master key with the primary's, so it must be confirmed with `--force`.
 
 Safe on a freshly installed node. On one that has been in service it orphans every volume and fragment sealed under the old key, so check before forcing.
+
+### Buckets Report as Under-Replicated
+
+```bash
+sudo spx admin kv replicas
+```
+
+A bucket showing `UNDER-REPLICATED` lives on fewer nodes than the cluster has, so losing the node holding it takes it down for the whole cluster. Two things put a bucket in that state, and the fix is the same for both:
+
+```bash
+sudo spx admin kv replicas --repair
+```
+
+The first cause is **a cluster that grew**: buckets created when there were three servers stay on three replicas until something raises them. Services do this themselves as they restart, and `--repair` does it now.
+
+The second is **a node that was down when the bucket was created**, so the Raft group formed short. Bring the node back first — `--repair` on an incomplete cluster raises the configured count, but the group cannot place the extra replica until the node is there to hold it. Confirm with `spx get nodes` before repairing.
+
+If `WANT` itself is wrong — 1 on a three-server cluster — the problem is not the buckets but that host's view of the cluster. Check it has all three `[nodes.*]` sections:
+
+```bash
+sudo grep -oP '^\[nodes\.\K[^.\]]+' /etc/spinifex/spinifex.toml | sort -u
+```
 
 ### OVN Database Cluster Not Forming
 

@@ -32,6 +32,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
@@ -1671,10 +1672,11 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
-	// Set the default KV replica count before any handler creates a bucket, so
-	// lazily-created buckets are born at cluster-size replication instead of R1.
+	// A daemon assembled in a test may never have gone through config.LoadConfig,
+	// which is where a real process declares this. Declaring it again from the
+	// same source is harmless and keeps bucket creation available either way.
 	if d.clusterConfig != nil {
-		utils.SetDefaultKVReplicas(len(d.clusterConfig.Nodes))
+		clustersize.Declare(len(d.clusterConfig.Nodes))
 	}
 
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
@@ -2397,7 +2399,7 @@ func (d *Daemon) initJetStream() error {
 	for {
 		attempt++
 		var err error
-		d.jsManager, err = NewJetStreamManager(d.natsConn, 1)
+		d.jsManager, err = NewJetStreamManager(d.natsConn)
 		if err == nil {
 			err = d.jsManager.InitKVBucket()
 		}
@@ -2431,15 +2433,20 @@ func (d *Daemon) initJetStream() error {
 	return nil
 }
 
-// upgradeJetStreamReplicas bumps KV_* stream replication to match the cluster
-// size. Runs after all buckets are created and the cluster is ready.
+// upgradeJetStreamReplicas raises every KV bucket to the cluster's replica
+// count. Runs after all buckets are created and the cluster is ready, which is
+// when a bucket created by whichever node got there first can be repaired.
 func (d *Daemon) upgradeJetStreamReplicas() {
-	clusterSize := len(d.clusterConfig.Nodes)
-	if clusterSize <= 1 || d.jsManager == nil {
+	if d.jsManager == nil || d.jsManager.js == nil {
 		return
 	}
-	if err := d.jsManager.UpdateReplicas(clusterSize); err != nil {
-		slog.Warn("Failed to upgrade JetStream replicas", "targetReplicas", clusterSize, "error", err)
+	raised, err := kvutil.RaiseAllBucketReplicas(d.ctx, d.jsManager.js)
+	if err != nil {
+		slog.Warn("Failed to raise KV bucket replicas to the cluster's node count", "error", err)
+		return
+	}
+	if raised > 0 {
+		slog.Info("Raised KV buckets to the cluster's replica count", "buckets", raised)
 	}
 }
 

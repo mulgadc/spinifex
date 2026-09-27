@@ -69,7 +69,7 @@ func (r *EKSBillableReaper) Sweep(ctx context.Context) (int, error) {
 			continue // ENI gone or untagged: cannot confirm orphan-hood, never reap
 		}
 
-		acctKV, err := GetOrCreateAccountBucket(ctx, js, clusterAccount, max(r.svc.deps.ClusterSize, 1))
+		acctKV, err := GetOrCreateAccountBucket(ctx, js, clusterAccount)
 		if err != nil {
 			slog.WarnContext(ctx, "eks-billable: account bucket lookup failed", "account", clusterAccount, "err", err)
 			continue

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -73,6 +74,10 @@ func StartTestJetStream(t *testing.T) (*server.Server, *nats.Conn, jetstream.Jet
 
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
+
+	// One embedded server is a one-node cluster, and bucket creation refuses to
+	// guess. A test that wants a different count declares it after this returns.
+	clustersize.Declare(1)
 	return ns, nc, js
 }
 

@@ -16,7 +16,7 @@ import (
 // leave the service nil for the process lifetime. Blocks up to maxWait, then
 // returns the last error. Callers that legitimately run without a master key
 // must guard the call themselves.
-func NewIAMServiceWithRetry(ctx context.Context, natsConn *nats.Conn, masterKey []byte, clusterSize int) (*IAMServiceImpl, error) {
+func NewIAMServiceWithRetry(ctx context.Context, natsConn *nats.Conn, masterKey []byte) (*IAMServiceImpl, error) {
 	const maxWait = 5 * time.Minute
 	retryDelay := 500 * time.Millisecond
 	start := time.Now()
@@ -24,7 +24,7 @@ func NewIAMServiceWithRetry(ctx context.Context, natsConn *nats.Conn, masterKey 
 
 	for {
 		attempt++
-		svc, err := NewIAMServiceImpl(ctx, natsConn, masterKey, clusterSize)
+		svc, err := NewIAMServiceImpl(ctx, natsConn, masterKey)
 		if err == nil {
 			if attempt > 1 {
 				slog.Info("IAM service initialized after retry", "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))

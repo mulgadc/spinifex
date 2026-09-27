@@ -26,10 +26,10 @@ func dnsTestDaemon(t *testing.T) (*Daemon, func(id, publicIP, privateIP string, 
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := kvstore.New[vm.InstanceRecord](js, kvstore.Config{
-		Name: InstanceStateBucket, History: 1, Replicas: 1,
+		Name: InstanceStateBucket, History: 1,
 	})
 	d := &Daemon{
-		jsManager:         &JetStreamManager{js: js, records: store, replicas: 1},
+		jsManager:         &JetStreamManager{js: js, records: store},
 		vmMgr:             vm.NewManager(),
 		config:            &config.Config{Region: "ap-southeast-2"},
 		dnsBaseDomain:     "spx3.net",

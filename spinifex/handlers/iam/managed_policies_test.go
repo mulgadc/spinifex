@@ -67,7 +67,7 @@ func TestNewIAMServiceImpl_PropagatesBuiltinManagedPolicyParseError(t *testing.T
 	builtinManagedPolicyParseErr = parseErr
 	t.Cleanup(func() { builtinManagedPolicyParseErr = previousErr })
 
-	_, err := NewIAMServiceImpl(t.Context(), nil, make([]byte, 32), 1)
+	_, err := NewIAMServiceImpl(t.Context(), nil, make([]byte, 32))
 	require.ErrorIs(t, err, parseErr)
 	assert.ErrorContains(t, err, "init builtin managed policies")
 }

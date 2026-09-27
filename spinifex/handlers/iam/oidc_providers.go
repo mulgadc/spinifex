@@ -50,8 +50,8 @@ func OIDCProviderARN(accountID, issuerHostPath string) string {
 }
 
 // GetOrCreateIAMAccountBucket opens the per-account IAM bucket, creating it on first use.
-func GetOrCreateIAMAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string, replicas int) (jetstream.KeyValue, error) {
-	return kvutil.GetOrCreateBucketWithReplicas(ctx, js, IAMAccountBucketName(accountID), 1, max(replicas, 1))
+func GetOrCreateIAMAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
+	return kvutil.GetOrCreateBucket(ctx, js, IAMAccountBucketName(accountID), 1)
 }
 
 // OIDCProviderRecord is the stored shape of a registered OIDC identity provider.
@@ -141,7 +141,7 @@ func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *ia
 		return nil, fmt.Errorf("marshal OIDC provider: %w", err)
 	}
 
-	kv, err := GetOrCreateIAMAccountBucket(ctx, s.js, accountID, s.replicas)
+	kv, err := GetOrCreateIAMAccountBucket(ctx, s.js, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("open IAM account bucket: %w", err)
 	}

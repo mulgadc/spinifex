@@ -41,7 +41,7 @@ func createDaemonWithJetStream(t *testing.T) *Daemon {
 	daemon.config = &config.Config{BaseDir: tmpDir, DataDir: tmpDir}
 
 	daemon.natsConn = nc
-	daemon.jsManager, err = NewJetStreamManager(nc, 1)
+	daemon.jsManager, err = NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, daemon.jsManager.InitKVBucket())
 	require.NoError(t, daemon.jsManager.InitClusterStateBucket())

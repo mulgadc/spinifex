@@ -39,7 +39,7 @@ func newBootstrapHarness(t *testing.T) *natsBootstrapHarness {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 
 	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta(bootstrapTestCluster)))
@@ -85,7 +85,7 @@ func (h *natsBootstrapHarness) waitSubsBound(base, want int) {
 func TestNewNATSBootstrap_RejectsBadInputs(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 
 	_, err = NewNATSBootstrap(nil, kv, bootstrapTestMasterKey, testAccountID, "alpha")

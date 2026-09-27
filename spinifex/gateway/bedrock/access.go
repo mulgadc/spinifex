@@ -65,13 +65,12 @@ type ModelAccessStore struct {
 var _ AccessResolver = (*ModelAccessStore)(nil)
 
 // NewModelAccessStore constructs a ModelAccessStore over the cluster's
-// JetStream client, replicated across replicas nodes.
-func NewModelAccessStore(js jetstream.JetStream, replicas int) *ModelAccessStore {
+// JetStream client.
+func NewModelAccessStore(js jetstream.JetStream) *ModelAccessStore {
 	return &ModelAccessStore{bucket: kvstore.NewBucket(js, kvstore.Config{
-		Name:     modelAccessBucket,
-		History:  modelAccessHistory,
-		Replicas: replicas,
-		Missing:  "bedrock: model access store has no JetStream client configured",
+		Name:    modelAccessBucket,
+		History: modelAccessHistory,
+		Missing: "bedrock: model access store has no JetStream client configured",
 	})}
 }
 

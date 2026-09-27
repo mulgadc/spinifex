@@ -223,7 +223,7 @@ func TestEKSServiceImpl_NodegroupMethodsShimMode(t *testing.T) {
 func seedTestCluster(t *testing.T, svc *EKSServiceImpl, cluster string) {
 	t.Helper()
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	require.NoError(t, PutClusterMeta(t.Context(), kv, &ClusterMeta{Name: cluster, Status: ClusterStatusActive}))
 }
@@ -414,7 +414,7 @@ func TestAccessPolicy_DisassociateRemovesProjectedGroup(t *testing.T) {
 	require.NoError(t, err)
 
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	rec, err := GetAccessEntryRecord(t.Context(), kv, "c1", testPrincipalARN)
 	require.NoError(t, err)
@@ -461,7 +461,7 @@ func TestEKSServiceImpl_OIDCMethodsReturnNotImplemented(t *testing.T) {
 func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
 	svc := setupTestService(t)
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 
 	const arn = "arn:aws:eks:us-east-1:111122223333:cluster/c1"
@@ -503,7 +503,7 @@ func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
 func TestEKSServiceImpl_NodegroupTagRoundTrip(t *testing.T) {
 	svc := setupTestService(t)
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 
 	const arn = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/ng1/abc123"

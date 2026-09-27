@@ -15,7 +15,7 @@ import (
 func acctKVForTest(t *testing.T, svc *EKSServiceImpl) jetstream.KeyValue {
 	t.Helper()
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	return kv
 }

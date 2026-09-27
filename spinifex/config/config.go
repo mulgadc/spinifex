@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/spf13/viper"
 )
 
@@ -604,6 +605,11 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	if err := validateClusterConfig(&config); err != nil {
 		return nil, err
 	}
+
+	// Every process that creates a KV bucket loads the cluster config first, so
+	// this is the one place the node count can be declared without a service
+	// being able to forget to. Buckets refuse to be created until it has been.
+	clustersize.Declare(len(config.Nodes))
 
 	return &config, nil
 }

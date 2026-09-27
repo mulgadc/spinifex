@@ -17,77 +17,62 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/safecast"
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// GetOrCreateBucket creates or opens a KV bucket at the cluster's default
-// replica count (see utils.SetDefaultKVReplicas), so buckets created lazily
-// after boot are quorate on multi-node rather than stuck at R1.
+// GetOrCreateBucket creates or opens a KV bucket replicated across the cluster.
 func GetOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, bucket string, history int) (jetstream.KeyValue, error) {
-	return GetOrCreateBucketWithReplicas(ctx, js, bucket, history, utils.DefaultKVReplicas())
+	return getOrCreateBucket(ctx, js, jetstream.KeyValueConfig{
+		Bucket:  bucket,
+		History: safecast.IntToUint8(history),
+	})
 }
 
 // GetOrCreateBucketWithTTL is GetOrCreateBucket for buckets whose entries
 // should age out on their own — request-dedupe records and other short-lived
 // state that would otherwise accumulate without a sweeper. TTL applies at
-// creation only, like Replicas.
+// creation only; the replica count does not.
 func GetOrCreateBucketWithTTL(ctx context.Context, js jetstream.KeyValueManager, bucket string, history int, ttl time.Duration) (jetstream.KeyValue, error) {
 	return getOrCreateBucket(ctx, js, jetstream.KeyValueConfig{
-		Bucket:   bucket,
-		History:  safecast.IntToUint8(history),
-		Replicas: max(utils.DefaultKVReplicas(), 1),
-		TTL:      ttl,
-	})
-}
-
-// GetOrCreateBucketWithReplicas creates or opens a KV bucket at the given
-// replica count (clamped to a minimum of 1). The replica count applies to
-// creation only: an existing bucket is opened with the config it already has,
-// so one created before the cluster grew is upgraded on rebalance, not here.
-func GetOrCreateBucketWithReplicas(ctx context.Context, js jetstream.KeyValueManager, bucket string, history, replicas int) (jetstream.KeyValue, error) {
-	return getOrCreateBucket(ctx, js, jetstream.KeyValueConfig{
-		Bucket:   bucket,
-		History:  safecast.IntToUint8(history),
-		Replicas: max(replicas, 1),
+		Bucket:  bucket,
+		History: safecast.IntToUint8(history),
+		TTL:     ttl,
 	})
 }
 
 // BucketOptions is GetOrCreateBucket's full argument set, for callers needing a
-// combination the three named helpers do not cover. A zero Replicas means the
-// cluster default, matching those helpers.
+// combination the named helpers do not cover. There is deliberately no Replicas
+// field: see Replicas.
 type BucketOptions struct {
 	Name        string
 	Description string
 	History     int
-	Replicas    int
 	TTL         time.Duration
 }
 
-// GetOrCreateBucketWithOptions creates or opens a KV bucket from opts. Like the
-// named helpers, every field but Name applies at creation only: an existing
-// bucket is opened with the config it already has.
+// GetOrCreateBucketWithOptions creates or opens a KV bucket from opts. Every
+// field but Name applies at creation only: an existing bucket is opened with
+// the config it already has, apart from its replica count.
 func GetOrCreateBucketWithOptions(ctx context.Context, js jetstream.KeyValueManager, opts BucketOptions) (jetstream.KeyValue, error) {
-	replicas := opts.Replicas
-	if replicas == 0 {
-		replicas = DefaultReplicas()
-	}
 	return getOrCreateBucket(ctx, js, jetstream.KeyValueConfig{
 		Bucket:      opts.Name,
 		Description: opts.Description,
 		History:     safecast.IntToUint8(opts.History),
-		Replicas:    max(replicas, 1),
 		TTL:         opts.TTL,
 	})
 }
 
-// DefaultReplicas is the cluster's default KV replica count, exposed so callers
-// building a BucketOptions can tell "unset" from a deliberate 1.
-func DefaultReplicas() int { return utils.DefaultKVReplicas() }
-
 func getOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
 	bucket := cfg.Bucket
+	replicas, err := clustersize.Replicas()
+	if err != nil {
+		return nil, fmt.Errorf("create KV bucket %s: %w", bucket, err)
+	}
+	cfg.Replicas = replicas
+
 	kv, err := js.CreateKeyValue(ctx, cfg)
 	if err == nil {
 		return kv, nil
@@ -101,6 +86,13 @@ func getOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, cfg je
 	kv, err = js.KeyValue(ctx, bucket)
 	if err != nil {
 		return nil, fmt.Errorf("open KV bucket %s: %w", bucket, err)
+	}
+
+	// An existing bucket may predate this rule, or predate the cluster growing.
+	// Raising it here is what makes a formed cluster self-heal on the next
+	// service start rather than waiting for someone to run a repair.
+	if err := RaiseBucketReplicas(ctx, js, bucket, replicas); err != nil {
+		return nil, err
 	}
 	return kv, nil
 }

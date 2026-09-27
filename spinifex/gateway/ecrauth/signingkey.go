@@ -76,8 +76,8 @@ func kidFor(pub *ecdsa.PublicKey) (string, error) {
 // returns the active signing key. On first run it generates and persists one.
 // The active key is the newest by KV creation time (ties broken by kid), so all
 // nodes converge on the same signer and a freshly rotated key takes over.
-func LoadOrCreateSigningKey(ctx context.Context, js jetstream.JetStream, masterKey []byte, replicas int) (*SigningKey, map[string]*ecdsa.PublicKey, error) {
-	kv, err := openSigningBucket(ctx, js, masterKey, replicas)
+func LoadOrCreateSigningKey(ctx context.Context, js jetstream.JetStream, masterKey []byte) (*SigningKey, map[string]*ecdsa.PublicKey, error) {
+	kv, err := openSigningBucket(ctx, js, masterKey)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -104,14 +104,14 @@ func LoadOrCreateSigningKey(ctx context.Context, js jetstream.JetStream, masterK
 
 // openSigningBucket validates inputs and returns the awsgw-keys KV handle,
 // creating the cluster-replicated bucket on first use.
-func openSigningBucket(ctx context.Context, js jetstream.JetStream, masterKey []byte, replicas int) (jetstream.KeyValue, error) {
+func openSigningBucket(ctx context.Context, js jetstream.JetStream, masterKey []byte) (jetstream.KeyValue, error) {
 	if js == nil {
 		return nil, errors.New("ecrauth: nil JetStream context")
 	}
 	if len(masterKey) == 0 {
 		return nil, errors.New("ecrauth: empty master key")
 	}
-	return kvutil.GetOrCreateBucketWithReplicas(ctx, js, SigningBucket, signingKeyHistory, replicas)
+	return kvutil.GetOrCreateBucket(ctx, js, SigningBucket, signingKeyHistory)
 }
 
 // reloadKeys reads every stored signing key, returning the verify set, each

@@ -58,9 +58,9 @@ func newReconcilerHarness(t *testing.T, healthURL string, opts ...ReconcilerOpti
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	leaderKV, err := InitLeaderBucket(t.Context(), js, 1)
+	leaderKV, err := InitLeaderBucket(t.Context(), js)
 	require.NoError(t, err)
-	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	require.NoError(t, PutClusterMeta(t.Context(), acctKV, sampleClusterMeta("alpha")))
 
@@ -72,9 +72,9 @@ func newReconcilerHarness(t *testing.T, healthURL string, opts ...ReconcilerOpti
 func TestNewClusterReconciler_EmptyInputsRejected(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	leaderKV, err := InitLeaderBucket(t.Context(), js, 1)
+	leaderKV, err := InitLeaderBucket(t.Context(), js)
 	require.NoError(t, err)
-	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 
 	_, err = NewClusterReconciler(nil, acctKV, testAccountID, "alpha", "h", "")

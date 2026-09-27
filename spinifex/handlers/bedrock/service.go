@@ -90,7 +90,7 @@ func NewService(nc *nats.Conn, deps ServiceDeps) *Service {
 	return &Service{
 		nc:     nc,
 		deps:   deps,
-		store:  newEndpointStore(js, deps.Replicas),
+		store:  newEndpointStore(js),
 		leader: newLeaderBucket(js),
 	}
 }

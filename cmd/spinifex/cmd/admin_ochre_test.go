@@ -42,7 +42,7 @@ const (
 func newWeightsStoreForTest(t *testing.T) *gateway_bedrock.WeightsStore {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	return gateway_bedrock.NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	return gateway_bedrock.NewWeightsStore(testutil.NewJetStream(t, nc))
 }
 
 // explodingObjectStore fails the test immediately if any of its methods is
@@ -775,7 +775,7 @@ func TestRunOchreWeightsList_PrintsStagedModels(t *testing.T) {
 	}
 	stubConnect(t, cfg, nc, nil)
 
-	seedStore := gateway_bedrock.NewWeightsStore(js, 1)
+	seedStore := gateway_bedrock.NewWeightsStore(js)
 	require.NoError(t, seedStore.PutWeights(context.Background(), selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
 
 	out := captureStdout(t, func() { runOchreWeightsList(nil, nil) })
@@ -822,7 +822,7 @@ func TestRunOchreWeightsRemove_RoundTripPrintsSnapshotAndDropsEntry(t *testing.T
 	ns, nc, js := testutil.StartTestJetStream(t)
 	stubConnect(t, fakeClusterConfig(), nc, nil)
 
-	seedStore := gateway_bedrock.NewWeightsStore(js, 1)
+	seedStore := gateway_bedrock.NewWeightsStore(js)
 	require.NoError(t, seedStore.PutWeights(context.Background(), selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
 
 	cmd := newOchreWeightsRemoveTestCmd(t, selfHostModelID)
@@ -835,7 +835,7 @@ func TestRunOchreWeightsRemove_RoundTripPrintsSnapshotAndDropsEntry(t *testing.T
 	verifyNC, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
 	t.Cleanup(func() { verifyNC.Close() })
-	verifyStore := gateway_bedrock.NewWeightsStore(testutil.NewJetStream(t, verifyNC), 1)
+	verifyStore := gateway_bedrock.NewWeightsStore(testutil.NewJetStream(t, verifyNC))
 
 	_, ok, err := verifyStore.GetWeights(context.Background(), selfHostModelID)
 	require.NoError(t, err)

@@ -223,7 +223,7 @@ func TestInstanceStateMigration_CopiesStoppedInstancesForward(t *testing.T) {
 	seedLegacyBucket(t, nc, daemon.InstanceStateBucket, daemon.StoppedInstancePrefix,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano"})
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 
@@ -247,7 +247,7 @@ func TestInstanceStateMigration_RunsEveryStepFromTheOldestVersion(t *testing.T) 
 	_, err = kv.Put(context.Background(), daemon.InstanceStatePrefix+"node-1", blob)
 	require.NoError(t, err)
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 
@@ -277,7 +277,7 @@ func TestInstanceStateMigration_DoesNotOverwriteAFresherRecord(t *testing.T) {
 	_, err = kv.Put(context.Background(), daemon.StoppedInstancePrefix+"i-2", untouched)
 	require.NoError(t, err)
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 
@@ -297,12 +297,12 @@ func TestInstanceStateMigration_IsSafeToRunTwice(t *testing.T) {
 	kv := seedLegacyBucket(t, nc, daemon.InstanceStateBucket, daemon.StoppedInstancePrefix,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano"})
 
-	first, err := daemon.NewJetStreamManager(nc, 1)
+	first, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, first.InitKVBucket())
 
 	require.NoError(t, kvutil.WriteVersion(context.Background(), kv, 1))
-	second, err := daemon.NewJetStreamManager(nc, 1)
+	second, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, second.InitKVBucket())
 
@@ -317,7 +317,7 @@ func TestTerminatedInstanceMigration_CopiesTerminatedInstancesForward(t *testing
 	seedLegacyBucket(t, nc, daemon.TerminatedInstanceBucket, daemon.TerminatedInstancePrefix,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano"})
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitTerminatedInstanceBucket())
 

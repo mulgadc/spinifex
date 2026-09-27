@@ -103,7 +103,7 @@ func TestHeartbeatKVContract(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitClusterStateBucket())
 

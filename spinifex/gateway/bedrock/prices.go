@@ -76,13 +76,12 @@ type PriceStore struct {
 var _ PriceResolver = (*PriceStore)(nil)
 
 // NewPriceStore constructs a PriceStore over the cluster's JetStream client,
-// replicated across replicas nodes.
-func NewPriceStore(js jetstream.JetStream, replicas int) *PriceStore {
+
+func NewPriceStore(js jetstream.JetStream) *PriceStore {
 	return &PriceStore{store: kvstore.New[Price](js, kvstore.Config{
-		Name:     bedrockPricesBucket,
-		History:  bedrockPricesHistory,
-		Replicas: replicas,
-		Missing:  "bedrock: price store has no JetStream client configured",
+		Name:    bedrockPricesBucket,
+		History: bedrockPricesHistory,
+		Missing: "bedrock: price store has no JetStream client configured",
 	})}
 }
 

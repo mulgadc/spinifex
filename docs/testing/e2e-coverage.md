@@ -7,11 +7,13 @@ Suites live in `tests/e2e/<name>/` and build to `tests/e2e/_bin/<name>.test`. Ev
 | Set | Suites |
 | --- | --- |
 | `E2E_SUITES_SINGLE` | `single iam cert eks ecs storagegrowth partialblock rds quota storagefault` |
-| `E2E_SUITES_MULTI` | `multinode lb cert quota lbrecovery instancerecovery storagefault` |
+| `E2E_SUITES_MULTI` | `multinode lb cert quota kvquorum lbrecovery instancerecovery storagefault` |
 | `E2E_SUITES_NIGHTLY_SINGLE` | `single cert iam` |
 | `E2E_SUITES_NIGHTLY_MULTI` | `multinode cert lb` |
 
-The nightly permutation sets are deliberately narrower than the full ones: those cells have a ~35 minute budget and exist to prove every install / network / host-OS combination boots and serves. `eks`, `ecs`, `rds`, `storagefault`, `instancerecovery` and `lbrecovery` each get a dedicated cell instead.
+The nightly permutation sets are deliberately narrower than the full ones: those cells have a ~35 minute budget and exist to prove every install / network / host-OS combination boots and serves. `eks`, `ecs`, `rds`, `storagefault`, `instancerecovery`, `lbrecovery` and `kvquorum` each get a dedicated cell instead.
+
+**`multinode` carries the KV replication sweep as well**, which is why the thing `kvquorum` proves is still checked in every multi-node permutation cell even though the suite itself is not. The read-only half costs a NATS connection and a stream listing; only the node-loss half needs a cell of its own.
 
 ## The suites
 
@@ -41,6 +43,22 @@ Two nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 30). Cell
 ### `multinode` — behaviour that only exists on more than one node
 
 `VPCSetup`, `SpansMultipleNodes`, `SpreadPlacement`, `EveryRunningInstanceReported`, `BastionSSH`, and its own NAT Gateway lane: `PreNATIsolation`, `NATGatewayInternet`, `NATCleanupOrdering`.
+
+**`TestMultinodeJetStreamReplicas` is a whole-cluster sweep, not a named list, and it lives here on purpose.** It audits every KV bucket the cluster has and fails any that is replicated across fewer nodes than the cluster has, capped at JetStream's ceiling of five. Naming buckets would only ever cover the ones somebody remembered — a replica count is set where a bucket is created, and there is a bucket-creating call in most services — so the sweep is the assertion and the three daemon-owned buckets are named only so that a run enumerating nothing still fails. Because `multinode` is in `E2E_SUITES_NIGHTLY_MULTI`, this runs in every multi-node permutation cell, and no cell can be added that quietly opts out of it.
+
+### `kvquorum` — the cluster's own state survives losing a node (multi-node, needs three)
+
+**The control plane keeps its state in JetStream KV buckets, and this is the suite that proves those buckets are actually replicated.** A bucket on one replica lives on one JetStream-chosen server recorded in no config, so losing that node makes it return `nats: no responders available for request` from *every* node at once — a cluster-wide outage caused by a single-node event. Leader leases are the worst case: acquiring one is a write, so a lease bucket without a quorum cannot be acquired by anyone, and every reconciler sharing it stops cluster-wide at exactly the moment a node has failed and there is repair work to do.
+
+Three entry points, in the order they run:
+
+- **`TestKVBucketsAreReplicatedAcrossTheCluster`** is read-only and runs first, so a cluster that is already wrong is reported as wrong rather than as a failure to survive a node loss. It sweeps every bucket, then separately requires the leader-lease buckets to be among those checked — they were the worst case of the defect, and a regression reaching only them would otherwise be one line in a long list rather than the headline.
+- **`TestKVReplicasCommandReportsHealthy`** runs `spx admin kv replicas --json` on **every** node, not one. The command reads cluster-global Raft metadata, so all nodes must give the same answer; a node that disagrees is reporting on a cluster it is not fully part of, which is worth knowing before a deployment is gated on its exit status.
+- **`TestKVBucketsSurviveANodeLoss`** produces the fault rather than inspecting for it. It takes away **the node leading the most buckets** — the worst one to lose, and the one a test picking arbitrarily would usually miss — then requires every survivor to still answer for every bucket, brings the node back, and requires it to carry its share again.
+
+**Configured replicas are checked against placed replicas, which are different facts.** A stream can carry the right replica count while its Raft group is still short of peers, and that reads as healthy right up until the node it is really on goes away. The last assertion is that no bucket came back with *fewer* replicas than it had: a cluster that "repaired" itself by lowering a count would pass every other assertion here and have quietly traded the durability this suite is about for a green run.
+
+**Its own suite and its own cell, for lbrecovery's reasons.** It takes a node away, so anything sharing the environment reports that outage as its own failure, and the question it answers — "is our internal state actually replicated" — has to read as itself rather than as one more red subtest somewhere else. Three nodes is the floor: on two, a majority is two, so losing either leaves no quorum for any stream and there is nothing to assert beyond "Raft needs a majority", which is true of NATS and not a property of ours.
 
 ### `instancerecovery` — a guest whose node goes away (multi-node)
 

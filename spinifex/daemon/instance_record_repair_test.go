@@ -19,7 +19,7 @@ func newRecordManagerInPackage(t *testing.T) *JetStreamManager {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	m, err := NewJetStreamManager(nc, 1)
+	m, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 	require.NoError(t, m.InitTerminatedInstanceBucket())

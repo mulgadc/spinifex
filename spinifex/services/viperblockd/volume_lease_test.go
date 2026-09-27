@@ -24,7 +24,7 @@ func newTestLeases(t *testing.T, natsURL, owner string) *volumeLeases {
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	leases, err := newVolumeLeases(t.Context(), nc, owner, 1)
+	leases, err := newVolumeLeases(t.Context(), nc, owner)
 	require.NoError(t, err)
 	return leases
 }
@@ -561,7 +561,7 @@ func TestVolumeLease_UnreachableStoreIsRetryable(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	leases, err := newVolumeLeases(t.Context(), nc, "node-a", 1)
+	leases, err := newVolumeLeases(t.Context(), nc, "node-a")
 	require.NoError(t, err)
 
 	// Close the connection under the bound store, which is the shape of a

@@ -142,11 +142,6 @@ type Config struct {
 	// If empty, falls back to generic ebs.mount / ebs.unmount with queue group (single-node compat).
 	NodeName string
 
-	// KVReplicas is the replica count for the volume lease and dirty buckets,
-	// which is the cluster's node count. 0 means one, for a single node and for
-	// tests.
-	KVReplicas int
-
 	// NBDTransport controls the transport type: "socket" (default) or "tcp"
 	// Socket is faster for local connections, TCP required for remote/DPU scenarios
 	NBDTransport types.NBDTransport
@@ -720,7 +715,7 @@ func launchService(cfg *Config) (err error) {
 	// Bound before recovery, which opens engines: without the store every
 	// engine open refuses, and the daemon would come up unable to adopt the
 	// exports that outlived it.
-	leases, err := newVolumeLeases(context.Background(), nc, cfg.leaseOwner(), cfg.KVReplicas)
+	leases, err := newVolumeLeases(context.Background(), nc, cfg.leaseOwner())
 	if err != nil {
 		return fmt.Errorf("volume leases: %w", err)
 	}

@@ -106,16 +106,13 @@ type IAMServiceImpl struct {
 	instanceProfilesBucket jetstream.KeyValue
 	groupsBucket           jetstream.KeyValue
 	key                    *masterkey.Key
-	// replicas is the JetStream replication factor for lazily-created per-account buckets.
-	replicas int
 }
 
 var _ IAMService = (*IAMServiceImpl)(nil)
 
 // NewIAMServiceImpl creates a new IAM service backed by NATS JetStream KV.
-// clusterSize sets the replication factor; pass 1 for single-node or test setups.
 // The context bounds bucket creation and the schema migrations only.
-func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byte, clusterSize int) (*IAMServiceImpl, error) {
+func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byte) (*IAMServiceImpl, error) {
 	if builtinManagedPolicyParseErr != nil {
 		return nil, fmt.Errorf("init builtin managed policies: %w", builtinManagedPolicyParseErr)
 	}
@@ -123,14 +120,12 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("master key must be 32 bytes, got %d", len(masterKey))
 	}
 
-	replicas := max(clusterSize, 1)
-
 	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	usersBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketUsers, 10, replicas)
+	usersBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketUsers, 10)
 	if err != nil {
 		return nil, fmt.Errorf("init users bucket: %w", err)
 	}
@@ -138,7 +133,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketUsers, err)
 	}
 
-	accessKeysBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketAccessKeys, 5, replicas)
+	accessKeysBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketAccessKeys, 5)
 	if err != nil {
 		return nil, fmt.Errorf("init access keys bucket: %w", err)
 	}
@@ -146,7 +141,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketAccessKeys, err)
 	}
 
-	policiesBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketPolicies, 10, replicas)
+	policiesBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketPolicies, 10)
 	if err != nil {
 		return nil, fmt.Errorf("init policies bucket: %w", err)
 	}
@@ -154,7 +149,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketPolicies, err)
 	}
 
-	accountsBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketAccounts, 5, replicas)
+	accountsBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketAccounts, 5)
 	if err != nil {
 		return nil, fmt.Errorf("init accounts bucket: %w", err)
 	}
@@ -162,7 +157,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketAccounts, err)
 	}
 
-	accountCounterBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketAccountCounter, 5, replicas)
+	accountCounterBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketAccountCounter, 5)
 	if err != nil {
 		return nil, fmt.Errorf("init account counter bucket: %w", err)
 	}
@@ -170,7 +165,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketAccountCounter, err)
 	}
 
-	rolesBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketRoles, 10, replicas)
+	rolesBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketRoles, 10)
 	if err != nil {
 		return nil, fmt.Errorf("init roles bucket: %w", err)
 	}
@@ -178,7 +173,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketRoles, err)
 	}
 
-	instanceProfilesBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketInstanceProfiles, 10, replicas)
+	instanceProfilesBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketInstanceProfiles, 10)
 	if err != nil {
 		return nil, fmt.Errorf("init instance profiles bucket: %w", err)
 	}
@@ -186,7 +181,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketInstanceProfiles, err)
 	}
 
-	groupsBucket, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketGroups, 10, replicas)
+	groupsBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketGroups, 10)
 	if err != nil {
 		return nil, fmt.Errorf("init groups bucket: %w", err)
 	}
@@ -206,8 +201,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		"accounts_bucket", KVBucketAccounts,
 		"roles_bucket", KVBucketRoles,
 		"instance_profiles_bucket", KVBucketInstanceProfiles,
-		"groups_bucket", KVBucketGroups,
-		"replicas", replicas)
+		"groups_bucket", KVBucketGroups)
 
 	return &IAMServiceImpl{
 		js:                     js,
@@ -221,7 +215,6 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		instanceProfilesBucket: instanceProfilesBucket,
 		groupsBucket:           groupsBucket,
 		key:                    key,
-		replicas:               replicas,
 	}, nil
 }
 

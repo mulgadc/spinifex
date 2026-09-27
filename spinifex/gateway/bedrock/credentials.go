@@ -38,13 +38,12 @@ var _ CredentialResolver = (*CredentialStore)(nil)
 // NewCredentialStore constructs a CredentialStore. platformDefaults maps
 // vendor to a platform-wide API key used when an account has no key of its
 // own; pass an empty map to disable platform defaults entirely.
-func NewCredentialStore(js jetstream.JetStream, masterKey []byte, replicas int, platformDefaults map[string]string) *CredentialStore {
+func NewCredentialStore(js jetstream.JetStream, masterKey []byte, platformDefaults map[string]string) *CredentialStore {
 	return &CredentialStore{
 		bucket: kvstore.NewBucket(js, kvstore.Config{
-			Name:     bedrockCredentialsBucket,
-			History:  bedrockCredentialsHistory,
-			Replicas: replicas,
-			Missing:  "bedrock: credential store has no JetStream client configured",
+			Name:    bedrockCredentialsBucket,
+			History: bedrockCredentialsHistory,
+			Missing: "bedrock: credential store has no JetStream client configured",
 		}),
 		masterKey:        masterKey,
 		platformDefaults: platformDefaults,

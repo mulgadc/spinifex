@@ -24,17 +24,17 @@ func newTestSetup(t *testing.T) (*STSServiceImpl, *nats.Conn) {
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
 
-	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
+	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	stsSvc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, 1)
+	stsSvc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey)
 	require.NoError(t, err)
 	return stsSvc, nc
 }
 
 func TestNewSTSServiceImpl_RejectsNilNATSConn(t *testing.T) {
 	masterKey := bytes.Repeat([]byte{0x01}, masterKeySize)
-	_, err := NewSTSServiceImpl(t.Context(), nil, nopIAMService{}, masterKey, 1)
+	_, err := NewSTSServiceImpl(t.Context(), nil, nopIAMService{}, masterKey)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "NATS")
 }
@@ -42,7 +42,7 @@ func TestNewSTSServiceImpl_RejectsNilNATSConn(t *testing.T) {
 func TestNewSTSServiceImpl_RejectsNilIAMService(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey := bytes.Repeat([]byte{0x01}, masterKeySize)
-	_, err := NewSTSServiceImpl(t.Context(), nc, nil, masterKey, 1)
+	_, err := NewSTSServiceImpl(t.Context(), nc, nil, masterKey)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "IAM")
 }
@@ -51,7 +51,7 @@ func TestNewSTSServiceImpl_RejectsWrongMasterKeySize(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	for _, size := range []int{0, 1, 16, 31, 33, 64} {
 		t.Run("size", func(t *testing.T) {
-			_, err := NewSTSServiceImpl(t.Context(), nc, nopIAMService{}, bytes.Repeat([]byte{0xaa}, size), 1)
+			_, err := NewSTSServiceImpl(t.Context(), nc, nopIAMService{}, bytes.Repeat([]byte{0xaa}, size))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "master key")
 		})
@@ -68,10 +68,10 @@ func TestNewSTSServiceImpl_NormalisesNegativeClusterSize(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
-	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
+	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	svc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, 0)
+	svc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey)
 	require.NoError(t, err)
 	require.NotNil(t, svc)
 }

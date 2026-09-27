@@ -66,12 +66,11 @@ type SessionCredential struct {
 
 // sessionCredentialsConfig describes the session-credentials bucket. History is
 // fixed at 1: credentials are write-once at mint and delete-once at expiry.
-func sessionCredentialsConfig(replicas int) kvstore.Config {
+func sessionCredentialsConfig() kvstore.Config {
 	return kvstore.Config{
-		Name:     KVBucketSessionCredentials,
-		History:  1,
-		Replicas: replicas,
-		Missing:  "session credentials KV bucket not initialized",
+		Name:    KVBucketSessionCredentials,
+		History: 1,
+		Missing: "session credentials KV bucket not initialized",
 		OnOpen: func(ctx context.Context, kv jetstream.KeyValue) error {
 			return migrate.DefaultRegistry.RunKV(ctx, KVBucketSessionCredentials, kv, KVBucketSessionCredentialsVersion)
 		},
@@ -79,9 +78,8 @@ func sessionCredentialsConfig(replicas int) kvstore.Config {
 }
 
 // initSessionCredentialsStore opens (or creates) the session-credentials bucket.
-func initSessionCredentialsStore(ctx context.Context, js jetstream.JetStream, replicas int) (*kvstore.Store[SessionCredential], error) {
-	// kvstore clamps replicas to a minimum of 1, so a zero clusterSize still creates.
-	store := kvstore.New[SessionCredential](js, sessionCredentialsConfig(replicas))
+func initSessionCredentialsStore(ctx context.Context, js jetstream.JetStream) (*kvstore.Store[SessionCredential], error) {
+	store := kvstore.New[SessionCredential](js, sessionCredentialsConfig())
 	// Opened eagerly: a bucket that cannot be created must fail service
 	// construction, not the first AssumeRole that needs to mint into it.
 	if _, err := store.KV(ctx); err != nil {

@@ -648,6 +648,24 @@ func (d *Daemon) terminateSystemInstanceLocal(instanceID string) error {
 	return nil
 }
 
+// prepareInstanceRelaunch makes this node's world match an instance record it is
+// about to launch from.
+//
+// Both callers start from a record rather than a request, and a record names
+// things by reference: paths to files, an address held in a cluster-wide
+// reservation. On a same-node restart the references still resolve; on a recovery
+// onto a survivor they point at another node. So both concerns below are the same
+// question asked twice — what does this record assume that is not true here yet.
+func (d *Daemon) prepareInstanceRelaunch(inst *vm.VM) error {
+	// Before the launch, and not fatal. The instance is running on this node
+	// either way, and the reservation naming the node it left is what stops that
+	// node's own teardown from handing the address to somebody else.
+	if d.mgmtIPAllocator != nil {
+		d.mgmtIPAllocator.Claim(inst.ID, inst.MgmtIP)
+	}
+	return d.refreshSystemInstanceState(inst)
+}
+
 // refreshSystemInstanceState regenerates the tmpfs-backed fw_cfg blobs that
 // QEMU loads at boot. The blobs live under utils.RuntimeDir() (tmpfs on
 // production hosts) and are wiped on host reboot while the persisted

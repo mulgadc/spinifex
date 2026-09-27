@@ -23,6 +23,16 @@ type VolumeMounter interface {
 	// failures are aggregated and returned, and mean the data is not durable.
 	Unmount(ctx context.Context, v *VM) error
 
+	// Abandon gives up this node's export of every attached volume without
+	// sealing, for an instance another node owns now.
+	//
+	// It is not an unmount and must never become one. A seal here publishes this
+	// node's stale block map over the winner's. It is also not optional: the
+	// export holds the volume lease, and a healthy node renews that lease
+	// forever, so a guest stopped here without this is a guest that cannot start
+	// anywhere.
+	Abandon(ctx context.Context, v *VM, reason string) error
+
 	// MountOne sends ebs.mount for a single request and writes the resolved
 	// NBDURI back into req.NBDURI on success. Used by hot-attach. accountID
 	// names the owner, which a lone request carries no instance to supply.

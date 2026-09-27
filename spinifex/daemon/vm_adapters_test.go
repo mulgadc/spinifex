@@ -398,20 +398,35 @@ func TestRemoveFromSpotRequest_NoService_NoOp(t *testing.T) {
 
 // TestBuildVMManagerDeps_WiresBeforeInstanceRelaunch guards the single line
 // in buildVMManagerDeps that routes the recovery hook to
-// refreshSystemInstanceState. Dropping it would surface only in cell-18.
+// prepareInstanceRelaunch. Dropping it would surface only in cell-18.
 func TestBuildVMManagerDeps_WiresBeforeInstanceRelaunch(t *testing.T) {
 	d := &Daemon{config: &config.Config{}, vmMgr: vm.NewManager()}
 	deps := d.buildVMManagerDeps()
 	require.NotNil(t, deps.Hooks.BeforeInstanceRelaunch)
 
-	wantPC := reflect.ValueOf(d.refreshSystemInstanceState).Pointer()
+	wantPC := reflect.ValueOf(d.prepareInstanceRelaunch).Pointer()
 	gotPC := reflect.ValueOf(deps.Hooks.BeforeInstanceRelaunch).Pointer()
-	assert.Equal(t, wantPC, gotPC, "hook must point at refreshSystemInstanceState")
+	assert.Equal(t, wantPC, gotPC, "hook must point at prepareInstanceRelaunch")
 
 	// Sanity: the wired hook is callable and returns nil for non-ELBv2 VMs.
 	require.NoError(t, deps.Hooks.BeforeInstanceRelaunch(&vm.VM{ID: "i-noop", ManagedBy: ""}))
 	require.Error(t, deps.Hooks.BeforeInstanceRelaunch(&vm.VM{ID: "i-svc", ManagedBy: tags.ManagedByELBv2}),
 		"ELBv2 VM with nil elbv2Service must error rather than silently no-op")
+}
+
+// The hook is what both relaunch paths pass through, so it is where an instance
+// arriving from another node takes its management address over. Without that the
+// reservation keeps naming the node it left, and the node running it could never
+// give the address back.
+func TestPrepareInstanceRelaunch_ClaimsTheManagementAddress(t *testing.T) {
+	alloc, err := NewMgmtIPAllocator("10.36.8.1")
+	require.NoError(t, err)
+
+	d := &Daemon{config: &config.Config{}, vmMgr: vm.NewManager(), mgmtIPAllocator: alloc}
+	require.NoError(t, d.prepareInstanceRelaunch(&vm.VM{ID: "i-moved", MgmtIP: "10.36.8.42"}))
+
+	assert.Equal(t, 1, alloc.AllocatedCount(),
+		"an instance that arrived here holds its address here, and the allocator has to know before the next launch")
 }
 
 // --- DetachAndDeleteENI: post-launch attach enumeration ---

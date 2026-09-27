@@ -2692,8 +2692,19 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 		return errors.New(awserrors.ValidErrorCodeFromError(err))
 	}
 
-	if err := s.vmMgr.Run(ctx, instance); err != nil {
-		slog.ErrorContext(ctx, "launchClaimedInstance: vmMgr.Run failed", "instanceId", instance.ID, "err", err)
+	// The record names on-host state by path, and this host is not the one that
+	// wrote it. A system instance whose boot blobs are not rebuilt here is handed
+	// paths that exist only on the node it is being recovered from, so it either
+	// refuses to start or starts with no network configuration at all.
+	launchErr := s.vmMgr.PrepareRelaunch(instance)
+	if launchErr != nil {
+		slog.ErrorContext(ctx, "launchClaimedInstance: could not rebuild this node's copy of the instance's boot state",
+			"instanceId", instance.ID, "managedBy", instance.ManagedBy, "err", launchErr)
+	} else {
+		launchErr = s.vmMgr.Run(ctx, instance)
+	}
+	if err := launchErr; err != nil {
+		slog.ErrorContext(ctx, "launchClaimedInstance: relaunch failed", "instanceId", instance.ID, "err", err)
 		if addressAllocated {
 			s.rollbackStartPublicIP(ctx, instance)
 		}

@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -266,6 +267,54 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 	}
 
 	return errors.Join(sealErrs...)
+}
+
+// abandonTimeout bounds one ebs.abandon request. Generous enough to cover
+// viperblockd's SIGKILL wait for an nbdkit stuck in the storage path, and far
+// short of the unmount's budget because nothing here seals.
+const abandonTimeout = 45 * time.Second
+
+// Abandon tears down this node's export of every volume the instance had open,
+// without sealing any of them.
+//
+// Every volume is attempted and the failures are aggregated, because a volume
+// left exported is one the new owner cannot open — the caller is dropping a
+// superseded instance and needs to know whether it actually let go.
+func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, reason string) error {
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+
+	var errs []error
+	for _, ebsRequest := range instance.EBSRequests.Requests {
+		payload, err := json.Marshal(vbwire.VolumeAbandonRequest{Volume: ebsRequest.Name, Reason: reason})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("marshal abandon request for %s: %w", ebsRequest.Name, err))
+			continue
+		}
+
+		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID,
+			vbwire.VolumeAbandonSubject(a.node), payload, abandonTimeout)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("abandon %s: %w", ebsRequest.Name, err))
+			continue
+		}
+
+		var resp vbwire.VolumeAbandonResponse
+		if err := json.Unmarshal(msg.Data, &resp); err != nil {
+			errs = append(errs, fmt.Errorf("unmarshal abandon response for %s: %w", ebsRequest.Name, err))
+			continue
+		}
+		if resp.Error != "" {
+			errs = append(errs, fmt.Errorf("abandon %s: %s", ebsRequest.Name, resp.Error))
+			continue
+		}
+		if resp.Abandoned {
+			slog.WarnContext(ctx, "Gave up a volume export to the node that owns the instance now",
+				"instance", instance.ID, "volume", ebsRequest.Name, "reason", reason)
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // MountOne sends ebs.mount for a single request and writes the resolved
@@ -637,7 +686,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 			OnInstanceUp:           d.onInstanceUpHook(),
 			OnInstanceDown:         d.onInstanceDownHook(),
 			OnInstanceRecovering:   d.onInstanceRecoveringHook(),
-			BeforeInstanceRelaunch: d.refreshSystemInstanceState,
+			BeforeInstanceRelaunch: d.prepareInstanceRelaunch,
 		},
 		ShutdownSignal:             d.shuttingDown.Load,
 		CrashHandler:               d.vmMgr.HandleCrash,

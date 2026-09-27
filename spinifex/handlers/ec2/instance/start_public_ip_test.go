@@ -31,6 +31,7 @@ func (refusingMounter) Unmount(context.Context, *vm.VM) error { return nil }
 func (refusingMounter) MountOne(context.Context, string, *types.EBSRequest) error {
 	return nil
 }
+func (refusingMounter) Abandon(context.Context, *vm.VM, string) error              { return nil }
 func (refusingMounter) UnmountOne(context.Context, string, types.EBSRequest) error { return nil }
 
 // startFixture builds a stopped instance whose address went back to the pool,

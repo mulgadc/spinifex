@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -844,6 +845,42 @@ func launchService(cfg *Config) (err error) {
 		respondAndPublish(msg, nc, "ebs.unmount.response", ebsResponse)
 	}); err != nil {
 		return fmt.Errorf("failed to subscribe to %s: %w", unmountTopic, err)
+	}
+
+	// Never a queue group, even in single-node mode. Abandoning an export is an
+	// instruction to one specific node about its own volume, and a queue group
+	// would let it land on a node that has nothing to abandon while the one that
+	// does goes on holding the lease.
+	abandonTopic := vbwire.VolumeAbandonSubject(cfg.NodeName)
+	if _, err := nc.Subscribe(abandonTopic, func(msg *nats.Msg) {
+		ctx, span := utils.StartConsumerSpan(msg)
+		defer span.End()
+
+		var req vbwire.VolumeAbandonRequest
+		if err := json.Unmarshal(msg.Data, &req); err != nil {
+			slog.ErrorContext(ctx, "failed to unmarshal volume abandon request", "err", err)
+			utils.MarkSpanError(span, err)
+			respondJSON(msg, vbwire.VolumeAbandonResponse{Error: fmt.Sprintf("bad request: %v", err)})
+			return
+		}
+		// No path is built from this: the name is matched against exports this
+		// node recorded itself. An empty one would match nothing and report
+		// success, which is the wrong answer to a malformed request.
+		if req.Volume == "" {
+			slog.ErrorContext(ctx, "volume abandon: request names no volume")
+			respondJSON(msg, vbwire.VolumeAbandonResponse{Error: "request names no volume"})
+			return
+		}
+
+		abandoned, err := cfg.abandonVolume(ctx, req.Volume, req.Reason)
+		response := vbwire.VolumeAbandonResponse{Abandoned: abandoned}
+		if err != nil {
+			utils.MarkSpanError(span, err)
+			response.Error = err.Error()
+		}
+		respondJSON(msg, response)
+	}); err != nil {
+		return fmt.Errorf("failed to subscribe to %s: %w", abandonTopic, err)
 	}
 
 	if _, err := nc.QueueSubscribe("ebs.sync", "spinifex-workers", func(msg *nats.Msg) {

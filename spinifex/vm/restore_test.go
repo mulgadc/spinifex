@@ -647,6 +647,7 @@ func (f *recoveryMounter) Mount(_ context.Context, v *VM) error {
 }
 
 func (f *recoveryMounter) Unmount(context.Context, *VM) error                         { return nil }
+func (f *recoveryMounter) Abandon(context.Context, *VM, string) error                 { return nil }
 func (f *recoveryMounter) MountOne(context.Context, string, *types.EBSRequest) error  { return nil }
 func (f *recoveryMounter) UnmountOne(context.Context, string, types.EBSRequest) error { return nil }
 

@@ -849,24 +849,60 @@ const (
 	// exceeds the plain-VM default even for a small guest (a 16GB EKS GPU worker
 	// takes >30s on wattle). Small guests land here.
 	qmpVFIOGreetingFloor = 180 * time.Second
-	// qmpVFIOGreetingCap bounds the scaled wait so a mis-sized guest cannot
-	// wedge a launch indefinitely.
-	qmpVFIOGreetingCap = 600 * time.Second
+	// qmpGreetingCap bounds the whole wait so a mis-sized guest cannot wedge a
+	// launch indefinitely. It has to clear the sum of the two floors with room
+	// to spare, or it would clip a guest that has both costs before either had
+	// been waited out.
+	qmpGreetingCap = 900 * time.Second
+
+	// qmpNBDGreetingTimeout is the deadline for a guest whose drives are
+	// network-backed. QEMU opens every drive before its monitor answers, and a
+	// cold volume open reads its state out of the object store — which is
+	// slowest precisely when a node has just been lost and the store is serving
+	// degraded reads. Measured at 35s with one node of three away, against a 30s
+	// deadline that killed the guest five seconds short of ready and then did it
+	// again on every retry.
+	qmpNBDGreetingTimeout = 180 * time.Second
 )
 
-// qmpGreetingTimeout picks the QMP greeting deadline for a VM: the plain default
-// unless the guest has GPU/VFIO passthrough, whose synchronous RAM pin delays the
-// monitor. For VFIO the deadline is base + perGiB*RAM, floored so small guests
-// keep the proven deadline and capped so a huge guest cannot wedge a launch.
+// qmpGreetingTimeout is how long QEMU may take to answer its monitor. Both
+// costs it allows for exist for the same reason: QEMU does work synchronously
+// before the monitor answers, and a deadline shorter than that work SIGKILLs a
+// guest that would have come up.
+//
+// They are added, not chosen between, because a GPU guest booting from a network
+// drive pays both — QEMU opens every drive over the object store and pins the
+// whole of guest RAM, one after the other. Taking whichever is larger would give
+// such a guest a deadline that cannot cover what it has to do, and the symptom
+// would be a GPU instance that is killed on every attempt while its plain
+// sibling launches, which reads as a GPU fault rather than a deadline.
+//
+// The VFIO term scales with RAM because the pin is synchronous and grows with
+// it; the drive term does not, because opening a volume's state out of the store
+// costs the same whatever the guest is.
 func qmpGreetingTimeout(v *VM) time.Duration {
-	if len(v.GPUAttachments) == 0 {
-		return qmp.DefaultGreetingTimeout
+	deadline := qmp.DefaultGreetingTimeout
+	if hasNetworkBackedDrive(v) {
+		deadline = qmpNBDGreetingTimeout
 	}
-	memGiB := v.Config.Memory / 1024
-	scaled := qmpVFIOGreetingBase + time.Duration(memGiB)*qmpVFIOGreetingPerGiB
-	scaled = max(scaled, qmpVFIOGreetingFloor)
-	scaled = min(scaled, qmpVFIOGreetingCap)
-	return scaled
+	if len(v.GPUAttachments) > 0 {
+		memGiB := v.Config.Memory / 1024
+		deadline += max(qmpVFIOGreetingBase+time.Duration(memGiB)*qmpVFIOGreetingPerGiB, qmpVFIOGreetingFloor)
+	}
+	return min(deadline, qmpGreetingCap)
+}
+
+// hasNetworkBackedDrive reports whether any of the guest's drives is served
+// over NBD, and so has to be opened across the object store before QEMU's
+// monitor answers. Every production guest boots from one; a VM without is a
+// unit test.
+func hasNetworkBackedDrive(v *VM) bool {
+	for _, req := range v.EBSRequests.Requests {
+		if req.NBDURI != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // removeStaleQMPSocket unlinks a leftover QMP socket inode from a prior QEMU so

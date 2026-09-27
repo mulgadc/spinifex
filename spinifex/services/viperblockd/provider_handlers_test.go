@@ -56,6 +56,11 @@ func TestMountErrRetryable(t *testing.T) {
 			true,
 		},
 		{"plain error", errors.New("some other mount failure"), false},
+		// Restoring this node's own guests, a lease another node holds means that
+		// node is running the guest. Retrying would relaunch against an owner,
+		// which is the outcome the lease exists to prevent. The recovery
+		// reconciler treats the same refusal as retryable because there it means
+		// the dead owner has not let go yet, and it classifies it itself.
 		{"lease held by another node is not retryable", errVolumeLeaseHeld, false},
 	}
 	for _, tt := range tests {

@@ -642,6 +642,51 @@ func (m *Manager) shutdownAndUnmount(instance *VM) error {
 	return sealErr
 }
 
+// ForgetSuperseded stops any local copy of an instance another node now owns
+// and removes it from this node's view.
+//
+// It stops the guest without unmounting, for the reason shutdownQEMU is
+// separate at all: the volumes belong to the new owner, and an unmount here
+// would seal this node's stale copy over theirs. The local resources the
+// instance was admitted against are returned, since it is no longer here.
+//
+// Stopping the guest is not sufficient, and this is the part that is easy to get
+// wrong. The export outlives the guest and holds the volume lease, and this node
+// is healthy, so it renews that lease indefinitely — the new owner would never
+// acquire it, and the instance would be stopped here and unable to start
+// anywhere. So the export is given up too, without sealing.
+// An instance's OVN logical port is bound to whichever chassis has a tap
+// carrying its iface-id, and the column holding that binding names one chassis.
+// Two nodes offering the same iface-id therefore do not split the traffic — they
+// contend for the binding, and the address answers from whichever won last. So
+// the tap goes, on this node, for the same reason the guest does.
+//
+// It also unblocks the layer above: the external IP's host ingress is pruned on
+// the evidence that the owning guest sits on another chassis, which stays false
+// for as long as this node is still claiming the port.
+func (m *Manager) ForgetSuperseded(instance *VM) {
+	if instance == nil {
+		return
+	}
+	m.shutdownQEMU(instance)
+	m.cleanupTapDevices(instance)
+
+	if m.deps.VolumeMounter != nil {
+		if err := m.deps.VolumeMounter.Abandon(context.Background(), instance,
+			"the instance is owned by another node now"); err != nil {
+			// Logged rather than returned because there is nothing better to do
+			// here and the instance is going either way. The lease is the cost: a
+			// volume this node did not let go of is one the new owner waits on.
+			slog.Error("Could not give up the volumes of an instance that moved, "+
+				"so this node may still hold leases its new owner needs",
+				"id", instance.ID, "err", err)
+		}
+	}
+
+	m.deallocateResources(instance)
+	m.Delete(instance.ID)
+}
+
 // shutdownQEMU takes the guest process down and nothing else. Separated from
 // shutdownAndUnmount for the fence path, which must stop the guest without
 // unmounting: a fenced node's volumes belong to another node now, and an

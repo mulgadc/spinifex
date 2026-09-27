@@ -27,8 +27,14 @@ func (r TrafficResult) Unique() int { return len(r.Distribution) }
 // JSON {"instance_id":"..."}, and counts responders. Matches the app-userdata
 // HTTP responder in run-lb-e2e.sh.
 func HTTPRoundRobin(url string, n int, timeout time.Duration) TrafficResult {
+	return HTTPRoundRobinWithClient(&http.Client{Timeout: timeout}, url, n)
+}
+
+// HTTPRoundRobinWithClient is HTTPRoundRobin over a caller-supplied client, for
+// probes that have to reach the URL by a particular path — a client whose
+// hostnames are resolved by one named server rather than the runner's resolver.
+func HTTPRoundRobinWithClient(client *http.Client, url string, n int) TrafficResult {
 	r := TrafficResult{Distribution: map[string]int{}, Total: n}
-	client := &http.Client{Timeout: timeout}
 	for i := 0; i < n; i++ {
 		resp, err := client.Get(url)
 		if err != nil {

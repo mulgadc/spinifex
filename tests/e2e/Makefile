@@ -18,9 +18,9 @@ SUITE_TAG   ?= $(notdir $(patsubst %/...,%,$(firstword $(PKG))))
 # BIN_DIR/<suite>.test so CI can ship binaries (not source + go toolchain) to
 # the remote VM.
 BIN_DIR      ?= $(CURDIR)/_bin
-SUITES_BUILD ?= cert lb eks ecs single iam ecr bedrock gpu natuplink multinode storagegrowth partialblock rds quota diskperf storagefault
+SUITES_BUILD ?= cert lb eks ecs single iam ecr bedrock gpu natuplink multinode storagegrowth partialblock rds quota diskperf storagefault instancerecovery lbrecovery
 
-.PHONY: e2e e2e-quota e2e-cert e2e-lb e2e-eks e2e-ecs e2e-single e2e-iam e2e-ecr e2e-bedrock e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-gpu e2e-natuplink e2e-storagegrowth e2e-partialblock e2e-diskperf e2e-rds e2e-storagefault e2e-all clean e2e-build
+.PHONY: e2e e2e-quota e2e-cert e2e-lb e2e-eks e2e-ecs e2e-single e2e-iam e2e-ecr e2e-bedrock e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-gpu e2e-natuplink e2e-storagegrowth e2e-partialblock e2e-diskperf e2e-rds e2e-storagefault e2e-instancerecovery e2e-lbrecovery e2e-all clean e2e-build
 
 RUN_FLAG = $(if $(RUN),-run '$(RUN)',)
 
@@ -68,6 +68,12 @@ e2e-quota:      ; $(MAKE) e2e PKG=./quota/...
 # Freezes predastore, so its budget covers a deliberate outage plus the
 # recovery and re-verification that follow it, twice over for the two tests.
 e2e-storagefault: ; $(MAKE) e2e PKG=./storagefault/... TIMEOUT=45m
+# Takes a node away twice and freezes predastore once. Almost all of its budget
+# is waiting for staleness, a boot and a pause that is measured in minutes.
+e2e-instancerecovery: ; $(MAKE) e2e PKG=./instancerecovery/... TIMEOUT=60m
+# Stands a load balancer and its backends up before it breaks anything, then
+# takes the load balancer's node away and brings it back.
+e2e-lbrecovery: ; $(MAKE) e2e PKG=./lbrecovery/... TIMEOUT=75m
 e2e-all:        ; $(MAKE) e2e
 
 e2e-build:

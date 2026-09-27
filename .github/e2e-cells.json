@@ -154,5 +154,29 @@
     "runner": "ci-multi",
     "extra": "nat-multi",
     "suite": ""
+  },
+  {
+    "cell": 31,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "",
+    "suite": "instancerecovery",
+    "timeout_minutes": 105
+  },
+  {
+    "cell": 32,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "",
+    "suite": "lbrecovery",
+    "timeout_minutes": 90
   }
 ]

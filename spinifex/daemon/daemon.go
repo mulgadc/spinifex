@@ -171,9 +171,12 @@ type Daemon struct {
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
 	externalIPAM          *handlers_ec2_vpc.ExternalIPAM
-	ctx                   context.Context
-	cancel                context.CancelFunc
-	shutdownWg            sync.WaitGroup
+	// ociAllocators is every source="oci" pool on this node. Written once during
+	// startup, before anything reads it.
+	ociAllocators []ociPool
+	ctx           context.Context
+	cancel        context.CancelFunc
+	shutdownWg    sync.WaitGroup
 
 	// recoveryRetryWg tracks the post-restore retry loop, which writes the
 	// local state file when it finishes. Tests wait on it before cleanup.
@@ -1497,9 +1500,21 @@ func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js je
 		}
 		slog.Info("OCI allocator ready", "pool", p.Name,
 			"collected", len(res.Collected), "stale_bindings", len(res.Stale), "skipped", res.Skipped)
-		go d.runOCIAffinityLoop(alloc, p.Name)
+		d.ociAllocators = append(d.ociAllocators, ociPool{name: p.Name, alloc: alloc})
+	}
+	if len(d.ociAllocators) > 0 {
+		go d.runOCIAffinityLoop()
 	}
 	return nil
+}
+
+// ociPool pairs a pool's allocator with its name, so one pass can cover every
+// pool and reach a single verdict about each guest. Per-pool loops could not: a
+// guest is impaired or it is not, and two loops writing that answer from half the
+// evidence would take turns contradicting each other.
+type ociPool struct {
+	name  string
+	alloc *ocinet.PoolAllocator
 }
 
 // ociAffinityInterval is how often a node checks that OCI delivers its guests'
@@ -1513,7 +1528,7 @@ const ociAffinityInterval = 15 * time.Second
 // loop and for the same reason: the question is about this host's guests, and a
 // node that never wins the reconcile lease would otherwise never claim the
 // addresses of the instances it is running.
-func (d *Daemon) runOCIAffinityLoop(alloc *ocinet.PoolAllocator, poolName string) {
+func (d *Daemon) runOCIAffinityLoop() {
 	ticker := time.NewTicker(ociAffinityInterval)
 	defer ticker.Stop()
 	for {
@@ -1522,16 +1537,54 @@ func (d *Daemon) runOCIAffinityLoop(alloc *ocinet.PoolAllocator, poolName string
 			return
 		case <-ticker.C:
 		}
-		res, err := alloc.ClaimLocalAddresses(d.ctx)
+		d.ClaimOCIAddresses(d.ctx)
+	}
+}
+
+// ClaimOCIAddresses runs one affinity pass over every OCI pool and records which
+// guests OCI is not delivering an address to.
+//
+// Exported because the recovery path calls it in line: a guest relaunched here is
+// reported running the moment it boots, and until this has run OCI still delivers
+// its address to the node that died. Waiting for the ticker would mean up to a
+// full interval in which the records say recovered and the address says nothing.
+//
+// A pass that could not read its own inputs marks nothing. It learned that no
+// guest is reachable, not that every guest is, and clearing on that would turn an
+// OCI outage into a clean bill of health.
+func (d *Daemon) ClaimOCIAddresses(ctx context.Context) {
+	if len(d.ociAllocators) == 0 {
+		return
+	}
+
+	complete := true
+	stalled := make(map[string]string)
+	for _, p := range d.ociAllocators {
+		res, err := p.alloc.ClaimLocalAddresses(ctx)
 		if err != nil {
 			slog.Error("OCI address affinity pass failed; a guest here may be unreachable on its public address",
-				"pool", poolName, "err", err)
+				"pool", p.name, "err", err)
+			complete = false
 			continue
 		}
 		if len(res.Claimed) > 0 {
-			slog.Info("OCI addresses moved to this node", "pool", poolName,
+			slog.Info("OCI addresses moved to this node", "pool", p.name,
 				"claimed", res.Claimed, "local_bindings", res.Local)
 		}
+		for _, s := range res.Stalled {
+			slog.Error("OCI is not delivering an address to the node running its guest",
+				"pool", p.name, "public_ip", s.PublicIP, "eni_id", s.ENIID, "reason", s.Reason)
+			if s.ENIID != "" {
+				stalled[s.ENIID] = s.Reason
+			}
+		}
+	}
+	if !complete || d.vmMgr == nil {
+		return
+	}
+	if marked := d.vmMgr.SetUnreachableAddresses(stalled); len(marked) > 0 {
+		slog.Error("Instances are running and unreachable on their public address",
+			"node", d.node, "instances", marked)
 	}
 }
 
@@ -2165,6 +2218,7 @@ func (d *Daemon) startCluster() error {
 
 	d.startHeartbeat()
 	d.startRecordRepair()
+	d.startInstanceRecovery()
 	d.vmMgr.StartPendingWatchdog(d.ctx)
 
 	// Reality→desired GC backstop (ADR-0003 §3): finish teardown interrupted by
@@ -2561,6 +2615,7 @@ func (d *Daemon) LoadState() error {
 // it is recovering are already down, and blocking here would keep the API from
 // coming up while it waits.
 func (d *Daemon) restoreInstances() error {
+	d.forgetSupersededInstances()
 	d.vmMgr.Restore()
 	if err := d.WriteState(); err != nil {
 		slog.Error("Failed to persist local state after restore", "error", err)

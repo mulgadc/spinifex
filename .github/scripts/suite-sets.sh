@@ -40,7 +40,18 @@
 E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota storagefault"
 
 # Suites runnable against a multi-node environment.
-E2E_SUITES_MULTI="multinode lb cert quota storagefault"
+#
+# instancerecovery is multi-only and needs three: recovery is inert below that,
+# because there is no survivor to move a guest to that is not the node that
+# failed. Like storagefault it takes a node away and freezes a cluster-wide
+# service, so it runs last and owns its environment.
+#
+# lbrecovery is multi-only and needs three for two reasons rather than one: a
+# survivor to move the load balancer to, and a node for its backends that is not
+# the load balancer's, so taking that node away does not take the backends with
+# it. It runs beside instancerecovery at the end because it also takes a node
+# away and owns its environment while it does.
+E2E_SUITES_MULTI="multinode lb cert quota lbrecovery instancerecovery storagefault"
 
 # grep -xE alternation form, for narrowing a requested set to the eligible one.
 E2E_SUITES_SINGLE_RE="$(printf '%s' "${E2E_SUITES_SINGLE}" | tr ' ' '|')"
@@ -88,6 +99,19 @@ e2e_suite_timeout() {
     # SIGSTOPped for seven minutes to prove a guest survives it. A full pass on
     # dev-prod is ~63 minutes, so the 30m default truncated it mid-suite.
     storagefault) echo "90m" ;;
+    # instancerecovery is almost entirely waiting, and none of it is avoidable:
+    # a dead owner has to be seen stale twice, a guest has to boot, and the
+    # storage case waits for a pause measured at 4m47s and then holds four
+    # minutes to prove nothing moved. Three tests, each taking a node away and
+    # bringing it back, and the partition case adds a lease validity, a lease
+    # TTL and a boot on top of everything the other two wait for.
+    instancerecovery) echo "90m" ;;
+    # lbrecovery pays for a load balancer twice: once to stand one up with two
+    # backends placed around it, and once for the recovery itself — a stale
+    # owner, a lease, a boot, HAProxy's own start, and its health checks against
+    # the backends before it forwards anything. Then the node comes back and has
+    # to be shown not to answer for an address it no longer holds.
+    lbrecovery) echo "75m" ;;
     *) echo "30m" ;;
   esac
 }

@@ -76,17 +76,7 @@ func (cfg *Config) onVolumeLeaseLost(ctx context.Context, volumeName string, kin
 // would publish an older state over the winner's. For the same reason the dirty
 // marker is left alone — the winner has taken it over and it now names them.
 func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string, outcome otelsetup.FenceOutcome) {
-	cfg.mu.Lock()
-	var matched MountedVolume
-	found := false
-	for _, volume := range cfg.MountedVolumes {
-		if volume.Name == volumeName {
-			matched, found = volume, true
-			break
-		}
-	}
-	cfg.mu.Unlock()
-
+	matched, found := cfg.lookupMountedVolume(volumeName)
 	if !found {
 		// The export went away on its own between losing the lease and getting
 		// here, which is the ordinary unmount racing this path. Nothing to do.
@@ -98,9 +88,160 @@ func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string, o
 		"volume", volumeName, "previous_owner", cfg.leases.owner, "winner", winner,
 		"pid", matched.PID)
 
+	if err := cfg.tearDownExport(ctx, matched, "fence"); err != nil {
+		slog.ErrorContext(ctx, "fence FAILED: nbdkit did not exit, so this node is still a writer on a volume it does not own",
+			"volume", volumeName, "pid", matched.PID, "winner", winner, "err", err)
+		otelsetup.RecordVolumeFence(ctx, otelsetup.FenceOutcomeKillFailed)
+		if !cfg.writerAlive(matched.PID) {
+			// The kill was refused rather than ignored, so nothing here says what
+			// happened to the writer. The export stays registered and the lease
+			// stays held, which is the only reading of "unknown" that is safe.
+			slog.ErrorContext(ctx, "fence FAILED with no writer to watch: the export stays registered and the lease held",
+				"volume", volumeName, "pid", matched.PID, "winner", winner)
+			return
+		}
+		cfg.awaitFencedWriterExit(ctx, volumeName, matched, winner, outcome)
+		return
+	}
+
+	otelsetup.RecordVolumeFence(ctx, outcome)
+	cfg.publishVolumeFenced(ctx, volumeName, winner)
+}
+
+// defaultFenceWatchInterval is how often a fence that did not complete re-checks
+// and re-reports. One log line and one metric sample per interval, for a
+// condition that must not be reported once and then look resolved.
+const defaultFenceWatchInterval = 30 * time.Second
+
+// writerAlive reports whether an export's process is still running, honouring a
+// test's injected probe if there is one.
+func (cfg *Config) writerAlive(pid int) bool {
+	if cfg.processAlive != nil {
+		return cfg.processAlive(pid)
+	}
+	return utils.ProcessAlive(pid)
+}
+
+// fenceWatchInterval is how often a failed fence re-checks its writer.
+func (cfg *Config) fenceWatchInterval() time.Duration {
+	if cfg.fenceWatchEvery > 0 {
+		return cfg.fenceWatchEvery
+	}
+	return defaultFenceWatchInterval
+}
+
+// awaitFencedWriterExit keeps a failed fence open until its writer is gone. It
+// is entered only with that writer observed alive, because a PID this node
+// cannot see says nothing about whether it exited.
+//
+// A SIGKILL that has not taken effect is a process in uninterruptible sleep with
+// the signal already pending. It exits when its I/O completes, so there is
+// nothing to re-send and nothing else to try — and because it has not exited, its
+// PID cannot have been reused, which is what makes waiting safe where re-killing
+// would not be.
+//
+// What there is to do is not stop watching. The teardown deliberately left the
+// registry entry and the lease in place: releasing a lease while still a writer
+// would hand the volume on with this node still on it. Both are finished here,
+// once the exit is confirmed. Until then the failure is re-reported every
+// interval, because a second writer that is only in one old log line is a second
+// writer nobody knows about.
+func (cfg *Config) awaitFencedWriterExit(ctx context.Context, volumeName string,
+	matched MountedVolume, winner string, outcome otelsetup.FenceOutcome) {
+	began := time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			slog.ErrorContext(ctx, "fence never completed: stopping with a live writer on a volume this node does not own",
+				"volume", volumeName, "pid", matched.PID, "winner", winner,
+				"unfenced_ms", otelsetup.Millis(time.Since(began)))
+			return
+		case <-time.After(cfg.fenceWatchInterval()):
+		}
+
+		if cfg.writerAlive(matched.PID) {
+			slog.ErrorContext(ctx, "fence still FAILED: this node is writing a volume it does not own",
+				"volume", volumeName, "pid", matched.PID, "winner", winner,
+				"unfenced_ms", otelsetup.Millis(time.Since(began)))
+			otelsetup.RecordVolumeFence(ctx, otelsetup.FenceOutcomeKillFailed)
+			continue
+		}
+
+		cfg.finishTeardown(ctx, matched, "fence")
+		slog.WarnContext(ctx, "fence completed late: the writer finally exited",
+			"volume", volumeName, "pid", matched.PID, "winner", winner,
+			"unfenced_ms", otelsetup.Millis(time.Since(began)))
+		otelsetup.RecordVolumeFence(ctx, outcome)
+		cfg.publishVolumeFenced(ctx, volumeName, winner)
+		return
+	}
+}
+
+// abandonVolume tears down an export because the instance that was using it
+// belongs to another node now, and this node has just been told so.
+//
+// It is the returning node's half of the fence, and it is needed for a reason
+// that is easy to miss: stopping the local guest is not enough. The export
+// outlives it, and the export holds the volume lease, which this node goes on
+// renewing because nothing is wrong with it. A lease held by a healthy node
+// never expires, so the winner can never acquire, and the instance ends up
+// stopped here and unable to start anywhere — recovery retries until its budget
+// runs out and then gives up on a guest that was never unrecoverable.
+//
+// Like the fence it does not seal, for the same reason: this node's copy is the
+// stale one, and sealing would publish an older state over the winner's.
+//
+// Unlike the fence, the lease is not lost here, so releasing it deletes the key
+// rather than leaving it to expire — the winner gets the volume on the next
+// attempt instead of waiting out the TTL.
+func (cfg *Config) abandonVolume(ctx context.Context, volumeName, reason string) (bool, error) {
+	matched, found := cfg.lookupMountedVolume(volumeName)
+	if !found {
+		// The ordinary case: the caller is reconciling, and most volumes it asks
+		// about were never exported here or have already gone.
+		slog.InfoContext(ctx, "volume abandon: not exported here, nothing to tear down",
+			"volume", volumeName, "reason", reason)
+		return false, nil
+	}
+
+	slog.WarnContext(ctx, "abandoning volume: the instance using it is owned by another node now",
+		"volume", volumeName, "owner", cfg.leaseOwner(), "pid", matched.PID, "reason", reason)
+
+	if err := cfg.tearDownExport(ctx, matched, "abandon"); err != nil {
+		slog.ErrorContext(ctx, "volume abandon FAILED: nbdkit did not exit, so this node still holds the lease "+
+			"and the volume cannot start anywhere else",
+			"volume", volumeName, "pid", matched.PID, "err", err)
+		return false, err
+	}
+
+	slog.InfoContext(ctx, "volume abandoned", "volume", volumeName, "reason", reason)
+	return true, nil
+}
+
+// lookupMountedVolume reports this node's export for volumeName, if it has one.
+func (cfg *Config) lookupMountedVolume(volumeName string) (MountedVolume, bool) {
+	cfg.mu.Lock()
+	defer cfg.mu.Unlock()
+	for _, volume := range cfg.MountedVolumes {
+		if volume.Name == volumeName {
+			return volume, true
+		}
+	}
+	return MountedVolume{}, false
+}
+
+// tearDownExport removes an export without sealing it: subscriptions, the
+// metadata flushes, nbdkit, the registry entry, the socket and the lease.
+//
+// Shared by the fence and the abandon because the teardown is the same act
+// either way — what differs is who decided and what it means. The kill is the
+// step nothing may run ahead of: everything after it assumes the writer is gone,
+// and reporting a teardown that has not killed nbdkit is the failure that lets a
+// second writer keep going while the cluster believes it stopped.
+func (cfg *Config) tearDownExport(ctx context.Context, matched MountedVolume, why string) error {
 	if matched.ConfigSub != nil {
 		if err := matched.ConfigSub.Unsubscribe(); err != nil {
-			slog.ErrorContext(ctx, "fence: unsubscribe config topic", "volume", volumeName, "err", err)
+			slog.ErrorContext(ctx, why+": unsubscribe config topic", "volume", matched.Name, "err", err)
 		}
 	}
 	unsubscribeOwnerSubjects(matched.Name, matched.OwnerSubs)
@@ -111,17 +252,18 @@ func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string, o
 		matched.VB.Detach()
 	}
 
-	// Everything below assumes the writer is gone, so nothing below may run
-	// until it is observed gone. A fence that has not killed nbdkit has fenced
-	// nothing, and reporting it as done is the failure that lets a second
-	// writer keep going while the cluster believes it stopped.
 	if err := utils.ForceKillProcess(matched.PID, fenceKillTimeout); err != nil {
-		slog.ErrorContext(ctx, "fence FAILED: nbdkit did not exit, so this node is still a writer on a volume it does not own",
-			"volume", volumeName, "pid", matched.PID, "winner", winner, "err", err)
-		otelsetup.RecordVolumeFence(ctx, otelsetup.FenceOutcomeKillFailed)
-		return
+		return err
 	}
 
+	cfg.finishTeardown(ctx, matched, why)
+	return nil
+}
+
+// finishTeardown is everything after the writer is confirmed gone. Split out
+// because a fence whose kill did not take effect has to run it later rather than
+// not at all, and because every line of it assumes the process has exited.
+func (cfg *Config) finishTeardown(ctx context.Context, matched MountedVolume, why string) {
 	cfg.mu.Lock()
 	for i, volume := range cfg.MountedVolumes {
 		if volume.Name == matched.Name {
@@ -133,16 +275,14 @@ func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string, o
 
 	if matched.Socket != "" {
 		if err := os.Remove(matched.Socket); err != nil && !os.IsNotExist(err) {
-			slog.ErrorContext(ctx, "fence: could not remove nbd socket", "socket", matched.Socket, "err", err)
+			slog.ErrorContext(ctx, why+": could not remove nbd socket", "socket", matched.Socket, "err", err)
 		}
 	}
 
-	// Stops the renewal goroutine and drops the local entry. The lease was
-	// already flagged lost, so this cannot delete the winner's key.
+	// Stops the renewal goroutine and drops the local entry. It deletes the key
+	// only when this node still holds it, so a lost lease cannot evict the
+	// winner and a held one does not make the volume wait out its TTL.
 	cfg.releaseVolumeLease(ctx, matched.Lease)
-
-	otelsetup.RecordVolumeFence(ctx, outcome)
-	cfg.publishVolumeFenced(ctx, volumeName, winner)
 }
 
 // publishVolumeFenced tells the local daemon a guest is now running against a

@@ -68,7 +68,7 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 	// that reaches an engine open without one refuses, and refusing every
 	// publish is a worse failure than not starting.
 	if cfg.leases == nil {
-		leases, err := newVolumeLeases(context.Background(), nc, cfg.leaseOwner())
+		leases, err := newVolumeLeases(context.Background(), nc, cfg.leaseOwner(), cfg.KVReplicas)
 		if err != nil {
 			return fmt.Errorf("volume leases: %w", err)
 		}
@@ -79,7 +79,7 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 	// Same reasoning as the lease store: a mount that cannot consult the dirty
 	// marker cannot tell a stale cross-node start from a routine one.
 	if cfg.dirty == nil {
-		dirty, err := newVolumeDirty(context.Background(), nc, cfg.leaseOwner())
+		dirty, err := newVolumeDirty(context.Background(), nc, cfg.leaseOwner(), cfg.KVReplicas)
 		if err != nil {
 			return fmt.Errorf("volume dirty markers: %w", err)
 		}
@@ -1334,6 +1334,11 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 // and its absence is what made a routine cluster update destructive: the lease
 // is claimed before any state is read, so a node coming up alongside NATS fails
 // there first and never reaches the conditions these sentinels describe.
+//
+// errVolumeLeaseHeld deliberately does not. This classifier drives the restore
+// path, where a lease held by another node means that node owns the guest now,
+// and retrying would fight the owner rather than wait for one. The recovery
+// reconciler wants the opposite and reads that refusal itself.
 func mountErrRetryable(err error) bool {
 	return errors.Is(err, viperblock.ErrStateNotFound) ||
 		errors.Is(err, viperblock.ErrStateBackendUnavailable) ||

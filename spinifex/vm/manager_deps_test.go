@@ -144,6 +144,8 @@ type fakeVolumeMounter struct {
 	mu                       sync.Mutex
 	mounted, unmounted       []string
 	mountedOne, unmountedOne []string
+	abandoned                []string
+	abandonErr               error
 	mountErr                 error
 	mountOneErr              error
 	unmountErr               error
@@ -171,6 +173,14 @@ func (f *fakeVolumeMounter) Unmount(_ context.Context, v *VM) error {
 	f.mu.Lock()
 	f.unmounted = append(f.unmounted, v.ID)
 	err := f.unmountErr
+	f.mu.Unlock()
+	return err
+}
+
+func (f *fakeVolumeMounter) Abandon(_ context.Context, v *VM, _ string) error {
+	f.mu.Lock()
+	f.abandoned = append(f.abandoned, v.ID)
+	err := f.abandonErr
 	f.mu.Unlock()
 	return err
 }

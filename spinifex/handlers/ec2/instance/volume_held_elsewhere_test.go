@@ -38,6 +38,12 @@ func TestVolumeHeldElsewhere_NamesTheHolder(t *testing.T) {
 			assert.NotEqual(t, awserrors.ErrorServerInternal, code,
 				"ServerInternal reads as a transient fault and invites a retry that cannot succeed")
 			assert.Contains(t, got.Error(), "node-b", "the caller has to learn where the data is")
+
+			assert.ErrorIs(t, got, ErrVolumeHeldElsewhere,
+				"recovery retries this on a shorter clock than anything else, so it has to be matchable")
+			resolved, _, ok := awserrors.ResolveErrorDetail(got)
+			require.True(t, ok, "the sentinel must not hide the code from the layer that returns it")
+			assert.Equal(t, awserrors.ErrorIncorrectState, resolved)
 		})
 	}
 }

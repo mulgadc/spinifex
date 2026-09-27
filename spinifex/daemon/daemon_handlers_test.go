@@ -727,10 +727,22 @@ func TestHandleEC2Events_StopInstance(t *testing.T) {
 	// Should get immediate {} response
 	assert.Equal(t, `{}`, string(reply.Data))
 
-	// State should transition to stopping
-	var status vm.InstanceState
-	daemon.vmMgr.UpdateState(instanceID, func(v *vm.VM) { status = v.Status })
-	assert.Equal(t, vm.StateStopping, status)
+	// The ack comes first and the transition runs detached, so the state is a
+	// later fact than the reply — and it does not stop at stopping.
+	assertLeavesRunning(t, daemon, instanceID, vm.StateStopping, vm.StateStopped)
+}
+
+// assertLeavesRunning waits for a detached stop or terminate to move the
+// instance out of running. Asserting on the transient state alone is a race in
+// both directions: too early reads running, too late reads the final state.
+func assertLeavesRunning(t *testing.T, daemon *Daemon, instanceID string, want ...vm.InstanceState) {
+	t.Helper()
+
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		var status vm.InstanceState
+		daemon.vmMgr.UpdateState(instanceID, func(v *vm.VM) { status = v.Status })
+		assert.Contains(c, want, status)
+	}, 10*time.Second, 10*time.Millisecond)
 }
 
 func TestHandleEC2Events_TerminateInstance(t *testing.T) {
@@ -771,9 +783,7 @@ func TestHandleEC2Events_TerminateInstance(t *testing.T) {
 
 	assert.Equal(t, `{}`, string(reply.Data))
 
-	var status vm.InstanceState
-	daemon.vmMgr.UpdateState(instanceID, func(v *vm.VM) { status = v.Status })
-	assert.Equal(t, vm.StateShuttingDown, status)
+	assertLeavesRunning(t, daemon, instanceID, vm.StateShuttingDown, vm.StateTerminated)
 }
 
 func TestHandleEC2Events_RebootRunningInstance(t *testing.T) {

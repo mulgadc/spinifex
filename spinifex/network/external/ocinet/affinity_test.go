@@ -205,6 +205,63 @@ func TestClaimReportsAFailureToRecordTheNewOwner(t *testing.T) {
 	assert.Contains(t, err.Error(), "record new VNIC")
 }
 
+// acceptWithoutMoving is OCI agreeing to a reassignment and not performing it.
+// It is the failure the verification exists for and the one nothing else can
+// produce: every other error is reported by the call that failed.
+type acceptWithoutMoving struct{ *oci.Fake }
+
+func (c acceptWithoutMoving) MovePrivateIP(ctx context.Context, privateIPID, _ string) (oci.PrivateIP, error) {
+	return c.GetPrivateIP(ctx, privateIPID)
+}
+
+// A move's own response is OCI accepting the request. Trusting it would leave a
+// guest running, reported healthy, and answering on nothing at all.
+func TestClaimReportsAnAddressOCIAcceptedAndDidNotDeliver(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	store := ocinet.NewMemStore()
+	a, err := ocinet.New(acceptWithoutMoving{fake}, store, ocinet.Config{
+		Pool:          external.ExternalPoolConfig{Name: "oci-wan", Source: external.SourceOCI},
+		VNICID:        thisVNIC,
+		CompartmentID: "ocid1.compartment.oc1..comp1",
+		Schedule:      []time.Duration{time.Millisecond},
+		Budget:        time.Second,
+		Sleep:         func(context.Context, time.Duration) error { return nil },
+		LocalPorts: func(context.Context) (map[string]struct{}, error) {
+			return map[string]struct{}{"port-eni-1": {}}, nil
+		},
+	})
+	require.NoError(t, err)
+	pubAddr, _ := seedForeignBinding(t, fake, store, "eni-1")
+
+	res, err := a.ClaimLocalAddresses(ctx)
+	require.NoError(t, err, "a guest that cannot be reached is a per-address fault, not a failed pass")
+	assert.Empty(t, res.Claimed, "an address that did not arrive must not be reported as claimed")
+	require.Len(t, res.Stalled, 1)
+	assert.Equal(t, pubAddr, res.Stalled[0].PublicIP)
+	assert.Equal(t, "eni-1", res.Stalled[0].ENIID,
+		"the caller names the guest from the ENI, so an entry without one cannot be acted on")
+	assert.Contains(t, res.Stalled[0].Reason, "does not deliver")
+}
+
+// A throttle or a denial is per-object. Abandoning the pass on the first one
+// leaves every later guest dark for no reason of its own.
+func TestOneAddressFailingDoesNotAbandonTheRest(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	a, store := newAffinityAllocator(t, fake, "port-eni-1", "port-eni-2")
+	seedForeignBinding(t, fake, store, "eni-1")
+	seedForeignBinding(t, fake, store, "eni-2")
+
+	fake.FailOp("MovePrivateIP", errors.New("429 too many requests"))
+	res, err := a.ClaimLocalAddresses(ctx)
+	require.NoError(t, err)
+	assert.Len(t, res.Claimed, 1, "the address that could move should have moved")
+	require.Len(t, res.Stalled, 1)
+	assert.Contains(t, res.Stalled[0].Reason, "429")
+	assert.NotEmpty(t, res.Stalled[0].ENIID)
+}
+
 // newGatewayAffinityAllocator builds an allocator with no guests at all and a
 // fixed answer to "am I the gateway chassis for this VPC".
 func newGatewayAffinityAllocator(t *testing.T, fake *oci.Fake, local bool, err error) (*ocinet.PoolAllocator, *ocinet.MemStore) {

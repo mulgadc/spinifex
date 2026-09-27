@@ -358,14 +358,12 @@ func (m *Manager) relaunchAll(toLaunch []*VM) {
 					"instanceId", inst.ID, "status", string(status))
 				return
 			}
-			if m.deps.Hooks.BeforeInstanceRelaunch != nil {
-				if err := m.deps.Hooks.BeforeInstanceRelaunch(inst); err != nil {
-					slog.Error("Pre-relaunch hook failed",
-						"instanceId", inst.ID, "managedBy", inst.ManagedBy,
-						"instanceType", inst.InstanceType, "err", err)
-					m.MarkRecoveryFailed(inst, "pre_relaunch_hook_failed")
-					return
-				}
+			if err := m.PrepareRelaunch(inst); err != nil {
+				slog.Error("Pre-relaunch hook failed",
+					"instanceId", inst.ID, "managedBy", inst.ManagedBy,
+					"instanceType", inst.InstanceType, "err", err)
+				m.MarkRecoveryFailed(inst, "pre_relaunch_hook_failed")
+				return
 			}
 			slog.Info("Launching instance (recovery)",
 				"instance", inst.ID, "managedBy", inst.ManagedBy, "instanceType", inst.InstanceType)
@@ -388,6 +386,26 @@ func (m *Manager) relaunchAll(toLaunch []*VM) {
 		}(instance)
 	}
 	wg.Wait()
+}
+
+// PrepareRelaunch rebuilds whatever on-host state an instance's record only
+// names, for a launch driven by that record rather than by a request.
+//
+// Every such launch needs it, not only the same-node one. A system instance's
+// boot configuration is a set of files under the runtime directory, and the
+// record holds their paths — so a host reboot and a move to another node leave
+// the record saying exactly the same wrong thing. Recovery onto a survivor is
+// the case where nobody notices, because the guest simply never comes up and the
+// service it was providing has no other symptom.
+//
+// Exported so the cross-node claim path can call it. Nothing about this is
+// specific to Restore, and the hook being reachable only from there is what made
+// a recovered load balancer boot with no network configuration.
+func (m *Manager) PrepareRelaunch(inst *VM) error {
+	if m.deps.Hooks.BeforeInstanceRelaunch == nil {
+		return nil
+	}
+	return m.deps.Hooks.BeforeInstanceRelaunch(inst)
 }
 
 // relaunchWithRetry calls m.Run, retrying only when the failure is

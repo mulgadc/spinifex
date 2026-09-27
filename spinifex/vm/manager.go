@@ -15,9 +15,11 @@ type ManagerHooks struct {
 	// OnInstanceRecovering fires from Restore before each relaunch so the daemon
 	// can early-subscribe ec2.cmd.<id> and handle concurrent terminates in flight.
 	OnInstanceRecovering func(*VM)
-	// BeforeInstanceRelaunch fires from Restore immediately before m.Run. Daemons
-	// use this to refresh ephemeral on-host state that did not survive a reboot.
-	// A non-nil error aborts the relaunch and marks the instance recovery_failed.
+	// BeforeInstanceRelaunch fires immediately before m.Run on any launch from a
+	// persisted record rather than from a request. Daemons use this to rebuild
+	// ephemeral on-host state the record only names: a path to a file this host
+	// does not have is the same problem whether the file went with a reboot or
+	// with the node that wrote it. A non-nil error aborts the relaunch.
 	BeforeInstanceRelaunch func(*VM) error
 }
 

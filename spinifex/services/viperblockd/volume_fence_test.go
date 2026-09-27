@@ -6,7 +6,9 @@ package viperblockd
 import (
 	"context"
 	"os/exec"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
@@ -113,16 +115,79 @@ func TestVolumeFence_KillFailureLeavesTheVolumeMounted(t *testing.T) {
 
 	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
 	cfg.MountedVolumes[0].PID = 0 // rejected by ForceKillProcess, so the kill cannot succeed
+	cfg.processAlive = func(int) bool { return true }
+	cfg.fenceWatchEvery = 10 * time.Millisecond
+
+	// The watch outlives the fence by design, so it is cancelled and joined here
+	// rather than left to the test's own cleanup.
+	ctx, cancel := context.WithCancel(t.Context())
+	watched := make(chan struct{})
+	go func() { defer close(watched); cfg.fenceVolume(ctx, volumeName, "node-b", "taken") }()
+	defer func() { cancel(); <-watched }()
+
+	assert.Never(t, func() bool {
+		cfg.mu.Lock()
+		defer cfg.mu.Unlock()
+		return len(cfg.MountedVolumes) == 0
+	}, 20*cfg.fenceWatchEvery, cfg.fenceWatchEvery,
+		"a fence that could not stop the writer must not report the volume released")
+
+	owner, held := cfg.leases.currentOwner(t.Context(), volumeName)
+	require.True(t, held, "the lease must not be released while this node is still exporting")
+	assert.Equal(t, "node-a", owner)
+}
+
+// TestVolumeFence_CompletesOnceTheWriterFinallyExits is the other half of a
+// failed kill. The SIGKILL is pending on a process in uninterruptible sleep, so
+// the writer does stop — and the teardown has to run then rather than never, or
+// the lease is held by a node that is no longer writing and the volume cannot
+// start anywhere.
+func TestVolumeFence_CompletesOnceTheWriterFinallyExits(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+
+	const volumeName = "vol-fencekilllate"
+
+	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
+	cfg.MountedVolumes[0].PID = 0 // rejected by ForceKillProcess, so the kill cannot succeed
+	// Alive for the guard and one watch pass, gone on the next: the fence has to
+	// see the failure persist and then resolve.
+	var probes atomic.Int32
+	cfg.processAlive = func(int) bool { return probes.Add(1) <= 2 }
+	cfg.fenceWatchEvery = 10 * time.Millisecond
 
 	cfg.fenceVolume(t.Context(), volumeName, "node-b", "taken")
 
 	cfg.mu.Lock()
 	mounted := len(cfg.MountedVolumes)
 	cfg.mu.Unlock()
-	require.Equal(t, 1, mounted, "a fence that could not stop the writer must not report the volume released")
+	assert.Zero(t, mounted, "an export whose writer has exited must not stay registered")
+
+	_, held := cfg.leases.currentOwner(t.Context(), volumeName)
+	assert.False(t, held, "a fence that completed late must still release the lease, or the volume starts nowhere")
+}
+
+// TestVolumeFence_DoesNotCompleteForAWriterItCannotSee covers a kill refused
+// rather than ignored. Nothing then says what became of the writer, so treating
+// the PID's absence as an exit would release the lease on a guess.
+func TestVolumeFence_DoesNotCompleteForAWriterItCannotSee(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+
+	const volumeName = "vol-fencekillrefused"
+
+	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
+	cfg.MountedVolumes[0].PID = 0 // rejected by ForceKillProcess, so the kill cannot succeed
+	cfg.processAlive = func(int) bool { return false }
+	cfg.fenceWatchEvery = 10 * time.Millisecond
+
+	cfg.fenceVolume(t.Context(), volumeName, "node-b", "taken")
+
+	cfg.mu.Lock()
+	mounted := len(cfg.MountedVolumes)
+	cfg.mu.Unlock()
+	assert.Equal(t, 1, mounted, "an unproven writer must leave the export registered")
 
 	owner, held := cfg.leases.currentOwner(t.Context(), volumeName)
-	require.True(t, held, "the lease must not be released while this node is still exporting")
+	require.True(t, held, "the lease must not move on the strength of a PID this node never saw")
 	assert.Equal(t, "node-a", owner)
 }
 

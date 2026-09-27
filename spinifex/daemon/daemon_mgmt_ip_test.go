@@ -756,3 +756,198 @@ func TestPrimeMgmtNeighEntry_NoMACIsNoOp(t *testing.T) {
 		t.Errorf("prime calls = %d, want 0", len(*primed))
 	}
 }
+
+// mgmtIPEntryFor reads the cluster record's entry for one instance, so a test
+// can assert who is recorded as holding an address rather than inferring it from
+// whether the next allocation happens to collide.
+func mgmtIPEntryFor(t *testing.T, jsm *JetStreamManager, a *MgmtIPAllocator, instanceID string) (MgmtIPEntry, bool) {
+	t.Helper()
+	record, err := updateMgmtIPAMWithRetry(jsm, a.subnet, func(*MgmtIPRecord) {}, false)
+	if err != nil {
+		t.Fatalf("read mgmt ipam record: %v", err)
+	}
+	for _, e := range record.Allocated {
+		if e.InstanceID == instanceID {
+			return e, true
+		}
+	}
+	return MgmtIPEntry{}, false
+}
+
+// The node an instance left runs the teardown for it, and br-mgmt is one flat L2
+// segment across the cluster. A release there would put an address still in use
+// back in the pool for any node's next instance, so only the node the entry
+// names may free it.
+func TestMgmtIPAllocator_ReleaseWillNotFreeAnAddressAnotherNodeHolds(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+
+	node1, err := NewMgmtIPAllocator("10.31.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node1.BindKV(jsm, "node-1")
+	cleanupMgmtIPAM(t, jsm, node1)
+
+	node2, err := NewMgmtIPAllocator("10.31.8.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node2.BindKV(jsm, "node-2")
+
+	ip, err := node1.Allocate("i-moved")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The instance is recovered onto node2, which takes the reservation over.
+	node2.Claim("i-moved", ip)
+
+	// node1 then reaches its own teardown for the copy it is dropping.
+	node1.Release("i-moved")
+
+	entry, present := mgmtIPEntryFor(t, jsm, node1, "i-moved")
+	if !present {
+		t.Fatalf("node-1 freed %s while node-2 was running the instance; "+
+			"on a flat segment the next instance anywhere can now be given an address in use", ip)
+	}
+	if entry.Node != "node-2" || entry.IP != ip {
+		t.Errorf("entry after the takeover = %+v, want node-2 holding %s", entry, ip)
+	}
+}
+
+// Without the claim the entry keeps naming the node the instance left, so the
+// node actually running it could never give the address back and it would stay
+// reserved for good.
+func TestMgmtIPAllocator_ClaimLetsTheNewHolderReleaseItLater(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+
+	node1, err := NewMgmtIPAllocator("10.32.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node1.BindKV(jsm, "node-1")
+	cleanupMgmtIPAM(t, jsm, node1)
+
+	node2, err := NewMgmtIPAllocator("10.32.8.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node2.BindKV(jsm, "node-2")
+
+	ip, err := node1.Allocate("i-moved")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node2.Claim("i-moved", ip)
+	node2.Release("i-moved")
+
+	if entry, present := mgmtIPEntryFor(t, jsm, node1, "i-moved"); present {
+		t.Errorf("the holder could not release its own address: entry still %+v", entry)
+	}
+
+	// And the address is genuinely back, not merely unrecorded.
+	reused, err := node1.Allocate("i-next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != ip {
+		t.Errorf("next allocation = %q, want the freed address %q", reused, ip)
+	}
+}
+
+// Claim is idempotent and does not allocate: an instance carrying an address
+// nothing wrote down still holds it on the segment, so the record has to say so.
+func TestMgmtIPAllocator_ClaimRecordsAnAddressWithNoEntry(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+
+	a, err := NewMgmtIPAllocator("10.33.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.BindKV(jsm, "node-a")
+	cleanupMgmtIPAM(t, jsm, a)
+
+	a.Claim("i-orphan", "10.33.8.77")
+	a.Claim("i-orphan", "10.33.8.77")
+
+	entry, present := mgmtIPEntryFor(t, jsm, a, "i-orphan")
+	if !present {
+		t.Fatal("an address in use on the segment must be recorded, or another instance is given it")
+	}
+	if entry.IP != "10.33.8.77" || entry.Node != "node-a" {
+		t.Errorf("entry = %+v, want node-a holding 10.33.8.77", entry)
+	}
+
+	// Allocate must now route around it rather than handing it out again.
+	ip, err := a.Allocate("i-next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ip == "10.33.8.77" {
+		t.Error("Allocate handed out an address Claim had already recorded as in use")
+	}
+}
+
+// A record written before the node field existed names nobody. Refusing those
+// would leak every pre-upgrade address forever, which is worse than the
+// collision the check exists to prevent — there is no other holder to collide
+// with.
+func TestMgmtIPAllocator_ReleaseFreesAnEntryThatNamesNoNode(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+
+	a, err := NewMgmtIPAllocator("10.34.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.BindKV(jsm, "node-a")
+	cleanupMgmtIPAM(t, jsm, a)
+
+	if _, err := updateMgmtIPAMWithRetry(jsm, a.subnet, func(r *MgmtIPRecord) {
+		r.Subnet = a.subnet
+		r.Allocated = append(r.Allocated, MgmtIPEntry{IP: "10.34.8.10", InstanceID: "i-legacy"})
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	a.Release("i-legacy")
+
+	if entry, present := mgmtIPEntryFor(t, jsm, a, "i-legacy"); present {
+		t.Errorf("a pre-upgrade entry was left reserved forever: %+v", entry)
+	}
+}
+
+// Rebuild runs on a node that is already running the instance, so it is the
+// other place the record can be told the address moved — the case where the
+// recovery happened while this node was down.
+func TestMgmtIPAllocator_RebuildTakesOverAnEntryFromAnotherNode(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+
+	node1, err := NewMgmtIPAllocator("10.35.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node1.BindKV(jsm, "node-1")
+	cleanupMgmtIPAM(t, jsm, node1)
+
+	node2, err := NewMgmtIPAllocator("10.35.8.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node2.BindKV(jsm, "node-2")
+
+	ip, err := node1.Allocate("i-moved")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node2.Rebuild(map[string]*vm.VM{"i-moved": {MgmtIP: ip}})
+
+	entry, present := mgmtIPEntryFor(t, jsm, node1, "i-moved")
+	if !present {
+		t.Fatal("the entry vanished; Rebuild must re-stamp it, not remove it")
+	}
+	if entry.Node != "node-2" {
+		t.Errorf("holder after rebuild = %q, want node-2, or nothing can ever release this address", entry.Node)
+	}
+}

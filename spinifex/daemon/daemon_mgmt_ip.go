@@ -133,9 +133,11 @@ func NewMgmtIPAllocator(bridgeIP string) (*MgmtIPAllocator, error) {
 
 // BindKV attaches the cluster-wide KV backing store. Called once from
 // daemon.startCluster after JetStream is up — never from startLocal (DDIL
-// §1e-audit). node identifies this node's entries in the shared record for
-// audit; it plays no part in allocation, which considers every entry in the
-// record regardless of which node owns it.
+// §1e-audit).
+//
+// node plays no part in allocation, which considers every entry in the record
+// regardless of which node owns it. It does decide releases: only the node an
+// entry names may give that address back.
 func (a *MgmtIPAllocator) BindKV(jsManager *JetStreamManager, node string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -239,7 +241,7 @@ func (a *MgmtIPAllocator) Release(instanceID string) {
 	a.mu.Lock()
 	ip, hadLocal := a.allocated[instanceID]
 	delete(a.allocated, instanceID)
-	jsManager, subnet := a.jsManager, a.subnet
+	jsManager, node, subnet := a.jsManager, a.node, a.subnet
 	a.mu.Unlock()
 
 	if hadLocal {
@@ -254,17 +256,91 @@ func (a *MgmtIPAllocator) Release(instanceID string) {
 	// (or that no node has a record for) must not conjure an empty record
 	// into existence — jetstream.ErrKeyNotFound just means there was nothing to
 	// release.
+	//
+	// Only the node the entry names may free it. br-mgmt is one flat L2 segment
+	// across the cluster, so a node that gives back an address still in use puts
+	// it up for the next instance anywhere — and this path runs on exactly the
+	// node that should not: the one dropping a guest another node now runs,
+	// whether it was fenced or found superseded on its return.
+	foreign := ""
 	_, err := updateMgmtIPAMWithRetry(jsManager, subnet, func(r *MgmtIPRecord) {
+		foreign = ""
 		for i, e := range r.Allocated {
-			if e.InstanceID == instanceID {
-				r.Allocated = append(r.Allocated[:i], r.Allocated[i+1:]...)
+			if e.InstanceID != instanceID {
+				continue
+			}
+			// An entry written before the node field existed names nobody, and
+			// refusing those would leak every pre-upgrade address forever.
+			if e.Node != "" && e.Node != node {
+				foreign = e.Node
 				return
 			}
+			r.Allocated = append(r.Allocated[:i], r.Allocated[i+1:]...)
+			return
 		}
 	}, false)
 	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		slog.Warn("Failed to release mgmt IP in cluster KV; address remains reserved until reconciled",
 			"instance", instanceID, "err", err)
+	}
+	if foreign != "" {
+		slog.Info("Left a management IP reserved: it belongs to the node running this instance now",
+			"instance", instanceID, "ip", ip, "holder", foreign, "node", node)
+	}
+}
+
+// Claim records this node as the holder of an instance's management IP, for an
+// instance that arrived here from somewhere else.
+//
+// It is the other half of a node-scoped release. Without it the entry keeps
+// naming the node the instance left, so the node actually running it could never
+// give the address back and it would stay reserved for good.
+//
+// Idempotent, and it does not allocate: a record with no entry for the instance
+// gets one for the address the instance already carries, because that address is
+// in use on the segment whether or not anything wrote it down.
+func (a *MgmtIPAllocator) Claim(instanceID, mgmtIP string) {
+	if instanceID == "" || mgmtIP == "" {
+		return
+	}
+
+	a.mu.Lock()
+	a.allocated[instanceID] = mgmtIP
+	jsManager, node, subnet := a.jsManager, a.node, a.subnet
+	a.mu.Unlock()
+
+	if jsManager == nil {
+		return
+	}
+
+	moved := ""
+	_, err := updateMgmtIPAMWithRetry(jsManager, subnet, func(r *MgmtIPRecord) {
+		moved = ""
+		if r.Subnet == "" {
+			r.Subnet = subnet
+		}
+		for i, e := range r.Allocated {
+			if e.InstanceID != instanceID {
+				continue
+			}
+			if e.Node == node && e.IP == mgmtIP {
+				return
+			}
+			moved = e.Node
+			r.Allocated[i].Node = node
+			r.Allocated[i].IP = mgmtIP
+			return
+		}
+		r.Allocated = append(r.Allocated, MgmtIPEntry{IP: mgmtIP, InstanceID: instanceID, Node: node})
+	}, true)
+	if err != nil {
+		slog.Warn("Failed to claim mgmt IP in cluster KV; the address stays recorded against its previous holder",
+			"instance", instanceID, "ip", mgmtIP, "err", err)
+		return
+	}
+	if moved != "" {
+		slog.Info("Took over a management IP from the node the instance left",
+			"instance", instanceID, "ip", mgmtIP, "from", moved, "node", node)
 	}
 }
 
@@ -309,10 +385,16 @@ func (a *MgmtIPAllocator) Rebuild(vms map[string]*vm.VM) {
 			if r.Subnet == "" {
 				r.Subnet = subnet
 			}
-			for _, e := range r.Allocated {
-				if e.InstanceID == id {
-					return // already reconciled
+			for i, e := range r.Allocated {
+				if e.InstanceID != id {
+					continue
 				}
+				// Re-stamped rather than left alone: this node is running the
+				// instance, so it holds the address, and an entry still naming
+				// where the instance came from is one nobody may release.
+				r.Allocated[i].Node = node
+				r.Allocated[i].IP = mgmtIP
+				return
 			}
 			r.Allocated = append(r.Allocated, MgmtIPEntry{IP: mgmtIP, InstanceID: id, Node: node})
 		}, true)

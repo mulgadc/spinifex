@@ -58,3 +58,9 @@ var ErrQMPUnavailable = errors.New("QMP unavailable for instance")
 // lost the race and must not proceed to allocate resources or launch qemu
 // for that instance.
 var ErrStoppedInstanceClaimed = errors.New("stopped instance already claimed")
+
+// ErrRecoveryClaimLost is returned when the CAS that takes an instance off a
+// node that stopped heartbeating did not land: another survivor won it, or the
+// record changed underneath the attempt. Losing is ordinary, so the caller
+// moves on rather than retrying.
+var ErrRecoveryClaimLost = errors.New("instance recovery claim lost")

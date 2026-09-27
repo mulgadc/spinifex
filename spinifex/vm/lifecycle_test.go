@@ -1259,13 +1259,25 @@ func TestQMPGreetingTimeout(t *testing.T) {
 	assert.Equal(t, qmp.DefaultGreetingTimeout, qmpGreetingTimeout(plain),
 		"a plain VM keeps the default greeting deadline")
 
+	// A guest with a network-backed root volume, which is every real one. QEMU
+	// opens the drive across the object store before its monitor answers, and
+	// the default deadline is shorter than a cold open costs on a cluster that
+	// has just lost a node — which is the only time a recovery launch happens.
+	nbd := &VM{EBSRequests: types.EBSRequests{Requests: []types.EBSRequest{
+		{Name: "vol-boot", NBDURI: "nbd+unix:///?socket=/run/spinifex/nbd/boot.sock", Boot: true},
+	}}}
+	assert.Equal(t, qmpNBDGreetingTimeout, qmpGreetingTimeout(nbd),
+		"a guest with an NBD drive waits for the volume open, not the plain default")
+	assert.Greater(t, qmpNBDGreetingTimeout, 35*time.Second,
+		"the deadline must exceed the 35s cold open measured with one node of three away")
+
 	// A small GPU guest (<1 GiB scaling contribution) sits at the floor.
 	smallGPU := &VM{
 		GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:5e:00.0"}},
 		Config:         Config{Memory: 4096},
 	}
-	assert.Equal(t, qmpVFIOGreetingFloor, qmpGreetingTimeout(smallGPU),
-		"a small VFIO guest gets the floor greeting deadline")
+	assert.Equal(t, qmp.DefaultGreetingTimeout+qmpVFIOGreetingFloor, qmpGreetingTimeout(smallGPU),
+		"a small VFIO guest gets the floor on top of the plain startup it still pays")
 	assert.Greater(t, qmpVFIOGreetingFloor, qmp.DefaultGreetingTimeout,
 		"the VFIO floor must exceed the plain default")
 
@@ -1274,7 +1286,7 @@ func TestQMPGreetingTimeout(t *testing.T) {
 		GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:5e:00.0"}},
 		Config:         Config{Memory: 64 * 1024},
 	}
-	assert.Equal(t, qmpVFIOGreetingBase+64*qmpVFIOGreetingPerGiB, qmpGreetingTimeout(largeGPU),
+	assert.Equal(t, qmp.DefaultGreetingTimeout+qmpVFIOGreetingBase+64*qmpVFIOGreetingPerGiB, qmpGreetingTimeout(largeGPU),
 		"a large VFIO guest scales its deadline with RAM")
 
 	// An oversized guest is clamped to the cap, not left unbounded.
@@ -1282,8 +1294,42 @@ func TestQMPGreetingTimeout(t *testing.T) {
 		GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:5e:00.0"}},
 		Config:         Config{Memory: 1024 * 1024},
 	}
-	assert.Equal(t, qmpVFIOGreetingCap, qmpGreetingTimeout(hugeGPU),
+	assert.Equal(t, qmpGreetingCap, qmpGreetingTimeout(hugeGPU),
 		"a huge VFIO guest is clamped to the cap")
+}
+
+// TestQMPGreetingTimeoutAddsBothCosts is the case a real GPU instance is: it
+// boots from a network-backed root volume and it passes through a GPU, so QEMU
+// opens the drive over the object store and then pins the whole of guest RAM,
+// one after the other, all before the monitor answers.
+//
+// Taking whichever cost is larger would give it a deadline that cannot cover
+// what it has to do. The symptom would be a GPU instance SIGKILLed on every
+// attempt while its plain sibling launches, which reads as a GPU fault.
+func TestQMPGreetingTimeoutAddsBothCosts(t *testing.T) {
+	// EBSRequests carries a mutex, so each VM gets its own rather than a copy.
+	withDrive := func(v *VM) *VM {
+		v.EBSRequests.Requests = []types.EBSRequest{
+			{Name: "vol-boot", NBDURI: "nbd+unix:///?socket=/run/spinifex/nbd/boot.sock", Boot: true},
+		}
+		return v
+	}
+	attachment := []gpu.GPUAttachment{{PCIAddress: "0000:5e:00.0"}}
+
+	gpuOnly := &VM{GPUAttachments: attachment, Config: Config{Memory: 16 * 1024}}
+	driveOnly := withDrive(&VM{})
+	both := withDrive(&VM{GPUAttachments: attachment, Config: Config{Memory: 16 * 1024}})
+
+	// 16 GiB scales to 158s, so the VFIO term is its floor.
+	assert.Equal(t, qmpNBDGreetingTimeout+qmpVFIOGreetingFloor, qmpGreetingTimeout(both),
+		"the two costs are sequential, so the deadline that covers both is their sum")
+	assert.Greater(t, qmpGreetingTimeout(both), qmpGreetingTimeout(gpuOnly),
+		"a GPU guest that also has to open a volume over the network must be given longer than one that does not")
+	assert.Greater(t, qmpGreetingTimeout(both), qmpGreetingTimeout(driveOnly),
+		"and longer than a guest that only has the volume to open")
+
+	assert.Greater(t, qmpGreetingCap, qmpVFIOGreetingFloor+qmpNBDGreetingTimeout,
+		"the cap has to clear both floors together, or it clips a guest before either cost has been waited out")
 }
 
 // TestRemoveStaleQMPSocket covers the SIGKILL-leftover unlink: a stale socket

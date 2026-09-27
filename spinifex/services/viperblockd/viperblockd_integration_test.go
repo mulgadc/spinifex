@@ -54,7 +54,7 @@ func installTestVolumeLeases(t *testing.T, cfg *Config, natsURL string) {
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	leases, err := newVolumeLeases(t.Context(), nc, cfg.leaseOwner())
+	leases, err := newVolumeLeases(t.Context(), nc, cfg.leaseOwner(), 1)
 	require.NoError(t, err)
 	cfg.leases = leases
 }

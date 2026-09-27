@@ -25,6 +25,12 @@ const (
 	recoveryJournalThisRun = `sudo journalctl --no-pager ` +
 		`_SYSTEMD_INVOCATION_ID="$(systemctl show -p InvocationID --value spinifex-daemon)"`
 
+	// The same for the storage service. The lease, the surrender and the fence
+	// are its work: the daemon only hears the announcement afterwards, so its
+	// journal carries the consequence and never the reason.
+	recoveryStorageJournalThisRun = `sudo journalctl --no-pager ` +
+		`_SYSTEMD_INVOCATION_ID="$(systemctl show -p InvocationID --value spinifex-viperblock)"`
+
 	// The owner has to be seen stale across two passes before anything is
 	// claimed, then the volume leases have to expire before the launch can open
 	// them. That is roughly a minute of unavoidable waiting before the first
@@ -126,7 +132,7 @@ func runInstanceAutoRecovery(t *testing.T, fix *Fixture) {
 		return len(hosting) > 0
 	}, recoveryBudget, 15*time.Second,
 		"%s never came back on a survivor after %s stopped answering\n%s",
-		instanceID, victim.Name, recoveryWhy(t, fix, victim, instanceID))
+		instanceID, victim.Name, lazyWhy(func() string { return recoveryWhy(t, fix, victim, instanceID) }))
 
 	require.Lenf(t, hosting, 1, "%s is running on more than one survivor: %v",
 		instanceID, recoveryNodeNames(hosting))
@@ -405,15 +411,30 @@ func recoveryWhy(t *testing.T, fix *Fixture, victim harness.Node, instanceID str
 		if node.Name == victim.Name {
 			continue
 		}
-		out, err := recoveryRunErr(node,
-			"sudo journalctl -u spinifex-daemon --no-pager -n 500 | grep -iE 'recovery|claim|stopped heartbeating' | tail -20")
-		if err != nil {
-			out = "(" + err.Error() + ")"
+		for label, query := range map[string]string{
+			"recovery log": recoveryJournalThisRun + " | grep -iE 'recovery|claim|stopped heartbeating' | tail -20",
+			// A claim that succeeds and then cannot mount fails in the storage
+			// service, and the daemon records only that the attempt did not
+			// complete. Without this the reason is not in the failure at all.
+			"storage log": recoveryStorageJournalThisRun + " | grep -iE 'lease|dirty|mount' | tail -20",
+		} {
+			out, err := recoveryRunErr(node, query)
+			if err != nil {
+				out = "(" + err.Error() + ")"
+			}
+			fmt.Fprintf(&b, "         %s %s:\n%s\n", node.Name, label, strings.TrimSpace(out))
 		}
-		fmt.Fprintf(&b, "         %s recovery log:\n%s\n", node.Name, strings.TrimSpace(out))
 	}
 	return b.String()
 }
+
+// lazyWhy defers a diagnostic until the assertion formats it. require.Eventuallyf
+// evaluates its message arguments at the call site, so a diagnostic passed
+// directly describes the moment the wait began and never the failure — which is
+// how a ten-minute wait came to be explained by a log that stopped before it.
+type lazyWhy func() string
+
+func (f lazyWhy) String() string { return f() }
 
 func recoveryNodeNames(nodes []harness.Node) []string {
 	names := make([]string, 0, len(nodes))

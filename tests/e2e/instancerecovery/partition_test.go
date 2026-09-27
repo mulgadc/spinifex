@@ -91,11 +91,12 @@ func runInstancePartitionRecovery(t *testing.T, fix *Fixture) {
 	}, partitionFenceBudget, 5*time.Second,
 		"%s is still running %s after %s with no way to confirm it owns the volume; "+
 			"a node that cannot prove it is the only writer and keeps writing is the corruption this fence exists to prevent\n%s",
-		victim.Name, instanceID, partitionFenceBudget, partitionWhy(t, victim, instanceID))
+		victim.Name, instanceID, partitionFenceBudget,
+		lazyWhy(func() string { return partitionWhy(t, victim, instanceID) }))
 
 	// Why it stopped, not just that it did. A guest killed by the OOM killer
 	// would satisfy the count above and mean the opposite.
-	journal := recoveryRun(t, victim, recoveryJournalThisRun+" | grep -iE 'lease|fenc' | tail -40")
+	journal := recoveryRun(t, victim, recoveryStorageJournalThisRun+" | grep -iE 'lease|fenc' | tail -40")
 	assert.Containsf(t, journal, partitionSurrenderLog,
 		"%s stopped the guest without recording that its lease went unconfirmed, so it stopped for some other reason\n%s",
 		victim.Name, journal)
@@ -109,7 +110,7 @@ func runInstancePartitionRecovery(t *testing.T, fix *Fixture) {
 		return len(hosting) > 0
 	}, partitionRecoveryBudget, 15*time.Second,
 		"%s never came back on a survivor while %s was partitioned\n%s",
-		instanceID, victim.Name, recoveryWhy(t, fix, victim, instanceID))
+		instanceID, victim.Name, lazyWhy(func() string { return recoveryWhy(t, fix, victim, instanceID) }))
 
 	require.Lenf(t, hosting, 1, "%s is running on more than one survivor: %v",
 		instanceID, recoveryNodeNames(hosting))
@@ -234,6 +235,7 @@ func partitionWhy(t *testing.T, victim harness.Node, instanceID string) string {
 	var b strings.Builder
 	for _, query := range []string{
 		recoveryJournalThisRun + " | grep -iE 'lease|fenc|nats' | tail -30",
+		recoveryStorageJournalThisRun + " | grep -iE 'lease|fenc|nats' | tail -30",
 		"ps auxw | grep -F " + harness.ShellQuote(instanceID) + " | grep -v grep || true",
 		"sudo nft list table inet " + "spx_e2e_partition" + " 2>&1 | head -30",
 	} {

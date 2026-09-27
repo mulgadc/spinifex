@@ -128,17 +128,23 @@ type volumeLeases struct {
 }
 
 // newVolumeLeases binds the lease bucket, creating it if this is the first
-// node up. owner identifies this node in the entries it writes.
-func newVolumeLeases(ctx context.Context, nc *nats.Conn, owner string) (*volumeLeases, error) {
+// node up. owner identifies this node in the entries it writes, and replicas is
+// the cluster size: this bucket decides who may write a volume, so a single
+// replica would put every volume in the cluster behind one node staying up.
+func newVolumeLeases(ctx context.Context, nc *nats.Conn, owner string, replicas int) (*volumeLeases, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
+	// Create-or-update rather than create: a bucket left behind by a build that
+	// made it single-replica is raised here, and a cluster cannot be asked to
+	// lose its leases to be repaired.
 	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:      volumeLeaseBucket,
 		Description: "one entry per volume with a viperblock engine open on it",
 		TTL:         volumeLeaseTTL,
 		History:     1,
+		Replicas:    max(replicas, 1),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("volume lease bucket: %w", err)

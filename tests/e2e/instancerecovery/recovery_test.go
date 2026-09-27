@@ -19,13 +19,11 @@ import (
 )
 
 const (
-	recoveryConfigFile = "/etc/spinifex/spinifex.toml"
-	recoveryConfigBak  = "/var/tmp/spinifex.toml.e2e-instance-recovery"
-
-	// Recovery defaults off, so every node has to be told. Appended rather than
-	// edited in place: the section does not exist in an installed config, and a
-	// duplicate key would be the config loader's problem rather than ours.
-	recoveryEnableTOML = `printf '\n[recovery]\nenabled = true\n'`
+	// recoveryJournalThisRun reads the daemon's log for its current invocation
+	// only. Scoping it that way is what lets a line logged once at startup be
+	// found on a daemon that has been up for days.
+	recoveryJournalThisRun = `sudo journalctl --no-pager ` +
+		`_SYSTEMD_INVOCATION_ID="$(systemctl show -p InvocationID --value spinifex-daemon)"`
 
 	// The owner has to be seen stale across two passes before anything is
 	// claimed, then the volume leases have to expire before the launch can open
@@ -82,7 +80,7 @@ systemd-run --unit=spx-e2e-diskload /usr/local/sbin/spx-e2e-diskload
 // it is.
 func runInstanceAutoRecovery(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Instance Auto-Recovery")
-	recoveryEnable(t, fix)
+	recoveryWaitActive(t, fix)
 
 	victim, instanceID := recoveryGuestOnAPeer(t, fix, "")
 	harness.Detail(t, "victim_node", victim.Name)
@@ -138,7 +136,7 @@ func runInstanceAutoRecovery(t *testing.T, fix *Fixture) {
 // move, and when the store comes back the guest must resume where it was.
 func runInstanceRecoveryRefusesStorageFault(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Recovery Refuses a Storage Fault")
-	recoveryEnable(t, fix)
+	recoveryWaitActive(t, fix)
 
 	victim, instanceID := recoveryGuestOnAPeer(t, fix, diskLoadUserData)
 	harness.Detail(t, "victim_node", victim.Name)
@@ -190,51 +188,29 @@ func runInstanceRecoveryRefusesStorageFault(t *testing.T, fix *Fixture) {
 		"%s is not running on exactly one node once the store returned", instanceID)
 }
 
-// recoveryEnable turns recovery on across the cluster and restarts each daemon
-// to read it, restoring both when the test ends.
+// recoveryWaitActive waits until every node has recovery running, and nothing
+// here turns it on: there is no setting to turn on.
 //
-// Every node, not just the survivors: the flag is read locally and any node may
-// be the one that claims. The restart is what makes the settle window start
-// here rather than at boot, which is also what makes the window observable.
-func recoveryEnable(t *testing.T, fix *Fixture) {
+// That absence is the assertion. A cluster installed by the ordinary path has
+// recovery active on every node with no config written and no daemon restarted,
+// so a build that reintroduced a switch would fail here rather than quietly
+// leaving a dead node's guests down.
+//
+// Every node, not just the survivors, because any of them may be the one that
+// claims. The reconciler is also inert until it has seen every peer live, so a
+// run that started measuring before that would be measuring the settle window.
+func recoveryWaitActive(t *testing.T, fix *Fixture) {
 	t.Helper()
-	harness.Step(t, "enable [recovery] on all %d nodes and restart their daemons", len(fix.Cluster.Nodes))
+	harness.Step(t, "wait for all %d nodes to report recovery active, with no config written", len(fix.Cluster.Nodes))
 
-	for _, node := range fix.Cluster.Nodes {
-		if already := strings.TrimSpace(recoveryRun(t, node,
-			"sudo grep -c '^\\[recovery\\]' "+recoveryConfigFile+" || true")); already != "0" {
-			continue
-		}
-		recoveryRun(t, node, "sudo cp -a "+recoveryConfigFile+" "+recoveryConfigBak)
-		recoveryRun(t, node, recoveryEnableTOML+" | sudo tee -a "+recoveryConfigFile+" >/dev/null")
-
-		restore := node
-		t.Cleanup(func() {
-			if _, err := recoveryRunErr(restore, "test -e "+recoveryConfigBak); err != nil {
-				return
-			}
-			recoveryRun(t, restore, "sudo cp -a "+recoveryConfigBak+" "+recoveryConfigFile+
-				" && sudo rm -f "+recoveryConfigBak+" && sudo systemctl restart spinifex-daemon")
-		})
-	}
-
-	for _, node := range fix.Cluster.Nodes {
-		recoveryRun(t, node, "sudo systemctl restart spinifex-daemon")
-	}
-	for _, node := range fix.Cluster.Nodes {
-		harness.WaitNodeServiceReady(t, node, harness.WithTimeout(3*time.Minute))
-	}
-
-	// The reconciler is inert until it has seen every peer live, so a run that
-	// started measuring before that would be measuring the settle window.
-	harness.Step(t, "wait for every daemon to report recovery active")
 	for _, node := range fix.Cluster.Nodes {
 		n := node
 		require.Eventuallyf(t, func() bool {
-			out, err := recoveryRunErr(n, "sudo journalctl -u spinifex-daemon --no-pager -n 500")
+			out, err := recoveryRunErr(n, recoveryJournalThisRun)
 			return err == nil && strings.Contains(out, "recovery has seen every peer live")
-		}, 3*time.Minute, 5*time.Second,
-			"%s never reported recovery active, so nothing below would be a test of it", n.Name)
+		}, 6*time.Minute, 5*time.Second,
+			"%s never reported recovery active, so either the settle window has not passed "+
+				"or recovery is off on a cluster nothing configured — and nothing below would be a test of it", n.Name)
 	}
 }
 

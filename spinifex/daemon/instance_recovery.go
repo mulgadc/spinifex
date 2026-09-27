@@ -60,9 +60,15 @@ type recoveryCandidate struct {
 // Every node runs the same loop with no leader between them. A leader would
 // add failover state and no safety: the claim is a CAS on the instance record,
 // so several nodes racing one instance already resolve to one winner.
+//
+// There is no setting for this. An instance whose host is gone is down either
+// way, so the only thing a switch could buy is leaving it down, and a cluster
+// configured into that state by accident is a worse outcome than any this
+// recovers from. The conditions below are what make it inert, and each is a
+// fact about the cluster rather than a choice about it.
 func (d *Daemon) startInstanceRecovery() {
-	if d.clusterConfig == nil || !d.clusterConfig.Recovery.Enabled {
-		slog.Info("Instance recovery is disabled", "node", d.node)
+	if d.clusterConfig == nil {
+		slog.Warn("Instance recovery not started: no cluster config")
 		return
 	}
 	if d.jsManager == nil || d.instanceService == nil {

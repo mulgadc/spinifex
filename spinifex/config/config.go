@@ -18,7 +18,6 @@ type ClusterConfig struct {
 	Network   NetworkConfig     `mapstructure:"network"`   // cluster-wide external network settings
 	Bootstrap BootstrapConfig   `mapstructure:"bootstrap"` // default VPC IDs for OVN reconciliation
 	AWS       AWSConfig         `mapstructure:"aws"`       // cluster-wide AWS-parity settings (region, endpoint suffix)
-	Recovery  RecoveryConfig    `mapstructure:"recovery"`  // automatic instance recovery after a host failure
 	Nodes     map[string]Config `mapstructure:"nodes"`     // full config for every node
 }
 
@@ -250,17 +249,6 @@ const (
 	// DefaultCacheSizeMB is the per-volume plaintext read cache.
 	DefaultCacheSizeMB = 128
 )
-
-// RecoveryConfig turns automatic instance recovery on.
-//
-// It is cluster-wide rather than per node, because a node that has it off is
-// not opting out of anything: recovery is something survivors do to a dead
-// node's instances, so a per-node setting would read as a promise it cannot
-// keep. It defaults off so that turning it on is deliberate, once every node
-// carries the code.
-type RecoveryConfig struct {
-	Enabled bool `json:"Enabled" mapstructure:"enabled"`
-}
 
 // EBSConfig selects which provider backs EBS and carries the per-volume
 // export tunables. Not nested under ViperblockConfig: it names the provider

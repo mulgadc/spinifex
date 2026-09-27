@@ -5,7 +5,11 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,30 +198,28 @@ func TestTheSettleWindowReleasesWhenItExpires(t *testing.T) {
 		"a peer that never returns is the genuine failure, with nothing to compare against")
 }
 
-// The three refusals that decide whether the loop starts at all. Each is a
-// different kind of "not here": not asked for, not wired up, and not a cluster
-// big enough for recovery to mean anything.
+// Every refusal that stops the loop starting, and none of them is a setting.
+// Each is a fact about the cluster — not wired up, or not big enough for
+// recovery to mean anything — so no cluster can be configured into leaving a
+// dead node's guests down.
 func TestWhatStopsTheLoopStarting(t *testing.T) {
 	threeNodes := map[string]config.Config{"node-1": {}, "node-2": {}, "node-3": {}}
 
 	tests := []struct {
-		name  string
-		build func() *Daemon
+		name   string
+		reason string
+		build  func() *Daemon
 	}{
-		{"off by default", func() *Daemon {
+		{"no cluster config to read the node list from", "no cluster config", func() *Daemon {
+			return &Daemon{node: "node-1"}
+		}},
+		{"no JetStream to read records from", "JetStream or the instance service is unavailable", func() *Daemon {
 			return &Daemon{node: "node-1", clusterConfig: &config.ClusterConfig{Nodes: threeNodes}}
 		}},
-		{"no JetStream to read records from", func() *Daemon {
-			cfg := &config.ClusterConfig{Nodes: threeNodes}
-			cfg.Recovery.Enabled = true
-			return &Daemon{node: "node-1", clusterConfig: cfg}
-		}},
-		{"too few nodes to move a guest between", func() *Daemon {
-			cfg := &config.ClusterConfig{Nodes: map[string]config.Config{"node-1": {}, "node-2": {}}}
-			cfg.Recovery.Enabled = true
+		{"too few nodes to move a guest between", "inert on a cluster this small", func() *Daemon {
 			return &Daemon{
 				node:            "node-1",
-				clusterConfig:   cfg,
+				clusterConfig:   &config.ClusterConfig{Nodes: map[string]config.Config{"node-1": {}, "node-2": {}}},
 				jsManager:       &JetStreamManager{},
 				instanceService: &handlers_ec2_instance.InstanceServiceImpl{},
 			}
@@ -226,10 +228,27 @@ func TestWhatStopsTheLoopStarting(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
 			d := tc.build()
-			assert.NotPanics(t, d.startInstanceRecovery,
+			require.NotPanics(t, d.startInstanceRecovery,
 				"a refusal to start has to return, not fail")
+			assert.Contains(t, logs.String(), tc.reason,
+				"the operator has to be told which condition made recovery inert here")
 		})
+	}
+}
+
+// TestRecoveryHasNoOffSwitch pins the absence itself, because the cheapest way
+// to reintroduce one is to add a field nobody notices. A guest whose host is
+// gone is down either way, so a switch could only buy leaving it down.
+func TestRecoveryHasNoOffSwitch(t *testing.T) {
+	for field := range reflect.TypeFor[config.ClusterConfig]().Fields() {
+		assert.NotContains(t, strings.ToLower(field.Name), "recover",
+			"ClusterConfig.%s reads as a recovery setting, and recovery is not configurable", field.Name)
 	}
 }
 

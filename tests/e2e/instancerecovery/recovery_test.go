@@ -56,13 +56,23 @@ const (
 	// clusters give guests no public address, so a test that needed to log in
 	// could not run on half the cells. The console is readable the same way, by
 	// the API, so the marker travels the same path.
+	//
+	// The writing never stops and the announcing does. The console is a ring the
+	// whole test reads back, and a line a second for an hour pushes everything
+	// that explains a failure out of it — including the kernel's own account of
+	// the I/O error this test exists to produce.
 	diskLoadUserData = `#!/bin/bash
 cat > /usr/local/sbin/spx-e2e-diskload <<'EOF'
 #!/bin/bash
+announce=20
 while true; do
   dd if=/dev/urandom of=/var/tmp/spx-e2e-load bs=1M count=32 oflag=direct conv=fsync 2>/dev/null
   sync
-  echo "spx-e2e-diskload: writing" > /dev/console
+  if [ "$announce" -gt 0 ]; then
+    echo "spx-e2e-diskload: writing" > /dev/console
+    announce=$((announce - 1))
+    [ "$announce" -eq 0 ] && echo "spx-e2e-diskload: still writing, quietly from here" > /dev/console
+  fi
   sleep 1
 done
 EOF

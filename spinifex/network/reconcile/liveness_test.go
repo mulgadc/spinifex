@@ -64,14 +64,6 @@ func TestL2_DriftIntervalBounded(t *testing.T) {
 	// Blocked on a clock-injectable DriftLoop signature.
 }
 
-// TestL3_FederationReEnablesOnLinkRecovery is a placeholder for ADR-0006 L3
-// (OVN-IC tunnel re-establishment on inter-AZ link recovery).
-func TestL3_FederationReEnablesOnLinkRecovery(t *testing.T) {
-	t.Skip(`ADR-0006 L3 deferred: network/federation/ has not yet been built. ` +
-		`Once it lands, replace this stub with a test that drives a fake ` +
-		`LinkObserver from Down → Degraded and asserts BringUpLink fires.`)
-}
-
 // scaledIntent produces an IntentState with n VPCs, each with one subnet, port, and SG.
 func scaledIntent(t *testing.T, n int) IntentState {
 	t.Helper()

@@ -624,9 +624,7 @@ run_workbook() {
 
     local rc=0 destroy_log
     destroy_log=$(mktemp)
-    if assert_"${example//-/_}" && assert_clean_plan "$example" "${apply_args[@]}"; then
-        log "  PASS ${example}"
-    else
+    if ! assert_"${example//-/_}" || ! assert_clean_plan "$example" "${apply_args[@]}"; then
         log "  FAIL ${example}: assertion"
         # Capture OVN state while VMs still exist — the EXIT trap fires after
         # destroy, by which point port groups, address sets, and ACLs are gone.
@@ -646,6 +644,13 @@ run_workbook() {
         rc=1
     fi
     rm -f "$destroy_log"
+
+    # After the teardown, not before it. The verdict now depends on it, so a
+    # workbook that printed PASS and then failed to delete what it built would
+    # have reported both.
+    if [ "$rc" -eq 0 ]; then
+        log "  PASS ${example}"
+    fi
 
     cd "$SCRIPT_DIR"
     return "$rc"

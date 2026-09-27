@@ -27,6 +27,8 @@ resources:
 ## Table of Contents
 
 - [Overview](#overview)
+- [Support status](#support-status)
+  - [What happens when a node fails](#what-happens-when-a-node-fails)
 - [Why run Spinifex on OCI](#why-run-spinifex-on-oci)
 - [What OCI changes](#what-oci-changes)
 - [How it fits together](#how-it-fits-together)
@@ -52,9 +54,34 @@ Spinifex is an open-source infrastructure platform that brings core AWS services
 
 This guide runs that same stack on Oracle Cloud Infrastructure. Everything in [Single-Node Install](/docs/install) and [Multi-Node Install](/docs/install-multi-node) still applies: one node is a working install, three is the minimum for a cluster that can lose a node, and formation, storage and OVN behave exactly as they do on hardware you own. What changes is the layer underneath — an OCI VCN is not an Ethernet segment, so the external datapath is wired differently, and public addresses come from OCI's API rather than from a range you write in a config file.
 
-**Read this guide end to end and you have a working cluster.** [Deploying](#deploying) is one sequence of seven steps, from an empty compartment to a node that can launch an instance with a publicly reachable address. It builds the infrastructure with Terraform, then installs and forms Spinifex the same way [Single-Node Install](/docs/install) and [Multi-Node Install](/docs/install-multi-node) do — those steps are inlined here, so you do not need to read three documents at once. The only choice to make is one node or three, and it is one line in Step 1.
+**Read this guide end to end and you have a working cluster.** [Deploying](#deploying) is one sequence of eight steps, from an empty compartment to a node that can launch an instance with a publicly reachable address, and then to the Oracle Linux guest image to put on it. It builds the infrastructure with Terraform, then installs and forms Spinifex the same way [Single-Node Install](/docs/install) and [Multi-Node Install](/docs/install-multi-node) do — those steps are inlined here, so you do not need to read three documents at once. The only choice to make is one node or three, and it is one line in Step 1.
 
 Every command and every output below was run against a live OCI tenancy, on both paths.
+
+## Support status
+
+**What is written here was proven on one shape, in one region, on one guest OS.** Three nodes of `VM.Standard.E6.Flex` in `ap-sydney-1`, Ubuntu hosts, routed NAT, OCI reserved public IPs over secondary private IPs, with a single-node pass of the same guide beside it. Nothing about the integration is region-specific or shape-specific by design, but nothing else has been run, so treat another region, a bare-metal shape or a different host image as untested rather than unsupported — and record the shape, region, fault domains, quotas, kernel and `spx version` when you reproduce it, because that is the only way a later difference can be attributed.
+
+**OCI is not in the nightly test matrix.** The routed-NAT datapath this integration depends on is guarded nightly, on three nodes, on our own hardware — the behaviour is covered, the cloud underneath it is not. So an OCI-specific regression would be found by the next person to run this guide rather than by CI. That is a real gap and it is tracked; it is not a reason to avoid the integration, but it is a reason not to read "proven" as "continuously proven".
+
+### What happens when a node fails
+
+A three-node cluster recovers a guest from a node that has stopped heartbeating, onto a survivor, with no operator action. There is no setting for it: an instance whose host is gone is down either way, and the only thing a switch could buy is leaving it down. It is inert below three nodes, because a single node has nowhere to move a guest to.
+
+The cluster is deliberately slow to believe a node has gone. A daemon takes no recovery action until it has seen every peer live or five minutes have passed, so a coordinated restart does not look like three simultaneous host failures; a node has to be seen stale across two passes fifteen seconds apart; and the guest's volume lease has to lapse before anything else may open it. Expect a recovery to take minutes, not seconds.
+
+| Condition | What the cluster does | What you see |
+| --- | --- | --- |
+| A node stops heartbeating and a survivor can reach its own object store | A survivor claims the instance and relaunches it | The same instance ID, the same volume and the same private address on a new host. `DescribeInstanceStatus` reports the move, as it would on EC2 |
+| The volume is still leased by the node that had it | Retries every 15–90 seconds until the lease lapses | Recovery takes about a lease TTL longer. The guest never runs in two places |
+| A survivor's own object store is not answering | That node stands down and lets the others try | If the object store is broken everywhere, nothing moves and nothing claims to have moved. An instance that no node could have run stays where it is |
+| No survivor has capacity | Each survivor tries in its own order, with backoff | After the attempt budget the instance is stopped carrying `Server.InsufficientInstanceCapacity`, one `StartInstances` from running |
+| Anything else — a torn volume, an OCI API denial, a launch that will not finish | Retries with doubling backoff, bounded at twelve attempts, roughly an hour and a half | The instance is stopped carrying `Server.HostRecoveryFailed` and the last error. It is never left looping with nothing visible to you |
+| A planned whole-cluster restart | The settle window suppresses recovery while nodes return | Guests are not migrated out from under a deploy |
+
+**The public address follows the guest, and it keeps its identity while it does.** An OCI public address is a reserved public IP object that OCI 1:1-NATs onto a secondary private IP on a VNIC, and the guest only ever sees the private half. Recovery moves the private half between VNICs in the same subnet — one OCI call, server-side, keeping the OCID — so the reserved public IP is never released, never reallocated and never renumbered. The customer's address is the same address before and after. What does change is which node OCI delivers it to, and each node claims its own guests' addresses on a fifteen-second pass, so there is a window after the guest is running in which it is not yet reachable on its public address. Private VPC addresses have no such window: they are node-independent.
+
+**What this is not.** A fenced guest is stopped locally, and the volume lease is what stops it — it is not a write barrier the storage backend enforces. A node that loses contact with the cluster gives its volume up on a clock it can evaluate without reaching anything, which bounds the exposure to one renewal interval rather than to the lease TTL, and a survivor does not open the volume until the lease has lapsed. But a write the losing node had already issued is not refused by the object store, and the failure to stop the local writer is reported rather than corrected. So the guarantee is "one running guest, and a bounded, logged window" — not "a second writer is impossible". If your workload cannot tolerate that, it wants a replicated datastore rather than a recovered instance.
 
 ## Why run Spinifex on OCI
 
@@ -242,7 +269,7 @@ oci --version
 
 **Terraform builds the infrastructure; the standard Spinifex installer builds the node.** That split is deliberate — formation on OCI is the same path prod and bare metal take, and diverging it for one cloud would mean two formation paths to keep correct.
 
-There is one sequence of seven steps below, and the only thing that differs between a single node and a cluster is `node_count` in Step 1 and which variant of Steps 4 and 5 you follow. Decide now:
+There is one sequence of eight steps below, and the only thing that differs between a single node and a cluster is `node_count` in Step 1 and which variant of Steps 4 and 5 you follow. Decide now:
 
 | | Single node | Three nodes |
 | --- | --- | --- |
@@ -994,12 +1021,13 @@ ip -br addr show | grep ime-                 # holds 169.254.42.x, not .169.x
 - **IPv4 only.** IPv6 on OCI is materially simpler — no pools, prefixes assign directly to VCNs — but is not implemented.
 - **No BYOIP.** The integration accepts a public IP pool OCID in config so BYOIP becomes a config change rather than a code change, but the RIR validation and Oracle's own validation window both precede any use of it.
 - **OCI Block Volumes are not an EBS provider.** They back `/var/lib/spinifex` and therefore viperblock, which captures most of the performance benefit, but there is no native OCI block provider.
+- **A recovered guest is briefly unreachable on its public address.** The address is never renumbered, but the node it is delivered to is corrected by a background pass every fifteen seconds rather than by the recovery itself. Private VPC addresses are unaffected. [Support status](#support-status) has the detail.
 - **Terraform builds infrastructure, not Spinifex.** Formation is still the standard install path, by design: it is the same path prod and bare metal take, and diverging it for one cloud would mean two formation paths to keep correct.
 
 ### What is no longer a limit
 
 Recorded because earlier versions of this guide said otherwise:
 
-- **Multi-node works.** The `--nodes=1` cap on routed mode is gone, three-node formation and guest-to-guest traffic are proven on OCI, and the routed-NAT datapath is guarded nightly on three nodes.
+- **Multi-node works.** The `--nodes=1` cap on routed mode is gone, three-node formation and guest-to-guest traffic are proven on OCI, and the routed-NAT datapath is guarded nightly on three nodes — on our own hardware, not on OCI. See [Support status](#support-status).
 - **Public addresses are not pinned to one node.** Each node allocates on its own VNIC, and an affinity pass reassigns an address's private half to whichever node the guest is on — one OCI call, keeping the OCID, so the customer's public address never changes. No node needs another node's VNIC OCID, and `oci_vnic_iface` is correct on every node.
 - **Addresses are released when an instance stops.** An auto-assigned address goes back to the pool on stop and the reserved public IP object is deleted, so a stopped fleet stops costing you addresses.

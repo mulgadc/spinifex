@@ -73,22 +73,6 @@ func TestMultinodeNodeRecovery(t *testing.T) {
 	runNodeRecovery(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeInstanceAutoRecovery is sequential and declared after
-// NodeRecovery so the cluster is whole before it takes a node down again. It
-// owns the guests it launches and enables [recovery] across the cluster,
-// restoring every config it touched.
-func TestMultinodeInstanceAutoRecovery(t *testing.T) {
-	runInstanceAutoRecovery(t, requireMultiNodeFixture(t))
-}
-
-// TestMultinodeInstanceRecoveryRefusesStorageFault is sequential and declared
-// after the recovery test, because it asserts the opposite outcome and a
-// reconciler that cannot tell the two faults apart passes one and fails the
-// other. It stops predastore cluster-wide and restarts it in cleanup.
-func TestMultinodeInstanceRecoveryRefusesStorageFault(t *testing.T) {
-	runInstanceRecoveryRefusesStorageFault(t, requireMultiNodeFixture(t))
-}
-
 // TestMultinodeClusterRestartResumesGuests is sequential and declared after
 // NodeRecovery so the cluster is whole before it takes the whole thing down.
 // It is the software-update path — a coordinated drain and restart — which the

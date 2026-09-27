@@ -7,11 +7,11 @@ Suites live in `tests/e2e/<name>/` and build to `tests/e2e/_bin/<name>.test`. Ev
 | Set | Suites |
 | --- | --- |
 | `E2E_SUITES_SINGLE` | `single iam cert eks ecs storagegrowth partialblock rds quota storagefault` |
-| `E2E_SUITES_MULTI` | `multinode lb cert quota storagefault` |
+| `E2E_SUITES_MULTI` | `multinode lb cert quota instancerecovery storagefault` |
 | `E2E_SUITES_NIGHTLY_SINGLE` | `single cert iam` |
 | `E2E_SUITES_NIGHTLY_MULTI` | `multinode cert lb` |
 
-The nightly permutation sets are deliberately narrower than the full ones: those cells have a ~35 minute budget and exist to prove every install / network / host-OS combination boots and serves. `eks`, `ecs`, `rds` and `storagefault` each get a dedicated cell instead.
+The nightly permutation sets are deliberately narrower than the full ones: those cells have a ~35 minute budget and exist to prove every install / network / host-OS combination boots and serves. `eks`, `ecs`, `rds`, `storagefault` and `instancerecovery` each get a dedicated cell instead.
 
 ## The suites
 
@@ -42,9 +42,13 @@ Two nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 30). Cell
 
 `VPCSetup`, `SpansMultipleNodes`, `SpreadPlacement`, `EveryRunningInstanceReported`, `BastionSSH`, and its own NAT Gateway lane: `PreNATIsolation`, `NATGatewayInternet`, `NATCleanupOrdering`.
 
-**Automatic instance recovery is asserted from both sides, and the pair is the point.** `InstanceAutoRecovery` takes a node down and requires the guest to come back on a survivor, identified by the qemu process rather than by what the API says. `InstanceRecoveryRefusesStorageFault` freezes predastore cluster-wide first, so the guest is paused by `werror=stop` when its node goes away, and requires that **nothing moves** — a store that refuses every node cannot be fixed by moving a guest, and the relaunch would cost it the request QEMU is holding. A reconciler that cannot tell a host failure from a storage failure passes the first and fails the second. Both enable `[recovery]` across the cluster and restore every config they touch.
+### `instancerecovery` — a guest whose node goes away (multi-node)
+
+**Asserted from both sides, and the pair is the point.** `InstanceAutoRecovery` takes a node down and requires the guest to come back on exactly one survivor, identified by the qemu process rather than by what the API says, then brings the node back and requires it to drop the local copy instead of relaunching it. `InstanceRecoveryRefusesStorageFault` freezes predastore cluster-wide first, so the guest is paused by `werror=stop` when its node goes away, and requires that **nothing moves** — a store that refuses every node cannot be fixed by moving a guest, and the relaunch would cost it the request QEMU is holding. A reconciler that cannot tell a host failure from a storage failure passes the first and fails the second. Both enable `[recovery]` across the cluster and restore every config they touch.
 
 **The storage-fault victim launches with cloud-init user-data that writes continuously, and that is load bearing.** An idle guest issues no I/O that reaches the object store, so a version of this test without a workload left three guests running happily through twelve minutes of dead predastore and proved nothing. Driving the load from user-data rather than over SSH is what lets it run on a routed-NAT cell, where guests have no public address. The pause itself takes minutes — 4m47s when measured — so the budget is generous on purpose.
+
+**Its own suite and its own nightly cell, for storagefault's reasons.** It freezes a cluster-wide service and removes a node, so anything sharing the environment reports that outage as its own failure; and it is slow by nature, which is why it is not in a permutation cell budgeted at thirty-five minutes. Both behaviours were first proven by hand against a real hypervisor power-off on the three-node OCI cluster.
 
 ### `iam` — everything IAM and STS
 

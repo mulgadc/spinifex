@@ -40,7 +40,12 @@
 E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota storagefault"
 
 # Suites runnable against a multi-node environment.
-E2E_SUITES_MULTI="multinode lb cert quota storagefault"
+#
+# instancerecovery is multi-only and needs three: recovery is inert below that,
+# because there is no survivor to move a guest to that is not the node that
+# failed. Like storagefault it takes a node away and freezes a cluster-wide
+# service, so it runs last and owns its environment.
+E2E_SUITES_MULTI="multinode lb cert quota instancerecovery storagefault"
 
 # grep -xE alternation form, for narrowing a requested set to the eligible one.
 E2E_SUITES_SINGLE_RE="$(printf '%s' "${E2E_SUITES_SINGLE}" | tr ' ' '|')"
@@ -88,6 +93,12 @@ e2e_suite_timeout() {
     # SIGSTOPped for seven minutes to prove a guest survives it. A full pass on
     # dev-prod is ~63 minutes, so the 30m default truncated it mid-suite.
     storagefault) echo "90m" ;;
+    # instancerecovery is almost entirely waiting, and none of it is avoidable:
+    # a dead owner has to be seen stale twice, a guest has to boot, and the
+    # storage case waits for a pause measured at 4m47s and then holds four
+    # minutes to prove nothing moved. Two tests, each taking a node away and
+    # bringing it back.
+    instancerecovery) echo "60m" ;;
     *) echo "30m" ;;
   esac
 }

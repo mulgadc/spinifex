@@ -1,6 +1,6 @@
 //go:build e2e
 
-package multinode
+package instancerecovery
 
 import (
 	"context"
@@ -69,10 +69,7 @@ systemd-run --unit=spx-e2e-diskload /usr/local/sbin/spx-e2e-diskload
 // reporting an instance running says where the records think it is, not where
 // it is.
 func runInstanceAutoRecovery(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode — Instance Auto-Recovery")
-	require.GreaterOrEqualf(t, len(fix.Cluster.Nodes), 3,
-		"recovery is inert below three nodes, have %d", len(fix.Cluster.Nodes))
-
+	harness.Phase(t, "Instance Auto-Recovery")
 	recoveryEnable(t, fix)
 
 	victim, instanceID := recoveryGuestOnAPeer(t, fix, "")
@@ -128,10 +125,7 @@ func runInstanceAutoRecovery(t *testing.T, fix *Fixture) {
 // refuse it identically, having thrown away its RAM on the way. So nothing must
 // move, and when the store comes back the guest must resume where it was.
 func runInstanceRecoveryRefusesStorageFault(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode — Recovery Refuses a Storage Fault")
-	require.GreaterOrEqualf(t, len(fix.Cluster.Nodes), 3,
-		"recovery is inert below three nodes, have %d", len(fix.Cluster.Nodes))
-
+	harness.Phase(t, "Recovery Refuses a Storage Fault")
 	recoveryEnable(t, fix)
 
 	victim, instanceID := recoveryGuestOnAPeer(t, fix, diskLoadUserData)
@@ -265,9 +259,9 @@ func recoveryFreezeStore(t *testing.T, fix *Fixture) func() {
 func recoveryGuestOnAPeer(t *testing.T, fix *Fixture, userData string) (harness.Node, string) {
 	t.Helper()
 
-	instType, arch := needInstanceTypeArch(t, fix)
-	amiID := needAMI(t, fix, arch)
-	keyName, _ := needKeyPair(t, fix)
+	instType, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	amiID := harness.DiscoverUbuntuAMI(t, fix.Harness, arch)
+	keyName, _ := harness.EnsureKeyPair(t, fix.Harness)
 	def := harness.EnsureDefaultVPC(t, fix.Harness)
 	require.NotEmpty(t, def.SGID, "default SG required")
 

@@ -95,3 +95,10 @@ func TestInstanceAutoRecovery(t *testing.T) {
 func TestInstanceRecoveryRefusesStorageFault(t *testing.T) {
 	runInstanceRecoveryRefusesStorageFault(t, requireFixture(t))
 }
+
+// TestInstancePartitionRecovery is last because it is the only one that leaves
+// firewall state behind if it fails, and running it after the other two means a
+// failure here cannot be mistaken for the cause of theirs.
+func TestInstancePartitionRecovery(t *testing.T) {
+	runInstancePartitionRecovery(t, requireFixture(t))
+}

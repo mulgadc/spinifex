@@ -96,9 +96,10 @@ e2e_suite_timeout() {
     # instancerecovery is almost entirely waiting, and none of it is avoidable:
     # a dead owner has to be seen stale twice, a guest has to boot, and the
     # storage case waits for a pause measured at 4m47s and then holds four
-    # minutes to prove nothing moved. Two tests, each taking a node away and
-    # bringing it back.
-    instancerecovery) echo "60m" ;;
+    # minutes to prove nothing moved. Three tests, each taking a node away and
+    # bringing it back, and the partition case adds a lease validity, a lease
+    # TTL and a boot on top of everything the other two wait for.
+    instancerecovery) echo "90m" ;;
     *) echo "30m" ;;
   esac
 }

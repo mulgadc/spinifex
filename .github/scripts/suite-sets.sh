@@ -45,7 +45,13 @@ E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota 
 # because there is no survivor to move a guest to that is not the node that
 # failed. Like storagefault it takes a node away and freezes a cluster-wide
 # service, so it runs last and owns its environment.
-E2E_SUITES_MULTI="multinode lb cert quota instancerecovery storagefault"
+#
+# lbrecovery is multi-only and needs three for two reasons rather than one: a
+# survivor to move the load balancer to, and a node for its backends that is not
+# the load balancer's, so taking that node away does not take the backends with
+# it. It runs beside instancerecovery at the end because it also takes a node
+# away and owns its environment while it does.
+E2E_SUITES_MULTI="multinode lb cert quota lbrecovery instancerecovery storagefault"
 
 # grep -xE alternation form, for narrowing a requested set to the eligible one.
 E2E_SUITES_SINGLE_RE="$(printf '%s' "${E2E_SUITES_SINGLE}" | tr ' ' '|')"
@@ -100,6 +106,12 @@ e2e_suite_timeout() {
     # bringing it back, and the partition case adds a lease validity, a lease
     # TTL and a boot on top of everything the other two wait for.
     instancerecovery) echo "90m" ;;
+    # lbrecovery pays for a load balancer twice: once to stand one up with two
+    # backends placed around it, and once for the recovery itself — a stale
+    # owner, a lease, a boot, HAProxy's own start, and its health checks against
+    # the backends before it forwards anything. Then the node comes back and has
+    # to be shown not to answer for an address it no longer holds.
+    lbrecovery) echo "75m" ;;
     *) echo "30m" ;;
   esac
 }

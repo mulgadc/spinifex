@@ -1,3 +1,8 @@
+// Builds an InstanceServiceImpl field by field and calls the claim path
+// directly, because a cross-node relaunch is not reachable from the exported
+// surface: it is driven by the recovery reconciler, not by a request.
+//
+//test:in-package — the service's dependencies and launchClaimedInstance itself are unexported.
 package handlers_ec2_instance
 
 import (

@@ -5,6 +5,8 @@ package harness
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -26,6 +28,11 @@ const (
 	// systemdUplinkResolvConf is the uplink view systemd-resolved maintains
 	// alongside the stub, listing the nameservers it actually forwards to.
 	systemdUplinkResolvConf = "/run/systemd/resolve/resolv.conf"
+
+	// How long a query to one node's northstar is given. Short, because the
+	// caller is usually polling and a node that has stopped answering is the
+	// answer rather than something to wait out.
+	nodeDNSTimeout = 5 * time.Second
 )
 
 // NorthstarBaseDomain returns the cluster's authoritative DNS base domain
@@ -110,6 +117,44 @@ func RequireDNSEnabled(t *testing.T, env *Env) string {
 		t.Fatalf("fixture requires Northstar DNS, but no authoritative base domain is configured")
 	}
 	return domain
+}
+
+// NodeResolver returns a resolver that asks one node's northstar directly,
+// rather than whatever the runner's resolver has cached or forwards to. Port 53
+// is open on every node deliberately, because northstar serves public names.
+//
+// Go's own resolver rather than dig: dig is proven present in the guest image
+// and nowhere else, and a test that shells out to a tool a host does not carry
+// reports a DNS failure that is nothing of the kind.
+func NodeResolver(node Node) *net.Resolver {
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: nodeDNSTimeout}
+			return d.DialContext(ctx, network, net.JoinHostPort(node.Addr, "53"))
+		},
+	}
+}
+
+// ResolveViaNode returns the addresses one node's northstar answers for name.
+func ResolveViaNode(ctx context.Context, node Node, name string) ([]string, error) {
+	addrs, err := NodeResolver(node).LookupHost(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s via %s: %w", name, node.Name, err)
+	}
+	return addrs, nil
+}
+
+// NodeResolverHTTPClient returns an HTTP client whose hostnames are resolved by
+// one node's northstar, so a probe can be driven through a name this cluster
+// serves without the runner having been configured to forward to it.
+func NodeResolverHTTPClient(node Node, timeout time.Duration) *http.Client {
+	resolver := NodeResolver(node)
+	dialer := &net.Dialer{Timeout: timeout, Resolver: resolver}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{DialContext: dialer.DialContext},
+	}
 }
 
 // GuestResolvers returns the nameservers a guest forwards DNS queries to,

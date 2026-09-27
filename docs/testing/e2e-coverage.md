@@ -7,11 +7,11 @@ Suites live in `tests/e2e/<name>/` and build to `tests/e2e/_bin/<name>.test`. Ev
 | Set | Suites |
 | --- | --- |
 | `E2E_SUITES_SINGLE` | `single iam cert eks ecs storagegrowth partialblock rds quota storagefault` |
-| `E2E_SUITES_MULTI` | `multinode lb cert quota instancerecovery storagefault` |
+| `E2E_SUITES_MULTI` | `multinode lb cert quota lbrecovery instancerecovery storagefault` |
 | `E2E_SUITES_NIGHTLY_SINGLE` | `single cert iam` |
 | `E2E_SUITES_NIGHTLY_MULTI` | `multinode cert lb` |
 
-The nightly permutation sets are deliberately narrower than the full ones: those cells have a ~35 minute budget and exist to prove every install / network / host-OS combination boots and serves. `eks`, `ecs`, `rds`, `storagefault` and `instancerecovery` each get a dedicated cell instead.
+The nightly permutation sets are deliberately narrower than the full ones: those cells have a ~35 minute budget and exist to prove every install / network / host-OS combination boots and serves. `eks`, `ecs`, `rds`, `storagefault`, `instancerecovery` and `lbrecovery` each get a dedicated cell instead.
 
 ## The suites
 
@@ -53,6 +53,22 @@ Two nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 30). Cell
 **The storage-fault victim launches with cloud-init user-data that writes continuously, and that is load bearing.** An idle guest issues no I/O that reaches the object store, so a version of this test without a workload left three guests running happily through twelve minutes of dead predastore and proved nothing. Driving the load from user-data rather than over SSH is what lets it run on a routed-NAT cell, where guests have no public address. The pause itself takes minutes — 4m47s when measured — so the budget is generous on purpose.
 
 **Its own suite and its own nightly cell, for storagefault's reasons.** It freezes a cluster-wide service and removes a node, so anything sharing the environment reports that outage as its own failure; and it is slow by nature, which is why it is not in a permutation cell budgeted at thirty-five minutes. Both behaviours were first proven by hand against a real hypervisor power-off on the three-node OCI cluster.
+
+### `lbrecovery` — a load balancer whose node goes away (multi-node, needs three)
+
+**The customer-visible half of host failure, asserted from outside the cluster rather than from the records.** `ALBSurvivesItsHostFailing` stands up an internet-facing ALB with two HTTP backends, discovers which node the load balancer's guest landed on, and takes that node away. It then requires the four things a customer of a load balancer actually holds: the name keeps resolving, the address behind it does not move, requests through the name are answered again within a bounded time, and the backends — which never moved — are healthy again from the recovered load balancer's point of view.
+
+**The backends are placed around the load balancer, not beside it.** A load balancer is launched over a queue group and lands wherever a node answers, so its node is discovered and the backends are then launched and relaunched until both are somewhere else. A backend on the node about to be taken away would be recovered too, and the run could not then tell an ALB that came back serving from one that came back with nothing to serve.
+
+**DNS is queried against a node's own northstar, not through the runner's resolver.** Go's resolver dials port 53 on a named node — which is open on every node deliberately, because northstar serves public names — so the assertion is about what this cluster answers rather than about what the machine running the tests was configured to forward to. The same resolver drives the HTTP probes, so traffic goes through the load balancer's name end to end and not through an address resolved once at the start. `dig` is deliberately not used: it is proven present in the guest image and nowhere else.
+
+**The assertion no single sample can reach is the name.** A watch queries every surviving node every five seconds for the whole run, and fails on any sample where the record is missing, where a node refuses the query, or where it answers an address that is not the load balancer's. An answer naming another address is the worst of the three, because the traffic goes there; an empty answer outlives the fix for as long as anything cached it. An address that moves is asserted separately and before any traffic, since a passing probe against a renumbered address would hide it.
+
+**Then the node comes back, and has to give up what it no longer owns.** The returning node must not relaunch its local copy, and must no longer carry the tap that claims the load balancer's logical port — OVN binds a port to one chassis, so a second claimant does not split the traffic, it contends for it and the address answers from whichever won last. That same stale tap is also what keeps the external address's host ingress from being pruned, since the prune waits on evidence the guest sits elsewhere. The last assertion is that the name still serves traffic with the node back in the cluster, which is the end-user form of the same question.
+
+**`DescribeLoadBalancers` is required to keep reporting `active` throughout, and that is AWS parity rather than an oversight.** AWS never marks a load balancer degraded because a host under it failed: the state describes the customer's configuration, not our hardware. The honest signals about the outage are target health and the traffic itself, which is why both are asserted and the state is not trusted as evidence of anything.
+
+**Its own suite and its own cell, for instancerecovery's reasons plus one.** It takes a node away, so anything sharing the environment reports that outage as its own failure; it needs its own VPC, public subnet and a backend placement no shared fixture describes; and a failure here has to read as "the load balancer did not survive its host" rather than as one more red subtest in a suite about load balancer features.
 
 ### `iam` — everything IAM and STS
 

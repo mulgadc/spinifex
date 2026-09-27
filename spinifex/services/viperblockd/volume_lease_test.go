@@ -2,6 +2,7 @@ package viperblockd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -172,10 +173,16 @@ func dirEntries(t *testing.T, dir string) []os.DirEntry {
 // conflictKV fails every Update with a wrong-last-sequence response under the
 // given code, which is how a renewal presents once another node has taken the
 // lease over. Single-replica streams report 10071, replicated ones 10164.
+//
+// Get is delegated unless getErr or getValue is set, so a test can say what the
+// re-read finds: that is what decides whether a refused renewal was a takeover
+// or this node's own write coming back.
 type conflictKV struct {
 	jetstream.KeyValue
 
-	code jetstream.ErrorCode
+	code     jetstream.ErrorCode
+	getErr   error
+	getValue []byte
 }
 
 func (k *conflictKV) Update(context.Context, string, []byte, uint64) (uint64, error) {
@@ -187,10 +194,41 @@ func (k *conflictKV) Update(context.Context, string, []byte, uint64) (uint64, er
 	return 0, fmt.Errorf("%w: %w", apiErr, jetstream.ErrKeyRevisionMismatch)
 }
 
-// TestVolumeLease_RenewalConflictLosesTheLease is the multi-node regression: a
-// renewal refused on a replicated bucket must mark the lease lost, not shrug it
-// off as transient and keep renewing over whoever now holds the volume.
-func TestVolumeLease_RenewalConflictLosesTheLease(t *testing.T) {
+func (k *conflictKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+	switch {
+	case k.getErr != nil:
+		return nil, k.getErr
+	case k.getValue != nil:
+		return stubEntry{value: k.getValue, revision: 99}, nil
+	}
+	return k.KeyValue.Get(ctx, key)
+}
+
+// stubEntry is the two fields readopt looks at. The rest of the interface is
+// never called, so it panics rather than returning a plausible zero value.
+type stubEntry struct {
+	jetstream.KeyValueEntry
+
+	value    []byte
+	revision uint64
+}
+
+func (e stubEntry) Value() []byte    { return e.value }
+func (e stubEntry) Revision() uint64 { return e.revision }
+
+// leaseEntry is what a holder's entry looks like on the wire.
+func leaseEntry(t *testing.T, owner string, generation uint64) []byte {
+	t.Helper()
+	raw, err := json.Marshal(volumeLeaseRecord{Owner: owner, Generation: generation, AcquiredAt: time.Now().UTC()})
+	require.NoError(t, err)
+	return raw
+}
+
+// TestVolumeLease_RenewalConflictLosesTheLeaseToARealPeer is the multi-node
+// regression: a renewal refused on a replicated bucket, where the entry really
+// has been taken, must mark the lease lost rather than shrug it off as
+// transient and keep renewing over whoever now holds the volume.
+func TestVolumeLease_RenewalConflictLosesTheLeaseToARealPeer(t *testing.T) {
 	for name, code := range map[string]jetstream.ErrorCode{
 		"single replica": jetstream.JSErrCodeStreamWrongLastSequence,
 		"replicated":     jetstream.JSErrCodeStreamWrongLastSequenceConstant,
@@ -204,7 +242,11 @@ func TestVolumeLease_RenewalConflictLosesTheLease(t *testing.T) {
 			lease.stop()
 			<-lease.done
 
-			leases.kv = &conflictKV{KeyValue: leases.kv, code: code}
+			leases.kv = &conflictKV{
+				KeyValue: leases.kv,
+				code:     code,
+				getValue: leaseEntry(t, "node-b", lease.generation+7),
+			}
 			assert.False(t, lease.renew(t.Context()), "a refused renewal must not report the lease as still held")
 
 			lease.mu.Lock()
@@ -212,6 +254,172 @@ func TestVolumeLease_RenewalConflictLosesTheLease(t *testing.T) {
 			assert.True(t, lease.lost, "a refused renewal must mark the lease lost so the renew loop stops")
 		})
 	}
+}
+
+// TestVolumeLease_RenewalConflictOnThisNodesOwnWriteIsNotATakeover is the P0.
+//
+// A renewal that times out is treated as transient and keeps the lease, but the
+// server may have applied it anyway — leaving it a revision ahead of what the
+// holder recorded, so every later attempt is refused for that reason alone. A
+// ten-second JetStream stall on prod destroyed four running guests this way,
+// each fenced with winner=unknown against a peer that never existed.
+func TestVolumeLease_RenewalConflictOnThisNodesOwnWriteIsNotATakeover(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+
+	const volumeName = "vol-renewreadopt"
+	fenced := make(chan leaseLossKind, 1)
+	leases.onLost = func(_ context.Context, _ string, kind leaseLossKind) { fenced <- kind }
+
+	lease, err := leases.acquire(t.Context(), volumeName)
+	require.NoError(t, err)
+	lease.stop()
+	<-lease.done
+
+	before := lease.lastConfirmed()
+
+	// The entry still names this node and this lease's generation, which is what
+	// the server holds after applying a write the client never saw acknowledged.
+	leases.kv = &conflictKV{
+		KeyValue: leases.kv,
+		code:     jetstream.JSErrCodeStreamWrongLastSequenceConstant,
+		getValue: leaseEntry(t, "node-a", lease.generation),
+	}
+
+	assert.True(t, lease.renew(t.Context()),
+		"a renewal refused against this node's own entry is not a takeover, so the lease is kept")
+
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	assert.False(t, lease.lost, "nothing took the volume, so nothing may be fenced")
+	assert.Equal(t, uint64(99), lease.revision,
+		"the revision the server actually holds has to be adopted or every later renewal is refused too")
+	assert.Equal(t, before, lease.confirmed,
+		"a re-read is not an acknowledged write, so it must not extend how long this holder may keep writing")
+
+	select {
+	case kind := <-fenced:
+		t.Fatalf("the export was fenced (%v) over a volume nobody took", kind)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestVolumeLease_RenewalConflictOnAnOlderGenerationIsATakeover covers the same
+// node holding the entry under a later lease — a daemon that restarted and
+// reclaimed the volume through takeOver. The owner matches and the lease is
+// still superseded, so the generation is what decides it.
+func TestVolumeLease_RenewalConflictOnAnOlderGenerationIsATakeover(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+
+	lease, err := leases.acquire(t.Context(), "vol-renewgeneration")
+	require.NoError(t, err)
+	lease.stop()
+	<-lease.done
+
+	leases.kv = &conflictKV{
+		KeyValue: leases.kv,
+		code:     jetstream.JSErrCodeStreamWrongLastSequenceConstant,
+		getValue: leaseEntry(t, "node-a", lease.generation+1),
+	}
+
+	assert.False(t, lease.renew(t.Context()), "a later generation on this node supersedes this lease")
+
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	assert.True(t, lease.lost, "an entry this lease did not write is not this lease's to keep")
+}
+
+// TestVolumeLease_RenewalConflictWithAnUnreadableEntryKeepsTheLease is the
+// other half of the rule. A re-read that cannot be answered is evidence of
+// nothing, so it must not fence — and it must not silently extend the lease
+// either. Local validity is the bound that depends on reading nothing.
+func TestVolumeLease_RenewalConflictWithAnUnreadableEntryKeepsTheLease(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+
+	lease, err := leases.acquire(t.Context(), "vol-renewunreadable")
+	require.NoError(t, err)
+	lease.stop()
+	<-lease.done
+
+	before := lease.lastConfirmed()
+	leases.kv = &conflictKV{
+		KeyValue: leases.kv,
+		code:     jetstream.JSErrCodeStreamWrongLastSequenceConstant,
+		getErr:   nats.ErrTimeout,
+	}
+
+	assert.True(t, lease.renew(t.Context()), "an unanswerable re-read is not evidence that the volume moved")
+
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	assert.False(t, lease.lost, "a fence needs evidence, and a timeout is not evidence")
+	assert.Equal(t, before, lease.confirmed,
+		"keeping the lease must not reset the clock that bounds how long it may be kept")
+}
+
+// TestVolumeLease_RenewalAgainstAMissingEntryIsATakeover covers the entry being
+// gone rather than changed. There is nothing to re-read and nothing to adopt,
+// and the server may already have granted it to somebody else.
+func TestVolumeLease_RenewalAgainstAMissingEntryIsATakeover(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+
+	lease, err := leases.acquire(t.Context(), "vol-renewmissing")
+	require.NoError(t, err)
+	lease.stop()
+	<-lease.done
+
+	leases.kv = &conflictKV{
+		KeyValue: leases.kv,
+		code:     jetstream.JSErrCodeStreamWrongLastSequenceConstant,
+		getErr:   jetstream.ErrKeyNotFound,
+	}
+
+	assert.False(t, lease.renew(t.Context()), "an entry that is gone cannot show this node is the only writer")
+
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	assert.True(t, lease.lost, "a missing entry is a lost lease")
+}
+
+// TestVolumeLease_FencingRule states the rule itself, in one place, because the
+// two candidate rules are incompatible and this is what has to outlive the
+// argument between them.
+//
+// Fencing kills a running guest's disk. So it needs evidence, and a rejected
+// write is not evidence — only a re-read showing the entry is no longer this
+// lease's, or this holder's own clock saying it may no longer write. The weaker
+// rule, that an unnameable winner never fences, would remove the second and
+// leave a partitioned node writing for as long as it stayed partitioned.
+func TestVolumeLease_FencingRule(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+
+	lease, err := leases.acquire(t.Context(), "vol-fencingrule")
+	require.NoError(t, err)
+	lease.stop()
+	<-lease.done
+
+	// A revision mismatch may not fence before a re-read has shown the entry is
+	// no longer this lease's.
+	leases.kv = &conflictKV{
+		KeyValue: leases.kv,
+		code:     jetstream.JSErrCodeStreamWrongLastSequenceConstant,
+		getValue: leaseEntry(t, "node-a", lease.generation),
+	}
+	require.True(t, lease.renew(t.Context()),
+		"a revision mismatch may not fence before a re-read says the entry is no longer ours")
+
+	// Lapsed local validity always fences, whether or not a winner can be named.
+	// This is the only bound that holds when nothing can be read at all.
+	require.False(t, lease.expiredLocally(), "a lease confirmed just now is still valid")
+	lease.mu.Lock()
+	lease.confirmed = time.Now().Add(-volumeLeaseValidity - time.Second)
+	lease.mu.Unlock()
+	require.True(t, lease.expiredLocally(),
+		"a holder that cannot confirm its lease must stop writing on its own clock, named winner or not")
 }
 
 // TestVolumeLease_RejectsUnsafeKeys pins that a volume name off the wire

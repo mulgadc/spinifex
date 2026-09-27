@@ -688,6 +688,72 @@ func (m *JetStreamManager) ClaimStoppedInstance(instanceID string) (*vm.VM, erro
 	return vm.VMFromRecord(&claimed), nil
 }
 
+// ClaimRecoverableInstance takes an instance off a node that has stopped
+// heartbeating, by CASing Status.LastNode from that node to this one.
+//
+// The CAS is the whole of the coordination. Several survivors see the same
+// candidate and race; exactly one revision wins, and the losers find a record
+// that names a live owner and stop considering it. Nothing else is needed: a
+// claimant that dies mid-launch leaves the record naming a node that is itself
+// stale, which is the same candidate the next pass derives again.
+//
+// Ownership is not permission to write. The volume leases still decide whether
+// the guest can actually move, and a claimant that cannot open them hands the
+// record back with ReleaseRecoveredInstance.
+func (m *JetStreamManager) ClaimRecoverableInstance(instanceID, from, to string) (*vm.VM, error) {
+	if m.records == nil {
+		return nil, errors.New("KV bucket not initialized")
+	}
+
+	key := instanceRecordKey(instanceID)
+	record, rev, err := m.records.Get(context.Background(), key)
+	if err != nil {
+		if errors.Is(err, kvstore.ErrNotFound) {
+			return nil, vm.ErrRecoveryClaimLost
+		}
+		return nil, err
+	}
+	if record.Status.LastNode != from || !recoverable(record) {
+		return nil, vm.ErrRecoveryClaimLost
+	}
+
+	claimed := *record
+	claimed.Status.LastNode = to
+	if _, err := m.records.CompareAndSet(context.Background(), key, &claimed, rev); err != nil {
+		if errors.Is(err, kvstore.ErrConflict) {
+			return nil, vm.ErrRecoveryClaimLost
+		}
+		return nil, err
+	}
+
+	slog.Info("Claimed an instance from a node that stopped heartbeating",
+		"instanceId", instanceID, "from", from, "to", to)
+	return vm.VMFromRecord(&claimed), nil
+}
+
+// ReleaseRecoveredInstance hands a claimed record back to the node it was taken
+// from, after a launch this node could not complete.
+//
+// Without it a failed attempt parks the instance on a node that has just proved
+// it cannot run it, and no other survivor will look at it again: the record
+// would name a live owner. Best-effort — the claimant may itself be failing —
+// and a release that does not land is corrected by the next pass once this node
+// stops heartbeating, or by an operator.
+func (m *JetStreamManager) ReleaseRecoveredInstance(instanceID, self, to string) error {
+	if m.records == nil {
+		return errors.New("KV bucket not initialized")
+	}
+	_, err := m.UpdateInstanceRecord(instanceID, func(record *vm.InstanceRecord) {
+		if record.Status.LastNode == self {
+			record.Status.LastNode = to
+		}
+	})
+	if err != nil && !errors.Is(err, kvstore.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
 // UpdateStoppedInstance atomically applies mutate to the current KV-stored
 // stopped record for instanceID and writes it back using optimistic
 // concurrency (CAS), retrying on a concurrent writer's revision conflict.

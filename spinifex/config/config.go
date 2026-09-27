@@ -187,6 +187,7 @@ type Config struct {
 	ACM         ACMConfig         `json:"ACM" mapstructure:"acm"`
 	Bedrock     BedrockConfig     `json:"Bedrock" mapstructure:"bedrock"`
 	OchreVector OchreVectorConfig `json:"OchreVector" mapstructure:"ochre_vector"`
+	Recovery    RecoveryConfig    `json:"Recovery" mapstructure:"recovery"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -249,6 +250,17 @@ const (
 	// DefaultCacheSizeMB is the per-volume plaintext read cache.
 	DefaultCacheSizeMB = 128
 )
+
+// RecoveryConfig turns automatic instance recovery on.
+//
+// It defaults off, and that is the absence of a mechanism rather than
+// timidity: nothing in the product compares a config value across nodes or
+// refuses to start on a mismatch, so a cluster part-way through an upgrade
+// would be deciding this per node. Turning it on once, deliberately, after
+// every node carries the code is the honest version of the same guarantee.
+type RecoveryConfig struct {
+	Enabled bool `json:"Enabled" mapstructure:"enabled"`
+}
 
 // EBSConfig selects which provider backs EBS and carries the per-volume
 // export tunables. Not nested under ViperblockConfig: it names the provider

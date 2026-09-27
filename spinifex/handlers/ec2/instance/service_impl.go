@@ -2593,19 +2593,35 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	}
 
 	// Reset node-local fields that are stale after cross-node migration.
+	if err := s.launchClaimedInstance(ctx, instance, func() { s.restoreClaimedStoppedInstance(ctx, instance) }); err != nil {
+		return nil, err
+	}
+
+	slog.InfoContext(ctx, "Started stopped instance from shared KV", "instanceId", instance.ID)
+	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil
+}
+
+// launchClaimedInstance runs an instance this node has already won the right
+// to run, and is the whole of the launch both claims share.
+//
+// undo hands the record back to whoever should hold it if the launch does not
+// happen, which is the one thing the two callers disagree about: an explicit
+// start returns it to the stopped store, a recovery returns it to the node it
+// was taken from.
+func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instance *vm.VM, undo func()) error {
 	instance.ResetNodeLocalState()
 
 	instanceType, ok := s.resourceMgr.InstanceTypes()[instance.InstanceType]
 	if !ok {
-		slog.ErrorContext(ctx, "StartStoppedInstance: instance type not available on this node",
-			"instanceId", input.InstanceID, "instanceType", instance.InstanceType)
-		s.restoreClaimedStoppedInstance(ctx, instance)
-		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		slog.ErrorContext(ctx, "launchClaimedInstance: instance type not available on this node",
+			"instanceId", instance.ID, "instanceType", instance.InstanceType)
+		undo()
+		return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 	if err := s.resourceMgr.Allocate(instanceType); err != nil {
-		slog.ErrorContext(ctx, "StartStoppedInstance: failed to allocate resources", "instanceId", input.InstanceID, "err", err)
-		s.restoreClaimedStoppedInstance(ctx, instance)
-		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		slog.ErrorContext(ctx, "launchClaimedInstance: failed to allocate resources", "instanceId", instance.ID, "err", err)
+		undo()
+		return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 
 	// Add to local map + clear the stop intent before launch.
@@ -2621,40 +2637,40 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 		// field wired at a different moment. Starting a GPU type without a
 		// claimer would hand the customer a running, GPU-less instance.
 		if s.gpuClaimer == nil {
-			slog.ErrorContext(ctx, "StartStoppedInstance: GPU type admitted with no GPU claimer wired",
-				"instanceId", input.InstanceID, "instanceType", instance.InstanceType)
+			slog.ErrorContext(ctx, "launchClaimedInstance: GPU type admitted with no GPU claimer wired",
+				"instanceId", instance.ID, "instanceType", instance.InstanceType)
 			s.resourceMgr.Deallocate(instanceType)
 			s.vmMgr.Delete(instance.ID)
-			s.restoreClaimedStoppedInstance(ctx, instance)
-			return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+			undo()
+			return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 		}
 		profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
 		gpuCount := instancetypes.GPUCountForType(instance.InstanceType)
 		if recorded := len(instance.GPUAttachments); recorded > 0 && recorded != gpuCount {
-			slog.WarnContext(ctx, "StartStoppedInstance: recorded GPU count differs from the instance type",
-				"instanceId", input.InstanceID, "instanceType", instance.InstanceType,
+			slog.WarnContext(ctx, "launchClaimedInstance: recorded GPU count differs from the instance type",
+				"instanceId", instance.ID, "instanceType", instance.InstanceType,
 				"recorded", recorded, "reclaiming", gpuCount)
 		}
 		attachments, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName, gpuCount)
 		if gpuErr == nil && len(attachments) != gpuCount {
-			slog.ErrorContext(ctx, "StartStoppedInstance: GPU claim returned the wrong count",
-				"instanceId", input.InstanceID, "requested", gpuCount, "got", len(attachments))
+			slog.ErrorContext(ctx, "launchClaimedInstance: GPU claim returned the wrong count",
+				"instanceId", instance.ID, "requested", gpuCount, "got", len(attachments))
 			if relErr := s.gpuClaimer.Release(instance.ID); relErr != nil {
-				slog.ErrorContext(ctx, "StartStoppedInstance: GPU release after short claim failed",
-					"instanceId", input.InstanceID, "err", relErr)
+				slog.ErrorContext(ctx, "launchClaimedInstance: GPU release after short claim failed",
+					"instanceId", instance.ID, "err", relErr)
 			}
 			gpuErr = errors.New("GPU claim returned fewer GPUs than the instance type requires")
 		}
 		if gpuErr != nil {
-			slog.ErrorContext(ctx, "StartStoppedInstance: GPU claim failed", "instanceId", input.InstanceID, "count", gpuCount, "err", gpuErr)
+			slog.ErrorContext(ctx, "launchClaimedInstance: GPU claim failed", "instanceId", instance.ID, "count", gpuCount, "err", gpuErr)
 			s.resourceMgr.Deallocate(instanceType)
 			s.vmMgr.Delete(instance.ID)
-			s.restoreClaimedStoppedInstance(ctx, instance)
-			return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+			undo()
+			return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 		}
 		instance.GPUAttachments = attachments
 		gpuClaimed = true
-		slog.InfoContext(ctx, "GPUs claimed for instance", "instanceId", input.InstanceID,
+		slog.InfoContext(ctx, "GPUs claimed for instance", "instanceId", instance.ID,
 			"count", len(attachments), "attachments", attachments)
 	}
 
@@ -2662,44 +2678,64 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	// booting a guest the customer cannot reach.
 	addressAllocated, err := s.reassignAutoAssignedPublicIP(ctx, instance)
 	if err != nil {
-		slog.ErrorContext(ctx, "StartStoppedInstance: public IP allocation failed — refusing the start",
-			"instanceId", input.InstanceID, "err", err)
+		slog.ErrorContext(ctx, "launchClaimedInstance: public IP allocation failed — refusing the start",
+			"instanceId", instance.ID, "err", err)
 		if gpuClaimed {
 			if relErr := s.gpuClaimer.Release(instance.ID); relErr != nil {
-				slog.ErrorContext(ctx, "StartStoppedInstance: GPU release failed after address allocation failure",
-					"instanceId", input.InstanceID, "err", relErr)
+				slog.ErrorContext(ctx, "launchClaimedInstance: GPU release failed after address allocation failure",
+					"instanceId", instance.ID, "err", relErr)
 			}
 		}
 		s.resourceMgr.Deallocate(instanceType)
 		s.vmMgr.Delete(instance.ID)
-		s.restoreClaimedStoppedInstance(ctx, instance)
-		return nil, errors.New(awserrors.ValidErrorCodeFromError(err))
+		undo()
+		return errors.New(awserrors.ValidErrorCodeFromError(err))
 	}
 
 	if err := s.vmMgr.Run(ctx, instance); err != nil {
-		slog.ErrorContext(ctx, "StartStoppedInstance: vmMgr.Run failed", "instanceId", input.InstanceID, "err", err)
+		slog.ErrorContext(ctx, "launchClaimedInstance: vmMgr.Run failed", "instanceId", instance.ID, "err", err)
 		if addressAllocated {
 			s.rollbackStartPublicIP(ctx, instance)
 		}
 		if gpuClaimed {
 			if relErr := s.gpuClaimer.Release(instance.ID); relErr != nil {
-				slog.ErrorContext(ctx, "StartStoppedInstance: GPU release failed after launch failure",
-					"instanceId", input.InstanceID, "err", relErr)
+				slog.ErrorContext(ctx, "launchClaimedInstance: GPU release failed after launch failure",
+					"instanceId", instance.ID, "err", relErr)
 			}
 		}
 		s.resourceMgr.Deallocate(instanceType)
 		s.vmMgr.Delete(instance.ID)
-		s.restoreClaimedStoppedInstance(ctx, instance)
+		undo()
 		if refusal := volumeHeldElsewhereError(err); refusal != nil {
-			return nil, refusal
+			return refusal
 		}
-		return nil, errors.New(awserrors.ErrorServerInternal)
+		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	s.vmMgr.LogGuestDeviceMap(instance)
 
-	slog.InfoContext(ctx, "Started stopped instance from shared KV", "instanceId", instance.ID)
-	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil
+	return nil
+}
+
+// RecoverInstance launches an instance whose record this node has already
+// claimed from a node that stopped heartbeating.
+//
+// It makes no decision of its own: the claim decided who launches, and the
+// volume leases decide whether the launch may proceed. A refusal because the
+// old owner still holds a lease is ordinary and retryable — it means the
+// source's own self-fence has not finished yet — so it is returned as-is for
+// the caller to try again rather than turned into a failure.
+func (s *InstanceServiceImpl) RecoverInstance(ctx context.Context, instance *vm.VM, undo func()) error {
+	if s.resourceMgr == nil || s.vmMgr == nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// The record was written by a node that never got to stop the instance, so
+	// it still says running and a launch would read that as a terminate racing
+	// it. Pending is the same shape a drain-stop leaves behind, which restore
+	// already relaunches from.
+	instance.Status = vm.StatePending
+	return s.launchClaimedInstance(ctx, instance, undo)
 }
 
 // volumeExclusionMarkers are the refusals that mean another node is writing this

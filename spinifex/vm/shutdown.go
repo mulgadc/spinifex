@@ -642,6 +642,22 @@ func (m *Manager) shutdownAndUnmount(instance *VM) error {
 	return sealErr
 }
 
+// ForgetSuperseded stops any local copy of an instance another node now owns
+// and removes it from this node's view.
+//
+// It stops the guest without unmounting, for the reason shutdownQEMU is
+// separate at all: the volumes belong to the new owner, and an unmount here
+// would seal this node's stale copy over theirs. The local resources the
+// instance was admitted against are returned, since it is no longer here.
+func (m *Manager) ForgetSuperseded(instance *VM) {
+	if instance == nil {
+		return
+	}
+	m.shutdownQEMU(instance)
+	m.deallocateResources(instance)
+	m.Delete(instance.ID)
+}
+
 // shutdownQEMU takes the guest process down and nothing else. Separated from
 // shutdownAndUnmount for the fence path, which must stop the guest without
 // unmounting: a fenced node's volumes belong to another node now, and an

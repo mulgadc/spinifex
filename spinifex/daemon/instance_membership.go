@@ -35,3 +35,38 @@ func runsOn(record *vm.InstanceRecord, nodeID string) bool {
 	}
 	return record.Status.LastNode == nodeID && !operatorStopped(record)
 }
+
+// recoverable reports whether a record is one another node may take over when
+// the node named on it stops heartbeating.
+//
+// Desired state is the test, not observed state. A node that dies hard leaves
+// its instances observed-running and never writes anything again, and a node
+// drained for maintenance leaves them observed-stopped but still wanted — both
+// are recoveries. What is excluded is an instance nobody wants running: an
+// operator stop, or a terminate already under way.
+func recoverable(record *vm.InstanceRecord) bool {
+	if record == nil || record.Spec.DesiredState != vm.DesiredRunning {
+		return false
+	}
+	if record.Metadata.MarkedForDeletion() {
+		return false
+	}
+	switch record.Status.Status {
+	case vm.StateTerminated, vm.StateShuttingDown:
+		return false
+	}
+	return !storageFaulted(record)
+}
+
+// storageFaulted reports whether the last health an instance published was its
+// storage refusing I/O, which werror=stop turns into a paused guest.
+//
+// This is the failure another node cannot fix. The volumes are the same objects
+// in the same object store from anywhere, so a backend refusing them refuses
+// them everywhere, and relaunching elsewhere moves the pause rather than ending
+// it. Left alone the guest keeps its held request and resumes when the backend
+// returns, which is the better outcome than a relaunch that loses its RAM and
+// then pauses too.
+func storageFaulted(record *vm.InstanceRecord) bool {
+	return !record.Status.Health.IOErrorSince.IsZero()
+}

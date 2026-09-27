@@ -2165,6 +2165,7 @@ func (d *Daemon) startCluster() error {
 
 	d.startHeartbeat()
 	d.startRecordRepair()
+	d.startInstanceRecovery()
 	d.vmMgr.StartPendingWatchdog(d.ctx)
 
 	// Reality→desired GC backstop (ADR-0003 §3): finish teardown interrupted by
@@ -2561,6 +2562,7 @@ func (d *Daemon) LoadState() error {
 // it is recovering are already down, and blocking here would keep the API from
 // coming up while it waits.
 func (d *Daemon) restoreInstances() error {
+	d.forgetSupersededInstances()
 	d.vmMgr.Restore()
 	if err := d.WriteState(); err != nil {
 		slog.Error("Failed to persist local state after restore", "error", err)

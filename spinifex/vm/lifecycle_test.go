@@ -1259,6 +1259,18 @@ func TestQMPGreetingTimeout(t *testing.T) {
 	assert.Equal(t, qmp.DefaultGreetingTimeout, qmpGreetingTimeout(plain),
 		"a plain VM keeps the default greeting deadline")
 
+	// A guest with a network-backed root volume, which is every real one. QEMU
+	// opens the drive across the object store before its monitor answers, and
+	// the default deadline is shorter than a cold open costs on a cluster that
+	// has just lost a node — which is the only time a recovery launch happens.
+	nbd := &VM{EBSRequests: types.EBSRequests{Requests: []types.EBSRequest{
+		{Name: "vol-boot", NBDURI: "nbd+unix:///?socket=/run/spinifex/nbd/boot.sock", Boot: true},
+	}}}
+	assert.Equal(t, qmpNBDGreetingTimeout, qmpGreetingTimeout(nbd),
+		"a guest with an NBD drive waits for the volume open, not the plain default")
+	assert.Greater(t, qmpNBDGreetingTimeout, 35*time.Second,
+		"the deadline must exceed the 35s cold open measured with one node of three away")
+
 	// A small GPU guest (<1 GiB scaling contribution) sits at the floor.
 	smallGPU := &VM{
 		GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:5e:00.0"}},

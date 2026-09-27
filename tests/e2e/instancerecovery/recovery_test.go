@@ -234,11 +234,17 @@ func recoveryEnable(t *testing.T, fix *Fixture) {
 func recoveryFreezeStore(t *testing.T, fix *Fixture) func() {
 	t.Helper()
 
+	// Best effort per node, and never fatal. The thaw runs after a node has been
+	// taken away, where there is no process to signal — and a node it cannot
+	// reach must not stop it restoring the others, which is how a failure here
+	// would leave the cluster frozen for every test after it.
 	signal := func(sig string) {
 		for _, node := range fix.Cluster.Nodes {
-			recoveryRun(t, node,
+			if _, err := recoveryRunErr(node,
 				"PID=$(systemctl show spinifex-predastore -p MainPID --value); "+
-					"[ \"$PID\" != 0 ] && sudo kill -"+sig+" \"$PID\"")
+					"if [ \"$PID\" != 0 ]; then sudo kill -"+sig+" \"$PID\"; fi"); err != nil {
+				t.Logf("predastore %s on %s: %v", sig, node.Name, err)
+			}
 		}
 	}
 

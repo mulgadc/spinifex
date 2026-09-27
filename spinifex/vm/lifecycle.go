@@ -852,21 +852,48 @@ const (
 	// qmpVFIOGreetingCap bounds the scaled wait so a mis-sized guest cannot
 	// wedge a launch indefinitely.
 	qmpVFIOGreetingCap = 600 * time.Second
+
+	// qmpNBDGreetingTimeout is the deadline for a guest whose drives are
+	// network-backed. QEMU opens every drive before its monitor answers, and a
+	// cold volume open reads its state out of the object store — which is
+	// slowest precisely when a node has just been lost and the store is serving
+	// degraded reads. Measured at 35s with one node of three away, against a 30s
+	// deadline that killed the guest five seconds short of ready and then did it
+	// again on every retry.
+	qmpNBDGreetingTimeout = 180 * time.Second
 )
 
-// qmpGreetingTimeout picks the QMP greeting deadline for a VM: the plain default
-// unless the guest has GPU/VFIO passthrough, whose synchronous RAM pin delays the
-// monitor. For VFIO the deadline is base + perGiB*RAM, floored so small guests
-// keep the proven deadline and capped so a huge guest cannot wedge a launch.
+// qmpGreetingTimeout picks the QMP greeting deadline for a VM. Both branches
+// exist for the same reason: QEMU does some work synchronously before its
+// monitor answers, and a deadline shorter than that work SIGKILLs a guest that
+// would have come up. VFIO pins guest RAM, so its deadline is base + perGiB*RAM,
+// floored so small guests keep the proven deadline and capped so a huge guest
+// cannot wedge a launch. A network-backed drive has to be opened over the object
+// store, which is a flat cost that does not scale with the guest.
 func qmpGreetingTimeout(v *VM) time.Duration {
-	if len(v.GPUAttachments) == 0 {
-		return qmp.DefaultGreetingTimeout
+	if len(v.GPUAttachments) > 0 {
+		memGiB := v.Config.Memory / 1024
+		scaled := qmpVFIOGreetingBase + time.Duration(memGiB)*qmpVFIOGreetingPerGiB
+		scaled = max(scaled, qmpVFIOGreetingFloor)
+		return min(scaled, qmpVFIOGreetingCap)
 	}
-	memGiB := v.Config.Memory / 1024
-	scaled := qmpVFIOGreetingBase + time.Duration(memGiB)*qmpVFIOGreetingPerGiB
-	scaled = max(scaled, qmpVFIOGreetingFloor)
-	scaled = min(scaled, qmpVFIOGreetingCap)
-	return scaled
+	if hasNetworkBackedDrive(v) {
+		return qmpNBDGreetingTimeout
+	}
+	return qmp.DefaultGreetingTimeout
+}
+
+// hasNetworkBackedDrive reports whether any of the guest's drives is served
+// over NBD, and so has to be opened across the object store before QEMU's
+// monitor answers. Every production guest boots from one; a VM without is a
+// unit test.
+func hasNetworkBackedDrive(v *VM) bool {
+	for _, req := range v.EBSRequests.Requests {
+		if req.NBDURI != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // removeStaleQMPSocket unlinks a leftover QMP socket inode from a prior QEMU so

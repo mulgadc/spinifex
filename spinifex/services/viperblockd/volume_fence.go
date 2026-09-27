@@ -92,11 +92,89 @@ func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string, o
 		slog.ErrorContext(ctx, "fence FAILED: nbdkit did not exit, so this node is still a writer on a volume it does not own",
 			"volume", volumeName, "pid", matched.PID, "winner", winner, "err", err)
 		otelsetup.RecordVolumeFence(ctx, otelsetup.FenceOutcomeKillFailed)
+		if !cfg.writerAlive(matched.PID) {
+			// The kill was refused rather than ignored, so nothing here says what
+			// happened to the writer. The export stays registered and the lease
+			// stays held, which is the only reading of "unknown" that is safe.
+			slog.ErrorContext(ctx, "fence FAILED with no writer to watch: the export stays registered and the lease held",
+				"volume", volumeName, "pid", matched.PID, "winner", winner)
+			return
+		}
+		cfg.awaitFencedWriterExit(ctx, volumeName, matched, winner, outcome)
 		return
 	}
 
 	otelsetup.RecordVolumeFence(ctx, outcome)
 	cfg.publishVolumeFenced(ctx, volumeName, winner)
+}
+
+// defaultFenceWatchInterval is how often a fence that did not complete re-checks
+// and re-reports. One log line and one metric sample per interval, for a
+// condition that must not be reported once and then look resolved.
+const defaultFenceWatchInterval = 30 * time.Second
+
+// writerAlive reports whether an export's process is still running, honouring a
+// test's injected probe if there is one.
+func (cfg *Config) writerAlive(pid int) bool {
+	if cfg.processAlive != nil {
+		return cfg.processAlive(pid)
+	}
+	return utils.ProcessAlive(pid)
+}
+
+// fenceWatchInterval is how often a failed fence re-checks its writer.
+func (cfg *Config) fenceWatchInterval() time.Duration {
+	if cfg.fenceWatchEvery > 0 {
+		return cfg.fenceWatchEvery
+	}
+	return defaultFenceWatchInterval
+}
+
+// awaitFencedWriterExit keeps a failed fence open until its writer is gone. It
+// is entered only with that writer observed alive, because a PID this node
+// cannot see says nothing about whether it exited.
+//
+// A SIGKILL that has not taken effect is a process in uninterruptible sleep with
+// the signal already pending. It exits when its I/O completes, so there is
+// nothing to re-send and nothing else to try — and because it has not exited, its
+// PID cannot have been reused, which is what makes waiting safe where re-killing
+// would not be.
+//
+// What there is to do is not stop watching. The teardown deliberately left the
+// registry entry and the lease in place: releasing a lease while still a writer
+// would hand the volume on with this node still on it. Both are finished here,
+// once the exit is confirmed. Until then the failure is re-reported every
+// interval, because a second writer that is only in one old log line is a second
+// writer nobody knows about.
+func (cfg *Config) awaitFencedWriterExit(ctx context.Context, volumeName string,
+	matched MountedVolume, winner string, outcome otelsetup.FenceOutcome) {
+	began := time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			slog.ErrorContext(ctx, "fence never completed: stopping with a live writer on a volume this node does not own",
+				"volume", volumeName, "pid", matched.PID, "winner", winner,
+				"unfenced_ms", otelsetup.Millis(time.Since(began)))
+			return
+		case <-time.After(cfg.fenceWatchInterval()):
+		}
+
+		if cfg.writerAlive(matched.PID) {
+			slog.ErrorContext(ctx, "fence still FAILED: this node is writing a volume it does not own",
+				"volume", volumeName, "pid", matched.PID, "winner", winner,
+				"unfenced_ms", otelsetup.Millis(time.Since(began)))
+			otelsetup.RecordVolumeFence(ctx, otelsetup.FenceOutcomeKillFailed)
+			continue
+		}
+
+		cfg.finishTeardown(ctx, matched, "fence")
+		slog.WarnContext(ctx, "fence completed late: the writer finally exited",
+			"volume", volumeName, "pid", matched.PID, "winner", winner,
+			"unfenced_ms", otelsetup.Millis(time.Since(began)))
+		otelsetup.RecordVolumeFence(ctx, outcome)
+		cfg.publishVolumeFenced(ctx, volumeName, winner)
+		return
+	}
 }
 
 // abandonVolume tears down an export because the instance that was using it
@@ -178,6 +256,14 @@ func (cfg *Config) tearDownExport(ctx context.Context, matched MountedVolume, wh
 		return err
 	}
 
+	cfg.finishTeardown(ctx, matched, why)
+	return nil
+}
+
+// finishTeardown is everything after the writer is confirmed gone. Split out
+// because a fence whose kill did not take effect has to run it later rather than
+// not at all, and because every line of it assumes the process has exited.
+func (cfg *Config) finishTeardown(ctx context.Context, matched MountedVolume, why string) {
 	cfg.mu.Lock()
 	for i, volume := range cfg.MountedVolumes {
 		if volume.Name == matched.Name {
@@ -197,7 +283,6 @@ func (cfg *Config) tearDownExport(ctx context.Context, matched MountedVolume, wh
 	// only when this node still holds it, so a lost lease cannot evict the
 	// winner and a held one does not make the volume wait out its TTL.
 	cfg.releaseVolumeLease(ctx, matched.Lease)
-	return nil
 }
 
 // publishVolumeFenced tells the local daemon a guest is now running against a

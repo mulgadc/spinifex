@@ -204,6 +204,12 @@ type Config struct {
 	// standing up a real S3 backend.
 	constructVB func(ctx context.Context, volumeName string) (*viperblock.VB, int, error)
 
+	// fenceWatchEvery and processAlive drive the watch a failed fence keeps on
+	// its writer. Zero means the production interval and utils.ProcessAlive: a
+	// SIGKILL that does not take effect cannot be staged with a real process.
+	fenceWatchEvery time.Duration
+	processAlive    func(pid int) bool
+
 	// leases excludes a second viperblock engine on a volume this node has
 	// open. Nil means exclusion cannot be established, and every engine open
 	// refuses rather than proceeding blind.

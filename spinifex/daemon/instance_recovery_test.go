@@ -1,9 +1,16 @@
+//test:in-package — selectCandidates, settled and the backoff are the whole of
+//the policy and are deliberately unexported. Exporting them to test them would
+//make the reconciler's internals part of the daemon's API for no other reason.
+
 package daemon
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/instancecache"
 	"github.com/mulgadc/spinifex/spinifex/resource"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -144,6 +151,133 @@ func TestAPastStoragePauseThatClearedDoesNotBlockRecovery(t *testing.T) {
 
 	r := recoveryFixture("node-2")
 	assert.Len(t, twice(r, []*vm.InstanceRecord{recovered}, stale), 1)
+}
+
+// The settle window asks whether this node is still coming up alongside its
+// peers, which is answered once. Asked afresh every pass it would become
+// "are the peers live now" and refuse to act on the failure it exists for.
+func TestTheSettleWindowLatchesOnceThePeersHaveBeenSeen(t *testing.T) {
+	r := recoveryFixture("node-1")
+	r.startedAt = time.Now()
+	r.daemon.clusterConfig = &config.ClusterConfig{
+		Nodes: map[string]config.Config{"node-1": {}, "node-2": {}, "node-3": {}},
+	}
+
+	live := map[string]instancecache.NodeState{
+		"node-2": instancecache.NodeLive, "node-3": instancecache.NodeLive,
+	}
+	state := func(node string) instancecache.NodeState { return live[node] }
+	require.True(t, r.settled(state), "every peer is live, so the cluster is not mid-restart")
+
+	live["node-2"] = instancecache.NodeStale
+	assert.True(t, r.settled(state),
+		"a peer going away afterwards is the failure to recover from, not a reason to stand down")
+}
+
+func TestTheSettleWindowHoldsWhileAPeerHasNotBeenSeen(t *testing.T) {
+	r := recoveryFixture("node-1")
+	r.startedAt = time.Now()
+	r.daemon.clusterConfig = &config.ClusterConfig{
+		Nodes: map[string]config.Config{"node-1": {}, "node-2": {}},
+	}
+	assert.False(t, r.settled(stale),
+		"a node restarted alongside its peers must not recover their guests while they boot")
+}
+
+func TestTheSettleWindowReleasesWhenItExpires(t *testing.T) {
+	r := recoveryFixture("node-1")
+	r.startedAt = time.Now().Add(-recoverySettleWindow - time.Second)
+	r.daemon.clusterConfig = &config.ClusterConfig{
+		Nodes: map[string]config.Config{"node-1": {}, "node-2": {}},
+	}
+	assert.True(t, r.settled(stale),
+		"a peer that never returns is the genuine failure, with nothing to compare against")
+}
+
+// The three refusals that decide whether the loop starts at all. Each is a
+// different kind of "not here": not asked for, not wired up, and not a cluster
+// big enough for recovery to mean anything.
+func TestWhatStopsTheLoopStarting(t *testing.T) {
+	three := &config.ClusterConfig{
+		Nodes: map[string]config.Config{"node-1": {}, "node-2": {}, "node-3": {}},
+	}
+
+	tests := []struct {
+		name  string
+		build func() *Daemon
+	}{
+		{"off by default", func() *Daemon {
+			return &Daemon{node: "node-1", config: &config.Config{}, clusterConfig: three}
+		}},
+		{"no JetStream to read records from", func() *Daemon {
+			cfg := &config.Config{}
+			cfg.Recovery.Enabled = true
+			return &Daemon{node: "node-1", config: cfg, clusterConfig: three}
+		}},
+		{"too few nodes to move a guest between", func() *Daemon {
+			cfg := &config.Config{}
+			cfg.Recovery.Enabled = true
+			return &Daemon{
+				node:            "node-1",
+				config:          cfg,
+				clusterConfig:   &config.ClusterConfig{Nodes: map[string]config.Config{"node-1": {}, "node-2": {}}},
+				jsManager:       &JetStreamManager{},
+				instanceService: &handlers_ec2_instance.InstanceServiceImpl{},
+			}
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := tc.build()
+			assert.NotPanics(t, d.startInstanceRecovery,
+				"a refusal to start has to return, not fail")
+		})
+	}
+}
+
+// The difference between a store broken here and a store broken everywhere is
+// made by every node asking only about itself. A node that cannot serve objects
+// cannot mount a volume, so claiming one would take an instance off its dead
+// owner only to fail, and hold it away from a survivor that could have run it.
+func TestANodeWhoseObjectStoreIsDownClaimsNothing(t *testing.T) {
+	for _, verdict := range []string{predastoreHealthUnreachable, predastoreHealthNoLeader} {
+		t.Run(verdict, func(t *testing.T) {
+			r := recoveryFixture("node-1")
+			r.daemon.predastoreHealth.at = time.Now()
+			r.daemon.predastoreHealth.result = verdict
+
+			assert.False(t, r.canHostRecoveries(context.Background()))
+		})
+	}
+}
+
+func TestANodeWhoseObjectStoreIsHealthyMayClaim(t *testing.T) {
+	r := recoveryFixture("node-1")
+	r.daemon.predastoreHealth.at = time.Now()
+	r.daemon.predastoreHealth.result = predastoreHealthOK
+
+	assert.True(t, r.canHostRecoveries(context.Background()))
+}
+
+// A pass with nothing wired behind it must return rather than fail. The store
+// verdict is read before the records are, so a node standing down never reaches
+// the reader at all.
+func TestAPassStandsDownBeforeReadingAnything(t *testing.T) {
+	r := recoveryFixture("node-1")
+	r.settledOnce = true
+	r.daemon.predastoreHealth.at = time.Now()
+	r.daemon.predastoreHealth.result = predastoreHealthUnreachable
+
+	assert.NotPanics(t, func() { r.pass(context.Background()) },
+		"jsManager is nil here, so reaching the record read would panic")
+}
+
+// An unreadable record is not evidence that an instance moved, so a returning
+// node with no way to ask leaves its local copies alone.
+func TestForgettingSupersededInstancesNeedsAStoreToAsk(t *testing.T) {
+	d := &Daemon{node: "node-1"}
+	assert.NotPanics(t, d.forgetSupersededInstances)
 }
 
 // A launch that cannot complete has to cost less each time it fails. Some

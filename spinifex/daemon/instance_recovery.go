@@ -114,9 +114,10 @@ type instanceRecovery struct {
 	daemon   *Daemon
 	liveness *instancecache.Liveness
 
-	startedAt time.Time
-	staleOnce map[string]struct{}
-	backoff   map[string]recoveryBackoff
+	startedAt   time.Time
+	settledOnce bool
+	staleOnce   map[string]struct{}
+	backoff     map[string]recoveryBackoff
 }
 
 // recoveryBackoff is how long this node has agreed to leave an instance alone
@@ -130,7 +131,8 @@ type recoveryBackoff struct {
 // take. Nothing is stored between passes but the stale-once set, so a daemon
 // that restarts derives exactly the same work again.
 func (r *instanceRecovery) pass(ctx context.Context) {
-	if !r.settled(ctx) || !r.canHostRecoveries(ctx) {
+	state := r.peerState(ctx)
+	if !r.settled(state) || !r.canHostRecoveries(ctx) {
 		return
 	}
 
@@ -140,7 +142,7 @@ func (r *instanceRecovery) pass(ctx context.Context) {
 		return
 	}
 
-	for _, candidate := range r.candidates(ctx, records) {
+	for _, candidate := range r.selectCandidates(records, state) {
 		if ctx.Err() != nil {
 			return
 		}
@@ -201,21 +203,32 @@ func (r *instanceRecovery) deferRetry(id string, now time.Time) int {
 // settled reports whether this daemon has been up long enough to believe what
 // the heartbeats say about its peers.
 //
-// A peer seen live once is enough: the question is whether the cluster is
-// mid-restart, not whether every node is healthy now. A node that never comes
-// back is covered by the window expiring, which is the genuine-failure case.
-func (r *instanceRecovery) settled(ctx context.Context) bool {
+// It latches, and that is the point. The question is whether this node is still
+// coming up alongside its peers, which is answered once and for good the first
+// time it sees them all live. Asked afresh every pass it would be a different
+// question — whether the peers are live right now — and would answer no for
+// exactly the failure the reconciler exists to handle.
+//
+// A node that never comes back is covered by the window expiring, which is the
+// genuine-failure case with nothing to compare against.
+func (r *instanceRecovery) settled(state func(string) instancecache.NodeState) bool {
+	if r.settledOnce {
+		return true
+	}
 	if time.Since(r.startedAt) >= recoverySettleWindow {
+		r.settledOnce = true
 		return true
 	}
 	for name := range r.daemon.clusterConfig.Nodes {
 		if name == r.daemon.node {
 			continue
 		}
-		if r.liveness.State(ctx, name) != instancecache.NodeLive {
+		if state(name) != instancecache.NodeLive {
 			return false
 		}
 	}
+	r.settledOnce = true
+	slog.Info("Instance recovery has seen every peer live and is now active", "node", r.daemon.node)
 	return true
 }
 
@@ -277,11 +290,12 @@ func (r *instanceRecovery) preference(instanceID string) uint64 {
 	return h.Sum64()
 }
 
-// candidates is selectCandidates against the live liveness view.
-func (r *instanceRecovery) candidates(ctx context.Context, records []*vm.InstanceRecord) []recoveryCandidate {
-	return r.selectCandidates(records, func(node string) instancecache.NodeState {
+// peerState is the liveness view as a function, so everything that decides on
+// it stays pure over the answer and testable without a cluster.
+func (r *instanceRecovery) peerState(ctx context.Context) func(string) instancecache.NodeState {
+	return func(node string) instancecache.NodeState {
 		return r.liveness.State(ctx, node)
-	})
+	}
 }
 
 // attempt claims one instance and launches it here.

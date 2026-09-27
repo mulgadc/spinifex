@@ -42,6 +42,8 @@ Two nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 30). Cell
 
 `VPCSetup`, `SpansMultipleNodes`, `SpreadPlacement`, `EveryRunningInstanceReported`, `BastionSSH`, and its own NAT Gateway lane: `PreNATIsolation`, `NATGatewayInternet`, `NATCleanupOrdering`.
 
+**Automatic instance recovery is asserted from both sides, and the pair is the point.** `InstanceAutoRecovery` takes a node down and requires the guest to come back on a survivor, identified by the qemu process rather than by what the API says. `InstanceRecoveryRefusesStorageFault` stops predastore cluster-wide first, so the guest is paused by `werror=stop` when its node goes away, and requires that **nothing moves** — a store that refuses every node cannot be fixed by moving a guest, and the relaunch would cost it the request QEMU is holding. A reconciler that cannot tell a host failure from a storage failure passes the first and fails the second. Both enable `[recovery]` across the cluster and restore every config they touch.
+
 ### `iam` — everything IAM and STS
 
 Policy evaluation against live requests rather than unit-level: a deny applying to the next request without a new credential, resource-scoped grants naming one key pair, `aws:SourceIp` seeing the real client address, assumed-role sessions carrying role policies, and revocation stopping one key alone.

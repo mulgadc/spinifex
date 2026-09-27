@@ -407,10 +407,10 @@ func (lease *volumeLease) renew(ctx context.Context) bool {
 
 	// Bounded so a hung JetStream call cannot hold this goroutine past the
 	// point where the server has already re-granted the entry.
-	ctx, cancel := context.WithTimeout(ctx, volumeLeaseRenewTimeout)
+	updateCtx, cancel := context.WithTimeout(ctx, volumeLeaseRenewTimeout)
 	defer cancel()
 
-	renewed, err := lease.leases.kv.Update(ctx, lease.key, payload, revision)
+	renewed, err := lease.leases.kv.Update(updateCtx, lease.key, payload, revision)
 	switch {
 	case err == nil:
 		lease.mu.Lock()
@@ -422,22 +422,85 @@ func (lease *volumeLease) renew(ctx context.Context) bool {
 		return false
 	// Update reports a lost race as ErrKeyRevisionMismatch on every replica
 	// count; ErrKeyExists only ever matched it by code on a single replica.
-	case errors.Is(err, jetstream.ErrKeyRevisionMismatch), errors.Is(err, jetstream.ErrKeyNotFound):
-		lease.mu.Lock()
-		lease.lost = true
-		lease.mu.Unlock()
-		slog.Error("volume lease lost: another opener may hold this volume", "volume", lease.volume, "generation", lease.generation, "err", err)
-		if onLost := lease.leases.onLost; onLost != nil {
-			// WithoutCancel: release cancels this context, and the fence has
-			// KV reads and a teardown to finish after that.
-			go onLost(context.WithoutCancel(ctx), lease.volume, leaseLostToPeer)
-		}
+	case errors.Is(err, jetstream.ErrKeyRevisionMismatch):
+		return lease.readopt(ctx, err)
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		lease.loseToPeer(ctx, err, "the entry is gone, so the volume is nobody's")
 		return false
 	default:
 		// A transient JetStream error is not a lost lease. Keep renewing; the
 		// TTL is several intervals wide, so there is room to recover.
 		slog.Warn("volume lease: renewal failed", "volume", lease.volume, "err", err)
 		return true
+	}
+}
+
+// readopt decides what a rejected conditional update actually meant, and is the
+// difference between fencing a volume somebody took and fencing one nobody did.
+//
+// A renewal that times out is treated as transient, correctly, but the server
+// may have applied it anyway — leaving it one revision ahead of what this holder
+// recorded, so every later attempt is refused for that reason alone. Re-reading
+// separates the two: an entry still carrying this lease's owner and generation
+// is this node's own write, acknowledged after the client gave up.
+//
+// A re-read that cannot be answered is evidence of nothing, so the lease is
+// kept. Local validity is the bound that does not depend on reading anything,
+// and it fences on its own schedule if the entry really has moved.
+func (lease *volumeLease) readopt(ctx context.Context, cause error) bool {
+	readCtx, cancel := context.WithTimeout(ctx, volumeLeaseRenewTimeout)
+	defer cancel()
+
+	entry, err := lease.leases.kv.Get(readCtx, lease.key)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			lease.loseToPeer(ctx, cause, "the entry is gone, so the volume is nobody's")
+			return false
+		}
+		slog.Warn("volume lease: a renewal was rejected and the entry could not be re-read, so the lease is kept until its validity lapses",
+			"volume", lease.volume, "generation", lease.generation, "err", err, "cause", cause)
+		return true
+	}
+
+	var record volumeLeaseRecord
+	if err := json.Unmarshal(entry.Value(), &record); err != nil {
+		slog.Warn("volume lease: a renewal was rejected and the entry could not be parsed, so the lease is kept until its validity lapses",
+			"volume", lease.volume, "generation", lease.generation, "err", err, "cause", cause)
+		return true
+	}
+
+	if record.Owner != lease.leases.owner || record.Generation != lease.generation {
+		lease.loseToPeer(ctx, cause, fmt.Sprintf("the entry now names owner %q generation %d", record.Owner, record.Generation))
+		return false
+	}
+
+	// This lease's own entry, at a revision it never saw acknowledged. Adopt it
+	// so the next renewal can succeed, but do not count it as a confirmation:
+	// only a write the server acknowledged proves the entry is still ours, and
+	// the validity clock is what bounds writing on a lease we cannot refresh.
+	lease.mu.Lock()
+	lease.revision = entry.Revision()
+	lease.mu.Unlock()
+	slog.Warn("volume lease: adopted a revision this node wrote but never saw acknowledged",
+		"volume", lease.volume, "generation", lease.generation, "revision", entry.Revision())
+	return true
+}
+
+// loseToPeer marks the lease gone and fences the export. why is for the operator: the
+// two ways to lose a lease need different responses and the log line is where
+// that starts.
+func (lease *volumeLease) loseToPeer(ctx context.Context, cause error, why string) {
+	lease.mu.Lock()
+	lease.lost = true
+	lease.mu.Unlock()
+
+	slog.Error("volume lease lost: another opener may hold this volume",
+		"volume", lease.volume, "generation", lease.generation, "reason", why, "err", cause)
+
+	if onLost := lease.leases.onLost; onLost != nil {
+		// WithoutCancel: release cancels this context, and the fence has KV
+		// reads and a teardown to finish after that.
+		go onLost(context.WithoutCancel(ctx), lease.volume, leaseLostToPeer)
 	}
 }
 

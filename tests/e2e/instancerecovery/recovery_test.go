@@ -86,12 +86,28 @@ func runInstanceAutoRecovery(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "victim_node", victim.Name)
 	harness.Detail(t, "instance", instanceID)
 
+	cli := harness.AWSClientForGateway(t, fix.Env, fix.Cluster.Nodes[0])
+	healthy := recoveryRequireStatus(t, cli, instanceID, func(s harness.InstanceStatusSummary) bool {
+		return s.State == "running" && s.SystemStatus == "ok"
+	}, 3*time.Minute, "state=running with system-status=ok before anything is broken")
+
 	harness.Step(t, "stop the spinifex services on %s — the guest keeps running, nothing drains it", victim.Name)
 	harness.StopNode(t, victim)
 	t.Cleanup(func() { harness.StartNode(t, victim) })
 
 	fix.Cluster.WaitNATSPeers(t, 1, harness.WithTimeout(60*time.Second),
 		harness.WithPoll(2*time.Second), harness.WithSkipNodes(victim.Name))
+
+	// The AWS-visible half of a host failure, and the reason this is asserted
+	// before the recovery rather than after it: the window is real and bounded —
+	// it opens when the owner's heartbeat goes stale, which is strictly before any
+	// survivor may claim, and closes when the relaunch registers. A customer
+	// watching DescribeInstanceStatus is told the host is impaired, which is what
+	// AWS reports for exactly this fault and is all AWS ever discloses about a
+	// host. Reporting ok throughout would be the more comfortable lie.
+	recoveryRequireStatus(t, cli, instanceID, func(s harness.InstanceStatusSummary) bool {
+		return s.SystemStatus == "impaired" || s.SystemStatus == "insufficient-data"
+	}, 4*time.Minute, "system-status=impaired while its host is gone")
 
 	harness.Step(t, "wait for a survivor to claim and relaunch %s", instanceID)
 	var hosting []harness.Node
@@ -107,8 +123,20 @@ func runInstanceAutoRecovery(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "recovered_onto", hosting[0].Name)
 
 	harness.Step(t, "the gateway agrees the instance is running and names the new owner")
-	cli := harness.AWSClientForGateway(t, fix.Env, fix.Cluster.Nodes[0])
 	harness.WaitForInstanceState(t, cli, instanceID, "running")
+
+	// The other half of the parity, and the part that says the move finished
+	// rather than merely started. AWS never discloses which host an instance is
+	// on, so the customer-visible evidence that it moved is that the impairment
+	// ended while the instance kept running — and that the AZ did not change,
+	// because a recovery that crossed one would break every placement promise
+	// made to the customer.
+	recovered := recoveryRequireStatus(t, cli, instanceID, func(s harness.InstanceStatusSummary) bool {
+		return s.State == "running" && s.SystemStatus == "ok" && s.InstanceStatus != "impaired"
+	}, 5*time.Minute, "system-status back to ok on the survivor, with the instance still running")
+	assert.Equalf(t, healthy.AZ, recovered.AZ,
+		"%s came back in %s having been launched in %s; a recovery must not move an instance between availability zones",
+		instanceID, recovered.AZ, healthy.AZ)
 
 	harness.Step(t, "bring %s back and assert it does not relaunch what moved", victim.Name)
 	harness.StartNode(t, victim)
@@ -397,4 +425,36 @@ func recoveryRunErr(node harness.Node, cmd string) (string, error) {
 	defer cancel()
 	out, err := harness.NewPeerSSH().Run(ctx, node.Addr, cmd)
 	return string(out), err
+}
+
+// recoveryRequireStatus polls DescribeInstanceStatus until want is satisfied and
+// returns the frame that satisfied it, failing the test with the last frame seen.
+//
+// The last frame is the whole value of this over a bare Eventually: "the status
+// never became impaired" is not a finding on its own, and "it stayed ok while
+// its host was gone" is.
+func recoveryRequireStatus(t *testing.T, cli *harness.AWSClient, instanceID string,
+	want func(harness.InstanceStatusSummary) bool, budget time.Duration, describe string,
+) harness.InstanceStatusSummary {
+	t.Helper()
+	harness.Step(t, "require %s reports %s", instanceID, describe)
+
+	var last harness.InstanceStatusSummary
+	var lastErr error
+	missing := false
+
+	require.Eventuallyf(t, func() bool {
+		summary, ok, err := harness.InstanceStatus(cli, instanceID)
+		lastErr, missing = err, !ok && err == nil
+		if err != nil || !ok {
+			return false
+		}
+		last = summary
+		return want(summary)
+	}, budget, 3*time.Second,
+		"%s never reported %s\nlast frame: %s\nabsent from the answer: %v\nlast error: %v",
+		instanceID, describe, last, missing, lastErr)
+
+	harness.Detail(t, "instance_status", last.String())
+	return last
 }

@@ -4,8 +4,10 @@ package multinode
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,10 +33,32 @@ const (
 	// attempt can succeed, and a boot on top of it.
 	recoveryBudget = 8 * time.Minute
 
-	// How long the guests are given to notice their storage has gone and pause.
-	// QEMU pauses on the first failed I/O, but the guest has to issue one, and
-	// the daemon's QMP poll is every 30s.
-	recoveryPauseBudget = 3 * time.Minute
+	// How long the guest is given to notice its storage has gone and pause.
+	// Generous because nothing about it is prompt: viperblock serves what it
+	// has cached, nbdkit waits out its reconnect delay, and only then does the
+	// error reach QEMU. Measured at 4m47s on a three-node cluster.
+	recoveryPauseBudget = 10 * time.Minute
+
+	// diskLoadUserData starts a guest writing to its root volume and never
+	// stopping. An idle guest issues no I/O that reaches the object store, so
+	// freezing the store leaves it running and this test proves nothing;
+	// measured on a real cluster, an idle guest never paused at all.
+	//
+	// It is cloud-init rather than SSH into the guest on purpose: routed-NAT
+	// clusters give guests no public address, so a test that needed to log in
+	// could not run on half the cells.
+	diskLoadUserData = `#!/bin/bash
+cat > /usr/local/sbin/spx-e2e-diskload <<'EOF'
+#!/bin/bash
+while true; do
+  dd if=/dev/urandom of=/var/tmp/spx-e2e-load bs=1M count=32 oflag=direct conv=fsync 2>/dev/null
+  sync
+  sleep 1
+done
+EOF
+chmod +x /usr/local/sbin/spx-e2e-diskload
+systemd-run --unit=spx-e2e-diskload /usr/local/sbin/spx-e2e-diskload
+`
 )
 
 // runInstanceAutoRecovery proves a guest on a node that stops answering comes
@@ -51,7 +75,7 @@ func runInstanceAutoRecovery(t *testing.T, fix *Fixture) {
 
 	recoveryEnable(t, fix)
 
-	victim, instanceID := recoveryGuestOnAPeer(t, fix)
+	victim, instanceID := recoveryGuestOnAPeer(t, fix, "")
 	harness.Detail(t, "victim_node", victim.Name)
 	harness.Detail(t, "instance", instanceID)
 
@@ -110,25 +134,12 @@ func runInstanceRecoveryRefusesStorageFault(t *testing.T, fix *Fixture) {
 
 	recoveryEnable(t, fix)
 
-	victim, instanceID := recoveryGuestOnAPeer(t, fix)
+	victim, instanceID := recoveryGuestOnAPeer(t, fix, diskLoadUserData)
 	harness.Detail(t, "victim_node", victim.Name)
 	harness.Detail(t, "instance", instanceID)
 
-	harness.Step(t, "stop predastore on every node — the store is now broken cluster-wide")
-	for _, node := range fix.Cluster.Nodes {
-		recoveryRun(t, node, "sudo systemctl stop spinifex-predastore")
-	}
-	restored := false
-	restore := func() {
-		if restored {
-			return
-		}
-		restored = true
-		for _, node := range fix.Cluster.Nodes {
-			recoveryRun(t, node, "sudo systemctl start spinifex-predastore")
-		}
-	}
-	t.Cleanup(restore)
+	harness.Step(t, "freeze predastore on every node — the store is now broken cluster-wide")
+	restore := recoveryFreezeStore(t, fix)
 
 	harness.Step(t, "wait for %s to pause on its storage and publish that it did", instanceID)
 	require.Eventuallyf(t, func() bool {
@@ -219,13 +230,39 @@ func recoveryEnable(t *testing.T, fix *Fixture) {
 	}
 }
 
+// recoveryFreezeStore SIGSTOPs predastore on every node and returns the thaw,
+// which is also registered as a cleanup so a failure anywhere restores it.
+//
+// SIGSTOP rather than stopping the unit, for the reason the storagefault suite
+// gives: a stopped process holds its connections open and answers nothing,
+// which is the outage that defeats code with no timeout. A clean stop refuses
+// connections instead and is a different fault.
+func recoveryFreezeStore(t *testing.T, fix *Fixture) func() {
+	t.Helper()
+
+	signal := func(sig string) {
+		for _, node := range fix.Cluster.Nodes {
+			recoveryRun(t, node,
+				"PID=$(systemctl show spinifex-predastore -p MainPID --value); "+
+					"[ \"$PID\" != 0 ] && sudo kill -"+sig+" \"$PID\"")
+		}
+	}
+
+	var once sync.Once
+	thaw := func() { once.Do(func() { signal("CONT") }) }
+	t.Cleanup(thaw)
+	signal("STOP")
+	return thaw
+}
+
 // recoveryGuestOnAPeer launches guests until one lands on a node other than the
-// first, and returns that node and instance.
+// first, and returns that node and instance. A non-empty userData is delivered
+// to cloud-init.
 //
 // Not the first node: it is the operator gateway every assertion here is made
 // through, and taking it down would remove the means of observing the result
 // rather than test anything.
-func recoveryGuestOnAPeer(t *testing.T, fix *Fixture) (harness.Node, string) {
+func recoveryGuestOnAPeer(t *testing.T, fix *Fixture, userData string) (harness.Node, string) {
 	t.Helper()
 
 	instType, arch := needInstanceTypeArch(t, fix)
@@ -234,19 +271,24 @@ func recoveryGuestOnAPeer(t *testing.T, fix *Fixture) (harness.Node, string) {
 	def := harness.EnsureDefaultVPC(t, fix.Harness)
 	require.NotEmpty(t, def.SGID, "default SG required")
 
+	in := &ec2.RunInstancesInput{
+		ImageId:          aws.String(amiID),
+		InstanceType:     aws.String(instType),
+		KeyName:          aws.String(keyName),
+		SubnetId:         aws.String(def.SubnetID),
+		SecurityGroupIds: []*string{aws.String(def.SGID)},
+		MinCount:         aws.Int64(1),
+		MaxCount:         aws.Int64(1),
+	}
+	if userData != "" {
+		in.UserData = aws.String(base64.StdEncoding.EncodeToString([]byte(userData)))
+	}
+
 	for attempt := 1; attempt <= 6; attempt++ {
 		// A shared fixture cannot serve this: the guest has to be on a named node
 		// so that node can be taken away, and losing it is what is under test.
 		// e2e:allow-create
-		out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
-			ImageId:          aws.String(amiID),
-			InstanceType:     aws.String(instType),
-			KeyName:          aws.String(keyName),
-			SubnetId:         aws.String(def.SubnetID),
-			SecurityGroupIds: []*string{aws.String(def.SGID)},
-			MinCount:         aws.Int64(1),
-			MaxCount:         aws.Int64(1),
-		})
+		out, err := fix.AWS.EC2.RunInstances(in)
 		if err != nil {
 			if strings.Contains(err.Error(), "InsufficientInstanceCapacity") {
 				time.Sleep(10 * time.Second)
@@ -278,16 +320,17 @@ func recoveryGuestOnAPeer(t *testing.T, fix *Fixture) (harness.Node, string) {
 
 // recoveryGuestIsPaused reports whether the node's daemon has seen this guest
 // pause on an I/O error, which is what a broken object store looks like from
-// the control plane.
+// the control plane. BLOCK_IO_ERROR is the QMP event and the other is the
+// daemon's own line; either is the pause, and it stamps Health.IOErrorSince.
 func recoveryGuestIsPaused(t *testing.T, node harness.Node, instanceID string) bool {
 	t.Helper()
 	out, err := recoveryRunErr(node,
-		"sudo journalctl -u spinifex-daemon --no-pager -n 500 | grep -F "+harness.ShellQuote(instanceID))
+		"sudo journalctl -u spinifex-daemon --no-pager -n 2000 | grep -F "+harness.ShellQuote(instanceID))
 	if err != nil {
 		return false
 	}
-	return strings.Contains(out, "io-error") || strings.Contains(out, "IOError") ||
-		strings.Contains(out, "paused")
+	return strings.Contains(out, "BLOCK_IO_ERROR") ||
+		strings.Contains(out, "Guest paused on a backend I/O error")
 }
 
 // recoveryWhy gathers what decides a recovery, for a failure message that does

@@ -39,6 +39,16 @@ const (
 	// error reach QEMU. Measured at 4m47s on a three-node cluster.
 	recoveryPauseBudget = 10 * time.Minute
 
+	// How long the guest is given to boot, run cloud-init, and announce that its
+	// first write landed. The announcement is the premise of the whole test, so
+	// this is generous and failing it is a hard error rather than a skip.
+	recoveryDiskLoadBudget = 6 * time.Minute
+
+	// diskLoadMarker is printed to the serial console by the load driver once a
+	// full 32 MiB pass has been written and synced, so it is proof the guest is
+	// driving its root volume rather than a claim that it was asked to.
+	diskLoadMarker = "spx-e2e-diskload: writing"
+
 	// diskLoadUserData starts a guest writing to its root volume and never
 	// stopping. An idle guest issues no I/O that reaches the object store, so
 	// freezing the store leaves it running and this test proves nothing;
@@ -46,13 +56,15 @@ const (
 	//
 	// It is cloud-init rather than SSH into the guest on purpose: routed-NAT
 	// clusters give guests no public address, so a test that needed to log in
-	// could not run on half the cells.
+	// could not run on half the cells. The console is readable the same way, by
+	// the API, so the marker travels the same path.
 	diskLoadUserData = `#!/bin/bash
 cat > /usr/local/sbin/spx-e2e-diskload <<'EOF'
 #!/bin/bash
 while true; do
   dd if=/dev/urandom of=/var/tmp/spx-e2e-load bs=1M count=32 oflag=direct conv=fsync 2>/dev/null
   sync
+  echo "spx-e2e-diskload: writing" > /dev/console
   sleep 1
 done
 EOF
@@ -131,6 +143,8 @@ func runInstanceRecoveryRefusesStorageFault(t *testing.T, fix *Fixture) {
 	victim, instanceID := recoveryGuestOnAPeer(t, fix, diskLoadUserData)
 	harness.Detail(t, "victim_node", victim.Name)
 	harness.Detail(t, "instance", instanceID)
+
+	recoveryWaitForDiskLoad(t, fix, instanceID)
 
 	harness.Step(t, "freeze predastore on every node — the store is now broken cluster-wide")
 	restore := recoveryFreezeStore(t, fix)
@@ -316,6 +330,41 @@ func recoveryGuestOnAPeer(t *testing.T, fix *Fixture, userData string) (harness.
 
 	t.Fatalf("no guest landed on a node other than %s in six attempts", fix.Cluster.Nodes[0].Name)
 	return harness.Node{}, ""
+}
+
+// recoveryWaitForDiskLoad blocks until the guest says on its console that it has
+// written and synced a pass to its root volume.
+//
+// This is the test's own premise, and a run that froze the store before it was
+// true proved nothing while reporting a product failure: the guest was still in
+// UEFI, so the only thing the frozen store could reach was the EFI varstore, and
+// pflash has no werror=stop to pause on. So a guest that never says it is
+// writing fails here, where the message names the real problem.
+func recoveryWaitForDiskLoad(t *testing.T, fix *Fixture, instanceID string) {
+	t.Helper()
+	harness.Step(t, "wait for %s to boot and start driving its root volume", instanceID)
+
+	var last string
+	require.Eventuallyf(t, func() bool {
+		console, err := harness.InstanceConsole(fix.AWS, instanceID)
+		if err != nil {
+			return false
+		}
+		last = console
+		return strings.Contains(console, diskLoadMarker)
+	}, recoveryDiskLoadBudget, 10*time.Second,
+		"%s never reported %q on its console, so its load driver never wrote to the root volume "+
+			"and freezing the store would prove nothing\nconsole tail:\n%s",
+		instanceID, diskLoadMarker, recoveryTail(last, 2000))
+}
+
+// recoveryTail returns the last n bytes of s, for a failure message that needs
+// the end of a console rather than all of it.
+func recoveryTail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }
 
 // recoveryGuestIsPaused reports whether the node's daemon has seen this guest

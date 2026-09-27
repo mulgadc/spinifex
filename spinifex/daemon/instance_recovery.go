@@ -15,6 +15,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/instancecache"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // recoveryPassInterval is the gap between passes. It is well under the volume
@@ -409,25 +413,38 @@ func (r *instanceRecovery) peerState(ctx context.Context) func(string) instancec
 // Claim before admission, not after: the claim is what stops two survivors
 // doing the same expensive setup, and a node that turns out not to fit hands
 // the record straight back.
+// A recovery is three phases that already trace themselves — the volumes
+// opening, QEMU starting, and its monitor answering — and nothing tied them to
+// the attempt that asked for them. This span is that tie: the phases become its
+// children, so one trace ID reads end to end across an attempt and a phase that
+// took the whole of it can be named rather than guessed at.
 func (r *instanceRecovery) attempt(ctx context.Context, candidate recoveryCandidate) {
 	id := candidate.record.Metadata.Name
+
+	ctx, span := otel.Tracer(daemonTracerName).Start(ctx, "recovery.attempt",
+		trace.WithAttributes(
+			attribute.String("instance.id", id),
+			attribute.String("recovery.from", candidate.from),
+			attribute.String("recovery.to", r.daemon.node),
+		))
+	defer span.End()
 
 	instance, err := r.daemon.jsManager.ClaimRecoverableInstance(id, candidate.from, r.daemon.node)
 	if err != nil {
 		if !errors.Is(err, vm.ErrRecoveryClaimLost) {
-			slog.Warn("Instance recovery could not claim an instance", "instanceId", id, "err", err)
+			slog.WarnContext(ctx, "Instance recovery could not claim an instance", "instanceId", id, "err", err)
 		}
 		return
 	}
 
 	undo := func() {
 		if err := r.daemon.jsManager.ReleaseRecoveredInstance(id, r.daemon.node, candidate.from); err != nil {
-			slog.Error("Instance recovery could not hand a claimed instance back",
+			slog.ErrorContext(ctx, "Instance recovery could not hand a claimed instance back",
 				"instanceId", id, "to", candidate.from, "err", err)
 		}
 	}
 
-	slog.Info("Recovering an instance from a node that stopped heartbeating",
+	slog.InfoContext(ctx, "Recovering an instance from a node that stopped heartbeating",
 		"instanceId", id, "from", candidate.from, "to", r.daemon.node)
 
 	if err := r.daemon.instanceService.RecoverInstance(ctx, instance, undo); err != nil {
@@ -435,11 +452,16 @@ func (r *instanceRecovery) attempt(ctx context.Context, candidate recoveryCandid
 		// self-fence has to run before anyone else may open the volume.
 		fault := classifyRecoveryFault(err)
 		attempts := r.deferRetry(id, fault, time.Now())
-		slog.Warn("Instance recovery attempt did not complete",
+		span.SetAttributes(
+			attribute.String("recovery.fault", fault.String()),
+			attribute.Int("recovery.attempts", attempts))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		slog.WarnContext(ctx, "Instance recovery attempt did not complete",
 			"instanceId", id, "from", candidate.from, "fault", fault.String(),
 			"attempts", attempts, "budget", recoveryMaxAttempts, "err", err)
 		if attempts >= recoveryMaxAttempts {
-			r.abandon(id, candidate.from, fault, err, attempts)
+			r.abandon(ctx, id, candidate.from, fault, err, attempts)
 		}
 		return
 	}
@@ -454,7 +476,7 @@ func (r *instanceRecovery) attempt(ctx context.Context, candidate recoveryCandid
 	// marked impaired by the pass rather than reported healthy.
 	r.daemon.ClaimOCIAddresses(ctx)
 
-	slog.Info("Recovered an instance onto this node",
+	slog.InfoContext(ctx, "Recovered an instance onto this node",
 		"instanceId", id, "from", candidate.from, "node", r.daemon.node)
 }
 
@@ -469,17 +491,17 @@ func (r *instanceRecovery) attempt(ctx context.Context, candidate recoveryCandid
 // A record another node has since claimed and launched is not touched, and a
 // write that does not land leaves the backoff in place — the next pass tries the
 // launch again rather than the give-up, which is the safer of the two to repeat.
-func (r *instanceRecovery) abandon(id, from string, fault recoveryFault, cause error, attempts int) {
+func (r *instanceRecovery) abandon(ctx context.Context, id, from string, fault recoveryFault, cause error, attempts int) {
 	reason := fmt.Sprintf("recovery onto %s failed %d times, last: %v", r.daemon.node, attempts, cause)
 
 	abandoned, err := r.daemon.jsManager.AbandonRecovery(id, from, fault.stateReasonCode(), reason)
 	if err != nil {
-		slog.Error("Instance recovery could not record that it has given up",
+		slog.ErrorContext(ctx, "Instance recovery could not record that it has given up",
 			"instanceId", id, "from", from, "err", err)
 		return
 	}
 	if !abandoned {
-		slog.Info("Instance recovery gave up on an instance that is no longer its to give up on",
+		slog.InfoContext(ctx, "Instance recovery gave up on an instance that is no longer its to give up on",
 			"instanceId", id, "from", from)
 		delete(r.backoff, id)
 		delete(r.staleOnce, id)
@@ -488,7 +510,7 @@ func (r *instanceRecovery) abandon(id, from string, fault recoveryFault, cause e
 
 	delete(r.backoff, id)
 	delete(r.staleOnce, id)
-	slog.Error("Instance recovery has given up: the instance is stopped and needs a start",
+	slog.ErrorContext(ctx, "Instance recovery has given up: the instance is stopped and needs a start",
 		"instanceId", id, "from", from, "node", r.daemon.node, "attempts", attempts,
 		"fault", fault.String(), "code", fault.stateReasonCode(), "err", cause)
 }

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -752,6 +754,53 @@ func (m *JetStreamManager) ReleaseRecoveredInstance(instanceID, self, to string)
 		return err
 	}
 	return nil
+}
+
+// AbandonRecovery stops an instance being a recovery candidate on every node,
+// by writing the giving-up into the record they all derive their work from.
+//
+// The record is left in the shape a stop leaves — observed stopped, wanted
+// stopped, carrying a StateReason that names why — which is what AWS leaves
+// behind when a host fails and the instance cannot be brought back. So the
+// customer's own StartInstances is the retry and needs no special case, and
+// nothing has to remember a cluster-wide decision: recoverable() tests desired
+// state, so one node's write ends the retrying everywhere at once. That is the
+// same property the claim has, for the same reason.
+//
+// from is checked, so a node that gives up after another has already claimed
+// and launched the instance cannot stop a guest that is now running. Reports
+// whether the record was still the one being given up on.
+func (m *JetStreamManager) AbandonRecovery(instanceID, from, code, reason string) (bool, error) {
+	if m.records == nil {
+		return false, errors.New("KV bucket not initialized")
+	}
+
+	applied := false
+	_, err := m.UpdateInstanceRecord(instanceID, func(record *vm.InstanceRecord) {
+		// Reset per attempt: the mutation is replayed on a revision conflict,
+		// and a retry that finds the record moved must not report the first
+		// read's answer.
+		applied = false
+		if record.Status.LastNode != from || !recoverable(record) {
+			return
+		}
+		applied = true
+		record.Spec.DesiredState = vm.DesiredStopped
+		record.Status.Status = vm.StateStopped
+		if record.Status.Instance != nil {
+			record.Status.Instance.StateReason = &ec2.StateReason{
+				Code:    aws.String(code),
+				Message: aws.String(reason),
+			}
+		}
+	})
+	if err != nil {
+		if errors.Is(err, kvstore.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return applied, nil
 }
 
 // UpdateStoppedInstance atomically applies mutate to the current KV-stored

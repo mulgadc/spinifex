@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/resource"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -158,4 +160,80 @@ func TestClaimAndRelease_RefuseWithoutABucket(t *testing.T) {
 		"an uninitialised bucket is a fault here, not an ordinary lost race")
 
 	assert.Error(t, m.ReleaseRecoveredInstance("i-1", "node-2", "node-1"))
+}
+
+// AbandonRecovery is what stops an instance being retried forever, and the
+// shape it leaves behind is the whole of its contract: the retrying ends on
+// every node because they all derive their work from desired state, and the
+// customer's own StartInstances is the retry.
+func TestAbandonRecovery_LeavesTheInstanceStoppedWithAReason(t *testing.T) {
+	m := newRecordManager(t)
+	record := recoverableRecord("i-1", "node-1")
+	record.Status.Instance = &ec2.Instance{InstanceId: aws.String("i-1")}
+	require.NoError(t, m.WriteInstanceRecord("i-1", record))
+
+	abandoned, err := m.AbandonRecovery("i-1", "node-1", "Server.HostRecoveryFailed", "nbdkit exited 1")
+	require.NoError(t, err)
+	require.True(t, abandoned)
+
+	stored, err := m.LoadInstanceRecord("i-1")
+	require.NoError(t, err)
+	assert.Equal(t, vm.DesiredStopped, stored.Spec.DesiredState,
+		"desired state is what every node's selection reads, so this is what ends the retrying cluster-wide")
+	assert.Equal(t, vm.StateStopped, stored.Status.Status,
+		"AWS leaves a host-failed instance stopped, not running on a node that is gone")
+	require.NotNil(t, stored.Status.Instance.StateReason)
+	assert.Equal(t, "Server.HostRecoveryFailed", aws.StringValue(stored.Status.Instance.StateReason.Code))
+	assert.Equal(t, "nbdkit exited 1", aws.StringValue(stored.Status.Instance.StateReason.Message),
+		"the reason is the only account of this the customer ever gets")
+	assert.Equal(t, "node-1", stored.Status.LastNode,
+		"where it last ran is still true and is the only pointer to the evidence")
+}
+
+// The give-up races the success. A node that exhausts its attempts after another
+// survivor has already claimed and launched the instance must not stop a guest
+// that is now running.
+func TestAbandonRecovery_WillNotStopAnInstanceAnotherNodeTook(t *testing.T) {
+	m := newRecordManager(t)
+	require.NoError(t, m.WriteInstanceRecord("i-1", recoverableRecord("i-1", "node-3")))
+
+	abandoned, err := m.AbandonRecovery("i-1", "node-1", "Server.HostRecoveryFailed", "gave up")
+	require.NoError(t, err)
+	assert.False(t, abandoned, "the caller has to be able to tell it did not apply")
+
+	stored, err := m.LoadInstanceRecord("i-1")
+	require.NoError(t, err)
+	assert.Equal(t, vm.DesiredRunning, stored.Spec.DesiredState)
+	assert.Equal(t, vm.StateRunning, stored.Status.Status)
+}
+
+// A record with no EC2 projection yet still has to stop being retried. The
+// reason is lost, which is a worse outcome than having one and a better one than
+// retrying forever.
+func TestAbandonRecovery_WorksWithoutAnEC2Projection(t *testing.T) {
+	m := newRecordManager(t)
+	require.NoError(t, m.WriteInstanceRecord("i-1", recoverableRecord("i-1", "node-1")))
+
+	abandoned, err := m.AbandonRecovery("i-1", "node-1", "Server.HostRecoveryFailed", "gave up")
+	require.NoError(t, err)
+	assert.True(t, abandoned)
+
+	stored, err := m.LoadInstanceRecord("i-1")
+	require.NoError(t, err)
+	assert.Equal(t, vm.DesiredStopped, stored.Spec.DesiredState)
+}
+
+func TestAbandonRecovery_AbsentRecordIsNotAnError(t *testing.T) {
+	m := newRecordManager(t)
+
+	abandoned, err := m.AbandonRecovery("i-never-written", "node-1", "Server.HostRecoveryFailed", "gave up")
+	assert.NoError(t, err)
+	assert.False(t, abandoned)
+}
+
+func TestAbandonRecovery_RefusesWithoutABucket(t *testing.T) {
+	m := &daemon.JetStreamManager{}
+
+	_, err := m.AbandonRecovery("i-1", "node-1", "Server.HostRecoveryFailed", "gave up")
+	assert.Error(t, err)
 }

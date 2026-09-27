@@ -2746,6 +2746,15 @@ var volumeExclusionMarkers = []string{
 	"volume is leased by another owner",
 }
 
+// ErrVolumeHeldElsewhere reports a launch refused because another node still
+// holds one of the instance's volume leases.
+//
+// Recovery treats it differently from every other failure — it clears on the
+// lease's own clock rather than needing anything fixed — so it has to be
+// recognisable with errors.Is rather than inferred from text that has already
+// crossed NATS once.
+var ErrVolumeHeldElsewhere = errors.New("a volume is leased by another node")
+
 // volumeHeldElsewhereError converts a mount refused because another node holds
 // the volume into a client-facing error carrying that reason. Returns nil for
 // anything else. Without it the caller gets ServerInternal and is told to
@@ -2758,7 +2767,8 @@ func volumeHeldElsewhereError(err error) error {
 	msg := err.Error()
 	for _, marker := range volumeExclusionMarkers {
 		if strings.Contains(msg, marker) {
-			return awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", msg)
+			return fmt.Errorf("%w: %w", ErrVolumeHeldElsewhere,
+				awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", msg))
 		}
 	}
 	return nil

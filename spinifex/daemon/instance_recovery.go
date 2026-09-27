@@ -4,11 +4,14 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"slices"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/instancecache"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -48,6 +51,30 @@ const (
 	recoveryBackoffBase = 30 * time.Second
 	recoveryBackoffMax  = 15 * time.Minute
 )
+
+// recoveryLeaseBackoffBase and recoveryLeaseBackoffMax are the same bounds for
+// the one failure that clears on a clock rather than on somebody fixing
+// something: the node this instance was taken from still holds its volume
+// lease, and will stop holding it within a TTL. Retrying that on the general
+// backoff would spend minutes waiting for something already over, so it is
+// faster and it is capped near two TTLs — past which the cause is no longer the
+// one being waited for, and the attempt budget should be spent finding out.
+const (
+	recoveryLeaseBackoffBase = 15 * time.Second
+	recoveryLeaseBackoffMax  = 90 * time.Second
+)
+
+// recoveryMaxAttempts is how many times one node tries an instance before it
+// stops and says so.
+//
+// Retrying forever was the previous behaviour and it is the worse failure. The
+// instance stays observed-running on a node that is gone, nothing is visible to
+// the customer beyond an instance that does not answer, and no operator is ever
+// told. A budget converts that into a stopped instance carrying the reason, on
+// the same path AWS leaves a host-failed instance on. At these delays the budget
+// is roughly an hour and a half of trying, so anything that was going to clear
+// has had far longer than the clocks it depends on.
+const recoveryMaxAttempts = 12
 
 // recoveryCandidate is one instance this node could take over, and why.
 type recoveryCandidate struct {
@@ -196,14 +223,87 @@ func (r *instanceRecovery) backingOff(id string, now time.Time) bool {
 // opposite things. A volume lease the old owner has not released yet clears
 // within one TTL and wants a prompt retry; an object store refusing reads clears
 // when an operator fixes it and wants no traffic at all in the meantime. Doubling
-// serves the first without spending the cluster on the second.
-func (r *instanceRecovery) deferRetry(id string, now time.Time) int {
+// serves the first without spending the cluster on the second, and the bounds it
+// doubles between come from the fault, which is the other half of the same
+// distinction.
+//
+// Every fault counts against the same budget. A class that did not count would
+// be the old unbounded behaviour under a narrower condition, and the conditions
+// this can read are not precise enough to be trusted with that.
+func (r *instanceRecovery) deferRetry(id string, fault recoveryFault, now time.Time) int {
+	base, limit := fault.backoff()
 	held := r.backoff[id]
 	held.attempts++
-	delay := min(recoveryBackoffBase<<min(held.attempts-1, 16), recoveryBackoffMax)
+	delay := min(base<<min(held.attempts-1, 16), limit)
 	held.until = now.Add(delay)
 	r.backoff[id] = held
 	return held.attempts
+}
+
+// recoveryFault is what a failed attempt says about the next one, and it is
+// deliberately a small set: how long to wait, and what to tell the customer if
+// the budget runs out.
+//
+// There is no terminal class, because nothing on this path can prove one. The
+// launch reports a capacity refusal and a lease refusal distinguishably and
+// collapses everything else into ServerInternal, so a fault named "will never
+// succeed" would be a guess dressed as a verdict — and the guess that abandons a
+// recoverable instance is the expensive one. The budget bounds the unknown case
+// instead, which needs no such claim.
+type recoveryFault int
+
+const (
+	// recoveryFaultLeaseHeld: the node this was taken from still holds a volume
+	// lease. Ordinary, expected, and over within a TTL.
+	recoveryFaultLeaseHeld recoveryFault = iota
+
+	// recoveryFaultCapacity: this node has no room for the instance. Another
+	// survivor may, and each derives its own order, so they all get a turn.
+	recoveryFaultCapacity
+
+	// recoveryFaultUnknown: everything else, which is most of it.
+	recoveryFaultUnknown
+)
+
+func (f recoveryFault) String() string {
+	switch f {
+	case recoveryFaultLeaseHeld:
+		return "volume_lease_held"
+	case recoveryFaultCapacity:
+		return "insufficient_capacity"
+	default:
+		return "unknown"
+	}
+}
+
+// backoff is the delay range for this fault.
+func (f recoveryFault) backoff() (base, limit time.Duration) {
+	if f == recoveryFaultLeaseHeld {
+		return recoveryLeaseBackoffBase, recoveryLeaseBackoffMax
+	}
+	return recoveryBackoffBase, recoveryBackoffMax
+}
+
+// stateReasonCode is what an abandoned instance carries for this fault. AWS has
+// a real code for a capacity refusal, so that one is not invented; the rest have
+// no AWS equivalent and get the code that says which subsystem gave up, distinct
+// from the one a node's own restart uses.
+func (f recoveryFault) stateReasonCode() string {
+	if f == recoveryFaultCapacity {
+		return "Server.InsufficientInstanceCapacity"
+	}
+	return "Server.HostRecoveryFailed"
+}
+
+// classifyRecoveryFault reads what the launch refused with.
+func classifyRecoveryFault(err error) recoveryFault {
+	if errors.Is(err, handlers_ec2_instance.ErrVolumeHeldElsewhere) {
+		return recoveryFaultLeaseHeld
+	}
+	if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorInsufficientInstanceCapacity {
+		return recoveryFaultCapacity
+	}
+	return recoveryFaultUnknown
 }
 
 // settled reports whether this daemon has been up long enough to believe what
@@ -333,9 +433,14 @@ func (r *instanceRecovery) attempt(ctx context.Context, candidate recoveryCandid
 	if err := r.daemon.instanceService.RecoverInstance(ctx, instance, undo); err != nil {
 		// Expected while the old owner's volume lease is still valid: its own
 		// self-fence has to run before anyone else may open the volume.
-		attempts := r.deferRetry(id, time.Now())
+		fault := classifyRecoveryFault(err)
+		attempts := r.deferRetry(id, fault, time.Now())
 		slog.Warn("Instance recovery attempt did not complete",
-			"instanceId", id, "from", candidate.from, "attempts", attempts, "err", err)
+			"instanceId", id, "from", candidate.from, "fault", fault.String(),
+			"attempts", attempts, "budget", recoveryMaxAttempts, "err", err)
+		if attempts >= recoveryMaxAttempts {
+			r.abandon(id, candidate.from, fault, err, attempts)
+		}
 		return
 	}
 
@@ -343,6 +448,41 @@ func (r *instanceRecovery) attempt(ctx context.Context, candidate recoveryCandid
 	delete(r.backoff, id)
 	slog.Info("Recovered an instance onto this node",
 		"instanceId", id, "from", candidate.from, "node", r.daemon.node)
+}
+
+// abandon stops trying and leaves the instance stopped with the reason it
+// stopped for, which is the only outcome here that is visible to the customer.
+//
+// This is the same place AWS leaves an instance whose host failed and could not
+// be brought back: stopped, carrying a StateReason, one StartInstances away from
+// running. So the customer's retry is the ordinary API call on whichever node
+// has room, and nothing here needs an operator-only path to undo it.
+//
+// A record another node has since claimed and launched is not touched, and a
+// write that does not land leaves the backoff in place — the next pass tries the
+// launch again rather than the give-up, which is the safer of the two to repeat.
+func (r *instanceRecovery) abandon(id, from string, fault recoveryFault, cause error, attempts int) {
+	reason := fmt.Sprintf("recovery onto %s failed %d times, last: %v", r.daemon.node, attempts, cause)
+
+	abandoned, err := r.daemon.jsManager.AbandonRecovery(id, from, fault.stateReasonCode(), reason)
+	if err != nil {
+		slog.Error("Instance recovery could not record that it has given up",
+			"instanceId", id, "from", from, "err", err)
+		return
+	}
+	if !abandoned {
+		slog.Info("Instance recovery gave up on an instance that is no longer its to give up on",
+			"instanceId", id, "from", from)
+		delete(r.backoff, id)
+		delete(r.staleOnce, id)
+		return
+	}
+
+	delete(r.backoff, id)
+	delete(r.staleOnce, id)
+	slog.Error("Instance recovery has given up: the instance is stopped and needs a start",
+		"instanceId", id, "from", from, "node", r.daemon.node, "attempts", attempts,
+		"fault", fault.String(), "code", fault.stateReasonCode(), "err", cause)
 }
 
 // newLiveness opens the daemon's own read-only view of the heartbeat store.

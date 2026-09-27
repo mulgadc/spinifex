@@ -7,12 +7,15 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/instancecache"
@@ -305,17 +308,103 @@ func TestRetriesBackOffAndCapAfterAFailedLaunch(t *testing.T) {
 
 	assert.False(t, r.backingOff("i-1", now), "an instance never tried is not backed off")
 
-	require.Equal(t, 1, r.deferRetry("i-1", now))
+	require.Equal(t, 1, r.deferRetry("i-1", recoveryFaultUnknown, now))
 	assert.True(t, r.backingOff("i-1", now.Add(recoveryBackoffBase-time.Second)))
 	assert.False(t, r.backingOff("i-1", now.Add(recoveryBackoffBase)))
 
-	require.Equal(t, 2, r.deferRetry("i-1", now))
+	require.Equal(t, 2, r.deferRetry("i-1", recoveryFaultUnknown, now))
 	assert.True(t, r.backingOff("i-1", now.Add(2*recoveryBackoffBase-time.Second)),
 		"the second failure has to wait longer than the first")
 
 	for range 20 {
-		r.deferRetry("i-1", now)
+		r.deferRetry("i-1", recoveryFaultUnknown, now)
 	}
 	assert.False(t, r.backingOff("i-1", now.Add(recoveryBackoffMax)),
 		"the delay is capped, so a fault that is fixed is noticed without an operator nudge")
+}
+
+// TestALeaseStillHeldIsRetriedFasterThanAnythingElse pins the one distinction
+// the backoff makes. The old owner's lease lapses on a clock nobody has to act
+// on, so waiting minutes for it is time an instance spends down for nothing.
+func TestALeaseStillHeldIsRetriedFasterThanAnythingElse(t *testing.T) {
+	r := recoveryFixture("node-2")
+	now := time.Now()
+
+	require.Equal(t, 1, r.deferRetry("i-lease", recoveryFaultLeaseHeld, now))
+	assert.False(t, r.backingOff("i-lease", now.Add(recoveryLeaseBackoffBase)))
+
+	for range 20 {
+		r.deferRetry("i-lease", recoveryFaultLeaseHeld, now)
+	}
+	assert.False(t, r.backingOff("i-lease", now.Add(recoveryLeaseBackoffMax)))
+	assert.Less(t, recoveryLeaseBackoffMax, recoveryBackoffMax,
+		"a cause that clears on a lease TTL must not be waited on like one that needs an operator")
+}
+
+// TestTheAttemptBudgetIsSharedByEveryFault is the whole reason there is a
+// budget. A class of failure that did not count against it would be the old
+// unbounded retry under a narrower condition, and the conditions this code can
+// read are not precise enough to be trusted with that.
+func TestTheAttemptBudgetIsSharedByEveryFault(t *testing.T) {
+	r := recoveryFixture("node-2")
+	now := time.Now()
+
+	faults := []recoveryFault{recoveryFaultLeaseHeld, recoveryFaultCapacity, recoveryFaultUnknown}
+	for i := range recoveryMaxAttempts {
+		attempts := r.deferRetry("i-1", faults[i%len(faults)], now)
+		require.Equal(t, i+1, attempts,
+			"every fault counts, so the budget cannot be extended by failing a different way")
+	}
+	assert.Equal(t, recoveryMaxAttempts, r.backoff["i-1"].attempts,
+		"reaching the budget is what makes the give-up happen, so the count has to be exact")
+}
+
+// TestWhatTheLaunchRefusalMeansForTheNextAttempt is the classifier. The two
+// cases it names are the two the launch reports distinguishably; everything else
+// is unknown on purpose, because a fault named "will never succeed" on this
+// evidence would be a guess, and the guess that abandons a recoverable instance
+// is the expensive one.
+func TestWhatTheLaunchRefusalMeansForTheNextAttempt(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want recoveryFault
+		code string
+	}{
+		{
+			name: "the old owner still holds the volume lease",
+			err: fmt.Errorf("mount refused: %w", fmt.Errorf("%w: %w",
+				handlers_ec2_instance.ErrVolumeHeldElsewhere,
+				awserrors.Errorf(awserrors.ErrorIncorrectState, "volume is leased by another owner: node-1"))),
+			want: recoveryFaultLeaseHeld,
+			code: "Server.HostRecoveryFailed",
+		},
+		{
+			name: "this node has no room for the instance",
+			err:  errors.New(awserrors.ErrorInsufficientInstanceCapacity),
+			want: recoveryFaultCapacity,
+			code: "Server.InsufficientInstanceCapacity",
+		},
+		{
+			name: "everything the launch collapses into ServerInternal",
+			err:  errors.New(awserrors.ErrorServerInternal),
+			want: recoveryFaultUnknown,
+			code: "Server.HostRecoveryFailed",
+		},
+		{
+			name: "an error carrying no AWS code at all",
+			err:  errors.New("nbdkit exited 1"),
+			want: recoveryFaultUnknown,
+			code: "Server.HostRecoveryFailed",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyRecoveryFault(tc.err)
+			assert.Equal(t, tc.want, got, "classified as %s", got)
+			assert.Equal(t, tc.code, got.stateReasonCode(),
+				"the state reason is what the customer sees, so it has to follow the classification")
+		})
+	}
 }

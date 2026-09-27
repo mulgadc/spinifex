@@ -3433,13 +3433,26 @@ func buildInstanceStatus(v *vm.VM, systemImpaired bool, az string) *ec2.Instance
 	// SystemStatus reflects host/node health, independent of the VM process: a
 	// running VM's host is reachable unless under memory pressure. A guest held
 	// on a backend I/O error is an infrastructure fault rather than a guest one,
-	// which is the distinction this check exists to draw.
+	// which is the distinction this check exists to draw. So is a guest whose
+	// public address the cloud underneath is not delivering here: it answers on
+	// its private address and on nothing else, and reporting that as healthy is
+	// the one outcome worse than reporting it as down.
 	systemStatus, systemReach := instanceStatusOK, instanceStatusPassed
+	addressDark := !v.Health.AddressUnreachableSince.IsZero()
 	switch {
 	case v.Status != vm.StateRunning:
 		systemStatus, systemReach = instanceStatusNotApplicable, instanceStatusNotApplicable
-	case systemImpaired, v.Health.IOErrorResumes > 0:
+	case systemImpaired, v.Health.IOErrorResumes > 0, addressDark:
 		systemStatus, systemReach = instanceStatusImpaired, instanceStatusFailed
+	}
+
+	sysDetail := &ec2.InstanceStatusDetails{
+		Name:   aws.String(reachabilityDetailName),
+		Status: aws.String(systemReach),
+	}
+	if addressDark && v.Status == vm.StateRunning {
+		since := v.Health.AddressUnreachableSince
+		sysDetail.ImpairedSince = &since
 	}
 
 	return &ec2.InstanceStatus{
@@ -3451,11 +3464,8 @@ func buildInstanceStatus(v *vm.VM, systemImpaired bool, az string) *ec2.Instance
 			Details: []*ec2.InstanceStatusDetails{instDetail},
 		},
 		SystemStatus: &ec2.InstanceStatusSummary{
-			Status: aws.String(systemStatus),
-			Details: []*ec2.InstanceStatusDetails{{
-				Name:   aws.String(reachabilityDetailName),
-				Status: aws.String(systemReach),
-			}},
+			Status:  aws.String(systemStatus),
+			Details: []*ec2.InstanceStatusDetails{sysDetail},
 		},
 	}
 }

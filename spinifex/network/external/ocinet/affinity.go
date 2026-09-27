@@ -17,6 +17,22 @@ type ClaimResult struct {
 	Claimed []string
 	// Local is how many bindings this node already owned, moved or not.
 	Local int
+	// Stalled is every address whose guest runs here and which OCI is not
+	// delivering here, after the pass has tried to move it and re-read the
+	// answer. Empty is the healthy result, and a non-empty entry names a guest
+	// that is running and unreachable on its public address.
+	Stalled []StalledAddress
+}
+
+// StalledAddress is one address the pass could not put where its guest is.
+//
+// It carries the ENI rather than the instance because that is what this layer
+// knows: a caller that wants to name the guest has the port-to-instance map and
+// this package does not.
+type StalledAddress struct {
+	PublicIP string
+	ENIID    string
+	Reason   string
 }
 
 // ClaimLocalAddresses makes OCI agree with where the guests actually are.
@@ -48,6 +64,12 @@ type ClaimResult struct {
 // the same answer from a different local fact: it is a logical router's SNAT
 // source, so it belongs on the VPC's gateway chassis, and whether that is this
 // node is something the chassisredirect port binding says locally.
+//
+// What the pass could not do is reported rather than returned as one error. A
+// denial or a throttle is per-address, the guests behind the others are just as
+// dark, and the caller needs to know which guest to call impaired — so every
+// address that did not arrive comes back in Stalled, verified against OCI's own
+// answer rather than against its acknowledgement of the request.
 func (a *PoolAllocator) ClaimLocalAddresses(ctx context.Context) (ClaimResult, error) {
 	var res ClaimResult
 	if a.localPorts == nil && a.localGateway == nil {
@@ -103,6 +125,9 @@ func (a *PoolAllocator) ClaimLocalAddresses(ctx context.Context) (ClaimResult, e
 		return res, err
 	}
 
+	// One address failing must not abandon the rest: a throttle or a denial is
+	// per-object, and the guests behind the other addresses are as unreachable
+	// as this one if the pass gives up here.
 	for key := range mine {
 		b := rec.Bindings[key]
 		if _, ok := held[b.PrivateIPID]; ok {
@@ -110,8 +135,9 @@ func (a *PoolAllocator) ClaimLocalAddresses(ctx context.Context) (ClaimResult, e
 		}
 		moved, err := a.client.MovePrivateIP(ctx, b.PrivateIPID, a.cfg.VNICID)
 		if err != nil {
-			return res, fmt.Errorf("ocinet affinity: move %s (%s) to %s: %w",
-				b.PrivateAddr, b.PrivateIPID, a.cfg.VNICID, err)
+			res.Stalled = append(res.Stalled, StalledAddress{PublicIP: key, ENIID: b.ENIID,
+				Reason: fmt.Sprintf("move %s (%s) to %s: %v", b.PrivateAddr, b.PrivateIPID, a.cfg.VNICID, err)})
+			continue
 		}
 		slog.WarnContext(ctx, "ocinet claimed an address whose datapath runs here",
 			"pool", a.cfg.Pool.Name, "public_ip", key, "private_ip", b.PrivateAddr,
@@ -123,7 +149,41 @@ func (a *PoolAllocator) ClaimLocalAddresses(ctx context.Context) (ClaimResult, e
 		}
 		res.Claimed = append(res.Claimed, key)
 	}
+
+	if err := a.verifyClaimed(ctx, rec, &res); err != nil {
+		return res, err
+	}
 	return res, nil
+}
+
+// verifyClaimed re-reads what OCI delivers here and checks that every address
+// this pass moved actually arrived.
+//
+// The move's own response is OCI agreeing to the request, not OCI having done
+// it, and the difference is the whole failure this guards: a guest that is
+// running, reported healthy, and answering on nothing. One extra call, and only
+// when something moved.
+func (a *PoolAllocator) verifyClaimed(ctx context.Context, rec Record, res *ClaimResult) error {
+	if len(res.Claimed) == 0 {
+		return nil
+	}
+	held, err := a.heldPrivateIPIDs(ctx)
+	if err != nil {
+		return err
+	}
+	landed := res.Claimed[:0:0]
+	for _, key := range res.Claimed {
+		b := rec.Bindings[key]
+		if _, ok := held[b.PrivateIPID]; ok {
+			landed = append(landed, key)
+			continue
+		}
+		res.Stalled = append(res.Stalled, StalledAddress{PublicIP: key, ENIID: b.ENIID,
+			Reason: fmt.Sprintf("OCI accepted the move of %s (%s) and does not deliver it to %s",
+				b.PrivateAddr, b.PrivateIPID, a.cfg.VNICID)})
+	}
+	res.Claimed = landed
+	return nil
 }
 
 // ownsBinding answers whether this node is where b's traffic is handled, and so

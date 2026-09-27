@@ -446,6 +446,14 @@ func (r *instanceRecovery) attempt(ctx context.Context, candidate recoveryCandid
 
 	delete(r.staleOnce, id)
 	delete(r.backoff, id)
+
+	// The guest is running here and the cloud underneath still delivers its
+	// public address to the node that died, so this is the last thing between a
+	// recovered instance and a reachable one. It runs in line rather than waiting
+	// for the affinity ticker, and a guest whose address does not arrive is
+	// marked impaired by the pass rather than reported healthy.
+	r.daemon.ClaimOCIAddresses(ctx)
+
 	slog.Info("Recovered an instance onto this node",
 		"instanceId", id, "from", candidate.from, "node", r.daemon.node)
 }

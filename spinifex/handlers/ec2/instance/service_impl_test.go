@@ -4858,6 +4858,35 @@ func TestDescribeInstanceStatus_NoPressureSystemOK(t *testing.T) {
 	assert.Equal(t, "ok", *out.InstanceStatuses[0].SystemStatus.Status)
 }
 
+// A guest the cloud underneath is not delivering a public address to is running
+// and answering on nothing. Reporting that as healthy is the one outcome worse
+// than reporting it as down, and it is a system fault rather than a guest one:
+// the instance passes every check it can be asked about itself.
+func TestDescribeInstanceStatus_AnAddressTheCloudWillNotDeliverIsSystemImpaired(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-dark", owner)
+	started := time.Now().Add(-90 * time.Second)
+	v.Health.AddressUnreachableSince = started
+	v.Health.AddressUnreachableReason = "OCI does not deliver 10.200.0.7 to this VNIC"
+	svc := &InstanceServiceImpl{
+		config:      &config.Config{AZ: "az-a"},
+		vmMgr:       mgrWith(map[string]*vm.VM{v.ID: v}),
+		resourceMgr: &fakeResourceCapacityProvider{},
+	}
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+
+	s := out.InstanceStatuses[0]
+	assert.Equal(t, "ok", *s.InstanceStatus.Status, "the guest is fine; the path to it is not")
+	assert.Equal(t, "impaired", *s.SystemStatus.Status)
+	assert.Equal(t, "failed", *s.SystemStatus.Details[0].Status)
+	require.NotNil(t, s.SystemStatus.Details[0].ImpairedSince,
+		"an operator needs to know how long it has been dark, not just that it is")
+	assert.WithinDuration(t, started, *s.SystemStatus.Details[0].ImpairedSince, time.Second)
+}
+
 // TestInstanceArchitecture pins the safe-extraction contract: malformed
 // InstanceTypeInfo returns "" rather than panicking, and the firmware probe
 // surfaces "" as a clear error on the launch path.

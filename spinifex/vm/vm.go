@@ -39,6 +39,13 @@ type InstanceHealthState struct {
 	// backend that keeps failing rather than one that failed once.
 	IOErrorResumes int       `json:"io_error_resumes,omitempty"`
 	IOErrorSince   time.Time `json:"io_error_since,omitzero"`
+
+	// AddressUnreachableSince marks a guest the cloud underneath is not
+	// delivering a public address to. The guest is healthy and the infrastructure
+	// is not, which is why it reports as a system-status failure rather than an
+	// instance one.
+	AddressUnreachableSince  time.Time `json:"address_unreachable_since,omitzero"`
+	AddressUnreachableReason string    `json:"address_unreachable_reason,omitempty"`
 }
 
 // ExtraENI describes an additional VPC network interface attached to a VM

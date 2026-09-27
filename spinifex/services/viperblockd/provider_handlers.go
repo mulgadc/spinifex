@@ -1334,6 +1334,11 @@ func constructMountedVB(ctx context.Context, cfg *Config, volumeName string) (*v
 // and its absence is what made a routine cluster update destructive: the lease
 // is claimed before any state is read, so a node coming up alongside NATS fails
 // there first and never reaches the conditions these sentinels describe.
+//
+// errVolumeLeaseHeld deliberately does not. This classifier drives the restore
+// path, where a lease held by another node means that node owns the guest now,
+// and retrying would fight the owner rather than wait for one. The recovery
+// reconciler wants the opposite and reads that refusal itself.
 func mountErrRetryable(err error) bool {
 	return errors.Is(err, viperblock.ErrStateNotFound) ||
 		errors.Is(err, viperblock.ErrStateBackendUnavailable) ||

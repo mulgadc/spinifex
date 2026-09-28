@@ -13,8 +13,10 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -57,6 +59,9 @@ const (
 	maxDurationSeconds     int64 = 43200
 	defaultDurationSeconds int64 = 3600
 
+	minRoleSessionNameLength = 2
+	maxRoleSessionNameLength = 64
+
 	// sessionAKIDRandomBytes hex-encodes to 16 chars; with the ASIA prefix the
 	// AKID is 20 chars total, matching the AWS public format.
 	sessionAKIDRandomBytes = 8
@@ -70,8 +75,8 @@ const (
 // ASCII range. `:` and `/` are excluded so the assumed-role ARN stays unambiguously parseable.
 var roleSessionNameRegex = regexp.MustCompile(`^[A-Za-z0-9_+=,.@-]{2,64}$`)
 
-// roleSessionNameCharsetRegex is roleSessionNameRegex without the length bound, so a
-// charset violation can carry AWS's pattern message while a length one does not.
+// roleSessionNameCharsetRegex is roleSessionNameRegex without the length bound, so the
+// charset and length constraints are reported separately, as AWS does.
 var roleSessionNameCharsetRegex = regexp.MustCompile(`^[A-Za-z0-9_+=,.@-]*$`)
 
 // AssumeRole mints temporary credentials after evaluating the target role's
@@ -86,14 +91,33 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 	}
 
 	sessionName := *input.RoleSessionName
-	if !roleSessionNameRegex.MatchString(sessionName) {
-		// A length violation keeps the bare code, as AWS's wording for it is unconfirmed.
-		if roleSessionNameCharsetRegex.MatchString(sessionName) {
-			return nil, errors.New(awserrors.ErrorValidationError)
+
+	// AWS reports every failed constraint at once, durationSeconds first, and before
+	// resolving the role, so a bad value against a missing role is not AccessDenied.
+	var violations []constraintViolation
+	if d := input.DurationSeconds; d != nil {
+		value := strconv.FormatInt(*d, 10)
+		if *d < minDurationSeconds {
+			violations = append(violations, constraintViolation{"durationSeconds", value,
+				fmt.Sprintf("Member must have value greater than or equal to %d", minDurationSeconds)})
+		} else if *d > maxDurationSeconds {
+			violations = append(violations, constraintViolation{"durationSeconds", value,
+				fmt.Sprintf("Member must have value less than or equal to %d", maxDurationSeconds)})
 		}
-		return nil, awserrors.Errorf(awserrors.ErrorValidationError,
-			"1 validation error detected: Value '%s' at 'roleSessionName' failed to satisfy constraint: "+
-				"Member must satisfy regular expression pattern: [\\w+=,.@-]*", sessionName)
+	}
+	if !roleSessionNameCharsetRegex.MatchString(sessionName) {
+		violations = append(violations, constraintViolation{"roleSessionName", sessionName,
+			`Member must satisfy regular expression pattern: [\w+=,.@-]*`})
+	}
+	if n := utf8.RuneCountInString(sessionName); n < minRoleSessionNameLength {
+		violations = append(violations, constraintViolation{"roleSessionName", sessionName,
+			fmt.Sprintf("Member must have length greater than or equal to %d", minRoleSessionNameLength)})
+	} else if n > maxRoleSessionNameLength {
+		violations = append(violations, constraintViolation{"roleSessionName", sessionName,
+			fmt.Sprintf("Member must have length less than or equal to %d", maxRoleSessionNameLength)})
+	}
+	if err := validationError(violations); err != nil {
+		return nil, err
 	}
 
 	if aws.StringValue(input.Policy) != "" || len(input.PolicyArns) > 0 {

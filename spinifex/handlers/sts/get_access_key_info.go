@@ -2,7 +2,10 @@ package handlers_sts
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
+	"regexp"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
@@ -15,6 +18,9 @@ const (
 	minAccessKeyIDLength = 16
 	maxAccessKeyIDLength = 128
 )
+
+// accessKeyIDRegex is the model's AccessKeyIdType pattern [\w]*, ASCII-only as on AWS.
+var accessKeyIDRegex = regexp.MustCompile(`^\w*$`)
 
 // GetAccessKeyInfo resolves an access key ID to the account that owns it.
 // AWS requires no permission for this call and does not scope it to the caller,
@@ -29,8 +35,21 @@ func (s *STSServiceImpl) GetAccessKeyInfo(input *sts.GetAccessKeyInfoInput) (*st
 	if accessKeyID == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	if !isAccessKeyIDShaped(accessKeyID) {
-		return nil, errors.New(awserrors.ErrorValidationError)
+
+	var violations []constraintViolation
+	if !accessKeyIDRegex.MatchString(accessKeyID) {
+		violations = append(violations, constraintViolation{"accessKeyId", accessKeyID,
+			`Member must satisfy regular expression pattern: [\w]*`})
+	}
+	if n := utf8.RuneCountInString(accessKeyID); n < minAccessKeyIDLength {
+		violations = append(violations, constraintViolation{"accessKeyId", accessKeyID,
+			fmt.Sprintf("Member must have length greater than or equal to %d", minAccessKeyIDLength)})
+	} else if n > maxAccessKeyIDLength {
+		violations = append(violations, constraintViolation{"accessKeyId", accessKeyID,
+			fmt.Sprintf("Member must have length less than or equal to %d", maxAccessKeyIDLength)})
+	}
+	if err := validationError(violations); err != nil {
+		return nil, err
 	}
 
 	accountID, err := s.resolveAccessKeyAccount(accessKeyID)
@@ -86,20 +105,4 @@ func (s *STSServiceImpl) resolveAccessKeyAccount(accessKeyID string) (string, er
 func isNoSuchEntity(err error) bool {
 	code, ok := awserrors.ResolveErrorCode(err)
 	return ok && code == awserrors.ErrorIAMNoSuchEntity
-}
-
-// isAccessKeyIDShaped reports whether s satisfies the model's AccessKeyIdType:
-// 16-128 characters, each an ASCII letter or digit.
-func isAccessKeyIDShaped(s string) bool {
-	if len(s) < minAccessKeyIDLength || len(s) > maxAccessKeyIDLength {
-		return false
-	}
-	for _, r := range s {
-		switch {
-		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-		default:
-			return false
-		}
-	}
-	return true
 }

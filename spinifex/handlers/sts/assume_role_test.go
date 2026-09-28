@@ -254,7 +254,8 @@ func TestAssumeRole_DurationBounds(t *testing.T) {
 		wantErr     bool
 		wantMessage string
 	}{
-		{"below_minimum", 899, true, ""},
+		{"below_minimum", 899, true, "1 validation error detected: Value '899' at 'durationSeconds' failed to satisfy constraint: " +
+			"Member must have value greater than or equal to 900"},
 		{"at_minimum", 900, false, ""},
 		{"default_via_unset", 0, false, ""},
 		{"at_role_max", 3600, false, ""},
@@ -304,8 +305,32 @@ func TestAssumeRole_LongerMaxSessionDuration_CapAtTwelveHours(t *testing.T) {
 			RoleSessionName: aws.String("sess2"),
 			DurationSeconds: aws.Int64(maxDurationSeconds + 1),
 		})
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorValidationError, err.Error())
+	requireAWSError(t, err, awserrors.ErrorValidationError,
+		"1 validation error detected: Value '43201' at 'durationSeconds' failed to satisfy constraint: "+
+			"Member must have value less than or equal to 43200")
+}
+
+// AWS checks input constraints before the role, so a bad value against a missing
+// role is a ValidationError, and every failed constraint is reported at once.
+func TestAssumeRole_ConstraintsCheckedBeforeRoleAndReportedTogether(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	missing := fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCallerAccountID)
+
+	input := basicAssumeRoleInput(missing, "sess")
+	input.DurationSeconds = aws.Int64(899)
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
+	requireAWSError(t, err, awserrors.ErrorValidationError,
+		"1 validation error detected: Value '899' at 'durationSeconds' failed to satisfy constraint: "+
+			"Member must have value greater than or equal to 900")
+
+	input = basicAssumeRoleInput(missing, "bad name!")
+	input.DurationSeconds = aws.Int64(43201)
+	_, err = svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
+	requireAWSError(t, err, awserrors.ErrorValidationError,
+		"2 validation errors detected: Value '43201' at 'durationSeconds' failed to satisfy constraint: "+
+			"Member must have value less than or equal to 43200; "+
+			"Value 'bad name!' at 'roleSessionName' failed to satisfy constraint: "+
+			`Member must satisfy regular expression pattern: [\w+=,.@-]*`)
 }
 
 func TestAssumeRole_RejectsSessionPolicies(t *testing.T) {
@@ -470,16 +495,26 @@ func TestAssumeRole_RejectsInvalidSessionName(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "name", trustPolicyAllowingUser(testCallerARN()))
 
-	patternMessage := func(name string) string {
-		return fmt.Sprintf("1 validation error detected: Value '%s' at 'roleSessionName' failed to satisfy constraint: "+
-			`Member must satisfy regular expression pattern: [\w+=,.@-]*`, name)
+	const (
+		pattern  = `Member must satisfy regular expression pattern: [\w+=,.@-]*`
+		tooShort = "Member must have length greater than or equal to 2"
+		tooLong  = "Member must have length less than or equal to 64"
+	)
+	violation := func(name, constraint string) string {
+		return fmt.Sprintf("Value '%s' at 'roleSessionName' failed to satisfy constraint: %s", name, constraint)
 	}
+	patternMessage := func(name string) string {
+		return "1 validation error detected: " + violation(name, pattern)
+	}
+	long, longBad := strings.Repeat("a", 65), strings.Repeat("a", 64)+"!"
 	bad := []struct {
 		name        string
 		wantMessage string
 	}{
-		{"a", ""},                     // too short
-		{strings.Repeat("a", 65), ""}, // too long
+		{"a", "1 validation error detected: " + violation("a", tooShort)},
+		{long, "1 validation error detected: " + violation(long, tooLong)},
+		{"!", "2 validation errors detected: " + violation("!", pattern) + "; " + violation("!", tooShort)},
+		{longBad, "2 validation errors detected: " + violation(longBad, pattern) + "; " + violation(longBad, tooLong)},
 		{"has/slash", patternMessage("has/slash")},
 		{"has:colon", patternMessage("has:colon")},
 		{"bad name!", patternMessage("bad name!")},

@@ -77,6 +77,8 @@ func TestGetAccessKeyInfo_UnknownKeyIsValidationError(t *testing.T) {
 		{"unknown long-lived", "AKIANOTAREALKEY00000"},
 		{"unknown session", SessionAccessKeyIDPrefix + "NOTAREALKEY00000"},
 		{"unknown prefix", "AROANOTAREALKEY00000"},
+		{"underscore", "AKIA_0123456789ABCD"},
+		{"lowercase", "akiaiosfodnn7example"},
 	}
 
 	for _, tc := range cases {
@@ -103,22 +105,29 @@ func TestGetAccessKeyInfo_MalformedKeyRejectedWithoutLookup(t *testing.T) {
 		akid string
 		want string
 	}{
-		{"empty", "", awserrors.ErrorMissingParameter},
-		{"too short", "AKIA0123", awserrors.ErrorValidationError},
-		{"too long", strings.Repeat("A", maxAccessKeyIDLength+1), awserrors.ErrorValidationError},
-		{"punctuation", "AKIA-0123456789ABCD", awserrors.ErrorValidationError},
-		{"whitespace", "AKIA 0123456789ABCD", awserrors.ErrorValidationError},
-		{"arn not a key id", "arn:aws:iam::000000000000:user/alice", awserrors.ErrorValidationError},
+		{"too short", "AKIA0123",
+			"1 validation error detected: Value 'AKIA0123' at 'accessKeyId' failed to satisfy constraint: Member must have length greater than or equal to 16"},
+		{"too long", strings.Repeat("A", 129),
+			"1 validation error detected: Value '" + strings.Repeat("A", 129) + "' at 'accessKeyId' failed to satisfy constraint: Member must have length less than or equal to 128"},
+		{"punctuation", "AKIA-0123456789ABCD",
+			"1 validation error detected: Value 'AKIA-0123456789ABCD' at 'accessKeyId' failed to satisfy constraint: Member must satisfy regular expression pattern: [\\w]*"},
+		{"whitespace", "AKIA 0123456789ABCD",
+			"1 validation error detected: Value 'AKIA 0123456789ABCD' at 'accessKeyId' failed to satisfy constraint: Member must satisfy regular expression pattern: [\\w]*"},
+		{"too short and punctuation", "AKIA-012",
+			"2 validation errors detected: Value 'AKIA-012' at 'accessKeyId' failed to satisfy constraint: Member must satisfy regular expression pattern: [\\w]*; " +
+				"Value 'AKIA-012' at 'accessKeyId' failed to satisfy constraint: Member must have length greater than or equal to 16"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := svc.GetAccessKeyInfo(&sts.GetAccessKeyInfoInput{AccessKeyId: aws.String(tc.akid)})
-			require.Error(t, err)
 			assert.Nil(t, out)
-			assert.Equal(t, tc.want, err.Error())
+			requireAWSError(t, err, awserrors.ErrorValidationError, tc.want)
 		})
 	}
+
+	_, err := svc.GetAccessKeyInfo(&sts.GetAccessKeyInfoInput{AccessKeyId: aws.String("")})
+	requireAWSError(t, err, awserrors.ErrorMissingParameter, "")
 	assert.Zero(t, stub.calls, "malformed access key ID must not reach the KV bucket")
 }
 
@@ -150,13 +159,4 @@ func TestGetAccessKeyInfo_RecordWithoutAccountIsInternalError(t *testing.T) {
 	_, err := svc.GetAccessKeyInfo(&sts.GetAccessKeyInfoInput{AccessKeyId: aws.String("AKIA0123456789ABCDEF")})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
-}
-
-func TestIsAccessKeyIDShaped(t *testing.T) {
-	assert.True(t, isAccessKeyIDShaped("AKIA0123456789ABCDEF"))
-	assert.True(t, isAccessKeyIDShaped(strings.Repeat("A", minAccessKeyIDLength)))
-	assert.True(t, isAccessKeyIDShaped(strings.Repeat("A", maxAccessKeyIDLength)))
-	assert.False(t, isAccessKeyIDShaped(strings.Repeat("A", minAccessKeyIDLength-1)))
-	assert.False(t, isAccessKeyIDShaped(strings.Repeat("A", maxAccessKeyIDLength+1)))
-	assert.False(t, isAccessKeyIDShaped("AKIA_123456789ABCDE"))
 }

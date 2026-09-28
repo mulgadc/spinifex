@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/eks"
-	"github.com/mulgadc/spinifex/spinifex/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

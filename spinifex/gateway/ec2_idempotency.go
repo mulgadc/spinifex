@@ -9,7 +9,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ec2_idem "github.com/mulgadc/spinifex/spinifex/gateway/ec2/idem"
-	"github.com/mulgadc/spinifex/spinifex/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

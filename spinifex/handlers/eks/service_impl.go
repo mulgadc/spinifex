@@ -26,7 +26,7 @@ import (
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	"github.com/mulgadc/spinifex/spinifex/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/mulgadc/spinifex/spinifex/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"

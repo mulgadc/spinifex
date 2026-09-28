@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

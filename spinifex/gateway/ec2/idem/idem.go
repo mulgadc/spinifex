@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 )
 
 const (

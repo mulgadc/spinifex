@@ -115,6 +115,30 @@ Verification passed with an isolated Go module/build cache:
 - a Go-source search for the old import path returned no matches
 - `git diff --check`
 
+## Third source move — AWS Query parser
+
+The third source move names the protocol concern rather than the first service
+that happened to use it:
+
+- old import path: `github.com/mulgadc/spinifex/spinifex/awsec2query`
+- target import path: `github.com/mulgadc/spinifex/spinifex/ingress/aws/query`
+
+Source commit `caaf98d9e` moves the two parser files, renames the Go package to
+`query`, and updates thirteen importing files. The parser is used across EC2,
+IAM, STS, ECS, ECR, ELBv2 and RDS, but owns only AWS Query wire decoding and no
+service action or resource semantics.
+
+Verification passed with an isolated Go module/build cache:
+
+- `go test ./spinifex/ingress/aws/query`
+- `go test -run '^$'` for six direct caller packages
+- a Go-source search for the old import path returned no matches
+- `git diff --check`
+
+A broad `go test` run over those caller packages was stopped after two minutes
+without output. It is not recorded as a passing test; the normal full suite
+remains CI evidence for the branch.
+
 ## Recording rule
 
 For every later slice, add the old and new path, source commit, focused

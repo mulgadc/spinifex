@@ -16,6 +16,7 @@ Every AWS call enters through a SigV4-authenticated gateway, is published to NAT
 | [`docs/COMMANDS.md`](docs/COMMANDS.md) | The `spx admin` CLI and the systemd units it manages. |
 | [`docs/coverage/`](docs/coverage/README.md) | Which AWS API operations each service implements. |
 | [`scripts/README.md`](scripts/README.md) | Install, dev-environment, and image-build scripts. |
+| [`docs/PACKAGE_BOUNDARY_MIGRATION.md`](docs/PACKAGE_BOUNDARY_MIGRATION.md) | ADR-0001 implementation inventory and incremental source moves. |
 
 User-facing docs are published at [docs.mulgadc.com](https://docs.mulgadc.com).
 

@@ -14,7 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-//go:generate ../../scripts/gen-asset-manifest.sh
+//go:generate ../../../scripts/gen-asset-manifest.sh
 
 // Status is the outcome of checking one managed asset against this build's manifest.
 type Status int

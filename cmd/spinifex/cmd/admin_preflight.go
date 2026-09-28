@@ -5,7 +5,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/mulgadc/spinifex/spinifex/preflight"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	"github.com/spf13/cobra"
 )
 

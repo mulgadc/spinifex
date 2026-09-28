@@ -1,7 +1,7 @@
 #!/bin/bash
 # gen-asset-manifest.sh — extracts the canonical bytes of each managed asset
 # heredoc from the provisioning scripts, sha256s them, and (re)writes
-# spinifex/preflight/manifest_gen.go.
+# spinifex/bootstrap/preflight/manifest_gen.go.
 #
 # Run this after editing a managed heredoc in setup.sh or setup-ovn.sh.
 # manifest_gen_test.go re-extracts the same heredocs and fails if the
@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-OUT="$ROOT/spinifex/preflight/manifest_gen.go"
+OUT="$ROOT/spinifex/bootstrap/preflight/manifest_gen.go"
 
 # extract_heredoc FILE ANCHOR
 # Prints the body of the first quoted 'HELPER' heredoc starting after the

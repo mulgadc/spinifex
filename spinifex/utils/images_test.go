@@ -21,12 +21,19 @@ import (
 // resolveServingAMI filters purely on these two tags and never on the image
 // name, so a typo in either hides the serving image from Ochre and every
 // endpoint launch dies at "bedrock: no vllm-serving AMI found".
-func TestAvailableImages_VLLMServingCarriesBedrockTags(t *testing.T) {
+//
+// The entry is withheld while its artifact is unpublished, so the contract is
+// checked where the definition lives rather than dropped along with it.
+func TestWithheldImages_VLLMServingCarriesBedrockTags(t *testing.T) {
 	const key = "ubuntu-26.04-vllm-serving-x86_64"
 
-	img, ok := AvailableImages[key]
+	if _, offered := AvailableImages[key]; offered {
+		t.Fatalf("%s is offered for import while its artifact is unpublished", key)
+	}
+
+	img, ok := WithheldImages[key]
 	if !ok {
-		t.Fatalf("%s missing from AvailableImages", key)
+		t.Fatalf("%s missing from WithheldImages", key)
 	}
 
 	for tag, want := range map[string]string{

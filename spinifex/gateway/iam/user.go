@@ -53,7 +53,12 @@ func GetUserPolicy(accountID string, input *iam.GetUserPolicyInput, svc handlers
 	if input.PolicyName == nil || *input.PolicyName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.GetUserPolicy(accountID, input)
+	out, err := svc.GetUserPolicy(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.PolicyDocument = encodePolicyDocument(out.PolicyDocument)
+	return out, nil
 }
 
 func DeleteUserPolicy(accountID string, input *iam.DeleteUserPolicyInput, svc handlers_iam.IAMService) (*iam.DeleteUserPolicyOutput, error) {

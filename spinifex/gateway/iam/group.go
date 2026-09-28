@@ -107,7 +107,12 @@ func GetGroupPolicy(accountID string, input *iam.GetGroupPolicyInput, svc handle
 	if input.PolicyName == nil || *input.PolicyName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.GetGroupPolicy(accountID, input)
+	out, err := svc.GetGroupPolicy(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.PolicyDocument = encodePolicyDocument(out.PolicyDocument)
+	return out, nil
 }
 
 func DeleteGroupPolicy(accountID string, input *iam.DeleteGroupPolicyInput, svc handlers_iam.IAMService) (*iam.DeleteGroupPolicyOutput, error) {

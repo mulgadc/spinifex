@@ -396,9 +396,7 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 	return &iam.PutRolePolicyOutput{}, nil
 }
 
-// GetRolePolicy returns a role's inline policy document by name.
-// Returns the document as a raw JSON string, matching how GetRole returns
-// AssumeRolePolicyDocument; AWS URL-encodes it, we follow the in-repo convention.
+// GetRolePolicy returns a role's inline policy document by name, as raw JSON.
 func (s *IAMServiceImpl) GetRolePolicy(accountID string, input *iam.GetRolePolicyInput) (*iam.GetRolePolicyOutput, error) {
 	ctx := context.Background()
 	roleName := *input.RoleName

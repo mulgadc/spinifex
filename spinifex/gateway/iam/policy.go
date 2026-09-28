@@ -32,7 +32,14 @@ func GetPolicyVersion(accountID string, input *iam.GetPolicyVersionInput, svc ha
 	if input.VersionId == nil || *input.VersionId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.GetPolicyVersion(accountID, input)
+	out, err := svc.GetPolicyVersion(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	if out.PolicyVersion != nil {
+		out.PolicyVersion.Document = encodePolicyDocument(out.PolicyVersion.Document)
+	}
+	return out, nil
 }
 
 func ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput, svc handlers_iam.IAMService) (*iam.ListPolicyVersionsOutput, error) {

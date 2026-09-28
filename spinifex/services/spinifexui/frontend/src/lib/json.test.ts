@@ -42,24 +42,20 @@ describe("formatJson", () => {
 describe("decodePolicyDocument", () => {
   it("decodes and pretty-prints a URL-encoded document", () => {
     const encoded = encodeURIComponent('{"Version":"2012-10-17"}')
-    expect(decodePolicyDocument(encoded, true)).toBe(
+    expect(decodePolicyDocument(encoded)).toBe(
       '{\n  "Version": "2012-10-17"\n}',
     )
   })
 
-  it("pretty-prints a raw JSON document without decoding", () => {
-    expect(decodePolicyDocument('{"a":1}', false)).toBe('{\n  "a": 1\n}')
-  })
-
-  it("leaves literal percent sequences intact for raw documents", () => {
-    const raw = '{"Resource":"arn:aws:s3:::bucket/logs%2Fpath"}'
-    expect(decodePolicyDocument(raw, false)).toBe(
-      '{\n  "Resource": "arn:aws:s3:::bucket/logs%2Fpath"\n}',
+  it("decodes exactly once, keeping a literal + and %41", () => {
+    const encoded = encodeURIComponent('{"Resource":"a+b%41c d"}')
+    expect(decodePolicyDocument(encoded)).toBe(
+      '{\n  "Resource": "a+b%41c d"\n}',
     )
   })
 
   it("returns the original text when it is not JSON", () => {
-    expect(decodePolicyDocument("not json", true)).toBe("not json")
+    expect(decodePolicyDocument("not json")).toBe("not json")
   })
 })
 

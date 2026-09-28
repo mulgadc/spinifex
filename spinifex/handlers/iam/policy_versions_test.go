@@ -1,3 +1,5 @@
+//test:in-package — writes raw records to policiesBucket and reads resolveAttachedPolicy, both unexported.
+
 package handlers_iam
 
 import (
@@ -310,6 +312,7 @@ func TestDeletePolicy_NonDefaultVersionsAreAConflict(t *testing.T) {
 	_, err := svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{PolicyArn: policy.Arn})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+	assert.Contains(t, err.Error(), "This policy has more than one version.")
 
 	deletePolicyVersion(t, svc, policy.Arn, "v1")
 	_, err = svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{PolicyArn: policy.Arn})

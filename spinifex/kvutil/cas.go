@@ -159,6 +159,38 @@ func Put(ctx context.Context, kv jetstream.KeyValue, key string, cfg CASConfig, 
 	})
 }
 
+// DeleteIf removes key once check accepts its current value, at the revision check saw. A write landing between the two sends the
+// new value back through check, so a precondition is never judged on a stale read. It returns the value deleted.
+func DeleteIf[T any](ctx context.Context, kv jetstream.KeyValue, key string, cfg CASConfig, check func(*T) error) (*T, error) {
+	var result *T
+	err := retryCAS(ctx, cfg, "delete", key, func() error {
+		entry, gerr := kv.Get(ctx, key)
+		switch {
+		case gerr == nil:
+		case errors.Is(gerr, jetstream.ErrKeyNotFound) && cfg.NotFound != nil:
+			return cfg.NotFound
+		default:
+			return fmt.Errorf("%w: %w", ErrRead, gerr)
+		}
+		var v T
+		if uerr := json.Unmarshal(entry.Value(), &v); uerr != nil {
+			return fmt.Errorf("%w: %w", ErrDecode, uerr)
+		}
+		if cerr := check(&v); cerr != nil {
+			return cerr
+		}
+		if derr := kv.Delete(ctx, key, jetstream.LastRevision(entry.Revision())); derr != nil {
+			return fmt.Errorf("%w: %w", ErrWrite, derr)
+		}
+		result = &v
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // Claim atomically removes key, decoding its value first. At most one caller can observe a successful delete at a given revision, so
 // at most one gets a non-nil value back - the primitive an exclusive claim is built on.
 func Claim[T any](ctx context.Context, kv jetstream.KeyValue, key string, cfg CASConfig) (value *T, notFound bool, err error) {

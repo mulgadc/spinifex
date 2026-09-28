@@ -277,8 +277,28 @@ func (r *iamPolicyReaper) List(_ context.Context, accountID string) ([]Resource,
 	return found, nil
 }
 
+// Delete removes the non-default versions first: a policy that still has any
+// refuses deletion with DeleteConflict, as it does in AWS.
 func (r *iamPolicyReaper) Delete(_ context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := r.svc.DeletePolicy(accountID, &iam.DeletePolicyInput{PolicyArn: aws.String(resource.ID)})
+	policyARN := aws.String(resource.ID)
+	versions, err := r.svc.ListPolicyVersions(accountID, &iam.ListPolicyVersionsInput{PolicyArn: policyARN})
+	if err != nil && !isAlreadyGone(err) {
+		return err
+	}
+	if versions != nil {
+		for _, version := range versions.Versions {
+			if version == nil || version.VersionId == nil || aws.BoolValue(version.IsDefaultVersion) {
+				continue
+			}
+			if _, err := r.svc.DeletePolicyVersion(accountID, &iam.DeletePolicyVersionInput{
+				PolicyArn: policyARN, VersionId: version.VersionId,
+			}); err != nil && !isAlreadyGone(err) {
+				return err
+			}
+		}
+	}
+
+	_, err = r.svc.DeletePolicy(accountID, &iam.DeletePolicyInput{PolicyArn: policyARN})
 	return ignoreAlreadyGone(err)
 }
 

@@ -1350,26 +1350,32 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 
 func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error) {
 	ctx := context.Background()
-	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
+	policyARN := *input.PolicyArn
+	key, cfg, err := policyCASTarget(accountID, policyARN)
 	if err != nil {
 		return nil, err
 	}
 
-	counts, err := s.buildAttachmentCounts(ctx, accountID)
+	// Revision-guarded, so a version created after the checks cannot be deleted unseen.
+	policy, err := kvutil.DeleteIf(ctx, s.policiesBucket, key, cfg, func(p *Policy) error {
+		if p.ARN != policyARN {
+			return errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		if len(p.OtherVersions) > 0 {
+			return awserrors.Errorf(awserrors.ErrorIAMDeleteConflict,
+				"This policy has more than one version. Before you delete a policy, you must delete the policy's versions. The default version is deleted with the policy.")
+		}
+		counts, err := s.buildAttachmentCounts(ctx, accountID)
+		if err != nil {
+			return fmt.Errorf("check policy attachments: %w", err)
+		}
+		if counts[p.ARN] > 0 {
+			return errors.New(awserrors.ErrorIAMDeleteConflict)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("check policy attachments: %w", err)
-	}
-	if counts[policy.ARN] > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
-	}
-	if len(policy.OtherVersions) > 0 {
-		return nil, awserrors.Errorf(awserrors.ErrorIAMDeleteConflict,
-			"This policy has more than one version. Before you delete a policy, you must delete the policy's versions. The default version is deleted with the policy.")
-	}
-
-	kvKey := accountID + "." + policy.PolicyName
-	if err := s.policiesBucket.Delete(ctx, kvKey); err != nil {
-		return nil, fmt.Errorf("delete policy: %w", err)
+		return nil, err
 	}
 
 	slog.Info("IAM policy deleted", "accountID", accountID, "policyName", policy.PolicyName)

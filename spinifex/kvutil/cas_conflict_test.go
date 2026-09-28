@@ -179,3 +179,38 @@ func TestUpdate_ExhaustionUsesCallerError(t *testing.T) {
 
 	assert.ErrorIs(t, err, sentinel)
 }
+
+// A write landing between DeleteIf's check and its delete must send the new
+// value back through the check instead of deleting it unseen.
+func TestDeleteIf_RechecksAValueWrittenAfterTheCheck(t *testing.T) {
+	kv := casTestBucket(t, "cas-delete-if")
+	_, err := kv.Put(t.Context(), "key", []byte(`{"counter":1}`))
+	require.NoError(t, err)
+
+	refused := errors.New("counter moved")
+	var seen []int
+	_, err = kvutil.DeleteIf(t.Context(), kv, "key", kvutil.CASConfig{Attempts: casTestAttempts}, func(r *casRecord) error {
+		seen = append(seen, r.Counter)
+		if r.Counter != 1 {
+			return refused
+		}
+		_, perr := kv.Put(t.Context(), "key", []byte(`{"counter":2}`))
+		return perr
+	})
+
+	assert.ErrorIs(t, err, refused)
+	assert.Equal(t, []int{1, 2}, seen)
+	entry, err := kv.Get(t.Context(), "key")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"counter":2}`, string(entry.Value()))
+}
+
+func TestDeleteIf_AbsentKeyReturnsCallerError(t *testing.T) {
+	kv := casTestBucket(t, "cas-delete-if-notfound")
+
+	sentinel := errors.New("no such entity")
+	_, err := kvutil.DeleteIf(t.Context(), kv, "missing", kvutil.CASConfig{NotFound: sentinel},
+		func(*casRecord) error { t.Fatal("check ran against an absent key"); return nil })
+
+	assert.ErrorIs(t, err, sentinel)
+}

@@ -89,21 +89,11 @@ func policyVersionToSDK(v PolicyVersionRecord, isDefault bool) *iam.PolicyVersio
 // optimistic concurrency, as updateRoleCAS does for roles. mutate reports
 // whether it changed the record; a false return commits nothing.
 func (s *IAMServiceImpl) updatePolicyCAS(ctx context.Context, accountID, policyARN string, mutate func(*Policy) (bool, error)) error {
-	_, policyName, err := iamarn.ParsePolicyARN(policyARN)
+	key, cfg, err := policyCASTarget(accountID, policyARN)
 	if err != nil {
-		slog.Debug("updatePolicyCAS: unparseable policy ARN",
-			"accountID", accountID, "policyArn", policyARN, "err", err)
-		return errors.New(awserrors.ErrorIAMNoSuchEntity)
+		return err
 	}
-	_, err = kvutil.Update(ctx, s.policiesBucket, accountID+"."+policyName, kvutil.CASConfig{
-		Attempts: policyCASMaxRetries,
-		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),
-		Exhausted: func(string, int) error {
-			slog.Error("IAM policy CAS retries exhausted under contention",
-				"accountID", accountID, "policyName", policyName, "attempts", policyCASMaxRetries)
-			return errors.New(awserrors.ErrorServerInternal)
-		},
-	}, func(p *Policy) (bool, error) {
+	_, err = kvutil.Update(ctx, s.policiesBucket, key, cfg, func(p *Policy) (bool, error) {
 		// The key omits the path, so an ARN with the wrong path names no policy.
 		if p.ARN != policyARN {
 			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
@@ -111,6 +101,26 @@ func (s *IAMServiceImpl) updatePolicyCAS(ctx context.Context, accountID, policyA
 		return mutate(p)
 	})
 	return err
+}
+
+// policyCASTarget resolves policyARN to its KV key and the CAS settings every
+// write to a policy record shares.
+func policyCASTarget(accountID, policyARN string) (string, kvutil.CASConfig, error) {
+	_, policyName, err := iamarn.ParsePolicyARN(policyARN)
+	if err != nil {
+		slog.Debug("policyCASTarget: unparseable policy ARN",
+			"accountID", accountID, "policyArn", policyARN, "err", err)
+		return "", kvutil.CASConfig{}, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	return accountID + "." + policyName, kvutil.CASConfig{
+		Attempts: policyCASMaxRetries,
+		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),
+		Exhausted: func(string, int) error {
+			slog.Error("IAM policy CAS retries exhausted under contention",
+				"accountID", accountID, "policyName", policyName, "attempts", policyCASMaxRetries)
+			return errors.New(awserrors.ErrorServerInternal)
+		},
+	}, nil
 }
 
 func (s *IAMServiceImpl) CreatePolicyVersion(accountID string, input *iam.CreatePolicyVersionInput) (*iam.CreatePolicyVersionOutput, error) {

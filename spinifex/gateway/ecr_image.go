@@ -84,8 +84,8 @@ func (gw *GatewayConfig) ecrImageAccount(r *http.Request) (string, error) {
 // validateRepoAndRegistry rejects a malformed repository name and a registryId
 // targeting another account.
 func validateRepoAndRegistry(name, registryID, accountID string) error {
-	if err := handlers_ecr.ValidateRepoName(name); err != nil {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	if err := gateway_ecrapi.ValidateRepositoryName(name); err != nil {
+		return err
 	}
 	if registryID != "" && registryID != accountID {
 		return errors.New(awserrors.ErrorAccessDenied)
@@ -96,10 +96,10 @@ func validateRepoAndRegistry(name, registryID, accountID string) error {
 func decodeJSONBody(r *http.Request, dst any) error {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.MalformedBodyError()
 	}
 	if err := json.Unmarshal(body, dst); err != nil {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.MalformedBodyError()
 	}
 	return nil
 }
@@ -233,7 +233,7 @@ func (gw *GatewayConfig) handleBatchGetImage(w http.ResponseWriter, r *http.Requ
 		return err
 	}
 	if len(req.ImageIds) > maxImageBatch {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.MaxItemsError("imageIds", maxImageBatch)
 	}
 
 	var images []*ecr.Image
@@ -292,7 +292,7 @@ func (gw *GatewayConfig) handlePutImage(w http.ResponseWriter, r *http.Request) 
 		return err
 	}
 	if req.ImageManifest == "" {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.RequiredParameterError("imageManifest")
 	}
 
 	ref := req.ImageTag
@@ -336,7 +336,7 @@ func (gw *GatewayConfig) handleBatchDeleteImage(w http.ResponseWriter, r *http.R
 		return err
 	}
 	if len(req.ImageIds) > maxImageBatch {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.MaxItemsError("imageIds", maxImageBatch)
 	}
 
 	var deleted []*ecr.ImageIdentifier
@@ -396,7 +396,7 @@ func mapStoreManifestError(ctx context.Context, err error, repo string) error {
 		case "NAME_UNKNOWN":
 			return errors.New(awserrors.ErrorRepositoryNotFound)
 		default:
-			return errors.New(awserrors.ErrorInvalidParameterValue)
+			return gateway_ecrapi.ConstraintError("imageManifest", mErr.Msg)
 		}
 	}
 	slog.ErrorContext(ctx, "PutImage: store manifest failed", "repo", repo, "err", err)

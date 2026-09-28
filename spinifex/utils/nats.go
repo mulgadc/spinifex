@@ -425,6 +425,8 @@ type Summary struct {
 	FirstClient4xx string         // first deterministic 4xx code seen, "" if none
 	TimedOut       bool           // deadline hit before the stop condition was met
 
+	FirstClient4xxMessage string // message the FirstClient4xx frame carried, "" if none
+
 	// The rest are populated only in identity mode (ExpectedResponders set,
 	// or Mode == CollectUntilDeadline). They stay nil/zero for a caller that
 	// does not opt in, so that caller's behavior is unchanged by construction.
@@ -436,6 +438,18 @@ type Summary struct {
 	DuplicateFrames   int             // frames whose node had already answered; bytes dropped, identity kept
 	CapHit            bool            // the identity frame or byte cap ended collection early
 	SettledEarly      bool            // collection ended before the deadline with the answer settled, by Settled or by full responder coverage
+}
+
+// Client4xxError rebuilds the first deterministic 4xx with the message its
+// node sent, or returns nil when the fan-out saw none.
+func (s Summary) Client4xxError() error {
+	if s.FirstClient4xx == "" {
+		return nil
+	}
+	if s.FirstClient4xxMessage != "" {
+		return awserrors.Errorf(s.FirstClient4xx, "%s", s.FirstClient4xxMessage)
+	}
+	return errors.New(s.FirstClient4xx)
 }
 
 // GatherOpts configures a Gather fan-out.
@@ -617,6 +631,9 @@ func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte
 			if sum.FirstClient4xx == "" && code != "" {
 				if info, known := awserrors.ErrorLookup[code]; known && info.HTTPCode >= 400 && info.HTTPCode < 500 {
 					sum.FirstClient4xx = code
+					if responseError.Message != nil {
+						sum.FirstClient4xxMessage = *responseError.Message
+					}
 				}
 			}
 			slog.Debug("Gather: skipping error response", "code", code, "subject", subject)

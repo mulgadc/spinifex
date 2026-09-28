@@ -265,9 +265,6 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplate(ctx context.Context, in
 	if err := validateTemplateName(name); err != nil {
 		return nil, err
 	}
-	if aws.BoolValue(input.DryRun) {
-		return &ec2.CreateLaunchTemplateOutput{}, nil
-	}
 
 	data, err := requestToResponse(input.LaunchTemplateData)
 	if err != nil {
@@ -373,9 +370,6 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 	if err != nil {
 		return nil, err
 	}
-	if aws.BoolValue(input.DryRun) {
-		return &ec2.CreateLaunchTemplateVersionOutput{}, nil
-	}
 
 	override, err := requestToResponse(input.LaunchTemplateData)
 	if err != nil {
@@ -444,13 +438,6 @@ func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, in
 	if err != nil {
 		return nil, err
 	}
-	if aws.BoolValue(input.DryRun) {
-		latest, err := s.latestVersionNumber(ctx, accountID, header.LaunchTemplateId)
-		if err != nil {
-			return nil, err
-		}
-		return &ec2.ModifyLaunchTemplateOutput{LaunchTemplate: headerToEC2(header, latest)}, nil
-	}
 
 	if sel := aws.StringValue(input.DefaultVersion); sel != "" {
 		n, err := s.resolveVersionNumber(ctx, accountID, header, sel)
@@ -486,13 +473,6 @@ func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplate(ctx context.Context, in
 	header, _, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
 	if err != nil {
 		return nil, err
-	}
-	if aws.BoolValue(input.DryRun) {
-		latest, err := s.latestVersionNumber(ctx, accountID, header.LaunchTemplateId)
-		if err != nil {
-			return nil, err
-		}
-		return &ec2.DeleteLaunchTemplateOutput{LaunchTemplate: headerToEC2(header, latest)}, nil
 	}
 
 	latest, err := s.latestVersionNumber(ctx, accountID, header.LaunchTemplateId)
@@ -535,9 +515,6 @@ func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplateVersions(ctx context.Con
 	}
 
 	out := &ec2.DeleteLaunchTemplateVersionsOutput{}
-	if aws.BoolValue(input.DryRun) {
-		return out, nil
-	}
 
 	for _, v := range input.Versions {
 		sel := aws.StringValue(v)

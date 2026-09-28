@@ -36,12 +36,12 @@ func (gw *GatewayConfig) handleDescribeRepositories(w http.ResponseWriter, r *ht
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.ErrorContext(ctx, "DescribeRepositories: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.MalformedBodyError()
 	}
 	var req describeRepositoriesRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
-			return errors.New(awserrors.ErrorInvalidParameterValue)
+			return gateway_ecrapi.MalformedBodyError()
 		}
 	}
 	if req.RegistryID != "" && req.RegistryID != accountID {

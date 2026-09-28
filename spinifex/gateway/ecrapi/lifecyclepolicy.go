@@ -27,11 +27,11 @@ func resolveLifecycleRepo(ctx context.Context, nc *nats.Conn, accountID string, 
 	var req lifecyclePolicyRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
-			return req, nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return req, nil, MalformedBodyError()
 		}
 	}
-	if req.RepositoryName == "" || handlers_ecr.ValidateRepoName(req.RepositoryName) != nil {
-		return req, nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	if err := ValidateRepositoryName(req.RepositoryName); err != nil {
+		return req, nil, err
 	}
 	if req.RegistryID != "" && req.RegistryID != accountID {
 		return req, nil, errors.New(awserrors.ErrorAccessDenied)
@@ -56,7 +56,7 @@ func PutLifecyclePolicy(ctx context.Context, nc *nats.Conn, accountID string, bo
 		return nil, err
 	}
 	if _, err := handlers_ecr.ParseLifecyclePolicy([]byte(req.LifecyclePolicyText)); err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, InvalidLifecyclePolicyError()
 	}
 	if err := store.PutLifecyclePolicy(ctx, accountID, req.RepositoryName, []byte(req.LifecyclePolicyText)); err != nil {
 		return nil, err

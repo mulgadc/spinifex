@@ -25,11 +25,27 @@ func GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput, sv
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.GetInstanceProfile(accountID, input)
+	out, err := svc.GetInstanceProfile(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	encodeInstanceProfileDocuments(out.InstanceProfile)
+	return out, nil
 }
 
 func ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput, svc handlers_iam.IAMService) (*iam.ListInstanceProfilesOutput, error) {
-	return svc.ListInstanceProfiles(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListInstanceProfiles(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.InstanceProfiles, out.Marker = paginate(p, out.InstanceProfiles, instanceProfileKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	encodeInstanceProfileDocuments(out.InstanceProfiles...)
+	return out, nil
 }
 
 // DeleteInstanceProfile refuses to delete a profile still referenced by a live
@@ -72,7 +88,18 @@ func ListInstanceProfilesForRole(accountID string, input *iam.ListInstanceProfil
 	if input.RoleName == nil || *input.RoleName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListInstanceProfilesForRole(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListInstanceProfilesForRole(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.InstanceProfiles, out.Marker = paginate(p, out.InstanceProfiles, instanceProfileKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	encodeInstanceProfileDocuments(out.InstanceProfiles...)
+	return out, nil
 }
 
 func AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput, svc handlers_iam.IAMService) (*iam.AddRoleToInstanceProfileOutput, error) {
@@ -119,5 +146,15 @@ func ListInstanceProfileTags(accountID string, input *iam.ListInstanceProfileTag
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListInstanceProfileTags(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListInstanceProfileTags(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.Tags, out.Marker = paginate(p, out.Tags, tagKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }

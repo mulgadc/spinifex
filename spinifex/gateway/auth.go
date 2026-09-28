@@ -57,6 +57,12 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 					gw.writeSigV4Error(w, r, awserrors.ErrorMissingAuthenticationToken, "")
 				case errors.Is(err, sigv4.ErrPayloadTooLarge):
 					gw.writeSigV4Error(w, r, awserrors.ErrorRequestEntityTooLarge, "")
+				case errors.Is(err, sigv4.ErrReadingBody):
+					// A dropped or stalled connection, not an auth attempt: counting it
+					// would lock out an IP for its network trouble.
+					slog.Warn("Auth aborted: request body read failed",
+						"sourceIP", clientIP, "err", err)
+					gw.writeSigV4Error(w, r, awserrors.ErrorInternalError, "")
 				case errors.Is(err, sigv4.ErrRequestTimeTooSkewed):
 					// Skew/replay: AWS returns this as SignatureDoesNotMatch, which is
 					// indistinguishable on the wire from a canonicalisation mismatch.

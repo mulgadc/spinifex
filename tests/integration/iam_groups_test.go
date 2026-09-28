@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -341,7 +342,7 @@ func TestIAMGroupsLifecycle(t *testing.T) {
 	})
 	require.NoError(t, err, "idempotent re-put")
 
-	// GetGroupPolicy — round-trips the stored document (raw, not URL-encoded).
+	// GetGroupPolicy — returns the stored document URL-encoded, as AWS does.
 	inlineGot, err := iamCli.GetGroupPolicy(&iam.GetGroupPolicyInput{
 		GroupName:  aws.String(grpLifecycleGroup),
 		PolicyName: aws.String(grpLifecycleInline),
@@ -349,7 +350,9 @@ func TestIAMGroupsLifecycle(t *testing.T) {
 	require.NoError(t, err, "get-group-policy")
 	require.Equal(t, grpLifecycleGroup, aws.StringValue(inlineGot.GroupName))
 	require.Equal(t, grpLifecycleInline, aws.StringValue(inlineGot.PolicyName))
-	require.JSONEq(t, groupDescribeRegionsPolicy, aws.StringValue(inlineGot.PolicyDocument),
+	inlineDoc, err := url.QueryUnescape(aws.StringValue(inlineGot.PolicyDocument))
+	require.NoError(t, err, "get-group-policy document must be URL-encoded")
+	require.JSONEq(t, groupDescribeRegionsPolicy, inlineDoc,
 		"get-group-policy must round-trip the stored document")
 
 	_, err = iamCli.GetGroupPolicy(&iam.GetGroupPolicyInput{

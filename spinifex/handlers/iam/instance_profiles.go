@@ -29,15 +29,15 @@ func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.Crea
 	ctx := context.Background()
 	profileName := *input.InstanceProfileName
 
-	if err := validatePolicyName(profileName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("instanceProfileName", profileName, 128); err != nil {
+		return nil, err
 	}
 
 	path := "/"
 	if input.Path != nil {
 		path = *input.Path
 		if err := validatePath(path); err != nil {
-			return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+			return nil, err
 		}
 	}
 
@@ -142,7 +142,7 @@ func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListI
 			continue
 		}
 
-		sdkProfile, err := s.profileToSDK(ctx, accountID, &profile)
+		sdkProfile, err := s.listedProfileToSDK(ctx, accountID, &profile)
 		if err != nil {
 			return nil, err
 		}
@@ -237,7 +237,7 @@ func (s *IAMServiceImpl) ListInstanceProfilesForRole(accountID string, input *ia
 
 	out := make([]*iam.InstanceProfile, 0, len(profiles))
 	for _, p := range profiles {
-		sdkProfile, err := s.profileToSDK(ctx, accountID, p)
+		sdkProfile, err := s.listedProfileToSDK(ctx, accountID, p)
 		if err != nil {
 			return nil, err
 		}
@@ -255,7 +255,7 @@ func (s *IAMServiceImpl) ListInstanceProfilesForRole(accountID string, input *ia
 func (s *IAMServiceImpl) ResolveInstanceProfile(accountID, nameOrARN string) (*InstanceProfile, error) {
 	ctx := context.Background()
 	if nameOrARN == "" {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The instance profile name or ARN must not be empty.")
 	}
 
 	if !strings.HasPrefix(nameOrARN, "arn:") {
@@ -330,8 +330,7 @@ func (s *IAMServiceImpl) UntagInstanceProfile(accountID string, input *iam.Untag
 	return &iam.UntagInstanceProfileOutput{}, nil
 }
 
-// ListInstanceProfileTags returns an instance profile's tags. Pagination is
-// not implemented: IsTruncated is always false.
+// ListInstanceProfileTags returns an instance profile's tags, all of them; the gateway pages the list.
 func (s *IAMServiceImpl) ListInstanceProfileTags(accountID string, input *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
 	ctx := context.Background()
 	profile, err := s.getInstanceProfile(ctx, accountID, *input.InstanceProfileName)
@@ -387,12 +386,7 @@ func (s *IAMServiceImpl) profileToSDK(ctx context.Context, accountID string, p *
 		CreateDate:          aws.Time(parseCreatedAt(p.CreatedAt)),
 		Roles:               []*iam.Role{},
 	}
-	for _, t := range p.Tags {
-		out.Tags = append(out.Tags, &iam.Tag{
-			Key:   aws.String(t.Key),
-			Value: aws.String(t.Value),
-		})
-	}
+	out.Tags = tagsToSDK(p.Tags)
 	if p.RoleName != "" {
 		role, err := s.getRole(ctx, accountID, p.RoleName)
 		if err != nil {
@@ -400,5 +394,16 @@ func (s *IAMServiceImpl) profileToSDK(ctx context.Context, accountID string, p *
 		}
 		out.Roles = append(out.Roles, roleToSDK(role))
 	}
+	return out, nil
+}
+
+// listedProfileToSDK is the shape ListInstanceProfiles and
+// ListInstanceProfilesForRole return: GetInstanceProfile's without Tags.
+func (s *IAMServiceImpl) listedProfileToSDK(ctx context.Context, accountID string, p *InstanceProfile) (*iam.InstanceProfile, error) {
+	out, err := s.profileToSDK(ctx, accountID, p)
+	if err != nil {
+		return nil, err
+	}
+	out.Tags = nil
 	return out, nil
 }

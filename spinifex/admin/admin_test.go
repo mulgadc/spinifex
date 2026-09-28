@@ -1080,16 +1080,6 @@ func TestChownServicePaths_SkipsMissingPath(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestSetServiceOwnership_RequiresRoot(t *testing.T) {
-	// SetServiceOwnership operates on hardcoded /etc/spinifex and
-	// /var/lib/spinifex paths and chowns to the spinifex group, both of
-	// which require root. The per-service failure-aggregation logic itself
-	// is covered without root via TestChownServicePaths_MissingUser above.
-	if os.Geteuid() != 0 {
-		t.Skip("SetServiceOwnership requires root")
-	}
-}
-
 // --- SetGPUPassthrough ---
 
 func writeToml(t *testing.T, content string) string {

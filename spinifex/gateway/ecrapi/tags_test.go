@@ -124,28 +124,28 @@ func TestTagResource_Errors(t *testing.T) {
 		_, err := TagResource(context.Background(), nc, policyTestAccount,
 			[]byte(`{"resourceArn":"`+tagResourceARN("team/app")+`","tags":[]}`))
 		require.Error(t, err)
-		assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
 	})
 
 	t.Run("malformed arn", func(t *testing.T) {
 		_, err := TagResource(context.Background(), nc, policyTestAccount,
 			[]byte(`{"resourceArn":"not-an-arn","tags":[{"Key":"env","Value":"prod"}]}`))
 		require.Error(t, err)
-		assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
 	})
 
 	t.Run("repo not found", func(t *testing.T) {
 		_, err := TagResource(context.Background(), nc, policyTestAccount,
 			[]byte(`{"resourceArn":"`+tagResourceARN("team/ghost")+`","tags":[{"Key":"env","Value":"prod"}]}`))
 		require.Error(t, err)
-		assert.Equal(t, awserrors.ErrorRepositoryNotFound, err.Error())
+		assert.Equal(t, awserrors.ErrorRepositoryNotFound, awserrors.ValidErrorCodeFromError(err))
 	})
 
 	t.Run("empty key rejected", func(t *testing.T) {
 		_, err := TagResource(context.Background(), nc, policyTestAccount,
 			[]byte(`{"resourceArn":"`+tagResourceARN("team/app")+`","tags":[{"Key":"","Value":"prod"}]}`))
 		require.Error(t, err)
-		assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
 	})
 }
 
@@ -155,5 +155,5 @@ func TestUntagResource_Errors(t *testing.T) {
 	_, err := UntagResource(context.Background(), nc, policyTestAccount,
 		[]byte(`{"resourceArn":"`+tagResourceARN("team/app")+`","tagKeys":[]}`))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
 }

@@ -52,14 +52,17 @@ func TestCreateRole(t *testing.T) {
 	require.NotNil(t, out.Role)
 	assert.Equal(t, "app-role", *out.Role.RoleName)
 	assert.Equal(t, "/service-roles/", *out.Role.Path)
-	assert.Equal(t, "Role for app servers", *out.Role.Description)
-	assert.Equal(t, int64(7200), *out.Role.MaxSessionDuration)
 	assert.Equal(t, "arn:aws:iam::"+testAccountID+":role/service-roles/app-role", *out.Role.Arn)
 	require.Greater(t, len(*out.Role.RoleId), 4)
 	assert.Equal(t, "AROA", (*out.Role.RoleId)[:4])
 	require.Len(t, out.Role.Tags, 1)
 	assert.Equal(t, "team", *out.Role.Tags[0].Key)
 	assert.Equal(t, "backend", *out.Role.Tags[0].Value)
+
+	got, err := svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: aws.String("app-role")})
+	require.NoError(t, err)
+	assert.Equal(t, "Role for app servers", *got.Role.Description)
+	assert.Equal(t, int64(7200), *got.Role.MaxSessionDuration)
 }
 
 func TestCreateRole_DefaultPath(t *testing.T) {
@@ -79,10 +82,12 @@ func TestCreateRole_DefaultMaxSessionDuration(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
 
-	out, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
 		RoleName:                 aws.String("default-session"),
 		AssumeRolePolicyDocument: aws.String(validTrustPolicy()),
 	})
+	require.NoError(t, err)
+	out, err := svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: aws.String("default-session")})
 	require.NoError(t, err)
 	assert.Equal(t, defaultMaxSessionDuration, *out.Role.MaxSessionDuration)
 }
@@ -110,7 +115,7 @@ func TestCreateRole_InvalidPath(t *testing.T) {
 		Path:                     aws.String("no-leading-slash/"),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestCreateRole_PermissionsBoundarySet(t *testing.T) {
@@ -1028,7 +1033,7 @@ func TestPutRolePolicy_InvalidName(t *testing.T) {
 		PolicyDocument: aws.String(validPolicyDocument()),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestPutRolePolicy_MalformedDocument(t *testing.T) {

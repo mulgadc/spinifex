@@ -32,3 +32,28 @@ Six additional production-referenced values are deliberately not accepted by the
 Phase 5 generates the public model-versus-dispatch inventory as one page per service under `docs/coverage/`, plus an index carrying the cross-service summary. Run `make aws-model-coverage` to regenerate the pages and print a terminal summary. A normal `make build` and the integration target both regenerate the pages so handler-map changes cannot silently leave them stale.
 
 The inventory counts modelled operations bound to real handlers separately from registered stubs and deliberately unsupported handlers. S3 is marked opaque because Spinifex delegates its REST surface to Predastore rather than using an operation-name dispatch table; no mechanical S3 coverage percentage is claimed.
+
+## Request conformance
+
+`TestRequestConformance` generates requests from the service models for every implemented operation except S3's, sends them through the in-process gateway with every daemon-lite wired, and judges each response. An acceptance request carries the required members plus at most one optional member and should not be refused as invalid. A rejection request breaks one constraint (a required member, enum, length, range or pattern, including a map key's) and should be refused with a validation error. Anything else, such as a missing resource, is inconclusive.
+
+A rejection that succeeds is always a finding. A refusal counts as a pass only when the acceptance request it builds on was accepted, and only when its code is one the operation declares or one AWS lists as common to every service (`ValidationError`, `ValidationException`, `MissingParameter`, `InvalidParameterValue`, `InvalidParameterCombination`). Any other validation code is reported as an undeclared error. Operations that declare no errors, which includes all of EC2, are not compared.
+
+Request findings and undeclared errors block only for services listed under `promotedRequestServices` in `conformance-promoted-services.json`, which starts empty; response promotion does not carry over.
+
+The 2026-09-28 baseline sent 3986 requests across 368 operations: 794 pass, 396 findings, 101 undeclared errors, 2695 inconclusive. None of it has been checked against AWS, so each finding below is a lead to verify before any fix.
+
+| Finding | Count | Notes |
+|---|---:|---|
+| A request breaking a model constraint is accepted | 336 | IAM 116, ECS 63, ELBv2 48, ECR 41, EC2 34, ACM 15, RDS 7, STS 6, EKS 6. Examples: IAM `List*` accept out-of-range `MaxItems` and `Marker`; IAM, ELBv2 and ECR accept a tag without `Key`; EC2 `Describe*` accept out-of-range `MaxResults`; ECS `CreateCapacityProvider` accepts every enum and range break inside `autoScalingGroupProvider`; STS `GetSessionToken` accepts a `SerialNumber` and `TokenCode` below their minimum length. |
+| A model-valid request is refused as invalid | 60 | Mostly deliberate limitations that say so: RDS `ModifyDBInstance` members, STS session policies, tags and MFA, IAM `PermissionsBoundary`, ECS `availabilityZoneRebalancing`. Others return a generic message whose cause is unresolved (ECS, EC2, EKS), or the model leaves out a value AWS itself requires, such as an RDS `AllocatedStorage` below the engine minimum. |
+| A refusal uses an undeclared error code | 101 | ECR (89) and EKS (1) answer with `InvalidParameterValueException`; both models declare `InvalidParameterException`. IAM (11) answers `CreateGroup` and `Put*Policy` constraint breaks with `InvalidInput`, which those operations do not declare. |
+
+Known limits of the sweep:
+
+- Models mark conditionally required members optional, so an acceptance request refused with `MissingParameter` or `InvalidParameterCombination` is inconclusive, and so is every later refusal for that operation once its required-only request is refused.
+- Filter names and pagination tokens cannot be generated validly, so `Filters`, `Marker` and `NextToken` get rejection requests only, and a refusal of one is inconclusive.
+- ACM `RequestCertificate` sends no requests: its `DomainName` pattern uses lookahead, which Go's regexp cannot sample. The report lists such operations as `UNTESTED`.
+- Constraints no request breaks are counted as `unbroken_constraints`: required URI labels, maximum lengths above the generated limit (such as IAM policy documents), map entry counts, and patterns no value of a valid length breaks.
+- Most inconclusives are resource lookups that run before validation (`NoSuchEntity`, `*NotFound`), EC2 requests missing a conditionally required member (`MissingParameter`), EC2 subjects no daemon-lite answers (`InternalError`), and EKS operations whose backends are absent (`ServiceUnavailableException`, `NotImplementedException`).
+- The EC2 query parser ignores parameters it does not know, which no generated request can reveal because every member it sends is modelled.

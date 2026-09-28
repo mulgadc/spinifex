@@ -51,7 +51,7 @@ func isUnmodelledCommonError(service Service, code string) bool {
 	case IAM, ElasticLoadBalancingV2:
 		return isUnmodelledQueryError(code)
 	case STS:
-		// STS also uses these two runtime input errors even though api-2.json
+		// STS also uses these two runtime input errors even though the model
 		// does not declare them on AssumeRole/GetSessionToken.
 		return isUnmodelledQueryError(code) || code == "ValidationError" || code == "InvalidParameterValue"
 	case ECS:

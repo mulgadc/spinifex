@@ -28,11 +28,11 @@ func resolvePolicyRepo(ctx context.Context, nc *nats.Conn, accountID string, bod
 	var req repoPolicyRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
-			return req, nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return req, nil, MalformedBodyError()
 		}
 	}
-	if req.RepositoryName == "" || handlers_ecr.ValidateRepoName(req.RepositoryName) != nil {
-		return req, nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	if err := ValidateRepositoryName(req.RepositoryName); err != nil {
+		return req, nil, err
 	}
 	// Cross-account registry access is the Q8 parity gap pending registry-policy
 	// v2; a registryId naming a different account is denied.
@@ -58,8 +58,11 @@ func SetRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string, b
 	if err != nil {
 		return nil, err
 	}
-	if req.PolicyText == "" || !json.Valid([]byte(req.PolicyText)) {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	if req.PolicyText == "" {
+		return nil, RequiredParameterError("policyText")
+	}
+	if !json.Valid([]byte(req.PolicyText)) {
+		return nil, ConstraintError("policyText", "Invalid repository policy provided")
 	}
 	if err := store.PutRepoPolicy(ctx, accountID, req.RepositoryName, []byte(req.PolicyText)); err != nil {
 		return nil, err

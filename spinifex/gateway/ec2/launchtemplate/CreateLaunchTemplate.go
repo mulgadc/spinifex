@@ -12,7 +12,7 @@ import (
 )
 
 // ValidateCreateLaunchTemplateInput checks the parameters required to create a
-// template. Name format and DryRun semantics are owned by the daemon.
+// template. Name format is owned by the daemon.
 func ValidateCreateLaunchTemplateInput(input *ec2.CreateLaunchTemplateInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

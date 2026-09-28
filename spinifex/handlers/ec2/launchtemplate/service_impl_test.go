@@ -108,20 +108,6 @@ func TestLaunchTemplateNameWithKVUnsafeCharacters(t *testing.T) {
 	}
 }
 
-func TestCreateLaunchTemplate_DryRunNoPersist(t *testing.T) {
-	svc := setupTestService(t)
-	out, err := svc.CreateLaunchTemplate(context.Background(), &ec2.CreateLaunchTemplateInput{
-		DryRun:             aws.Bool(true),
-		LaunchTemplateName: aws.String("dry"),
-		LaunchTemplateData: &ec2.RequestLaunchTemplateData{ImageId: aws.String("ami-1")},
-	}, testAccountID)
-	require.NoError(t, err)
-	assert.Nil(t, out.LaunchTemplate)
-
-	// Nothing persisted: the name is still claimable.
-	createTemplate(t, svc, "dry", "t3.micro")
-}
-
 // TestCreateLaunchTemplate_OrphanNameReclaim verifies repair-on-write: a name
 // whose header is gone (crash orphan) is reclaimed by the next create.
 func TestCreateLaunchTemplate_OrphanNameReclaim(t *testing.T) {

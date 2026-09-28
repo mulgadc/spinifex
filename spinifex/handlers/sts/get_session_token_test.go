@@ -145,8 +145,7 @@ func TestGetSessionToken_RejectsMFAParameters(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID, tc.input)
-			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+			requireMFANotSupported(t, err)
 			assert.Nil(t, out)
 		})
 	}

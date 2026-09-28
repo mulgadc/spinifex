@@ -55,14 +55,14 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.ErrorContext(ctx, "CreateRepository: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.MalformedBodyError()
 	}
 	var req createRepositoryRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.MalformedBodyError()
 	}
-	if err := handlers_ecr.ValidateRepoName(req.RepositoryName); err != nil {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	if err := gateway_ecrapi.ValidateRepositoryName(req.RepositoryName); err != nil {
+		return err
 	}
 	if req.RegistryID != "" && req.RegistryID != accountID {
 		return errors.New(awserrors.ErrorAccessDenied)
@@ -115,11 +115,11 @@ func tagMapFromInput(in []*ecr.Tag) (map[string]string, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
+	if err := gateway_ecrapi.ValidateTags(in); err != nil {
+		return nil, err
+	}
 	out := make(map[string]string, len(in))
 	for _, t := range in {
-		if t == nil || aws.StringValue(t.Key) == "" {
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-		}
 		out[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
 	}
 	return out, nil
@@ -139,7 +139,8 @@ func normalizeEncryptionType(cfg *encryptionConfigurationInput) (string, error) 
 		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"encryptionType KMS is not supported: no customer-managed key is used, and repositories are already encrypted at rest under a server-managed AES-256 key")
 	default:
-		return "", errors.New(awserrors.ErrorInvalidParameterValue)
+		return "", gateway_ecrapi.EnumValueError("encryptionConfiguration.encryptionType", cfg.EncryptionType,
+			handlers_ecr.EncryptionTypeAES256, handlers_ecr.EncryptionTypeKMS)
 	}
 }
 
@@ -152,6 +153,7 @@ func normalizeTagMutability(v string) (string, error) {
 	case handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable:
 		return v, nil
 	default:
-		return "", errors.New(awserrors.ErrorInvalidParameterValue)
+		return "", gateway_ecrapi.EnumValueError("imageTagMutability", v,
+			handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable)
 	}
 }

@@ -282,6 +282,30 @@ func TestIAMRequest_GetAccountSummary_Success(t *testing.T) {
 	assert.Contains(t, xmlStr, "<value>2</value>")
 }
 
+// AWS answers GetRole for a never-used role with an empty <RoleLastUsed/>
+// element; a nil-field struct must still marshal to that element, not vanish.
+func TestIAMRequest_GetRole_EmptyRoleLastUsed(t *testing.T) {
+	svc := &flexMockIAMService{
+		getRoleFn: func(_ string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+			return &iam.GetRoleOutput{Role: &iam.Role{
+				RoleName:                 input.RoleName,
+				AssumeRolePolicyDocument: aws.String("{}"),
+				RoleLastUsed:             &iam.RoleLastUsed{},
+			}}, nil
+		},
+	}
+	handler := setupIAMRequestHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=GetRole&RoleName=app"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp := doRequest(handler, req)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "<RoleLastUsed></RoleLastUsed>")
+}
+
 func TestIAMRequest_UnknownAction(t *testing.T) {
 	handler := setupIAMRequestHandler(&flexMockIAMService{})
 

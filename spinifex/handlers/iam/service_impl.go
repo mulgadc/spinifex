@@ -249,19 +249,25 @@ func validateTags(tags []*iam.Tag) error {
 		return errors.New(awserrors.ErrorIAMLimitExceeded)
 	}
 	seen := make(map[string]struct{}, len(tags))
-	for _, tag := range tags {
+	for i, tag := range tags {
+		field := fmt.Sprintf("tags.%d.member", i+1)
 		if tag == nil || tag.Key == nil {
-			return errors.New(awserrors.ErrorIAMInvalidInput)
+			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+				"1 validation error detected: Value null at '%s.key' failed to satisfy constraint: Member must not be null", field)
 		}
 		key := *tag.Key
-		if len(key) < 1 || len(key) > maxTagKeyLength {
-			return errors.New(awserrors.ErrorIAMInvalidInput)
+		if len(key) < 1 {
+			return lengthViolation(key, field+".key", "greater than or equal to 1")
+		}
+		if len(key) > maxTagKeyLength {
+			return lengthViolation(key, field+".key", fmt.Sprintf("less than or equal to %d", maxTagKeyLength))
 		}
 		if tag.Value != nil && len(*tag.Value) > maxTagValueLength {
-			return errors.New(awserrors.ErrorIAMInvalidInput)
+			return lengthViolation(*tag.Value, field+".value", fmt.Sprintf("less than or equal to %d", maxTagValueLength))
 		}
 		if _, dup := seen[key]; dup {
-			return errors.New(awserrors.ErrorIAMInvalidInput)
+			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+				"Duplicate tag keys found. Please note that Tag keys are case insensitive.")
 		}
 		seen[key] = struct{}{}
 	}
@@ -312,8 +318,8 @@ func removeTagKeys(existing []Tag, keys []*string) []Tag {
 func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
 	ctx := context.Background()
 	userName := *input.UserName
-	if err := validateUserName(userName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("userName", userName, 64); err != nil {
+		return nil, err
 	}
 
 	if err := validatePermissionsBoundary(input.PermissionsBoundary); err != nil {
@@ -324,7 +330,7 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 	if input.Path != nil {
 		path = *input.Path
 		if err := validatePath(path); err != nil {
-			return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+			return nil, err
 		}
 	}
 
@@ -370,6 +376,7 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 			Arn:        aws.String(user.ARN),
 			Path:       aws.String(user.Path),
 			CreateDate: aws.Time(createdAt),
+			Tags:       tagsToSDK(user.Tags),
 		},
 	}, nil
 }
@@ -652,7 +659,8 @@ func (s *IAMServiceImpl) UpdateAccessKey(accountID string, input *iam.UpdateAcce
 	ctx := context.Background()
 	status := *input.Status
 	if status != AccessKeyStatusActive && status != AccessKeyStatusInactive {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		// AWS lists Expired, which the v1 SDK's StatusType_Values omits.
+		return nil, enumViolation("status", []string{"Expired", AccessKeyStatusActive, AccessKeyStatusInactive})
 	}
 
 	accessKeyID := *input.AccessKeyId
@@ -957,7 +965,7 @@ func (s *IAMServiceImpl) IsEmpty() (bool, error) {
 func (s *IAMServiceImpl) CreateAccount(name string) (*Account, error) {
 	ctx := context.Background()
 	if name == "" {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The account name must not be empty.")
 	}
 
 	var accountID string
@@ -1098,7 +1106,9 @@ func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, e
 	switch status {
 	case AccountStatusActive, AccountStatusSuspended, AccountStatusTerminating:
 	default:
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+			"Account status %q is invalid. It must be one of %s, %s or %s.",
+			status, AccountStatusActive, AccountStatusSuspended, AccountStatusTerminating)
 	}
 
 	account, err := s.GetAccount(accountID)
@@ -1169,8 +1179,8 @@ func (s *IAMServiceImpl) DeleteAccount(accountID string) error {
 func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
 	ctx := context.Background()
 	policyName := *input.PolicyName
-	if err := validatePolicyName(policyName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("policyName", policyName, 128); err != nil {
+		return nil, err
 	}
 
 	kvKey := accountID + "." + policyName
@@ -1188,7 +1198,7 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 	if path == "" {
 		path = "/"
 	} else if err := validatePath(path); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, err
 	}
 
 	newPolicyID, err := generateIAMID("ANPA")
@@ -1221,21 +1231,10 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 
 	slog.Info("IAM policy created", "accountID", accountID, "policyName", policyName, "policyID", policy.PolicyID)
 
-	createdAt := parseCreatedAt(policy.CreatedAt)
-	return &iam.CreatePolicyOutput{
-		Policy: &iam.Policy{
-			PolicyName:       aws.String(policy.PolicyName),
-			PolicyId:         aws.String(policy.PolicyID),
-			Arn:              aws.String(policy.ARN),
-			Path:             aws.String(policy.Path),
-			Description:      aws.String(policy.Description),
-			DefaultVersionId: aws.String(policy.DefaultVersion),
-			CreateDate:       aws.Time(createdAt),
-			AttachmentCount:  aws.Int64(0),
-			IsAttachable:     aws.Bool(true),
-			Tags:             tagsToSDK(policy.Tags),
-		},
-	}, nil
+	// CreatePolicy omits Description even when it was supplied.
+	out := policyToSDK(&policy, 0)
+	out.Tags = tagsToSDK(policy.Tags)
+	return &iam.CreatePolicyOutput{Policy: out}, nil
 }
 
 func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) (*iam.GetPolicyOutput, error) {
@@ -1249,65 +1248,11 @@ func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) 
 	if err != nil {
 		return nil, fmt.Errorf("check policy attachments: %w", err)
 	}
-	attachmentCount := counts[policy.ARN]
 
-	createdAt := parseCreatedAt(policy.CreatedAt)
-	return &iam.GetPolicyOutput{
-		Policy: &iam.Policy{
-			PolicyName:       aws.String(policy.PolicyName),
-			PolicyId:         aws.String(policy.PolicyID),
-			Arn:              aws.String(policy.ARN),
-			Path:             aws.String(policy.Path),
-			Description:      aws.String(policy.Description),
-			DefaultVersionId: aws.String(policy.DefaultVersion),
-			CreateDate:       aws.Time(createdAt),
-			AttachmentCount:  aws.Int64(attachmentCount),
-			IsAttachable:     aws.Bool(true),
-			Tags:             tagsToSDK(policy.Tags),
-		},
-	}, nil
-}
-
-func (s *IAMServiceImpl) GetPolicyVersion(accountID string, input *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
-	ctx := context.Background()
-	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
-	if err != nil {
-		return nil, err
-	}
-
-	// We only support v1 — reject other version IDs
-	if *input.VersionId != "v1" {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-
-	createdAt := parseCreatedAt(policy.CreatedAt)
-	return &iam.GetPolicyVersionOutput{
-		PolicyVersion: &iam.PolicyVersion{
-			Document:         aws.String(policy.PolicyDocument),
-			VersionId:        aws.String("v1"),
-			IsDefaultVersion: aws.Bool(true),
-			CreateDate:       aws.Time(createdAt),
-		},
-	}, nil
-}
-
-func (s *IAMServiceImpl) ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
-	ctx := context.Background()
-	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
-	if err != nil {
-		return nil, err
-	}
-
-	// Every policy has exactly one immutable version (v1); Document is omitted per AWS convention.
-	createdAt := parseCreatedAt(policy.CreatedAt)
-	return &iam.ListPolicyVersionsOutput{
-		Versions: []*iam.PolicyVersion{{
-			VersionId:        aws.String(policy.DefaultVersion),
-			IsDefaultVersion: aws.Bool(true),
-			CreateDate:       aws.Time(createdAt),
-		}},
-		IsTruncated: aws.Bool(false),
-	}, nil
+	out := policyToSDK(policy, counts[policy.ARN])
+	out.Description = aws.String(policy.Description)
+	out.Tags = tagsToSDK(policy.Tags)
+	return &iam.GetPolicyOutput{Policy: out}, nil
 }
 
 func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
@@ -1329,7 +1274,10 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 	}
 
 	keyPrefix := accountID + "."
-	var policies []*iam.Policy
+	pathPrefix := aws.StringValue(input.PathPrefix)
+	scope := aws.StringValue(input.Scope)
+	onlyAttached := aws.BoolValue(input.OnlyAttached)
+	policies := []*iam.Policy{}
 	for _, key := range keys {
 		if key == utils.VersionKey {
 			continue
@@ -1354,18 +1302,15 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 			continue
 		}
 
-		createdAt := parseCreatedAt(policy.CreatedAt)
-		policies = append(policies, &iam.Policy{
-			PolicyName:       aws.String(policy.PolicyName),
-			PolicyId:         aws.String(policy.PolicyID),
-			Arn:              aws.String(policy.ARN),
-			Path:             aws.String(policy.Path),
-			DefaultVersionId: aws.String(policy.DefaultVersion),
-			CreateDate:       aws.Time(createdAt),
-			AttachmentCount:  aws.Int64(attachCounts[policy.ARN]),
-			IsAttachable:     aws.Bool(true),
-			Tags:             tagsToSDK(policy.Tags),
-		})
+		if !strings.HasPrefix(policy.Path, pathPrefix) || !policyInScope(policy.ARN, scope) {
+			continue
+		}
+		if onlyAttached && attachCounts[policy.ARN] == 0 {
+			continue
+		}
+
+		// ListPolicies carries neither Tags nor Description.
+		policies = append(policies, policyToSDK(&policy, attachCounts[policy.ARN]))
 	}
 
 	return &iam.ListPoliciesOutput{
@@ -1374,24 +1319,69 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 	}, nil
 }
 
+// policyToSDK is the field set every policy action returns. Permissions
+// boundaries are rejected, so no policy is ever in use as one.
+func policyToSDK(p *Policy, attachmentCount int64) *iam.Policy {
+	updatedAt := p.UpdatedAt
+	if updatedAt == "" {
+		updatedAt = p.CreatedAt
+	}
+	return &iam.Policy{
+		PolicyName:                    aws.String(p.PolicyName),
+		PolicyId:                      aws.String(p.PolicyID),
+		Arn:                           aws.String(p.ARN),
+		Path:                          aws.String(p.Path),
+		DefaultVersionId:              aws.String(p.DefaultVersion),
+		CreateDate:                    aws.Time(parseCreatedAt(p.CreatedAt)),
+		UpdateDate:                    aws.Time(parseCreatedAt(updatedAt)),
+		AttachmentCount:               aws.Int64(attachmentCount),
+		PermissionsBoundaryUsageCount: aws.Int64(0),
+		IsAttachable:                  aws.Bool(true),
+	}
+}
+
+// policyInScope applies ListPolicies' Scope: Local is customer-managed, AWS is
+// arn:aws:iam::aws:policy/..., and All (or unset) keeps both.
+func policyInScope(policyARN, scope string) bool {
+	awsManaged := isAWSManagedPolicyARN(policyARN)
+	switch scope {
+	case iam.PolicyScopeTypeLocal:
+		return !awsManaged
+	case iam.PolicyScopeTypeAws:
+		return awsManaged
+	default:
+		return true
+	}
+}
+
 func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error) {
 	ctx := context.Background()
-	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
+	policyARN := *input.PolicyArn
+	key, cfg, err := policyCASTarget(accountID, policyARN)
 	if err != nil {
 		return nil, err
 	}
 
-	counts, err := s.buildAttachmentCounts(ctx, accountID)
+	// Revision-guarded, so a version created after the checks cannot be deleted unseen.
+	policy, err := kvutil.DeleteIf(ctx, s.policiesBucket, key, cfg, func(p *Policy) error {
+		if p.ARN != policyARN {
+			return errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		if len(p.OtherVersions) > 0 {
+			return awserrors.Errorf(awserrors.ErrorIAMDeleteConflict,
+				"This policy has more than one version. Before you delete a policy, you must delete the policy's versions. The default version is deleted with the policy.")
+		}
+		counts, err := s.buildAttachmentCounts(ctx, accountID)
+		if err != nil {
+			return fmt.Errorf("check policy attachments: %w", err)
+		}
+		if counts[p.ARN] > 0 {
+			return errors.New(awserrors.ErrorIAMDeleteConflict)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("check policy attachments: %w", err)
-	}
-	if counts[policy.ARN] > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
-	}
-
-	kvKey := accountID + "." + policy.PolicyName
-	if err := s.policiesBucket.Delete(ctx, kvKey); err != nil {
-		return nil, fmt.Errorf("delete policy: %w", err)
+		return nil, err
 	}
 
 	slog.Info("IAM policy deleted", "accountID", accountID, "policyName", policy.PolicyName)
@@ -1427,7 +1417,7 @@ func (s *IAMServiceImpl) ListEntitiesForPolicy(accountID string, input *iam.List
 		iam.EntityTypeLocalManagedPolicy, iam.EntityTypeAwsmanagedPolicy:
 		// valid
 	default:
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, enumViolation("entityFilter", iam.EntityType_Values())
 	}
 
 	// LocalManagedPolicy/AWSManagedPolicy describe the policy's own management
@@ -1590,8 +1580,8 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 	policyDoc := *input.PolicyDocument
 	userKVKey := accountID + "." + userName
 
-	if err := validatePolicyName(policyName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("policyName", policyName, 128); err != nil {
+		return nil, err
 	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
@@ -1677,7 +1667,7 @@ func (s *IAMServiceImpl) DeleteUserPolicy(accountID string, input *iam.DeleteUse
 }
 
 // ListUserPolicies returns the names of a user's inline policies, sorted for
-// deterministic output. Pagination is not implemented: IsTruncated is always false.
+// deterministic output. Returns the whole list; the gateway pages it.
 func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
 	ctx := context.Background()
 	user, err := s.getUser(ctx, accountID, *input.UserName)
@@ -1757,8 +1747,7 @@ func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) 
 	return &iam.UntagUserOutput{}, nil
 }
 
-// ListUserTags returns a user's tags. Pagination is not implemented:
-// IsTruncated is always false.
+// ListUserTags returns a user's tags, all of them; the gateway pages the list.
 func (s *IAMServiceImpl) ListUserTags(accountID string, input *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
 	ctx := context.Background()
 	user, err := s.getUser(ctx, accountID, *input.UserName)
@@ -1771,60 +1760,46 @@ func (s *IAMServiceImpl) ListUserTags(accountID string, input *iam.ListUserTagsI
 	}, nil
 }
 
-// TagPolicy upserts tags on a customer-managed policy, resolved by ARN.
+// TagPolicy upserts tags on a customer-managed policy under CAS, so a stale
+// record cannot undo a concurrent change of default version.
 func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
 	ctx := context.Background()
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
-	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
+	err := s.updatePolicyCAS(ctx, accountID, *input.PolicyArn, func(policy *Policy) (bool, error) {
+		merged := mergeTags(policy.Tags, input.Tags)
+		if len(merged) > maxTagsPerResource {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		policy.Tags = merged
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	merged := mergeTags(policy.Tags, input.Tags)
-	if len(merged) > maxTagsPerResource {
-		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
-	}
-	policy.Tags = merged
-
-	data, err := json.Marshal(policy)
-	if err != nil {
-		return nil, fmt.Errorf("marshal policy: %w", err)
-	}
-	if _, err := s.policiesBucket.Put(ctx, accountID+"."+policy.PolicyName, data); err != nil {
-		return nil, fmt.Errorf("update policy: %w", err)
-	}
-
-	slog.Info("IAM policy tagged", "accountID", accountID, "policyName", policy.PolicyName)
+	slog.Info("IAM policy tagged", "accountID", accountID, "policyArn", *input.PolicyArn)
 	return &iam.TagPolicyOutput{}, nil
 }
 
 // UntagPolicy removes the named tag keys from a policy; unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
 	ctx := context.Background()
-	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
+	err := s.updatePolicyCAS(ctx, accountID, *input.PolicyArn, func(policy *Policy) (bool, error) {
+		policy.Tags = removeTagKeys(policy.Tags, input.TagKeys)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	policy.Tags = removeTagKeys(policy.Tags, input.TagKeys)
-
-	data, err := json.Marshal(policy)
-	if err != nil {
-		return nil, fmt.Errorf("marshal policy: %w", err)
-	}
-	if _, err := s.policiesBucket.Put(ctx, accountID+"."+policy.PolicyName, data); err != nil {
-		return nil, fmt.Errorf("update policy: %w", err)
-	}
-
-	slog.Info("IAM policy untagged", "accountID", accountID, "policyName", policy.PolicyName)
+	slog.Info("IAM policy untagged", "accountID", accountID, "policyArn", *input.PolicyArn)
 	return &iam.UntagPolicyOutput{}, nil
 }
 
-// ListPolicyTags returns a policy's tags. Pagination is not implemented:
-// IsTruncated is always false.
+// ListPolicyTags returns a policy's tags, all of them; the gateway pages the list.
 func (s *IAMServiceImpl) ListPolicyTags(accountID string, input *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
 	ctx := context.Background()
 	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
@@ -2107,28 +2082,32 @@ func isIAMNameChar(c byte) bool {
 		c == '+' || c == '=' || c == ',' || c == '.' || c == '@' || c == '-' || c == '_'
 }
 
-func validateUserName(name string) error {
-	if len(name) == 0 || len(name) > 64 {
-		return fmt.Errorf("user name must be between 1 and 64 characters")
+// validateIAMName checks an IAM entity or policy name, refusing it with the
+// message AWS gives, which names the failing parameter.
+func validateIAMName(field, name string, maxLen int) error {
+	if len(name) == 0 {
+		return lengthViolation(name, field, "greater than or equal to 1")
+	}
+	if len(name) > maxLen {
+		return lengthViolation(name, field, fmt.Sprintf("less than or equal to %d", maxLen))
 	}
 	for i := range len(name) {
 		if !isIAMNameChar(name[i]) {
-			return fmt.Errorf("user name contains invalid character: %q", name[i])
+			return awserrors.Errorf(awserrors.ErrorValidationError,
+				"The specified value for %s is invalid. It must contain only alphanumeric characters and/or the following: +=,.@_-", field)
 		}
 	}
 	return nil
 }
 
-func validatePolicyName(name string) error {
-	if len(name) == 0 || len(name) > 128 {
-		return fmt.Errorf("policy name must be between 1 and 128 characters")
-	}
-	for i := range len(name) {
-		if !isIAMNameChar(name[i]) {
-			return fmt.Errorf("policy name contains invalid character: %q", name[i])
-		}
-	}
-	return nil
+func lengthViolation(value, field, bound string) error {
+	return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+		"1 validation error detected: Value '%s' at '%s' failed to satisfy constraint: Member must have length %s", value, field, bound)
+}
+
+func enumViolation(field string, allowed []string) error {
+	return awserrors.Errorf(awserrors.ErrorValidationError,
+		"1 validation error detected: Value at '%s' failed to satisfy constraint: Member must satisfy enum value set: [%s]", field, strings.Join(allowed, ", "))
 }
 
 // validatePermissionsBoundary rejects a boundary the evaluator cannot enforce.
@@ -2144,10 +2123,11 @@ func validatePermissionsBoundary(boundary *string) error {
 
 func validatePath(path string) error {
 	if !strings.HasPrefix(path, "/") || !strings.HasSuffix(path, "/") {
-		return fmt.Errorf("path must begin and end with /")
+		return awserrors.Errorf(awserrors.ErrorValidationError,
+			"The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters.")
 	}
 	if len(path) > 512 {
-		return fmt.Errorf("path exceeds maximum length of 512")
+		return lengthViolation(path, "path", "less than or equal to 512")
 	}
 	return nil
 }
@@ -2325,21 +2305,27 @@ var summaryQuotaDefaults = map[string]int64{
 	"GroupPolicySizeQuota":            5120,
 	"PolicySizeQuota":                 6144,
 	"VersionsPerPolicyQuota":          5,
+	"AssumeRolePolicySizeQuota":       maxTrustPolicyDocumentSize,
+	"RolePolicySizeQuota":             10240,
+
+	// AWS's default: STS global endpoint tokens valid only in default Regions.
+	"GlobalEndpointTokenVersion": 1,
 
 	// Resource types Spinifex does not model — reported as 0.
-	"MFADevices":                 0,
-	"MFADevicesInUse":            0,
-	"AccountMFAEnabled":          0,
-	"ServerCertificates":         0,
-	"SigningCertificatesPerUser": 0,
-	"PolicyVersionsInUse":        0,
+	"MFADevices":                        0,
+	"MFADevicesInUse":                   0,
+	"AccountMFAEnabled":                 0,
+	"ServerCertificates":                0,
+	"PolicyVersionsInUse":               0,
+	"AccountAccessKeysPresent":          0,
+	"AccountPasswordPresent":            0,
+	"AccountSigningCertificatesPresent": 0,
 }
 
-// countBucket counts records in a KV bucket that belong to accountID. Records
-// are keyed "accountID.name"; counting is by key prefix only (no Get/unmarshal)
-// so it stays cheap with many resources. The version key is skipped and a
-// missing bucket counts as zero.
-func countBucket(ctx context.Context, bucket jetstream.KeyValue, accountID string) (int64, error) {
+// countBucket counts the keys in bucket that start with prefix, without a
+// Get/unmarshal so it stays cheap with many resources. The version key is
+// skipped and an empty bucket counts as zero.
+func countBucket(ctx context.Context, bucket jetstream.KeyValue, prefix string) (int64, error) {
 	keys, err := kvutil.Keys(ctx, bucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
@@ -2348,7 +2334,6 @@ func countBucket(ctx context.Context, bucket jetstream.KeyValue, accountID strin
 		return 0, err
 	}
 
-	prefix := accountID + "."
 	var count int64
 	for _, key := range keys {
 		if key == utils.VersionKey {
@@ -2379,12 +2364,31 @@ func (s *IAMServiceImpl) GetAccountSummary(accountID string, _ *iam.GetAccountSu
 		summary[key] = aws.Int64(value)
 	}
 	for key, bucket := range counted {
-		n, err := countBucket(ctx, bucket, accountID)
+		n, err := countBucket(ctx, bucket, accountID+".")
 		if err != nil {
 			return nil, fmt.Errorf("count %s: %w", key, err)
 		}
 		summary[key] = aws.Int64(n)
 	}
 
+	providers, err := s.countOIDCProviders(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("count Providers: %w", err)
+	}
+	summary["Providers"] = aws.Int64(providers)
+
 	return &iam.GetAccountSummaryOutput{SummaryMap: summary}, nil
+}
+
+// countOIDCProviders counts the account's OIDC providers. AWS also counts SAML
+// providers under Providers; Spinifex has none.
+func (s *IAMServiceImpl) countOIDCProviders(ctx context.Context, accountID string) (int64, error) {
+	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
+	if err != nil {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("open IAM account bucket: %w", err)
+	}
+	return countBucket(ctx, kv, oidcProvidersKeyPrefix)
 }

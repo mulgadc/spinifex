@@ -3,6 +3,7 @@ package gateway_iam
 import (
 	"errors"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -57,5 +58,15 @@ func ListOpenIDConnectProviderTags(accountID string, input *iam.ListOpenIDConnec
 	if input.OpenIDConnectProviderArn == nil || *input.OpenIDConnectProviderArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListOpenIDConnectProviderTags(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListOpenIDConnectProviderTags(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.Tags, out.Marker = paginate(p, out.Tags, tagKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }

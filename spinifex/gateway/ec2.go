@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"uuid"
 
@@ -675,6 +676,9 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 	if err := gw.checkPolicyResources(r, "ec2", action, resources); err != nil {
 		return err
 	}
+	if dryRunRequested(input) {
+		return errors.New(awserrors.ErrorDryRunOperation)
+	}
 
 	if gw.NATSConn == nil && !ec2LocalActions[action] {
 		return errors.New(awserrors.ErrorServerInternal)
@@ -691,4 +695,19 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 		slog.Error("Failed to write EC2 response", "err", err)
 	}
 	return nil
+}
+
+// dryRunRequested reports whether a parsed EC2 input carries DryRun=true. Only
+// actions whose SDK input models the parameter can answer DryRunOperation.
+func dryRunRequested(input any) bool {
+	v := reflect.ValueOf(input)
+	if v.Kind() != reflect.Pointer || v.IsNil() || v.Elem().Kind() != reflect.Struct {
+		return false
+	}
+	field := v.Elem().FieldByName("DryRun")
+	if !field.IsValid() {
+		return false
+	}
+	dryRun, ok := reflect.TypeAssert[*bool](field)
+	return ok && aws.BoolValue(dryRun)
 }

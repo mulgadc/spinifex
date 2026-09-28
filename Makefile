@@ -202,10 +202,12 @@ AWS_MODEL_OPERATION_COVERAGE_DIR ?= $(CURDIR)/docs/coverage
 # -count=1 is load-bearing: the conformance report is written by the test binary,
 # so a cached pass skips the run, leaves no report, and the cat below fails the
 # target. It also keeps the conformance gate honest — a cached result would mean
-# the check never ran against this commit.
+# the check never ran against this commit. The generated request sweep adds
+# about 15s, most of it EC2 fan-outs waiting out their window for instances
+# no daemon-lite owns.
 test-integration:
 	@echo -e "\n....Running in-process integration tests...."
-	$(_Q)LOG_IGNORE=1 AWS_MODEL_CONFORMANCE_MODE=$(AWS_MODEL_CONFORMANCE_MODE) AWS_MODEL_CONFORMANCE_REPORT=$(AWS_MODEL_CONFORMANCE_REPORT) go test -count=1 -tags=integration -timeout 60s ./tests/integration/... $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 AWS_MODEL_CONFORMANCE_MODE=$(AWS_MODEL_CONFORMANCE_MODE) AWS_MODEL_CONFORMANCE_REPORT=$(AWS_MODEL_CONFORMANCE_REPORT) go test -count=1 -tags=integration -timeout 120s ./tests/integration/... $(_RACEQ)
 	@cat $(AWS_MODEL_CONFORMANCE_REPORT)
 	@$(MAKE) --no-print-directory generate-aws-model-coverage
 	@echo "AWS operation coverage: $(AWS_MODEL_OPERATION_COVERAGE_DIR)"

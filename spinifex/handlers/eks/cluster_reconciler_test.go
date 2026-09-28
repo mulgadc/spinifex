@@ -97,7 +97,7 @@ func TestClusterReconciler_AcquireLeaseFirstHolderWins(t *testing.T) {
 	require.NotNil(t, release)
 	defer release()
 
-	// Second AcquireLease from same holder must fail (Create returns KeyExists).
+	// Re-acquiring from the same holder succeeds: the lease is already held.
 	release2, ok2 := r.AcquireLease(t.Context())
 	assert.True(t, ok2)
 	assert.NotNil(t, release2)

@@ -51,7 +51,8 @@ func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, caller
 
 	// MFA is out of scope: reject rather than silently ignore, so callers don't believe MFA was enforced.
 	if aws.StringValue(input.SerialNumber) != "" || aws.StringValue(input.TokenCode) != "" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"MFA is not supported in this release; omit SerialNumber and TokenCode")
 	}
 
 	duration := getSessionTokenDefaultDuration

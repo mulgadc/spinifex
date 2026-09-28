@@ -23,7 +23,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.73
 	github.com/minio/highwayhash v1.0.4
-	github.com/mulgadc/bluebottle v1.20.1-0.20260916040751-5a5ca6f0fb33
+	github.com/mulgadc/bluebottle v1.20.1-0.20260928004821-163f43196afd
 	github.com/mulgadc/northstar v1.20.1-0.20260917032839-357bbc94201d
 	github.com/mulgadc/predastore v1.20.1-0.20260918222809-019dd349cf1f
 	github.com/mulgadc/viperblock v1.20.0
@@ -74,7 +74,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.38.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.0 // indirect
-	github.com/aws/smithy-go v1.28.1 // indirect
+	github.com/aws/smithy-go v1.28.2 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/boltdb/bolt v1.3.1 // indirect

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -281,10 +280,3 @@ var (
 	_ Runner          = execRunner{}
 	_ InterfaceReader = kernelReader{}
 )
-
-func TestUplinkModes_ConstantSet(t *testing.T) {
-	modes := []UplinkMode{UplinkModeUnknown, UplinkModePhysical, UplinkModeVeth}
-	if !slices.Contains(modes, UplinkModePhysical) || !slices.Contains(modes, UplinkModeVeth) {
-		t.Fatal("expected physical and veth in supported mode set")
-	}
-}

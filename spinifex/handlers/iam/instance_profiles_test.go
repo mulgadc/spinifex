@@ -82,7 +82,7 @@ func TestCreateInstanceProfile_InvalidPath(t *testing.T) {
 		Path:                aws.String("missing-slashes"),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestCreateInstanceProfile_Duplicate(t *testing.T) {

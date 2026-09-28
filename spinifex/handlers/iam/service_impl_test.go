@@ -394,10 +394,10 @@ func TestCreateUser_InvalidName_BadChars(t *testing.T) {
 	svc := setupTestIAMService(t)
 
 	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
-		UserName: aws.String("user name!"),
+		UserName: aws.String("bad name!"),
 	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	requireIAMError(t, err, awserrors.ErrorValidationError,
+		"The specified value for userName is invalid. It must contain only alphanumeric characters and/or the following: +=,.@_-")
 }
 
 func TestCreateUser_InvalidPath(t *testing.T) {
@@ -406,10 +406,10 @@ func TestCreateUser_InvalidPath(t *testing.T) {
 
 	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
 		UserName: aws.String("validuser"),
-		Path:     aws.String("no-leading-slash/"),
+		Path:     aws.String("noslash"),
 	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	requireIAMError(t, err, awserrors.ErrorValidationError,
+		"The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters.")
 }
 
 func TestCreatePolicy_InvalidName(t *testing.T) {
@@ -435,7 +435,7 @@ func TestCreatePolicy_InvalidPath(t *testing.T) {
 		Path:           aws.String("bad-path"),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestValidatePolicyDocument_TooLarge(t *testing.T) {
@@ -690,8 +690,8 @@ func TestUpdateAccessKey_InvalidStatus(t *testing.T) {
 		AccessKeyId: keyOut.AccessKey.AccessKeyId,
 		Status:      aws.String("Invalid"),
 	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	requireIAMError(t, err, awserrors.ErrorValidationError,
+		"1 validation error detected: Value at 'status' failed to satisfy constraint: Member must satisfy enum value set: [Expired, Active, Inactive]")
 }
 
 func TestUpdateAccessKey_NotFound(t *testing.T) {
@@ -1085,7 +1085,7 @@ func TestCreatePolicy(t *testing.T) {
 	require.NotNil(t, out.Policy)
 	assert.Equal(t, "AllowEC2", *out.Policy.PolicyName)
 	assert.Equal(t, "/devteam/", *out.Policy.Path)
-	assert.Equal(t, "Allow EC2 describe", *out.Policy.Description)
+	assert.Nil(t, out.Policy.Description, "AWS omits Description from CreatePolicy even when supplied")
 	assert.Equal(t, "v1", *out.Policy.DefaultVersionId)
 	assert.Contains(t, *out.Policy.Arn, "policy/devteam/AllowEC2")
 	assert.Greater(t, len(*out.Policy.PolicyId), 4)
@@ -1235,7 +1235,7 @@ func TestCreatePolicy_WithTags(t *testing.T) {
 		}
 	}
 	require.NotNil(t, listed, "TaggedPolicy missing from ListPolicies")
-	require.Len(t, listed.Tags, 2)
+	assert.Nil(t, listed.Tags, "AWS omits Tags from ListPolicies")
 
 	tagsOut, err := svc.ListPolicyTags(testAccountID, &iam.ListPolicyTagsInput{PolicyArn: createOut.Policy.Arn})
 	require.NoError(t, err)
@@ -1251,7 +1251,6 @@ func TestCreatePolicy_WithTags(t *testing.T) {
 	want := map[string]string{"team": "platform", "env": "prod"}
 	assert.Equal(t, want, byKey(createOut.Policy.Tags))
 	assert.Equal(t, want, byKey(getOut.Policy.Tags))
-	assert.Equal(t, want, byKey(listed.Tags))
 	assert.Equal(t, want, byKey(tagsOut.Tags))
 }
 
@@ -1477,6 +1476,73 @@ func TestListPolicies_Empty(t *testing.T) {
 	out, err := svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{})
 	require.NoError(t, err)
 	assert.Empty(t, out.Policies)
+}
+
+func TestListPolicies_Filters(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	createTestPolicy(t, svc, "RootPolicy")
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("TeamPolicy"),
+		Path:           aws.String("/team/"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+	attached := createTestPolicy(t, svc, "AttachedPolicy")
+	createTestUser(t, svc, "filterlistuser")
+	_, err = svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("filterlistuser"),
+		PolicyArn: attached.Arn,
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		input *iam.ListPoliciesInput
+		want  []string
+	}{
+		{"no filters", &iam.ListPoliciesInput{}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"path prefix", &iam.ListPoliciesInput{PathPrefix: aws.String("/team/")}, []string{"TeamPolicy"}},
+		{"partial path prefix", &iam.ListPoliciesInput{PathPrefix: aws.String("/te")}, []string{"TeamPolicy"}},
+		{"root path prefix", &iam.ListPoliciesInput{PathPrefix: aws.String("/")}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"scope local", &iam.ListPoliciesInput{Scope: aws.String("Local")}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"scope all", &iam.ListPoliciesInput{Scope: aws.String("All")}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"scope aws", &iam.ListPoliciesInput{Scope: aws.String("AWS")}, []string{}},
+		{"only attached", &iam.ListPoliciesInput{OnlyAttached: aws.Bool(true)}, []string{"AttachedPolicy"}},
+		{"only attached false", &iam.ListPoliciesInput{OnlyAttached: aws.Bool(false)}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"only attached under path", &iam.ListPoliciesInput{PathPrefix: aws.String("/team/"), OnlyAttached: aws.Bool(true)}, []string{}},
+		{"local under path", &iam.ListPoliciesInput{Scope: aws.String("Local"), PathPrefix: aws.String("/team/")}, []string{"TeamPolicy"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := svc.ListPolicies(testAccountID, tc.input)
+			require.NoError(t, err)
+			// A nil slice would drop the Policies element from the XML response.
+			require.NotNil(t, out.Policies)
+			names := []string{}
+			for _, p := range out.Policies {
+				names = append(names, *p.PolicyName)
+			}
+			assert.ElementsMatch(t, tc.want, names)
+		})
+	}
+}
+
+func TestPolicyInScope(t *testing.T) {
+	t.Parallel()
+	local := "arn:aws:iam::000000000000:policy/AdministratorAccess"
+	awsManaged := "arn:aws:iam::aws:policy/AdministratorAccess"
+
+	assert.True(t, policyInScope(local, ""))
+	assert.True(t, policyInScope(awsManaged, ""))
+	assert.True(t, policyInScope(local, "All"))
+	assert.True(t, policyInScope(awsManaged, "All"))
+	assert.True(t, policyInScope(local, "Local"))
+	assert.False(t, policyInScope(awsManaged, "Local"))
+	assert.False(t, policyInScope(local, "AWS"))
+	assert.True(t, policyInScope(awsManaged, "AWS"))
 }
 
 func TestDeletePolicy(t *testing.T) {
@@ -2515,90 +2581,83 @@ func TestIsIAMNameChar(t *testing.T) {
 	}
 }
 
-func TestValidateUserName(t *testing.T) {
+func TestValidateIAMName(t *testing.T) {
 	t.Parallel()
+	const charset = "It must contain only alphanumeric characters and/or the following: +=,.@_-"
+	invalid, validation := awserrors.ErrorIAMInvalidInput, awserrors.ErrorValidationError
 	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
+		name     string
+		field    string
+		input    string
+		maxLen   int
+		wantCode string
+		wantMsg  string
 	}{
-		{"valid simple", "alice", false},
-		{"valid with special chars", "alice.bob+test@example_com", false},
-		{"valid single char", "a", false},
-		{"valid 64 chars", strings.Repeat("a", 64), false},
-		{"empty", "", true},
-		{"too long 65 chars", strings.Repeat("a", 65), true},
-		{"invalid space", "alice bob", true},
-		{"invalid slash", "alice/bob", true},
-		{"invalid colon", "alice:bob", true},
+		{"valid simple", "userName", "alice", 64, "", ""},
+		{"valid with special chars", "userName", "alice.bob+test@example_com", 64, "", ""},
+		{"valid single char", "userName", "a", 64, "", ""},
+		{"valid at max length", "userName", strings.Repeat("a", 64), 64, "", ""},
+		{"valid policy at max length", "policyName", strings.Repeat("x", 128), 128, "", ""},
+		{"empty", "userName", "", 64, invalid,
+			"1 validation error detected: Value '' at 'userName' failed to satisfy constraint: Member must have length greater than or equal to 1"},
+		{"too long", "policyName", strings.Repeat("x", 129), 128, invalid,
+			"1 validation error detected: Value '" + strings.Repeat("x", 129) + "' at 'policyName' failed to satisfy constraint: Member must have length less than or equal to 128"},
+		{"space", "userName", "bad name!", 64, validation, "The specified value for userName is invalid. " + charset},
+		{"slash", "roleName", "alice/bob", 64, validation, "The specified value for roleName is invalid. " + charset},
+		{"colon", "groupName", "alice:bob", 128, validation, "The specified value for groupName is invalid. " + charset},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateUserName(tt.input)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
+			err := validateIAMName(tt.field, tt.input, tt.maxLen)
+			if tt.wantMsg == "" {
 				assert.NoError(t, err)
+				return
 			}
+			requireIAMError(t, err, tt.wantCode, tt.wantMsg)
 		})
 	}
 }
 
-func TestValidatePolicyName(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
-		{"valid simple", "MyPolicy", false},
-		{"valid with special chars", "My.Policy-v2_test+1", false},
-		{"valid single char", "P", false},
-		{"valid 128 chars", strings.Repeat("x", 128), false},
-		{"empty", "", true},
-		{"too long 129 chars", strings.Repeat("x", 129), true},
-		{"invalid space", "My Policy", true},
-		{"invalid slash", "My/Policy", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := validatePolicyName(tt.input)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
+func requireIAMError(t *testing.T, err error, wantCode, wantMsg string) {
+	t.Helper()
+	require.Error(t, err)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, wantCode, code)
+	assert.Equal(t, wantMsg, msg)
 }
 
 func TestValidatePath(t *testing.T) {
 	t.Parallel()
+	const shape = "The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters."
+	tooLong := "/" + strings.Repeat("a", 511) + "/"
+	invalid, validation := awserrors.ErrorIAMInvalidInput, awserrors.ErrorValidationError
 	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
+		name     string
+		input    string
+		wantCode string
+		wantMsg  string
 	}{
-		{"root path", "/", false},
-		{"nested path", "/division/engineering/", false},
-		{"no leading slash", "division/", true},
-		{"no trailing slash", "/division", true},
-		{"empty string", "", true},
-		{"just text", "division", true},
-		{"max length 512", "/" + strings.Repeat("a", 510) + "/", false},
-		{"over max length 513", "/" + strings.Repeat("a", 511) + "/", true},
+		{"root path", "/", "", ""},
+		{"nested path", "/division/engineering/", "", ""},
+		{"no leading slash", "division/", validation, shape},
+		{"no trailing slash", "/division", validation, shape},
+		{"empty string", "", validation, shape},
+		{"just text", "noslash", validation, shape},
+		{"max length 512", "/" + strings.Repeat("a", 510) + "/", "", ""},
+		{"over max length 513", tooLong, invalid,
+			"1 validation error detected: Value '" + tooLong + "' at 'path' failed to satisfy constraint: Member must have length less than or equal to 512"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := validatePath(tt.input)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
+			if tt.wantMsg == "" {
 				assert.NoError(t, err)
+				return
 			}
+			requireIAMError(t, err, tt.wantCode, tt.wantMsg)
 		})
 	}
 }

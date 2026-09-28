@@ -58,7 +58,7 @@ func TestLifecyclePolicy_Lifecycle(t *testing.T) {
 
 	_, err = GetLifecyclePolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorLifecyclePolicyNotFound, err.Error())
+	assert.Equal(t, awserrors.ErrorLifecyclePolicyNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestLifecyclePolicy_Errors(t *testing.T) {
@@ -84,7 +84,7 @@ func TestLifecyclePolicy_Errors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.fn(context.Background(), nc, policyTestAccount, []byte(tc.body))
 			require.Error(t, err)
-			assert.Equal(t, tc.expect, err.Error())
+			assert.Equal(t, tc.expect, awserrors.ValidErrorCodeFromError(err))
 		})
 	}
 }

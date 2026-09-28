@@ -15,6 +15,7 @@ func TestEmbeddedConformancePolicyPromotesSTS(t *testing.T) {
 	require.Equal(t, []awsmodel.Service{awsmodel.STS}, policy.services())
 	require.True(t, policy.isPromoted(awsmodel.STS))
 	require.False(t, policy.isPromoted(awsmodel.EC2))
+	require.False(t, policy.isRequestPromoted(awsmodel.STS), "request findings are promoted separately from response findings")
 }
 
 func TestConformanceModeFromEnvironment(t *testing.T) {

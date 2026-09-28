@@ -129,6 +129,6 @@ func TestResourceARNs_FieldSpelledTwoWaysIsRejected(t *testing.T) {
 	for range 50 {
 		_, err := gateway_ecrapi.ResourceARNs("DeleteRepository", testRegion, testAccountID,
 			[]byte(`{"repositoryName":"dev","RepositoryName":"prod"}`))
-		require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
 	}
 }

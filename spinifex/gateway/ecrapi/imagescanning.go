@@ -34,11 +34,11 @@ func PutImageScanningConfiguration(ctx context.Context, nc *nats.Conn, accountID
 	var req putImageScanningConfigurationRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return nil, MalformedBodyError()
 		}
 	}
-	if req.RepositoryName == "" || handlers_ecr.ValidateRepoName(req.RepositoryName) != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	if err := ValidateRepositoryName(req.RepositoryName); err != nil {
+		return nil, err
 	}
 	if req.RegistryID != "" && req.RegistryID != accountID {
 		return nil, errors.New(awserrors.ErrorAccessDenied)

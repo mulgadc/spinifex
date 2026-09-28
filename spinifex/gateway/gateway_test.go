@@ -376,6 +376,32 @@ func TestErrorHandler_NoMessageSupplied_MatchesErrorLookup(t *testing.T) {
 	assert.Contains(t, xmlStr, awserrors.ErrorLookup[awserrors.ErrorInvalidParameterValue].Message)
 }
 
+// TestErrorHandler_NonEC2ValidationDefaults_DropEC2Wording covers a bare
+// validation code outside EC2: the default must not be EC2's Reserved Instance
+// or resource-ID wording, whichever envelope the service uses.
+func TestErrorHandler_NonEC2ValidationDefaults_DropEC2Wording(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	for svc := range supportedServices {
+		if svc == "ec2" {
+			continue
+		}
+		for _, code := range []string{awserrors.ErrorInvalidInput, awserrors.ErrorInvalidParameterValue} {
+			t.Run(svc+"/"+code, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPost, "/", nil)
+				req = req.WithContext(context.WithValue(req.Context(), ctxService, svc))
+				w := httptest.NewRecorder()
+
+				gw.ErrorHandler(w, req, errors.New(code))
+
+				assert.Equal(t, http.StatusBadRequest, w.Code)
+				body := w.Body.String()
+				assert.NotContains(t, body, "Reserved Instance")
+				assert.NotContains(t, body, "full ID")
+			})
+		}
+	}
+}
+
 func TestErrorHandler_ELBv2Service(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 

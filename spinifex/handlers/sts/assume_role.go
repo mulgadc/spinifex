@@ -13,8 +13,10 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -57,6 +59,9 @@ const (
 	maxDurationSeconds     int64 = 43200
 	defaultDurationSeconds int64 = 3600
 
+	minRoleSessionNameLength = 2
+	maxRoleSessionNameLength = 64
+
 	// sessionAKIDRandomBytes hex-encodes to 16 chars; with the ASIA prefix the
 	// AKID is 20 chars total, matching the AWS public format.
 	sessionAKIDRandomBytes = 8
@@ -70,6 +75,10 @@ const (
 // ASCII range. `:` and `/` are excluded so the assumed-role ARN stays unambiguously parseable.
 var roleSessionNameRegex = regexp.MustCompile(`^[A-Za-z0-9_+=,.@-]{2,64}$`)
 
+// roleSessionNameCharsetRegex is roleSessionNameRegex without the length bound, so the
+// charset and length constraints are reported separately, as AWS does.
+var roleSessionNameCharsetRegex = regexp.MustCompile(`^[A-Za-z0-9_+=,.@-]*$`)
+
 // AssumeRole mints temporary credentials after evaluating the target role's
 // trust policy against the caller.
 func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
@@ -82,8 +91,33 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 	}
 
 	sessionName := *input.RoleSessionName
-	if !roleSessionNameRegex.MatchString(sessionName) {
-		return nil, errors.New(awserrors.ErrorValidationError)
+
+	// AWS reports every failed constraint at once, durationSeconds first, and before
+	// resolving the role, so a bad value against a missing role is not AccessDenied.
+	var violations []constraintViolation
+	if d := input.DurationSeconds; d != nil {
+		value := strconv.FormatInt(*d, 10)
+		if *d < minDurationSeconds {
+			violations = append(violations, constraintViolation{"durationSeconds", value,
+				fmt.Sprintf("Member must have value greater than or equal to %d", minDurationSeconds)})
+		} else if *d > maxDurationSeconds {
+			violations = append(violations, constraintViolation{"durationSeconds", value,
+				fmt.Sprintf("Member must have value less than or equal to %d", maxDurationSeconds)})
+		}
+	}
+	if !roleSessionNameCharsetRegex.MatchString(sessionName) {
+		violations = append(violations, constraintViolation{"roleSessionName", sessionName,
+			`Member must satisfy regular expression pattern: [\w+=,.@-]*`})
+	}
+	if n := utf8.RuneCountInString(sessionName); n < minRoleSessionNameLength {
+		violations = append(violations, constraintViolation{"roleSessionName", sessionName,
+			fmt.Sprintf("Member must have length greater than or equal to %d", minRoleSessionNameLength)})
+	} else if n > maxRoleSessionNameLength {
+		violations = append(violations, constraintViolation{"roleSessionName", sessionName,
+			fmt.Sprintf("Member must have length less than or equal to %d", maxRoleSessionNameLength)})
+	}
+	if err := validationError(violations); err != nil {
+		return nil, err
 	}
 
 	if aws.StringValue(input.Policy) != "" || len(input.PolicyArns) > 0 {
@@ -95,7 +129,8 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 			"Session tags are not supported in this release; omit Tags and TransitiveTagKeys")
 	}
 	if aws.StringValue(input.SerialNumber) != "" || aws.StringValue(input.TokenCode) != "" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"MFA is not supported in this release; omit SerialNumber and TokenCode")
 	}
 
 	duration := int64(0)
@@ -155,10 +190,15 @@ func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID st
 func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
 	roleAccountID, role, err := ResolveRoleByARN(s.iamSvc, roleARN)
 	if err != nil {
-		// A miss and a non-canonical ARN are both masked to AccessDenied,
-		// matching AWS and preventing role enumeration.
+		// A miss and a non-canonical ARN are both masked to AccessDenied, with the
+		// same text as a trust-policy refusal, preventing role enumeration. IMDS
+		// has no caller ARN and keeps the bare code.
 		if errors.Is(err, ErrRoleUnresolved) {
-			return nil, errors.New(awserrors.ErrorAccessDenied)
+			if callerARN == "" {
+				return nil, errors.New(awserrors.ErrorAccessDenied)
+			}
+			return nil, awserrors.Errorf(awserrors.ErrorAccessDenied,
+				"User: %s is not authorized to perform: %s on resource: %s", callerARN, stsActionAssumeRole, roleARN)
 		}
 		return nil, err
 	}
@@ -172,6 +212,10 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 		effectiveMax = defaultDurationSeconds
 	}
 	effectiveMax = min(effectiveMax, maxDurationSeconds)
+	if duration > effectiveMax && duration <= maxDurationSeconds {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError,
+			"The requested DurationSeconds exceeds the MaxSessionDuration set for this role.")
+	}
 	if duration < minDurationSeconds || duration > effectiveMax {
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
@@ -184,6 +228,10 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 	}
 
 	if err := evalTrustPolicy(aws.StringValue(role.AssumeRolePolicyDocument), callerARN, sources); err != nil {
+		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorAccessDenied && callerARN != "" {
+			return nil, awserrors.Errorf(awserrors.ErrorAccessDenied,
+				"User: %s is not authorized to perform: %s on resource: %s", callerARN, stsActionAssumeRole, roleARN)
+		}
 		return nil, err
 	}
 

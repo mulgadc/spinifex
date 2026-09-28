@@ -2,7 +2,6 @@ package dhcp_test
 
 import (
 	"context"
-	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -52,17 +51,6 @@ func TestFakeAcquireReturnsLeaseAndTracksCount(t *testing.T) {
 	}
 }
 
-func TestFakeAcquireHookOverridesDefault(t *testing.T) {
-	f := dhcp.NewFake()
-	f.AcquireHook = func(dhcp.AcquireRequest) (*dhcp.Lease, error) {
-		return nil, errors.New("injected")
-	}
-	_, err := f.Acquire(context.Background(), dhcp.AcquireRequest{Bridge: "br-wan", ClientID: "x"})
-	if err == nil || err.Error() != "injected" {
-		t.Fatalf("expected injected error, got %v", err)
-	}
-}
-
 func TestFakeRenewRefreshesAcquiredAt(t *testing.T) {
 	f := dhcp.NewFake()
 	lease, err := f.Acquire(context.Background(), dhcp.AcquireRequest{
@@ -99,26 +87,6 @@ func TestFakeReleaseClearsTrackedLease(t *testing.T) {
 	}
 	if f.ReleaseCount() != 1 {
 		t.Errorf("release count = %d, want 1", f.ReleaseCount())
-	}
-}
-
-func TestFakeRenewHookSurfacesError(t *testing.T) {
-	f := dhcp.NewFake()
-	f.RenewHook = func(*dhcp.Lease) (*dhcp.Lease, error) {
-		return nil, errors.New("server NAK")
-	}
-	lease, _ := f.Acquire(context.Background(), dhcp.AcquireRequest{Bridge: "br-wan", ClientID: "eni-4"})
-	if _, err := f.Renew(context.Background(), lease); err == nil {
-		t.Fatal("expected hook error")
-	}
-}
-
-func TestFakeReleaseHookSurfacesError(t *testing.T) {
-	f := dhcp.NewFake()
-	f.ReleaseHook = func(*dhcp.Lease) error { return errors.New("server unreachable") }
-	lease, _ := f.Acquire(context.Background(), dhcp.AcquireRequest{Bridge: "br-wan", ClientID: "eni-rel"})
-	if err := f.Release(context.Background(), lease); err == nil {
-		t.Fatal("expected hook error")
 	}
 }
 

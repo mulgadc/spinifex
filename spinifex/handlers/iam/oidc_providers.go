@@ -126,7 +126,7 @@ func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *ia
 	issuer := aws.StringValue(input.Url)
 	if err := validateOIDCProviderURL(issuer); err != nil {
 		slog.Debug("CreateOpenIDConnectProvider: invalid Url", "url", issuer, "err", err)
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The specified value for url is invalid: %v", err)
 	}
 
 	record := OIDCProviderRecord{
@@ -306,8 +306,7 @@ func (s *IAMServiceImpl) UntagOpenIDConnectProvider(accountID string, input *iam
 	return &iam.UntagOpenIDConnectProviderOutput{}, nil
 }
 
-// ListOpenIDConnectProviderTags returns an OIDC provider's tags. Pagination is
-// not implemented: IsTruncated is always false.
+// ListOpenIDConnectProviderTags returns an OIDC provider's tags, all of them; the gateway pages the list.
 func (s *IAMServiceImpl) ListOpenIDConnectProviderTags(accountID string, input *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
 	ctx := context.Background()
 	record, err := s.getOIDCProvider(ctx, accountID, aws.StringValue(input.OpenIDConnectProviderArn))

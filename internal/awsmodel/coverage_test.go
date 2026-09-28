@@ -17,8 +17,8 @@ func TestCompareOperations(t *testing.T) {
 	if len(coverage.Implemented) != 1 || coverage.Implemented[0] != "AssumeRole" {
 		t.Fatalf("implemented = %v, want [AssumeRole]", coverage.Implemented)
 	}
-	if len(coverage.Missing) != 5 {
-		t.Fatalf("missing count = %d, want 5: %v", len(coverage.Missing), coverage.Missing)
+	if len(coverage.Missing) != 8 {
+		t.Fatalf("missing count = %d, want 8: %v", len(coverage.Missing), coverage.Missing)
 	}
 	if len(coverage.Extra) != 1 || coverage.Extra[0] != "ExtraOperation" {
 		t.Fatalf("extra = %v, want [ExtraOperation]", coverage.Extra)
@@ -39,8 +39,8 @@ func TestRenderCoverageSummary(t *testing.T) {
 	}
 	report := RenderCoverageSummary([]OperationCoverage{coverage})
 	for _, want := range []string{
-		"aws-sdk-go " + SourceSDKVersion,
-		"1 of   8 implemented ( 12.5%)",
+		ModelSourceDescription(),
+		"1 of  11 implemented (  9.1%)",
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("summary does not contain %q:\n%s", want, report)

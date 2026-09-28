@@ -3,6 +3,7 @@ package gateway_iam
 import (
 	"errors"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -19,11 +20,31 @@ func GetGroup(accountID string, input *iam.GetGroupInput, svc handlers_iam.IAMSe
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.GetGroup(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.GetGroup(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.Users, out.Marker = paginate(p, out.Users, userKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }
 
 func ListGroups(accountID string, input *iam.ListGroupsInput, svc handlers_iam.IAMService) (*iam.ListGroupsOutput, error) {
-	return svc.ListGroups(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListGroups(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.Groups, out.Marker = paginate(p, out.Groups, groupKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }
 
 func DeleteGroup(accountID string, input *iam.DeleteGroupInput, svc handlers_iam.IAMService) (*iam.DeleteGroupOutput, error) {
@@ -57,7 +78,17 @@ func ListGroupsForUser(accountID string, input *iam.ListGroupsForUserInput, svc 
 	if input.UserName == nil || *input.UserName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListGroupsForUser(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListGroupsForUser(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.Groups, out.Marker = paginate(p, out.Groups, groupKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }
 
 func AttachGroupPolicy(accountID string, input *iam.AttachGroupPolicyInput, svc handlers_iam.IAMService) (*iam.AttachGroupPolicyOutput, error) {
@@ -84,7 +115,17 @@ func ListAttachedGroupPolicies(accountID string, input *iam.ListAttachedGroupPol
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListAttachedGroupPolicies(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListAttachedGroupPolicies(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.AttachedPolicies, out.Marker = paginate(p, out.AttachedPolicies, attachedPolicyKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }
 
 func PutGroupPolicy(accountID string, input *iam.PutGroupPolicyInput, svc handlers_iam.IAMService) (*iam.PutGroupPolicyOutput, error) {
@@ -107,7 +148,12 @@ func GetGroupPolicy(accountID string, input *iam.GetGroupPolicyInput, svc handle
 	if input.PolicyName == nil || *input.PolicyName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.GetGroupPolicy(accountID, input)
+	out, err := svc.GetGroupPolicy(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.PolicyDocument = encodePolicyDocument(out.PolicyDocument)
+	return out, nil
 }
 
 func DeleteGroupPolicy(accountID string, input *iam.DeleteGroupPolicyInput, svc handlers_iam.IAMService) (*iam.DeleteGroupPolicyOutput, error) {
@@ -124,5 +170,15 @@ func ListGroupPolicies(accountID string, input *iam.ListGroupPoliciesInput, svc 
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListGroupPolicies(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListGroupPolicies(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.PolicyNames, out.Marker = paginate(p, out.PolicyNames, aws.StringValue)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }

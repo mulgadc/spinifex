@@ -87,12 +87,18 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(ctx context.Context, in
 		strategy = ec2.PlacementStrategyCluster
 	}
 
-	// Only spread and cluster are supported; partition is rejected.
+	// Only spread and cluster are supported. A partition count AWS would
+	// reject gets AWS's range error rather than the unsupported-strategy one.
 	if strategy == ec2.PlacementStrategyPartition {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		if n := aws.Int64Value(input.PartitionCount); input.PartitionCount != nil && (n < 1 || n > 7) {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"Invalid value '%d' for partition-count, the value must be between 1 and 7.", n)
+		}
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"The partition placement strategy is not supported; use cluster or spread.")
 	}
 	if strategy != ec2.PlacementStrategySpread && strategy != ec2.PlacementStrategyCluster {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "The placement strategy is invalid.")
 	}
 
 	groupName := *input.GroupName

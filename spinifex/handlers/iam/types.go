@@ -87,10 +87,23 @@ type Policy struct {
 	ARN            string `json:"arn"`
 	Path           string `json:"path"`
 	Description    string `json:"description,omitempty"`
-	PolicyDocument string `json:"policy_document"` // JSON string
+	PolicyDocument string `json:"policy_document"` // the default version's document
 	CreatedAt      string `json:"created_at"`
-	DefaultVersion string `json:"default_version"` // always "v1"
+	DefaultVersion string `json:"default_version"`
 	Tags           []Tag  `json:"tags"`
+
+	// Absent on records written before versioning, which read as a lone v1.
+	DefaultVersionCreatedAt string                `json:"default_version_created_at,omitempty"`
+	OtherVersions           []PolicyVersionRecord `json:"other_versions,omitempty"`
+	LatestVersion           int                   `json:"latest_version,omitempty"` // highest number issued; never reused
+	UpdatedAt               string                `json:"updated_at,omitempty"`     // last change of default version
+}
+
+// PolicyVersionRecord is a stored non-default version of a managed policy.
+type PolicyVersionRecord struct {
+	VersionID string `json:"version_id"`
+	Document  string `json:"document"`
+	CreatedAt string `json:"created_at"`
 }
 
 // Role is an assumable IAM identity stored in JetStream KV.

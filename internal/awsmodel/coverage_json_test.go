@@ -1,4 +1,4 @@
-package awsmodel
+package awsmodel_test
 
 import (
 	"encoding/json"
@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mulgadc/spinifex/internal/awsmodel"
 )
 
 func TestRenderCoverageJSONIsDeterministicAndPreservesDispatchStates(t *testing.T) {
-	sts, err := CompareOperations(STS, DispatchInventory{
+	sts, err := awsmodel.CompareOperations(awsmodel.STS, awsmodel.DispatchInventory{
 		Registered:  []string{"AssumeRole", "GetCallerIdentity", "GetSessionToken"},
 		Stubbed:     []string{"GetSessionToken"},
 		Unsupported: []string{"GetCallerIdentity"},
@@ -17,19 +19,21 @@ func TestRenderCoverageJSONIsDeterministicAndPreservesDispatchStates(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	iam, err := CompareOperations(IAM, DispatchInventory{})
+	iam, err := awsmodel.CompareOperations(awsmodel.IAM, awsmodel.DispatchInventory{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	contents, err := RenderCoverageJSON([]OperationCoverage{sts, iam})
+	contents, err := awsmodel.RenderCoverageJSON([]awsmodel.OperationCoverage{sts, iam})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var document struct {
 		SchemaVersion int `json:"schema_version"`
 		ModelSource   struct {
-			AWSSDKGoVersion string `json:"aws_sdk_go_version"`
+			Repository string `json:"repository"`
+			Commit     string `json:"commit"`
+			CommitDate string `json:"commit_date"`
 		} `json:"model_source"`
 		Services []struct {
 			Service    string `json:"service"`
@@ -44,11 +48,11 @@ func TestRenderCoverageJSONIsDeterministicAndPreservesDispatchStates(t *testing.
 	if err := json.Unmarshal([]byte(contents), &document); err != nil {
 		t.Fatalf("generated JSON is invalid: %v\n%s", err, contents)
 	}
-	if document.SchemaVersion != CoverageJSONSchemaVersion {
-		t.Errorf("schema version = %d, want %d", document.SchemaVersion, CoverageJSONSchemaVersion)
+	if document.SchemaVersion != awsmodel.CoverageJSONSchemaVersion {
+		t.Errorf("schema version = %d, want %d", document.SchemaVersion, awsmodel.CoverageJSONSchemaVersion)
 	}
-	if document.ModelSource.AWSSDKGoVersion != SourceSDKVersion {
-		t.Errorf("source version = %q, want %q", document.ModelSource.AWSSDKGoVersion, SourceSDKVersion)
+	if source := document.ModelSource; source.Repository != awsmodel.ModelRepository || source.Commit != awsmodel.ModelCommit || source.CommitDate != awsmodel.ModelCommitDate {
+		t.Errorf("model source = %+v, want %s at %s (%s)", source, awsmodel.ModelRepository, awsmodel.ModelCommit, awsmodel.ModelCommitDate)
 	}
 	if !strings.Contains(contents, `"registered": []`) {
 		t.Errorf("an empty operation set must be an array, not null:\n%s", contents)
@@ -72,16 +76,16 @@ func TestRenderCoverageJSONIsDeterministicAndPreservesDispatchStates(t *testing.
 }
 
 func TestWriteCoverageJSONWritesTheSameDocument(t *testing.T) {
-	coverage, err := CompareOperations(STS, DispatchInventory{Registered: []string{"AssumeRole"}})
+	coverage, err := awsmodel.CompareOperations(awsmodel.STS, awsmodel.DispatchInventory{Registered: []string{"AssumeRole"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := RenderCoverageJSON([]OperationCoverage{coverage})
+	want, err := awsmodel.RenderCoverageJSON([]awsmodel.OperationCoverage{coverage})
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "coverage.json")
-	if err := WriteCoverageJSON(path, []OperationCoverage{coverage}); err != nil {
+	if err := awsmodel.WriteCoverageJSON(path, []awsmodel.OperationCoverage{coverage}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)

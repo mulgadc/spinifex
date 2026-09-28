@@ -146,7 +146,7 @@ func TestAssumeRole_NonIAMRootARN_DoesNotMatch(t *testing.T) {
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(*role.Arn, "sess"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 func TestAssumeRole_BareAccountIDPrincipal_TreatedAsRoot(t *testing.T) {
@@ -195,8 +195,7 @@ func TestAssumeRole_ExplicitDenyWinsOverAllow(t *testing.T) {
 
 	_, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
 		basicAssumeRoleInput(*role.Arn, "sess"))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(caller, *role.Arn))
 
 	// And in the opposite order: Deny first, Allow second — same result.
 	policyDenyThenAllow := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[
@@ -207,7 +206,7 @@ func TestAssumeRole_ExplicitDenyWinsOverAllow(t *testing.T) {
 	_, err = svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
 		basicAssumeRoleInput(*role2.Arn, "sess"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 func TestAssumeRole_NoMatchingAllow_AccessDenied(t *testing.T) {
@@ -217,18 +216,18 @@ func TestAssumeRole_NoMatchingAllow_AccessDenied(t *testing.T) {
 
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(*role.Arn, "sess"))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), *role.Arn))
 }
 
 func TestAssumeRole_SameAccountRoleNotFound_AccessDenied(t *testing.T) {
 	svc, _ := newTestSetup(t)
 
-	// AWS masks missing roles to AccessDenied regardless of account.
+	// AWS masks missing roles to AccessDenied regardless of account, naming the
+	// RoleArn as supplied, path included.
+	roleARN := fmt.Sprintf("arn:aws:iam::%s:role/team/ghost", testCallerAccountID)
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
-		basicAssumeRoleInput(fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCallerAccountID), "sess"))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+		basicAssumeRoleInput(roleARN, "sess"))
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), roleARN))
 }
 
 func TestAssumeRole_CrossAccountRoleNotFound_AccessDenied(t *testing.T) {
@@ -237,10 +236,10 @@ func TestAssumeRole_CrossAccountRoleNotFound_AccessDenied(t *testing.T) {
 	// Caller is in callerAccountID; missing role is in testCrossAccountID.
 	// Masking to AccessDenied (rather than NoSuchEntity) prevents
 	// cross-account role enumeration.
+	roleARN := fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCrossAccountID)
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
-		basicAssumeRoleInput(fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCrossAccountID), "sess"))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+		basicAssumeRoleInput(roleARN, "sess"))
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), roleARN))
 }
 
 func TestAssumeRole_DurationBounds(t *testing.T) {
@@ -248,16 +247,20 @@ func TestAssumeRole_DurationBounds(t *testing.T) {
 	caller := testCallerARN()
 	role := createRoleInAccount(t, svc, testCallerAccountID, "dur", trustPolicyAllowingUser(caller))
 
+	const exceedsRoleMax = "The requested DurationSeconds exceeds the MaxSessionDuration set for this role."
 	cases := []struct {
-		name    string
-		seconds int64
-		wantErr bool
+		name        string
+		seconds     int64
+		wantErr     bool
+		wantMessage string
 	}{
-		{"below_minimum", 899, true},
-		{"at_minimum", 900, false},
-		{"default_via_unset", 0, false},
-		{"at_role_max", 3600, false},
-		{"above_role_max", 3601, true},
+		{"below_minimum", 899, true, "1 validation error detected: Value '899' at 'durationSeconds' failed to satisfy constraint: " +
+			"Member must have value greater than or equal to 900"},
+		{"at_minimum", 900, false, ""},
+		{"default_via_unset", 0, false, ""},
+		{"at_role_max", 3600, false, ""},
+		{"above_role_max", 3601, true, exceedsRoleMax},
+		{"at_absolute_max", maxDurationSeconds, true, exceedsRoleMax},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -267,8 +270,7 @@ func TestAssumeRole_DurationBounds(t *testing.T) {
 			}
 			_, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName, input)
 			if tc.wantErr {
-				require.Error(t, err)
-				assert.Equal(t, awserrors.ErrorValidationError, err.Error())
+				requireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
 				return
 			}
 			require.NoError(t, err)
@@ -303,8 +305,32 @@ func TestAssumeRole_LongerMaxSessionDuration_CapAtTwelveHours(t *testing.T) {
 			RoleSessionName: aws.String("sess2"),
 			DurationSeconds: aws.Int64(maxDurationSeconds + 1),
 		})
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorValidationError, err.Error())
+	requireAWSError(t, err, awserrors.ErrorValidationError,
+		"1 validation error detected: Value '43201' at 'durationSeconds' failed to satisfy constraint: "+
+			"Member must have value less than or equal to 43200")
+}
+
+// AWS checks input constraints before the role, so a bad value against a missing
+// role is a ValidationError, and every failed constraint is reported at once.
+func TestAssumeRole_ConstraintsCheckedBeforeRoleAndReportedTogether(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	missing := fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCallerAccountID)
+
+	input := basicAssumeRoleInput(missing, "sess")
+	input.DurationSeconds = aws.Int64(899)
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
+	requireAWSError(t, err, awserrors.ErrorValidationError,
+		"1 validation error detected: Value '899' at 'durationSeconds' failed to satisfy constraint: "+
+			"Member must have value greater than or equal to 900")
+
+	input = basicAssumeRoleInput(missing, "bad name!")
+	input.DurationSeconds = aws.Int64(43201)
+	_, err = svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
+	requireAWSError(t, err, awserrors.ErrorValidationError,
+		"2 validation errors detected: Value '43201' at 'durationSeconds' failed to satisfy constraint: "+
+			"Member must have value less than or equal to 43200; "+
+			"Value 'bad name!' at 'roleSessionName' failed to satisfy constraint: "+
+			`Member must satisfy regular expression pattern: [\w+=,.@-]*`)
 }
 
 func TestAssumeRole_RejectsSessionPolicies(t *testing.T) {
@@ -375,6 +401,32 @@ func TestAssumeRole_RejectsSessionTags(t *testing.T) {
 	}
 }
 
+// assertErrorCode resolves the registered code, which a message attached via
+// awserrors.Errorf hides from err.Error().
+func assertErrorCode(t *testing.T, err error, wantCode string) {
+	t.Helper()
+	require.Error(t, err)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, wantCode, code)
+}
+
+// requireAWSError pins the code and the exact client-facing message; an empty
+// wantMessage asserts the bare code with no message attached.
+func requireAWSError(t *testing.T, err error, wantCode, wantMessage string) {
+	t.Helper()
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, wantCode, code)
+	assert.Equal(t, wantMessage, message)
+}
+
+// assumeRoleDeniedMessage is AWS's AccessDenied text, naming the RoleArn as supplied.
+func assumeRoleDeniedMessage(callerARN, roleARN string) string {
+	return fmt.Sprintf("User: %s is not authorized to perform: sts:AssumeRole on resource: %s", callerARN, roleARN)
+}
+
 // requireUnsupportedSessionInput pins both the code and the message, since the
 // defect being guarded is a misleading message under a plausible code.
 func requireUnsupportedSessionInput(t *testing.T, err error, wantMessage string) {
@@ -384,6 +436,15 @@ func requireUnsupportedSessionInput(t *testing.T, err error, wantMessage string)
 	require.True(t, ok, "error must carry a registered code: %v", err)
 	assert.Equal(t, awserrors.ErrorValidationError, code)
 	assert.Contains(t, message, wantMessage)
+}
+
+func requireMFANotSupported(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "MFA is not supported in this release; omit SerialNumber and TokenCode", message)
 }
 
 func TestAssumeRole_EchoesSourceIdentity(t *testing.T) {
@@ -433,8 +494,7 @@ func TestAssumeRole_RejectsMFA(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
-			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+			requireMFANotSupported(t, err)
 		})
 	}
 }
@@ -443,29 +503,42 @@ func TestAssumeRole_RejectsInvalidSessionName(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "name", trustPolicyAllowingUser(testCallerARN()))
 
-	bad := []string{
-		"",                      // missing → MissingParameter (handled separately below)
-		"a",                     // too short
-		strings.Repeat("a", 65), // too long
-		"has/slash",
-		"has:colon",
-		"ué", // non-ASCII; literal regex deliberately excludes Unicode
+	const (
+		pattern  = `Member must satisfy regular expression pattern: [\w+=,.@-]*`
+		tooShort = "Member must have length greater than or equal to 2"
+		tooLong  = "Member must have length less than or equal to 64"
+	)
+	violation := func(name, constraint string) string {
+		return fmt.Sprintf("Value '%s' at 'roleSessionName' failed to satisfy constraint: %s", name, constraint)
 	}
-	for _, name := range bad {
-		t.Run("session_"+name, func(t *testing.T) {
-			input := &sts.AssumeRoleInput{
-				RoleArn:         role.Arn,
-				RoleSessionName: aws.String(name),
-			}
-			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
-			require.Error(t, err)
-			if name == "" {
-				assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
-			} else {
-				assert.Equal(t, awserrors.ErrorValidationError, err.Error())
-			}
+	patternMessage := func(name string) string {
+		return "1 validation error detected: " + violation(name, pattern)
+	}
+	long, longBad := strings.Repeat("a", 65), strings.Repeat("a", 64)+"!"
+	bad := []struct {
+		name        string
+		wantMessage string
+	}{
+		{"a", "1 validation error detected: " + violation("a", tooShort)},
+		{long, "1 validation error detected: " + violation(long, tooLong)},
+		{"!", "2 validation errors detected: " + violation("!", pattern) + "; " + violation("!", tooShort)},
+		{longBad, "2 validation errors detected: " + violation(longBad, pattern) + "; " + violation(longBad, tooLong)},
+		{"has/slash", patternMessage("has/slash")},
+		{"has:colon", patternMessage("has:colon")},
+		{"bad name!", patternMessage("bad name!")},
+		{"ué", patternMessage("ué")}, // non-ASCII; literal regex deliberately excludes Unicode
+	}
+	for _, tc := range bad {
+		t.Run("session_"+tc.name, func(t *testing.T) {
+			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+				basicAssumeRoleInput(*role.Arn, tc.name))
+			requireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
 		})
 	}
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, ""))
+	requireAWSError(t, err, awserrors.ErrorMissingParameter, "")
 }
 
 func TestAssumeRole_RejectsMissingRequiredFields(t *testing.T) {
@@ -554,7 +627,7 @@ func TestAssumeRole_ChainedAssume_LiteralSessionARN(t *testing.T) {
 	_, err = svc.AssumeRole(testCallerAccountID, otherSession, "SourceRole",
 		basicAssumeRoleInput(*role.Arn, "no"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 func TestAssumeRole_PrincipalArray_AnyEntryMatches(t *testing.T) {
@@ -585,7 +658,7 @@ func TestAssumeRole_ServicePrincipal_NotMatchedByUserCaller(t *testing.T) {
 	_, err = svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(*role2.Arn, "sess"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 // ----- ECS task-role attribution (HTTPS AssumeRole path) -----------------
@@ -636,7 +709,7 @@ func TestAssumeRole_ECSTasks_TaskRoleCallerDenied(t *testing.T) {
 	_, err := svc.AssumeRole(testCallerAccountID, taskCaller, "attacker-task-role",
 		basicAssumeRoleInput(*victim.Arn, "ecs-task-2"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 func TestAssumeRole_ECSTasks_UserCallerDenied(t *testing.T) {
@@ -646,7 +719,7 @@ func TestAssumeRole_ECSTasks_UserCallerDenied(t *testing.T) {
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(*role.Arn, "sess"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 // A container instance is attributed the service principal only for roles in its
@@ -658,7 +731,7 @@ func TestAssumeRole_ECSTasks_CrossAccountInstanceCallerDenied(t *testing.T) {
 	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
 		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-3"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 // Attribution is per-principal, not blanket: a container instance is ecs-tasks
@@ -670,7 +743,7 @@ func TestAssumeRole_ECSTasks_InstanceCallerCannotClaimEC2(t *testing.T) {
 	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
 		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-4"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 func TestAssumeRole_ECSTasks_ExplicitDenyWins(t *testing.T) {
@@ -683,7 +756,7 @@ func TestAssumeRole_ECSTasks_ExplicitDenyWins(t *testing.T) {
 	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
 		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-5"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 // ----- Trust-policy Condition evaluation on sts:AssumeRole (mulga-yxd9p, B) --
@@ -720,7 +793,7 @@ func TestAssumeRole_SourceAccountCondition_NonMatchingAccountDenies(t *testing.T
 	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
 		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-sa-2"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 // TestAssumeRole_SourceAccountCondition_DenyEvaluatedBeforeAllow pins that the
@@ -738,7 +811,7 @@ func TestAssumeRole_SourceAccountCondition_DenyEvaluatedBeforeAllow(t *testing.T
 	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
 		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-sa-3"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 // TestAssumeRoleConditionsHold_UnknownKeyFailsClosed unit-tests the evaluator
@@ -839,7 +912,7 @@ func TestAssumeRoleForInstance_NonWhitelistedService_Denied(t *testing.T) {
 
 	_, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 // Attribution does not leak between entry points: IMDS is ec2.amazonaws.com only,
@@ -850,7 +923,7 @@ func TestAssumeRoleForInstance_ECSTasksService_Denied(t *testing.T) {
 
 	_, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 // A role that only trusts an AWS principal (no Service entry) must not be
@@ -859,9 +932,9 @@ func TestAssumeRoleForInstance_AWSOnlyPrincipal_Denied(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "user-role", trustPolicyAllowingUser(testCallerARN()))
 
+	// IMDS has no caller ARN to name, so the denial carries the bare code.
 	_, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, "")
 }
 
 // Regression: the EC2 service principal must remain unreachable over the HTTPS
@@ -875,7 +948,7 @@ func TestAssumeRoleForInstance_EC2ServiceUnreachableViaHTTPS(t *testing.T) {
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(*role.Arn, "sess"))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
 }
 
 func TestAssumeRoleForInstance_RejectsMissingFields(t *testing.T) {
@@ -907,8 +980,7 @@ func TestAssumeRoleForInstance_CrossAccountRoleMiss_AccessDenied(t *testing.T) {
 	// missing — masked to AccessDenied to prevent cross-account enumeration.
 	_, err := svc.AssumeRoleForInstance(testCallerAccountID,
 		fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCrossAccountID), testInstanceID, defaultDurationSeconds)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, "")
 }
 
 func TestAssumeRole_RetriesOnAKIDCollision(t *testing.T) {

@@ -3,7 +3,6 @@ package gateway_ec2_instance
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -67,7 +66,7 @@ func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStat
 	finalStatuses := dedupStatuses(allStatuses)
 
 	if sum.FirstClient4xx != "" && len(finalStatuses) == 0 {
-		return nil, errors.New(sum.FirstClient4xx)
+		return nil, sum.Client4xxError()
 	}
 
 	slog.InfoContext(ctx, "DescribeInstanceStatus: Aggregated response", "total_statuses", len(finalStatuses))

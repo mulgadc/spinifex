@@ -35,22 +35,26 @@ func (gw *GatewayConfig) handlePutImageTagMutability(w http.ResponseWriter, r *h
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.ErrorContext(ctx, "PutImageTagMutability: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.MalformedBodyError()
 	}
 	var req putImageTagMutabilityRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.MalformedBodyError()
 	}
-	if err := handlers_ecr.ValidateRepoName(req.RepositoryName); err != nil {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	if err := gateway_ecrapi.ValidateRepositoryName(req.RepositoryName); err != nil {
+		return err
 	}
 	if req.RegistryID != "" && req.RegistryID != accountID {
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
 	// imageTagMutability is required here (unlike CreateRepository's default).
-	if req.ImageTagMutability != handlers_ecr.TagMutabilityMutable &&
-		req.ImageTagMutability != handlers_ecr.TagMutabilityImmutable {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	switch req.ImageTagMutability {
+	case handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable:
+	case "":
+		return gateway_ecrapi.RequiredParameterError("imageTagMutability")
+	default:
+		return gateway_ecrapi.EnumValueError("imageTagMutability", req.ImageTagMutability,
+			handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable)
 	}
 
 	store := handlers_ecr.NewNATSMetaStore(gw.NATSConn)

@@ -29,15 +29,15 @@ const maxGroupsPerUser = 10
 func (s *IAMServiceImpl) CreateGroup(accountID string, input *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
 	ctx := context.Background()
 	groupName := *input.GroupName
-	if err := validateGroupName(groupName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("groupName", groupName, 128); err != nil {
+		return nil, err
 	}
 
 	path := "/"
 	if input.Path != nil {
 		path = *input.Path
 		if err := validatePath(path); err != nil {
-			return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+			return nil, err
 		}
 	}
 
@@ -418,8 +418,8 @@ func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPol
 	policyDoc := *input.PolicyDocument
 	kvKey := accountID + "." + groupName
 
-	if err := validatePolicyName(policyName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("policyName", policyName, 128); err != nil {
+		return nil, err
 	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
@@ -505,7 +505,7 @@ func (s *IAMServiceImpl) DeleteGroupPolicy(accountID string, input *iam.DeleteGr
 }
 
 // ListGroupPolicies returns the names of a group's inline policies, sorted for
-// deterministic output. Pagination is not implemented: IsTruncated is always false.
+// deterministic output. Returns the whole list; the gateway pages it.
 func (s *IAMServiceImpl) ListGroupPolicies(accountID string, input *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
 	ctx := context.Background()
 	group, err := s.getGroup(ctx, accountID, *input.GroupName)
@@ -599,10 +599,4 @@ func groupToSDK(g *Group) *iam.Group {
 		Path:       aws.String(g.Path),
 		CreateDate: aws.Time(parseCreatedAt(g.CreatedAt)),
 	}
-}
-
-// validateGroupName enforces the IAM group-name limits: 1–128 chars from the
-// IAM name charset. The constraints match validatePolicyName exactly.
-func validateGroupName(name string) error {
-	return validatePolicyName(name)
 }

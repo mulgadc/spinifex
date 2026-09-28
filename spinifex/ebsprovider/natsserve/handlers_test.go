@@ -432,11 +432,43 @@ func (p *countingProvider) PublishVolume(ctx context.Context, req ebsprovider.Pu
 	return p.EBSProvider.PublishVolume(ctx, req)
 }
 
+// handlerSettle is how long a handler count is watched after it reaches the
+// expected value, to catch a delivery that should not have happened arriving
+// late. Generous, because a false pass here is a silently broken queue group.
+const handlerSettle = 250 * time.Millisecond
+
+// requireCapabilitiesHandlers waits for the capabilities handlers to have run
+// the expected number of times, then confirms the count does not move.
+//
+// Both halves are needed. How many handlers a message reaches is the server's
+// decision — a queue group picks one member, a plain subscription reaches
+// every member — so the count converges on the answer from below and cannot
+// overshoot it. But a broken queue group that delivered to both members would
+// pass through the correct value on its way to the wrong one, so converging
+// alone would accept it.
+func requireCapabilitiesHandlers(t *testing.T, workers []*countingProvider, want int32) {
+	t.Helper()
+	total := func() int32 {
+		var sum int32
+		for _, worker := range workers {
+			sum += worker.capabilities.Load()
+		}
+		return sum
+	}
+	require.Eventuallyf(t, func() bool { return total() == want }, requestTimeout, 5*time.Millisecond,
+		"capabilities never reached %d handlers", want)
+	time.Sleep(handlerSettle)
+	require.Equal(t, want, total(), "capabilities handler count moved after it had settled")
+}
+
 // TestServeQueueGroupBalancesSharedSubjects is the difference between two
-// workers sharing a workload and both doing all of it. The mount subject is
-// never queue-grouped, so once both servers have handled a mount, message
-// ordering on the shared connection guarantees the earlier capabilities
-// request has already been delivered to everyone that was going to get it.
+// workers sharing a workload and both doing all of it.
+//
+// The handler counts are waited for rather than read once. Each subscription
+// dispatches on its own goroutine, so there is no ordering between a worker's
+// mount handler and its capabilities handler: the mount having landed on both
+// workers says nothing about whether the earlier capabilities message has been
+// counted yet.
 func TestServeQueueGroupBalancesSharedSubjects(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -470,7 +502,7 @@ func TestServeQueueGroupBalancesSharedSubjects(t *testing.T) {
 				return workers[0].publishes.Load()+workers[1].publishes.Load() == 2
 			}, requestTimeout, 5*time.Millisecond, "mount is never queue-grouped, so both servers must see it")
 
-			assert.Equal(t, tc.wantHandlers, workers[0].capabilities.Load()+workers[1].capabilities.Load())
+			requireCapabilitiesHandlers(t, workers, tc.wantHandlers)
 		})
 	}
 }

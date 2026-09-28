@@ -73,6 +73,8 @@ github.com/aws/aws-sdk-go-v2/service/sts v1.51.0 h1:Zpnqa6XtrNzXZnwbdCqHOXpXhMsa
 github.com/aws/aws-sdk-go-v2/service/sts v1.51.0/go.mod h1:/8JRcdTt//hG0Q4BTmGbuOplT7ABe+5rdtqUHqXvYIM=
 github.com/aws/smithy-go v1.28.1 h1:R/nXH00c8qcfCzQVELtRw+eLQWtzv+VAIEFJ1/xxXlQ=
 github.com/aws/smithy-go v1.28.1/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
+github.com/aws/smithy-go v1.28.2 h1:myhcykQcatTul2B/zITjDk203G7t0awUAs1hVry5Bvg=
+github.com/aws/smithy-go v1.28.2/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1/go.mod h1:uYgXzlJ7ZpABp8OJ+exZzJJhRNQ2ASbcXHWsFqH8hp8=
 github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973/go.mod h1:Dwedo/Wpr24TaqPxmxbtue+5NUziq4I4S80YR8gNf3Q=
@@ -368,6 +370,8 @@ github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
 github.com/mulgadc/bluebottle v1.20.1-0.20260916040751-5a5ca6f0fb33 h1:Rw3mnRF2YrhVZgHpCsOi6La8cOu/V3xnhB000iWcdr8=
 github.com/mulgadc/bluebottle v1.20.1-0.20260916040751-5a5ca6f0fb33/go.mod h1:4rjLL3B0xZBPmxacaXPkw6sPOZZgyuCDBFmPSOC81yE=
+github.com/mulgadc/bluebottle v1.20.1-0.20260928004821-163f43196afd h1:Ffa6OIUqHLUNn+NM4Ij4kGOLm7DEeicM16+Sn/Kulm8=
+github.com/mulgadc/bluebottle v1.20.1-0.20260928004821-163f43196afd/go.mod h1:LH0MuQcFxet0dDEISlZsuULIYj592eCN2Fv39A6EH5o=
 github.com/mulgadc/northstar v1.20.1-0.20260917032839-357bbc94201d h1:xYdO+KXrn+/aBLva3yuRly9MnKrSNSouGYleITgkoXE=
 github.com/mulgadc/northstar v1.20.1-0.20260917032839-357bbc94201d/go.mod h1:3GB49VUE9rA2idp88se5jAMv3ql1Oq9kIcT29WAZwDU=
 github.com/mulgadc/predastore v1.20.1-0.20260918222809-019dd349cf1f h1:P7echVc7fCYiU2CS/L0dLAf0i/6eWcjDqqf7AnFKpDg=

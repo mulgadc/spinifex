@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -542,6 +543,31 @@ func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 	if !strings.Contains(string(body), "RequestEntityTooLarge") {
 		t.Errorf("Expected RequestEntityTooLarge error, got: %s", string(body))
 	}
+}
+
+// A body the gateway cannot read is a transport failure: it answers InternalError
+// and leaves the lockout alone, so a flaky link cannot lock out its own IP.
+func TestSigV4Auth_BodyReadFailureDoesNotCountTowardLockout(t *testing.T) {
+	handler := setupTestApp(testAccessKey, testSecretKey)
+
+	for range maxFailures + 1 {
+		req := httptest.NewRequest(http.MethodPost, "/", iotest.ErrReader(io.ErrUnexpectedEOF))
+		req.Host = "localhost:9999"
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		signTestRequest(t, req, []byte("Action=DescribeInstances"), testAccessKey, testSecretKey)
+
+		resp := doRequest(handler, req)
+		body, _ := io.ReadAll(resp.Body)
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode, string(body))
+		require.Contains(t, string(body), awserrors.ErrorInternalError)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+
+	resp := doRequest(handler, req)
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "body-read failures must not lock out the IP")
 }
 
 // --- Clock Skew / Replay Protection Tests ---

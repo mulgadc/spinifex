@@ -3,9 +3,11 @@ package kvstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,6 +54,23 @@ func TestOpenWithRetry_GivesUpAndKeepsTheCause(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, cause, "the caller has to be able to see why, not just that")
 	assert.Contains(t, err.Error(), "spinifex-instance-state")
+}
+
+// TestOpenWithRetry_StopsOnAnUndeclaredClusterSize keeps a configuration fault
+// fast and legible. Waiting cannot declare a cluster size, so retrying one turns
+// a clear error into a minute and a half of silence followed by the same error.
+func TestOpenWithRetry_StopsOnAnUndeclaredClusterSize(t *testing.T) {
+	defer kvstore.SetOpenRetryInterval(time.Millisecond)()
+
+	calls := 0
+	_, err := kvstore.OpenWithRetry(context.Background(), "bucket", time.Minute,
+		func(context.Context) (string, error) {
+			calls++
+			return "", fmt.Errorf("create KV bucket bucket: %w", clustersize.ErrUndeclared)
+		})
+
+	require.ErrorIs(t, err, clustersize.ErrUndeclared)
+	assert.Equal(t, 1, calls, "a permanent fault must not be retried")
 }
 
 func TestOpenWithRetry_StopsOnCancelledContext(t *testing.T) {

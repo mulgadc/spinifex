@@ -131,6 +131,52 @@ func runIAMAuthorization(t *testing.T, fix *Fixture) {
 		})
 	})
 
+	t.Run("ANewDefaultPolicyVersionAppliesToTheNextRequest", func(t *testing.T) {
+		policyARN := newManagedPolicy(t, fix, "version", authzStatement{
+			Effect:   "Allow",
+			Action:   []string{"ec2:CreateKeyPair"},
+			Resource: []string{keyPairARN(account, run+"-version-*")},
+		})
+		principal := newAuthzPrincipal(t, fix, "version")
+		_, err := fix.AWS.IAM.AttachUserPolicy(&iam.AttachUserPolicyInput{
+			UserName: aws.String(principal.UserName), PolicyArn: aws.String(policyARN),
+		})
+		require.NoError(t, err, "attach-user-policy %s", policyARN)
+
+		// v1 is the principal's only grant, so it has to be live before a new
+		// default version withdrawing it proves anything.
+		harness.EventuallyErr(t, func() error {
+			_, err := principal.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{ // e2e:allow-create — the create is the authorization probe
+				KeyName: aws.String(run + "-version-1"),
+			})
+			return err
+		}, 30*time.Second, 2*time.Second)
+		t.Cleanup(func() { deleteKeyPairBestEffort(t, fix, run+"-version-1") })
+
+		_, err = fix.AWS.IAM.CreatePolicyVersion(&iam.CreatePolicyVersionInput{
+			PolicyArn: aws.String(policyARN),
+			PolicyDocument: aws.String(authzDocument(t, authzStatement{
+				Effect: "Allow", Action: []string{"ec2:DescribeKeyPairs"}, Resource: []string{"*"},
+			})),
+			SetAsDefault: aws.Bool(true),
+		})
+		require.NoError(t, err, "create-policy-version %s", policyARN)
+		t.Cleanup(func() { deleteSecondPolicyVersionBestEffort(t, fix, policyARN) })
+
+		harness.ExpectError(t, "AccessDenied", func() error {
+			_, err := principal.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{ // e2e:allow-create — the create is the authorization probe
+				KeyName: aws.String(run + "-version-2"),
+			})
+			return err
+		})
+
+		_, err = fix.AWS.IAM.SetDefaultPolicyVersion(&iam.SetDefaultPolicyVersionInput{
+			PolicyArn: aws.String(policyARN), VersionId: aws.String("v1"),
+		})
+		require.NoError(t, err, "set-default-policy-version %s v1", policyARN)
+		createKeyPair(t, fix, principal, run+"-version-3")
+	})
+
 	t.Run("RevokingACredentialStopsThatKeyAlone", func(t *testing.T) {
 		principal := newAuthzPrincipal(t, fix, "revoke", authzStatement{
 			Effect:   "Allow",
@@ -361,6 +407,22 @@ func newManagedPolicy(t *testing.T, fix *Fixture, name string, statements ...aut
 		}
 	})
 	return arn
+}
+
+// deleteSecondPolicyVersionBestEffort restores v1 as the default and deletes v2,
+// which DeletePolicy otherwise refuses with DeleteConflict.
+func deleteSecondPolicyVersionBestEffort(t *testing.T, fix *Fixture, policyARN string) {
+	t.Helper()
+	if _, err := fix.AWS.IAM.SetDefaultPolicyVersion(&iam.SetDefaultPolicyVersionInput{
+		PolicyArn: aws.String(policyARN), VersionId: aws.String("v1"),
+	}); err != nil {
+		t.Logf("cleanup: set-default-policy-version %s v1: %v", policyARN, err)
+	}
+	if _, err := fix.AWS.IAM.DeletePolicyVersion(&iam.DeletePolicyVersionInput{
+		PolicyArn: aws.String(policyARN), VersionId: aws.String("v2"),
+	}); err != nil {
+		t.Logf("cleanup: delete-policy-version %s v2: %v", policyARN, err)
+	}
 }
 
 // createAuthzRole creates a role assumable by any principal in the account,

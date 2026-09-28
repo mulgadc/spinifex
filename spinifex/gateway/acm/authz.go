@@ -6,7 +6,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/mulgadc/spinifex/spinifex/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
 )

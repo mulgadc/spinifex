@@ -2,7 +2,7 @@ package handlers_iam
 
 import (
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/mulgadc/spinifex/spinifex/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 )
 
 // IAMService defines the interface for IAM operations.

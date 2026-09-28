@@ -3,7 +3,7 @@ package gateway_eks_test
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/stretchr/testify/assert"

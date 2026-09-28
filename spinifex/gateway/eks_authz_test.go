@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"

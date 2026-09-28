@@ -110,7 +110,7 @@ func TestCreateRole_InvalidPath(t *testing.T) {
 		Path:                     aws.String("no-leading-slash/"),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestCreateRole_PermissionsBoundarySet(t *testing.T) {
@@ -1028,7 +1028,7 @@ func TestPutRolePolicy_InvalidName(t *testing.T) {
 		PolicyDocument: aws.String(validPolicyDocument()),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestPutRolePolicy_MalformedDocument(t *testing.T) {

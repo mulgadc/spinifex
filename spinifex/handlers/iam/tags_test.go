@@ -75,7 +75,7 @@ func TestValidateTags_NamesFailingMember(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			requireIAMInvalidInput(t, validateTags(tc.tags), tc.wantMsg)
+			requireIAMError(t, validateTags(tc.tags), awserrors.ErrorIAMInvalidInput, tc.wantMsg)
 		})
 	}
 }

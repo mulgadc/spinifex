@@ -95,7 +95,7 @@ func TestCreateGroup_InvalidPath(t *testing.T) {
 		Path:      aws.String("no-leading-slash/"),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestGetGroup(t *testing.T) {
@@ -773,7 +773,7 @@ func TestPutGroupPolicy_InvalidName(t *testing.T) {
 		PolicyDocument: aws.String(validPolicyDocument()),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestPutGroupPolicy_MalformedDocument(t *testing.T) {

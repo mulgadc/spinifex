@@ -82,7 +82,7 @@ func TestPutUserPolicy_InvalidName(t *testing.T) {
 		PolicyDocument: aws.String(validPolicyDocument()),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestPutUserPolicy_MalformedDocument(t *testing.T) {

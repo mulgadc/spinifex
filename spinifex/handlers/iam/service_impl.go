@@ -2111,7 +2111,7 @@ func validateIAMName(field, name string, maxLen int) error {
 	}
 	for i := range len(name) {
 		if !isIAMNameChar(name[i]) {
-			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+			return awserrors.Errorf(awserrors.ErrorValidationError,
 				"The specified value for %s is invalid. It must contain only alphanumeric characters and/or the following: +=,.@_-", field)
 		}
 	}
@@ -2124,7 +2124,7 @@ func lengthViolation(value, field, bound string) error {
 }
 
 func enumViolation(field string, allowed []string) error {
-	return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+	return awserrors.Errorf(awserrors.ErrorValidationError,
 		"1 validation error detected: Value at '%s' failed to satisfy constraint: Member must satisfy enum value set: [%s]", field, strings.Join(allowed, ", "))
 }
 
@@ -2141,7 +2141,7 @@ func validatePermissionsBoundary(boundary *string) error {
 
 func validatePath(path string) error {
 	if !strings.HasPrefix(path, "/") || !strings.HasSuffix(path, "/") {
-		return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+		return awserrors.Errorf(awserrors.ErrorValidationError,
 			"The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters.")
 	}
 	if len(path) > 512 {

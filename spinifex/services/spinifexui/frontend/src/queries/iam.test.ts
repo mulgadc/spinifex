@@ -229,7 +229,7 @@ describe("queryFn", () => {
   it("iamUsersQueryOptions sends ListUsersCommand", async () => {
     await callQueryFn(iamUsersQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({ MaxItems: 1000 })
   })
 
   it("iamUserQueryOptions sends GetUserCommand with userName", async () => {
@@ -248,7 +248,10 @@ describe("queryFn", () => {
 
   it("iamPoliciesQueryOptions sends ListPoliciesCommand with Local scope", async () => {
     await callQueryFn(iamPoliciesQueryOptions)
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({ Scope: "Local" })
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      Scope: "Local",
+      MaxItems: 1000,
+    })
   })
 
   it("iamPolicyQueryOptions sends GetPolicyCommand with policyArn", async () => {
@@ -275,7 +278,7 @@ describe("queryFn", () => {
 
   it("iamRolesQueryOptions sends ListRolesCommand", async () => {
     await callQueryFn(iamRolesQueryOptions)
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({ MaxItems: 1000 })
   })
 
   it("iamRoleQueryOptions sends GetRoleCommand with roleName", async () => {
@@ -294,7 +297,7 @@ describe("queryFn", () => {
 
   it("iamInstanceProfilesQueryOptions sends ListInstanceProfilesCommand", async () => {
     await callQueryFn(iamInstanceProfilesQueryOptions)
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({ MaxItems: 1000 })
   })
 
   it("iamInstanceProfileQueryOptions sends GetInstanceProfileCommand", async () => {
@@ -313,13 +316,14 @@ describe("queryFn", () => {
 
   it("iamGroupsQueryOptions sends ListGroupsCommand", async () => {
     await callQueryFn(iamGroupsQueryOptions)
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({ MaxItems: 1000 })
   })
 
   it("iamGroupQueryOptions sends GetGroupCommand with groupName", async () => {
     await callQueryFn(iamGroupQueryOptions("my-group"))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
+      MaxItems: 1000,
     })
   })
 

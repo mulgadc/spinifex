@@ -34,10 +34,16 @@ func GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput, sv
 }
 
 func ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput, svc handlers_iam.IAMService) (*iam.ListInstanceProfilesOutput, error) {
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
 	out, err := svc.ListInstanceProfiles(accountID, input)
 	if err != nil {
 		return nil, err
 	}
+	out.InstanceProfiles, out.Marker = paginate(p, out.InstanceProfiles, instanceProfileKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
 	encodeInstanceProfileDocuments(out.InstanceProfiles...)
 	return out, nil
 }
@@ -82,10 +88,16 @@ func ListInstanceProfilesForRole(accountID string, input *iam.ListInstanceProfil
 	if input.RoleName == nil || *input.RoleName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
 	out, err := svc.ListInstanceProfilesForRole(accountID, input)
 	if err != nil {
 		return nil, err
 	}
+	out.InstanceProfiles, out.Marker = paginate(p, out.InstanceProfiles, instanceProfileKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
 	encodeInstanceProfileDocuments(out.InstanceProfiles...)
 	return out, nil
 }
@@ -134,5 +146,15 @@ func ListInstanceProfileTags(accountID string, input *iam.ListInstanceProfileTag
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListInstanceProfileTags(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListInstanceProfileTags(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.Tags, out.Marker = paginate(p, out.Tags, tagKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }

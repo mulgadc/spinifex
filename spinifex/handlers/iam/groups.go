@@ -505,7 +505,7 @@ func (s *IAMServiceImpl) DeleteGroupPolicy(accountID string, input *iam.DeleteGr
 }
 
 // ListGroupPolicies returns the names of a group's inline policies, sorted for
-// deterministic output. Pagination is not implemented: IsTruncated is always false.
+// deterministic output. Returns the whole list; the gateway pages it.
 func (s *IAMServiceImpl) ListGroupPolicies(accountID string, input *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
 	ctx := context.Background()
 	group, err := s.getGroup(ctx, accountID, *input.GroupName)

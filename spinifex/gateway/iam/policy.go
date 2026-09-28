@@ -3,6 +3,7 @@ package gateway_iam
 import (
 	"errors"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -46,7 +47,17 @@ func ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput, sv
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListPolicyVersions(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListPolicyVersions(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.Versions, out.Marker = paginateFunc(p, out.Versions, policyVersionKey, newestVersionFirst)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }
 
 func CreatePolicyVersion(accountID string, input *iam.CreatePolicyVersionInput, svc handlers_iam.IAMService) (*iam.CreatePolicyVersionOutput, error) {
@@ -80,7 +91,17 @@ func DeletePolicyVersion(accountID string, input *iam.DeletePolicyVersionInput, 
 }
 
 func ListPolicies(accountID string, input *iam.ListPoliciesInput, svc handlers_iam.IAMService) (*iam.ListPoliciesOutput, error) {
-	return svc.ListPolicies(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListPolicies(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.Policies, out.Marker = paginate(p, out.Policies, policyKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }
 
 func DeletePolicy(accountID string, input *iam.DeletePolicyInput, svc handlers_iam.IAMService) (*iam.DeletePolicyOutput, error) {
@@ -94,7 +115,52 @@ func ListEntitiesForPolicy(accountID string, input *iam.ListEntitiesForPolicyInp
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListEntitiesForPolicy(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListEntitiesForPolicy(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	pageEntitiesForPolicy(p, out)
+	return out, nil
+}
+
+// policyEntity is one row of ListEntitiesForPolicy's three lists, which page as
+// a single sequence: groups, then roles, then users, each by name.
+type policyEntity struct {
+	key   string
+	group *iam.PolicyGroup
+	role  *iam.PolicyRole
+	user  *iam.PolicyUser
+}
+
+func pageEntitiesForPolicy(p pager, out *iam.ListEntitiesForPolicyOutput) {
+	all := make([]policyEntity, 0, len(out.PolicyGroups)+len(out.PolicyRoles)+len(out.PolicyUsers))
+	for _, g := range out.PolicyGroups {
+		all = append(all, policyEntity{key: iam.EntityTypeGroup + "\x00" + aws.StringValue(g.GroupName), group: g})
+	}
+	for _, r := range out.PolicyRoles {
+		all = append(all, policyEntity{key: iam.EntityTypeRole + "\x00" + aws.StringValue(r.RoleName), role: r})
+	}
+	for _, u := range out.PolicyUsers {
+		all = append(all, policyEntity{key: iam.EntityTypeUser + "\x00" + aws.StringValue(u.UserName), user: u})
+	}
+
+	page, marker := paginate(p, all, func(e policyEntity) string { return e.key })
+	out.PolicyGroups, out.PolicyRoles, out.PolicyUsers = []*iam.PolicyGroup{}, []*iam.PolicyRole{}, []*iam.PolicyUser{}
+	for _, e := range page {
+		switch {
+		case e.group != nil:
+			out.PolicyGroups = append(out.PolicyGroups, e.group)
+		case e.role != nil:
+			out.PolicyRoles = append(out.PolicyRoles, e.role)
+		default:
+			out.PolicyUsers = append(out.PolicyUsers, e.user)
+		}
+	}
+	out.Marker, out.IsTruncated = marker, aws.Bool(marker != nil)
 }
 
 func AttachUserPolicy(accountID string, input *iam.AttachUserPolicyInput, svc handlers_iam.IAMService) (*iam.AttachUserPolicyOutput, error) {
@@ -121,7 +187,17 @@ func ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPolic
 	if input.UserName == nil || *input.UserName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListAttachedUserPolicies(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListAttachedUserPolicies(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.AttachedPolicies, out.Marker = paginate(p, out.AttachedPolicies, attachedPolicyKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }
 
 func TagPolicy(accountID string, input *iam.TagPolicyInput, svc handlers_iam.IAMService) (*iam.TagPolicyOutput, error) {
@@ -148,5 +224,15 @@ func ListPolicyTags(accountID string, input *iam.ListPolicyTagsInput, svc handle
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListPolicyTags(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListPolicyTags(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.Tags, out.Marker = paginate(p, out.Tags, tagKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }

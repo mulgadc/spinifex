@@ -51,7 +51,31 @@ func TestValidateTags(t *testing.T) {
 				return
 			}
 			require.Error(t, err)
-			assert.Equal(t, tc.wantErr, err.Error())
+			code, ok := awserrors.ResolveErrorCode(err)
+			require.True(t, ok, "error must carry a registered code: %v", err)
+			assert.Equal(t, tc.wantErr, code)
+		})
+	}
+}
+
+func TestValidateTags_NamesFailingMember(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		tags    []*iam.Tag
+		wantMsg string
+	}{
+		{"nil key", []*iam.Tag{sdkTag("a", "1"), {Value: aws.String("v")}},
+			"1 validation error detected: Value null at 'tags.2.member.key' failed to satisfy constraint: Member must not be null"},
+		{"over-length value", []*iam.Tag{sdkTag("a", "1"), sdkTag("b", "2"), sdkTag("k", strings.Repeat("v", maxTagValueLength+1))},
+			"1 validation error detected: Value '" + strings.Repeat("v", maxTagValueLength+1) + "' at 'tags.3.member.value' failed to satisfy constraint: Member must have length less than or equal to 256"},
+		{"duplicate keys", []*iam.Tag{sdkTag("k", "1"), sdkTag("k", "2")},
+			"Duplicate tag keys found. Please note that Tag keys are case insensitive."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireIAMInvalidInput(t, validateTags(tc.tags), tc.wantMsg)
 		})
 	}
 }

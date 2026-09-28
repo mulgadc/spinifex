@@ -101,8 +101,23 @@ func TestCreatePlacementGroup_PartitionRejected(t *testing.T) {
 		GroupName: aws.String("part-group"),
 		Strategy:  aws.String("partition"),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "The partition placement strategy is not supported; use cluster or spread.", msg)
+}
+
+func TestCreatePlacementGroup_PartitionCountOutOfRange(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.CreatePlacementGroup(context.Background(), &ec2.CreatePlacementGroupInput{
+		GroupName:      aws.String("part-group"),
+		Strategy:       aws.String("partition"),
+		PartitionCount: aws.Int64(99),
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Invalid value '99' for partition-count, the value must be between 1 and 7.", msg)
 }
 
 func TestCreatePlacementGroup_InvalidStrategy(t *testing.T) {
@@ -111,8 +126,10 @@ func TestCreatePlacementGroup_InvalidStrategy(t *testing.T) {
 		GroupName: aws.String("bad-group"),
 		Strategy:  aws.String("invalid"),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "The placement strategy is invalid.", msg)
 }
 
 func TestCreatePlacementGroup_MissingName(t *testing.T) {

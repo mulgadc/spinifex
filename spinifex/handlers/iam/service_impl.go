@@ -256,19 +256,25 @@ func validateTags(tags []*iam.Tag) error {
 		return errors.New(awserrors.ErrorIAMLimitExceeded)
 	}
 	seen := make(map[string]struct{}, len(tags))
-	for _, tag := range tags {
+	for i, tag := range tags {
+		field := fmt.Sprintf("tags.%d.member", i+1)
 		if tag == nil || tag.Key == nil {
-			return errors.New(awserrors.ErrorIAMInvalidInput)
+			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+				"1 validation error detected: Value null at '%s.key' failed to satisfy constraint: Member must not be null", field)
 		}
 		key := *tag.Key
-		if len(key) < 1 || len(key) > maxTagKeyLength {
-			return errors.New(awserrors.ErrorIAMInvalidInput)
+		if len(key) < 1 {
+			return lengthViolation(key, field+".key", "greater than or equal to 1")
+		}
+		if len(key) > maxTagKeyLength {
+			return lengthViolation(key, field+".key", fmt.Sprintf("less than or equal to %d", maxTagKeyLength))
 		}
 		if tag.Value != nil && len(*tag.Value) > maxTagValueLength {
-			return errors.New(awserrors.ErrorIAMInvalidInput)
+			return lengthViolation(*tag.Value, field+".value", fmt.Sprintf("less than or equal to %d", maxTagValueLength))
 		}
 		if _, dup := seen[key]; dup {
-			return errors.New(awserrors.ErrorIAMInvalidInput)
+			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+				"Duplicate tag keys found. Please note that Tag keys are case insensitive.")
 		}
 		seen[key] = struct{}{}
 	}
@@ -319,8 +325,8 @@ func removeTagKeys(existing []Tag, keys []*string) []Tag {
 func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
 	ctx := context.Background()
 	userName := *input.UserName
-	if err := validateUserName(userName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("userName", userName, 64); err != nil {
+		return nil, err
 	}
 
 	if err := validatePermissionsBoundary(input.PermissionsBoundary); err != nil {
@@ -331,7 +337,7 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 	if input.Path != nil {
 		path = *input.Path
 		if err := validatePath(path); err != nil {
-			return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+			return nil, err
 		}
 	}
 
@@ -659,7 +665,8 @@ func (s *IAMServiceImpl) UpdateAccessKey(accountID string, input *iam.UpdateAcce
 	ctx := context.Background()
 	status := *input.Status
 	if status != AccessKeyStatusActive && status != AccessKeyStatusInactive {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		// AWS lists Expired, which the v1 SDK's StatusType_Values omits.
+		return nil, enumViolation("status", []string{"Expired", AccessKeyStatusActive, AccessKeyStatusInactive})
 	}
 
 	accessKeyID := *input.AccessKeyId
@@ -964,7 +971,7 @@ func (s *IAMServiceImpl) IsEmpty() (bool, error) {
 func (s *IAMServiceImpl) CreateAccount(name string) (*Account, error) {
 	ctx := context.Background()
 	if name == "" {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The account name must not be empty.")
 	}
 
 	var accountID string
@@ -1105,7 +1112,9 @@ func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, e
 	switch status {
 	case AccountStatusActive, AccountStatusSuspended, AccountStatusTerminating:
 	default:
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+			"Account status %q is invalid. It must be one of %s, %s or %s.",
+			status, AccountStatusActive, AccountStatusSuspended, AccountStatusTerminating)
 	}
 
 	account, err := s.GetAccount(accountID)
@@ -1176,8 +1185,8 @@ func (s *IAMServiceImpl) DeleteAccount(accountID string) error {
 func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
 	ctx := context.Background()
 	policyName := *input.PolicyName
-	if err := validatePolicyName(policyName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("policyName", policyName, 128); err != nil {
+		return nil, err
 	}
 
 	kvKey := accountID + "." + policyName
@@ -1195,7 +1204,7 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 	if path == "" {
 		path = "/"
 	} else if err := validatePath(path); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, err
 	}
 
 	newPolicyID, err := generateIAMID("ANPA")
@@ -1434,7 +1443,7 @@ func (s *IAMServiceImpl) ListEntitiesForPolicy(accountID string, input *iam.List
 		iam.EntityTypeLocalManagedPolicy, iam.EntityTypeAwsmanagedPolicy:
 		// valid
 	default:
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, enumViolation("entityFilter", iam.EntityType_Values())
 	}
 
 	// LocalManagedPolicy/AWSManagedPolicy describe the policy's own management
@@ -1597,8 +1606,8 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 	policyDoc := *input.PolicyDocument
 	userKVKey := accountID + "." + userName
 
-	if err := validatePolicyName(policyName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("policyName", policyName, 128); err != nil {
+		return nil, err
 	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
@@ -2114,28 +2123,32 @@ func isIAMNameChar(c byte) bool {
 		c == '+' || c == '=' || c == ',' || c == '.' || c == '@' || c == '-' || c == '_'
 }
 
-func validateUserName(name string) error {
-	if len(name) == 0 || len(name) > 64 {
-		return fmt.Errorf("user name must be between 1 and 64 characters")
+// validateIAMName checks an IAM entity or policy name, refusing it with the
+// message AWS gives, which names the failing parameter.
+func validateIAMName(field, name string, maxLen int) error {
+	if len(name) == 0 {
+		return lengthViolation(name, field, "greater than or equal to 1")
+	}
+	if len(name) > maxLen {
+		return lengthViolation(name, field, fmt.Sprintf("less than or equal to %d", maxLen))
 	}
 	for i := range len(name) {
 		if !isIAMNameChar(name[i]) {
-			return fmt.Errorf("user name contains invalid character: %q", name[i])
+			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+				"The specified value for %s is invalid. It must contain only alphanumeric characters and/or the following: +=,.@_-", field)
 		}
 	}
 	return nil
 }
 
-func validatePolicyName(name string) error {
-	if len(name) == 0 || len(name) > 128 {
-		return fmt.Errorf("policy name must be between 1 and 128 characters")
-	}
-	for i := range len(name) {
-		if !isIAMNameChar(name[i]) {
-			return fmt.Errorf("policy name contains invalid character: %q", name[i])
-		}
-	}
-	return nil
+func lengthViolation(value, field, bound string) error {
+	return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+		"1 validation error detected: Value '%s' at '%s' failed to satisfy constraint: Member must have length %s", value, field, bound)
+}
+
+func enumViolation(field string, allowed []string) error {
+	return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+		"1 validation error detected: Value at '%s' failed to satisfy constraint: Member must satisfy enum value set: [%s]", field, strings.Join(allowed, ", "))
 }
 
 // validatePermissionsBoundary rejects a boundary the evaluator cannot enforce.
@@ -2151,10 +2164,11 @@ func validatePermissionsBoundary(boundary *string) error {
 
 func validatePath(path string) error {
 	if !strings.HasPrefix(path, "/") || !strings.HasSuffix(path, "/") {
-		return fmt.Errorf("path must begin and end with /")
+		return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+			"The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters.")
 	}
 	if len(path) > 512 {
-		return fmt.Errorf("path exceeds maximum length of 512")
+		return lengthViolation(path, "path", "less than or equal to 512")
 	}
 	return nil
 }

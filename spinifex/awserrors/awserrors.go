@@ -683,7 +683,7 @@ func ResolveRetryAfter(err error) (time.Duration, bool) {
 // errorLookupByService overrides ErrorLookup's message and HTTP status for a
 // (service, code) pair whose wire code is shared by services with different
 // canonical wording — e.g. ACM and EKS both use "ResourceInUseException".
-var errorLookupByService = map[string]map[string]ErrorMessage{
+var errorLookupByService = withNeutralValidationMessages(map[string]map[string]ErrorMessage{
 	"acm": {
 		ErrorACMResourceInUse: {HTTPCode: 400, Message: "The certificate is in use by another AWS resource in this account. Remove the reference to the certificate before deleting it."},
 	},
@@ -711,6 +711,26 @@ var errorLookupByService = map[string]map[string]ErrorMessage{
 	"rds": {
 		ErrorOperationNotSupported: {HTTPCode: 400, Message: "The specified RDS action is not supported in the RDS v1 API."},
 	},
+})
+
+// nonEC2Services are the gateway's services other than EC2, whose validation
+// errors must not fall back to ErrorLookup's EC2 wording.
+var nonEC2Services = []string{
+	"iam", "sts", "elasticloadbalancing", "eks", "ecs", "ecr", "acm", "rds", "tagging", "spinifex",
+	"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime",
+}
+
+// withNeutralValidationMessages gives every non-EC2 service a service-neutral
+// default for the two validation codes, used when the call site supplied none.
+func withNeutralValidationMessages(m map[string]map[string]ErrorMessage) map[string]map[string]ErrorMessage {
+	for _, svc := range nonEC2Services {
+		if m[svc] == nil {
+			m[svc] = map[string]ErrorMessage{}
+		}
+		m[svc][ErrorInvalidInput] = ErrorMessage{HTTPCode: 400, Message: "The request was rejected because an invalid or out-of-range value was supplied for an input parameter."}
+		m[svc][ErrorInvalidParameterValue] = ErrorMessage{HTTPCode: 400, Message: "A value specified in a parameter is not valid, is unsupported, or cannot be used."}
+	}
+	return m
 }
 
 // bedrockResourceNotFoundMessage overrides the EKS wording ErrorLookup carries

@@ -1570,7 +1570,10 @@ func TestVpc_DescribeVpcAttribute_InvalidAttribute(t *testing.T) {
 		VpcId:     aws.String(vpcID),
 		Attribute: aws.String("invalidAttribute"),
 	}, testAccountID)
-	assert.Error(t, err)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Value (invalidAttribute) for parameter attribute is invalid. Unknown attribute.", msg)
 }
 
 func TestVpc_DescribeVpcAttribute_MissingAttribute(t *testing.T) {

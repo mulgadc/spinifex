@@ -207,7 +207,7 @@ func broadcastForAssociation(ctx context.Context, natsConn *nats.Conn, subject s
 	}
 	// A daemon error is authoritative — only the owner would return one.
 	if sum.FirstClient4xx != "" {
-		return nil, errors.New(sum.FirstClient4xx)
+		return nil, sum.Client4xxError()
 	}
 	if sum.Successes < sum.Received {
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -241,7 +241,7 @@ func broadcastDescribeAssociations(ctx context.Context, natsConn *nats.Conn, inp
 	// collected; transient 5xx/unknown errors are dropped so partial Describe results
 	// still feed CountInstanceProfileAssociations' live-instance gate.
 	if sum.FirstClient4xx != "" && len(associations) == 0 {
-		return nil, errors.New(sum.FirstClient4xx)
+		return nil, sum.Client4xxError()
 	}
 	return associations, nil
 }

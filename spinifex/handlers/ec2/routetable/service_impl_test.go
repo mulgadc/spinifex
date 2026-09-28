@@ -422,7 +422,10 @@ func TestDeleteRoute_LocalRoute(t *testing.T) {
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("10.0.0.0/16"),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "cannot remove local route 10.0.0.0/16 in route table "+rtbID, msg)
 }
 
 func TestDeleteRoute_NotFound(t *testing.T) {

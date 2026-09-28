@@ -61,7 +61,7 @@ func TestCreateOpenIDConnectProvider_InvalidURL(t *testing.T) {
 	for _, bad := range []string{"", "http://insecure.example", "://nohost", "ftp://x"} {
 		_, err := svc.CreateOpenIDConnectProvider("000000000001",
 			&iam.CreateOpenIDConnectProviderInput{Url: aws.String(bad)})
-		if err == nil || err.Error() != awserrors.ErrorIAMInvalidInput {
+		if code, _ := awserrors.ResolveErrorCode(err); code != awserrors.ErrorIAMInvalidInput {
 			t.Fatalf("url %q: err = %v, want InvalidInput", bad, err)
 		}
 	}

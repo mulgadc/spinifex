@@ -394,10 +394,10 @@ func TestCreateUser_InvalidName_BadChars(t *testing.T) {
 	svc := setupTestIAMService(t)
 
 	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
-		UserName: aws.String("user name!"),
+		UserName: aws.String("bad name!"),
 	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	requireIAMInvalidInput(t, err,
+		"The specified value for userName is invalid. It must contain only alphanumeric characters and/or the following: +=,.@_-")
 }
 
 func TestCreateUser_InvalidPath(t *testing.T) {
@@ -406,10 +406,10 @@ func TestCreateUser_InvalidPath(t *testing.T) {
 
 	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
 		UserName: aws.String("validuser"),
-		Path:     aws.String("no-leading-slash/"),
+		Path:     aws.String("noslash"),
 	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	requireIAMInvalidInput(t, err,
+		"The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters.")
 }
 
 func TestCreatePolicy_InvalidName(t *testing.T) {
@@ -690,8 +690,8 @@ func TestUpdateAccessKey_InvalidStatus(t *testing.T) {
 		AccessKeyId: keyOut.AccessKey.AccessKeyId,
 		Status:      aws.String("Invalid"),
 	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	requireIAMInvalidInput(t, err,
+		"1 validation error detected: Value at 'status' failed to satisfy constraint: Member must satisfy enum value set: [Expired, Active, Inactive]")
 }
 
 func TestUpdateAccessKey_NotFound(t *testing.T) {
@@ -2515,90 +2515,79 @@ func TestIsIAMNameChar(t *testing.T) {
 	}
 }
 
-func TestValidateUserName(t *testing.T) {
+func TestValidateIAMName(t *testing.T) {
 	t.Parallel()
+	const charset = "It must contain only alphanumeric characters and/or the following: +=,.@_-"
 	tests := []struct {
 		name    string
+		field   string
 		input   string
-		wantErr bool
+		maxLen  int
+		wantMsg string
 	}{
-		{"valid simple", "alice", false},
-		{"valid with special chars", "alice.bob+test@example_com", false},
-		{"valid single char", "a", false},
-		{"valid 64 chars", strings.Repeat("a", 64), false},
-		{"empty", "", true},
-		{"too long 65 chars", strings.Repeat("a", 65), true},
-		{"invalid space", "alice bob", true},
-		{"invalid slash", "alice/bob", true},
-		{"invalid colon", "alice:bob", true},
+		{"valid simple", "userName", "alice", 64, ""},
+		{"valid with special chars", "userName", "alice.bob+test@example_com", 64, ""},
+		{"valid single char", "userName", "a", 64, ""},
+		{"valid at max length", "userName", strings.Repeat("a", 64), 64, ""},
+		{"valid policy at max length", "policyName", strings.Repeat("x", 128), 128, ""},
+		{"empty", "userName", "", 64,
+			"1 validation error detected: Value '' at 'userName' failed to satisfy constraint: Member must have length greater than or equal to 1"},
+		{"too long", "policyName", strings.Repeat("x", 129), 128,
+			"1 validation error detected: Value '" + strings.Repeat("x", 129) + "' at 'policyName' failed to satisfy constraint: Member must have length less than or equal to 128"},
+		{"space", "userName", "bad name!", 64, "The specified value for userName is invalid. " + charset},
+		{"slash", "roleName", "alice/bob", 64, "The specified value for roleName is invalid. " + charset},
+		{"colon", "groupName", "alice:bob", 128, "The specified value for groupName is invalid. " + charset},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateUserName(tt.input)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
+			err := validateIAMName(tt.field, tt.input, tt.maxLen)
+			if tt.wantMsg == "" {
 				assert.NoError(t, err)
+				return
 			}
+			requireIAMInvalidInput(t, err, tt.wantMsg)
 		})
 	}
 }
 
-func TestValidatePolicyName(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
-		{"valid simple", "MyPolicy", false},
-		{"valid with special chars", "My.Policy-v2_test+1", false},
-		{"valid single char", "P", false},
-		{"valid 128 chars", strings.Repeat("x", 128), false},
-		{"empty", "", true},
-		{"too long 129 chars", strings.Repeat("x", 129), true},
-		{"invalid space", "My Policy", true},
-		{"invalid slash", "My/Policy", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := validatePolicyName(tt.input)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
+func requireIAMInvalidInput(t *testing.T, err error, wantMsg string) {
+	t.Helper()
+	require.Error(t, err)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, awserrors.ErrorIAMInvalidInput, code)
+	assert.Equal(t, wantMsg, msg)
 }
 
 func TestValidatePath(t *testing.T) {
 	t.Parallel()
+	const shape = "The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters."
+	tooLong := "/" + strings.Repeat("a", 511) + "/"
 	tests := []struct {
 		name    string
 		input   string
-		wantErr bool
+		wantMsg string
 	}{
-		{"root path", "/", false},
-		{"nested path", "/division/engineering/", false},
-		{"no leading slash", "division/", true},
-		{"no trailing slash", "/division", true},
-		{"empty string", "", true},
-		{"just text", "division", true},
-		{"max length 512", "/" + strings.Repeat("a", 510) + "/", false},
-		{"over max length 513", "/" + strings.Repeat("a", 511) + "/", true},
+		{"root path", "/", ""},
+		{"nested path", "/division/engineering/", ""},
+		{"no leading slash", "division/", shape},
+		{"no trailing slash", "/division", shape},
+		{"empty string", "", shape},
+		{"just text", "noslash", shape},
+		{"max length 512", "/" + strings.Repeat("a", 510) + "/", ""},
+		{"over max length 513", tooLong,
+			"1 validation error detected: Value '" + tooLong + "' at 'path' failed to satisfy constraint: Member must have length less than or equal to 512"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := validatePath(tt.input)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
+			if tt.wantMsg == "" {
 				assert.NoError(t, err)
+				return
 			}
+			requireIAMInvalidInput(t, err, tt.wantMsg)
 		})
 	}
 }

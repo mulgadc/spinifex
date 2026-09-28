@@ -91,7 +91,7 @@ func TestRepositoryPolicy_Lifecycle(t *testing.T) {
 	// Policy gone after delete.
 	_, err = GetRepositoryPolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorRepositoryPolicyNotFound, err.Error())
+	assert.Equal(t, awserrors.ErrorRepositoryPolicyNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestRepositoryPolicy_Errors(t *testing.T) {
@@ -116,7 +116,7 @@ func TestRepositoryPolicy_Errors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.fn(context.Background(), nc, policyTestAccount, []byte(tc.body))
 			require.Error(t, err)
-			assert.Equal(t, tc.expect, err.Error())
+			assert.Equal(t, tc.expect, awserrors.ValidErrorCodeFromError(err))
 		})
 	}
 }

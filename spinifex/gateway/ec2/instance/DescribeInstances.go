@@ -79,13 +79,13 @@ func WithFanoutTimeout(d time.Duration) DescribeOption {
 // Callers that must not act on a partial view at all (the quota reconcile)
 // use DescribeInstancesForReconcile.
 func DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string, opts ...DescribeOption) (*ec2.DescribeInstancesOutput, error) {
-	reservations, _, firstClient4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, nil, accountID, opts...)
+	reservations, _, client4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, nil, accountID, opts...)
 	if err != nil {
 		return nil, err
 	}
 	// Propagate a deterministic 4xx only when nothing was collected (fan-out + KV).
-	if firstClient4xx != "" && len(reservations) == 0 {
-		return nil, errors.New(firstClient4xx)
+	if client4xx != nil && len(reservations) == 0 {
+		return nil, client4xx
 	}
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
 }
@@ -109,12 +109,12 @@ func DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, n
 // caller that does not supply one leaves at 0 — never complete, so the
 // assertion is never made.
 func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, nodeIDs []string, accountID string, opts ...DescribeOption) (*ec2.DescribeInstancesOutput, error) {
-	reservations, complete, firstClient4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, nodeIDs, accountID, opts...)
+	reservations, complete, client4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, nodeIDs, accountID, opts...)
 	if err != nil {
 		return nil, err
 	}
-	if firstClient4xx != "" && len(reservations) == 0 {
-		return nil, errors.New(firstClient4xx)
+	if client4xx != nil && len(reservations) == 0 {
+		return nil, client4xx
 	}
 
 	if len(input.InstanceIds) > 0 {
@@ -178,7 +178,7 @@ func DescribeInstancesForReconcile(ctx context.Context, input *ec2.DescribeInsta
 }
 
 // gatherInstances runs the running-instance fan-out plus the stopped/terminated
-// KV bucket queries and aggregates every reservation. firstClient4xx carries
+// KV bucket queries and aggregates every reservation. client4xx carries
 // the first deterministic 4xx for the lenient caller to surface when nothing
 // was collected.
 //
@@ -188,7 +188,7 @@ func DescribeInstancesForReconcile(ctx context.Context, input *ec2.DescribeInsta
 // explicit-ID request collects to its deadline under CollectUntilDeadline; a
 // request with no explicit IDs stays on CollectServeData regardless, since
 // nothing there is being proved.
-func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, nodeIDs []string, accountID string, opts ...DescribeOption) (reservations []*ec2.Reservation, complete bool, firstClient4xx string, err error) {
+func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, nodeIDs []string, accountID string, opts ...DescribeOption) (reservations []*ec2.Reservation, complete bool, client4xx error, err error) {
 	cfg := describeConfig{fanoutTimeout: defaultDescribeFanoutTimeout}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -197,7 +197,7 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 	jsonData, err := json.Marshal(input)
 	if err != nil {
 		slog.ErrorContext(ctx, "DescribeInstances: Failed to marshal input", "err", err)
-		return nil, false, "", fmt.Errorf("failed to marshal input: %w", err)
+		return nil, false, nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
 	// The buckets run alongside the fan-out rather than after it, so a stopped
@@ -233,7 +233,7 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 				kvWg.Wait()
 				slog.WarnContext(ctx, "DescribeInstances: absence proof budget exhausted, throttling",
 					"limit", maxConcurrentAbsenceProofs)
-				return nil, false, "", errors.New(awserrors.ErrorRequestLimitExceeded)
+				return nil, false, nil, errors.New(awserrors.ErrorRequestLimitExceeded)
 			}
 			defer release()
 
@@ -251,7 +251,7 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstances", jsonData, gatherOpts)
 	if err != nil {
 		kvWg.Wait()
-		return nil, false, "", err
+		return nil, false, nil, err
 	}
 
 	var allReservations []*ec2.Reservation
@@ -276,7 +276,7 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 	allReservations = mergeReservationsByID(allReservations)
 
 	slog.InfoContext(ctx, "DescribeInstances: Aggregated response", "total_reservations", len(allReservations))
-	return allReservations, fanoutComplete && bucketsOK, sum.FirstClient4xx, nil
+	return allReservations, fanoutComplete && bucketsOK, sum.Client4xxError(), nil
 }
 
 // mergeReservationsByID merges frames sharing a ReservationId into one, drops

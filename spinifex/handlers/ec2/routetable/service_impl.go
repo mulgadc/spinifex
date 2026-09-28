@@ -805,9 +805,9 @@ func (s *RouteTableServiceImpl) DeleteRoute(ctx context.Context, input *ec2.Dele
 
 	departing := record.Routes[idx]
 
-	// Cannot delete local route
 	if departing.GatewayId == "local" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"cannot remove local route %s in route table %s", destCidr, rtbID)
 	}
 
 	record.Routes = append(record.Routes[:idx], record.Routes[idx+1:]...)

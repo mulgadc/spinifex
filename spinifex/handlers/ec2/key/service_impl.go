@@ -107,7 +107,8 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 		case "ed25519":
 			keyType = "ed25519"
 		default:
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"1 validation error detected: Value '%s' at 'keyType' failed to satisfy constraint: Member must satisfy enum value set: [rsa, ed25519]", *input.KeyType)
 		}
 	}
 

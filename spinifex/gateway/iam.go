@@ -30,7 +30,7 @@ func iamHandler[In any](handler func(string, *In, *GatewayConfig) (any, error)) 
 				if errors.Is(err, awsec2query.ErrSliceTooLarge) {
 					return nil, errors.New(awserrors.ErrorMalformedQueryString)
 				}
-				return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+				return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The request parameters are invalid: %v", err)
 			}
 			return input, nil
 		},

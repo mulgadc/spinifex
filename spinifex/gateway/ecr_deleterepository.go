@@ -36,14 +36,14 @@ func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.R
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.ErrorContext(ctx, "DeleteRepository: failed to read body", "err", err)
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.MalformedBodyError()
 	}
 	var req deleteRepositoryRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return gateway_ecrapi.MalformedBodyError()
 	}
-	if err := handlers_ecr.ValidateRepoName(req.RepositoryName); err != nil {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	if err := gateway_ecrapi.ValidateRepositoryName(req.RepositoryName); err != nil {
+		return err
 	}
 	if req.RegistryID != "" && req.RegistryID != accountID {
 		return errors.New(awserrors.ErrorAccessDenied)

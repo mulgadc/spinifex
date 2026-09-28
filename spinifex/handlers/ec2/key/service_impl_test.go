@@ -262,9 +262,11 @@ func TestCreateKeyPair_InvalidKeyType(t *testing.T) {
 		KeyName: aws.String("bad-type-key"),
 		KeyType: aws.String("dsa"),
 	}, testAccountID)
-	require.Error(t, err)
 	assert.Nil(t, out)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "1 validation error detected: Value 'dsa' at 'keyType' failed to satisfy constraint: Member must satisfy enum value set: [rsa, ed25519]", msg)
 }
 
 // ============================================================

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -80,7 +81,7 @@ func TestLifecyclePreview_Errors(t *testing.T) {
 	// Malformed override policy.
 	_, err = callImage(t, gw, (*GatewayConfig).handleGetLifecyclePolicyPreview, previewBody("team/app", "not-json"))
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", err.Error())
+	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
 
 	// Cross-account.
 	_, err = callImage(t, gw, (*GatewayConfig).handleStartLifecyclePolicyPreview, `{"repositoryName":"team/app","registryId":"999999999999","lifecyclePolicyText":`+strconvQuotePreview(previewExpireOldest)+`}`)

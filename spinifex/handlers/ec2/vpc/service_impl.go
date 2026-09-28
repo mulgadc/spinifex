@@ -1387,7 +1387,8 @@ func (s *VPCServiceImpl) DescribeVpcAttribute(ctx context.Context, input *ec2.De
 	case ec2.VpcAttributeNameEnableNetworkAddressUsageMetrics:
 		output.EnableNetworkAddressUsageMetrics = &ec2.AttributeBooleanValue{Value: aws.Bool(record.EnableNetworkAddressUsageMetrics)}
 	default:
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Value (%s) for parameter attribute is invalid. Unknown attribute.", *input.Attribute)
 	}
 
 	return output, nil

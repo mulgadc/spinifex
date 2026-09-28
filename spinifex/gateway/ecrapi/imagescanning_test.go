@@ -52,7 +52,7 @@ func TestPutImageScanningConfiguration_ScanOnPushRejected(t *testing.T) {
 		[]byte(`{"repositoryName":"team/app","imageScanningConfiguration":{"scanOnPush":true}}`))
 	assert.Nil(t, out)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorOperationNotSupported, err.Error())
+	assert.Equal(t, awserrors.ErrorOperationNotSupported, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestPutImageScanningConfiguration_Errors(t *testing.T) {
@@ -71,7 +71,7 @@ func TestPutImageScanningConfiguration_Errors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := PutImageScanningConfiguration(context.Background(), nc, policyTestAccount, []byte(tc.body))
 			require.Error(t, err)
-			assert.Equal(t, tc.expect, err.Error())
+			assert.Equal(t, tc.expect, awserrors.ValidErrorCodeFromError(err))
 		})
 	}
 }

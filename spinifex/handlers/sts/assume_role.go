@@ -129,7 +129,8 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 			"Session tags are not supported in this release; omit Tags and TransitiveTagKeys")
 	}
 	if aws.StringValue(input.SerialNumber) != "" || aws.StringValue(input.TokenCode) != "" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"MFA is not supported in this release; omit SerialNumber and TokenCode")
 	}
 
 	duration := int64(0)

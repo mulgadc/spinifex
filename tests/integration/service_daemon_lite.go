@@ -16,10 +16,8 @@ import (
 )
 
 // StartServiceDaemonLite subscribes the real ACM, ECS, EKS, ELBv2 and RDS
-// services — the ones a live daemon constructs in daemon.go — to their
-// "<service>.<Method>" subjects, with no provisioning backends behind them.
-// Requests are validated and stored as on a live daemon; anything that would
-// launch an instance or a VM fails at the NATS subject nothing answers.
+// services to their "<service>.<Method>" subjects. ECS and RDS run without
+// their provisioning dependencies, so checks that need them do not run.
 func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	t.Helper()
 	nc := gw.NATSConn

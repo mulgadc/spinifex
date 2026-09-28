@@ -215,11 +215,9 @@ var (
 	stringType  = reflect.TypeFor[string]()
 )
 
-// subscribeServiceMethods subscribes every method of service shaped like a
-// daemon NATS handler — (ctx, *Input, accountID[, principalARN]) (*Output,
-// error) — to "<prefix>.<Method>", replicating daemon.handleNATSRequest.
-// Deriving the subjects from the methods keeps this from drifting from the
-// daemon's hand-written subscription lists.
+// subscribeServiceMethods subscribes each method shaped like a daemon NATS
+// handler, (ctx, *Input, accountID[, principalARN]) (*Output, error), to
+// "<prefix>.<Method>", so the subjects cannot drift from the service.
 func subscribeServiceMethods(t *testing.T, nc *nats.Conn, prefix string, service any) {
 	t.Helper()
 	value := reflect.ValueOf(service)

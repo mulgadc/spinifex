@@ -122,21 +122,3 @@ func TestEncodeRequestS3IsNotSupported(t *testing.T) {
 	_, err := awsmodel.EncodeRequest(awsmodel.S3, "ListBuckets", map[string]any{})
 	require.ErrorContains(t, err, "not implemented")
 }
-
-// Generated inputs for every implemented protocol must encode.
-func TestEncodeRequestEncodesGeneratedInputs(t *testing.T) {
-	for _, test := range []struct {
-		service   awsmodel.Service
-		operation string
-	}{
-		{awsmodel.IAM, "CreateRole"}, {awsmodel.EC2, "RunInstances"}, {awsmodel.ECS, "CreateService"}, {awsmodel.EKS, "CreateNodegroup"},
-		{awsmodel.ElasticLoadBalancingV2, "CreateTargetGroup"}, {awsmodel.RDS, "CreateDBInstance"}, {awsmodel.STS, "AssumeRole"},
-	} {
-		plan, err := awsmodel.GenerateRequests(test.service, test.operation, awsmodel.RequestOptions{AccountID: "123456789012", Region: "ap-southeast-2"})
-		require.NoError(t, err)
-		for _, request := range plan.Cases {
-			_, err := awsmodel.EncodeRequest(test.service, test.operation, request.Input)
-			require.NoError(t, err, "%s %s %s", test.operation, request.Constraint, request.Path)
-		}
-	}
-}

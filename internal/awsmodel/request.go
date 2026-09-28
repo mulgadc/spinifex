@@ -22,11 +22,9 @@ const (
 	ConstraintPattern  Constraint = "pattern"
 )
 
-// RequestCase is one generated request. Every case carries the operation's
-// required members plus at most one optional top-level member, named by
-// Member, so a rejection points at the member that caused it. An acceptance
-// case has no Constraint; a rejection case breaks exactly the constraint it
-// names, at Path.
+// RequestCase is one generated request: the required members plus at most one
+// optional top-level member, named by Member. An acceptance case has no
+// Constraint; a rejection case breaks the constraint it names, at Path.
 type RequestCase struct {
 	Operation  string
 	Member     string
@@ -40,23 +38,24 @@ type RequestCase struct {
 func (c RequestCase) Acceptance() bool { return c.Constraint == "" }
 
 // RequestPlan is every request generated for one operation, acceptance cases
-// first. Skipped lists the members left out of the requests and the
-// constraints that were not broken, each with the reason.
+// first. Skipped lists members left out of every request, Unbroken the
+// constraints no request breaks; DeclaredErrors are the operation's error codes.
 type RequestPlan struct {
-	Cases   []RequestCase
-	Skipped []SkippedMember
+	Cases          []RequestCase
+	Skipped        []Skip
+	Unbroken       []Skip
+	DeclaredErrors []string
 }
 
-// SkippedMember names a member the generator could not exercise.
-type SkippedMember struct {
+// Skip names a member or constraint the generator could not exercise.
+type Skip struct {
 	Path   string
 	Reason string
 }
 
-// GenerateRequests builds, for an operation's input, an acceptance request
-// with only the required members, one adding each optional top-level member,
-// and one rejection request per breakable constraint. Values are valid by the
-// model and of the right form, but identifiers name nothing that exists.
+// GenerateRequests builds a required-members-only acceptance request, one
+// adding each optional top-level member, and one rejection request per
+// breakable constraint. Identifiers are well formed but name nothing.
 func GenerateRequests(service Service, operationName string, options RequestOptions) (RequestPlan, error) {
 	model, err := Load(service)
 	if err != nil {
@@ -66,15 +65,16 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 	if !ok {
 		return RequestPlan{}, fmt.Errorf("awsmodel: %s operation %q is not modelled", service, operationName)
 	}
+	declared := model.operationErrorCodes(operation)
 	if operation.Input == nil {
-		return RequestPlan{Cases: []RequestCase{{Operation: operationName, Input: map[string]any{}}}}, nil
+		return RequestPlan{Cases: []RequestCase{{Operation: operationName, Input: map[string]any{}}}, DeclaredErrors: declared}, nil
 	}
 
 	first := model.newRequestGenerator(0, options)
 	full, ok := first.structure(operation.Input.Shape, nil, 0)
-	plan := RequestPlan{Skipped: first.skipped}
+	plan := RequestPlan{Skipped: first.skipped, Unbroken: first.unbroken, DeclaredErrors: declared}
 	if !ok {
-		plan.Skipped = append(plan.Skipped, SkippedMember{Path: "$", Reason: "a required member cannot be generated"})
+		plan.Skipped = append(plan.Skipped, Skip{Path: "$", Reason: "a required member cannot be generated"})
 		return plan, nil
 	}
 	input := model.shapes[operation.Input.Shape]
@@ -128,11 +128,15 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 		if err != nil {
 			return RequestPlan{}, err
 		}
+		path := formatPath(site.path)
+		if site.renameKey {
+			path = formatPath(site.path[:len(site.path)-1]) + mapKeyPath
+		}
 		plan.Cases = append(plan.Cases, RequestCase{
 			Operation:  operationName,
 			Member:     member,
 			Constraint: site.constraint,
-			Path:       formatPath(site.path),
+			Path:       path,
 			Detail:     site.detail,
 			Input:      broken,
 		})
@@ -186,13 +190,17 @@ func formatPath(path []pathStep) string {
 	return builder.String()
 }
 
-// constraintSite is one constraint a rejection request can break: it either
-// removes a required member or replaces the value at path.
+// mapKeyPath stands for a map's generated key in a rejection case's Path.
+const mapKeyPath = ".{key}"
+
+// constraintSite is one constraint a rejection request can break: it removes a
+// required member, renames a map key, or replaces the value at path.
 type constraintSite struct {
 	path        []pathStep
 	constraint  Constraint
 	detail      string
 	remove      bool
+	renameKey   bool
 	replacement any
 	// build makes a replacement too costly to make for every case.
 	build func() any
@@ -234,9 +242,17 @@ func (s constraintSite) apply(input map[string]any) (map[string]any, error) {
 		if !ok {
 			return nil, fmt.Errorf("awsmodel: %s: want a structure or map", formatPath(s.path))
 		}
-		if s.remove {
+		switch {
+		case s.remove:
 			delete(fields, last)
-		} else {
+		case s.renameKey:
+			key, ok := replacement.(string)
+			if !ok {
+				return nil, fmt.Errorf("awsmodel: %s: want a string key", formatPath(s.path))
+			}
+			fields[key] = fields[last]
+			delete(fields, last)
+		default:
 			fields[last] = replacement
 		}
 	}
@@ -257,7 +273,8 @@ type requestGenerator struct {
 	salt       string
 	saltNumber int
 	sites      []constraintSite
-	skipped    []SkippedMember
+	skipped    []Skip
+	unbroken   []Skip
 	visiting   map[string]bool
 }
 
@@ -279,7 +296,12 @@ func saltLetters(n int) string {
 }
 
 func (g *requestGenerator) skip(path []pathStep, reason string) {
-	g.skipped = append(g.skipped, SkippedMember{Path: formatPath(path), Reason: reason})
+	g.skipped = append(g.skipped, Skip{Path: formatPath(path), Reason: reason})
+}
+
+// leaveUnbroken records a constraint no rejection request breaks.
+func (g *requestGenerator) leaveUnbroken(path []pathStep, reason string) {
+	g.unbroken = append(g.unbroken, Skip{Path: formatPath(path), Reason: reason})
 }
 
 func (g *requestGenerator) site(path []pathStep, site constraintSite) {
@@ -350,7 +372,9 @@ func (g *requestGenerator) structure(name string, path []pathStep, depth int) (m
 		value[member] = memberValue
 		// An empty URI label changes which route the request reaches, rather
 		// than omitting a member from it.
-		if required[member] && ref.Location != "uri" {
+		if required[member] && ref.Location == "uri" {
+			g.leaveUnbroken(memberPath, "a required URI label cannot be omitted")
+		} else if required[member] {
 			g.site(memberPath, constraintSite{constraint: ConstraintRequired, detail: "member omitted", remove: true})
 		}
 		// A union takes exactly one member.
@@ -385,7 +409,9 @@ func (g *requestGenerator) list(shape *Shape, path []pathStep, depth int) (any, 
 		short := slices.Clone(list[:int(*shape.Min)-1])
 		g.site(path, constraintSite{constraint: ConstraintLength, detail: fmt.Sprintf("%d items, below min %g", len(short), *shape.Min), replacement: short})
 	}
-	if shape.Max != nil && *shape.Max < maxListRejectionLength {
+	if shape.Max != nil && *shape.Max >= maxListRejectionLength {
+		g.leaveUnbroken(path, fmt.Sprintf("list max %g is above the generated limit", *shape.Max))
+	} else if shape.Max != nil {
 		build := func() any {
 			long := make([]any, int(*shape.Max)+1)
 			for i := range long {
@@ -401,22 +427,30 @@ func (g *requestGenerator) list(shape *Shape, path []pathStep, depth int) (any, 
 // quietValue generates a further valid value without recording sites or
 // skips, for list entries beyond the first.
 func (g *requestGenerator) quietValue(ref ShapeRef, depth int) (any, bool) {
-	sites, skipped := len(g.sites), len(g.skipped)
+	sites, skipped, unbroken := len(g.sites), len(g.skipped), len(g.unbroken)
 	value, ok := g.value(ref, nil, depth)
-	g.sites, g.skipped = g.sites[:sites], g.skipped[:skipped]
+	g.sites, g.skipped, g.unbroken = g.sites[:sites], g.skipped[:skipped], g.unbroken[:unbroken]
 	return value, ok
 }
 
+// mapValue generates a one-entry map. The key's constraints are broken by
+// renaming the key, since its path is only known once it is generated.
 func (g *requestGenerator) mapValue(shape *Shape, path []pathStep, depth int) (any, bool) {
-	key, ok := g.quietValue(*shape.Key, depth)
-	if !ok {
+	sites, skipped, unbroken := len(g.sites), len(g.skipped), len(g.unbroken)
+	key, ok := g.value(*shape.Key, append(slices.Clone(path), "{key}"), depth)
+	keyString, isString := key.(string)
+	if !ok || !isString {
+		g.sites, g.skipped, g.unbroken = g.sites[:sites], g.skipped[:skipped], g.unbroken[:unbroken]
 		g.skip(path, "map key cannot be generated")
 		return nil, false
 	}
-	keyString, ok := key.(string)
-	if !ok {
-		g.skip(path, "map key is not a string")
-		return nil, false
+	for i := range g.sites[sites:] {
+		site := &g.sites[sites+i]
+		site.path = append(slices.Clone(path), keyString)
+		site.renameKey = true
+	}
+	if shape.Min != nil || shape.Max != nil {
+		g.leaveUnbroken(path, "map entry counts are not broken")
 	}
 	value, ok := g.value(*shape.Value, append(slices.Clone(path), keyString), depth)
 	if !ok {
@@ -457,17 +491,23 @@ func (g *requestGenerator) stringValue(shape *Shape, ref ShapeRef, path []pathSt
 	}
 
 	label := ref.Location == "uri"
-	if shape.Min != nil && minLength > 0 && (!label || minLength != 1) {
+	switch {
+	case shape.Min == nil || minLength == 0:
+	case label && minLength == 1:
+		g.leaveUnbroken(path, "an empty URI label changes the route")
+	default:
 		g.site(path, g.lengthSite(sampler, 0, minLength-1, minLength-1, fmt.Sprintf("below min %d", minLength)))
 	}
 	if shape.Max != nil && maxLength < maxGeneratedLength {
 		g.site(path, g.lengthSite(sampler, maxLength+1, maxGeneratedLength, maxLength+1, fmt.Sprintf("above max %d", maxLength)))
+	} else if shape.Max != nil {
+		g.leaveUnbroken(path, fmt.Sprintf("max length %g is above the generated limit", *shape.Max))
 	}
 	if sampler != nil {
-		if broken, ok := patternBreaker(sampler.re, max(minLength, 1), maxLength); ok {
+		if broken, ok := patternBreaker(sampler.re, minLength, maxLength); ok {
 			g.site(path, constraintSite{constraint: ConstraintPattern, detail: "value does not match " + shape.Pattern, replacement: broken})
 		} else {
-			g.skip(path, "no value of a valid length breaks the pattern")
+			g.leaveUnbroken(path, "no value of a valid length breaks the pattern")
 		}
 	}
 	return value, true
@@ -586,6 +626,8 @@ func (g *requestGenerator) blob(shape *Shape, path []pathStep) []byte {
 		maxLength = min(maxLength, int(*shape.Max))
 		if maxLength < maxGeneratedLength {
 			g.site(path, constraintSite{constraint: ConstraintLength, detail: fmt.Sprintf("above max %d bytes", maxLength), replacement: []byte(fitLength("", maxLength+1, maxLength+1))})
+		} else {
+			g.leaveUnbroken(path, fmt.Sprintf("max length %g bytes is above the generated limit", *shape.Max))
 		}
 	}
 	return []byte(fitLength("spx"+g.salt, minLength, maxLength))

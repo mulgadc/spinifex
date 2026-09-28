@@ -4,7 +4,9 @@ package integration
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -46,18 +48,19 @@ func TestRequestConformance(t *testing.T) {
 
 			gw := startGateway(t, nil)
 			startRequestConformanceBackends(t, gw)
-			sender := newRequestSender(gw, service)
+			sender, err := newRequestSender(gw, service)
+			require.NoError(t, err)
 			for _, operation := range coverage.Implemented {
 				plan, err := awsmodel.GenerateRequests(service, operation, awsmodel.RequestOptions{AccountID: gw.AccountID, Region: testRegion})
 				require.NoError(t, err, operation)
-				suiteRequestConformance.recordOperation(service, len(plan.Skipped))
-				judge := awsmodel.NewRequestJudge()
+				suiteRequestConformance.recordOperation(service, operation, plan)
+				judge := plan.NewJudge()
 				for _, request := range plan.Cases {
 					started := time.Now()
 					result, err := sender.send(request)
 					require.NoError(t, err, "%s %s", operation, request.Path)
 					if elapsed := time.Since(started); elapsed > slowRequest {
-						t.Logf("slow request: %s %s %s took %s (%d %s)", operation, request.Constraint, request.Path, elapsed, result.Status, result.Code)
+						t.Logf("slow request: %s %s %s took %dms (%d %s)", operation, request.Constraint, request.Path, elapsed.Milliseconds(), result.Status, result.Code)
 					}
 					suiteRequestConformance.record(service, request, result, judge.Judge(request, result))
 				}
@@ -87,19 +90,23 @@ type requestSender struct {
 	client   *http.Client
 }
 
-func newRequestSender(gw *Gateway, service awsmodel.Service) *requestSender {
-	model, _ := awsmodel.Load(service)
+func newRequestSender(gw *Gateway, service awsmodel.Service) (*requestSender, error) {
+	model, err := awsmodel.Load(service)
+	if err != nil {
+		return nil, err
+	}
 	return &requestSender{
 		endpoint: gw.Server.URL,
 		service:  service,
 		signing:  model.Metadata().SigningName,
 		signer:   v4.NewSigner(awscreds.NewStaticCredentials(testAccessKeyID, testSecretAccessKey, "")),
 		client:   &http.Client{Timeout: requestTimeout},
-	}
+	}, nil
 }
 
 // send encodes, signs and sends one request. A request that times out is
-// recorded with status 0, which judges as inconclusive.
+// recorded with status 0, which judges as inconclusive; any other transport
+// failure, such as a gateway panic closing the connection, is an error.
 func (s *requestSender) send(request awsmodel.RequestCase) (awsmodel.RequestResult, error) {
 	encoded, err := awsmodel.EncodeRequest(s.service, request.Operation, request.Input)
 	if err != nil {
@@ -116,8 +123,11 @@ func (s *requestSender) send(request awsmodel.RequestCase) (awsmodel.RequestResu
 		return awsmodel.RequestResult{}, err
 	}
 	response, err := s.client.Do(httpRequest)
-	if err != nil {
+	if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
 		return awsmodel.RequestResult{Code: "Timeout"}, nil
+	}
+	if err != nil {
+		return awsmodel.RequestResult{}, err
 	}
 	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)

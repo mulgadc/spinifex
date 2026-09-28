@@ -68,10 +68,9 @@ func compilePatternSampler(pattern string) (*patternSampler, error) {
 	return &patternSampler{re: re, anchored: anchored, syntax: parsed.Simplify(), samples: map[[2]int]sampleResult{}}, nil
 }
 
-// sample returns a string that fully matches the pattern and whose length in
-// runes is within [minLength, maxLength]. Every unbounded or ranged repetition
-// is expanded the same number of times; the count is searched for, since the
-// length only grows with it.
+// sample returns a string fully matching the pattern with a rune length in
+// [minLength, maxLength], expanding every repetition the same number of times
+// and searching for that count, since the length only grows with it.
 func (p *patternSampler) sample(minLength, maxLength int) (string, bool) {
 	key := [2]int{minLength, maxLength}
 	p.mu.Lock()

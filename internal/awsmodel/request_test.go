@@ -55,7 +55,7 @@ func (m *Model) inputViolations(shapeName, path string, value any, violations *[
 		}
 	case "map":
 		for key, entry := range value.(map[string]any) {
-			m.inputViolations(shape.Key.Shape, path+"."+key, key, violations)
+			m.inputViolations(shape.Key.Shape, path+mapKeyPath, key, violations)
 			m.inputViolations(shape.Value.Shape, path+"."+key, entry, violations)
 		}
 	case "string":
@@ -105,8 +105,8 @@ func testPattern(pattern string) *regexp.Regexp {
 }
 
 // TestGeneratedRequestsBreakOnlyTheirConstraint checks every modelled
-// operation: an acceptance request breaks no constraint, and a rejection
-// request breaks its named constraint at its path and nothing elsewhere.
+// operation: acceptance cases come first and break nothing, a rejection breaks
+// only its named constraint, and every case encodes.
 func TestGeneratedRequestsBreakOnlyTheirConstraint(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -125,7 +125,14 @@ func TestGeneratedRequestsBreakOnlyTheirConstraint(t *testing.T) {
 				plan, err := GenerateRequests(service, operationName, testRequestOptions)
 				require.NoError(t, err, operationName)
 				input := model.shapes[operation.Input.Shape]
+				rejecting := false
 				for _, request := range plan.Cases {
+					require.False(t, rejecting && request.Acceptance(), "%s acceptance %s follows a rejection", operationName, request.Path)
+					rejecting = !request.Acceptance()
+					if service != S3 {
+						_, err := EncodeRequest(service, operationName, request.Input)
+						require.NoError(t, err, "%s %s %s encodes", operationName, request.Constraint, request.Path)
+					}
 					var violations []constraintViolation
 					model.inputViolations(operation.Input.Shape, "$", request.Input, &violations)
 					for member := range request.Input {
@@ -190,6 +197,58 @@ func TestGenerateRequestsAttributesRejections(t *testing.T) {
 	require.Equal(t, "Tags", byPath["required $.Tags[0].Key"].Member)
 }
 
+func TestGenerateRequestsBreaksEachConstraintKind(t *testing.T) {
+	plan, err := GenerateRequests(IAM, "CreateRole", testRequestOptions)
+	require.NoError(t, err)
+	var rejections []string
+	for _, request := range plan.Cases {
+		if !request.Acceptance() {
+			rejections = append(rejections, string(request.Constraint)+" "+request.Path)
+		}
+	}
+	for _, want := range []string{
+		"required $.RoleName", "length $.RoleName", "pattern $.RoleName",
+		"range $.MaxSessionDuration", "length $.Tags", "required $.Tags[0].Key",
+	} {
+		require.Contains(t, rejections, want)
+	}
+
+	plan, err = GenerateRequests(EC2, "CreateVolume", testRequestOptions)
+	require.NoError(t, err)
+	var enums []string
+	for _, request := range plan.Cases {
+		if request.Constraint == ConstraintEnum {
+			enums = append(enums, request.Path)
+		}
+	}
+	require.Contains(t, enums, "$.VolumeType")
+}
+
+func TestGenerateRequestsBreaksMapKeys(t *testing.T) {
+	plan, err := GenerateRequests(EKS, "TagResource", testRequestOptions)
+	require.NoError(t, err)
+	var keyRejections []Constraint
+	for _, request := range plan.Cases {
+		if request.Path == "$.tags"+mapKeyPath {
+			keyRejections = append(keyRejections, request.Constraint)
+			tags := request.Input["tags"].(map[string]any)
+			require.Len(t, tags, 1, "the key is renamed, not added")
+		}
+	}
+	require.Equal(t, []Constraint{ConstraintLength, ConstraintLength}, keyRejections, "below min and above max")
+}
+
+func TestGenerateRequestsRecordsUnbrokenConstraints(t *testing.T) {
+	plan, err := GenerateRequests(EKS, "DescribeCluster", testRequestOptions)
+	require.NoError(t, err)
+	require.Contains(t, plan.Unbroken, Skip{Path: "$.name", Reason: "a required URI label cannot be omitted"})
+
+	plan, err = GenerateRequests(IAM, "CreateRole", testRequestOptions)
+	require.NoError(t, err)
+	require.Contains(t, plan.Unbroken, Skip{Path: "$.AssumeRolePolicyDocument", Reason: "max length 131072 is above the generated limit"})
+	require.Contains(t, plan.DeclaredErrors, "InvalidInput")
+}
+
 func TestGenerateRequestsSkipsAcceptanceForUnguessableMembers(t *testing.T) {
 	plan, err := GenerateRequests(IAM, "ListRoles", testRequestOptions)
 	require.NoError(t, err)
@@ -217,6 +276,8 @@ func TestGenerateRequestsUsesResourceHints(t *testing.T) {
 		{ElasticLoadBalancingV2, "DeleteLoadBalancer", "LoadBalancerArn", regexp.MustCompile(`^arn:aws:elasticloadbalancing:ap-southeast-2:123456789012:loadbalancer/app/`)},
 		{IAM, "AttachRolePolicy", "PolicyArn", regexp.MustCompile(`^arn:aws:iam::123456789012:policy/`)},
 		{RDS, "CreateDBInstance", "Engine", regexp.MustCompile(`^postgres$`)},
+		{ECR, "TagResource", "resourceArn", regexp.MustCompile(`^arn:aws:ecr:ap-southeast-2:123456789012:repository/`)},
+		{EKS, "TagResource", "resourceArn", regexp.MustCompile(`^arn:aws:eks:ap-southeast-2:123456789012:cluster/`)},
 	}
 	for _, test := range tests {
 		t.Run(test.operation+"."+test.member, func(t *testing.T) {

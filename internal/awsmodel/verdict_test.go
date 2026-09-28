@@ -8,53 +8,87 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRequestCaseJudge(t *testing.T) {
-	acceptance := awsmodel.RequestCase{Operation: "CreateRole"}
-	rejection := awsmodel.RequestCase{Operation: "CreateRole", Constraint: awsmodel.ConstraintLength, Path: "$.RoleName"}
+var (
+	accepted       = awsmodel.RequestResult{Status: 200}
+	invalid        = awsmodel.RequestResult{Status: 400, Code: "ValidationError"}
+	missing        = awsmodel.RequestResult{Status: 400, Code: "MissingParameter"}
+	notFound       = awsmodel.RequestResult{Status: 404, Code: "NoSuchEntity"}
+	createRolePlan = awsmodel.RequestPlan{DeclaredErrors: []string{"InvalidInput", "LimitExceeded"}}
+)
+
+func TestRequestJudgeAcceptance(t *testing.T) {
 	tests := []struct {
-		name    string
-		request awsmodel.RequestCase
-		result  awsmodel.RequestResult
-		want    awsmodel.Verdict
+		name   string
+		result awsmodel.RequestResult
+		want   awsmodel.Verdict
 	}{
-		{"accepted valid request", acceptance, awsmodel.RequestResult{Status: 200}, awsmodel.VerdictPass},
-		{"valid request refused as invalid", acceptance, awsmodel.RequestResult{Status: 400, Code: "ValidationError"}, awsmodel.VerdictFinding},
-		{"valid request refused as malformed", acceptance, awsmodel.RequestResult{Status: 400, Code: "InvalidInstanceID.Malformed"}, awsmodel.VerdictFinding},
-		{"valid request missing a conditionally required member", acceptance, awsmodel.RequestResult{Status: 400, Code: "MissingParameter"}, awsmodel.VerdictInconclusive},
-		{"valid request names a missing resource", acceptance, awsmodel.RequestResult{Status: 404, Code: "NoSuchEntity"}, awsmodel.VerdictInconclusive},
-		{"valid request times out", acceptance, awsmodel.RequestResult{Code: "Timeout"}, awsmodel.VerdictInconclusive},
-		{"invalid request accepted", rejection, awsmodel.RequestResult{Status: 200}, awsmodel.VerdictFinding},
-		{"invalid request refused as invalid", rejection, awsmodel.RequestResult{Status: 400, Code: "ValidationError"}, awsmodel.VerdictPass},
-		{"invalid request refused for a missing member", rejection, awsmodel.RequestResult{Status: 400, Code: "MissingParameter"}, awsmodel.VerdictPass},
-		{"invalid request refused for another reason", rejection, awsmodel.RequestResult{Status: 404, Code: "NoSuchEntity"}, awsmodel.VerdictInconclusive},
+		{"accepted valid request", accepted, awsmodel.VerdictPass},
+		{"valid request refused as invalid", invalid, awsmodel.VerdictFinding},
+		{"valid request refused as malformed", awsmodel.RequestResult{Status: 400, Code: "InvalidInstanceID.Malformed"}, awsmodel.VerdictFinding},
+		{"valid request missing a conditionally required member", missing, awsmodel.VerdictInconclusive},
+		{"valid request names a missing resource", notFound, awsmodel.VerdictInconclusive},
+		{"valid request times out", awsmodel.RequestResult{Code: "Timeout"}, awsmodel.VerdictInconclusive},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			require.Equal(t, test.want, test.request.Judge(test.result))
+			require.Equal(t, test.want, createRolePlan.NewJudge().Judge(awsmodel.RequestCase{}, test.result))
 		})
 	}
 }
 
-func TestRequestJudgeDiscountsRejectionsOfRefusedBase(t *testing.T) {
-	ok := awsmodel.RequestResult{Status: 200}
-	invalid := awsmodel.RequestResult{Status: 400, Code: "ValidationError"}
-	missing := awsmodel.RequestResult{Status: 400, Code: "MissingParameter"}
+func TestRequestJudgeRejection(t *testing.T) {
+	rejection := awsmodel.RequestCase{Constraint: awsmodel.ConstraintLength, Path: "$.RoleName"}
+	tests := []struct {
+		name   string
+		plan   awsmodel.RequestPlan
+		result awsmodel.RequestResult
+		want   awsmodel.Verdict
+	}{
+		{"invalid request accepted", createRolePlan, accepted, awsmodel.VerdictFinding},
+		{"refused with a common validation error", createRolePlan, invalid, awsmodel.VerdictPass},
+		{"refused for a missing member", createRolePlan, missing, awsmodel.VerdictPass},
+		{"refused with a declared error", createRolePlan, awsmodel.RequestResult{Status: 400, Code: "InvalidInput"}, awsmodel.VerdictPass},
+		{"refused with an undeclared error", createRolePlan, awsmodel.RequestResult{Status: 400, Code: "InvalidParameterValueException"}, awsmodel.VerdictUndeclaredError},
+		{"operation declares no errors", awsmodel.RequestPlan{}, awsmodel.RequestResult{Status: 400, Code: "InvalidParameterValueException"}, awsmodel.VerdictPass},
+		{"refused for another reason", createRolePlan, notFound, awsmodel.VerdictInconclusive},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			judge := test.plan.NewJudge()
+			require.Equal(t, awsmodel.VerdictPass, judge.Judge(awsmodel.RequestCase{}, accepted))
+			require.Equal(t, test.want, judge.Judge(rejection, test.result))
+		})
+	}
+}
 
-	judge := awsmodel.NewRequestJudge()
-	require.Equal(t, awsmodel.VerdictPass, judge.Judge(awsmodel.RequestCase{}, ok))
+func TestRequestJudgeDiscountsRefusalsOfRefusedAcceptance(t *testing.T) {
+	judge := createRolePlan.NewJudge()
+	require.Equal(t, awsmodel.VerdictPass, judge.Judge(awsmodel.RequestCase{}, accepted))
 	require.Equal(t, awsmodel.VerdictFinding, judge.Judge(awsmodel.RequestCase{Member: "Tags"}, invalid))
-	require.Equal(t, awsmodel.VerdictPass, judge.Judge(awsmodel.RequestCase{Member: "Path"}, ok))
-	// Tags alone was refused, so its rejection proves nothing.
+	require.Equal(t, awsmodel.VerdictPass, judge.Judge(awsmodel.RequestCase{Member: "Path"}, accepted))
+	// Tags alone was refused, so a refusal of its rejection proves nothing.
 	require.Equal(t, awsmodel.VerdictInconclusive, judge.Judge(awsmodel.RequestCase{Member: "Tags", Constraint: awsmodel.ConstraintLength}, invalid))
+	require.Equal(t, awsmodel.VerdictFinding, judge.Judge(awsmodel.RequestCase{Member: "Tags", Constraint: awsmodel.ConstraintLength}, accepted))
 	require.Equal(t, awsmodel.VerdictPass, judge.Judge(awsmodel.RequestCase{Member: "Path", Constraint: awsmodel.ConstraintPattern}, invalid))
-	require.Equal(t, awsmodel.VerdictFinding, judge.Judge(awsmodel.RequestCase{Member: "Path", Constraint: awsmodel.ConstraintPattern}, ok))
 
-	// A refused base leaves nothing attributable to any single member.
-	judge = awsmodel.NewRequestJudge()
+	// A refused base leaves no refusal attributable to any single member, but
+	// a request breaking a constraint that succeeds is still a finding.
+	judge = createRolePlan.NewJudge()
 	require.Equal(t, awsmodel.VerdictInconclusive, judge.Judge(awsmodel.RequestCase{}, missing))
 	require.Equal(t, awsmodel.VerdictInconclusive, judge.Judge(awsmodel.RequestCase{Constraint: awsmodel.ConstraintRequired, Path: "$.RoleName"}, invalid))
-	require.Equal(t, awsmodel.VerdictInconclusive, judge.Judge(awsmodel.RequestCase{Member: "Tags"}, invalid))
-	require.Equal(t, awsmodel.VerdictInconclusive, judge.Judge(awsmodel.RequestCase{Member: "Tags", Constraint: awsmodel.ConstraintLength}, ok))
+	require.Equal(t, awsmodel.VerdictFinding, judge.Judge(awsmodel.RequestCase{Constraint: awsmodel.ConstraintRequired, Path: "$.RoleName"}, accepted))
+	require.Equal(t, awsmodel.VerdictInconclusive, judge.Judge(awsmodel.RequestCase{Member: "Tags"}, accepted))
+	require.Equal(t, awsmodel.VerdictFinding, judge.Judge(awsmodel.RequestCase{Member: "Tags", Constraint: awsmodel.ConstraintLength}, accepted))
+}
+
+func TestRequestJudgeDiscountsRefusalsOfMembersWithoutAcceptance(t *testing.T) {
+	judge := createRolePlan.NewJudge()
+	require.Equal(t, awsmodel.VerdictPass, judge.Judge(awsmodel.RequestCase{}, accepted))
+	// A pagination token gets no acceptance case, so its refusal may be of
+	// the token rather than the broken constraint.
+	marker := awsmodel.RequestCase{Member: "Marker", Constraint: awsmodel.ConstraintLength, Path: "$.Marker"}
+	require.Equal(t, awsmodel.VerdictInconclusive, judge.Judge(marker, invalid))
+	require.Equal(t, awsmodel.VerdictFinding, judge.Judge(marker, accepted))
 }
 
 func TestDecodeRequestResult(t *testing.T) {

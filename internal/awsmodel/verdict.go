@@ -2,6 +2,7 @@ package awsmodel
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -12,6 +13,9 @@ const (
 	VerdictPass         Verdict = "pass"
 	VerdictFinding      Verdict = "finding"
 	VerdictInconclusive Verdict = "inconclusive"
+	// VerdictUndeclaredError is a rejection refused with a validation code
+	// that neither the operation nor the common errors declare.
+	VerdictUndeclaredError Verdict = "undeclared_error"
 )
 
 // validationErrorCodes are the codes that refuse a request as failing
@@ -31,6 +35,16 @@ var validationErrorCodes = map[string]bool{
 	"ValidationException":            true,
 }
 
+// commonValidationCodes are validation errors AWS lists as common to every
+// service rather than declaring them on each operation.
+var commonValidationCodes = map[string]bool{
+	"InvalidParameterCombination": true,
+	"InvalidParameterValue":       true,
+	"MissingParameter":            true,
+	"ValidationError":             true,
+	"ValidationException":         true,
+}
+
 // IsValidationErrorCode reports whether code is a parameter validation error,
 // including EC2's per-resource "*.Malformed" codes.
 func IsValidationErrorCode(code string) bool {
@@ -45,6 +59,8 @@ type RequestResult struct {
 	Message string
 }
 
+func (r RequestResult) succeeded() bool { return r.Status >= 200 && r.Status < 300 }
+
 // conditionalRequirementCodes name a member the request omits or a pairing it
 // breaks. Models mark conditionally required members optional, so an
 // acceptance request refused with one of these may be refused by AWS too.
@@ -53,52 +69,49 @@ var conditionalRequirementCodes = map[string]bool{
 	"MissingParameter":            true,
 }
 
-// Judge decides a generated request's verdict. The acceptance request fails
-// only on a validation error; any other error, such as a missing resource,
-// says nothing about its parameters. A rejection request passes on a
-// validation error and is a finding if it succeeds.
-func (c RequestCase) Judge(result RequestResult) Verdict {
-	succeeded := result.Status >= 200 && result.Status < 300
-	validation := !succeeded && IsValidationErrorCode(result.Code)
-	switch {
-	case c.Acceptance() && succeeded:
-		return VerdictPass
-	case c.Acceptance() && validation && !conditionalRequirementCodes[result.Code]:
-		return VerdictFinding
-	case !c.Acceptance() && succeeded:
-		return VerdictFinding
-	case !c.Acceptance() && validation:
-		return VerdictPass
-	default:
-		return VerdictInconclusive
-	}
-}
-
-// RequestJudge judges one operation's cases in plan order, where each case
-// builds on the required-members-only acceptance case. Once that base is
-// rejected as invalid no later case can be attributed to its member, so the
-// base carries any finding and the later cases are inconclusive.
+// RequestJudge judges a plan's cases in plan order. A refusal counts for a
+// rejection case only if the acceptance cases it builds on were accepted; a
+// rejection case that succeeds is a finding regardless.
 type RequestJudge struct {
-	rejected map[string]bool
+	declared []string
+	refused  map[string]bool
 }
 
-func NewRequestJudge() *RequestJudge {
-	return &RequestJudge{rejected: map[string]bool{}}
+func (p RequestPlan) NewJudge() *RequestJudge {
+	return &RequestJudge{declared: p.DeclaredErrors, refused: map[string]bool{}}
 }
 
 func (j *RequestJudge) Judge(c RequestCase, result RequestResult) Verdict {
-	verdict := c.Judge(result)
-	if c.Member != "" && j.rejected[""] {
-		return VerdictInconclusive
-	}
+	validation := !result.succeeded() && IsValidationErrorCode(result.Code)
 	if c.Acceptance() {
-		j.rejected[c.Member] = IsValidationErrorCode(result.Code)
-		return verdict
+		baseRefused := c.Member != "" && j.refused[""]
+		j.refused[c.Member] = validation
+		switch {
+		case baseRefused:
+			return VerdictInconclusive
+		case result.succeeded():
+			return VerdictPass
+		case validation && !conditionalRequirementCodes[result.Code]:
+			return VerdictFinding
+		default:
+			return VerdictInconclusive
+		}
 	}
-	if j.rejected[c.Member] {
+	if result.succeeded() {
+		return VerdictFinding
+	}
+	// A member with no acceptance case, such as a pagination token, gives a
+	// refusal nothing to be attributed against.
+	baseRefused, baseJudged := j.refused[""]
+	memberRefused, memberJudged := j.refused[c.Member]
+	switch {
+	case !validation, !baseJudged, !memberJudged, baseRefused, memberRefused:
 		return VerdictInconclusive
+	case len(j.declared) > 0 && !slices.Contains(j.declared, result.Code) && !commonValidationCodes[result.Code]:
+		return VerdictUndeclaredError
+	default:
+		return VerdictPass
 	}
-	return verdict
 }
 
 // DecodeRequestResult extracts the error code and message from a response.

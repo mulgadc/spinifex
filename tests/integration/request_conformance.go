@@ -3,10 +3,10 @@
 package integration
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 
@@ -14,21 +14,24 @@ import (
 )
 
 // requestFinding is one generated request whose outcome disagrees with the
-// model: an acceptance request rejected as invalid, or a rejection request
-// that succeeded.
+// model: an acceptance request rejected as invalid, a rejection request that
+// succeeded, or one refused with an error the operation does not declare.
 type requestFinding struct {
-	service   awsmodel.Service
-	operation string
-	request   awsmodel.RequestCase
-	result    awsmodel.RequestResult
+	service awsmodel.Service
+	request awsmodel.RequestCase
+	result  awsmodel.RequestResult
+	verdict awsmodel.Verdict
 }
 
 type requestServiceCounts struct {
-	operations   int
-	requests     int
-	verdicts     map[awsmodel.Verdict]int
-	inconclusive map[string]int
-	skipped      int
+	operations     int
+	requests       int
+	verdicts       map[awsmodel.Verdict]int
+	inconclusive   map[string]int
+	skippedMembers int
+	unbroken       int
+	// untested maps each operation that produced no request to the reason.
+	untested map[string]string
 }
 
 // requestCollector gathers the verdicts of the generated request sweep.
@@ -47,18 +50,26 @@ var suiteRequestConformance = newRequestCollector()
 func (c *requestCollector) serviceLocked(service awsmodel.Service) *requestServiceCounts {
 	counts := c.services[service]
 	if counts == nil {
-		counts = &requestServiceCounts{verdicts: map[awsmodel.Verdict]int{}, inconclusive: map[string]int{}}
+		counts = &requestServiceCounts{verdicts: map[awsmodel.Verdict]int{}, inconclusive: map[string]int{}, untested: map[string]string{}}
 		c.services[service] = counts
 	}
 	return counts
 }
 
-func (c *requestCollector) recordOperation(service awsmodel.Service, skipped int) {
+func (c *requestCollector) recordOperation(service awsmodel.Service, operation string, plan awsmodel.RequestPlan) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	counts := c.serviceLocked(service)
 	counts.operations++
-	counts.skipped += skipped
+	counts.skippedMembers += len(plan.Skipped)
+	counts.unbroken += len(plan.Unbroken)
+	if len(plan.Cases) == 0 {
+		reasons := make([]string, len(plan.Skipped))
+		for i, skip := range plan.Skipped {
+			reasons[i] = skip.Path + ": " + skip.Reason
+		}
+		counts.untested[operation] = strings.Join(reasons, "; ")
+	}
 }
 
 func (c *requestCollector) record(service awsmodel.Service, request awsmodel.RequestCase, result awsmodel.RequestResult, verdict awsmodel.Verdict) {
@@ -68,8 +79,8 @@ func (c *requestCollector) record(service awsmodel.Service, request awsmodel.Req
 	counts.requests++
 	counts.verdicts[verdict]++
 	switch verdict {
-	case awsmodel.VerdictFinding:
-		c.findings = append(c.findings, requestFinding{service: service, operation: request.Operation, request: request, result: result})
+	case awsmodel.VerdictFinding, awsmodel.VerdictUndeclaredError:
+		c.findings = append(c.findings, requestFinding{service: service, request: request, result: result, verdict: verdict})
 	case awsmodel.VerdictInconclusive:
 		code := result.Code
 		if code == "" {
@@ -100,28 +111,29 @@ func (c *requestCollector) report(policy conformancePolicy, mode conformanceMode
 
 	var report strings.Builder
 	total := requestServiceCounts{verdicts: map[awsmodel.Verdict]int{}}
+	untested := 0
 	for _, counts := range c.services {
 		total.operations += counts.operations
 		total.requests += counts.requests
-		total.skipped += counts.skipped
+		total.skippedMembers += counts.skippedMembers
+		total.unbroken += counts.unbroken
+		untested += len(counts.untested)
 		for verdict, count := range counts.verdicts {
 			total.verdicts[verdict] += count
 		}
 	}
-	fmt.Fprintf(&report, "AWS request conformance (%s): operations=%d requests=%d pass=%d findings=%d inconclusive=%d skipped_members=%d\n",
-		mode, total.operations, total.requests, total.verdicts[awsmodel.VerdictPass], total.verdicts[awsmodel.VerdictFinding],
-		total.verdicts[awsmodel.VerdictInconclusive], total.skipped)
+	fmt.Fprintf(&report, "AWS request conformance (%s): operations=%d untested_operations=%d requests=%d %s\n",
+		mode, total.operations, untested, total.requests, verdictSummary(&total))
 
 	for _, service := range slices.Sorted(maps.Keys(c.services)) {
 		counts := c.services[service]
-		fmt.Fprintf(&report, "REQUESTS %s operations=%d requests=%d pass=%d findings=%d inconclusive=%d skipped_members=%d promoted=%t\n",
-			service, counts.operations, counts.requests, counts.verdicts[awsmodel.VerdictPass], counts.verdicts[awsmodel.VerdictFinding],
-			counts.verdicts[awsmodel.VerdictInconclusive], counts.skipped, policy.isRequestPromoted(service))
+		fmt.Fprintf(&report, "REQUESTS %s operations=%d untested_operations=%d requests=%d %s promoted=%t\n",
+			service, counts.operations, len(counts.untested), counts.requests, verdictSummary(counts), policy.isRequestPromoted(service))
+		for _, operation := range slices.Sorted(maps.Keys(counts.untested)) {
+			fmt.Fprintf(&report, "UNTESTED %s %s: %s\n", service, operation, counts.untested[operation])
+		}
 		codes := slices.SortedFunc(maps.Keys(counts.inconclusive), func(a, b string) int {
-			if counts.inconclusive[a] != counts.inconclusive[b] {
-				return counts.inconclusive[b] - counts.inconclusive[a]
-			}
-			return strings.Compare(a, b)
+			return cmp.Or(cmp.Compare(counts.inconclusive[b], counts.inconclusive[a]), strings.Compare(a, b))
 		})
 		if len(codes) > 0 {
 			parts := make([]string, len(codes))
@@ -133,27 +145,37 @@ func (c *requestCollector) report(policy conformancePolicy, mode conformanceMode
 	}
 
 	findings := slices.Clone(c.findings)
-	sort.Slice(findings, func(i, j int) bool {
-		left, right := findings[i], findings[j]
-		return fmt.Sprint(left.service, "\x00", left.operation, "\x00", left.request.Path, "\x00", left.request.Detail) <
-			fmt.Sprint(right.service, "\x00", right.operation, "\x00", right.request.Path, "\x00", right.request.Detail)
+	slices.SortFunc(findings, func(a, b requestFinding) int {
+		return cmp.Or(cmp.Compare(a.service, b.service), strings.Compare(a.request.Operation, b.request.Operation),
+			strings.Compare(a.request.Path, b.request.Path), strings.Compare(a.request.Detail, b.request.Detail))
 	})
 	for _, finding := range findings {
 		severity := "WARN"
 		if mode == conformanceModeFail && policy.isRequestPromoted(finding.service) {
 			severity = "FAIL"
 		}
-		if finding.request.Acceptance() {
+		request := finding.request
+		switch {
+		case finding.verdict == awsmodel.VerdictUndeclaredError:
+			fmt.Fprintf(&report, "%s %s %s %s %s (%s) refused with undeclared %s: %s\n",
+				severity, finding.service, request.Operation, request.Path, request.Constraint, request.Detail, finding.result.Code, finding.result.Message)
+		case request.Acceptance():
 			with := "with only required members"
-			if finding.request.Member != "" {
-				with = "with " + finding.request.Path + " set"
+			if request.Member != "" {
+				with = "with " + request.Path + " set"
 			}
 			fmt.Fprintf(&report, "%s %s %s model-valid request %s rejected: %s: %s\n",
-				severity, finding.service, finding.operation, with, finding.result.Code, finding.result.Message)
-			continue
+				severity, finding.service, request.Operation, with, finding.result.Code, finding.result.Message)
+		default:
+			fmt.Fprintf(&report, "%s %s %s %s %s (%s) accepted\n",
+				severity, finding.service, request.Operation, request.Path, request.Constraint, request.Detail)
 		}
-		fmt.Fprintf(&report, "%s %s %s %s %s (%s) accepted\n",
-			severity, finding.service, finding.operation, finding.request.Path, finding.request.Constraint, finding.request.Detail)
 	}
 	return strings.TrimSuffix(report.String(), "\n")
+}
+
+func verdictSummary(counts *requestServiceCounts) string {
+	return fmt.Sprintf("pass=%d findings=%d undeclared_errors=%d inconclusive=%d skipped_members=%d unbroken_constraints=%d",
+		counts.verdicts[awsmodel.VerdictPass], counts.verdicts[awsmodel.VerdictFinding], counts.verdicts[awsmodel.VerdictUndeclaredError],
+		counts.verdicts[awsmodel.VerdictInconclusive], counts.skippedMembers, counts.unbroken)
 }

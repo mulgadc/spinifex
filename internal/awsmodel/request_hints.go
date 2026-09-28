@@ -14,10 +14,9 @@ type RequestOptions struct {
 	Region    string
 }
 
-// Models constrain most identifiers only by length, so a value valid by the
-// model alone, such as "spxa" for an AMI ID, is one AWS rejects too. These
-// hints give members that name a resource a value of the right form; a hint
-// is used only if the member's own constraints also accept it.
+// Models constrain most identifiers only by length, so "spxa" is a model-valid
+// AMI ID that AWS rejects. Hints give resource-naming members a value of the
+// right form, used only if the member's own constraints accept it.
 
 // ec2IDPrefixes maps the resource an EC2 "<Resource>Id" member names to its
 // ID prefix.
@@ -114,10 +113,18 @@ func (g *requestGenerator) hint(path []pathStep) (string, bool) {
 		case "taskDefinition":
 			return name + ":1", true
 		}
+	case ECR:
+		if member == "resourceArn" {
+			return fmt.Sprintf("arn:aws:ecr:%s:%s:repository/%s", options.Region, options.AccountID, name), true
+		}
+	case EKS:
+		if member == "resourceArn" {
+			return fmt.Sprintf("arn:aws:eks:%s:%s:cluster/%s", options.Region, options.AccountID, name), true
+		}
 	}
 
 	switch member {
-	case "PolicyArn", "PermissionsBoundary", "arn":
+	case "PolicyArn", "PermissionsBoundary":
 		return fmt.Sprintf("arn:aws:iam::%s:policy/%s", options.AccountID, name), true
 	case "RoleArn":
 		return fmt.Sprintf("arn:aws:iam::%s:role/%s", options.AccountID, name), true

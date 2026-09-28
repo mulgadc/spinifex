@@ -1,10 +1,12 @@
-package awsmodel
+package awsmodel_test
 
 import (
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
+
+	. "github.com/mulgadc/spinifex/internal/awsmodel"
 )
 
 func mustLoad(t *testing.T, service Service) *Model {
@@ -107,7 +109,7 @@ func TestSmithyErrors(t *testing.T) {
 	// JSON wire code stays the shape name.
 	acm := mustLoad(t, ACM)
 	deleteCertificate, _ := acm.Operation("DeleteCertificate")
-	codes := acm.operationErrorCodes(deleteCertificate)
+	codes := acm.OperationErrorCodes(deleteCertificate)
 	if !strings.Contains(strings.Join(codes, ","), "AccessDeniedException") {
 		t.Errorf("DeleteCertificate codes = %v, want AccessDeniedException", codes)
 	}
@@ -184,7 +186,7 @@ func TestParseSmithyModelRejectsMalformedModels(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := parseSmithyModel("test", []byte(test.document))
+			_, err := ParseSmithyModel("test", []byte(test.document))
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want it to contain %q", err, test.want)
 			}

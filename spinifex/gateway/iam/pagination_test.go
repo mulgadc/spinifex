@@ -1,4 +1,4 @@
-package gateway_iam
+package gateway_iam_test
 
 import (
 	"fmt"
@@ -7,14 +7,18 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+const testAccountID = "000000000000"
+
 // listStub serves fixed lists in whatever order the test gives, as the KV
 // bucket does, and counts service calls.
 type listStub struct {
-	stubIAMService
+	handlers_iam.IAMService
 
 	users    []string
 	versions []string
@@ -53,7 +57,7 @@ func userNames(users []*iam.User) []string {
 
 func listUsers(t *testing.T, svc *listStub, marker *string, maxItems int64) *iam.ListUsersOutput {
 	t.Helper()
-	out, err := ListUsers(testAccountID, &iam.ListUsersInput{Marker: marker, MaxItems: aws.Int64(maxItems)}, svc)
+	out, err := gateway_iam.ListUsers(testAccountID, &iam.ListUsersInput{Marker: marker, MaxItems: aws.Int64(maxItems)}, svc)
 	require.NoError(t, err)
 	return out
 }
@@ -78,7 +82,7 @@ func TestListUsers_DefaultPageIs100(t *testing.T) {
 		svc.users = append(svc.users, fmt.Sprintf("user%03d", i))
 	}
 
-	out, err := ListUsers(testAccountID, &iam.ListUsersInput{}, svc)
+	out, err := gateway_iam.ListUsers(testAccountID, &iam.ListUsersInput{}, svc)
 	require.NoError(t, err)
 	assert.Len(t, out.Users, 100)
 	assert.True(t, aws.BoolValue(out.IsTruncated))
@@ -120,7 +124,7 @@ func TestListUsers_RejectsBadPagingBeforeListing(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &listStub{users: []string{"a"}}
-			_, err := ListUsers(testAccountID, tc.input, svc)
+			_, err := gateway_iam.ListUsers(testAccountID, tc.input, svc)
 			require.Error(t, err)
 			assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationError), "got %v", err)
 			assert.Zero(t, svc.calls)
@@ -144,12 +148,12 @@ func TestListPolicyVersions_PagesNewestFirst(t *testing.T) {
 		return got
 	}
 
-	first, err := ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{PolicyArn: aws.String("arn"), MaxItems: aws.Int64(2)}, svc)
+	first, err := gateway_iam.ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{PolicyArn: aws.String("arn"), MaxItems: aws.Int64(2)}, svc)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"v10", "v9"}, ids(first))
 	assert.True(t, aws.BoolValue(first.IsTruncated))
 
-	second, err := ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{PolicyArn: aws.String("arn"), MaxItems: aws.Int64(2), Marker: first.Marker}, svc)
+	second, err := gateway_iam.ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{PolicyArn: aws.String("arn"), MaxItems: aws.Int64(2), Marker: first.Marker}, svc)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"v2"}, ids(second))
 	assert.False(t, aws.BoolValue(second.IsTruncated))
@@ -167,7 +171,7 @@ func TestListEntitiesForPolicy_PagesAcrossAllThreeLists(t *testing.T) {
 	}}
 	input := &iam.ListEntitiesForPolicyInput{PolicyArn: aws.String("arn"), MaxItems: aws.Int64(2)}
 
-	first, err := ListEntitiesForPolicy(testAccountID, input, svc)
+	first, err := gateway_iam.ListEntitiesForPolicy(testAccountID, input, svc)
 	require.NoError(t, err)
 	require.Len(t, first.PolicyGroups, 1)
 	require.Len(t, first.PolicyRoles, 1)
@@ -177,7 +181,7 @@ func TestListEntitiesForPolicy_PagesAcrossAllThreeLists(t *testing.T) {
 	assert.True(t, aws.BoolValue(first.IsTruncated))
 
 	input.Marker = first.Marker
-	second, err := ListEntitiesForPolicy(testAccountID, input, svc)
+	second, err := gateway_iam.ListEntitiesForPolicy(testAccountID, input, svc)
 	require.NoError(t, err)
 	assert.Empty(t, second.PolicyGroups)
 	require.Len(t, second.PolicyRoles, 1)

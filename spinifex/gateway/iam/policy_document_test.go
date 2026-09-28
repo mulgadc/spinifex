@@ -1,4 +1,4 @@
-package gateway_iam
+package gateway_iam_test
 
 import (
 	"net/url"
@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -89,70 +90,70 @@ func TestPolicyDocumentsAreURLEncoded(t *testing.T) {
 		call   func() ([]*string, error)
 	}{
 		{"CreateRole", func() ([]*string, error) {
-			out, err := CreateRole(testAccountID, &iam.CreateRoleInput{RoleName: name, AssumeRolePolicyDocument: aws.String(rawDoc)}, svc)
+			out, err := gateway_iam.CreateRole(testAccountID, &iam.CreateRoleInput{RoleName: name, AssumeRolePolicyDocument: aws.String(rawDoc)}, svc)
 			if err != nil {
 				return nil, err
 			}
 			return roleDocs(out.Role), nil
 		}},
 		{"GetRole", func() ([]*string, error) {
-			out, err := GetRole(testAccountID, &iam.GetRoleInput{RoleName: name}, svc)
+			out, err := gateway_iam.GetRole(testAccountID, &iam.GetRoleInput{RoleName: name}, svc)
 			if err != nil {
 				return nil, err
 			}
 			return roleDocs(out.Role), nil
 		}},
 		{"ListRoles", func() ([]*string, error) {
-			out, err := ListRoles(testAccountID, &iam.ListRolesInput{}, svc)
+			out, err := gateway_iam.ListRoles(testAccountID, &iam.ListRolesInput{}, svc)
 			if err != nil {
 				return nil, err
 			}
 			return roleDocs(out.Roles...), nil
 		}},
 		{"GetRolePolicy", func() ([]*string, error) {
-			out, err := GetRolePolicy(testAccountID, &iam.GetRolePolicyInput{RoleName: name, PolicyName: name}, svc)
+			out, err := gateway_iam.GetRolePolicy(testAccountID, &iam.GetRolePolicyInput{RoleName: name, PolicyName: name}, svc)
 			if err != nil {
 				return nil, err
 			}
 			return []*string{out.PolicyDocument}, nil
 		}},
 		{"GetUserPolicy", func() ([]*string, error) {
-			out, err := GetUserPolicy(testAccountID, &iam.GetUserPolicyInput{UserName: name, PolicyName: name}, svc)
+			out, err := gateway_iam.GetUserPolicy(testAccountID, &iam.GetUserPolicyInput{UserName: name, PolicyName: name}, svc)
 			if err != nil {
 				return nil, err
 			}
 			return []*string{out.PolicyDocument}, nil
 		}},
 		{"GetGroupPolicy", func() ([]*string, error) {
-			out, err := GetGroupPolicy(testAccountID, &iam.GetGroupPolicyInput{GroupName: name, PolicyName: name}, svc)
+			out, err := gateway_iam.GetGroupPolicy(testAccountID, &iam.GetGroupPolicyInput{GroupName: name, PolicyName: name}, svc)
 			if err != nil {
 				return nil, err
 			}
 			return []*string{out.PolicyDocument}, nil
 		}},
 		{"GetPolicyVersion", func() ([]*string, error) {
-			out, err := GetPolicyVersion(testAccountID, &iam.GetPolicyVersionInput{PolicyArn: name, VersionId: aws.String("v1")}, svc)
+			out, err := gateway_iam.GetPolicyVersion(testAccountID, &iam.GetPolicyVersionInput{PolicyArn: name, VersionId: aws.String("v1")}, svc)
 			if err != nil {
 				return nil, err
 			}
 			return []*string{out.PolicyVersion.Document}, nil
 		}},
 		{"GetInstanceProfile", func() ([]*string, error) {
-			out, err := GetInstanceProfile(testAccountID, &iam.GetInstanceProfileInput{InstanceProfileName: name}, svc)
+			out, err := gateway_iam.GetInstanceProfile(testAccountID, &iam.GetInstanceProfileInput{InstanceProfileName: name}, svc)
 			if err != nil {
 				return nil, err
 			}
 			return profileDocs(out.InstanceProfile), nil
 		}},
 		{"ListInstanceProfiles", func() ([]*string, error) {
-			out, err := ListInstanceProfiles(testAccountID, &iam.ListInstanceProfilesInput{}, svc)
+			out, err := gateway_iam.ListInstanceProfiles(testAccountID, &iam.ListInstanceProfilesInput{}, svc)
 			if err != nil {
 				return nil, err
 			}
 			return profileDocs(out.InstanceProfiles...), nil
 		}},
 		{"ListInstanceProfilesForRole", func() ([]*string, error) {
-			out, err := ListInstanceProfilesForRole(testAccountID, &iam.ListInstanceProfilesForRoleInput{RoleName: name}, svc)
+			out, err := gateway_iam.ListInstanceProfilesForRole(testAccountID, &iam.ListInstanceProfilesForRoleInput{RoleName: name}, svc)
 			if err != nil {
 				return nil, err
 			}

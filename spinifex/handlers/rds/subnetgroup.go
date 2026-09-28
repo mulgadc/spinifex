@@ -285,11 +285,15 @@ func (s *Service) projectSubnetGroup(rec *DBSubnetGroupRecord) *rds.DBSubnetGrou
 		DBSubnetGroupArn:         aws.String(FormatARN(ResourceKindDBSubnetGroup, s.region, rec.AccountID, rec.Name)),
 		SubnetGroupStatus:        aws.String(subnetGroupStatusComplete),
 		VpcId:                    aws.String(rec.VpcID),
+		SupportedNetworkTypes:    aws.StringSlice([]string{networkTypeIPv4}),
 	}
 	for _, subnet := range rec.Subnets {
+		// Empty rather than nil: AWS reports SubnetOutpost as {} on every subnet,
+		// and the XML marshaller omits a nil pointer entirely.
 		member := &rds.Subnet{
 			SubnetIdentifier: aws.String(subnet.SubnetID),
 			SubnetStatus:     aws.String("Active"),
+			SubnetOutpost:    &rds.Outpost{},
 		}
 		if subnet.AvailabilityZone != "" {
 			member.SubnetAvailabilityZone = &rds.AvailabilityZone{Name: aws.String(subnet.AvailabilityZone)}

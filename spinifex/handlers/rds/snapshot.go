@@ -262,7 +262,11 @@ func (s *Service) DescribeDBSnapshots(ctx context.Context, input *rds.DescribeDB
 		}
 		snapshots = append(snapshots, s.projectDBSnapshot(&rec))
 	}
-	return &rds.DescribeDBSnapshotsOutput{DBSnapshots: snapshots}, nil
+	snapshots, next, err := Page(snapshots, dbSnapshotPageKey, input.MaxRecords, input.Marker)
+	if err != nil {
+		return nil, err
+	}
+	return &rds.DescribeDBSnapshotsOutput{DBSnapshots: snapshots, Marker: next}, nil
 }
 
 // An empty filter matches everything, as AWS does.

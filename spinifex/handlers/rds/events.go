@@ -33,9 +33,8 @@ const (
 	// once, so the CAS is retried rather than dropped on first contention.
 	eventWriteAttempts = 8
 
-	// AWS's defaults for the read: a one-hour window and a 100-record page.
+	// AWS's default window for the read.
 	defaultEventDuration = time.Hour
-	maxEventRecords      = 100
 )
 
 // AWS's SourceType values. Only the ones some phase actually writes are
@@ -209,16 +208,14 @@ func (s *Service) DescribeEvents(ctx context.Context, input *rds.DescribeEventsI
 	// Oldest first across resources, as AWS returns them, so a client that has
 	// already read up to a timestamp can resume from it.
 	slices.SortFunc(events, func(a, b Event) int {
-		if cmp := a.Date.Compare(b.Date); cmp != 0 {
-			return cmp
-		}
-		return strings.Compare(a.SourceIdentifier, b.SourceIdentifier)
+		return strings.Compare(eventPageKey(a), eventPageKey(b))
 	})
-	if limit := eventRecordLimit(input); len(events) > limit {
-		events = events[:limit]
+	events, marker, err := Page(events, eventPageKey, input.MaxRecords, input.Marker)
+	if err != nil {
+		return nil, err
 	}
 
-	out := &rds.DescribeEventsOutput{Events: make([]*rds.Event, 0, len(events))}
+	out := &rds.DescribeEventsOutput{Events: make([]*rds.Event, 0, len(events)), Marker: marker}
 	for _, event := range events {
 		out.Events = append(out.Events, s.projectEvent(accountID, event))
 	}
@@ -267,12 +264,11 @@ func eventWindow(input *rds.DescribeEventsInput) (timeWindow, error) {
 	return window, nil
 }
 
-func eventRecordLimit(input *rds.DescribeEventsInput) int {
-	requested := aws.Int64Value(input.MaxRecords)
-	if requested <= 0 || requested > maxEventRecords {
-		return maxEventRecords
-	}
-	return int(requested)
+// Fixed-width nanoseconds lead, so the key sorts by date, and the remaining
+// fields break a tie the same way on every read.
+func eventPageKey(event Event) string {
+	return pageKey(fmt.Sprintf("%020d", event.Date.UnixNano()),
+		event.SourceIdentifier, event.SourceType, event.Message)
 }
 
 // A fully qualified read is one Get. Anything broader has to enumerate, because

@@ -102,6 +102,28 @@ func TestDescribeEvents_ReadsAcrossResourcesAndScopesToOneWhenAsked(t *testing.T
 	assert.Equal(t, []string{"snapshot event"}, messagesOf(scoped))
 }
 
+// A truncated read carries a Marker, so a client can tell the list was cut and
+// resume from it.
+func TestDescribeEvents_PagesOldestFirst(t *testing.T) {
+	t.Parallel()
+	svc := newTestService(t)
+	now := time.Now().UTC()
+	seedEvent(t, svc, EventSourceTypeDBInstance, testDBID, now.Add(-3*time.Minute), "first")
+	seedEvent(t, svc, EventSourceTypeDBInstance, testDBID, now.Add(-2*time.Minute), "second")
+	seedEvent(t, svc, EventSourceTypeDBInstance, testDBID, now.Add(-time.Minute), "third")
+
+	first, err := svc.DescribeEvents(t.Context(), &rds.DescribeEventsInput{MaxRecords: aws.Int64(2)}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first", "second"}, messagesOf(first.Events))
+	require.NotNil(t, first.Marker)
+
+	rest, err := svc.DescribeEvents(t.Context(),
+		&rds.DescribeEventsInput{MaxRecords: aws.Int64(2), Marker: first.Marker}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"third"}, messagesOf(rest.Events))
+	assert.Nil(t, rest.Marker)
+}
+
 func TestDescribeEvents_RejectsMalformedRequests(t *testing.T) {
 	cases := []struct {
 		name    string

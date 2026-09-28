@@ -24,29 +24,29 @@ const (
 // polling a create would otherwise read an empty list as "gone" rather than
 // "not ready".
 func (s *Service) DescribeDBInstances(ctx context.Context, input *rds.DescribeDBInstancesInput, accountID string) (*rds.DescribeDBInstancesOutput, error) {
+	if input == nil {
+		input = &rds.DescribeDBInstancesInput{}
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
 
-	var matches func(*DBInstanceRecord) bool
-	if input != nil {
-		matches, err = dbInstanceFilterMatcher(input.Filters)
+	matches, err := dbInstanceFilterMatcher(input.Filters)
+	if err != nil {
+		return nil, err
+	}
+	if id := aws.StringValue(input.DBInstanceIdentifier); id != "" {
+		rec, _, err := s.getDBInstance(ctx, kv, id)
 		if err != nil {
 			return nil, err
 		}
-		if id := aws.StringValue(input.DBInstanceIdentifier); id != "" {
-			rec, _, err := s.getDBInstance(ctx, kv, id)
-			if err != nil {
-				return nil, err
-			}
-			// A named instance the filters exclude is reported as absent rather than
-			// returned anyway, so the two halves of one request cannot disagree.
-			if matches != nil && !matches(rec) {
-				return nil, errors.New(awserrors.ErrorDBInstanceNotFound)
-			}
-			return &rds.DescribeDBInstancesOutput{DBInstances: []*rds.DBInstance{s.projectDBInstance(rec)}}, nil
+		// A named instance the filters exclude is reported as absent rather than
+		// returned anyway, so the two halves of one request cannot disagree.
+		if matches != nil && !matches(rec) {
+			return nil, errors.New(awserrors.ErrorDBInstanceNotFound)
 		}
+		return &rds.DescribeDBInstancesOutput{DBInstances: []*rds.DBInstance{s.projectDBInstance(rec)}}, nil
 	}
 
 	ids, err := ListDBInstanceIDs(ctx, kv)
@@ -72,7 +72,11 @@ func (s *Service) DescribeDBInstances(ctx context.Context, input *rds.DescribeDB
 		}
 		instances = append(instances, s.projectDBInstance(&rec))
 	}
-	return &rds.DescribeDBInstancesOutput{DBInstances: instances}, nil
+	instances, next, err := Page(instances, dbInstancePageKey, input.MaxRecords, input.Marker)
+	if err != nil {
+		return nil, err
+	}
+	return &rds.DescribeDBInstancesOutput{DBInstances: instances, Marker: next}, nil
 }
 
 // The filter names AWS documents for this action and clients actually send.

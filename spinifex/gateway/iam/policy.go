@@ -49,6 +49,36 @@ func ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput, sv
 	return svc.ListPolicyVersions(accountID, input)
 }
 
+func CreatePolicyVersion(accountID string, input *iam.CreatePolicyVersionInput, svc handlers_iam.IAMService) (*iam.CreatePolicyVersionOutput, error) {
+	if input.PolicyArn == nil || *input.PolicyArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyDocument == nil || *input.PolicyDocument == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.CreatePolicyVersion(accountID, input)
+}
+
+func SetDefaultPolicyVersion(accountID string, input *iam.SetDefaultPolicyVersionInput, svc handlers_iam.IAMService) (*iam.SetDefaultPolicyVersionOutput, error) {
+	if input.PolicyArn == nil || *input.PolicyArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.VersionId == nil || *input.VersionId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.SetDefaultPolicyVersion(accountID, input)
+}
+
+func DeletePolicyVersion(accountID string, input *iam.DeletePolicyVersionInput, svc handlers_iam.IAMService) (*iam.DeletePolicyVersionOutput, error) {
+	if input.PolicyArn == nil || *input.PolicyArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.VersionId == nil || *input.VersionId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.DeletePolicyVersion(accountID, input)
+}
+
 func ListPolicies(accountID string, input *iam.ListPoliciesInput, svc handlers_iam.IAMService) (*iam.ListPoliciesOutput, error) {
 	return svc.ListPolicies(accountID, input)
 }

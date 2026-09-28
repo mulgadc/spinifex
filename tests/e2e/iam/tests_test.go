@@ -17,9 +17,9 @@ import "testing"
 // under collision-safe namespaces.
 
 // TestIAMAuthorization exercises identity-policy enforcement against the live
-// stack: resource-scoped grants, a Deny and a revocation taking effect on the
-// next request, role-session scoping, and the aws:SourceIp condition. Zero-VM —
-// its resources are IAM principals and EC2 key pairs.
+// stack: resource-scoped grants, a Deny, a revocation and a new default policy
+// version taking effect on the next request, role-session scoping, and the
+// aws:SourceIp condition. Zero-VM — its resources are IAM principals and key pairs.
 func TestIAMAuthorization(t *testing.T) {
 	runIAMAuthorization(t, requireIAMFixture(t))
 }

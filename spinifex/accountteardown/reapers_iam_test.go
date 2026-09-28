@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -205,6 +206,13 @@ func (f *fakeIAM) DeletePolicy(_ string, _ *iam.DeletePolicyInput) (*iam.DeleteP
 	return &iam.DeletePolicyOutput{}, nil
 }
 
+func (f *fakeIAM) ListPolicyVersions(_ string, _ *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
+	f.record("ListPolicyVersions")
+	return &iam.ListPolicyVersionsOutput{Versions: []*iam.PolicyVersion{
+		{VersionId: aws.String("v1"), IsDefaultVersion: aws.Bool(true)},
+	}}, nil
+}
+
 func (f *fakeIAM) ListInstanceProfiles(_ string, _ *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
 	f.record("ListInstanceProfiles")
 	out := &iam.ListInstanceProfilesOutput{}
@@ -382,6 +390,39 @@ func TestPolicyReaperAsksOnlyForLocalPolicies(t *testing.T) {
 	require.Len(t, found, 1)
 	assert.Equal(t, "arn:aws:iam::000000000042:policy/app", found[0].ID)
 	assert.NoError(t, reaper.Delete(testCtx(t), "000000000042", found[0], false))
+}
+
+// A policy whose document was ever changed holds non-default versions, and
+// DeletePolicy refuses it until they are gone.
+func TestPolicyReaperDeletesAPolicyWithSeveralVersions(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
+	require.NoError(t, err)
+
+	const accountID = "000000000042"
+	const doc = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}`
+	created, err := svc.CreatePolicy(accountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("app"), PolicyDocument: aws.String(doc),
+	})
+	require.NoError(t, err)
+	for _, setAsDefault := range []bool{true, false} {
+		_, err := svc.CreatePolicyVersion(accountID, &iam.CreatePolicyVersionInput{
+			PolicyArn: created.Policy.Arn, PolicyDocument: aws.String(doc), SetAsDefault: aws.Bool(setAsDefault),
+		})
+		require.NoError(t, err)
+	}
+
+	reaper := &iamPolicyReaper{svc: svc}
+	found, err := reaper.List(testCtx(t), accountID)
+	require.NoError(t, err)
+	require.Len(t, found, 1)
+	require.NoError(t, reaper.Delete(testCtx(t), accountID, found[0], false))
+
+	remaining, err := reaper.List(testCtx(t), accountID)
+	require.NoError(t, err)
+	assert.Empty(t, remaining)
 }
 
 func TestUserRoleAndGroupListingsSkipEmptyRecords(t *testing.T) {

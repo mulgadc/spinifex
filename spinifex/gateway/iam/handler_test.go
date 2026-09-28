@@ -71,6 +71,18 @@ func (s *stubIAMService) ListPolicyVersions(_ string, _ *iam.ListPolicyVersionsI
 	return &iam.ListPolicyVersionsOutput{}, nil
 }
 
+func (s *stubIAMService) CreatePolicyVersion(_ string, _ *iam.CreatePolicyVersionInput) (*iam.CreatePolicyVersionOutput, error) {
+	return &iam.CreatePolicyVersionOutput{}, nil
+}
+
+func (s *stubIAMService) SetDefaultPolicyVersion(_ string, _ *iam.SetDefaultPolicyVersionInput) (*iam.SetDefaultPolicyVersionOutput, error) {
+	return &iam.SetDefaultPolicyVersionOutput{}, nil
+}
+
+func (s *stubIAMService) DeletePolicyVersion(_ string, _ *iam.DeletePolicyVersionInput) (*iam.DeletePolicyVersionOutput, error) {
+	return &iam.DeletePolicyVersionOutput{}, nil
+}
+
 func (s *stubIAMService) ListPolicies(_ string, _ *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	return &iam.ListPoliciesOutput{}, nil
 }
@@ -508,6 +520,88 @@ func TestGetPolicyVersion(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := GetPolicyVersion(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestCreatePolicyVersion(t *testing.T) {
+	svc := &stubIAMService{}
+	arn := "arn:aws:iam::000000000000:policy/mypolicy"
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`
+	tests := []struct {
+		name    string
+		input   *iam.CreatePolicyVersionInput
+		wantErr string
+	}{
+		{"nil PolicyArn", &iam.CreatePolicyVersionInput{PolicyDocument: aws.String(doc)}, awserrors.ErrorMissingParameter},
+		{"empty PolicyArn", &iam.CreatePolicyVersionInput{PolicyArn: aws.String(""), PolicyDocument: aws.String(doc)}, awserrors.ErrorMissingParameter},
+		{"nil PolicyDocument", &iam.CreatePolicyVersionInput{PolicyArn: aws.String(arn)}, awserrors.ErrorMissingParameter},
+		{"empty PolicyDocument", &iam.CreatePolicyVersionInput{PolicyArn: aws.String(arn), PolicyDocument: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.CreatePolicyVersionInput{PolicyArn: aws.String(arn), PolicyDocument: aws.String(doc)}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := CreatePolicyVersion(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestSetDefaultPolicyVersion(t *testing.T) {
+	svc := &stubIAMService{}
+	arn := "arn:aws:iam::000000000000:policy/mypolicy"
+	tests := []struct {
+		name    string
+		input   *iam.SetDefaultPolicyVersionInput
+		wantErr string
+	}{
+		{"nil PolicyArn", &iam.SetDefaultPolicyVersionInput{VersionId: aws.String("v2")}, awserrors.ErrorMissingParameter},
+		{"empty PolicyArn", &iam.SetDefaultPolicyVersionInput{PolicyArn: aws.String(""), VersionId: aws.String("v2")}, awserrors.ErrorMissingParameter},
+		{"nil VersionId", &iam.SetDefaultPolicyVersionInput{PolicyArn: aws.String(arn)}, awserrors.ErrorMissingParameter},
+		{"empty VersionId", &iam.SetDefaultPolicyVersionInput{PolicyArn: aws.String(arn), VersionId: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.SetDefaultPolicyVersionInput{PolicyArn: aws.String(arn), VersionId: aws.String("v2")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := SetDefaultPolicyVersion(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestDeletePolicyVersion(t *testing.T) {
+	svc := &stubIAMService{}
+	arn := "arn:aws:iam::000000000000:policy/mypolicy"
+	tests := []struct {
+		name    string
+		input   *iam.DeletePolicyVersionInput
+		wantErr string
+	}{
+		{"nil PolicyArn", &iam.DeletePolicyVersionInput{VersionId: aws.String("v2")}, awserrors.ErrorMissingParameter},
+		{"empty PolicyArn", &iam.DeletePolicyVersionInput{PolicyArn: aws.String(""), VersionId: aws.String("v2")}, awserrors.ErrorMissingParameter},
+		{"nil VersionId", &iam.DeletePolicyVersionInput{PolicyArn: aws.String(arn)}, awserrors.ErrorMissingParameter},
+		{"empty VersionId", &iam.DeletePolicyVersionInput{PolicyArn: aws.String(arn), VersionId: aws.String("")}, awserrors.ErrorMissingParameter},
+		{"valid", &iam.DeletePolicyVersionInput{PolicyArn: aws.String(arn), VersionId: aws.String("v2")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DeletePolicyVersion(testAccountID, tc.input, svc)
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				assert.Equal(t, tc.wantErr, err.Error())

@@ -30,6 +30,7 @@ resources:
 
 - [Overview](#overview)
 - [Cluster sizing](#cluster-sizing)
+- [How the cluster's own state is replicated](#how-the-clusters-own-state-is-replicated)
 - [Hardware](#hardware)
 - [Network requirements](#network-requirements)
 - [Prerequisites](#prerequisites)
@@ -65,10 +66,81 @@ A Spinifex cluster distributes services across multiple servers for high availab
 | **VPC networking** — OVN | Control-plane databases run clustered, surviving the loss of any one node. |
 | **Object storage** — Predastore (S3) | Objects are erasure coded `RS(2,1)`, surviving the loss of any one node's shards. |
 | **Block storage** — Viperblock (EBS) | Volumes are stored in Predastore, so they inherit the same durability. |
+| **Cluster state** — NATS JetStream | Every key-value bucket is replicated onto all three nodes, so the control plane keeps its own state through the loss of any one. |
 
 On one or two servers none of that holds. OVN runs standalone on the first node, and the storage metadata quorum has no majority to lose. If that node goes down, running instances keep full networking — but nothing can *change*: no new VPCs, no launches, no security group edits. See [OVN control plane on multi-node clusters](/docs/vpc-networking#ovn-control-plane-on-multi-node-clusters).
 
 Servers beyond the third run the full set of services — storage, gateway and networking agents — and add their capacity to the pool. What they do not do is join the OVN database cluster, which stays at three members, so write latency there stays flat as the cluster grows.
+
+### How the cluster's own state is replicated
+
+Guest data has an obvious home: volumes live in Viperblock, objects in Predastore, both erasure coded across the cluster. The cluster's own bookkeeping has a less obvious one, and it matters just as much. Every instance record, every VPC and subnet, the server roster, IAM users and access keys, quotas and DNS records are kept in **NATS JetStream key-value buckets** — Spinifex's control-plane database, replicated across the servers you installed rather than sitting on any one of them. A cluster that has lost its state has lost the ability to describe, launch, terminate or route anything, even while every guest is still running.
+
+**A bucket is replicated across the largest odd number of nodes the cluster has, up to five.** That number is decided once, by the `--nodes` count you give `spx admin init` in Step 4, and every service on every node reads it back out of `/etc/spinifex/spinifex.toml` before it creates anything.
+
+| Servers | Replicas per bucket | Quorum | Survives |
+|---|---|---|---|
+| 1 | 1 | 1 | nothing — a single node is a single point of failure by definition |
+| 2 | — | — | rejected by `spx admin init`; see below |
+| 3 | 3 | 2 | any 1 node lost |
+| 4 | 3 | 2 | any 1 node lost |
+| 5 | 5 | 3 | any 2 nodes lost |
+| 10 | 5 | 3 | any 2 of the 5 nodes holding each bucket |
+
+**The count is always odd, and that is why four servers replicate three ways rather than four.** Agreement is by majority, and an even number of copies does not buy you one: four copies cost a fourth write every time and still survive exactly one loss, the same as three. On four servers NATS spreads which three nodes hold each bucket, so all four carry their share and none of them is idle.
+
+Five is JetStream's own ceiling on a stream's replica count, not a choice of ours. Past five servers the buckets stay at five and NATS spreads which five nodes hold each one, so the cluster keeps growing while the cost of a write does not.
+
+**Two servers is refused rather than allowed with a warning.** There is no replica count that works on two: one disappears with the node holding it, and two stop accepting writes when either member goes, because neither survivor is a majority on its own. OVN and the storage metadata quorum have the same problem on two servers, so `spx admin init --nodes 2` fails and tells you to use one server or three.
+
+#### Worked example — three servers
+
+Say you ran Step 4 with `--nodes 3` on `node1`, `node2` and `node3`. Every bucket the cluster creates is held by all three servers, with one of them responsible for coordinating changes to it:
+
+```
+KV bucket "spinifex-instance-state"        KV bucket "spinifex-vpcd-reconcile"
+┌──────────┬──────────┬──────────┐         ┌──────────┬──────────┬──────────┐
+│  node1   │  node2   │  node3   │         │  node1   │  node2   │  node3   │
+│  leader  │ follower │ follower │         │ follower │  leader  │ follower │
+└──────────┴──────────┴──────────┘         └──────────┴──────────┴──────────┘
+        quorum = 2 of 3                            quorum = 2 of 3
+```
+
+Three things follow from that picture, and they are the whole reason three servers is the floor:
+
+- **A change is not confirmed until most of the cluster has it.** When you launch an instance, the API does not report success until at least two of the three servers have written the record to disk. Losing a server afterwards cannot lose that instance.
+- **Losing a server costs a pause, not the data.** If `node1` goes down, `node2` and `node3` are still a majority. They take over the buckets `node1` was responsible for — seconds on a healthy cluster — and the API keeps answering throughout. Nothing becomes unreadable, because nothing lived only on `node1`.
+- **The cluster keeps repairing itself.** Spinifex runs background workers that fix up VPC state, enforce quotas and publish DNS. Only one server runs each at a time, and they claim that right by writing to a bucket. If those buckets were not replicated, a server failure would stop the repair work at precisely the moment there was repair work to do.
+
+Contrast that with a bucket on **one** server. It lives wherever it happened to be created, which is not recorded in any config file you can inspect. Stopping, rebooting or losing that one server makes the bucket unreachable from *every* node at once — a single-server event becomes a cluster-wide outage, on a server nobody chose.
+
+#### What you see when a server fails
+
+Majority is not an implementation detail. It is what stops two halves of a damaged cluster from both believing they are in charge, and it is the reason the minimum is three servers rather than two.
+
+**With one server down, the cluster carries on.** `node2` and `node3` are two of three. Instances launch, VPCs change, the API answers normally, and there is nothing to do but replace the failed server. What you have lost is the *next* failure: a second server down leaves no majority and the cluster stops accepting changes until one comes back.
+
+**A server that is cut off stops accepting changes, on purpose.** If `node1` is not down but isolated — a failed switch, a misconfigured port — it is one server out of three, which is not a majority, so it will not record anything. An operator working on `node1` who tries to launch an instance gets a failure rather than a success. That is the behaviour you want: if `node1` accepted changes while `node2` and `node3` were also accepting them, you would end up with two different versions of the same cluster and no way to merge them. Refusing the isolated side is what makes the surviving side worth trusting.
+
+Everything else on `node1` keeps running. Guests continue to execute and their volumes keep serving. What stops is anything that has to be recorded: launching, terminating, attaching a volume, changing a security group. Storage writes fail alongside it, so a guest on the isolated server stalls rather than quietly diverging from the rest of the cluster.
+
+**Be careful reading state from an isolated server.** A server that is cut off can still answer `describe-instances` from its own copy of the data — frozen at the moment it lost contact, with nothing in the answer to say so. **Run operator commands from a server you know is with the majority**, and if one server's answers disagree with its peers', believe the peers.
+
+**A returning server catches up on its own.** Bring `node1` back and it synchronises from the others automatically: no command to run, no restart, no repair step. (`spx admin kv replicas --repair` exists for a different situation — a bucket configured with too few copies — not a server that is simply behind.)
+
+#### Growing an existing cluster
+
+Adding a fourth server does not, on its own, re-replicate the buckets that already exist — the nodes that hold them are perfectly healthy, so nothing prompts a change. Spinifex raises them for you at the next service start: each service checks every bucket it opens against the cluster's current node count and raises any that are short. It never lowers one.
+
+**A config that names a node before that node is serving is safe.** It is the ordinary middle of growing a cluster, and services start normally through it: a bucket that cannot be raised yet keeps working at the count it has, and the node logs `Could not raise KV bucket to the cluster's replica count`. The raise is retried every time a service opens the bucket, so it completes on its own once the new server is in the cluster.
+
+To do it immediately rather than waiting for a restart, run the audit with `--repair` from any node:
+
+```bash
+sudo spx admin kv replicas --repair
+```
+
+It changes nothing about a bucket except the replica count, never lowers one, and is safe to run twice or on a healthy cluster.
 
 ### Hardware
 
@@ -252,6 +324,8 @@ sudo spx admin init --force \
 
 `--nodes 3` is the number of servers init waits for. Set it to your total node count if you are building a larger cluster.
 
+It is also what decides how many nodes the cluster's JetStream state is replicated across, so it is worth getting right rather than raising later — see [How the cluster's own state is replicated](#how-the-clusters-own-state-is-replicated). Every joining server takes the count from server 1, so it is chosen once, here. `--nodes 2` is refused: use 1 for a single server, or 3 and up for a cluster that can survive losing one.
+
 IPsec encrypts the Geneve overlay between servers and is on by default. Joining servers take the setting from server 1, so it is chosen once, on init. On servers that share a trusted private link, `--ipsec=false` leaves the overlay unencrypted in exchange for considerably higher throughput between instances.
 
 The init output displays the join command including the token:
@@ -360,7 +434,40 @@ The top table is per-node CPU, memory and GPU usage. The bottom table is what th
 
 If capacity looks like a single server rather than the sum of your nodes, the others have not joined.
 
-**3. The AWS API answers.**
+**3. The cluster's own state is replicated across every node.**
+
+```bash
+sudo spx admin kv replicas
+```
+
+```
+spinifex@node1:~$ sudo spx admin kv replicas
+BUCKET                         REPLICAS  WANT  ONLINE  STATUS  LEADER                HELD BY
+spinifex-cluster-state         3         3     3       ok      spinifex-nats-node1   spinifex-nats-node1,spinifex-nats-node2,spinifex-nats-node3
+spinifex-dns-reconcile         3         3     3       ok      spinifex-nats-node2   spinifex-nats-node2,spinifex-nats-node1,spinifex-nats-node3
+spinifex-iam                   3         3     3       ok      spinifex-nats-node3   spinifex-nats-node3,spinifex-nats-node1,spinifex-nats-node2
+spinifex-instance-state        3         3     3       ok      spinifex-nats-node1   spinifex-nats-node1,spinifex-nats-node2,spinifex-nats-node3
+spinifex-quota-reconcile       3         3     3       ok      spinifex-nats-node2   spinifex-nats-node2,spinifex-nats-node3,spinifex-nats-node1
+spinifex-terminated-instances  3         3     3       ok      spinifex-nats-node3   spinifex-nats-node3,spinifex-nats-node2,spinifex-nats-node1
+spinifex-vpcd-reconcile        3         3     3       ok      spinifex-nats-node2   spinifex-nats-node2,spinifex-nats-node1,spinifex-nats-node3
+
+47 buckets, 0 under-replicated, 0 without quorum
+```
+
+Server names are the node name behind a `spinifex-nats-` prefix, which is what NATS itself calls each server.
+
+What to check:
+
+- **`0 under-replicated, 0 without quorum`.** These are different problems. Under-replicated means a bucket lives on fewer nodes than depend on it — see [Buckets report as under-replicated](#buckets-report-as-under-replicated), and `--repair` is the fix. Without quorum means a bucket is not able to accept a write right now, whatever its replica count says, and no repair helps until you find out why a node is not answering.
+- **`WANT` is the largest odd number of nodes you have**, capped at five — 3 on three or four servers, 5 on five or more. If it says 1 on a three-server cluster, the node the command ran on is not configured for three: check `--nodes` in Step 4 and the `[nodes.*]` sections of that host's `/etc/spinifex/spinifex.toml`.
+- **`ONLINE` equals `REPLICAS`.** It counts the replicas that are caught up and reachable, so a bucket at `3` replicas with `ONLINE 2` is one node away from being unavailable and needs looking at before anything else is done to the cluster.
+- **`LEADER` is spread across the cluster** rather than parked on one node, and `HELD BY` names as many distinct servers as `REPLICAS`.
+
+Exit status is what a deployment gate should read rather than the output: `0` healthy, `1` something is under-replicated, `2` something has no quorum or the report could not be produced at all.
+
+Run it on every node, not just one. It reads cluster-global Raft metadata, so all of them should give the same answer; one that disagrees is not fully part of the cluster.
+
+**4. The AWS API answers.**
 
 ```bash
 export AWS_PROFILE=spinifex
@@ -402,6 +509,28 @@ Turn the firewall off on **every** node and retry the join, then re-arm once the
 The node has its own cluster configuration — normal for anything installed from the ISO, which initializes a single-node cluster at first boot. Joining replaces that node's CA and master key with the primary's, so it must be confirmed with `--force`.
 
 Safe on a freshly installed node. On one that has been in service it orphans every volume and fragment sealed under the old key, so check before forcing.
+
+### Buckets Report as Under-Replicated
+
+```bash
+sudo spx admin kv replicas
+```
+
+A bucket showing `UNDER-REPLICATED` lives on fewer nodes than the cluster has, so losing the node holding it takes it down for the whole cluster. Two things put a bucket in that state, and the fix is the same for both:
+
+```bash
+sudo spx admin kv replicas --repair
+```
+
+The first cause is **a cluster that grew**: buckets created when there were three servers stay on three replicas until something raises them. Services do this themselves as they restart, and `--repair` does it now.
+
+The second is **a node that was down when the bucket was created**, so the Raft group formed short. Bring the node back first — `--repair` on an incomplete cluster raises the configured count, but the group cannot place the extra replica until the node is there to hold it. Confirm with `spx get nodes` before repairing.
+
+If `WANT` itself is wrong — 1 on a three-server cluster — the problem is not the buckets but that host's view of the cluster. Check it has all three `[nodes.*]` sections:
+
+```bash
+sudo grep -oP '^\[nodes\.\K[^.\]]+' /etc/spinifex/spinifex.toml | sort -u
+```
 
 ### OVN Database Cluster Not Forming
 

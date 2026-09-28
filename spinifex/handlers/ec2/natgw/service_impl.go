@@ -84,23 +84,16 @@ func NewNatGatewayServiceImplWithNATS(ctx context.Context, natsConn *nats.Conn) 
 	}, nil
 }
 
-// getOrCreateDeletedBucket creates the expiring bucket without changing an
-// existing bucket's replica or placement configuration.
+// getOrCreateDeletedBucket creates the expiring bucket that records a deletion
+// for as long as a client may still ask about it.
 func getOrCreateDeletedBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
 	// Terraform polls DescribeNatGateways after delete and expects state=deleted.
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:      KVBucketDeletedNatGateways,
+	return kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
+		Name:        KVBucketDeletedNatGateways,
 		Description: "Deleted NAT Gateways (auto-expire after 1 hour)",
 		History:     1,
 		TTL:         time.Hour,
 	})
-	if err == nil {
-		return kv, nil
-	}
-	if !errors.Is(err, jetstream.ErrBucketExists) {
-		return nil, err
-	}
-	return js.KeyValue(ctx, KVBucketDeletedNatGateways)
 }
 
 // natGatewayEvent is published on vpc.add-nat-gateway / vpc.delete-nat-gateway topics.

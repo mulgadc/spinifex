@@ -32,6 +32,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
@@ -1667,14 +1668,18 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("connect NATS: %w", err)
 	}
 
-	if err := d.initJetStream(); err != nil {
-		return fmt.Errorf("initialize JetStream: %w", err)
+	// Declared before JetStream, not after: initJetStream creates buckets, and
+	// bucket creation refuses until the count is known. A daemon assembled in a
+	// test may never have gone through config.LoadConfig, which is where a real
+	// process declares it from this same source.
+	if d.clusterConfig != nil {
+		if err := clustersize.Declare(len(d.clusterConfig.Nodes)); err != nil {
+			return err
+		}
 	}
 
-	// Set the default KV replica count before any handler creates a bucket, so
-	// lazily-created buckets are born at cluster-size replication instead of R1.
-	if d.clusterConfig != nil {
-		utils.SetDefaultKVReplicas(len(d.clusterConfig.Nodes))
+	if err := d.initJetStream(); err != nil {
+		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
@@ -2397,7 +2402,7 @@ func (d *Daemon) initJetStream() error {
 	for {
 		attempt++
 		var err error
-		d.jsManager, err = NewJetStreamManager(d.natsConn, 1)
+		d.jsManager, err = NewJetStreamManager(d.natsConn)
 		if err == nil {
 			err = d.jsManager.InitKVBucket()
 		}
@@ -2412,8 +2417,18 @@ func (d *Daemon) initJetStream() error {
 
 		if err == nil {
 			d.jsManager.SetSyncObserver(d)
-			slog.Info("JetStream KV stores initialized successfully", "replicas", 1, "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
+			// Replicas cannot be undeclared here: bucket creation refuses
+			// before it, so reaching this line means it was declared.
+			replicas, _ := clustersize.Replicas()
+			slog.Info("JetStream KV stores initialized successfully", "replicas", replicas, "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			break
+		}
+
+		// A misdeclared cluster size is not something quorum arrives and fixes,
+		// so waiting for it spends the whole budget and then reports a quorum
+		// problem that was never the cause.
+		if clustersize.Permanent(err) {
+			return fmt.Errorf("initialize JetStream: %w", err)
 		}
 
 		elapsed := time.Since(start)
@@ -2431,15 +2446,20 @@ func (d *Daemon) initJetStream() error {
 	return nil
 }
 
-// upgradeJetStreamReplicas bumps KV_* stream replication to match the cluster
-// size. Runs after all buckets are created and the cluster is ready.
+// upgradeJetStreamReplicas raises every KV bucket to the cluster's replica
+// count. Runs after all buckets are created and the cluster is ready, which is
+// when a bucket created by whichever node got there first can be repaired.
 func (d *Daemon) upgradeJetStreamReplicas() {
-	clusterSize := len(d.clusterConfig.Nodes)
-	if clusterSize <= 1 || d.jsManager == nil {
+	if d.jsManager == nil || d.jsManager.js == nil {
 		return
 	}
-	if err := d.jsManager.UpdateReplicas(clusterSize); err != nil {
-		slog.Warn("Failed to upgrade JetStream replicas", "targetReplicas", clusterSize, "error", err)
+	raised, err := kvutil.RaiseAllBucketReplicas(d.ctx, d.jsManager.js)
+	if err != nil {
+		slog.Warn("Failed to raise KV bucket replicas to the cluster's node count", "error", err)
+		return
+	}
+	if raised > 0 {
+		slog.Info("Raised KV buckets to the cluster's replica count", "buckets", raised)
 	}
 }
 

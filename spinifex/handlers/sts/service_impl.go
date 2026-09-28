@@ -37,10 +37,9 @@ type STSServiceImpl struct {
 var _ STSService = (*STSServiceImpl)(nil)
 
 // NewSTSServiceImpl constructs an STSServiceImpl. masterKey must be the 32-byte
-// key shared with IAMServiceImpl. clusterSize sets the JetStream replication factor;
-// pass 1 for single-node or test setups. The context bounds bucket creation and
-// the schema migration only.
-func NewSTSServiceImpl(ctx context.Context, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, masterKey []byte, clusterSize int) (*STSServiceImpl, error) {
+// key shared with IAMServiceImpl. The context bounds bucket creation and the
+// schema migration only.
+func NewSTSServiceImpl(ctx context.Context, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, masterKey []byte) (*STSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -51,21 +50,18 @@ func NewSTSServiceImpl(ctx context.Context, natsConn *nats.Conn, iamSvc handlers
 		return nil, fmt.Errorf("master key must be %d bytes, got %d", masterKeySize, len(masterKey))
 	}
 
-	replicas := max(clusterSize, 1)
-
 	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	sessions, err := initSessionCredentialsStore(ctx, js, replicas)
+	sessions, err := initSessionCredentialsStore(ctx, js)
 	if err != nil {
 		return nil, fmt.Errorf("init session credentials bucket: %w", err)
 	}
 
 	slog.Info("STS service initialized",
-		"sessions_bucket", KVBucketSessionCredentials,
-		"replicas", replicas)
+		"sessions_bucket", KVBucketSessionCredentials)
 
 	return &STSServiceImpl{
 		natsConn:  natsConn,

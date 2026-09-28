@@ -50,11 +50,6 @@ type EKSServiceDeps struct {
 	Region         string
 	HolderID       string
 
-	// ClusterSize is the daemon's node count, used as the JetStream replica
-	// count for the lazily-created per-account and leader KV buckets so they
-	// match the cluster's other R3 streams instead of staying stuck at R1.
-	ClusterSize int
-
 	// InternalSuffix is the AWS-parity internal DNS suffix (e.g. spinifex.internal)
 	// used to compose the worker's ECR registry host.
 	InternalSuffix string
@@ -305,7 +300,7 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	// The leader bucket outlives every request, so its open is bounded by the
 	// service's own background context rather than a caller's.
 	ctx, cancel := context.WithCancel(context.Background())
-	leaderKV, err := InitLeaderBucket(ctx, js, max(deps.ClusterSize, 1))
+	leaderKV, err := InitLeaderBucket(ctx, js)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -519,7 +514,7 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 	if err != nil {
 		return nil, logCreateErr(name, accountID, "jetstream", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
 	if err != nil {
 		return nil, logCreateErr(name, accountID, "get account bucket", err)
 	}
@@ -1051,7 +1046,7 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}
@@ -1070,7 +1065,7 @@ func (s *EKSServiceImpl) ListClusters(ctx context.Context, input *eks.ListCluste
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "jetstream")
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "get account bucket")
 	}
@@ -1117,7 +1112,7 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}
@@ -1536,7 +1531,7 @@ func (s *EKSServiceImpl) acctKVForCluster(ctx context.Context, accountID, cluste
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}
@@ -2002,7 +1997,7 @@ func (s *EKSServiceImpl) accountBucket(ctx context.Context, accountID string) (j
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	return GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	return GetOrCreateAccountBucket(ctx, js, accountID)
 }
 
 // clusterNameFromARN extracts the cluster name from an EKS cluster ARN
@@ -2232,7 +2227,7 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 		slog.Error("spawnReconciler: jetstream", "err", err)
 		return
 	}
-	acctKV, err := GetOrCreateAccountBucket(s.bgCtx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(s.bgCtx, js, accountID)
 	if err != nil {
 		slog.Error("spawnReconciler: account bucket", "err", err)
 		return

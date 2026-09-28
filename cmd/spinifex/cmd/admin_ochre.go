@@ -854,7 +854,7 @@ func runOchreWeightsStage(cmd *cobra.Command, _ []string) {
 		ochreExit(1)
 		return
 	}
-	weightsStore := gateway_bedrock.NewWeightsStore(js, len(appConfig.Nodes))
+	weightsStore := gateway_bedrock.NewWeightsStore(js)
 	store := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
 
 	provider := ebsprovider.NewNATSProvider(nc, imageImportTimeout)
@@ -930,7 +930,7 @@ func runOchreWeightsList(_ *cobra.Command, _ []string) {
 		ochreExit(1)
 		return
 	}
-	weightsStore := gateway_bedrock.NewWeightsStore(js, len(appConfig.Nodes))
+	weightsStore := gateway_bedrock.NewWeightsStore(js)
 	store := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
 	checkSnapshotLive := newWeightsSnapshotChecker(store, node.Predastore.Bucket)
 
@@ -967,7 +967,7 @@ func removeWeights(ctx context.Context, weightsStore *gateway_bedrock.WeightsSto
 func runOchreWeightsRemove(cmd *cobra.Command, _ []string) {
 	modelID, _ := cmd.Flags().GetString("model-id")
 
-	appConfig, nc, err := loadConfigAndConnectFn()
+	_, nc, err := loadConfigAndConnectFn()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		ochreExit(1)
@@ -981,7 +981,7 @@ func runOchreWeightsRemove(cmd *cobra.Command, _ []string) {
 		ochreExit(1)
 		return
 	}
-	weightsStore := gateway_bedrock.NewWeightsStore(js, len(appConfig.Nodes))
+	weightsStore := gateway_bedrock.NewWeightsStore(js)
 
 	entry, err := removeWeights(context.Background(), weightsStore, modelID)
 	if err != nil {
@@ -1014,7 +1014,7 @@ func resolveHFToken(ctx context.Context, cmd *cobra.Command, cfg *config.Cluster
 	if err != nil {
 		return ""
 	}
-	credStore := gateway_bedrock.NewCredentialStore(js, masterKey, len(cfg.Nodes), nil)
+	credStore := gateway_bedrock.NewCredentialStore(js, masterKey, nil)
 	token, ok, err := credStore.Resolve(ctx, utils.GlobalAccountID, vendorHuggingFace)
 	if err != nil || !ok {
 		return ""
@@ -1088,7 +1088,7 @@ func ochreCredentialsStore() (*gateway_bedrock.CredentialStore, func(), error) {
 		nc.Close()
 		return nil, nil, fmt.Errorf("jetstream context: %w", err)
 	}
-	return gateway_bedrock.NewCredentialStore(js, masterKey, len(cfg.Nodes), nil), func() { nc.Close() }, nil
+	return gateway_bedrock.NewCredentialStore(js, masterKey, nil), func() { nc.Close() }, nil
 }
 
 func runOchreCredentialsSet(cmd *cobra.Command, _ []string) {
@@ -1186,7 +1186,7 @@ func init() {
 // ochreAccessStore connects to the cluster and returns the grant store along
 // with a cleanup that closes the connection.
 func ochreAccessStore() (*gateway_bedrock.ModelAccessStore, func(), error) {
-	cfg, nc, err := loadConfigAndConnectFn()
+	_, nc, err := loadConfigAndConnectFn()
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect to cluster: %w", err)
 	}
@@ -1195,7 +1195,7 @@ func ochreAccessStore() (*gateway_bedrock.ModelAccessStore, func(), error) {
 		nc.Close()
 		return nil, nil, fmt.Errorf("jetstream context: %w", err)
 	}
-	return gateway_bedrock.NewModelAccessStore(js, len(cfg.Nodes)), func() { nc.Close() }, nil
+	return gateway_bedrock.NewModelAccessStore(js), func() { nc.Close() }, nil
 }
 
 // ochreTargetModels resolves the --model-id / --all-models pair into the model

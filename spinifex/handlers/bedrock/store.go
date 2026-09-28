@@ -66,15 +66,13 @@ type endpointStore struct {
 	*kvstore.Store[EndpointRecord]
 }
 
-// newEndpointStore returns the endpoints store over js, replicated across
-// replicas nodes. A nil js is permitted: every accessor then reports
-// missingJetStream rather than panicking.
-func newEndpointStore(js jetstream.JetStream, replicas int) *endpointStore {
+// newEndpointStore returns the endpoints store over js. A nil js is permitted:
+// every accessor then reports missingJetStream rather than panicking.
+func newEndpointStore(js jetstream.JetStream) *endpointStore {
 	return &endpointStore{Store: kvstore.New[EndpointRecord](js, kvstore.Config{
-		Name:     KVBucketEndpoints,
-		History:  KVBucketEndpointsHistory,
-		Replicas: replicas,
-		Missing:  missingJetStream,
+		Name:    KVBucketEndpoints,
+		History: KVBucketEndpointsHistory,
+		Missing: missingJetStream,
 	})}
 }
 

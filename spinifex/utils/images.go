@@ -591,28 +591,6 @@ var AvailableImages = map[string]Images{
 		Tags:         map[string]string{"gpu-vendor": "nvidia"},
 	},
 
-	// Bedrock self-host serving AMI. Resolved by spinifex:managed-by=bedrock +
-	// spinifex:bedrock-role=vllm-serving tags — LaunchServingVM's
-	// resolveServingAMI filters on both, never by name.
-	"ubuntu-26.04-vllm-serving-x86_64": {
-		Name:         "ubuntu-26.04-vllm-serving-x86_64",
-		Description:  "Ubuntu 26.04 Bedrock co-served bundle image — NVIDIA GPU base + vLLM and TEI baked side by side (uv-managed venv, TEI staged from HuggingFace's CUDA image), one bedrock-serve@ instance per bundle member against its own read-only weights mount",
-		Distro:       "ubuntu",
-		Version:      "26.04",
-		Arch:         "x86_64",
-		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC),
-		URL:          "https://iso.mulgadc.com/system-ami/ubuntu-26.04-vllm-serving-x86_64.qcow2",
-		Checksum:     "https://iso.mulgadc.com/system-ami/ubuntu-26.04-vllm-serving-x86_64.qcow2.sha256",
-		ChecksumType: "sha256",
-		BootMode:     "uefi",
-		Tags: map[string]string{
-			"spinifex:managed-by":   "bedrock",
-			"spinifex:bedrock-role": "vllm-serving",
-			"gpu-vendor":            "nvidia",
-		},
-	},
-
 	"ubuntu-26.04-amd-gpu-x86_64": {
 		Name:         "ubuntu-26.04-amd-gpu-x86_64",
 		Description:  "Ubuntu 26.04 AMD GPU base image — linux-firmware, ROCm CLI, Python toolchain, Docker",
@@ -738,6 +716,35 @@ var AvailableImages = map[string]Images{
 		Tags: map[string]string{
 			"spinifex:managed-by": "rds", "engine": "mariadb", "engine-version": "11.8",
 			"rds-data-volume-contract": "format-auth-v1",
+		},
+	},
+}
+
+// WithheldImages are catalog entries whose artifact is not published, so an
+// import of one would fail for every operator. They are kept here rather than
+// deleted because the entry is the definition: moving one back into
+// AvailableImages is the whole of publishing it.
+var WithheldImages = map[string]Images{
+
+	// Bedrock self-host serving AMI. Resolved by spinifex:managed-by=bedrock +
+	// spinifex:bedrock-role=vllm-serving tags — LaunchServingVM's
+	// resolveServingAMI filters on both, never by name.
+	"ubuntu-26.04-vllm-serving-x86_64": {
+		Name:         "ubuntu-26.04-vllm-serving-x86_64",
+		Description:  "Ubuntu 26.04 Bedrock co-served bundle image — NVIDIA GPU base + vLLM and TEI baked side by side (uv-managed venv, TEI staged from HuggingFace's CUDA image), one bedrock-serve@ instance per bundle member against its own read-only weights mount",
+		Distro:       "ubuntu",
+		Version:      "26.04",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC),
+		URL:          "https://iso.mulgadc.com/system-ami/ubuntu-26.04-vllm-serving-x86_64.qcow2",
+		Checksum:     "https://iso.mulgadc.com/system-ami/ubuntu-26.04-vllm-serving-x86_64.qcow2.sha256",
+		ChecksumType: "sha256",
+		BootMode:     "uefi",
+		Tags: map[string]string{
+			"spinifex:managed-by":   "bedrock",
+			"spinifex:bedrock-role": "vllm-serving",
+			"gpu-vendor":            "nvidia",
 		},
 	},
 }

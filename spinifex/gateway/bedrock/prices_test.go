@@ -94,7 +94,7 @@ func TestResolvePrice_ResolverErrorPropagates(t *testing.T) {
 // TestWeightsStore_PutAndResolve_KV.
 func TestPriceStore_PutGetDelete(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewPriceStore(testutil.NewJetStream(t, nc), 1)
+	store := NewPriceStore(testutil.NewJetStream(t, nc))
 	ctx := context.Background()
 
 	_, ok, err := store.Resolve(ctx, priceTestProviderModelID)
@@ -123,7 +123,7 @@ func TestPriceStore_PutGetDelete(t *testing.T) {
 // JetStream client: every accessor must report the misconfiguration rather
 // than panic on a nil handle.
 func TestPriceStore_RequiresJetStream(t *testing.T) {
-	store := NewPriceStore(nil, 1)
+	store := NewPriceStore(nil)
 	ctx := context.Background()
 
 	_, _, err := store.Resolve(ctx, priceTestProviderModelID)

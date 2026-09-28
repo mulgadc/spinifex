@@ -79,12 +79,12 @@ func TestPlanRotation(t *testing.T) {
 func TestRotateOnce_MintsAndSwaps(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	issuer := NewIssuer(key, testAudience)
 	verifier := NewVerifier(verify, testAudience)
-	kv, err := openSigningBucket(t.Context(), js, testMasterKey, 1)
+	kv, err := openSigningBucket(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	// Token minted under the original key before rotation.
@@ -120,9 +120,9 @@ func TestRotateOnce_MintsAndSwaps(t *testing.T) {
 func TestRotateOnce_PrunesExpiredKey(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	first, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	first, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
-	kv, err := openSigningBucket(t.Context(), js, testMasterKey, 1)
+	kv, err := openSigningBucket(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 	second, err := generateSigningKey(t.Context(), kv, testMasterKey)
 	require.NoError(t, err)
@@ -151,11 +151,11 @@ func TestRotateOnce_PrunesExpiredKey(t *testing.T) {
 func TestRotator_RunRotatesThenStops(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 	issuer := NewIssuer(key, testAudience)
 	verifier := NewVerifier(verify, testAudience)
-	kv, err := openSigningBucket(t.Context(), js, testMasterKey, 1)
+	kv, err := openSigningBucket(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	r := &Rotator{
@@ -185,9 +185,9 @@ func TestRotator_RunRotatesThenStops(t *testing.T) {
 func TestIssuerVerifier_ConcurrentSwap(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	k1, v1, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	k1, v1, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
-	kv, err := openSigningBucket(t.Context(), js, testMasterKey, 1)
+	kv, err := openSigningBucket(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 	k2, err := generateSigningKey(t.Context(), kv, testMasterKey)
 	require.NoError(t, err)

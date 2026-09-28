@@ -62,7 +62,7 @@ func TestDNSWatchBuckets_ZeroValueDaemonIsNilSafe(t *testing.T) {
 
 func TestInstanceStateWatchBuckets_ReturnsSharedBucket(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	d := &Daemon{jsManager: &JetStreamManager{js: js, replicas: 1}}
+	d := &Daemon{jsManager: &JetStreamManager{js: js}}
 
 	buckets, err := d.instanceStateWatchBuckets(t.Context())
 	require.NoError(t, err)
@@ -111,7 +111,7 @@ func TestEksWatchBuckets_NilGuards(t *testing.T) {
 func TestEksWatchBuckets_DelegatesToAccountWatchBuckets(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	_, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "111111111111", 1)
+	_, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "111111111111")
 	require.NoError(t, err)
 
 	d := &Daemon{eksService: &handlers_eks.EKSServiceImpl{}, natsConn: nc}

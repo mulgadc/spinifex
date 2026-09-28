@@ -21,7 +21,7 @@ func fixedMasterKey() []byte {
 // live NATS server is out of scope here). Resolve must consult
 // platformDefaults without dereferencing js.
 func TestCredentialStore_Resolve_NilJS(t *testing.T) {
-	store := NewCredentialStore(nil, fixedMasterKey(), 1, map[string]string{"anthropic": "sk-platform-default"})
+	store := NewCredentialStore(nil, fixedMasterKey(), map[string]string{"anthropic": "sk-platform-default"})
 
 	cases := []struct {
 		name    string
@@ -43,7 +43,7 @@ func TestCredentialStore_Resolve_NilJS(t *testing.T) {
 }
 
 func TestCredentialStore_Resolve_NoPlatformDefaults(t *testing.T) {
-	store := NewCredentialStore(nil, fixedMasterKey(), 1, nil)
+	store := NewCredentialStore(nil, fixedMasterKey(), nil)
 
 	key, ok, err := store.Resolve(context.Background(), "000000000001", "anthropic")
 	require.NoError(t, err)
@@ -63,7 +63,7 @@ func TestNoopCredentialResolver_ResolvesNothing(t *testing.T) {
 // KV-hit branch of Resolve (Get+decrypt).
 func TestCredentialStore_PutAndResolve_KV(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewCredentialStore(testutil.NewJetStream(t, nc), fixedMasterKey(), 1, nil)
+	store := NewCredentialStore(testutil.NewJetStream(t, nc), fixedMasterKey(), nil)
 
 	ctx := context.Background()
 	require.NoError(t, store.PutCredential(ctx, "000000000001", "anthropic", "sk-test"))
@@ -78,7 +78,7 @@ func TestCredentialStore_PutAndResolve_KV(t *testing.T) {
 // miss (jetstream.ErrKeyNotFound) that falls through to the platform default.
 func TestCredentialStore_Resolve_KVMissFallsBackToPlatformDefault(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewCredentialStore(testutil.NewJetStream(t, nc), fixedMasterKey(), 1, map[string]string{"anthropic": "sk-platform-default"})
+	store := NewCredentialStore(testutil.NewJetStream(t, nc), fixedMasterKey(), map[string]string{"anthropic": "sk-platform-default"})
 
 	key, ok, err := store.Resolve(context.Background(), "999999999999", "anthropic")
 	require.NoError(t, err)
@@ -90,7 +90,7 @@ func TestCredentialStore_Resolve_KVMissFallsBackToPlatformDefault(t *testing.T) 
 // unknown account with no platform defaults configured: ("", false, nil).
 func TestCredentialStore_Resolve_KVMissNoPlatformDefault(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewCredentialStore(testutil.NewJetStream(t, nc), fixedMasterKey(), 1, nil)
+	store := NewCredentialStore(testutil.NewJetStream(t, nc), fixedMasterKey(), nil)
 
 	key, ok, err := store.Resolve(context.Background(), "999999999999", "anthropic")
 	require.NoError(t, err)
@@ -119,7 +119,7 @@ func TestEncryptDecryptSecret_RoundTrip(t *testing.T) {
 // Resolve's tolerated nil: a write has no platform-default fallback to fall
 // back to, so it must report the misconfiguration.
 func TestCredentialStore_PutCredential_RequiresJetStream(t *testing.T) {
-	store := NewCredentialStore(nil, fixedMasterKey(), 1, map[string]string{"anthropic": "sk-default"})
+	store := NewCredentialStore(nil, fixedMasterKey(), map[string]string{"anthropic": "sk-default"})
 
 	err := store.PutCredential(context.Background(), "000000000001", "anthropic", "sk-account")
 	require.Error(t, err)

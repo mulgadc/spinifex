@@ -167,7 +167,7 @@ func runClusterShutdown(cmd *cobra.Command, args []string) {
 	fmt.Printf("Timeout per phase: %s\n\n", timeout)
 
 	// Write cluster shutdown marker to KV
-	jsm, err := daemon.NewJetStreamManager(nc, 1)
+	jsm, err := daemon.NewJetStreamManager(nc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to create JetStream manager: %v\n", err)
 	} else {

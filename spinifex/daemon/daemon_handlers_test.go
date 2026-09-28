@@ -132,7 +132,7 @@ func createFullTestDaemonWithJetStream(t *testing.T, natsURL string) *Daemon {
 	daemon := createFullTestDaemon(t, natsURL)
 
 	var err error
-	daemon.jsManager, err = NewJetStreamManager(daemon.natsConn, 1)
+	daemon.jsManager, err = NewJetStreamManager(daemon.natsConn)
 	require.NoError(t, err)
 	err = daemon.jsManager.InitKVBucket()
 	require.NoError(t, err)

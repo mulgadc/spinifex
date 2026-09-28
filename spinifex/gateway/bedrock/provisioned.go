@@ -81,16 +81,14 @@ type ProvisionedStore struct {
 	endpoint EndpointProvisioner
 }
 
-// NewProvisionedStore constructs a ProvisionedStore over js, replicated
-// across replicas nodes, driving endpoint launches/teardowns through
-// endpoint.
-func NewProvisionedStore(js jetstream.JetStream, replicas int, region string, endpoint EndpointProvisioner) *ProvisionedStore {
+// NewProvisionedStore constructs a ProvisionedStore over js, driving endpoint
+// launches and teardowns through endpoint.
+func NewProvisionedStore(js jetstream.JetStream, region string, endpoint EndpointProvisioner) *ProvisionedStore {
 	return &ProvisionedStore{
 		store: kvstore.New[ProvisionedModelRecord](js, kvstore.Config{
-			Name:     bedrockProvisionedBucket,
-			History:  bedrockProvisionedHistory,
-			Replicas: replicas,
-			Missing:  "bedrock: provisioned store has no JetStream client configured",
+			Name:    bedrockProvisionedBucket,
+			History: bedrockProvisionedHistory,
+			Missing: "bedrock: provisioned store has no JetStream client configured",
 		}),
 		region:   region,
 		endpoint: endpoint,

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/nats-io/nats.go"
@@ -26,22 +27,18 @@ type volumeDirty struct {
 }
 
 // newVolumeDirty binds the dirty bucket, creating it if this is the first node
-// up. owner identifies this node in the entries it writes, and replicas is the
-// cluster size: this is read on the mount path, so a single replica would make
-// every mount depend on one node being up.
-func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string, replicas int) (*volumeDirty, error) {
+// up. owner identifies this node in the entries it writes. This is read on the
+// mount path, so a single replica would make every mount in the cluster depend
+// on one node being up.
+func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string) (*volumeDirty, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	// Create-or-update rather than create: a bucket left behind by a build that
-	// made it single-replica is raised here, and a cluster cannot be asked to
-	// lose its markers to be repaired.
-	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:      vbwire.DirtyBucket,
+	kv, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
+		Name:        vbwire.DirtyBucket,
 		Description: "volumes whose last seal failed, keyed by volume, naming the node holding the current copy",
 		History:     1,
-		Replicas:    max(replicas, 1),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("volume dirty bucket: %w", err)

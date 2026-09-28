@@ -45,9 +45,8 @@ func (d *Daemon) instanceStateWatchBuckets(context.Context) ([]*kvstore.Bucket, 
 		return nil, nil
 	}
 	return []*kvstore.Bucket{kvstore.NewBucket(d.jsManager.js, kvstore.Config{
-		Name:     InstanceStateBucket,
-		History:  1,
-		Replicas: d.jsManager.replicas,
+		Name:    InstanceStateBucket,
+		History: 1,
 	})}, nil
 }
 

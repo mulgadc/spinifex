@@ -24,7 +24,7 @@ func newTestMgmtJSM(t *testing.T) *JetStreamManager {
 	}
 	t.Cleanup(nc.Close)
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	if err != nil {
 		t.Fatalf("new JetStreamManager: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestMgmtIPAllocator_Allocate_RefusedWhenKVUnhealthy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	if err != nil {
 		t.Fatal(err)
 	}

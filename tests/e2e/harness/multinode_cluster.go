@@ -30,6 +30,9 @@ type natsRoutezResponse struct {
 // WaitNATSPeers polls every node's NATS /routez until each reports at least want
 // distinct peers (timeout 60s, interval 2s). NATS monitor binds 127.0.0.1:8222
 // only, so queries run via PeerSSH + curl rather than dialling node.Addr directly.
+//
+// want is a count of *other* nodes, because /routez reports routes to peers and
+// not a node's own membership. A fully formed cluster is len(c.Nodes)-1.
 // Nodes passed to WithSkipNodes are excluded — use it when a node has been
 // stopped so its dead monitor port doesn't fail the poll.
 func (c *Cluster) WaitNATSPeers(t *testing.T, want int, opts ...PollOpt) {

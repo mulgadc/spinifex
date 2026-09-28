@@ -30,6 +30,13 @@ func TestAccountScoping(t *testing.T) {
 	runAccountScoping(t, requireSingleNodeFixture(t))
 }
 
+// TestKVReplication reads the cluster's own state and runs a repair that has
+// nothing to repair, so it mutates nothing another test can see.
+func TestKVReplication(t *testing.T) {
+	t.Parallel()
+	runKVReplication(t, requireSingleNodeFixture(t))
+}
+
 // Reaches the public internet rather than the cluster: it asks whether the
 // upstreams our image catalog names are still publishing what it claims.
 func TestImageCatalogReachable(t *testing.T) {

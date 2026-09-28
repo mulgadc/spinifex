@@ -242,7 +242,7 @@ func TestReclaimOrphanedNodegroups_TerminatesStrandedWorkers(t *testing.T) {
 func TestNodegroupRecord_CRUDRoundTrip(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 
 	rec := &NodegroupRecord{

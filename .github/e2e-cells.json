@@ -178,5 +178,17 @@
     "extra": "",
     "suite": "lbrecovery",
     "timeout_minutes": 90
+  },
+  {
+    "cell": 33,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "",
+    "suite": "kvquorum",
+    "timeout_minutes": 55
   }
 ]

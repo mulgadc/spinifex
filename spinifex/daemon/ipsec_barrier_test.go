@@ -21,7 +21,7 @@ func newTestIPSecBarrier(t *testing.T) (*KVIPSecBarrier, *JetStreamManager) {
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitClusterStateBucket())
 

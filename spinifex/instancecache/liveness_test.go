@@ -23,7 +23,7 @@ func newTestLiveness(t *testing.T) (*instancecache.Liveness, jetstream.KeyValue)
 	kv, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: bucket, History: 1})
 	require.NoError(t, err)
 
-	l := instancecache.NewLiveness(js, kvstore.Config{Name: bucket, History: 1, Replicas: 1})
+	l := instancecache.NewLiveness(js, kvstore.Config{Name: bucket, History: 1})
 	return l, kv
 }
 

@@ -89,15 +89,14 @@ type GuardrailStore struct {
 	region string
 }
 
-// NewGuardrailStore constructs a GuardrailStore over js, replicated across
-// replicas nodes, minting ARNs for region.
-func NewGuardrailStore(js jetstream.JetStream, replicas int, region string) *GuardrailStore {
+// NewGuardrailStore constructs a GuardrailStore over js, minting ARNs for
+// region.
+func NewGuardrailStore(js jetstream.JetStream, region string) *GuardrailStore {
 	return &GuardrailStore{
 		store: kvstore.New[GuardrailRecord](js, kvstore.Config{
-			Name:     bedrockGuardrailBucket,
-			History:  bedrockGuardrailHistory,
-			Replicas: replicas,
-			Missing:  "bedrock: guardrail store has no JetStream client configured",
+			Name:    bedrockGuardrailBucket,
+			History: bedrockGuardrailHistory,
+			Missing: "bedrock: guardrail store has no JetStream client configured",
 		}),
 		region: region,
 	}

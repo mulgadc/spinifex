@@ -62,7 +62,7 @@ func TestDesiredDNSChanges_MetadataReadFailureIsNotAuthoritative(t *testing.T) {
 	require.NoError(t, PutClusterMeta(t.Context(), fixture.kv, active))
 
 	js := testutil.NewJetStream(t, fixture.svc.deps.NATSConn)
-	corruptKV, err := GetOrCreateAccountBucket(t.Context(), js, "444455556666", 1)
+	corruptKV, err := GetOrCreateAccountBucket(t.Context(), js, "444455556666")
 	require.NoError(t, err)
 	_, err = corruptKV.Put(t.Context(), ClusterMetaKey("unreadable"), []byte("{not json"))
 	require.NoError(t, err)

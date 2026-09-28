@@ -15,7 +15,7 @@ func newClusterStateTestKV(t *testing.T) jetstream.KeyValue {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	return kv
 }

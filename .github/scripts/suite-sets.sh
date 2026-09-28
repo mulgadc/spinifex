@@ -51,7 +51,13 @@ E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota 
 # the load balancer's, so taking that node away does not take the backends with
 # it. It runs beside instancerecovery at the end because it also takes a node
 # away and owns its environment while it does.
-E2E_SUITES_MULTI="multinode lb cert quota lbrecovery instancerecovery storagefault"
+#
+# kvquorum is multi-only and needs three, for the same reason as those two: a
+# surviving majority. It is what proves the control plane's own state is
+# replicated rather than sitting on one node, so it runs before the pair that
+# take a node away — a cluster whose buckets are already wrong should report
+# that, not report a recovery failing.
+E2E_SUITES_MULTI="multinode lb cert quota kvquorum lbrecovery instancerecovery storagefault"
 
 # grep -xE alternation form, for narrowing a requested set to the eligible one.
 E2E_SUITES_SINGLE_RE="$(printf '%s' "${E2E_SUITES_SINGLE}" | tr ' ' '|')"
@@ -75,6 +81,10 @@ E2E_SUITES_MULTI_RE="$(printf '%s' "${E2E_SUITES_MULTI}" | tr ' ' '|')"
 # after a failed seal do not exist on one node, and they are the assertions
 # worth a nightly.
 E2E_SUITES_NIGHTLY_SINGLE="single cert iam"
+#
+# The multi-node nightly subset carries kvquorum's read-only half through
+# `multinode`, which sweeps every KV bucket rather than the three the daemon
+# owns. The node-loss half is too slow for a 35-minute cell and has its own.
 E2E_SUITES_NIGHTLY_MULTI="multinode cert lb"
 
 # How long a suite gets, for the same reason the lists above live here: the
@@ -112,6 +122,10 @@ e2e_suite_timeout() {
     # the backends before it forwards anything. Then the node comes back and has
     # to be shown not to answer for an address it no longer holds.
     lbrecovery) echo "75m" ;;
+    # kvquorum audits every bucket in seconds and then spends the rest of its
+    # budget on a node stopping and starting: seven units down, a raft election,
+    # and the whole service stack back up with every stream caught up.
+    kvquorum) echo "40m" ;;
     *) echo "30m" ;;
   esac
 }

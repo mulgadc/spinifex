@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats-server/v2/server"
 	natstest "github.com/nats-io/nats-server/v2/test"
@@ -42,6 +43,9 @@ func setupEmbeddedNATS(t *testing.T) (*server.Server, string) {
 	}
 	t.Cleanup(ns.Shutdown)
 
+	// One embedded server is a one-node cluster, and bucket creation refuses to
+	// guess a replica count it was never told.
+	clustersize.DeclareForTest(t, 1)
 	return ns, ns.ClientURL()
 }
 
@@ -54,7 +58,7 @@ func installTestVolumeLeases(t *testing.T, cfg *Config, natsURL string) {
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	leases, err := newVolumeLeases(t.Context(), nc, cfg.leaseOwner(), 1)
+	leases, err := newVolumeLeases(t.Context(), nc, cfg.leaseOwner())
 	require.NoError(t, err)
 	cfg.leases = leases
 }

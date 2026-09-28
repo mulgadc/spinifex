@@ -17,7 +17,7 @@ func TestEndpointKey_Base64EncodesColonBearingModelID(t *testing.T) {
 func newTestBucket(t *testing.T) *endpointStore {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	return newEndpointStore(js, 1)
+	return newEndpointStore(js)
 }
 
 func TestStore_CreateGetUpdateDelete(t *testing.T) {

@@ -384,7 +384,6 @@ var viperblockStartCmd = &cobra.Command{
 			SecretKey:         nodeConfig.Predastore.SecretKey,
 			BaseDir:           nodeConfig.Predastore.BaseDir,
 			NodeName:          clusterConfig.Node,
-			KVReplicas:        len(clusterConfig.Nodes),
 			ShardWAL:          shardWAL,
 			GCEnabled:         gcEnabled,
 			WALBaseDir:        nodeConfig.Viperblock.WALBaseDir,

@@ -68,7 +68,7 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 	// that reaches an engine open without one refuses, and refusing every
 	// publish is a worse failure than not starting.
 	if cfg.leases == nil {
-		leases, err := newVolumeLeases(context.Background(), nc, cfg.leaseOwner(), cfg.KVReplicas)
+		leases, err := newVolumeLeases(context.Background(), nc, cfg.leaseOwner())
 		if err != nil {
 			return fmt.Errorf("volume leases: %w", err)
 		}
@@ -79,7 +79,7 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 	// Same reasoning as the lease store: a mount that cannot consult the dirty
 	// marker cannot tell a stale cross-node start from a routine one.
 	if cfg.dirty == nil {
-		dirty, err := newVolumeDirty(context.Background(), nc, cfg.leaseOwner(), cfg.KVReplicas)
+		dirty, err := newVolumeDirty(context.Background(), nc, cfg.leaseOwner())
 		if err != nil {
 			return fmt.Errorf("volume dirty markers: %w", err)
 		}

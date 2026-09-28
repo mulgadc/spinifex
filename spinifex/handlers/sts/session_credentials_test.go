@@ -18,7 +18,7 @@ import (
 func setupBucket(t *testing.T) *kvstore.Store[SessionCredential] {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store, err := initSessionCredentialsStore(t.Context(), testutil.NewJetStream(t, nc), 1)
+	store, err := initSessionCredentialsStore(t.Context(), testutil.NewJetStream(t, nc))
 	require.NoError(t, err)
 	return store
 }
@@ -53,7 +53,7 @@ func TestInitSessionCredentialsBucket_StampsVersion(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	store, err := initSessionCredentialsStore(t.Context(), js, 1)
+	store, err := initSessionCredentialsStore(t.Context(), js)
 	require.NoError(t, err)
 	kv, err := store.KV(t.Context())
 	require.NoError(t, err)
@@ -67,11 +67,11 @@ func TestInitSessionCredentialsBucket_Idempotent(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	store1, err := initSessionCredentialsStore(t.Context(), js, 1)
+	store1, err := initSessionCredentialsStore(t.Context(), js)
 	require.NoError(t, err)
 
 	// Reopen — must return the same bucket without error.
-	store2, err := initSessionCredentialsStore(t.Context(), js, 1)
+	store2, err := initSessionCredentialsStore(t.Context(), js)
 	require.NoError(t, err)
 	assert.Equal(t, store1.Name(), store2.Name())
 }

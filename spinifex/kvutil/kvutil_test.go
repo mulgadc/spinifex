@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -31,13 +32,13 @@ func streamReplicas(t *testing.T, js jetstream.JetStream, bucket string) int {
 	return info.Config.Replicas
 }
 
-func TestGetOrCreateBucket_CreatesAtDefaultReplicas(t *testing.T) {
+func TestGetOrCreateBucket_CreatesAtTheClusterReplicaCount(t *testing.T) {
 	js := startJetStream(t)
 
 	kv, err := GetOrCreateBucket(t.Context(), js, "regression-bucket", 5)
 	require.NoError(t, err)
 	require.NotNil(t, kv)
-	assert.Equal(t, 1, streamReplicas(t, js, "regression-bucket"))
+	assert.Equal(t, 1, streamReplicas(t, js, "regression-bucket"), "one embedded server is a one-node cluster")
 }
 
 // TestGetOrCreateBucket_OpensExisting covers the second-boot path: a bucket that
@@ -58,31 +59,61 @@ func TestGetOrCreateBucket_OpensExisting(t *testing.T) {
 	assert.Equal(t, "value", string(entry.Value()))
 }
 
-func TestGetOrCreateBucketWithReplicas_ClampsBelowOne(t *testing.T) {
+// TestGetOrCreateBucket_RefusesWhenClusterSizeIsUndeclared pins the fail-closed
+// choice: an undeclared size must not fall back to one replica, because one
+// replica on a multi-node cluster is the outage this package exists to prevent.
+func TestGetOrCreateBucket_RefusesWhenClusterSizeIsUndeclared(t *testing.T) {
 	js := startJetStream(t)
+	clustersize.RedeclareForTest(t, 0)
 
-	kv, err := GetOrCreateBucketWithReplicas(t.Context(), js, "clamped-zero", 1, 0)
-	require.NoError(t, err)
-	require.NotNil(t, kv)
-	assert.Equal(t, 1, streamReplicas(t, js, "clamped-zero"))
+	_, err := GetOrCreateBucket(t.Context(), js, "undeclared", 1)
+	require.ErrorIs(t, err, clustersize.ErrUndeclared)
 
-	kv, err = GetOrCreateBucketWithReplicas(t.Context(), js, "clamped-negative", 1, -3)
-	require.NoError(t, err)
-	require.NotNil(t, kv)
-	assert.Equal(t, 1, streamReplicas(t, js, "clamped-negative"))
+	_, err = js.KeyValue(t.Context(), "undeclared")
+	require.ErrorIs(t, err, jetstream.ErrBucketNotFound, "a refused create must not leave a bucket behind")
 }
 
-// TestGetOrCreateBucketWithReplicas_SurfacesCreateFailure pins the reason the
-// open is scoped to "bucket exists": a create that fails for any other reason
-// must report that reason, not the "bucket not found" a blind reopen produces.
-func TestGetOrCreateBucketWithReplicas_SurfacesCreateFailure(t *testing.T) {
+// TestGetOrCreateBucket_SurfacesCreateFailure pins the reason the open is scoped
+// to "bucket exists": a create that fails for any other reason must report that
+// reason, not the "bucket not found" a blind reopen produces.
+func TestGetOrCreateBucket_SurfacesCreateFailure(t *testing.T) {
 	js := startJetStream(t)
 
-	// The embedded single-node server rejects Replicas > 1.
-	_, err := GetOrCreateBucketWithReplicas(t.Context(), js, "over-replicated", 1, 3)
+	// The embedded single-node server rejects a three-node replica count.
+	clustersize.RedeclareForTest(t, 3)
+
+	_, err := GetOrCreateBucket(t.Context(), js, "over-replicated", 1)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, jetstream.ErrBucketNotFound)
 	assert.Contains(t, err.Error(), "create KV bucket over-replicated")
+}
+
+// TestGetOrCreateBucket_OpensAnExistingBucketTheClusterCannotYetRaise pins the
+// other half of the line, and it is the half that matters in production: a
+// bucket that exists and works must be handed back even when it cannot be
+// raised to the count the config now asks for.
+//
+// That happens on the documented growth path — the config names a new node
+// before that node is serving — and refusing would stop every service on the
+// host over a bucket that is perfectly usable. The sweep and
+// `kv replicas --repair` are what finish the raise.
+func TestGetOrCreateBucket_OpensAnExistingBucketTheClusterCannotYetRaise(t *testing.T) {
+	js := startJetStream(t)
+
+	kv, err := GetOrCreateBucket(t.Context(), js, "growing-cluster", 1)
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), "key", []byte("value"))
+	require.NoError(t, err)
+
+	// One embedded server cannot hold three replicas, so the raise must fail.
+	clustersize.RedeclareForTest(t, 3)
+
+	reopened, err := GetOrCreateBucket(t.Context(), js, "growing-cluster", 1)
+	require.NoError(t, err, "an existing, working bucket must open even when it cannot be raised")
+	entry, err := reopened.Get(t.Context(), "key")
+	require.NoError(t, err)
+	assert.Equal(t, "value", string(entry.Value()))
+	assert.Equal(t, 1, streamReplicas(t, js, "growing-cluster"), "the raise must not have been faked")
 }
 
 func TestDeleteBucketIfExists(t *testing.T) {

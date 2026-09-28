@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/spf13/viper"
 )
 
@@ -603,6 +604,24 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 
 	if err := validateClusterConfig(&config); err != nil {
 		return nil, err
+	}
+
+	// Every process that creates a KV bucket loads the cluster config first, so
+	// this is the one place the node count can be declared without a service
+	// being able to forget to. Buckets refuse to be created until it has been.
+	//
+	// A conflicting second load is reported rather than refused, because this
+	// function also reads config files that are not this process's own cluster —
+	// an installer inspecting a peer's, a tool rendering one. The first
+	// declaration stands either way, so nothing that already created a bucket can
+	// have the count changed underneath it.
+	if err := clustersize.Declare(len(config.Nodes)); err != nil {
+		slog.Warn("Ignoring a cluster size that disagrees with the one already declared; the first one stands",
+			"loaded_nodes", len(config.Nodes), "declared_nodes", clustersize.Nodes(), "error", err)
+	}
+	if len(config.Nodes) > 1 && len(config.Nodes) < clustersize.MinHANodes {
+		slog.Warn("This cluster has too few nodes to survive losing one, so its state is replicated to a single node",
+			"nodes", len(config.Nodes), "ha_minimum", clustersize.MinHANodes)
 	}
 
 	return &config, nil

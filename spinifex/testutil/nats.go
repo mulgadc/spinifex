@@ -76,8 +76,9 @@ func StartTestJetStream(t *testing.T) (*server.Server, *nats.Conn, jetstream.Jet
 	require.NoError(t, err)
 
 	// One embedded server is a one-node cluster, and bucket creation refuses to
-	// guess. A test that wants a different count declares it after this returns.
-	clustersize.Declare(1)
+	// guess. A test that wants a different count calls RedeclareForTest, because
+	// declaring is write-once and this has already done it.
+	clustersize.DeclareForTest(t, 1)
 	return ns, nc, js
 }
 

@@ -65,10 +65,7 @@ func OpenBucket(ctx context.Context, js jetstream.JetStream, cfg BucketConfig) (
 		// tick, so refusing here would stop every reconciler sharing the bucket
 		// — the outage this replica count exists to prevent — over a bucket that
 		// is present and quorate at the count it already has.
-		if raiseErr := kvutil.RaiseBucketReplicas(ctx, js, cfg.Name, replicas); raiseErr != nil {
-			slog.WarnContext(ctx, "kvlease: could not raise lease bucket to the cluster's replica count",
-				"bucket", cfg.Name, "want", replicas, "error", raiseErr)
-		}
+		kvutil.TryRaiseBucketReplicas(ctx, js, cfg.Name, replicas)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("kvlease: open or create lease bucket %s: %w", cfg.Name, err)
@@ -96,6 +93,11 @@ func NATSBucket(nc *nats.Conn, bucket string, ttl time.Duration) BucketFunc {
 			kv, err := OpenBucket(ctx, js, BucketConfig{Name: bucket, TTL: ttl})
 			if err == nil {
 				return kv, nil
+			}
+			// An undeclared cluster size does not become declared by waiting, so
+			// it surfaces now rather than after the whole retry window.
+			if clustersize.Permanent(err) {
+				return nil, err
 			}
 			if time.Now().After(deadline) {
 				return nil, fmt.Errorf("kvlease: KV bucket %q unreachable after %s: %w", bucket, bucketRetryFor, err)

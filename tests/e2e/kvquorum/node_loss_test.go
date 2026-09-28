@@ -121,16 +121,14 @@ func requireNoBucketLostReplicas(t *testing.T, before, after []kvutil.BucketRepo
 // Leadership is where the loss hurts most: a follower going away costs a raft
 // group a peer, a leader going away costs it an election.
 //
-// A stream's peers are NATS server names, which are the node name behind a
-// prefix rather than the node name itself, so they go through the helper that
+// The leader is read from the field that holds it rather than guessed at the head
+// of the peer list. It is a NATS server name, which is the node name behind a
+// prefix rather than the node name itself, so it goes through the helper that
 // owns that prefix.
 func busiestLeader(nodes []harness.Node, reports []kvutil.BucketReport) (harness.Node, int) {
 	led := make(map[string]int, len(nodes))
 	for _, r := range reports {
-		if len(r.Peers) == 0 {
-			continue
-		}
-		if node, ok := natssvc.NodeFromServerName(r.Peers[0]); ok {
+		if node, ok := natssvc.NodeFromServerName(r.Leader); ok {
 			led[node]++
 		}
 	}

@@ -14,6 +14,14 @@ func ServerName(node string) string { return ServerNamePrefix + node }
 // NodeFromServerName is ServerName's inverse. The second result is false for a
 // name this cluster did not generate, so a caller can tell "not our node" from
 // "a node called the empty string".
+//
+// The bare prefix is rejected too. It is a name we could not have generated, and
+// mapping it to the empty node would silently create a phantom peer in anything
+// counting nodes.
 func NodeFromServerName(server string) (string, bool) {
-	return strings.CutPrefix(server, ServerNamePrefix)
+	node, ok := strings.CutPrefix(server, ServerNamePrefix)
+	if !ok || node == "" {
+		return "", false
+	}
+	return node, true
 }

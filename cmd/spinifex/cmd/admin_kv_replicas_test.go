@@ -19,8 +19,9 @@ import (
 
 func TestWriteReplicaReport_NamesEveryUnderReplicatedBucket(t *testing.T) {
 	reports := []kvutil.BucketReport{
-		{Bucket: "healthy", Replicas: 3, Want: 3, Peers: []string{"a", "b", "c"}},
-		{Bucket: "short", Replicas: 1, Want: 3, Peers: []string{"a"}},
+		{Bucket: "healthy", Replicas: 3, Want: 3, Online: 3, Leader: "a", Peers: []string{"a", "b", "c"}},
+		{Bucket: "short", Replicas: 1, Want: 3, Online: 1, Leader: "a", Peers: []string{"a"}},
+		{Bucket: "stuck", Replicas: 3, Want: 3, Online: 1, Peers: []string{"a", "b", "c"}},
 	}
 
 	var out bytes.Buffer
@@ -29,9 +30,28 @@ func TestWriteReplicaReport_NamesEveryUnderReplicatedBucket(t *testing.T) {
 
 	assert.Contains(t, got, "BUCKET")
 	assert.Contains(t, got, "HELD BY")
-	assert.Regexp(t, `healthy\s+3\s+3\s+ok\s+a,b,c`, got)
-	assert.Regexp(t, `short\s+1\s+3\s+UNDER-REPLICATED\s+a`, got)
-	assert.Contains(t, got, "2 buckets, 1 under-replicated")
+	assert.Regexp(t, `healthy\s+3\s+3\s+3\s+ok\s+a\s+a,b,c`, got)
+	assert.Regexp(t, `short\s+1\s+3\s+1\s+UNDER-REPLICATED\s+a\s+a`, got)
+	// A bucket that cannot serve reads as NO-QUORUM even though its configured
+	// count is right, because raising a count is not the response to it.
+	assert.Regexp(t, `stuck\s+3\s+3\s+1\s+NO-QUORUM`, got)
+	assert.Contains(t, got, "3 buckets, 1 under-replicated, 1 without quorum")
+}
+
+// TestReplicaReportExit pins the three exit classes a deployment gate reads. They
+// are separate because the responses are: a raise fixes an under-replicated
+// bucket, and nothing the command can do fixes one that will not answer.
+func TestReplicaReportExit(t *testing.T) {
+	healthy := kvutil.BucketReport{Bucket: "a", Replicas: 3, Want: 3, Online: 3}
+	short := kvutil.BucketReport{Bucket: "b", Replicas: 1, Want: 3, Online: 1}
+	stuck := kvutil.BucketReport{Bucket: "c", Replicas: 3, Want: 3, Online: 1}
+
+	assert.Equal(t, exitHealthy, replicaReportExit(nil))
+	assert.Equal(t, exitHealthy, replicaReportExit([]kvutil.BucketReport{healthy}))
+	assert.Equal(t, exitUnderReplicated, replicaReportExit([]kvutil.BucketReport{healthy, short}))
+	assert.Equal(t, exitUnreachable, replicaReportExit([]kvutil.BucketReport{healthy, stuck}))
+	// Both problems at once sends the operator to the node rather than to --repair.
+	assert.Equal(t, exitUnreachable, replicaReportExit([]kvutil.BucketReport{short, stuck}))
 }
 
 // TestWriteReplicaReport_JSONIsWhatTheE2ESuiteDecodes keeps the machine-readable
@@ -40,7 +60,7 @@ func TestWriteReplicaReport_NamesEveryUnderReplicatedBucket(t *testing.T) {
 func TestWriteReplicaReport_JSONIsWhatTheE2ESuiteDecodes(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, writeReplicaReport(&out, []kvutil.BucketReport{
-		{Bucket: "short", Replicas: 1, Want: 3, Cluster: "spinifex", Peers: []string{"a"}},
+		{Bucket: "short", Replicas: 1, Want: 3, Cluster: "spinifex", Online: 1, Leader: "a", Peers: []string{"a"}},
 	}, true))
 
 	assert.Contains(t, out.String(), `"bucket":"short"`)
@@ -51,7 +71,10 @@ func TestWriteReplicaReport_JSONIsWhatTheE2ESuiteDecodes(t *testing.T) {
 	assert.Equal(t, "short", decoded[0].Bucket)
 	assert.Equal(t, 1, decoded[0].Replicas)
 	assert.Equal(t, 3, decoded[0].Want)
+	assert.Equal(t, 1, decoded[0].Online)
+	assert.Equal(t, "a", decoded[0].Leader)
 	assert.True(t, decoded[0].UnderReplicated())
+	assert.True(t, decoded[0].HasQuorum())
 }
 
 func TestUnderReplicatedCount(t *testing.T) {
@@ -94,7 +117,7 @@ func TestRepairReplicaReports_KeepsGoingPastABucketItCannotPlace(t *testing.T) {
 func TestRepairReplicaReports_RaisesWhatItCan(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 	defer nc.Close()
-	clustersize.Declare(1)
+	clustersize.DeclareForTest(t, 1)
 
 	_, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "repair-ok", History: 1})
 	require.NoError(t, err)

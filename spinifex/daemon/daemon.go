@@ -1668,15 +1668,18 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("connect NATS: %w", err)
 	}
 
-	if err := d.initJetStream(); err != nil {
-		return fmt.Errorf("initialize JetStream: %w", err)
+	// Declared before JetStream, not after: initJetStream creates buckets, and
+	// bucket creation refuses until the count is known. A daemon assembled in a
+	// test may never have gone through config.LoadConfig, which is where a real
+	// process declares it from this same source.
+	if d.clusterConfig != nil {
+		if err := clustersize.Declare(len(d.clusterConfig.Nodes)); err != nil {
+			return err
+		}
 	}
 
-	// A daemon assembled in a test may never have gone through config.LoadConfig,
-	// which is where a real process declares this. Declaring it again from the
-	// same source is harmless and keeps bucket creation available either way.
-	if d.clusterConfig != nil {
-		clustersize.Declare(len(d.clusterConfig.Nodes))
+	if err := d.initJetStream(); err != nil {
+		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
@@ -2419,6 +2422,13 @@ func (d *Daemon) initJetStream() error {
 			replicas, _ := clustersize.Replicas()
 			slog.Info("JetStream KV stores initialized successfully", "replicas", replicas, "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			break
+		}
+
+		// A misdeclared cluster size is not something quorum arrives and fixes,
+		// so waiting for it spends the whole budget and then reports a quorum
+		// problem that was never the cause.
+		if clustersize.Permanent(err) {
+			return fmt.Errorf("initialize JetStream: %w", err)
 		}
 
 		elapsed := time.Since(start)

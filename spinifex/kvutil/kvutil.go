@@ -12,7 +12,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -111,16 +110,10 @@ func getOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, cfg je
 //
 // An existing bucket may predate this rule, or predate the cluster growing, and
 // raising it on open is what makes a formed cluster self-heal rather than wait
-// for someone to run a repair. A failed raise is deliberately not a failed
-// open: the config can legitimately name nodes that are not serving yet — that
-// is what growing a cluster looks like — and refusing would stop every service
-// on the host over a bucket that is present and quorate at the count it has.
-// The daemon's sweep and `spx admin kv replicas --repair` finish the job.
+// for someone to run a repair. The daemon's sweep and
+// `spx admin kv replicas --repair` finish the job.
 func openAndRaise(ctx context.Context, js jetstream.KeyValueManager, kv jetstream.KeyValue, bucket string, replicas int) jetstream.KeyValue {
-	if err := RaiseBucketReplicas(ctx, js, bucket, replicas); err != nil {
-		slog.WarnContext(ctx, "Could not raise KV bucket to the cluster's replica count; it stays where it is until the cluster can hold more",
-			"bucket", bucket, "want", replicas, "error", err)
-	}
+	TryRaiseBucketReplicas(ctx, js, bucket, replicas)
 	return kv
 }
 

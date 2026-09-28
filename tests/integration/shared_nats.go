@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/tests/fixtures/scratch"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
@@ -43,6 +44,14 @@ const natsStorePrefix = "spinifex-integration-nats-"
 // startSharedNATS boots the one embedded, JetStream-enabled NATS server the
 // whole package's tests connect into.
 func startSharedNATS() (*sharedNATS, error) {
+	// One embedded, non-clustered server, so every bucket this binary creates is
+	// on one replica. Bucket creation refuses until it is told, and this package
+	// builds its gateway by hand rather than through config.LoadConfig, which is
+	// where a real process declares it.
+	if err := clustersize.Declare(1); err != nil {
+		return nil, err
+	}
+
 	// The store cannot be a t.TempDir(): the server outlives every individual
 	// test, so the first test to finish would delete it out from under it.
 	scratch.SweepAbandoned(os.TempDir(), natsStorePrefix, scratch.DefaultMaxAge)

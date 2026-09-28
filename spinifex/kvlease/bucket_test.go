@@ -30,8 +30,7 @@ func TestOpenBucket_OpensALeaseBucketTheClusterCannotYetRaise(t *testing.T) {
 	require.NoError(t, err)
 
 	// One embedded server cannot hold three replicas, so the raise must fail.
-	clustersize.Declare(3)
-	t.Cleanup(func() { clustersize.Declare(1) })
+	clustersize.RedeclareForTest(t, 3)
 
 	reopened, err := kvlease.OpenBucket(t.Context(), js, cfg)
 	require.NoError(t, err, "a reconciler must still be able to reach its lease bucket")
@@ -47,9 +46,31 @@ func TestOpenBucket_RefusesWhenClusterSizeIsUndeclared(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 	defer nc.Close()
 
-	clustersize.Declare(0)
-	t.Cleanup(func() { clustersize.Declare(1) })
+	clustersize.RedeclareForTest(t, 0)
 
 	_, err := kvlease.OpenBucket(t.Context(), js, kvlease.BucketConfig{Name: "lease-undeclared", TTL: time.Minute})
 	require.ErrorIs(t, err, clustersize.ErrUndeclared)
+}
+
+// TestNATSBucket_StopsOnAConfigFault covers the retry loop rather than the open.
+//
+// The loop exists because a cold multi-node start has no JetStream quorum yet, and
+// waiting for one is right. An undeclared cluster size never becomes declared by
+// waiting, so a loop that cannot tell them apart holds a reconciler for its whole
+// retry window and then reports the bucket as unreachable — which was never the
+// problem.
+func TestNATSBucket_StopsOnAConfigFault(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	clustersize.RedeclareForTest(t, 0)
+
+	start := time.Now()
+	_, err := kvlease.NATSBucket(nc, "lease-config-fault", time.Minute)(t.Context())
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, clustersize.ErrUndeclared,
+		"the error has to name the config fault, not the bucket it never reached")
+	require.Lessf(t, elapsed, 10*time.Second,
+		"returned after %s; a permanent fault must not consume the retry window", elapsed)
 }

@@ -76,17 +76,22 @@ Servers beyond the third run the full set of services — storage, gateway and n
 
 Guest data has an obvious home: volumes live in Viperblock, objects in Predastore, both erasure coded across the cluster. The control plane's *own* state has a less obvious one, and it matters just as much. Every instance record, every VPC and subnet, the node roster, IAM users and access keys, quotas, DNS records and the leases reconcilers hold are all kept in **NATS JetStream key-value buckets**, replicated by Raft across the servers you installed. A cluster that has lost its state has lost the ability to describe, launch, terminate or route anything, even while every guest is still running.
 
-**A bucket is replicated across as many nodes as the cluster has, up to five.** That number is decided once, by the `--nodes` count you give `spx admin init` in Step 4, and every service on every node reads it back out of `/etc/spinifex/spinifex.toml` before it creates anything.
+**A bucket is replicated across the largest odd number of nodes the cluster has, up to five.** That number is decided once, by the `--nodes` count you give `spx admin init` in Step 4, and every service on every node reads it back out of `/etc/spinifex/spinifex.toml` before it creates anything.
 
 | Servers | Replicas per bucket | Quorum | Survives |
 |---|---|---|---|
 | 1 | 1 | 1 | nothing — a single node is a single point of failure by definition |
+| 2 | — | — | rejected by `spx admin init`; see below |
 | 3 | 3 | 2 | any 1 node lost |
-| 4 | 4 | 3 | any 1 node lost |
+| 4 | 3 | 2 | any 1 node lost |
 | 5 | 5 | 3 | any 2 nodes lost |
 | 10 | 5 | 3 | any 2 of the 5 nodes holding each bucket |
 
+**The count is always odd, and that is why four servers replicate three ways rather than four.** A Raft group needs a majority, and an even number of members does not buy one: four replicas store a fourth full copy of every write and still survive exactly one loss, the same as three. On four servers NATS spreads which three nodes hold each bucket, so all four carry their share and none of them is idle.
+
 Five is JetStream's own ceiling on a stream's replica count, not a choice of ours. Past five servers the buckets stay at five and NATS spreads which five nodes hold each one, so the cluster keeps growing while the cost of a write does not.
+
+**Two servers is refused rather than allowed with a warning.** There is no replica count that works on two: one disappears with the node holding it, and two stop accepting writes when either member goes, because neither survivor is a majority on its own. OVN and the storage metadata quorum have the same problem on two servers, so `spx admin init --nodes 2` fails and tells you to use one server or three.
 
 #### Worked example — three servers
 
@@ -305,7 +310,7 @@ sudo spx admin init --force \
 
 `--nodes 3` is the number of servers init waits for. Set it to your total node count if you are building a larger cluster.
 
-It is also what decides how many nodes the cluster's JetStream state is replicated across, so it is worth getting right rather than raising later — see [How the cluster's own state is replicated](#how-the-clusters-own-state-is-replicated). Every joining server takes the count from server 1, so it is chosen once, here.
+It is also what decides how many nodes the cluster's JetStream state is replicated across, so it is worth getting right rather than raising later — see [How the cluster's own state is replicated](#how-the-clusters-own-state-is-replicated). Every joining server takes the count from server 1, so it is chosen once, here. `--nodes 2` is refused: use 1 for a single server, or 3 and up for a cluster that can survive losing one.
 
 IPsec encrypts the Geneve overlay between servers and is on by default. Joining servers take the setting from server 1, so it is chosen once, on init. On servers that share a trusted private link, `--ipsec=false` leaves the overlay unencrypted in exchange for considerably higher throughput between instances.
 
@@ -423,23 +428,28 @@ sudo spx admin kv replicas
 
 ```
 spinifex@node1:~$ sudo spx admin kv replicas
-BUCKET                         REPLICAS  WANT  STATUS  HELD BY
-spinifex-cluster-state         3         3     ok      node1,node2,node3
-spinifex-dns-reconcile         3         3     ok      node2,node1,node3
-spinifex-iam                   3         3     ok      node3,node1,node2
-spinifex-instance-state        3         3     ok      node1,node2,node3
-spinifex-quota-reconcile       3         3     ok      node2,node3,node1
-spinifex-terminated-instances  3         3     ok      node3,node2,node1
-spinifex-vpcd-reconcile        3         3     ok      node2,node1,node3
+BUCKET                         REPLICAS  WANT  ONLINE  STATUS  LEADER                HELD BY
+spinifex-cluster-state         3         3     3       ok      spinifex-nats-node1   spinifex-nats-node1,spinifex-nats-node2,spinifex-nats-node3
+spinifex-dns-reconcile         3         3     3       ok      spinifex-nats-node2   spinifex-nats-node2,spinifex-nats-node1,spinifex-nats-node3
+spinifex-iam                   3         3     3       ok      spinifex-nats-node3   spinifex-nats-node3,spinifex-nats-node1,spinifex-nats-node2
+spinifex-instance-state        3         3     3       ok      spinifex-nats-node1   spinifex-nats-node1,spinifex-nats-node2,spinifex-nats-node3
+spinifex-quota-reconcile       3         3     3       ok      spinifex-nats-node2   spinifex-nats-node2,spinifex-nats-node3,spinifex-nats-node1
+spinifex-terminated-instances  3         3     3       ok      spinifex-nats-node3   spinifex-nats-node3,spinifex-nats-node2,spinifex-nats-node1
+spinifex-vpcd-reconcile        3         3     3       ok      spinifex-nats-node2   spinifex-nats-node2,spinifex-nats-node1,spinifex-nats-node3
 
-47 buckets, 0 under-replicated
+47 buckets, 0 under-replicated, 0 without quorum
 ```
+
+Server names are the node name behind a `spinifex-nats-` prefix, which is what NATS itself calls each server.
 
 What to check:
 
-- **`0 under-replicated`.** Anything else means a bucket lives on fewer nodes than depend on it — see [Buckets report as under-replicated](#buckets-report-as-under-replicated). The command exits 1 in that case, so it can gate a deployment without parsing anything.
-- **`WANT` equals your node count**, capped at five. If it says 1 on a three-server cluster, the node the command ran on is not configured for three — check `--nodes` in Step 4 and the `[nodes.*]` sections of that host's `/etc/spinifex/spinifex.toml`.
-- **`HELD BY` names as many distinct servers as `REPLICAS`.** The first name is the current leader for that bucket, and leadership is expected to be spread across the cluster rather than parked on one node.
+- **`0 under-replicated, 0 without quorum`.** These are different problems. Under-replicated means a bucket lives on fewer nodes than depend on it — see [Buckets report as under-replicated](#buckets-report-as-under-replicated), and `--repair` is the fix. Without quorum means a bucket is not able to accept a write right now, whatever its replica count says, and no repair helps until you find out why a node is not answering.
+- **`WANT` is the largest odd number of nodes you have**, capped at five — 3 on three or four servers, 5 on five or more. If it says 1 on a three-server cluster, the node the command ran on is not configured for three: check `--nodes` in Step 4 and the `[nodes.*]` sections of that host's `/etc/spinifex/spinifex.toml`.
+- **`ONLINE` equals `REPLICAS`.** It counts the replicas that are caught up and reachable, so a bucket at `3` replicas with `ONLINE 2` is one node away from being unavailable and needs looking at before anything else is done to the cluster.
+- **`LEADER` is spread across the cluster** rather than parked on one node, and `HELD BY` names as many distinct servers as `REPLICAS`.
+
+Exit status is what a deployment gate should read rather than the output: `0` healthy, `1` something is under-replicated, `2` something has no quorum or the report could not be produced at all.
 
 Run it on every node, not just one. It reads cluster-global Raft metadata, so all of them should give the same answer; one that disagrees is not fully part of the cluster.
 

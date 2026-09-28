@@ -50,12 +50,13 @@ func KVReplicaFactors(t *testing.T, env *Env, buckets ...string) map[string]int 
 }
 
 // WantKVReplicas is how many nodes a KV bucket must be replicated across on a
-// cluster of this size: every node, up to JetStream's ceiling.
+// cluster of this size.
+//
+// It defers to the production rule rather than restating it. A test that carried
+// its own copy would keep passing after the policy changed, which is the one
+// thing this assertion must not do.
 func WantKVReplicas(nodes int) int {
-	if nodes < 1 {
-		return 1
-	}
-	return min(nodes, clustersize.MaxReplicas)
+	return clustersize.ReplicasFor(nodes)
 }
 
 // DialClusterNATS opens a NATS connection to the cluster, using the caller's
@@ -76,10 +77,14 @@ func DialClusterNATS(t *testing.T, env *Env) *nats.Conn {
 //
 // The node count is declared here because this process never loaded a cluster
 // config, and the audit refuses to guess one rather than assuming a single
-// replica.
+// replica. Declaring is write-once, so the reset makes a second call with the
+// same count safe and a third with a different one a visible failure.
 func KVReplication(t *testing.T, env *Env, nodes int) []kvutil.BucketReport {
 	t.Helper()
-	clustersize.Declare(nodes)
+	clustersize.ResetForTest()
+	if err := clustersize.Declare(nodes); err != nil {
+		t.Fatalf("declare cluster size %d: %v", nodes, err)
+	}
 	js, err := jetstream.New(DialClusterNATS(t, env))
 	if err != nil {
 		t.Fatalf("jetstream context: %v", err)
@@ -117,13 +122,20 @@ func RequireKVQuorum(t *testing.T, env *Env, nodes int) {
 				r.Bucket, r.Replicas, want))
 			continue
 		}
-		// Configured and placed are different facts. A stream can carry the
-		// right count while its group is still short of peers, and that reads
-		// as healthy right up until the node it is really on goes away.
+		// Configured, placed and serving are three facts. A stream can carry the
+		// right count while its group is short of peers or those peers are not
+		// caught up, and either reads as healthy right up until the node it is
+		// really on goes away.
 		if held := distinctPeers(r.Peers); held < want {
 			problems = append(problems, fmt.Sprintf(
 				"%s is configured for %d replicas but held by %d node(s) (%s)",
 				r.Bucket, r.Replicas, held, strings.Join(r.Peers, ",")))
+			continue
+		}
+		if r.Online < want {
+			problems = append(problems, fmt.Sprintf(
+				"%s is held by %d node(s) but only %d are caught up and reachable (leader %s)",
+				r.Bucket, len(r.Peers), r.Online, r.Leader))
 		}
 	}
 	if len(problems) > 0 {
@@ -132,6 +144,43 @@ func RequireKVQuorum(t *testing.T, env *Env, nodes int) {
 			len(problems), len(reports), nodes, strings.Join(problems, "\n  "))
 	}
 	Detail(t, "kv_buckets", len(reports), "replicas", want, "nodes", nodes)
+}
+
+// RequireKVSingleNode fails unless a one-node cluster's buckets are exactly what
+// one node can give them: one replica each, all of them serving.
+//
+// It is the counterpart assertion to RequireKVQuorum, and it is not the same
+// check with a smaller number. On one node R1 is correct rather than a defect, so
+// what has to be proved is the opposite: that nothing declared a count this
+// deployment cannot place, and that a bucket which cannot be raised has not been
+// left unreadable by the attempt.
+func RequireKVSingleNode(t *testing.T, env *Env) {
+	t.Helper()
+
+	reports := KVReplication(t, env, 1)
+	if len(reports) == 0 {
+		t.Fatal("the cluster reports no KV buckets at all, so nothing was checked")
+	}
+
+	var problems []string
+	for _, r := range reports {
+		if r.Replicas != 1 {
+			problems = append(problems, fmt.Sprintf(
+				"%s is configured for %d replicas on a single node, which JetStream cannot place",
+				r.Bucket, r.Replicas))
+			continue
+		}
+		if !r.HasQuorum() {
+			problems = append(problems, fmt.Sprintf("%s is not serving: %d of %d replicas online",
+				r.Bucket, r.Online, r.Replicas))
+		}
+	}
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		t.Fatalf("%d of %d KV buckets are wrong for a single-node cluster:\n  %s",
+			len(problems), len(reports), strings.Join(problems, "\n  "))
+	}
+	Detail(t, "kv_buckets", len(reports), "replicas", 1, "nodes", 1)
 }
 
 // distinctPeers counts the unique node names holding a stream, since the leader

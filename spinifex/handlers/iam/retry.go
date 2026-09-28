@@ -3,9 +3,11 @@ package handlers_iam
 import (
 	"context"
 	"fmt"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"log/slog"
 	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 
 	"github.com/nats-io/nats.go"
 )
@@ -30,6 +32,13 @@ func NewIAMServiceWithRetry(ctx context.Context, natsConn *nats.Conn, masterKey 
 				slog.Info("IAM service initialized after retry", "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			}
 			return svc, nil
+		}
+
+		// An undeclared cluster size is a configuration fault, not a cluster that
+		// has yet to form, so retrying it turns a clear error into five minutes
+		// of waiting followed by a misleading one.
+		if clustersize.Permanent(err) {
+			return nil, err
 		}
 
 		elapsed := time.Since(start)

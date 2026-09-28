@@ -64,8 +64,7 @@ func TestGetOrCreateBucket_OpensExisting(t *testing.T) {
 // replica on a multi-node cluster is the outage this package exists to prevent.
 func TestGetOrCreateBucket_RefusesWhenClusterSizeIsUndeclared(t *testing.T) {
 	js := startJetStream(t)
-	clustersize.Declare(0)
-	t.Cleanup(func() { clustersize.Declare(1) })
+	clustersize.RedeclareForTest(t, 0)
 
 	_, err := GetOrCreateBucket(t.Context(), js, "undeclared", 1)
 	require.ErrorIs(t, err, clustersize.ErrUndeclared)
@@ -81,8 +80,7 @@ func TestGetOrCreateBucket_SurfacesCreateFailure(t *testing.T) {
 	js := startJetStream(t)
 
 	// The embedded single-node server rejects a three-node replica count.
-	clustersize.Declare(3)
-	t.Cleanup(func() { clustersize.Declare(1) })
+	clustersize.RedeclareForTest(t, 3)
 
 	_, err := GetOrCreateBucket(t.Context(), js, "over-replicated", 1)
 	require.Error(t, err)
@@ -108,8 +106,7 @@ func TestGetOrCreateBucket_OpensAnExistingBucketTheClusterCannotYetRaise(t *test
 	require.NoError(t, err)
 
 	// One embedded server cannot hold three replicas, so the raise must fail.
-	clustersize.Declare(3)
-	t.Cleanup(func() { clustersize.Declare(1) })
+	clustersize.RedeclareForTest(t, 3)
 
 	reopened, err := GetOrCreateBucket(t.Context(), js, "growing-cluster", 1)
 	require.NoError(t, err, "an existing, working bucket must open even when it cannot be raised")

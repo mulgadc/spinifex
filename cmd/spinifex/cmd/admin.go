@@ -30,6 +30,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
@@ -372,7 +373,7 @@ func init() {
 	adminInitCmd.Flags().String("region", "ap-southeast-2", "Mulga region to create")
 	adminInitCmd.Flags().String("az", "ap-southeast-2a", "Mulga AZ to create")
 	adminInitCmd.Flags().String("node", "node1", "Node name, increment for additional nodes (default, node1)")
-	adminInitCmd.Flags().Int("nodes", 3, "Number of nodes to expect for cluster")
+	adminInitCmd.Flags().Int("nodes", 3, "Number of nodes to expect for cluster (1, or 3 and up)")
 	adminInitCmd.Flags().String("host", "", "Leader node to join (if not specified, tries multicast discovery)")
 	adminInitCmd.Flags().Int("port", 4432, "Port to bind cluster services on")
 	adminInitCmd.Flags().String("bind", "0.0.0.0", "IP address to bind services to (e.g., 10.11.12.1 for multi-node). Default 0.0.0.0 listens on all interfaces.")
@@ -1212,6 +1213,26 @@ func runimagesListCmd(cmd *cobra.Command, args []string) {
 	pterm.Println("spx admin images import --name <image-name>")
 }
 
+// validateNodeCount accepts the cluster sizes Spinifex supports: one server, or
+// three and up.
+//
+// Two is rejected rather than allowed and warned about. On two servers OVN runs
+// standalone, the storage metadata quorum has no majority to lose, and the
+// control plane's own KV state has no replica count that works — one replica
+// disappears with its node, and two stop accepting writes when either goes. A
+// cluster that cannot survive the event it was built for is worth refusing at the
+// point someone asks for it.
+func validateNodeCount(nodes int) error {
+	if nodes < 1 {
+		return fmt.Errorf("a cluster needs at least one node, got %d", nodes)
+	}
+	if nodes > 1 && nodes < clustersize.MinHANodes {
+		return fmt.Errorf("%d nodes is not a supported cluster size: use 1 for a single server, or %d and up for a cluster that can survive losing one",
+			nodes, clustersize.MinHANodes)
+	}
+	return nil
+}
+
 // TODO: Move all logic to a module, use minimal application logic in viper commands.
 func runAdminInit(cmd *cobra.Command, args []string) {
 	if os.Getuid() != 0 {
@@ -1242,6 +1263,15 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
 	clusterName, _ := cmd.Flags().GetString("cluster-name")
 	services, _ := cmd.Flags().GetStringSlice("services")
+
+	// Rejected before anything is written, because a two-node cluster has no
+	// correct answer rather than a worse one: no layer of the stack has a
+	// majority to lose, and no replica count for its state both survives a node
+	// going away and still accepts writes.
+	if err := validateNodeCount(nodes); err != nil {
+		fmt.Fprintf(os.Stderr, "--nodes: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Optional operator email — validated up-front so a bad address fails
 	// before we touch any config state. Empty is allowed here; reset / repeat

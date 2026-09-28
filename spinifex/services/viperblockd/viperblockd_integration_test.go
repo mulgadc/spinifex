@@ -45,7 +45,7 @@ func setupEmbeddedNATS(t *testing.T) (*server.Server, string) {
 
 	// One embedded server is a one-node cluster, and bucket creation refuses to
 	// guess a replica count it was never told.
-	clustersize.Declare(1)
+	clustersize.DeclareForTest(t, 1)
 	return ns, ns.ClientURL()
 }
 

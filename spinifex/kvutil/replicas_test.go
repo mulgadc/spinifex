@@ -32,8 +32,7 @@ func TestAuditBucketReplicas_ReportsEveryBucketAgainstTheClusterSize(t *testing.
 
 	// The cluster grew. Every existing bucket is now behind it, which is exactly
 	// what the audit has to say before anything can repair it.
-	clustersize.Declare(3)
-	t.Cleanup(func() { clustersize.Declare(1) })
+	clustersize.RedeclareForTest(t, 3)
 
 	reports, err = kvutil.AuditBucketReplicas(t.Context(), js)
 	require.NoError(t, err)
@@ -47,8 +46,7 @@ func TestAuditBucketReplicas_ReportsEveryBucketAgainstTheClusterSize(t *testing.
 
 func TestAuditBucketReplicas_RefusesWhenClusterSizeIsUndeclared(t *testing.T) {
 	js := newJetStream(t)
-	clustersize.Declare(0)
-	t.Cleanup(func() { clustersize.Declare(1) })
+	clustersize.RedeclareForTest(t, 0)
 
 	_, err := kvutil.AuditBucketReplicas(t.Context(), js)
 	require.ErrorIs(t, err, clustersize.ErrUndeclared)
@@ -142,8 +140,7 @@ func TestRaiseAllBucketReplicas_RaisesWhatItCanAndReportsWhatItCannot(t *testing
 	// The cluster grew beyond what one embedded server can place, so every
 	// bucket is short and every raise fails. The sweep must attempt all of them
 	// and join the failures rather than stopping at the first.
-	clustersize.Declare(3)
-	t.Cleanup(func() { clustersize.Declare(1) })
+	clustersize.RedeclareForTest(t, 3)
 
 	raised, err = kvutil.RaiseAllBucketReplicas(t.Context(), js)
 	require.Error(t, err)
@@ -158,8 +155,7 @@ func TestRaiseAllBucketReplicas_RaisesWhatItCanAndReportsWhatItCannot(t *testing
 // which would report a whole cluster of single-replica buckets as healthy.
 func TestRaiseAllBucketReplicas_RefusesWhenClusterSizeIsUndeclared(t *testing.T) {
 	js := newJetStream(t)
-	clustersize.Declare(0)
-	t.Cleanup(func() { clustersize.Declare(1) })
+	clustersize.RedeclareForTest(t, 0)
 
 	_, err := kvutil.RaiseAllBucketReplicas(t.Context(), js)
 	require.ErrorIs(t, err, clustersize.ErrUndeclared)

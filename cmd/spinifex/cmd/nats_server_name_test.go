@@ -36,4 +36,9 @@ func TestNATSConfServerNameMatchesTheHelper(t *testing.T) {
 
 	_, ok = natssvc.NodeFromServerName("node2")
 	assert.False(t, ok, "a bare node name is not a server name")
+
+	// The bare prefix is a name we could not have generated, and mapping it to the
+	// empty node would put a phantom peer into anything counting nodes.
+	_, ok = natssvc.NodeFromServerName(natssvc.ServerNamePrefix)
+	assert.False(t, ok, "the prefix with no node after it is not a server name")
 }

@@ -45,8 +45,7 @@ func TestVolumeBuckets_RefuseAReplicaCountTheServerCannotHold(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	clustersize.Declare(3)
-	t.Cleanup(func() { clustersize.Declare(1) })
+	clustersize.RedeclareForTest(t, 3)
 
 	_, err = newVolumeLeases(t.Context(), nc, "node-a")
 	require.Error(t, err, "a lease bucket that cannot be made quorate must fail the service, not serve unreplicated")
@@ -65,8 +64,7 @@ func TestVolumeBuckets_RefuseAnUndeclaredClusterSize(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	clustersize.Declare(0)
-	t.Cleanup(func() { clustersize.Declare(1) })
+	clustersize.RedeclareForTest(t, 0)
 
 	_, err = newVolumeLeases(t.Context(), nc, "node-a")
 	require.Error(t, err)

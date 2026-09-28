@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -147,6 +148,14 @@ func newVolumeLeases(ctx context.Context, nc *nats.Conn, owner string) (*volumeL
 		return nil, fmt.Errorf("volume lease bucket: %w", err)
 	}
 	return &volumeLeases{kv: kv, owner: owner, held: make(map[string]*volumeLease)}, nil
+}
+
+// newVolumeLeasesWaiting is newVolumeLeases for a daemon that is starting. On a
+// cold multi-node start every service races JetStream electing a leader, and a
+// refusal that only means "not yet" must not leave this node without storage.
+func newVolumeLeasesWaiting(ctx context.Context, nc *nats.Conn, owner string) (*volumeLeases, error) {
+	return kvstore.OpenWithRetry(ctx, volumeLeaseBucket, kvstore.DefaultOpenWindow,
+		func(ctx context.Context) (*volumeLeases, error) { return newVolumeLeases(ctx, nc, owner) })
 }
 
 // volumeLease is one held lease and the goroutine keeping it alive.

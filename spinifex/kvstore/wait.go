@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 )
 
@@ -43,6 +44,11 @@ func OpenWithRetry[T any](ctx context.Context, what string, window time.Duration
 			return v, nil
 		}
 
+		// An undeclared cluster size does not become declared by waiting, so it
+		// surfaces now rather than as the last error of an exhausted window.
+		if clustersize.Permanent(err) {
+			return zero, fmt.Errorf("open %s: %w", what, err)
+		}
 		if ctx.Err() != nil {
 			return zero, fmt.Errorf("open %s: %w", what, ctx.Err())
 		}

@@ -715,7 +715,7 @@ func launchService(cfg *Config) (err error) {
 	// Bound before recovery, which opens engines: without the store every
 	// engine open refuses, and the daemon would come up unable to adopt the
 	// exports that outlived it.
-	leases, err := newVolumeLeases(context.Background(), nc, cfg.leaseOwner())
+	leases, err := newVolumeLeasesWaiting(context.Background(), nc, cfg.leaseOwner())
 	if err != nil {
 		return fmt.Errorf("volume leases: %w", err)
 	}

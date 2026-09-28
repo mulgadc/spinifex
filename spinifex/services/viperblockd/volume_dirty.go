@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
@@ -44,6 +45,14 @@ func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string) (*volumeDi
 		return nil, fmt.Errorf("volume dirty bucket: %w", err)
 	}
 	return &volumeDirty{kv: kv, owner: owner}, nil
+}
+
+// newVolumeDirtyWaiting is newVolumeDirty for a daemon that is starting, for the
+// same reason as newVolumeLeasesWaiting: a cold cluster has no stream leader
+// yet, and one refused open must not decide that this node has no storage.
+func newVolumeDirtyWaiting(ctx context.Context, nc *nats.Conn, owner string) (*volumeDirty, error) {
+	return kvstore.OpenWithRetry(ctx, vbwire.DirtyBucket, kvstore.DefaultOpenWindow,
+		func(ctx context.Context) (*volumeDirty, error) { return newVolumeDirty(ctx, nc, owner) })
 }
 
 // mark records that this node holds writes for volumeName at generation.

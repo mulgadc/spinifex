@@ -306,8 +306,7 @@ func (s *IAMServiceImpl) UntagOpenIDConnectProvider(accountID string, input *iam
 	return &iam.UntagOpenIDConnectProviderOutput{}, nil
 }
 
-// ListOpenIDConnectProviderTags returns an OIDC provider's tags. Pagination is
-// not implemented: IsTruncated is always false.
+// ListOpenIDConnectProviderTags returns an OIDC provider's tags, all of them; the gateway pages the list.
 func (s *IAMServiceImpl) ListOpenIDConnectProviderTags(accountID string, input *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
 	ctx := context.Background()
 	record, err := s.getOIDCProvider(ctx, accountID, aws.StringValue(input.OpenIDConnectProviderArn))

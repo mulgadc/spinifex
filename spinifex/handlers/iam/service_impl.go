@@ -1685,7 +1685,7 @@ func (s *IAMServiceImpl) DeleteUserPolicy(accountID string, input *iam.DeleteUse
 }
 
 // ListUserPolicies returns the names of a user's inline policies, sorted for
-// deterministic output. Pagination is not implemented: IsTruncated is always false.
+// deterministic output. Returns the whole list; the gateway pages it.
 func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
 	ctx := context.Background()
 	user, err := s.getUser(ctx, accountID, *input.UserName)
@@ -1765,8 +1765,7 @@ func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) 
 	return &iam.UntagUserOutput{}, nil
 }
 
-// ListUserTags returns a user's tags. Pagination is not implemented:
-// IsTruncated is always false.
+// ListUserTags returns a user's tags, all of them; the gateway pages the list.
 func (s *IAMServiceImpl) ListUserTags(accountID string, input *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
 	ctx := context.Background()
 	user, err := s.getUser(ctx, accountID, *input.UserName)
@@ -1818,8 +1817,7 @@ func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInp
 	return &iam.UntagPolicyOutput{}, nil
 }
 
-// ListPolicyTags returns a policy's tags. Pagination is not implemented:
-// IsTruncated is always false.
+// ListPolicyTags returns a policy's tags, all of them; the gateway pages the list.
 func (s *IAMServiceImpl) ListPolicyTags(accountID string, input *iam.ListPolicyTagsInput) (*iam.ListPolicyTagsOutput, error) {
 	ctx := context.Background()
 	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)

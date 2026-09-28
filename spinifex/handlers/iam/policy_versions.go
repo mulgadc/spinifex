@@ -228,7 +228,7 @@ func (s *IAMServiceImpl) GetPolicyVersion(accountID string, input *iam.GetPolicy
 }
 
 // ListPolicyVersions returns every version newest first, without documents, as
-// AWS does. Pagination is not implemented: IsTruncated is always false.
+// AWS does. Returns the whole list; the gateway pages it.
 func (s *IAMServiceImpl) ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
 	ctx := context.Background()
 	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)

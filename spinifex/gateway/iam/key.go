@@ -3,6 +3,7 @@ package gateway_iam
 import (
 	"errors"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -19,7 +20,17 @@ func ListAccessKeys(accountID string, input *iam.ListAccessKeysInput, svc handle
 	if input.UserName == nil || *input.UserName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListAccessKeys(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListAccessKeys(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.AccessKeyMetadata, out.Marker = paginate(p, out.AccessKeyMetadata, accessKeyKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }
 
 func DeleteAccessKey(accountID string, input *iam.DeleteAccessKeyInput, svc handlers_iam.IAMService) (*iam.DeleteAccessKeyOutput, error) {

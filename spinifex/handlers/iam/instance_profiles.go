@@ -330,8 +330,7 @@ func (s *IAMServiceImpl) UntagInstanceProfile(accountID string, input *iam.Untag
 	return &iam.UntagInstanceProfileOutput{}, nil
 }
 
-// ListInstanceProfileTags returns an instance profile's tags. Pagination is
-// not implemented: IsTruncated is always false.
+// ListInstanceProfileTags returns an instance profile's tags, all of them; the gateway pages the list.
 func (s *IAMServiceImpl) ListInstanceProfileTags(accountID string, input *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
 	ctx := context.Background()
 	profile, err := s.getInstanceProfile(ctx, accountID, *input.InstanceProfileName)

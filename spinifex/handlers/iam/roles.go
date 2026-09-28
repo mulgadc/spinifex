@@ -442,7 +442,7 @@ func (s *IAMServiceImpl) DeleteRolePolicy(accountID string, input *iam.DeleteRol
 }
 
 // ListRolePolicies returns the names of a role's inline policies, sorted for
-// deterministic output. Pagination is not implemented: IsTruncated is always false.
+// deterministic output. Returns the whole list; the gateway pages it.
 func (s *IAMServiceImpl) ListRolePolicies(accountID string, input *iam.ListRolePoliciesInput) (*iam.ListRolePoliciesOutput, error) {
 	ctx := context.Background()
 	role, err := s.getRole(ctx, accountID, *input.RoleName)
@@ -503,8 +503,7 @@ func (s *IAMServiceImpl) UntagRole(accountID string, input *iam.UntagRoleInput) 
 	return &iam.UntagRoleOutput{}, nil
 }
 
-// ListRoleTags returns a role's tags. Pagination is not implemented:
-// IsTruncated is always false.
+// ListRoleTags returns a role's tags, all of them; the gateway pages the list.
 func (s *IAMServiceImpl) ListRoleTags(accountID string, input *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
 	ctx := context.Background()
 	role, err := s.getRole(ctx, accountID, *input.RoleName)

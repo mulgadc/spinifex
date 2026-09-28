@@ -3,6 +3,7 @@ package gateway_iam
 import (
 	"errors"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -36,10 +37,16 @@ func GetRole(accountID string, input *iam.GetRoleInput, svc handlers_iam.IAMServ
 }
 
 func ListRoles(accountID string, input *iam.ListRolesInput, svc handlers_iam.IAMService) (*iam.ListRolesOutput, error) {
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
 	out, err := svc.ListRoles(accountID, input)
 	if err != nil {
 		return nil, err
 	}
+	out.Roles, out.Marker = paginate(p, out.Roles, roleKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
 	encodeRoleDocuments(out.Roles...)
 	return out, nil
 }
@@ -92,7 +99,17 @@ func ListAttachedRolePolicies(accountID string, input *iam.ListAttachedRolePolic
 	if input.RoleName == nil || *input.RoleName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListAttachedRolePolicies(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListAttachedRolePolicies(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.AttachedPolicies, out.Marker = paginate(p, out.AttachedPolicies, attachedPolicyKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }
 
 func PutRolePolicy(accountID string, input *iam.PutRolePolicyInput, svc handlers_iam.IAMService) (*iam.PutRolePolicyOutput, error) {
@@ -137,7 +154,17 @@ func ListRolePolicies(accountID string, input *iam.ListRolePoliciesInput, svc ha
 	if input.RoleName == nil || *input.RoleName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListRolePolicies(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListRolePolicies(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.PolicyNames, out.Marker = paginate(p, out.PolicyNames, aws.StringValue)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }
 
 func TagRole(accountID string, input *iam.TagRoleInput, svc handlers_iam.IAMService) (*iam.TagRoleOutput, error) {
@@ -164,5 +191,15 @@ func ListRoleTags(accountID string, input *iam.ListRoleTagsInput, svc handlers_i
 	if input.RoleName == nil || *input.RoleName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.ListRoleTags(accountID, input)
+	p, err := newPager(input.Marker, input.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ListRoleTags(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.Tags, out.Marker = paginate(p, out.Tags, tagKey)
+	out.IsTruncated = aws.Bool(out.Marker != nil)
+	return out, nil
 }

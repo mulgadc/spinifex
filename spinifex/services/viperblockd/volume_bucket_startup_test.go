@@ -1,3 +1,6 @@
+//test:in-package — the start-path bucket openers and the constructors beneath
+//them are unexported, and the point is which of the two waits.
+
 package viperblockd
 
 import (

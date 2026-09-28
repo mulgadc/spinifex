@@ -365,9 +365,9 @@ describe("queryFn", () => {
     })
   })
 
-  it("iamRolePolicyQueryOptions sends GetRolePolicyCommand and formats raw JSON", async () => {
+  it("iamRolePolicyQueryOptions sends GetRolePolicyCommand and decodes document", async () => {
     mockSend.mockResolvedValueOnce({
-      PolicyDocument: '{"Version":"2012-10-17"}',
+      PolicyDocument: encodeURIComponent('{"Version":"2012-10-17"}'),
     })
     const document = await callQueryFn(
       iamRolePolicyQueryOptions("my-role", "s3-read"),

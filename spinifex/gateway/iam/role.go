@@ -15,18 +15,33 @@ func CreateRole(accountID string, input *iam.CreateRoleInput, svc handlers_iam.I
 	if input.AssumeRolePolicyDocument == nil || *input.AssumeRolePolicyDocument == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.CreateRole(accountID, input)
+	out, err := svc.CreateRole(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	encodeRoleDocuments(out.Role)
+	return out, nil
 }
 
 func GetRole(accountID string, input *iam.GetRoleInput, svc handlers_iam.IAMService) (*iam.GetRoleOutput, error) {
 	if input.RoleName == nil || *input.RoleName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.GetRole(accountID, input)
+	out, err := svc.GetRole(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	encodeRoleDocuments(out.Role)
+	return out, nil
 }
 
 func ListRoles(accountID string, input *iam.ListRolesInput, svc handlers_iam.IAMService) (*iam.ListRolesOutput, error) {
-	return svc.ListRoles(accountID, input)
+	out, err := svc.ListRoles(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	encodeRoleDocuments(out.Roles...)
+	return out, nil
 }
 
 func DeleteRole(accountID string, input *iam.DeleteRoleInput, svc handlers_iam.IAMService) (*iam.DeleteRoleOutput, error) {
@@ -100,7 +115,12 @@ func GetRolePolicy(accountID string, input *iam.GetRolePolicyInput, svc handlers
 	if input.PolicyName == nil || *input.PolicyName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	return svc.GetRolePolicy(accountID, input)
+	out, err := svc.GetRolePolicy(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	out.PolicyDocument = encodePolicyDocument(out.PolicyDocument)
+	return out, nil
 }
 
 func DeleteRolePolicy(accountID string, input *iam.DeleteRolePolicyInput, svc handlers_iam.IAMService) (*iam.DeleteRolePolicyOutput, error) {

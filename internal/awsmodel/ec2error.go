@@ -85,8 +85,8 @@ var loadEC2ErrorCatalog = sync.OnceValues(func() (*ec2ErrorCatalog, error) {
 
 // ValidateEC2ErrorResponse validates an EC2 Query API error envelope against
 // the checked-in catalog curated from AWS's EC2 error-code reference. The AWS
-// api-2.json model declares no operation errors, so this is intentionally a
-// separate oracle.
+// EC2 model declares no operation errors, so this is intentionally a separate
+// oracle.
 func ValidateEC2ErrorResponse(status int, body []byte) ([]Violation, error) {
 	root, err := parseXML(body)
 	if err != nil {

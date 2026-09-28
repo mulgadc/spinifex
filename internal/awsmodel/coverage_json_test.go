@@ -31,7 +31,9 @@ func TestRenderCoverageJSONIsDeterministicAndPreservesDispatchStates(t *testing.
 	var document struct {
 		SchemaVersion int `json:"schema_version"`
 		ModelSource   struct {
-			AWSSDKGoVersion string `json:"aws_sdk_go_version"`
+			Repository string `json:"repository"`
+			Commit     string `json:"commit"`
+			CommitDate string `json:"commit_date"`
 		} `json:"model_source"`
 		Services []struct {
 			Service    string `json:"service"`
@@ -49,8 +51,8 @@ func TestRenderCoverageJSONIsDeterministicAndPreservesDispatchStates(t *testing.
 	if document.SchemaVersion != awsmodel.CoverageJSONSchemaVersion {
 		t.Errorf("schema version = %d, want %d", document.SchemaVersion, awsmodel.CoverageJSONSchemaVersion)
 	}
-	if document.ModelSource.AWSSDKGoVersion != awsmodel.SourceSDKVersion {
-		t.Errorf("source version = %q, want %q", document.ModelSource.AWSSDKGoVersion, awsmodel.SourceSDKVersion)
+	if source := document.ModelSource; source.Repository != awsmodel.ModelRepository || source.Commit != awsmodel.ModelCommit || source.CommitDate != awsmodel.ModelCommitDate {
+		t.Errorf("model source = %+v, want %s at %s (%s)", source, awsmodel.ModelRepository, awsmodel.ModelCommit, awsmodel.ModelCommitDate)
 	}
 	if !strings.Contains(contents, `"registered": []`) {
 		t.Errorf("an empty operation set must be an array, not null:\n%s", contents)

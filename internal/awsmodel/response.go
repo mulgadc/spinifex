@@ -13,7 +13,7 @@ import (
 // ValidateResponse decodes an AWS wire response and validates it against the
 // operation's output shape. JSON services are decoded directly; EC2 and Query
 // XML responses are normalized from their wire names and result wrappers to
-// api-2.json member names first.
+// model member names first.
 func ValidateResponse(service Service, operationName string, body []byte) ([]Violation, error) {
 	model, err := Load(service)
 	if err != nil {

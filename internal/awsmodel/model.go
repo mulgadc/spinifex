@@ -1,26 +1,28 @@
-// Package awsmodel loads the AWS api-2.json service definitions used by the
-// conformance suite.
+// Package awsmodel loads the AWS Smithy service models used by the
+// conformance suite and translates them into the api-2.json shaped structs
+// its validators read.
 package awsmodel
 
 import (
-	"encoding/json"
+	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"maps"
-	"os"
-	"os/exec"
-	"os/user"
-	"path/filepath"
 	"slices"
 	"sync"
 )
 
-// SourceSDKVersion is the aws-sdk-go release whose module-cache models are
-// used by the conformance suite.
-const SourceSDKVersion = "v1.55.8"
+// ModelRepository is where the embedded models come from. The commit is
+// recorded in model_source.go by scripts/sync-aws-models.sh.
+const ModelRepository = "github.com/aws/api-models-aws"
 
-const sourceSDKModule = "github.com/aws/aws-sdk-go"
+// ModelSourceDescription names the pinned model source for reports.
+func ModelSourceDescription() string {
+	return fmt.Sprintf("%s@%.12s, %s", ModelRepository, ModelCommit, ModelCommitDate)
+}
 
-// Service identifies an AWS service model loaded from the SDK module cache.
+// Service identifies an AWS service model embedded in this package.
 type Service string
 
 const (
@@ -37,77 +39,74 @@ const (
 )
 
 // Metadata describes the service and wire protocol represented by a model.
+// Protocol uses the api-2.json names: json, rest-json, rest-xml, query, ec2.
 type Metadata struct {
-	APIVersion          string   `json:"apiVersion"`
-	EndpointPrefix      string   `json:"endpointPrefix"`
-	Protocol            string   `json:"protocol"`
-	Protocols           []string `json:"protocols"`
-	ServiceAbbreviation string   `json:"serviceAbbreviation"`
-	ServiceFullName     string   `json:"serviceFullName"`
-	ServiceID           string   `json:"serviceId"`
-	SignatureVersion    string   `json:"signatureVersion"`
-	UID                 string   `json:"uid"`
+	APIVersion      string
+	EndpointPrefix  string
+	Protocol        string
+	ServiceFullName string
+	ServiceID       string
 }
 
 // Operation describes an AWS API operation and the shapes used by its input,
 // output and declared errors.
 type Operation struct {
-	Name   string     `json:"name"`
-	HTTP   HTTP       `json:"http"`
-	Input  *ShapeRef  `json:"input"`
-	Output *ShapeRef  `json:"output"`
-	Errors []ShapeRef `json:"errors"`
+	Name   string
+	HTTP   HTTP
+	Input  *ShapeRef
+	Output *ShapeRef
+	Errors []ShapeRef
 }
 
 // HTTP describes an operation's HTTP binding.
 type HTTP struct {
-	Method       string `json:"method"`
-	RequestURI   string `json:"requestUri"`
-	ResponseCode int    `json:"responseCode"`
+	Method       string
+	RequestURI   string
+	ResponseCode int
 }
 
 // Shape describes a value in an AWS service model. Depending on Type, it can
 // refer to structure members, a list member, or map keys and values.
 type Shape struct {
-	Type            string              `json:"type"`
-	Required        []string            `json:"required"`
-	Members         map[string]ShapeRef `json:"members"`
-	Member          *ShapeRef           `json:"member"`
-	Key             *ShapeRef           `json:"key"`
-	Value           *ShapeRef           `json:"value"`
-	Enum            []string            `json:"enum"`
-	Min             *float64            `json:"min"`
-	Max             *float64            `json:"max"`
-	Pattern         string              `json:"pattern"`
-	LocationName    string              `json:"locationName"`
-	TimestampFormat string              `json:"timestampFormat"`
-	Payload         string              `json:"payload"`
-	Flattened       bool                `json:"flattened"`
-	Sensitive       bool                `json:"sensitive"`
-	Exception       bool                `json:"exception"`
-	Fault           bool                `json:"fault"`
-	Error           *ErrorInfo          `json:"error"`
+	Type            string
+	Required        []string
+	Members         map[string]ShapeRef
+	Member          *ShapeRef
+	Key             *ShapeRef
+	Value           *ShapeRef
+	Enum            []string
+	Min             *float64
+	Max             *float64
+	Pattern         string
+	LocationName    string
+	TimestampFormat string
+	Payload         string
+	Flattened       bool
+	Sensitive       bool
+	Exception       bool
+	Fault           bool
+	Error           *ErrorInfo
 }
 
 // ErrorInfo describes an error shape's code and HTTP classification.
 type ErrorInfo struct {
-	Code           string `json:"code"`
-	HTTPStatusCode int    `json:"httpStatusCode"`
-	SenderFault    bool   `json:"senderFault"`
+	Code           string
+	HTTPStatusCode int
+	SenderFault    bool
 }
 
 // ShapeRef names another shape and carries any wire binding specific to the
 // place where it is referenced.
 type ShapeRef struct {
-	Shape           string `json:"shape"`
-	ResultWrapper   string `json:"resultWrapper"`
-	Location        string `json:"location"`
-	LocationName    string `json:"locationName"`
-	QueryName       string `json:"queryName"`
-	TimestampFormat string `json:"timestampFormat"`
-	Flattened       bool   `json:"flattened"`
-	Streaming       bool   `json:"streaming"`
-	XMLAttribute    bool   `json:"xmlAttribute"`
+	Shape           string
+	ResultWrapper   string
+	Location        string
+	LocationName    string
+	QueryName       string
+	TimestampFormat string
+	Flattened       bool
+	Streaming       bool
+	XMLAttribute    bool
 }
 
 // Model is an indexed AWS service definition.
@@ -118,44 +117,12 @@ type Model struct {
 	shapes     map[string]*Shape
 }
 
-type modelDocument struct {
-	Version    string                `json:"version"`
-	Metadata   Metadata              `json:"metadata"`
-	Operations map[string]*Operation `json:"operations"`
-	Shapes     map[string]*Shape     `json:"shapes"`
-}
-
 type loadResult struct {
 	model *Model
 	err   error
 }
 
 var modelCache sync.Map
-
-var modelRoot = sync.OnceValues(resolveModelRoot)
-
-func resolveModelRoot() (string, error) {
-	if root := os.Getenv("GOMODCACHE"); root != "" {
-		return filepath.Join(root, sourceSDKModule+"@"+SourceSDKVersion), nil
-	}
-	if output, err := exec.Command("go", "env", "GOMODCACHE").Output(); err == nil {
-		if root := string(output); root != "" {
-			return filepath.Join(stringTrimSpace(root), sourceSDKModule+"@"+SourceSDKVersion), nil
-		}
-	}
-	currentUser, err := user.Current()
-	if err != nil {
-		return "", fmt.Errorf("awsmodel: resolve Go module cache: %w", err)
-	}
-	return filepath.Join(currentUser.HomeDir, "go", "pkg", "mod", sourceSDKModule+"@"+SourceSDKVersion), nil
-}
-
-func stringTrimSpace(value string) string {
-	for len(value) > 0 && (value[len(value)-1] == '\n' || value[len(value)-1] == '\r' || value[len(value)-1] == ' ' || value[len(value)-1] == '\t') {
-		value = value[:len(value)-1]
-	}
-	return value
-}
 
 // Services returns the supported service identifiers in stable order.
 func Services() []Service {
@@ -167,45 +134,21 @@ func Services() []Service {
 	return services
 }
 
-// Load parses and indexes the cached SDK model for service. Each service is
+// Load parses and indexes the embedded model for service. Each service is
 // parsed at most once and the resulting Model is safe for concurrent reads.
 func Load(service Service) (*Model, error) {
-	path, ok := modelFiles[service]
+	file, ok := modelFiles[service]
 	if !ok {
 		return nil, fmt.Errorf("awsmodel: unsupported service %q", service)
 	}
 
 	loader, _ := modelCache.LoadOrStore(service, sync.OnceValue(func() loadResult {
-		root, err := modelRoot()
+		contents, err := readModel(file)
 		if err != nil {
-			return loadResult{err: err}
+			return loadResult{err: fmt.Errorf("awsmodel: read %s model: %w", service, err)}
 		}
-		contents, err := os.ReadFile(filepath.Join(root, path))
-		if err != nil {
-			return loadResult{err: fmt.Errorf("awsmodel: read cached %s model at %s: %w", service, filepath.Join(root, path), err)}
-		}
-
-		var document modelDocument
-		if err := json.Unmarshal(contents, &document); err != nil {
-			return loadResult{err: fmt.Errorf("awsmodel: parse %s model: %w", service, err)}
-		}
-		if document.Version != "2.0" {
-			return loadResult{err: fmt.Errorf("awsmodel: %s model version is %q, want %q", service, document.Version, "2.0")}
-		}
-		if len(document.Operations) == 0 || len(document.Shapes) == 0 {
-			return loadResult{err: fmt.Errorf("awsmodel: %s model has no operations or shapes", service)}
-		}
-
-		model := &Model{
-			service:    service,
-			metadata:   document.Metadata,
-			operations: document.Operations,
-			shapes:     document.Shapes,
-		}
-		if err := model.validateReferences(); err != nil {
-			return loadResult{err: err}
-		}
-		return loadResult{model: model}
+		model, err := parseSmithyModel(service, contents)
+		return loadResult{model: model, err: err}
 	}))
 	load, ok := loader.(func() loadResult)
 	if !ok {
@@ -215,10 +158,23 @@ func Load(service Service) (*Model, error) {
 	return result.model, result.err
 }
 
+func readModel(file string) ([]byte, error) {
+	compressed, err := modelFS.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = reader.Close() }()
+	return io.ReadAll(reader)
+}
+
 // Service returns the identifier used to load the model.
 func (m *Model) Service() Service { return m.service }
 
-// Metadata returns the service metadata from api-2.json.
+// Metadata returns the service metadata.
 func (m *Model) Metadata() Metadata { return m.metadata }
 
 // Operation resolves an operation by its model key, such as DescribeInstances.

@@ -120,9 +120,11 @@ func ResourceARNs(action, region, accountID string, body []byte) ([]string, erro
 		return nil, errors.New(awserrors.ErrorInvalidAction)
 	}
 
+	// Parse fails only on a field spelled two ways, which it cannot scope.
 	scope, err := bodyscope.Parse(action, body)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"The request body names the same field more than once in different letter case")
 	}
 
 	resources := make([]string, 0, len(sources))
@@ -214,11 +216,11 @@ func tagARN(region, accountID, resourceARN string) string {
 func RepositoryNameFromResourceARN(resourceARN string) (string, error) {
 	parts := strings.SplitN(resourceARN, ":", 6)
 	if len(parts) != 6 || parts[0] != "arn" || parts[2] != "ecr" {
-		return "", errors.New(awserrors.ErrorInvalidParameterValue)
+		return "", invalidResourceARNError()
 	}
 	kind, name, found := strings.Cut(parts[5], "/")
 	if !found || kind != repositoryResourceType || name == "" {
-		return "", errors.New(awserrors.ErrorInvalidParameterValue)
+		return "", invalidResourceARNError()
 	}
 	return name, nil
 }

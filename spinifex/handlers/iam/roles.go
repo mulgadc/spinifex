@@ -40,8 +40,8 @@ const (
 func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
 	ctx := context.Background()
 	roleName := *input.RoleName
-	if err := validateUserName(roleName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("roleName", roleName, 64); err != nil {
+		return nil, err
 	}
 
 	if err := validatePermissionsBoundary(input.PermissionsBoundary); err != nil {
@@ -52,7 +52,7 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 	if input.Path != nil {
 		path = *input.Path
 		if err := validatePath(path); err != nil {
-			return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+			return nil, err
 		}
 	}
 
@@ -364,8 +364,8 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 	policyName := *input.PolicyName
 	policyDoc := *input.PolicyDocument
 
-	if err := validatePolicyName(policyName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("policyName", policyName, 128); err != nil {
+		return nil, err
 	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,

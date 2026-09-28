@@ -110,7 +110,7 @@ func TestCreateRepository_Tags(t *testing.T) {
 
 	_, err = createRepo(t, gw, `{"repositoryName":"team/badtag","tags":[{"Key":"","Value":"x"}]}`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", err.Error())
+	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestCreateRepository_EncryptionAndScanningConfiguration(t *testing.T) {
@@ -140,7 +140,7 @@ func TestCreateRepository_EncryptionAndScanningConfiguration(t *testing.T) {
 
 	_, err = createRepo(t, gw, `{"repositoryName":"team/bad","encryptionConfiguration":{"encryptionType":"bogus"}}`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", err.Error())
+	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestCreateRepository_Errors(t *testing.T) {
@@ -160,9 +160,20 @@ func TestCreateRepository_Errors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := createRepo(t, gw, tc.body)
 			require.Error(t, err)
-			assert.Equal(t, tc.expect, err.Error())
+			assert.Equal(t, tc.expect, awserrors.ValidErrorCodeFromError(err))
 		})
 	}
+}
+
+// AWS's CreateRepository names the pattern a refused repositoryName must match.
+func TestCreateRepository_BadNameCarriesAWSMessage(t *testing.T) {
+	gw, _ := newRepoLifecycleGateway(t)
+	_, err := createRepo(t, gw, `{"repositoryName":"Bad_Name!"}`)
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, `Invalid parameter at 'repositoryName' failed to satisfy constraint: 'must satisfy regular expression '[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*''`, message)
 }
 
 // noAccountRequest builds a request without the auth-context account ID, which
@@ -180,7 +191,7 @@ func TestCreateRepository_NoAccountAndMalformed(t *testing.T) {
 
 	_, err = createRepo(t, gw, `{`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", err.Error())
+	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestDeleteRepository_NoAccountAndMalformed(t *testing.T) {
@@ -192,7 +203,7 @@ func TestDeleteRepository_NoAccountAndMalformed(t *testing.T) {
 
 	_, err = deleteRepo(t, gw, `{`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", err.Error())
+	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestDeleteRepository_Happy(t *testing.T) {

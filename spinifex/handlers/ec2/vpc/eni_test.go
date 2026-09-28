@@ -110,7 +110,10 @@ func TestCreateNetworkInterface_RequestedPrivateIPOutOfRange(t *testing.T) {
 		SubnetId:         aws.String(subnetId),
 		PrivateIpAddress: aws.String("172.31.0.50"),
 	}, testAccountID)
-	assert.ErrorContains(t, err, awserrors.ErrorInvalidParameterValue)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Address does not fall within the subnet's address range", msg)
 }
 
 func TestCreateNetworkInterface_RequestedPrivateIPReserved(t *testing.T) {
@@ -123,7 +126,10 @@ func TestCreateNetworkInterface_RequestedPrivateIPReserved(t *testing.T) {
 		SubnetId:         aws.String(subnetId),
 		PrivateIpAddress: aws.String("10.0.1.1"),
 	}, testAccountID)
-	assert.ErrorContains(t, err, awserrors.ErrorInvalidParameterValue)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "10.0.1.1 is not a usable address in subnet 10.0.1.0/24", msg)
 }
 
 func TestCreateNetworkInterface_RequestedPrivateIPAlreadyInUse(t *testing.T) {

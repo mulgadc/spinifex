@@ -37,7 +37,7 @@ type listTagsForResourceRequest struct {
 // and the NATS-backed MetaStore for a follow-on read-modify-write.
 func resolveTaggedRepo(ctx context.Context, nc *nats.Conn, accountID, resourceArn string) (string, handlers_ecr.RepoMeta, *handlers_ecr.NATSMetaStore, error) {
 	if resourceArn == "" {
-		return "", handlers_ecr.RepoMeta{}, nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return "", handlers_ecr.RepoMeta{}, nil, RequiredParameterError("resourceArn")
 	}
 	name, err := RepositoryNameFromResourceARN(resourceArn)
 	if err != nil {
@@ -60,11 +60,14 @@ func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []by
 	var req tagResourceRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return nil, MalformedBodyError()
 		}
 	}
 	if len(req.Tags) == 0 {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, RequiredParameterError("tags")
+	}
+	if err := ValidateTags(req.Tags); err != nil {
+		return nil, err
 	}
 	_, meta, store, err := resolveTaggedRepo(ctx, nc, accountID, req.ResourceArn)
 	if err != nil {
@@ -74,9 +77,6 @@ func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []by
 		meta.Tags = make(map[string]string, len(req.Tags))
 	}
 	for _, t := range req.Tags {
-		if t == nil || aws.StringValue(t.Key) == "" {
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-		}
 		meta.Tags[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
 	}
 	if err := store.PutRepo(ctx, accountID, meta); err != nil {
@@ -91,11 +91,11 @@ func UntagResource(ctx context.Context, nc *nats.Conn, accountID string, body []
 	var req untagResourceRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return nil, MalformedBodyError()
 		}
 	}
 	if len(req.TagKeys) == 0 {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, RequiredParameterError("tagKeys")
 	}
 	_, meta, store, err := resolveTaggedRepo(ctx, nc, accountID, req.ResourceArn)
 	if err != nil {
@@ -116,7 +116,7 @@ func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, b
 	var req listTagsForResourceRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return nil, MalformedBodyError()
 		}
 	}
 	_, meta, _, err := resolveTaggedRepo(ctx, nc, accountID, req.ResourceArn)

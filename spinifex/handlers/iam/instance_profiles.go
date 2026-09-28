@@ -29,15 +29,15 @@ func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.Crea
 	ctx := context.Background()
 	profileName := *input.InstanceProfileName
 
-	if err := validatePolicyName(profileName); err != nil {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	if err := validateIAMName("instanceProfileName", profileName, 128); err != nil {
+		return nil, err
 	}
 
 	path := "/"
 	if input.Path != nil {
 		path = *input.Path
 		if err := validatePath(path); err != nil {
-			return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+			return nil, err
 		}
 	}
 
@@ -255,7 +255,7 @@ func (s *IAMServiceImpl) ListInstanceProfilesForRole(accountID string, input *ia
 func (s *IAMServiceImpl) ResolveInstanceProfile(accountID, nameOrARN string) (*InstanceProfile, error) {
 	ctx := context.Background()
 	if nameOrARN == "" {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The instance profile name or ARN must not be empty.")
 	}
 
 	if !strings.HasPrefix(nameOrARN, "arn:") {

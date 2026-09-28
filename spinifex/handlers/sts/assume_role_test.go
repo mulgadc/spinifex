@@ -438,6 +438,15 @@ func requireUnsupportedSessionInput(t *testing.T, err error, wantMessage string)
 	assert.Contains(t, message, wantMessage)
 }
 
+func requireMFANotSupported(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "MFA is not supported in this release; omit SerialNumber and TokenCode", message)
+}
+
 func TestAssumeRole_EchoesSourceIdentity(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
@@ -485,8 +494,7 @@ func TestAssumeRole_RejectsMFA(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
-			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+			requireMFANotSupported(t, err)
 		})
 	}
 }

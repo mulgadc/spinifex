@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -149,7 +150,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 			case errors.Is(err, ErrIPInUse):
 				return nil, errors.New(awserrors.ErrorInvalidIPAddressInUse)
 			case errors.Is(err, ErrIPOutOfRange):
-				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+				return nil, eniAddressError(*input.PrivateIpAddress, subnet.CidrBlock)
 			default:
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
@@ -1165,4 +1166,16 @@ func (s *VPCServiceImpl) isEIPOwned(ctx context.Context, eniId, accountID string
 		}
 	}
 	return false, nil
+}
+
+// eniAddressError answers a requested private IP the subnet cannot hold, with
+// AWS's message when the address lies outside the subnet's CIDR.
+func eniAddressError(requested, cidrBlock string) error {
+	addr, addrErr := netip.ParseAddr(requested)
+	prefix, prefixErr := netip.ParsePrefix(cidrBlock)
+	if addrErr == nil && prefixErr == nil && !prefix.Contains(addr) {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Address does not fall within the subnet's address range")
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"%s is not a usable address in subnet %s", requested, cidrBlock)
 }

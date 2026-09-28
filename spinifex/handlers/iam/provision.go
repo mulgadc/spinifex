@@ -55,7 +55,7 @@ func ProvisionAccount(svc IAMService, accountID, name string) (*ProvisionedAccou
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	if accountID == "" || name == "" {
-		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The account ID and account name must not be empty.")
 	}
 
 	if _, err := svc.CreateUser(accountID, &iam.CreateUserInput{

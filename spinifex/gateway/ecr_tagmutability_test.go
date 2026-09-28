@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +44,7 @@ func TestCreateRepository_InvalidMutability(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
 	_, err := createRepo(t, gw, `{"repositoryName":"team/app","imageTagMutability":"SOMETIMES"}`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", err.Error())
+	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestPutImageTagMutability_Happy(t *testing.T) {
@@ -91,7 +92,7 @@ func TestPutImageTagMutability_Errors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := putTagMutability(t, gw, tc.body)
 			require.Error(t, err)
-			assert.Equal(t, tc.expect, err.Error())
+			assert.Equal(t, tc.expect, awserrors.ValidErrorCodeFromError(err))
 		})
 	}
 }
@@ -105,7 +106,7 @@ func TestPutImageTagMutability_NoAccountAndMalformed(t *testing.T) {
 
 	_, err = putTagMutability(t, gw, `{`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", err.Error())
+	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestECRRequest_PutImageTagMutabilityDispatched(t *testing.T) {

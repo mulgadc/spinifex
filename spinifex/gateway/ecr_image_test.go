@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -146,7 +147,7 @@ func TestBatchGetImage_CapExceeded(t *testing.T) {
 	body := `{"repositoryName":"team/app","imageIds":[` + strings.Join(ids, ",") + `]}`
 	_, err := callImage(t, gw, (*GatewayConfig).handleBatchGetImage, body)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", err.Error())
+	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestPutImage_HappyAndMissingManifest(t *testing.T) {
@@ -177,7 +178,7 @@ func TestPutImage_HappyAndMissingManifest(t *testing.T) {
 	// Missing manifest -> InvalidParameterValue.
 	_, err = callImage(t, gw, (*GatewayConfig).handlePutImage, `{"repositoryName":"team/app","imageTag":"v2"}`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", err.Error())
+	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
 }
 
 // TestPutImage_RepoNotCreated asserts the JSON PutImage path rejects an uncreated

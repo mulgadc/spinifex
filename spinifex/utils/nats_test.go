@@ -891,6 +891,33 @@ func TestGather_MixedSuccessAndErrors(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, sum.FirstClient4xx)
 }
 
+func TestGather_Client4xxErrorKeepsNodeMessage(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	_, err := nc.Subscribe("test.gather.msg", func(msg *nats.Msg) {
+		_ = msg.Respond(GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidParameterValue, "The filter 'x' is invalid"))
+	})
+	require.NoError(t, err)
+
+	_, sum, err := Gather(context.Background(), nc, "test.gather.msg", []byte("{}"),
+		GatherOpts{Timeout: 2 * time.Second, ExpectedNodes: 1})
+	require.NoError(t, err)
+
+	code, msg, ok := awserrors.ResolveErrorDetail(sum.Client4xxError())
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "The filter 'x' is invalid", msg)
+}
+
+func TestSummary_Client4xxError(t *testing.T) {
+	assert.NoError(t, Summary{}.Client4xxError())
+
+	code, msg, ok := awserrors.ResolveErrorDetail(Summary{FirstClient4xx: awserrors.ErrorInvalidInstanceIDNotFound}.Client4xxError())
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, code)
+	assert.Empty(t, msg)
+}
+
 func TestGather_StopOnFirstSkipsErrors(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 

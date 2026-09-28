@@ -264,6 +264,25 @@ func TestDescribeInstances_NodeReturnsError(t *testing.T) {
 	assert.Empty(t, output.Reservations)
 }
 
+// A node's 4xx reaches the caller with the message the node wrote, not just
+// the code, when nothing else was collected.
+func TestDescribeInstancesChecked_NodeClientErrorKeepsMessage(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeEmptyInstanceBuckets(t, nc)
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1",
+		utils.GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidParameterValue, "The filter 'bogus-filter' is invalid"))
+
+	input := &ec2.DescribeInstancesInput{Filters: []*ec2.Filter{{Name: aws.String("bogus-filter"), Values: []*string{aws.String("x")}}}}
+	_, err := DescribeInstancesChecked(context.Background(), input, nc, 1, nil, "123456789012",
+		WithFanoutTimeout(2*time.Second))
+
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "The filter 'bogus-filter' is invalid", msg)
+}
+
 func TestDescribeInstances_MixedResponses(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)

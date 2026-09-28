@@ -65,7 +65,7 @@ func (gw *GatewayConfig) evaluateLifecyclePreview(r *http.Request) (string, []ha
 
 	expiries, err := handlers_ecr.EvaluateLifecyclePolicy([]byte(policyText), images, time.Now().UTC())
 	if err != nil {
-		return "", nil, nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return "", nil, nil, gateway_ecrapi.InvalidLifecyclePolicyError()
 	}
 	return policyText, expiries, &req, nil
 }

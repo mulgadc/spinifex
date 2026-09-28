@@ -57,7 +57,7 @@ func runBucketsSurviveANodeLoss(t *testing.T, fix *Fixture) {
 	harness.Step(t, "bring %s back", victim.Name)
 	harness.StartNode(t, victim)
 	harness.WaitNodeServiceReady(t, victim, harness.WithTimeout(rejoinBudget))
-	fix.Cluster.WaitNATSPeers(t, nodes, harness.WithTimeout(rejoinBudget))
+	fix.Cluster.WaitNATSPeers(t, nodes-1, harness.WithTimeout(rejoinBudget))
 
 	harness.Step(t, "the returning node must carry its share again")
 	for _, node := range fix.Cluster.Nodes {

@@ -62,6 +62,11 @@ const (
 // backend-side signals (no "backend out of space" latch, GC "sweep complete"
 // swept counts) are read out of band from the viperblockd log stream, because
 // the plugin's own accounting is not visible to the guest.
+//
+// Before detaching it also reads the volume's retained LOCAL WAL and reports it
+// (reportWALRetention). The long single open is the only shape in the suite that
+// can show that number, and it has to be read before the detach because Close
+// deletes the per-volume directory.
 func TestContinuousChurn(t *testing.T) {
 	fix := requireStorageGrowthFixture(t)
 	harness.Phase(t, "Continuous Churn — single long-open concurrent raw overwrite (503 limiter + live GC)")
@@ -103,6 +108,11 @@ func TestContinuousChurn(t *testing.T) {
 	harness.Detail(t, "chunk_writes", passes,
 		"approx_bytes_written_gib",
 		fmt.Sprintf("%.1f", float64(passes)*4.0/1024.0))
+
+	// Read the retained local WAL while the volume is still attached. The detach
+	// registered above closes it, and Close deletes the per-volume directory, so
+	// this is the only point in the run where the number exists to be read.
+	reportWALRetention(t, volID, passes*(4<<20))
 }
 
 // runContinuousChurn runs parallelism concurrent raw-overwrite loops against

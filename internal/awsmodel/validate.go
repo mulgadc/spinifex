@@ -32,7 +32,7 @@ func (v Violation) String() string {
 }
 
 // Validate checks a normalized response document against an operation's
-// output shape. Structure keys must use the member names from api-2.json;
+// output shape. Structure keys must use the model's member names;
 // protocol-specific response middleware is responsible for translating wire
 // names and wrappers to that representation.
 func Validate(service Service, operationName string, document any) ([]Violation, error) {

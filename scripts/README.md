@@ -41,6 +41,7 @@ Both ship to `/usr/local/share/spinifex/` on every node, so they are available o
 | `test-ddil-phase1.sh` | systemd-level smoke test for daemon-local-autonomy tier 1. Destructive on the local node: stops and starts `spinifex-nats` and restarts `spinifex-daemon`, restoring both via a cleanup trap. |
 | `check-coverage.sh` | Fails the build if total Go coverage falls below the minimum threshold, excluding packages exempt from the requirement. |
 | `diff-coverage.sh` | Coverage check scoped to changed lines only, against an auto-detected base ref (`HEAD~1` on main, `origin/main` on dev, otherwise `origin/dev`). |
+| `sync-aws-models.sh` | Replaces the embedded AWS Smithy models under `internal/awsmodel/models/` with the ten service files from `aws/api-models-aws` at the given commit, and records that commit in `internal/awsmodel/model_source.go`. Takes a full 40-character SHA. |
 | `run-bench.sh` | Launches a benchmark against running Ubuntu instances, auto-detecting the AMI for the host architecture. Tracks nbdkit and perf alongside the run. |
 | `disk-performance.sh` | Runs a `fio` random 70/30 read-write benchmark swept across 4k/16k/128k/1M. Writes JSON results to `/tmp/spinifex-disk-bench`; override with `BENCH_DIR`, `OUT_DIR`, `SIZE`, `JOBS`, `BLOCK_SIZES`. |
 | `network-performance.sh` | iperf throughput from several clients to one server, driven over SSH, writing a `summary.txt` of Gbit/s per client. `--server-ip` sets the address clients dial, so pointing it at instance private addresses measures the VPC overlay rather than the external pool. |

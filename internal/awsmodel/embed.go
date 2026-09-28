@@ -2,22 +2,21 @@ package awsmodel
 
 import "embed"
 
-// modelFS contains only the curated EC2 error catalog. The large upstream
-// api-2.json files are resolved from the pinned aws-sdk-go module cache at
-// runtime; they are intentionally not source-controlled here.
+// modelFS holds the Smithy service models, gzipped, from the api-models-aws
+// commit named by ModelCommit, and the curated EC2 error catalog.
 //
-//go:embed models/ec2/error-codes.json
+//go:embed models/*.json.gz models/ec2/error-codes.json
 var modelFS embed.FS
 
 var modelFiles = map[Service]string{
-	ACM:                    "models/apis/acm/2015-12-08/api-2.json",
-	EC2:                    "models/apis/ec2/2016-11-15/api-2.json",
-	ECR:                    "models/apis/ecr/2015-09-21/api-2.json",
-	ECS:                    "models/apis/ecs/2014-11-13/api-2.json",
-	EKS:                    "models/apis/eks/2017-11-01/api-2.json",
-	ElasticLoadBalancingV2: "models/apis/elasticloadbalancingv2/2015-12-01/api-2.json",
-	IAM:                    "models/apis/iam/2010-05-08/api-2.json",
-	RDS:                    "models/apis/rds/2014-10-31/api-2.json",
-	S3:                     "models/apis/s3/2006-03-01/api-2.json",
-	STS:                    "models/apis/sts/2011-06-15/api-2.json",
+	ACM:                    "models/acm-2015-12-08.json.gz",
+	EC2:                    "models/ec2-2016-11-15.json.gz",
+	ECR:                    "models/ecr-2015-09-21.json.gz",
+	ECS:                    "models/ecs-2014-11-13.json.gz",
+	EKS:                    "models/eks-2017-11-01.json.gz",
+	ElasticLoadBalancingV2: "models/elastic-load-balancing-v2-2015-12-01.json.gz",
+	IAM:                    "models/iam-2010-05-08.json.gz",
+	RDS:                    "models/rds-2014-10-31.json.gz",
+	S3:                     "models/s3-2006-03-01.json.gz",
+	STS:                    "models/sts-2011-06-15.json.gz",
 }

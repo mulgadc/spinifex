@@ -56,7 +56,7 @@ func TestValidateEnum(t *testing.T) {
 	want := []Violation{{
 		Rule:    RuleEnum,
 		Path:    "$.tasks[0].launchType",
-		Message: "value \"ON_PREMISES\" is not one of [EC2, FARGATE, EXTERNAL]",
+		Message: "value \"ON_PREMISES\" is not one of [EC2, FARGATE, EXTERNAL, MANAGED_INSTANCES]",
 	}}
 	if !reflect.DeepEqual(violations, want) {
 		t.Fatalf("violations = %#v, want %#v", violations, want)

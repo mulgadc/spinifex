@@ -395,6 +395,9 @@ func AutomatedBackupStamp(at time.Time) string {
 // listable through DescribeDBSnapshots --snapshot-type automated.
 func (s *Service) DescribeDBInstanceAutomatedBackups(ctx context.Context,
 	input *rds.DescribeDBInstanceAutomatedBackupsInput, accountID string) (*rds.DescribeDBInstanceAutomatedBackupsOutput, error) {
+	if input == nil {
+		input = &rds.DescribeDBInstanceAutomatedBackupsInput{}
+	}
 	wanted, err := validateDescribeAutomatedBackupsRequest(input)
 	if err != nil {
 		return nil, err
@@ -436,7 +439,11 @@ func (s *Service) DescribeDBInstanceAutomatedBackups(ctx context.Context,
 		}
 		backups = append(backups, s.projectAutomatedBackup(&rec, len(stamps)))
 	}
-	return &rds.DescribeDBInstanceAutomatedBackupsOutput{DBInstanceAutomatedBackups: backups}, nil
+	backups, next, err := Page(backups, automatedBackupPageKey, input.MaxRecords, input.Marker)
+	if err != nil {
+		return nil, err
+	}
+	return &rds.DescribeDBInstanceAutomatedBackupsOutput{DBInstanceAutomatedBackups: backups, Marker: next}, nil
 }
 
 // A filter this phase cannot honour is rejected rather than dropped, since a

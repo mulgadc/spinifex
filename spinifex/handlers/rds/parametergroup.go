@@ -84,20 +84,21 @@ func (s *Service) CreateDBParameterGroup(ctx context.Context, input *rds.CreateD
 // or not anything has materialised it yet — a client that lists groups before
 // creating its first instance must still see the one it can name.
 func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.DescribeDBParameterGroupsInput, accountID string) (*rds.DescribeDBParameterGroupsOutput, error) {
+	if input == nil {
+		input = &rds.DescribeDBParameterGroupsInput{}
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	if input != nil {
-		if name := aws.StringValue(input.DBParameterGroupName); name != "" {
-			rec, _, err := getDBParameterGroup(ctx, kv, accountID, name)
-			if err != nil {
-				return nil, err
-			}
-			return &rds.DescribeDBParameterGroupsOutput{
-				DBParameterGroups: []*rds.DBParameterGroup{s.projectParameterGroupRecord(rec)},
-			}, nil
+	if name := aws.StringValue(input.DBParameterGroupName); name != "" {
+		rec, _, err := getDBParameterGroup(ctx, kv, accountID, name)
+		if err != nil {
+			return nil, err
 		}
+		return &rds.DescribeDBParameterGroupsOutput{
+			DBParameterGroups: []*rds.DBParameterGroup{s.projectParameterGroupRecord(rec)},
+		}, nil
 	}
 
 	names, err := ListDBParameterGroupNames(ctx, kv)
@@ -125,7 +126,11 @@ func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.Desc
 		}
 		groups = append(groups, s.projectParameterGroupRecord(rec))
 	}
-	return &rds.DescribeDBParameterGroupsOutput{DBParameterGroups: groups}, nil
+	groups, next, err := Page(groups, parameterGroupPageKey, input.MaxRecords, input.Marker)
+	if err != nil {
+		return nil, err
+	}
+	return &rds.DescribeDBParameterGroupsOutput{DBParameterGroups: groups, Marker: next}, nil
 }
 
 // Stores validated overrides, one KV key per parameter, so a modify touching one
@@ -279,6 +284,10 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 			continue
 		}
 		out.Parameters = append(out.Parameters, projectParameter(spec, value, override.ApplyMethod, isOverride))
+	}
+	out.Parameters, out.Marker, err = Page(out.Parameters, parameterPageKey, input.MaxRecords, input.Marker)
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }

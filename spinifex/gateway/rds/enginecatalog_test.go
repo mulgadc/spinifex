@@ -238,10 +238,32 @@ func TestDescribeCatalogs_RejectMalformedFilters(t *testing.T) {
 	}
 }
 
-// Neither action ever issues a Marker, so one in a request was fabricated by the
-// caller. This diverges from the other RDS describes, which parse and ignore it,
-// because those may one day paginate and these two never will.
-func TestDescribeCatalogs_RejectAMarker(t *testing.T) {
+// Following each Marker returns the whole catalog once, in the unpaged order,
+// with the Marker surviving the XML round trip.
+func TestDescribeOrderableDBInstanceOptions_PagesTheCatalog(t *testing.T) {
+	nc := newStubbedNATS(t)
+	var classes []string
+	marker := ""
+	for {
+		query := map[string]string{"Action": "DescribeOrderableDBInstanceOptions", "Engine": "postgres", "MaxRecords": "2"}
+		if marker != "" {
+			query["Marker"] = marker
+		}
+		body, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", query, nc, testCaller, testEnv)
+		require.NoError(t, err)
+		var out rds.DescribeOrderableDBInstanceOptionsOutput
+		require.NoError(t, xmlutil.UnmarshalXML(&out, xml.NewDecoder(bytes.NewReader(body)),
+			"DescribeOrderableDBInstanceOptionsResult"))
+		require.LessOrEqual(t, len(out.OrderableDBInstanceOptions), 2)
+		classes = append(classes, classNames(out.OrderableDBInstanceOptions)...)
+		if marker = aws.StringValue(out.Marker); marker == "" {
+			break
+		}
+	}
+	assert.Equal(t, handlers_rds.SupportedInstanceClasses(), classes)
+}
+
+func TestDescribeCatalogs_RejectAMarkerTheyDidNotIssue(t *testing.T) {
 	nc := newStubbedNATS(t)
 	for _, action := range []string{"DescribeDBEngineVersions", "DescribeOrderableDBInstanceOptions"} {
 		t.Run(action, func(t *testing.T) {
@@ -250,7 +272,6 @@ func TestDescribeCatalogs_RejectAMarker(t *testing.T) {
 			}, nc, testCaller, testEnv)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
-			assert.Contains(t, err.Error(), "Marker")
 		})
 	}
 }

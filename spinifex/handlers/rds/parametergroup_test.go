@@ -1,6 +1,7 @@
 package handlers_rds
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -597,6 +598,56 @@ func TestDescribeDBParameters_FiltersOnSource(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, defaults.Parameters, len(enginePostgres.CatalogParameterNames())-1)
+}
+
+// AWS's observed first page of a fresh postgres18 group at MaxRecords 20: twenty
+// parameters by name, and a Marker that is base64 of the twenty-first's name.
+func TestDescribeDBParameters_PagesByName(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	catalog := enginePostgres.CatalogParameterNames()
+
+	var listed []string
+	var marker *string
+	for page := 0; ; page++ {
+		out, err := h.svc.DescribeDBParameters(t.Context(), &rds.DescribeDBParametersInput{
+			DBParameterGroupName: aws.String(testDefaultPG),
+			MaxRecords:           aws.Int64(20),
+			Marker:               marker,
+		}, testAccountID)
+		require.NoError(t, err)
+		if page == 0 {
+			require.Len(t, out.Parameters, 20)
+			assert.Equal(t, base64.StdEncoding.EncodeToString([]byte(catalog[20])), aws.StringValue(out.Marker))
+		}
+		for _, p := range out.Parameters {
+			listed = append(listed, aws.StringValue(p.ParameterName))
+		}
+		if out.Marker == nil {
+			break
+		}
+		marker = out.Marker
+	}
+	assert.Equal(t, catalog, listed)
+}
+
+func TestDescribeDBParameterGroups_PagesByName(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput("alpha"), testAccountID)
+	require.NoError(t, err)
+
+	first, err := h.svc.DescribeDBParameterGroups(t.Context(),
+		&rds.DescribeDBParameterGroupsInput{MaxRecords: aws.Int64(2)}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alpha", testDefaultMariaDB}, parameterGroupNames(first))
+	require.NotNil(t, first.Marker)
+
+	rest, err := h.svc.DescribeDBParameterGroups(t.Context(),
+		&rds.DescribeDBParameterGroupsInput{MaxRecords: aws.Int64(2), Marker: first.Marker}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{testDefaultPG}, parameterGroupNames(rest))
+	assert.Nil(t, rest.Marker)
 }
 
 func TestDeleteDBParameterGroup_RemovesTheGroupAndItsValues(t *testing.T) {

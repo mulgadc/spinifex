@@ -91,18 +91,19 @@ func (s *Service) CreateDBSubnetGroup(ctx context.Context, input *rds.CreateDBSu
 // A named group that does not exist is an error, matching AWS; an unnamed
 // request lists the account's groups.
 func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.DescribeDBSubnetGroupsInput, accountID string) (*rds.DescribeDBSubnetGroupsOutput, error) {
+	if input == nil {
+		input = &rds.DescribeDBSubnetGroupsInput{}
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	if input != nil {
-		if name := aws.StringValue(input.DBSubnetGroupName); name != "" {
-			rec, _, err := getDBSubnetGroup(ctx, kv, name)
-			if err != nil {
-				return nil, err
-			}
-			return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: []*rds.DBSubnetGroup{s.projectSubnetGroup(rec)}}, nil
+	if name := aws.StringValue(input.DBSubnetGroupName); name != "" {
+		rec, _, err := getDBSubnetGroup(ctx, kv, name)
+		if err != nil {
+			return nil, err
 		}
+		return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: []*rds.DBSubnetGroup{s.projectSubnetGroup(rec)}}, nil
 	}
 
 	names, err := listNames(ctx, kv, DBSubnetGroupsPrefix())
@@ -123,7 +124,11 @@ func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.Describ
 		}
 		groups = append(groups, s.projectSubnetGroup(&rec))
 	}
-	return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: groups}, nil
+	groups, next, err := Page(groups, subnetGroupPageKey, input.MaxRecords, input.Marker)
+	if err != nil {
+		return nil, err
+	}
+	return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: groups, Marker: next}, nil
 }
 
 // Refused while any instance still names the group, including one that is only

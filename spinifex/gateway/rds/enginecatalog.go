@@ -43,10 +43,6 @@ var (
 // filter here rather than a required parameter, and an unknown one is an empty
 // list rather than the rejection create-db-instance gives it.
 func DescribeDBEngineVersions(ctx context.Context, input *rds.DescribeDBEngineVersionsInput, _ *nats.Conn, _ Caller) (any, error) {
-	if err := rejectMarker(input.Marker, "DescribeDBEngineVersions"); err != nil {
-		return nil, err
-	}
-
 	filter := handlers_rds.EngineVersionFilter{}
 	filter.Engine.AddParam(aws.StringValue(input.Engine))
 	filter.EngineVersion.AddParam(aws.StringValue(input.EngineVersion))
@@ -74,15 +70,17 @@ func DescribeDBEngineVersions(ctx context.Context, input *rds.DescribeDBEngineVe
 	// DefaultOnly, IncludeAll, ListSupportedCharacterSets and ListSupportedTimezones
 	// are accepted and not read: each is an identity on a catalog of one available
 	// version per engine with no character-set or timezone list to populate.
-	return &rds.DescribeDBEngineVersionsOutput{DBEngineVersions: handlers_rds.EngineVersions(filter)}, nil
+	versions, marker, err := handlers_rds.Page(handlers_rds.EngineVersions(filter),
+		handlers_rds.EngineVersionPageKey, input.MaxRecords, input.Marker)
+	if err != nil {
+		return nil, err
+	}
+	return &rds.DescribeDBEngineVersionsOutput{DBEngineVersions: versions, Marker: marker}, nil
 }
 
 // Engine is required, so an absent one is MissingParameter and an unknown one is
 // the InvalidParameterValue LookupEngine already words. Everything else narrows.
 func DescribeOrderableDBInstanceOptions(ctx context.Context, input *rds.DescribeOrderableDBInstanceOptionsInput, nc *nats.Conn, _ Caller, env Env) (any, error) {
-	if err := rejectMarker(input.Marker, "DescribeOrderableDBInstanceOptions"); err != nil {
-		return nil, err
-	}
 	if aws.StringValue(input.AvailabilityZoneGroup) != "" {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"AvailabilityZoneGroup is not supported: this platform exposes a single zone and names none")
@@ -133,9 +131,12 @@ func DescribeOrderableDBInstanceOptions(ctx context.Context, input *rds.Describe
 	if err != nil {
 		return nil, err
 	}
-	return &rds.DescribeOrderableDBInstanceOptionsOutput{
-		OrderableDBInstanceOptions: handlers_rds.OrderableOptions(filter, runnable),
-	}, nil
+	options, marker, err := handlers_rds.Page(handlers_rds.OrderableOptions(filter, runnable),
+		handlers_rds.OrderableOptionPageKey, input.MaxRecords, input.Marker)
+	if err != nil {
+		return nil, err
+	}
+	return &rds.DescribeOrderableDBInstanceOptionsOutput{OrderableDBInstanceOptions: options, Marker: marker}, nil
 }
 
 // Which EC2 instance types the cluster's nodes report they can run, as a
@@ -169,17 +170,6 @@ func clusterRunnableTypes(ctx context.Context, nc *nats.Conn, env Env) (func(str
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	return func(instanceType string) bool { return supported[instanceType] }, nil
-}
-
-// Neither action ever issues a Marker, so one in a request can only have been
-// fabricated. Answering it as page one would report the whole catalog as if it
-// were a later page.
-func rejectMarker(marker *string, action string) error {
-	if aws.StringValue(marker) == "" {
-		return nil
-	}
-	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-		"Marker is not supported: %s returns every row in a single page", action)
 }
 
 // Both members are required by the shape, and treating either as absent would

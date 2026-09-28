@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -67,45 +68,69 @@ func runKVReplicas(cmd *cobra.Command, _ []string) {
 	}
 
 	if repair {
-		for i, r := range reports {
-			if !r.UnderReplicated() {
-				continue
-			}
-			if err := kvutil.RaiseBucketReplicas(ctx, js, r.Bucket, r.Want); err != nil {
-				fmt.Fprintf(os.Stderr, "repair %s: %v\n", r.Bucket, err)
-				os.Exit(1)
-			}
-			reports[i].Replicas = r.Want
-		}
+		repairReplicaReports(ctx, js, reports, os.Stderr)
 	}
 
+	if err := writeReplicaReport(os.Stdout, reports, asJSON); err != nil {
+		fmt.Fprintf(os.Stderr, "write report: %v\n", err)
+		os.Exit(1)
+	}
+
+	if underReplicatedCount(reports) > 0 {
+		os.Exit(1)
+	}
+}
+
+// repairReplicaReports raises every under-replicated bucket and updates reports
+// in place for the ones that were raised.
+//
+// One bucket that cannot be placed must not stop the others being repaired, so a
+// failure is named on errOut and the sweep continues. The bucket it failed on
+// stays UNDER-REPLICATED in the report, which is already what makes the exit
+// status non-zero, so nothing is lost by not returning an error here.
+func repairReplicaReports(ctx context.Context, js jetstream.JetStream, reports []kvutil.BucketReport, errOut io.Writer) {
+	for i, r := range reports {
+		if !r.UnderReplicated() {
+			continue
+		}
+		if err := kvutil.RaiseBucketReplicas(ctx, js, r.Bucket, r.Want); err != nil {
+			fmt.Fprintf(errOut, "repair %s: %v\n", r.Bucket, err)
+			continue
+		}
+		reports[i].Replicas = r.Want
+	}
+}
+
+// underReplicatedCount is how many buckets are below the cluster's replica
+// count, which is what the command's exit status reports.
+func underReplicatedCount(reports []kvutil.BucketReport) int {
 	under := 0
 	for _, r := range reports {
 		if r.UnderReplicated() {
 			under++
 		}
 	}
+	return under
+}
 
+// writeReplicaReport renders reports as a table, or as JSON when asJSON.
+func writeReplicaReport(out io.Writer, reports []kvutil.BucketReport, asJSON bool) error {
 	if asJSON {
-		if err := json.NewEncoder(os.Stdout).Encode(reports); err != nil {
-			fmt.Fprintf(os.Stderr, "encode report: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "BUCKET\tREPLICAS\tWANT\tSTATUS\tHELD BY")
-		for _, r := range reports {
-			status := "ok"
-			if r.UnderReplicated() {
-				status = "UNDER-REPLICATED"
-			}
-			fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\n", r.Bucket, r.Replicas, r.Want, status, strings.Join(r.Peers, ","))
-		}
-		w.Flush()
-		fmt.Printf("\n%d buckets, %d under-replicated\n", len(reports), under)
+		return json.NewEncoder(out).Encode(reports)
 	}
 
-	if under > 0 {
-		os.Exit(1)
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "BUCKET\tREPLICAS\tWANT\tSTATUS\tHELD BY")
+	for _, r := range reports {
+		status := "ok"
+		if r.UnderReplicated() {
+			status = "UNDER-REPLICATED"
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\n", r.Bucket, r.Replicas, r.Want, status, strings.Join(r.Peers, ","))
 	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(out, "\n%d buckets, %d under-replicated\n", len(reports), underReplicatedCount(reports))
+	return err
 }

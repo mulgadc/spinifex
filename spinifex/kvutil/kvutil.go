@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -73,13 +74,28 @@ func getOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, cfg je
 	}
 	cfg.Replicas = replicas
 
-	kv, err := js.CreateKeyValue(ctx, cfg)
+	// Attach before create, so whether the bucket exists is this function's own
+	// answer rather than an inference from which error the server reported
+	// first. A create asking for more replicas than the cluster can place is
+	// refused before the name is looked at, which would otherwise read as
+	// "create failed" for a bucket that is present and serving.
+	kv, err := js.KeyValue(ctx, bucket)
+	switch {
+	case err == nil:
+		return openAndRaise(ctx, js, kv, bucket, replicas), nil
+	case !errors.Is(err, jetstream.ErrBucketNotFound):
+		return nil, fmt.Errorf("open KV bucket %s: %w", bucket, err)
+	}
+
+	kv, err = js.CreateKeyValue(ctx, cfg)
 	if err == nil {
 		return kv, nil
 	}
 
-	// A previous boot or a concurrent daemon already created it, so opening it
-	// is the expected outcome. Every other create failure is real and surfaces.
+	// A concurrent daemon created it in the gap, so opening it is the expected
+	// outcome. Every other create failure is real and surfaces — a create at
+	// fewer replicas than the cluster wants is the defect, so it must not be
+	// reached by falling back.
 	if !errors.Is(err, jetstream.ErrBucketExists) {
 		return nil, fmt.Errorf("create KV bucket %s: %w", bucket, err)
 	}
@@ -87,14 +103,25 @@ func getOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, cfg je
 	if err != nil {
 		return nil, fmt.Errorf("open KV bucket %s: %w", bucket, err)
 	}
+	return openAndRaise(ctx, js, kv, bucket, replicas), nil
+}
 
-	// An existing bucket may predate this rule, or predate the cluster growing.
-	// Raising it here is what makes a formed cluster self-heal on the next
-	// service start rather than waiting for someone to run a repair.
+// openAndRaise returns an already-open bucket, raising it to the cluster's
+// replica count on a best-effort basis.
+//
+// An existing bucket may predate this rule, or predate the cluster growing, and
+// raising it on open is what makes a formed cluster self-heal rather than wait
+// for someone to run a repair. A failed raise is deliberately not a failed
+// open: the config can legitimately name nodes that are not serving yet — that
+// is what growing a cluster looks like — and refusing would stop every service
+// on the host over a bucket that is present and quorate at the count it has.
+// The daemon's sweep and `spx admin kv replicas --repair` finish the job.
+func openAndRaise(ctx context.Context, js jetstream.KeyValueManager, kv jetstream.KeyValue, bucket string, replicas int) jetstream.KeyValue {
 	if err := RaiseBucketReplicas(ctx, js, bucket, replicas); err != nil {
-		return nil, err
+		slog.WarnContext(ctx, "Could not raise KV bucket to the cluster's replica count; it stays where it is until the cluster can hold more",
+			"bucket", bucket, "want", replicas, "error", err)
 	}
-	return kv, nil
+	return kv
 }
 
 // IsStreamUnavailable reports whether err means the KV bucket's underlying

@@ -1,23 +1,25 @@
-package kvutil
+package kvutil_test
 
 import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestAuditBucketReplicas_ReportsEveryBucketAgainstTheClusterSize(t *testing.T) {
-	js := startJetStream(t)
+	js := newJetStream(t)
 
 	for _, bucket := range []string{"audit-alpha", "audit-beta"} {
-		_, err := GetOrCreateBucket(t.Context(), js, bucket, 1)
+		_, err := kvutil.GetOrCreateBucket(t.Context(), js, bucket, 1)
 		require.NoError(t, err)
 	}
 
-	reports, err := AuditBucketReplicas(t.Context(), js)
+	reports, err := kvutil.AuditBucketReplicas(t.Context(), js)
 	require.NoError(t, err)
 	require.Len(t, reports, 2)
 	assert.Equal(t, "audit-alpha", reports[0].Bucket, "reports are sorted by bucket name")
@@ -33,7 +35,7 @@ func TestAuditBucketReplicas_ReportsEveryBucketAgainstTheClusterSize(t *testing.
 	clustersize.Declare(3)
 	t.Cleanup(func() { clustersize.Declare(1) })
 
-	reports, err = AuditBucketReplicas(t.Context(), js)
+	reports, err = kvutil.AuditBucketReplicas(t.Context(), js)
 	require.NoError(t, err)
 	require.Len(t, reports, 2)
 	for _, r := range reports {
@@ -44,11 +46,11 @@ func TestAuditBucketReplicas_ReportsEveryBucketAgainstTheClusterSize(t *testing.
 }
 
 func TestAuditBucketReplicas_RefusesWhenClusterSizeIsUndeclared(t *testing.T) {
-	js := startJetStream(t)
+	js := newJetStream(t)
 	clustersize.Declare(0)
 	t.Cleanup(func() { clustersize.Declare(1) })
 
-	_, err := AuditBucketReplicas(t.Context(), js)
+	_, err := kvutil.AuditBucketReplicas(t.Context(), js)
 	require.ErrorIs(t, err, clustersize.ErrUndeclared)
 }
 
@@ -57,27 +59,27 @@ func TestAuditBucketReplicas_RefusesWhenClusterSizeIsUndeclared(t *testing.T) {
 // alone, so a cluster that has lost a node does not have its durability cut to
 // match.
 func TestRaiseBucketReplicas_NeverLowers(t *testing.T) {
-	js := startJetStream(t)
+	js := newJetStream(t)
 
-	_, err := GetOrCreateBucket(t.Context(), js, "no-downgrade", 1)
+	_, err := kvutil.GetOrCreateBucket(t.Context(), js, "no-downgrade", 1)
 	require.NoError(t, err)
 
-	require.NoError(t, RaiseBucketReplicas(t.Context(), js, "no-downgrade", 1))
-	assert.Equal(t, 1, streamReplicas(t, js, "no-downgrade"))
+	require.NoError(t, kvutil.RaiseBucketReplicas(t.Context(), js, "no-downgrade", 1))
+	assert.Equal(t, 1, streamConfig(t, js, "no-downgrade").Replicas)
 
 	// Zero and negative are below the current count, so they are no-ops too
 	// rather than an update that would ask the server for an invalid config.
-	require.NoError(t, RaiseBucketReplicas(t.Context(), js, "no-downgrade", 0))
-	assert.Equal(t, 1, streamReplicas(t, js, "no-downgrade"))
+	require.NoError(t, kvutil.RaiseBucketReplicas(t.Context(), js, "no-downgrade", 0))
+	assert.Equal(t, 1, streamConfig(t, js, "no-downgrade").Replicas)
 }
 
 // TestRaiseBucketReplicas_PreservesTheRestOfTheConfig is why this updates the
 // stream rather than the KV bucket: a KeyValueConfig cannot express a stream's
 // full configuration, so applying one would reset whatever it omits.
 func TestRaiseBucketReplicas_PreservesTheRestOfTheConfig(t *testing.T) {
-	js := startJetStream(t)
+	js := newJetStream(t)
 
-	_, err := GetOrCreateBucketWithOptions(t.Context(), js, BucketOptions{
+	_, err := kvutil.GetOrCreateBucketWithOptions(t.Context(), js, kvutil.BucketOptions{
 		Name:        "config-preserved",
 		Description: "a bucket with settings worth not losing",
 		History:     7,
@@ -85,7 +87,7 @@ func TestRaiseBucketReplicas_PreservesTheRestOfTheConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	before := streamConfig(t, js, "config-preserved")
-	require.NoError(t, RaiseBucketReplicas(t.Context(), js, "config-preserved", 1))
+	require.NoError(t, kvutil.RaiseBucketReplicas(t.Context(), js, "config-preserved", 1))
 	after := streamConfig(t, js, "config-preserved")
 
 	assert.Equal(t, before.Description, after.Description)
@@ -96,18 +98,69 @@ func TestRaiseBucketReplicas_PreservesTheRestOfTheConfig(t *testing.T) {
 // TestRaiseBucketReplicas_SurfacesAMissingBucket keeps a raise against a bucket
 // that is not there from reading as success.
 func TestRaiseBucketReplicas_SurfacesAMissingBucket(t *testing.T) {
-	js := startJetStream(t)
+	js := newJetStream(t)
 
-	err := RaiseBucketReplicas(t.Context(), js, "never-created", 1)
+	err := kvutil.RaiseBucketReplicas(t.Context(), js, "never-created", 1)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, jetstream.ErrStreamNotFound)
 }
 
 func streamConfig(t *testing.T, js jetstream.JetStream, bucket string) jetstream.StreamConfig {
 	t.Helper()
-	stream, err := js.Stream(t.Context(), streamPrefix+bucket)
+	stream, err := js.Stream(t.Context(), "KV_"+bucket)
 	require.NoError(t, err)
 	info, err := stream.Info(t.Context())
 	require.NoError(t, err)
 	return info.Config
+}
+
+// newJetStream starts an embedded one-node JetStream for a test in this package.
+func newJetStream(t *testing.T) jetstream.JetStream {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	return testutil.NewJetStream(t, nc)
+}
+
+// TestRaiseAllBucketReplicas_RaisesWhatItCanAndReportsWhatItCannot covers the
+// sweep's two halves at once. It is the cluster-wide counterpart to the raise a
+// bucket gets when a service opens it: a node joining changes the answer for
+// every bucket, and most will not be reopened until something restarts.
+func TestRaiseAllBucketReplicas_RaisesWhatItCanAndReportsWhatItCannot(t *testing.T) {
+	js := newJetStream(t)
+
+	for _, b := range []string{"sweep-alpha", "sweep-beta"} {
+		_, err := kvutil.GetOrCreateBucket(t.Context(), js, b, 1)
+		require.NoError(t, err)
+	}
+
+	// Nothing is short at one node, so the sweep must change nothing and say so
+	// rather than rewriting every bucket it looked at.
+	raised, err := kvutil.RaiseAllBucketReplicas(t.Context(), js)
+	require.NoError(t, err)
+	assert.Zero(t, raised, "a healthy cluster needs no repair")
+
+	// The cluster grew beyond what one embedded server can place, so every
+	// bucket is short and every raise fails. The sweep must attempt all of them
+	// and join the failures rather than stopping at the first.
+	clustersize.Declare(3)
+	t.Cleanup(func() { clustersize.Declare(1) })
+
+	raised, err = kvutil.RaiseAllBucketReplicas(t.Context(), js)
+	require.Error(t, err)
+	assert.Zero(t, raised)
+	assert.Contains(t, err.Error(), "sweep-alpha")
+	assert.Contains(t, err.Error(), "sweep-beta", "the sweep stopped at the first failure")
+	assert.Equal(t, 1, streamConfig(t, js, "sweep-alpha").Replicas, "a failed raise must not have changed anything")
+}
+
+// TestRaiseAllBucketReplicas_RefusesWhenClusterSizeIsUndeclared keeps the sweep
+// from reading an undeclared size as "one replica is what everything wants",
+// which would report a whole cluster of single-replica buckets as healthy.
+func TestRaiseAllBucketReplicas_RefusesWhenClusterSizeIsUndeclared(t *testing.T) {
+	js := newJetStream(t)
+	clustersize.Declare(0)
+	t.Cleanup(func() { clustersize.Declare(1) })
+
+	_, err := kvutil.RaiseAllBucketReplicas(t.Context(), js)
+	require.ErrorIs(t, err, clustersize.ErrUndeclared)
 }

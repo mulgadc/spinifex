@@ -2414,7 +2414,10 @@ func (d *Daemon) initJetStream() error {
 
 		if err == nil {
 			d.jsManager.SetSyncObserver(d)
-			slog.Info("JetStream KV stores initialized successfully", "replicas", 1, "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
+			// Replicas cannot be undeclared here: bucket creation refuses
+			// before it, so reaching this line means it was declared.
+			replicas, _ := clustersize.Replicas()
+			slog.Info("JetStream KV stores initialized successfully", "replicas", replicas, "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			break
 		}
 

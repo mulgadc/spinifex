@@ -80,22 +80,29 @@ func AuditBucketReplicas(ctx context.Context, js jetstream.JetStream) ([]BucketR
 // It is the cluster-wide counterpart to the raise a bucket gets when a service
 // opens it: a node joining changes the answer for every bucket at once, and
 // most of them will not be opened again until something restarts.
+//
+// Every bucket is attempted even after one fails, and the failures come back
+// joined. Stopping at the first would leave the rest of a cluster's buckets
+// short because one of them could not be placed, which is the opposite of what
+// a sweep is for.
 func RaiseAllBucketReplicas(ctx context.Context, js jetstream.JetStream) (int, error) {
 	reports, err := AuditBucketReplicas(ctx, js)
 	if err != nil {
 		return 0, err
 	}
 	raised := 0
+	var failures []error
 	for _, r := range reports {
 		if !r.UnderReplicated() {
 			continue
 		}
 		if err := RaiseBucketReplicas(ctx, js, r.Bucket, r.Want); err != nil {
-			return raised, err
+			failures = append(failures, err)
+			continue
 		}
 		raised++
 	}
-	return raised, nil
+	return raised, errors.Join(failures...)
 }
 
 // RaiseBucketReplicas raises a bucket to want replicas, leaving every other

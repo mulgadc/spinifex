@@ -61,7 +61,14 @@ func OpenBucket(ctx context.Context, js jetstream.JetStream, cfg BucketConfig) (
 			Replicas: replicas,
 		})
 	case err == nil:
-		err = kvutil.RaiseBucketReplicas(ctx, js, cfg.Name, replicas)
+		// A failed raise must not fail the open. This runs on every reconcile
+		// tick, so refusing here would stop every reconciler sharing the bucket
+		// — the outage this replica count exists to prevent — over a bucket that
+		// is present and quorate at the count it already has.
+		if raiseErr := kvutil.RaiseBucketReplicas(ctx, js, cfg.Name, replicas); raiseErr != nil {
+			slog.WarnContext(ctx, "kvlease: could not raise lease bucket to the cluster's replica count",
+				"bucket", cfg.Name, "want", replicas, "error", raiseErr)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("kvlease: open or create lease bucket %s: %w", cfg.Name, err)

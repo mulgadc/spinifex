@@ -113,6 +113,8 @@ Contrast that with a bucket on **one** replica. It lives on one server, chosen b
 
 Adding a fourth server does not, on its own, re-replicate the buckets that already exist — the nodes that hold them are perfectly healthy, so nothing prompts a change. Spinifex raises them for you at the next service start: each service checks every bucket it opens against the cluster's current node count and raises any that are short. It never lowers one.
 
+**A config that names a node before that node is serving is safe.** It is the ordinary middle of growing a cluster, and services start normally through it: a bucket that cannot be raised yet keeps working at the count it has, and the node logs `Could not raise KV bucket to the cluster's replica count`. The raise is retried every time a service opens the bucket, so it completes on its own once the new server is in the cluster.
+
 To do it immediately rather than waiting for a restart, run the audit with `--repair` from any node:
 
 ```bash

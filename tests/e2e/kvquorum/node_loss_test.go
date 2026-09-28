@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	natssvc "github.com/mulgadc/spinifex/spinifex/services/nats"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -119,19 +120,24 @@ func requireNoBucketLostReplicas(t *testing.T, before, after []kvutil.BucketRepo
 // busiestLeader returns the node leading the most buckets, and how many.
 // Leadership is where the loss hurts most: a follower going away costs a raft
 // group a peer, a leader going away costs it an election.
+//
+// A stream's peers are NATS server names, which are the node name behind a
+// prefix rather than the node name itself, so they go through the helper that
+// owns that prefix.
 func busiestLeader(nodes []harness.Node, reports []kvutil.BucketReport) (harness.Node, int) {
 	led := make(map[string]int, len(nodes))
 	for _, r := range reports {
-		if len(r.Peers) > 0 {
-			led[r.Peers[0]]++
+		if len(r.Peers) == 0 {
+			continue
+		}
+		if node, ok := natssvc.NodeFromServerName(r.Peers[0]); ok {
+			led[node]++
 		}
 	}
 
 	var best harness.Node
 	bestN := -1
 	for _, n := range nodes {
-		// The stream's peer name is the NATS server name, which is the node
-		// name on a cluster formed by our own installer.
 		if c := led[n.Name]; c > bestN {
 			best, bestN = n, c
 		}

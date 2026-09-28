@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/nats-io/nats.go/jetstream"
 
-	resourcearn "github.com/mulgadc/spinifex/spinifex/arn"
+	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"

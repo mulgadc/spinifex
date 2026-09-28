@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
-	"github.com/mulgadc/spinifex/spinifex/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )

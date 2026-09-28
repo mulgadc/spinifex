@@ -3,7 +3,7 @@ package arn_test
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 )
 
 func TestFormatIAMPath(t *testing.T) {

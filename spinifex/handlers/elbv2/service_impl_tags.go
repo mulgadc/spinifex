@@ -7,7 +7,7 @@ import (
 	"maps"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	resourcearn "github.com/mulgadc/spinifex/spinifex/arn"
+	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 

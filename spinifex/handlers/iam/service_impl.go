@@ -24,7 +24,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"

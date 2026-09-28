@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )

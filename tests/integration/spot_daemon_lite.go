@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,10 +28,7 @@ func StartSpotDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_spotinstance.S
 	svc, err := handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(t.Context(), nil, gw.NATSConn)
 	require.NoError(t, err, "construct spot instance service")
 
-	nc := gw.NATSConn
-	sub(t, nc, "ec2.PutSpotInstanceRequests", func(m *nats.Msg) { dispatch(m, svc.PutSpotInstanceRequests) })
-	sub(t, nc, "ec2.DescribeSpotInstanceRequests", func(m *nats.Msg) { dispatch(m, svc.DescribeSpotInstanceRequests) })
-	sub(t, nc, "ec2.CancelSpotInstanceRequests", func(m *nats.Msg) { dispatch(m, svc.CancelSpotInstanceRequests) })
+	subscribeServiceMethods(t, gw.NATSConn, "ec2", svc)
 
 	return svc
 }

@@ -5,8 +5,8 @@ package integration
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
+	"reflect"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -181,44 +181,10 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 	return dl
 }
 
-// dispatch replicates daemon.handleNATSRequest's unmarshal -> service ->
-// marshal -> respond envelope (daemon/daemon_handlers.go), so a subscribed
-// service impl answers a NATS request exactly like the real daemon handler
-// would, without needing an exported hook into the unexported daemon package.
+// dispatch answers a NATS request with one service method, for subjects not
+// named after the method.
 func dispatch[I any, O any](msg *nats.Msg, serviceFn func(context.Context, *I, string) (*O, error)) {
-	ctx, span := utils.StartConsumerSpan(msg)
-	defer span.End()
-
-	accountID := utils.AccountIDFromMsg(msg)
-	input := new(I)
-	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
-		utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
-		if err := msg.Respond(errResp); err != nil {
-			slog.Error("dispatch: failed to respond to NATS request", "err", err)
-		}
-		return
-	}
-
-	output, err := serviceFn(ctx, input, accountID)
-	if err != nil {
-		utils.MarkSpanError(span, err)
-		if respErr := msg.Respond(utils.GenerateErrorPayload(awserrors.ValidErrorCode(err.Error()))); respErr != nil {
-			slog.Error("dispatch: failed to respond to NATS request", "err", respErr)
-		}
-		return
-	}
-
-	jsonResponse, err := json.Marshal(output)
-	if err != nil {
-		slog.Error("dispatch: failed to marshal response", "err", err)
-		if respErr := msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorServerInternal)); respErr != nil {
-			slog.Error("dispatch: failed to respond to NATS request", "err", respErr)
-		}
-		return
-	}
-	if err := msg.Respond(jsonResponse); err != nil {
-		slog.Error("dispatch: failed to respond to NATS request", "err", err)
-	}
+	dispatchReflected(msg, reflect.ValueOf(serviceFn), false)
 }
 
 // sub registers a plain (non-queue-group) subscription and its t.Cleanup
@@ -231,83 +197,91 @@ func sub(t *testing.T, nc *nats.Conn, subject string, handler nats.MsgHandler) {
 	t.Cleanup(func() { _ = s.Unsubscribe() })
 }
 
-// subscribe wires every subject the in-scope ported tests (TestKeyPairs,
-// TestTagManagement, TestRouteTableValidation, TestReplaceRouteConvergence,
-// TestAccountScoping_*, TestSerialConsoleAccess) exercise, plus their
-// supporting VPC/subnet/SG/IGW/EIGW/account-settings subjects, to the real
-// service impls held on dl.
+// subscribe wires every handler method of the service impls held on dl to its
+// "ec2.<Method>" subject.
 func (dl *DaemonLite) subscribe(t *testing.T, nc *nats.Conn) {
 	t.Helper()
+	// Tags dispatch straight to TagsServiceImpl, skipping the live daemon's
+	// instance-ID routing and tag mirroring, which only instance and volume
+	// tagging need; both paths write the central tag store DescribeTags reads.
+	for _, service := range []any{dl.Key, dl.Tags, dl.RouteTable, dl.VPC, dl.IGW, dl.EIGW, dl.AccountSettings} {
+		subscribeServiceMethods(t, nc, "ec2", service)
+	}
+}
 
-	// Key pairs.
-	sub(t, nc, "ec2.CreateKeyPair", func(m *nats.Msg) { dispatch(m, dl.Key.CreateKeyPair) })
-	sub(t, nc, "ec2.DeleteKeyPair", func(m *nats.Msg) { dispatch(m, dl.Key.DeleteKeyPair) })
-	sub(t, nc, "ec2.DescribeKeyPairs", func(m *nats.Msg) { dispatch(m, dl.Key.DescribeKeyPairs) })
-	sub(t, nc, "ec2.ImportKeyPair", func(m *nats.Msg) { dispatch(m, dl.Key.ImportKeyPair) })
+var (
+	contextType = reflect.TypeFor[context.Context]()
+	errorType   = reflect.TypeFor[error]()
+	stringType  = reflect.TypeFor[string]()
+)
 
-	// Tags. Unlike the live daemon's handleEC2CreateTags/handleEC2DeleteTags
-	// (daemon/daemon_handlers_tag.go), this dispatches straight to
-	// TagsServiceImpl and skips the instance-ID routing split and the
-	// recordTagMirrors projection onto owning resource records — both exist
-	// only to support instance/volume tagging, which is out of scope here
-	// and neither is observed by the ported TestTagManagement assertions (all
-	// of which read back through
-	// DescribeTags, the central tag store both paths write identically).
-	sub(t, nc, "ec2.CreateTags", func(m *nats.Msg) { dispatch(m, dl.Tags.CreateTags) })
-	sub(t, nc, "ec2.DeleteTags", func(m *nats.Msg) { dispatch(m, dl.Tags.DeleteTags) })
-	sub(t, nc, "ec2.DescribeTags", func(m *nats.Msg) { dispatch(m, dl.Tags.DescribeTags) })
+// subscribeServiceMethods subscribes each method shaped like a daemon NATS
+// handler, (ctx, *Input, accountID[, principalARN]) (*Output, error), to
+// "<prefix>.<Method>", so the subjects cannot drift from the service.
+func subscribeServiceMethods(t *testing.T, nc *nats.Conn, prefix string, service any) {
+	t.Helper()
+	value := reflect.ValueOf(service)
+	for i := range value.NumMethod() {
+		method := value.Type().Method(i)
+		handler := value.Method(i)
+		withPrincipal, ok := daemonHandlerShape(handler.Type())
+		if !ok {
+			continue
+		}
+		sub(t, nc, prefix+"."+method.Name, func(msg *nats.Msg) {
+			dispatchReflected(msg, handler, withPrincipal)
+		})
+	}
+}
 
-	// Route tables.
-	sub(t, nc, "ec2.CreateRouteTable", func(m *nats.Msg) { dispatch(m, dl.RouteTable.CreateRouteTable) })
-	sub(t, nc, "ec2.DeleteRouteTable", func(m *nats.Msg) { dispatch(m, dl.RouteTable.DeleteRouteTable) })
-	sub(t, nc, "ec2.DescribeRouteTables", func(m *nats.Msg) { dispatch(m, dl.RouteTable.DescribeRouteTables) })
-	sub(t, nc, "ec2.CreateRoute", func(m *nats.Msg) { dispatch(m, dl.RouteTable.CreateRoute) })
-	sub(t, nc, "ec2.DeleteRoute", func(m *nats.Msg) { dispatch(m, dl.RouteTable.DeleteRoute) })
-	sub(t, nc, "ec2.ReplaceRoute", func(m *nats.Msg) { dispatch(m, dl.RouteTable.ReplaceRoute) })
-	sub(t, nc, "ec2.AssociateRouteTable", func(m *nats.Msg) { dispatch(m, dl.RouteTable.AssociateRouteTable) })
-	sub(t, nc, "ec2.DisassociateRouteTable", func(m *nats.Msg) { dispatch(m, dl.RouteTable.DisassociateRouteTable) })
-	sub(t, nc, "ec2.ReplaceRouteTableAssociation", func(m *nats.Msg) { dispatch(m, dl.RouteTable.ReplaceRouteTableAssociation) })
+func daemonHandlerShape(fn reflect.Type) (withPrincipal, ok bool) {
+	if fn.NumOut() != 2 || fn.Out(0).Kind() != reflect.Pointer || fn.Out(1) != errorType {
+		return false, false
+	}
+	switch fn.NumIn() {
+	case 3:
+	case 4:
+		if fn.In(3) != stringType {
+			return false, false
+		}
+		withPrincipal = true
+	default:
+		return false, false
+	}
+	return withPrincipal, fn.In(0) == contextType && fn.In(1).Kind() == reflect.Pointer && fn.In(2) == stringType
+}
 
-	// VPC / subnet / ENI / security group.
-	sub(t, nc, "ec2.CreateVpc", func(m *nats.Msg) { dispatch(m, dl.VPC.CreateVpc) })
-	sub(t, nc, "ec2.DeleteVpc", func(m *nats.Msg) { dispatch(m, dl.VPC.DeleteVpc) })
-	sub(t, nc, "ec2.DescribeVpcs", func(m *nats.Msg) { dispatch(m, dl.VPC.DescribeVpcs) })
-	sub(t, nc, "ec2.CreateSubnet", func(m *nats.Msg) { dispatch(m, dl.VPC.CreateSubnet) })
-	sub(t, nc, "ec2.DeleteSubnet", func(m *nats.Msg) { dispatch(m, dl.VPC.DeleteSubnet) })
-	sub(t, nc, "ec2.DescribeSubnets", func(m *nats.Msg) { dispatch(m, dl.VPC.DescribeSubnets) })
-	sub(t, nc, "ec2.ModifySubnetAttribute", func(m *nats.Msg) { dispatch(m, dl.VPC.ModifySubnetAttribute) })
-	sub(t, nc, "ec2.ModifyVpcAttribute", func(m *nats.Msg) { dispatch(m, dl.VPC.ModifyVpcAttribute) })
-	sub(t, nc, "ec2.DescribeVpcAttribute", func(m *nats.Msg) { dispatch(m, dl.VPC.DescribeVpcAttribute) })
-	sub(t, nc, "ec2.CreateNetworkInterface", func(m *nats.Msg) { dispatch(m, dl.VPC.CreateNetworkInterface) })
-	sub(t, nc, "ec2.DeleteNetworkInterface", func(m *nats.Msg) { dispatch(m, dl.VPC.DeleteNetworkInterface) })
-	sub(t, nc, "ec2.DescribeNetworkInterfaces", func(m *nats.Msg) { dispatch(m, dl.VPC.DescribeNetworkInterfaces) })
-	sub(t, nc, "ec2.ModifyNetworkInterfaceAttribute", func(m *nats.Msg) { dispatch(m, dl.VPC.ModifyNetworkInterfaceAttribute) })
-	sub(t, nc, "ec2.CreateSecurityGroup", func(m *nats.Msg) { dispatch(m, dl.VPC.CreateSecurityGroup) })
-	sub(t, nc, "ec2.DeleteSecurityGroup", func(m *nats.Msg) { dispatch(m, dl.VPC.DeleteSecurityGroup) })
-	sub(t, nc, "ec2.DescribeSecurityGroups", func(m *nats.Msg) { dispatch(m, dl.VPC.DescribeSecurityGroups) })
-	sub(t, nc, "ec2.DescribeSecurityGroupRules", func(m *nats.Msg) { dispatch(m, dl.VPC.DescribeSecurityGroupRules) })
-	sub(t, nc, "ec2.AuthorizeSecurityGroupIngress", func(m *nats.Msg) { dispatch(m, dl.VPC.AuthorizeSecurityGroupIngress) })
-	sub(t, nc, "ec2.AuthorizeSecurityGroupEgress", func(m *nats.Msg) { dispatch(m, dl.VPC.AuthorizeSecurityGroupEgress) })
-	sub(t, nc, "ec2.RevokeSecurityGroupIngress", func(m *nats.Msg) { dispatch(m, dl.VPC.RevokeSecurityGroupIngress) })
-	sub(t, nc, "ec2.RevokeSecurityGroupEgress", func(m *nats.Msg) { dispatch(m, dl.VPC.RevokeSecurityGroupEgress) })
+func dispatchReflected(msg *nats.Msg, handler reflect.Value, withPrincipal bool) {
+	ctx, span := utils.StartConsumerSpan(msg)
+	defer span.End()
+	ctx = utils.WithIdempotencyKey(ctx, utils.IdempotencyKeyFromMsg(msg))
 
-	// Internet gateways.
-	sub(t, nc, "ec2.CreateInternetGateway", func(m *nats.Msg) { dispatch(m, dl.IGW.CreateInternetGateway) })
-	sub(t, nc, "ec2.DeleteInternetGateway", func(m *nats.Msg) { dispatch(m, dl.IGW.DeleteInternetGateway) })
-	sub(t, nc, "ec2.DescribeInternetGateways", func(m *nats.Msg) { dispatch(m, dl.IGW.DescribeInternetGateways) })
-	sub(t, nc, "ec2.AttachInternetGateway", func(m *nats.Msg) { dispatch(m, dl.IGW.AttachInternetGateway) })
-	sub(t, nc, "ec2.DetachInternetGateway", func(m *nats.Msg) { dispatch(m, dl.IGW.DetachInternetGateway) })
+	input := reflect.New(handler.Type().In(1).Elem())
+	if errResp := utils.UnmarshalJsonPayload(input.Interface(), msg.Data); errResp != nil {
+		respond(msg, errResp)
+		return
+	}
+	args := []reflect.Value{reflect.ValueOf(ctx), input, reflect.ValueOf(utils.AccountIDFromMsg(msg))}
+	if withPrincipal {
+		args = append(args, reflect.ValueOf(utils.PrincipalARNFromMsg(msg)))
+	}
+	results := handler.Call(args)
+	if err, _ := results[1].Interface().(error); err != nil {
+		utils.MarkSpanError(span, err)
+		_, message, _ := awserrors.ResolveErrorDetail(err)
+		respond(msg, utils.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message))
+		return
+	}
+	payload, err := json.Marshal(results[0].Interface())
+	if err != nil {
+		respond(msg, utils.GenerateErrorPayload(awserrors.ErrorServerInternal))
+		return
+	}
+	respond(msg, payload)
+}
 
-	// Egress-only internet gateways.
-	sub(t, nc, "ec2.CreateEgressOnlyInternetGateway", func(m *nats.Msg) { dispatch(m, dl.EIGW.CreateEgressOnlyInternetGateway) })
-	sub(t, nc, "ec2.DeleteEgressOnlyInternetGateway", func(m *nats.Msg) { dispatch(m, dl.EIGW.DeleteEgressOnlyInternetGateway) })
-	sub(t, nc, "ec2.DescribeEgressOnlyInternetGateways", func(m *nats.Msg) { dispatch(m, dl.EIGW.DescribeEgressOnlyInternetGateways) })
-
-	// Account settings.
-	sub(t, nc, "ec2.EnableEbsEncryptionByDefault", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.EnableEbsEncryptionByDefault) })
-	sub(t, nc, "ec2.DisableEbsEncryptionByDefault", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.DisableEbsEncryptionByDefault) })
-	sub(t, nc, "ec2.GetEbsEncryptionByDefault", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.GetEbsEncryptionByDefault) })
-	sub(t, nc, "ec2.EnableSerialConsoleAccess", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.EnableSerialConsoleAccess) })
-	sub(t, nc, "ec2.DisableSerialConsoleAccess", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.DisableSerialConsoleAccess) })
-	sub(t, nc, "ec2.GetSerialConsoleAccessStatus", func(m *nats.Msg) { dispatch(m, dl.AccountSettings.GetSerialConsoleAccessStatus) })
+func respond(msg *nats.Msg, payload []byte) {
+	if err := msg.Respond(payload); err != nil {
+		slog.Error("service daemon-lite: failed to respond to NATS request", "subject", msg.Subject, "err", err)
+	}
 }

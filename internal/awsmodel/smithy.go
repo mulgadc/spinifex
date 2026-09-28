@@ -229,7 +229,10 @@ func (t *smithyTranslator) translate() (*Model, error) {
 }
 
 func (t *smithyTranslator) metadata() (Metadata, error) {
-	var service *smithyShape
+	var (
+		service   *smithyShape
+		serviceID string
+	)
 	for id, shape := range t.document.Shapes {
 		if shape.Type != "service" {
 			continue
@@ -237,7 +240,7 @@ func (t *smithyTranslator) metadata() (Metadata, error) {
 		if service != nil {
 			return Metadata{}, fmt.Errorf("model defines more than one service, including %s", id)
 		}
-		service = &shape
+		service, serviceID = &shape, id
 	}
 	if service == nil {
 		return Metadata{}, errors.New("model defines no service")
@@ -252,6 +255,10 @@ func (t *smithyTranslator) metadata() (Metadata, error) {
 			return Metadata{}, fmt.Errorf("service declares more than one protocol")
 		}
 		metadata.Protocol = protocol
+		if version, ok := strings.CutPrefix(trait, "aws.protocols#awsJson"); ok {
+			metadata.JSONVersion = strings.ReplaceAll(version, "_", ".")
+			metadata.TargetPrefix = localName(serviceID)
+		}
 	}
 	if metadata.Protocol == "" {
 		return Metadata{}, errors.New("service declares no supported protocol")
@@ -268,9 +275,16 @@ func (t *smithyTranslator) metadata() (Metadata, error) {
 	if err != nil {
 		return Metadata{}, err
 	}
+	var sigv4 struct {
+		Name string `json:"name"`
+	}
+	if _, err := service.Traits.decode("aws.auth#sigv4", &sigv4); err != nil {
+		return Metadata{}, err
+	}
 	metadata.EndpointPrefix = awsService.EndpointPrefix
 	metadata.ServiceID = awsService.SDKID
 	metadata.ServiceFullName = title
+	metadata.SigningName = sigv4.Name
 	return metadata, nil
 }
 
@@ -371,6 +385,7 @@ func (t *smithyTranslator) shape(source smithyShape) (*Shape, error) {
 			shape.Enum = append(shape.Enum, value)
 		}
 	case "structure", "union":
+		shape.Union = source.Type == "union"
 		shape.Members = make(map[string]ShapeRef, len(source.Members))
 		for _, member := range source.Members {
 			ref, err := t.memberRef(member)

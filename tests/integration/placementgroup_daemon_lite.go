@@ -33,15 +33,8 @@ func StartPlacementGroupDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_plac
 	require.NoError(t, err, "construct placement group service")
 
 	nc := gw.NATSConn
-	sub(t, nc, "ec2.CreatePlacementGroup", func(m *nats.Msg) { dispatch(m, svc.CreatePlacementGroup) })
-	sub(t, nc, "ec2.DeletePlacementGroup", func(m *nats.Msg) { dispatch(m, svc.DeletePlacementGroup) })
-	sub(t, nc, "ec2.DescribePlacementGroups", func(m *nats.Msg) { dispatch(m, svc.DescribePlacementGroups) })
-	sub(t, nc, "ec2.ReserveSpreadNodes", func(m *nats.Msg) { dispatch(m, svc.ReserveSpreadNodes) })
-	sub(t, nc, "ec2.FinalizeSpreadInstances", func(m *nats.Msg) { dispatch(m, svc.FinalizeSpreadInstances) })
-	sub(t, nc, "ec2.ReleaseSpreadNodes", func(m *nats.Msg) { dispatch(m, svc.ReleaseSpreadNodes) })
+	subscribeServiceMethods(t, nc, "ec2", svc)
 	sub(t, nc, "ec2.RemoveInstanceFromPlacementGroup", func(m *nats.Msg) { dispatch(m, svc.RemoveInstance) })
-	sub(t, nc, "ec2.ReserveClusterNode", func(m *nats.Msg) { dispatch(m, svc.ReserveClusterNode) })
-	sub(t, nc, "ec2.FinalizeClusterInstances", func(m *nats.Msg) { dispatch(m, svc.FinalizeClusterInstances) })
 
 	return svc
 }

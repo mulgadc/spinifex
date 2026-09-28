@@ -13,7 +13,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,7 +34,7 @@ const providerRequestTimeout = 60 * time.Second
 
 // StartVolumeDaemonLite subscribes a real handlers_ec2_volume.VolumeServiceImpl
 // — the same production code a live daemon runs (daemon/daemon_handlers_volume.go)
-// — to the ec2.CreateVolume/DeleteVolume/DescribeVolumes subjects, backed by a
+// — to its ec2.* subjects, backed by a
 // real predastore daemon (testpredastore.Start) rather than the memory-backed
 // stores DaemonLite's other resources use.
 //
@@ -47,9 +46,8 @@ const providerRequestTimeout = 60 * time.Second
 // Only a test that actually exercises volume storage should pay the shared
 // predastore daemon's startup cost.
 //
-// Must be called before a test issues ec2.CreateVolume/DeleteVolume/
-// DescribeVolumes; like StartECRDaemonLite it wires its own subjects
-// independent of StartDaemonLite.
+// Must be called before a test issues a volume request; like
+// StartECRDaemonLite it wires its own subjects independent of StartDaemonLite.
 func StartVolumeDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_volume.VolumeServiceImpl {
 	t.Helper()
 
@@ -89,9 +87,7 @@ func StartVolumeDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_volume.Volum
 	}, nc), "register provider subjects")
 	svc.SetEBSProvider(ebsprovider.NewNATSProvider(nc, providerRequestTimeout))
 
-	sub(t, nc, "ec2.CreateVolume", func(m *nats.Msg) { dispatch(m, svc.CreateVolume) })
-	sub(t, nc, "ec2.DeleteVolume", func(m *nats.Msg) { dispatch(m, svc.DeleteVolume) })
-	sub(t, nc, "ec2.DescribeVolumes", func(m *nats.Msg) { dispatch(m, svc.DescribeVolumes) })
+	subscribeServiceMethods(t, nc, "ec2", svc)
 
 	return svc
 }

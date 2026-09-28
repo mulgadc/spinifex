@@ -55,10 +55,14 @@ func TestMain(m *testing.M) {
 	// the only point at which its cluster goroutines can be drained.
 	testpredastore.Stop()
 
-	report := suiteConformance.report(policy, mode)
+	report := suiteConformance.report(policy, mode) + "\n" + suiteRequestConformance.report(policy, mode)
 	fmt.Fprintln(os.Stderr, report)
 	if blocking := suiteConformance.blocking(policy, mode); blocking != 0 {
 		fmt.Fprintf(os.Stderr, "tests/integration: %d blocking AWS model conformance violation(s)\n", blocking)
+		code = 1
+	}
+	if blocking := suiteRequestConformance.blocking(policy, mode); blocking != 0 {
+		fmt.Fprintf(os.Stderr, "tests/integration: %d blocking AWS request conformance finding(s)\n", blocking)
 		code = 1
 	}
 	if reportPath := os.Getenv("AWS_MODEL_CONFORMANCE_REPORT"); reportPath != "" {

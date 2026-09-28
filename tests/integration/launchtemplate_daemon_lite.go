@@ -7,7 +7,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,14 +30,7 @@ func StartLaunchTemplateDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_laun
 	svc, err := handlers_ec2_launchtemplate.NewLaunchTemplateServiceImplWithNATS(t.Context(), cfg, gw.NATSConn)
 	require.NoError(t, err, "construct launch template service")
 
-	nc := gw.NATSConn
-	sub(t, nc, "ec2.CreateLaunchTemplate", func(m *nats.Msg) { dispatch(m, svc.CreateLaunchTemplate) })
-	sub(t, nc, "ec2.CreateLaunchTemplateVersion", func(m *nats.Msg) { dispatch(m, svc.CreateLaunchTemplateVersion) })
-	sub(t, nc, "ec2.DeleteLaunchTemplate", func(m *nats.Msg) { dispatch(m, svc.DeleteLaunchTemplate) })
-	sub(t, nc, "ec2.DeleteLaunchTemplateVersions", func(m *nats.Msg) { dispatch(m, svc.DeleteLaunchTemplateVersions) })
-	sub(t, nc, "ec2.ModifyLaunchTemplate", func(m *nats.Msg) { dispatch(m, svc.ModifyLaunchTemplate) })
-	sub(t, nc, "ec2.DescribeLaunchTemplates", func(m *nats.Msg) { dispatch(m, svc.DescribeLaunchTemplates) })
-	sub(t, nc, "ec2.DescribeLaunchTemplateVersions", func(m *nats.Msg) { dispatch(m, svc.DescribeLaunchTemplateVersions) })
+	subscribeServiceMethods(t, gw.NATSConn, "ec2", svc)
 
 	return svc
 }

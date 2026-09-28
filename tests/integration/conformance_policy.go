@@ -20,12 +20,16 @@ const (
 	conformanceModeFail conformanceMode = "fail"
 )
 
+// conformancePolicy lists the services whose findings block the suite: their
+// responses, and separately the generated requests they are sent.
 type conformancePolicy struct {
-	promoted map[awsmodel.Service]bool
+	promoted        map[awsmodel.Service]bool
+	requestPromoted map[awsmodel.Service]bool
 }
 
 type conformancePolicyFile struct {
-	PromotedServices []awsmodel.Service `json:"promotedServices"`
+	PromotedServices        []awsmodel.Service `json:"promotedServices"`
+	PromotedRequestServices []awsmodel.Service `json:"promotedRequestServices"`
 }
 
 //go:embed conformance-promoted-services.json
@@ -39,21 +43,33 @@ func loadConformancePolicy() (conformancePolicy, error) {
 		return conformancePolicy{}, fmt.Errorf("parse promoted-services policy: %w", err)
 	}
 
+	promoted, err := promotedServiceSet("promotedServices", file.PromotedServices)
+	if err != nil {
+		return conformancePolicy{}, err
+	}
+	requestPromoted, err := promotedServiceSet("promotedRequestServices", file.PromotedRequestServices)
+	if err != nil {
+		return conformancePolicy{}, err
+	}
+	return conformancePolicy{promoted: promoted, requestPromoted: requestPromoted}, nil
+}
+
+func promotedServiceSet(field string, services []awsmodel.Service) (map[awsmodel.Service]bool, error) {
 	known := make(map[awsmodel.Service]bool)
 	for _, service := range awsmodel.Services() {
 		known[service] = true
 	}
-	policy := conformancePolicy{promoted: make(map[awsmodel.Service]bool, len(file.PromotedServices))}
-	for _, service := range file.PromotedServices {
+	set := make(map[awsmodel.Service]bool, len(services))
+	for _, service := range services {
 		if !known[service] {
-			return conformancePolicy{}, fmt.Errorf("promoted-services policy contains unknown service %q", service)
+			return nil, fmt.Errorf("promoted-services policy %s contains unknown service %q", field, service)
 		}
-		if policy.promoted[service] {
-			return conformancePolicy{}, fmt.Errorf("promoted-services policy contains duplicate service %q", service)
+		if set[service] {
+			return nil, fmt.Errorf("promoted-services policy %s contains duplicate service %q", field, service)
 		}
-		policy.promoted[service] = true
+		set[service] = true
 	}
-	return policy, nil
+	return set, nil
 }
 
 func conformancePolicyFor(services ...awsmodel.Service) conformancePolicy {
@@ -66,6 +82,10 @@ func conformancePolicyFor(services ...awsmodel.Service) conformancePolicy {
 
 func (p conformancePolicy) isPromoted(service awsmodel.Service) bool {
 	return p.promoted[service]
+}
+
+func (p conformancePolicy) isRequestPromoted(service awsmodel.Service) bool {
+	return p.requestPromoted[service]
 }
 
 func (p conformancePolicy) services() []awsmodel.Service {

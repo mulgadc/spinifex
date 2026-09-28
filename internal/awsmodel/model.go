@@ -40,12 +40,16 @@ const (
 
 // Metadata describes the service and wire protocol represented by a model.
 // Protocol uses the api-2.json names: json, rest-json, rest-xml, query, ec2.
+// JSONVersion and TargetPrefix are set only for the json protocol.
 type Metadata struct {
 	APIVersion      string
 	EndpointPrefix  string
+	JSONVersion     string
 	Protocol        string
 	ServiceFullName string
 	ServiceID       string
+	SigningName     string
+	TargetPrefix    string
 }
 
 // Operation describes an AWS API operation and the shapes used by its input,
@@ -83,6 +87,7 @@ type Shape struct {
 	Payload         string
 	Flattened       bool
 	Sensitive       bool
+	Union           bool
 	Exception       bool
 	Fault           bool
 	Error           *ErrorInfo

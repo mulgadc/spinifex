@@ -92,6 +92,15 @@ var iamActions = map[string]iamAction{
 	"ListPolicyVersions": iamHandler(func(accountID string, input *iam.ListPolicyVersionsInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.ListPolicyVersions(accountID, input, gw.IAMService)
 	}),
+	"CreatePolicyVersion": iamHandler(func(accountID string, input *iam.CreatePolicyVersionInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.CreatePolicyVersion(accountID, input, gw.IAMService)
+	}),
+	"SetDefaultPolicyVersion": iamHandler(func(accountID string, input *iam.SetDefaultPolicyVersionInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.SetDefaultPolicyVersion(accountID, input, gw.IAMService)
+	}),
+	"DeletePolicyVersion": iamHandler(func(accountID string, input *iam.DeletePolicyVersionInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.DeletePolicyVersion(accountID, input, gw.IAMService)
+	}),
 	"ListPolicies": iamHandler(func(accountID string, input *iam.ListPoliciesInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.ListPolicies(accountID, input, gw.IAMService)
 	}),

@@ -957,7 +957,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## iam
 
-`2010-05-08` — 76 of 180 modelled operations implemented (42.2%), 0 stubbed, 19 not applicable, 0 registered outside the pinned model.
+`2010-05-08` — 79 of 180 modelled operations implemented (43.9%), 0 stubbed, 19 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -969,14 +969,12 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 - `CreateAccountAlias`
 - `CreateDelegationRequest`
 - `CreateLoginProfile`
-- `CreatePolicyVersion`
 - `CreateSAMLProvider`
 - `CreateVirtualMFADevice`
 - `DeactivateMFADevice`
 - `DeleteAccountAlias`
 - `DeleteAccountPasswordPolicy`
 - `DeleteLoginProfile`
-- `DeletePolicyVersion`
 - `DeleteRolePermissionsBoundary`
 - `DeleteSAMLProvider`
 - `DeleteServerCertificate`
@@ -1026,7 +1024,6 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 - `RemoveClientIDFromOpenIDConnectProvider`
 - `ResyncMFADevice`
 - `SendDelegationToken`
-- `SetDefaultPolicyVersion`
 - `SetSecurityTokenServicePreferences`
 - `SimulateCustomPolicy`
 - `SimulatePrincipalPolicy`

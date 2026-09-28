@@ -1284,48 +1284,6 @@ func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) 
 	}, nil
 }
 
-func (s *IAMServiceImpl) GetPolicyVersion(accountID string, input *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
-	ctx := context.Background()
-	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
-	if err != nil {
-		return nil, err
-	}
-
-	// We only support v1 — reject other version IDs
-	if *input.VersionId != "v1" {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-
-	createdAt := parseCreatedAt(policy.CreatedAt)
-	return &iam.GetPolicyVersionOutput{
-		PolicyVersion: &iam.PolicyVersion{
-			Document:         aws.String(policy.PolicyDocument),
-			VersionId:        aws.String("v1"),
-			IsDefaultVersion: aws.Bool(true),
-			CreateDate:       aws.Time(createdAt),
-		},
-	}, nil
-}
-
-func (s *IAMServiceImpl) ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
-	ctx := context.Background()
-	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
-	if err != nil {
-		return nil, err
-	}
-
-	// Every policy has exactly one immutable version (v1); Document is omitted per AWS convention.
-	createdAt := parseCreatedAt(policy.CreatedAt)
-	return &iam.ListPolicyVersionsOutput{
-		Versions: []*iam.PolicyVersion{{
-			VersionId:        aws.String(policy.DefaultVersion),
-			IsDefaultVersion: aws.Bool(true),
-			CreateDate:       aws.Time(createdAt),
-		}},
-		IsTruncated: aws.Bool(false),
-	}, nil
-}
-
 func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	ctx := context.Background()
 	keys, err := kvutil.Keys(ctx, s.policiesBucket)
@@ -1403,6 +1361,10 @@ func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyI
 	}
 	if counts[policy.ARN] > 0 {
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+	}
+	if len(policy.OtherVersions) > 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorIAMDeleteConflict,
+			"This policy has more than one version. Before you delete a policy, you must delete the policy's versions. The default version is deleted with the policy.")
 	}
 
 	kvKey := accountID + "." + policy.PolicyName
@@ -1787,55 +1749,42 @@ func (s *IAMServiceImpl) ListUserTags(accountID string, input *iam.ListUserTagsI
 	}, nil
 }
 
-// TagPolicy upserts tags on a customer-managed policy, resolved by ARN.
+// TagPolicy upserts tags on a customer-managed policy under CAS, so a stale
+// record cannot undo a concurrent change of default version.
 func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
 	ctx := context.Background()
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
-	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
+	err := s.updatePolicyCAS(ctx, accountID, *input.PolicyArn, func(policy *Policy) (bool, error) {
+		merged := mergeTags(policy.Tags, input.Tags)
+		if len(merged) > maxTagsPerResource {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		policy.Tags = merged
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	merged := mergeTags(policy.Tags, input.Tags)
-	if len(merged) > maxTagsPerResource {
-		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
-	}
-	policy.Tags = merged
-
-	data, err := json.Marshal(policy)
-	if err != nil {
-		return nil, fmt.Errorf("marshal policy: %w", err)
-	}
-	if _, err := s.policiesBucket.Put(ctx, accountID+"."+policy.PolicyName, data); err != nil {
-		return nil, fmt.Errorf("update policy: %w", err)
-	}
-
-	slog.Info("IAM policy tagged", "accountID", accountID, "policyName", policy.PolicyName)
+	slog.Info("IAM policy tagged", "accountID", accountID, "policyArn", *input.PolicyArn)
 	return &iam.TagPolicyOutput{}, nil
 }
 
 // UntagPolicy removes the named tag keys from a policy; unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
 	ctx := context.Background()
-	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
+	err := s.updatePolicyCAS(ctx, accountID, *input.PolicyArn, func(policy *Policy) (bool, error) {
+		policy.Tags = removeTagKeys(policy.Tags, input.TagKeys)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	policy.Tags = removeTagKeys(policy.Tags, input.TagKeys)
-
-	data, err := json.Marshal(policy)
-	if err != nil {
-		return nil, fmt.Errorf("marshal policy: %w", err)
-	}
-	if _, err := s.policiesBucket.Put(ctx, accountID+"."+policy.PolicyName, data); err != nil {
-		return nil, fmt.Errorf("update policy: %w", err)
-	}
-
-	slog.Info("IAM policy untagged", "accountID", accountID, "policyName", policy.PolicyName)
+	slog.Info("IAM policy untagged", "accountID", accountID, "policyArn", *input.PolicyArn)
 	return &iam.UntagPolicyOutput{}, nil
 }
 

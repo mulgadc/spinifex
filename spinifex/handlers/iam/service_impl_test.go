@@ -1085,7 +1085,7 @@ func TestCreatePolicy(t *testing.T) {
 	require.NotNil(t, out.Policy)
 	assert.Equal(t, "AllowEC2", *out.Policy.PolicyName)
 	assert.Equal(t, "/devteam/", *out.Policy.Path)
-	assert.Equal(t, "Allow EC2 describe", *out.Policy.Description)
+	assert.Nil(t, out.Policy.Description, "AWS omits Description from CreatePolicy even when supplied")
 	assert.Equal(t, "v1", *out.Policy.DefaultVersionId)
 	assert.Contains(t, *out.Policy.Arn, "policy/devteam/AllowEC2")
 	assert.Greater(t, len(*out.Policy.PolicyId), 4)
@@ -1235,7 +1235,7 @@ func TestCreatePolicy_WithTags(t *testing.T) {
 		}
 	}
 	require.NotNil(t, listed, "TaggedPolicy missing from ListPolicies")
-	require.Len(t, listed.Tags, 2)
+	assert.Nil(t, listed.Tags, "AWS omits Tags from ListPolicies")
 
 	tagsOut, err := svc.ListPolicyTags(testAccountID, &iam.ListPolicyTagsInput{PolicyArn: createOut.Policy.Arn})
 	require.NoError(t, err)
@@ -1251,7 +1251,6 @@ func TestCreatePolicy_WithTags(t *testing.T) {
 	want := map[string]string{"team": "platform", "env": "prod"}
 	assert.Equal(t, want, byKey(createOut.Policy.Tags))
 	assert.Equal(t, want, byKey(getOut.Policy.Tags))
-	assert.Equal(t, want, byKey(listed.Tags))
 	assert.Equal(t, want, byKey(tagsOut.Tags))
 }
 

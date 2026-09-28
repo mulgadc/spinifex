@@ -383,6 +383,7 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 			Arn:        aws.String(user.ARN),
 			Path:       aws.String(user.Path),
 			CreateDate: aws.Time(createdAt),
+			Tags:       tagsToSDK(user.Tags),
 		},
 	}, nil
 }
@@ -1237,21 +1238,10 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 
 	slog.Info("IAM policy created", "accountID", accountID, "policyName", policyName, "policyID", policy.PolicyID)
 
-	createdAt := parseCreatedAt(policy.CreatedAt)
-	return &iam.CreatePolicyOutput{
-		Policy: &iam.Policy{
-			PolicyName:       aws.String(policy.PolicyName),
-			PolicyId:         aws.String(policy.PolicyID),
-			Arn:              aws.String(policy.ARN),
-			Path:             aws.String(policy.Path),
-			Description:      aws.String(policy.Description),
-			DefaultVersionId: aws.String(policy.DefaultVersion),
-			CreateDate:       aws.Time(createdAt),
-			AttachmentCount:  aws.Int64(0),
-			IsAttachable:     aws.Bool(true),
-			Tags:             tagsToSDK(policy.Tags),
-		},
-	}, nil
+	// CreatePolicy omits Description even when it was supplied.
+	out := policyToSDK(&policy, 0)
+	out.Tags = tagsToSDK(policy.Tags)
+	return &iam.CreatePolicyOutput{Policy: out}, nil
 }
 
 func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) (*iam.GetPolicyOutput, error) {
@@ -1265,23 +1255,11 @@ func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) 
 	if err != nil {
 		return nil, fmt.Errorf("check policy attachments: %w", err)
 	}
-	attachmentCount := counts[policy.ARN]
 
-	createdAt := parseCreatedAt(policy.CreatedAt)
-	return &iam.GetPolicyOutput{
-		Policy: &iam.Policy{
-			PolicyName:       aws.String(policy.PolicyName),
-			PolicyId:         aws.String(policy.PolicyID),
-			Arn:              aws.String(policy.ARN),
-			Path:             aws.String(policy.Path),
-			Description:      aws.String(policy.Description),
-			DefaultVersionId: aws.String(policy.DefaultVersion),
-			CreateDate:       aws.Time(createdAt),
-			AttachmentCount:  aws.Int64(attachmentCount),
-			IsAttachable:     aws.Bool(true),
-			Tags:             tagsToSDK(policy.Tags),
-		},
-	}, nil
+	out := policyToSDK(policy, counts[policy.ARN])
+	out.Description = aws.String(policy.Description)
+	out.Tags = tagsToSDK(policy.Tags)
+	return &iam.GetPolicyOutput{Policy: out}, nil
 }
 
 func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
@@ -1338,24 +1316,35 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 			continue
 		}
 
-		createdAt := parseCreatedAt(policy.CreatedAt)
-		policies = append(policies, &iam.Policy{
-			PolicyName:       aws.String(policy.PolicyName),
-			PolicyId:         aws.String(policy.PolicyID),
-			Arn:              aws.String(policy.ARN),
-			Path:             aws.String(policy.Path),
-			DefaultVersionId: aws.String(policy.DefaultVersion),
-			CreateDate:       aws.Time(createdAt),
-			AttachmentCount:  aws.Int64(attachCounts[policy.ARN]),
-			IsAttachable:     aws.Bool(true),
-			Tags:             tagsToSDK(policy.Tags),
-		})
+		// ListPolicies carries neither Tags nor Description.
+		policies = append(policies, policyToSDK(&policy, attachCounts[policy.ARN]))
 	}
 
 	return &iam.ListPoliciesOutput{
 		Policies:    policies,
 		IsTruncated: aws.Bool(false),
 	}, nil
+}
+
+// policyToSDK is the field set every policy action returns. Permissions
+// boundaries are rejected, so no policy is ever in use as one.
+func policyToSDK(p *Policy, attachmentCount int64) *iam.Policy {
+	updatedAt := p.UpdatedAt
+	if updatedAt == "" {
+		updatedAt = p.CreatedAt
+	}
+	return &iam.Policy{
+		PolicyName:                    aws.String(p.PolicyName),
+		PolicyId:                      aws.String(p.PolicyID),
+		Arn:                           aws.String(p.ARN),
+		Path:                          aws.String(p.Path),
+		DefaultVersionId:              aws.String(p.DefaultVersion),
+		CreateDate:                    aws.Time(parseCreatedAt(p.CreatedAt)),
+		UpdateDate:                    aws.Time(parseCreatedAt(updatedAt)),
+		AttachmentCount:               aws.Int64(attachmentCount),
+		PermissionsBoundaryUsageCount: aws.Int64(0),
+		IsAttachable:                  aws.Bool(true),
+	}
 }
 
 // policyInScope applies ListPolicies' Scope: Local is customer-managed, AWS is
@@ -2323,21 +2312,27 @@ var summaryQuotaDefaults = map[string]int64{
 	"GroupPolicySizeQuota":            5120,
 	"PolicySizeQuota":                 6144,
 	"VersionsPerPolicyQuota":          5,
+	"AssumeRolePolicySizeQuota":       maxTrustPolicyDocumentSize,
+	"RolePolicySizeQuota":             10240,
+
+	// AWS's default: STS global endpoint tokens valid only in default Regions.
+	"GlobalEndpointTokenVersion": 1,
 
 	// Resource types Spinifex does not model — reported as 0.
-	"MFADevices":                 0,
-	"MFADevicesInUse":            0,
-	"AccountMFAEnabled":          0,
-	"ServerCertificates":         0,
-	"SigningCertificatesPerUser": 0,
-	"PolicyVersionsInUse":        0,
+	"MFADevices":                        0,
+	"MFADevicesInUse":                   0,
+	"AccountMFAEnabled":                 0,
+	"ServerCertificates":                0,
+	"PolicyVersionsInUse":               0,
+	"AccountAccessKeysPresent":          0,
+	"AccountPasswordPresent":            0,
+	"AccountSigningCertificatesPresent": 0,
 }
 
-// countBucket counts records in a KV bucket that belong to accountID. Records
-// are keyed "accountID.name"; counting is by key prefix only (no Get/unmarshal)
-// so it stays cheap with many resources. The version key is skipped and a
-// missing bucket counts as zero.
-func countBucket(ctx context.Context, bucket jetstream.KeyValue, accountID string) (int64, error) {
+// countBucket counts the keys in bucket that start with prefix, without a
+// Get/unmarshal so it stays cheap with many resources. The version key is
+// skipped and an empty bucket counts as zero.
+func countBucket(ctx context.Context, bucket jetstream.KeyValue, prefix string) (int64, error) {
 	keys, err := kvutil.Keys(ctx, bucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
@@ -2346,7 +2341,6 @@ func countBucket(ctx context.Context, bucket jetstream.KeyValue, accountID strin
 		return 0, err
 	}
 
-	prefix := accountID + "."
 	var count int64
 	for _, key := range keys {
 		if key == utils.VersionKey {
@@ -2377,12 +2371,31 @@ func (s *IAMServiceImpl) GetAccountSummary(accountID string, _ *iam.GetAccountSu
 		summary[key] = aws.Int64(value)
 	}
 	for key, bucket := range counted {
-		n, err := countBucket(ctx, bucket, accountID)
+		n, err := countBucket(ctx, bucket, accountID+".")
 		if err != nil {
 			return nil, fmt.Errorf("count %s: %w", key, err)
 		}
 		summary[key] = aws.Int64(n)
 	}
 
+	providers, err := s.countOIDCProviders(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("count Providers: %w", err)
+	}
+	summary["Providers"] = aws.Int64(providers)
+
 	return &iam.GetAccountSummaryOutput{SummaryMap: summary}, nil
+}
+
+// countOIDCProviders counts the account's OIDC providers. AWS also counts SAML
+// providers under Providers; Spinifex has none.
+func (s *IAMServiceImpl) countOIDCProviders(ctx context.Context, accountID string) (int64, error) {
+	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
+	if err != nil {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("open IAM account bucket: %w", err)
+	}
+	return countBucket(ctx, kv, oidcProvidersKeyPrefix)
 }

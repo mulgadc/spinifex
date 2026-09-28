@@ -106,7 +106,7 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 
 	slog.Info("IAM role created", "accountID", accountID, "roleName", roleName, "roleID", role.RoleID)
 
-	return &iam.CreateRoleOutput{Role: roleToSDK(&role)}, nil
+	return &iam.CreateRoleOutput{Role: createdRoleToSDK(&role)}, nil
 }
 
 func (s *IAMServiceImpl) GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
@@ -116,7 +116,7 @@ func (s *IAMServiceImpl) GetRole(accountID string, input *iam.GetRoleInput) (*ia
 		return nil, err
 	}
 
-	return &iam.GetRoleOutput{Role: roleToSDK(role)}, nil
+	return &iam.GetRoleOutput{Role: gotRoleToSDK(role)}, nil
 }
 
 func (s *IAMServiceImpl) ListRoles(accountID string, input *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
@@ -169,7 +169,7 @@ func (s *IAMServiceImpl) ListRoles(accountID string, input *iam.ListRolesInput) 
 			continue
 		}
 
-		roles = append(roles, roleToSDK(&role))
+		roles = append(roles, listedRoleToSDK(&role))
 	}
 
 	return &iam.ListRolesOutput{
@@ -646,27 +646,43 @@ func (s *IAMServiceImpl) findInstanceProfilesForRole(ctx context.Context, accoun
 	return profiles, nil
 }
 
-// roleToSDK converts the internal Role record into the AWS SDK shape used by
-// CreateRole / GetRole / ListRoles responses.
+// roleToSDK is the field set AWS returns for a role embedded in an instance
+// profile. Each role action adds to it: AWS returns a different set per call.
 func roleToSDK(r *Role) *iam.Role {
-	out := &iam.Role{
+	return &iam.Role{
 		RoleName:                 aws.String(r.RoleName),
 		RoleId:                   aws.String(r.RoleID),
 		Arn:                      aws.String(r.ARN),
 		Path:                     aws.String(r.Path),
 		AssumeRolePolicyDocument: aws.String(r.AssumeRolePolicyDocument),
 		CreateDate:               aws.Time(parseCreatedAt(r.CreatedAt)),
-		MaxSessionDuration:       aws.Int64(r.MaxSessionDuration),
 	}
+}
+
+// createdRoleToSDK is CreateRole's shape, which omits Description and
+// MaxSessionDuration even when they were supplied.
+func createdRoleToSDK(r *Role) *iam.Role {
+	out := roleToSDK(r)
+	out.Tags = tagsToSDK(r.Tags)
+	return out
+}
+
+// listedRoleToSDK is ListRoles' shape, which carries no Tags or RoleLastUsed.
+func listedRoleToSDK(r *Role) *iam.Role {
+	out := roleToSDK(r)
 	if r.Description != "" {
 		out.Description = aws.String(r.Description)
 	}
-	for _, t := range r.Tags {
-		out.Tags = append(out.Tags, &iam.Tag{
-			Key:   aws.String(t.Key),
-			Value: aws.String(t.Value),
-		})
-	}
+	out.MaxSessionDuration = aws.Int64(r.MaxSessionDuration)
+	return out
+}
+
+// gotRoleToSDK is GetRole's shape. RoleLastUsed is always empty, which is what
+// AWS returns for a role that has never been used.
+func gotRoleToSDK(r *Role) *iam.Role {
+	out := listedRoleToSDK(r)
+	out.Tags = tagsToSDK(r.Tags)
+	out.RoleLastUsed = &iam.RoleLastUsed{}
 	return out
 }
 

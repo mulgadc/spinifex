@@ -108,3 +108,48 @@ func TestGetAccountSummary_EmptyAccount(t *testing.T) {
 	// Quota parity constants are present even for an empty account.
 	assert.Equal(t, int64(5000), summaryCount(t, out.SummaryMap, "UsersQuota"))
 }
+
+func TestGetAccountSummary_AWSKeySet(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	acc, err := svc.CreateAccount("Key Set Org")
+	require.NoError(t, err)
+
+	out, err := svc.GetAccountSummary(acc.AccountID, &iam.GetAccountSummaryInput{})
+	require.NoError(t, err)
+
+	assert.NotContains(t, out.SummaryMap, "SigningCertificatesPerUser", "AWS has no such key")
+	for key, want := range map[string]int64{
+		"AssumeRolePolicySizeQuota":         2048,
+		"RolePolicySizeQuota":               10240,
+		"GlobalEndpointTokenVersion":        1,
+		"AccountAccessKeysPresent":          0,
+		"AccountPasswordPresent":            0,
+		"AccountSigningCertificatesPresent": 0,
+		"Providers":                         0,
+	} {
+		assert.Equal(t, want, summaryCount(t, out.SummaryMap, key), key)
+	}
+}
+
+func TestGetAccountSummary_ProvidersCountsOIDCPerAccount(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	accA, err := svc.CreateAccount("Org A")
+	require.NoError(t, err)
+	accB, err := svc.CreateAccount("Org B")
+	require.NoError(t, err)
+
+	for _, issuer := range []string{"https://oidc.example/a", "https://oidc.example/b"} {
+		_, err := svc.CreateOpenIDConnectProvider(accA.AccountID, &iam.CreateOpenIDConnectProviderInput{Url: aws.String(issuer)})
+		require.NoError(t, err)
+	}
+	_, err = svc.CreateOpenIDConnectProvider(accB.AccountID, &iam.CreateOpenIDConnectProviderInput{Url: aws.String("https://oidc.example/c")})
+	require.NoError(t, err)
+
+	out, err := svc.GetAccountSummary(accA.AccountID, &iam.GetAccountSummaryInput{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), summaryCount(t, out.SummaryMap, "Providers"))
+}

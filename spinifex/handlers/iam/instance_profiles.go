@@ -142,7 +142,7 @@ func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListI
 			continue
 		}
 
-		sdkProfile, err := s.profileToSDK(ctx, accountID, &profile)
+		sdkProfile, err := s.listedProfileToSDK(ctx, accountID, &profile)
 		if err != nil {
 			return nil, err
 		}
@@ -237,7 +237,7 @@ func (s *IAMServiceImpl) ListInstanceProfilesForRole(accountID string, input *ia
 
 	out := make([]*iam.InstanceProfile, 0, len(profiles))
 	for _, p := range profiles {
-		sdkProfile, err := s.profileToSDK(ctx, accountID, p)
+		sdkProfile, err := s.listedProfileToSDK(ctx, accountID, p)
 		if err != nil {
 			return nil, err
 		}
@@ -386,12 +386,7 @@ func (s *IAMServiceImpl) profileToSDK(ctx context.Context, accountID string, p *
 		CreateDate:          aws.Time(parseCreatedAt(p.CreatedAt)),
 		Roles:               []*iam.Role{},
 	}
-	for _, t := range p.Tags {
-		out.Tags = append(out.Tags, &iam.Tag{
-			Key:   aws.String(t.Key),
-			Value: aws.String(t.Value),
-		})
-	}
+	out.Tags = tagsToSDK(p.Tags)
 	if p.RoleName != "" {
 		role, err := s.getRole(ctx, accountID, p.RoleName)
 		if err != nil {
@@ -399,5 +394,16 @@ func (s *IAMServiceImpl) profileToSDK(ctx context.Context, accountID string, p *
 		}
 		out.Roles = append(out.Roles, roleToSDK(role))
 	}
+	return out, nil
+}
+
+// listedProfileToSDK is the shape ListInstanceProfiles and
+// ListInstanceProfilesForRole return: GetInstanceProfile's without Tags.
+func (s *IAMServiceImpl) listedProfileToSDK(ctx context.Context, accountID string, p *InstanceProfile) (*iam.InstanceProfile, error) {
+	out, err := s.profileToSDK(ctx, accountID, p)
+	if err != nil {
+		return nil, err
+	}
+	out.Tags = nil
 	return out, nil
 }

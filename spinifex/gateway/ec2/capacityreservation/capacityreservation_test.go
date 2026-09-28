@@ -85,14 +85,6 @@ func TestValidateCreateCapacityReservationInput_Nil(t *testing.T) {
 	assert.EqualError(t, ValidateCreateCapacityReservationInput(nil), awserrors.ErrorInvalidParameterValue)
 }
 
-// DryRun short-circuits after validation, before any cluster round-trip.
-func TestCreateCapacityReservation_DryRun(t *testing.T) {
-	in := validCreateInput()
-	in.DryRun = aws.Bool(true)
-	_, err := CreateCapacityReservation(context.Background(), in, nil, 1, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorDryRunOperation)
-}
-
 func TestCreateCapacityReservation_NilNATS(t *testing.T) {
 	_, err := CreateCapacityReservation(context.Background(), validCreateInput(), nil, 1, testAccountID)
 	assert.ErrorIs(t, err, utils.ErrClusterUnavailable)
@@ -279,14 +271,6 @@ func TestCancelCapacityReservation_Malformed(t *testing.T) {
 		CapacityReservationId: aws.String("bogus-id"),
 	}, nil, 1, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidCapacityReservationIdMalformed)
-}
-
-func TestCancelCapacityReservation_DryRun(t *testing.T) {
-	_, err := CancelCapacityReservation(context.Background(), &ec2.CancelCapacityReservationInput{
-		CapacityReservationId: aws.String("cr-0123456789abcdef0"),
-		DryRun:                aws.Bool(true),
-	}, nil, 1, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorDryRunOperation)
 }
 
 func TestCancelCapacityReservation_NotFound(t *testing.T) {

@@ -60,9 +60,6 @@ func CreateCapacityReservation(ctx context.Context, input *ec2.CreateCapacityRes
 	if err := ValidateCreateCapacityReservationInput(input); err != nil {
 		return output, err
 	}
-	if aws.BoolValue(input.DryRun) {
-		return output, errors.New(awserrors.ErrorDryRunOperation)
-	}
 
 	census, err := collectCensus(ctx, natsConn, expectedNodes, accountID)
 	if err != nil {

@@ -31,9 +31,6 @@ func CancelCapacityReservation(ctx context.Context, input *ec2.CancelCapacityRes
 	if !strings.HasPrefix(id, "cr-") {
 		return output, errors.New(awserrors.ErrorInvalidCapacityReservationIdMalformed)
 	}
-	if aws.BoolValue(input.DryRun) {
-		return output, errors.New(awserrors.ErrorDryRunOperation)
-	}
 
 	payload, err := json.Marshal(input)
 	if err != nil {

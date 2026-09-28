@@ -35,7 +35,7 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	subscribeServiceMethods(t, nc, "elbv2", elbv2)
 
 	eks, err := handlers_eks.NewEKSServiceImpl(handlers_eks.EKSServiceDeps{
-		Config: cfg, NATSConn: nc, MasterKey: masterKey, Region: testRegion, HolderID: "integration-test-node", ClusterSize: 1,
+		Config: cfg, NATSConn: nc, MasterKey: masterKey, Region: testRegion, HolderID: "integration-test-node",
 	})
 	require.NoError(t, err, "construct EKS service")
 	t.Cleanup(eks.Shutdown)

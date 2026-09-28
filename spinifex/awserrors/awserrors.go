@@ -811,7 +811,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorDeleteConversionTaskError:                             {HTTPCode: 400, Message: "The conversion task cannot be canceled."},
 	ErrorDependencyViolation:                                   {HTTPCode: 400, Message: "The specified object has dependent resources. A number of resources in a VPC may have dependent resources, which prevent you from deleting or detaching them. Remove the dependencies first, then retry your request. For example, this error occurs if you try to delete a security group in a VPC that is in use by another security group."},
 	ErrorDiskImageSizeTooLarge:                                 {HTTPCode: 400, Message: "The disk image exceeds the allowed limit (for instance or volume import)."},
-	ErrorDryRunOperation:                                       {HTTPCode: 412, Message: "The user has the required permissions, so the request would have succeeded, but the DryRun parameter was used."},
+	ErrorDryRunOperation:                                       {HTTPCode: 412, Message: "Request would have succeeded, but DryRun flag is set."},
 	ErrorDuplicateSubnetsInSameZone:                            {HTTPCode: 400, Message: "For an interface VPC endpoint, you can specify only one subnet per Availability Zone."},
 	ErrorEncryptedVolumesNotSupported:                          {HTTPCode: 400, Message: "Encrypted Amazon EBS volumes may only be attached to instances that support Amazon EBS encryption. For more information, see Amazon EBS encryption."},
 	ErrorExistingVpcEndpointConnections:                        {HTTPCode: 400, Message: "You cannot delete a VPC endpoint service configuration or change the load balancers for the endpoint service if there are endpoints attached to the service."},

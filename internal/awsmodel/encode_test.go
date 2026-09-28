@@ -1,4 +1,4 @@
-package awsmodel
+package awsmodel_test
 
 import (
 	"encoding/json"
@@ -6,10 +6,11 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/mulgadc/spinifex/internal/awsmodel"
 	"github.com/stretchr/testify/require"
 )
 
-func encodedForm(t *testing.T, request *EncodedRequest) url.Values {
+func encodedForm(t *testing.T, request *awsmodel.EncodedRequest) url.Values {
 	t.Helper()
 	require.Equal(t, http.MethodPost, request.Method)
 	require.Equal(t, "/", request.Path)
@@ -19,7 +20,7 @@ func encodedForm(t *testing.T, request *EncodedRequest) url.Values {
 }
 
 func TestEncodeRequestAWSQueryWrapsListMembers(t *testing.T) {
-	request, err := EncodeRequest(IAM, "CreateRole", map[string]any{
+	request, err := awsmodel.EncodeRequest(awsmodel.IAM, "CreateRole", map[string]any{
 		"RoleName":                 "app",
 		"AssumeRolePolicyDocument": "{}",
 		"MaxSessionDuration":       int64(3600),
@@ -38,7 +39,7 @@ func TestEncodeRequestAWSQueryWrapsListMembers(t *testing.T) {
 }
 
 func TestEncodeRequestEC2UsesQueryNamesWithoutMemberWrapper(t *testing.T) {
-	request, err := EncodeRequest(EC2, "RunInstances", map[string]any{
+	request, err := awsmodel.EncodeRequest(awsmodel.EC2, "RunInstances", map[string]any{
 		"ImageId":          "ami-0123456789abcdef0",
 		"MinCount":         int64(1),
 		"MaxCount":         int64(1),
@@ -64,19 +65,19 @@ func TestEncodeRequestEC2UsesQueryNamesWithoutMemberWrapper(t *testing.T) {
 
 func TestEncodeRequestJSONTargetsOperation(t *testing.T) {
 	tests := []struct {
-		service   Service
+		service   awsmodel.Service
 		operation string
 		target    string
 	}{
-		{ECS, "ListClusters", "AmazonEC2ContainerServiceV20141113.ListClusters"},
-		{ECR, "DescribeRepositories", "AmazonEC2ContainerRegistry_V20150921.DescribeRepositories"},
-		{ACM, "ListCertificates", "CertificateManager.ListCertificates"},
+		{awsmodel.ECS, "ListClusters", "AmazonEC2ContainerServiceV20141113.ListClusters"},
+		{awsmodel.ECR, "DescribeRepositories", "AmazonEC2ContainerRegistry_V20150921.DescribeRepositories"},
+		{awsmodel.ACM, "ListCertificates", "CertificateManager.ListCertificates"},
 	}
 	for _, test := range tests {
 		t.Run(string(test.service), func(t *testing.T) {
-			request, err := EncodeRequest(test.service, test.operation, map[string]any{"maxResults": int64(5)})
-			if test.service == ACM {
-				request, err = EncodeRequest(test.service, test.operation, map[string]any{"MaxItems": int64(5)})
+			request, err := awsmodel.EncodeRequest(test.service, test.operation, map[string]any{"maxResults": int64(5)})
+			if test.service == awsmodel.ACM {
+				request, err = awsmodel.EncodeRequest(test.service, test.operation, map[string]any{"MaxItems": int64(5)})
 			}
 			require.NoError(t, err)
 			require.Equal(t, http.MethodPost, request.Method)
@@ -90,17 +91,17 @@ func TestEncodeRequestJSONTargetsOperation(t *testing.T) {
 }
 
 func TestEncodeRequestRestJSONPlacesMembers(t *testing.T) {
-	describe, err := EncodeRequest(EKS, "DescribeCluster", map[string]any{"name": "prod cluster"})
+	describe, err := awsmodel.EncodeRequest(awsmodel.EKS, "DescribeCluster", map[string]any{"name": "prod cluster"})
 	require.NoError(t, err)
 	require.Equal(t, http.MethodGet, describe.Method)
 	require.Equal(t, "https://eks.example/clusters/prod%20cluster", describe.URL("https://eks.example"))
 
-	list, err := EncodeRequest(EKS, "ListClusters", map[string]any{"maxResults": int64(5), "include": []any{"all"}})
+	list, err := awsmodel.EncodeRequest(awsmodel.EKS, "ListClusters", map[string]any{"maxResults": int64(5), "include": []any{"all"}})
 	require.NoError(t, err)
 	require.Equal(t, url.Values{"maxResults": {"5"}, "include": {"all"}}, list.Query)
 	require.Empty(t, list.Body)
 
-	create, err := EncodeRequest(EKS, "CreateCluster", map[string]any{
+	create, err := awsmodel.EncodeRequest(awsmodel.EKS, "CreateCluster", map[string]any{
 		"name":               "prod",
 		"roleArn":            "arn:aws:iam::123456789012:role/eks",
 		"resourcesVpcConfig": map[string]any{"subnetIds": []any{"subnet-1"}},
@@ -113,28 +114,28 @@ func TestEncodeRequestRestJSONPlacesMembers(t *testing.T) {
 }
 
 func TestEncodeRequestRejectsUnmodelledMember(t *testing.T) {
-	_, err := EncodeRequest(IAM, "GetRole", map[string]any{"RoleName": "app", "Bogus": "x"})
+	_, err := awsmodel.EncodeRequest(awsmodel.IAM, "GetRole", map[string]any{"RoleName": "app", "Bogus": "x"})
 	require.ErrorContains(t, err, `no member "Bogus"`)
 }
 
 func TestEncodeRequestS3IsNotSupported(t *testing.T) {
-	_, err := EncodeRequest(S3, "ListBuckets", map[string]any{})
+	_, err := awsmodel.EncodeRequest(awsmodel.S3, "ListBuckets", map[string]any{})
 	require.ErrorContains(t, err, "not implemented")
 }
 
 // Generated inputs for every implemented protocol must encode.
 func TestEncodeRequestEncodesGeneratedInputs(t *testing.T) {
 	for _, test := range []struct {
-		service   Service
+		service   awsmodel.Service
 		operation string
 	}{
-		{IAM, "CreateRole"}, {EC2, "RunInstances"}, {ECS, "CreateService"}, {EKS, "CreateNodegroup"},
-		{ElasticLoadBalancingV2, "CreateTargetGroup"}, {RDS, "CreateDBInstance"}, {STS, "AssumeRole"},
+		{awsmodel.IAM, "CreateRole"}, {awsmodel.EC2, "RunInstances"}, {awsmodel.ECS, "CreateService"}, {awsmodel.EKS, "CreateNodegroup"},
+		{awsmodel.ElasticLoadBalancingV2, "CreateTargetGroup"}, {awsmodel.RDS, "CreateDBInstance"}, {awsmodel.STS, "AssumeRole"},
 	} {
-		plan, err := GenerateRequests(test.service, test.operation, testRequestOptions)
+		plan, err := awsmodel.GenerateRequests(test.service, test.operation, awsmodel.RequestOptions{AccountID: "123456789012", Region: "ap-southeast-2"})
 		require.NoError(t, err)
 		for _, request := range plan.Cases {
-			_, err := EncodeRequest(test.service, test.operation, request.Input)
+			_, err := awsmodel.EncodeRequest(test.service, test.operation, request.Input)
 			require.NoError(t, err, "%s %s %s", test.operation, request.Constraint, request.Path)
 		}
 	}

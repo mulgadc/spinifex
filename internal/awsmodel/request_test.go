@@ -1,5 +1,8 @@
 package awsmodel
 
+//test:in-package — checks generated inputs against the unexported model
+//shapes, and the unexported pattern sampler and salt helpers.
+
 import (
 	"fmt"
 	"maps"

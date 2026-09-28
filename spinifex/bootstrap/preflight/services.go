@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/mulgadc/spinifex/spinifex/systemd"
+	"github.com/mulgadc/spinifex/spinifex/operator/host/systemd"
 )
 
 // deletedSuffix is what the kernel appends to /proc/<pid>/exe once the

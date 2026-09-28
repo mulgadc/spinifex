@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/migrate"
-	"github.com/mulgadc/spinifex/spinifex/systemd"
+	"github.com/mulgadc/spinifex/spinifex/operator/host/systemd"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

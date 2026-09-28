@@ -26,7 +26,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	unitsDir := filepath.Join(selfDir, "..", "..", "build", "systemd")
+	unitsDir := filepath.Join(selfDir, "..", "..", "..", "..", "build", "systemd")
 
 	ents, err := os.ReadDir(unitsDir)
 	if err != nil {

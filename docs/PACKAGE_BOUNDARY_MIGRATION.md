@@ -75,17 +75,25 @@ intact; ADR-0001 explicitly defers that design.
 | `scripts/dev-env/`, `scripts/demo/`, benchmarks, diagnostics and Terraform experiments | Development or exploratory automation | Keep at the module root; they are not customer-facing contracts. |
 | `scripts/check-coverage.sh`, `diff-coverage.sh`, `run-gate.sh`, `sync-aws-models.sh` and test harness scripts | Repository and qualification automation | Keep at the module root; their caller defines the contract and evidence. |
 
-## First source move
+## First source move — ARN
 
-The first source move remains the cohesive ARN leaf package:
+The first source move is the cohesive ARN leaf package:
 
 - old import path: `github.com/mulgadc/spinifex/spinifex/arn`
 - target import path: `github.com/mulgadc/spinifex/spinifex/foundation/aws/arn`
 
-It changes no behaviour, leaves no forwarding package, updates every importer,
-runs the package and direct-caller tests, and proves the old path is absent.
-The inventory is intentionally committed before this move so a later thin-main
-refactor cannot silently choose an owner by convenience.
+Source commit `91ac70e29` moves the ten package files and updates all forty-four
+Go importers. It changes no behaviour and leaves no forwarding package.
+
+Verification passed with an isolated Go module/build cache:
+
+- `go test ./spinifex/foundation/aws/arn`
+- `go test` for the fourteen packages directly importing ARN
+- a Go-source search for the old import path returned no matches
+- `git diff --check`
+
+The inventory was intentionally committed before this move so a later
+thin-main refactor cannot silently choose an owner by convenience.
 
 ## Recording rule
 

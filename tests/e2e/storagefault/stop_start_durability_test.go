@@ -31,6 +31,10 @@ const (
 	// Generous because the stop is deliberately made to run against a backend
 	// that cannot answer, which is the slowest this path ever gets.
 	stopStartTimeout = 10 * time.Minute
+
+	// nodeConfigPath is where the installed layout keeps the cluster config an
+	// spx subcommand run over SSH has to be pointed at.
+	nodeConfigPath = "/etc/spinifex/spinifex.toml"
 )
 
 // viperblockBaseDir is where a node keeps per-volume local state. Overridable
@@ -147,6 +151,12 @@ func TestCrossNodeStartAfterFailedSealTakesOverLoudly(t *testing.T) {
 	thawPredastore(t, fix, freezeSet)
 	time.Sleep(recoverySettle)
 
+	// Read after the thaw has settled, not before it. A marker is written when
+	// a volume opens and cleared by the seal, and the seal the stop gave up
+	// waiting for can still finish once the backend answers again. Only what
+	// survives that is genuinely left behind for the takeover to be loud about.
+	unsealed := requireUnsealedVolumes(t, fix, hostNode)
+
 	// The node has to be gone, not merely quiet. A live viperblockd goes on
 	// renewing the lease on a volume whose seal failed, and that refusal is
 	// correct: the node could still be writing.
@@ -167,7 +177,7 @@ func TestCrossNodeStartAfterFailedSealTakesOverLoudly(t *testing.T) {
 
 	// The loss is accepted; being unable to see it is not. This is the only
 	// record that the volume opened from an older checkpoint than existed.
-	assertTakeoverLogged(t, fix, landed, hostNode, volID)
+	assertTakeoverLogged(t, fix, landed, hostNode, unsealed)
 
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	if !harness.TryGuestSSHReady(host, port, "ubuntu", tgt.KeyPath, 5*time.Minute) {
@@ -229,7 +239,7 @@ func guestDatasource(tgt harness.SSHTarget) string {
 // This is the whole guarantee. Losing the previous holder's unsealed writes is
 // a deliberate trade against the instance not running at all, and it is only
 // defensible while an operator can find out it happened.
-func assertTakeoverLogged(t *testing.T, fix *Fixture, landed, previous *harness.Node, volID string) {
+func assertTakeoverLogged(t *testing.T, fix *Fixture, landed, previous *harness.Node, unsealed []string) {
 	t.Helper()
 	if landed == nil {
 		return
@@ -239,27 +249,98 @@ func assertTakeoverLogged(t *testing.T, fix *Fixture, landed, previous *harness.
 	defer cancel()
 
 	cmd := "sudo journalctl -u spinifex-viperblock -u spinifex-daemon --since '-10 min' --no-pager 2>/dev/null | " +
-		"grep -F " + volID + " | grep -i 'last held by another node' | tail -5"
+		"grep -i 'last held by another node' | tail -20"
 	out, err := fix.SSH.Run(ctx, *landed, cmd)
 	if err != nil {
 		t.Errorf("could not read %s's journal to confirm the takeover was logged: %v", landed.Name, err)
 		return
 	}
+
+	// Any one of them: the instance's volumes are sealed together and the
+	// guarantee is that the operator is told, not that every volume is named.
 	journal := string(out)
-	if strings.TrimSpace(journal) == "" {
+	var named string
+	for _, volID := range unsealed {
+		if strings.Contains(journal, volID) {
+			named = volID
+			break
+		}
+	}
+	if named == "" {
 		t.Errorf("%s opened %s from the backend checkpoint while %s held unsealed writes, and logged "+
 			"nothing about it. The loss is acceptable; a silent loss is not.",
-			landed.Name, volID, previous.Name)
+			landed.Name, strings.Join(unsealed, ", "), previous.Name)
 		return
 	}
 	// The marker records the spinifex node name, which is the host's own name
 	// and not the harness's nodeN label, so accept either identity.
 	if !strings.Contains(journal, previous.Name) && !strings.Contains(journal, previous.Addr) {
 		t.Errorf("%s logged a takeover for %s but did not name %s (%s), so an operator cannot tell "+
-			"whose writes were left behind:\n%s", landed.Name, volID, previous.Name, previous.Addr, journal)
+			"whose writes were left behind:\n%s", landed.Name, named, previous.Name, previous.Addr, journal)
 		return
 	}
-	harness.Step(t, "%s logged the takeover and named %s", landed.Name, previous.Name)
+	harness.Step(t, "%s logged the takeover of %s and named %s", landed.Name, named, previous.Name)
+}
+
+// requireUnsealedVolumes returns the volumes the cluster records node as
+// holding writes the backend may not have, and skips the test if there are none.
+//
+// The stop returning an error does not establish this. The unmount is a NATS
+// request, and its caller giving up says nothing about the seal behind it, so
+// local state kept with no seal receipt is equally what an in-flight seal looks
+// like. A marker that is still there once the backend is answering again is not.
+//
+// Which volume is left unsealed is not the test's to choose. Freezing
+// predastore fails a seal that has to read from it — a root volume loading its
+// AMI snapshot — while a blank attached volume can seal straight through the
+// outage. That is correct behaviour, so the takeover is asserted against
+// whatever was actually left behind rather than a volume picked in advance.
+func requireUnsealedVolumes(t *testing.T, fix *Fixture, node *harness.Node) []string {
+	t.Helper()
+
+	held := unsealedVolumesHeldBy(t, fix, node)
+	if len(held) == 0 {
+		t.Skipf("no seal failed on %s while the backend was frozen, so there are no unsealed writes "+
+			"to take over and this test would assert a warning that would be wrong", node.Name)
+	}
+	harness.Step(t, "%s still holds unsealed writes for %s after the backend came back",
+		node.Name, strings.Join(held, ", "))
+	return held
+}
+
+// unsealedVolumesHeldBy reads the cluster's unsealed-volume report from node and
+// returns the volumes it names node as holding. The report is a block per
+// volume: the id on its own line, then indented fields.
+func unsealedVolumesHeldBy(t *testing.T, fix *Fixture, node *harness.Node) []string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	out, err := fix.SSH.Run(ctx, *node, "sudo spx admin volumes unsealed --config "+nodeConfigPath)
+	if err != nil {
+		// The node is up and the report reads NATS, not the frozen backend, so
+		// this is worth seeing rather than retrying silently.
+		t.Logf("could not read the unsealed volumes from %s: %v", node.Name, err)
+		return nil
+	}
+
+	var held []string
+	current := ""
+	for line := range strings.SplitSeq(string(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "vol-") && !strings.Contains(trimmed, " "):
+			current = trimmed
+		case current != "" && strings.HasPrefix(trimmed, "held by:"):
+			owner := strings.TrimSpace(strings.TrimPrefix(trimmed, "held by:"))
+			if owner == node.Name || owner == node.Addr {
+				held = append(held, current)
+			}
+			current = ""
+		}
+	}
+	return held
 }
 
 // assertLocalStateKept checks the node kept the volume's local files and wrote

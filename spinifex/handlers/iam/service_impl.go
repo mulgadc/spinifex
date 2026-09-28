@@ -1303,7 +1303,10 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 	}
 
 	keyPrefix := accountID + "."
-	var policies []*iam.Policy
+	pathPrefix := aws.StringValue(input.PathPrefix)
+	scope := aws.StringValue(input.Scope)
+	onlyAttached := aws.BoolValue(input.OnlyAttached)
+	policies := []*iam.Policy{}
 	for _, key := range keys {
 		if key == utils.VersionKey {
 			continue
@@ -1328,6 +1331,13 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 			continue
 		}
 
+		if !strings.HasPrefix(policy.Path, pathPrefix) || !policyInScope(policy.ARN, scope) {
+			continue
+		}
+		if onlyAttached && attachCounts[policy.ARN] == 0 {
+			continue
+		}
+
 		createdAt := parseCreatedAt(policy.CreatedAt)
 		policies = append(policies, &iam.Policy{
 			PolicyName:       aws.String(policy.PolicyName),
@@ -1346,6 +1356,20 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 		Policies:    policies,
 		IsTruncated: aws.Bool(false),
 	}, nil
+}
+
+// policyInScope applies ListPolicies' Scope: Local is customer-managed, AWS is
+// arn:aws:iam::aws:policy/..., and All (or unset) keeps both.
+func policyInScope(policyARN, scope string) bool {
+	awsManaged := isAWSManagedPolicyARN(policyARN)
+	switch scope {
+	case iam.PolicyScopeTypeLocal:
+		return !awsManaged
+	case iam.PolicyScopeTypeAws:
+		return awsManaged
+	default:
+		return true
+	}
 }
 
 func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error) {

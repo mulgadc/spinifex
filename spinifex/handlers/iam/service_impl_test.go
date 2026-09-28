@@ -1479,6 +1479,73 @@ func TestListPolicies_Empty(t *testing.T) {
 	assert.Empty(t, out.Policies)
 }
 
+func TestListPolicies_Filters(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	createTestPolicy(t, svc, "RootPolicy")
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("TeamPolicy"),
+		Path:           aws.String("/team/"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+	attached := createTestPolicy(t, svc, "AttachedPolicy")
+	createTestUser(t, svc, "filterlistuser")
+	_, err = svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("filterlistuser"),
+		PolicyArn: attached.Arn,
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		input *iam.ListPoliciesInput
+		want  []string
+	}{
+		{"no filters", &iam.ListPoliciesInput{}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"path prefix", &iam.ListPoliciesInput{PathPrefix: aws.String("/team/")}, []string{"TeamPolicy"}},
+		{"partial path prefix", &iam.ListPoliciesInput{PathPrefix: aws.String("/te")}, []string{"TeamPolicy"}},
+		{"root path prefix", &iam.ListPoliciesInput{PathPrefix: aws.String("/")}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"scope local", &iam.ListPoliciesInput{Scope: aws.String("Local")}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"scope all", &iam.ListPoliciesInput{Scope: aws.String("All")}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"scope aws", &iam.ListPoliciesInput{Scope: aws.String("AWS")}, []string{}},
+		{"only attached", &iam.ListPoliciesInput{OnlyAttached: aws.Bool(true)}, []string{"AttachedPolicy"}},
+		{"only attached false", &iam.ListPoliciesInput{OnlyAttached: aws.Bool(false)}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"only attached under path", &iam.ListPoliciesInput{PathPrefix: aws.String("/team/"), OnlyAttached: aws.Bool(true)}, []string{}},
+		{"local under path", &iam.ListPoliciesInput{Scope: aws.String("Local"), PathPrefix: aws.String("/team/")}, []string{"TeamPolicy"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := svc.ListPolicies(testAccountID, tc.input)
+			require.NoError(t, err)
+			// A nil slice would drop the Policies element from the XML response.
+			require.NotNil(t, out.Policies)
+			names := []string{}
+			for _, p := range out.Policies {
+				names = append(names, *p.PolicyName)
+			}
+			assert.ElementsMatch(t, tc.want, names)
+		})
+	}
+}
+
+func TestPolicyInScope(t *testing.T) {
+	t.Parallel()
+	local := "arn:aws:iam::000000000000:policy/AdministratorAccess"
+	awsManaged := "arn:aws:iam::aws:policy/AdministratorAccess"
+
+	assert.True(t, policyInScope(local, ""))
+	assert.True(t, policyInScope(awsManaged, ""))
+	assert.True(t, policyInScope(local, "All"))
+	assert.True(t, policyInScope(awsManaged, "All"))
+	assert.True(t, policyInScope(local, "Local"))
+	assert.False(t, policyInScope(awsManaged, "Local"))
+	assert.False(t, policyInScope(local, "AWS"))
+	assert.True(t, policyInScope(awsManaged, "AWS"))
+}
+
 func TestDeletePolicy(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

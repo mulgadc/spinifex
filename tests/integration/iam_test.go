@@ -370,6 +370,25 @@ func TestIAMPolicyCRUD(t *testing.T) {
 	all, err := iamCli.ListPolicies(&iam.ListPoliciesInput{})
 	require.NoError(t, err, "list-policies")
 	require.GreaterOrEqual(t, len(all.Policies), 5, "expected >=5 policies, got %d", len(all.Policies))
+
+	pathed, err := iamCli.ListPolicies(&iam.ListPoliciesInput{
+		Scope:      aws.String("Local"),
+		PathPrefix: aws.String(iamPolicyFullAdminPath),
+	})
+	require.NoError(t, err, "list-policies scope Local path %s", iamPolicyFullAdminPath)
+	require.Len(t, pathed.Policies, 1)
+	require.Equal(t, iamPolicyFullAdmin, aws.StringValue(pathed.Policies[0].PolicyName))
+
+	attached, err := iamCli.ListPolicies(&iam.ListPoliciesInput{
+		PathPrefix:   aws.String(iamPolicyFullAdminPath),
+		OnlyAttached: aws.Bool(true),
+	})
+	require.NoError(t, err, "list-policies only attached")
+	require.Empty(t, attached.Policies)
+
+	awsScope, err := iamCli.ListPolicies(&iam.ListPoliciesInput{Scope: aws.String("AWS")})
+	require.NoError(t, err, "list-policies scope AWS")
+	require.Empty(t, awsScope.Policies)
 }
 
 // TestIAMPolicyAttachmentEnforcement proves AttachUserPolicy idempotency,

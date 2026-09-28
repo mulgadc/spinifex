@@ -19,7 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -294,7 +294,7 @@ func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.Desc
 
 	slog.InfoContext(ctx, "Describing volumes", "volumeIds", input.VolumeIds)
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeVolumesValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeVolumesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeVolumes: invalid filter", "err", err)
 		return nil, err
@@ -337,7 +337,7 @@ func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.Desc
 	return &ec2.DescribeVolumesOutput{Volumes: volumes}, nil
 }
 
-// volumeMatchesFilters checks whether an ec2.Volume satisfies all parsed filters.
+// volumeMatchesFilters checks whether an ec2.Volume satisfies all parsed awsfilters.
 func volumeMatchesFilters(vol *ec2.Volume, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -400,14 +400,14 @@ func volumeMatchesFilters(vol *ec2.Volume, filters map[string][]string) bool {
 			return false
 		}
 
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
 
 	// Check tag:Key filters
-	tags := filterutil.EC2TagsToMap(vol.Tags)
-	return filterutil.MatchesTags(filters, tags)
+	tags := awsfilters.EC2TagsToMap(vol.Tags)
+	return awsfilters.MatchesTags(filters, tags)
 }
 
 // volumeAttachmentMatchesAny checks if any attachment's field matches any filter value.
@@ -416,7 +416,7 @@ func volumeAttachmentMatchesAny(attachments []*ec2.VolumeAttachment, fieldFn fun
 		return false
 	}
 	for _, a := range attachments {
-		if filterutil.MatchesAny(values, fieldFn(a)) {
+		if awsfilters.MatchesAny(values, fieldFn(a)) {
 			return true
 		}
 	}
@@ -438,7 +438,7 @@ func (s *VolumeServiceImpl) DescribeVolumeStatus(ctx context.Context, input *ec2
 
 	slog.InfoContext(ctx, "DescribeVolumeStatus", "volumeIds", input.VolumeIds)
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeVolumeStatusValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeVolumeStatusValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeVolumeStatus: invalid filter", "err", err)
 		return nil, err
@@ -447,7 +447,7 @@ func (s *VolumeServiceImpl) DescribeVolumeStatus(ctx context.Context, input *ec2
 	return s.describeVolumeStatus(ctx, input, accountID, parsedFilters)
 }
 
-// volumeStatusMatchesFilters checks whether a VolumeStatusItem satisfies all parsed filters.
+// volumeStatusMatchesFilters checks whether a VolumeStatusItem satisfies all parsed awsfilters.
 func volumeStatusMatchesFilters(item *ec2.VolumeStatusItem, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -473,7 +473,7 @@ func volumeStatusMatchesFilters(item *ec2.VolumeStatusItem, filters map[string][
 			return false
 		}
 
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
@@ -589,7 +589,7 @@ func ebsModificationToEC2(volumeID string, m *ebsmetadata.VolumeModification) *e
 }
 
 // volumeModificationMatchesFilters checks whether an ec2.VolumeModification
-// satisfies all parsed filters.
+// satisfies all parsed awsfilters.
 func volumeModificationMatchesFilters(m *ec2.VolumeModification, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -639,7 +639,7 @@ func volumeModificationMatchesFilters(m *ec2.VolumeModification, filters map[str
 			return false
 		}
 
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
@@ -656,7 +656,7 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 
 	slog.InfoContext(ctx, "DescribeVolumesModifications", "volumeIds", input.VolumeIds)
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeVolumesModificationsValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeVolumesModificationsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeVolumesModifications: invalid filter", "err", err)
 		return nil, err
@@ -699,7 +699,7 @@ func (s *VolumeServiceImpl) DescribeVolumesModifications(ctx context.Context, in
 	}
 
 	for _, meta := range metas {
-		if len(volumeIDFilterValues) > 0 && !filterutil.MatchesAny(volumeIDFilterValues, meta.VolumeID) {
+		if len(volumeIDFilterValues) > 0 && !awsfilters.MatchesAny(volumeIDFilterValues, meta.VolumeID) {
 			continue
 		}
 		if meta.Modification == nil {

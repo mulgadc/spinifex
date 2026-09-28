@@ -26,7 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"golang.org/x/crypto/ssh"
@@ -611,7 +611,7 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 
 	slog.InfoContext(ctx, "Describing key pairs", "filters", input.Filters)
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeKeyPairsValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeKeyPairsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeKeyPairs: invalid filter", "err", err)
 		return nil, err
@@ -655,7 +655,7 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 		if len(keyPairIDFilterValues) > 0 {
 			objKey := *obj.Key
 			kpID := strings.TrimSuffix(strings.TrimPrefix(objKey, prefix), ".json")
-			if !filterutil.MatchesAny(keyPairIDFilterValues, kpID) {
+			if !awsfilters.MatchesAny(keyPairIDFilterValues, kpID) {
 				continue
 			}
 		}
@@ -770,7 +770,7 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 	}, nil
 }
 
-// keyPairMatchesFilters checks whether a KeyPairInfo satisfies all parsed filters.
+// keyPairMatchesFilters checks whether a KeyPairInfo satisfies all parsed awsfilters.
 func keyPairMatchesFilters(kp *ec2.KeyPairInfo, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -795,14 +795,14 @@ func keyPairMatchesFilters(kp *ec2.KeyPairInfo, filters map[string][]string) boo
 			return false
 		}
 
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
 
 	// Check tag:Key filters
-	tags := filterutil.EC2TagsToMap(kp.Tags)
-	return filterutil.MatchesTags(filters, tags)
+	tags := awsfilters.EC2TagsToMap(kp.Tags)
+	return awsfilters.MatchesTags(filters, tags)
 }
 
 // ImportKeyPair imports an existing public key.
@@ -981,7 +981,7 @@ func (s *KeyServiceImpl) mirrorKeyPairTags(ctx context.Context, resources []*str
 		if err != nil {
 			return fmt.Errorf("failed to unmarshal key pair metadata: %w", err)
 		}
-		tags := filterutil.EC2TagsToMap(metadata.Tags)
+		tags := awsfilters.EC2TagsToMap(metadata.Tags)
 		if tags == nil {
 			tags = map[string]string{}
 		}

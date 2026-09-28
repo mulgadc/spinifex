@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +20,7 @@ func readKeyPairTags(t *testing.T, svc *KeyServiceImpl, accountID, keyPairID str
 	t.Helper()
 	var metadata ec2.CreateKeyPairOutput
 	require.NoError(t, json.Unmarshal(readKeyPairRecord(t, svc, accountID, keyPairID), &metadata))
-	return filterutil.EC2TagsToMap(metadata.Tags)
+	return awsfilters.EC2TagsToMap(metadata.Tags)
 }
 
 // readKeyPairRecord returns the stored metadata object verbatim.
@@ -100,7 +100,7 @@ func TestKeyPairRecordTagsMirror_UpgradesLegacyRecord(t *testing.T) {
 	require.Len(t, out.KeyPairs, 1)
 	assert.Equal(t, "ed25519", *out.KeyPairs[0].KeyType)
 	assert.Equal(t, testED25519Fingerprint, *out.KeyPairs[0].KeyFingerprint)
-	assert.Equal(t, "prod", filterutil.EC2TagsToMap(out.KeyPairs[0].Tags)["env"])
+	assert.Equal(t, "prod", awsfilters.EC2TagsToMap(out.KeyPairs[0].Tags)["env"])
 }
 
 func TestKeyPairRecordTagsMirror_UnownedNoError(t *testing.T) {

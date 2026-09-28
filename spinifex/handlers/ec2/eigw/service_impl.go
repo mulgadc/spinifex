@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -160,7 +160,7 @@ func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx contex
 		}
 	}
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeEIGWValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeEIGWValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeEgressOnlyInternetGateways: invalid filter", "err", err)
 		return nil, err
@@ -210,7 +210,7 @@ func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx contex
 	}, nil
 }
 
-// eigwMatchesFilters checks whether an EgressOnlyIGWRecord satisfies all parsed filters.
+// eigwMatchesFilters checks whether an EgressOnlyIGWRecord satisfies all parsed awsfilters.
 func eigwMatchesFilters(record *EgressOnlyIGWRecord, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -225,12 +225,12 @@ func eigwMatchesFilters(record *EgressOnlyIGWRecord, filters map[string][]string
 			return false
 		}
 
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
 
-	return filterutil.MatchesTags(filters, record.Tags)
+	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
 func (s *EgressOnlyIGWServiceImpl) recordToEC2(record *EgressOnlyIGWRecord) *ec2.EgressOnlyInternetGateway {

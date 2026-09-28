@@ -15,7 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -590,7 +590,7 @@ func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVp
 		}
 	}
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeVpcsValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeVpcsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeVpcs: invalid filter", "err", err)
 		return nil, err
@@ -962,7 +962,7 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 		}
 	}
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSubnetsValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeSubnetsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSubnets: invalid filter", "err", err)
 		return nil, err
@@ -1146,7 +1146,7 @@ func (s *VPCServiceImpl) updateRecordTags(ctx context.Context, accountID, resour
 	return nil
 }
 
-// vpcMatchesFilters checks whether a VPCRecord satisfies all parsed filters.
+// vpcMatchesFilters checks whether a VPCRecord satisfies all parsed awsfilters.
 func vpcMatchesFilters(record *VPCRecord, accountID string, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -1173,12 +1173,12 @@ func vpcMatchesFilters(record *VPCRecord, accountID string, filters map[string][
 			return false
 		}
 
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
 
-	return filterutil.MatchesTags(filters, record.Tags)
+	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
 // describeSubnetsValidFilters defines the set of filter names accepted by DescribeSubnets.
@@ -1191,7 +1191,7 @@ var describeSubnetsValidFilters = map[string]bool{
 	"default-for-az":    true,
 }
 
-// subnetMatchesFilters checks whether a SubnetRecord satisfies all parsed filters.
+// subnetMatchesFilters checks whether a SubnetRecord satisfies all parsed awsfilters.
 func subnetMatchesFilters(record *SubnetRecord, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -1216,12 +1216,12 @@ func subnetMatchesFilters(record *SubnetRecord, filters map[string][]string) boo
 			return false
 		}
 
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
 
-	return filterutil.MatchesTags(filters, record.Tags)
+	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
 func (s *VPCServiceImpl) vpcRecordToEC2(record *VPCRecord, accountID string) *ec2.Vpc {

@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +30,7 @@ func TestCreateKeyPair_TagSpecifications(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	tags := filterutil.EC2TagsToMap(out.Tags)
+	tags := awsfilters.EC2TagsToMap(out.Tags)
 	assert.Equal(t, "build-key", tags["Name"])
 	assert.Equal(t, "dev", tags["env"])
 
@@ -40,7 +40,7 @@ func TestCreateKeyPair_TagSpecifications(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, desc.KeyPairs, 1)
-	descTags := filterutil.EC2TagsToMap(desc.KeyPairs[0].Tags)
+	descTags := awsfilters.EC2TagsToMap(desc.KeyPairs[0].Tags)
 	assert.Equal(t, "build-key", descTags["Name"])
 	assert.Equal(t, "dev", descTags["env"])
 }
@@ -55,7 +55,7 @@ func TestImportKeyPair_TagSpecifications(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	tags := filterutil.EC2TagsToMap(out.Tags)
+	tags := awsfilters.EC2TagsToMap(out.Tags)
 	assert.Equal(t, "build-key", tags["Name"])
 
 	// Tag filter matches the imported key.

@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
 	"github.com/nats-io/nats.go"
 )
@@ -42,7 +42,7 @@ func DescribeInstanceTypeOfferings(ctx context.Context, input *ec2.DescribeInsta
 		return nil, err
 	}
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeInstanceTypeOfferingsValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeInstanceTypeOfferingsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeInstanceTypeOfferings: invalid filter", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -60,11 +60,11 @@ func DescribeInstanceTypeOfferings(ctx context.Context, input *ec2.DescribeInsta
 		if instanceType == nil || instanceType.InstanceType == nil {
 			continue
 		}
-		if !filterutil.MatchesAny(parsedFilters["instance-type"], *instanceType.InstanceType) {
+		if !awsfilters.MatchesAny(parsedFilters["instance-type"], *instanceType.InstanceType) {
 			continue
 		}
 		for _, location := range locations {
-			if !filterutil.MatchesAny(parsedFilters["location"], location) {
+			if !awsfilters.MatchesAny(parsedFilters["location"], location) {
 				continue
 			}
 			offerings = append(offerings, &ec2.InstanceTypeOffering{

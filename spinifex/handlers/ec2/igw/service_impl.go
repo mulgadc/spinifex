@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -200,7 +200,7 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 		}
 	}
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeIGWValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeIGWValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeInternetGateways: invalid filter", "err", err)
 		return nil, err
@@ -260,7 +260,7 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 	}, nil
 }
 
-// igwMatchesFilters checks whether an IGWRecord satisfies all parsed filters.
+// igwMatchesFilters checks whether an IGWRecord satisfies all parsed awsfilters.
 func igwMatchesFilters(record *IGWRecord, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -285,12 +285,12 @@ func igwMatchesFilters(record *IGWRecord, filters map[string][]string) bool {
 			return false
 		}
 
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
 
-	return filterutil.MatchesTags(filters, record.Tags)
+	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
 // AttachInternetGateway attaches an IGW to a VPC and publishes a NATS event

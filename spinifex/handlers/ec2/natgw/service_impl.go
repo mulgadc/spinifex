@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
@@ -373,7 +373,7 @@ var describeNatGatewaysValidFilters = map[string]bool{
 
 // DescribeNatGateways lists NAT Gateways, optionally filtered.
 func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *ec2.DescribeNatGatewaysInput, accountID string) (*ec2.DescribeNatGatewaysOutput, error) {
-	parsedFilters, err := filterutil.ParseFilters(input.Filter, describeNatGatewaysValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filter, describeNatGatewaysValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeNatGateways: invalid filter", "err", err)
 		return nil, err
@@ -451,7 +451,7 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 	}, nil
 }
 
-// natgwMatchesFilters checks whether a NAT Gateway record matches all parsed filters.
+// natgwMatchesFilters checks whether a NAT Gateway record matches all parsed awsfilters.
 func natgwMatchesFilters(record *NatGatewayRecord, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -459,26 +459,26 @@ func natgwMatchesFilters(record *NatGatewayRecord, filters map[string][]string) 
 		}
 		switch name {
 		case "nat-gateway-id":
-			if !filterutil.MatchesAny(values, record.NatGatewayId) {
+			if !awsfilters.MatchesAny(values, record.NatGatewayId) {
 				return false
 			}
 		case "subnet-id":
-			if !filterutil.MatchesAny(values, record.SubnetId) {
+			if !awsfilters.MatchesAny(values, record.SubnetId) {
 				return false
 			}
 		case "vpc-id":
-			if !filterutil.MatchesAny(values, record.VpcId) {
+			if !awsfilters.MatchesAny(values, record.VpcId) {
 				return false
 			}
 		case "state":
-			if !filterutil.MatchesAny(values, record.State) {
+			if !awsfilters.MatchesAny(values, record.State) {
 				return false
 			}
 		default:
 			return false
 		}
 	}
-	return filterutil.MatchesTags(filters, record.Tags)
+	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
 // PublishAddEvent publishes a vpc.add-nat-gateway event for vpcd to create the SNAT rule.

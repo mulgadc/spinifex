@@ -17,7 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -441,7 +441,7 @@ var describeSecurityGroupsValidFilters = map[string]bool{
 	"ip-permission.cidr": true,
 }
 
-// DescribeSecurityGroups lists security groups with optional filters.
+// DescribeSecurityGroups lists security groups with optional awsfilters.
 func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error) {
 	groups := []*ec2.SecurityGroup{}
 
@@ -452,7 +452,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 		}
 	}
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSecurityGroupsValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeSecurityGroupsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSecurityGroups: invalid filter", "err", err)
 		return nil, err
@@ -517,7 +517,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 	}, nil
 }
 
-// sgMatchesFilters checks whether a SecurityGroupRecord satisfies all parsed filters.
+// sgMatchesFilters checks whether a SecurityGroupRecord satisfies all parsed awsfilters.
 func sgMatchesFilters(record *SecurityGroupRecord, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -526,19 +526,19 @@ func sgMatchesFilters(record *SecurityGroupRecord, filters map[string][]string) 
 
 		switch name {
 		case "group-id":
-			if !filterutil.MatchesAny(values, record.GroupId) {
+			if !awsfilters.MatchesAny(values, record.GroupId) {
 				return false
 			}
 		case "group-name":
-			if !filterutil.MatchesAny(values, record.GroupName) {
+			if !awsfilters.MatchesAny(values, record.GroupName) {
 				return false
 			}
 		case "vpc-id":
-			if !filterutil.MatchesAny(values, record.VpcId) {
+			if !awsfilters.MatchesAny(values, record.VpcId) {
 				return false
 			}
 		case "description":
-			if !filterutil.MatchesAny(values, record.Description) {
+			if !awsfilters.MatchesAny(values, record.Description) {
 				return false
 			}
 		case "ip-permission.cidr":
@@ -550,13 +550,13 @@ func sgMatchesFilters(record *SecurityGroupRecord, filters map[string][]string) 
 		}
 	}
 
-	return filterutil.MatchesTags(filters, record.Tags)
+	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
 // sgIngressCIDRMatchesAny checks if any ingress rule's CIDR matches any of the filter values.
 func sgIngressCIDRMatchesAny(rules []SGRule, values []string) bool {
 	for _, rule := range rules {
-		if rule.CidrIp != "" && filterutil.MatchesAny(values, rule.CidrIp) {
+		if rule.CidrIp != "" && awsfilters.MatchesAny(values, rule.CidrIp) {
 			return true
 		}
 	}
@@ -596,7 +596,7 @@ func (s *VPCServiceImpl) GetSecurityGroupsForVpc(ctx context.Context, input *ec2
 		return nil, err
 	}
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, getSecurityGroupsForVpcValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, getSecurityGroupsForVpcValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "GetSecurityGroupsForVpc: invalid filter", "err", err)
 		return nil, err
@@ -673,23 +673,23 @@ func sgForVpcMatchesFilters(record *SecurityGroupRecord, accountID string, filte
 
 		switch name {
 		case "group-id":
-			if !filterutil.MatchesAny(values, record.GroupId) {
+			if !awsfilters.MatchesAny(values, record.GroupId) {
 				return false
 			}
 		case "group-name":
-			if !filterutil.MatchesAny(values, record.GroupName) {
+			if !awsfilters.MatchesAny(values, record.GroupName) {
 				return false
 			}
 		case "description":
-			if !filterutil.MatchesAny(values, record.Description) {
+			if !awsfilters.MatchesAny(values, record.Description) {
 				return false
 			}
 		case "owner-id":
-			if !filterutil.MatchesAny(values, accountID) {
+			if !awsfilters.MatchesAny(values, accountID) {
 				return false
 			}
 		case "primary-vpc-id":
-			if !filterutil.MatchesAny(values, record.VpcId) {
+			if !awsfilters.MatchesAny(values, record.VpcId) {
 				return false
 			}
 		default:
@@ -697,7 +697,7 @@ func sgForVpcMatchesFilters(record *SecurityGroupRecord, accountID string, filte
 		}
 	}
 
-	return filterutil.MatchesTags(filters, record.Tags)
+	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
 // pageSecurityGroupsForVpc slices one page out of a sorted group set, using an
@@ -736,7 +736,7 @@ var describeSecurityGroupRulesValidFilters = map[string]bool{
 
 // DescribeSecurityGroupRules returns a flat list of SecurityGroupRule objects
 // for the caller's account, optionally narrowed by SecurityGroupRuleIds or
-// filters. MaxResults and NextToken are accepted but ignored.
+// awsfilters. MaxResults and NextToken are accepted but ignored.
 func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *ec2.DescribeSecurityGroupRulesInput, accountID string) (*ec2.DescribeSecurityGroupRulesOutput, error) {
 	requested := make(map[string]bool)
 	if input != nil {
@@ -752,7 +752,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 	if input != nil {
 		filters = input.Filters
 	}
-	parsedFilters, err := filterutil.ParseFilters(filters, describeSecurityGroupRulesValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(filters, describeSecurityGroupRulesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSecurityGroupRules: invalid filter", "err", err)
 		return nil, err
@@ -828,11 +828,11 @@ func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[
 		}
 		switch name {
 		case "group-id":
-			if !filterutil.MatchesAny(values, record.GroupId) {
+			if !awsfilters.MatchesAny(values, record.GroupId) {
 				return false
 			}
 		case "security-group-rule-id":
-			if !filterutil.MatchesAny(values, rule.RuleId) {
+			if !awsfilters.MatchesAny(values, rule.RuleId) {
 				return false
 			}
 		case "tag-key":
@@ -846,7 +846,7 @@ func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[
 			return false
 		}
 	}
-	return filterutil.MatchesTags(filters, rule.Tags)
+	return awsfilters.MatchesTags(filters, rule.Tags)
 }
 
 // updateSGRuleTags applies mut to the tags of the rule named by ruleID, which
@@ -921,7 +921,7 @@ func findSGRuleByID(rules []SGRule, ruleID string) *SGRule {
 // keys, whatever their values.
 func sgRuleMatchesTagKey(tags map[string]string, keys []string) bool {
 	for key := range tags {
-		if filterutil.MatchesAny(keys, key) {
+		if awsfilters.MatchesAny(keys, key) {
 			return true
 		}
 	}

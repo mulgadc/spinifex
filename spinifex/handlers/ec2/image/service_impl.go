@@ -18,7 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -129,7 +129,7 @@ func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.Descri
 
 	slog.InfoContext(ctx, "Describing images", "filters", input.Filters, "imageIds", input.ImageIds)
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeImagesValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeImagesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeImages: invalid filter", "err", err)
 		return nil, err
@@ -337,7 +337,7 @@ func amiImageState(state string) string {
 	return state
 }
 
-// imageMatchesFilters checks whether an ec2.Image satisfies all parsed filters.
+// imageMatchesFilters checks whether an ec2.Image satisfies all parsed awsfilters.
 func imageMatchesFilters(image *ec2.Image, filters map[string][]string, tags map[string]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -390,12 +390,12 @@ func imageMatchesFilters(image *ec2.Image, filters map[string][]string, tags map
 			return false
 		}
 
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
 
-	return filterutil.MatchesTags(filters, tags)
+	return awsfilters.MatchesTags(filters, tags)
 }
 
 // CreateImage is the generic interface method — on the daemon side, the handler

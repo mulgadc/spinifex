@@ -1,4 +1,6 @@
-package filterutil
+// Package filters provides AWS filter parsing, tag matching and wildcard
+// comparison primitives without owning any resource's filter semantics.
+package filters
 
 import (
 	"log/slog"

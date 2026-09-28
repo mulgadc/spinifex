@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,7 +45,7 @@ func TestCreatePlacementGroup_TagSpecifications(t *testing.T) {
 	svc := setupTestService(t)
 	pg := createTaggedGroup(t, svc, "tagged-group", map[string]string{"Name": "web", "env": "dev"})
 
-	tags := filterutil.EC2TagsToMap(pg.Tags)
+	tags := awsfilters.EC2TagsToMap(pg.Tags)
 	assert.Equal(t, "web", tags["Name"])
 	assert.Equal(t, "dev", tags["env"])
 
@@ -54,7 +54,7 @@ func TestCreatePlacementGroup_TagSpecifications(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.PlacementGroups, 1)
-	descTags := filterutil.EC2TagsToMap(out.PlacementGroups[0].Tags)
+	descTags := awsfilters.EC2TagsToMap(out.PlacementGroups[0].Tags)
 	assert.Equal(t, "web", descTags["Name"])
 }
 

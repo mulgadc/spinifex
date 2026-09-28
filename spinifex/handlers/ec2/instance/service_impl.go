@@ -21,7 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
@@ -1975,11 +1975,11 @@ func IsInstanceVisibleToCaller(accountID string, v *vm.VM) bool {
 	return v.ManagedBy == "" || accountID == utils.GlobalAccountID
 }
 
-// instanceMatchesFilters checks whether a VM + its built ec2.Instance copy satisfy all parsed filters.
+// instanceMatchesFilters checks whether a VM + its built ec2.Instance copy satisfy all parsed awsfilters.
 func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
-			// tag:Key filters are handled after all field filters.
+			// tag:Key filters are handled after all field awsfilters.
 			continue
 		}
 
@@ -2017,20 +2017,20 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 			return false
 		}
 
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
 
 	// Check tag:Key filters via the instance's Tag slice.
-	tags := filterutil.EC2TagsToMap(ic.Tags)
-	return filterutil.MatchesTags(filters, tags)
+	tags := awsfilters.EC2TagsToMap(ic.Tags)
+	return awsfilters.MatchesTags(filters, tags)
 }
 
 // matchTagKey returns true if any tag key on the resource matches any of the filter values.
 func matchTagKey(tags []*ec2.Tag, values []string) bool {
 	for _, t := range tags {
-		if t.Key != nil && filterutil.MatchesAny(values, *t.Key) {
+		if t.Key != nil && awsfilters.MatchesAny(values, *t.Key) {
 			return true
 		}
 	}
@@ -2040,7 +2040,7 @@ func matchTagKey(tags []*ec2.Tag, values []string) bool {
 // matchTagValue returns true if any tag value on the resource matches any of the filter values.
 func matchTagValue(tags []*ec2.Tag, values []string) bool {
 	for _, t := range tags {
-		if t.Value != nil && filterutil.MatchesAny(values, *t.Value) {
+		if t.Value != nil && awsfilters.MatchesAny(values, *t.Value) {
 			return true
 		}
 	}
@@ -2056,7 +2056,7 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 		return nil, err
 	}
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, DescribeInstancesValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, DescribeInstancesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeInstances: invalid filter", "err", err)
 		return nil, err
@@ -2184,7 +2184,7 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 		return nil, err
 	}
 
-	parsedFilters, filterErr := filterutil.ParseFilters(input.Filters, DescribeInstancesValidFilters)
+	parsedFilters, filterErr := awsfilters.ParseFilters(input.Filters, DescribeInstancesValidFilters)
 	if filterErr != nil {
 		slog.WarnContext(ctx, opName+": invalid filter", "err", filterErr)
 		return nil, filterErr
@@ -3546,16 +3546,16 @@ func instanceStatusMatchesFilters(v *vm.VM, is *ec2.InstanceStatus, filters map[
 		default:
 			return false
 		}
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
 
 	if v.Instance != nil {
-		tags := filterutil.EC2TagsToMap(v.Instance.Tags)
-		return filterutil.MatchesTags(filters, tags)
+		tags := awsfilters.EC2TagsToMap(v.Instance.Tags)
+		return awsfilters.MatchesTags(filters, tags)
 	}
-	return filterutil.MatchesTags(filters, nil)
+	return awsfilters.MatchesTags(filters, nil)
 }
 
 // DescribeInstanceStatus returns per-VM status entries for VMs on this node

@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -2387,7 +2387,7 @@ func TestAuthorizeSecurityGroupIngress_StoresRuleTags(t *testing.T) {
 	require.Len(t, out.SecurityGroupRules, 1)
 	ruleID := aws.StringValue(out.SecurityGroupRules[0].SecurityGroupRuleId)
 	assert.Equal(t, map[string]string{"terraform-aws-modules": "alb"},
-		filterutil.EC2TagsToMap(out.SecurityGroupRules[0].Tags), "authorize must echo the tags it stored")
+		awsfilters.EC2TagsToMap(out.SecurityGroupRules[0].Tags), "authorize must echo the tags it stored")
 
 	desc, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		SecurityGroupRuleIds: []*string{aws.String(ruleID)},
@@ -2395,7 +2395,7 @@ func TestAuthorizeSecurityGroupIngress_StoresRuleTags(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.SecurityGroupRules, 1)
 	assert.Equal(t, map[string]string{"terraform-aws-modules": "alb"},
-		filterutil.EC2TagsToMap(desc.SecurityGroupRules[0].Tags))
+		awsfilters.EC2TagsToMap(desc.SecurityGroupRules[0].Tags))
 }
 
 func TestDescribeSecurityGroupRules_FiltersByTag(t *testing.T) {
@@ -2488,7 +2488,7 @@ func TestApplyRecordTags_ReachesASecurityGroupRule(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.SecurityGroupRules, 1)
 	assert.Equal(t, map[string]string{"Name": "ssh"},
-		filterutil.EC2TagsToMap(desc.SecurityGroupRules[0].Tags))
+		awsfilters.EC2TagsToMap(desc.SecurityGroupRules[0].Tags))
 
 	require.NoError(t, svc.RemoveRecordTags(&ec2.DeleteTagsInput{
 		Resources: []*string{aws.String(ruleID)},

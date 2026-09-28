@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -573,7 +573,7 @@ var describeLaunchTemplatesValidFilters = map[string]bool{
 }
 
 func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context, input *ec2.DescribeLaunchTemplatesInput, accountID string) (*ec2.DescribeLaunchTemplatesOutput, error) {
-	filters, err := filterutil.ParseFilters(input.Filters, describeLaunchTemplatesValidFilters)
+	filters, err := awsfilters.ParseFilters(input.Filters, describeLaunchTemplatesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeLaunchTemplates: invalid filter", "err", err)
 		return nil, err
@@ -651,21 +651,21 @@ func templateMatchesFilters(h *LaunchTemplateHeader, filters map[string][]string
 		}
 		switch name {
 		case "launch-template-id":
-			if !filterutil.MatchesAny(values, h.LaunchTemplateId) {
+			if !awsfilters.MatchesAny(values, h.LaunchTemplateId) {
 				return false
 			}
 		case "launch-template-name":
-			if !filterutil.MatchesAny(values, h.LaunchTemplateName) {
+			if !awsfilters.MatchesAny(values, h.LaunchTemplateName) {
 				return false
 			}
 		case "create-time":
-			if !filterutil.MatchesAny(values, h.CreateTime.Format(time.RFC3339)) {
+			if !awsfilters.MatchesAny(values, h.CreateTime.Format(time.RFC3339)) {
 				return false
 			}
 		case "tag-key":
 			matched := false
 			for k := range h.Tags {
-				if filterutil.MatchesAny(values, k) {
+				if awsfilters.MatchesAny(values, k) {
 					matched = true
 					break
 				}
@@ -677,7 +677,7 @@ func templateMatchesFilters(h *LaunchTemplateHeader, filters map[string][]string
 			return false
 		}
 	}
-	return filterutil.MatchesTags(filters, h.Tags)
+	return awsfilters.MatchesTags(filters, h.Tags)
 }
 
 // --- DescribeLaunchTemplateVersions ---
@@ -692,7 +692,7 @@ var describeLaunchTemplateVersionsValidFilters = map[string]bool{
 }
 
 func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplateVersions(ctx context.Context, input *ec2.DescribeLaunchTemplateVersionsInput, accountID string) (*ec2.DescribeLaunchTemplateVersionsOutput, error) {
-	filters, err := filterutil.ParseFilters(input.Filters, describeLaunchTemplateVersionsValidFilters)
+	filters, err := awsfilters.ParseFilters(input.Filters, describeLaunchTemplateVersionsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeLaunchTemplateVersions: invalid filter", "err", err)
 		return nil, err
@@ -788,27 +788,27 @@ func versionMatchesFilters(rec *LaunchTemplateVersionRec, isDefault bool, filter
 	for name, values := range filters {
 		switch name {
 		case "is-default-version":
-			if !filterutil.MatchesAny(values, strconv.FormatBool(isDefault)) {
+			if !awsfilters.MatchesAny(values, strconv.FormatBool(isDefault)) {
 				return false
 			}
 		case "image-id":
-			if d == nil || !filterutil.MatchesAny(values, aws.StringValue(d.ImageId)) {
+			if d == nil || !awsfilters.MatchesAny(values, aws.StringValue(d.ImageId)) {
 				return false
 			}
 		case "instance-type":
-			if d == nil || !filterutil.MatchesAny(values, aws.StringValue(d.InstanceType)) {
+			if d == nil || !awsfilters.MatchesAny(values, aws.StringValue(d.InstanceType)) {
 				return false
 			}
 		case "kernel-id":
-			if d == nil || !filterutil.MatchesAny(values, aws.StringValue(d.KernelId)) {
+			if d == nil || !awsfilters.MatchesAny(values, aws.StringValue(d.KernelId)) {
 				return false
 			}
 		case "ram-disk-id":
-			if d == nil || !filterutil.MatchesAny(values, aws.StringValue(d.RamDiskId)) {
+			if d == nil || !awsfilters.MatchesAny(values, aws.StringValue(d.RamDiskId)) {
 				return false
 			}
 		case "ebs-optimized":
-			if d == nil || !filterutil.MatchesAny(values, strconv.FormatBool(aws.BoolValue(d.EbsOptimized))) {
+			if d == nil || !awsfilters.MatchesAny(values, strconv.FormatBool(aws.BoolValue(d.EbsOptimized))) {
 				return false
 			}
 		default:

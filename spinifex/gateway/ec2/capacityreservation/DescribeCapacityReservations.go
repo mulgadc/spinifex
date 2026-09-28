@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -28,7 +28,7 @@ var validCapacityReservationFilters = map[string]bool{
 }
 
 // DescribeCapacityReservations fans out to every node, aggregates each daemon's
-// in-memory reservations, and applies the requested ids and filters. Account
+// in-memory reservations, and applies the requested ids and awsfilters. Account
 // scoping is enforced by the daemons (which key ListReservations on the caller's
 // account id from the request header).
 func DescribeCapacityReservations(ctx context.Context, input *ec2.DescribeCapacityReservationsInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.DescribeCapacityReservationsOutput, error) {
@@ -37,7 +37,7 @@ func DescribeCapacityReservations(ctx context.Context, input *ec2.DescribeCapaci
 		input = &ec2.DescribeCapacityReservationsInput{}
 	}
 
-	filters, err := filterutil.ParseFilters(input.Filters, validCapacityReservationFilters)
+	filters, err := awsfilters.ParseFilters(input.Filters, validCapacityReservationFilters)
 	if err != nil {
 		return output, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -115,7 +115,7 @@ func reservationMatchesFilters(r *ec2.CapacityReservation, filters map[string][]
 		default:
 			return false
 		}
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}

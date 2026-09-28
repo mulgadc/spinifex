@@ -5,7 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -195,7 +195,7 @@ func TestParseFilters_UnknownFilterName(t *testing.T) {
 	filters := []*ec2.Filter{
 		{Name: aws.String("bogus-filter"), Values: []*string{aws.String("val")}},
 	}
-	_, err := filterutil.ParseFilters(filters, DescribeInstancesValidFilters)
+	_, err := awsfilters.ParseFilters(filters, DescribeInstancesValidFilters)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "InvalidParameterValue")
 }
@@ -205,11 +205,11 @@ func TestEC2TagsToMap(t *testing.T) {
 		{Key: aws.String("a"), Value: aws.String("1")},
 		{Key: aws.String("b"), Value: aws.String("2")},
 	}
-	m := filterutil.EC2TagsToMap(tags)
+	m := awsfilters.EC2TagsToMap(tags)
 	assert.Equal(t, "1", m["a"])
 	assert.Equal(t, "2", m["b"])
 }
 
 func TestEC2TagsToMap_Nil(t *testing.T) {
-	assert.Nil(t, filterutil.EC2TagsToMap(nil))
+	assert.Nil(t, awsfilters.EC2TagsToMap(nil))
 }

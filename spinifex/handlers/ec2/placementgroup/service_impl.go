@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -180,9 +180,9 @@ var describePlacementGroupsValidFilters = map[string]bool{
 	"tag-value":    true,
 }
 
-// DescribePlacementGroups lists placement groups with optional filters.
+// DescribePlacementGroups lists placement groups with optional awsfilters.
 func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context, input *ec2.DescribePlacementGroupsInput, accountID string) (*ec2.DescribePlacementGroupsOutput, error) {
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describePlacementGroupsValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describePlacementGroupsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribePlacementGroups: invalid filter", "err", err)
 		return nil, err
@@ -266,7 +266,7 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context,
 	}, nil
 }
 
-// pgMatchesFilters checks whether a placement group record matches all parsed filters.
+// pgMatchesFilters checks whether a placement group record matches all parsed awsfilters.
 func pgMatchesFilters(record *PlacementGroupRecord, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -274,23 +274,23 @@ func pgMatchesFilters(record *PlacementGroupRecord, filters map[string][]string)
 		}
 		switch name {
 		case "group-id":
-			if !filterutil.MatchesAny(values, record.GroupId) {
+			if !awsfilters.MatchesAny(values, record.GroupId) {
 				return false
 			}
 		case "strategy":
-			if !filterutil.MatchesAny(values, record.Strategy) {
+			if !awsfilters.MatchesAny(values, record.Strategy) {
 				return false
 			}
 		case "state":
-			if !filterutil.MatchesAny(values, record.State) {
+			if !awsfilters.MatchesAny(values, record.State) {
 				return false
 			}
 		case "spread-level":
-			if !filterutil.MatchesAny(values, record.SpreadLevel) {
+			if !awsfilters.MatchesAny(values, record.SpreadLevel) {
 				return false
 			}
 		case "group-name":
-			if !filterutil.MatchesAny(values, record.GroupName) {
+			if !awsfilters.MatchesAny(values, record.GroupName) {
 				return false
 			}
 		case "tag-key":
@@ -305,14 +305,14 @@ func pgMatchesFilters(record *PlacementGroupRecord, filters map[string][]string)
 			return false
 		}
 	}
-	return filterutil.MatchesTags(filters, record.Tags)
+	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
 // pgMatchesAnyTag reports whether any tag's selected field (key or value)
 // matches any of the filter values.
 func pgMatchesAnyTag(tags map[string]string, values []string, field func(k, v string) string) bool {
 	for k, v := range tags {
-		if filterutil.MatchesAny(values, field(k, v)) {
+		if awsfilters.MatchesAny(values, field(k, v)) {
 			return true
 		}
 	}

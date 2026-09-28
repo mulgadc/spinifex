@@ -16,7 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/testutil/ebsfake"
@@ -538,7 +538,7 @@ func TestVolumeLeakReaper_Provider(t *testing.T) {
 	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, testVolAccountID)
 	require.NoError(t, err)
 	require.Len(t, described.Volumes, 1)
-	assert.NotEmpty(t, filterutil.EC2TagsToMap(described.Volumes[0].Tags)[orphanTagKey],
+	assert.NotEmpty(t, awsfilters.EC2TagsToMap(described.Volumes[0].Tags)[orphanTagKey],
 		"the orphan mark must be visible via DescribeVolumes, which reads ebsmetadata under the provider path")
 
 	// Idempotent: a second sweep re-marks nothing.
@@ -567,7 +567,7 @@ func TestApplyRecordTags_Provider_VisibleViaDescribeVolumes(t *testing.T) {
 	described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, testVolAccountID)
 	require.NoError(t, err)
 	require.Len(t, described.Volumes, 1)
-	assert.Equal(t, "control-plane", filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"],
+	assert.Equal(t, "control-plane", awsfilters.EC2TagsToMap(described.Volumes[0].Tags)["owner"],
 		"a tag applied post-create must be visible via DescribeVolumes under the provider path")
 
 	require.NoError(t, svc.RemoveRecordTags(&ec2.DeleteTagsInput{
@@ -578,7 +578,7 @@ func TestApplyRecordTags_Provider_VisibleViaDescribeVolumes(t *testing.T) {
 	described, err = svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, testVolAccountID)
 	require.NoError(t, err)
 	require.Len(t, described.Volumes, 1)
-	_, hasOwnerTag := filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"]
+	_, hasOwnerTag := awsfilters.EC2TagsToMap(described.Volumes[0].Tags)["owner"]
 	assert.False(t, hasOwnerTag, "RemoveRecordTags must remove the tag under the provider path too")
 
 	t.Run("wrong tenant is a no-op", func(t *testing.T) {
@@ -588,7 +588,7 @@ func TestApplyRecordTags_Provider_VisibleViaDescribeVolumes(t *testing.T) {
 		}, "000000000002"))
 		described, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{vol.VolumeId}}, testVolAccountID)
 		require.NoError(t, err)
-		_, hasOwnerTag := filterutil.EC2TagsToMap(described.Volumes[0].Tags)["owner"]
+		_, hasOwnerTag := awsfilters.EC2TagsToMap(described.Volumes[0].Tags)["owner"]
 		assert.False(t, hasOwnerTag, "a caller who does not own the volume must not be able to tag it")
 	})
 

@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -125,9 +125,9 @@ var describeSpotRequestsValidFilters = map[string]bool{
 	"tag-key":                    true,
 }
 
-// DescribeSpotInstanceRequests lists requests from both buckets, merges, and filters.
+// DescribeSpotInstanceRequests lists requests from both buckets, merges, and awsfilters.
 func (s *SpotInstanceServiceImpl) DescribeSpotInstanceRequests(ctx context.Context, input *ec2.DescribeSpotInstanceRequestsInput, accountID string) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSpotRequestsValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeSpotRequestsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSpotInstanceRequests: invalid filter", "err", err)
 		return nil, err
@@ -159,7 +159,7 @@ func (s *SpotInstanceServiceImpl) DescribeSpotInstanceRequests(ctx context.Conte
 		if !sirMatchesFilters(req, parsedFilters) {
 			continue
 		}
-		if !filterutil.MatchesTags(parsedFilters, filterutil.EC2TagsToMap(req.Tags)) {
+		if !awsfilters.MatchesTags(parsedFilters, awsfilters.EC2TagsToMap(req.Tags)) {
 			continue
 		}
 		found[sirID] = true
@@ -321,41 +321,41 @@ func setSpotStatus(req *ec2.SpotInstanceRequest, code, message string) {
 	}
 }
 
-// sirMatchesFilters reports whether a request matches all non-tag filters.
-// tag:* filters are handled separately via filterutil.MatchesTags.
+// sirMatchesFilters reports whether a request matches all non-tag awsfilters.
+// tag:* filters are handled separately via awsfilters.MatchesTags.
 func sirMatchesFilters(req *ec2.SpotInstanceRequest, filters map[string][]string) bool {
 	for name, values := range filters {
 		switch {
 		case name == "spot-instance-request-id":
-			if !filterutil.MatchesAny(values, aws.StringValue(req.SpotInstanceRequestId)) {
+			if !awsfilters.MatchesAny(values, aws.StringValue(req.SpotInstanceRequestId)) {
 				return false
 			}
 		case name == "state":
-			if !filterutil.MatchesAny(values, aws.StringValue(req.State)) {
+			if !awsfilters.MatchesAny(values, aws.StringValue(req.State)) {
 				return false
 			}
 		case name == "instance-id":
-			if !filterutil.MatchesAny(values, aws.StringValue(req.InstanceId)) {
+			if !awsfilters.MatchesAny(values, aws.StringValue(req.InstanceId)) {
 				return false
 			}
 		case name == "type":
-			if !filterutil.MatchesAny(values, aws.StringValue(req.Type)) {
+			if !awsfilters.MatchesAny(values, aws.StringValue(req.Type)) {
 				return false
 			}
 		case name == "launched-availability-zone":
-			if !filterutil.MatchesAny(values, aws.StringValue(req.LaunchedAvailabilityZone)) {
+			if !awsfilters.MatchesAny(values, aws.StringValue(req.LaunchedAvailabilityZone)) {
 				return false
 			}
 		case name == "launch.image-id":
-			if !filterutil.MatchesAny(values, aws.StringValue(launchSpec(req).ImageId)) {
+			if !awsfilters.MatchesAny(values, aws.StringValue(launchSpec(req).ImageId)) {
 				return false
 			}
 		case name == "launch.instance-type":
-			if !filterutil.MatchesAny(values, aws.StringValue(launchSpec(req).InstanceType)) {
+			if !awsfilters.MatchesAny(values, aws.StringValue(launchSpec(req).InstanceType)) {
 				return false
 			}
 		case name == "launch.key-name":
-			if !filterutil.MatchesAny(values, aws.StringValue(launchSpec(req).KeyName)) {
+			if !awsfilters.MatchesAny(values, aws.StringValue(launchSpec(req).KeyName)) {
 				return false
 			}
 		case name == "tag-key":
@@ -363,7 +363,7 @@ func sirMatchesFilters(req *ec2.SpotInstanceRequest, filters map[string][]string
 				return false
 			}
 		case strings.HasPrefix(name, "tag:"):
-			// Handled by filterutil.MatchesTags.
+			// Handled by awsfilters.MatchesTags.
 		default:
 			return false
 		}
@@ -373,7 +373,7 @@ func sirMatchesFilters(req *ec2.SpotInstanceRequest, filters map[string][]string
 
 func sirMatchesTagKey(tags []*ec2.Tag, values []string) bool {
 	for _, t := range tags {
-		if t.Key != nil && filterutil.MatchesAny(values, *t.Key) {
+		if t.Key != nil && awsfilters.MatchesAny(values, *t.Key) {
 			return true
 		}
 	}

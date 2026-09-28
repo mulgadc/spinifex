@@ -20,7 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -451,7 +451,7 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 
 	slog.InfoContext(ctx, "DescribeSnapshots request", "snapshotIds", input.SnapshotIds, "accountID", accountID)
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSnapshotsValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeSnapshotsValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSnapshots: invalid filter", "err", err)
 		return nil, err
@@ -628,7 +628,7 @@ func ownerIDsIncludeCaller(ownerIDs []*string, accountID string) bool {
 	return false
 }
 
-// snapshotMatchesFilters checks whether a snapshot document satisfies all parsed filters.
+// snapshotMatchesFilters checks whether a snapshot document satisfies all parsed awsfilters.
 func snapshotMatchesFilters(cfg ebsmetadata.Snapshot, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -651,12 +651,12 @@ func snapshotMatchesFilters(cfg ebsmetadata.Snapshot, filters map[string][]strin
 			return false
 		}
 
-		if !filterutil.MatchesAny(values, field) {
+		if !awsfilters.MatchesAny(values, field) {
 			return false
 		}
 	}
 
-	return filterutil.MatchesTags(filters, cfg.Tags)
+	return awsfilters.MatchesTags(filters, cfg.Tags)
 }
 
 // snapshotInUseByVolumes checks if any volume was created from the given

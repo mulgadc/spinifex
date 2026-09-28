@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
@@ -610,7 +610,7 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 		}
 	}
 
-	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeRouteTablesValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeRouteTablesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeRouteTables: invalid filter", "err", err)
 		return nil, err
@@ -1192,7 +1192,7 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 	return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
 }
 
-// rtbMatchesFilters checks if a route table record matches all parsed filters.
+// rtbMatchesFilters checks if a route table record matches all parsed awsfilters.
 func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bool {
 	for name, values := range filters {
 		if strings.HasPrefix(name, "tag:") {
@@ -1200,11 +1200,11 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 		}
 		switch name {
 		case "vpc-id":
-			if !filterutil.MatchesAny(values, record.VpcId) {
+			if !awsfilters.MatchesAny(values, record.VpcId) {
 				return false
 			}
 		case "route-table-id":
-			if !filterutil.MatchesAny(values, record.RouteTableId) {
+			if !awsfilters.MatchesAny(values, record.RouteTableId) {
 				return false
 			}
 		case "association.main":
@@ -1215,14 +1215,14 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 					break
 				}
 			}
-			wantMain := filterutil.MatchesAny(values, "true")
+			wantMain := awsfilters.MatchesAny(values, "true")
 			if wantMain != hasMain {
 				return false
 			}
 		case "association.route-table-association-id":
 			found := false
 			for _, a := range record.Associations {
-				if filterutil.MatchesAny(values, a.AssociationId) {
+				if awsfilters.MatchesAny(values, a.AssociationId) {
 					found = true
 					break
 				}
@@ -1233,7 +1233,7 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 		case "association.subnet-id":
 			found := false
 			for _, a := range record.Associations {
-				if filterutil.MatchesAny(values, a.SubnetId) {
+				if awsfilters.MatchesAny(values, a.SubnetId) {
 					found = true
 					break
 				}
@@ -1244,7 +1244,7 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 		case "route.destination-cidr-block":
 			found := false
 			for _, r := range record.Routes {
-				if filterutil.MatchesAny(values, r.DestinationCidrBlock) {
+				if awsfilters.MatchesAny(values, r.DestinationCidrBlock) {
 					found = true
 					break
 				}
@@ -1255,7 +1255,7 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 		case "route.gateway-id":
 			found := false
 			for _, r := range record.Routes {
-				if filterutil.MatchesAny(values, r.GatewayId) {
+				if awsfilters.MatchesAny(values, r.GatewayId) {
 					found = true
 					break
 				}
@@ -1266,7 +1266,7 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 		case "route.nat-gateway-id":
 			found := false
 			for _, r := range record.Routes {
-				if filterutil.MatchesAny(values, r.NatGatewayId) {
+				if awsfilters.MatchesAny(values, r.NatGatewayId) {
 					found = true
 					break
 				}
@@ -1277,7 +1277,7 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 		case "route.state":
 			found := false
 			for _, r := range record.Routes {
-				if filterutil.MatchesAny(values, r.State) {
+				if awsfilters.MatchesAny(values, r.State) {
 					found = true
 					break
 				}
@@ -1288,7 +1288,7 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 		case "route.origin":
 			found := false
 			for _, r := range record.Routes {
-				if filterutil.MatchesAny(values, r.Origin) {
+				if awsfilters.MatchesAny(values, r.Origin) {
 					found = true
 					break
 				}
@@ -1297,14 +1297,14 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 				return false
 			}
 		case "owner-id":
-			if !filterutil.MatchesAny(values, record.AccountID) {
+			if !awsfilters.MatchesAny(values, record.AccountID) {
 				return false
 			}
 		default:
 			return false
 		}
 	}
-	return filterutil.MatchesTags(filters, record.Tags)
+	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
 // publishNatGatewayEvents publishes vpc.add-nat-gateway for each associated subnet

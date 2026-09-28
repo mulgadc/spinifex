@@ -5,7 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 )
 
@@ -36,7 +36,7 @@ func ParseStatusSelection(input *ec2.DescribeInstanceStatusInput, accountID stri
 		return StatusSelection{}, err
 	}
 
-	filters, err := filterutil.ParseFilters(input.Filters, DescribeInstanceStatusValidFilters)
+	filters, err := awsfilters.ParseFilters(input.Filters, DescribeInstanceStatusValidFilters)
 	if err != nil {
 		slog.Warn("DescribeInstanceStatus: invalid filter", "err", err)
 		return StatusSelection{}, err

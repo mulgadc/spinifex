@@ -17,7 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
@@ -287,12 +287,12 @@ var describeTagsValidFilters = map[string]bool{
 	"value":         true,
 }
 
-// DescribeTags returns tags matching the specified filters.
+// DescribeTags returns tags matching the specified awsfilters.
 func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeTagsInput, accountID string) (*ec2.DescribeTagsOutput, error) {
 	var filters map[string][]string
 	if input != nil {
 		var err error
-		filters, err = filterutil.ParseFilters(input.Filters, describeTagsValidFilters)
+		filters, err = awsfilters.ParseFilters(input.Filters, describeTagsValidFilters)
 		if err != nil {
 			slog.WarnContext(ctx, "DescribeTags: invalid filter", "err", err)
 			return nil, err
@@ -312,10 +312,10 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 	for _, resourceID := range resourceIDs {
 		resourceType := describeTagsResourceType(resourceID)
 
-		if !filterutil.MatchesAny(filters["resource-id"], resourceID) {
+		if !awsfilters.MatchesAny(filters["resource-id"], resourceID) {
 			continue
 		}
-		if !filterutil.MatchesAny(filters["resource-type"], resourceType) {
+		if !awsfilters.MatchesAny(filters["resource-type"], resourceType) {
 			continue
 		}
 
@@ -327,10 +327,10 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 		}
 
 		for key, value := range resourceTags {
-			if !filterutil.MatchesAny(filters["key"], key) {
+			if !awsfilters.MatchesAny(filters["key"], key) {
 				continue
 			}
-			if !filterutil.MatchesAny(filters["value"], value) {
+			if !awsfilters.MatchesAny(filters["value"], value) {
 				continue
 			}
 

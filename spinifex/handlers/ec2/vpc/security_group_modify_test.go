@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -211,7 +211,7 @@ func TestModifySecurityGroupRules_PreservesTags(t *testing.T) {
 	require.NoError(t, modifyRules(svc, sgID, ruleUpdate(ruleID, tcpCIDRRequest(81, "10.0.0.0/24"))))
 
 	want := map[string]string{"Name": "web"}
-	assert.Equal(t, want, filterutil.EC2TagsToMap(sgRuleByID(t, svc, testAccountID, ruleID).Tags))
+	assert.Equal(t, want, awsfilters.EC2TagsToMap(sgRuleByID(t, svc, testAccountID, ruleID).Tags))
 	assert.Equal(t, want, writer.Calls[ruleID], "the central tag store must still hold the rule's tags")
 	assert.NotContains(t, writer.Deleted, ruleID, "a modify must not clear the rule's central tags")
 }

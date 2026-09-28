@@ -87,7 +87,13 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 
 	sessionName := *input.RoleSessionName
 	if !roleSessionNameRegex.MatchString(sessionName) {
-		return nil, roleSessionNameError(sessionName)
+		// A length violation keeps the bare code, as AWS's wording for it is unconfirmed.
+		if roleSessionNameCharsetRegex.MatchString(sessionName) {
+			return nil, errors.New(awserrors.ErrorValidationError)
+		}
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError,
+			"1 validation error detected: Value '%s' at 'roleSessionName' failed to satisfy constraint: "+
+				"Member must satisfy regular expression pattern: [\\w+=,.@-]*", sessionName)
 	}
 
 	if aws.StringValue(input.Policy) != "" || len(input.PolicyArns) > 0 {
@@ -159,10 +165,15 @@ func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID st
 func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
 	roleAccountID, role, err := ResolveRoleByARN(s.iamSvc, roleARN)
 	if err != nil {
-		// A miss and a non-canonical ARN are both masked to AccessDenied,
-		// matching AWS and preventing role enumeration.
+		// A miss and a non-canonical ARN are both masked to AccessDenied, with the
+		// same text as a trust-policy refusal, preventing role enumeration. IMDS
+		// has no caller ARN and keeps the bare code.
 		if errors.Is(err, ErrRoleUnresolved) {
-			return nil, assumeRoleDenied(callerARN, roleARN)
+			if callerARN == "" {
+				return nil, errors.New(awserrors.ErrorAccessDenied)
+			}
+			return nil, awserrors.Errorf(awserrors.ErrorAccessDenied,
+				"User: %s is not authorized to perform: %s on resource: %s", callerARN, stsActionAssumeRole, roleARN)
 		}
 		return nil, err
 	}
@@ -192,8 +203,9 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 	}
 
 	if err := evalTrustPolicy(aws.StringValue(role.AssumeRolePolicyDocument), callerARN, sources); err != nil {
-		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorAccessDenied {
-			return nil, assumeRoleDenied(callerARN, roleARN)
+		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorAccessDenied && callerARN != "" {
+			return nil, awserrors.Errorf(awserrors.ErrorAccessDenied,
+				"User: %s is not authorized to perform: %s on resource: %s", callerARN, stsActionAssumeRole, roleARN)
 		}
 		return nil, err
 	}
@@ -221,27 +233,6 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 		out.SourceIdentity = aws.String(cred.SourceIdentity)
 	}
 	return out, nil
-}
-
-// assumeRoleDenied is AWS's AccessDenied for a missing role and a refused one alike,
-// so the two stay indistinguishable. The IMDS path has no caller ARN and keeps the bare code.
-func assumeRoleDenied(callerARN, roleARN string) error {
-	if callerARN == "" {
-		return errors.New(awserrors.ErrorAccessDenied)
-	}
-	return awserrors.Errorf(awserrors.ErrorAccessDenied,
-		"User: %s is not authorized to perform: %s on resource: %s", callerARN, stsActionAssumeRole, roleARN)
-}
-
-// roleSessionNameError carries AWS's pattern message for a charset violation. A
-// length violation keeps the bare code, as AWS's wording for it is unconfirmed.
-func roleSessionNameError(sessionName string) error {
-	if roleSessionNameCharsetRegex.MatchString(sessionName) {
-		return errors.New(awserrors.ErrorValidationError)
-	}
-	return awserrors.Errorf(awserrors.ErrorValidationError,
-		"1 validation error detected: Value '%s' at 'roleSessionName' failed to satisfy constraint: "+
-			"Member must satisfy regular expression pattern: [\\w+=,.@-]*", sessionName)
 }
 
 // assumeRoleConditionKeySourceAccount is the only condition key evaluated on the

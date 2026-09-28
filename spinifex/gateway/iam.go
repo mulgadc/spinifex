@@ -7,7 +7,7 @@ import (
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
@@ -26,8 +26,8 @@ func iamHandler[In any](handler func(string, *In, *GatewayConfig) (any, error)) 
 	return iamAction{
 		parse: func(q map[string]string) (any, error) {
 			input := new(In)
-			if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
-				if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+			if err := query.QueryParamsToStruct(q, input); err != nil {
+				if errors.Is(err, query.ErrSliceTooLarge) {
 					return nil, errors.New(awserrors.ErrorMalformedQueryString)
 				}
 				return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The request parameters are invalid: %v", err)

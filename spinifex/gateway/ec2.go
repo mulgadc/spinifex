@@ -13,7 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
 	gateway_ec2_account "github.com/mulgadc/spinifex/spinifex/gateway/ec2/account"
@@ -76,7 +76,7 @@ func requestContext(r *http.Request) context.Context {
 // ec2Action constructor so they all consume the same parse.
 func parseEC2Input[In any](q map[string]string) (any, error) {
 	input := new(In)
-	if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
+	if err := query.QueryParamsToStruct(q, input); err != nil {
 		return nil, err
 	}
 	return input, nil
@@ -655,7 +655,7 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 
 	input, err := handler.parse(queryArgs)
 	if err != nil {
-		if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+		if errors.Is(err, query.ErrSliceTooLarge) {
 			return errors.New(awserrors.ErrorMalformedQueryString)
 		}
 		return err

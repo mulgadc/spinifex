@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
 )
@@ -143,7 +143,7 @@ func ResourceARNs(action, region, accountID string, body []byte) ([]string, erro
 			if _, duplicate := seen[resource]; duplicate {
 				continue
 			}
-			if len(resources) >= awsec2query.MaxSliceLen {
+			if len(resources) >= query.MaxSliceLen {
 				return nil, errors.New(awserrors.ErrorMalformedQueryString)
 			}
 			seen[resource] = struct{}{}
@@ -172,7 +172,7 @@ func resolve(source resourceSource, action, region, accountID string, scope body
 		}
 		// Capped so a body-supplied list cannot make the gate do unbounded work
 		// ahead of the authorization decision.
-		if len(names) > awsec2query.MaxSliceLen {
+		if len(names) > query.MaxSliceLen {
 			return nil, errors.New(awserrors.ErrorMalformedQueryString)
 		}
 		out := make([]string, 0, len(names))

@@ -1,4 +1,6 @@
-package awsec2query
+// Package query decodes AWS Query protocol parameters into SDK request shapes.
+// It is protocol plumbing and owns no service action or resource semantics.
+package query
 
 import (
 	"encoding/base64"

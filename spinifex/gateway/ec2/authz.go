@@ -9,7 +9,7 @@ import (
 	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -333,7 +333,7 @@ func ResourceARNs(action, region, accountID string, input any) ([]string, error)
 			}
 			seen[resource] = struct{}{}
 			resources = append(resources, resource)
-			if len(resources) > awsec2query.MaxSliceLen {
+			if len(resources) > query.MaxSliceLen {
 				return nil, errors.New(awserrors.ErrorMalformedQueryString)
 			}
 		}
@@ -360,7 +360,7 @@ func (s *resourceScope) resolve(region, accountID string, input any) ([]string, 
 		}
 		return []string{anyResource}, nil
 	}
-	if len(ids) > awsec2query.MaxSliceLen {
+	if len(ids) > query.MaxSliceLen {
 		return nil, errors.New(awserrors.ErrorMalformedQueryString)
 	}
 
@@ -384,7 +384,7 @@ func (s *resourceScope) resolve(region, accountID string, input any) ([]string, 
 // precedence. Values are deduplicated before policy evaluation.
 func (s *resourceScope) identifiers(input any) []string {
 	for _, path := range s.paths {
-		values := awsec2query.StringValuesAt(input, path)
+		values := query.StringValuesAt(input, path)
 		seen := make(map[string]struct{}, len(values))
 		ids := make([]string, 0, len(values))
 		for _, value := range values {

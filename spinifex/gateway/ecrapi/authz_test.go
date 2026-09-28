@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 	"github.com/stretchr/testify/assert"
@@ -113,13 +113,13 @@ func TestResourceARNs_OversizedListIsRejected(t *testing.T) {
 	}
 
 	_, err := gateway_ecrapi.ResourceARNs("DescribeRepositories", testRegion, testAccountID,
-		namesBody(awsec2query.MaxSliceLen+1))
+		namesBody(query.MaxSliceLen+1))
 	require.EqualError(t, err, awserrors.ErrorMalformedQueryString)
 
 	resources, err := gateway_ecrapi.ResourceARNs("DescribeRepositories", testRegion, testAccountID,
-		namesBody(awsec2query.MaxSliceLen))
+		namesBody(query.MaxSliceLen))
 	require.NoError(t, err)
-	assert.Len(t, resources, awsec2query.MaxSliceLen)
+	assert.Len(t, resources, query.MaxSliceLen)
 }
 
 // encoding/json resolves two spellings of one field in document order when the

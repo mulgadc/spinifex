@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"sort"
 
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -50,10 +50,10 @@ type Handler func(ctx context.Context, action string, q map[string]string, nc *n
 func typedEnv[In any](handler func(context.Context, *In, *nats.Conn, Caller, Env) (any, error)) Handler {
 	return func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error) {
 		input := new(In)
-		if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
+		if err := query.QueryParamsToStruct(q, input); err != nil {
 			// An over-long indexed list is a client-side malformation, not an
 			// internal failure, so it keeps its own error code.
-			if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+			if errors.Is(err, query.ErrSliceTooLarge) {
 				return nil, errors.New(awserrors.ErrorMalformedQueryString)
 			}
 			return nil, errors.New(awserrors.ErrorInvalidParameterValue)

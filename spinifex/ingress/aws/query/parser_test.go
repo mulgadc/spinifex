@@ -1,4 +1,4 @@
-package awsec2query
+package query
 
 import (
 	"fmt"

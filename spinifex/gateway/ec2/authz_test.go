@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,7 +29,7 @@ func resolve(t *testing.T, action string, q map[string]string) []string {
 	var input any
 	if prototype, ok := ec2Inputs[action]; ok {
 		input = reflect.New(reflect.TypeOf(prototype).Elem()).Interface()
-		require.NoError(t, awsec2query.QueryParamsToStruct(q, input))
+		require.NoError(t, query.QueryParamsToStruct(q, input))
 	}
 	got, err := ResourceARNs(action, testRegion, testAccountID, input)
 	require.NoError(t, err)

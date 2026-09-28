@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
 	spxarn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
@@ -36,8 +36,8 @@ type STSHandler func(action string, q map[string]string, gw *GatewayConfig, c st
 func stsHandler[In any](handler func(c stsCaller, input *In, gw *GatewayConfig) (any, error)) STSHandler {
 	return func(action string, q map[string]string, gw *GatewayConfig, c stsCaller) ([]byte, error) {
 		input := new(In)
-		if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
-			if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+		if err := query.QueryParamsToStruct(q, input); err != nil {
+			if errors.Is(err, query.ErrSliceTooLarge) {
 				return nil, errors.New(awserrors.ErrorMalformedQueryString)
 			}
 			return nil, errors.New(awserrors.ErrorValidationError)

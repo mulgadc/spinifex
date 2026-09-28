@@ -74,7 +74,7 @@ Servers beyond the third run the full set of services — storage, gateway and n
 
 ### How the cluster's own state is replicated
 
-Guest data has an obvious home: volumes live in Viperblock, objects in Predastore, both erasure coded across the cluster. The control plane's *own* state has a less obvious one, and it matters just as much. Every instance record, every VPC and subnet, the node roster, IAM users and access keys, quotas, DNS records and the leases reconcilers hold are all kept in **NATS JetStream key-value buckets**, replicated by Raft across the servers you installed. A cluster that has lost its state has lost the ability to describe, launch, terminate or route anything, even while every guest is still running.
+Guest data has an obvious home: volumes live in Viperblock, objects in Predastore, both erasure coded across the cluster. The cluster's own bookkeeping has a less obvious one, and it matters just as much. Every instance record, every VPC and subnet, the server roster, IAM users and access keys, quotas and DNS records are kept in **NATS JetStream key-value buckets** — Spinifex's control-plane database, replicated across the servers you installed rather than sitting on any one of them. A cluster that has lost its state has lost the ability to describe, launch, terminate or route anything, even while every guest is still running.
 
 **A bucket is replicated across the largest odd number of nodes the cluster has, up to five.** That number is decided once, by the `--nodes` count you give `spx admin init` in Step 4, and every service on every node reads it back out of `/etc/spinifex/spinifex.toml` before it creates anything.
 
@@ -87,7 +87,7 @@ Guest data has an obvious home: volumes live in Viperblock, objects in Predastor
 | 5 | 5 | 3 | any 2 nodes lost |
 | 10 | 5 | 3 | any 2 of the 5 nodes holding each bucket |
 
-**The count is always odd, and that is why four servers replicate three ways rather than four.** A Raft group needs a majority, and an even number of members does not buy one: four replicas store a fourth full copy of every write and still survive exactly one loss, the same as three. On four servers NATS spreads which three nodes hold each bucket, so all four carry their share and none of them is idle.
+**The count is always odd, and that is why four servers replicate three ways rather than four.** Agreement is by majority, and an even number of copies does not buy you one: four copies cost a fourth write every time and still survive exactly one loss, the same as three. On four servers NATS spreads which three nodes hold each bucket, so all four carry their share and none of them is idle.
 
 Five is JetStream's own ceiling on a stream's replica count, not a choice of ours. Past five servers the buckets stay at five and NATS spreads which five nodes hold each one, so the cluster keeps growing while the cost of a write does not.
 
@@ -95,7 +95,7 @@ Five is JetStream's own ceiling on a stream's replica count, not a choice of our
 
 #### Worked example — three servers
 
-Say you ran Step 4 with `--nodes 3` on `node1`, `node2` and `node3`. Every KV bucket the cluster creates is a three-member Raft group, one member per server:
+Say you ran Step 4 with `--nodes 3` on `node1`, `node2` and `node3`. Every bucket the cluster creates is held by all three servers, with one of them responsible for coordinating changes to it:
 
 ```
 KV bucket "spinifex-instance-state"        KV bucket "spinifex-vpcd-reconcile"
@@ -108,11 +108,25 @@ KV bucket "spinifex-instance-state"        KV bucket "spinifex-vpcd-reconcile"
 
 Three things follow from that picture, and they are the whole reason three servers is the floor:
 
-- **A write is only acknowledged once a majority has it.** Launching an instance is not confirmed to the caller until at least two of the three servers have the record on disk. Losing one server afterwards cannot lose that instance.
-- **Losing a node costs an election, not the data.** If `node1` goes down, `node2` and `node3` are still a majority. They elect a new leader for the buckets `node1` led — seconds on a healthy cluster — and the API keeps answering throughout. No bucket becomes unreadable, because no bucket lived only on `node1`.
-- **Leader leases keep working, which is what keeps the cluster self-healing.** The reconcilers that repair VPC state, enforce quotas and publish DNS each hold a lease in a bucket of their own (`spinifex-vpcd-reconcile`, `spinifex-quota-reconcile`, `spinifex-dns-reconcile`, and the ECS and RDS leader buckets). Acquiring a lease is a write, so a lease bucket without a quorum cannot be acquired by anyone — every reconciler sharing it would stop cluster-wide at exactly the moment a node had failed and there was repair work to do. On three replicas the survivors take the leases over instead.
+- **A change is not confirmed until most of the cluster has it.** When you launch an instance, the API does not report success until at least two of the three servers have written the record to disk. Losing a server afterwards cannot lose that instance.
+- **Losing a server costs a pause, not the data.** If `node1` goes down, `node2` and `node3` are still a majority. They take over the buckets `node1` was responsible for — seconds on a healthy cluster — and the API keeps answering throughout. Nothing becomes unreadable, because nothing lived only on `node1`.
+- **The cluster keeps repairing itself.** Spinifex runs background workers that fix up VPC state, enforce quotas and publish DNS. Only one server runs each at a time, and they claim that right by writing to a bucket. If those buckets were not replicated, a server failure would stop the repair work at precisely the moment there was repair work to do.
 
-Contrast that with a bucket on **one** replica. It lives on one server, chosen by JetStream and recorded in no configuration file you can inspect. Stopping, rebooting or partitioning that one server makes the bucket return `nats: no responders available for request` on *every* node at once. A single-node event becomes a cluster-wide outage, and which node it was is not something you decided or can see from the config.
+Contrast that with a bucket on **one** server. It lives wherever it happened to be created, which is not recorded in any config file you can inspect. Stopping, rebooting or losing that one server makes the bucket unreachable from *every* node at once — a single-server event becomes a cluster-wide outage, on a server nobody chose.
+
+#### What you see when a server fails
+
+Majority is not an implementation detail. It is what stops two halves of a damaged cluster from both believing they are in charge, and it is the reason the minimum is three servers rather than two.
+
+**With one server down, the cluster carries on.** `node2` and `node3` are two of three. Instances launch, VPCs change, the API answers normally, and there is nothing to do but replace the failed server. What you have lost is the *next* failure: a second server down leaves no majority and the cluster stops accepting changes until one comes back.
+
+**A server that is cut off stops accepting changes, on purpose.** If `node1` is not down but isolated — a failed switch, a misconfigured port — it is one server out of three, which is not a majority, so it will not record anything. An operator working on `node1` who tries to launch an instance gets a failure rather than a success. That is the behaviour you want: if `node1` accepted changes while `node2` and `node3` were also accepting them, you would end up with two different versions of the same cluster and no way to merge them. Refusing the isolated side is what makes the surviving side worth trusting.
+
+Everything else on `node1` keeps running. Guests continue to execute and their volumes keep serving. What stops is anything that has to be recorded: launching, terminating, attaching a volume, changing a security group. Storage writes fail alongside it, so a guest on the isolated server stalls rather than quietly diverging from the rest of the cluster.
+
+**Be careful reading state from an isolated server.** A server that is cut off can still answer `describe-instances` from its own copy of the data — frozen at the moment it lost contact, with nothing in the answer to say so. **Run operator commands from a server you know is with the majority**, and if one server's answers disagree with its peers', believe the peers.
+
+**A returning server catches up on its own.** Bring `node1` back and it synchronises from the others automatically: no command to run, no restart, no repair step. (`spx admin kv replicas --repair` exists for a different situation — a bucket configured with too few copies — not a server that is simply behind.)
 
 #### Growing an existing cluster
 

@@ -1,4 +1,4 @@
-package handlers_ec2_instance
+package handlers_ec2_instance_test
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -51,12 +51,11 @@ func (f *fakeVolumeCreator) DeleteVolume(_ context.Context, input *ec2.DeleteVol
 
 // dataVolumeService builds an instance service with a metadata store and the
 // fake creator wired in, which is all the data-volume path touches.
-func dataVolumeService(t *testing.T, creator *fakeVolumeCreator) *InstanceServiceImpl {
+func dataVolumeService(t *testing.T, creator *fakeVolumeCreator) *handlers_ec2_instance.InstanceServiceImpl {
 	t.Helper()
-	svc := providerRootVolumeService(t, ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}),
-		rootVolumeAMILoader(), objectstore.NewMemoryObjectStore())
-	creator.metadata = svc.metadata
-	svc.volumeCreator = creator
+	svc := handlers_ec2_instance.NewProviderRootVolumeTestService(t)
+	creator.metadata = svc.MetadataStore()
+	svc.SetVolumeCreator(creator)
 	return svc
 }
 
@@ -81,9 +80,9 @@ func dataMappingInput(devices ...string) *ec2.RunInstancesInput {
 func TestPrepareDataVolumes_CreatesOnePerMapping(t *testing.T) {
 	creator := &fakeVolumeCreator{}
 	svc := dataVolumeService(t, creator)
-	instance := &vm.VM{AccountID: testRootAccount}
+	instance := &vm.VM{AccountID: handlers_ec2_instance.TestRootAccount}
 
-	infos, err := svc.prepareDataVolumes(context.Background(), dataMappingInput("/dev/sdf", "/dev/sdg"), instance)
+	infos, err := svc.PrepareDataVolumes(context.Background(), dataMappingInput("/dev/sdf", "/dev/sdg"), instance)
 	require.NoError(t, err)
 	require.Len(t, infos, 2)
 	assert.Equal(t, "/dev/sdf", infos[0].DeviceName)
@@ -92,7 +91,7 @@ func TestPrepareDataVolumes_CreatesOnePerMapping(t *testing.T) {
 	require.Len(t, creator.created, 2)
 	assert.Equal(t, int64(4), aws.Int64Value(creator.created[0].Size))
 	assert.Equal(t, int64(5), aws.Int64Value(creator.created[1].Size))
-	assert.Equal(t, testRootAZ, aws.StringValue(creator.created[0].AvailabilityZone))
+	assert.Equal(t, handlers_ec2_instance.TestRootAZ, aws.StringValue(creator.created[0].AvailabilityZone))
 
 	require.Len(t, instance.EBSRequests.Requests, 2)
 	for i, req := range instance.EBSRequests.Requests {
@@ -106,9 +105,9 @@ func TestPrepareDataVolumes_CreatesOnePerMapping(t *testing.T) {
 func TestPrepareDataVolumes_NoMappingsCreatesNothing(t *testing.T) {
 	creator := &fakeVolumeCreator{}
 	svc := dataVolumeService(t, creator)
-	instance := &vm.VM{AccountID: testRootAccount}
+	instance := &vm.VM{AccountID: handlers_ec2_instance.TestRootAccount}
 
-	infos, err := svc.prepareDataVolumes(context.Background(), dataMappingInput(), instance)
+	infos, err := svc.PrepareDataVolumes(context.Background(), dataMappingInput(), instance)
 	require.NoError(t, err)
 	assert.Empty(t, infos)
 	assert.Empty(t, creator.created)
@@ -120,9 +119,9 @@ func TestPrepareDataVolumes_NoMappingsCreatesNothing(t *testing.T) {
 func TestPrepareDataVolumes_UnwindsWhatItCreated(t *testing.T) {
 	creator := &fakeVolumeCreator{failFrom: 1}
 	svc := dataVolumeService(t, creator)
-	instance := &vm.VM{AccountID: testRootAccount}
+	instance := &vm.VM{AccountID: handlers_ec2_instance.TestRootAccount}
 
-	_, err := svc.prepareDataVolumes(context.Background(), dataMappingInput("/dev/sdf", "/dev/sdg"), instance)
+	_, err := svc.PrepareDataVolumes(context.Background(), dataMappingInput("/dev/sdf", "/dev/sdg"), instance)
 	require.Error(t, err)
 	assert.Len(t, creator.created, 1)
 	assert.Equal(t, []string{"vol-data-a"}, creator.deleted)
@@ -133,27 +132,27 @@ func TestPrepareDataVolumes_UnwindsWhatItCreated(t *testing.T) {
 func TestPrepareDataVolumes_RecordsDeleteOnTermination(t *testing.T) {
 	creator := &fakeVolumeCreator{}
 	svc := dataVolumeService(t, creator)
-	instance := &vm.VM{AccountID: testRootAccount}
+	instance := &vm.VM{AccountID: handlers_ec2_instance.TestRootAccount}
 
 	input := dataMappingInput("/dev/sdf")
 	input.BlockDeviceMappings[1].Ebs.DeleteOnTermination = aws.Bool(false)
-	infos, err := svc.prepareDataVolumes(context.Background(), input, instance)
+	infos, err := svc.PrepareDataVolumes(context.Background(), input, instance)
 	require.NoError(t, err)
 	require.Len(t, infos, 1)
 	assert.False(t, infos[0].DeleteOnTermination)
 	require.Len(t, instance.EBSRequests.Requests, 1)
 	assert.False(t, instance.EBSRequests.Requests[0].DeleteOnTermination)
 
-	doc, err := svc.metadata.GetVolume(context.Background(), testRootAccount, infos[0].VolumeId)
+	doc, err := svc.MetadataStore().GetVolume(context.Background(), handlers_ec2_instance.TestRootAccount, infos[0].VolumeId)
 	require.NoError(t, err)
 	assert.False(t, doc.DeleteOnTermination)
 
 	kept := &fakeVolumeCreator{}
 	keptSvc := dataVolumeService(t, kept)
-	keptInfos, err := keptSvc.prepareDataVolumes(context.Background(), dataMappingInput("/dev/sdf"), &vm.VM{AccountID: testRootAccount})
+	keptInfos, err := keptSvc.PrepareDataVolumes(context.Background(), dataMappingInput("/dev/sdf"), &vm.VM{AccountID: handlers_ec2_instance.TestRootAccount})
 	require.NoError(t, err)
 	require.Len(t, keptInfos, 1)
-	doc, err = keptSvc.metadata.GetVolume(context.Background(), testRootAccount, keptInfos[0].VolumeId)
+	doc, err = keptSvc.MetadataStore().GetVolume(context.Background(), handlers_ec2_instance.TestRootAccount, keptInfos[0].VolumeId)
 	require.NoError(t, err)
 	assert.True(t, doc.DeleteOnTermination)
 }
@@ -167,9 +166,9 @@ func TestParseDataVolumeParams_SkipsRootAndEphemeral(t *testing.T) {
 			{DeviceName: aws.String("/dev/sdb"), VirtualName: aws.String("ephemeral0")},
 		},
 	}
-	params := parseDataVolumeParams(input)
+	params := handlers_ec2_instance.ParseDataVolumeParams(input)
 	require.Len(t, params, 1)
-	assert.Equal(t, "/dev/sdf", params[0].deviceName)
-	assert.Equal(t, int64(4), params[0].sizeGiB)
-	assert.True(t, params[0].deleteOnTermination)
+	assert.Equal(t, "/dev/sdf", params[0].DeviceName)
+	assert.Equal(t, int64(4), params[0].SizeGiB)
+	assert.True(t, params[0].DeleteOnTermination)
 }

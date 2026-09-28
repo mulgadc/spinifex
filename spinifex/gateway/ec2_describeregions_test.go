@@ -1,8 +1,9 @@
-package gateway
+package gateway_test
 
 import (
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,8 +27,8 @@ func TestAdvertisedEndpoint_ResolvesFromRegistryHost(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gw := &GatewayConfig{RegistryHost: tc.registryHost, RegistryPort: tc.port}
-			assert.Equal(t, tc.want, gw.advertisedEndpoint())
+			gw := &gateway.GatewayConfig{RegistryHost: tc.registryHost, RegistryPort: tc.port}
+			assert.Equal(t, tc.want, gw.AdvertisedEndpoint())
 		})
 	}
 }
@@ -37,12 +38,8 @@ func TestAdvertisedEndpoint_ResolvesFromRegistryHost(t *testing.T) {
 // response. A caller on a concrete-host deployment must never be told to
 // dial its own loopback, which is the defect this guards against.
 func TestDescribeRegions_UsesAdvertisedEndpoint(t *testing.T) {
-	h := ec2Actions["DescribeRegions"]
-	input, err := h.parse(map[string]string{})
-	require.NoError(t, err)
-
-	gw := &GatewayConfig{Region: "ap-southeast-2", RegistryHost: "10.0.0.5", RegistryPort: "9999"}
-	xmlOutput, err := h.dispatch("DescribeRegions", input, gw, "acct-123", nil)
+	gw := &gateway.GatewayConfig{Region: "ap-southeast-2", RegistryHost: "10.0.0.5", RegistryPort: "9999"}
+	xmlOutput, err := gateway.DispatchEC2Action(gw, "DescribeRegions", map[string]string{}, "acct-123")
 	require.NoError(t, err)
 
 	body := string(xmlOutput)

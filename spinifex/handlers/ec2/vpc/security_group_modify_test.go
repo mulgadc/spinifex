@@ -189,7 +189,7 @@ func TestModifySecurityGroupRules_RevocableByNewContent(t *testing.T) {
 func TestModifySecurityGroupRules_PreservesTags(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
-	writer := &fakeCentralTagStore{}
+	writer := &FakeCentralTagStore{}
 	svc.SetCentralTagStore(writer)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgID := createTestSG(t, svc, vpcID, "mod-tags")
@@ -212,8 +212,8 @@ func TestModifySecurityGroupRules_PreservesTags(t *testing.T) {
 
 	want := map[string]string{"Name": "web"}
 	assert.Equal(t, want, filterutil.EC2TagsToMap(sgRuleByID(t, svc, testAccountID, ruleID).Tags))
-	assert.Equal(t, want, writer.calls[ruleID], "the central tag store must still hold the rule's tags")
-	assert.NotContains(t, writer.deleted, ruleID, "a modify must not clear the rule's central tags")
+	assert.Equal(t, want, writer.Calls[ruleID], "the central tag store must still hold the rule's tags")
+	assert.NotContains(t, writer.Deleted, ruleID, "a modify must not clear the rule's central tags")
 }
 
 // TestModifySecurityGroupRules_DescriptionIsReplaced pins AWS's whole-rule

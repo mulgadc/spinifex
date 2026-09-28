@@ -1,23 +1,24 @@
-package handlers_ecs
+package handlers_ecs_test
 
 import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // listInstanceARNs lists a cluster's container instances at one status, or at
 // every status when the filter is empty.
-func listInstanceARNs(t *testing.T, svc *Service, cluster, status string) []string {
+func listInstanceARNs(t *testing.T, svc *handlers_ecs.Service, cluster, status string) []string {
 	t.Helper()
 	in := &ecs.ListContainerInstancesInput{Cluster: aws.String(cluster)}
 	if status != "" {
 		in.Status = aws.String(status)
 	}
-	out, err := svc.ListContainerInstances(t.Context(), in, testAccountID)
+	out, err := svc.ListContainerInstances(t.Context(), in, handlers_ecs.TestAccountID)
 	require.NoError(t, err)
 	return aws.StringValueSlice(out.ContainerInstanceArns)
 }
@@ -26,24 +27,24 @@ func listInstanceARNs(t *testing.T, svc *Service, cluster, status string) []stri
 // find one that can take work, and a cluster carrying a drained node reads as
 // if every node were live.
 func TestListContainerInstances_StatusSelectsOnlyThatStatus(t *testing.T) {
-	svc, _ := newTestService(t)
-	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	svc, _ := handlers_ecs.NewTestService(t)
+	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, handlers_ecs.TestAccountID)
 	require.NoError(t, err)
-	registerInstance(t, svc, "web", "i-live", 1024, 2048)
-	registerInstance(t, svc, "web", "i-drained", 1024, 2048)
+	handlers_ecs.RegisterInstance(t, svc, "web", "i-live", 1024, 2048)
+	handlers_ecs.RegisterInstance(t, svc, "web", "i-drained", 1024, 2048)
 
-	kv, err := svc.bucket(t.Context(), testAccountID)
+	kv, err := svc.Bucket(t.Context(), handlers_ecs.TestAccountID)
 	require.NoError(t, err)
-	drained, err := svc.upsertInstance(t.Context(), kv, testAccountID, "web", "i-drained", func(r *InstanceRecord) {
-		r.Status = InstanceStatusDraining
+	drained, err := svc.UpsertInstance(t.Context(), kv, handlers_ecs.TestAccountID, "web", "i-drained", func(r *handlers_ecs.InstanceRecord) {
+		r.Status = handlers_ecs.InstanceStatusDraining
 	})
 	require.NoError(t, err)
 
-	active := listInstanceARNs(t, svc, "web", InstanceStatusActive)
+	active := listInstanceARNs(t, svc, "web", handlers_ecs.InstanceStatusActive)
 	assert.Len(t, active, 1)
 	assert.NotContains(t, active, drained.ARN)
 
-	assert.Equal(t, []string{drained.ARN}, listInstanceARNs(t, svc, "web", InstanceStatusDraining))
+	assert.Equal(t, []string{drained.ARN}, listInstanceARNs(t, svc, "web", handlers_ecs.InstanceStatusDraining))
 	assert.Len(t, listInstanceARNs(t, svc, "web", ""), 2)
 }
 
@@ -51,10 +52,10 @@ func TestListContainerInstances_StatusSelectsOnlyThatStatus(t *testing.T) {
 // so asking for one is a valid question with an empty answer rather than an
 // error.
 func TestListContainerInstances_TransitionalStatusMatchesNothing(t *testing.T) {
-	svc, _ := newTestService(t)
-	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	svc, _ := handlers_ecs.NewTestService(t)
+	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, handlers_ecs.TestAccountID)
 	require.NoError(t, err)
-	registerInstance(t, svc, "web", "i-live", 1024, 2048)
+	handlers_ecs.RegisterInstance(t, svc, "web", "i-live", 1024, 2048)
 
 	for _, status := range []string{"REGISTERING", "DEREGISTERING", "REGISTRATION_FAILED"} {
 		assert.Empty(t, listInstanceARNs(t, svc, "web", status), status)
@@ -62,42 +63,42 @@ func TestListContainerInstances_TransitionalStatusMatchesNothing(t *testing.T) {
 }
 
 func TestListContainerInstances_UnknownStatusIsRefused(t *testing.T) {
-	svc, _ := newTestService(t)
-	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	svc, _ := handlers_ecs.NewTestService(t)
+	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, handlers_ecs.TestAccountID)
 	require.NoError(t, err)
 
 	_, err = svc.ListContainerInstances(t.Context(), &ecs.ListContainerInstancesInput{
 		Cluster: aws.String("web"),
 		Status:  aws.String("INACTIVE"),
-	}, testAccountID)
+	}, handlers_ecs.TestAccountID)
 	require.Error(t, err)
 }
 
 // A filtered list and a describe of what it returned have to agree, since the
 // status the filter selects on is the one describe reports.
 func TestListContainerInstances_FilterAgreesWithDescribe(t *testing.T) {
-	svc, _ := newTestService(t)
-	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	svc, _ := handlers_ecs.NewTestService(t)
+	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, handlers_ecs.TestAccountID)
 	require.NoError(t, err)
-	registerInstance(t, svc, "web", "i-live", 1024, 2048)
-	registerInstance(t, svc, "web", "i-drained", 1024, 2048)
+	handlers_ecs.RegisterInstance(t, svc, "web", "i-live", 1024, 2048)
+	handlers_ecs.RegisterInstance(t, svc, "web", "i-drained", 1024, 2048)
 
-	kv, err := svc.bucket(t.Context(), testAccountID)
+	kv, err := svc.Bucket(t.Context(), handlers_ecs.TestAccountID)
 	require.NoError(t, err)
-	_, err = svc.upsertInstance(t.Context(), kv, testAccountID, "web", "i-drained", func(r *InstanceRecord) {
-		r.Status = InstanceStatusDraining
+	_, err = svc.UpsertInstance(t.Context(), kv, handlers_ecs.TestAccountID, "web", "i-drained", func(r *handlers_ecs.InstanceRecord) {
+		r.Status = handlers_ecs.InstanceStatusDraining
 	})
 	require.NoError(t, err)
 
-	arns := listInstanceARNs(t, svc, "web", InstanceStatusActive)
+	arns := listInstanceARNs(t, svc, "web", handlers_ecs.InstanceStatusActive)
 	require.NotEmpty(t, arns)
 	out, err := svc.DescribeContainerInstances(t.Context(), &ecs.DescribeContainerInstancesInput{
 		Cluster:            aws.String("web"),
 		ContainerInstances: aws.StringSlice(arns),
-	}, testAccountID)
+	}, handlers_ecs.TestAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.ContainerInstances, len(arns))
 	for _, ci := range out.ContainerInstances {
-		assert.Equal(t, InstanceStatusActive, aws.StringValue(ci.Status))
+		assert.Equal(t, handlers_ecs.InstanceStatusActive, aws.StringValue(ci.Status))
 	}
 }

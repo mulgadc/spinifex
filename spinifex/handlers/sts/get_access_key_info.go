@@ -38,10 +38,10 @@ func (s *STSServiceImpl) GetAccessKeyInfo(input *sts.GetAccessKeyInfoInput) (*st
 		return nil, err
 	}
 	if accountID == "" {
-		// AWS reports an unresolvable key ID as an invalid token. A success with a
+		// AWS reports an unresolvable key ID as a validation error. A success with a
 		// blank Account would read to a caller as a mismatch rather than a failure.
 		slog.Debug("GetAccessKeyInfo: access key ID resolved to no account", "akid", accessKeyID)
-		return nil, errors.New(awserrors.ErrorInvalidClientTokenId)
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Access key ID is not valid.")
 	}
 
 	return &sts.GetAccessKeyInfoOutput{Account: aws.String(accountID)}, nil

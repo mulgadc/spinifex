@@ -67,7 +67,7 @@ func TestGetAccessKeyInfo_ResolvesSessionCredential(t *testing.T) {
 	assert.Equal(t, testCallerAccountID, aws.StringValue(out.Account))
 }
 
-func TestGetAccessKeyInfo_UnknownKeyIsInvalidClientToken(t *testing.T) {
+func TestGetAccessKeyInfo_UnknownKeyIsValidationError(t *testing.T) {
 	svc, _ := newTestSetup(t)
 
 	cases := []struct {
@@ -84,7 +84,10 @@ func TestGetAccessKeyInfo_UnknownKeyIsInvalidClientToken(t *testing.T) {
 			out, err := svc.GetAccessKeyInfo(&sts.GetAccessKeyInfoInput{AccessKeyId: aws.String(tc.akid)})
 			require.Error(t, err)
 			assert.Nil(t, out)
-			assert.Equal(t, awserrors.ErrorInvalidClientTokenId, err.Error())
+			code, message, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorValidationError, code)
+			assert.Equal(t, "Access key ID is not valid.", message)
 		})
 	}
 }

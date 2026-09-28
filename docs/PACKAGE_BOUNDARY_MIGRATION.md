@@ -95,6 +95,26 @@ Verification passed with an isolated Go module/build cache:
 The inventory was intentionally committed before this move so a later
 thin-main refactor cannot silently choose an owner by convenience.
 
+## Second source move — AWS filters
+
+The second source move removes the generic `filterutil` location and name:
+
+- old import path: `github.com/mulgadc/spinifex/spinifex/filterutil`
+- target import path: `github.com/mulgadc/spinifex/spinifex/foundation/aws/filters`
+
+Source commit `e707be942` moves the two package files, renames the Go package
+to `filters`, and updates twenty-eight importing files. Callers use the
+explicit import alias `awsfilters`: many filter implementations already hold
+a local `filters` value, and the alias prevents a package-name collision
+without changing that local state or any filter behaviour.
+
+Verification passed with an isolated Go module/build cache:
+
+- `go test ./spinifex/foundation/aws/filters`
+- `go test` for the seventeen direct caller packages
+- a Go-source search for the old import path returned no matches
+- `git diff --check`
+
 ## Recording rule
 
 For every later slice, add the old and new path, source commit, focused

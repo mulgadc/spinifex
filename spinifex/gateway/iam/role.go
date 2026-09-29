@@ -37,6 +37,9 @@ func GetRole(accountID string, input *iam.GetRoleInput, svc handlers_iam.IAMServ
 }
 
 func ListRoles(accountID string, input *iam.ListRolesInput, svc handlers_iam.IAMService) (*iam.ListRolesOutput, error) {
+	if err := validatePathPrefix(input.PathPrefix, identityPathPrefix); err != nil {
+		return nil, err
+	}
 	p, err := newPager(input.Marker, input.MaxItems)
 	if err != nil {
 		return nil, err
@@ -98,6 +101,9 @@ func DetachRolePolicy(accountID string, input *iam.DetachRolePolicyInput, svc ha
 func ListAttachedRolePolicies(accountID string, input *iam.ListAttachedRolePoliciesInput, svc handlers_iam.IAMService) (*iam.ListAttachedRolePoliciesOutput, error) {
 	if input.RoleName == nil || *input.RoleName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if err := validatePathPrefix(input.PathPrefix, policyPathPrefix); err != nil {
+		return nil, err
 	}
 	p, err := newPager(input.Marker, input.MaxItems)
 	if err != nil {

@@ -108,10 +108,9 @@ func TestIAMRolesAndProfiles(t *testing.T) {
 	require.Equal(t, "updated", aws.StringValue(got.Role.Description))
 	require.Equal(t, int64(7200), aws.Int64Value(got.Role.MaxSessionDuration))
 
-	// Server-side MaxSessionDuration range guard (900-43200) isn't reachable
-	// via the AWS SDK: UpdateRoleInput carries min:"3600" so SDK.Validate()
-	// blocks values < 3600 before dispatch. The gateway guard is covered by
-	// handlers/iam/roles_test.go TestCreateRole_MaxSessionDuration_TooSmall.
+	// The MaxSessionDuration range guard (3600-43200) is unreachable here: the
+	// SDK refuses values below 3600 before dispatch. handlers/iam covers it in
+	// TestRole_MaxSessionDurationBounds.
 
 	// UpdateAssumeRolePolicy — swap document, no enforcement yet.
 	_, err = iamCli.UpdateAssumeRolePolicy(&iam.UpdateAssumeRolePolicyInput{

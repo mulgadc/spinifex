@@ -34,6 +34,9 @@ func GetGroup(accountID string, input *iam.GetGroupInput, svc handlers_iam.IAMSe
 }
 
 func ListGroups(accountID string, input *iam.ListGroupsInput, svc handlers_iam.IAMService) (*iam.ListGroupsOutput, error) {
+	if err := validatePathPrefix(input.PathPrefix, identityPathPrefix); err != nil {
+		return nil, err
+	}
 	p, err := newPager(input.Marker, input.MaxItems)
 	if err != nil {
 		return nil, err
@@ -114,6 +117,9 @@ func DetachGroupPolicy(accountID string, input *iam.DetachGroupPolicyInput, svc 
 func ListAttachedGroupPolicies(accountID string, input *iam.ListAttachedGroupPoliciesInput, svc handlers_iam.IAMService) (*iam.ListAttachedGroupPoliciesOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if err := validatePathPrefix(input.PathPrefix, policyPathPrefix); err != nil {
+		return nil, err
 	}
 	p, err := newPager(input.Marker, input.MaxItems)
 	if err != nil {

@@ -10,10 +10,12 @@ import (
 	"log/slog"
 	"maps"
 	"net/netip"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -54,6 +56,7 @@ const (
 	maxTagsPerResource   = 50
 	maxTagKeyLength      = 128
 	maxTagValueLength    = 256
+	maxDescriptionLength = 1000
 
 	// LongLivedAccessKeyIDPrefix is the AWS-defined prefix for long-lived IAM access keys.
 	// The access-keys bucket rejects writes with any other prefix to prevent silent privilege escalation.
@@ -218,14 +221,12 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 	}, nil
 }
 
-// copyTags converts SDK IAM tags into the stored Tag slice, skipping entries
-// with a nil key or value. Returns a non-nil (possibly empty) slice.
+// copyTags converts SDK IAM tags, already checked by validateTags, into the
+// stored Tag slice. Returns a non-nil (possibly empty) slice.
 func copyTags(tags []*iam.Tag) []Tag {
 	out := make([]Tag, 0, len(tags))
 	for _, tag := range tags {
-		if tag.Key != nil && tag.Value != nil {
-			out = append(out, Tag{Key: *tag.Key, Value: *tag.Value})
-		}
+		out = append(out, Tag{Key: *tag.Key, Value: *tag.Value})
 	}
 	return out
 }
@@ -242,29 +243,57 @@ func tagsToSDK(tags []Tag) []*iam.Tag {
 	return out
 }
 
-// validateTags enforces the AWS IAM tag limits on request input: at most 50
-// tags, key length 1-128, value length 0-256, no duplicate keys.
-func validateTags(tags []*iam.Tag) error {
-	if len(tags) > maxTagsPerResource {
-		return errors.New(awserrors.ErrorIAMLimitExceeded)
+// Tag key and value patterns from the IAM model, as AWS enforces them.
+var (
+	tagKeyPattern   = regexp.MustCompile(`^[\p{L}\p{Z}\p{N}_.:/=+\-@]+$`)
+	tagValuePattern = regexp.MustCompile(`^[\p{L}\p{Z}\p{N}_.:/=+\-@]*$`)
+)
+
+// keyCase is how a resource type compares tag keys: AWS ignores case on users
+// and roles, and matches exactly on policies, instance profiles and OIDC
+// providers.
+type keyCase bool
+
+const (
+	exactKeys  keyCase = false
+	foldedKeys keyCase = true
+)
+
+func (c keyCase) norm(key string) string {
+	if c == foldedKeys {
+		return strings.ToLower(key)
 	}
-	seen := make(map[string]struct{}, len(tags))
+	return key
+}
+
+// validateTags enforces the AWS IAM tag limits on request input: the model's
+// list length and its null, length (in characters) and pattern constraints on
+// every key and value, then no reserved aws: prefix and no duplicate keys as
+// keys compares them.
+func validateTags(tags []*iam.Tag, keys keyCase) error {
+	var violations []string
+	if len(tags) > maxTagsPerResource {
+		violations = append(violations, fmt.Sprintf("Value at 'tags' failed to satisfy constraint: Member must have length less than or equal to %d", maxTagsPerResource))
+	}
 	for i, tag := range tags {
 		field := fmt.Sprintf("tags.%d.member", i+1)
-		if tag == nil || tag.Key == nil {
-			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
-				"1 validation error detected: Value null at '%s.key' failed to satisfy constraint: Member must not be null", field)
+		if tag == nil {
+			tag = &iam.Tag{}
 		}
-		key := *tag.Key
-		if len(key) < 1 {
-			return lengthViolation(key, field+".key", "greater than or equal to 1")
+		violations = append(violations, tagMemberViolations(field+".key", tag.Key, 1, maxTagKeyLength, tagKeyPattern)...)
+		violations = append(violations, tagMemberViolations(field+".value", tag.Value, 0, maxTagValueLength, tagValuePattern)...)
+	}
+	if err := validationError(violations); err != nil {
+		return err
+	}
+	for _, tag := range tags {
+		if strings.HasPrefix(strings.ToLower(*tag.Key), "aws:") {
+			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "Tag keys beginning with aws: are reserved for system use.")
 		}
-		if len(key) > maxTagKeyLength {
-			return lengthViolation(key, field+".key", fmt.Sprintf("less than or equal to %d", maxTagKeyLength))
-		}
-		if tag.Value != nil && len(*tag.Value) > maxTagValueLength {
-			return lengthViolation(*tag.Value, field+".value", fmt.Sprintf("less than or equal to %d", maxTagValueLength))
-		}
+	}
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		key := keys.norm(*tag.Key)
 		if _, dup := seen[key]; dup {
 			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
 				"Duplicate tag keys found. Please note that Tag keys are case insensitive.")
@@ -274,16 +303,73 @@ func validateTags(tags []*iam.Tag) error {
 	return nil
 }
 
+// validateTagKeys enforces the model constraints on an untag request's key
+// list. AWS reports every bad key as one violation of the list.
+func validateTagKeys(keys []*string) error {
+	var violations []string
+	if len(keys) > maxTagsPerResource {
+		violations = append(violations, fmt.Sprintf("Value at 'tagKeys' failed to satisfy constraint: Member must have length less than or equal to %d", maxTagsPerResource))
+	}
+	for _, key := range keys {
+		if key == nil || len(tagMemberViolations("", key, 1, maxTagKeyLength, tagKeyPattern)) > 0 {
+			violations = append(violations, fmt.Sprintf("Value at 'tagKeys' failed to satisfy constraint: Member must satisfy constraint: "+
+				"[Member must have length less than or equal to %d, Member must have length greater than or equal to 1, "+
+				"Member must satisfy regular expression pattern: %s, Member must not be null]", maxTagKeyLength, modelPattern(tagKeyPattern)))
+			break
+		}
+	}
+	return validationError(violations)
+}
+
+// validationError renders model-constraint violations as the single
+// ValidationError AWS returns for them, or nil when there are none.
+func validationError(violations []string) error {
+	if len(violations) == 0 {
+		return nil
+	}
+	noun := "errors"
+	if len(violations) == 1 {
+		noun = "error"
+	}
+	return awserrors.Errorf(awserrors.ErrorValidationError,
+		"%d validation %s detected: %s", len(violations), noun, strings.Join(violations, "; "))
+}
+
+// tagMemberViolations checks one tag key or value. AWS leaves the value out of
+// tag violation messages, so these name only the member.
+func tagMemberViolations(field string, value *string, minLen, maxLen int, pattern *regexp.Regexp) []string {
+	prefix := "Value at '" + field + "' failed to satisfy constraint: Member must "
+	if value == nil {
+		return []string{prefix + "not be null"}
+	}
+	var out []string
+	if n := utf8.RuneCountInString(*value); n < minLen {
+		out = append(out, fmt.Sprintf("%shave length greater than or equal to %d", prefix, minLen))
+	} else if n > maxLen {
+		out = append(out, fmt.Sprintf("%shave length less than or equal to %d", prefix, maxLen))
+	}
+	if !pattern.MatchString(*value) {
+		out = append(out, prefix+"satisfy regular expression pattern: "+modelPattern(pattern))
+	}
+	return out
+}
+
+// modelPattern renders a compiled tag pattern as the model writes it.
+func modelPattern(pattern *regexp.Regexp) string {
+	return strings.TrimSuffix(strings.TrimPrefix(pattern.String(), "^"), "$")
+}
+
 // mergeTags upserts add into existing by key, matching AWS semantics: a
-// repeated key overwrites in place, new keys append in input order.
-func mergeTags(existing []Tag, add []*iam.Tag) []Tag {
+// repeated key, as keys compares them, is overwritten in place with the new
+// key's case; new keys append in input order.
+func mergeTags(existing []Tag, add []*iam.Tag, keys keyCase) []Tag {
 	out := slices.Clone(existing)
 	for _, tag := range add {
 		if tag.Key == nil {
 			continue
 		}
 		next := Tag{Key: *tag.Key, Value: aws.StringValue(tag.Value)}
-		idx := slices.IndexFunc(out, func(t Tag) bool { return t.Key == next.Key })
+		idx := slices.IndexFunc(out, func(t Tag) bool { return keys.norm(t.Key) == keys.norm(next.Key) })
 		if idx >= 0 {
 			out[idx] = next
 		} else {
@@ -293,18 +379,18 @@ func mergeTags(existing []Tag, add []*iam.Tag) []Tag {
 	return out
 }
 
-// removeTagKeys drops the named keys from existing; unknown keys are
-// silently ignored, matching AWS.
-func removeTagKeys(existing []Tag, keys []*string) []Tag {
+// removeTagKeys drops the named keys from existing, as match compares them;
+// unknown keys are silently ignored, matching AWS.
+func removeTagKeys(existing []Tag, keys []*string, match keyCase) []Tag {
 	drop := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
 		if k != nil {
-			drop[*k] = struct{}{}
+			drop[match.norm(*k)] = struct{}{}
 		}
 	}
 	out := make([]Tag, 0, len(existing))
 	for _, t := range existing {
-		if _, gone := drop[t.Key]; !gone {
+		if _, gone := drop[match.norm(t.Key)]; !gone {
 			out = append(out, t)
 		}
 	}
@@ -332,6 +418,10 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 		if err := validatePath(path); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := validateTags(input.Tags, foldedKeys); err != nil {
+		return nil, err
 	}
 
 	userID, err := generateIAMID("AIDA")
@@ -1185,19 +1275,23 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 
 	kvKey := accountID + "." + policyName
 
+	if err := validateDescription(input.Description); err != nil {
+		return nil, err
+	}
+	path := "/"
+	if input.Path != nil {
+		path = *input.Path
+		if err := validatePath(path); err != nil {
+			return nil, err
+		}
+	}
+
 	if _, err := ValidatePolicyDocument(*input.PolicyDocument); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
 			"policy %q: %w", policyName, err)
 	}
 
-	if err := validateTags(input.Tags); err != nil {
-		return nil, err
-	}
-
-	path := aws.StringValue(input.Path)
-	if path == "" {
-		path = "/"
-	} else if err := validatePath(path); err != nil {
+	if err := validateTags(input.Tags, exactKeys); err != nil {
 		return nil, err
 	}
 
@@ -1257,6 +1351,12 @@ func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) 
 
 func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	ctx := context.Background()
+	if err := checkEnum("scope", input.Scope, policyScopeValues); err != nil {
+		return nil, err
+	}
+	if err := checkEnum("policyUsageFilter", input.PolicyUsageFilter, policyUsageValues); err != nil {
+		return nil, err
+	}
 	keys, err := kvutil.Keys(ctx, s.policiesBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
@@ -1405,6 +1505,9 @@ func (s *IAMServiceImpl) ListEntitiesForPolicy(accountID string, input *iam.List
 		IsTruncated:  aws.Bool(false),
 	}
 
+	if err := checkEnum("policyUsageFilter", input.PolicyUsageFilter, policyUsageValues); err != nil {
+		return nil, err
+	}
 	// Permissions boundaries are rejected outright at policy-attachment time,
 	// so no entity ever uses a policy that way. The correct answer is empty.
 	if aws.StringValue(input.PolicyUsageFilter) == iam.PolicyUsageTypePermissionsBoundary {
@@ -1531,27 +1634,28 @@ func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUse
 	return &iam.DetachUserPolicyOutput{}, nil
 }
 
-func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
-	ctx := context.Background()
-	user, err := s.getUser(ctx, accountID, *input.UserName)
-	if err != nil {
-		return nil, err
-	}
-
+// attachedPolicies resolves an identity's attached policy ARNs for the
+// ListAttached*Policies calls, keeping those whose path starts with pathPrefix.
+func (s *IAMServiceImpl) attachedPolicies(ctx context.Context, accountID string, arns []string, pathPrefix string) []*iam.AttachedPolicy {
 	var attached []*iam.AttachedPolicy
-	for _, arn := range user.AttachedPolicies {
+	for _, arn := range arns {
 		// AWS-managed ARNs have no KV entry; report them from the ARN itself so
 		// attach/list round-trips instead of silently dropping them.
 		if isAWSManagedPolicyARN(arn) {
-			attached = append(attached, &iam.AttachedPolicy{
-				PolicyArn:  aws.String(arn),
-				PolicyName: aws.String(managedPolicyNameFromARN(arn)),
-			})
+			if strings.HasPrefix(policyPathFromARN(arn), pathPrefix) {
+				attached = append(attached, &iam.AttachedPolicy{
+					PolicyArn:  aws.String(arn),
+					PolicyName: aws.String(managedPolicyNameFromARN(arn)),
+				})
+			}
 			continue
 		}
 		policy, err := s.getPolicyByARN(ctx, accountID, arn)
 		if err != nil {
-			slog.Warn("ListAttachedUserPolicies: policy not found for ARN", "arn", arn, "err", err)
+			slog.Warn("attached policy not found for ARN", "arn", arn, "err", err)
+			continue
+		}
+		if !strings.HasPrefix(policy.Path, pathPrefix) {
 			continue
 		}
 		attached = append(attached, &iam.AttachedPolicy{
@@ -1559,6 +1663,24 @@ func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.L
 			PolicyName: aws.String(policy.PolicyName),
 		})
 	}
+	return attached
+}
+
+// policyPathFromARN returns the path of a policy ARN, e.g.
+// arn:aws:iam::aws:policy/service-role/Name -> /service-role/.
+func policyPathFromARN(arn string) string {
+	_, resource, _ := strings.Cut(arn, ":policy")
+	return resource[:strings.LastIndex(resource, "/")+1]
+}
+
+func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
+	ctx := context.Background()
+	user, err := s.getUser(ctx, accountID, *input.UserName)
+	if err != nil {
+		return nil, err
+	}
+
+	attached := s.attachedPolicies(ctx, accountID, user.AttachedPolicies, aws.StringValue(input.PathPrefix))
 
 	return &iam.ListAttachedUserPoliciesOutput{
 		AttachedPolicies: attached,
@@ -1696,7 +1818,7 @@ func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserP
 // user writers (no CAS).
 func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*iam.TagUserOutput, error) {
 	ctx := context.Background()
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, foldedKeys); err != nil {
 		return nil, err
 	}
 
@@ -1706,7 +1828,7 @@ func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*ia
 		return nil, err
 	}
 
-	merged := mergeTags(user.Tags, input.Tags)
+	merged := mergeTags(user.Tags, input.Tags, foldedKeys)
 	if len(merged) > maxTagsPerResource {
 		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
 	}
@@ -1726,6 +1848,9 @@ func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*ia
 
 // UntagUser removes the named tag keys from a user; unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	if err := validateTagKeys(input.TagKeys); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	userName := *input.UserName
 	user, err := s.getUser(ctx, accountID, userName)
@@ -1733,7 +1858,7 @@ func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) 
 		return nil, err
 	}
 
-	user.Tags = removeTagKeys(user.Tags, input.TagKeys)
+	user.Tags = removeTagKeys(user.Tags, input.TagKeys, foldedKeys)
 
 	data, err := json.Marshal(user)
 	if err != nil {
@@ -1764,12 +1889,12 @@ func (s *IAMServiceImpl) ListUserTags(accountID string, input *iam.ListUserTagsI
 // record cannot undo a concurrent change of default version.
 func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
 	ctx := context.Background()
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, exactKeys); err != nil {
 		return nil, err
 	}
 
 	err := s.updatePolicyCAS(ctx, accountID, *input.PolicyArn, func(policy *Policy) (bool, error) {
-		merged := mergeTags(policy.Tags, input.Tags)
+		merged := mergeTags(policy.Tags, input.Tags, exactKeys)
 		if len(merged) > maxTagsPerResource {
 			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
 		}
@@ -1786,9 +1911,12 @@ func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) 
 
 // UntagPolicy removes the named tag keys from a policy; unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
+	if err := validateTagKeys(input.TagKeys); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	err := s.updatePolicyCAS(ctx, accountID, *input.PolicyArn, func(policy *Policy) (bool, error) {
-		policy.Tags = removeTagKeys(policy.Tags, input.TagKeys)
+		policy.Tags = removeTagKeys(policy.Tags, input.TagKeys, exactKeys)
 		return true, nil
 	})
 	if err != nil {
@@ -2086,10 +2214,10 @@ func isIAMNameChar(c byte) bool {
 // message AWS gives, which names the failing parameter.
 func validateIAMName(field, name string, maxLen int) error {
 	if len(name) == 0 {
-		return lengthViolation(name, field, "greater than or equal to 1")
+		return lengthViolation(field, "greater than or equal to 1")
 	}
 	if len(name) > maxLen {
-		return lengthViolation(name, field, fmt.Sprintf("less than or equal to %d", maxLen))
+		return lengthViolation(field, fmt.Sprintf("less than or equal to %d", maxLen))
 	}
 	for i := range len(name) {
 		if !isIAMNameChar(name[i]) {
@@ -2100,9 +2228,33 @@ func validateIAMName(field, name string, maxLen int) error {
 	return nil
 }
 
-func lengthViolation(value, field, bound string) error {
-	return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
-		"1 validation error detected: Value '%s' at '%s' failed to satisfy constraint: Member must have length %s", value, field, bound)
+// validateDescription enforces the 1000-character limit on a role or policy
+// description.
+func validateDescription(description *string) error {
+	if description != nil && utf8.RuneCountInString(*description) > maxDescriptionLength {
+		return lengthViolation("description", fmt.Sprintf("less than or equal to %d", maxDescriptionLength))
+	}
+	return nil
+}
+
+// lengthViolation is the ValidationError AWS returns for a member outside its
+// length bounds; IAM leaves the value out of the message.
+func lengthViolation(field, bound string) error {
+	return validationError([]string{fmt.Sprintf("Value at '%s' failed to satisfy constraint: Member must have length %s", field, bound)})
+}
+
+// Enum values in the order AWS lists them in a violation, not the model's.
+var (
+	policyScopeValues = []string{iam.PolicyScopeTypeAll, iam.PolicyScopeTypeLocal, iam.PolicyScopeTypeAws}
+	policyUsageValues = []string{iam.PolicyUsageTypePermissionsBoundary, iam.PolicyUsageTypePermissionsPolicy}
+)
+
+// checkEnum refuses an optional member set to a value outside allowed.
+func checkEnum(field string, value *string, allowed []string) error {
+	if value == nil || slices.Contains(allowed, *value) {
+		return nil
+	}
+	return enumViolation(field, allowed)
 }
 
 func enumViolation(field string, allowed []string) error {
@@ -2127,7 +2279,7 @@ func validatePath(path string) error {
 			"The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters.")
 	}
 	if len(path) > 512 {
-		return lengthViolation(path, "path", "less than or equal to 512")
+		return lengthViolation("path", "less than or equal to 512")
 	}
 	return nil
 }

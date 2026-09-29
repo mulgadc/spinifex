@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/mulgadc/spinifex/spinifex/services/awsgw"
-	"github.com/mulgadc/spinifex/spinifex/services/nats"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/mulgadc/spinifex/spinifex/services/northstar"
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
 	"github.com/mulgadc/spinifex/spinifex/services/qemunbdd"

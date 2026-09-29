@@ -23,7 +23,7 @@ func templatePath(t *testing.T) string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
 	require.True(t, ok)
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "cmd", "spinifex", "cmd", "templates", "nats.conf")
+	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..", "cmd", "spinifex", "cmd", "templates", "nats.conf")
 }
 
 // TestRenderedConfig_EnforcesAuth renders the production nats.conf template,

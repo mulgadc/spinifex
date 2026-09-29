@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	svcnats "github.com/mulgadc/spinifex/spinifex/services/nats"
+	svcnats "github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

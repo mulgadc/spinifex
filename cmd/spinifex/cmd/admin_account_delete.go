@@ -5,12 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/spf13/cobra"
 )
@@ -84,7 +84,7 @@ func runAccountDelete(cmd *cobra.Command, args []string) error {
 
 	node := cfg.Nodes[cfg.Node]
 	buckets := objectstore.NewS3ObjectStoreFromConfig(
-		admin.DialTarget(node.Predastore.Host),
+		netaddr.DialTarget(node.Predastore.Host),
 		node.Predastore.Region,
 		node.Predastore.AccessKey,
 		node.Predastore.SecretKey,

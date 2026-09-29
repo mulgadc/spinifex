@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -9,15 +10,15 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
 func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) string {
 	promoteImage := func(_ context.Context, input *admin.PromoteImageOpts, _ string) (*admin.PromoteImageResult, error) {
 		store := objectstore.NewS3ObjectStoreFromConfig(
-			admin.DialTarget(d.config.Predastore.Host),
+			netaddr.DialTarget(d.config.Predastore.Host),
 			d.config.Predastore.Region,
 			d.config.Predastore.AccessKey,
 			d.config.Predastore.SecretKey,

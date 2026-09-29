@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"net"
 	"net/http"
@@ -36,8 +37,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/reconciler"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	toml "github.com/pelletier/go-toml/v2"
@@ -202,7 +203,7 @@ func openAccountQuotaBucket(ctx context.Context, js jetstream.KeyValueManager, r
 func launchService(config *config.ClusterConfig) error {
 	nodeConfig := config.Nodes[config.Node]
 
-	natsConn, err := utils.ConnectNATSWithRetry(admin.DialTarget(nodeConfig.NATS.Host), nodeConfig.NATS.ACL.Token, nodeConfig.NATS.CACert)
+	natsConn, err := utils.ConnectNATSWithRetry(netaddr.DialTarget(nodeConfig.NATS.Host), nodeConfig.NATS.ACL.Token, nodeConfig.NATS.CACert)
 	if err != nil {
 		return err
 	}
@@ -315,7 +316,7 @@ func launchService(config *config.ClusterConfig) error {
 	// uploads are owned by the daemon and reached over NATS request/reply. The
 	// /v2 auth bridge resolves the per-request account from a verified token.
 	objStore := objectstore.NewS3ObjectStoreFromConfig(
-		admin.DialTarget(nodeConfig.Predastore.Host),
+		netaddr.DialTarget(nodeConfig.Predastore.Host),
 		nodeConfig.Predastore.Region,
 		nodeConfig.Predastore.AccessKey,
 		nodeConfig.Predastore.SecretKey,

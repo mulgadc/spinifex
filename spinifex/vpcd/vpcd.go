@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -16,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
@@ -28,7 +29,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/network/subscribers"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -434,7 +434,7 @@ func launchService(cfg *Config) error {
 	}
 	slog.Info("OVN preflight passed (br-int exists, ovn-controller running)")
 
-	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
+	nc, err := utils.ConnectNATSWithRetry(netaddr.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
 	if err != nil {
 		slog.Error("Failed to connect to NATS", "err", err)
 		return err

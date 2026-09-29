@@ -4,18 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"path/filepath"
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
-	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -127,7 +127,7 @@ func (d *Daemon) startOchreVector() {
 		reranker = gateway_bedrock.NewReranker(endpointResolver, cfg.RerankModel)
 	}
 
-	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host),
+	store := objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(d.config.Predastore.Host),
 		d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 
 	// registry and jobs were already built above (and attached to appliance

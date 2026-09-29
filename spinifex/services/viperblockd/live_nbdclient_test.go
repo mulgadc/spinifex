@@ -4,12 +4,12 @@
 package viperblockd_test
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"os"
 	"strconv"
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
@@ -62,7 +62,7 @@ func liveProviderTB(t testing.TB) (ebsprovider.EBSProvider, string) {
 
 	// NATS token and CA cert go straight from config into the connect
 	// helper. Never log them, and never let a failure message embed them.
-	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(nodeConfig.NATS.Host), nodeConfig.NATS.ACL.Token, nodeConfig.NATS.CACert)
+	nc, err := utils.ConnectNATSWithRetry(netaddr.DialTarget(nodeConfig.NATS.Host), nodeConfig.NATS.ACL.Token, nodeConfig.NATS.CACert)
 	require.NoError(t, err, "connect to NATS")
 	t.Cleanup(nc.Close)
 

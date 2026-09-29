@@ -1,4 +1,5 @@
-package admin
+// Package netaddr normalises listener addresses for local and off-host use.
+package netaddr
 
 import "net"
 

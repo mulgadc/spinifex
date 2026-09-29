@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,7 +18,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -376,7 +376,7 @@ func (cfg *Config) volumeS3Config(volumeName string) s3.S3Config {
 		Region:     cfg.Region,
 		AccessKey:  cfg.AccessKey,
 		SecretKey:  cfg.SecretKey,
-		Host:       admin.DialTarget(cfg.S3Host),
+		Host:       netaddr.DialTarget(cfg.S3Host),
 		HTTPClient: cfg.s3HTTPClient,
 	}
 }
@@ -697,7 +697,7 @@ func (svc *Service) Reload() (err error) {
 }
 
 func launchService(cfg *Config) (err error) {
-	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
+	nc, err := utils.ConnectNATSWithRetry(netaddr.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
 	if err != nil {
 		slog.Error("Failed to connect to NATS", "err", err)
 		return err

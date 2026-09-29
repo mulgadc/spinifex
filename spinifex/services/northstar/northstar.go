@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -12,7 +13,6 @@ import (
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	nsserver "github.com/mulgadc/northstar/pkg/server"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -102,7 +102,7 @@ func (svc *Service) subscribeReload() {
 		slog.Info("northstar: NATS host not set, relying on S3 poll for zone updates")
 		return
 	}
-	endpoint := admin.DialTarget(svc.Config.NatsHost)
+	endpoint := netaddr.DialTarget(svc.Config.NatsHost)
 	nc, err := utils.ConnectNATS(endpoint, svc.Config.NatsToken, svc.Config.NatsCACert)
 	if err != nil {
 		slog.Warn("northstar: connect TLS NATS for zone reload", "endpoint", endpoint, "error", err)

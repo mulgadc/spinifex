@@ -3,12 +3,12 @@ package qemunbdd
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
@@ -74,7 +74,7 @@ func (svc *Service) Reload() (err error) {
 // serves ebs.provider.v1.* until SIGINT/SIGTERM, then unsubscribes. It blocks
 // for the life of the process.
 func launchService(cfg *Config) error {
-	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
+	nc, err := utils.ConnectNATSWithRetry(netaddr.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
 	if err != nil {
 		return fmt.Errorf("connect to NATS: %w", err)
 	}

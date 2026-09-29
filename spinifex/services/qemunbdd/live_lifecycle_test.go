@@ -6,6 +6,7 @@ package qemunbdd_test
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"os"
 	"os/exec"
 	"strconv"
@@ -13,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -58,7 +58,7 @@ func TestLive_QEMUNBDLifecycle(t *testing.T) {
 	// NATS token and CA cert are read from config and handed straight to the
 	// connect helper. Never log them, and never let a failure message embed
 	// the config value that produced it.
-	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(nodeConfig.NATS.Host), nodeConfig.NATS.ACL.Token, nodeConfig.NATS.CACert)
+	nc, err := utils.ConnectNATSWithRetry(netaddr.DialTarget(nodeConfig.NATS.Host), nodeConfig.NATS.ACL.Token, nodeConfig.NATS.CACert)
 	require.NoError(t, err, "connect to NATS")
 	t.Cleanup(nc.Close)
 	t.Logf("connected to NATS")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"net"
 	"os"
@@ -16,9 +17,8 @@ import (
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
-	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -44,7 +44,7 @@ const pluginSealGrace = 25 * time.Second
 // inject objectstore.NewMemoryObjectStore(), keeping the unit tests free of
 // any network dependency.
 var providerObjectStoreFactory = func(cfg *Config) objectstore.ObjectStore {
-	return objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(cfg.S3Host), cfg.Region, cfg.AccessKey, cfg.SecretKey)
+	return objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(cfg.S3Host), cfg.Region, cfg.AccessKey, cfg.SecretKey)
 }
 
 // registerProviderSubjects subscribes the ebs.provider.v1.* handlers that
@@ -1460,7 +1460,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		PidFile:           nbdPidFile,
 		PluginPath:        cfg.PluginPath,
 		BaseDir:           cfg.BaseDir,
-		Host:              admin.DialTarget(cfg.S3Host),
+		Host:              netaddr.DialTarget(cfg.S3Host),
 		Verbose:           false,
 		Size:              safecast.Uint64ToInt64(vb.GetVolumeSize()),
 		Volume:            volumeName,

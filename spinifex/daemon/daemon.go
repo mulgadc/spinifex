@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"maps"
 	"net"
@@ -31,11 +32,11 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
-	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
@@ -68,12 +69,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -1703,15 +1704,15 @@ func (d *Daemon) startCluster() error {
 		if err := d.jsManager.WriteServiceManifest(
 			d.node,
 			d.config.GetServices(),
-			admin.DialTarget(d.config.NATS.Host),
-			admin.DialTarget(d.config.Predastore.Host),
+			netaddr.DialTarget(d.config.NATS.Host),
+			netaddr.DialTarget(d.config.Predastore.Host),
 		); err != nil {
 			slog.Warn("Failed to write service manifest", "error", err)
 		}
 	}
 
 	// Create services before loading/launching instances, since LaunchInstance depends on them
-	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
+	store := objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.dnsWriter = handlers_dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
 	d.dnsReconciler = handlers_dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
@@ -2377,7 +2378,7 @@ func (d *Daemon) connectNATS(extraOpts ...utils.RetryOption) error {
 		}),
 	}, d.natsRetryOpts...)
 	opts = append(opts, extraOpts...)
-	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(d.config.NATS.Host), d.config.NATS.ACL.Token, d.config.NATS.CACert, opts...)
+	nc, err := utils.ConnectNATSWithRetry(netaddr.DialTarget(d.config.NATS.Host), d.config.NATS.ACL.Token, d.config.NATS.CACert, opts...)
 	if err != nil {
 		return err
 	}
@@ -2561,7 +2562,7 @@ var predastoreReadinessClient = &http.Client{
 // listening. Any response counts as ready, including the 401/403 an S3
 // endpoint returns for this deliberately unsigned request.
 func (d *Daemon) checkPredastoreReady() bool {
-	host := admin.DialTarget(d.config.Predastore.Host)
+	host := netaddr.DialTarget(d.config.Predastore.Host)
 	if host == "" {
 		return true // no predastore configured, skip check
 	}

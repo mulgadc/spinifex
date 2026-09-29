@@ -316,6 +316,9 @@ func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInst
 // UntagInstanceProfile removes the named tag keys from an instance profile;
 // unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagInstanceProfile(accountID string, input *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
+	if err := validateTagKeys(input.TagKeys); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	profileName := *input.InstanceProfileName
 	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {

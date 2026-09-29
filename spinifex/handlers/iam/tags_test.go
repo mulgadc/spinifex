@@ -101,6 +101,56 @@ func TestValidateTags_Messages(t *testing.T) {
 	}
 }
 
+func TestValidateTagKeys(t *testing.T) {
+	t.Parallel()
+	keySet := `Value at 'tagKeys' failed to satisfy constraint: Member must satisfy constraint: [Member must have length less than or equal to 128, ` +
+		`Member must have length greater than or equal to 1, Member must satisfy regular expression pattern: [\p{L}\p{Z}\p{N}_.:/=+\-@]+, Member must not be null]`
+	tooMany := make([]*string, maxTagsPerResource+1)
+	for i := range tooMany {
+		tooMany[i] = aws.String(fmt.Sprintf("k%d", i))
+	}
+	cases := []struct {
+		name    string
+		keys    []*string
+		wantMsg string
+	}{
+		{"valid keys", []*string{aws.String("env"), aws.String(strings.Repeat("é", maxTagKeyLength))}, ""},
+		{"empty key", []*string{aws.String("")}, "1 validation error detected: " + keySet},
+		{"key outside pattern", []*string{aws.String("bad#key")}, "1 validation error detected: " + keySet},
+		{"over-length key", []*string{aws.String(strings.Repeat("k", maxTagKeyLength+1))}, "1 validation error detected: " + keySet},
+		{"several bad keys are one violation", []*string{aws.String("bad#"), aws.String("k"), aws.String("bad*")}, "1 validation error detected: " + keySet},
+		{"nil key", []*string{nil}, "1 validation error detected: " + keySet},
+		{"over 50 keys", tooMany,
+			"1 validation error detected: Value at 'tagKeys' failed to satisfy constraint: Member must have length less than or equal to 50"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateTagKeys(tc.keys)
+			if tc.wantMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			requireIAMError(t, err, awserrors.ErrorValidationError, tc.wantMsg)
+		})
+	}
+}
+
+// AWS checks the keys before looking the resource up.
+func TestUntag_InvalidKeyRefusedBeforeLookup(t *testing.T) {
+	t.Parallel()
+	for _, ops := range allTagOps() {
+		t.Run(ops.resource, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestIAMService(t)
+			err := ops.untag(svc, ops.missingID, []*string{aws.String("bad#key")})
+			code, ok := awserrors.ResolveErrorCode(err)
+			require.True(t, ok, "error must carry a registered code: %v", err)
+			assert.Equal(t, awserrors.ErrorValidationError, code)
+		})
+	}
+}
+
 func TestMergeTags(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

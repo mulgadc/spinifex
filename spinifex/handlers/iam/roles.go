@@ -493,6 +493,9 @@ func (s *IAMServiceImpl) TagRole(accountID string, input *iam.TagRoleInput) (*ia
 
 // UntagRole removes the named tag keys from a role; unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagRole(accountID string, input *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
+	if err := validateTagKeys(input.TagKeys); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	roleName := *input.RoleName
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {

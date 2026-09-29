@@ -293,6 +293,9 @@ func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.T
 // UntagOpenIDConnectProvider removes the named tag keys from an OIDC provider;
 // unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagOpenIDConnectProvider(accountID string, input *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
+	if err := validateTagKeys(input.TagKeys); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	arn := aws.StringValue(input.OpenIDConnectProviderArn)
 	record, err := s.getOIDCProvider(ctx, accountID, arn)

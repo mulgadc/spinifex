@@ -264,13 +264,8 @@ func validateTags(tags []*iam.Tag) error {
 		violations = append(violations, tagMemberViolations(field+".key", tag.Key, 1, maxTagKeyLength, tagKeyPattern)...)
 		violations = append(violations, tagMemberViolations(field+".value", tag.Value, 0, maxTagValueLength, tagValuePattern)...)
 	}
-	if len(violations) > 0 {
-		noun := "errors"
-		if len(violations) == 1 {
-			noun = "error"
-		}
-		return awserrors.Errorf(awserrors.ErrorValidationError,
-			"%d validation %s detected: %s", len(violations), noun, strings.Join(violations, "; "))
+	if err := validationError(violations); err != nil {
+		return err
 	}
 	seen := make(map[string]struct{}, len(tags))
 	for _, tag := range tags {
@@ -282,6 +277,38 @@ func validateTags(tags []*iam.Tag) error {
 		seen[key] = struct{}{}
 	}
 	return nil
+}
+
+// validateTagKeys enforces the model constraints on an untag request's key
+// list. AWS reports every bad key as one violation of the list.
+func validateTagKeys(keys []*string) error {
+	var violations []string
+	if len(keys) > maxTagsPerResource {
+		violations = append(violations, fmt.Sprintf("Value at 'tagKeys' failed to satisfy constraint: Member must have length less than or equal to %d", maxTagsPerResource))
+	}
+	for _, key := range keys {
+		if key == nil || len(tagMemberViolations("", key, 1, maxTagKeyLength, tagKeyPattern)) > 0 {
+			violations = append(violations, fmt.Sprintf("Value at 'tagKeys' failed to satisfy constraint: Member must satisfy constraint: "+
+				"[Member must have length less than or equal to %d, Member must have length greater than or equal to 1, "+
+				"Member must satisfy regular expression pattern: %s, Member must not be null]", maxTagKeyLength, modelPattern(tagKeyPattern)))
+			break
+		}
+	}
+	return validationError(violations)
+}
+
+// validationError renders model-constraint violations as the single
+// ValidationError AWS returns for them, or nil when there are none.
+func validationError(violations []string) error {
+	if len(violations) == 0 {
+		return nil
+	}
+	noun := "errors"
+	if len(violations) == 1 {
+		noun = "error"
+	}
+	return awserrors.Errorf(awserrors.ErrorValidationError,
+		"%d validation %s detected: %s", len(violations), noun, strings.Join(violations, "; "))
 }
 
 // tagMemberViolations checks one tag key or value. AWS leaves the value out of
@@ -1765,6 +1792,9 @@ func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*ia
 
 // UntagUser removes the named tag keys from a user; unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	if err := validateTagKeys(input.TagKeys); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	userName := *input.UserName
 	user, err := s.getUser(ctx, accountID, userName)
@@ -1825,6 +1855,9 @@ func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) 
 
 // UntagPolicy removes the named tag keys from a policy; unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInput) (*iam.UntagPolicyOutput, error) {
+	if err := validateTagKeys(input.TagKeys); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	err := s.updatePolicyCAS(ctx, accountID, *input.PolicyArn, func(policy *Policy) (bool, error) {
 		policy.Tags = removeTagKeys(policy.Tags, input.TagKeys)

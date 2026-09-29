@@ -9,7 +9,7 @@ import (
 	"syscall"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/natsserve"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 

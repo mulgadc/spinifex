@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 )
 
 // trackingProvider delegates every call to the provider under test and records

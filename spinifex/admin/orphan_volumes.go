@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 )
 
 // efiVolumeSuffix marks a volume derived from another one. An EFI variable

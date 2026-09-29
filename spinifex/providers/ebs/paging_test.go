@@ -3,7 +3,7 @@ package ebsprovider_test
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

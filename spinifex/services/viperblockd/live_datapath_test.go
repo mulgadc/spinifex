@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/conformance"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
 )
 
 // TestLive_ViperblockdDataPath drives qemu-img bench against the published

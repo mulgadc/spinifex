@@ -15,6 +15,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// tracerName is the stable instrumentation scope for EBS-provider traces.
+// It intentionally survives this package relocation so existing dashboards
+// and alerts do not split their trace series.
 const tracerName = "github.com/mulgadc/spinifex/spinifex/ebsprovider"
 
 // spanNamePrefix puts provider spans in the same namespace as the ebs.mount

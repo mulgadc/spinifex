@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 )
 
 // defaultBenchVolumeBytes is the size a benchmarked volume is created at when

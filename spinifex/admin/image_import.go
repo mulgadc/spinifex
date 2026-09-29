@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 

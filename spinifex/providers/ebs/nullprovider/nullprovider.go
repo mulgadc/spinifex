@@ -13,8 +13,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/natsserve"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
 	"github.com/nats-io/nats.go"
 )
 

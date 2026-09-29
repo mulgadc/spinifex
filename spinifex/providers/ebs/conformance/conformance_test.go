@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/conformance"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/natsserve"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
 	"github.com/stretchr/testify/require"
 )
 

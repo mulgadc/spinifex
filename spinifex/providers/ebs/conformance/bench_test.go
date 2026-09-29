@@ -3,10 +3,10 @@ package conformance_test
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/conformance"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/natsserve"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/nullprovider"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/nullprovider"
 )
 
 // BenchmarkNullProvider_InProcess prices the contract with no transport and no

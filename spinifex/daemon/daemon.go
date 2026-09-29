@@ -35,7 +35,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"

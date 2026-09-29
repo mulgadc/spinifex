@@ -11,8 +11,8 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/conformance"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/require"
 )

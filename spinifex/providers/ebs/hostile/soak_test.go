@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/hostile"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/nullprovider"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/hostile"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/nullprovider"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

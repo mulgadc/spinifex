@@ -1,5 +1,5 @@
 // Package natsserve is the provider-neutral NATS server for the
-// ebs.provider.v1.* wire contract defined by spinifex/ebsprovider. It
+// ebs.provider.v1.* wire contract defined by spinifex/providers/ebs. It
 // depends on nothing but the ebsprovider.EBSProvider interface, so any implementation of that interface can be served over NATS by calling Serve.
 package natsserve
 
@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -56,7 +56,7 @@ func traced(base context.Context, handler msgHandler) nats.MsgHandler {
 	}
 }
 
-// Serve subscribes every subject spinifex/ebsprovider/nats.go defines,
+// Serve subscribes every subject spinifex/providers/ebs/nats.go defines,
 // except owner-routed subjects (see the comment in the function body), and
 // delegates each to provider. The returned stop function unsubscribes everything Serve registered; it is safe to call more than once.
 func Serve(ctx context.Context, nc *nats.Conn, provider ebsprovider.EBSProvider, opts Options) (stop func(), err error) {

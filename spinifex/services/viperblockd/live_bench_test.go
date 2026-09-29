@@ -5,7 +5,7 @@ package viperblockd_test
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/conformance"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
 )
 
 // BenchmarkLive_Viperblockd runs the same suite the null and qemunbdd

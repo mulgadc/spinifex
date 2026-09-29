@@ -3,7 +3,7 @@ package hostile
 import (
 	"context"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 )
 
 // Verb names match the span names the contract emits, so an injection log and

@@ -3,10 +3,10 @@ package nullprovider_test
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/natsserve"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider/nullprovider"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/nullprovider"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

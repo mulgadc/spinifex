@@ -34,7 +34,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/testutil/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/types"

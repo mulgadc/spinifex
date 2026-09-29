@@ -7,7 +7,7 @@ import (
 	"maps"
 	"sync"
 
-	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 )
 
 // DeviceController abstracts the QMP surface the ENI hot-plug pipeline uses:

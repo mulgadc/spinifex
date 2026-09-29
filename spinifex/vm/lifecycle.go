@@ -19,7 +19,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
-	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"go.opentelemetry.io/otel"

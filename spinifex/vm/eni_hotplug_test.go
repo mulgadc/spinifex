@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 )
 

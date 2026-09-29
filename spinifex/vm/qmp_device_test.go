@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

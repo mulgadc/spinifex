@@ -29,6 +29,13 @@ func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, caller
 		input = &sts.GetSessionTokenInput{}
 	}
 
+	// Model constraints are checked before the caller, as AWS does for AssumeRole.
+	violations := durationViolations(input.DurationSeconds, getSessionTokenMaxDuration)
+	violations = append(violations, mfaViolations(input.SerialNumber, input.TokenCode)...)
+	if err := validationError(violations); err != nil {
+		return nil, err
+	}
+
 	if callerPrincipalType != principalTypeUser {
 		slog.Warn("GetSessionToken denied: caller is not a long-lived user principal",
 			"account_id", callerAccountID, "principal_type", callerPrincipalType)
@@ -50,14 +57,14 @@ func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, caller
 	}
 
 	// MFA is out of scope: reject rather than silently ignore, so callers don't believe MFA was enforced.
-	if aws.StringValue(input.SerialNumber) != "" || aws.StringValue(input.TokenCode) != "" {
+	if input.SerialNumber != nil || input.TokenCode != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"MFA is not supported in this release; omit SerialNumber and TokenCode")
 	}
 
 	duration := getSessionTokenDefaultDuration
 	if input.DurationSeconds != nil {
-		duration = clampGetSessionTokenDuration(*input.DurationSeconds)
+		duration = *input.DurationSeconds
 	}
 
 	// Resolved here rather than threaded from the gateway: the gateway's value is
@@ -98,18 +105,6 @@ func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, caller
 			Expiration:      aws.Time(cred.ExpiresAt),
 		},
 	}, nil
-}
-
-// clampGetSessionTokenDuration coerces a duration into [900, 129600].
-// A nil DurationSeconds is handled by the caller; AWS clamps explicit values rather than rejecting them.
-func clampGetSessionTokenDuration(requested int64) int64 {
-	if requested < minDurationSeconds {
-		return minDurationSeconds
-	}
-	if requested > getSessionTokenMaxDuration {
-		return getSessionTokenMaxDuration
-	}
-	return requested
 }
 
 // userEnvelope is the session envelope for a GetSessionToken user session:

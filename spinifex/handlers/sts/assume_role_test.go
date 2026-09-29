@@ -497,7 +497,57 @@ func TestAssumeRole_RejectsMFA(t *testing.T) {
 			requireMFANotSupported(t, err)
 		})
 	}
+
+	for _, tc := range mfaConstraintCases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := basicAssumeRoleInput(*role.Arn, "sess")
+			input.SerialNumber, input.TokenCode = tc.serialNumber, tc.tokenCode
+			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
+			requireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
+		})
+	}
 }
+
+// mfaConstraintCases break the model's serialNumber and tokenCode constraints, which
+// are checked before MFA is refused as unsupported.
+var mfaConstraintCases = func() []struct {
+	name                    string
+	serialNumber, tokenCode *string
+	wantMessage             string
+} {
+	const (
+		serialPattern = `Member must satisfy regular expression pattern: [\w+=/:,.@-]*`
+		serialShort   = "Member must have length greater than or equal to 9"
+		serialLong    = "Member must have length less than or equal to 256"
+		tokenPattern  = `Member must satisfy regular expression pattern: [\d]*`
+		tokenShort    = "Member must have length greater than or equal to 6"
+		tokenLong     = "Member must have length less than or equal to 6"
+	)
+	violation := func(field, value, constraint string) string {
+		return fmt.Sprintf("Value '%s' at '%s' failed to satisfy constraint: %s", value, field, constraint)
+	}
+	one := func(field, value, constraint string) string {
+		return "1 validation error detected: " + violation(field, value, constraint)
+	}
+	long := strings.Repeat("a", 257)
+	return []struct {
+		name                    string
+		serialNumber, tokenCode *string
+		wantMessage             string
+	}{
+		{"serial_empty", aws.String(""), nil, one("serialNumber", "", serialShort)},
+		{"serial_short", aws.String("GAHT1234"), nil, one("serialNumber", "GAHT1234", serialShort)},
+		{"serial_long", aws.String(long), nil, one("serialNumber", long, serialLong)},
+		{"serial_charset", aws.String("GAHT 12345"), nil, one("serialNumber", "GAHT 12345", serialPattern)},
+		{"token_empty", nil, aws.String(""), one("tokenCode", "", tokenShort)},
+		{"token_long", nil, aws.String("1234567"), one("tokenCode", "1234567", tokenLong)},
+		{"token_charset", nil, aws.String("12345a"), one("tokenCode", "12345a", tokenPattern)},
+		{"token_charset_and_short", nil, aws.String("abc"), "2 validation errors detected: " +
+			violation("tokenCode", "abc", tokenPattern) + "; " + violation("tokenCode", "abc", tokenShort)},
+		{"both", aws.String(""), aws.String(""), "2 validation errors detected: " +
+			violation("serialNumber", "", serialShort) + "; " + violation("tokenCode", "", tokenShort)},
+	}
+}()
 
 func TestAssumeRole_RejectsInvalidSessionName(t *testing.T) {
 	svc, _ := newTestSetup(t)

@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -27,6 +28,11 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 
 	acm, err := handlers_acm.NewACMServiceImplWithNATS(t.Context(), cfg, nc, masterKey)
 	require.NoError(t, err, "construct ACM service")
+	// Without a tenant CA no mode can issue, so every RequestCertificate would
+	// be refused. The generated requests name example.com domains.
+	caDir := t.TempDir()
+	acm.TenantCA, err = handlers_acm.LoadOrCreateTenantCA(filepath.Join(caDir, "ca.pem"), filepath.Join(caDir, "ca.key"), []string{"example.com"})
+	require.NoError(t, err, "create ACM tenant CA")
 	subscribeServiceMethods(t, nc, "acm", acm)
 
 	elbv2, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(cfg, nc, masterKey)

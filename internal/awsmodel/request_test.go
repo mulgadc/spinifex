@@ -4,6 +4,8 @@ package awsmodel
 //shapes, and the unexported pattern sampler and salt helpers.
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"maps"
 	"regexp"
@@ -17,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var testRequestOptions = RequestOptions{AccountID: "123456789012", Region: "ap-southeast-2"}
+var testRequestOptions = RequestOptions{AccountID: "123456789012", Region: "ap-southeast-2", AccessKeyID: "AKIAIOSFODNN7EXAMPLE"}
 
 // constraintViolation is one model constraint an input breaks, found by
 // walking the input against the model independently of the generator.
@@ -99,7 +101,7 @@ func testPattern(pattern string) *regexp.Regexp {
 	if re, ok := testPatterns.Load(pattern); ok {
 		return re.(*regexp.Regexp)
 	}
-	re := regexp.MustCompile(javaEscape.ReplaceAllString(pattern, `\x{$1}`))
+	re := regexp.MustCompile(re2Pattern(pattern))
 	testPatterns.Store(pattern, re)
 	return re
 }
@@ -136,7 +138,7 @@ func TestGeneratedRequestsBreakOnlyTheirConstraint(t *testing.T) {
 					var violations []constraintViolation
 					model.inputViolations(operation.Input.Shape, "$", request.Input, &violations)
 					for member := range request.Input {
-						if !slices.Contains(input.Required, member) {
+						if !slices.Contains(input.Required, member) && !slices.Contains(conditionallyRequired[service][operationName], member) {
 							require.Equal(t, request.Member, member, "%s %s %s carries an unrelated optional member", operationName, request.Constraint, request.Path)
 						}
 					}
@@ -178,6 +180,50 @@ func TestGenerateRequestsIsolatesEachOptionalMember(t *testing.T) {
 			names[name] = true
 		}
 	}
+}
+
+func TestGenerateRequestsSeedsConditionallyRequiredMembers(t *testing.T) {
+	for service, operations := range conditionallyRequired {
+		model, err := Load(service)
+		require.NoError(t, err)
+		for operationName, members := range operations {
+			operation, ok := model.Operation(operationName)
+			require.True(t, ok, "%s %s is not modelled", service, operationName)
+			input := model.shapes[operation.Input.Shape]
+			for _, member := range members {
+				require.Contains(t, input.Members, member, "%s %s", service, operationName)
+				require.NotContains(t, input.Required, member, "%s %s now models %s as required", service, operationName, member)
+			}
+
+			plan, err := GenerateRequests(service, operationName, testRequestOptions)
+			require.NoError(t, err)
+			for _, request := range plan.Cases {
+				for _, member := range members {
+					require.NotEqual(t, member, request.Member, "%s %s", service, operationName)
+					require.Contains(t, request.Input, member, "%s %s %s %s", service, operationName, request.Constraint, request.Path)
+				}
+			}
+		}
+	}
+
+	plan, err := GenerateRequests(RDS, "CreateDBInstance", testRequestOptions)
+	require.NoError(t, err)
+	require.Equal(t, int64(20), plan.Cases[0].Input["AllocatedStorage"])
+	plan, err = GenerateRequests(EC2, "CreateCapacityReservation", testRequestOptions)
+	require.NoError(t, err)
+	require.Equal(t, "ap-southeast-2a", plan.Cases[0].Input["AvailabilityZone"])
+
+	// A constraint inside a seeded member is judged against the base request.
+	plan, err = GenerateRequests(ECS, "CreateCapacityProvider", testRequestOptions)
+	require.NoError(t, err)
+	nested := 0
+	for _, request := range plan.Cases {
+		if strings.HasPrefix(request.Path, "$.autoScalingGroupProvider.") {
+			nested++
+			require.Empty(t, request.Member, request.Path)
+		}
+	}
+	require.NotZero(t, nested)
 }
 
 func TestGenerateRequestsAttributesRejections(t *testing.T) {
@@ -278,6 +324,13 @@ func TestGenerateRequestsUsesResourceHints(t *testing.T) {
 		{RDS, "CreateDBInstance", "Engine", regexp.MustCompile(`^postgres$`)},
 		{ECR, "TagResource", "resourceArn", regexp.MustCompile(`^arn:aws:ecr:ap-southeast-2:123456789012:repository/`)},
 		{EKS, "TagResource", "resourceArn", regexp.MustCompile(`^arn:aws:eks:ap-southeast-2:123456789012:cluster/`)},
+		{EKS, "AssociateAccessPolicy", "policyArn", regexp.MustCompile(`^arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy$`)},
+		{EKS, "CreateAddon", "addonName", regexp.MustCompile(`^aws-ebs-csi-driver$`)},
+		{EKS, "CreateAccessEntry", "type", regexp.MustCompile(`^STANDARD$`)},
+		{ElasticLoadBalancingV2, "CreateTargetGroup", "ProtocolVersion", regexp.MustCompile(`^HTTP1$`)},
+		{EC2, "CopyImage", "SourceRegion", regexp.MustCompile(`^ap-southeast-2$`)},
+		{STS, "GetAccessKeyInfo", "AccessKeyId", regexp.MustCompile(`^AKIAIOSFODNN7EXAMPLE$`)},
+		{IAM, "DeleteAccessKey", "AccessKeyId", regexp.MustCompile(`^AKIA[0-9A-F]{16}$`)},
 	}
 	for _, test := range tests {
 		t.Run(test.operation+"."+test.member, func(t *testing.T) {
@@ -299,6 +352,61 @@ func TestGenerateRequestsUsesResourceHints(t *testing.T) {
 			}
 			t.Fatalf("no acceptance request sets %s", test.member)
 		})
+	}
+}
+
+func TestGenerateRequestsHintsNestedMembers(t *testing.T) {
+	plan, err := GenerateRequests(ElasticLoadBalancingV2, "CreateTargetGroup", testRequestOptions)
+	require.NoError(t, err)
+	for _, request := range plan.Cases {
+		if request.Acceptance() && request.Member == "Matcher" {
+			require.Equal(t, "200", request.Input["Matcher"].(map[string]any)["HttpCode"])
+			return
+		}
+	}
+	t.Fatal("no acceptance request sets Matcher")
+}
+
+func TestGenerateRequestsImportsAVerifiableCertificate(t *testing.T) {
+	plan, err := GenerateRequests(ACM, "ImportCertificate", testRequestOptions)
+	require.NoError(t, err)
+	var input map[string]any
+	for _, request := range plan.Cases {
+		if request.Acceptance() && request.Member == "CertificateChain" {
+			input = request.Input
+		}
+	}
+	require.NotNil(t, input, "no acceptance request sets CertificateChain")
+
+	pair, err := tls.X509KeyPair(input["Certificate"].([]byte), input["PrivateKey"].([]byte))
+	require.NoError(t, err)
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	require.NoError(t, err)
+	roots := x509.NewCertPool()
+	require.True(t, roots.AppendCertsFromPEM(input["CertificateChain"].([]byte)))
+	_, err = leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: "spx.example.com"})
+	require.NoError(t, err)
+}
+
+func TestRE2EquivalentsMatchTheModelledSemantics(t *testing.T) {
+	modelled := map[string]bool{}
+	for _, service := range Services() {
+		model, err := Load(service)
+		require.NoError(t, err)
+		for _, shape := range model.shapes {
+			modelled[shape.Pattern] = true
+		}
+	}
+	for pattern := range re2Equivalents {
+		require.True(t, modelled[pattern], "no model uses %s", pattern)
+	}
+
+	domain := testPattern(`^(\*\.)?(((?!-)[A-Za-z0-9-]{0,62}[A-Za-z0-9])\.)+((?!-)[A-Za-z0-9-]{1,62}[A-Za-z0-9])$`)
+	for _, name := range []string{"example.com", "*.example.com", "a.b.co", "x-y.example.com", "a." + strings.Repeat("b", 63)} {
+		require.True(t, domain.MatchString(name), name)
+	}
+	for _, name := range []string{"example", "-a.com", "a-.com", "a.c", "a.-com", "a.com-", "a..com", "*.com.*", strings.Repeat("a", 64) + ".com"} {
+		require.False(t, domain.MatchString(name), name)
 	}
 }
 

@@ -51,7 +51,7 @@ func TestRequestConformance(t *testing.T) {
 			sender, err := newRequestSender(gw, service)
 			require.NoError(t, err)
 			for _, operation := range coverage.Implemented {
-				plan, err := awsmodel.GenerateRequests(service, operation, awsmodel.RequestOptions{AccountID: gw.AccountID, Region: testRegion})
+				plan, err := awsmodel.GenerateRequests(service, operation, awsmodel.RequestOptions{AccountID: gw.AccountID, Region: testRegion, AccessKeyID: testAccessKeyID})
 				require.NoError(t, err, operation)
 				suiteRequestConformance.recordOperation(service, operation, plan)
 				judge := plan.NewJudge()

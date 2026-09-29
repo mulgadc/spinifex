@@ -65,6 +65,11 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 	if !ok {
 		return RequestPlan{}, fmt.Errorf("awsmodel: %s operation %q is not modelled", service, operationName)
 	}
+	if service == ACM {
+		if _, err := importMaterial(); err != nil {
+			return RequestPlan{}, err
+		}
+	}
 	declared := model.operationErrorCodes(operation)
 	if operation.Input == nil {
 		return RequestPlan{Cases: []RequestCase{{Operation: operationName, Input: map[string]any{}}}, DeclaredErrors: declared}, nil
@@ -77,10 +82,11 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 		plan.Skipped = append(plan.Skipped, Skip{Path: "$", Reason: "a required member cannot be generated"})
 		return plan, nil
 	}
-	input := model.shapes[operation.Input.Shape]
+	// Conditionally required members join every request but are never omitted.
+	required := append(slices.Clone(model.shapes[operation.Input.Shape].Required), conditionallyRequired[service][operationName]...)
 	optional := make([]string, 0, len(full))
 	for _, member := range slices.Sorted(maps.Keys(full)) {
-		if !slices.Contains(input.Required, member) {
+		if !slices.Contains(required, member) {
 			optional = append(optional, member)
 		}
 	}
@@ -111,7 +117,7 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 			Operation: operationName,
 			Member:    member,
 			Path:      memberPathOf(member),
-			Input:     keepMembers(value, input.Required, member),
+			Input:     keepMembers(value, required, member),
 		})
 	}
 	for index := range first.sites {
@@ -121,10 +127,10 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 		}
 		site := sites[index]
 		member, _ := site.path[0].(string)
-		if slices.Contains(input.Required, member) {
+		if slices.Contains(required, member) {
 			member = ""
 		}
-		broken, err := site.apply(keepMembers(value, input.Required, member))
+		broken, err := site.apply(keepMembers(value, required, member))
 		if err != nil {
 			return RequestPlan{}, err
 		}
@@ -583,7 +589,10 @@ func invalidEnumValue(values []string) string {
 }
 
 func (g *requestGenerator) integer(shape *Shape, path []pathStep) int64 {
-	value := int64(1)
+	value, ok := g.integerHint(path)
+	if !ok {
+		value = 1
+	}
 	if shape.Min != nil {
 		value = max(value, int64(math.Ceil(*shape.Min)))
 	}
@@ -629,6 +638,9 @@ func (g *requestGenerator) blob(shape *Shape, path []pathStep) []byte {
 		} else {
 			g.leaveUnbroken(path, fmt.Sprintf("max length %g bytes is above the generated limit", *shape.Max))
 		}
+	}
+	if value, ok := g.blobHint(path); ok && len(value) >= minLength && len(value) <= maxLength {
+		return value
 	}
 	return []byte(fitLength("spx"+g.salt, minLength, maxLength))
 }

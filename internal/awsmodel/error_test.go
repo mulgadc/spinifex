@@ -98,6 +98,12 @@ func TestValidateErrorResponseClassifiesCommonErrorsAsUnmodelled(t *testing.T) {
 			body:      `<ErrorResponse><Error><Code>ValidationError</Code></Error></ErrorResponse>`,
 		},
 		{
+			name:      "ELBv2 parameter validation",
+			service:   ElasticLoadBalancingV2,
+			operation: "AddTags",
+			body:      `<ErrorResponse><Error><Code>InvalidParameterValue</Code></Error></ErrorResponse>`,
+		},
+		{
 			name:      "JSON authorization",
 			service:   ECS,
 			operation: "DescribeTasks",

@@ -48,7 +48,14 @@ func ValidateErrorResponse(service Service, operationName string, body []byte) (
 // they are not treated as proof that an operation-specific code conforms.
 func isUnmodelledCommonError(service Service, code string) bool {
 	switch service {
-	case IAM, ElasticLoadBalancingV2:
+	case IAM:
+		return isUnmodelledQueryError(code)
+	case ElasticLoadBalancingV2:
+		// ELBv2's common errors list the parameter validation codes too.
+		switch code {
+		case "InvalidParameterCombination", "InvalidParameterValue", "MissingParameter", "ValidationError":
+			return true
+		}
 		return isUnmodelledQueryError(code)
 	case STS:
 		// STS also uses these two runtime input errors even though the model

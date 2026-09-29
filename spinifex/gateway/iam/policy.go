@@ -91,6 +91,9 @@ func DeletePolicyVersion(accountID string, input *iam.DeletePolicyVersionInput, 
 }
 
 func ListPolicies(accountID string, input *iam.ListPoliciesInput, svc handlers_iam.IAMService) (*iam.ListPoliciesOutput, error) {
+	if err := validatePathPrefix(input.PathPrefix, policyPathPrefix); err != nil {
+		return nil, err
+	}
 	p, err := newPager(input.Marker, input.MaxItems)
 	if err != nil {
 		return nil, err
@@ -114,6 +117,9 @@ func DeletePolicy(accountID string, input *iam.DeletePolicyInput, svc handlers_i
 func ListEntitiesForPolicy(accountID string, input *iam.ListEntitiesForPolicyInput, svc handlers_iam.IAMService) (*iam.ListEntitiesForPolicyOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if err := validatePathPrefix(input.PathPrefix, entityPathPrefix); err != nil {
+		return nil, err
 	}
 	p, err := newPager(input.Marker, input.MaxItems)
 	if err != nil {
@@ -186,6 +192,9 @@ func DetachUserPolicy(accountID string, input *iam.DetachUserPolicyInput, svc ha
 func ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPoliciesInput, svc handlers_iam.IAMService) (*iam.ListAttachedUserPoliciesOutput, error) {
 	if input.UserName == nil || *input.UserName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if err := validatePathPrefix(input.PathPrefix, policyPathPrefix); err != nil {
+		return nil, err
 	}
 	p, err := newPager(input.Marker, input.MaxItems)
 	if err != nil {

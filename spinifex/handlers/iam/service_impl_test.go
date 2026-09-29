@@ -2002,6 +2002,78 @@ func TestListAttachedUserPolicies(t *testing.T) {
 	assert.True(t, names["ListPolicy2"])
 }
 
+func TestListAttachedPolicies_FilterByPathPrefix(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	root := createTestPolicy(t, svc, "RootPolicy")
+	team, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("TeamPolicy"), Path: aws.String("/team/a/"), PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+	createTestUser(t, svc, "u")
+	createTestRole(t, svc, "r")
+	createTestGroup(t, svc, "g")
+	for _, arn := range []*string{root.Arn, team.Policy.Arn} {
+		_, err = svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("u"), PolicyArn: arn})
+		require.NoError(t, err)
+		_, err = svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{RoleName: aws.String("r"), PolicyArn: arn})
+		require.NoError(t, err)
+		_, err = svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{GroupName: aws.String("g"), PolicyArn: arn})
+		require.NoError(t, err)
+	}
+
+	list := map[string]func(prefix *string) ([]*iam.AttachedPolicy, error){
+		"user": func(prefix *string) ([]*iam.AttachedPolicy, error) {
+			out, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{UserName: aws.String("u"), PathPrefix: prefix})
+			if err != nil {
+				return nil, err
+			}
+			return out.AttachedPolicies, nil
+		},
+		"role": func(prefix *string) ([]*iam.AttachedPolicy, error) {
+			out, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{RoleName: aws.String("r"), PathPrefix: prefix})
+			if err != nil {
+				return nil, err
+			}
+			return out.AttachedPolicies, nil
+		},
+		"group": func(prefix *string) ([]*iam.AttachedPolicy, error) {
+			out, err := svc.ListAttachedGroupPolicies(testAccountID, &iam.ListAttachedGroupPoliciesInput{GroupName: aws.String("g"), PathPrefix: prefix})
+			if err != nil {
+				return nil, err
+			}
+			return out.AttachedPolicies, nil
+		},
+	}
+	cases := []struct {
+		prefix *string
+		want   []string
+	}{
+		{nil, []string{"RootPolicy", "TeamPolicy"}},
+		{aws.String("/"), []string{"RootPolicy", "TeamPolicy"}},
+		{aws.String("/team/"), []string{"TeamPolicy"}},
+		{aws.String("/other/"), nil},
+	}
+	for identity, fn := range list {
+		for _, tc := range cases {
+			got, err := fn(tc.prefix)
+			require.NoError(t, err)
+			var names []string
+			for _, p := range got {
+				names = append(names, aws.StringValue(p.PolicyName))
+			}
+			assert.ElementsMatch(t, tc.want, names, "%s with PathPrefix %v", identity, aws.StringValue(tc.prefix))
+		}
+	}
+}
+
+func TestPolicyPathFromARN(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "/", policyPathFromARN("arn:aws:iam::aws:policy/ReadOnlyAccess"))
+	assert.Equal(t, "/service-role/", policyPathFromARN("arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM"))
+	assert.Equal(t, "/team/a/", policyPathFromARN("arn:aws:iam::000000000000:policy/team/a/TeamPolicy"))
+}
+
 func TestListAttachedUserPolicies_Empty(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

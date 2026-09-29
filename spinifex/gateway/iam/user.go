@@ -24,6 +24,9 @@ func GetUser(accountID string, input *iam.GetUserInput, svc handlers_iam.IAMServ
 }
 
 func ListUsers(accountID string, input *iam.ListUsersInput, svc handlers_iam.IAMService) (*iam.ListUsersOutput, error) {
+	if err := validatePathPrefix(input.PathPrefix, identityPathPrefix); err != nil {
+		return nil, err
+	}
 	p, err := newPager(input.Marker, input.MaxItems)
 	if err != nil {
 		return nil, err

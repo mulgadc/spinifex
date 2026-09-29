@@ -334,25 +334,7 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 		return nil, err
 	}
 
-	var attached []*iam.AttachedPolicy
-	for _, arn := range role.AttachedPolicies {
-		if isAWSManagedPolicyARN(arn) {
-			attached = append(attached, &iam.AttachedPolicy{
-				PolicyArn:  aws.String(arn),
-				PolicyName: aws.String(managedPolicyNameFromARN(arn)),
-			})
-			continue
-		}
-		policy, err := s.getPolicyByARN(ctx, accountID, arn)
-		if err != nil {
-			slog.Warn("ListAttachedRolePolicies: policy not found for ARN", "arn", arn, "err", err)
-			continue
-		}
-		attached = append(attached, &iam.AttachedPolicy{
-			PolicyArn:  aws.String(policy.ARN),
-			PolicyName: aws.String(policy.PolicyName),
-		})
-	}
+	attached := s.attachedPolicies(ctx, accountID, role.AttachedPolicies, aws.StringValue(input.PathPrefix))
 
 	return &iam.ListAttachedRolePoliciesOutput{
 		AttachedPolicies: attached,

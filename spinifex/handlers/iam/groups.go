@@ -378,25 +378,7 @@ func (s *IAMServiceImpl) ListAttachedGroupPolicies(accountID string, input *iam.
 		return nil, err
 	}
 
-	var attached []*iam.AttachedPolicy
-	for _, arn := range group.AttachedPolicies {
-		if isAWSManagedPolicyARN(arn) {
-			attached = append(attached, &iam.AttachedPolicy{
-				PolicyArn:  aws.String(arn),
-				PolicyName: aws.String(managedPolicyNameFromARN(arn)),
-			})
-			continue
-		}
-		policy, err := s.getPolicyByARN(ctx, accountID, arn)
-		if err != nil {
-			slog.Warn("ListAttachedGroupPolicies: policy not found for ARN", "arn", arn, "err", err)
-			continue
-		}
-		attached = append(attached, &iam.AttachedPolicy{
-			PolicyArn:  aws.String(policy.ARN),
-			PolicyName: aws.String(policy.PolicyName),
-		})
-	}
+	attached := s.attachedPolicies(ctx, accountID, group.AttachedPolicies, aws.StringValue(input.PathPrefix))
 
 	return &iam.ListAttachedGroupPoliciesOutput{
 		AttachedPolicies: attached,

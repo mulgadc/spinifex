@@ -1597,27 +1597,28 @@ func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUse
 	return &iam.DetachUserPolicyOutput{}, nil
 }
 
-func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
-	ctx := context.Background()
-	user, err := s.getUser(ctx, accountID, *input.UserName)
-	if err != nil {
-		return nil, err
-	}
-
+// attachedPolicies resolves an identity's attached policy ARNs for the
+// ListAttached*Policies calls, keeping those whose path starts with pathPrefix.
+func (s *IAMServiceImpl) attachedPolicies(ctx context.Context, accountID string, arns []string, pathPrefix string) []*iam.AttachedPolicy {
 	var attached []*iam.AttachedPolicy
-	for _, arn := range user.AttachedPolicies {
+	for _, arn := range arns {
 		// AWS-managed ARNs have no KV entry; report them from the ARN itself so
 		// attach/list round-trips instead of silently dropping them.
 		if isAWSManagedPolicyARN(arn) {
-			attached = append(attached, &iam.AttachedPolicy{
-				PolicyArn:  aws.String(arn),
-				PolicyName: aws.String(managedPolicyNameFromARN(arn)),
-			})
+			if strings.HasPrefix(policyPathFromARN(arn), pathPrefix) {
+				attached = append(attached, &iam.AttachedPolicy{
+					PolicyArn:  aws.String(arn),
+					PolicyName: aws.String(managedPolicyNameFromARN(arn)),
+				})
+			}
 			continue
 		}
 		policy, err := s.getPolicyByARN(ctx, accountID, arn)
 		if err != nil {
-			slog.Warn("ListAttachedUserPolicies: policy not found for ARN", "arn", arn, "err", err)
+			slog.Warn("attached policy not found for ARN", "arn", arn, "err", err)
+			continue
+		}
+		if !strings.HasPrefix(policy.Path, pathPrefix) {
 			continue
 		}
 		attached = append(attached, &iam.AttachedPolicy{
@@ -1625,6 +1626,24 @@ func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.L
 			PolicyName: aws.String(policy.PolicyName),
 		})
 	}
+	return attached
+}
+
+// policyPathFromARN returns the path of a policy ARN, e.g.
+// arn:aws:iam::aws:policy/service-role/Name -> /service-role/.
+func policyPathFromARN(arn string) string {
+	_, resource, _ := strings.Cut(arn, ":policy")
+	return resource[:strings.LastIndex(resource, "/")+1]
+}
+
+func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
+	ctx := context.Background()
+	user, err := s.getUser(ctx, accountID, *input.UserName)
+	if err != nil {
+		return nil, err
+	}
+
+	attached := s.attachedPolicies(ctx, accountID, user.AttachedPolicies, aws.StringValue(input.PathPrefix))
 
 	return &iam.ListAttachedUserPoliciesOutput{
 		AttachedPolicies: attached,

@@ -17,7 +17,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 )
 
 // maxGroupsPerUser caps how many groups a single user may belong to. Mirrors the

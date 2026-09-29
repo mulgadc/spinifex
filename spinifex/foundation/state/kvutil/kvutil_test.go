@@ -229,7 +229,7 @@ func TestVersionStateMachine(t *testing.T) {
 
 	// Round-trip the raw KV value to confirm the encoding is what readers
 	// outside this package would expect.
-	entry, err := kv.Get(t.Context(), kvutil.VersionKey)
+	entry, err := kv.Get(t.Context(), VersionKey)
 	require.NoError(t, err)
 	assert.Equal(t, "5", string(entry.Value()))
 }
@@ -240,7 +240,7 @@ func TestVersionCorruptValue(t *testing.T) {
 	js := startJetStream(t)
 	kv, err := GetOrCreateBucket(t.Context(), js, "test-version-corrupt", 1)
 	require.NoError(t, err)
-	_, err = kv.PutString(t.Context(), kvutil.VersionKey, "not-a-number")
+	_, err = kv.PutString(t.Context(), VersionKey, "not-a-number")
 	require.NoError(t, err)
 
 	_, err = ReadVersion(t.Context(), kv)

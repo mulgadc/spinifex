@@ -21,7 +21,7 @@ import (
 	"time"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

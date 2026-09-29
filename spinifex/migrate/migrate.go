@@ -9,7 +9,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
 )

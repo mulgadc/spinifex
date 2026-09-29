@@ -35,7 +35,7 @@ A rejection that succeeds is always a finding. A refusal counts as a pass only w
 
 Request findings and undeclared errors block only for services listed under `promotedRequestServices` in `conformance-promoted-services.json`, which starts empty; response promotion does not carry over.
 
-The 2026-09-29 baseline sent 4047 requests across 371 operations: 980 pass, 506 findings, 96 undeclared errors, 2465 inconclusive. None of it had been checked against AWS, so each finding below is a lead to verify before any fix. Since then, EC2 range-checks `MaxResults` on six `Describe*` calls and refuses a tag resource type the operation cannot tag, as AWS answers both, which clears 12 EC2 findings. Every finding is traced to its cause, and grouped into fix items, in the mulga plan `docs/development/bugs/aws-integration-conformance-findings.md`.
+The 2026-09-29 baseline sent 4047 requests across 371 operations: 980 pass, 506 findings, 96 undeclared errors, 2465 inconclusive. None of it had been checked against AWS, so each finding below is a lead to verify before any fix. Since then, EC2 range-checks `MaxResults` on six `Describe*` calls and refuses a tag resource type the operation cannot tag, as AWS answers both, which clears 12 EC2 findings. IAM tag and untag calls now refuse a tag with no value or outside the model's key and value character sets, count tag lengths in characters rather than bytes, and treat keys that differ only in case as one key; AWS answered each case the same way on a user. Every finding is traced to its cause, and grouped into fix items, in the mulga plan `docs/development/bugs/aws-integration-conformance-findings.md`.
 
 | Finding | Count | Notes |
 |---|---:|---|

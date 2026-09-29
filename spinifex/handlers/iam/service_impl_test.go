@@ -1264,7 +1264,7 @@ func TestCreatePolicy_InvalidTag(t *testing.T) {
 		Tags:           []*iam.Tag{{Key: aws.String(""), Value: aws.String("x")}},
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 
 	// The rejected policy must not have been stored.
 	_, err = svc.GetPolicy(testAccountID, &iam.GetPolicyInput{

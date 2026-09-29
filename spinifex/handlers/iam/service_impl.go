@@ -10,10 +10,12 @@ import (
 	"log/slog"
 	"maps"
 	"net/netip"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -242,29 +244,39 @@ func tagsToSDK(tags []Tag) []*iam.Tag {
 	return out
 }
 
+// Tag key and value patterns from the IAM model, as AWS enforces them.
+var (
+	tagKeyPattern   = regexp.MustCompile(`^[\p{L}\p{Z}\p{N}_.:/=+\-@]+$`)
+	tagValuePattern = regexp.MustCompile(`^[\p{L}\p{Z}\p{N}_.:/=+\-@]*$`)
+)
+
 // validateTags enforces the AWS IAM tag limits on request input: at most 50
-// tags, key length 1-128, value length 0-256, no duplicate keys.
+// tags, the model's null, length (in characters) and pattern constraints on
+// every key and value, then no duplicate keys ignoring case.
 func validateTags(tags []*iam.Tag) error {
 	if len(tags) > maxTagsPerResource {
 		return errors.New(awserrors.ErrorIAMLimitExceeded)
 	}
-	seen := make(map[string]struct{}, len(tags))
+	var violations []string
 	for i, tag := range tags {
 		field := fmt.Sprintf("tags.%d.member", i+1)
-		if tag == nil || tag.Key == nil {
-			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
-				"1 validation error detected: Value null at '%s.key' failed to satisfy constraint: Member must not be null", field)
+		if tag == nil {
+			tag = &iam.Tag{}
 		}
-		key := *tag.Key
-		if len(key) < 1 {
-			return lengthViolation(key, field+".key", "greater than or equal to 1")
+		violations = append(violations, tagMemberViolations(field+".key", tag.Key, 1, maxTagKeyLength, tagKeyPattern)...)
+		violations = append(violations, tagMemberViolations(field+".value", tag.Value, 0, maxTagValueLength, tagValuePattern)...)
+	}
+	if len(violations) > 0 {
+		noun := "errors"
+		if len(violations) == 1 {
+			noun = "error"
 		}
-		if len(key) > maxTagKeyLength {
-			return lengthViolation(key, field+".key", fmt.Sprintf("less than or equal to %d", maxTagKeyLength))
-		}
-		if tag.Value != nil && len(*tag.Value) > maxTagValueLength {
-			return lengthViolation(*tag.Value, field+".value", fmt.Sprintf("less than or equal to %d", maxTagValueLength))
-		}
+		return awserrors.Errorf(awserrors.ErrorValidationError,
+			"%d validation %s detected: %s", len(violations), noun, strings.Join(violations, "; "))
+	}
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		key := strings.ToLower(*tag.Key)
 		if _, dup := seen[key]; dup {
 			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
 				"Duplicate tag keys found. Please note that Tag keys are case insensitive.")
@@ -274,8 +286,33 @@ func validateTags(tags []*iam.Tag) error {
 	return nil
 }
 
+// tagMemberViolations checks one tag key or value. AWS leaves the value out of
+// tag violation messages, so these name only the member.
+func tagMemberViolations(field string, value *string, minLen, maxLen int, pattern *regexp.Regexp) []string {
+	prefix := "Value at '" + field + "' failed to satisfy constraint: Member must "
+	if value == nil {
+		return []string{prefix + "not be null"}
+	}
+	var out []string
+	if n := utf8.RuneCountInString(*value); n < minLen {
+		out = append(out, fmt.Sprintf("%shave length greater than or equal to %d", prefix, minLen))
+	} else if n > maxLen {
+		out = append(out, fmt.Sprintf("%shave length less than or equal to %d", prefix, maxLen))
+	}
+	if !pattern.MatchString(*value) {
+		out = append(out, prefix+"satisfy regular expression pattern: "+modelPattern(pattern))
+	}
+	return out
+}
+
+// modelPattern renders a compiled tag pattern as the model writes it.
+func modelPattern(pattern *regexp.Regexp) string {
+	return strings.TrimSuffix(strings.TrimPrefix(pattern.String(), "^"), "$")
+}
+
 // mergeTags upserts add into existing by key, matching AWS semantics: a
-// repeated key overwrites in place, new keys append in input order.
+// repeated key, ignoring case, is overwritten in place with the new key's
+// case; new keys append in input order.
 func mergeTags(existing []Tag, add []*iam.Tag) []Tag {
 	out := slices.Clone(existing)
 	for _, tag := range add {
@@ -283,7 +320,7 @@ func mergeTags(existing []Tag, add []*iam.Tag) []Tag {
 			continue
 		}
 		next := Tag{Key: *tag.Key, Value: aws.StringValue(tag.Value)}
-		idx := slices.IndexFunc(out, func(t Tag) bool { return t.Key == next.Key })
+		idx := slices.IndexFunc(out, func(t Tag) bool { return strings.EqualFold(t.Key, next.Key) })
 		if idx >= 0 {
 			out[idx] = next
 		} else {
@@ -293,18 +330,18 @@ func mergeTags(existing []Tag, add []*iam.Tag) []Tag {
 	return out
 }
 
-// removeTagKeys drops the named keys from existing; unknown keys are
-// silently ignored, matching AWS.
+// removeTagKeys drops the named keys from existing, ignoring case; unknown
+// keys are silently ignored, matching AWS.
 func removeTagKeys(existing []Tag, keys []*string) []Tag {
 	drop := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
 		if k != nil {
-			drop[*k] = struct{}{}
+			drop[strings.ToLower(*k)] = struct{}{}
 		}
 	}
 	out := make([]Tag, 0, len(existing))
 	for _, t := range existing {
-		if _, gone := drop[t.Key]; !gone {
+		if _, gone := drop[strings.ToLower(t.Key)]; !gone {
 			out = append(out, t)
 		}
 	}

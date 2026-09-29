@@ -13,7 +13,7 @@ import (
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/reconciler"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 )
 
 // dnsWatchSources names the buckets whose changes should wake the DNS

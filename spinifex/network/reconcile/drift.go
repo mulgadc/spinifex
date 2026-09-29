@@ -14,7 +14,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	loop "github.com/mulgadc/spinifex/spinifex/reconciler"
+	loop "github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )

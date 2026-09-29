@@ -674,6 +674,10 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 	if err := gw.checkPolicyResources(r, "ec2", action, resources); err != nil {
+		// EC2 answers a policy denial with UnauthorizedOperation, not AccessDenied.
+		if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorAccessDenied {
+			return errors.New(awserrors.ErrorUnauthorizedOperation)
+		}
 		return err
 	}
 	if dryRunRequested(input) {
@@ -686,6 +690,11 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 
 	xmlOutput, err := handler.dispatch(action, input, gw, accountID, r)
 	if err != nil {
+		// A gateway iam:PassRole denial is EC2's UnauthorizedOperation too; an
+		// AccessDenied a daemon returns is left as it is.
+		if _, denied := errors.AsType[*identityPolicyDenialError](err); denied {
+			return errors.New(awserrors.ErrorUnauthorizedOperation)
+		}
 		return err
 	}
 

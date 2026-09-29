@@ -46,7 +46,7 @@ func runIAMAuthorization(t *testing.T, fix *Fixture) {
 
 		createKeyPair(t, fix, principal, granted)
 
-		harness.ExpectError(t, "AccessDenied", func() error {
+		harness.ExpectError(t, "UnauthorizedOperation", func() error {
 			_, err := principal.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(sibling)}) // e2e:allow-create — the create is the authorization probe
 			return err
 		})
@@ -80,7 +80,7 @@ func runIAMAuthorization(t *testing.T, fix *Fixture) {
 
 		// Same client, same key: the credential is a pointer into live IAM state,
 		// not a capability minted when the key was issued.
-		harness.ExpectError(t, "AccessDenied", func() error {
+		harness.ExpectError(t, "UnauthorizedOperation", func() error {
 			_, err := principal.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{ // e2e:allow-create — the create is the authorization probe
 				KeyName: aws.String(run + "-deny-2"),
 			})
@@ -123,7 +123,7 @@ func runIAMAuthorization(t *testing.T, fix *Fixture) {
 		_, err = fix.AWS.IAM.DeletePolicy(&iam.DeletePolicyInput{PolicyArn: aws.String(grantARN)})
 		require.NoError(t, err, "delete-policy %s", grantARN)
 
-		harness.ExpectError(t, "AccessDenied", func() error {
+		harness.ExpectError(t, "UnauthorizedOperation", func() error {
 			_, err := principal.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{ // e2e:allow-create — the create is the authorization probe
 				KeyName: aws.String(run + "-attached-2"),
 			})
@@ -163,7 +163,7 @@ func runIAMAuthorization(t *testing.T, fix *Fixture) {
 		require.NoError(t, err, "create-policy-version %s", policyARN)
 		t.Cleanup(func() { deleteSecondPolicyVersionBestEffort(t, fix, policyARN) })
 
-		harness.ExpectError(t, "AccessDenied", func() error {
+		harness.ExpectError(t, "UnauthorizedOperation", func() error {
 			_, err := principal.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{ // e2e:allow-create — the create is the authorization probe
 				KeyName: aws.String(run + "-version-2"),
 			})
@@ -190,7 +190,7 @@ func runIAMAuthorization(t *testing.T, fix *Fixture) {
 		})
 		require.NoError(t, err, "delete-access-key %s", principal.KeyID)
 
-		// Not AccessDenied: a deleted key no longer authenticates, so the request
+		// Not UnauthorizedOperation: a deleted key no longer authenticates, so the request
 		// never reaches policy evaluation.
 		harness.ExpectError(t, "InvalidClientTokenId", func() error {
 			_, err := principal.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{ // e2e:allow-create — the create is the authorization probe
@@ -242,7 +242,7 @@ func runIAMAuthorization(t *testing.T, fix *Fixture) {
 			})
 
 		createKeyPair(t, fix, principal, run+"-user-1")
-		harness.ExpectError(t, "AccessDenied", func() error {
+		harness.ExpectError(t, "UnauthorizedOperation", func() error {
 			_, err := principal.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{ // e2e:allow-create — the create is the authorization probe
 				KeyName: aws.String(run + "-role-1"),
 			})
@@ -263,7 +263,7 @@ func runIAMAuthorization(t *testing.T, fix *Fixture) {
 		createKeyPair(t, fix, &authzPrincipal{Client: session}, run+"-role-2")
 		// The grant that carried the assuming user does not follow the session:
 		// the role's policies are the whole of what it holds.
-		harness.ExpectError(t, "AccessDenied", func() error {
+		harness.ExpectError(t, "UnauthorizedOperation", func() error {
 			_, err := session.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{ // e2e:allow-create — the create is the authorization probe
 				KeyName: aws.String(run + "-user-2"),
 			})
@@ -288,7 +288,7 @@ func runIAMAuthorization(t *testing.T, fix *Fixture) {
 			Resource:  []string{keyPairARN(account, run+"-ip-*")},
 			Condition: sourceIPCondition(authzForeignCIDR),
 		})
-		harness.ExpectError(t, "AccessDenied", func() error {
+		harness.ExpectError(t, "UnauthorizedOperation", func() error {
 			_, err := elsewhere.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{ // e2e:allow-create — the create is the authorization probe
 				KeyName: aws.String(run + "-ip-2"),
 			})
@@ -309,7 +309,7 @@ func runIAMAuthorization(t *testing.T, fix *Fixture) {
 				Resource:  []string{"*"},
 				Condition: sourceIPCondition(here),
 			})
-		harness.ExpectError(t, "AccessDenied", func() error {
+		harness.ExpectError(t, "UnauthorizedOperation", func() error {
 			_, err := fenced.Client.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{ // e2e:allow-create — the create is the authorization probe
 				KeyName: aws.String(run + "-ip-3"),
 			})
@@ -382,7 +382,7 @@ func addAccessKey(t *testing.T, fix *Fixture, principal *authzPrincipal) *authzP
 	client := harness.NewAWSClientWithCreds(t, fix.Env, keyID, aws.StringValue(out.AccessKey.SecretAccessKey))
 	harness.EventuallyErr(t, func() error {
 		_, err := client.EC2.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{})
-		if err == nil || harness.ErrorCodeIs(err, "AccessDenied") {
+		if err == nil || harness.ErrorCodeIs(err, "UnauthorizedOperation") {
 			return nil
 		}
 		return fmt.Errorf("credentials for %s are not live yet: %w", principal.UserName, err)

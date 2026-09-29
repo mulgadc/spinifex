@@ -4,11 +4,13 @@
 package gateway
 
 import (
+	"errors"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -60,6 +62,13 @@ func assertDenied(t *testing.T, err error) {
 	assert.Equal(t, awserrors.ErrorAccessDenied, code)
 }
 
+// assertUnauthorized asserts EC2's policy denial, UnauthorizedOperation.
+func assertUnauthorized(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorUnauthorizedOperation, err.Error())
+}
+
 // assertNotDenied asserts the policy gate passed where the handler failure that
 // follows is not fixed. It resolves the code for the same reason assertDenied
 // does: the denial message is no longer the bare code.
@@ -88,7 +97,7 @@ func TestEC2Request_ScopedDenyFires(t *testing.T) {
 		statement("Deny", "ec2:TerminateInstances", "arn:aws:ec2:*:*:instance/i-prod"),
 	)
 
-	assertDenied(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.1=i-prod"))
+	assertUnauthorized(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.1=i-prod"))
 	assertPermitted(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.1=i-dev"))
 }
 
@@ -100,7 +109,7 @@ func TestEC2Request_ScopedAllowGrants(t *testing.T) {
 	)
 
 	assertPermitted(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.1=i-dev"))
-	assertDenied(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.1=i-prod"))
+	assertUnauthorized(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.1=i-prod"))
 }
 
 // TestEC2Request_DenyOneMemberFailsTheBatch pins the AWS combining rule: a batch
@@ -111,7 +120,7 @@ func TestEC2Request_DenyOneMemberFailsTheBatch(t *testing.T) {
 		statement("Deny", "ec2:TerminateInstances", "arn:aws:ec2:*:*:instance/i-prod"),
 	)
 
-	assertDenied(t, dispatchEC2(t, gw,
+	assertUnauthorized(t, dispatchEC2(t, gw,
 		"Action=TerminateInstances&InstanceId.1=i-dev&InstanceId.2=i-prod&InstanceId.3=i-other"))
 	assertPermitted(t, dispatchEC2(t, gw,
 		"Action=TerminateInstances&InstanceId.1=i-dev&InstanceId.2=i-other"))
@@ -127,8 +136,8 @@ func TestEC2Request_MultiResourceParity(t *testing.T) {
 		statement("Deny", "ec2:RunInstances", "arn:aws:ec2:*:*:subnet/subnet-restricted"),
 	)
 
-	assertDenied(t, dispatchEC2(t, gw, "Action=RunInstances&ImageId=ami-restricted&MinCount=1&MaxCount=1"))
-	assertDenied(t, dispatchEC2(t, gw,
+	assertUnauthorized(t, dispatchEC2(t, gw, "Action=RunInstances&ImageId=ami-restricted&MinCount=1&MaxCount=1"))
+	assertUnauthorized(t, dispatchEC2(t, gw,
 		"Action=RunInstances&ImageId=ami-allowed&NetworkInterface.1.SubnetId=subnet-restricted&MinCount=1&MaxCount=1"))
 	assertPermitted(t, dispatchEC2(t, gw, "Action=RunInstances&ImageId=ami-allowed&MinCount=1&MaxCount=1"))
 }
@@ -139,7 +148,7 @@ func TestEC2Request_UsesCanonicalParsedResources(t *testing.T) {
 			statement("Allow", "ec2:*", "*"),
 			statement("Deny", "ec2:ModifyInstanceAttribute", "arn:aws:ec2:*:*:instance/i-prod"),
 		)
-		assertDenied(t, dispatchEC2(t, gw, "Action=ModifyInstanceAttribute&instanceId=i-prod"))
+		assertUnauthorized(t, dispatchEC2(t, gw, "Action=ModifyInstanceAttribute&instanceId=i-prod"))
 	})
 
 	t.Run("location name list wrapper", func(t *testing.T) {
@@ -147,7 +156,7 @@ func TestEC2Request_UsesCanonicalParsedResources(t *testing.T) {
 			statement("Allow", "ec2:*", "*"),
 			statement("Deny", "ec2:TerminateInstances", "arn:aws:ec2:*:*:instance/i-prod"),
 		)
-		assertDenied(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.InstanceId.1=i-prod"))
+		assertUnauthorized(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.InstanceId.1=i-prod"))
 	})
 
 	t.Run("handler field precedence", func(t *testing.T) {
@@ -155,7 +164,7 @@ func TestEC2Request_UsesCanonicalParsedResources(t *testing.T) {
 			statement("Allow", "ec2:*", "*"),
 			statement("Deny", "ec2:DeleteKeyPair", "arn:aws:ec2:*:*:key-pair/key-prod"),
 		)
-		assertDenied(t, dispatchEC2(t, gw, "Action=DeleteKeyPair&KeyName=dev&KeyPairId=key-prod"))
+		assertUnauthorized(t, dispatchEC2(t, gw, "Action=DeleteKeyPair&KeyName=dev&KeyPairId=key-prod"))
 	})
 }
 
@@ -164,7 +173,7 @@ func TestEC2Request_CreateRouteChecksNATGateway(t *testing.T) {
 		statement("Allow", "ec2:*", "*"),
 		statement("Deny", "ec2:CreateRoute", "arn:aws:ec2:*:*:natgateway/nat-prod"),
 	)
-	assertDenied(t, dispatchEC2(t, gw, "Action=CreateRoute&RouteTableId=rtb-dev&NatGatewayId=nat-prod"))
+	assertUnauthorized(t, dispatchEC2(t, gw, "Action=CreateRoute&RouteTableId=rtb-dev&NatGatewayId=nat-prod"))
 }
 
 func TestEC2Request_RequestSpotInstancesChecksLaunchResources(t *testing.T) {
@@ -174,7 +183,7 @@ func TestEC2Request_RequestSpotInstancesChecksLaunchResources(t *testing.T) {
 	)
 	body := "Action=RequestSpotInstances&LaunchSpecification.ImageId=ami-1&" +
 		"LaunchSpecification.InstanceType=t3.micro&LaunchSpecification.SubnetId=subnet-prod"
-	assertDenied(t, dispatchEC2(t, gw, body))
+	assertUnauthorized(t, dispatchEC2(t, gw, body))
 }
 
 // TestEC2Request_GetSecurityGroupsForVpcIsVpcScoped pins the one read action
@@ -186,7 +195,7 @@ func TestEC2Request_GetSecurityGroupsForVpcIsVpcScoped(t *testing.T) {
 		statement("Deny", "ec2:GetSecurityGroupsForVpc", "arn:aws:ec2:*:*:vpc/vpc-prod"),
 	)
 
-	assertDenied(t, dispatchEC2(t, gw, "Action=GetSecurityGroupsForVpc&VpcId=vpc-prod"))
+	assertUnauthorized(t, dispatchEC2(t, gw, "Action=GetSecurityGroupsForVpc&VpcId=vpc-prod"))
 	assertPermitted(t, dispatchEC2(t, gw, "Action=GetSecurityGroupsForVpc&VpcId=vpc-dev"))
 }
 
@@ -200,7 +209,7 @@ func TestEC2Request_UpdateSecurityGroupRuleDescriptionsIsGroupScoped(t *testing.
 	)
 
 	for _, action := range []string{"UpdateSecurityGroupRuleDescriptionsIngress", "UpdateSecurityGroupRuleDescriptionsEgress"} {
-		assertDenied(t, dispatchEC2(t, gw, "Action="+action+"&GroupId=sg-prod"))
+		assertUnauthorized(t, dispatchEC2(t, gw, "Action="+action+"&GroupId=sg-prod"))
 		assertPermitted(t, dispatchEC2(t, gw, "Action="+action+"&GroupId=sg-dev"))
 	}
 }
@@ -217,7 +226,7 @@ func TestEC2Request_ModifySecurityGroupRulesIsGroupScoped(t *testing.T) {
 		"&SecurityGroupRule.1.SecurityGroupRule.IpProtocol=tcp" +
 		"&SecurityGroupRule.1.SecurityGroupRule.FromPort=22&SecurityGroupRule.1.SecurityGroupRule.ToPort=22" +
 		"&SecurityGroupRule.1.SecurityGroupRule.CidrIpv4=10.0.0.0/24"
-	assertDenied(t, dispatchEC2(t, gw, "Action=ModifySecurityGroupRules&GroupId=sg-prod"+update))
+	assertUnauthorized(t, dispatchEC2(t, gw, "Action=ModifySecurityGroupRules&GroupId=sg-prod"+update))
 	assertPermitted(t, dispatchEC2(t, gw, "Action=ModifySecurityGroupRules&GroupId=sg-dev"+update))
 }
 
@@ -285,7 +294,7 @@ func TestEC2Request_IdentifierIsAValueNotAPattern(t *testing.T) {
 	// reverted STS work built an ARN from the segment after the final /, so a
 	// Deny on i-prod fenced i-prod/admin and a grant fenced the wrong object.
 	assertPermitted(t, dispatchEC2(t, fenced, "Action=TerminateInstances&InstanceId.1=i-prod/admin"))
-	assertDenied(t, dispatchEC2(t, fenced, "Action=TerminateInstances&InstanceId.1=i-prod"))
+	assertUnauthorized(t, dispatchEC2(t, fenced, "Action=TerminateInstances&InstanceId.1=i-prod"))
 }
 
 // TestEC2Request_ARNIsBuiltFromTheNodeRegion: the credential-scope region is
@@ -298,5 +307,60 @@ func TestEC2Request_ARNIsBuiltFromTheNodeRegion(t *testing.T) {
 		statement("Deny", "ec2:TerminateInstances", "arn:aws:ec2:"+authzRegion+":*:instance/i-prod"),
 	)
 
-	assertDenied(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.1=i-prod"))
+	assertUnauthorized(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.1=i-prod"))
+}
+
+// profileIAMService resolves every instance profile to one holding role app, or
+// fails resolution with resolveErr.
+type profileIAMService struct {
+	policyMockIAMService
+
+	resolveErr error
+}
+
+func (s *profileIAMService) ResolveInstanceProfile(accountID, _ string) (*handlers_iam.InstanceProfile, error) {
+	if s.resolveErr != nil {
+		return nil, s.resolveErr
+	}
+	return &handlers_iam.InstanceProfile{AccountID: accountID, RoleName: "app"}, nil
+}
+
+func (s *profileIAMService) CanonicalResourceARN(accountID string, _ arn.IAMResourceType, name string) (string, error) {
+	return "arn:aws:iam::" + accountID + ":role/" + name, nil
+}
+
+func passRoleDeniedGateway(t *testing.T, resolveErr error) *GatewayConfig {
+	t.Helper()
+	docs := []handlers_iam.PolicyDocument{{Version: "2012-10-17", Statement: []handlers_iam.Statement{
+		statement("Allow", "ec2:*", "*"),
+		statement("Deny", "iam:PassRole", "*"),
+	}}}
+	return &GatewayConfig{
+		DisableLogging: true,
+		Region:         authzRegion,
+		NATSConn:       startTestNATS(t),
+		IAMService: &profileIAMService{
+			policyMockIAMService: policyMockIAMService{
+				getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
+			},
+			resolveErr: resolveErr,
+		},
+	}
+}
+
+// An iam:PassRole denial raised during dispatch is EC2's UnauthorizedOperation,
+// the same as a denial at the action gate.
+func TestEC2Request_PassRoleDenialIsUnauthorizedOperation(t *testing.T) {
+	gw := passRoleDeniedGateway(t, nil)
+	assertUnauthorized(t, dispatchEC2(t, gw,
+		"Action=AssociateIamInstanceProfile&InstanceId=i-dev&IamInstanceProfile.Name=web"))
+}
+
+// Only the gateway's own policy denial is translated: an AccessDenied from
+// instance-profile resolution reaches the caller unchanged.
+func TestEC2Request_ResolverAccessDeniedPassesThrough(t *testing.T) {
+	gw := passRoleDeniedGateway(t, errors.New(awserrors.ErrorAccessDenied))
+	err := dispatchEC2(t, gw, "Action=AssociateIamInstanceProfile&InstanceId=i-dev&IamInstanceProfile.Name=web")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }

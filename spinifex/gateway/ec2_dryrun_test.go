@@ -75,7 +75,7 @@ func TestEC2Request_DryRunDeniedCaller(t *testing.T) {
 		statement("Allow", "ec2:*", "*"),
 		statement("Deny", "ec2:CreateVpc", "*"),
 	)
-	assertDenied(t, dispatchEC2(t, gw, "Action=CreateVpc&CidrBlock=10.0.0.0/16&DryRun=true"))
+	assertUnauthorized(t, dispatchEC2(t, gw, "Action=CreateVpc&CidrBlock=10.0.0.0/16&DryRun=true"))
 	assertDryRun(t, dispatchEC2(t, gw, "Action=CreateSecurityGroup&GroupName=g&GroupDescription=d&DryRun=true"))
 }
 

@@ -1597,3 +1597,35 @@ func TestUpdateAssumeRolePolicy_NotActionRejected(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
 }
+
+// The message is the one AWS returned for a 1001-character description, which
+// it checks before the role lookup and the trust policy.
+func TestRoleAndPolicy_DescriptionLength(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	const msg = "1 validation error detected: Value at 'description' failed to satisfy constraint: Member must have length less than or equal to 1000"
+	tooLong := aws.String(strings.Repeat("é", maxDescriptionLength+1))
+
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName: aws.String("r"), AssumeRolePolicyDocument: aws.String("{"), Description: tooLong,
+	})
+	requireIAMError(t, err, awserrors.ErrorValidationError, msg)
+	_, err = svc.UpdateRole(testAccountID, &iam.UpdateRoleInput{RoleName: aws.String("missing"), Description: tooLong})
+	requireIAMError(t, err, awserrors.ErrorValidationError, msg)
+	_, err = svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("p"), PolicyDocument: aws.String("{"), Description: tooLong,
+	})
+	requireIAMError(t, err, awserrors.ErrorValidationError, msg)
+
+	atMax := aws.String(strings.Repeat("é", maxDescriptionLength))
+	_, err = svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName: aws.String("r"), AssumeRolePolicyDocument: aws.String(validTrustPolicy()), Description: atMax,
+	})
+	require.NoError(t, err)
+	_, err = svc.UpdateRole(testAccountID, &iam.UpdateRoleInput{RoleName: aws.String("r"), Description: atMax})
+	require.NoError(t, err)
+	_, err = svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("p"), PolicyDocument: aws.String(validPolicyDocument()), Description: atMax,
+	})
+	require.NoError(t, err)
+}

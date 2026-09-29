@@ -56,6 +56,10 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 		}
 	}
 
+	if err := validateDescription(input.Description); err != nil {
+		return nil, err
+	}
+
 	// Carry the reason: a bare code cannot tell a caller which statement or key
 	// was refused, and the gateway logs the returned error, so one message
 	// serves both the client and the operator.
@@ -218,6 +222,9 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
 	ctx := context.Background()
 	roleName := *input.RoleName
+	if err := validateDescription(input.Description); err != nil {
+		return nil, err
+	}
 
 	role, err := s.getRole(ctx, accountID, roleName)
 	if err != nil {

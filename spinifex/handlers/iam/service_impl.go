@@ -56,6 +56,7 @@ const (
 	maxTagsPerResource   = 50
 	maxTagKeyLength      = 128
 	maxTagValueLength    = 256
+	maxDescriptionLength = 1000
 
 	// LongLivedAccessKeyIDPrefix is the AWS-defined prefix for long-lived IAM access keys.
 	// The access-keys bucket rejects writes with any other prefix to prevent silent privilege escalation.
@@ -1251,6 +1252,10 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 
 	kvKey := accountID + "." + policyName
 
+	if err := validateDescription(input.Description); err != nil {
+		return nil, err
+	}
+
 	if _, err := ValidatePolicyDocument(*input.PolicyDocument); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
 			"policy %q: %w", policyName, err)
@@ -2196,6 +2201,15 @@ func validateIAMName(field, name string, maxLen int) error {
 			return awserrors.Errorf(awserrors.ErrorValidationError,
 				"The specified value for %s is invalid. It must contain only alphanumeric characters and/or the following: +=,.@_-", field)
 		}
+	}
+	return nil
+}
+
+// validateDescription enforces the 1000-character limit on a role or policy
+// description.
+func validateDescription(description *string) error {
+	if description != nil && utf8.RuneCountInString(*description) > maxDescriptionLength {
+		return lengthViolation("description", fmt.Sprintf("less than or equal to %d", maxDescriptionLength))
 	}
 	return nil
 }

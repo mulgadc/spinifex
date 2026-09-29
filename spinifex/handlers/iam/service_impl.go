@@ -1278,6 +1278,13 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 	if err := validateDescription(input.Description); err != nil {
 		return nil, err
 	}
+	path := "/"
+	if input.Path != nil {
+		path = *input.Path
+		if err := validatePath(path); err != nil {
+			return nil, err
+		}
+	}
 
 	if _, err := ValidatePolicyDocument(*input.PolicyDocument); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
@@ -1285,13 +1292,6 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 	}
 
 	if err := validateTags(input.Tags, exactKeys); err != nil {
-		return nil, err
-	}
-
-	path := aws.StringValue(input.Path)
-	if path == "" {
-		path = "/"
-	} else if err := validatePath(path); err != nil {
 		return nil, err
 	}
 

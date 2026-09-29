@@ -438,6 +438,25 @@ func TestCreatePolicy_InvalidPath(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
+// AWS refuses an empty Path, as every other Create* does, and checks it before
+// the policy document.
+func TestCreatePolicy_EmptyPathRefusedBeforeDocument(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("EmptyPath"), PolicyDocument: aws.String("{"), Path: aws.String(""),
+	})
+	requireIAMError(t, err, awserrors.ErrorValidationError,
+		"The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters.")
+
+	out, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("NoPath"), PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "/", aws.StringValue(out.Policy.Path))
+}
+
 func TestValidatePolicyDocument_TooLarge(t *testing.T) {
 	t.Parallel()
 	largeDoc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"` + strings.Repeat("a", maxPolicyDocumentSize) + `"}]}`

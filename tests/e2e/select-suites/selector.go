@@ -64,7 +64,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		InfraGlobs: []string{
-			"spinifex/services/nats/**",
+			"spinifex/runtime/roles/nats/**",
 			"tests/e2e/harness/**",
 			"tests/e2e/lib/**",
 			"tests/e2e/Makefile",

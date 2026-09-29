@@ -241,7 +241,7 @@ services:
     depends_on: []
 
   nats:
-    path: spinifex/services/nats
+    path: spinifex/runtime/roles/nats
     # NATS broker bootstrap / cluster config. Not a NATS pub/sub
     # participant. Any change here is infra-path; selector forces
     # "run all".
@@ -250,7 +250,7 @@ services:
     depends_on: []
 
   spinifexui:
-    path: spinifex/services/spinifexui
+    path: spinifex/runtime/roles/spinifexui
     # Web UI. Talks to awsgw over HTTP, never NATS. Diffs limited to this
     # dir do not need any e2e suite to run.
     subscribes: []
@@ -395,7 +395,7 @@ suites:
 # the tool, listed here for visibility.
 #
 # infra_paths_force_all:
-#   - spinifex/services/nats/**
+#   - spinifex/runtime/roles/nats/**
 #   - spinifex/tests/e2e/harness/**
 #   - spinifex/tests/e2e/lib/**
 #   - spinifex/.github/workflows/e2e-go.yml

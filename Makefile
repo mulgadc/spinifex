@@ -54,7 +54,7 @@ build: go_build build-installer build-lb-agent generate-aws-model-coverage
 # Build spinifex-ui frontend (requires pnpm)
 build-ui:
 	@echo -e "\n....Building spinifex-ui frontend...."
-	cd spinifex/services/spinifexui/frontend && pnpm build
+	cd spinifex/runtime/roles/spinifexui/frontend && pnpm build
 
 # GO commands
 VERSION ?= $(shell git describe --tags --always --dirty)
@@ -353,7 +353,7 @@ reinstall:
 
 clean:
 	rm -f ./bin/$(GO_PROJECT_NAME)
-	rm -rf spinifex/services/spinifexui/frontend/dist
+	rm -rf spinifex/runtime/roles/spinifexui/frontend/dist
 
 install-system:
 	@echo -e "\n....Installing system dependencies for $(ARCH)...."

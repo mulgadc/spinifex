@@ -136,7 +136,7 @@ func TestValidate_CoversNoSuiteConflict(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Services: map[string]Service{
-			"spinifexui": {Path: "spinifex/services/spinifexui", CoversNoSuite: true},
+			"spinifexui": {Path: "spinifex/runtime/roles/spinifexui", CoversNoSuite: true},
 		},
 		Suites: map[string]Suite{
 			"e2e-cert": {

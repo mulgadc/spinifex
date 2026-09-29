@@ -20,7 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
 	"github.com/mulgadc/spinifex/spinifex/services/qemunbdd"
 	"github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
-	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
 	"github.com/mulgadc/spinifex/spinifex/vpcd"
 	"github.com/spf13/cobra"

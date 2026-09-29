@@ -128,7 +128,7 @@ func TestSelect_WorkflowChange_ForcesAll(t *testing.T) {
 }
 
 func TestSelect_NatsInfra_ForcesAll(t *testing.T) {
-	got := selectSuites(t, []string{"spinifex/services/nats/cluster.go"})
+	got := selectSuites(t, []string{"spinifex/runtime/roles/nats/cluster.go"})
 	if !got.AllSuites {
 		t.Fatalf("nats change must force all; got %+v", got)
 	}

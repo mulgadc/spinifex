@@ -511,6 +511,20 @@ func (s *KeyServiceImpl) GetPublicKeyMaterial(accountID, keyName string) (string
 	return material, nil
 }
 
+// describedPublicKey returns the stored key as AWS reports it: one OpenSSH
+// line whose comment is the key pair's name, whatever comment was imported.
+func (s *KeyServiceImpl) describedPublicKey(accountID, keyName string) (string, error) {
+	material, err := s.GetPublicKeyMaterial(accountID, keyName)
+	if err != nil {
+		return "", err
+	}
+	publicKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(material))
+	if err != nil {
+		return "", fmt.Errorf("parse public key %s: %w", keyName, err)
+	}
+	return fmt.Sprintf("%s %s\n", bytes.TrimSpace(ssh.MarshalAuthorizedKey(publicKey)), keyName), nil
+}
+
 // DeleteKeyPair removes a key pair (both public key and metadata from S3).
 func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKeyPairInput, accountID string) (*ec2.DeleteKeyPairOutput, error) {
 	if input == nil {
@@ -733,6 +747,15 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 		// Apply filters
 		if len(parsedFilters) > 0 && !keyPairMatchesFilters(keyPairInfo, parsedFilters) {
 			continue
+		}
+
+		if aws.BoolValue(input.IncludePublicKey) && metadata.KeyName != nil {
+			publicKey, err := s.describedPublicKey(accountID, *metadata.KeyName)
+			if err != nil {
+				slog.ErrorContext(ctx, "DescribeKeyPairs: failed to read public key", "keyName", *metadata.KeyName, "err", err)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			keyPairInfo.PublicKey = aws.String(publicKey)
 		}
 
 		keyPairs = append(keyPairs, keyPairInfo)

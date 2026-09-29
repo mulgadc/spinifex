@@ -649,6 +649,73 @@ func TestDescribeKeyPairs_LegacyED25519Record(t *testing.T) {
 		testLegacyED25519Fingerprint)
 }
 
+// AWS returns PublicKey only when asked, as one line ending in a newline whose
+// comment is the key pair's name, replacing any comment the caller imported.
+func TestDescribeKeyPairs_IncludePublicKey_Imported(t *testing.T) {
+	svc, _ := newTestKeyService()
+
+	_, err := svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
+		KeyName:           aws.String("imported"),
+		PublicKeyMaterial: []byte(testED25519PubKey + " tf-user@julian-wattle"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
+		IncludePublicKey: aws.Bool(true),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.KeyPairs, 1)
+	assert.Equal(t, testED25519PubKey+" imported\n", aws.StringValue(out.KeyPairs[0].PublicKey))
+
+	for _, input := range []*ec2.DescribeKeyPairsInput{{}, {IncludePublicKey: aws.Bool(false)}} {
+		out, err := svc.DescribeKeyPairs(context.Background(), input, testAccountID)
+		require.NoError(t, err)
+		require.Len(t, out.KeyPairs, 1)
+		assert.Nil(t, out.KeyPairs[0].PublicKey)
+	}
+}
+
+func TestDescribeKeyPairs_IncludePublicKey_Created(t *testing.T) {
+	svc, _ := newTestKeyService()
+
+	for _, keyType := range []string{"ed25519", "rsa"} {
+		created, err := svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
+			KeyName: aws.String(keyType + "-created"),
+			KeyType: aws.String(keyType),
+		}, testAccountID)
+		require.NoError(t, err)
+		signer, err := ssh.ParsePrivateKey([]byte(aws.StringValue(created.KeyMaterial)))
+		require.NoError(t, err)
+
+		out, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
+			KeyNames:         []*string{created.KeyName},
+			IncludePublicKey: aws.Bool(true),
+		}, testAccountID)
+		require.NoError(t, err)
+		require.Len(t, out.KeyPairs, 1)
+
+		want := strings.TrimSuffix(string(ssh.MarshalAuthorizedKey(signer.PublicKey())), "\n") + " " + keyType + "-created\n"
+		assert.Equal(t, want, aws.StringValue(out.KeyPairs[0].PublicKey))
+	}
+}
+
+// A listed key whose public half cannot be read fails the call rather than
+// describing it without the PublicKey that was asked for.
+func TestDescribeKeyPairs_IncludePublicKey_MissingMaterial(t *testing.T) {
+	svc, store := newTestKeyService()
+	importTestKey(t, svc, "half-deleted")
+	_, err := store.DeleteObject(context.Background(), &s3.DeleteObjectInput{
+		Bucket: aws.String(testBucket),
+		Key:    aws.String("keys/" + testAccountID + "/half-deleted"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
+		IncludePublicKey: aws.Bool(true),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorServerInternal)
+}
+
 func TestDescribeKeyPairs_FilterByKeyName(t *testing.T) {
 	svc, _ := newTestKeyService()
 

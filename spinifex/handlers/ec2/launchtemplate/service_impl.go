@@ -514,6 +514,13 @@ func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplateVersions(ctx context.Con
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
+	// Naming the default version fails the whole request, so nothing is deleted.
+	for _, v := range input.Versions {
+		if n, perr := strconv.ParseInt(aws.StringValue(v), 10, 64); perr == nil && n == header.DefaultVersionNumber {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "The default version cannot be deleted. Either specify another version as default or delete the launch template.")
+		}
+	}
+
 	out := &ec2.DeleteLaunchTemplateVersionsOutput{}
 
 	for _, v := range input.Versions {
@@ -524,14 +531,9 @@ func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplateVersions(ctx context.Con
 				deleteErrorItem(header, 0, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound, "invalid version number"))
 			continue
 		}
-		if n == header.DefaultVersionNumber {
-			out.UnsuccessfullyDeletedLaunchTemplateVersions = append(out.UnsuccessfullyDeletedLaunchTemplateVersions,
-				deleteErrorItem(header, n, awserrors.ErrorInvalidParameterValue, "cannot delete the default version of a launch template"))
-			continue
-		}
 		if _, err := s.getVersion(ctx, accountID, header.LaunchTemplateId, n); err != nil {
 			out.UnsuccessfullyDeletedLaunchTemplateVersions = append(out.UnsuccessfullyDeletedLaunchTemplateVersions,
-				deleteErrorItem(header, n, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound, "version does not exist"))
+				deleteErrorItem(header, n, launchTemplateVersionDoesNotExist, "The launch template version does not exist."))
 			continue
 		}
 		if err := s.kv.Delete(ctx, versionKey(accountID, header.LaunchTemplateId, n)); err != nil {
@@ -550,6 +552,10 @@ func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplateVersions(ctx context.Con
 	slog.InfoContext(ctx, "DeleteLaunchTemplateVersions completed", "launchTemplateId", header.LaunchTemplateId, "deleted", len(out.SuccessfullyDeletedLaunchTemplateVersions), "failed", len(out.UnsuccessfullyDeletedLaunchTemplateVersions), "accountID", accountID)
 	return out, nil
 }
+
+// launchTemplateVersionDoesNotExist is the per-version code AWS reports in a
+// DeleteLaunchTemplateVersions result; it is never a request-level error.
+const launchTemplateVersionDoesNotExist = "launchTemplateVersionDoesNotExist"
 
 func deleteErrorItem(h *LaunchTemplateHeader, n int64, code, msg string) *ec2.DeleteLaunchTemplateVersionsResponseErrorItem {
 	item := &ec2.DeleteLaunchTemplateVersionsResponseErrorItem{

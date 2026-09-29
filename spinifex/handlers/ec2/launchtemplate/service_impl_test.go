@@ -396,15 +396,23 @@ func TestModifyLaunchTemplate_DefaultToMissingVersion(t *testing.T) {
 func TestDeleteLaunchTemplateVersions_RejectDefault(t *testing.T) {
 	svc := setupTestService(t)
 	lt := createTemplate(t, svc, "web", "t3.micro") // default = v1
-	out, err := svc.DeleteLaunchTemplateVersions(context.Background(), &ec2.DeleteLaunchTemplateVersionsInput{
-		LaunchTemplateId: lt.LaunchTemplateId,
-		Versions:         []*string{aws.String("1")},
+	id := aws.StringValue(lt.LaunchTemplateId)
+	addVersion(t, svc, id, "a", "") // v2
+
+	// The default alongside a deletable version still fails the whole request.
+	_, err := svc.DeleteLaunchTemplateVersions(context.Background(), &ec2.DeleteLaunchTemplateVersionsInput{
+		LaunchTemplateId: aws.String(id),
+		Versions:         []*string{aws.String("2"), aws.String("1")},
 	}, testAccountID)
+	require.Error(t, err)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "The default version cannot be deleted. Either specify another version as default or delete the launch template.", msg)
+
+	nums, err := svc.listVersionNumbers(t.Context(), testAccountID, id)
 	require.NoError(t, err)
-	assert.Empty(t, out.SuccessfullyDeletedLaunchTemplateVersions)
-	require.Len(t, out.UnsuccessfullyDeletedLaunchTemplateVersions, 1)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue,
-		aws.StringValue(out.UnsuccessfullyDeletedLaunchTemplateVersions[0].ResponseError.Code))
+	assert.ElementsMatch(t, []int64{1, 2}, nums)
 }
 
 func TestDeleteLaunchTemplateVersions_SuccessAndMissing(t *testing.T) {
@@ -421,7 +429,10 @@ func TestDeleteLaunchTemplateVersions_SuccessAndMissing(t *testing.T) {
 	require.Len(t, out.SuccessfullyDeletedLaunchTemplateVersions, 1)
 	assert.Equal(t, int64(2), aws.Int64Value(out.SuccessfullyDeletedLaunchTemplateVersions[0].VersionNumber))
 	require.Len(t, out.UnsuccessfullyDeletedLaunchTemplateVersions, 1)
-	assert.Equal(t, int64(9), aws.Int64Value(out.UnsuccessfullyDeletedLaunchTemplateVersions[0].VersionNumber))
+	missing := out.UnsuccessfullyDeletedLaunchTemplateVersions[0]
+	assert.Equal(t, int64(9), aws.Int64Value(missing.VersionNumber))
+	assert.Equal(t, "launchTemplateVersionDoesNotExist", aws.StringValue(missing.ResponseError.Code))
+	assert.Equal(t, "The launch template version does not exist.", aws.StringValue(missing.ResponseError.Message))
 }
 
 // --- DeleteLaunchTemplate ---

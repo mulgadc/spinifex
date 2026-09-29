@@ -89,7 +89,8 @@ func (s *Service) CreateDBSubnetGroup(ctx context.Context, input *rds.CreateDBSu
 }
 
 // A named group that does not exist is an error, matching AWS; an unnamed
-// request lists the account's groups.
+// request lists the account's groups. Filters is not read: AWS ignores it here,
+// even an unknown or malformed entry.
 func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.DescribeDBSubnetGroupsInput, accountID string) (*rds.DescribeDBSubnetGroupsOutput, error) {
 	if input == nil {
 		input = &rds.DescribeDBSubnetGroupsInput{}

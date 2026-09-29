@@ -87,6 +87,10 @@ func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.Desc
 	if input == nil {
 		input = &rds.DescribeDBParameterGroupsInput{}
 	}
+	// AWS recognises both names and narrows by neither.
+	if _, err := ReadFilters(input.Filters, filterDBParameterGroupFamily, filterEngine); err != nil {
+		return nil, err
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -248,6 +252,11 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"Source %q is not one of %s or %s", source, ParameterSourceUser, ParameterSourceEngineDefault)
 	}
+	// AWS narrows by parameter-name, matching names in any case, and not by data-type.
+	filters, err := ReadFilters(input.Filters, filterParameterName, filterDataType)
+	if err != nil {
+		return nil, err
+	}
 
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
@@ -272,7 +281,8 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 		return nil, err
 	}
 
-	out := &rds.DescribeDBParametersOutput{}
+	// Non-nil, so a filter that matches nothing answers with an empty list, as AWS does.
+	out := &rds.DescribeDBParametersOutput{Parameters: []*rds.Parameter{}}
 	for _, param := range engine.CatalogParameterNames() {
 		spec, _ := engine.LookupParameter(param)
 		override, isOverride := overrides[param]
@@ -283,6 +293,9 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 		if source != "" && source != parameterSource(isOverride) {
 			continue
 		}
+		if !parameterNameMatches(filters, param) {
+			continue
+		}
 		out.Parameters = append(out.Parameters, projectParameter(spec, value, override.ApplyMethod, isOverride))
 	}
 	out.Parameters, out.Marker, err = Page(out.Parameters, parameterPageKey, input.MaxRecords, input.Marker)
@@ -290,6 +303,17 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 		return nil, err
 	}
 	return out, nil
+}
+
+func parameterNameMatches(filters []Filter, param string) bool {
+	for _, filter := range filters {
+		if filter.Name == filterParameterName && !slices.ContainsFunc(filter.Values, func(v string) bool {
+			return strings.EqualFold(v, param)
+		}) {
+			return false
+		}
+	}
+	return true
 }
 
 // Refused for a default group, and while any instance still references it —

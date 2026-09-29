@@ -222,7 +222,7 @@ func (s *Service) releaseQuiesce(ctx context.Context, accountID, dbInstanceIdent
 // empty list, matching AWS: a client polling a create would otherwise read
 // "gone" for "not ready".
 func (s *Service) DescribeDBSnapshots(ctx context.Context, input *rds.DescribeDBSnapshotsInput, accountID string) (*rds.DescribeDBSnapshotsOutput, error) {
-	snapshotType, err := validateDescribeSnapshotsRequest(input)
+	snapshotType, filters, err := validateDescribeSnapshotsRequest(input)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +236,7 @@ func (s *Service) DescribeDBSnapshots(ctx context.Context, input *rds.DescribeDB
 		if err != nil {
 			return nil, err
 		}
-		if !snapshotMatches(rec, aws.StringValue(input.DBInstanceIdentifier), snapshotType) {
+		if !snapshotMatches(rec, aws.StringValue(input.DBInstanceIdentifier), snapshotType, filters) {
 			return &rds.DescribeDBSnapshotsOutput{DBSnapshots: []*rds.DBSnapshot{}}, nil
 		}
 		return &rds.DescribeDBSnapshotsOutput{DBSnapshots: []*rds.DBSnapshot{s.projectDBSnapshot(rec)}}, nil
@@ -257,7 +257,7 @@ func (s *Service) DescribeDBSnapshots(ctx context.Context, input *rds.DescribeDB
 		}
 		// A snapshot deleted between the key listing and this read is simply gone,
 		// which is what a describe one tick later would report too.
-		if !found || !snapshotMatches(&rec, aws.StringValue(input.DBInstanceIdentifier), snapshotType) {
+		if !found || !snapshotMatches(&rec, aws.StringValue(input.DBInstanceIdentifier), snapshotType, filters) {
 			continue
 		}
 		snapshots = append(snapshots, s.projectDBSnapshot(&rec))
@@ -269,12 +269,27 @@ func (s *Service) DescribeDBSnapshots(ctx context.Context, input *rds.DescribeDB
 	return &rds.DescribeDBSnapshotsOutput{DBSnapshots: snapshots, Marker: next}, nil
 }
 
-// An empty filter matches everything, as AWS does.
-func snapshotMatches(rec *DBSnapshotRecord, dbInstanceIdentifier, snapshotType string) bool {
+// An empty parameter matches everything, as AWS does.
+func snapshotMatches(rec *DBSnapshotRecord, dbInstanceIdentifier, snapshotType string, filters []Filter) bool {
 	if dbInstanceIdentifier != "" && rec.DBInstanceIdentifier != dbInstanceIdentifier {
 		return false
 	}
-	return snapshotType == "" || rec.SnapshotType == snapshotType
+	if snapshotType != "" && rec.SnapshotType != snapshotType {
+		return false
+	}
+	return matchesFilters(filters, func(name string) (string, bool) {
+		switch name {
+		case filterDBInstanceID:
+			return rec.DBInstanceIdentifier, true
+		case filterDBSnapshotID:
+			return rec.DBSnapshotIdentifier, true
+		case filterSnapshotType:
+			return rec.SnapshotType, true
+		case filterEngine:
+			return rec.Engine, true
+		}
+		return "", false
+	})
 }
 
 // Removes the snapshot and, when it was the last thing holding a data volume
@@ -485,30 +500,52 @@ func validateCreateSnapshotRequest(input *rds.CreateDBSnapshotInput) (*validated
 	}, nil
 }
 
-// Returns the snapshot type to filter on, empty for "any". A filter this
-// phase cannot honour is rejected rather than dropped, because a silently
-// unfiltered list reads as a complete answer.
-func validateDescribeSnapshotsRequest(input *rds.DescribeDBSnapshotsInput) (string, error) {
+// Returns the snapshot type to filter on, empty for "any", and the Filters. A
+// scope this phase cannot honour is rejected rather than dropped, because a
+// silently unfiltered list reads as a complete answer.
+func validateDescribeSnapshotsRequest(input *rds.DescribeDBSnapshotsInput) (string, []Filter, error) {
 	if input == nil {
-		return "", nil
+		return "", nil, nil
 	}
-	if len(input.Filters) > 0 {
-		return "", unimplemented("Filters", "DescribeDBSnapshots filters on DBSnapshotIdentifier, DBInstanceIdentifier and SnapshotType only")
+	filters, err := ReadFilters(input.Filters,
+		filterDBInstanceID, filterDBSnapshotID, filterDbiResourceID, filterSnapshotType, filterEngine)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, filter := range filters {
+		switch filter.Name {
+		case filterDbiResourceID:
+			return "", nil, unimplemented("Filter dbi-resource-id", snapshotNoResourceID)
+		case filterSnapshotType:
+			// AWS's whole vocabulary is accepted; the types never offered here match nothing.
+			for _, value := range filter.Values {
+				if !slices.Contains(awsSnapshotTypes, value) {
+					return "", nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+						"Invalid snapshot type.  If specified, must be one of: public, shared, manual, awsbackup, automated.")
+				}
+			}
+		}
 	}
 	if aws.StringValue(input.DbiResourceId) != "" {
-		return "", unimplemented("DbiResourceId", "a DB instance has no resource ID distinct from its identifier here")
+		return "", nil, unimplemented("DbiResourceId", snapshotNoResourceID)
 	}
 	if aws.BoolValue(input.IncludeShared) || aws.BoolValue(input.IncludePublic) {
-		return "", unimplemented("IncludeShared/IncludePublic", "cross-account snapshot sharing is not offered")
+		return "", nil, unimplemented("IncludeShared/IncludePublic", "cross-account snapshot sharing is not offered")
 	}
 	switch snapshotType := aws.StringValue(input.SnapshotType); snapshotType {
 	case "", SnapshotTypeManual, SnapshotTypeAutomated:
-		return snapshotType, nil
+		return snapshotType, filters, nil
 	default:
-		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		return "", nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"SnapshotType %q is not offered; use %q or %q", snapshotType, SnapshotTypeManual, SnapshotTypeAutomated)
 	}
 }
+
+// Why DbiResourceId and the dbi-resource-id filter are refused: an instance has
+// one, but a snapshot does not record it.
+const snapshotNoResourceID = "a snapshot does not record its source instance's resource ID"
+
+var awsSnapshotTypes = []string{"public", "shared", SnapshotTypeManual, "awsbackup", SnapshotTypeAutomated}
 
 // A name the caller is minting: a customer snapshot, or a final snapshot at
 // delete. The rds: namespace belongs to automated backups, so it is refused

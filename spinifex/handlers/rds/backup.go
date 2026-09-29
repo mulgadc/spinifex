@@ -398,7 +398,7 @@ func (s *Service) DescribeDBInstanceAutomatedBackups(ctx context.Context,
 	if input == nil {
 		input = &rds.DescribeDBInstanceAutomatedBackupsInput{}
 	}
-	wanted, err := validateDescribeAutomatedBackupsRequest(input)
+	wanted, filters, err := validateDescribeAutomatedBackupsRequest(input)
 	if err != nil {
 		return nil, err
 	}
@@ -437,7 +437,19 @@ func (s *Service) DescribeDBInstanceAutomatedBackups(ctx context.Context,
 		if err != nil {
 			return nil, err
 		}
-		backups = append(backups, s.projectAutomatedBackup(&rec, len(stamps)))
+		backup := s.projectAutomatedBackup(&rec, len(stamps))
+		if !matchesFilters(filters, func(name string) (string, bool) {
+			switch name {
+			case filterDBInstanceID:
+				return aws.StringValue(backup.DBInstanceIdentifier), true
+			case filterStatus:
+				return aws.StringValue(backup.Status), true
+			}
+			return "", false
+		}) {
+			continue
+		}
+		backups = append(backups, backup)
 	}
 	backups, next, err := Page(backups, automatedBackupPageKey, input.MaxRecords, input.Marker)
 	if err != nil {
@@ -446,25 +458,46 @@ func (s *Service) DescribeDBInstanceAutomatedBackups(ctx context.Context,
 	return &rds.DescribeDBInstanceAutomatedBackupsOutput{DBInstanceAutomatedBackups: backups, Marker: next}, nil
 }
 
-// A filter this phase cannot honour is rejected rather than dropped, since a
+// A scope this phase cannot honour is rejected rather than dropped, since a
 // silently unfiltered list reads as a complete answer. Returns the DB instance to
-// report on, empty for every one.
-func validateDescribeAutomatedBackupsRequest(input *rds.DescribeDBInstanceAutomatedBackupsInput) (string, error) {
+// report on, empty for every one, and the Filters.
+func validateDescribeAutomatedBackupsRequest(input *rds.DescribeDBInstanceAutomatedBackupsInput) (string, []Filter, error) {
 	if input == nil {
-		return "", nil
+		return "", nil, nil
 	}
-	if len(input.Filters) > 0 {
-		return "", unimplemented("Filters", "DescribeDBInstanceAutomatedBackups filters on DBInstanceIdentifier only")
+	filters, err := ReadFilters(input.Filters, filterDBInstanceID, filterDbiResourceID, filterStatus)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, filter := range filters {
+		switch filter.Name {
+		case filterDbiResourceID:
+			return "", nil, unimplemented("Filter dbi-resource-id", automatedBackupNoResourceID)
+		case filterStatus:
+			for _, value := range filter.Values {
+				if !slices.Contains(awsAutomatedBackupStatuses, value) {
+					return "", nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+						"The parameter Filter: status is not a valid Automated Backup status. Allowed values are creating, active, retained, pending, replicating, deleting.")
+				}
+			}
+		}
 	}
 	if aws.StringValue(input.DbiResourceId) != "" {
-		return "", unimplemented("DbiResourceId", "a DB instance has no resource ID distinct from its identifier here")
+		return "", nil, unimplemented("DbiResourceId", automatedBackupNoResourceID)
 	}
 	if aws.StringValue(input.DBInstanceAutomatedBackupsArn) != "" {
-		return "", unimplemented("DBInstanceAutomatedBackupsArn",
+		return "", nil, unimplemented("DBInstanceAutomatedBackupsArn",
 			"cross-region automated backup replication is not offered, so no replicated backup has an ARN")
 	}
-	return aws.StringValue(input.DBInstanceIdentifier), nil
+	return aws.StringValue(input.DBInstanceIdentifier), filters, nil
 }
+
+// Why DbiResourceId and the dbi-resource-id filter are refused: an instance has
+// one, but its automated backups are addressed by its identifier only.
+const automatedBackupNoResourceID = "automated backups are addressed by DBInstanceIdentifier only"
+
+// AWS's whole status vocabulary; the ones never reported here match nothing.
+var awsAutomatedBackupStatuses = []string{"creating", "active", "retained", "pending", "replicating", "deleting"}
 
 // RestoreWindow and LatestRestorableTime are deliberately absent: this phase
 // backs discrete daily snapshots, and reporting a restore window would tell a

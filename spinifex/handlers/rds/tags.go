@@ -75,6 +75,10 @@ func (s *Service) ListTagsForResource(ctx context.Context, input *rds.ListTagsFo
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
+	// AWS recognises the name and does not narrow by it.
+	if _, err := ReadFilters(input.Filters, filterResourceID); err != nil {
+		return nil, err
+	}
 	resource, parsed, err := s.resolveTaggable(aws.StringValue(input.ResourceName), accountID)
 	if err != nil {
 		return nil, err

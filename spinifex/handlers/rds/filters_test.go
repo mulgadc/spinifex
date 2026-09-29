@@ -1,3 +1,6 @@
+//test:in-package — reuses the in-package create harness and event seeding, and
+// the filter-name constants are unexported
+
 package handlers_rds
 
 import (

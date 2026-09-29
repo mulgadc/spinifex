@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/mulgadc/spinifex/spinifex/loadgen"
+	"github.com/mulgadc/spinifex/internal/testkit/loadgen"
 )
 
 // fixedOp answers after a fixed delay, so a stage's percentiles are known

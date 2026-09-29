@@ -151,6 +151,20 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 		}
 	}
 
+	// A declared divergence: AWS returns a PuTTY key for ppk, Spinifex refuses
+	// it rather than silently returning a PEM the caller did not ask for.
+	if input.KeyFormat != nil {
+		switch *input.KeyFormat {
+		case ec2.KeyFormatPem:
+		case ec2.KeyFormatPpk:
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"The ppk key format is not supported; use pem.")
+		default:
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"1 validation error detected: Value '%s' at 'keyFormat' failed to satisfy constraint: Member must satisfy enum value set: [pem, ppk]", *input.KeyFormat)
+		}
+	}
+
 	// Generate the key in process; the private half never reaches local disk.
 	privateKeyData, publicKey, err := generateKeyPair(keyType)
 	if err != nil {

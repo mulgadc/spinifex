@@ -270,6 +270,36 @@ func TestCreateKeyPair_InvalidKeyType(t *testing.T) {
 	assert.Equal(t, "1 validation error detected: Value 'dsa' at 'keyType' failed to satisfy constraint: Member must satisfy enum value set: [rsa, ed25519]", msg)
 }
 
+func TestCreateKeyPair_KeyFormat(t *testing.T) {
+	svc, store := newTestKeyService()
+
+	for _, tc := range []struct {
+		format, msg string
+	}{
+		{"ppk", "The ppk key format is not supported; use pem."},
+		{"der", "1 validation error detected: Value 'der' at 'keyFormat' failed to satisfy constraint: Member must satisfy enum value set: [pem, ppk]"},
+	} {
+		out, err := svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
+			KeyName:   aws.String("fmt-" + tc.format),
+			KeyFormat: aws.String(tc.format),
+		}, testAccountID)
+		assert.Nil(t, out)
+		code, msg, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+		assert.Equal(t, tc.msg, msg)
+	}
+	assert.Zero(t, store.Count(), "a rejected format must not store a key")
+
+	out, err := svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
+		KeyName:   aws.String("fmt-pem"),
+		KeyFormat: aws.String("pem"),
+		KeyType:   aws.String("rsa"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(*out.KeyMaterial, "-----BEGIN RSA PRIVATE KEY-----"))
+}
+
 // ============================================================
 // ImportKeyPair Tests
 // ============================================================

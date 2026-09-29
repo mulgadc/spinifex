@@ -155,6 +155,35 @@ func TestCreateRouteTable_PersistsTagsForTagFilterDiscovery(t *testing.T) {
 	assert.Equal(t, "cp-private-rt", tags["spinifex:eks-role"])
 }
 
+func TestDescribeRouteTables_FilterByTagKeyAndTagValue(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	out, err := svc.CreateRouteTable(t.Context(), &ec2.CreateRouteTableInput{
+		VpcId: aws.String("vpc-test1"),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String(ec2.ResourceTypeRouteTable),
+			Tags:         []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestRtb(t, svc) // untagged
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "Env"}, {"tag-value", "prod"}} {
+		desc, err := svc.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: aws.StringSlice([]string{tc.value})}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, desc.RouteTables, 1, tc.name)
+		assert.Equal(t, *out.RouteTable.RouteTableId, *desc.RouteTables[0].RouteTableId, tc.name)
+
+		desc, err = svc.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: aws.StringSlice([]string{"zz-awsdiff-none"})}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, desc.RouteTables, tc.name)
+	}
+}
+
 func TestCreateRouteTable_VpcNotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)

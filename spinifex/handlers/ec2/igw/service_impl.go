@@ -187,6 +187,8 @@ var describeIGWValidFilters = map[string]bool{
 	"internet-gateway-id": true,
 	"attachment.vpc-id":   true,
 	"attachment.state":    true,
+	"tag-key":             true,
+	"tag-value":           true,
 }
 
 // DescribeInternetGateways lists Internet Gateways, optionally filtered by ID.
@@ -263,7 +265,7 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 // igwMatchesFilters checks whether an IGWRecord satisfies all parsed filters.
 func igwMatchesFilters(record *IGWRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if filterutil.IsTagFilter(name) {
 			continue
 		}
 

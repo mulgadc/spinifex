@@ -439,6 +439,8 @@ var describeSecurityGroupsValidFilters = map[string]bool{
 	"vpc-id":             true,
 	"description":        true,
 	"ip-permission.cidr": true,
+	"tag-key":            true,
+	"tag-value":          true,
 }
 
 // DescribeSecurityGroups lists security groups with optional filters.
@@ -520,7 +522,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 // sgMatchesFilters checks whether a SecurityGroupRecord satisfies all parsed filters.
 func sgMatchesFilters(record *SecurityGroupRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if filterutil.IsTagFilter(name) {
 			continue
 		}
 
@@ -732,6 +734,7 @@ var describeSecurityGroupRulesValidFilters = map[string]bool{
 	"group-id":               true,
 	"security-group-rule-id": true,
 	"tag-key":                true,
+	"tag-value":              true,
 }
 
 // DescribeSecurityGroupRules returns a flat list of SecurityGroupRule objects
@@ -823,7 +826,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 // single rule.
 func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if filterutil.IsTagFilter(name) {
 			continue
 		}
 		switch name {
@@ -833,10 +836,6 @@ func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[
 			}
 		case "security-group-rule-id":
 			if !filterutil.MatchesAny(values, rule.RuleId) {
-				return false
-			}
-		case "tag-key":
-			if !sgRuleMatchesTagKey(rule.Tags, values) {
 				return false
 			}
 		default:
@@ -915,17 +914,6 @@ func findSGRuleByID(rules []SGRule, ruleID string) *SGRule {
 		}
 	}
 	return nil
-}
-
-// sgRuleMatchesTagKey reports whether the rule carries any of the named tag
-// keys, whatever their values.
-func sgRuleMatchesTagKey(tags map[string]string, keys []string) bool {
-	for key := range tags {
-		if filterutil.MatchesAny(keys, key) {
-			return true
-		}
-	}
-	return false
 }
 
 // applySGRuleTags stamps the security-group-rule TagSpecification onto every

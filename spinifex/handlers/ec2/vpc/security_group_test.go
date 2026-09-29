@@ -1415,6 +1415,39 @@ func TestDescribeSecurityGroups_FilterByTag(t *testing.T) {
 	assert.Equal(t, *out.GroupId, *desc.SecurityGroups[0].GroupId)
 }
 
+func TestDescribeSecurityGroups_FilterByTagKeyAndTagValue(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	out, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("tagged-sg"),
+		Description: aws.String("tagged"),
+		VpcId:       aws.String(vpcID),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("security-group"),
+			Tags:         []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestSG(t, svc, vpcID, "untagged-sg")
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "Env"}, {"tag-value", "prod"}} {
+		desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String(tc.value)}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, desc.SecurityGroups, 1, tc.name)
+		assert.Equal(t, *out.GroupId, *desc.SecurityGroups[0].GroupId, tc.name)
+
+		desc, err = svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String("zz-awsdiff-none")}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, desc.SecurityGroups, tc.name)
+	}
+}
+
 func TestDescribeSecurityGroups_FilterNoResults(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
@@ -2440,6 +2473,13 @@ func TestDescribeSecurityGroupRules_FiltersByTag(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, byKey.SecurityGroupRules, 1)
 	assert.Equal(t, taggedID, aws.StringValue(byKey.SecurityGroupRules[0].SecurityGroupRuleId))
+
+	byTagValue, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("tag-value"), Values: []*string{aws.String("alb")}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, byTagValue.SecurityGroupRules, 1)
+	assert.Equal(t, taggedID, aws.StringValue(byTagValue.SecurityGroupRules[0].SecurityGroupRuleId))
 }
 
 func TestDescribeSecurityGroupRules_AllProtocolReportsMinusOnePorts(t *testing.T) {

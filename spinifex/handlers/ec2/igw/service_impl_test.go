@@ -948,6 +948,35 @@ func TestDescribeInternetGateways_FilterByTag(t *testing.T) {
 	assert.Equal(t, *out.InternetGateway.InternetGatewayId, *desc.InternetGateways[0].InternetGatewayId)
 }
 
+func TestDescribeInternetGateways_FilterByTagKeyAndTagValue(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("internet-gateway"),
+				Tags:         []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+			},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestIGW(t, svc) // untagged
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "Env"}, {"tag-value", "prod"}} {
+		desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String(tc.value)}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, desc.InternetGateways, 1, tc.name)
+		assert.Equal(t, *out.InternetGateway.InternetGatewayId, *desc.InternetGateways[0].InternetGatewayId, tc.name)
+
+		desc, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String("zz-awsdiff-none")}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, desc.InternetGateways, tc.name)
+	}
+}
+
 func TestDeleteInternetGateway_PublishesNoEvent(t *testing.T) {
 	svc, nc := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)

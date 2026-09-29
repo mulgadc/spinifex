@@ -270,6 +270,36 @@ func TestDescribeEgressOnlyInternetGateways_FilterByTag(t *testing.T) {
 	assert.Equal(t, *out.EgressOnlyInternetGateway.EgressOnlyInternetGatewayId, *desc.EgressOnlyInternetGateways[0].EgressOnlyInternetGatewayId)
 }
 
+func TestDescribeEgressOnlyInternetGateways_FilterByTagKeyAndTagValue(t *testing.T) {
+	svc := setupTestEIGWService(t)
+	out, err := svc.CreateEgressOnlyInternetGateway(context.Background(), &ec2.CreateEgressOnlyInternetGatewayInput{
+		VpcId: aws.String("vpc-tagged"),
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("egress-only-internet-gateway"),
+				Tags:         []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+			},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestEIGW(t, svc) // untagged
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "Env"}, {"tag-value", "prod"}} {
+		desc, err := svc.DescribeEgressOnlyInternetGateways(context.Background(), &ec2.DescribeEgressOnlyInternetGatewaysInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String(tc.value)}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, desc.EgressOnlyInternetGateways, 1, tc.name)
+		assert.Equal(t, *out.EgressOnlyInternetGateway.EgressOnlyInternetGatewayId, *desc.EgressOnlyInternetGateways[0].EgressOnlyInternetGatewayId, tc.name)
+
+		desc, err = svc.DescribeEgressOnlyInternetGateways(context.Background(), &ec2.DescribeEgressOnlyInternetGatewaysInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String("zz-awsdiff-none")}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, desc.EgressOnlyInternetGateways, tc.name)
+	}
+}
+
 // TestCreateEgressOnlyInternetGateway_CrossAccountVPCRejected tests that creating an EIGW in another account's VPC is rejected.
 func TestCreateEgressOnlyInternetGateway_CrossAccountVPCRejected(t *testing.T) {
 	// Set up with manual NATS to get VPC KV access

@@ -1882,6 +1882,36 @@ func TestDescribeVpcs_FilterByTag(t *testing.T) {
 	assert.Equal(t, "10.0.0.0/16", *desc.Vpcs[0].CidrBlock)
 }
 
+func TestDescribeVpcs_FilterByTagKeyAndTagValue(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+
+	out, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
+		CidrBlock: aws.String("10.0.0.0/16"),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("vpc"),
+			Tags:         []*ec2.Tag{{Key: aws.String("awsdiff"), Value: aws.String("yes")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestVPC(t, svc, "172.16.0.0/16")
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "awsdiff"}, {"tag-value", "yes"}} {
+		desc, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String(tc.value)}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, desc.Vpcs, 1, tc.name)
+		assert.Equal(t, *out.Vpc.VpcId, *desc.Vpcs[0].VpcId, tc.name)
+
+		desc, err = svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String("zz-awsdiff-none")}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, desc.Vpcs, tc.name)
+	}
+}
+
 func TestDescribeVpcs_FilterByVpcId(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
@@ -2132,6 +2162,38 @@ func TestDescribeSubnets_FilterByTag(t *testing.T) {
 	assert.Equal(t, *out.Subnet.SubnetId, *desc.Subnets[0].SubnetId)
 }
 
+func TestDescribeSubnets_FilterByTagKeyAndTagValue(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	out, err := svc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
+		VpcId:     aws.String(vpcID),
+		CidrBlock: aws.String("10.0.1.0/24"),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("subnet"),
+			Tags:         []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestSubnet(t, svc, vpcID, "10.0.2.0/24")
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "Env"}, {"tag-value", "prod"}} {
+		desc, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String(tc.value)}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, desc.Subnets, 1, tc.name)
+		assert.Equal(t, *out.Subnet.SubnetId, *desc.Subnets[0].SubnetId, tc.name)
+
+		desc, err = svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String("zz-awsdiff-none")}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, desc.Subnets, tc.name)
+	}
+}
+
 // --- SetExternalIPAM / GetSubnet ---
 
 func TestGetSubnet_Success(t *testing.T) {
@@ -2320,6 +2382,35 @@ func TestApplyRecordTags_ENITagFilteredDescribe(t *testing.T) {
 	require.Len(t, out.NetworkInterfaces, 1)
 	assert.Equal(t, eniID, *out.NetworkInterfaces[0].NetworkInterfaceId)
 	assert.Equal(t, "primary", findTag(out.NetworkInterfaces[0].TagSet, "Name"))
+}
+
+func TestDescribeNetworkInterfaces_FilterByTagKeyAndTagValue(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.5.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.5.1.0/24")
+	eniID := createTestENI(t, svc, subnetID)
+	createTestENI(t, svc, subnetID) // untagged
+
+	require.NoError(t, svc.ApplyRecordTags(&ec2.CreateTagsInput{
+		Resources: []*string{aws.String(eniID)},
+		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("primary")}},
+	}, testAccountID))
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "Name"}, {"tag-value", "primary"}} {
+		out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String(tc.value)}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, out.NetworkInterfaces, 1, tc.name)
+		assert.Equal(t, eniID, *out.NetworkInterfaces[0].NetworkInterfaceId, tc.name)
+
+		out, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String("zz-awsdiff-none")}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, out.NetworkInterfaces, tc.name)
+	}
 }
 
 func TestApplyRecordTags_UnknownResourceNoError(t *testing.T) {

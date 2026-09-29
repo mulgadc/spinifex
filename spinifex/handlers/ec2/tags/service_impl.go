@@ -289,6 +289,8 @@ var describeTagsValidFilters = map[string]bool{
 	"resource-type": true,
 	"key":           true,
 	"value":         true,
+	"tag-key":       true,
+	"tag-value":     true,
 }
 
 // DescribeTags returns tags matching the specified filters.
@@ -335,6 +337,11 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 				continue
 			}
 			if !filterutil.MatchesAny(filters["value"], value) {
+				continue
+			}
+			// On DescribeTags, AWS applies tag-key and tag-value to each tag row,
+			// exactly as it applies key and value.
+			if !filterutil.MatchesAny(filters["tag-key"], key) || !filterutil.MatchesAny(filters["tag-value"], value) {
 				continue
 			}
 

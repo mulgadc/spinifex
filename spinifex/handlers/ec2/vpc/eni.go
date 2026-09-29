@@ -486,6 +486,8 @@ var describeNetworkInterfacesValidFilters = map[string]bool{
 	"attachment.attachment-id": true,
 	"attachment.instance-id":   true,
 	"attachment.status":        true,
+	"tag-key":                  true,
+	"tag-value":                true,
 }
 
 // DescribeNetworkInterfaces lists ENIs with optional filters.
@@ -566,7 +568,7 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 // eniMatchesFilters checks whether an ENI record matches all parsed filters.
 func eniMatchesFilters(record *ENIRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if filterutil.IsTagFilter(name) {
 			continue
 		}
 		switch name {

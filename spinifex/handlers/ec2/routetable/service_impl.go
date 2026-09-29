@@ -599,6 +599,8 @@ var describeRouteTablesValidFilters = map[string]bool{
 	"route.state":                            true,
 	"route.origin":                           true,
 	"owner-id":                               true,
+	"tag-key":                                true,
+	"tag-value":                              true,
 }
 
 // DescribeRouteTables lists route tables, optionally filtered.
@@ -1195,7 +1197,7 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 // rtbMatchesFilters checks if a route table record matches all parsed filters.
 func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if filterutil.IsTagFilter(name) {
 			continue
 		}
 		switch name {

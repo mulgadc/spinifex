@@ -147,6 +147,8 @@ func (s *EgressOnlyIGWServiceImpl) DeleteEgressOnlyInternetGateway(ctx context.C
 // describeEIGWValidFilters defines the set of filter names accepted by DescribeEgressOnlyInternetGateways.
 var describeEIGWValidFilters = map[string]bool{
 	"egress-only-internet-gateway-id": true,
+	"tag-key":                         true,
+	"tag-value":                       true,
 }
 
 // DescribeEgressOnlyInternetGateways describes Egress-only Internet Gateways.
@@ -213,7 +215,7 @@ func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx contex
 // eigwMatchesFilters checks whether an EgressOnlyIGWRecord satisfies all parsed filters.
 func eigwMatchesFilters(record *EgressOnlyIGWRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if filterutil.IsTagFilter(name) {
 			continue
 		}
 

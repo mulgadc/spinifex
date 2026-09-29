@@ -287,6 +287,41 @@ func TestDescribeTags_FilterByValue(t *testing.T) {
 	assert.Equal(t, "production", *result.Tags[0].Value)
 }
 
+// TestDescribeTags_FilterByTagKeyAndTagValue checks that tag-key and tag-value
+// select tag rows, as key and value do, rather than whole resources.
+func TestDescribeTags_FilterByTagKeyAndTagValue(t *testing.T) {
+	svc, _ := setupTestTagsService(t)
+
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
+		Resources: []*string{aws.String("vpc-test1")},
+		Tags: []*ec2.Tag{
+			{Key: aws.String("Name"), Value: aws.String("web")},
+			{Key: aws.String("awsdiff"), Value: aws.String("yes")},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	describe := func(name, value string) []*ec2.TagDescription {
+		t.Helper()
+		result, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{
+			Filters: []*ec2.Filter{{Name: aws.String(name), Values: []*string{aws.String(value)}}},
+		}, testAccountID)
+		require.NoError(t, err)
+		return result.Tags
+	}
+
+	byKey := describe("tag-key", "awsdiff")
+	require.Len(t, byKey, 1)
+	assert.Equal(t, "awsdiff", *byKey[0].Key)
+
+	byValue := describe("tag-value", "web")
+	require.Len(t, byValue, 1)
+	assert.Equal(t, "Name", *byValue[0].Key)
+
+	assert.Empty(t, describe("tag-key", "zz-awsdiff-none"))
+	assert.Empty(t, describe("tag-value", "zz-awsdiff-none"))
+}
+
 // TestDescribeTags_Empty tests listing tags when none exist.
 func TestDescribeTags_Empty(t *testing.T) {
 	svc, _ := setupTestTagsService(t)

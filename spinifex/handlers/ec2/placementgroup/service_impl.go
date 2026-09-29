@@ -289,7 +289,7 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context,
 // pgMatchesFilters checks whether a placement group record matches all parsed filters.
 func pgMatchesFilters(record *PlacementGroupRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if filterutil.IsTagFilter(name) {
 			continue
 		}
 		switch name {
@@ -313,30 +313,11 @@ func pgMatchesFilters(record *PlacementGroupRecord, filters map[string][]string)
 			if !filterutil.MatchesAny(values, record.GroupName) {
 				return false
 			}
-		case "tag-key":
-			if !pgMatchesAnyTag(record.Tags, values, func(k, _ string) string { return k }) {
-				return false
-			}
-		case "tag-value":
-			if !pgMatchesAnyTag(record.Tags, values, func(_, v string) string { return v }) {
-				return false
-			}
 		default:
 			return false
 		}
 	}
 	return filterutil.MatchesTags(filters, record.Tags)
-}
-
-// pgMatchesAnyTag reports whether any tag's selected field (key or value)
-// matches any of the filter values.
-func pgMatchesAnyTag(tags map[string]string, values []string, field func(k, v string) string) bool {
-	for k, v := range tags {
-		if filterutil.MatchesAny(values, field(k, v)) {
-			return true
-		}
-	}
-	return false
 }
 
 const maxCASRetries = 5

@@ -569,6 +569,8 @@ var describeVpcsValidFilters = map[string]bool{
 	"isDefault":                         true,
 	"owner-id":                          true,
 	"cidr-block-association.cidr-block": true,
+	"tag-key":                           true,
+	"tag-value":                         true,
 }
 
 // SupportsDescribeVpcsFilter reports whether DescribeVpcs accepts a filter name.
@@ -1149,7 +1151,7 @@ func (s *VPCServiceImpl) updateRecordTags(ctx context.Context, accountID, resour
 // vpcMatchesFilters checks whether a VPCRecord satisfies all parsed filters.
 func vpcMatchesFilters(record *VPCRecord, accountID string, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if filterutil.IsTagFilter(name) {
 			continue
 		}
 
@@ -1189,12 +1191,14 @@ var describeSubnetsValidFilters = map[string]bool{
 	"cidr-block":        true,
 	"state":             true,
 	"default-for-az":    true,
+	"tag-key":           true,
+	"tag-value":         true,
 }
 
 // subnetMatchesFilters checks whether a SubnetRecord satisfies all parsed filters.
 func subnetMatchesFilters(record *SubnetRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if filterutil.IsTagFilter(name) {
 			continue
 		}
 

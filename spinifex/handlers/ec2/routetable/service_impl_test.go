@@ -1495,3 +1495,22 @@ func TestPublishGateDecisionsForVPC_EmptyVPCNoOp(t *testing.T) {
 	assertNoEvents(t, svc, gate, "expected no gate event")
 	assertNoEvents(t, svc, ungate, "expected no ungate event")
 }
+
+func TestDescribeRouteTables_PagingValidation(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	_, err := svc.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{MaxResults: aws.Int64(101)}, testAccountID)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Value ( 101 ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 100.", message)
+
+	_, err = svc.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{
+		MaxResults: aws.Int64(5), RouteTableIds: []*string{aws.String("rtb-0123456789abcdef0")},
+	}, testAccountID)
+	code, message, ok = awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+	assert.Equal(t, "The parameter RouteTableIds cannot be used with the parameter MaxResults", message)
+}

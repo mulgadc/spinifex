@@ -19,6 +19,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/paging"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -587,6 +588,13 @@ func (s *RouteTableServiceImpl) DeleteRouteTable(ctx context.Context, input *ec2
 	return &ec2.DeleteRouteTableOutput{}, nil
 }
 
+var describeRouteTablesPaging = paging.EC2{
+	MaxResults: 100,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 100.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter RouteTableIds cannot be used with the parameter MaxResults",
+}
+
 var describeRouteTablesValidFilters = map[string]bool{
 	"vpc-id":                                 true,
 	"route-table-id":                         true,
@@ -605,6 +613,11 @@ var describeRouteTablesValidFilters = map[string]bool{
 
 // DescribeRouteTables lists route tables, optionally filtered.
 func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *ec2.DescribeRouteTablesInput, accountID string) (*ec2.DescribeRouteTablesOutput, error) {
+	// Validated but not paged: AWS's paging of DescribeRouteTables is unobserved.
+	if _, err := describeRouteTablesPaging.Parse(input.MaxResults, input.NextToken, len(input.RouteTableIds)); err != nil {
+		return nil, err
+	}
+
 	rtbIDs := make(map[string]bool)
 	for _, id := range input.RouteTableIds {
 		if id != nil {

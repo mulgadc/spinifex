@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	"github.com/mulgadc/spinifex/spinifex/paging"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -453,9 +454,22 @@ var describeSecurityGroupsValidFilters = map[string]bool{
 	"tag-value":          true,
 }
 
+// AWS accepts 5 and 1000 despite the "smaller than" and "greater than" wording.
+var describeSecurityGroupsPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value smaller than 1000.",
+	TooSmall:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than 5.",
+	WithIDs:    "The parameter securityGroupIdSet cannot be used with the parameter maxResults",
+}
+
 // DescribeSecurityGroups lists security groups with optional filters.
 func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error) {
 	groups := []*ec2.SecurityGroup{}
+
+	pageReq, err := describeSecurityGroupsPaging.Parse(input.MaxResults, input.NextToken, len(input.GroupIds))
+	if err != nil {
+		return nil, err
+	}
 
 	groupIDs := make(map[string]bool)
 	for _, id := range input.GroupIds {
@@ -522,10 +536,13 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 		}
 	}
 
+	groups, nextToken := paging.EC2Page(groups, func(g *ec2.SecurityGroup) string { return *g.GroupId }, pageReq)
+
 	slog.InfoContext(ctx, "DescribeSecurityGroups completed", "count", len(groups), "accountID", accountID)
 
 	return &ec2.DescribeSecurityGroupsOutput{
 		SecurityGroups: groups,
+		NextToken:      nextToken,
 	}, nil
 }
 
@@ -747,25 +764,35 @@ var describeSecurityGroupRulesValidFilters = map[string]bool{
 	"tag-value":              true,
 }
 
+var describeSecurityGroupRulesPaging = paging.EC2{
+	MaxResults:           1000,
+	TooLarge:             "Value ( %d ) for parameter maxResults is invalid. Expecting a value less than or equal to 1000.",
+	TooSmall:             "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:              "The parameter 'securityGroupRuleIds' may not be used in combination with 'maxResults'.",
+	PaginationTokenError: true,
+}
+
 // DescribeSecurityGroupRules returns a flat list of SecurityGroupRule objects
 // for the caller's account, optionally narrowed by SecurityGroupRuleIds or
-// filters. MaxResults and NextToken are accepted but ignored.
+// filters, one page at a time.
 func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *ec2.DescribeSecurityGroupRulesInput, accountID string) (*ec2.DescribeSecurityGroupRulesOutput, error) {
-	requested := make(map[string]bool)
-	if input != nil {
-		for _, id := range input.SecurityGroupRuleIds {
-			if id == nil || *id == "" {
-				return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
-			}
-			requested[*id] = true
-		}
+	if input == nil {
+		input = &ec2.DescribeSecurityGroupRulesInput{}
+	}
+	pageReq, err := describeSecurityGroupRulesPaging.Parse(input.MaxResults, input.NextToken, len(input.SecurityGroupRuleIds))
+	if err != nil {
+		return nil, err
 	}
 
-	var filters []*ec2.Filter
-	if input != nil {
-		filters = input.Filters
+	requested := make(map[string]bool)
+	for _, id := range input.SecurityGroupRuleIds {
+		if id == nil || *id == "" {
+			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
+		}
+		requested[*id] = true
 	}
-	parsedFilters, err := filterutil.ParseFilters(filters, describeSecurityGroupRulesValidFilters)
+
+	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeSecurityGroupRulesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSecurityGroupRules: invalid filter", "err", err)
 		return nil, err
@@ -825,10 +852,13 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 		}
 	}
 
+	rules, nextToken := paging.EC2Page(rules, func(r *ec2.SecurityGroupRule) string { return *r.SecurityGroupRuleId }, pageReq)
+
 	slog.InfoContext(ctx, "DescribeSecurityGroupRules completed", "count", len(rules), "accountID", accountID)
 
 	return &ec2.DescribeSecurityGroupRulesOutput{
 		SecurityGroupRules: rules,
+		NextToken:          nextToken,
 	}, nil
 }
 

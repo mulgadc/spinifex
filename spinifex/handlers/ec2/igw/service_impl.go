@@ -17,6 +17,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/paging"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -182,6 +183,13 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 	return &ec2.DeleteInternetGatewayOutput{}, nil
 }
 
+var describeIGWPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 1000.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter InternetGatewayIds cannot be used with the parameter MaxResults",
+}
+
 // describeIGWValidFilters defines the set of filter names accepted by DescribeInternetGateways.
 var describeIGWValidFilters = map[string]bool{
 	"internet-gateway-id": true,
@@ -194,6 +202,11 @@ var describeIGWValidFilters = map[string]bool{
 // DescribeInternetGateways lists Internet Gateways, optionally filtered by ID.
 func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec2.DescribeInternetGatewaysInput, accountID string) (*ec2.DescribeInternetGatewaysOutput, error) {
 	var igws []*ec2.InternetGateway
+
+	// Validated but not paged: AWS's paging of DescribeInternetGateways is unobserved.
+	if _, err := describeIGWPaging.Parse(input.MaxResults, input.NextToken, len(input.InternetGatewayIds)); err != nil {
+		return nil, err
+	}
 
 	igwIDs := make(map[string]bool)
 	for _, id := range input.InternetGatewayIds {

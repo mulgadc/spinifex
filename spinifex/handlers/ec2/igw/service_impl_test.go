@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -1057,4 +1058,23 @@ func TestAttachInternetGateway_NoGatePublisher_NoOp(t *testing.T) {
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
+}
+
+func TestDescribeInternetGateways_PagingValidation(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+
+	_, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		MaxResults: aws.Int64(5), InternetGatewayIds: []*string{aws.String("igw-0123456789abcdef0")},
+	}, testAccountID)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+	assert.Equal(t, "The parameter InternetGatewayIds cannot be used with the parameter MaxResults", message)
+
+	_, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		NextToken: aws.String("garbage"),
+	}, testAccountID)
+	code, _, ok = awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
 }

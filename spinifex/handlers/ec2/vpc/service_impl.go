@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/paging"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -595,6 +596,11 @@ func SupportsDescribeVpcsFilter(name string) bool {
 func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVpcsInput, accountID string) (*ec2.DescribeVpcsOutput, error) {
 	var vpcs []*ec2.Vpc
 
+	// Validated but not paged: AWS's paging of DescribeVpcs is unobserved.
+	if _, err := describeVpcsPaging.Parse(input.MaxResults, input.NextToken, len(input.VpcIds)); err != nil {
+		return nil, err
+	}
+
 	vpcIDs := make(map[string]bool)
 	for _, id := range input.VpcIds {
 		if id != nil {
@@ -967,6 +973,11 @@ func (s *VPCServiceImpl) clearRouteTableAssociationsForSubnet(ctx context.Contex
 func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.DescribeSubnetsInput, accountID string) (*ec2.DescribeSubnetsOutput, error) {
 	var subnets []*ec2.Subnet
 
+	pageReq, err := describeSubnetsPaging.Parse(input.MaxResults, input.NextToken, len(input.SubnetIds))
+	if err != nil {
+		return nil, err
+	}
+
 	subnetIDs := make(map[string]bool)
 	for _, id := range input.SubnetIds {
 		if id != nil {
@@ -1040,10 +1051,13 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 		}
 	}
 
+	subnets, nextToken := paging.EC2Page(subnets, func(s *ec2.Subnet) string { return *s.SubnetId }, pageReq)
+
 	slog.InfoContext(ctx, "DescribeSubnets completed", "count", len(subnets), "accountID", accountID)
 
 	return &ec2.DescribeSubnetsOutput{
-		Subnets: subnets,
+		Subnets:   subnets,
+		NextToken: nextToken,
 	}, nil
 }
 
@@ -1191,6 +1205,20 @@ func vpcMatchesFilters(record *VPCRecord, accountID string, filters map[string][
 	}
 
 	return filterutil.MatchesTags(filters, record.Tags)
+}
+
+var describeVpcsPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 1000.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter VpcIds cannot be used with the parameter MaxResults",
+}
+
+var describeSubnetsPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 1000.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter SubnetIds cannot be used with the parameter MaxResults",
 }
 
 // describeSubnetsValidFilters defines the set of filter names accepted by DescribeSubnets.

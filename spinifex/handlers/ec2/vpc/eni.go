@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/paging"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -473,6 +474,13 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, in
 	return &ec2.ModifyNetworkInterfaceAttributeOutput{}, nil
 }
 
+var describeNetworkInterfacesPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 1000.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter NetworkInterfaceIds cannot be used with the parameter MaxResults",
+}
+
 var describeNetworkInterfacesValidFilters = map[string]bool{
 	"network-interface-id":     true,
 	"subnet-id":                true,
@@ -492,6 +500,11 @@ var describeNetworkInterfacesValidFilters = map[string]bool{
 
 // DescribeNetworkInterfaces lists ENIs with optional filters.
 func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	pageReq, err := describeNetworkInterfacesPaging.Parse(input.MaxResults, input.NextToken, len(input.NetworkInterfaceIds))
+	if err != nil {
+		return nil, err
+	}
+
 	parsedFilters, err := filterutil.ParseFilters(input.Filters, describeNetworkInterfacesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeNetworkInterfaces: invalid filter", "err", err)
@@ -558,10 +571,13 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 		}
 	}
 
+	enis, nextToken := paging.EC2Page(enis, func(e *ec2.NetworkInterface) string { return *e.NetworkInterfaceId }, pageReq)
+
 	slog.InfoContext(ctx, "DescribeNetworkInterfaces completed", "count", len(enis), "accountID", accountID)
 
 	return &ec2.DescribeNetworkInterfacesOutput{
 		NetworkInterfaces: enis,
+		NextToken:         nextToken,
 	}, nil
 }
 

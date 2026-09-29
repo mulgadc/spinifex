@@ -1012,7 +1012,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidNetworkLoadBalancerArnNotFound:                 {HTTPCode: 404, Message: "The specified Network Load Balancer ARN does not exist."},
 	ErrorInvalidNextToken:                                      {HTTPCode: 400, Message: "The specified NextToken is not valid."},
 	ErrorInvalidOptionConflict:                                 {HTTPCode: 409, Message: "A VPN connection between the virtual private gateway and the customer gateway already exists."},
-	ErrorInvalidPaginationToken:                                {HTTPCode: 403, Message: "The specified pagination token is not valid or is expired."},
+	ErrorInvalidPaginationToken:                                {HTTPCode: 400, Message: "The specified pagination token is not valid or is expired."},
 	ErrorInvalidParameter:                                      {HTTPCode: 400, Message: "A parameter specified in a request is not valid, is unsupported, or cannot be used. The returned message provides an explanation of the error value. For example, if you are launching an instance, you can't specify a security group and subnet that are in different VPCs."},
 	ErrorInvalidParameterCombination:                           {HTTPCode: 400, Message: "Indicates an incorrect combination of parameters, or a missing parameter. For example, trying to terminate an instance without specifying the instance ID."},
 	ErrorInvalidParameterDependency:                            {HTTPCode: 400, Message: "Indicates an incorrect combination of parameters, or a missing parameter. For example, trying to terminate an instance without specifying the instance ID."},

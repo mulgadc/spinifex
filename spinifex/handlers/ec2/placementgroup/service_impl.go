@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
@@ -49,6 +50,7 @@ type PlacementGroupServiceImpl struct {
 	config   *config.Config
 	natsConn *nats.Conn
 	kv       jetstream.KeyValue
+	region   string
 }
 
 // NewPlacementGroupServiceImplWithNATS creates a placement group service with NATS JetStream.
@@ -66,12 +68,18 @@ func NewPlacementGroupServiceImplWithNATS(ctx context.Context, cfg *config.Confi
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketPlacementGroups, err)
 	}
 
+	region := config.DefaultAWSRegion
+	if cfg != nil && cfg.Region != "" {
+		region = cfg.Region
+	}
+
 	slog.Info("Placement group service initialized with JetStream KV", "bucket", KVBucketPlacementGroups)
 
 	return &PlacementGroupServiceImpl{
 		config:   cfg,
 		natsConn: natsConn,
 		kv:       kv,
+		region:   region,
 	}, nil
 }
 
@@ -568,6 +576,7 @@ func (s *PlacementGroupServiceImpl) FinalizeClusterInstances(ctx context.Context
 // recordToEC2 converts an internal record to the AWS SDK PlacementGroup type.
 func (s *PlacementGroupServiceImpl) recordToEC2(record *PlacementGroupRecord) *ec2.PlacementGroup {
 	pg := &ec2.PlacementGroup{
+		GroupArn:  aws.String(arn.FormatEC2(arn.EC2PlacementGroup, s.region, record.AccountID, record.GroupName)),
 		GroupId:   aws.String(record.GroupId),
 		GroupName: aws.String(record.GroupName),
 		Strategy:  aws.String(record.Strategy),

@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -81,6 +82,34 @@ func TestCreatePlacementGroup_Cluster(t *testing.T) {
 	assert.Equal(t, "available", *pg.State)
 	// SpreadLevel should be nil for cluster strategy
 	assert.Nil(t, pg.SpreadLevel)
+}
+
+// AWS builds GroupArn from the group name, not its ID, on create and describe.
+func TestPlacementGroup_GroupArnFromName(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc, err := NewPlacementGroupServiceImplWithNATS(t.Context(), &config.Config{Region: "ap-southeast-2"}, nc)
+	require.NoError(t, err)
+
+	for _, strategy := range []string{"cluster", "spread"} {
+		name := "arn-" + strategy
+		want := "arn:aws:ec2:ap-southeast-2:123456789012:placement-group/" + name
+
+		pg := createTestGroup(t, svc, name, strategy)
+		assert.Equal(t, want, aws.StringValue(pg.GroupArn))
+
+		out, err := svc.DescribePlacementGroups(context.Background(), &ec2.DescribePlacementGroupsInput{
+			GroupNames: []*string{aws.String(name)},
+		}, testAccountID)
+		require.NoError(t, err)
+		require.Len(t, out.PlacementGroups, 1)
+		assert.Equal(t, want, aws.StringValue(out.PlacementGroups[0].GroupArn))
+	}
+}
+
+func TestPlacementGroup_GroupArnDefaultRegion(t *testing.T) {
+	svc := setupTestService(t)
+	pg := createTestGroup(t, svc, "no-region", "spread")
+	assert.Equal(t, "arn:aws:ec2:us-east-1:123456789012:placement-group/no-region", aws.StringValue(pg.GroupArn))
 }
 
 func TestCreatePlacementGroup_DuplicateName(t *testing.T) {

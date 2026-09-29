@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
-	"github.com/mulgadc/spinifex/spinifex/services/qemunbdd"
-	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qemunbdd"
 	"github.com/stretchr/testify/require"
 )
 

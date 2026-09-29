@@ -2,11 +2,18 @@ package gateway_iam
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+)
+
+// The model's arnType length bounds.
+const (
+	minARNLength = 20
+	maxARNLength = 2048
 )
 
 func CreatePolicy(accountID string, input *iam.CreatePolicyInput, svc handlers_iam.IAMService) (*iam.CreatePolicyOutput, error) {
@@ -117,6 +124,14 @@ func DeletePolicy(accountID string, input *iam.DeletePolicyInput, svc handlers_i
 func ListEntitiesForPolicy(accountID string, input *iam.ListEntitiesForPolicyInput, svc handlers_iam.IAMService) (*iam.ListEntitiesForPolicyOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if n := len(*input.PolicyArn); n < minARNLength || n > maxARNLength {
+		bound := fmt.Sprintf("greater than or equal to %d", minARNLength)
+		if n > maxARNLength {
+			bound = fmt.Sprintf("less than or equal to %d", maxARNLength)
+		}
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError,
+			"1 validation error detected: Value at 'policyArn' failed to satisfy constraint: Member must have length %s", bound)
 	}
 	if err := validatePathPrefix(input.PathPrefix, entityPathPrefix); err != nil {
 		return nil, err

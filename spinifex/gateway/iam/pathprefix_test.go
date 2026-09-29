@@ -101,3 +101,18 @@ func TestListPolicies_PathPrefixPatternBeforeLength(t *testing.T) {
 	require.True(t, ok, "error must carry a registered code: %v", err)
 	assert.Equal(t, badPathPrefix, msg)
 }
+
+// The messages are the ones AWS returned for a 19- and a 2049-character ARN.
+func TestListEntitiesForPolicy_PolicyArnLength(t *testing.T) {
+	cases := map[string]string{
+		"arn:aws:iam::aws:x": "1 validation error detected: Value at 'policyArn' failed to satisfy constraint: Member must have length greater than or equal to 20",
+		"arn:aws:iam::aws:policy/" + strings.Repeat("p", 2025): "1 validation error detected: Value at 'policyArn' failed to satisfy constraint: Member must have length less than or equal to 2048",
+	}
+	for arn, want := range cases {
+		_, err := gateway_iam.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{PolicyArn: aws.String(arn)}, &listStub{})
+		code, msg, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok, "error must carry a registered code: %v", err)
+		assert.Equal(t, awserrors.ErrorValidationError, code)
+		assert.Equal(t, want, msg)
+	}
+}

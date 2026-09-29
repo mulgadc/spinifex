@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 )
 

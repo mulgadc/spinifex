@@ -11,7 +11,7 @@ import (
 	"unicode"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 )
 
 // The engine-neutral half of the parameter catalog: the spec type, its parsing

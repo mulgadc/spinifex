@@ -6,7 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 

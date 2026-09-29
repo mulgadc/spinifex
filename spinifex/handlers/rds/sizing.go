@@ -6,7 +6,7 @@ import (
 	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 )
 
 // db.* is a naming facade, not a second sizing table: every entry resolves

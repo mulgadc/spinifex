@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

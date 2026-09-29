@@ -36,6 +36,7 @@ import (
 	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 )
 
 // EC2Handler processes parsed query args and returns XML response bytes.
@@ -356,7 +357,9 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_volume.DetachVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeAccountAttributes": ec2Handler(func(ctx context.Context, input *ec2.DescribeAccountAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.DescribeAccountAttributes(input)
+		return gateway_ec2_account.DescribeAccountAttributes(input, func() (string, error) {
+			return defaultVPCID(ctx, gw.NATSConn, accountID)
+		})
 	}),
 	"EnableEbsEncryptionByDefault": ec2Handler(func(ctx context.Context, input *ec2.EnableEbsEncryptionByDefaultInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_account.EnableEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
@@ -626,7 +629,26 @@ var ec2Actions = map[string]ec2Action{
 	}),
 }
 
-// ec2LocalActions are actions that don't require NATS.
+// defaultVPCID returns the ID of accountID's default VPC, or "" when it has
+// none, as the account's own DescribeVpcs sees it.
+func defaultVPCID(ctx context.Context, natsConn *nats.Conn, accountID string) (string, error) {
+	if natsConn == nil {
+		return "", errors.New(awserrors.ErrorServerInternal)
+	}
+	out, err := gateway_ec2_vpc.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("is-default"), Values: aws.StringSlice([]string{"true"})}},
+	}, natsConn, accountID)
+	if err != nil {
+		return "", err
+	}
+	if len(out.Vpcs) == 0 {
+		return "", nil
+	}
+	return aws.StringValue(out.Vpcs[0].VpcId), nil
+}
+
+// ec2LocalActions are actions that don't require NATS. DescribeAccountAttributes
+// needs it only for default-vpc.
 var ec2LocalActions = map[string]bool{
 	"DescribeRegions":           true,
 	"DescribeAvailabilityZones": true,

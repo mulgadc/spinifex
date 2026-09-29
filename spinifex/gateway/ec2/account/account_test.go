@@ -2,6 +2,7 @@ package gateway_ec2_account
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -14,7 +15,7 @@ import (
 func TestDescribeAccountAttributes_AllAttributes(t *testing.T) {
 	input := &ec2.DescribeAccountAttributesInput{}
 
-	output, err := DescribeAccountAttributes(input)
+	output, err := DescribeAccountAttributes(input, noDefaultVPC)
 	require.NoError(t, err)
 	require.NotNil(t, output)
 
@@ -38,7 +39,7 @@ func TestDescribeAccountAttributes_FilterSingle(t *testing.T) {
 		AttributeNames: []*string{aws.String("max-instances")},
 	}
 
-	output, err := DescribeAccountAttributes(input)
+	output, err := DescribeAccountAttributes(input, noDefaultVPC)
 	require.NoError(t, err)
 	require.NotNil(t, output)
 
@@ -55,7 +56,7 @@ func TestDescribeAccountAttributes_FilterMultiple(t *testing.T) {
 		},
 	}
 
-	output, err := DescribeAccountAttributes(input)
+	output, err := DescribeAccountAttributes(input, noDefaultVPC)
 	require.NoError(t, err)
 	require.NotNil(t, output)
 
@@ -74,7 +75,7 @@ func TestDescribeAccountAttributes_FilterNonExistent(t *testing.T) {
 		AttributeNames: []*string{aws.String("nonexistent-attribute")},
 	}
 
-	output, err := DescribeAccountAttributes(input)
+	output, err := DescribeAccountAttributes(input, noDefaultVPC)
 	require.NoError(t, err)
 	require.NotNil(t, output)
 
@@ -86,12 +87,43 @@ func TestDescribeAccountAttributes_EmptyAttributeNames(t *testing.T) {
 		AttributeNames: []*string{},
 	}
 
-	output, err := DescribeAccountAttributes(input)
+	output, err := DescribeAccountAttributes(input, noDefaultVPC)
 	require.NoError(t, err)
 	require.NotNil(t, output)
 
 	// Empty slice means return all
 	assert.Len(t, output.AccountAttributes, 6)
+}
+
+func noDefaultVPC() (string, error) { return "", nil }
+
+func TestDescribeAccountAttributes_DefaultVPC(t *testing.T) {
+	named := &ec2.DescribeAccountAttributesInput{AttributeNames: []*string{aws.String("default-vpc")}}
+
+	output, err := DescribeAccountAttributes(named, func() (string, error) { return "vpc-0abc", nil })
+	require.NoError(t, err)
+	require.Len(t, output.AccountAttributes, 1)
+	assert.Equal(t, "vpc-0abc", aws.StringValue(output.AccountAttributes[0].AttributeValues[0].AttributeValue))
+
+	output, err = DescribeAccountAttributes(named, noDefaultVPC)
+	require.NoError(t, err)
+	assert.Equal(t, "none", aws.StringValue(output.AccountAttributes[0].AttributeValues[0].AttributeValue))
+}
+
+// A failed lookup fails the request rather than reporting "none" for an
+// account that may well have a default VPC; other attributes never look.
+func TestDescribeAccountAttributes_DefaultVPCLookupFailure(t *testing.T) {
+	failing := func() (string, error) { return "", errors.New(awserrors.ErrorServerInternal) }
+
+	_, err := DescribeAccountAttributes(&ec2.DescribeAccountAttributesInput{}, failing)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+
+	output, err := DescribeAccountAttributes(&ec2.DescribeAccountAttributesInput{
+		AttributeNames: []*string{aws.String("max-instances")},
+	}, failing)
+	require.NoError(t, err)
+	assert.Len(t, output.AccountAttributes, 1)
 }
 
 func TestValidateEnableEbsEncryptionByDefaultInput(t *testing.T) {

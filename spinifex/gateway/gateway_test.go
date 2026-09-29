@@ -22,6 +22,7 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1124,9 +1125,10 @@ func TestEC2Request_MissingAccountID(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
+// Static attributes are served without NATS; only default-vpc needs a lookup.
 func TestEC2Request_DescribeAccountAttributes(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, NATSConn: nil, IAMService: allowAllIAMService()}
-	req := setupEC2Request("Action=DescribeAccountAttributes", "123456789012")
+	req := setupEC2Request("Action=DescribeAccountAttributes&AttributeName.1=max-instances", "123456789012")
 	w := httptest.NewRecorder()
 
 	err := gw.EC2_Request(w, req)
@@ -1138,6 +1140,32 @@ func TestEC2Request_DescribeAccountAttributes(t *testing.T) {
 
 	body, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(body), "DescribeAccountAttributesResponse")
+}
+
+// default-vpc is the caller's own default VPC, asked for with the is-default
+// filter so a deleted default VPC reads as none.
+func TestEC2Request_DescribeAccountAttributes_DefaultVPC(t *testing.T) {
+	nc := startTestNATS(t)
+	sub, err := nc.Subscribe("ec2.DescribeVpcs", func(msg *nats.Msg) {
+		var in awsec2.DescribeVpcsInput
+		if err := json.Unmarshal(msg.Data, &in); err != nil || len(in.Filters) != 1 ||
+			aws.StringValue(in.Filters[0].Name) != "is-default" || msg.Header.Get(utils.AccountIDHeader) != "123456789012" {
+			_ = msg.Respond([]byte(`{}`))
+			return
+		}
+		data, _ := json.Marshal(awsec2.DescribeVpcsOutput{Vpcs: []*awsec2.Vpc{{VpcId: aws.String("vpc-0default"), IsDefault: aws.Bool(true)}}})
+		_ = msg.Respond(data)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()}
+	req := setupEC2Request("Action=DescribeAccountAttributes&AttributeName.1=default-vpc", "123456789012")
+	w := httptest.NewRecorder()
+
+	require.NoError(t, gw.EC2_Request(w, req))
+	body, _ := io.ReadAll(w.Result().Body)
+	assert.Contains(t, string(body), "<attributeValue>vpc-0default</attributeValue>")
 }
 
 func TestEC2Request_DescribeAvailabilityZones(t *testing.T) {

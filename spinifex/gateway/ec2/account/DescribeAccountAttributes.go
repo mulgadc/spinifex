@@ -7,8 +7,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 )
 
-// DescribeAccountAttributes returns static account attributes for the Spinifex platform.
-func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput) (*ec2.DescribeAccountAttributesOutput, error) {
+// DescribeAccountAttributes returns the account's attributes. Every attribute
+// but default-vpc is static; defaultVPCID looks that one up, is called only
+// when it is asked for, and returns "" for an account with no default VPC.
+func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput, defaultVPCID func() (string, error)) (*ec2.DescribeAccountAttributesOutput, error) {
 	requestedAttrs := make(map[string]bool)
 	for _, name := range input.AttributeNames {
 		if name != nil {
@@ -30,10 +32,17 @@ func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput) (*ec2.
 	}
 
 	if returnAll || requestedAttrs["default-vpc"] {
+		vpcID, err := defaultVPCID()
+		if err != nil {
+			return nil, err
+		}
+		if vpcID == "" {
+			vpcID = "none"
+		}
 		accountAttributes = append(accountAttributes, &ec2.AccountAttribute{
 			AttributeName: aws.String("default-vpc"),
 			AttributeValues: []*ec2.AccountAttributeValue{
-				{AttributeValue: aws.String("none")},
+				{AttributeValue: aws.String(vpcID)},
 			},
 		})
 	}

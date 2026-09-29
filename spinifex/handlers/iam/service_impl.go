@@ -266,14 +266,15 @@ func (c keyCase) norm(key string) string {
 	return key
 }
 
-// validateTags enforces the AWS IAM tag limits on request input: at most 50
-// tags, the model's null, length (in characters) and pattern constraints on
-// every key and value, then no duplicate keys as keys compares them.
+// validateTags enforces the AWS IAM tag limits on request input: the model's
+// list length and its null, length (in characters) and pattern constraints on
+// every key and value, then no reserved aws: prefix and no duplicate keys as
+// keys compares them.
 func validateTags(tags []*iam.Tag, keys keyCase) error {
-	if len(tags) > maxTagsPerResource {
-		return errors.New(awserrors.ErrorIAMLimitExceeded)
-	}
 	var violations []string
+	if len(tags) > maxTagsPerResource {
+		violations = append(violations, fmt.Sprintf("Value at 'tags' failed to satisfy constraint: Member must have length less than or equal to %d", maxTagsPerResource))
+	}
 	for i, tag := range tags {
 		field := fmt.Sprintf("tags.%d.member", i+1)
 		if tag == nil {
@@ -284,6 +285,11 @@ func validateTags(tags []*iam.Tag, keys keyCase) error {
 	}
 	if err := validationError(violations); err != nil {
 		return err
+	}
+	for _, tag := range tags {
+		if strings.HasPrefix(strings.ToLower(*tag.Key), "aws:") {
+			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "Tag keys beginning with aws: are reserved for system use.")
+		}
 	}
 	seen := make(map[string]struct{}, len(tags))
 	for _, tag := range tags {

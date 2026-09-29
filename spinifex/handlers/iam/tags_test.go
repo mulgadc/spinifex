@@ -36,7 +36,11 @@ func TestValidateTags(t *testing.T) {
 		{"max value length", []*iam.Tag{sdkTag("k", strings.Repeat("v", maxTagValueLength))}, ""},
 		{"max key length in multibyte characters", []*iam.Tag{sdkTag(strings.Repeat("é", maxTagKeyLength), "v")}, ""},
 		{"max value length in multibyte characters", []*iam.Tag{sdkTag("k", strings.Repeat("é", maxTagValueLength))}, ""},
-		{"over 50 tags", tooMany, awserrors.ErrorIAMLimitExceeded},
+		{"over 50 tags", tooMany, awserrors.ErrorValidationError},
+		{"reserved aws: prefix", []*iam.Tag{sdkTag("aws:thing", "v")}, awserrors.ErrorIAMInvalidInput},
+		{"reserved prefix in any case", []*iam.Tag{sdkTag("AWS:thing", "v")}, awserrors.ErrorIAMInvalidInput},
+		{"aws prefix without colon", []*iam.Tag{sdkTag("awsthing", "v")}, ""},
+		{"constraint break wins over reserved prefix", []*iam.Tag{sdkTag("aws:thing", "v"), sdkTag("bad#", "v")}, awserrors.ErrorValidationError},
 		{"nil tag entry", []*iam.Tag{nil}, awserrors.ErrorValidationError},
 		{"nil key", []*iam.Tag{{Value: aws.String("v")}}, awserrors.ErrorValidationError},
 		{"nil value", []*iam.Tag{{Key: aws.String("k")}}, awserrors.ErrorValidationError},
@@ -92,6 +96,11 @@ func TestValidateTags_Messages(t *testing.T) {
 			"1 validation error detected: Value at 'tags.2.member.key' failed to satisfy constraint: Member must not be null"},
 		{"duplicate keys differing in case", []*iam.Tag{sdkTag("Dup", "1"), sdkTag("dup", "2")}, awserrors.ErrorIAMInvalidInput,
 			"Duplicate tag keys found. Please note that Tag keys are case insensitive."},
+		{"reserved aws: prefix", []*iam.Tag{sdkTag("aws:thing", "v")}, awserrors.ErrorIAMInvalidInput,
+			"Tag keys beginning with aws: are reserved for system use."},
+		{"over 50 tags with a bad key", append(tagsNamed(maxTagsPerResource), sdkTag("bad#key", "v")), awserrors.ErrorValidationError,
+			"2 validation errors detected: Value at 'tags' failed to satisfy constraint: Member must have length less than or equal to 50; " +
+				`Value at 'tags.51.member.key' failed to satisfy constraint: Member must satisfy regular expression pattern: [\p{L}\p{Z}\p{N}_.:/=+\-@]+`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,6 +158,14 @@ func TestUntag_InvalidKeyRefusedBeforeLookup(t *testing.T) {
 			assert.Equal(t, awserrors.ErrorValidationError, code)
 		})
 	}
+}
+
+func tagsNamed(n int) []*iam.Tag {
+	tags := make([]*iam.Tag, n)
+	for i := range tags {
+		tags[i] = sdkTag(fmt.Sprintf("k%d", i), "v")
+	}
+	return tags
 }
 
 func TestMergeTags(t *testing.T) {
@@ -428,6 +445,7 @@ func TestCreate_InvalidTagsRefusedAndNotStored(t *testing.T) {
 		{"nil value", []*iam.Tag{{Key: aws.String("k")}}, awserrors.ErrorValidationError},
 		{"key outside pattern", []*iam.Tag{sdkTag("bad#key", "v")}, awserrors.ErrorValidationError},
 		{"duplicate keys", []*iam.Tag{sdkTag("dup", "1"), sdkTag("dup", "2")}, awserrors.ErrorIAMInvalidInput},
+		{"reserved aws: prefix", []*iam.Tag{sdkTag("aws:thing", "v")}, awserrors.ErrorIAMInvalidInput},
 	}
 	for _, ops := range allTagOps() {
 		for _, tc := range cases {

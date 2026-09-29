@@ -287,6 +287,44 @@ func TestCreateSubnet(t *testing.T) {
 	assert.Equal(t, int64(251), *out.Subnet.AvailableIpAddressCount)
 }
 
+// TestSubnetResponse_AWSDefaultFields checks the ARN and the fields AWS
+// reports for a new subnet, on both the create and describe paths.
+func TestSubnetResponse_AWSDefaultFields(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	svc.config = &config.Config{Region: "ap-southeast-2"}
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	out, err := svc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
+		VpcId:     aws.String(vpcID),
+		CidrBlock: aws.String("10.0.1.0/24"),
+	}, testAccountID)
+	require.NoError(t, err)
+	desc, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{
+		SubnetIds: []*string{out.Subnet.SubnetId},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Subnets, 1)
+
+	for name, subnet := range map[string]*ec2.Subnet{"create": out.Subnet, "describe": desc.Subnets[0]} {
+		assert.Equal(t, "arn:aws:ec2:ap-southeast-2:"+testAccountID+":subnet/"+*out.Subnet.SubnetId, aws.StringValue(subnet.SubnetArn), name)
+		for field, v := range map[string]*bool{
+			"AssignIpv6AddressOnCreation": subnet.AssignIpv6AddressOnCreation,
+			"EnableDns64":                 subnet.EnableDns64,
+			"Ipv6Native":                  subnet.Ipv6Native,
+			"MapCustomerOwnedIpOnLaunch":  subnet.MapCustomerOwnedIpOnLaunch,
+		} {
+			require.NotNil(t, v, "%s %s", name, field)
+			assert.False(t, *v, "%s %s", name, field)
+		}
+		assert.Equal(t, &ec2.PrivateDnsNameOptionsOnLaunch{
+			HostnameType:                    aws.String("ip-name"),
+			EnableResourceNameDnsARecord:    aws.Bool(false),
+			EnableResourceNameDnsAAAARecord: aws.Bool(false),
+		}, subnet.PrivateDnsNameOptionsOnLaunch, name)
+	}
+}
+
 func TestCreateSubnet_MissingVpcId(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)

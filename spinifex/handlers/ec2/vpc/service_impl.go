@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
@@ -130,6 +131,15 @@ func (s *VPCServiceImpl) localAZ() string {
 		return ""
 	}
 	return s.config.AZ
+}
+
+// region returns the configured AWS region, falling back to the default when
+// no config or region is wired.
+func (s *VPCServiceImpl) region() string {
+	if s.config == nil || s.config.Region == "" {
+		return config.DefaultAWSRegion
+	}
+	return s.config.Region
 }
 
 // NewVPCServiceImplWithNATS creates a VPC service with NATS JetStream for persistence.
@@ -1265,6 +1275,18 @@ func (s *VPCServiceImpl) subnetRecordToEC2(record *SubnetRecord, availableIPs in
 		AvailableIpAddressCount: aws.Int64(int64(availableIPs)),
 		OwnerId:                 aws.String(accountID),
 		MapPublicIpOnLaunch:     aws.Bool(record.MapPublicIpOnLaunch),
+		SubnetArn:               aws.String(arn.FormatEC2(arn.EC2Subnet, s.region(), accountID, record.SubnetId)),
+		// Spinifex subnets are IPv4-only with no customer-owned pool, and
+		// instances are named ip-<a-b-c-d> with no resource-name records.
+		AssignIpv6AddressOnCreation: aws.Bool(false),
+		EnableDns64:                 aws.Bool(false),
+		Ipv6Native:                  aws.Bool(false),
+		MapCustomerOwnedIpOnLaunch:  aws.Bool(false),
+		PrivateDnsNameOptionsOnLaunch: &ec2.PrivateDnsNameOptionsOnLaunch{
+			HostnameType:                    aws.String(ec2.HostnameTypeIpName),
+			EnableResourceNameDnsARecord:    aws.Bool(false),
+			EnableResourceNameDnsAAAARecord: aws.Bool(false),
+		},
 	}
 
 	subnet.Tags = utils.MapToEC2Tags(record.Tags)

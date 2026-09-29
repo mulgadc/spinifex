@@ -2177,10 +2177,10 @@ func isIAMNameChar(c byte) bool {
 // message AWS gives, which names the failing parameter.
 func validateIAMName(field, name string, maxLen int) error {
 	if len(name) == 0 {
-		return lengthViolation(name, field, "greater than or equal to 1")
+		return lengthViolation(field, "greater than or equal to 1")
 	}
 	if len(name) > maxLen {
-		return lengthViolation(name, field, fmt.Sprintf("less than or equal to %d", maxLen))
+		return lengthViolation(field, fmt.Sprintf("less than or equal to %d", maxLen))
 	}
 	for i := range len(name) {
 		if !isIAMNameChar(name[i]) {
@@ -2191,9 +2191,10 @@ func validateIAMName(field, name string, maxLen int) error {
 	return nil
 }
 
-func lengthViolation(value, field, bound string) error {
-	return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
-		"1 validation error detected: Value '%s' at '%s' failed to satisfy constraint: Member must have length %s", value, field, bound)
+// lengthViolation is the ValidationError AWS returns for a member outside its
+// length bounds; IAM leaves the value out of the message.
+func lengthViolation(field, bound string) error {
+	return validationError([]string{fmt.Sprintf("Value at '%s' failed to satisfy constraint: Member must have length %s", field, bound)})
 }
 
 func enumViolation(field string, allowed []string) error {
@@ -2218,7 +2219,7 @@ func validatePath(path string) error {
 			"The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters.")
 	}
 	if len(path) > 512 {
-		return lengthViolation(path, "path", "less than or equal to 512")
+		return lengthViolation("path", "less than or equal to 512")
 	}
 	return nil
 }

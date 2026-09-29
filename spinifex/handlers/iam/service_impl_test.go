@@ -386,7 +386,7 @@ func TestCreateUser_InvalidName_TooLong(t *testing.T) {
 		UserName: aws.String(longName),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestCreateUser_InvalidName_BadChars(t *testing.T) {
@@ -422,7 +422,7 @@ func TestCreatePolicy_InvalidName(t *testing.T) {
 		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestCreatePolicy_InvalidPath(t *testing.T) {
@@ -2656,7 +2656,7 @@ func TestIsIAMNameChar(t *testing.T) {
 func TestValidateIAMName(t *testing.T) {
 	t.Parallel()
 	const charset = "It must contain only alphanumeric characters and/or the following: +=,.@_-"
-	invalid, validation := awserrors.ErrorIAMInvalidInput, awserrors.ErrorValidationError
+	validation := awserrors.ErrorValidationError
 	tests := []struct {
 		name     string
 		field    string
@@ -2670,10 +2670,10 @@ func TestValidateIAMName(t *testing.T) {
 		{"valid single char", "userName", "a", 64, "", ""},
 		{"valid at max length", "userName", strings.Repeat("a", 64), 64, "", ""},
 		{"valid policy at max length", "policyName", strings.Repeat("x", 128), 128, "", ""},
-		{"empty", "userName", "", 64, invalid,
-			"1 validation error detected: Value '' at 'userName' failed to satisfy constraint: Member must have length greater than or equal to 1"},
-		{"too long", "policyName", strings.Repeat("x", 129), 128, invalid,
-			"1 validation error detected: Value '" + strings.Repeat("x", 129) + "' at 'policyName' failed to satisfy constraint: Member must have length less than or equal to 128"},
+		{"empty", "userName", "", 64, validation,
+			"1 validation error detected: Value at 'userName' failed to satisfy constraint: Member must have length greater than or equal to 1"},
+		{"too long", "policyName", strings.Repeat("x", 129), 128, validation,
+			"1 validation error detected: Value at 'policyName' failed to satisfy constraint: Member must have length less than or equal to 128"},
 		{"space", "userName", "bad name!", 64, validation, "The specified value for userName is invalid. " + charset},
 		{"slash", "roleName", "alice/bob", 64, validation, "The specified value for roleName is invalid. " + charset},
 		{"colon", "groupName", "alice:bob", 128, validation, "The specified value for groupName is invalid. " + charset},
@@ -2704,7 +2704,7 @@ func TestValidatePath(t *testing.T) {
 	t.Parallel()
 	const shape = "The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters."
 	tooLong := "/" + strings.Repeat("a", 511) + "/"
-	invalid, validation := awserrors.ErrorIAMInvalidInput, awserrors.ErrorValidationError
+	validation := awserrors.ErrorValidationError
 	tests := []struct {
 		name     string
 		input    string
@@ -2718,8 +2718,8 @@ func TestValidatePath(t *testing.T) {
 		{"empty string", "", validation, shape},
 		{"just text", "noslash", validation, shape},
 		{"max length 512", "/" + strings.Repeat("a", 510) + "/", "", ""},
-		{"over max length 513", tooLong, invalid,
-			"1 validation error detected: Value '" + tooLong + "' at 'path' failed to satisfy constraint: Member must have length less than or equal to 512"},
+		{"over max length 513", tooLong, validation,
+			"1 validation error detected: Value at 'path' failed to satisfy constraint: Member must have length less than or equal to 512"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

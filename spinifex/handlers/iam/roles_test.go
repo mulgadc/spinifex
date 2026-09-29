@@ -102,7 +102,7 @@ func TestCreateRole_InvalidName(t *testing.T) {
 		AssumeRolePolicyDocument: aws.String(validTrustPolicy()),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestCreateRole_InvalidPath(t *testing.T) {

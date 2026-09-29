@@ -83,7 +83,7 @@ func TestCreateGroup_InvalidName(t *testing.T) {
 		GroupName: aws.String(longName),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestCreateGroup_InvalidPath(t *testing.T) {

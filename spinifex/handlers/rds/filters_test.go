@@ -67,6 +67,11 @@ func TestDescribeDBParameters_FiltersOnParameterName(t *testing.T) {
 
 	all, err := describe(nil)
 	require.NoError(t, err)
+	none, err := describe(filter(filterParameterName, "nope"))
+	require.NoError(t, err)
+	assert.NotNil(t, none.Parameters, "AWS answers an empty list, not an absent one")
+	assert.Empty(t, none.Parameters)
+
 	byType, err := describe(filter(filterDataType, "nope"))
 	require.NoError(t, err)
 	assert.Len(t, byType.Parameters, len(all.Parameters))

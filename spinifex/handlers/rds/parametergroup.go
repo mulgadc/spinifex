@@ -281,7 +281,8 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 		return nil, err
 	}
 
-	out := &rds.DescribeDBParametersOutput{}
+	// Non-nil, so a filter that matches nothing answers with an empty list, as AWS does.
+	out := &rds.DescribeDBParametersOutput{Parameters: []*rds.Parameter{}}
 	for _, param := range engine.CatalogParameterNames() {
 		spec, _ := engine.LookupParameter(param)
 		override, isOverride := overrides[param]

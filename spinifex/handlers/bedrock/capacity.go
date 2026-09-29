@@ -6,7 +6,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 )
 
 // gpuSnapshotter reports the current GPU/MIG pool. Narrowed to Snapshot so

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 )
 
 // daemonGPUClaimer adapts the daemon's gpu.Manager + GPUModelOverrides config to

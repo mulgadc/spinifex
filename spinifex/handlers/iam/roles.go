@@ -76,7 +76,7 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 		maxSession = *input.MaxSessionDuration
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, foldedKeys); err != nil {
 		return nil, err
 	}
 
@@ -472,13 +472,13 @@ func (s *IAMServiceImpl) ListRolePolicies(accountID string, input *iam.ListRoleP
 // TagRole upserts tags on a role under CAS, like the other role writers.
 func (s *IAMServiceImpl) TagRole(accountID string, input *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
 	ctx := context.Background()
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, foldedKeys); err != nil {
 		return nil, err
 	}
 
 	roleName := *input.RoleName
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
-		merged := mergeTags(role.Tags, input.Tags)
+		merged := mergeTags(role.Tags, input.Tags, foldedKeys)
 		if len(merged) > maxTagsPerResource {
 			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
 		}
@@ -501,7 +501,7 @@ func (s *IAMServiceImpl) UntagRole(accountID string, input *iam.UntagRoleInput) 
 	ctx := context.Background()
 	roleName := *input.RoleName
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
-		role.Tags = removeTagKeys(role.Tags, input.TagKeys)
+		role.Tags = removeTagKeys(role.Tags, input.TagKeys, foldedKeys)
 		return true, nil
 	})
 	if err != nil {

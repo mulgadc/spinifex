@@ -129,7 +129,7 @@ func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *ia
 		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The specified value for url is invalid: %v", err)
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, exactKeys); err != nil {
 		return nil, err
 	}
 
@@ -266,7 +266,7 @@ func (s *IAMServiceImpl) DeleteOpenIDConnectProvider(accountID string, input *ia
 // read-modify-write Put like the other writers here (no CAS).
 func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
 	ctx := context.Background()
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, exactKeys); err != nil {
 		return nil, err
 	}
 
@@ -276,7 +276,7 @@ func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.T
 		return nil, err
 	}
 
-	merged := mergeTags(record.Tags, input.Tags)
+	merged := mergeTags(record.Tags, input.Tags, exactKeys)
 	if len(merged) > maxTagsPerResource {
 		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
 	}
@@ -303,7 +303,7 @@ func (s *IAMServiceImpl) UntagOpenIDConnectProvider(accountID string, input *iam
 		return nil, err
 	}
 
-	record.Tags = removeTagKeys(record.Tags, input.TagKeys)
+	record.Tags = removeTagKeys(record.Tags, input.TagKeys, exactKeys)
 
 	if err := s.putOIDCProvider(ctx, accountID, record); err != nil {
 		return nil, err

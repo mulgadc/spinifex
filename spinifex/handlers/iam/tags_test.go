@@ -53,7 +53,7 @@ func TestValidateTags(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateTags(tc.tags)
+			err := validateTags(tc.tags, foldedKeys)
 			if tc.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -96,7 +96,7 @@ func TestValidateTags_Messages(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			requireIAMError(t, validateTags(tc.tags), tc.wantCode, tc.wantMsg)
+			requireIAMError(t, validateTags(tc.tags, foldedKeys), tc.wantCode, tc.wantMsg)
 		})
 	}
 }
@@ -189,16 +189,28 @@ func TestMergeTags(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := mergeTags(tc.existing, tc.add)
+			got := mergeTags(tc.existing, tc.add, foldedKeys)
 			assert.Equal(t, tc.want, got)
 		})
 	}
 }
 
+func TestMergeAndRemoveTags_ExactKeys(t *testing.T) {
+	t.Parallel()
+	existing := []Tag{{Key: "Env", Value: "base"}}
+	merged := mergeTags(existing, []*iam.Tag{sdkTag("env", "lower")}, exactKeys)
+	assert.Equal(t, []Tag{{Key: "Env", Value: "base"}, {Key: "env", Value: "lower"}}, merged)
+	assert.Equal(t, merged, removeTagKeys(merged, []*string{aws.String("ENV")}, exactKeys))
+	assert.Equal(t, []Tag{{Key: "env", Value: "lower"}}, removeTagKeys(merged, []*string{aws.String("Env")}, exactKeys))
+	require.NoError(t, validateTags([]*iam.Tag{sdkTag("Dup", "1"), sdkTag("dup", "2")}, exactKeys))
+	requireIAMError(t, validateTags([]*iam.Tag{sdkTag("dup", "1"), sdkTag("dup", "2")}, exactKeys), awserrors.ErrorIAMInvalidInput,
+		"Duplicate tag keys found. Please note that Tag keys are case insensitive.")
+}
+
 func TestMergeTags_DoesNotMutateExisting(t *testing.T) {
 	t.Parallel()
 	existing := []Tag{{Key: "a", Value: "1"}}
-	_ = mergeTags(existing, []*iam.Tag{sdkTag("a", "9")})
+	_ = mergeTags(existing, []*iam.Tag{sdkTag("a", "9")}, foldedKeys)
 	assert.Equal(t, []Tag{{Key: "a", Value: "1"}}, existing)
 }
 
@@ -221,7 +233,7 @@ func TestRemoveTagKeys(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := removeTagKeys(existing, tc.keys)
+			got := removeTagKeys(existing, tc.keys, foldedKeys)
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -231,6 +243,7 @@ func TestRemoveTagKeys(t *testing.T) {
 // behaviour is asserted identically for every taggable resource.
 type tagOps struct {
 	resource string
+	keys     keyCase
 	create   func(t *testing.T, svc *IAMServiceImpl) string
 	// createTagged creates the resource with tags and returns the ID it would have.
 	createTagged func(svc *IAMServiceImpl, tags []*iam.Tag) (string, error)
@@ -244,6 +257,7 @@ func allTagOps() []tagOps {
 	return []tagOps{
 		{
 			resource: "user",
+			keys:     foldedKeys,
 			create: func(t *testing.T, svc *IAMServiceImpl) string {
 				return *createTestUser(t, svc, "tagme").UserName
 			},
@@ -270,6 +284,7 @@ func allTagOps() []tagOps {
 		},
 		{
 			resource: "role",
+			keys:     foldedKeys,
 			create: func(t *testing.T, svc *IAMServiceImpl) string {
 				return *createTestRole(t, svc, "tagme").RoleName
 			},
@@ -298,6 +313,7 @@ func allTagOps() []tagOps {
 		},
 		{
 			resource: "policy",
+			keys:     exactKeys,
 			create: func(t *testing.T, svc *IAMServiceImpl) string {
 				out, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
 					PolicyName:     aws.String("tagme"),
@@ -331,6 +347,7 @@ func allTagOps() []tagOps {
 		},
 		{
 			resource: "instance profile",
+			keys:     exactKeys,
 			create: func(t *testing.T, svc *IAMServiceImpl) string {
 				return *createTestInstanceProfile(t, svc, "tagme").InstanceProfileName
 			},
@@ -359,6 +376,7 @@ func allTagOps() []tagOps {
 		},
 		{
 			resource: "OIDC provider",
+			keys:     exactKeys,
 			create: func(t *testing.T, svc *IAMServiceImpl) string {
 				out, err := svc.CreateOpenIDConnectProvider(testAccountID, &iam.CreateOpenIDConnectProviderInput{
 					Url: aws.String("https://oidc.example.com/id/TAGME"),
@@ -409,7 +427,7 @@ func TestCreate_InvalidTagsRefusedAndNotStored(t *testing.T) {
 	}{
 		{"nil value", []*iam.Tag{{Key: aws.String("k")}}, awserrors.ErrorValidationError},
 		{"key outside pattern", []*iam.Tag{sdkTag("bad#key", "v")}, awserrors.ErrorValidationError},
-		{"duplicate keys differing in case", []*iam.Tag{sdkTag("Dup", "1"), sdkTag("dup", "2")}, awserrors.ErrorIAMInvalidInput},
+		{"duplicate keys", []*iam.Tag{sdkTag("dup", "1"), sdkTag("dup", "2")}, awserrors.ErrorIAMInvalidInput},
 	}
 	for _, ops := range allTagOps() {
 		for _, tc := range cases {
@@ -441,6 +459,45 @@ func TestCreate_ValidTagsStored(t *testing.T) {
 			got, err := ops.list(svc, id)
 			require.NoError(t, err)
 			assert.Equal(t, map[string]string{"env": "prod", "team": ""}, tagsAsMap(got))
+		})
+	}
+}
+
+// AWS compares tag keys ignoring case on users and roles only: elsewhere Dup
+// and dup are two tags, and neither tagging nor untagging in another case
+// touches the stored key.
+func TestResourceTagging_KeyCase(t *testing.T) {
+	t.Parallel()
+	for _, ops := range allTagOps() {
+		t.Run(ops.resource, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestIAMService(t)
+			id := ops.create(t, svc)
+
+			err := ops.tag(svc, id, []*iam.Tag{sdkTag("Dup", "1"), sdkTag("dup", "2")})
+			if ops.keys == foldedKeys {
+				requireIAMError(t, err, awserrors.ErrorIAMInvalidInput, "Duplicate tag keys found. Please note that Tag keys are case insensitive.")
+			} else {
+				require.NoError(t, err)
+			}
+
+			require.NoError(t, ops.tag(svc, id, []*iam.Tag{sdkTag("Case", "upper")}))
+			require.NoError(t, ops.tag(svc, id, []*iam.Tag{sdkTag("case", "lower")}))
+			got, err := ops.list(svc, id)
+			require.NoError(t, err)
+			want := map[string]string{"Dup": "1", "dup": "2", "Case": "upper", "case": "lower"}
+			if ops.keys == foldedKeys {
+				want = map[string]string{"case": "lower"}
+			}
+			assert.Equal(t, want, tagsAsMap(got))
+
+			require.NoError(t, ops.untag(svc, id, []*string{aws.String("CASE")}))
+			got, err = ops.list(svc, id)
+			require.NoError(t, err)
+			if ops.keys == foldedKeys {
+				want = map[string]string{}
+			}
+			assert.Equal(t, want, tagsAsMap(got))
 		})
 	}
 }

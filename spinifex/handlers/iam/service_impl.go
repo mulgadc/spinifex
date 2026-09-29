@@ -249,10 +249,27 @@ var (
 	tagValuePattern = regexp.MustCompile(`^[\p{L}\p{Z}\p{N}_.:/=+\-@]*$`)
 )
 
+// keyCase is how a resource type compares tag keys: AWS ignores case on users
+// and roles, and matches exactly on policies, instance profiles and OIDC
+// providers.
+type keyCase bool
+
+const (
+	exactKeys  keyCase = false
+	foldedKeys keyCase = true
+)
+
+func (c keyCase) norm(key string) string {
+	if c == foldedKeys {
+		return strings.ToLower(key)
+	}
+	return key
+}
+
 // validateTags enforces the AWS IAM tag limits on request input: at most 50
 // tags, the model's null, length (in characters) and pattern constraints on
-// every key and value, then no duplicate keys ignoring case.
-func validateTags(tags []*iam.Tag) error {
+// every key and value, then no duplicate keys as keys compares them.
+func validateTags(tags []*iam.Tag, keys keyCase) error {
 	if len(tags) > maxTagsPerResource {
 		return errors.New(awserrors.ErrorIAMLimitExceeded)
 	}
@@ -270,7 +287,7 @@ func validateTags(tags []*iam.Tag) error {
 	}
 	seen := make(map[string]struct{}, len(tags))
 	for _, tag := range tags {
-		key := strings.ToLower(*tag.Key)
+		key := keys.norm(*tag.Key)
 		if _, dup := seen[key]; dup {
 			return awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
 				"Duplicate tag keys found. Please note that Tag keys are case insensitive.")
@@ -337,16 +354,16 @@ func modelPattern(pattern *regexp.Regexp) string {
 }
 
 // mergeTags upserts add into existing by key, matching AWS semantics: a
-// repeated key, ignoring case, is overwritten in place with the new key's
-// case; new keys append in input order.
-func mergeTags(existing []Tag, add []*iam.Tag) []Tag {
+// repeated key, as keys compares them, is overwritten in place with the new
+// key's case; new keys append in input order.
+func mergeTags(existing []Tag, add []*iam.Tag, keys keyCase) []Tag {
 	out := slices.Clone(existing)
 	for _, tag := range add {
 		if tag.Key == nil {
 			continue
 		}
 		next := Tag{Key: *tag.Key, Value: aws.StringValue(tag.Value)}
-		idx := slices.IndexFunc(out, func(t Tag) bool { return strings.EqualFold(t.Key, next.Key) })
+		idx := slices.IndexFunc(out, func(t Tag) bool { return keys.norm(t.Key) == keys.norm(next.Key) })
 		if idx >= 0 {
 			out[idx] = next
 		} else {
@@ -356,18 +373,18 @@ func mergeTags(existing []Tag, add []*iam.Tag) []Tag {
 	return out
 }
 
-// removeTagKeys drops the named keys from existing, ignoring case; unknown
-// keys are silently ignored, matching AWS.
-func removeTagKeys(existing []Tag, keys []*string) []Tag {
+// removeTagKeys drops the named keys from existing, as match compares them;
+// unknown keys are silently ignored, matching AWS.
+func removeTagKeys(existing []Tag, keys []*string, match keyCase) []Tag {
 	drop := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
 		if k != nil {
-			drop[strings.ToLower(*k)] = struct{}{}
+			drop[match.norm(*k)] = struct{}{}
 		}
 	}
 	out := make([]Tag, 0, len(existing))
 	for _, t := range existing {
-		if _, gone := drop[strings.ToLower(t.Key)]; !gone {
+		if _, gone := drop[match.norm(t.Key)]; !gone {
 			out = append(out, t)
 		}
 	}
@@ -397,7 +414,7 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 		}
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, foldedKeys); err != nil {
 		return nil, err
 	}
 
@@ -1261,7 +1278,7 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 			"policy %q: %w", policyName, err)
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, exactKeys); err != nil {
 		return nil, err
 	}
 
@@ -1795,7 +1812,7 @@ func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserP
 // user writers (no CAS).
 func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*iam.TagUserOutput, error) {
 	ctx := context.Background()
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, foldedKeys); err != nil {
 		return nil, err
 	}
 
@@ -1805,7 +1822,7 @@ func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*ia
 		return nil, err
 	}
 
-	merged := mergeTags(user.Tags, input.Tags)
+	merged := mergeTags(user.Tags, input.Tags, foldedKeys)
 	if len(merged) > maxTagsPerResource {
 		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
 	}
@@ -1835,7 +1852,7 @@ func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) 
 		return nil, err
 	}
 
-	user.Tags = removeTagKeys(user.Tags, input.TagKeys)
+	user.Tags = removeTagKeys(user.Tags, input.TagKeys, foldedKeys)
 
 	data, err := json.Marshal(user)
 	if err != nil {
@@ -1866,12 +1883,12 @@ func (s *IAMServiceImpl) ListUserTags(accountID string, input *iam.ListUserTagsI
 // record cannot undo a concurrent change of default version.
 func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) (*iam.TagPolicyOutput, error) {
 	ctx := context.Background()
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, exactKeys); err != nil {
 		return nil, err
 	}
 
 	err := s.updatePolicyCAS(ctx, accountID, *input.PolicyArn, func(policy *Policy) (bool, error) {
-		merged := mergeTags(policy.Tags, input.Tags)
+		merged := mergeTags(policy.Tags, input.Tags, exactKeys)
 		if len(merged) > maxTagsPerResource {
 			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
 		}
@@ -1893,7 +1910,7 @@ func (s *IAMServiceImpl) UntagPolicy(accountID string, input *iam.UntagPolicyInp
 	}
 	ctx := context.Background()
 	err := s.updatePolicyCAS(ctx, accountID, *input.PolicyArn, func(policy *Policy) (bool, error) {
-		policy.Tags = removeTagKeys(policy.Tags, input.TagKeys)
+		policy.Tags = removeTagKeys(policy.Tags, input.TagKeys, exactKeys)
 		return true, nil
 	})
 	if err != nil {

@@ -20,3 +20,23 @@ func PlatformFromDetails(platformDetails string) *string {
 	p := PlatformWindows
 	return &p
 }
+
+// usageOperations maps PlatformDetails to the billing code AWS reports as an
+// image's UsageOperation, for the platforms checked against real AWS images.
+var usageOperations = map[string]string{
+	"Linux/UNIX":               "RunInstances",
+	"Red Hat Enterprise Linux": "RunInstances:0010",
+	"SUSE Linux":               "RunInstances:000g",
+	"Ubuntu Pro Linux":         "RunInstances:0g00",
+	"Windows":                  "RunInstances:0002",
+}
+
+// UsageOperationFromDetails returns the UsageOperation for platformDetails, or
+// nil for a platform whose code has not been confirmed.
+func UsageOperationFromDetails(platformDetails string) *string {
+	op, ok := usageOperations[platformDetails]
+	if !ok {
+		return nil
+	}
+	return &op
+}

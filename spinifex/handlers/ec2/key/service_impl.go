@@ -211,9 +211,15 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	keyPairID := utils.GenerateResourceID("key")
 	tagMap := utils.ExtractTags(input.TagSpecifications, "key-pair")
 	tags := utils.MapToEC2Tags(tagMap)
+	// AWS ends RSA material at its END line, while OpenSSH-format Ed25519
+	// material keeps the trailing newline.
+	keyMaterial := string(privateKeyData)
+	if keyType == "rsa" {
+		keyMaterial = strings.TrimSuffix(keyMaterial, "\n")
+	}
 	output := &ec2.CreateKeyPairOutput{
 		KeyFingerprint: aws.String(fingerprint),
-		KeyMaterial:    aws.String(string(privateKeyData)),
+		KeyMaterial:    aws.String(keyMaterial),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
 		Tags:           tags,
@@ -608,7 +614,7 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 			// AWS DeleteKeyPair is idempotent — return success for non-existent keys
 			if err.Error() == awserrors.ErrorInvalidKeyPairNotFound {
 				slog.DebugContext(ctx, "DeleteKeyPair: key pair not found, returning success (idempotent)", "keyPairId", keyPairID)
-				return &ec2.DeleteKeyPairOutput{}, nil
+				return &ec2.DeleteKeyPairOutput{Return: aws.Bool(true)}, nil
 			}
 			slog.ErrorContext(ctx, "Failed to get keyName from keyPairId", "keyPairId", keyPairID, "err", err)
 			return nil, err
@@ -628,7 +634,7 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 			// AWS DeleteKeyPair is idempotent — return success for non-existent keys
 			if err.Error() == awserrors.ErrorInvalidKeyPairNotFound {
 				slog.DebugContext(ctx, "DeleteKeyPair: key pair not found, returning success (idempotent)", "keyName", keyName)
-				return &ec2.DeleteKeyPairOutput{}, nil
+				return &ec2.DeleteKeyPairOutput{Return: aws.Bool(true)}, nil
 			}
 			slog.ErrorContext(ctx, "Failed to find keyPairId from keyName", "keyName", keyName, "err", err)
 			return nil, err
@@ -665,7 +671,8 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 
 	slog.InfoContext(ctx, "Key pair deleted successfully", "keyName", keyName, "keyPairId", keyPairID)
 
-	return &ec2.DeleteKeyPairOutput{}, nil
+	// AWS names the key only when one was actually deleted.
+	return &ec2.DeleteKeyPairOutput{Return: aws.Bool(true), KeyPairId: aws.String(keyPairID)}, nil
 }
 
 // DescribeKeyPairs lists available key pairs by reading metadata files from S3

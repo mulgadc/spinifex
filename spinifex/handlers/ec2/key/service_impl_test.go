@@ -179,6 +179,7 @@ func TestCreateKeyPair_ED25519(t *testing.T) {
 
 	// ED25519 has no PEM representation, so it stays in the OpenSSH container.
 	assert.Contains(t, *out.KeyMaterial, "BEGIN OPENSSH PRIVATE KEY")
+	assert.True(t, strings.HasSuffix(*out.KeyMaterial, "-----END OPENSSH PRIVATE KEY-----\n"))
 }
 
 func TestCreateKeyPair_RSA(t *testing.T) {
@@ -196,6 +197,7 @@ func TestCreateKeyPair_RSA(t *testing.T) {
 	// PKCS#1 PEM, as AWS returns it: get-password-data --priv-launch-key cannot
 	// read the OpenSSH container ssh-keygen writes by default.
 	assert.Contains(t, *out.KeyMaterial, "BEGIN RSA PRIVATE KEY")
+	assert.True(t, strings.HasSuffix(*out.KeyMaterial, "-----END RSA PRIVATE KEY-----"), "AWS ends RSA material without a newline")
 
 	// The key is generated per-run, so the digest is not knowable in advance.
 	// Recompute it from the private key the caller was handed: that is what pins
@@ -488,7 +490,8 @@ func TestDeleteKeyPair_ByKeyName(t *testing.T) {
 		KeyName: aws.String("to-delete-by-name"),
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.NotNil(t, result)
+	assert.True(t, aws.BoolValue(result.Return))
+	assert.Equal(t, aws.StringValue(imported.KeyPairId), aws.StringValue(result.KeyPairId))
 
 	// Verify public key removed from S3
 	keyPath := "keys/" + testAccountID + "/to-delete-by-name"
@@ -516,7 +519,8 @@ func TestDeleteKeyPair_ByKeyPairId(t *testing.T) {
 		KeyPairId: imported.KeyPairId,
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.NotNil(t, result)
+	assert.True(t, aws.BoolValue(result.Return))
+	assert.Equal(t, aws.StringValue(imported.KeyPairId), aws.StringValue(result.KeyPairId))
 
 	// Verify public key removed from S3
 	keyPath := "keys/" + testAccountID + "/to-delete-by-id"
@@ -543,7 +547,8 @@ func TestDeleteKeyPairIdempotent(t *testing.T) {
 			KeyName: aws.String("no-such-key"),
 		}, testAccountID)
 		require.NoError(t, err)
-		assert.NotNil(t, result)
+		assert.True(t, aws.BoolValue(result.Return))
+		assert.Nil(t, result.KeyPairId, "no key was deleted, so none is named")
 	})
 
 	t.Run("NonExistentKeyPairId", func(t *testing.T) {
@@ -551,7 +556,8 @@ func TestDeleteKeyPairIdempotent(t *testing.T) {
 			KeyPairId: aws.String("key-0123456789abcdef0"),
 		}, testAccountID)
 		require.NoError(t, err)
-		assert.NotNil(t, result)
+		assert.True(t, aws.BoolValue(result.Return))
+		assert.Nil(t, result.KeyPairId, "no key was deleted, so none is named")
 	})
 }
 

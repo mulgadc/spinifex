@@ -105,13 +105,20 @@ func ec2Handler[In any](handler func(ctx context.Context, input *In, gw *Gateway
 	}
 }
 
+// ec2ListsAsSet names the list fields AWS omits when empty instead of
+// rendering them. Each is rendered as its handler set it, so nil omits it.
+var ec2ListsAsSet = map[reflect.Type][]string{
+	reflect.TypeFor[ec2.CreateKeyPairOutput](): {"Tags"},
+	reflect.TypeFor[ec2.Image]():               {"Tags", "ProductCodes"},
+}
+
 // marshalEC2Response renders an EC2 handler's output into the action's XML
 // envelope. Every EC2 action funnels through here (via ec2Handler and
 // ec2HandlerWithReq), so wire-format fixes belong here, not in each handler.
 func marshalEC2Response(action string, output any) ([]byte, error) {
 	// BuildXML omits a nil slice's container element entirely but renders an
-	// empty one for a non-nil empty slice; AWS always renders the latter.
-	normalized := utils.NormalizeXMLOutput(output)
+	// empty one for a non-nil empty slice; AWS mostly renders the latter.
+	normalized := utils.NormalizeXMLOutput(output, ec2ListsAsSet)
 	// The SDK's generated output structs never carry a RequestId field.
 	withRequestID := utils.WithRequestID(normalized, uuid.NewV4().String())
 	payload := utils.GenerateXMLPayload(action+"Response", withRequestID)

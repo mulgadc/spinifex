@@ -1891,11 +1891,11 @@ type normalizeOuter struct {
 
 func TestNormalizeXMLOutput_InvalidValue(t *testing.T) {
 	var output any
-	assert.Nil(t, NormalizeXMLOutput(output))
+	assert.Nil(t, NormalizeXMLOutput(output, nil))
 }
 
 func TestNormalizeXMLOutput_TopLevelNilSlice(t *testing.T) {
-	out := NormalizeXMLOutput(normalizeOuter{}).(normalizeOuter)
+	out := NormalizeXMLOutput(normalizeOuter{}, nil).(normalizeOuter)
 	require.NotNil(t, out.Names)
 	assert.Empty(t, out.Names)
 }
@@ -1903,28 +1903,39 @@ func TestNormalizeXMLOutput_TopLevelNilSlice(t *testing.T) {
 func TestNormalizeXMLOutput_NestedPointerStruct(t *testing.T) {
 	out := NormalizeXMLOutput(normalizeOuter{
 		Nested: &normalizeInner{},
-	}).(normalizeOuter)
+	}, nil).(normalizeOuter)
 	require.NotNil(t, out.Nested)
 	require.NotNil(t, out.Nested.Tags, "nil slice inside a pointer field must be normalized")
 	assert.Empty(t, out.Nested.Tags)
 }
 
 func TestNormalizeXMLOutput_NestedValueStruct(t *testing.T) {
-	out := NormalizeXMLOutput(normalizeOuter{}).(normalizeOuter)
+	out := NormalizeXMLOutput(normalizeOuter{}, nil).(normalizeOuter)
 	require.NotNil(t, out.Value.Tags, "nil slice inside a nested struct field must be normalized")
 }
 
 func TestNormalizeXMLOutput_RecursesIntoSliceElements(t *testing.T) {
 	out := NormalizeXMLOutput(normalizeOuter{
 		Children: []*normalizeInner{{}, {Tags: []string{"a"}}},
-	}).(normalizeOuter)
+	}, nil).(normalizeOuter)
 	require.Len(t, out.Children, 2)
 	require.NotNil(t, out.Children[0].Tags, "nil slice inside a slice element must be normalized")
 	assert.Equal(t, []string{"a"}, out.Children[1].Tags, "an already-populated slice element must be left untouched")
 }
 
+func TestNormalizeXMLOutput_AsSetFieldsKeepNil(t *testing.T) {
+	asSet := map[reflect.Type][]string{reflect.TypeFor[normalizeInner](): {"Tags"}}
+	out := NormalizeXMLOutput(normalizeOuter{
+		Nested:   &normalizeInner{},
+		Children: []*normalizeInner{{Tags: []string{}}},
+	}, asSet).(normalizeOuter)
+	assert.Nil(t, out.Nested.Tags, "a nil as-set field must stay nil so BuildXML omits it")
+	require.NotNil(t, out.Children[0].Tags, "an empty as-set field must stay empty so BuildXML renders it")
+	require.NotNil(t, out.Names, "fields outside asSet are still normalized")
+}
+
 func TestNormalizeXMLOutput_NilPointerFieldUntouched(t *testing.T) {
-	out := NormalizeXMLOutput(normalizeOuter{}).(normalizeOuter)
+	out := NormalizeXMLOutput(normalizeOuter{}, nil).(normalizeOuter)
 	assert.Nil(t, out.Nested, "a nil pointer field must not be allocated")
 }
 

@@ -116,3 +116,23 @@ func TestEC2Describe_NonEmptyResult_Unchanged(t *testing.T) {
 	assert.Contains(t, body, "<keySet>")
 	assert.NotContains(t, body, "<keySet></keySet>", "non-empty KeyPairs must not render as an empty container")
 }
+
+// AWS omits some empty lists rather than rendering them: an untagged
+// CreateKeyPair's tagSet, and an image's tagSet and productCodes. Other empty
+// lists in the same responses are still rendered.
+func TestEC2_ListsAWSOmitsWhenEmpty(t *testing.T) {
+	key := render[ec2.CreateKeyPairInput](t, "CreateKeyPair", ec2.CreateKeyPairOutput{KeyName: aws.String("k")})
+	assert.NotContains(t, key, "tagSet")
+
+	images := render[ec2.DescribeImagesInput](t, "DescribeImages", ec2.DescribeImagesOutput{
+		Images: []*ec2.Image{{ImageId: aws.String("ami-1")}},
+	})
+	assert.NotContains(t, images, "tagSet")
+	assert.NotContains(t, images, "productCodes")
+	assert.Contains(t, images, "<blockDeviceMapping></blockDeviceMapping>")
+
+	tagged := render[ec2.DescribeImagesInput](t, "DescribeImages", ec2.DescribeImagesOutput{
+		Images: []*ec2.Image{{ImageId: aws.String("ami-1"), Tags: []*ec2.Tag{{Key: aws.String("k"), Value: aws.String("v")}}}},
+	})
+	assert.Contains(t, tagged, "<tagSet><item><key>k</key><value>v</value></item></tagSet>")
+}

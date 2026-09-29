@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // JSONContentType is the AWS REST-JSON 1.1 content type bedrock clients expect.

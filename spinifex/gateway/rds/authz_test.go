@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/utils"

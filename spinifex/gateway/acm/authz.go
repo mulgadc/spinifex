@@ -7,7 +7,7 @@ import (
 	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
 )
 

@@ -8,7 +8,7 @@ import (
 	"net"
 	"net/netip"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/nats-io/nats.go/jetstream"

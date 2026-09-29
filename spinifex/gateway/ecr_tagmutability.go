@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 )

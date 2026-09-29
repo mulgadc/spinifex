@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

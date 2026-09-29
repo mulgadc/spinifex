@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 

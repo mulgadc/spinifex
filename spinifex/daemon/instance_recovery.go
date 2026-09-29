@@ -10,7 +10,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/instancecache"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"

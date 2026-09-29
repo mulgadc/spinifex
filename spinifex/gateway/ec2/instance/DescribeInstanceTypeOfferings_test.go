@@ -7,7 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"

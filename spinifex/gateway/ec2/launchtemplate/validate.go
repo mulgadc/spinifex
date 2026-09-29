@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // requireTemplateIdentity enforces the id-XOR-name rule shared by the actions

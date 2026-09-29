@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	rgt "github.com/aws/aws-sdk-go/service/resourcegroupstaggingapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"

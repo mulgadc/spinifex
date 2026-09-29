@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 )

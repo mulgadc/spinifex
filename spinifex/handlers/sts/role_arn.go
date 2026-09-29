@@ -7,7 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 
 	"github.com/mulgadc/bluebottle/pkg/auth"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // ErrRoleUnresolved reports a caller-supplied role ARN that names no role the

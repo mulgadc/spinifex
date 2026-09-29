@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // MariaDB 11.8 is the current LTS series and the only one in the pinned Alpine

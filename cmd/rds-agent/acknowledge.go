@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/mulgadc/spinifex/internal/rdsgw"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // The completion receipt rds-init writes once the master role is durably

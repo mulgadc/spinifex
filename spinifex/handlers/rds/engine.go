@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // The control-plane half of the engine seam: what CreateDBInstance needs to

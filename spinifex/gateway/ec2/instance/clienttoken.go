@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_idem "github.com/mulgadc/spinifex/spinifex/gateway/ec2/idem"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/nats-io/nats.go"

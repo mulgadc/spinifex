@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // DefaultBaseURL is the public Hugging Face Hub API and file host.

@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	spxarn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/utils"

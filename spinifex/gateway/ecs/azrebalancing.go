@@ -6,7 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // availabilityZoneRebalancing is a field the pinned aws-sdk-go's ECS shapes

@@ -9,7 +9,7 @@ import (
 	// the timezone parameter validates identically wherever the daemon runs.
 	_ "time/tzdata"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // PostgreSQL 18 is the pinned v1 major, matching the rds-postgres AMI preset.

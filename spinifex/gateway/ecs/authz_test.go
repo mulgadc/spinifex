@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

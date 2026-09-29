@@ -7,7 +7,7 @@ import (
 	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 )

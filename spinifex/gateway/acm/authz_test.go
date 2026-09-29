@@ -3,7 +3,7 @@ package gateway_acm_test
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

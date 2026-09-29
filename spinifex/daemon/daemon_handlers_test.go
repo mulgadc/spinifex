@@ -17,7 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"

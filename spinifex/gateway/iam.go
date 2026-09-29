@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"

@@ -7,7 +7,7 @@ import (
 	"net/http"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_spx "github.com/mulgadc/spinifex/spinifex/gateway/spx"
 )

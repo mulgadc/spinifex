@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/acm"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )

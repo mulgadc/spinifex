@@ -21,7 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/hostdns"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"

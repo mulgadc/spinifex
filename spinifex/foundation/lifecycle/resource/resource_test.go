@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/resource"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

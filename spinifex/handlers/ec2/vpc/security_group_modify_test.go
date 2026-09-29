@@ -7,6 +7,7 @@ package handlers_ec2_vpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -630,4 +631,86 @@ func TestModifySecurityGroupRules_ConcurrentAuthorize(t *testing.T) {
 	}
 	assert.Equal(t, modErr == nil, modified, "the modify succeeded iff its effect is stored")
 	assert.Equal(t, authErr == nil, authorized, "the authorize succeeded iff its effect is stored")
+}
+
+func requireInvertedPortRange(t *testing.T, err error, from, to int64) {
+	t.Helper()
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %q carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, fmt.Sprintf("Invalid TCP/UDP port range(%d:%d)", from, to), message)
+}
+
+func TestAuthorizeSecurityGroupRules_RejectsInvertedPortRange(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "inverted-ports")
+	before := storedSGRecord(t, svc, sgID)
+
+	perm := func(proto string) []*ec2.IpPermission {
+		return []*ec2.IpPermission{{
+			IpProtocol: aws.String(proto), FromPort: aws.Int64(100), ToPort: aws.Int64(50),
+			IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/24")}},
+		}}
+	}
+	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID), IpPermissions: perm("tcp"),
+	}, testAccountID)
+	requireInvertedPortRange(t, err, 100, 50)
+
+	_, err = svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID), IpPermissions: perm("udp"),
+	}, testAccountID)
+	requireInvertedPortRange(t, err, 100, 50)
+
+	assert.Equal(t, before, storedSGRecord(t, svc, sgID), "a rejected authorize may store nothing")
+}
+
+func TestModifySecurityGroupRules_RejectsInvertedPortRange(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "mod-inverted-ports")
+	ruleID := authorizeIngressTCP(t, svc, sgID, 80, "10.0.0.0/24")
+
+	req := tcpCIDRRequest(100, "10.0.0.0/24")
+	req.ToPort = aws.Int64(50)
+	requireInvertedPortRange(t, modifyRules(svc, sgID, ruleUpdate(ruleID, req)), 100, 50)
+	assert.Equal(t, int64(80), storedSGRule(t, svc, sgID, ruleID).FromPort)
+}
+
+// TestRevokeSecurityGroupIngress_InvertedPortRangeStillRevocable covers a rule
+// stored before the range check existed: revoking it by its ports must work.
+func TestRevokeSecurityGroupIngress_InvertedPortRangeStillRevocable(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "stale-inverted-ports")
+
+	key := utils.AccountKey(testAccountID, sgID)
+	var rec SecurityGroupRecord
+	require.NoError(t, json.Unmarshal(storedSGRecord(t, svc, sgID), &rec))
+	rec.IngressRules = append(rec.IngressRules, SGRule{
+		RuleId: "sgr-0123456789abcdef0", IpProtocol: "tcp", FromPort: 100, ToPort: 50, CidrIp: "10.0.0.0/24",
+	})
+	data, err := json.Marshal(rec)
+	require.NoError(t, err)
+	_, err = svc.sgKV.Put(t.Context(), key, data)
+	require.NoError(t, err)
+
+	_, err = svc.RevokeSecurityGroupIngress(context.Background(), &ec2.RevokeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"), FromPort: aws.Int64(100), ToPort: aws.Int64(50),
+			IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/24")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	require.NoError(t, json.Unmarshal(storedSGRecord(t, svc, sgID), &rec))
+	for _, r := range rec.IngressRules {
+		assert.NotEqual(t, "sgr-0123456789abcdef0", r.RuleId)
+	}
 }

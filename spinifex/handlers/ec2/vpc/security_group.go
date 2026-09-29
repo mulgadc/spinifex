@@ -59,6 +59,16 @@ func normalizeIPProtocol(proto string) (string, error) {
 	return "", fmt.Errorf("invalid IpProtocol %q: supported values are tcp, udp, icmp, -1 (or 6, 17, 1)", proto)
 }
 
+// validateSGRulePorts rejects a tcp or udp rule whose FromPort exceeds its ToPort.
+// Only create paths call it, so a rule stored before the check can still be
+// revoked or re-described by its ports.
+func validateSGRulePorts(proto string, fromPort, toPort int64) error {
+	if (proto == "tcp" || proto == "udp") && fromPort > toPort {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Invalid TCP/UDP port range(%d:%d)", fromPort, toPort)
+	}
+	return nil
+}
+
 // validateSGRule rejects CidrIp values that are non-canonical or IPv6, CidrIpv6
 // values that are non-canonical or IPv4, IpProtocol values the ACL builder
 // cannot express, and SourceSG values not matching the sg-ID format. At least
@@ -995,6 +1005,9 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 	newRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseAuthorize)
 	if err != nil {
 		slog.WarnContext(ctx, "AuthorizeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
+		if _, ok := awserrors.ResolveErrorCode(err); ok {
+			return nil, err
+		}
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 	newRules = applySGRuleTags(newRules, input.TagSpecifications)
@@ -1075,6 +1088,9 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 	newRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseAuthorize)
 	if err != nil {
 		slog.WarnContext(ctx, "AuthorizeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
+		if _, ok := awserrors.ResolveErrorCode(err); ok {
+			return nil, err
+		}
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 	newRules = applySGRuleTags(newRules, input.TagSpecifications)
@@ -1695,6 +1711,9 @@ func sgRuleRequestToSGRule(req *ec2.SecurityGroupRuleRequest) (SGRule, error) {
 				"Invalid value for portRange. Must specify both from and to ports with TCP/UDP.")
 		}
 		r.FromPort, r.ToPort = *req.FromPort, *req.ToPort
+		if err := validateSGRulePorts(proto, r.FromPort, r.ToPort); err != nil {
+			return SGRule{}, err
+		}
 	case allProtocols:
 		// Stored as 0/0, the form authorize stores for the no-ports case, so the
 		// rule's sgRuleKey matches Terraform's and the default egress rule's.
@@ -1824,6 +1843,11 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 		}
 		if perm.ToPort != nil {
 			toPort = *perm.ToPort
+		}
+		if mode == sgParseAuthorize {
+			if err := validateSGRulePorts(proto, fromPort, toPort); err != nil {
+				return nil, err
+			}
 		}
 
 		appended := false

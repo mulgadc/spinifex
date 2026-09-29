@@ -180,12 +180,14 @@ func TestRemoveTagKeys(t *testing.T) {
 // tagOps abstracts the per-resource tag/untag/list triple so the round-trip
 // behaviour is asserted identically for every taggable resource.
 type tagOps struct {
-	resource  string
-	create    func(t *testing.T, svc *IAMServiceImpl) string
-	missingID string
-	tag       func(svc *IAMServiceImpl, id string, tags []*iam.Tag) error
-	untag     func(svc *IAMServiceImpl, id string, keys []*string) error
-	list      func(svc *IAMServiceImpl, id string) ([]*iam.Tag, error)
+	resource string
+	create   func(t *testing.T, svc *IAMServiceImpl) string
+	// createTagged creates the resource with tags and returns the ID it would have.
+	createTagged func(svc *IAMServiceImpl, tags []*iam.Tag) (string, error)
+	missingID    string
+	tag          func(svc *IAMServiceImpl, id string, tags []*iam.Tag) error
+	untag        func(svc *IAMServiceImpl, id string, keys []*string) error
+	list         func(svc *IAMServiceImpl, id string) ([]*iam.Tag, error)
 }
 
 func allTagOps() []tagOps {
@@ -194,6 +196,10 @@ func allTagOps() []tagOps {
 			resource: "user",
 			create: func(t *testing.T, svc *IAMServiceImpl) string {
 				return *createTestUser(t, svc, "tagme").UserName
+			},
+			createTagged: func(svc *IAMServiceImpl, tags []*iam.Tag) (string, error) {
+				_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{UserName: aws.String("tagged"), Tags: tags})
+				return "tagged", err
 			},
 			missingID: "no-such-user",
 			tag: func(svc *IAMServiceImpl, id string, tags []*iam.Tag) error {
@@ -216,6 +222,12 @@ func allTagOps() []tagOps {
 			resource: "role",
 			create: func(t *testing.T, svc *IAMServiceImpl) string {
 				return *createTestRole(t, svc, "tagme").RoleName
+			},
+			createTagged: func(svc *IAMServiceImpl, tags []*iam.Tag) (string, error) {
+				_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+					RoleName: aws.String("tagged"), AssumeRolePolicyDocument: aws.String(validTrustPolicy()), Tags: tags,
+				})
+				return "tagged", err
 			},
 			missingID: "no-such-role",
 			tag: func(svc *IAMServiceImpl, id string, tags []*iam.Tag) error {
@@ -244,6 +256,12 @@ func allTagOps() []tagOps {
 				require.NoError(t, err)
 				return *out.Policy.Arn
 			},
+			createTagged: func(svc *IAMServiceImpl, tags []*iam.Tag) (string, error) {
+				_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+					PolicyName: aws.String("tagged"), PolicyDocument: aws.String(validPolicyDocument()), Tags: tags,
+				})
+				return "arn:aws:iam::" + testAccountID + ":policy/tagged", err
+			},
 			missingID: "arn:aws:iam::" + testAccountID + ":policy/no-such-policy",
 			tag: func(svc *IAMServiceImpl, id string, tags []*iam.Tag) error {
 				_, err := svc.TagPolicy(testAccountID, &iam.TagPolicyInput{PolicyArn: aws.String(id), Tags: tags})
@@ -265,6 +283,12 @@ func allTagOps() []tagOps {
 			resource: "instance profile",
 			create: func(t *testing.T, svc *IAMServiceImpl) string {
 				return *createTestInstanceProfile(t, svc, "tagme").InstanceProfileName
+			},
+			createTagged: func(svc *IAMServiceImpl, tags []*iam.Tag) (string, error) {
+				_, err := svc.CreateInstanceProfile(testAccountID, &iam.CreateInstanceProfileInput{
+					InstanceProfileName: aws.String("tagged"), Tags: tags,
+				})
+				return "tagged", err
 			},
 			missingID: "no-such-profile",
 			tag: func(svc *IAMServiceImpl, id string, tags []*iam.Tag) error {
@@ -292,6 +316,12 @@ func allTagOps() []tagOps {
 				require.NoError(t, err)
 				return *out.OpenIDConnectProviderArn
 			},
+			createTagged: func(svc *IAMServiceImpl, tags []*iam.Tag) (string, error) {
+				_, err := svc.CreateOpenIDConnectProvider(testAccountID, &iam.CreateOpenIDConnectProviderInput{
+					Url: aws.String("https://oidc.example.com/id/TAGGED"), Tags: tags,
+				})
+				return "arn:aws:iam::" + testAccountID + ":oidc-provider/oidc.example.com/id/TAGGED", err
+			},
 			missingID: "arn:aws:iam::" + testAccountID + ":oidc-provider/oidc.example.com/id/MISSING",
 			tag: func(svc *IAMServiceImpl, id string, tags []*iam.Tag) error {
 				_, err := svc.TagOpenIDConnectProvider(testAccountID, &iam.TagOpenIDConnectProviderInput{OpenIDConnectProviderArn: aws.String(id), Tags: tags})
@@ -318,6 +348,51 @@ func tagsAsMap(tags []*iam.Tag) map[string]string {
 		m[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
 	}
 	return m
+}
+
+func TestCreate_InvalidTagsRefusedAndNotStored(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		tags     []*iam.Tag
+		wantCode string
+	}{
+		{"nil value", []*iam.Tag{{Key: aws.String("k")}}, awserrors.ErrorValidationError},
+		{"key outside pattern", []*iam.Tag{sdkTag("bad#key", "v")}, awserrors.ErrorValidationError},
+		{"duplicate keys differing in case", []*iam.Tag{sdkTag("Dup", "1"), sdkTag("dup", "2")}, awserrors.ErrorIAMInvalidInput},
+	}
+	for _, ops := range allTagOps() {
+		for _, tc := range cases {
+			t.Run(ops.resource+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				svc := setupTestIAMService(t)
+				id, err := ops.createTagged(svc, tc.tags)
+				require.Error(t, err)
+				code, ok := awserrors.ResolveErrorCode(err)
+				require.True(t, ok, "error must carry a registered code: %v", err)
+				assert.Equal(t, tc.wantCode, code)
+
+				_, err = ops.list(svc, id)
+				require.Error(t, err)
+				assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+			})
+		}
+	}
+}
+
+func TestCreate_ValidTagsStored(t *testing.T) {
+	t.Parallel()
+	for _, ops := range allTagOps() {
+		t.Run(ops.resource, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestIAMService(t)
+			id, err := ops.createTagged(svc, []*iam.Tag{sdkTag("env", "prod"), sdkTag("team", "")})
+			require.NoError(t, err)
+			got, err := ops.list(svc, id)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]string{"env": "prod", "team": ""}, tagsAsMap(got))
+		})
+	}
 }
 
 func TestResourceTagging_RoundTrip(t *testing.T) {

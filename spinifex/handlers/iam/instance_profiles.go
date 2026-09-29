@@ -41,6 +41,10 @@ func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.Crea
 		}
 	}
 
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
 	profileID, err := generateIAMID("AIPA")
 	if err != nil {
 		return nil, fmt.Errorf("generate instance profile ID: %w", err)

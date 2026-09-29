@@ -72,6 +72,10 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 		}
 	}
 
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
 	roleID, err := generateIAMID("AROA")
 	if err != nil {
 		return nil, fmt.Errorf("generate role ID: %w", err)

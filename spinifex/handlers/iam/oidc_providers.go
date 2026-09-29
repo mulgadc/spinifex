@@ -129,6 +129,10 @@ func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *ia
 		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The specified value for url is invalid: %v", err)
 	}
 
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
+
 	record := OIDCProviderRecord{
 		Url:            issuer,
 		ClientIDList:   awsStrings(input.ClientIDList),

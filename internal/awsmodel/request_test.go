@@ -226,6 +226,21 @@ func TestGenerateRequestsSeedsConditionallyRequiredMembers(t *testing.T) {
 	require.NotZero(t, nested)
 }
 
+func TestGenerateRequestsTargetsFixturesOutsideCreateAndDelete(t *testing.T) {
+	options := testRequestOptions
+	options.Fixtures = map[string]string{"RoleName": "fixture"}
+	for operation, wantFixture := range map[string]bool{"TagRole": true, "CreateRole": false, "DeleteRole": false} {
+		plan, err := GenerateRequests(IAM, operation, options)
+		require.NoError(t, err)
+		for _, request := range plan.Cases {
+			if request.Path == "$.RoleName" {
+				continue
+			}
+			require.Equal(t, wantFixture, request.Input["RoleName"] == "fixture", "%s %s %s", operation, request.Constraint, request.Path)
+		}
+	}
+}
+
 func TestGenerateRequestsAttributesRejections(t *testing.T) {
 	plan, err := GenerateRequests(IAM, "CreateRole", testRequestOptions)
 	require.NoError(t, err)

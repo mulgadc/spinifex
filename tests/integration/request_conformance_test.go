@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,8 +51,10 @@ func TestRequestConformance(t *testing.T) {
 			startRequestConformanceBackends(t, gw)
 			sender, err := newRequestSender(gw, service)
 			require.NoError(t, err)
+			options := awsmodel.RequestOptions{AccountID: gw.AccountID, Region: testRegion, AccessKeyID: testAccessKeyID}
+			options.Fixtures = createRequestFixtures(t, sender, service, gw.AccountID)
 			for _, operation := range coverage.Implemented {
-				plan, err := awsmodel.GenerateRequests(service, operation, awsmodel.RequestOptions{AccountID: gw.AccountID, Region: testRegion, AccessKeyID: testAccessKeyID})
+				plan, err := awsmodel.GenerateRequests(service, operation, options)
 				require.NoError(t, err, operation)
 				suiteRequestConformance.recordOperation(service, operation, plan)
 				judge := plan.NewJudge()
@@ -80,6 +83,56 @@ func startRequestConformanceBackends(t *testing.T, gw *Gateway) {
 	StartSpotDaemonLite(t, gw)
 	StartECRDaemonLite(t, gw)
 	StartServiceDaemonLite(t, gw)
+}
+
+// requestFixture is the name every fixture resource takes.
+const requestFixture = "conformance-fixture"
+
+// createRequestFixtures creates one resource of each kind the service's
+// generated requests name, so a case reaches its resource instead of ending
+// in not-found. It returns the members that name them.
+func createRequestFixtures(t *testing.T, sender *requestSender, service awsmodel.Service, accountID string) map[string]string {
+	t.Helper()
+	create := func(operation string, input map[string]any) {
+		t.Helper()
+		result, err := sender.send(awsmodel.RequestCase{Operation: operation, Input: input})
+		require.NoError(t, err, operation)
+		require.True(t, result.Status >= 200 && result.Status < 300, "create fixture: %s: %d %s: %s", operation, result.Status, result.Code, result.Message)
+	}
+	switch service {
+	case awsmodel.IAM:
+		const oidcHost = "fixture.example.com"
+		create("CreateRole", map[string]any{"RoleName": requestFixture, "AssumeRolePolicyDocument": `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`})
+		create("CreatePolicy", map[string]any{"PolicyName": requestFixture, "PolicyDocument": `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}`})
+		create("CreateOpenIDConnectProvider", map[string]any{"Url": "https://" + oidcHost, "ClientIDList": []any{"sts.amazonaws.com"}, "ThumbprintList": []any{strings.Repeat("a", 40)}})
+		create("CreateInstanceProfile", map[string]any{"InstanceProfileName": requestFixture})
+		create("CreateGroup", map[string]any{"GroupName": requestFixture})
+		create("CreateUser", map[string]any{"UserName": requestFixture})
+		return map[string]string{
+			"RoleName":                 requestFixture,
+			"PolicyArn":                "arn:aws:iam::" + accountID + ":policy/" + requestFixture,
+			"OpenIDConnectProviderArn": "arn:aws:iam::" + accountID + ":oidc-provider/" + oidcHost,
+			"InstanceProfileName":      requestFixture,
+			"GroupName":                requestFixture,
+			"UserName":                 requestFixture,
+		}
+	case awsmodel.ECS:
+		create("CreateCluster", map[string]any{"clusterName": requestFixture})
+		return map[string]string{
+			"cluster":     requestFixture,
+			"clusters":    requestFixture,
+			"resourceArn": "arn:aws:ecs:" + testRegion + ":" + accountID + ":cluster/" + requestFixture,
+		}
+	case awsmodel.ECR:
+		create("CreateRepository", map[string]any{"repositoryName": requestFixture})
+		return map[string]string{
+			"repositoryName":  requestFixture,
+			"repositoryNames": requestFixture,
+			"resourceArn":     "arn:aws:ecr:" + testRegion + ":" + accountID + ":repository/" + requestFixture,
+		}
+	default:
+		return nil
+	}
 }
 
 type requestSender struct {

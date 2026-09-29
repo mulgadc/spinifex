@@ -18,10 +18,12 @@ import (
 
 // RequestOptions places generated ARNs in the account and region the
 // requests are sent as. AccessKeyID is the key the requests are signed with.
+// Fixtures maps a member to an existing resource it can name.
 type RequestOptions struct {
 	AccountID   string
 	Region      string
 	AccessKeyID string
+	Fixtures    map[string]string
 }
 
 // Models constrain most identifiers only by length, so "spxa" is a model-valid
@@ -82,6 +84,11 @@ var conditionallyRequired = map[Service]map[string][]string{
 }
 
 const (
+	// imageManifest is well formed but names blobs no repository holds.
+	imageManifest    = `{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{"mediaType":"application/vnd.docker.container.image.v1+json","size":2,"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},"layers":[]}`
+	lifecyclePolicy  = `{"rules":[{"rulePriority":1,"description":"expire untagged","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":14},"action":{"type":"expire"}}]}`
+	repositoryPolicy = `{"Version":"2012-10-17","Statement":[{"Sid":"pull","Effect":"Allow","Principal":{"AWS":"arn:aws:iam::%s:root"},"Action":"ecr:BatchGetImage"}]}`
+
 	policyDocument      = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}`
 	trustPolicyDocument = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 )
@@ -94,6 +101,9 @@ func (g *requestGenerator) hint(path []pathStep) (string, bool) {
 		return "", false
 	}
 	options := g.options
+	if fixture, ok := options.Fixtures[member]; ok {
+		return fixture, true
+	}
 	suffix := fmt.Sprintf("%017x", g.saltNumber)
 	name := "spx" + g.salt
 
@@ -157,8 +167,15 @@ func (g *requestGenerator) hint(path []pathStep) (string, bool) {
 			return name + ".example.com", true
 		}
 	case ECR:
-		if member == "resourceArn" {
+		switch member {
+		case "resourceArn":
 			return fmt.Sprintf("arn:aws:ecr:%s:%s:repository/%s", options.Region, options.AccountID, name), true
+		case "imageManifest":
+			return imageManifest, true
+		case "lifecyclePolicyText":
+			return lifecyclePolicy, true
+		case "policyText":
+			return fmt.Sprintf(repositoryPolicy, options.AccountID), true
 		}
 	case EKS:
 		switch member {

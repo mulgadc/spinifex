@@ -75,6 +75,11 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 		return RequestPlan{Cases: []RequestCase{{Operation: operationName, Input: map[string]any{}}}, DeclaredErrors: declared}, nil
 	}
 
+	// A create or delete names a resource of its own, so it neither collides
+	// with a fixture nor removes one.
+	if strings.HasPrefix(operationName, "Create") || strings.HasPrefix(operationName, "Delete") {
+		options.Fixtures = nil
+	}
 	first := model.newRequestGenerator(0, options)
 	full, ok := first.structure(operation.Input.Shape, nil, 0)
 	plan := RequestPlan{Skipped: first.skipped, Unbroken: first.unbroken, DeclaredErrors: declared}

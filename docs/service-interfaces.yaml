@@ -43,12 +43,12 @@ services:
       - "ochre.vector.*"
 
   spinifex_daemon:
-    path: spinifex/services/spinifex
+    path: spinifex/runtime/roles/spinifex
     # Orchestrator. Owns most ec2.* + all elbv2.* + iam event publication.
     # Translates VPC / EBS / S3 operations into vpc.* / ebs.* / s3.* and
     # forwards to vpcd / viperblockd / predastore.
     #
-    # Source layout: spinifex/services/spinifex (entry), spinifex/daemon
+    # Source layout: spinifex/runtime/roles/spinifex (entry), spinifex/daemon
     # (subscribe registration), spinifex/handlers/{ec2,elbv2,iam} (per-
     # subject handler bodies). Selector treats all four paths as belonging
     # to this service via the `additional_paths` field.

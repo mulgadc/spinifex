@@ -26,7 +26,7 @@ func testManifest() *Manifest {
 				Subscribes: []string{},
 			},
 			"spinifex_daemon": {
-				Path:            "spinifex/services/spinifex",
+				Path:            "spinifex/runtime/roles/spinifex",
 				AdditionalPaths: []string{"spinifex/daemon", "spinifex/handlers/ec2"},
 				Subscribes:      []string{"ec2.RunInstances", "elbv2.CreateLoadBalancer"},
 				Publishes:       []string{"vpc.create", "ebs.mount", "s3.*", "iam.account.created"},

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
-	"github.com/mulgadc/spinifex/spinifex/kvlease"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"

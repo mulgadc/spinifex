@@ -1323,6 +1323,12 @@ func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) 
 
 func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	ctx := context.Background()
+	if err := checkEnum("scope", input.Scope, policyScopeValues); err != nil {
+		return nil, err
+	}
+	if err := checkEnum("policyUsageFilter", input.PolicyUsageFilter, policyUsageValues); err != nil {
+		return nil, err
+	}
 	keys, err := kvutil.Keys(ctx, s.policiesBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
@@ -1471,6 +1477,9 @@ func (s *IAMServiceImpl) ListEntitiesForPolicy(accountID string, input *iam.List
 		IsTruncated:  aws.Bool(false),
 	}
 
+	if err := checkEnum("policyUsageFilter", input.PolicyUsageFilter, policyUsageValues); err != nil {
+		return nil, err
+	}
 	// Permissions boundaries are rejected outright at policy-attachment time,
 	// so no entity ever uses a policy that way. The correct answer is empty.
 	if aws.StringValue(input.PolicyUsageFilter) == iam.PolicyUsageTypePermissionsBoundary {
@@ -2195,6 +2204,20 @@ func validateIAMName(field, name string, maxLen int) error {
 // length bounds; IAM leaves the value out of the message.
 func lengthViolation(field, bound string) error {
 	return validationError([]string{fmt.Sprintf("Value at '%s' failed to satisfy constraint: Member must have length %s", field, bound)})
+}
+
+// Enum values in the order AWS lists them in a violation, not the model's.
+var (
+	policyScopeValues = []string{iam.PolicyScopeTypeAll, iam.PolicyScopeTypeLocal, iam.PolicyScopeTypeAws}
+	policyUsageValues = []string{iam.PolicyUsageTypePermissionsBoundary, iam.PolicyUsageTypePermissionsPolicy}
+)
+
+// checkEnum refuses an optional member set to a value outside allowed.
+func checkEnum(field string, value *string, allowed []string) error {
+	if value == nil || slices.Contains(allowed, *value) {
+		return nil
+	}
+	return enumViolation(field, allowed)
 }
 
 func enumViolation(field string, allowed []string) error {

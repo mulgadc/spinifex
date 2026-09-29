@@ -1700,6 +1700,37 @@ func TestDeletePolicy_AttachedConflict_Group(t *testing.T) {
 // ListEntitiesForPolicy Tests
 // ============================================================================
 
+// The messages are the ones AWS returned for the same values.
+func TestListPolicyCalls_EnumViolations(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	const (
+		scopeMsg = "1 validation error detected: Value at 'scope' failed to satisfy constraint: Member must satisfy enum value set: [All, Local, AWS]"
+		usageMsg = "1 validation error detected: Value at 'policyUsageFilter' failed to satisfy constraint: Member must satisfy enum value set: [PermissionsBoundary, PermissionsPolicy]"
+	)
+	_, err := svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{Scope: aws.String("Bogus")})
+	requireIAMError(t, err, awserrors.ErrorValidationError, scopeMsg)
+	_, err = svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{PolicyUsageFilter: aws.String("Bogus")})
+	requireIAMError(t, err, awserrors.ErrorValidationError, usageMsg)
+	_, err = svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn: aws.String("arn:aws:iam::aws:policy/ReadOnlyAccess"), PolicyUsageFilter: aws.String("Bogus"),
+	})
+	requireIAMError(t, err, awserrors.ErrorValidationError, usageMsg)
+
+	for _, scope := range iam.PolicyScopeType_Values() {
+		_, err = svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{Scope: aws.String(scope)})
+		require.NoError(t, err, scope)
+	}
+	for _, usage := range iam.PolicyUsageType_Values() {
+		_, err = svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{PolicyUsageFilter: aws.String(usage)})
+		require.NoError(t, err, usage)
+		_, err = svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+			PolicyArn: aws.String("arn:aws:iam::aws:policy/ReadOnlyAccess"), PolicyUsageFilter: aws.String(usage),
+		})
+		require.NoError(t, err, usage)
+	}
+}
+
 func TestListEntitiesForPolicy_Empty(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

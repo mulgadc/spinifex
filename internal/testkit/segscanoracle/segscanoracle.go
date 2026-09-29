@@ -2,7 +2,7 @@
 // umbrella repo's scripts/segscan against a copy of a real predastore node
 // data dir, reporting live / dead-tombstoned / dead-orphan bytes per the
 // on-disk .seg segments. It is the segscan-side counterpart to
-// spinifex/testutil/vbscan (see that package's comment for the chunk/config
+// internal/testkit/vbscan (see that package's comment for the chunk/config
 // oracle) — together they let integration tests assert real persisted
 // storage state instead of only "the handler did not error".
 //
@@ -57,8 +57,8 @@ func Locate() (string, error) {
 	if !ok {
 		return "", errors.New("segscanoracle: could not resolve source location for module-relative lookup")
 	}
-	// thisFile is <spinifex-root>/spinifex/testutil/segscanoracle/segscanoracle.go.
-	root := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(thisFile))))
+	// thisFile is <spinifex-root>/internal/testkit/segscanoracle/segscanoracle.go.
+	root := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
 	return resolveSegscanDir(os.Getenv(segscanEnvVar), root)
 }
 

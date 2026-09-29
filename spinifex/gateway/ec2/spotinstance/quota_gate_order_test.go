@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"

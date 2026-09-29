@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/spinifex/spinifex/daemon"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
 )
 
 func newCanaryBucket(t *testing.T) (jetstream.KeyValue, jetstream.JetStream) {

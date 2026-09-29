@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

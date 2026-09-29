@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

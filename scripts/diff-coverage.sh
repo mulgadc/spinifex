@@ -70,10 +70,10 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # -C enables copy detection for the same reason (file split = partial copy).
 # cmd/installer/ui is excluded: interactive TUI rendering has no meaningful unit
 # test, and the installer is validated by the ISO hardware run instead.
-# spinifex/testutil is excluded because it is fakes and harnesses used only from
+# internal/testkit is excluded because it is fakes and harnesses used only from
 # _test.go files. Coverage is recorded per package under test, so a fake another
 # package's tests drive reads as zero-covered however hard it is exercised.
-git diff "${BASE_REF}" HEAD --unified=0 -M -C --diff-filter=AM -- '*.go' ':!*_test.go' ':!spinifex/migrate/*' ':!cmd/installer/ui/*' ':!spinifex/testutil/*' | awk '
+git diff "${BASE_REF}" HEAD --unified=0 -M -C --diff-filter=AM -- '*.go' ':!*_test.go' ':!spinifex/migrate/*' ':!cmd/installer/ui/*' ':!internal/testkit/*' | awk '
     /^\+\+\+ / {
         file = substr($2, 3)
         next

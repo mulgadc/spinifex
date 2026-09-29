@@ -1,6 +1,6 @@
 // Package predastore starts a real predastore cluster for tests that need to
 // exercise an actual S3-compatible backend rather than a mock. It is
-// deliberately its own leaf package (not folded into spinifex/testutil,
+// deliberately its own leaf package (not folded into internal/testkit,
 // which is imported by most of the module's test files for lightweight NATS
 // helpers): starting one here runs a whole predastore host — blob nodes, Raft
 // meta replicas and the S3 gate in front of them — whose goroutines run for

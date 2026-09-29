@@ -11,7 +11,7 @@
 // This mirrors scripts/vbrefscan (in the mulga umbrella module) but is
 // reimplemented locally rather than imported: spinifex cannot depend on
 // mulga, the module that contains it, without a repo-level cycle. It is
-// deliberately its own leaf package, not part of the shared spinifex/testutil
+// deliberately its own leaf package, not part of the shared internal/testkit
 // package that ~80 test files import — see tests/fixtures/predastore's package
 // comment for why that matters (goleak poisoning via transitively-linked
 // long-lived goroutines). vbscan does not pull in a predastore cluster

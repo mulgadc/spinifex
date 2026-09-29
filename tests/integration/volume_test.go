@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/testutil/vbscan"
+	"github.com/mulgadc/spinifex/internal/testkit/vbscan"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

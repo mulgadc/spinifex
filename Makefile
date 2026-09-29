@@ -219,7 +219,7 @@ aws-model-coverage: generate-aws-model-coverage
 	@go run ./cmd/aws-model-coverage
 
 # Segscan storage oracle: needs the mulga umbrella repo's scripts/segscan
-# checked out alongside spinifex (see spinifex/testutil/segscanoracle), which
+# checked out alongside spinifex (see internal/testkit/segscanoracle), which
 # is not the default local or CI layout, so this is a separate target from
 # test-integration rather than folded into it. Skips itself when segscan's
 # source isn't found.

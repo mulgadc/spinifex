@@ -16,7 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/testutil/recordingstore"
+	"github.com/mulgadc/spinifex/internal/testkit/recordingstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -14,7 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider/conformance"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider/natsserve"
 	"github.com/mulgadc/spinifex/spinifex/services/qemunbdd"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/stretchr/testify/require"
 )
 

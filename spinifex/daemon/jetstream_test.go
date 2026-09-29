@@ -3,7 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"sync"
 	"testing"
 	"time"

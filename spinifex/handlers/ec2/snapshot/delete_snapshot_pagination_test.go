@@ -13,7 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
-	"github.com/mulgadc/spinifex/spinifex/testutil/pagedstore"
+	"github.com/mulgadc/spinifex/internal/testkit/pagedstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

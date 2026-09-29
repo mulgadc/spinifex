@@ -6,7 +6,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider/conformance"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider/natsserve"
 	"github.com/mulgadc/spinifex/spinifex/ebsprovider/nullprovider"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
 )
 
 // BenchmarkNullProvider_InProcess prices the contract with no transport and no

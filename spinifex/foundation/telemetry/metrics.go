@@ -10,8 +10,9 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// meterName is the instrumentation scope every spinifex request metric shares,
-// so the HTTP and NATS paths land on one set of instruments.
+// meterName is the stable instrumentation scope every spinifex request metric
+// shares. It intentionally survives this Go package relocation so existing
+// dashboards and alerts do not split their metric series.
 const meterName = "github.com/mulgadc/spinifex/spinifex/otelsetup"
 
 // actionAttrKey names the logical operation on request metrics. Values must

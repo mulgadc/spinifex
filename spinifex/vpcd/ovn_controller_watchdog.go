@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/host"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
 // Compile-time check: the gateway-claim prober satisfies the watchdog's needs.

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
 // DefaultLifecycleSweepInterval is the period between lifecycle expiry cycles.

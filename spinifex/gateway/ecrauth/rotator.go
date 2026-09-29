@@ -2,7 +2,7 @@ package gateway_ecrauth
 
 import (
 	"context"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"log/slog"
 	"sort"
 	"time"

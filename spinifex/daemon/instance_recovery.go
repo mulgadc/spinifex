@@ -13,7 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/instancecache"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"

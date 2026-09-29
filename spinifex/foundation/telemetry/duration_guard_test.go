@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/tools/go/packages"
 
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
 // logMethods are the slog entry points that take loosely typed key/value pairs,
@@ -107,7 +107,7 @@ func isMillisCall(info *types.Info, expr ast.Expr) bool {
 		return false
 	}
 	return fn.Name() == "Millis" &&
-		fn.Pkg().Path() == "github.com/mulgadc/spinifex/spinifex/otelsetup"
+		fn.Pkg().Path() == "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 }
 
 // precededByUnitKey reports whether the argument at i is the value half of a

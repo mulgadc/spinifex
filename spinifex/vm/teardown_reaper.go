@@ -3,7 +3,7 @@ package vm
 import (
 	"context"
 	"fmt"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"log/slog"
 	"strings"
 	"sync"

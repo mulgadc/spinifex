@@ -680,8 +680,15 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 		}
 		return err
 	}
+	// AWS refuses a bad tag resource type even on a DryRun request.
+	if err := validateTagSpecificationTypes(action, input); err != nil {
+		return err
+	}
 	if dryRunRequested(input) {
 		return errors.New(awserrors.ErrorDryRunOperation)
+	}
+	if err := validateMaxResults(action, input); err != nil {
+		return err
 	}
 
 	if gw.NATSConn == nil && !ec2LocalActions[action] {

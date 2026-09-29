@@ -80,7 +80,7 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 	if strings.HasPrefix(operationName, "Create") || strings.HasPrefix(operationName, "Delete") {
 		options.Fixtures = nil
 	}
-	first := model.newRequestGenerator(0, options)
+	first := model.newRequestGenerator(operationName, 0, options)
 	full, ok := first.structure(operation.Input.Shape, nil, 0)
 	plan := RequestPlan{Skipped: first.skipped, Unbroken: first.unbroken, DeclaredErrors: declared}
 	if !ok {
@@ -101,7 +101,7 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 	// what an earlier case created.
 	salt := 0
 	generate := func() (map[string]any, []constraintSite, error) {
-		generator := model.newRequestGenerator(salt, options)
+		generator := model.newRequestGenerator(operationName, salt, options)
 		salt++
 		value, _ := generator.structure(operation.Input.Shape, nil, 0)
 		if len(generator.sites) != len(first.sites) {
@@ -280,6 +280,7 @@ var generatedTimestamp = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 type requestGenerator struct {
 	model      *Model
+	operation  string
 	options    RequestOptions
 	salt       string
 	saltNumber int
@@ -289,8 +290,8 @@ type requestGenerator struct {
 	visiting   map[string]bool
 }
 
-func (m *Model) newRequestGenerator(salt int, options RequestOptions) *requestGenerator {
-	return &requestGenerator{model: m, options: options, salt: saltLetters(salt), saltNumber: salt, visiting: map[string]bool{}}
+func (m *Model) newRequestGenerator(operation string, salt int, options RequestOptions) *requestGenerator {
+	return &requestGenerator{model: m, operation: operation, options: options, salt: saltLetters(salt), saltNumber: salt, visiting: map[string]bool{}}
 }
 
 // saltLetters spells n in base 26 with lower-case letters, which fit more
@@ -473,6 +474,9 @@ func (g *requestGenerator) mapValue(shape *Shape, path []pathStep, depth int) (a
 func (g *requestGenerator) stringValue(shape *Shape, ref ShapeRef, path []pathStep) (any, bool) {
 	if len(shape.Enum) > 0 {
 		g.site(path, constraintSite{constraint: ConstraintEnum, detail: "value not in enum", replacement: invalidEnumValue(shape.Enum)})
+		if value, ok := g.enumHint(path); ok && slices.Contains(shape.Enum, value) {
+			return value, true
+		}
 		return shape.Enum[0], true
 	}
 

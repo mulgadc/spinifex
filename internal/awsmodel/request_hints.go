@@ -93,6 +93,46 @@ const (
 	trustPolicyDocument = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 )
 
+// ec2TaggedTypes is the resource type each EC2 create tags through its
+// TagSpecifications. AWS refuses any other type, so the enum's first value
+// would make an otherwise valid request invalid.
+var ec2TaggedTypes = map[string]string{
+	"AllocateAddress":                 "elastic-ip",
+	"AuthorizeSecurityGroupEgress":    "security-group-rule",
+	"AuthorizeSecurityGroupIngress":   "security-group-rule",
+	"CopyImage":                       "image",
+	"CopySnapshot":                    "snapshot",
+	"CreateCapacityReservation":       "capacity-reservation",
+	"CreateEgressOnlyInternetGateway": "egress-only-internet-gateway",
+	"CreateImage":                     "image",
+	"CreateInternetGateway":           "internet-gateway",
+	"CreateKeyPair":                   "key-pair",
+	"CreateLaunchTemplate":            "launch-template",
+	"CreateNatGateway":                "natgateway",
+	"CreateNetworkInterface":          "network-interface",
+	"CreatePlacementGroup":            "placement-group",
+	"CreateRouteTable":                "route-table",
+	"CreateSecurityGroup":             "security-group",
+	"CreateSnapshot":                  "snapshot",
+	"CreateSubnet":                    "subnet",
+	"CreateVolume":                    "volume",
+	"CreateVpc":                       "vpc",
+	"ImportKeyPair":                   "key-pair",
+	"RegisterImage":                   "image",
+	"RequestSpotInstances":            "spot-instances-request",
+	"RunInstances":                    "instance",
+}
+
+// enumHint returns the enum value a valid request needs at path, where the
+// first value would not do.
+func (g *requestGenerator) enumHint(path []pathStep) (string, bool) {
+	if g.model.service != EC2 || len(path) == 0 || path[0] != "TagSpecifications" || memberName(path) != "ResourceType" {
+		return "", false
+	}
+	value, ok := ec2TaggedTypes[g.operation]
+	return value, ok
+}
+
 // hint returns a value of the right form for the member at path, if one is
 // known. salt keeps names distinct between request cases.
 func (g *requestGenerator) hint(path []pathStep) (string, bool) {

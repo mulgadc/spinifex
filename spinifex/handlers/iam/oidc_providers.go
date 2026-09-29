@@ -19,7 +19,6 @@ import (
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Per-account IAM bucket holds account-scoped resources (currently the OIDC provider registry).
@@ -203,7 +202,7 @@ func (s *IAMServiceImpl) ListOpenIDConnectProviders(accountID string, _ *iam.Lis
 	}
 
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, oidcProvidersKeyPrefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, oidcProvidersKeyPrefix) {
 			continue
 		}
 		entry, err := kv.Get(ctx, key)

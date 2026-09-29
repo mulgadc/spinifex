@@ -14,8 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
-	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -512,7 +513,7 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 	}
 
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, prefix) {
@@ -779,7 +780,7 @@ func (s *VPCServiceImpl) listInstanceENIs(ctx context.Context, accountID, instan
 	prefix := accountID + "."
 	var out []ENIRecord
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.eniKV.Get(ctx, key)
@@ -841,7 +842,7 @@ func (s *VPCServiceImpl) scanENIs(ctx context.Context, match func(*ENIRecord) bo
 
 	var out []AccountENI
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		accountID, _, found := strings.Cut(key, ".")
@@ -907,7 +908,7 @@ func (s *VPCServiceImpl) findENIByAttachment(ctx context.Context, accountID, att
 	}
 	prefix := accountID + "."
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.eniKV.Get(ctx, key)

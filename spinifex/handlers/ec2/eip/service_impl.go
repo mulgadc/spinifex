@@ -491,7 +491,7 @@ func (s *EIPServiceImpl) findByENI(ctx context.Context, accountID, eniID string)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.eipKV.Get(ctx, k)
@@ -555,7 +555,7 @@ func (s *EIPServiceImpl) DescribeAddresses(ctx context.Context, input *ec2.Descr
 
 	var addresses []*ec2.Address
 	for _, k := range keys {
-		if k == utils.VersionKey {
+		if k == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(k, prefix) {
@@ -675,7 +675,7 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		for _, k := range keys {
-			if k == utils.VersionKey {
+			if k == kvutil.VersionKey {
 				continue
 			}
 			if !strings.HasPrefix(k, prefix) {
@@ -772,7 +772,7 @@ func (s *EIPServiceImpl) findByAssociationID(ctx context.Context, accountID, ass
 	}
 
 	for _, k := range keys {
-		if k == utils.VersionKey {
+		if k == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(k, prefix) {
@@ -810,7 +810,7 @@ func (s *EIPServiceImpl) AssociatedPublicIPForInstance(ctx context.Context, acco
 		return "", false
 	}
 	for _, k := range keys {
-		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.eipKV.Get(ctx, k)
@@ -847,7 +847,7 @@ func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
 	}
 	var errs []error
 	for _, k := range keys {
-		if k == utils.VersionKey {
+		if k == kvutil.VersionKey {
 			continue
 		}
 		entry, err := s.eipKV.Get(ctx, k)

@@ -18,7 +18,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Bound on optimistic-concurrency retries when a concurrent writer wins the
@@ -115,7 +114,7 @@ func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListI
 	// to no element at all rather than an empty one.
 	profiles := []*iam.InstanceProfile{}
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {

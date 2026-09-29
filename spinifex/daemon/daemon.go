@@ -1675,7 +1675,7 @@ func (d *Daemon) startCluster() error {
 	// Set the default KV replica count before any handler creates a bucket, so
 	// lazily-created buckets are born at cluster-size replication instead of R1.
 	if d.clusterConfig != nil {
-		utils.SetDefaultKVReplicas(len(d.clusterConfig.Nodes))
+		kvutil.SetDefaultKVReplicas(len(d.clusterConfig.Nodes))
 	}
 
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).

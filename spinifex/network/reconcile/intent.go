@@ -15,10 +15,10 @@ import (
 	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -229,7 +229,7 @@ func matchesLocalAZ(vpcAZ, localAZ string) bool {
 	return vpcAZ == "" || vpcAZ == localAZ
 }
 
-func keyIsVersion(key string) bool { return key == utils.VersionKey }
+func keyIsVersion(key string) bool { return key == kvutil.VersionKey }
 
 func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, error) {
 	localVPCs := make(map[string]struct{})

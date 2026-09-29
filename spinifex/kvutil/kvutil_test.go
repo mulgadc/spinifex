@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -230,7 +229,7 @@ func TestVersionStateMachine(t *testing.T) {
 
 	// Round-trip the raw KV value to confirm the encoding is what readers
 	// outside this package would expect.
-	entry, err := kv.Get(t.Context(), utils.VersionKey)
+	entry, err := kv.Get(t.Context(), kvutil.VersionKey)
 	require.NoError(t, err)
 	assert.Equal(t, "5", string(entry.Value()))
 }
@@ -241,7 +240,7 @@ func TestVersionCorruptValue(t *testing.T) {
 	js := startJetStream(t)
 	kv, err := GetOrCreateBucket(t.Context(), js, "test-version-corrupt", 1)
 	require.NoError(t, err)
-	_, err = kv.PutString(t.Context(), utils.VersionKey, "not-a-number")
+	_, err = kv.PutString(t.Context(), kvutil.VersionKey, "not-a-number")
 	require.NoError(t, err)
 
 	_, err = ReadVersion(t.Context(), kv)

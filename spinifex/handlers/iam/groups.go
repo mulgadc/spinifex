@@ -18,7 +18,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // maxGroupsPerUser caps how many groups a single user may belong to. Mirrors the
@@ -129,7 +128,7 @@ func (s *IAMServiceImpl) ListGroups(accountID string, input *iam.ListGroupsInput
 	// element at all rather than an empty one.
 	groups := []*iam.Group{}
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -562,7 +561,7 @@ func (s *IAMServiceImpl) findGroupMembers(ctx context.Context, accountID, groupN
 	keyPrefix := accountID + "."
 	var members []*User
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {

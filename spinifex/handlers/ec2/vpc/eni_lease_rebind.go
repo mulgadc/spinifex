@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -68,7 +69,7 @@ func (s *VPCServiceImpl) findENIAnyAccount(ctx context.Context, eniID string) (*
 
 	suffix := "." + eniID
 	for _, k := range keys {
-		if k == utils.VersionKey || !strings.HasSuffix(k, suffix) {
+		if k == kvutil.VersionKey || !strings.HasSuffix(k, suffix) {
 			continue
 		}
 		entry, err := s.eniKV.Get(ctx, k)

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -79,7 +80,7 @@ func (s *EIPServiceImpl) AllocationExists(ctx context.Context, allocationID stri
 	}
 	suffix := "." + allocationID
 	for _, k := range keys {
-		if k != utils.VersionKey && strings.HasSuffix(k, suffix) {
+		if k != kvutil.VersionKey && strings.HasSuffix(k, suffix) {
 			return true, nil
 		}
 	}
@@ -97,7 +98,7 @@ func (s *EIPServiceImpl) findByAllocationIDAnyAccount(ctx context.Context, alloc
 
 	suffix := "." + allocationID
 	for _, k := range keys {
-		if k == utils.VersionKey || !strings.HasSuffix(k, suffix) {
+		if k == kvutil.VersionKey || !strings.HasSuffix(k, suffix) {
 			continue
 		}
 		entry, err := s.eipKV.Get(ctx, k)

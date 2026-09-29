@@ -13,8 +13,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -352,7 +352,7 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, k := range subnetKeys {
-		if k == utils.VersionKey {
+		if k == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(k, prefix) {
@@ -389,7 +389,7 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, k := range sgKeys {
-		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.sgKV.Get(ctx, k)
@@ -426,7 +426,7 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, k := range rtbKeys {
-		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.rtbKV.Get(ctx, k)
@@ -525,7 +525,7 @@ func (s *VPCServiceImpl) rejectAttachedIGW(ctx context.Context, accountID, vpcID
 	}
 
 	for _, k := range keys {
-		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.igwKV.Get(ctx, k)
@@ -603,7 +603,7 @@ func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVp
 	}
 
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, prefix) {
@@ -706,7 +706,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	}
 
 	for _, k := range subnetKeys {
-		if k == utils.VersionKey {
+		if k == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(k, prefix) {
@@ -843,7 +843,7 @@ func (s *VPCServiceImpl) checkSubnetResidents(ctx context.Context, accountID, su
 	}
 	prefix := accountID + "."
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.eniKV.Get(ctx, key)
@@ -890,7 +890,7 @@ func (s *VPCServiceImpl) clearRouteTableAssociationsForSubnet(ctx context.Contex
 	}
 	prefix := accountID + "."
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.rtbKV.Get(ctx, key)
@@ -975,7 +975,7 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 	}
 
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, prefix) {
@@ -1487,7 +1487,7 @@ func (s *VPCServiceImpl) findMainRouteTableID(ctx context.Context, accountID, vp
 		return "", fmt.Errorf("list rtb keys: %w", err)
 	}
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.rtbKV.Get(ctx, key)
@@ -1528,7 +1528,7 @@ func (s *VPCServiceImpl) getDefaultSubnet(ctx context.Context, accountID string)
 	}
 
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, prefix) {

@@ -431,7 +431,7 @@ func (s *IAMServiceImpl) ListUsers(accountID string, input *iam.ListUsersInput) 
 	// element at all rather than an empty one.
 	users := []*iam.User{}
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -957,7 +957,7 @@ func (s *IAMServiceImpl) IsEmpty() (bool, error) {
 		return false, fmt.Errorf("check users bucket: %w", err)
 	}
 	for _, key := range keys {
-		if key != utils.VersionKey {
+		if key != kvutil.VersionKey {
 			return false, nil
 		}
 	}
@@ -1073,7 +1073,7 @@ func (s *IAMServiceImpl) ListAccounts() ([]*Account, error) {
 
 	accounts := make([]*Account, 0, len(keys))
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		entry, err := s.accountsBucket.Get(ctx, key)
@@ -1286,7 +1286,7 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 	onlyAttached := aws.BoolValue(input.OnlyAttached)
 	policies := []*iam.Policy{}
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -1988,7 +1988,7 @@ func (s *IAMServiceImpl) buildPolicyAttachments(ctx context.Context, accountID s
 		}
 
 		for _, key := range keys {
-			if key == utils.VersionKey {
+			if key == kvutil.VersionKey {
 				continue
 			}
 			if !strings.HasPrefix(key, keyPrefix) {
@@ -2343,7 +2343,7 @@ func countBucket(ctx context.Context, bucket jetstream.KeyValue, prefix string) 
 
 	var count int64
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if strings.HasPrefix(key, prefix) {

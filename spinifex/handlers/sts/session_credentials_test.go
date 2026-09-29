@@ -6,10 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -123,7 +122,7 @@ func TestPutSessionCredential_RejectsNonASIAPrefix(t *testing.T) {
 	if !errors.Is(err, jetstream.ErrNoKeysFound) {
 		require.NoError(t, err)
 		for _, k := range keys {
-			if k == utils.VersionKey {
+			if k == kvutil.VersionKey {
 				continue
 			}
 			t.Fatalf("unexpected key written to session bucket: %q", k)
@@ -248,7 +247,7 @@ func TestSweepExpired_IgnoresVersionKey(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	assert.Equal(t, 0, svc.sweepExpired(t.Context(), time.Now().UTC()))
 
-	_, err := sessionsKV(t, svc).Get(t.Context(), utils.VersionKey)
+	_, err := sessionsKV(t, svc).Get(t.Context(), kvutil.VersionKey)
 	require.NoError(t, err, "version key must survive the sweep")
 }
 

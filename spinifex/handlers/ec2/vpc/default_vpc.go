@@ -232,7 +232,7 @@ func oldestAccountRecord[T any](ctx context.Context, kv jetstream.KeyValue, acco
 	var bestID string
 	var bestCreated time.Time
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := kv.Get(ctx, key)

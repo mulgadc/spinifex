@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -153,7 +152,7 @@ func (s *Store) List(ctx context.Context) ([]Entry, error) {
 	}
 	var out []Entry
 	for _, k := range keys {
-		if k == utils.VersionKey {
+		if k == kvutil.VersionKey {
 			continue
 		}
 		e, err := s.Get(ctx, k)

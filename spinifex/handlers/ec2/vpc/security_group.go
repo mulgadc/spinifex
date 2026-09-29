@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -192,7 +193,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 	}
 	sgsInVPC := 0
 	for _, k := range sgKeys {
-		if k == utils.VersionKey {
+		if k == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(k, prefix) {
@@ -360,7 +361,7 @@ func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, gro
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, k := range eniKeys {
-		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.eniKV.Get(ctx, k)
@@ -390,7 +391,7 @@ func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, gro
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, k := range sgKeys {
-		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.sgKV.Get(ctx, k)
@@ -465,7 +466,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 	}
 
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, prefix) {
@@ -610,7 +611,7 @@ func (s *VPCServiceImpl) GetSecurityGroupsForVpc(ctx context.Context, input *ec2
 
 	groups := []*ec2.SecurityGroupForVpc{}
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.sgKV.Get(ctx, key)
@@ -768,7 +769,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 	emitted := make(map[string]bool)
 
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.sgKV.Get(ctx, key)
@@ -865,7 +866,7 @@ func (s *VPCServiceImpl) updateSGRuleTags(ctx context.Context, accountID, ruleID
 	}
 
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.sgKV.Get(ctx, key)
@@ -2157,7 +2158,7 @@ func (s *VPCServiceImpl) findDefaultSGForVPC(ctx context.Context, accountID, vpc
 		return "", err
 	}
 	for _, k := range keys {
-		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.sgKV.Get(ctx, k)

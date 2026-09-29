@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -42,7 +42,7 @@ func keyWithSuffixExists(ctx context.Context, kv jetstream.KeyValue, resourceID 
 	}
 	suffix := "." + resourceID
 	for _, k := range keys {
-		if k != utils.VersionKey && strings.HasSuffix(k, suffix) {
+		if k != kvutil.VersionKey && strings.HasSuffix(k, suffix) {
 			return true, nil
 		}
 	}

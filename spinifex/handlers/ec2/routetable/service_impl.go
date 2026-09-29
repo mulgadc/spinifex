@@ -11,8 +11,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
@@ -222,7 +222,7 @@ func (s *RouteTableServiceImpl) subnetsImplicitlyOnMainRT(ctx context.Context, a
 	}
 	var implicit []string
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.subnetKV.Get(ctx, key)
@@ -390,7 +390,7 @@ func (s *RouteTableServiceImpl) allSubnetsForVPC(ctx context.Context, accountID,
 	}
 	var subnets []string
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.subnetKV.Get(ctx, key)
@@ -458,7 +458,7 @@ func (s *RouteTableServiceImpl) allRouteTablesForVPC(ctx context.Context, accoun
 
 	var results []RouteTableRecord
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.rtbKV.Get(ctx, key)
@@ -626,7 +626,7 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 	foundIDs := make(map[string]bool)
 
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 
@@ -1013,7 +1013,7 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(ctx context.Context, inpu
 	}
 
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 
@@ -1104,7 +1104,7 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 	}
 
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 

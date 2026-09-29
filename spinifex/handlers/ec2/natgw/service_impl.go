@@ -277,7 +277,7 @@ func (s *NatGatewayServiceImpl) publishDeleteEventsForNatGateway(ctx context.Con
 	}
 	prefix := accountID + "."
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := rtbKV.Get(ctx, key)
@@ -396,7 +396,7 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 	foundIDs := make(map[string]bool)
 
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 

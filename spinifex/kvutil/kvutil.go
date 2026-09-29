@@ -17,16 +17,15 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/safecast"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 // GetOrCreateBucket creates or opens a KV bucket at the cluster's default
-// replica count (see utils.SetDefaultKVReplicas), so buckets created lazily
+// replica count (see SetDefaultKVReplicas), so buckets created lazily
 // after boot are quorate on multi-node rather than stuck at R1.
 func GetOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, bucket string, history int) (jetstream.KeyValue, error) {
-	return GetOrCreateBucketWithReplicas(ctx, js, bucket, history, utils.DefaultKVReplicas())
+	return GetOrCreateBucketWithReplicas(ctx, js, bucket, history, DefaultKVReplicas())
 }
 
 // GetOrCreateBucketWithTTL is GetOrCreateBucket for buckets whose entries
@@ -37,7 +36,7 @@ func GetOrCreateBucketWithTTL(ctx context.Context, js jetstream.KeyValueManager,
 	return getOrCreateBucket(ctx, js, jetstream.KeyValueConfig{
 		Bucket:   bucket,
 		History:  safecast.IntToUint8(history),
-		Replicas: max(utils.DefaultKVReplicas(), 1),
+		Replicas: max(DefaultKVReplicas(), 1),
 		TTL:      ttl,
 	})
 }
@@ -84,7 +83,7 @@ func GetOrCreateBucketWithOptions(ctx context.Context, js jetstream.KeyValueMana
 
 // DefaultReplicas is the cluster's default KV replica count, exposed so callers
 // building a BucketOptions can tell "unset" from a deliberate 1.
-func DefaultReplicas() int { return utils.DefaultKVReplicas() }
+func DefaultReplicas() int { return DefaultKVReplicas() }
 
 func getOrCreateBucket(ctx context.Context, js jetstream.KeyValueManager, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
 	bucket := cfg.Bucket
@@ -198,27 +197,27 @@ func Keys(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
 // WriteVersion writes the schema version to a bucket, only if missing or older.
 // Returns an error if the stored value is corrupt (non-integer).
 func WriteVersion(ctx context.Context, kv jetstream.KeyValue, version int) error {
-	entry, err := kv.Get(ctx, utils.VersionKey)
+	entry, err := kv.Get(ctx, VersionKey)
 	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return fmt.Errorf("read current version: %w", err)
 	}
 	if err == nil {
 		stored, parseErr := strconv.Atoi(string(entry.Value()))
 		if parseErr != nil {
-			return fmt.Errorf("corrupted %s key (raw=%q): %w", utils.VersionKey, string(entry.Value()), parseErr)
+			return fmt.Errorf("corrupted %s key (raw=%q): %w", VersionKey, string(entry.Value()), parseErr)
 		}
 		if stored >= version {
 			return nil
 		}
 	}
-	_, err = kv.PutString(ctx, utils.VersionKey, strconv.Itoa(version))
+	_, err = kv.PutString(ctx, VersionKey, strconv.Itoa(version))
 	return err
 }
 
 // ReadVersion reads the schema version from a bucket; returns 0 if not set.
 // Errors distinguish network failures and corrupt values from "not set".
 func ReadVersion(ctx context.Context, kv jetstream.KeyValue) (int, error) {
-	entry, err := kv.Get(ctx, utils.VersionKey)
+	entry, err := kv.Get(ctx, VersionKey)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return 0, nil
@@ -227,7 +226,7 @@ func ReadVersion(ctx context.Context, kv jetstream.KeyValue) (int, error) {
 	}
 	v, parseErr := strconv.Atoi(string(entry.Value()))
 	if parseErr != nil {
-		return 0, fmt.Errorf("corrupted %s key (raw=%q): %w", utils.VersionKey, string(entry.Value()), parseErr)
+		return 0, fmt.Errorf("corrupted %s key (raw=%q): %w", VersionKey, string(entry.Value()), parseErr)
 	}
 	return v, nil
 }

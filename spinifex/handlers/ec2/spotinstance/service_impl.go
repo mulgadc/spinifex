@@ -11,8 +11,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -230,7 +230,7 @@ func (s *SpotInstanceServiceImpl) CloseForInstance(ctx context.Context, instance
 
 	prefix := accountID + "."
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		record, err := s.readRecord(ctx, s.activeKV, key)
@@ -268,7 +268,7 @@ func (s *SpotInstanceServiceImpl) listRequests(ctx context.Context, kv jetstream
 	prefix := accountID + "."
 	var requests []*ec2.SpotInstanceRequest
 	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		record, err := s.readRecord(ctx, kv, key)

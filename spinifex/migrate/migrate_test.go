@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	statemigrate "github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -34,9 +35,9 @@ func createTestBucket(t *testing.T, nc *nats.Conn, name string) jetstream.KeyVal
 // --- Registry validation tests ---
 
 func TestRegistry_ValidatesChainNoGaps(t *testing.T) {
-	r := NewRegistry()
-	r.RegisterKV("test-bucket", KVMigration{FromVersion: 1, ToVersion: 2, Description: "first", Run: func(context.Context, KVContext) error { return nil }})
-	r.RegisterKV("test-bucket", KVMigration{FromVersion: 3, ToVersion: 4, Description: "gap", Run: func(context.Context, KVContext) error { return nil }})
+	r := statemigrate.NewRegistry()
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{FromVersion: 1, ToVersion: 2, Description: "first", Run: func(context.Context, statemigrate.KVContext) error { return nil }})
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{FromVersion: 3, ToVersion: 4, Description: "gap", Run: func(context.Context, statemigrate.KVContext) error { return nil }})
 
 	_, nc := startTestNATS(t)
 	kv := createTestBucket(t, nc, "test-bucket")
@@ -50,9 +51,9 @@ func TestRegistry_ValidatesChainNoGaps(t *testing.T) {
 }
 
 func TestRegistry_RejectsDuplicateVersions(t *testing.T) {
-	r := NewRegistry()
-	r.RegisterKV("test-bucket", KVMigration{FromVersion: 1, ToVersion: 2, Description: "first", Run: func(context.Context, KVContext) error { return nil }})
-	r.RegisterKV("test-bucket", KVMigration{FromVersion: 1, ToVersion: 2, Description: "duplicate", Run: func(context.Context, KVContext) error { return nil }})
+	r := statemigrate.NewRegistry()
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{FromVersion: 1, ToVersion: 2, Description: "first", Run: func(context.Context, statemigrate.KVContext) error { return nil }})
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{FromVersion: 1, ToVersion: 2, Description: "duplicate", Run: func(context.Context, statemigrate.KVContext) error { return nil }})
 
 	_, nc := startTestNATS(t)
 	kv := createTestBucket(t, nc, "test-bucket")
@@ -72,7 +73,7 @@ func TestRegistry_RejectsDuplicateVersions(t *testing.T) {
 // --- RunKV tests ---
 
 func TestRunKV_NoPendingMigrations_NoOp(t *testing.T) {
-	r := NewRegistry()
+	r := statemigrate.NewRegistry()
 	_, nc := startTestNATS(t)
 	kv := createTestBucket(t, nc, "test-bucket")
 
@@ -87,10 +88,10 @@ func TestRunKV_NoPendingMigrations_NoOp(t *testing.T) {
 
 func TestRunKV_FreshBucket_WithMigrations(t *testing.T) {
 	ran := false
-	r := NewRegistry()
-	r.RegisterKV("test-bucket", KVMigration{
+	r := statemigrate.NewRegistry()
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{
 		FromVersion: 1, ToVersion: 2, Description: "first kv migration",
-		Run: func(context.Context, KVContext) error { ran = true; return nil },
+		Run: func(context.Context, statemigrate.KVContext) error { ran = true; return nil },
 	})
 
 	_, nc := startTestNATS(t)
@@ -108,7 +109,7 @@ func TestRunKV_FreshBucket_WithMigrations(t *testing.T) {
 }
 
 func TestRunKV_FreshBucket_StampsVersion(t *testing.T) {
-	r := NewRegistry()
+	r := statemigrate.NewRegistry()
 	_, nc := startTestNATS(t)
 	kv := createTestBucket(t, nc, "test-bucket")
 
@@ -124,14 +125,14 @@ func TestRunKV_FreshBucket_StampsVersion(t *testing.T) {
 
 func TestRunKV_ExecutesMigrationsInOrder(t *testing.T) {
 	var order []int
-	r := NewRegistry()
-	r.RegisterKV("test-bucket", KVMigration{
+	r := statemigrate.NewRegistry()
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{
 		FromVersion: 1, ToVersion: 2, Description: "step 1",
-		Run: func(context.Context, KVContext) error { order = append(order, 1); return nil },
+		Run: func(context.Context, statemigrate.KVContext) error { order = append(order, 1); return nil },
 	})
-	r.RegisterKV("test-bucket", KVMigration{
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{
 		FromVersion: 2, ToVersion: 3, Description: "step 2",
-		Run: func(context.Context, KVContext) error { order = append(order, 2); return nil },
+		Run: func(context.Context, statemigrate.KVContext) error { order = append(order, 2); return nil },
 	})
 
 	_, nc := startTestNATS(t)
@@ -150,17 +151,17 @@ func TestRunKV_ExecutesMigrationsInOrder(t *testing.T) {
 }
 
 func TestRunKV_StampsAfterEachStep(t *testing.T) {
-	r := NewRegistry()
-	r.RegisterKV("test-bucket", KVMigration{
+	r := statemigrate.NewRegistry()
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{
 		FromVersion: 1, ToVersion: 2, Description: "step 1",
-		Run: func(context.Context, KVContext) error {
+		Run: func(context.Context, statemigrate.KVContext) error {
 			// After this runs, version should be stamped to 2 by RunKV.
 			return nil
 		},
 	})
-	r.RegisterKV("test-bucket", KVMigration{
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{
 		FromVersion: 2, ToVersion: 3, Description: "step 2 fails",
-		Run: func(context.Context, KVContext) error { return errors.New("boom") },
+		Run: func(context.Context, statemigrate.KVContext) error { return errors.New("boom") },
 	})
 
 	_, nc := startTestNATS(t)
@@ -179,10 +180,10 @@ func TestRunKV_StampsAfterEachStep(t *testing.T) {
 }
 
 func TestRunKV_StopsOnFailure_VersionNotBumped(t *testing.T) {
-	r := NewRegistry()
-	r.RegisterKV("test-bucket", KVMigration{
+	r := statemigrate.NewRegistry()
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{
 		FromVersion: 1, ToVersion: 2, Description: "fails",
-		Run: func(context.Context, KVContext) error { return errors.New("migration error") },
+		Run: func(context.Context, statemigrate.KVContext) error { return errors.New("migration error") },
 	})
 
 	_, nc := startTestNATS(t)
@@ -200,7 +201,7 @@ func TestRunKV_StopsOnFailure_VersionNotBumped(t *testing.T) {
 }
 
 func TestRunKV_RejectsMissingMigration(t *testing.T) {
-	r := NewRegistry()
+	r := statemigrate.NewRegistry()
 	// No migrations registered, but bucket is at version 1 and target is 2.
 
 	_, nc := startTestNATS(t)
@@ -215,10 +216,10 @@ func TestRunKV_RejectsMissingMigration(t *testing.T) {
 
 func TestRunKV_Idempotent(t *testing.T) {
 	runCount := 0
-	r := NewRegistry()
-	r.RegisterKV("test-bucket", KVMigration{
+	r := statemigrate.NewRegistry()
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{
 		FromVersion: 1, ToVersion: 2, Description: "add field",
-		Run: func(ctx context.Context, kvc KVContext) error {
+		Run: func(ctx context.Context, kvc statemigrate.KVContext) error {
 			runCount++
 			// Idempotent: write a key, re-running writes the same value.
 			_, err := kvc.KV.PutString(ctx, "data.key1", `{"field":"value"}`)
@@ -247,10 +248,10 @@ func TestRunKV_Idempotent(t *testing.T) {
 // reads the keys it knows, misses the ones it does not, and writes back a view
 // of the bucket assembled from half of it.
 func TestRunKV_SchemaAheadOfThisBuildIsRefused(t *testing.T) {
-	r := NewRegistry()
-	r.RegisterKV("test-bucket", KVMigration{
+	r := statemigrate.NewRegistry()
+	r.RegisterKV("test-bucket", statemigrate.KVMigration{
 		FromVersion: 1, ToVersion: 2, Description: "add field",
-		Run: func(ctx context.Context, kvc KVContext) error { return nil },
+		Run: func(ctx context.Context, kvc statemigrate.KVContext) error { return nil },
 	})
 
 	_, nc := startTestNATS(t)
@@ -260,7 +261,7 @@ func TestRunKV_SchemaAheadOfThisBuildIsRefused(t *testing.T) {
 
 	err = r.RunKV(t.Context(), "test-bucket", kv, 2)
 
-	var ahead SchemaAheadError
+	var ahead statemigrate.SchemaAheadError
 	require.ErrorAs(t, err, &ahead)
 	assert.Equal(t, 5, ahead.Found)
 	assert.Equal(t, 2, ahead.Understood)

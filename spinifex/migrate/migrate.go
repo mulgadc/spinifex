@@ -10,26 +10,10 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	statemigrate "github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
-
-// KVMigration represents a versioned transformation of KV bucket data.
-type KVMigration struct {
-	FromVersion int
-	ToVersion   int
-	Description string
-	Run         func(ctx context.Context, kvc KVContext) error
-}
-
-// KVContext provides KV migration functions access to the bucket being migrated.
-// JetStream is non-nil only when the caller used RunKVWithJetStream — used by
-// migrations that need to read sibling buckets (e.g. owner-attribution lookups).
-type KVContext struct {
-	KV        jetstream.KeyValue
-	JetStream jetstream.JetStream
-	Logger    *slog.Logger
-}
 
 // ConfigMigration represents a versioned transformation of on-disk config files.
 type ConfigMigration struct {
@@ -79,16 +63,16 @@ type configTarget struct {
 	reader ConfigVersionReader
 }
 
-// Registry holds all registered migrations, keyed by target name.
+// Registry holds configuration and object-store migrations, keyed by target.
+// KV migrations are state primitives and live in foundation/state/migrate.
 type Registry struct {
-	kvMigrations     map[string][]KVMigration
 	configMigrations map[string][]ConfigMigration
 	configTargets    map[string]configTarget
 	objectMigrations map[string][]ObjectMigration
 }
 
-// DefaultRegistry is the global migration registry. Migrations self-register
-// via init() functions so they are available before any service starts.
+// DefaultRegistry is the global registry for configuration and object-store
+// migrations. KV migrations use foundation/state/migrate.DefaultRegistry.
 var DefaultRegistry = NewRegistry()
 
 // spinifexTarget is registered even with no migrations against it, so
@@ -102,19 +86,10 @@ func init() {
 // NewRegistry creates an empty migration registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		kvMigrations:     make(map[string][]KVMigration),
 		configMigrations: make(map[string][]ConfigMigration),
 		configTargets:    make(map[string]configTarget),
 		objectMigrations: make(map[string][]ObjectMigration),
 	}
-}
-
-// RegisterKV adds a KV bucket migration. Migrations are kept sorted by FromVersion.
-func (r *Registry) RegisterKV(bucket string, m KVMigration) {
-	r.kvMigrations[bucket] = append(r.kvMigrations[bucket], m)
-	sort.Slice(r.kvMigrations[bucket], func(i, j int) bool {
-		return r.kvMigrations[bucket][i].FromVersion < r.kvMigrations[bucket][j].FromVersion
-	})
 }
 
 // RegisterConfigTarget registers a config file target with its relative path
@@ -153,7 +128,7 @@ func (r *Registry) RunObject(ctx context.Context, target string, objects objects
 	}
 
 	if current > targetVersion {
-		return SchemaAheadError{Bucket: target, Found: current, Understood: targetVersion}
+		return statemigrate.SchemaAheadError{Bucket: target, Found: current, Understood: targetVersion}
 	}
 	if current == targetVersion {
 		return nil
@@ -204,102 +179,6 @@ func (r *Registry) RunObject(ctx context.Context, target string, objects objects
 		}
 		if err := kvutil.WriteVersion(ctx, versionKV, m.ToVersion); err != nil {
 			return fmt.Errorf("stamp version %d on %s: %w", m.ToVersion, target, err)
-		}
-	}
-
-	return nil
-}
-
-// SchemaAheadError reports a bucket migrated past what this build understands,
-// which means another node in the cluster is running a newer release.
-//
-// Stopping is the point. A migration only ever adds steps, so a newer schema is
-// one this build has no code for: it would read the keys it knows, miss the
-// ones it does not, and write back a view of the bucket assembled from half of
-// it. Refusing to open is recoverable; that is not.
-type SchemaAheadError struct {
-	Bucket     string
-	Found      int
-	Understood int
-}
-
-func (e SchemaAheadError) Error() string {
-	return fmt.Sprintf(
-		"%s is at schema version %d but this build understands %d: another node is running a newer release of Spinifex; upgrade this node to match",
-		e.Bucket, e.Found, e.Understood)
-}
-
-// RunKVWithJetStream is RunKV with a JetStream handle attached to each
-// migration's KVContext, enabling cross-bucket reads (e.g. owner-attribution
-// during a backfill). Prefer plain RunKV when the migration is self-contained.
-func (r *Registry) RunKVWithJetStream(ctx context.Context, bucket string, kv jetstream.KeyValue, js jetstream.JetStream, targetVersion int) error {
-	return r.runKV(ctx, bucket, kv, js, targetVersion)
-}
-
-// RunKV applies pending KV migrations up to targetVersion. Stamps directly when
-// no migrations are registered (fresh bucket). Errors if the chain is incomplete.
-func (r *Registry) RunKV(ctx context.Context, bucket string, kv jetstream.KeyValue, targetVersion int) error {
-	return r.runKV(ctx, bucket, kv, nil, targetVersion)
-}
-
-func (r *Registry) runKV(ctx context.Context, bucket string, kv jetstream.KeyValue, js jetstream.JetStream, targetVersion int) error {
-	current, err := kvutil.ReadVersion(ctx, kv)
-	if err != nil {
-		return fmt.Errorf("read version for %s: %w", bucket, err)
-	}
-
-	if current > targetVersion {
-		return SchemaAheadError{Bucket: bucket, Found: current, Understood: targetVersion}
-	}
-	if current == targetVersion {
-		return nil
-	}
-
-	all := r.kvMigrations[bucket]
-
-	// Fresh bucket, no migrations: stamp directly (common first-init path).
-	if current == 0 && len(all) == 0 {
-		return kvutil.WriteVersion(ctx, kv, targetVersion)
-	}
-
-	// Fresh bucket with migrations: no v0 schema by convention; start at chain bottom.
-	if current == 0 {
-		current = all[0].FromVersion // sorted ascending by FromVersion
-	}
-
-	// Require a complete chain from current to target.
-	var pending []KVMigration
-	for _, m := range all {
-		if m.FromVersion >= current && m.ToVersion <= targetVersion {
-			pending = append(pending, m)
-		}
-	}
-
-	if len(pending) == 0 {
-		return fmt.Errorf("no migrations registered for %s from version %d to %d", bucket, current, targetVersion)
-	}
-
-	// Validate contiguous chain.
-	expected := current
-	for _, m := range pending {
-		if m.FromVersion != expected {
-			return fmt.Errorf("migration chain gap for %s: expected from %d, got from %d", bucket, expected, m.FromVersion)
-		}
-		expected = m.ToVersion
-	}
-	if expected != targetVersion {
-		return fmt.Errorf("migration chain for %s ends at version %d, target is %d", bucket, expected, targetVersion)
-	}
-
-	logger := slog.Default()
-	for _, m := range pending {
-		logger.Info("Running KV migration", "bucket", bucket, "from", m.FromVersion, "to", m.ToVersion, "description", m.Description)
-		kvc := KVContext{KV: kv, JetStream: js, Logger: logger}
-		if err := m.Run(ctx, kvc); err != nil {
-			return fmt.Errorf("KV migration %s %d→%d failed: %w", bucket, m.FromVersion, m.ToVersion, err)
-		}
-		if err := kvutil.WriteVersion(ctx, kv, m.ToVersion); err != nil {
-			return fmt.Errorf("stamp version %d on %s: %w", m.ToVersion, bucket, err)
 		}
 	}
 

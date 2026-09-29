@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -121,8 +123,33 @@ func awsStrings(in []*string) []string {
 	return out
 }
 
+// validateOIDCProviderLists checks every client ID and thumbprint against the
+// model's lengths, before the Url as AWS orders them. AWS names each list once,
+// however many of its entries break.
+func validateOIDCProviderLists(clientIDs, thumbprints []*string) error {
+	outside := func(minLen, maxLen int) func(*string) bool {
+		return func(v *string) bool {
+			n := utf8.RuneCountInString(aws.StringValue(v))
+			return v == nil || n < minLen || n > maxLen
+		}
+	}
+	var violations []string
+	if slices.ContainsFunc(clientIDs, outside(1, 255)) {
+		violations = append(violations, "Value at 'clientIDList' failed to satisfy constraint: Member must satisfy constraint: "+
+			"[Member must have length less than or equal to 255, Member must have length greater than or equal to 1]")
+	}
+	if slices.ContainsFunc(thumbprints, outside(40, 40)) {
+		violations = append(violations, "Value at 'thumbprintList' failed to satisfy constraint: Member must satisfy constraint: "+
+			"[Member must have length less than or equal to 40, Member must have length greater than or equal to 40]")
+	}
+	return validationError(violations)
+}
+
 func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *iam.CreateOpenIDConnectProviderInput) (*iam.CreateOpenIDConnectProviderOutput, error) {
 	ctx := context.Background()
+	if err := validateOIDCProviderLists(input.ClientIDList, input.ThumbprintList); err != nil {
+		return nil, err
+	}
 	issuer := aws.StringValue(input.Url)
 	if err := validateOIDCProviderURL(issuer); err != nil {
 		slog.Debug("CreateOpenIDConnectProvider: invalid Url", "url", issuer, "err", err)

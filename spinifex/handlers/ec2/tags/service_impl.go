@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -34,6 +35,9 @@ var _ handlers_ec2_instance.InstanceTagWriter = (*TagsServiceImpl)(nil)
 
 // Ensure TagsServiceImpl can both project and clear vpc/subnet/sg/eni record tags.
 var _ handlers_ec2_vpc.CentralTagStore = (*TagsServiceImpl)(nil)
+
+// Ensure TagsServiceImpl can both project and clear key-pair record tags.
+var _ handlers_ec2_key.CentralTagStore = (*TagsServiceImpl)(nil)
 
 // TagsServiceImpl implements TagsService over a JetStream KV bucket, one entry
 // per resource, scoped by account in the key.

@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -1167,4 +1168,42 @@ func TestDescribeKeyPairs_AWSFilterWildcard(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.KeyPairs, 2)
+}
+
+type failingCentralTagStore struct{ puts, deletes int }
+
+func (f *failingCentralTagStore) PutResourceTags(context.Context, string, string, map[string]string) error {
+	f.puts++
+	return errors.New("tag store down")
+}
+
+func (f *failingCentralTagStore) DeleteAllTags(context.Context, string, string) error {
+	f.deletes++
+	return errors.New("tag store down")
+}
+
+// The key pair exists once its records are written, so a central tag store
+// failure is logged and never fails create, import or delete.
+func TestKeyPair_CentralTagStoreFailureDoesNotFailOperation(t *testing.T) {
+	svc, _ := newTestKeyService()
+	central := &failingCentralTagStore{}
+	svc.SetCentralTagStore(central)
+	spec := []*ec2.TagSpecification{{
+		ResourceType: aws.String("key-pair"),
+		Tags:         []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("k")}},
+	}}
+
+	_, err := svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
+		KeyName: aws.String("created"), TagSpecifications: spec,
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
+		KeyName: aws.String("imported"), PublicKeyMaterial: []byte(testED25519PubKey), TagSpecifications: spec,
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{KeyName: aws.String("created")}, testAccountID)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, central.puts)
+	assert.Equal(t, 1, central.deletes)
 }

@@ -1753,6 +1753,9 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to get tags KV bucket: %w", err)
 	}
 	d.tagsService = handlers_ec2_tags.NewTagsServiceImpl(d.config, tagsKV)
+	// Key pairs keep their creation tags in their own metadata; project them so
+	// describe-tags sees them, and clear them when the key pair is deleted.
+	d.keyService.SetCentralTagStore(d.tagsService)
 
 	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*handlers_ec2_eigw.EgressOnlyIGWServiceImpl, error) {
 		return handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)

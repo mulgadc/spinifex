@@ -41,6 +41,45 @@ type KeyServiceImpl struct {
 	config     *config.Config
 	store      objectstore.ObjectStore
 	bucketName string
+
+	// Optional: injected after construction. Nil leaves the central tag store
+	// untouched by create, import and delete.
+	centralTags CentralTagStore
+}
+
+// CentralTagStore keeps the central tag index in step with key-pair records, so
+// DescribeTags sees creation tags. Implemented by handlers/ec2/tags.TagsServiceImpl.
+type CentralTagStore interface {
+	PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error
+	DeleteAllTags(ctx context.Context, accountID, resourceID string) error
+}
+
+// SetCentralTagStore injects the central tag store that create and import
+// project their tags into and delete clears.
+func (s *KeyServiceImpl) SetCentralTagStore(st CentralTagStore) {
+	s.centralTags = st
+}
+
+// projectRecordTags writes creation tags into the central tag store. A failure
+// is logged, not returned: the key pair already exists.
+func (s *KeyServiceImpl) projectRecordTags(ctx context.Context, accountID, keyPairID string, tags map[string]string) {
+	if s.centralTags == nil || len(tags) == 0 {
+		return
+	}
+	if err := s.centralTags.PutResourceTags(ctx, accountID, keyPairID, tags); err != nil {
+		slog.ErrorContext(ctx, "central tag store write failed", "keyPairId", keyPairID, "err", err)
+	}
+}
+
+// clearRecordTags drops a deleted key pair's central tags. Call it only once the
+// delete has succeeded; a failure is logged, since the key pair is already gone.
+func (s *KeyServiceImpl) clearRecordTags(ctx context.Context, accountID, keyPairID string) {
+	if s.centralTags == nil {
+		return
+	}
+	if err := s.centralTags.DeleteAllTags(ctx, accountID, keyPairID); err != nil {
+		slog.ErrorContext(ctx, "central tag store clear failed", "keyPairId", keyPairID, "err", err)
+	}
 }
 
 // NewKeyServiceImpl creates a new daemon-side key service.
@@ -156,7 +195,8 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 
 	// Build response (similar to AWS EC2)
 	keyPairID := utils.GenerateResourceID("key")
-	tags := utils.MapToEC2Tags(utils.ExtractTags(input.TagSpecifications, "key-pair"))
+	tagMap := utils.ExtractTags(input.TagSpecifications, "key-pair")
+	tags := utils.MapToEC2Tags(tagMap)
 	output := &ec2.CreateKeyPairOutput{
 		KeyFingerprint: aws.String(fingerprint),
 		KeyMaterial:    aws.String(string(privateKeyData)),
@@ -184,6 +224,8 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+
+	s.projectRecordTags(ctx, accountID, keyPairID, tagMap)
 
 	slog.InfoContext(ctx, "Key pair created successfully", "keyName", keyName, "fingerprint", fingerprint, "keyPairId", keyPairID)
 
@@ -605,6 +647,8 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	s.clearRecordTags(ctx, accountID, keyPairID)
+
 	slog.InfoContext(ctx, "Key pair deleted successfully", "keyName", keyName, "keyPairId", keyPairID)
 
 	return &ec2.DeleteKeyPairOutput{}, nil
@@ -921,7 +965,8 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	keyPairID := utils.GenerateResourceID("key")
 
 	// Build response output
-	tags := utils.MapToEC2Tags(utils.ExtractTags(input.TagSpecifications, "key-pair"))
+	tagMap := utils.ExtractTags(input.TagSpecifications, "key-pair")
+	tags := utils.MapToEC2Tags(tagMap)
 	output := &ec2.ImportKeyPairOutput{
 		KeyFingerprint: aws.String(fingerprint),
 		KeyName:        aws.String(keyName),
@@ -948,6 +993,8 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+
+	s.projectRecordTags(ctx, accountID, keyPairID, tagMap)
 
 	slog.InfoContext(ctx, "Key pair imported successfully", "keyName", keyName, "fingerprint", fingerprint, "keyPairId", keyPairID, "keyType", keyType)
 

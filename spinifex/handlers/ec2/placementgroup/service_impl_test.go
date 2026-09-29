@@ -219,6 +219,24 @@ func TestDeletePlacementGroup_Success(t *testing.T) {
 	assert.Empty(t, out.PlacementGroups)
 }
 
+// AWS answers the ID of a deleted group with InvalidPlacementGroup.Unknown
+// naming that ID, not an empty list.
+func TestDescribePlacementGroups_DeletedGroupId(t *testing.T) {
+	svc := setupTestService(t)
+	kept := createTestGroup(t, svc, "kept", "spread")
+	deleted := createTestGroup(t, svc, "deleted", "spread")
+	_, err := svc.DeletePlacementGroup(context.Background(), &ec2.DeletePlacementGroupInput{GroupName: deleted.GroupName}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DescribePlacementGroups(context.Background(), &ec2.DescribePlacementGroupsInput{
+		GroupIds: []*string{kept.GroupId, deleted.GroupId},
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidPlacementGroupUnknown, code)
+	assert.Equal(t, "The Placement Group '"+*deleted.GroupId+"' is unknown.", msg)
+}
+
 func TestDeletePlacementGroup_NotFound(t *testing.T) {
 	svc := setupTestService(t)
 	_, err := svc.DeletePlacementGroup(context.Background(), &ec2.DeletePlacementGroupInput{

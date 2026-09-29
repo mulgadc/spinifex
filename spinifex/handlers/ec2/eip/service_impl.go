@@ -603,6 +603,18 @@ func (s *EIPServiceImpl) DescribeAddresses(ctx context.Context, input *ec2.Descr
 		}
 	}
 
+	if len(publicIPs) > 0 {
+		found := make(map[string]bool)
+		for _, addr := range addresses {
+			found[aws.StringValue(addr.PublicIp)] = true
+		}
+		for _, ip := range input.PublicIps {
+			if ip != nil && !found[*ip] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidAddressNotFound, "Address '%s' not found.", *ip)
+			}
+		}
+	}
+
 	slog.InfoContext(ctx, "DescribeAddresses completed", "count", len(addresses), "accountID", accountID)
 
 	return &ec2.DescribeAddressesOutput{

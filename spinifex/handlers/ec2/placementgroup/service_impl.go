@@ -266,6 +266,17 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context,
 			}
 		}
 	}
+	if len(idSet) > 0 {
+		found := make(map[string]bool)
+		for _, g := range groups {
+			found[aws.StringValue(g.GroupId)] = true
+		}
+		for _, id := range input.GroupIds {
+			if id != nil && !found[*id] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidPlacementGroupUnknown, "The Placement Group '%s' is unknown.", *id)
+			}
+		}
+	}
 
 	slog.InfoContext(ctx, "DescribePlacementGroups completed", "count", len(groups), "accountID", accountID)
 

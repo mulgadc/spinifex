@@ -157,6 +157,11 @@ func trimEvents(events []Event) []Event {
 // to a resource, so an unfiltered call reports the whole account's recent
 // history, including resources that have since been deleted.
 func (s *Service) DescribeEvents(ctx context.Context, input *rds.DescribeEventsInput, accountID string) (*rds.DescribeEventsOutput, error) {
+	// AWS recognises these names. They are not applied, as recognised names are
+	// not on the other calls documented as not supporting Filters.
+	if _, err := ReadFilters(input.Filters, filterEventCategory, filterDBInstanceID); err != nil {
+		return nil, err
+	}
 	window, err := eventWindow(input)
 	if err != nil {
 		return nil, err

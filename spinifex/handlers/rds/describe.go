@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
@@ -11,14 +13,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 )
 
-// The prefix AWS gives a DB instance's immutable resource ID, and the two filter
-// names DescribeDBInstances accepts against it.
-const (
-	dbiResourceIDPrefix = "db"
-
-	filterDbiResourceID = "dbi-resource-id"
-	filterDBInstanceID  = "db-instance-id"
-)
+// The prefix AWS gives a DB instance's immutable resource ID.
+const dbiResourceIDPrefix = "db"
 
 // Named DB instances that do not exist are an error, matching AWS: a client
 // polling a create would otherwise read an empty list as "gone" rather than
@@ -79,44 +75,56 @@ func (s *Service) DescribeDBInstances(ctx context.Context, input *rds.DescribeDB
 	return &rds.DescribeDBInstancesOutput{DBInstances: instances, Marker: next}, nil
 }
 
-// The filter names AWS documents for this action and clients actually send.
-// Ignoring them is not a safe default here: the Terraform provider keys its
+// Ignoring a filter is not a safe default here: the Terraform provider keys its
 // state off DbiResourceId and reads an instance back by filtering on it, so an
 // unapplied filter answers with every instance in the account, which the
-// provider rejects as an ambiguous match. An unrecognised name is refused for
-// the same reason — a filter silently dropped returns rows the caller asked to
-// exclude.
+// provider rejects as an ambiguous match.
 //
 // Returns nil when there is nothing to filter on, so the common path allocates
 // no closure.
-func dbInstanceFilterMatcher(filters []*rds.Filter) (func(*DBInstanceRecord) bool, error) {
-	if len(filters) == 0 {
-		return nil, nil
+func dbInstanceFilterMatcher(entries []*rds.Filter) (func(*DBInstanceRecord) bool, error) {
+	filters, err := ReadFilters(entries, filterDBClusterID, filterDBInstanceID, filterDbiResourceID, filterDomain, filterEngine)
+	if err != nil || len(filters) == 0 {
+		return nil, err
 	}
 	for _, filter := range filters {
-		switch name := aws.StringValue(filter.Name); name {
-		case filterDbiResourceID, filterDBInstanceID:
-		default:
-			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"unrecognized filter name: %s", name)
+		if filter.Name != filterDomain {
+			continue
+		}
+		for _, value := range filter.Values {
+			if !validDomainID(value) {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+					"The parameter Filter: domain is not a valid Domain identifier. Domain identifier must begin with d- prefix, must contain only ASCII characters, and must not be empty")
+			}
 		}
 	}
-	// AWS's own semantics: a record must match every filter, and matches a filter
-	// by carrying any one of its values.
+	// No instance belongs to a cluster or joins a directory domain, so those two
+	// filters match nothing.
 	return func(rec *DBInstanceRecord) bool {
-		for _, filter := range filters {
-			var value string
-			if aws.StringValue(filter.Name) == filterDbiResourceID {
-				value = rec.DbiResourceID
-			} else {
-				value = rec.DBInstanceIdentifier
+		return matchesFilters(filters, func(name string) (string, bool) {
+			switch name {
+			case filterDbiResourceID:
+				return rec.DbiResourceID, true
+			case filterDBInstanceID:
+				return rec.DBInstanceIdentifier, true
+			case filterEngine:
+				return rec.Engine, true
 			}
-			if !slices.Contains(aws.StringValueSlice(filter.Values), value) {
-				return false
-			}
-		}
-		return true
+			return "", false
+		})
 	}, nil
+}
+
+func validDomainID(value string) bool {
+	if !strings.HasPrefix(value, "d-") {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // Returns the record plus its revision, for callers that follow with a CAS.

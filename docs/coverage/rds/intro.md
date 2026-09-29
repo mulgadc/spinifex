@@ -44,3 +44,4 @@ A parameter whose omission would create a false safety, security or availability
 | `EnableCustomerOwnedIp` | An Outposts feature |
 | `ForceFailover` (reboot) | No standby to fail over to |
 | `DBSnapshotIdentifier` (stop) | Snapshot-on-stop is not implemented |
+| `dbi-resource-id` filter (DescribeDBSnapshots, DescribeDBInstanceAutomatedBackups) | Snapshots and automated backups do not record their source instance's resource ID |

@@ -219,13 +219,25 @@ func TestDescribeOrderableDBInstanceOptions_RejectANonBooleanVpcFilter(t *testin
 	}
 }
 
+// AWS's answers: names are compared case-sensitively and checked before the
+// values, and a missing name is reported as "null".
 func TestDescribeCatalogs_RejectMalformedFilters(t *testing.T) {
 	cases := []struct {
 		name  string
 		query map[string]string
+		code  string
+		msg   string
 	}{
-		{"no values", map[string]string{"Filters.Filter.1.Name": "engine"}},
-		{"no name", map[string]string{"Filters.Filter.1.Values.Value.1": "postgres"}},
+		{"no values", map[string]string{"Filters.Filter.1.Name": "engine"},
+			awserrors.ErrorInvalidParameterCombination, "The values list cannot be null for the filter engine."},
+		{"empty values", map[string]string{"Filters.Filter.1.Name": "engine", "Filters.Filter.1.Values": ""},
+			awserrors.ErrorInvalidParameterCombination, "The values list cannot be null for the filter engine."},
+		{"no name", map[string]string{"Filters.Filter.1.Values.Value.1": "postgres"},
+			awserrors.ErrorInvalidParameterValue, "Unrecognized filter name: null"},
+		{"name case", map[string]string{"Filters.Filter.1.Name": "Engine", "Filters.Filter.1.Values.Value.1": "postgres"},
+			awserrors.ErrorInvalidParameterValue, "Unrecognized filter name: Engine"},
+		{"unknown name without values", map[string]string{"Filters.Filter.1.Name": "bogus"},
+			awserrors.ErrorInvalidParameterValue, "Unrecognized filter name: bogus"},
 	}
 
 	for _, tc := range cases {
@@ -233,7 +245,8 @@ func TestDescribeCatalogs_RejectMalformedFilters(t *testing.T) {
 			tc.query["Action"] = "DescribeDBEngineVersions"
 			_, err := Dispatch(t.Context(), "DescribeDBEngineVersions", tc.query, nil, testCaller, testEnv)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+			assert.Contains(t, err.Error(), tc.code)
+			assert.Contains(t, err.Error(), tc.msg)
 		})
 	}
 }

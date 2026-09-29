@@ -25,7 +25,9 @@ import (
 // on every Linux architecture spinifex targets (x86_64, aarch64).
 const userHZ = 100.0
 
-// pollerTracerName is the instrumentation scope for per-instance poll spans.
+// pollerTracerName is the stable instrumentation scope for per-instance poll
+// spans. It intentionally survives this package relocation so existing
+// dashboards and alerts do not split their trace series.
 const pollerTracerName = "github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
 
 // sample is one raw counter snapshot; published values are deltas between

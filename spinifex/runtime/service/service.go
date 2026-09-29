@@ -8,7 +8,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/services/northstar"
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qemunbdd"
-	"github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifex"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"

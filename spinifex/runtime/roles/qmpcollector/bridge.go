@@ -15,6 +15,9 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// bridgeMeterName is the stable instrumentation scope for forwarded metrics.
+// It intentionally survives this package relocation so existing dashboards
+// and alerts do not split their metric series.
 const bridgeMeterName = "github.com/mulgadc/spinifex/spinifex/services/qmpcollector"
 
 // cloudwatchAccountDimension is the dimension name guest series carry. It is

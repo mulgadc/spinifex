@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 
@@ -109,8 +110,15 @@ var ec2MaxResultsRanges = map[string]maxResultsRange{
 		}
 		return fmt.Sprintf("Value (%d) for parameter maxResults is invalid. Expecting a value less than 255.", n)
 	}},
+	// AWS accepts any value from 5 up, despite the 1000 its API reference gives.
+	"DescribeInstances": {5, math.MaxInt64, awserrors.ErrorInvalidParameterValue, func(n int64) string {
+		return fmt.Sprintf("Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than 5.", n)
+	}},
 	"DescribeInstanceCreditSpecifications": {5, 1000, awserrors.ErrorInvalidRequest, func(n int64) string {
 		return fmt.Sprintf("The value %d for the maxResults parameter must be between 5 and 1000. Change the value and try again.", n)
+	}},
+	"DescribeInstanceTypes": {5, 100, awserrors.ErrorInvalidMaxResults, func(n int64) string {
+		return fmt.Sprintf("Value ( %d ) for parameter maxResults is invalid. Expecting a value from ( 5 ) to  ( 100 ).", n)
 	}},
 	"DescribeInstanceTypeOfferings": {5, 1000, awserrors.ErrorInvalidMaxResults, func(n int64) string {
 		return fmt.Sprintf("Value ( %d ) for parameter maxResults is invalid. Expecting a value from ( 5 ) to  ( 1000 ).", n)
@@ -124,6 +132,11 @@ var ec2MaxResultsRanges = map[string]maxResultsRange{
 // validateMaxResults refuses a MaxResults outside the action's range. It does
 // not page; an in-range value is still answered with every result.
 func validateMaxResults(action string, input any) error {
+	// AWS refuses the combination before it checks the range.
+	if in, ok := input.(*ec2.DescribeInstancesInput); ok && in.MaxResults != nil && len(in.InstanceIds) > 0 {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
+			"The parameter instancesSet cannot be used with the parameter maxResults")
+	}
 	r, ok := ec2MaxResultsRanges[action]
 	if !ok {
 		return nil

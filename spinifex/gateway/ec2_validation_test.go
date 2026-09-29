@@ -92,8 +92,11 @@ func TestEC2Request_MaxResultsOutOfRange(t *testing.T) {
 		{"DescribeCapacityReservations", 1001, "InvalidParameterValue", "1001 is an invalid value for MaxResults. MaxResults must be null, or between 1 and 1000."},
 		{"DescribeEgressOnlyInternetGateways", 4, "InvalidParameterValue", "Value (4) for parameter maxResults is invalid. Expecting a value greater than 5."},
 		{"DescribeEgressOnlyInternetGateways", 256, "InvalidParameterValue", "Value (256) for parameter maxResults is invalid. Expecting a value less than 255."},
+		{"DescribeInstances", 2, "InvalidParameterValue", "Value ( 2 ) for parameter maxResults is invalid. Expecting a value greater than 5."},
 		{"DescribeInstanceCreditSpecifications", 4, "InvalidRequest", "The value 4 for the maxResults parameter must be between 5 and 1000. Change the value and try again."},
 		{"DescribeInstanceCreditSpecifications", 1001, "InvalidRequest", "The value 1001 for the maxResults parameter must be between 5 and 1000. Change the value and try again."},
+		{"DescribeInstanceTypes", 4, "InvalidMaxResults", "Value ( 4 ) for parameter maxResults is invalid. Expecting a value from ( 5 ) to  ( 100 )."},
+		{"DescribeInstanceTypes", 101, "InvalidMaxResults", "Value ( 101 ) for parameter maxResults is invalid. Expecting a value from ( 5 ) to  ( 100 )."},
 		{"DescribeInstanceTypeOfferings", 4, "InvalidMaxResults", "Value ( 4 ) for parameter maxResults is invalid. Expecting a value from ( 5 ) to  ( 1000 )."},
 		{"DescribeInstanceTypeOfferings", 1001, "InvalidMaxResults", "Value ( 1001 ) for parameter maxResults is invalid. Expecting a value from ( 5 ) to  ( 1000 )."},
 		{"DescribeLaunchTemplates", 0, "InvalidParameterValue", "Maximum results allowed are between 1 and 200"},
@@ -111,12 +114,28 @@ func TestEC2Request_MaxResultsOutOfRange(t *testing.T) {
 	}
 }
 
+// Captured from AWS: the combination is refused even when MaxResults is also
+// out of range.
+func TestEC2Request_DescribeInstancesMaxResultsWithInstanceIds(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()}
+
+	for _, n := range []string{"2", "5"} {
+		w := serveEC2(gw, "Action=DescribeInstances&InstanceId.1=i-0123456789abcdef0&MaxResults="+n)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "<Code>InvalidParameterCombination</Code>")
+		assert.Contains(t, w.Body.String(), "<Message>The parameter instancesSet cannot be used with the parameter maxResults</Message>")
+	}
+}
+
 func TestEC2Request_MaxResultsInRange(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()}
 
 	for _, body := range []string{
 		"Action=DescribeCapacityReservations&MaxResults=1",
 		"Action=DescribeEgressOnlyInternetGateways&MaxResults=255",
+		"Action=DescribeInstances&MaxResults=5",
+		"Action=DescribeInstances&MaxResults=5000",
+		"Action=DescribeInstanceTypes&MaxResults=100",
 		"Action=DescribeInstanceTypeOfferings&MaxResults=5",
 		"Action=DescribeLaunchTemplates&MaxResults=200",
 		"Action=DescribeNatGateways&MaxResults=1000",

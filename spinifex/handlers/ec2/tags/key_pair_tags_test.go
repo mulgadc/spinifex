@@ -1,17 +1,32 @@
-package handlers_ec2_tags
+package handlers_ec2_tags_test
 
 import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
+	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-const testED25519PubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+const (
+	testAccountID     = "111111111111"
+	testED25519PubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+)
+
+func newTagsService(t *testing.T) *handlers_ec2_tags.TagsServiceImpl {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	kv, err := handlers_ec2_tags.GetOrCreateTagsBucket(t.Context(), testutil.NewJetStream(t, nc))
+	require.NoError(t, err)
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	return handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), kv)
+}
 
 func keyPairTagSpec(tags map[string]string) []*ec2.TagSpecification {
 	spec := &ec2.TagSpecification{ResourceType: aws.String("key-pair")}
@@ -21,7 +36,7 @@ func keyPairTagSpec(tags map[string]string) []*ec2.TagSpecification {
 	return []*ec2.TagSpecification{spec}
 }
 
-func describeKeyPairTags(t *testing.T, svc *TagsServiceImpl) map[string]map[string]string {
+func describeKeyPairTags(t *testing.T, svc *handlers_ec2_tags.TagsServiceImpl) map[string]map[string]string {
 	t.Helper()
 	out, err := svc.DescribeTags(t.Context(), &ec2.DescribeTagsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("resource-type"), Values: []*string{aws.String("key-pair")}}},
@@ -40,7 +55,7 @@ func describeKeyPairTags(t *testing.T, svc *TagsServiceImpl) map[string]map[stri
 // AWS lists the TagSpecifications tags of a created or imported key pair in
 // DescribeTags under resource type key-pair, and drops them when it is deleted.
 func TestKeyPairCreationTags_VisibleToDescribeTags(t *testing.T) {
-	tagsSvc, _ := setupTestTagsService(t)
+	tagsSvc := newTagsService(t)
 	keySvc := handlers_ec2_key.NewKeyServiceImplWithStore(objectstore.NewMemoryObjectStore(), "test-bucket")
 	keySvc.SetCentralTagStore(tagsSvc)
 

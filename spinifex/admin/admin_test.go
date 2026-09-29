@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/formation"
+	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

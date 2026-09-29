@@ -28,7 +28,7 @@ const (
 	maxTrustPolicyDocumentSize = 2048
 
 	defaultMaxSessionDuration = int64(3600)
-	minMaxSessionDuration     = int64(900)
+	minMaxSessionDuration     = int64(3600)
 	maxMaxSessionDuration     = int64(43200)
 
 	// Bound on optimistic-concurrency retries when a concurrent writer wins the
@@ -59,6 +59,9 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 	if err := validateDescription(input.Description); err != nil {
 		return nil, err
 	}
+	if err := validateMaxSessionDuration(input.MaxSessionDuration); err != nil {
+		return nil, err
+	}
 
 	// Carry the reason: a bare code cannot tell a caller which statement or key
 	// was refused, and the gateway logs the returned error, so one message
@@ -71,9 +74,6 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 	maxSession := defaultMaxSessionDuration
 	if input.MaxSessionDuration != nil {
 		maxSession = *input.MaxSessionDuration
-		if maxSession < minMaxSessionDuration || maxSession > maxMaxSessionDuration {
-			return nil, errors.New(awserrors.ErrorValidationError)
-		}
 	}
 
 	if err := validateTags(input.Tags); err != nil {
@@ -219,10 +219,27 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 	return &iam.DeleteRoleOutput{}, nil
 }
 
+// validateMaxSessionDuration enforces the role session limit of one to twelve
+// hours, in seconds, with the ValidationError AWS returns.
+func validateMaxSessionDuration(d *int64) error {
+	switch {
+	case d == nil:
+		return nil
+	case *d < minMaxSessionDuration:
+		return validationError([]string{fmt.Sprintf("Value at 'maxSessionDuration' failed to satisfy constraint: Member must have value greater than or equal to %d", minMaxSessionDuration)})
+	case *d > maxMaxSessionDuration:
+		return validationError([]string{fmt.Sprintf("Value at 'maxSessionDuration' failed to satisfy constraint: Member must have value less than or equal to %d", maxMaxSessionDuration)})
+	}
+	return nil
+}
+
 func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
 	ctx := context.Background()
 	roleName := *input.RoleName
 	if err := validateDescription(input.Description); err != nil {
+		return nil, err
+	}
+	if err := validateMaxSessionDuration(input.MaxSessionDuration); err != nil {
 		return nil, err
 	}
 
@@ -235,11 +252,7 @@ func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput
 		role.Description = *input.Description
 	}
 	if input.MaxSessionDuration != nil {
-		dur := *input.MaxSessionDuration
-		if dur < minMaxSessionDuration || dur > maxMaxSessionDuration {
-			return nil, errors.New(awserrors.ErrorValidationError)
-		}
-		role.MaxSessionDuration = dur
+		role.MaxSessionDuration = *input.MaxSessionDuration
 	}
 
 	data, err := json.Marshal(role)

@@ -3,6 +3,7 @@ package handlers_iam
 import (
 	"encoding/json"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -320,30 +321,45 @@ func TestCreateRole_TrustPolicy_DenyEffectAccepted(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestCreateRole_MaxSessionDuration_TooSmall(t *testing.T) {
+// The bounds and messages are the ones AWS returned; both calls check the
+// value before the trust policy or the role lookup.
+func TestRole_MaxSessionDurationBounds(t *testing.T) {
 	t.Parallel()
-	svc := setupTestIAMService(t)
-
-	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
-		RoleName:                 aws.String("short-session"),
-		AssumeRolePolicyDocument: aws.String(validTrustPolicy()),
-		MaxSessionDuration:       aws.Int64(minMaxSessionDuration - 1),
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
-}
-
-func TestCreateRole_MaxSessionDuration_TooLarge(t *testing.T) {
-	t.Parallel()
-	svc := setupTestIAMService(t)
-
-	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
-		RoleName:                 aws.String("long-session"),
-		AssumeRolePolicyDocument: aws.String(validTrustPolicy()),
-		MaxSessionDuration:       aws.Int64(maxMaxSessionDuration + 1),
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
+	const (
+		tooShort = "1 validation error detected: Value at 'maxSessionDuration' failed to satisfy constraint: Member must have value greater than or equal to 3600"
+		tooLong  = "1 validation error detected: Value at 'maxSessionDuration' failed to satisfy constraint: Member must have value less than or equal to 43200"
+	)
+	cases := []struct {
+		seconds int64
+		wantMsg string
+	}{
+		{900, tooShort},
+		{3599, tooShort},
+		{3600, ""},
+		{43200, ""},
+		{43201, tooLong},
+	}
+	for _, tc := range cases {
+		t.Run(strconv.FormatInt(tc.seconds, 10), func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestIAMService(t)
+			if tc.wantMsg != "" {
+				_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+					RoleName: aws.String("r"), AssumeRolePolicyDocument: aws.String("{"), MaxSessionDuration: aws.Int64(tc.seconds),
+				})
+				requireIAMError(t, err, awserrors.ErrorValidationError, tc.wantMsg)
+				_, err = svc.UpdateRole(testAccountID, &iam.UpdateRoleInput{RoleName: aws.String("missing"), MaxSessionDuration: aws.Int64(tc.seconds)})
+				requireIAMError(t, err, awserrors.ErrorValidationError, tc.wantMsg)
+				return
+			}
+			_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+				RoleName: aws.String("r"), AssumeRolePolicyDocument: aws.String(validTrustPolicy()), MaxSessionDuration: aws.Int64(tc.seconds),
+			})
+			require.NoError(t, err)
+			_, err = svc.UpdateRole(testAccountID, &iam.UpdateRoleInput{RoleName: aws.String("r"), MaxSessionDuration: aws.Int64(tc.seconds)})
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestCreateRole_Duplicate(t *testing.T) {
@@ -539,19 +555,6 @@ func TestUpdateRole_NotFound(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
-}
-
-func TestUpdateRole_InvalidMaxSessionDuration(t *testing.T) {
-	t.Parallel()
-	svc := setupTestIAMService(t)
-	createTestRole(t, svc, "session-role")
-
-	_, err := svc.UpdateRole(testAccountID, &iam.UpdateRoleInput{
-		RoleName:           aws.String("session-role"),
-		MaxSessionDuration: aws.Int64(60),
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestUpdateAssumeRolePolicy(t *testing.T) {

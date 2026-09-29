@@ -472,7 +472,7 @@ func validateDescribeAutomatedBackupsRequest(input *rds.DescribeDBInstanceAutoma
 	for _, filter := range filters {
 		switch filter.Name {
 		case filterDbiResourceID:
-			return "", nil, unimplemented("Filter dbi-resource-id", "an automated backup is reported by its instance's identifier only")
+			return "", nil, unimplemented("Filter dbi-resource-id", automatedBackupNoResourceID)
 		case filterStatus:
 			for _, value := range filter.Values {
 				if !slices.Contains(awsAutomatedBackupStatuses, value) {
@@ -483,7 +483,7 @@ func validateDescribeAutomatedBackupsRequest(input *rds.DescribeDBInstanceAutoma
 		}
 	}
 	if aws.StringValue(input.DbiResourceId) != "" {
-		return "", nil, unimplemented("DbiResourceId", "a DB instance has no resource ID distinct from its identifier here")
+		return "", nil, unimplemented("DbiResourceId", automatedBackupNoResourceID)
 	}
 	if aws.StringValue(input.DBInstanceAutomatedBackupsArn) != "" {
 		return "", nil, unimplemented("DBInstanceAutomatedBackupsArn",
@@ -491,6 +491,10 @@ func validateDescribeAutomatedBackupsRequest(input *rds.DescribeDBInstanceAutoma
 	}
 	return aws.StringValue(input.DBInstanceIdentifier), filters, nil
 }
+
+// Why DbiResourceId and the dbi-resource-id filter are refused: an instance has
+// one, but its automated backups are addressed by its identifier only.
+const automatedBackupNoResourceID = "automated backups are addressed by DBInstanceIdentifier only"
 
 // AWS's whole status vocabulary; the ones never reported here match nothing.
 var awsAutomatedBackupStatuses = []string{"creating", "active", "retained", "pending", "replicating", "deleting"}

@@ -515,7 +515,7 @@ func validateDescribeSnapshotsRequest(input *rds.DescribeDBSnapshotsInput) (stri
 	for _, filter := range filters {
 		switch filter.Name {
 		case filterDbiResourceID:
-			return "", nil, unimplemented("Filter dbi-resource-id", "a snapshot does not record its source instance's resource ID")
+			return "", nil, unimplemented("Filter dbi-resource-id", snapshotNoResourceID)
 		case filterSnapshotType:
 			// AWS's whole vocabulary is accepted; the types never offered here match nothing.
 			for _, value := range filter.Values {
@@ -527,7 +527,7 @@ func validateDescribeSnapshotsRequest(input *rds.DescribeDBSnapshotsInput) (stri
 		}
 	}
 	if aws.StringValue(input.DbiResourceId) != "" {
-		return "", nil, unimplemented("DbiResourceId", "a DB instance has no resource ID distinct from its identifier here")
+		return "", nil, unimplemented("DbiResourceId", snapshotNoResourceID)
 	}
 	if aws.BoolValue(input.IncludeShared) || aws.BoolValue(input.IncludePublic) {
 		return "", nil, unimplemented("IncludeShared/IncludePublic", "cross-account snapshot sharing is not offered")
@@ -540,6 +540,10 @@ func validateDescribeSnapshotsRequest(input *rds.DescribeDBSnapshotsInput) (stri
 			"SnapshotType %q is not offered; use %q or %q", snapshotType, SnapshotTypeManual, SnapshotTypeAutomated)
 	}
 }
+
+// Why DbiResourceId and the dbi-resource-id filter are refused: an instance has
+// one, but a snapshot does not record it.
+const snapshotNoResourceID = "a snapshot does not record its source instance's resource ID"
 
 var awsSnapshotTypes = []string{"public", "shared", SnapshotTypeManual, "awsbackup", SnapshotTypeAutomated}
 

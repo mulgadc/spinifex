@@ -6,7 +6,7 @@ import (
 	"time"
 
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // eniStaleThreshold is the minimum age of an AttachmentStatus transition before

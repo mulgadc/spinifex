@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // OVSPlumber implements vm.NetworkPlumber using system commands

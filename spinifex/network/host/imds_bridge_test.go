@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // TestIMDSBridgeIsNotBrInt locks in the coexistence decision: the IMDS redirect

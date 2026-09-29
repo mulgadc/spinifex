@@ -13,7 +13,7 @@ import (
 	"sync"
 
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // StateStore is an in-memory vm.StateStore. Per-method error fields let a

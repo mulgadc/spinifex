@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // InstanceRetainsRecords reports whether an instance in this state still owns

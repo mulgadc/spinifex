@@ -12,8 +12,8 @@ import (
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/vm"
-	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/host"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

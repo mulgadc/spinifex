@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // listInterfacesCmd is the single query ListIMDSTaps issues per pass.

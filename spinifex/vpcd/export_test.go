@@ -2,7 +2,7 @@ package vpcd
 
 import (
 	"github.com/mulgadc/spinifex/spinifex/daemon"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // LocalStateReaderForTest is the local instance state reader's consumer-facing

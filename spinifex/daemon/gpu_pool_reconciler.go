@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // gpuPoolLiveStates are the instance states that legitimately still hold a

@@ -28,6 +28,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// vmTracerName is the stable instrumentation scope for VM lifecycle traces.
+// It intentionally survives this package relocation so existing dashboards
+// and alerts do not split their trace series.
 const vmTracerName = "github.com/mulgadc/spinifex/spinifex/vm"
 
 // noTraceKey marks a context whose QMP commands should not open spans —

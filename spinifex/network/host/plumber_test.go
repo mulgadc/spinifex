@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 func TestOVSPlumber_SetupTap_AddPortArgs(t *testing.T) {

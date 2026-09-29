@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // AttachIMDSDatapath realises the per-tap IMDS datapath for a primary-ENI tap: the

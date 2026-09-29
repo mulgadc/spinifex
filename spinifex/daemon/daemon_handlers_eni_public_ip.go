@@ -7,7 +7,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // handleENIPublicIPChanged applies an EIP association to the instance record on

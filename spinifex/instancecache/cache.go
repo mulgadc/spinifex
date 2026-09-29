@@ -35,7 +35,7 @@ import (
 	instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

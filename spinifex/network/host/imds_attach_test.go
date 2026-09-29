@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 func TestIMDSDatapathSpec(t *testing.T) {

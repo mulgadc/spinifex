@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // orphanTagKey marks a volume the GC has surfaced as orphaned. It is a

@@ -10,7 +10,7 @@ import (
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )
 

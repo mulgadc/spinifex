@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // InstanceProjection carries the caller-scoped values ProjectInstance needs.

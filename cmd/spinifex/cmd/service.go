@@ -13,7 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
-	"github.com/mulgadc/spinifex/spinifex/service"
+	"github.com/mulgadc/spinifex/spinifex/runtime/service"
 	"github.com/mulgadc/spinifex/spinifex/services/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
 	"github.com/mulgadc/spinifex/spinifex/services/northstar"

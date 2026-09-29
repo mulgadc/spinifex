@@ -77,8 +77,8 @@ func TestEC2ErrorCatalogMetadataAndClasses(t *testing.T) {
 	if catalog.metadata.VerifiedOn == "" {
 		t.Fatal("verifiedOn is empty")
 	}
-	if len(catalog.codes) != 112 {
-		t.Fatalf("catalog code count = %d, want 112", len(catalog.codes))
+	if len(catalog.codes) != 114 {
+		t.Fatalf("catalog code count = %d, want 114", len(catalog.codes))
 	}
 	if catalog.codes["InvalidParameterValue"] != ec2ErrorClassClient {
 		t.Fatal("InvalidParameterValue is not classified as client")

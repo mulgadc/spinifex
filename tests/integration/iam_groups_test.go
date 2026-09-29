@@ -36,7 +36,7 @@ func TestIAMGroupEnforcement(t *testing.T) {
 
 	// No policy anywhere yet: the active key authenticates, then default-denies.
 	_, err = memberCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 
 	// Group + policy granting ec2:DescribeRegions, then join the user.
 	groupOut, err := gw.IAMClient(t).CreateGroup(&iam.CreateGroupInput{GroupName: aws.String("grp-enforce")})
@@ -71,7 +71,7 @@ func TestIAMGroupEnforcement(t *testing.T) {
 	require.NoError(t, err, "remove-user-from-group")
 
 	_, err = memberCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 }
 
 // TestIAMGroupInlineEnforcement proves an inline policy embedded in a group
@@ -93,7 +93,7 @@ func TestIAMGroupInlineEnforcement(t *testing.T) {
 
 	// No grant anywhere yet: the active key authenticates, then default-denies.
 	_, err = memberCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 
 	// Group with an inline policy granting ec2:DescribeRegions, then join the user.
 	groupOut, err := gw.IAMClient(t).CreateGroup(&iam.CreateGroupInput{GroupName: aws.String("grp-inline-enforce")})
@@ -126,7 +126,7 @@ func TestIAMGroupInlineEnforcement(t *testing.T) {
 	require.NoError(t, err, "delete-group-policy")
 
 	_, err = memberCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 }
 
 // TestIAMUserInlineEnforcement proves the user-inline linchpin: a policy
@@ -150,7 +150,7 @@ func TestIAMUserInlineEnforcement(t *testing.T) {
 
 	// No grant anywhere yet: the active key authenticates, then default-denies.
 	_, err = userCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 
 	// Put an inline policy granting ec2:DescribeRegions directly on the user.
 	const inlinePolicyName = "usr-inl-enf-describe-regions"
@@ -174,7 +174,7 @@ func TestIAMUserInlineEnforcement(t *testing.T) {
 	require.NoError(t, err, "delete-user-policy")
 
 	_, err = userCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 }
 
 // Dedicated identifiers for the Groups lifecycle test, distinct from the

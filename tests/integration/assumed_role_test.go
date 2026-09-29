@@ -75,7 +75,7 @@ func TestAssumedRoleControlPlaneEnforcement(t *testing.T) {
 
 	// Zero-policy role: the session authenticates, then default-denies.
 	_, err = sessionCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 
 	policyOut, err := gw.IAMClient(t).CreatePolicy(&iam.CreatePolicyInput{
 		PolicyName:     aws.String("are-ec2-describe-regions"),

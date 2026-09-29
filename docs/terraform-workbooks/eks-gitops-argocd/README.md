@@ -256,7 +256,7 @@ kubectl -n kube-system logs deploy/aws-load-balancer-controller --tail=50
 
 Confirm the cluster carries `spinifex.io/managed-ingress = "false"` so the LBC owns ingress.
 
-If the controller logs show `FailedBuildModel ... DescribeAvailabilityZones ... 403 ... AccessDenied`, the node role is missing the LBC permissions. The controller runs with the node instance-profile credentials, so the `${var.cluster_name}-node-lbc` policy (`aws_iam_policy.node_lbc`) must be attached to the node role — re-run `tofu apply` on the parent module if it was provisioned before that policy existed.
+If the controller logs show `FailedBuildModel ... DescribeAvailabilityZones ... 403 ... UnauthorizedOperation`, the node role is missing the LBC permissions. The controller runs with the node instance-profile credentials, so the `${var.cluster_name}-node-lbc` policy (`aws_iam_policy.node_lbc`) must be attached to the node role — re-run `tofu apply` on the parent module if it was provisioned before that policy existed.
 
 ### Provider Connection Refused
 

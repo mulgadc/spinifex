@@ -382,6 +382,25 @@ func TestGenerateRequestsHintsNestedMembers(t *testing.T) {
 	t.Fatal("no acceptance request sets Matcher")
 }
 
+// AWS refuses a tag resource type the operation does not create, so a valid
+// request tags the operation's own type rather than the enum's first value.
+func TestGenerateRequestsTagsTheOperationsOwnResourceType(t *testing.T) {
+	for operation, want := range map[string]string{"CreateVpc": "vpc", "CreateLaunchTemplate": "launch-template"} {
+		t.Run(operation, func(t *testing.T) {
+			plan, err := GenerateRequests(EC2, operation, testRequestOptions)
+			require.NoError(t, err)
+			for _, request := range plan.Cases {
+				if request.Acceptance() && request.Member == "TagSpecifications" {
+					spec := request.Input["TagSpecifications"].([]any)[0].(map[string]any)
+					require.Equal(t, want, spec["ResourceType"])
+					return
+				}
+			}
+			t.Fatal("no acceptance request sets TagSpecifications")
+		})
+	}
+}
+
 func TestGenerateRequestsImportsAVerifiableCertificate(t *testing.T) {
 	plan, err := GenerateRequests(ACM, "ImportCertificate", testRequestOptions)
 	require.NoError(t, err)

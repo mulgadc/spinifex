@@ -21,22 +21,23 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/instancecache"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -577,8 +578,10 @@ func launchService(config *config.ClusterConfig) error {
 	// started now so it is warm well before anything reads it. The describe
 	// path still serves from the fan-out and KV; only status synthesis reads it.
 	instanceCache := instancecache.New(js, instancecache.Config{
-		Bucket: kvstore.Config{Name: daemon.InstanceStateBucket, History: 1, Replicas: len(config.Nodes)},
-		Prefix: daemon.InstanceRecordPrefix,
+		Bucket:            kvstore.Config{Name: daemon.InstanceStateBucket, History: 1, Replicas: len(config.Nodes)},
+		Prefix:            daemon.InstanceRecordPrefix,
+		VisibleToCaller:   handlers_ec2_instance.IsInstanceVisibleToCaller,
+		FallbackAccountID: utils.GlobalAccountID,
 	})
 	go instanceCache.Run(janitorCtx)
 

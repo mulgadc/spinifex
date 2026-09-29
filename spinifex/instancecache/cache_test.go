@@ -14,11 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -44,14 +45,26 @@ func newTestCache(t *testing.T, mutate ...func(*Config)) (*Cache, jetstream.KeyV
 	require.NoError(t, err)
 
 	cfg := Config{
-		Bucket:        kvstore.Config{Name: bucket, History: 1, Replicas: 1},
-		Prefix:        testPrefix,
-		RetryInterval: 20 * time.Millisecond,
+		Bucket:            kvstore.Config{Name: bucket, History: 1, Replicas: 1},
+		Prefix:            testPrefix,
+		VisibleToCaller:   instance.IsInstanceVisibleToCaller,
+		FallbackAccountID: utils.GlobalAccountID,
+		RetryInterval:     20 * time.Millisecond,
 	}
 	for _, m := range mutate {
 		m(&cfg)
 	}
 	return New(js, cfg), kv, &cacheConn{nc: nc, js: js}
+}
+
+func TestNew_RequiresDomainPolicyAndFallbackAccount(t *testing.T) {
+	require.PanicsWithValue(t, "instancecache: Config.VisibleToCaller is required", func() {
+		New(nil, Config{})
+	})
+
+	require.PanicsWithValue(t, "instancecache: Config.FallbackAccountID is required", func() {
+		New(nil, Config{VisibleToCaller: func(string, *vm.VM) bool { return true }})
+	})
 }
 
 // cacheConn bundles the connection handles a test occasionally needs beyond
@@ -205,7 +218,7 @@ func TestPeriodicResync_RemovesEntryTheWatchNeverToldItAbout(t *testing.T) {
 	// the record space, but nothing was watching when it went, so the live
 	// map still shows it.
 	c.mu.Lock()
-	putInto(c.entries, c.index, "i-ghost", vm.VMFromRecord(testRecord("i-ghost", acctA, vm.StateRunning)))
+	c.putInto(c.entries, c.index, "i-ghost", vm.VMFromRecord(testRecord("i-ghost", acctA, vm.StateRunning)))
 	c.mu.Unlock()
 	waitForListLen(t, c, acctA, 2)
 
@@ -243,9 +256,11 @@ func TestPeriodicResync_TTLExpiredRecordRemovedWithNoWatchEvent(t *testing.T) {
 	require.NoError(t, err)
 
 	c := New(js, Config{
-		Bucket:        kvstore.Config{Name: bucket, History: 1, Replicas: 1},
-		Prefix:        testPrefix,
-		RetryInterval: 20 * time.Millisecond,
+		Bucket:            kvstore.Config{Name: bucket, History: 1, Replicas: 1},
+		Prefix:            testPrefix,
+		VisibleToCaller:   instance.IsInstanceVisibleToCaller,
+		FallbackAccountID: utils.GlobalAccountID,
+		RetryInterval:     20 * time.Millisecond,
 	})
 	putRecord(t, kv, "i-ttl", testRecord("i-ttl", acctA, vm.StateTerminated))
 

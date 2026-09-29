@@ -32,9 +32,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -50,6 +48,11 @@ const (
 	DefaultRetryInterval = 5 * time.Second
 )
 
+// VisibleToCallerFunc applies the domain's instance visibility policy after
+// the cache's account index lookup. It is supplied by the composition root:
+// the cache owns efficient record projection, not EC2 authorisation policy.
+type VisibleToCallerFunc func(accountID string, instance *vm.VM) bool
+
 // Config configures the KV bucket a Cache watches and its clocks. Bucket and
 // Prefix are supplied by the caller so this package never has to know the
 // daemon's bucket name or key-space constants.
@@ -63,6 +66,16 @@ type Config struct {
 	// The watch and snapshot filter is Prefix+"*", and an entry's map key is
 	// its record key with Prefix trimmed.
 	Prefix string
+
+	// VisibleToCaller is the EC2-domain visibility rule applied to a record
+	// after account-index lookup. It is required so the cache fails closed if
+	// its composition root does not supply the authorisation policy.
+	VisibleToCaller VisibleToCallerFunc
+
+	// FallbackAccountID is the system account under which legacy records with
+	// no owner are indexed. It is required and must agree with
+	// VisibleToCaller about which caller may see those records.
+	FallbackAccountID string
 
 	ResyncInterval time.Duration
 	RetryInterval  time.Duration
@@ -85,8 +98,10 @@ type Cache struct {
 	prefix string
 	filter string
 
-	resyncInterval time.Duration
-	retryInterval  time.Duration
+	resyncInterval    time.Duration
+	retryInterval     time.Duration
+	visibleToCaller   VisibleToCallerFunc
+	fallbackAccountID string
 
 	mu      sync.RWMutex
 	entries map[string]*vm.VM
@@ -113,6 +128,13 @@ type Cache struct {
 // New returns a Cache over the bucket cfg describes. Call Run to start it;
 // until the first sync completes, List reports the cache not ready.
 func New(js jetstream.JetStream, cfg Config) *Cache {
+	if cfg.VisibleToCaller == nil {
+		panic("instancecache: Config.VisibleToCaller is required")
+	}
+	if cfg.FallbackAccountID == "" {
+		panic("instancecache: Config.FallbackAccountID is required")
+	}
+
 	resync := cfg.ResyncInterval
 	if resync <= 0 {
 		resync = DefaultResyncInterval
@@ -122,14 +144,16 @@ func New(js jetstream.JetStream, cfg Config) *Cache {
 		retry = DefaultRetryInterval
 	}
 	c := &Cache{
-		store:          kvstore.New[vm.InstanceRecord](js, cfg.Bucket),
-		prefix:         cfg.Prefix,
-		filter:         cfg.Prefix + "*",
-		resyncInterval: resync,
-		retryInterval:  retry,
-		entries:        map[string]*vm.VM{},
-		index:          map[string]map[string]struct{}{},
-		watcherLost:    make(chan struct{}, 1),
+		store:             kvstore.New[vm.InstanceRecord](js, cfg.Bucket),
+		prefix:            cfg.Prefix,
+		filter:            cfg.Prefix + "*",
+		resyncInterval:    resync,
+		retryInterval:     retry,
+		visibleToCaller:   cfg.VisibleToCaller,
+		fallbackAccountID: cfg.FallbackAccountID,
+		entries:           map[string]*vm.VM{},
+		index:             map[string]map[string]struct{}{},
+		watcherLost:       make(chan struct{}, 1),
 	}
 	c.metrics = newCacheMetrics(c)
 	return c
@@ -184,17 +208,17 @@ func (c *Cache) Degraded() bool {
 }
 
 // List returns the cached instances visible to accountID and whether the
-// cache is ready to be believed about absence. IsInstanceVisibleToCaller is
-// applied after the index lookup as defence in depth: the index is a
+// cache is ready to be believed about absence. The supplied visibility policy
+// is applied after the index lookup as defence in depth: the index is a
 // performance structure, not the authorisation boundary.
 func (c *Cache) List(_ context.Context, accountID string) ([]*vm.VM, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	ids := c.index[indexKeyFor(accountID)]
+	ids := c.index[c.indexKeyFor(accountID)]
 	out := make([]*vm.VM, 0, len(ids))
 	for id := range ids {
 		v, ok := c.entries[id]
-		if !ok || !instance.IsInstanceVisibleToCaller(accountID, v) {
+		if !ok || !c.visibleToCaller(accountID, v) {
 			continue
 		}
 		out = append(out, v)
@@ -334,7 +358,7 @@ func (c *Cache) apply(entries map[string]*vm.VM, index map[string]map[string]str
 	id := strings.TrimPrefix(entry.Key(), c.prefix)
 	switch entry.Operation() {
 	case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
-		removeFrom(entries, index, id)
+		c.removeFrom(entries, index, id)
 	default:
 		var rec vm.InstanceRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
@@ -343,7 +367,7 @@ func (c *Cache) apply(entries map[string]*vm.VM, index map[string]map[string]str
 				"key", entry.Key(), "err", err)
 			return
 		}
-		putInto(entries, index, id, vm.VMFromRecord(&rec))
+		c.putInto(entries, index, id, vm.VMFromRecord(&rec))
 	}
 }
 
@@ -359,7 +383,7 @@ func (c *Cache) snapshotCandidate(ctx context.Context) (map[string]*vm.VM, map[s
 	index := make(map[string]map[string]struct{})
 	for i := range items {
 		id := strings.TrimPrefix(items[i].Key, c.prefix)
-		putInto(entries, index, id, vm.VMFromRecord(&items[i].Value))
+		c.putInto(entries, index, id, vm.VMFromRecord(&items[i].Value))
 	}
 	return entries, index, highWater, nil
 }
@@ -498,31 +522,31 @@ func (c *Cache) replaceWatcher(ctx context.Context, oldLw *liveWatcher) {
 	}
 }
 
-// indexKeyFor is the account index's bucket for v's owner: Global for an
-// empty owner, so a legacy pre-account record files under the same bucket a
-// platform-managed record does, and never under every account at once.
-func indexKeyFor(accountID string) string {
+// indexKeyFor is the account index's bucket for an owner: the configured
+// system account for an empty owner, so a legacy pre-account record files
+// under one bucket and never under every account at once.
+func (c *Cache) indexKeyFor(accountID string) string {
 	if accountID == "" {
-		return utils.GlobalAccountID
+		return c.fallbackAccountID
 	}
 	return accountID
 }
 
-func putInto(entries map[string]*vm.VM, index map[string]map[string]struct{}, id string, v *vm.VM) {
+func (c *Cache) putInto(entries map[string]*vm.VM, index map[string]map[string]struct{}, id string, v *vm.VM) {
 	if old, ok := entries[id]; ok {
-		removeFromIndex(index, indexKeyFor(old.AccountID), id)
+		removeFromIndex(index, c.indexKeyFor(old.AccountID), id)
 	}
 	entries[id] = v
-	addToIndex(index, indexKeyFor(v.AccountID), id)
+	addToIndex(index, c.indexKeyFor(v.AccountID), id)
 }
 
-func removeFrom(entries map[string]*vm.VM, index map[string]map[string]struct{}, id string) {
+func (c *Cache) removeFrom(entries map[string]*vm.VM, index map[string]map[string]struct{}, id string) {
 	old, ok := entries[id]
 	if !ok {
 		return
 	}
 	delete(entries, id)
-	removeFromIndex(index, indexKeyFor(old.AccountID), id)
+	removeFromIndex(index, c.indexKeyFor(old.AccountID), id)
 }
 
 func addToIndex(index map[string]map[string]struct{}, key, id string) {

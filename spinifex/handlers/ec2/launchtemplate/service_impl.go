@@ -143,9 +143,19 @@ func (s *LaunchTemplateServiceImpl) resolveHeader(ctx context.Context, accountID
 		if err := validateTemplateID(id); err != nil {
 			return nil, nil, err
 		}
-		return s.getHeaderByID(ctx, accountID, id)
+		h, entry, err := s.getHeaderByID(ctx, accountID, id)
+		if err != nil && err.Error() == awserrors.ErrorInvalidLaunchTemplateIdNotFound {
+			return nil, nil, awserrors.Errorf(awserrors.ErrorInvalidLaunchTemplateIdNotFound,
+				"The specified launch template, with template ID %s, does not exist.", id)
+		}
+		return h, entry, err
 	case nm != "":
-		return s.getHeaderByName(ctx, accountID, nm)
+		h, entry, err := s.getHeaderByName(ctx, accountID, nm)
+		if err != nil && err.Error() == awserrors.ErrorInvalidLaunchTemplateNameNotFoundException {
+			return nil, nil, awserrors.Errorf(awserrors.ErrorInvalidLaunchTemplateNameNotFoundException,
+				"The specified launch template, with template name %s, does not exist.", nm)
+		}
+		return h, entry, err
 	default:
 		return nil, nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -308,6 +318,11 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplate(ctx context.Context, in
 	}, nil
 }
 
+// errNameInUse is AWS's error for a launch template name already taken.
+func errNameInUse() error {
+	return awserrors.Errorf(awserrors.ErrorInvalidLaunchTemplateNameAlreadyExistsException, "Launch template name already in use.")
+}
+
 // claimName atomically reserves a template name via kv.Create, with
 // repair-on-write: if the name already exists but its header is gone (a crash
 // orphan), reclaim it via a revision-guarded CAS update. Only a name whose header
@@ -328,12 +343,12 @@ func (s *LaunchTemplateServiceImpl) claimName(ctx context.Context, accountID, na
 	_, herr := s.kv.Get(ctx, headerKey(accountID, string(entry.Value())))
 	switch {
 	case herr == nil:
-		return errors.New(awserrors.ErrorInvalidLaunchTemplateNameAlreadyExistsException)
+		return errNameInUse()
 	case !errors.Is(herr, jetstream.ErrKeyNotFound):
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	if _, err := s.kv.Update(ctx, key, []byte(ltID), entry.Revision()); err != nil {
-		return errors.New(awserrors.ErrorInvalidLaunchTemplateNameAlreadyExistsException)
+		return errNameInUse()
 	}
 	return nil
 }
@@ -381,11 +396,11 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 	if src := aws.StringValue(input.SourceVersion); src != "" {
 		n, err := s.resolveVersionNumber(ctx, accountID, header, src)
 		if err != nil {
-			return nil, err
+			return nil, withVersionNotFoundMessage(err, "Launch template version does not exist.")
 		}
 		base, err := s.getVersion(ctx, accountID, header.LaunchTemplateId, n)
 		if err != nil {
-			return nil, err
+			return nil, withVersionNotFoundMessage(err, "Launch template version does not exist.")
 		}
 		data = mergeResponseData(base.Data, override)
 	}
@@ -440,14 +455,15 @@ func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, in
 	}
 
 	if sel := aws.StringValue(input.DefaultVersion); sel != "" {
+		notFound := fmt.Sprintf("The launch template version %s is not found for the specified launch template.", sel)
 		n, err := s.resolveVersionNumber(ctx, accountID, header, sel)
 		if err != nil {
-			return nil, err
+			return nil, withVersionNotFoundMessage(err, notFound)
 		}
 		// Verify the target body exists immediately before the header CAS so a
 		// concurrent delete degrades to VersionNotFound, never a dangling default.
 		if _, err := s.getVersion(ctx, accountID, header.LaunchTemplateId, n); err != nil {
-			return nil, err
+			return nil, withVersionNotFoundMessage(err, notFound)
 		}
 		header.DefaultVersionNumber = n
 		data, err := json.Marshal(header)
@@ -635,14 +651,15 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 		templates = append(templates, headerToEC2(&h, latestByID[h.LaunchTemplateId]))
 	}
 
+	const missing = "At least one of the launch templates specified in the request does not exist."
 	for name := range nameSet {
 		if !foundNames[name] {
-			return nil, errors.New(awserrors.ErrorInvalidLaunchTemplateNameNotFoundException)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidLaunchTemplateNameNotFoundException, missing)
 		}
 	}
 	for id := range idSet {
 		if !foundIDs[id] {
-			return nil, errors.New(awserrors.ErrorInvalidLaunchTemplateIdNotFound)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidLaunchTemplateIdNotFound, missing)
 		}
 	}
 
@@ -738,12 +755,14 @@ func (s *LaunchTemplateServiceImpl) selectVersionNumbers(ctx context.Context, ac
 		seen := make(map[int64]bool)
 		var out []int64
 		for _, v := range input.Versions {
+			notFound := fmt.Sprintf("Could not find the specified version %s for the launch template with ID %s.",
+				aws.StringValue(v), header.LaunchTemplateId)
 			n, err := s.resolveVersionNumber(ctx, accountID, header, aws.StringValue(v))
 			if err != nil {
-				return nil, err
+				return nil, withVersionNotFoundMessage(err, notFound)
 			}
 			if _, err := s.getVersion(ctx, accountID, header.LaunchTemplateId, n); err != nil {
-				return nil, err
+				return nil, withVersionNotFoundMessage(err, notFound)
 			}
 			if !seen[n] {
 				seen[n] = true
@@ -863,6 +882,15 @@ func versionRecToEC2(h *LaunchTemplateHeader, rec *LaunchTemplateVersionRec, isD
 }
 
 // --- misc helpers ---
+
+// withVersionNotFoundMessage attaches AWS's message, which differs by action,
+// to a VersionNotFound error and passes any other error through.
+func withVersionNotFoundMessage(err error, message string) error {
+	if err.Error() != awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound {
+		return err
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound, "%s", message)
+}
 
 // isHeaderKey reports whether k is a template header key (account.lt-<id>) as
 // opposed to a name index, version body (account.lt-<id>.v<n>), or _version key.

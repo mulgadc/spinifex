@@ -84,7 +84,7 @@ func TestExpandRunInstances_MissingVersion(t *testing.T) {
 	}
 	err := ExpandRunInstances(context.Background(), svc, input, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound, err.Error())
+	assertCode(t, err, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound)
 }
 
 func TestExpandRunInstances_IdNameConflict(t *testing.T) {
@@ -115,5 +115,14 @@ func TestExpandRunInstances_UnknownTemplate(t *testing.T) {
 	}
 	err := ExpandRunInstances(context.Background(), svc, input, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdNotFound, err.Error())
+	assertCode(t, err, awserrors.ErrorInvalidLaunchTemplateIdNotFound)
+}
+
+// assertCode checks the code a client receives; the message is the
+// DescribeLaunchTemplateVersions one the expansion passes through.
+func assertCode(t *testing.T, err error, want string) {
+	t.Helper()
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok, "unresolvable error: %v", err)
+	assert.Equal(t, want, code)
 }

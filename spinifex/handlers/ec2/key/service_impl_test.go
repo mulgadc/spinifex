@@ -255,7 +255,7 @@ func TestCreateKeyPair_Duplicate(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Nil(t, out)
-	assert.Equal(t, awserrors.ErrorInvalidKeyPairDuplicate, err.Error())
+	assertAWSError(t, err, awserrors.ErrorInvalidKeyPairDuplicate, "The keypair already exists")
 }
 
 func TestCreateKeyPair_InvalidKeyType(t *testing.T) {
@@ -377,7 +377,7 @@ func TestImportKeyPair_Duplicate(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Nil(t, out)
-	assert.Equal(t, awserrors.ErrorInvalidKeyPairDuplicate, err.Error())
+	assertAWSError(t, err, awserrors.ErrorInvalidKeyPairDuplicate, "The keypair already exists")
 }
 
 func TestImportKeyPair_InvalidKeyName(t *testing.T) {
@@ -466,7 +466,7 @@ func TestImportKeyPairInvalidKeyFormat(t *testing.T) {
 				PublicKeyMaterial: []byte(tt.publicKey),
 			}, testAccountID)
 			require.Error(t, err)
-			assert.Equal(t, tt.expectedErrMsg, err.Error())
+			assertAWSError(t, err, tt.expectedErrMsg, "Key is not in valid OpenSSH public key format")
 
 			// Rejection must precede the upload, or the guest is served material
 			// the API refused.
@@ -795,7 +795,7 @@ func TestDescribeKeyPairs_NotFound_ByKeyName(t *testing.T) {
 		KeyNames: []*string{aws.String("does-not-exist")},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidKeyPair.NotFound")
+	assertAWSError(t, err, awserrors.ErrorInvalidKeyPairNotFound, "The key pair 'does-not-exist' does not exist")
 }
 
 // TestDescribeKeyPairs_NotFound_ByKeyPairId is the KeyPairIds counterpart of
@@ -809,7 +809,7 @@ func TestDescribeKeyPairs_NotFound_ByKeyPairId(t *testing.T) {
 		KeyPairIds: []*string{aws.String("key-doesnotexist")},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidKeyPair.NotFound")
+	assertAWSError(t, err, awserrors.ErrorInvalidKeyPairNotFound, "The keyPairId 'key-doesnotexist' does not exist")
 }
 
 // TestDescribeKeyPairs_NotFound_PartialMatch asserts that naming one existing
@@ -1242,4 +1242,13 @@ func TestKeyPair_CentralTagStoreFailureDoesNotFailOperation(t *testing.T) {
 
 	assert.Equal(t, 2, central.puts)
 	assert.Equal(t, 1, central.deletes)
+}
+
+// assertAWSError checks the code a client receives and the message with it.
+func assertAWSError(t *testing.T, err error, wantCode, wantMessage string) {
+	t.Helper()
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unresolvable error: %v", err)
+	assert.Equal(t, wantCode, code)
+	assert.Equal(t, wantMessage, msg)
 }

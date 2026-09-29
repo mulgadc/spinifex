@@ -596,9 +596,9 @@ func (s *EIPServiceImpl) DescribeAddresses(ctx context.Context, input *ec2.Descr
 				found[*addr.AllocationId] = true
 			}
 		}
-		for id := range allocIDs {
-			if !found[id] {
-				return nil, errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
+		for _, id := range input.AllocationIds {
+			if id != nil && !found[*id] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidAllocationIDNotFound, "The allocation ID '%s' does not exist", *id)
 			}
 		}
 	}

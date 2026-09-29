@@ -132,7 +132,7 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	if err == nil {
 		// Object exists - return duplicate error
 		slog.ErrorContext(ctx, "Key pair already exists", "keyName", keyName)
-		return nil, errors.New(awserrors.ErrorInvalidKeyPairDuplicate)
+		return nil, errDuplicateKeyPair()
 	}
 
 	// Determine key type (default: ed25519, optional: rsa). This deviates from
@@ -413,6 +413,17 @@ func (s *KeyServiceImpl) storeKeyPairMetadata(ctx context.Context, accountID, ke
 	}
 
 	return nil
+}
+
+// errDuplicateKeyPair is AWS's error for a name already in use, on create and
+// import alike.
+func errDuplicateKeyPair() error {
+	return awserrors.Errorf(awserrors.ErrorInvalidKeyPairDuplicate, "The keypair already exists")
+}
+
+// errInvalidKeyFormat is AWS's error for import material it cannot use.
+func errInvalidKeyFormat() error {
+	return awserrors.Errorf(awserrors.ErrorInvalidKeyFormat, "Key is not in valid OpenSSH public key format")
 }
 
 // getKeyNameFromKeyPairId retrieves the key name by directly reading the metadata file for a given keyPairId.
@@ -841,12 +852,12 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 		}
 		for _, name := range input.KeyNames {
 			if name != nil && !foundNames[*name] {
-				return nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidKeyPairNotFound, "The key pair '%s' does not exist", *name)
 			}
 		}
 		for _, id := range input.KeyPairIds {
 			if id != nil && !foundIDs[*id] {
-				return nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidKeyPairNotFound, "The keyPairId '%s' does not exist", *id)
 			}
 		}
 	}
@@ -922,7 +933,7 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	if err == nil {
 		// Object exists - return duplicate error
 		slog.ErrorContext(ctx, "Key pair already exists", "keyName", keyName)
-		return nil, errors.New(awserrors.ErrorInvalidKeyPairDuplicate)
+		return nil, errDuplicateKeyPair()
 	}
 
 	// The material is stored verbatim and later served to instances as their
@@ -940,7 +951,7 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	publicKeyData := bytes.TrimSpace(input.PublicKeyMaterial)
 	if bytes.ContainsAny(publicKeyData, "\r\n") {
 		slog.ErrorContext(ctx, "Public key material is not a single key", "keyName", keyName)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+		return nil, errInvalidKeyFormat()
 	}
 
 	// Parse the authorized-key line ("ssh-rsa AAAAB... comment"), which also
@@ -948,7 +959,7 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	publicKey, _, options, _, err := ssh.ParseAuthorizedKey(publicKeyData)
 	if err != nil {
 		slog.ErrorContext(ctx, "Invalid public key format", "keyName", keyName, "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+		return nil, errInvalidKeyFormat()
 	}
 
 	// An option prefix ("command=...", "from=...") is not covered by the
@@ -956,13 +967,13 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	// launched with this key pair. Refuse to import access the API cannot report.
 	if len(options) > 0 {
 		slog.ErrorContext(ctx, "Public key material carries authorized_keys options", "keyName", keyName, "options", options)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+		return nil, errInvalidKeyFormat()
 	}
 
 	keyType, err := keyPairType(publicKey)
 	if err != nil {
 		slog.ErrorContext(ctx, "Unsupported key type", "algorithm", publicKey.Type(), "keyName", keyName, "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+		return nil, errInvalidKeyFormat()
 	}
 
 	fingerprint, err := importedKeyFingerprint(publicKey)

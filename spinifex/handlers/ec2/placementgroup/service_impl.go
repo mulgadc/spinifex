@@ -131,7 +131,7 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(ctx context.Context, in
 	// Atomic create-if-not-exists to prevent TOCTOU race on duplicate names
 	if _, err := s.kv.Create(ctx, key, data); err != nil {
 		// Create fails if key already exists
-		return nil, errors.New(awserrors.ErrorInvalidPlacementGroupDuplicate)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidPlacementGroupDuplicate, "The placement group '%s' already exists.", groupName)
 	}
 
 	slog.InfoContext(ctx, "CreatePlacementGroup completed", "groupId", groupID, "groupName", groupName, "strategy", strategy, "accountID", accountID)
@@ -152,7 +152,8 @@ func (s *PlacementGroupServiceImpl) DeletePlacementGroup(ctx context.Context, in
 
 	entry, err := s.kv.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
+		// Lower case, unlike DescribePlacementGroups' message for the same code.
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidPlacementGroupUnknown, "The placement group '%s' is unknown.", groupName)
 	}
 
 	var record PlacementGroupRecord
@@ -260,9 +261,9 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context,
 				found[*g.GroupName] = true
 			}
 		}
-		for name := range nameSet {
-			if !found[name] {
-				return nil, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
+		for _, name := range input.GroupNames {
+			if name != nil && !found[*name] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidPlacementGroupUnknown, "The Placement Group '%s' is unknown.", *name)
 			}
 		}
 	}

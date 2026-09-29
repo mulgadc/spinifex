@@ -571,6 +571,25 @@ func TestEIP_DescribeAddresses_PublicIpNotFound(t *testing.T) {
 	assert.Equal(t, "Address '"+*released.PublicIp+"' not found.", msg)
 }
 
+func TestEIP_DescribeAddresses_AllocationIdNotFound(t *testing.T) {
+	svc, _, _ := setupTestEIP(t)
+
+	kept, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	released, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: released.AllocationId}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DescribeAddresses(context.Background(), &ec2.DescribeAddressesInput{
+		AllocationIds: []*string{kept.AllocationId, released.AllocationId},
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidAllocationIDNotFound, code)
+	assert.Equal(t, "The allocation ID '"+*released.AllocationId+"' does not exist", msg)
+}
+
 func TestEIP_DescribeAddresses_FilterByAllocationId(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
 

@@ -121,7 +121,7 @@ func TestCreatePlacementGroup_DuplicateName(t *testing.T) {
 		Strategy:  aws.String("spread"),
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidPlacementGroupDuplicate, err.Error())
+	assertAWSError(t, err, awserrors.ErrorInvalidPlacementGroupDuplicate, "The placement group 'dup-group' already exists.")
 }
 
 func TestCreatePlacementGroup_PartitionRejected(t *testing.T) {
@@ -243,7 +243,7 @@ func TestDeletePlacementGroup_NotFound(t *testing.T) {
 		GroupName: aws.String("nonexistent"),
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidPlacementGroupUnknown, err.Error())
+	assertAWSError(t, err, awserrors.ErrorInvalidPlacementGroupUnknown, "The placement group 'nonexistent' is unknown.")
 }
 
 func TestDeletePlacementGroup_InUse(t *testing.T) {
@@ -380,7 +380,7 @@ func TestDescribePlacementGroups_NameNotFound(t *testing.T) {
 		GroupNames: []*string{aws.String("ghost")},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidPlacementGroupUnknown, err.Error())
+	assertAWSError(t, err, awserrors.ErrorInvalidPlacementGroupUnknown, "The Placement Group 'ghost' is unknown.")
 }
 
 func TestDescribePlacementGroups_AccountScoped(t *testing.T) {
@@ -905,4 +905,13 @@ func TestRemoveInstance_ReadFailureIsNotSuccess(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorServerInternal), "got %v", err)
+}
+
+// assertAWSError checks the code a client receives and the message with it.
+func assertAWSError(t *testing.T, err error, wantCode, wantMessage string) {
+	t.Helper()
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unresolvable error: %v", err)
+	assert.Equal(t, wantCode, code)
+	assert.Equal(t, wantMessage, msg)
 }

@@ -227,7 +227,7 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_instance.TerminateInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeInstanceTypes": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceTypesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceTypes(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
+		return gateway_ec2_instance.DescribeInstanceTypes(ctx, input, gw.NATSConn, gw.ExpectedNodes, gw.NodeIDs, accountID)
 	}),
 	"DescribeInstanceTypeOfferings": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.DescribeInstanceTypeOfferings(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID, gw.Region, gw.AZ)

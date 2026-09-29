@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -28,7 +29,7 @@ func TestDescribeInstanceTypes_SingleNode(t *testing.T) {
 	})
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(context.Background(), input, nc, 1, "")
+	output, err := DescribeInstanceTypes(context.Background(), input, nc, 1, nil, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -71,7 +72,7 @@ func TestDescribeInstanceTypes_DeduplicatesAcrossNodes(t *testing.T) {
 	nc2.Flush()
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(context.Background(), input, nc, 2, "")
+	output, err := DescribeInstanceTypes(context.Background(), input, nc, 2, nil, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -127,7 +128,7 @@ func TestDescribeInstanceTypes_CapacityFilterShowsDuplicates(t *testing.T) {
 			},
 		},
 	}
-	output, err := DescribeInstanceTypes(context.Background(), input, nc, 2, "")
+	output, err := DescribeInstanceTypes(context.Background(), input, nc, 2, nil, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -158,7 +159,7 @@ func TestDescribeInstanceTypes_CapacityFilterFalseDeduplicates(t *testing.T) {
 			},
 		},
 	}
-	output, err := DescribeInstanceTypes(context.Background(), input, nc, 1, "")
+	output, err := DescribeInstanceTypes(context.Background(), input, nc, 1, nil, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -170,7 +171,7 @@ func TestDescribeInstanceTypes_NoSubscribers(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(context.Background(), input, nc, 0, "")
+	output, err := DescribeInstanceTypes(context.Background(), input, nc, 0, nil, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -187,7 +188,7 @@ func TestDescribeInstanceTypes_NodeReturnsError(t *testing.T) {
 	})
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(context.Background(), input, nc, 1, "")
+	output, err := DescribeInstanceTypes(context.Background(), input, nc, 1, nil, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -203,7 +204,7 @@ func TestDescribeInstanceTypes_MalformedJSON(t *testing.T) {
 	})
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(context.Background(), input, nc, 1, "")
+	output, err := DescribeInstanceTypes(context.Background(), input, nc, 1, nil, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -226,7 +227,7 @@ func TestDescribeInstanceTypes_NilInstanceTypeSkipped(t *testing.T) {
 	})
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	output, err := DescribeInstanceTypes(context.Background(), input, nc, 1, "")
+	output, err := DescribeInstanceTypes(context.Background(), input, nc, 1, nil, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -243,7 +244,114 @@ func TestDescribeInstanceTypes_ClosedConnection(t *testing.T) {
 	closedNC.Close()
 
 	input := &ec2.DescribeInstanceTypesInput{}
-	_, err = DescribeInstanceTypes(context.Background(), input, closedNC, 1, "")
+	_, err = DescribeInstanceTypes(context.Background(), input, closedNC, 1, nil, "")
 
 	require.Error(t, err)
+}
+
+func instanceTypesPayload(t *testing.T, names ...string) []byte {
+	t.Helper()
+	out := &ec2.DescribeInstanceTypesOutput{}
+	for _, n := range names {
+		out.InstanceTypes = append(out.InstanceTypes, &ec2.InstanceTypeInfo{InstanceType: aws.String(n)})
+	}
+	data, err := json.Marshal(out)
+	require.NoError(t, err)
+	return data
+}
+
+func instanceTypeNames(out *ec2.DescribeInstanceTypesOutput) []string {
+	var names []string
+	for _, it := range out.InstanceTypes {
+		names = append(names, *it.InstanceType)
+	}
+	return names
+}
+
+// AWS pages on MaxResults and NextToken; the aggregate is sorted so a page
+// boundary holds across calls whatever order the nodes reply in.
+func TestDescribeInstanceTypes_Paging(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n1",
+		instanceTypesPayload(t, "t3.small", "m5.large", "t3.micro", "c5.large", "t3.nano", "m5.xlarge", "c5.xlarge"))
+
+	page1, err := DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{MaxResults: aws.Int64(5)}, nc, 1, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"c5.large", "c5.xlarge", "m5.large", "m5.xlarge", "t3.micro"}, instanceTypeNames(page1))
+	require.NotNil(t, page1.NextToken)
+
+	page2, err := DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{MaxResults: aws.Int64(5), NextToken: page1.NextToken}, nc, 1, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"t3.nano", "t3.small"}, instanceTypeNames(page2))
+	assert.Nil(t, page2.NextToken)
+
+	all, err := DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{}, nc, 1, nil, "")
+	require.NoError(t, err)
+	assert.Len(t, all.InstanceTypes, 7)
+	assert.Nil(t, all.NextToken)
+}
+
+func TestDescribeInstanceTypes_InstanceTypeFilter(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n1",
+		instanceTypesPayload(t, "t3.micro", "t3.small", "m5.large", "c5.large"))
+
+	for _, tc := range []struct {
+		values []string
+		want   []string
+	}{
+		{[]string{"t3.micro"}, []string{"t3.micro"}},
+		{[]string{"t3.*"}, []string{"t3.micro", "t3.small"}},
+		{[]string{"m5.large", "c5.large"}, []string{"c5.large", "m5.large"}},
+		{[]string{"zz9.bogus"}, nil},
+	} {
+		out, err := DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{
+			Filters: []*ec2.Filter{{Name: aws.String("instance-type"), Values: aws.StringSlice(tc.values)}},
+		}, nc, 1, nil, "")
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, instanceTypeNames(out), tc.values)
+	}
+}
+
+// A named type no node has is InvalidInstanceType, as on AWS, once every
+// configured node has answered.
+func TestDescribeInstanceTypes_UnknownNamedType(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n1", instanceTypesPayload(t, "t3.micro"))
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n2", instanceTypesPayload(t, "m5.large"))
+	nodes := []string{"n1", "n2"}
+
+	out, err := DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{
+		InstanceTypes: aws.StringSlice([]string{"m5.large", "t3.micro"}),
+	}, nc, 0, nodes, "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"m5.large", "t3.micro"}, instanceTypeNames(out))
+
+	_, err = DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{
+		InstanceTypes: aws.StringSlice([]string{"t3.micro", "zz9.bogus"}),
+	}, nc, 0, nodes, "")
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceType, code)
+	assert.Equal(t, "The following supplied instance types do not exist: [zz9.bogus]", msg)
+}
+
+// Without a reply from every configured node a missing type may be on the
+// node that did not answer, so absence is not asserted.
+func TestDescribeInstanceTypes_UnknownNamedTypeIncompleteFanout(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n1", instanceTypesPayload(t, "t3.micro"))
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n2", utils.GenerateErrorPayload("InternalError"))
+	input := &ec2.DescribeInstanceTypesInput{InstanceTypes: aws.StringSlice([]string{"m5.large"})}
+
+	for _, nodes := range [][]string{{"n1", "n2"}, nil} {
+		_, err := DescribeInstanceTypes(context.Background(), input, nc, 2, nodes, "")
+		code, _, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok)
+		assert.Equal(t, awserrors.ErrorServiceUnavailable, code, nodes)
+	}
 }

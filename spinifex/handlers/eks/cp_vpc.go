@@ -4,7 +4,7 @@ import (
 	"context"
 
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
-	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 )
 
 // The managed control-plane VPC is the spinifex analogue of AWS EKS's hidden

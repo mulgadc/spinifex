@@ -7,7 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

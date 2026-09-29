@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 )
 
 // IGWProvisioner is the narrow Internet Gateway surface the system VPC needs.

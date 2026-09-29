@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )

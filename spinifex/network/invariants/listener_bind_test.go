@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	networkconnections "github.com/mulgadc/spinifex/docs/security/network-connections"
-	"github.com/mulgadc/spinifex/spinifex/network/listenerinventory"
+	"github.com/mulgadc/spinifex/internal/testkit/listenerinventory"
 )
 
 // TestListenerBindSitesMatchInventory is the static half of the listener

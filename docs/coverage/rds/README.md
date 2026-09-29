@@ -54,7 +54,7 @@ A parameter whose omission would create a false safety, security or availability
 | `DBSecurityGroups` | EC2-Classic security groups — use `VpcSecurityGroupIds` |
 | `DBClusterIdentifier`, `DBClusterSnapshotIdentifier` | Clustered engines are not offered |
 | `EnableCloudwatchLogsExports` | Log export is not implemented |
-| `EngineVersion` other than the engine's pin, `Engine` on modify | No in-place engine or version change |
+| `EngineVersion` other than the engine's pin; on modify, any `EngineVersion` and `Engine` | No in-place engine or version change |
 | `Engine=mysql` (and Aurora engines) | Oracle MySQL is not offered; `mariadb` is a distinct engine, not an alias for it |
 | `NewDBInstanceIdentifier` | The identifier is the DNS label and the KV key |
 | `DBPortNumber`, `DBSubnetGroupName` on modify | Both would move the endpoint |
@@ -67,6 +67,7 @@ A parameter whose omission would create a false safety, security or availability
 | `EnableCustomerOwnedIp` | An Outposts feature |
 | `ForceFailover` (reboot) | No standby to fail over to |
 | `DBSnapshotIdentifier` (stop) | Snapshot-on-stop is not implemented |
+| `DBInstanceAutomatedBackupsArn` (DescribeDBInstanceAutomatedBackups) | Cross-region automated backup replication is not offered, so no replicated backup has an ARN |
 | `dbi-resource-id` filter (DescribeDBSnapshots, DescribeDBInstanceAutomatedBackups) | Snapshots and automated backups do not record their source instance's resource ID |
 
 ### Operations

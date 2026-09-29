@@ -13,10 +13,8 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -75,10 +73,6 @@ const (
 // ASCII range. `:` and `/` are excluded so the assumed-role ARN stays unambiguously parseable.
 var roleSessionNameRegex = regexp.MustCompile(`^[A-Za-z0-9_+=,.@-]{2,64}$`)
 
-// roleSessionNameCharsetRegex is roleSessionNameRegex without the length bound, so the
-// charset and length constraints are reported separately, as AWS does.
-var roleSessionNameCharsetRegex = regexp.MustCompile(`^[A-Za-z0-9_+=,.@-]*$`)
-
 // AssumeRole mints temporary credentials after evaluating the target role's
 // trust policy against the caller.
 func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
@@ -94,28 +88,9 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 
 	// AWS reports every failed constraint at once, durationSeconds first, and before
 	// resolving the role, so a bad value against a missing role is not AccessDenied.
-	var violations []constraintViolation
-	if d := input.DurationSeconds; d != nil {
-		value := strconv.FormatInt(*d, 10)
-		if *d < minDurationSeconds {
-			violations = append(violations, constraintViolation{"durationSeconds", value,
-				fmt.Sprintf("Member must have value greater than or equal to %d", minDurationSeconds)})
-		} else if *d > maxDurationSeconds {
-			violations = append(violations, constraintViolation{"durationSeconds", value,
-				fmt.Sprintf("Member must have value less than or equal to %d", maxDurationSeconds)})
-		}
-	}
-	if !roleSessionNameCharsetRegex.MatchString(sessionName) {
-		violations = append(violations, constraintViolation{"roleSessionName", sessionName,
-			`Member must satisfy regular expression pattern: [\w+=,.@-]*`})
-	}
-	if n := utf8.RuneCountInString(sessionName); n < minRoleSessionNameLength {
-		violations = append(violations, constraintViolation{"roleSessionName", sessionName,
-			fmt.Sprintf("Member must have length greater than or equal to %d", minRoleSessionNameLength)})
-	} else if n > maxRoleSessionNameLength {
-		violations = append(violations, constraintViolation{"roleSessionName", sessionName,
-			fmt.Sprintf("Member must have length less than or equal to %d", maxRoleSessionNameLength)})
-	}
+	violations := durationViolations(input.DurationSeconds, maxDurationSeconds)
+	violations = append(violations, roleSessionNameConstraint.check("roleSessionName", sessionName)...)
+	violations = append(violations, mfaViolations(input.SerialNumber, input.TokenCode)...)
 	if err := validationError(violations); err != nil {
 		return nil, err
 	}
@@ -128,7 +103,7 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 		return nil, awserrors.Errorf(awserrors.ErrorValidationError,
 			"Session tags are not supported in this release; omit Tags and TransitiveTagKeys")
 	}
-	if aws.StringValue(input.SerialNumber) != "" || aws.StringValue(input.TokenCode) != "" {
+	if input.SerialNumber != nil || input.TokenCode != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"MFA is not supported in this release; omit SerialNumber and TokenCode")
 	}

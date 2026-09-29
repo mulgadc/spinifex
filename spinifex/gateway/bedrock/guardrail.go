@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

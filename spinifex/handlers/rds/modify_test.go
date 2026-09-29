@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"

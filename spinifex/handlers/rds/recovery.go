@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // How long an instance may be observed dark before it is called failed, unless

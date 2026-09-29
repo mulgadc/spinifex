@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // ReconcileResult reports what a pass found, so a caller can log it and a test

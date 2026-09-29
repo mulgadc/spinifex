@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // Lookup answers "what address does this external IP ride the wire as" from the

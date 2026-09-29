@@ -7,7 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // The single drain for everything a modify recorded but has not delivered. Both

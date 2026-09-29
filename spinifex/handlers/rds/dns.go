@@ -5,7 +5,7 @@ import (
 	"log/slog"
 
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // The vanity hostname for a DB instance, or "" on a deployment with no base

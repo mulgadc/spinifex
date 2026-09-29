@@ -7,7 +7,7 @@ import (
 	"time"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	reconcilelock "github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/reconciler"
 	"github.com/mulgadc/spinifex/internal/testkit"

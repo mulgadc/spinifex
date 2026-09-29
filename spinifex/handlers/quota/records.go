@@ -6,7 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )

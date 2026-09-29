@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/formation"
 	toml "github.com/pelletier/go-toml/v2"
 	"gopkg.in/ini.v1"
 )
@@ -90,10 +91,10 @@ type ConfigSettings struct {
 	OVNSBAddr string
 
 	// External networking for public subnets
-	ExternalMode  string     // "pool", "nat" (routed), or "" (disabled)
-	ExternalIface string     // WAN NIC name (e.g., "eth0", "eth1")
-	BridgeMode    string     // vpcd bridge_mode; only written for "nat" (bridged modes auto-detect)
-	Pools         []PoolData // External pools rendered in order (nat mode: transit first, then optional public pool)
+	ExternalMode  string               // "pool", "nat" (routed), or "" (disabled)
+	ExternalIface string               // WAN NIC name (e.g., "eth0", "eth1")
+	BridgeMode    string               // vpcd bridge_mode; only written for "nat" (bridged modes auto-detect)
+	Pools         []formation.PoolData // External pools rendered in order (nat mode: transit first, then optional public pool)
 
 	// OperatorEmail is the address collected at install time. Written under [operator]
 	// in spinifex.toml so it survives wipes. Empty means no identity was supplied.
@@ -145,32 +146,6 @@ type ConfigSettings struct {
 	// shim relays guest queries from a node address, so this covers both.
 	// Everyone else gets authoritative answers only.
 	ResolverAllowFrom []string
-}
-
-// PoolData is one [[network.external_pools]] block rendered into spinifex.toml.
-// The json tags are load bearing: formation sends these to every joiner, so a
-// renamed field silently drops a pool rather than failing to compile.
-type PoolData struct {
-	Name       string   `json:"name"`                  // Pool name (e.g., "wan", "nat-transit")
-	Source     string   `json:"source,omitempty"`      // IP source: "static" or "dhcp"
-	BindBridge string   `json:"bind_bridge,omitempty"` // Linux bridge / interface for upstream DORA (source=dhcp only)
-	Start      string   `json:"start,omitempty"`       // First IP in range (static only)
-	End        string   `json:"end,omitempty"`         // Last IP in range (static only)
-	Gateway    string   `json:"gateway,omitempty"`     // WAN gateway IP
-	GatewayIP  string   `json:"gateway_ip,omitempty"`  // Explicit SNAT IP (overrides default of first IP in range)
-	PrefixLen  int      `json:"prefix_len,omitempty"`  // Subnet prefix length (default 24)
-	DNSServers []string `json:"dns_servers,omitempty"` // DNS servers for VM DHCP (auto-detected from host)
-	DHCPMAC    string   `json:"dhcp_mac,omitempty"`    // DHCP client MAC strategy: "derived" (default) or "interface"
-	// GwLrpRangeStart/End reserve gateway-LRP IPs for OVN routers. When empty
-	// the allocator auto-derives the top 16 host IPs of the pool subnet.
-	GwLrpRangeStart string `json:"gw_lrp_range_start,omitempty"`
-	GwLrpRangeEnd   string `json:"gw_lrp_range_end,omitempty"`
-}
-
-// PredastoreNodeConfig describes a single Predastore node for multi-node config generation.
-type PredastoreNodeConfig struct {
-	ID   int
-	Host string
 }
 
 type ConfigFile struct {
@@ -1008,7 +983,7 @@ const PredastoreAdminPort = 8660
 // PredastoreTopology derives the cluster nodes for a set of machines: each
 // machine hosts a gate, one blob node and one meta node. Node IDs are unique
 // across the whole file, so gates take 1..n, blobs n+1..2n and metas 2n+1..3n.
-func PredastoreTopology(nodes []PredastoreNodeConfig) []PredastoreClusterNode {
+func PredastoreTopology(nodes []formation.PredastoreNodeConfig) []PredastoreClusterNode {
 	out := make([]PredastoreClusterNode, 0, len(nodes)*3)
 	for _, n := range nodes {
 		out = append(out, PredastoreClusterNode{ID: n.ID, HostID: n.ID, Role: predastoreRoleGate, Port: predastoreGatePort})
@@ -1035,13 +1010,13 @@ func PredastoreTopology(nodes []PredastoreNodeConfig) []PredastoreClusterNode {
 // system key write access to it, and adds the read-only entry the resolver
 // authenticates with. A zero value omits all three, yielding a config no
 // northstar service can use.
-func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, dataDir, bindIP string, compactionIntervalSeconds int, northstar NorthstarCredentials) (string, error) {
+func GenerateMultiNodePredastoreConfig(templateStr string, nodes []formation.PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, dataDir, bindIP string, compactionIntervalSeconds int, northstar NorthstarCredentials) (string, error) {
 	if len(nodes) < 2 {
 		return "", fmt.Errorf("multi-node predastore requires at least 2 nodes, got %d", len(nodes))
 	}
 
 	data := struct {
-		Nodes                     []PredastoreNodeConfig
+		Nodes                     []formation.PredastoreNodeConfig
 		ClusterNodes              []PredastoreClusterNode
 		AccessKey                 string
 		SecretKey                 string
@@ -1083,7 +1058,7 @@ func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNod
 
 // FindNodeIDByIP returns the node ID for the given IP in the node list,
 // or 0 if the IP is not found.
-func FindNodeIDByIP(nodes []PredastoreNodeConfig, ip string) int {
+func FindNodeIDByIP(nodes []formation.PredastoreNodeConfig, ip string) int {
 	for _, n := range nodes {
 		if n.Host == ip {
 			return n.ID

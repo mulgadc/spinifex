@@ -32,12 +32,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
@@ -1443,10 +1443,10 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	// Assemble the external pool blocks rendered into spinifex.toml.
-	var externalPools []admin.PoolData
+	var externalPools []formation.PoolData
 	switch externalMode {
 	case "nat":
-		externalPools = append(externalPools, admin.PoolData{
+		externalPools = append(externalPools, formation.PoolData{
 			Name: host.NATTransitPoolName, Gateway: host.NATTransitGatewayIP,
 			PrefixLen: 24, DNSServers: dnsServers,
 			GwLrpRangeStart: host.NATTransitGwLrpStart, GwLrpRangeEnd: host.NATTransitGwLrpEnd,
@@ -1458,14 +1458,14 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			if externalSource == "dhcp" && isNonBridgeableUplink(externalBindBridge) {
 				dhcpMAC = "interface"
 			}
-			externalPools = append(externalPools, admin.PoolData{
+			externalPools = append(externalPools, formation.PoolData{
 				Name: "wan", Source: externalSource, BindBridge: externalBindBridge,
 				DHCPMAC: dhcpMAC, Start: poolStart, End: poolEnd, Gateway: natPublicGateway,
 				GatewayIP: gatewayIP, PrefixLen: externalPrefixLen, DNSServers: dnsServers,
 			})
 		}
 	case "pool":
-		externalPools = append(externalPools, admin.PoolData{
+		externalPools = append(externalPools, formation.PoolData{
 			Name: "wan", Source: externalSource, BindBridge: externalBindBridge,
 			Start: poolStart, End: poolEnd, Gateway: externalGateway,
 			GatewayIP: gatewayIP, PrefixLen: externalPrefixLen, DNSServers: dnsServers,
@@ -1742,14 +1742,14 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			os.Exit(1)
 		}
 
-		var predastoreNodes []admin.PredastoreNodeConfig
+		var predastoreNodes []formation.PredastoreNodeConfig
 		for i, ip := range ips {
 			ip = strings.TrimSpace(ip)
 			if net.ParseIP(ip) == nil {
 				fmt.Fprintf(os.Stderr, "❌ Error: Invalid IP in --predastore-nodes: %s\n", ip)
 				os.Exit(1)
 			}
-			predastoreNodes = append(predastoreNodes, admin.PredastoreNodeConfig{
+			predastoreNodes = append(predastoreNodes, formation.PredastoreNodeConfig{
 				ID:   i + 1,
 				Host: ip,
 			})

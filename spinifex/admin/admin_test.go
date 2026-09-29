@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -816,7 +817,7 @@ id = {{.ID}}
 addr = "{{.Host}}"
 data_dir = "{{$.PredastoreDataDir}}"
 {{end}}`
-	nodes := []PredastoreNodeConfig{
+	nodes := []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
 		{ID: 2, Host: "10.0.0.2"},
 		{ID: 3, Host: "10.0.0.3"},
@@ -838,7 +839,7 @@ host_id = {{.HostID}}
 role = "{{.Role}}"
 port = {{.Port}}
 {{end}}`
-	nodes := []PredastoreNodeConfig{
+	nodes := []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
 		{ID: 2, Host: "10.0.0.2"},
 		{ID: 3, Host: "10.0.0.3"},
@@ -855,7 +856,7 @@ port = {{.Port}}
 }
 
 func TestPredastoreTopology_UniqueIDsAcrossRoles(t *testing.T) {
-	topology := PredastoreTopology([]PredastoreNodeConfig{
+	topology := PredastoreTopology([]formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
 		{ID: 2, Host: "10.0.0.2"},
 	})
@@ -877,7 +878,7 @@ func TestPredastoreTopology_UniqueIDsAcrossRoles(t *testing.T) {
 // bucket and no credential the resolver could authenticate with.
 func TestGenerateMultiNodePredastoreConfig_NorthstarCredentialsReachTemplate(t *testing.T) {
 	tmpl := `access = "{{.NorthstarAccessKey}}" secret = "{{.NorthstarSecretKey}}" bucket = "{{.NorthstarBucket}}"`
-	nodes := []PredastoreNodeConfig{
+	nodes := []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
 		{ID: 2, Host: "10.0.0.2"},
 	}
@@ -892,7 +893,7 @@ func TestGenerateMultiNodePredastoreConfig_NorthstarCredentialsReachTemplate(t *
 // production template's guards key off to omit the stanzas entirely.
 func TestGenerateMultiNodePredastoreConfig_NoNorthstarCredentials(t *testing.T) {
 	tmpl := `access = "{{.NorthstarAccessKey}}" secret = "{{.NorthstarSecretKey}}" bucket = "{{.NorthstarBucket}}"`
-	nodes := []PredastoreNodeConfig{
+	nodes := []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
 		{ID: 2, Host: "10.0.0.2"},
 	}
@@ -906,7 +907,7 @@ func TestGenerateMultiNodePredastoreConfig_NoNorthstarCredentials(t *testing.T) 
 func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
 	tmpl := "{{range .Nodes}}{{.ID}}{{end}}"
 
-	_, err := GenerateMultiNodePredastoreConfig(tmpl, []PredastoreNodeConfig{
+	_, err := GenerateMultiNodePredastoreConfig(tmpl, []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
 	}, "AK", "SK", "us-east-1", "nats-token", "/config", "/var/lib/spinifex", "10.0.0.1", 0, NorthstarCredentials{})
 	assert.Error(t, err)
@@ -914,7 +915,7 @@ func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
 }
 
 func TestGenerateMultiNodePredastoreConfig_InvalidTemplate(t *testing.T) {
-	_, err := GenerateMultiNodePredastoreConfig("{{.Unclosed", []PredastoreNodeConfig{
+	_, err := GenerateMultiNodePredastoreConfig("{{.Unclosed", []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "a"}, {ID: 2, Host: "b"}, {ID: 3, Host: "c"},
 	}, "AK", "SK", "us-east-1", "nats-token", "/config", "/var/lib/spinifex", "10.0.0.1", 0, NorthstarCredentials{})
 	assert.Error(t, err)
@@ -924,7 +925,7 @@ func TestGenerateMultiNodePredastoreConfig_InvalidTemplate(t *testing.T) {
 // --- FindNodeIDByIP ---
 
 func TestFindNodeIDByIP(t *testing.T) {
-	nodes := []PredastoreNodeConfig{
+	nodes := []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
 		{ID: 2, Host: "10.0.0.2"},
 		{ID: 3, Host: "10.0.0.3"},

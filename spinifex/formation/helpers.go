@@ -5,8 +5,6 @@ import (
 	"maps"
 	"slices"
 	"strings"
-
-	"github.com/mulgadc/spinifex/spinifex/admin"
 )
 
 // ovnDBQuorum is the number of nodes that host the clustered OVN NB/SB
@@ -52,7 +50,7 @@ func BuildClusterRoutes(nodes map[string]NodeInfo) []string {
 
 // BuildPredastoreNodes returns sorted PredastoreNodeConfig (1-based IDs) for
 // nodes running the "predastore" service.
-func BuildPredastoreNodes(nodes map[string]NodeInfo) []admin.PredastoreNodeConfig {
+func BuildPredastoreNodes(nodes map[string]NodeInfo) []PredastoreNodeConfig {
 	predaNodes := make(map[string]NodeInfo)
 	for k, n := range nodes {
 		if hasService(n.Services, "predastore") {
@@ -60,9 +58,9 @@ func BuildPredastoreNodes(nodes map[string]NodeInfo) []admin.PredastoreNodeConfi
 		}
 	}
 	sorted := sortedNodes(predaNodes)
-	out := make([]admin.PredastoreNodeConfig, len(sorted))
+	out := make([]PredastoreNodeConfig, len(sorted))
 	for i, n := range sorted {
-		out[i] = admin.PredastoreNodeConfig{
+		out[i] = PredastoreNodeConfig{
 			ID:   i + 1,
 			Host: n.BindIP,
 		}

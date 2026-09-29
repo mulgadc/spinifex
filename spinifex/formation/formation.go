@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 )
 
 // NodeInfo describes a node participating in cluster formation.
@@ -32,6 +31,36 @@ type NodeInfo struct {
 	AZ          string   `json:"az"`
 	Port        int      `json:"port"`
 	Services    []string `json:"services,omitempty"`
+}
+
+// PredastoreNodeConfig identifies one formed node in the generated Predastore
+// topology. Node IDs are assigned from the deterministic formation membership
+// order so every joiner renders the same topology.
+type PredastoreNodeConfig struct {
+	ID   int
+	Host string
+}
+
+// PoolData is one external-network pool propagated to joining nodes during
+// formation and rendered into spinifex.toml.
+//
+// The JSON field names are part of the formation protocol: changing one would
+// silently drop a pool on a joining node rather than fail compilation.
+type PoolData struct {
+	Name       string   `json:"name"`
+	Source     string   `json:"source,omitempty"`
+	BindBridge string   `json:"bind_bridge,omitempty"`
+	Start      string   `json:"start,omitempty"`
+	End        string   `json:"end,omitempty"`
+	Gateway    string   `json:"gateway,omitempty"`
+	GatewayIP  string   `json:"gateway_ip,omitempty"`
+	PrefixLen  int      `json:"prefix_len,omitempty"`
+	DNSServers []string `json:"dns_servers,omitempty"`
+	DHCPMAC    string   `json:"dhcp_mac,omitempty"`
+	// GwLrpRangeStart/End reserve gateway-LRP IPs for OVN routers. When empty
+	// the allocator derives the top 16 host IPs of the pool subnet.
+	GwLrpRangeStart string `json:"gw_lrp_range_start,omitempty"`
+	GwLrpRangeEnd   string `json:"gw_lrp_range_end,omitempty"`
 }
 
 // JoinRequest is the payload POSTed by joining nodes.
@@ -70,8 +99,8 @@ type NetworkConfig struct {
 	// order. A list rather than one flattened pool because routed NAT has two —
 	// the transit segment and any public pool — and the transit pool carries a
 	// gateway-LRP range that has no equivalent in pool mode.
-	Pools          []admin.PoolData `json:"pools,omitempty"`
-	PoolDNSServers []string         `json:"pool_dns_servers,omitempty"`
+	Pools          []PoolData `json:"pools,omitempty"`
+	PoolDNSServers []string   `json:"pool_dns_servers,omitempty"`
 
 	// IPSecEnabled propagates the cluster-wide intra-AZ IPsec toggle so the
 	// joining node provisions strongSwan and flips OVS ipsec_encapsulation to

@@ -317,7 +317,7 @@ external_interface = "enp0s3"
 // iam.nats_url must not embed a bare 0.0.0.0 — the predastore process dials
 // its own NATS via loopback when listening on wildcard.
 func TestPredastoreMultinodeTemplate_NatsURLLoopbackShim(t *testing.T) {
-	nodes := []admin.PredastoreNodeConfig{
+	nodes := []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
 		{ID: 2, Host: "10.0.0.2"},
 		{ID: 3, Host: "10.0.0.3"},
@@ -690,7 +690,7 @@ func TestSpinifexTomlTemplate_ExternalPoolDHCPSource(t *testing.T) {
 		OVNSBAddr:     "tcp:127.0.0.1:6642",
 		ExternalMode:  "pool",
 		ExternalIface: "eth0",
-		Pools: []admin.PoolData{{
+		Pools: []formation.PoolData{{
 			Name: "wan", Source: "dhcp", BindBridge: "br-wan", PrefixLen: 24,
 		}},
 	}
@@ -721,7 +721,7 @@ func TestSpinifexTomlTemplate_ExternalPoolStaticSource(t *testing.T) {
 		OVNSBAddr:     "tcp:127.0.0.1:6642",
 		ExternalMode:  "pool",
 		ExternalIface: "eth0",
-		Pools: []admin.PoolData{{
+		Pools: []formation.PoolData{{
 			Name: "wan", Source: "static",
 			Start: "192.168.1.150", End: "192.168.1.250",
 			Gateway: "192.168.1.1", PrefixLen: 24,
@@ -744,7 +744,7 @@ func TestApplyNetworkConfig_PropagatesPoolBindBridge(t *testing.T) {
 	settings := &admin.ConfigSettings{}
 	nc := &formation.NetworkConfig{
 		ExternalMode: "pool",
-		Pools: []admin.PoolData{{
+		Pools: []formation.PoolData{{
 			Name: "wan", Source: "dhcp", BindBridge: "br-wan", PrefixLen: 24,
 		}},
 	}
@@ -762,7 +762,7 @@ func TestApplyNetworkConfig_PropagatesEveryPool(t *testing.T) {
 	settings := &admin.ConfigSettings{}
 	nc := &formation.NetworkConfig{
 		ExternalMode: "nat",
-		Pools: []admin.PoolData{
+		Pools: []formation.PoolData{
 			{Name: "nat-transit", Gateway: "100.127.0.1", PrefixLen: 24,
 				GwLrpRangeStart: "100.127.0.16", GwLrpRangeEnd: "100.127.0.254"},
 			{Name: "wan", Source: "static", Start: "192.168.1.150", End: "192.168.1.200",
@@ -788,8 +788,8 @@ func renderSingleNodePredastore(t *testing.T, settings admin.ConfigSettings) str
 	return string(b)
 }
 
-func predastoreMultinodeNodes() []admin.PredastoreNodeConfig {
-	return []admin.PredastoreNodeConfig{
+func predastoreMultinodeNodes() []formation.PredastoreNodeConfig {
+	return []formation.PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"}, {ID: 2, Host: "10.0.0.2"}, {ID: 3, Host: "10.0.0.3"},
 	}
 }

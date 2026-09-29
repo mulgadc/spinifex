@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +31,7 @@ func TestSpinifexTomlTemplate_NATMode(t *testing.T) {
 
 		ExternalMode: "nat",
 		BridgeMode:   "nat",
-		Pools: []admin.PoolData{{
+		Pools: []formation.PoolData{{
 			Name: "nat-transit", Gateway: "100.127.0.1", PrefixLen: 24,
 		}},
 	}
@@ -57,7 +58,7 @@ func TestSpinifexTomlTemplate_GwLrpRange(t *testing.T) {
 		OVNNBAddr: "tcp:127.0.0.1:6641", OVNSBAddr: "tcp:127.0.0.1:6642",
 
 		ExternalMode: "nat", BridgeMode: "nat",
-		Pools: []admin.PoolData{{
+		Pools: []formation.PoolData{{
 			Name: "nat-transit", Gateway: "100.127.0.1", PrefixLen: 24,
 			GwLrpRangeStart: "100.127.0.16", GwLrpRangeEnd: "100.127.0.254",
 		}},
@@ -82,7 +83,7 @@ func TestSpinifexTomlTemplate_GwLrpRangeOmittedWhenUnset(t *testing.T) {
 		OVNNBAddr: "tcp:127.0.0.1:6641", OVNSBAddr: "tcp:127.0.0.1:6642",
 
 		ExternalMode: "pool", ExternalIface: "enp0s3",
-		Pools: []admin.PoolData{{
+		Pools: []formation.PoolData{{
 			Name: "wan", Source: "static",
 			Start: "192.168.1.150", End: "192.168.1.250",
 			Gateway: "192.168.1.1", PrefixLen: 24,
@@ -114,7 +115,7 @@ func TestSpinifexTomlTemplate_PoolModeOmitsBridgeMode(t *testing.T) {
 
 		ExternalMode:  "pool",
 		ExternalIface: "enp0s3",
-		Pools: []admin.PoolData{{
+		Pools: []formation.PoolData{{
 			Name: "wan", Source: "static",
 			Start: "192.168.1.150", End: "192.168.1.250",
 			Gateway: "192.168.1.1", PrefixLen: 24,
@@ -161,7 +162,7 @@ func TestSpinifexTomlTemplate_NATModeWithPublicPool(t *testing.T) {
 
 		ExternalMode: "nat",
 		BridgeMode:   "nat",
-		Pools: []admin.PoolData{
+		Pools: []formation.PoolData{
 			{Name: "nat-transit", Gateway: "100.127.0.1", PrefixLen: 24},
 			{
 				Name: "wan", Source: "dhcp", BindBridge: "wlan0",

@@ -343,7 +343,7 @@ func (gw *GatewayConfig) checkEKSPassRole(r *http.Request, action, accountID str
 		}
 		// Evaluated before an unknown role is reported, so a caller without
 		// iam:PassRole cannot use the reply to probe which roles exist.
-		if err := gw.checkPolicyResources(r, "iam", "PassRole", []string{roleARN}); err != nil {
+		if err := gw.checkPassRole(r, roleARN, eksServicePrincipal); err != nil {
 			return err
 		}
 		if unknown {

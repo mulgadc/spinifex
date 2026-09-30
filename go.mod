@@ -23,7 +23,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/miekg/dns v1.1.73
 	github.com/minio/highwayhash v1.0.4
-	github.com/mulgadc/bluebottle v1.21.0
+	github.com/mulgadc/bluebottle v1.21.1-0.20260930232112-06a30085e37e
 	github.com/mulgadc/northstar v1.21.0
 	github.com/mulgadc/predastore v1.21.0
 	github.com/mulgadc/viperblock v1.21.0

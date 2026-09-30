@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -504,7 +505,7 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 	if err := s.requireOrchestrationDeps("CreateCluster"); err != nil {
 		return nil, err
 	}
-	if err := validateCreateClusterInput(input); err != nil {
+	if err := validateCreateClusterInput(input, accountID); err != nil {
 		return nil, err
 	}
 	name := aws.StringValue(input.Name)
@@ -2044,11 +2045,12 @@ func eksTagErr(err error) error {
 
 func notImpl() error { return errors.New(awserrors.ErrorNotImplemented) }
 
-func validateCreateClusterInput(input *eks.CreateClusterInput) error {
+func validateCreateClusterInput(input *eks.CreateClusterInput, accountID string) error {
 	if input == nil || input.Name == nil || *input.Name == "" {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if input.RoleArn == nil || !strings.HasPrefix(*input.RoleArn, "arn:aws:iam:") {
+	// The cluster role must be a role in the caller's own account.
+	if roleAccount, _, err := auth.ParseRoleARN(aws.StringValue(input.RoleArn)); err != nil || roleAccount != accountID {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	if input.ResourcesVpcConfig == nil || len(input.ResourcesVpcConfig.SubnetIds) == 0 {

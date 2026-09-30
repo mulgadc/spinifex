@@ -1018,7 +1018,7 @@ func setupClusterFixture(t *testing.T, c *harness.AWSClient, env *harness.Env, a
 	t.Cleanup(func() { harness.DeleteWorkerEgress(t, c, fx.Egress) })
 
 	harness.Phase(t, "Creating cluster %q", fx.ClusterName)
-	roleArn := fmt.Sprintf("arn:aws:iam::%s:role/%s-role", fx.AccountID, fx.ClusterName)
+	roleArn := harness.CreateEKSClusterRole(t, c, fx.ClusterName+"-role")
 	_, err = c.EKS.CreateCluster(&eks.CreateClusterInput{
 		Name:    aws.String(fx.ClusterName),
 		RoleArn: aws.String(roleArn),

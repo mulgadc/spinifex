@@ -14,33 +14,48 @@ import (
 
 const eksNodeRoleARN = "arn:aws:iam::" + authzAccountID + ":role/eks/node-role"
 
+const foreignAccountID = "999999999999"
+
 // roleStoreIAMService evaluates policy from docs and resolves role names to the
-// ARNs in roles, the way the IAM store does.
+// ARNs in roles, keyed by account then name, the way the IAM store does.
 type roleStoreIAMService struct {
 	policyMockIAMService
 
-	roles map[string]string
+	roles        map[string]map[string]string
+	canonicalErr error
 }
 
-func (s *roleStoreIAMService) CanonicalResourceARN(_ string, _ arn.IAMResourceType, name string) (string, error) {
-	if roleARN, ok := s.roles[name]; ok {
+func (s *roleStoreIAMService) CanonicalResourceARN(account string, _ arn.IAMResourceType, name string) (string, error) {
+	if s.canonicalErr != nil {
+		return "", s.canonicalErr
+	}
+	if roleARN, ok := s.roles[account][name]; ok {
 		return roleARN, nil
 	}
 	return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
 }
 
-func eksPassRoleGateway(statements ...handlers_iam.Statement) *GatewayConfig {
+// The foreign account holds a role of the same name, so only the gateway's
+// account check stops its ARN from resolving.
+func eksPassRoleService(statements ...handlers_iam.Statement) *roleStoreIAMService {
 	docs := []handlers_iam.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
-	return &GatewayConfig{
-		DisableLogging: true,
-		Region:         authzRegion,
-		IAMService: &roleStoreIAMService{
-			policyMockIAMService: policyMockIAMService{
-				getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
-			},
-			roles: map[string]string{"node-role": eksNodeRoleARN},
+	return &roleStoreIAMService{
+		policyMockIAMService: policyMockIAMService{
+			getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
+		},
+		roles: map[string]map[string]string{
+			authzAccountID:   {"node-role": eksNodeRoleARN},
+			foreignAccountID: {"node-role": "arn:aws:iam::" + foreignAccountID + ":role/eks/node-role"},
 		},
 	}
+}
+
+func eksPassRoleGateway(statements ...handlers_iam.Statement) *GatewayConfig {
+	return eksGatewayWithIAM(eksPassRoleService(statements...))
+}
+
+func eksGatewayWithIAM(iamService *roleStoreIAMService) *GatewayConfig {
+	return &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: iamService}
 }
 
 func createNodegroupBody(nodeRole string) string {
@@ -86,8 +101,31 @@ func TestEKSCreateNodegroup_ForeignAccountRoleIsRefused(t *testing.T) {
 		statement("Allow", "iam:PassRole", "*"),
 	)
 	err := dispatchEKS(t, gw, http.MethodPost, "/clusters/prod/node-groups",
-		createNodegroupBody("arn:aws:iam::999999999999:role/eks/node-role"))
+		createNodegroupBody("arn:aws:iam::"+foreignAccountID+":role/eks/node-role"))
 	assertInvalidParameter(t, err)
+}
+
+func TestEKSCreateNodegroup_NonRoleARNIsRefused(t *testing.T) {
+	gw := eksPassRoleGateway(
+		statement("Allow", "eks:*", "*"),
+		statement("Allow", "iam:PassRole", "*"),
+	)
+	err := dispatchEKS(t, gw, http.MethodPost, "/clusters/prod/node-groups",
+		createNodegroupBody("arn:aws:iam::"+authzAccountID+":user/node-role"))
+	assertInvalidParameter(t, err)
+}
+
+// A store fault is not evidence the role is absent, so it must not surface as
+// a caller error or fall through to dispatch.
+func TestEKSCreateNodegroup_LookupFaultPassesThrough(t *testing.T) {
+	storeErr := errors.New("get role: nats: timeout")
+	iamService := eksPassRoleService(
+		statement("Allow", "eks:*", "*"),
+		statement("Allow", "iam:PassRole", "*"),
+	)
+	iamService.canonicalErr = storeErr
+	err := dispatchEKS(t, eksGatewayWithIAM(iamService), http.MethodPost, "/clusters/prod/node-groups", createNodegroupBody(eksNodeRoleARN))
+	require.ErrorIs(t, err, storeErr)
 }
 
 // An unknown role is reported only to a caller allowed to pass it, so the

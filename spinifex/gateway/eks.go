@@ -337,7 +337,7 @@ func (gw *GatewayConfig) checkEKSPassRole(r *http.Request, action, accountID str
 		if errors.Is(resolveErr, auth.ErrInvalidRoleARN) || errors.Is(resolveErr, errForeignRole) {
 			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s is not a role ARN in account %s", roleARN, accountID)
 		}
-		unknown := errors.Is(resolveErr, auth.ErrRoleARNMismatch) || isIAMNoSuchEntity(resolveErr)
+		unknown := errors.Is(resolveErr, auth.ErrRoleARNMismatch) || awserrors.IsErrorCode(resolveErr, awserrors.ErrorIAMNoSuchEntity)
 		if resolveErr != nil && !unknown {
 			return resolveErr
 		}
@@ -351,11 +351,6 @@ func (gw *GatewayConfig) checkEKSPassRole(r *http.Request, action, accountID str
 		}
 	}
 	return nil
-}
-
-func isIAMNoSuchEntity(err error) bool {
-	code, ok := awserrors.ResolveErrorCode(err)
-	return ok && code == awserrors.ErrorIAMNoSuchEntity
 }
 
 // eksCaller reads the principal behind the request. The role name comes from the

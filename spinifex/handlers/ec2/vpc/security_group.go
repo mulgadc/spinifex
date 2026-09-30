@@ -1956,10 +1956,12 @@ func sgRulesToIpPermissions(rules []SGRule) []*ec2.IpPermission {
 		key := permKey{IpProtocol: rule.IpProtocol, FromPort: rule.FromPort, ToPort: rule.ToPort}
 		perm, exists := grouped[key]
 		if !exists {
-			perm = &ec2.IpPermission{
-				IpProtocol: aws.String(rule.IpProtocol),
-				FromPort:   aws.Int64(rule.FromPort),
-				ToPort:     aws.Int64(rule.ToPort),
+			perm = &ec2.IpPermission{IpProtocol: aws.String(rule.IpProtocol)}
+			// AWS omits both ports on an all-protocol permission here, unlike the
+			// -1/-1 that DescribeSecurityGroupRules reports for the same rule.
+			if rule.IpProtocol != allProtocols {
+				perm.FromPort = aws.Int64(rule.FromPort)
+				perm.ToPort = aws.Int64(rule.ToPort)
 			}
 			grouped[key] = perm
 		}
@@ -2048,7 +2050,11 @@ func removeSGRules(existing, toRemove []SGRule) []SGRule {
 }
 
 // sgRuleKey returns a string key for deduplication/matching of SG rules.
+// An all-protocol rule has no ports, so its stored or requested ports are ignored.
 func sgRuleKey(r SGRule) string {
+	if r.IpProtocol == allProtocols {
+		r.FromPort, r.ToPort = 0, 0
+	}
 	return fmt.Sprintf("%s:%d:%d:%s:%s:%s", r.IpProtocol, r.FromPort, r.ToPort, r.CidrIp, r.CidrIpv6, r.SourceSG)
 }
 

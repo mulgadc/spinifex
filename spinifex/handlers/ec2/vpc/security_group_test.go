@@ -404,6 +404,34 @@ func TestRevokeSecurityGroupEgress_Success(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestRevokeSecurityGroupEgress_AllProtocolIgnoresPorts: DescribeSecurityGroups
+// reports no ports on an all-protocol rule, so a caller revoking it may send
+// -1/-1 (as the UI does) and must still match the stored rule.
+func TestRevokeSecurityGroupEgress_AllProtocolIgnoresPorts(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "revoke-egress-ports-sg")
+
+	_, err := svc.RevokeSecurityGroupEgress(context.Background(), &ec2.RevokeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("-1"),
+			FromPort:   aws.Int64(-1),
+			ToPort:     aws.Int64(-1),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.SecurityGroups, 1)
+	assert.Empty(t, desc.SecurityGroups[0].IpPermissionsEgress)
+}
+
 func TestRevokeSecurityGroupEgress_NotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
@@ -912,6 +940,8 @@ func TestSGRulesToIpPermissions_Conversion(t *testing.T) {
 	assert.Len(t, tcpPerm.IpRanges, 1)
 
 	require.NotNil(t, allPerm, "should have all-traffic permission")
+	assert.Nil(t, allPerm.FromPort, "AWS omits ports on an all-protocol permission")
+	assert.Nil(t, allPerm.ToPort)
 	assert.Len(t, allPerm.UserIdGroupPairs, 1)
 	assert.Equal(t, "sg-other", *allPerm.UserIdGroupPairs[0].GroupId)
 }

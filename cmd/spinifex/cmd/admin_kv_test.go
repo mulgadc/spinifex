@@ -279,7 +279,7 @@ func TestKVDigestIgnoresExpiry(t *testing.T) {
 	require.NoError(t, err)
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "ttl", TTL: time.Second})
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "ttl", TTL: 200 * time.Millisecond})
 	require.NoError(t, err)
 	_, err = kv.PutString(ctx, "k", "v")
 	require.NoError(t, err)
@@ -291,7 +291,7 @@ func TestKVDigestIgnoresExpiry(t *testing.T) {
 	ns.Shutdown()
 	ns.WaitForShutdown()
 
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
 	d, err := digestStore(ctx, work, nil, false, metas)
 	require.NoError(t, err)
 	require.Len(t, d, 1)

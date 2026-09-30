@@ -38,7 +38,7 @@ func TestDrainDHCPLeasesSumsReleased(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	fakeDrainResponder(t, nc, 7, "")
 
-	released, responders := drainDHCPLeases(nc, 2*time.Second)
+	released, responders := drainDHCPLeases(nc, 250*time.Millisecond)
 	assert.Equal(t, 7, released)
 	assert.Equal(t, 1, responders)
 }
@@ -49,7 +49,7 @@ func TestDrainDHCPLeasesReportsResponderError(t *testing.T) {
 
 	// An erroring responder still counts as a responder but contributes
 	// zero released leases.
-	released, responders := drainDHCPLeases(nc, 2*time.Second)
+	released, responders := drainDHCPLeases(nc, 250*time.Millisecond)
 	assert.Equal(t, 0, released)
 	assert.Equal(t, 1, responders)
 }

@@ -88,7 +88,7 @@ func setupTestConfig(t *testing.T, natsURL string) *Config {
 
 	cfg := &Config{
 		NatsHost:       natsURL,
-		S3Host:         "http://127.0.0.1:1",
+		S3Host:         fastFailingS3Host(t),
 		Bucket:         "test-bucket",
 		Region:         "us-east-1",
 		AccessKey:      "test-access-key",

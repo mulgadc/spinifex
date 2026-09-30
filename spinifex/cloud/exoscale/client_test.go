@@ -121,3 +121,20 @@ func TestExecRun_RealProcessFailure(t *testing.T) {
 	_, err = c.Version(context.Background())
 	require.Error(t, err)
 }
+
+// The instance comes before the EIP in both commands. Swapped, exo reports the
+// instance as not found, which Release would read as already detached.
+func TestAttachDetach_PassInstanceThenEIP(t *testing.T) {
+	s := &scripted{}
+	c := newScripted(t, s)
+	require.NoError(t, c.AttachElasticIP(context.Background(), "inst-1", "eip-1"))
+	assert.Equal(t, []string{"compute", "instance", "elastic-ip", "attach", "inst-1", "eip-1", "-z", "de-fra-1"}, s.args[7:])
+	require.NoError(t, c.DetachElasticIP(context.Background(), "inst-1", "eip-1"))
+	assert.Equal(t, []string{"compute", "instance", "elastic-ip", "detach", "inst-1", "eip-1", "-z", "de-fra-1"}, s.args[7:])
+}
+
+func TestDetach_NotFoundIsTheSentinel(t *testing.T) {
+	s := &scripted{stderr: testdata(t, "notfound.stderr"), err: errors.New("exit status 1")}
+	err := newScripted(t, s).DetachElasticIP(context.Background(), "inst-1", "eip-1")
+	assert.ErrorIs(t, err, ErrNotFound)
+}

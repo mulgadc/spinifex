@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 )
 
 // WaitForMode polls the daemon's /local/status until it reports the expected
@@ -145,10 +145,10 @@ func (d *DaemonClient) Instances(ctx context.Context, node Node) ([]LocalInstanc
 }
 
 // Health hits the daemon's /health endpoint to confirm basic reachability.
-func (d *DaemonClient) Health(ctx context.Context, node Node) (types.NodeHealthResponse, error) {
-	var h types.NodeHealthResponse
+func (d *DaemonClient) Health(ctx context.Context, node Node) (clusterv1.NodeHealthResponse, error) {
+	var h clusterv1.NodeHealthResponse
 	if err := d.getJSON(ctx, node, "/health", &h); err != nil {
-		return types.NodeHealthResponse{}, err
+		return clusterv1.NodeHealthResponse{}, err
 	}
 	return h, nil
 }

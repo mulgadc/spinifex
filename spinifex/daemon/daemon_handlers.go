@@ -346,7 +346,7 @@ func (d *Daemon) handleHealthCheck(msg *nats.Msg) string {
 		status = "starting"
 	}
 
-	response := types.NodeHealthResponse{
+	response := clusterv1.NodeHealthResponse{
 		Node:       d.node,
 		Status:     status,
 		ConfigHash: configHash,

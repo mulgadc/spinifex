@@ -1017,7 +1017,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.GetSerialConsoleAccessStatus", handleNATSRequest(d.node, d.accountService.GetSerialConsoleAccessStatus), "spinifex-workers"},
 		{"ec2.EnableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.EnableSerialConsoleAccess), "spinifex-workers"},
 		{"ec2.DisableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.DisableSerialConsoleAccess), "spinifex-workers"},
-		{fmt.Sprintf("spinifex.admin.%s.health", d.node), d.handleHealthCheck, ""},
+		{clusterv1.NodeHealthSubject(d.node), d.handleHealthCheck, ""},
 		{clusterv1.NodesDiscoverSubject, d.handleNodeDiscover, ""},
 		{"spinifex.node.status", d.handleNodeStatus, ""},
 		{"spinifex.node.vms", d.handleNodeVMs, ""},
@@ -2719,7 +2719,7 @@ func (d *Daemon) ClusterManager() error {
 			status = "starting"
 		}
 
-		response := types.NodeHealthResponse{
+		response := clusterv1.NodeHealthResponse{
 			Node:          d.node,
 			Status:        status,
 			ConfigHash:    configHash,

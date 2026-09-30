@@ -309,7 +309,7 @@ func TestHandleHealthCheck(t *testing.T) {
 
 	daemon := createTestDaemon(t, natsURL)
 
-	topic := fmt.Sprintf("spinifex.admin.%s.health", daemon.node)
+	topic := clusterv1.NodeHealthSubject(daemon.node)
 	sub, err := daemon.natsConn.Subscribe(topic, asMsgHandler(daemon.handleHealthCheck))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
@@ -319,7 +319,7 @@ func TestHandleHealthCheck(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 
-	var resp types.NodeHealthResponse
+	var resp clusterv1.NodeHealthResponse
 	err = json.Unmarshal(reply.Data, &resp)
 	require.NoError(t, err)
 

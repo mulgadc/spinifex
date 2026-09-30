@@ -129,7 +129,7 @@ func (s *EgressOnlyIGWServiceImpl) DeleteEgressOnlyInternetGateway(ctx context.C
 	// Verify the EIGW exists before deleting
 	if _, err := s.eigwKV.Get(ctx, key); err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidEgressOnlyInternetGatewayIdNotFound)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidGatewayIDNotFound, "The eigw ID '%s' does not exist", eigwID)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}

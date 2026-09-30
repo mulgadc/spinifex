@@ -2645,7 +2645,7 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 			topic:        "ec2.test.DeleteEgressOnlyIGW",
 			handler:      asMsgHandler(handleNATSRequest(daemon.node, daemon.eigwService.DeleteEgressOnlyInternetGateway)),
 			input:        &ec2.DeleteEgressOnlyInternetGatewayInput{EgressOnlyInternetGatewayId: aws.String("eigw-nonexistent")},
-			expectedCode: awserrors.ErrorInvalidEgressOnlyInternetGatewayIdNotFound,
+			expectedCode: awserrors.ErrorInvalidGatewayIDNotFound,
 		},
 		{
 			name:    "DescribeEgressOnlyInternetGateways",

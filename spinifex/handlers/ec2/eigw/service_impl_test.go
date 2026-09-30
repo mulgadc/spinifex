@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -133,7 +134,10 @@ func TestDeleteEgressOnlyInternetGateway_NotFound(t *testing.T) {
 	_, err := svc.DeleteEgressOnlyInternetGateway(context.Background(), &ec2.DeleteEgressOnlyInternetGatewayInput{
 		EgressOnlyInternetGatewayId: aws.String("eigw-nonexistent"),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidEgressOnlyInternetGatewayId.NotFound")
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidGatewayIDNotFound, code)
+	assert.Equal(t, "The eigw ID 'eigw-nonexistent' does not exist", msg)
 }
 
 func TestDeleteEgressOnlyInternetGateway_MissingID(t *testing.T) {

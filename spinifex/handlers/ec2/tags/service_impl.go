@@ -344,6 +344,9 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 			if !filterutil.MatchesAny(filters["tag-key"], key) || !filterutil.MatchesAny(filters["tag-value"], value) {
 				continue
 			}
+			if !rowMatchesTagFilters(filters, key, value) {
+				continue
+			}
 
 			tags = append(tags, &ec2.TagDescription{
 				ResourceId:   aws.String(resourceID),
@@ -359,6 +362,22 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 	return &ec2.DescribeTagsOutput{
 		Tags: tags,
 	}, nil
+}
+
+// rowMatchesTagFilters applies each tag:<key> filter to one tag row, as
+// tag-key and tag-value are applied here: the row must be that key, with a
+// value the filter names.
+func rowMatchesTagFilters(filters map[string][]string, key, value string) bool {
+	for name, values := range filters {
+		tagKey, ok := strings.CutPrefix(name, "tag:")
+		if !ok {
+			continue
+		}
+		if key != tagKey || !filterutil.MatchesAny(values, value) {
+			return false
+		}
+	}
+	return true
 }
 
 // DeleteTags removes tags from the specified resources.

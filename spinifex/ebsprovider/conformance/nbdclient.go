@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -302,13 +303,9 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 		capabilities := capabilitiesOf(t, provider)
 		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-extents", false)
 
-		holes := false
-		for _, extent := range nbdMap(t, dialURI(t, pub.NBDURI)) {
-			if strings.Contains(extent.Description, "hole") {
-				holes = true
-				break
-			}
-		}
+		holes := slices.ContainsFunc(nbdMap(t, dialURI(t, pub.NBDURI)), func(extent nbdExtent) bool {
+			return strings.Contains(extent.Description, "hole")
+		})
 		assert.Equalf(t, capabilities.SparseExtentReporting, holes,
 			"SparseExtentReporting=%v but a volume with nothing written to it reports holes=%v",
 			capabilities.SparseExtentReporting, holes)

@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -897,12 +898,9 @@ func qmpGreetingTimeout(v *VM) time.Duration {
 // monitor answers. Every production guest boots from one; a VM without is a
 // unit test.
 func hasNetworkBackedDrive(v *VM) bool {
-	for _, req := range v.EBSRequests.Requests {
-		if req.NBDURI != "" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(v.EBSRequests.Requests, func(req types.EBSRequest) bool {
+		return req.NBDURI != ""
+	})
 }
 
 // removeStaleQMPSocket unlinks a leftover QMP socket inode from a prior QEMU so

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -650,14 +651,9 @@ func eniMatchesFilters(record *ENIRecord, filters map[string][]string) bool {
 				return false
 			}
 		case "group-id":
-			found := false
-			for _, sgId := range record.SecurityGroupIds {
-				if filterutil.MatchesAny(values, sgId) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.SecurityGroupIds, func(sgId string) bool {
+				return filterutil.MatchesAny(values, sgId)
+			}) {
 				return false
 			}
 		case "mac-address":

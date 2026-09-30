@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -657,14 +658,9 @@ func loadNATGWs(
 			if rt.VpcId != rec.VpcId {
 				continue
 			}
-			hasNatRoute := false
-			for _, r := range rt.Routes {
-				if r.NatGatewayId == rec.NatGatewayId {
-					hasNatRoute = true
-					break
-				}
-			}
-			if !hasNatRoute {
+			if !slices.ContainsFunc(rt.Routes, func(r handlers_ec2_routetable.RouteRecord) bool {
+				return r.NatGatewayId == rec.NatGatewayId
+			}) {
 				continue
 			}
 			for _, assoc := range rt.Associations {

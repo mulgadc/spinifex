@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -777,28 +778,18 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 
 		// Filter by KeyName if specified
 		if len(input.KeyNames) > 0 {
-			found := false
-			for _, filterName := range input.KeyNames {
-				if filterName != nil && metadata.KeyName != nil && *filterName == *metadata.KeyName {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(input.KeyNames, func(filterName *string) bool {
+				return filterName != nil && metadata.KeyName != nil && *filterName == *metadata.KeyName
+			}) {
 				continue
 			}
 		}
 
 		// Filter by KeyPairId if specified
 		if len(input.KeyPairIds) > 0 {
-			found := false
-			for _, filterID := range input.KeyPairIds {
-				if filterID != nil && metadata.KeyPairId != nil && *filterID == *metadata.KeyPairId {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(input.KeyPairIds, func(filterID *string) bool {
+				return filterID != nil && metadata.KeyPairId != nil && *filterID == *metadata.KeyPairId
+			}) {
 				continue
 			}
 		}

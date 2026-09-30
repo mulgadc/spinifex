@@ -2,6 +2,7 @@ package filterutil
 
 import (
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -46,12 +47,9 @@ func MatchesAny(filterValues []string, value string) bool {
 	if len(filterValues) == 0 {
 		return true
 	}
-	for _, pattern := range filterValues {
-		if MatchWildcard(pattern, value) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(filterValues, func(pattern string) bool {
+		return MatchWildcard(pattern, value)
+	})
 }
 
 // IsTagFilter reports whether MatchesTags evaluates the named filter, so a

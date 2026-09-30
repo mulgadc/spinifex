@@ -3,6 +3,7 @@ package loadgen
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -135,22 +136,16 @@ func ResolveOps(names []string) ([]Op, error) {
 // NeedsVPC reports whether any selected operation acts on a tenant resource,
 // so the caller knows whether to pay for discovery before the run starts.
 func NeedsVPC(ops []Op) bool {
-	for _, op := range ops {
-		if op.Name == "CreateTags" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(ops, func(op Op) bool {
+		return op.Name == "CreateTags"
+	})
 }
 
 // NeedsVolume reports whether any selected operation needs a volume id.
 func NeedsVolume(ops []Op) bool {
-	for _, op := range ops {
-		if op.Name == "DescribeVolumesByID" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(ops, func(op Op) bool {
+		return op.Name == "DescribeVolumesByID"
+	})
 }
 
 // ResolveVolume finds one volume for the target to ask about by id. A tenant

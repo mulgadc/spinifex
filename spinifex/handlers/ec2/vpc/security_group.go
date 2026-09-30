@@ -628,12 +628,9 @@ func sgMatchesFilters(record *SecurityGroupRecord, filters map[string][]string) 
 
 // sgIngressCIDRMatchesAny checks if any ingress rule's CIDR matches any of the filter values.
 func sgIngressCIDRMatchesAny(rules []SGRule, values []string) bool {
-	for _, rule := range rules {
-		if rule.CidrIp != "" && filterutil.MatchesAny(values, rule.CidrIp) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(rules, func(rule SGRule) bool {
+		return rule.CidrIp != "" && filterutil.MatchesAny(values, rule.CidrIp)
+	})
 }
 
 // getSecurityGroupsForVpcValidFilters defines the set of filter names accepted

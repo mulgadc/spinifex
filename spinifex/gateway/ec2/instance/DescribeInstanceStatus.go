@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"time"
 
@@ -161,12 +162,9 @@ func filterStoppedStatuses(in []*ec2.InstanceStatus, filters []*ec2.Filter, az s
 }
 
 func filterValueMatches(values []*string, field string) bool {
-	for _, v := range values {
-		if v != nil && *v == field {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(values, func(v *string) bool {
+		return v != nil && *v == field
+	})
 }
 
 func buildInstanceStatusFromInstance(inst *ec2.Instance, az string) *ec2.InstanceStatus {

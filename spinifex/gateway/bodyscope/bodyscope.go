@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 )
 
@@ -126,10 +127,8 @@ func (s Scope) Object(names ...string) (Scope, error) {
 // where the presence of an optional field decides whether a scope applies at
 // all, rather than its value.
 func (s Scope) Has(names ...string) bool {
-	for _, name := range names {
-		if _, ok := s.fields[strings.ToLower(name)]; ok {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(names, func(name string) bool {
+		_, ok := s.fields[strings.ToLower(name)]
+		return ok
+	})
 }

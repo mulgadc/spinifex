@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -863,14 +864,9 @@ func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js jetstream.J
 	if cfg == nil || cfg.ExternalMode == "" {
 		return nil, nil, nil
 	}
-	wantDHCP := false
-	for _, p := range cfg.ExternalPools {
-		if p.Source == external.SourceDHCP {
-			wantDHCP = true
-			break
-		}
-	}
-	if !wantDHCP {
+	if !slices.ContainsFunc(cfg.ExternalPools, func(p external.ExternalPoolConfig) bool {
+		return p.Source == external.SourceDHCP
+	}) {
 		return nil, nil, nil
 	}
 

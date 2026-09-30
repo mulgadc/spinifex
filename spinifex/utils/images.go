@@ -24,6 +24,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -349,12 +350,9 @@ func SelectNewestImage(images []*ec2.Image, excludeTagKey string) (imageID, crea
 
 // imageHasTagKey reports whether img carries a tag with the given key.
 func imageHasTagKey(img *ec2.Image, key string) bool {
-	for _, t := range img.Tags {
-		if t != nil && aws.StringValue(t.Key) == key {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(img.Tags, func(t *ec2.Tag) bool {
+		return t != nil && aws.StringValue(t.Key) == key
+	})
 }
 
 type Images struct {

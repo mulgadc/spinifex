@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -1282,92 +1283,53 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 				return false
 			}
 		case "association.main":
-			hasMain := false
-			for _, a := range record.Associations {
-				if a.Main {
-					hasMain = true
-					break
-				}
-			}
+			hasMain := slices.ContainsFunc(record.Associations, func(a AssociationRecord) bool {
+				return a.Main
+			})
 			wantMain := filterutil.MatchesAny(values, "true")
 			if wantMain != hasMain {
 				return false
 			}
 		case "association.route-table-association-id":
-			found := false
-			for _, a := range record.Associations {
-				if filterutil.MatchesAny(values, a.AssociationId) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Associations, func(a AssociationRecord) bool {
+				return filterutil.MatchesAny(values, a.AssociationId)
+			}) {
 				return false
 			}
 		case "association.subnet-id":
-			found := false
-			for _, a := range record.Associations {
-				if filterutil.MatchesAny(values, a.SubnetId) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Associations, func(a AssociationRecord) bool {
+				return filterutil.MatchesAny(values, a.SubnetId)
+			}) {
 				return false
 			}
 		case "route.destination-cidr-block":
-			found := false
-			for _, r := range record.Routes {
-				if filterutil.MatchesAny(values, r.DestinationCidrBlock) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return filterutil.MatchesAny(values, r.DestinationCidrBlock)
+			}) {
 				return false
 			}
 		case "route.gateway-id":
-			found := false
-			for _, r := range record.Routes {
-				if filterutil.MatchesAny(values, r.GatewayId) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return filterutil.MatchesAny(values, r.GatewayId)
+			}) {
 				return false
 			}
 		case "route.nat-gateway-id":
-			found := false
-			for _, r := range record.Routes {
-				if filterutil.MatchesAny(values, r.NatGatewayId) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return filterutil.MatchesAny(values, r.NatGatewayId)
+			}) {
 				return false
 			}
 		case "route.state":
-			found := false
-			for _, r := range record.Routes {
-				if filterutil.MatchesAny(values, r.State) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return filterutil.MatchesAny(values, r.State)
+			}) {
 				return false
 			}
 		case "route.origin":
-			found := false
-			for _, r := range record.Routes {
-				if filterutil.MatchesAny(values, r.Origin) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return filterutil.MatchesAny(values, r.Origin)
+			}) {
 				return false
 			}
 		case "owner-id":

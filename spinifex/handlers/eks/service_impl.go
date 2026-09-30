@@ -1796,12 +1796,9 @@ func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, _ *eks.ListAcce
 
 // hasAssociatedPolicy reports whether the entry has the given policy ARN bound.
 func hasAssociatedPolicy(rec *AccessEntryRecord, policyARN string) bool {
-	for _, p := range rec.AssociatedPolicies {
-		if p.PolicyARN == policyARN {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(rec.AssociatedPolicies, func(p AssociatedAccessPolicy) bool {
+		return p.PolicyARN == policyARN
+	})
 }
 
 // accessPolicyName extracts the policy short name from its ARN

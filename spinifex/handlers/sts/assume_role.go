@@ -328,12 +328,9 @@ func assumeRoleConditionsHold(raw json.RawMessage, sourceAccount string) bool {
 }
 
 func matchTrustAction(actions []string) bool {
-	for _, a := range actions {
-		if a == stsActionAssumeRole || a == stsActionWildcard || a == globalWildcard {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(actions, func(a string) bool {
+		return a == stsActionAssumeRole || a == stsActionWildcard || a == globalWildcard
+	})
 }
 
 // serviceSourcesForCaller returns the service principals an authenticated HTTPS

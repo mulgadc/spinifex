@@ -3,6 +3,7 @@ package accountteardown
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -664,12 +665,9 @@ func isAlreadyGone(err error) bool {
 		return true
 	}
 	message := err.Error()
-	for _, marker := range notFoundMarkers {
-		if strings.Contains(message, marker) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(notFoundMarkers, func(marker string) bool {
+		return strings.Contains(message, marker)
+	})
 }
 
 // isNotAssociated reports the benign case of disassociating something that was

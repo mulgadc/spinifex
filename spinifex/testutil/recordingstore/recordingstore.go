@@ -7,6 +7,7 @@ package recordingstore
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 
@@ -77,10 +78,7 @@ func (s *Store) TouchedPrefix(prefix string) bool {
 			return true
 		}
 	}
-	for _, listed := range s.ListPrefixes() {
-		if strings.HasPrefix(listed, prefix) || strings.HasPrefix(prefix, listed) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(s.ListPrefixes(), func(listed string) bool {
+		return strings.HasPrefix(listed, prefix) || strings.HasPrefix(prefix, listed)
+	})
 }

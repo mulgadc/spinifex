@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2029,22 +2030,16 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 
 // matchTagKey returns true if any tag key on the resource matches any of the filter values.
 func matchTagKey(tags []*ec2.Tag, values []string) bool {
-	for _, t := range tags {
-		if t.Key != nil && filterutil.MatchesAny(values, *t.Key) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
+		return t.Key != nil && filterutil.MatchesAny(values, *t.Key)
+	})
 }
 
 // matchTagValue returns true if any tag value on the resource matches any of the filter values.
 func matchTagValue(tags []*ec2.Tag, values []string) bool {
-	for _, t := range tags {
-		if t.Value != nil && filterutil.MatchesAny(values, *t.Value) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
+		return t.Value != nil && filterutil.MatchesAny(values, *t.Value)
+	})
 }
 
 // DescribeInstances returns instances on this node visible to the caller's account.

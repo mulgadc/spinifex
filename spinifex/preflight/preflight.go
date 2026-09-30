@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -86,12 +87,9 @@ func CheckHostAt(root string) []Result {
 
 // HasProblem reports whether any result is not OK.
 func HasProblem(results []Result) bool {
-	for _, r := range results {
-		if r.Status != OK {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(results, func(r Result) bool {
+		return r.Status != OK
+	})
 }
 
 func checkHelper(root, path string) Result {

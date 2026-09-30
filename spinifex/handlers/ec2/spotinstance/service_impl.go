@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -360,12 +361,9 @@ func sirMatchesFilters(req *ec2.SpotInstanceRequest, filters map[string][]string
 }
 
 func sirMatchesTagKey(tags []*ec2.Tag, values []string) bool {
-	for _, t := range tags {
-		if t.Key != nil && filterutil.MatchesAny(values, *t.Key) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
+		return t.Key != nil && filterutil.MatchesAny(values, *t.Key)
+	})
 }
 
 // launchSpec returns the request's launch specification, or an empty one when

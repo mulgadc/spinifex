@@ -3,6 +3,7 @@ package handlers_rds
 import (
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -242,12 +243,9 @@ func (w weeklyWindow) segments() [][2]time.Duration {
 }
 
 func withinSegments(segments [][2]time.Duration, offset time.Duration) bool {
-	for _, segment := range segments {
-		if offset >= segment[0] && offset < segment[1] {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(segments, func(segment [2]time.Duration) bool {
+		return offset >= segment[0] && offset < segment[1]
+	})
 }
 
 func sinceMidnight(t time.Time) time.Duration {

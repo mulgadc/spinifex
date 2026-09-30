@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -89,22 +90,17 @@ func selectNode(census []nodeCensus, az, instanceType string, count int) string 
 // azInCensus reports whether any node in the census lives in az. A requested AZ
 // that no node reports is treated as unknown (InvalidAvailabilityZone).
 func azInCensus(census []nodeCensus, az string) bool {
-	for _, n := range census {
-		if n.AZ == az {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(census, func(n nodeCensus) bool {
+		return n.AZ == az
+	})
 }
 
 // typeInCensus reports whether instanceType is in any node's catalog. Known types
 // appear in node status even at zero available count, so an absent key means the type
 // is unsupported (or GPU, excluded from schedulable capacity) — rejected as InvalidInstanceType.
 func typeInCensus(census []nodeCensus, instanceType string) bool {
-	for _, n := range census {
-		if _, ok := n.Available[instanceType]; ok {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(census, func(n nodeCensus) bool {
+		_, ok := n.Available[instanceType]
+		return ok
+	})
 }

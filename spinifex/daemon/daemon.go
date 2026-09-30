@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -3551,13 +3552,9 @@ func probeGPU() gpuProbeResult {
 
 	// MIG-enabled GPUs are capable without vfio-pci: the NVIDIA driver owns
 	// isolation via the mdev subsystem, so vfio-pci is not required.
-	hasMIG := false
-	for _, d := range r.Devices {
-		if d.MIGEnabled {
-			hasMIG = true
-			break
-		}
-	}
+	hasMIG := slices.ContainsFunc(r.Devices, func(d gpu.GPUDevice) bool {
+		return d.MIGEnabled
+	})
 	r.Capable = len(r.Devices) > 0 && ((r.IOMMUActive && r.VFIOPresent) || hasMIG)
 	return r
 }

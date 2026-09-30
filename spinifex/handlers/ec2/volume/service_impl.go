@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -415,12 +416,9 @@ func volumeAttachmentMatchesAny(attachments []*ec2.VolumeAttachment, fieldFn fun
 	if len(attachments) == 0 {
 		return false
 	}
-	for _, a := range attachments {
-		if filterutil.MatchesAny(values, fieldFn(a)) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(attachments, func(a *ec2.VolumeAttachment) bool {
+		return filterutil.MatchesAny(values, fieldFn(a))
+	})
 }
 
 // DescribeVolumeStatus returns the status of one or more EBS volumes

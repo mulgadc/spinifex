@@ -306,10 +306,7 @@ func matchesCategories(event Event, wanted []string) bool {
 	if len(wanted) == 0 {
 		return true
 	}
-	for _, category := range wanted {
-		if slices.Contains(event.Categories, category) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(wanted, func(category string) bool {
+		return slices.Contains(event.Categories, category)
+	})
 }

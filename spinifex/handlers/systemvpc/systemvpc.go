@@ -19,6 +19,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"net/netip"
+	"slices"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -431,12 +432,9 @@ func ensureRouteTable(ctx context.Context, rtp RouteTableProvisioner, spec Spec,
 // associatedWith reports whether subnetID already holds an explicit association
 // on rt, as of the describe ensureRouteTable adopted it from.
 func associatedWith(rt *ec2.RouteTable, subnetID string) bool {
-	for _, assoc := range rt.Associations {
-		if aws.StringValue(assoc.SubnetId) == subnetID && !aws.BoolValue(assoc.Main) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(rt.Associations, func(assoc *ec2.RouteTableAssociation) bool {
+		return aws.StringValue(assoc.SubnetId) == subnetID && !aws.BoolValue(assoc.Main)
+	})
 }
 
 // describeOrCreateRouteTable returns the role-tagged route table, adopting an

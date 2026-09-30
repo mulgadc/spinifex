@@ -103,9 +103,11 @@ func TestCreateRouteTable(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
 	out, err := svc.CreateRouteTable(t.Context(), &ec2.CreateRouteTableInput{
-		VpcId: aws.String("vpc-test1"),
+		VpcId:       aws.String("vpc-test1"),
+		ClientToken: aws.String("token-1"),
 	}, testAccountID)
 	require.NoError(t, err)
+	assert.Equal(t, "token-1", aws.StringValue(out.ClientToken), "AWS echoes the request's ClientToken")
 
 	rtb := out.RouteTable
 	assert.NotEmpty(t, *rtb.RouteTableId)

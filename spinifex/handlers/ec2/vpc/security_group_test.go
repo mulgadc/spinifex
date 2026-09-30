@@ -44,6 +44,7 @@ func TestCreateSecurityGroup_Success(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.NotEmpty(t, *out.GroupId)
+	assert.Nil(t, out.Tags, "AWS omits Tags from an untagged CreateSecurityGroup")
 }
 
 func TestCreateSecurityGroup_MissingGroupName(t *testing.T) {
@@ -930,7 +931,7 @@ func TestSGRulesToIpPermissions_IPv6RoundTrip(t *testing.T) {
 	perms := sgRulesToIpPermissions([]SGRule{
 		{IpProtocol: "-1", CidrIp: "0.0.0.0/0"},
 		{IpProtocol: "-1", CidrIpv6: "::/0"},
-	})
+	}, testAccountID)
 	require.Len(t, perms, 1)
 	require.Len(t, perms[0].IpRanges, 1)
 	require.Len(t, perms[0].Ipv6Ranges, 1)
@@ -945,7 +946,7 @@ func TestSGRulesToIpPermissions_Conversion(t *testing.T) {
 		{IpProtocol: "-1", SourceSG: "sg-other"},
 	}
 
-	perms := sgRulesToIpPermissions(rules)
+	perms := sgRulesToIpPermissions(rules, testAccountID)
 	require.Len(t, perms, 2)
 
 	// Order is non-deterministic (map-based), find each by protocol
@@ -968,6 +969,7 @@ func TestSGRulesToIpPermissions_Conversion(t *testing.T) {
 	assert.Nil(t, allPerm.ToPort)
 	assert.Len(t, allPerm.UserIdGroupPairs, 1)
 	assert.Equal(t, "sg-other", *allPerm.UserIdGroupPairs[0].GroupId)
+	assert.Equal(t, testAccountID, aws.StringValue(allPerm.UserIdGroupPairs[0].UserId))
 }
 
 func TestSGRuleKey(t *testing.T) {
@@ -1456,6 +1458,9 @@ func TestDescribeSecurityGroups_FilterByTag(t *testing.T) {
 		},
 	}, testAccountID)
 	require.NoError(t, err)
+	require.Len(t, out.Tags, 1, "CreateSecurityGroup echoes the requested tags")
+	assert.Equal(t, "Env", aws.StringValue(out.Tags[0].Key))
+	assert.Equal(t, "prod", aws.StringValue(out.Tags[0].Value))
 
 	createTestSG(t, svc, vpcID, "untagged-sg")
 
@@ -2309,7 +2314,7 @@ func TestDescribeSecurityGroupRules_ReferencedGroupInfo(t *testing.T) {
 	dstSG := createTestSG(t, svc, vpcID, "dest")
 
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+	authOut, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(dstSG),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &proto,
@@ -2319,6 +2324,8 @@ func TestDescribeSecurityGroupRules_ReferencedGroupInfo(t *testing.T) {
 		}},
 	}, testAccountID)
 	require.NoError(t, err)
+	require.Len(t, authOut.SecurityGroupRules, 1)
+	assert.Nil(t, authOut.SecurityGroupRules[0].Tags, "Authorize* omits Tags on an untagged rule")
 
 	out, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(dstSG)}}},
@@ -2330,11 +2337,12 @@ func TestDescribeSecurityGroupRules_ReferencedGroupInfo(t *testing.T) {
 		if r.ReferencedGroupInfo != nil {
 			require.NotNil(t, r.ReferencedGroupInfo.GroupId)
 			require.NotNil(t, r.ReferencedGroupInfo.UserId)
-			require.NotNil(t, r.ReferencedGroupInfo.VpcId)
 			assert.Equal(t, srcSG, *r.ReferencedGroupInfo.GroupId)
 			assert.Equal(t, testAccountID, *r.ReferencedGroupInfo.UserId)
-			assert.Equal(t, vpcID, *r.ReferencedGroupInfo.VpcId)
+			assert.Nil(t, r.ReferencedGroupInfo.VpcId, "AWS names no VpcId for a same-VPC reference")
 			assert.Nil(t, r.CidrIpv4)
+			assert.NotNil(t, r.Tags, "DescribeSecurityGroupRules lists an untagged rule with empty Tags")
+			assert.Empty(t, r.Tags)
 			found = true
 		}
 	}

@@ -136,3 +136,48 @@ func TestEC2_ListsAWSOmitsWhenEmpty(t *testing.T) {
 	})
 	assert.Contains(t, tagged, "<tagSet><item><key>k</key><value>v</value></item></tagSet>")
 }
+
+// The network lists AWS omits when empty: an untagged security group's and
+// rule's tagSet, Revoke*'s unknownIpPermissionSet, an interface's prefix
+// lists, and a described VPC's IPv6 association set.
+func TestEC2_NetworkListsAWSOmitsWhenEmpty(t *testing.T) {
+	sg := render[ec2.CreateSecurityGroupInput](t, "CreateSecurityGroup", ec2.CreateSecurityGroupOutput{GroupId: aws.String("sg-1")})
+	assert.NotContains(t, sg, "tagSet")
+
+	groups := render[ec2.DescribeSecurityGroupsInput](t, "DescribeSecurityGroups", ec2.DescribeSecurityGroupsOutput{
+		SecurityGroups: []*ec2.SecurityGroup{{GroupId: aws.String("sg-1")}},
+	})
+	assert.NotContains(t, groups, "tagSet")
+	assert.Contains(t, groups, "<ipPermissions></ipPermissions>")
+
+	auth := render[ec2.AuthorizeSecurityGroupIngressInput](t, "AuthorizeSecurityGroupIngress", ec2.AuthorizeSecurityGroupIngressOutput{
+		SecurityGroupRules: []*ec2.SecurityGroupRule{{SecurityGroupRuleId: aws.String("sgr-1")}},
+	})
+	assert.NotContains(t, auth, "tagSet")
+
+	rules := render[ec2.DescribeSecurityGroupRulesInput](t, "DescribeSecurityGroupRules", ec2.DescribeSecurityGroupRulesOutput{
+		SecurityGroupRules: []*ec2.SecurityGroupRule{{SecurityGroupRuleId: aws.String("sgr-1"), Tags: []*ec2.Tag{}}},
+	})
+	assert.Contains(t, rules, "<tagSet></tagSet>")
+
+	revoke := render[ec2.RevokeSecurityGroupIngressInput](t, "RevokeSecurityGroupIngress", ec2.RevokeSecurityGroupIngressOutput{Return: aws.Bool(true)})
+	assert.NotContains(t, revoke, "unknownIpPermissionSet")
+	revokeEgress := render[ec2.RevokeSecurityGroupEgressInput](t, "RevokeSecurityGroupEgress", ec2.RevokeSecurityGroupEgressOutput{Return: aws.Bool(true)})
+	assert.NotContains(t, revokeEgress, "unknownIpPermissionSet")
+
+	enis := render[ec2.DescribeNetworkInterfacesInput](t, "DescribeNetworkInterfaces", ec2.DescribeNetworkInterfacesOutput{
+		NetworkInterfaces: []*ec2.NetworkInterface{{NetworkInterfaceId: aws.String("eni-1")}},
+	})
+	assert.NotContains(t, enis, "ipv4PrefixSet")
+	assert.NotContains(t, enis, "ipv6PrefixSet")
+	assert.Contains(t, enis, "<groupSet></groupSet>")
+
+	vpcs := render[ec2.DescribeVpcsInput](t, "DescribeVpcs", ec2.DescribeVpcsOutput{Vpcs: []*ec2.Vpc{{VpcId: aws.String("vpc-1")}}})
+	assert.NotContains(t, vpcs, "ipv6CidrBlockAssociationSet")
+
+	created := render[ec2.CreateVpcInput](t, "CreateVpc", ec2.CreateVpcOutput{Vpc: &ec2.Vpc{
+		VpcId:                       aws.String("vpc-1"),
+		Ipv6CidrBlockAssociationSet: []*ec2.VpcIpv6CidrBlockAssociation{},
+	}})
+	assert.Contains(t, created, "<ipv6CidrBlockAssociationSet></ipv6CidrBlockAssociationSet>")
+}

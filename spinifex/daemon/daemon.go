@@ -1806,6 +1806,12 @@ func (d *Daemon) startCluster() error {
 	// describe-tags agrees with each resource's own describe from birth and
 	// stops answering for it once it is deleted.
 	d.vpcService.SetCentralTagStore(d.tagsService)
+	// Name interfaces as their instances are named, so the two agree.
+	region, internalDomain := d.config.Region, handlers_dns.ResolveInternalDomain(d.config)
+	d.vpcService.SetPrivateDNSNamer(func(privateIP string) string {
+		_, private := handlers_dns.EC2DNSNames(region, "", internalDomain, "", privateIP)
+		return private
+	})
 
 	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {
 		return handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(d.ctx, d.config, d.natsConn)

@@ -98,6 +98,10 @@ type VPCServiceImpl struct {
 	// A nil value leaves both unchanged.
 	centralTags CentralTagStore
 
+	// Optional: injected after construction to name interfaces' private
+	// addresses. Nil leaves them unnamed.
+	privateDNSName func(privateIP string) string
+
 	// disableDefaultPublicIP seeds default subnets with MapPublicIpOnLaunch=false
 	// (non-pool external modes have no public IPs to assign). Zero value keeps
 	// the AWS-faithful default of true.
@@ -115,6 +119,13 @@ func (s *VPCServiceImpl) SetDefaultPublicIPMapping(enabled bool) {
 func (s *VPCServiceImpl) SetExternalIPAM(ipam *ExternalIPAM, eipKV jetstream.KeyValue) {
 	s.externalIPAM = ipam
 	s.eipKV = eipKV
+}
+
+// SetPrivateDNSNamer injects how a private address is named, so an interface
+// reports the same PrivateDnsName as the instance using it. Nil, or a namer
+// that answers "", leaves interfaces unnamed.
+func (s *VPCServiceImpl) SetPrivateDNSNamer(namer func(privateIP string) string) {
+	s.privateDNSName = namer
 }
 
 // SetCentralTagStore injects the central tag store so create paths project
@@ -328,9 +339,11 @@ func (s *VPCServiceImpl) CreateVpc(ctx context.Context, input *ec2.CreateVpcInpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	return &ec2.CreateVpcOutput{
-		Vpc: s.vpcRecordToEC2(&record, accountID),
-	}, nil
+	// AWS renders the empty IPv6 association list on CreateVpc only;
+	// DescribeVpcs omits it.
+	vpc := s.vpcRecordToEC2(&record, accountID)
+	vpc.Ipv6CidrBlockAssociationSet = []*ec2.VpcIpv6CidrBlockAssociation{}
+	return &ec2.CreateVpcOutput{Vpc: vpc}, nil
 }
 
 // requireVPCExists returns InvalidVpcID.NotFound if the VPC doesn't exist for

@@ -286,6 +286,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 
 	return &ec2.CreateSecurityGroupOutput{
 		GroupId: aws.String(groupId),
+		Tags:    utils.MapToEC2Tags(record.Tags),
 	}, nil
 }
 
@@ -864,6 +865,13 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 	}
 
 	rules, nextToken := paging.EC2Page(rules, func(r *ec2.SecurityGroupRule) string { return *r.SecurityGroupRuleId }, pageReq)
+	// AWS lists an untagged rule with empty Tags here, but omits them from
+	// the Authorize* responses that share the rule shape.
+	for _, r := range rules {
+		if r.Tags == nil {
+			r.Tags = []*ec2.Tag{}
+		}
+	}
 
 	slog.InfoContext(ctx, "DescribeSecurityGroupRules completed", "count", len(rules), "accountID", accountID)
 
@@ -982,8 +990,8 @@ func applySGRuleTags(rules []SGRule, specs []*ec2.TagSpecification) []SGRule {
 }
 
 // sgRuleToSecurityGroupRule flattens a stored SGRule into the AWS API shape.
-// accountID supplies GroupOwnerId and ReferencedGroupInfo.UserId; VpcId is
-// derived from the parent record (same-VPC references are enforced on write).
+// accountID supplies GroupOwnerId and ReferencedGroupInfo.UserId. AWS names
+// no VpcId for a same-VPC reference, the only kind Spinifex allows.
 func sgRuleToSecurityGroupRule(record *SecurityGroupRecord, rule SGRule, isEgress bool, accountID string) *ec2.SecurityGroupRule {
 	// An all-protocol rule has no ports to report. AWS answers -1 for both;
 	// reporting the stored zeroes offers a caller two ports it never sent.
@@ -1014,7 +1022,6 @@ func sgRuleToSecurityGroupRule(record *SecurityGroupRecord, rule SGRule, isEgres
 		out.ReferencedGroupInfo = &ec2.ReferencedSecurityGroup{
 			GroupId: aws.String(rule.SourceSG),
 			UserId:  aws.String(accountID),
-			VpcId:   aws.String(record.VpcId),
 		}
 	}
 	return out
@@ -1841,8 +1848,8 @@ func (s *VPCServiceImpl) sgRecordToEC2(record *SecurityGroupRecord, accountID st
 		Description:         aws.String(record.Description),
 		VpcId:               aws.String(record.VpcId),
 		OwnerId:             aws.String(accountID),
-		IpPermissions:       sgRulesToIpPermissions(record.IngressRules),
-		IpPermissionsEgress: sgRulesToIpPermissions(record.EgressRules),
+		IpPermissions:       sgRulesToIpPermissions(record.IngressRules, accountID),
+		IpPermissionsEgress: sgRulesToIpPermissions(record.EgressRules, accountID),
 	}
 
 	sg.Tags = utils.MapToEC2Tags(record.Tags)
@@ -1954,7 +1961,8 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 }
 
 // sgRulesToIpPermissions converts SGRule slice to AWS IpPermission slice.
-func sgRulesToIpPermissions(rules []SGRule) []*ec2.IpPermission {
+// accountID owns every referenced group, since references stay in one VPC.
+func sgRulesToIpPermissions(rules []SGRule, accountID string) []*ec2.IpPermission {
 	// Group rules by protocol+port range
 	type permKey struct {
 		IpProtocol string
@@ -1992,7 +2000,7 @@ func sgRulesToIpPermissions(rules []SGRule) []*ec2.IpPermission {
 			perm.Ipv6Ranges = append(perm.Ipv6Ranges, ipRange)
 		}
 		if rule.SourceSG != "" {
-			pair := &ec2.UserIdGroupPair{GroupId: aws.String(rule.SourceSG)}
+			pair := &ec2.UserIdGroupPair{GroupId: aws.String(rule.SourceSG), UserId: aws.String(accountID)}
 			if rule.Description != "" {
 				pair.Description = aws.String(rule.Description)
 			}

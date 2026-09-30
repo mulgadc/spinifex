@@ -109,8 +109,15 @@ func ec2Handler[In any](handler func(ctx context.Context, input *In, gw *Gateway
 // ec2ListsAsSet names the list fields AWS omits when empty instead of
 // rendering them. Each is rendered as its handler set it, so nil omits it.
 var ec2ListsAsSet = map[reflect.Type][]string{
-	reflect.TypeFor[ec2.CreateKeyPairOutput](): {"Tags"},
-	reflect.TypeFor[ec2.Image]():               {"Tags", "ProductCodes"},
+	reflect.TypeFor[ec2.CreateKeyPairOutput]():              {"Tags"},
+	reflect.TypeFor[ec2.Image]():                            {"Tags", "ProductCodes"},
+	reflect.TypeFor[ec2.CreateSecurityGroupOutput]():        {"Tags"},
+	reflect.TypeFor[ec2.SecurityGroup]():                    {"Tags"},
+	reflect.TypeFor[ec2.SecurityGroupRule]():                {"Tags"},
+	reflect.TypeFor[ec2.RevokeSecurityGroupIngressOutput](): {"UnknownIpPermissions"},
+	reflect.TypeFor[ec2.RevokeSecurityGroupEgressOutput]():  {"UnknownIpPermissions"},
+	reflect.TypeFor[ec2.NetworkInterface]():                 {"Ipv4Prefixes", "Ipv6Prefixes"},
+	reflect.TypeFor[ec2.Vpc]():                              {"Ipv6CidrBlockAssociationSet"},
 }
 
 // marshalEC2Response renders an EC2 handler's output into the action's XML

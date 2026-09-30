@@ -551,7 +551,8 @@ func (s *RouteTableServiceImpl) CreateRouteTable(ctx context.Context, input *ec2
 	}
 
 	return &ec2.CreateRouteTableOutput{
-		RouteTable: recordToEC2(record),
+		RouteTable:  recordToEC2(record),
+		ClientToken: input.ClientToken,
 	}, nil
 }
 

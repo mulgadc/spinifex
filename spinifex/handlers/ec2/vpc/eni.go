@@ -216,8 +216,10 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 		return nil, err
 	}
 
+	groupNames := make(map[string]string)
+	s.fillSGNames(ctx, accountID, record.SecurityGroupIds, groupNames)
 	return &ec2.CreateNetworkInterfaceOutput{
-		NetworkInterface: s.eniRecordToEC2(&record, accountID),
+		NetworkInterface: s.eniRecordToEC2(&record, accountID, groupNames),
 	}, nil
 }
 
@@ -542,6 +544,7 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 	}
 
 	enis := make([]*ec2.NetworkInterface, 0)
+	groupNames := make(map[string]string)
 
 	eniIDs := make(map[string]bool)
 	for _, id := range input.NetworkInterfaceIds {
@@ -586,7 +589,8 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 			continue
 		}
 
-		enis = append(enis, s.eniRecordToEC2(&record, accountID))
+		s.fillSGNames(ctx, accountID, record.SecurityGroupIds, groupNames)
+		enis = append(enis, s.eniRecordToEC2(&record, accountID, groupNames))
 	}
 
 	// If specific ENI IDs were requested but not found, return error
@@ -1008,8 +1012,32 @@ func (s *VPCServiceImpl) updateENIPublicIP(ctx context.Context, accountID, eniId
 	return nil
 }
 
-// eniRecordToEC2 converts an ENI record to an EC2 NetworkInterface.
-func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string) *ec2.NetworkInterface {
+// fillSGNames records in names the name of each group in ids it does not
+// already hold. A group that cannot be read is recorded as "", so it is listed
+// without a name and not looked up again.
+func (s *VPCServiceImpl) fillSGNames(ctx context.Context, accountID string, ids []string, names map[string]string) {
+	for _, id := range ids {
+		if _, ok := names[id]; ok {
+			continue
+		}
+		names[id] = ""
+		entry, err := s.sgKV.Get(ctx, utils.AccountKey(accountID, id))
+		if err != nil {
+			slog.WarnContext(ctx, "fillSGNames: SG read failed", "groupId", id, "err", err)
+			continue
+		}
+		var rec SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.WarnContext(ctx, "fillSGNames: SG unmarshal failed", "groupId", id, "err", err)
+			continue
+		}
+		names[id] = rec.GroupName
+	}
+}
+
+// eniRecordToEC2 converts an ENI record to an EC2 NetworkInterface, naming
+// each security group from groupNames.
+func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, groupNames map[string]string) *ec2.NetworkInterface {
 	// ENIs with spinifex:managed-by tag are system-managed (e.g. by ELBv2)
 	requesterManaged := record.Tags["spinifex:managed-by"] != ""
 
@@ -1038,11 +1066,20 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string) *ec
 	if len(record.SecurityGroupIds) > 0 {
 		groups := make([]*ec2.GroupIdentifier, 0, len(record.SecurityGroupIds))
 		for _, sgId := range record.SecurityGroupIds {
-			groups = append(groups, &ec2.GroupIdentifier{
-				GroupId: aws.String(sgId),
-			})
+			group := &ec2.GroupIdentifier{GroupId: aws.String(sgId)}
+			if name := groupNames[sgId]; name != "" {
+				group.GroupName = aws.String(name)
+			}
+			groups = append(groups, group)
 		}
 		eni.Groups = groups
+	}
+
+	if s.privateDNSName != nil && record.PrivateIpAddress != "" {
+		if name := s.privateDNSName(record.PrivateIpAddress); name != "" {
+			eni.PrivateDnsName = aws.String(name)
+			eni.PrivateIpAddresses[0].PrivateDnsName = aws.String(name)
+		}
 	}
 
 	if record.PublicIpAddress != "" {

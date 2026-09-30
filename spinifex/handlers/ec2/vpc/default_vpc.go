@@ -270,7 +270,6 @@ func (s *VPCServiceImpl) buildDefaultVPC(ctx context.Context, accountID string, 
 		AZ:                 s.localAZ(),
 		EnableDnsSupport:   true, // AWS default
 		EnableDnsHostnames: true, // AWS default for default VPC
-		Tags:               map[string]string{"Name": "default"},
 		CreatedAt:          time.Now(),
 	})
 	if err != nil {

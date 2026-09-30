@@ -50,6 +50,46 @@ func TestCreateNetworkInterface(t *testing.T) {
 	assert.NotEmpty(t, *eni.MacAddress)
 }
 
+func TestNetworkInterface_NamesGroupsAndPrivateAddress(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	sgId := createTestSG(t, svc, vpcId, "web")
+
+	// Without a namer an interface carries no private name.
+	unnamed := createTestENI(t, svc, subnetId)
+	desc, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(unnamed)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.NetworkInterfaces, 1)
+	assert.Nil(t, desc.NetworkInterfaces[0].PrivateDnsName)
+
+	svc.SetPrivateDNSNamer(func(ip string) string { return "name-of-" + ip })
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(subnetId),
+		Groups:   []*string{aws.String(sgId)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{out.NetworkInterface.NetworkInterfaceId},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.NetworkInterfaces, 1)
+
+	for name, eni := range map[string]*ec2.NetworkInterface{"create": out.NetworkInterface, "describe": desc.NetworkInterfaces[0]} {
+		want := "name-of-" + aws.StringValue(eni.PrivateIpAddress)
+		assert.Equal(t, want, aws.StringValue(eni.PrivateDnsName), name)
+		require.Len(t, eni.PrivateIpAddresses, 1, name)
+		assert.Equal(t, want, aws.StringValue(eni.PrivateIpAddresses[0].PrivateDnsName), name)
+		require.Len(t, eni.Groups, 1, name)
+		assert.Equal(t, sgId, aws.StringValue(eni.Groups[0].GroupId), name)
+		assert.Equal(t, "web", aws.StringValue(eni.Groups[0].GroupName), name)
+	}
+}
+
 func TestCreateNetworkInterface_SequentialIPs(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)

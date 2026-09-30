@@ -155,6 +155,8 @@ services:
       - "vpc.create-port"
       - "vpc.delete-port"
       - "vpc.update-port-sgs"
+      # EC2-to-network projection owned by contracts/ec2/v1. The network
+      # subscriber realizes it in OVN without reading EC2 private state.
       - "vpc.igw-attach"
       - "vpc.igw-detach"
       - "vpc.add-nat-gateway"

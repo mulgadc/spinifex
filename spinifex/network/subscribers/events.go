@@ -1,5 +1,7 @@
 package subscribers
 
+import ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
+
 // NATS topic names for VPC lifecycle events published by daemon.
 const (
 	TopicVPCCreate          = "vpc.create"
@@ -9,8 +11,8 @@ const (
 	TopicCreatePort         = "vpc.create-port"
 	TopicDeletePort         = "vpc.delete-port"
 	TopicUpdatePortSGs      = "vpc.update-port-sgs"
-	TopicIGWAttach          = "vpc.igw-attach"
-	TopicIGWDetach          = "vpc.igw-detach"
+	TopicIGWAttach          = ec2v1.InternetGatewayAttachSubject
+	TopicIGWDetach          = ec2v1.InternetGatewayDetachSubject
 	TopicAddNAT             = "vpc.add-nat"
 	TopicDeleteNAT          = "vpc.delete-nat"
 	TopicAddNATGateway      = "vpc.add-nat-gateway"

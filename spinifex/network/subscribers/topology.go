@@ -7,10 +7,10 @@ import (
 	"net"
 	"net/netip"
 
+	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 )
 
@@ -201,7 +201,7 @@ func (s *Subscriber) handleUpdatePortSGs(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleIGWAttach(msg *nats.Msg) {
-	var evt types.IGWEvent
+	var evt ec2v1.InternetGatewayEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.igw-attach event", "err", err)
 		respond(msg, err)
@@ -220,7 +220,7 @@ func (s *Subscriber) handleIGWAttach(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleIGWDetach(msg *nats.Msg) {
-	var evt types.IGWEvent
+	var evt ec2v1.InternetGatewayEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.igw-detach event", "err", err)
 		respond(msg, err)

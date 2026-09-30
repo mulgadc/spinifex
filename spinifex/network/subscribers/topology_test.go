@@ -9,17 +9,17 @@ import (
 	"encoding/json"
 	"testing"
 
+	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/mock"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
 // runningSubscriber wires a subscriber to a live NATS server with every topic
@@ -298,12 +298,12 @@ func TestHandleIGW_AttachAndDetach(t *testing.T) {
 	nc, _, m := runningSubscriber(t)
 
 	requestOK(t, nc, TopicVPCCreate, VPCEvent{VpcId: "vpc-1", CidrBlock: "10.0.0.0/16"})
-	requestOK(t, nc, TopicIGWAttach, types.IGWEvent{VpcId: "vpc-1", InternetGatewayId: "igw-1"})
+	requestOK(t, nc, TopicIGWAttach, ec2v1.InternetGatewayEvent{VpcId: "vpc-1", InternetGatewayId: "igw-1"})
 
 	require.True(t, routerPortExists(t, m, topology.GatewayRouterPort("vpc-1")),
 		"igw-attach must create the gateway router port")
 
-	requestOK(t, nc, TopicIGWDetach, types.IGWEvent{VpcId: "vpc-1", InternetGatewayId: "igw-1"})
+	requestOK(t, nc, TopicIGWDetach, ec2v1.InternetGatewayEvent{VpcId: "vpc-1", InternetGatewayId: "igw-1"})
 
 	assert.False(t, routerPortExists(t, m, topology.GatewayRouterPort("vpc-1")),
 		"igw-detach must remove the gateway router port")

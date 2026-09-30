@@ -11,13 +11,13 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -397,14 +397,14 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 
 	// Publish event for vpcd to clean up OVN external switch + gateway + NAT
 	if s.natsConn != nil {
-		event := types.IGWEvent{
+		event := ec2v1.InternetGatewayEvent{
 			InternetGatewayId: igwID,
 			VpcId:             vpcID,
 		}
 		eventData, err := json.Marshal(event)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to marshal IGW detach event", "error", err)
-		} else if err := s.natsConn.Publish("vpc.igw-detach", eventData); err != nil {
+		} else if err := s.natsConn.Publish(ec2v1.InternetGatewayDetachSubject, eventData); err != nil {
 			slog.WarnContext(ctx, "Failed to publish IGW detach event", "error", err)
 		}
 	}
@@ -427,10 +427,10 @@ func (s *IGWServiceImpl) publishAttach(ctx context.Context, igwID, vpcID string)
 	if s.natsConn == nil {
 		return
 	}
-	eventData, err := json.Marshal(types.IGWEvent{InternetGatewayId: igwID, VpcId: vpcID})
+	eventData, err := json.Marshal(ec2v1.InternetGatewayEvent{InternetGatewayId: igwID, VpcId: vpcID})
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to marshal IGW attach event", "error", err)
-	} else if err := s.natsConn.Publish("vpc.igw-attach", eventData); err != nil {
+	} else if err := s.natsConn.Publish(ec2v1.InternetGatewayAttachSubject, eventData); err != nil {
 		slog.WarnContext(ctx, "Failed to publish IGW attach event", "error", err)
 	}
 }

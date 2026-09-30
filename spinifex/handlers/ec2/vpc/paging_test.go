@@ -1,3 +1,5 @@
+//test:in-package — reuses the in-package VPC service fixtures (setupTestVPCService, createTestVPC)
+
 package handlers_ec2_vpc
 
 import (

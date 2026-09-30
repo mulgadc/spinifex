@@ -350,7 +350,7 @@ func (s *VPCServiceImpl) CreateVpc(ctx context.Context, input *ec2.CreateVpcInpu
 // this account.
 func (s *VPCServiceImpl) requireVPCExists(ctx context.Context, accountID, vpcId string) error {
 	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcId)); err != nil {
-		return errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return vpcNotFoundError(vpcId)
 	}
 	return nil
 }
@@ -369,7 +369,7 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 		// tolerates it on destroy); destroy orchestration tolerates it too.
 		// A transient read error stays a server error.
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+			return nil, vpcNotFoundError(vpcID)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -405,8 +405,8 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if subnet.VpcId == vpcID {
-			return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
-				"the VPC has a dependent subnet %s that must be deleted first", subnet.SubnetId)
+			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent subnet", "vpcId", vpcID, "subnetId", subnet.SubnetId)
+			return nil, awserrors.HasDependencies("vpc", vpcID)
 		}
 	}
 
@@ -442,8 +442,8 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 			continue
 		}
 		if !sg.IsDefault {
-			return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
-				"the VPC has a dependent security group %s that must be deleted first", sg.GroupId)
+			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent security group", "vpcId", vpcID, "groupId", sg.GroupId)
+			return nil, awserrors.HasDependencies("vpc", vpcID)
 		}
 		defaultSGId = sg.GroupId
 	}
@@ -483,8 +483,8 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 			continue
 		}
 		if !rtb.IsMain {
-			return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
-				"the VPC has a dependent route table %s that must be deleted first", rtb.RouteTableId)
+			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent route table", "vpcId", vpcID, "routeTableId", rtb.RouteTableId)
+			return nil, awserrors.HasDependencies("vpc", vpcID)
 		}
 	}
 
@@ -577,8 +577,8 @@ func (s *VPCServiceImpl) rejectAttachedIGW(ctx context.Context, accountID, vpcID
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if igw.VpcId == vpcID {
-			return awserrors.Errorf(awserrors.ErrorDependencyViolation,
-				"the VPC has a dependent internet gateway %s that must be detached first", igw.InternetGatewayId)
+			slog.WarnContext(ctx, "DeleteVpc: VPC has an attached internet gateway", "vpcId", vpcID, "internetGatewayId", igw.InternetGatewayId)
+			return awserrors.HasDependencies("vpc", vpcID)
 		}
 	}
 
@@ -677,9 +677,9 @@ func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVp
 				found[*vpc.VpcId] = true
 			}
 		}
-		for id := range vpcIDs {
-			if !found[id] {
-				return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		for _, id := range input.VpcIds {
+			if id != nil && !found[*id] {
+				return nil, vpcNotFoundError(*id)
 			}
 		}
 	}
@@ -711,7 +711,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	// Verify VPC exists and belongs to this account
 	vpcEntry, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID))
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return nil, vpcNotFoundError(vpcID)
 	}
 
 	var vpcRecord VPCRecord
@@ -722,7 +722,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	// AWS allows /16 to /28 for subnet CIDR blocks
 	ones, _ := subnetNet.Mask.Size()
 	if ones < 16 || ones > 28 {
-		return nil, errors.New(awserrors.ErrorInvalidSubnetRange)
+		return nil, subnetRangeError(*input.CidrBlock)
 	}
 
 	// Verify subnet CIDR is within VPC CIDR
@@ -732,7 +732,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	}
 
 	if !vpcNet.Contains(subnetNet.IP) {
-		return nil, errors.New(awserrors.ErrorInvalidSubnetRange)
+		return nil, subnetRangeError(*input.CidrBlock)
 	}
 
 	// Check for CIDR conflicts with existing subnets in this VPC (same account)
@@ -765,7 +765,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 			continue
 		}
 		if existingNet.Contains(subnetNet.IP) || subnetNet.Contains(existingNet.IP) {
-			return nil, errors.New(awserrors.ErrorInvalidSubnetConflict)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidSubnetConflict, "The CIDR '%s' conflicts with another subnet", *input.CidrBlock)
 		}
 	}
 
@@ -895,7 +895,7 @@ func (s *VPCServiceImpl) checkSubnetResidents(ctx context.Context, accountID, su
 			continue
 		}
 		if record.SubnetId == subnetID && eniIsLiveAttachment(&record) {
-			return errors.New(awserrors.ErrorDependencyViolation)
+			return awserrors.HasDependencies("subnet", subnetID)
 		}
 	}
 	return nil
@@ -1404,7 +1404,7 @@ func (s *VPCServiceImpl) ModifyVpcAttribute(ctx context.Context, input *ec2.Modi
 
 	entry, err := s.vpcKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return nil, vpcNotFoundError(vpcID)
 	}
 
 	var record VPCRecord
@@ -1452,7 +1452,7 @@ func (s *VPCServiceImpl) DescribeVpcAttribute(ctx context.Context, input *ec2.De
 
 	entry, err := s.vpcKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return nil, vpcNotFoundError(vpcID)
 	}
 
 	var record VPCRecord

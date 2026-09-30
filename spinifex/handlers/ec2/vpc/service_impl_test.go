@@ -213,16 +213,13 @@ func TestDeleteVpc_WithSubnets(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
+	createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
 
 	// Should fail because VPC has subnets
 	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{
 		VpcId: aws.String(vpcID),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "DependencyViolation")
-	// The message must name the blocking subnet so the caller knows what to
-	// delete first, not just that something is blocking.
-	assert.ErrorContains(t, err, subnetID)
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The vpc '"+vpcID+"' has dependencies and cannot be deleted.")
 }
 
 func TestDescribeVpcs_All(t *testing.T) {
@@ -264,7 +261,10 @@ func TestDescribeVpcs_NotFound(t *testing.T) {
 	_, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{
 		VpcIds: []*string{aws.String("vpc-nonexistent")},
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidVpcID.NotFound")
+	requireAWSError(t, err, awserrors.ErrorInvalidVpcIDNotFound, "The vpc ID 'vpc-nonexistent' does not exist")
+
+	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String("vpc-nonexistent")}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidVpcIDNotFound, "The vpc ID 'vpc-nonexistent' does not exist")
 }
 
 // --- Subnet Tests ---
@@ -382,7 +382,7 @@ func TestCreateSubnet_OutsideVpcCidr(t *testing.T) {
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String("192.168.1.0/24"),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidSubnet.Range")
+	requireAWSError(t, err, awserrors.ErrorInvalidSubnetRange, "The CIDR '192.168.1.0/24' is invalid.")
 }
 
 func TestCreateSubnet_ConflictingCidr(t *testing.T) {
@@ -396,7 +396,7 @@ func TestCreateSubnet_ConflictingCidr(t *testing.T) {
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String("10.0.1.0/25"),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidSubnet.Conflict")
+	requireAWSError(t, err, awserrors.ErrorInvalidSubnetConflict, "The CIDR '10.0.1.0/25' conflicts with another subnet")
 }
 
 func TestCreateSubnet_WithTags(t *testing.T) {
@@ -857,8 +857,7 @@ func TestDeleteVpc_RejectsAttachedInternetGateway(t *testing.T) {
 
 	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "DependencyViolation")
-	assert.ErrorContains(t, err, "igw-pending", "the caller must be told which gateway to detach")
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The vpc '"+vpcID+"' has dependencies and cannot be deleted.")
 
 	desc, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, testAccountID)
 	require.NoError(t, err)
@@ -1097,7 +1096,7 @@ func TestCreateSubnet_CidrTooSmall(t *testing.T) {
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String("10.0.0.0/29"),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidSubnet.Range")
+	requireAWSError(t, err, awserrors.ErrorInvalidSubnetRange, "The CIDR '10.0.0.0/29' is invalid.")
 }
 
 func TestVpcCidrBlockAssociation(t *testing.T) {

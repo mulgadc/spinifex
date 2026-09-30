@@ -94,8 +94,7 @@ func TestCreateSecurityGroup_DuplicateName(t *testing.T) {
 		GroupName: aws.String("dup-sg"),
 		VpcId:     aws.String(vpcID),
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidGroup.Duplicate")
+	requireAWSError(t, err, awserrors.ErrorInvalidGroupDuplicate, "The security group 'dup-sg' already exists for VPC '"+vpcID+"'")
 }
 
 // --- DeleteSecurityGroup ---
@@ -635,29 +634,25 @@ func ingressRuleIDReferencing(t *testing.T, svc *VPCServiceImpl, sgID, srcSG str
 	return ""
 }
 
-// TestDeleteSecurityGroup_DependencyViolationNamesENI pins that the refusal
-// identifies the attached ENI. A bare code forces the blocking id to be
-// recovered by cross-referencing the whole ENI table after the fact.
-func TestDeleteSecurityGroup_DependencyViolationNamesENI(t *testing.T) {
+// TestDeleteSecurityGroup_DependencyViolationForENI pins AWS's refusal for a
+// group still attached to an interface, which names the group, not the ENI.
+func TestDeleteSecurityGroup_DependencyViolationForENI(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
 	sgID := createTestSG(t, svc, vpcID, "attached-sg")
-	eniID := createAutoENI(t, svc, subnetID, "i-holder", []string{sgID}, time.Hour)
+	createAutoENI(t, svc, subnetID, "i-holder", []string{sgID}, time.Hour)
 
 	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(sgID),
 	}, testAccountID)
-	require.Error(t, err)
-	code, _ := awserrors.ResolveErrorCode(err)
-	assert.Equal(t, awserrors.ErrorDependencyViolation, code)
-	assert.ErrorContains(t, err, eniID, "the refusal must name the blocking ENI")
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "resource "+sgID+" has a dependent object")
 }
 
-// TestDeleteSecurityGroup_DependencyViolationNamesReferencingSG pins the same
-// for the SourceSG case: the group holding the rule is named, not just the code.
-func TestDeleteSecurityGroup_DependencyViolationNamesReferencingSG(t *testing.T) {
+// TestDeleteSecurityGroup_DependencyViolationForReferencingSG pins the same
+// answer for a group another group's rule references.
+func TestDeleteSecurityGroup_DependencyViolationForReferencingSG(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
@@ -669,10 +664,7 @@ func TestDeleteSecurityGroup_DependencyViolationNamesReferencingSG(t *testing.T)
 	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(targetSG),
 	}, testAccountID)
-	require.Error(t, err)
-	code, _ := awserrors.ResolveErrorCode(err)
-	assert.Equal(t, awserrors.ErrorDependencyViolation, code)
-	assert.ErrorContains(t, err, holderSG, "the refusal must name the referencing security group")
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "resource "+targetSG+" has a dependent object")
 }
 
 // TestRevokeSecurityGroupIngress_ByRuleID_BreaksMutualReferenceTeardown
@@ -1615,8 +1607,12 @@ func TestDeleteSecurityGroup_RejectsDefault(t *testing.T) {
 	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(sgID),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "CannotDelete")
+	requireAWSError(t, err, awserrors.ErrorCannotDelete, `the specified group: "`+sgID+`" name: "default" cannot be deleted by a user`)
+
+	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
+		GroupId: aws.String("sg-0000000000000dead"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidGroupNotFound, "The security group 'sg-0000000000000dead' does not exist")
 }
 
 func TestDeleteSecurityGroup_RejectsAttachedToENI(t *testing.T) {
@@ -1667,14 +1663,10 @@ func TestDeleteVpc_BlocksOnNonDefaultSG(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	sgID := createTestSG(t, svc, vpcID, "user-sg")
+	createTestSG(t, svc, vpcID, "user-sg")
 
 	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "DependencyViolation")
-	// The message must name the blocking security group so the caller knows
-	// what to delete first, not just that something is blocking.
-	assert.Contains(t, err.Error(), sgID)
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The vpc '"+vpcID+"' has dependencies and cannot be deleted.")
 }
 
 func TestDeleteVpc_CascadesDefaultSG(t *testing.T) {
@@ -2402,8 +2394,32 @@ func TestAuthorizeSecurityGroupIngress_RejectsContentDuplicate(t *testing.T) {
 		GroupId:       aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{perm},
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidPermission.Duplicate")
+	requireAWSError(t, err, awserrors.ErrorInvalidPermissionDuplicate,
+		`the specified rule "peer: 10.0.0.0/24, TCP, from port: 22, to port: 22, ALLOW" already exists`)
+
+	// The default egress rule, re-added, is described without ports
+	_, err = svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("-1"),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+		}},
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidPermissionDuplicate, `the specified rule "peer: 0.0.0.0/0, ALL, ALLOW" already exists`)
+
+	_, err = svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto, FromPort: aws.Int64(22), ToPort: aws.Int64(22),
+			IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/33")}},
+		}},
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue, "CIDR block 10.0.0.0/33 is malformed")
+
+	_, err = svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
+		SecurityGroupRuleIds: []*string{aws.String("sgr-0000000000000dead")},
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidSecurityGroupRuleIdNotFound, "The security group rule ID 'sgr-0000000000000dead' does not exist")
 }
 
 func TestDescribeSecurityGroupRules_InvalidFilter(t *testing.T) {

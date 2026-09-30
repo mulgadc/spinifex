@@ -218,7 +218,7 @@ func TestCreateNetworkInterface_RequestedPrivateIPRaceHasOneWinner(t *testing.T)
 		switch {
 		case err == nil:
 			successes++
-		case err.Error() == awserrors.ErrorInvalidIPAddressInUse:
+		case awserrors.IsErrorCode(err, awserrors.ErrorInvalidIPAddressInUse):
 			conflicts++
 		default:
 			t.Fatalf("unexpected error: %v", err)

@@ -114,7 +114,7 @@ func TestGetSecurityGroupsForVpc_ExcludesOtherAccount(t *testing.T) {
 		VpcId: otherVpc.Vpc.VpcId,
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidVpcIDNotFound, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidVpcIDNotFound), err.Error())
 }
 
 func TestGetSecurityGroupsForVpc_MissingVpcId(t *testing.T) {
@@ -136,7 +136,7 @@ func TestGetSecurityGroupsForVpc_UnknownVpcIsNotFound(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err, "an unknown VPC must not be reported as a VPC with no groups")
 	assert.Nil(t, out)
-	assert.Equal(t, awserrors.ErrorInvalidVpcIDNotFound, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidVpcIDNotFound), err.Error())
 }
 
 // A VPC whose only group is the default one still answers, so the not-found

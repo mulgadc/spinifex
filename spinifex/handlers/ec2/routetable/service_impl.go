@@ -92,7 +92,7 @@ func (s *RouteTableServiceImpl) getRouteTable(ctx context.Context, accountID, rt
 	entry, err := s.rtbKV.Get(ctx, utils.AccountKey(accountID, rtbID))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidRouteTableIDNotFound)
+			return nil, rtbNotFoundError(rtbID)
 		}
 		slog.ErrorContext(ctx, "Failed to read route table from KV", "routeTableId", rtbID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -146,7 +146,7 @@ func (s *RouteTableServiceImpl) mutateRouteTableCAS(ctx context.Context, account
 	case err == nil:
 		return nil
 	case errors.Is(err, errRTBAbsent):
-		return errors.New(awserrors.ErrorInvalidRouteTableIDNotFound)
+		return rtbNotFoundError(rtbID)
 	case errors.Is(err, errRTBContended):
 		// Contended rather than broken.
 		slog.ErrorContext(ctx, "Route table CAS retries exhausted under contention",
@@ -169,7 +169,7 @@ func (s *RouteTableServiceImpl) mutateRouteTableCAS(ctx context.Context, account
 func (s *RouteTableServiceImpl) getVPCCidr(ctx context.Context, accountID, vpcID string) (string, error) {
 	entry, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID))
 	if err != nil {
-		return "", errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return "", awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", vpcID)
 	}
 	var vpcRecord handlers_ec2_vpc.VPCRecord
 	if err := json.Unmarshal(entry.Value(), &vpcRecord); err != nil {
@@ -571,13 +571,13 @@ func (s *RouteTableServiceImpl) DeleteRouteTable(ctx context.Context, input *ec2
 	}
 
 	if record.IsMain {
-		return nil, errors.New(awserrors.ErrorDependencyViolation)
+		return nil, awserrors.HasDependencies("routeTable", rtbID)
 	}
 
 	// Check for non-main associations (subnets still using this table)
 	for _, assoc := range record.Associations {
 		if !assoc.Main && assoc.SubnetId != "" {
-			return nil, errors.New(awserrors.ErrorDependencyViolation)
+			return nil, awserrors.HasDependencies("routeTable", rtbID)
 		}
 	}
 
@@ -674,9 +674,9 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 	}
 
 	// Return error if specific IDs were requested but not found
-	for id := range rtbIDs {
-		if !foundIDs[id] {
-			return nil, errors.New(awserrors.ErrorInvalidRouteTableIDNotFound)
+	for _, id := range input.RouteTableIds {
+		if id != nil && !foundIDs[*id] {
+			return nil, rtbNotFoundError(*id)
 		}
 	}
 
@@ -688,6 +688,14 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 // CreateRoute adds a route to a route table.
 // gatewayNotFoundError is AWS's answer to a route naming a gateway that does
 // not exist, whatever the gateway's type.
+func rtbNotFoundError(id string) error {
+	return awserrors.IDNotFound(awserrors.ErrorInvalidRouteTableIDNotFound, "routeTable", id)
+}
+
+func associationNotFoundError(id string) error {
+	return awserrors.IDNotFound(awserrors.ErrorInvalidAssociationIDNotFound, "association", id)
+}
+
 func gatewayNotFoundError(id string) error {
 	return awserrors.Errorf(awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID '%s' does not exist", id)
 }
@@ -827,7 +835,7 @@ func (s *RouteTableServiceImpl) DeleteRoute(ctx context.Context, input *ec2.Dele
 		}
 	}
 	if idx < 0 {
-		return nil, errors.New(awserrors.ErrorInvalidRouteNotFound)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidRouteNotFound, "no route with destination-cidr-block %s in route table %s", destCidr, rtbID)
 	}
 
 	departing := record.Routes[idx]
@@ -1034,7 +1042,7 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(ctx context.Context, inpu
 	keys, err := s.rtbKV.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
+			return nil, associationNotFoundError(assocID)
 		}
 		slog.ErrorContext(ctx, "Failed to list route table keys", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -1099,7 +1107,7 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(ctx context.Context, inpu
 		}
 	}
 
-	return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
+	return nil, associationNotFoundError(assocID)
 }
 
 // ReplaceRouteTableAssociation atomically moves a subnet from one route table to another.
@@ -1125,7 +1133,7 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 	keys, err := s.rtbKV.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
+			return nil, associationNotFoundError(assocID)
 		}
 		slog.ErrorContext(ctx, "Failed to list route table keys", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -1217,7 +1225,7 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 		}
 	}
 
-	return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
+	return nil, associationNotFoundError(assocID)
 }
 
 // rtbMatchesFilters checks if a route table record matches all parsed filters.

@@ -137,8 +137,7 @@ func TestAbandonedENIBlocksSecurityGroupDelete(t *testing.T) {
 		GroupId: aws.String(sgID),
 	}, testAccountID)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, awserrors.ErrorDependencyViolation)
-	assert.ErrorContains(t, err, eniID, "the refusal must name the ENI that blocked it")
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "resource "+sgID+" has a dependent object")
 
 	orphans, err := svc.ListAbandonedInstanceENIs(context.Background(), 15*time.Minute)
 	require.NoError(t, err)

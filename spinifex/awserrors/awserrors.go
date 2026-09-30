@@ -640,6 +640,18 @@ func Errorf(code, format string, args ...any) error {
 	return outer
 }
 
+// IDNotFound returns code with EC2's not-found message for one resource ID,
+// "The <kind> ID '<id>' does not exist".
+func IDNotFound(code, kind, id string) error {
+	return Errorf(code, "The %s ID '%s' does not exist", kind, id)
+}
+
+// HasDependencies returns DependencyViolation with EC2's message for a
+// resource that cannot be deleted while others depend on it.
+func HasDependencies(kind, id string) error {
+	return Errorf(ErrorDependencyViolation, "The %s '%s' has dependencies and cannot be deleted.", kind, id)
+}
+
 // retryableError wraps a registered code with a suggested Retry-After
 // duration, for a 503 that a client can expect to clear on its own within a
 // bounded window (e.g. a warm-up race) rather than an open-ended outage.

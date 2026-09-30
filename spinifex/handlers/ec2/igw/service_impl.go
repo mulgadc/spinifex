@@ -156,7 +156,7 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 		// tolerates it on destroy); destroy orchestration tolerates it too.
 		// A transient read error stays a server error.
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+			return nil, igwNotFoundError(igwID)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -166,12 +166,11 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Cannot delete an attached IGW. The VPC is named because a pending
-	// attachment is hidden from describes, so the caller has no other way to
-	// learn what it must detach from.
+	// Cannot delete an attached IGW. AWS's message does not name the VPC, and
+	// a pending attachment is hidden from describes, so the log names it.
 	if record.VpcId != "" {
-		return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
-			"the internet gateway is attached to %s and must be detached first", record.VpcId)
+		slog.WarnContext(ctx, "DeleteInternetGateway: gateway is attached", "internetGatewayId", igwID, "vpcId", record.VpcId)
+		return nil, awserrors.HasDependencies("internetGateway", igwID)
 	}
 
 	if err := s.igwKV.Delete(ctx, key); err != nil {
@@ -262,9 +261,9 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 	}
 
 	// Return error if specific IDs were requested but not found
-	for id := range igwIDs {
-		if !foundIDs[id] {
-			return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+	for _, id := range input.InternetGatewayIds {
+		if id != nil && !foundIDs[*id] {
+			return nil, igwNotFoundError(*id)
 		}
 	}
 
@@ -324,7 +323,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 
 	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+		return nil, igwNotFoundError(igwID)
 	}
 
 	var record IGWRecord
@@ -333,7 +332,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 	}
 
 	if record.VpcId != "" {
-		return nil, errors.New(awserrors.ErrorResourceAlreadyAssociated)
+		return nil, awserrors.Errorf(awserrors.ErrorResourceAlreadyAssociated, "resource %s is already attached to network %s", igwID, record.VpcId)
 	}
 
 	// Verify the caller owns the target VPC (fail-closed if KV unavailable)
@@ -343,7 +342,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 	}
 	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID)); err != nil {
 		slog.WarnContext(ctx, "AttachInternetGateway: VPC not found for account", "vpcId", vpcID, "accountID", accountID)
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", vpcID)
 	}
 
 	record.VpcId = vpcID
@@ -386,7 +385,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 
 	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+		return nil, igwNotFoundError(igwID)
 	}
 
 	var record IGWRecord
@@ -458,7 +457,7 @@ func (s *IGWServiceImpl) CreateAttachedInternetGateway(ctx context.Context, acco
 		return false, errors.New(awserrors.ErrorServerInternal)
 	}
 	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID)); err != nil {
-		return false, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return false, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", vpcID)
 	}
 
 	key := utils.AccountKey(accountID, igwID)
@@ -627,4 +626,8 @@ func (s *IGWServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID 
 	return utils.MirrorKVRecordTags(context.Background(), s.igwKV, accountID, "igw-", input.Resources,
 		func(r *IGWRecord) *map[string]string { return &r.Tags },
 		utils.RemoveTagsMut(input))
+}
+
+func igwNotFoundError(id string) error {
+	return awserrors.IDNotFound(awserrors.ErrorInvalidInternetGatewayIDNotFound, "internetGateway", id)
 }

@@ -46,3 +46,23 @@ func sgIDMalformedError(id string) error {
 func eniIDMalformedError(id string) error {
 	return malformedIDError(awserrors.ErrorInvalidNetworkInterfaceIdMalformed, "eni", id, isLowerHex)
 }
+
+func vpcNotFoundError(id string) error {
+	return awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", id)
+}
+
+func eniNotFoundError(id string) error {
+	return awserrors.IDNotFound(awserrors.ErrorInvalidNetworkInterfaceIDNotFound, "networkInterface", id)
+}
+
+// sgNotFoundError is AWS's security group not-found answer, which unlike the
+// other resource types says no "ID".
+func sgNotFoundError(id string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidGroupNotFound, "The security group '%s' does not exist", id)
+}
+
+// subnetRangeError answers a subnet CIDR too large, too small or outside
+// its VPC, which AWS does not tell apart.
+func subnetRangeError(cidr string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidSubnetRange, "The CIDR '%s' is invalid.", cidr)
+}

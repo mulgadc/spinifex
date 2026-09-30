@@ -149,7 +149,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrIPInUse):
-				return nil, errors.New(awserrors.ErrorInvalidIPAddressInUse)
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidIPAddressInUse, "The specified address is already in use.")
 			case errors.Is(err, ErrIPOutOfRange):
 				return nil, eniAddressError(*input.PrivateIpAddress, subnet.CidrBlock)
 			default:
@@ -257,7 +257,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 			if force {
 				return &ec2.DeleteNetworkInterfaceOutput{}, nil
 			}
-			return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+			return nil, eniNotFoundError(eniId)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -352,7 +352,7 @@ func (s *VPCServiceImpl) DetachAndDeleteENI(ctx context.Context, accountID, eniI
 				if force {
 					return false, nil
 				}
-				return false, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+				return false, eniNotFoundError(eniID)
 			}
 			return false, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -456,7 +456,7 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, in
 
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		return nil, eniNotFoundError(eniId)
 	}
 
 	var record ENIRecord
@@ -603,7 +603,7 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 		}
 		for _, id := range input.NetworkInterfaceIds {
 			if id != nil && !found[*id] {
-				return nil, awserrors.Errorf(awserrors.ErrorInvalidNetworkInterfaceIDNotFound, "The networkInterface ID '%s' does not exist", *id)
+				return nil, eniNotFoundError(*id)
 			}
 		}
 	}
@@ -701,7 +701,7 @@ func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instan
 	key := utils.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
-		return "", errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		return "", eniNotFoundError(eniId)
 	}
 
 	var record ENIRecord
@@ -743,7 +743,7 @@ func (s *VPCServiceImpl) DetachENI(ctx context.Context, accountID, eniId string)
 	key := utils.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
-		return errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		return eniNotFoundError(eniId)
 	}
 
 	var record ENIRecord
@@ -779,7 +779,7 @@ func (s *VPCServiceImpl) getENIRecord(ctx context.Context, accountID, eniId stri
 	key := utils.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
-		return ENIRecord{}, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		return ENIRecord{}, eniNotFoundError(eniId)
 	}
 	var record ENIRecord
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
@@ -799,7 +799,7 @@ func (s *VPCServiceImpl) updateENI(ctx context.Context, accountID, eniId string,
 	key := utils.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
-		return errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		return eniNotFoundError(eniId)
 	}
 	var record ENIRecord
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
@@ -1198,7 +1198,7 @@ func (s *VPCServiceImpl) validateSGAttachment(ctx context.Context, accountID str
 	for _, sgId := range sgIds {
 		sgEntry, err := s.sgKV.Get(ctx, utils.AccountKey(accountID, sgId))
 		if err != nil {
-			return errors.New(awserrors.ErrorInvalidGroupNotFound)
+			return sgNotFoundError(sgId)
 		}
 		var sg SecurityGroupRecord
 		if err := json.Unmarshal(sgEntry.Value(), &sg); err != nil {

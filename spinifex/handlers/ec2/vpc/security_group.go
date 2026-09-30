@@ -85,7 +85,7 @@ func validateSGRule(r SGRule) error {
 	if r.CidrIp != "" {
 		_, ipnet, err := net.ParseCIDR(r.CidrIp)
 		if err != nil {
-			return fmt.Errorf("invalid CidrIp %q: %w", r.CidrIp, err)
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "CIDR block %s is malformed", r.CidrIp)
 		}
 		if ipnet.IP.To4() == nil {
 			return fmt.Errorf("invalid CidrIp %q: IPv6 belongs in CidrIpv6", r.CidrIp)
@@ -97,7 +97,7 @@ func validateSGRule(r SGRule) error {
 	if r.CidrIpv6 != "" {
 		_, ipnet, err := net.ParseCIDR(r.CidrIpv6)
 		if err != nil {
-			return fmt.Errorf("invalid CidrIpv6 %q: %w", r.CidrIpv6, err)
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "CIDR block %s is malformed", r.CidrIpv6)
 		}
 		if ipnet.IP.To4() != nil {
 			return fmt.Errorf("invalid CidrIpv6 %q: IPv4 belongs in CidrIp", r.CidrIpv6)
@@ -232,7 +232,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 		}
 		sgsInVPC++
 		if existing.GroupName == groupName {
-			return nil, errors.New(awserrors.ErrorInvalidGroupDuplicate)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidGroupDuplicate, "The security group '%s' already exists for VPC '%s'", groupName, vpcId)
 		}
 	}
 	if sgsInVPC >= maxSGsPerVPC {
@@ -305,7 +305,7 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 		// success. Destroy orchestration tolerates it via awserrors.IsNotFound;
 		// a transient read error stays a server error.
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+			return nil, sgNotFoundError(groupId)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -316,7 +316,7 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 	}
 
 	if record.IsDefault {
-		return nil, errors.New(awserrors.ErrorCannotDelete)
+		return nil, awserrors.Errorf(awserrors.ErrorCannotDelete, "the specified group: %q name: %q cannot be deleted by a user", groupId, record.GroupName)
 	}
 
 	if err := s.checkSGDependencies(ctx, accountID, groupId); err != nil {
@@ -351,14 +351,14 @@ func (s *VPCServiceImpl) validateSGRuleReferences(ctx context.Context, accountID
 		}
 		entry, err := s.sgKV.Get(ctx, utils.AccountKey(accountID, r.SourceSG))
 		if err != nil {
-			return errors.New(awserrors.ErrorInvalidGroupNotFound)
+			return sgNotFoundError(r.SourceSG)
 		}
 		var rec SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if rec.VpcId != ownerVpcId {
-			return errors.New(awserrors.ErrorInvalidGroupNotFound)
+			return sgNotFoundError(r.SourceSG)
 		}
 	}
 	return nil
@@ -395,8 +395,7 @@ func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, gro
 			// afterwards otherwise means cross-referencing the whole ENI table.
 			slog.WarnContext(ctx, "checkSGDependencies: SG still attached to ENI",
 				"groupId", groupId, "eniId", eni.NetworkInterfaceId, "accountID", accountID)
-			return awserrors.Errorf(awserrors.ErrorDependencyViolation,
-				"the security group has a dependent network interface %s that must be detached first", eni.NetworkInterfaceId)
+			return sgDependentObjectError(groupId)
 		}
 	}
 
@@ -435,16 +434,36 @@ func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, gro
 	return nil
 }
 
-// sgReferencedByError logs and returns the DependencyViolation naming the SG
-// whose rule still references groupId, so the blocking id survives even when
-// the message does not reach the client.
+// sgReferencedByError logs the SG whose rule still references groupId, since
+// AWS's message does not name it, and returns the DependencyViolation.
 func sgReferencedByError(ctx context.Context, accountID, groupId, referencingGroupId, direction string) error {
 	slog.WarnContext(ctx, "checkSGDependencies: SG referenced by another SG's rule",
 		"groupId", groupId, "referencingGroupId", referencingGroupId,
 		"direction", direction, "accountID", accountID)
-	return awserrors.Errorf(awserrors.ErrorDependencyViolation,
-		"the security group is referenced by a %s rule on security group %s that must be revoked first",
-		direction, referencingGroupId)
+	return sgDependentObjectError(groupId)
+}
+
+// sgDependentObjectError is AWS's answer to deleting a group that an
+// interface or another group's rule still uses; it does not say which.
+func sgDependentObjectError(groupId string) error {
+	return awserrors.Errorf(awserrors.ErrorDependencyViolation, "resource %s has a dependent object", groupId)
+}
+
+// sgRuleDuplicateError is AWS's answer to adding a rule the group already
+// has, which describes the rule by its peer, protocol and ports.
+func sgRuleDuplicateError(rule SGRule) error {
+	peer := rule.CidrIp
+	if peer == "" {
+		peer = rule.CidrIpv6
+	}
+	if peer == "" {
+		peer = rule.SourceSG
+	}
+	desc := fmt.Sprintf("peer: %s, ALL, ALLOW", peer)
+	if rule.IpProtocol != allProtocols {
+		desc = fmt.Sprintf("peer: %s, %s, from port: %d, to port: %d, ALLOW", peer, strings.ToUpper(rule.IpProtocol), rule.FromPort, rule.ToPort)
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidPermissionDuplicate, "the specified rule %q already exists", desc)
 }
 
 // describeSecurityGroupsValidFilters defines the set of filter names accepted by DescribeSecurityGroups.
@@ -543,7 +562,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 		}
 		for _, id := range input.GroupIds {
 			if id != nil && !found[*id] {
-				return nil, awserrors.Errorf(awserrors.ErrorInvalidGroupNotFound, "The security group '%s' does not exist", *id)
+				return nil, sgNotFoundError(*id)
 			}
 		}
 	}
@@ -856,11 +875,9 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 		}
 	}
 
-	if len(requested) > 0 {
-		for id := range requested {
-			if !emitted[id] {
-				return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound)
-			}
+	for _, id := range input.SecurityGroupRuleIds {
+		if !emitted[*id] {
+			return nil, sgRuleNotFoundError(*id)
 		}
 	}
 
@@ -1038,7 +1055,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return nil, sgNotFoundError(groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1068,7 +1085,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 	}
 	for _, nr := range newRules {
 		if _, ok := existing[sgRuleKey(nr)]; ok {
-			return nil, errors.New(awserrors.ErrorInvalidPermissionDuplicate)
+			return nil, sgRuleDuplicateError(nr)
 		}
 	}
 	if len(record.IngressRules)+len(newRules) > maxRulesPerSGSide {
@@ -1121,7 +1138,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return nil, sgNotFoundError(groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1151,7 +1168,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 	}
 	for _, nr := range newRules {
 		if _, ok := existing[sgRuleKey(nr)]; ok {
-			return nil, errors.New(awserrors.ErrorInvalidPermissionDuplicate)
+			return nil, sgRuleDuplicateError(nr)
 		}
 	}
 	if len(record.EgressRules)+len(newRules) > maxRulesPerSGSide {
@@ -1204,7 +1221,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(ctx context.Context, input *
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return nil, sgNotFoundError(groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1271,7 +1288,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *e
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return nil, sgNotFoundError(groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1392,7 +1409,7 @@ func (s *VPCServiceImpl) updateSGRuleDescriptions(ctx context.Context, accountID
 	key := utils.AccountKey(accountID, req.groupId)
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return sgNotFoundError(req.groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1468,7 +1485,7 @@ func applySGRuleDescriptions(rules []SGRule, descriptions []*ec2.SecurityGroupRu
 		// absent from this record and so is not-found, never a silent no-op.
 		i, ok := byID[id]
 		if !ok {
-			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound)
+			return nil, sgRuleNotFoundError(id)
 		}
 		if d.Description != nil {
 			out[i].Description = *d.Description
@@ -1585,7 +1602,7 @@ func (s *VPCServiceImpl) ModifySecurityGroupRules(ctx context.Context, input *ec
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return nil, sgNotFoundError(groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1728,7 +1745,7 @@ func checkSGRuleModificationDuplicates(record *SecurityGroupRecord, mods []sgRul
 
 	for i, r := range rules {
 		if !replaced[i] && newKeys[sgRuleKey(r)] {
-			return errors.New(awserrors.ErrorInvalidPermissionDuplicate)
+			return sgRuleDuplicateError(r)
 		}
 	}
 	return nil
@@ -1836,8 +1853,11 @@ func sgRuleIDLookupError(id string) error {
 	if SGRuleIDIsMalformed(id) {
 		return awserrors.Errorf(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed, "Invalid id: %q", id)
 	}
-	return awserrors.Errorf(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound,
-		"The security group rule ID '%s' does not exist", id)
+	return sgRuleNotFoundError(id)
+}
+
+func sgRuleNotFoundError(id string) error {
+	return awserrors.IDNotFound(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound, "security group rule", id)
 }
 
 // sgRecordToEC2 converts a SecurityGroupRecord to an EC2 SecurityGroup.
@@ -2102,7 +2122,7 @@ func resolveRuleIDsToRemove(existing []SGRule, ruleIDs []*string) ([]SGRule, err
 		}
 		r, ok := byID[*idp]
 		if !ok {
-			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound)
+			return nil, sgRuleNotFoundError(*idp)
 		}
 		out = append(out, r)
 	}

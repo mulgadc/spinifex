@@ -90,7 +90,7 @@ func (s *EgressOnlyIGWServiceImpl) CreateEgressOnlyInternetGateway(ctx context.C
 	}
 	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, *input.VpcId)); err != nil {
 		slog.WarnContext(ctx, "CreateEgressOnlyInternetGateway: VPC not found for account", "vpcId", *input.VpcId, "accountID", accountID)
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", *input.VpcId)
 	}
 
 	eigwID := utils.GenerateResourceID("eigw")

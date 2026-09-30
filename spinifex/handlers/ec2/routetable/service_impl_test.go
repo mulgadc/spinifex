@@ -192,7 +192,7 @@ func TestCreateRouteTable_VpcNotFound(t *testing.T) {
 	_, err := svc.CreateRouteTable(t.Context(), &ec2.CreateRouteTableInput{
 		VpcId: aws.String("vpc-nonexistent"),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidVpcIDNotFound)
+	requireAWSError(t, err, awserrors.ErrorInvalidVpcIDNotFound, "The vpc ID 'vpc-nonexistent' does not exist")
 }
 
 func TestDeleteRouteTable(t *testing.T) {
@@ -207,7 +207,7 @@ func TestDeleteRouteTable(t *testing.T) {
 
 	// Should be gone
 	_, err = svc.getRouteTable(t.Context(), testAccountID, rtbID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidRouteTableIDNotFound)
+	requireAWSError(t, err, awserrors.ErrorInvalidRouteTableIDNotFound, "The routeTable ID '"+rtbID+"' does not exist")
 }
 
 func TestDeleteRouteTable_Main(t *testing.T) {
@@ -219,7 +219,7 @@ func TestDeleteRouteTable_Main(t *testing.T) {
 	_, err = svc.DeleteRouteTable(t.Context(), &ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String(record.RouteTableId),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorDependencyViolation)
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The routeTable '"+record.RouteTableId+"' has dependencies and cannot be deleted.")
 }
 
 func TestDeleteRouteTable_WithAssociations(t *testing.T) {
@@ -238,7 +238,7 @@ func TestDeleteRouteTable_WithAssociations(t *testing.T) {
 	_, err = svc.DeleteRouteTable(t.Context(), &ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorDependencyViolation)
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The routeTable '"+rtbID+"' has dependencies and cannot be deleted.")
 }
 
 func TestDescribeRouteTables(t *testing.T) {
@@ -490,7 +490,7 @@ func TestDeleteRoute_NotFound(t *testing.T) {
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("192.168.0.0/16"),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidRouteNotFound)
+	requireAWSError(t, err, awserrors.ErrorInvalidRouteNotFound, "no route with destination-cidr-block 192.168.0.0/16 in route table "+rtbID)
 }
 
 func TestReplaceRoute(t *testing.T) {

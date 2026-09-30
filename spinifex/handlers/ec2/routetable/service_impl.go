@@ -685,6 +685,12 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 }
 
 // CreateRoute adds a route to a route table.
+// gatewayNotFoundError is AWS's answer to a route naming a gateway that does
+// not exist, whatever the gateway's type.
+func gatewayNotFoundError(id string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID '%s' does not exist", id)
+}
+
 func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.CreateRouteInput, accountID string) (*ec2.CreateRouteOutput, error) {
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -716,7 +722,7 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 		// Verify IGW exists and is attached to the same VPC
 		igwEntry, err := s.igwKV.Get(ctx, utils.AccountKey(accountID, igwID))
 		if err != nil {
-			return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+			return nil, gatewayNotFoundError(igwID)
 		}
 		var igwRecord handlers_ec2_igw.IGWRecord
 		if err := json.Unmarshal(igwEntry.Value(), &igwRecord); err != nil {
@@ -868,6 +874,23 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 		return nil, err
 	}
 
+	// V1: only GatewayId target supported
+	if input.GatewayId == nil || *input.GatewayId == "" {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	igwID := *input.GatewayId
+
+	// AWS reports a missing gateway ahead of a missing route.
+	igwEntry, err := s.igwKV.Get(ctx, utils.AccountKey(accountID, igwID))
+	if err != nil {
+		return nil, gatewayNotFoundError(igwID)
+	}
+	var igwRecord handlers_ec2_igw.IGWRecord
+	if err := json.Unmarshal(igwEntry.Value(), &igwRecord); err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	idx := -1
 	for i, r := range record.Routes {
 		if r.DestinationCidrBlock == destCidr {
@@ -876,28 +899,12 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 		}
 	}
 	if idx < 0 {
-		return nil, errors.New(awserrors.ErrorInvalidRouteNotFound)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"There is no route defined for '%s' in the route table. Use CreateRoute instead.", destCidr)
 	}
 
 	if record.Routes[idx].GatewayId == "local" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
-	// V1: only GatewayId target supported
-	if input.GatewayId == nil || *input.GatewayId == "" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
-	igwID := *input.GatewayId
-
-	// Verify IGW exists and is attached to same VPC
-	igwEntry, err := s.igwKV.Get(ctx, utils.AccountKey(accountID, igwID))
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
-	}
-	var igwRecord handlers_ec2_igw.IGWRecord
-	if err := json.Unmarshal(igwEntry.Value(), &igwRecord); err != nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if igwRecord.VpcId != record.VpcId {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)

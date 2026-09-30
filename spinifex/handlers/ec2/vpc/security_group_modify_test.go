@@ -28,6 +28,14 @@ func requireAWSCode(t *testing.T, err error, code string) {
 	assert.Equal(t, code, got, "error: %v", err)
 }
 
+func requireAWSError(t *testing.T, err error, code, message string) {
+	t.Helper()
+	got, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, code, got)
+	assert.Equal(t, message, msg)
+}
+
 func modifyRules(svc *VPCServiceImpl, sgID string, updates ...*ec2.SecurityGroupRuleUpdate) error {
 	_, err := svc.ModifySecurityGroupRules(context.Background(), &ec2.ModifySecurityGroupRulesInput{
 		GroupId:            aws.String(sgID),

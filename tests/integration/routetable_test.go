@@ -390,7 +390,7 @@ func TestReplaceRouteConvergence(t *testing.T) {
 		DestinationCidrBlock: aws.String("198.51.100.0/24"),
 		GatewayId:            aws.String(igw2),
 	})
-	requireAWSErrorCode(t, err, "InvalidRoute.NotFound")
+	requireAWSErrorCode(t, err, "InvalidParameterValue")
 
 	// Local route is immutable.
 	_, err = c.ReplaceRoute(&ec2.ReplaceRouteInput{
@@ -413,7 +413,7 @@ func TestReplaceRouteConvergence(t *testing.T) {
 		DestinationCidrBlock: aws.String(dest),
 		GatewayId:            aws.String("igw-00000000000000000"),
 	})
-	requireAWSErrorCode(t, err, "InvalidInternetGatewayID.NotFound")
+	requireAWSErrorCode(t, err, "InvalidGatewayID.NotFound")
 
 	// IGW attached to a different VPC than the route table.
 	_, err = c.ReplaceRoute(&ec2.ReplaceRouteInput{

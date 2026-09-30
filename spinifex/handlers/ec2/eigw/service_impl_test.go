@@ -337,3 +337,24 @@ func TestCreateEgressOnlyInternetGateway_CrossAccountVPCRejected(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, out.EgressOnlyInternetGateway)
 }
+
+func TestDescribeEgressOnlyInternetGateways_MalformedID(t *testing.T) {
+	svc := setupTestEIGWService(t)
+	describe := func(ids ...string) error {
+		_, err := svc.DescribeEgressOnlyInternetGateways(context.Background(), &ec2.DescribeEgressOnlyInternetGatewaysInput{
+			EgressOnlyInternetGatewayIds: aws.StringSlice(ids),
+		}, testAccountID)
+		return err
+	}
+
+	for _, id := range []string{"eigw-xyz", "eigw-12345", "eigw-0000000000000001", "eigw-000000000000000001", "foo"} {
+		err := describe(id)
+		code, msg, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok, "error %v carries no AWS code", err)
+		assert.Equal(t, awserrors.ErrorInvalidEgressOnlyInternetGatewayIdMalformed, code)
+		assert.Equal(t, "The eigw ID "+id+" is malformed", msg)
+	}
+	// Exactly 17 hex digits of either case is well formed, and unknown is not an error.
+	assert.NoError(t, describe("eigw-00000000000000001"))
+	assert.NoError(t, describe("eigw-0AAAAAAAAAAAAAAA1"))
+}

@@ -103,7 +103,8 @@ func TestCreateVpc_InvalidCidr(t *testing.T) {
 	_, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("not-a-cidr"),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidVpcRange")
+	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+		"Value (not-a-cidr) for parameter cidrBlock is invalid. This is not a valid CIDR block.")
 }
 
 func TestCreateVpc_CidrTooLarge(t *testing.T) {
@@ -112,7 +113,7 @@ func TestCreateVpc_CidrTooLarge(t *testing.T) {
 	_, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/8"),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidVpcRange")
+	requireAWSError(t, err, "InvalidVpc.Range", "The CIDR '10.0.0.0/8' is invalid.")
 }
 
 func TestCreateVpc_CidrTooSmall(t *testing.T) {
@@ -121,7 +122,7 @@ func TestCreateVpc_CidrTooSmall(t *testing.T) {
 	_, err := svc.CreateVpc(context.Background(), &ec2.CreateVpcInput{
 		CidrBlock: aws.String("10.0.0.0/29"),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidVpcRange")
+	requireAWSError(t, err, "InvalidVpc.Range", "The CIDR '10.0.0.0/29' is invalid.")
 }
 
 func TestCreateVpc_WithTags(t *testing.T) {
@@ -362,7 +363,15 @@ func TestCreateSubnet_InvalidCidr(t *testing.T) {
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String("not-a-cidr"),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidSubnet.Range")
+	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+		"Value (not-a-cidr) for parameter cidrBlock is invalid. This is not a valid CIDR block.")
+
+	// AWS rejects the CIDR before it looks the VPC up.
+	_, err = svc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
+		VpcId:     aws.String("vpc-nonexistent"),
+		CidrBlock: aws.String("not-a-cidr"),
+	}, testAccountID)
+	requireAWSCode(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestCreateSubnet_OutsideVpcCidr(t *testing.T) {

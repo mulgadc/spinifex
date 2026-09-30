@@ -255,22 +255,27 @@ func (s *VPCServiceImpl) nextVNI(ctx context.Context) (int64, error) {
 	return allocated, nil
 }
 
+// invalidCIDRBlockError is AWS's answer to a CidrBlock that does not parse.
+func invalidCIDRBlockError(cidr string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"Value (%s) for parameter cidrBlock is invalid. This is not a valid CIDR block.", cidr)
+}
+
 // CreateVpc creates a new VPC.
 func (s *VPCServiceImpl) CreateVpc(ctx context.Context, input *ec2.CreateVpcInput, accountID string) (*ec2.CreateVpcOutput, error) {
 	if input.CidrBlock == nil || *input.CidrBlock == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	// Validate CIDR block
 	_, ipNet, err := net.ParseCIDR(*input.CidrBlock)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVpcRange)
+		return nil, invalidCIDRBlockError(*input.CidrBlock)
 	}
 
 	// AWS allows /16 to /28 for VPC CIDR blocks
 	ones, _ := ipNet.Mask.Size()
 	if ones < 16 || ones > 28 {
-		return nil, errors.New(awserrors.ErrorInvalidVpcRange)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidVpcRange, "The CIDR '%s' is invalid.", *input.CidrBlock)
 	}
 
 	// Allocate VNI for overlay network
@@ -684,6 +689,12 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 
 	vpcID := *input.VpcId
 
+	// AWS rejects an unparseable CIDR before it looks the VPC up.
+	_, subnetNet, err := net.ParseCIDR(*input.CidrBlock)
+	if err != nil {
+		return nil, invalidCIDRBlockError(*input.CidrBlock)
+	}
+
 	// Verify VPC exists and belongs to this account
 	vpcEntry, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID))
 	if err != nil {
@@ -693,11 +704,6 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	var vpcRecord VPCRecord
 	if err := json.Unmarshal(vpcEntry.Value(), &vpcRecord); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	// Validate subnet CIDR
-	_, subnetNet, err := net.ParseCIDR(*input.CidrBlock)
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidSubnetRange)
 	}
 
 	// AWS allows /16 to /28 for subnet CIDR blocks

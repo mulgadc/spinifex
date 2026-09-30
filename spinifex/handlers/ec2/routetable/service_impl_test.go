@@ -490,6 +490,49 @@ func TestReplaceRoute(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func requireAWSError(t *testing.T, err error, code, message string) {
+	t.Helper()
+	got, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, code, got)
+	assert.Equal(t, message, msg)
+}
+
+func TestCreateRoute_MissingGateway(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	rtbID := createTestRtb(t, svc)
+
+	_, err := svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-0000000000000dead"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'igw-0000000000000dead' does not exist")
+}
+
+func TestReplaceRoute_MissingRouteOrGateway(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	rtbID := createTestRtb(t, svc)
+
+	_, err := svc.ReplaceRoute(t.Context(), &ec2.ReplaceRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("198.51.100.0/24"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+		"There is no route defined for '198.51.100.0/24' in the route table. Use CreateRoute instead.")
+
+	// AWS reports the missing gateway ahead of the missing route.
+	_, err = svc.ReplaceRoute(t.Context(), &ec2.ReplaceRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("198.51.100.0/24"),
+		GatewayId:            aws.String("igw-0000000000000dead"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'igw-0000000000000dead' does not exist")
+}
+
 func TestAssociateRouteTable(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)

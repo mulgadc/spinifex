@@ -314,7 +314,7 @@ var (
 	ErrorInvalidVpcPeeringConnectionIDNotFound                = "InvalidVpcPeeringConnectionID.NotFound"
 	ErrorInvalidVpcPeeringConnectionIdMalformed               = "InvalidVpcPeeringConnectionId.Malformed"
 	ErrorInvalidVpcPeeringConnectionStateDnsHostnamesDisabled = "InvalidVpcPeeringConnectionState.DnsHostnamesDisabled"
-	ErrorInvalidVpcRange                                      = "InvalidVpcRange"
+	ErrorInvalidVpcRange                                      = "InvalidVpc.Range"
 	ErrorInvalidVpcState                                      = "InvalidVpcState"
 	ErrorInvalidVpnConnectionInvalidState                     = "InvalidVpnConnection.InvalidState"
 	ErrorInvalidVpnConnectionInvalidType                      = "InvalidVpnConnection.InvalidType"
@@ -1097,7 +1097,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidVpcPeeringConnectionIDNotFound:                 {HTTPCode: 404, Message: "The specified VPC peering connection ID does not exist."},
 	ErrorInvalidVpcPeeringConnectionIdMalformed:                {HTTPCode: 400, Message: "The specified VPC peering connection ID is malformed. Ensure that you provide the ID in the form pcx-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidVpcPeeringConnectionStateDnsHostnamesDisabled:  {HTTPCode: 400, Message: "To enable DNS hostname resolution for the VPC peering connection, DNS hostname support must be enabled for the VPCs."},
-	ErrorInvalidVpcRange:                                       {HTTPCode: 400, Message: "The specified CIDR block range is not valid. The block range must be between a /28 netmask and /16 netmask. For more information, see VPC CIDR blocks."},
+	ErrorInvalidVpcRange:                                       {HTTPCode: 400, Message: "The CIDR block is invalid."},
 	ErrorInvalidVpcState:                                       {HTTPCode: 400, Message: "The specified VPC already has a virtual private gateway attached to it."},
 	ErrorInvalidVpnConnectionInvalidState:                      {HTTPCode: 400, Message: "The VPN connection must be in the available state to complete the request."},
 	ErrorInvalidVpnConnectionInvalidType:                       {HTTPCode: 400, Message: "The specified VPN connection does not support static routes."},

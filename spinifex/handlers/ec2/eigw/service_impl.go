@@ -2,6 +2,7 @@ package handlers_ec2_eigw
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -167,6 +168,11 @@ func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx contex
 		slog.WarnContext(ctx, "DescribeEgressOnlyInternetGateways: invalid filter", "err", err)
 		return nil, err
 	}
+	for _, id := range input.EgressOnlyInternetGatewayIds {
+		if id != nil && !eigwIDWellFormed(*id) {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidEgressOnlyInternetGatewayIdMalformed, "The eigw ID %s is malformed", *id)
+		}
+	}
 
 	prefix := accountID + "."
 	keys, err := s.eigwKV.Keys(ctx)
@@ -210,6 +216,18 @@ func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx contex
 	return &ec2.DescribeEgressOnlyInternetGatewaysOutput{
 		EgressOnlyInternetGateways: egressOnlyIGWs,
 	}, nil
+}
+
+// eigwIDWellFormed reports whether AWS accepts id as an egress-only gateway ID:
+// "eigw-" and exactly 17 hex digits of either case. A well-formed unknown ID is
+// not an error; the describe returns no gateway for it.
+func eigwIDWellFormed(id string) bool {
+	suffix, ok := strings.CutPrefix(id, "eigw-")
+	if !ok || len(suffix) != 17 {
+		return false
+	}
+	_, err := hex.DecodeString("0" + suffix)
+	return err == nil
 }
 
 // eigwMatchesFilters checks whether an EgressOnlyIGWRecord satisfies all parsed filters.

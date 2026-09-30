@@ -184,14 +184,13 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 	vpcId := *input.VpcId
 	groupName := *input.GroupName
 
-	// "default" is reserved for the per-VPC default SG that CreateVpc
-	// provisions internally. Matches AWS behavior.
-	if groupName == defaultSecurityGroupName {
-		return nil, errors.New(awserrors.ErrorInvalidGroupReserved)
-	}
-
 	if err := s.requireVPCExists(ctx, accountID, vpcId); err != nil {
 		return nil, err
+	}
+	// "default" is reserved for the per-VPC default SG that CreateVpc
+	// provisions internally. AWS checks the VPC first.
+	if groupName == defaultSecurityGroupName {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Cannot use reserved security group name: %s", groupName)
 	}
 	if strings.HasPrefix(groupName, "sg-") {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
@@ -487,6 +486,14 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 		slog.WarnContext(ctx, "DescribeSecurityGroups: invalid filter", "err", err)
 		return nil, err
 	}
+	for _, id := range input.GroupIds {
+		if id == nil {
+			continue
+		}
+		if err := sgIDMalformedError(*id); err != nil {
+			return nil, err
+		}
+	}
 
 	prefix := accountID + "."
 	keys, err := s.sgKV.Keys(ctx)
@@ -533,9 +540,9 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 				found[*sg.GroupId] = true
 			}
 		}
-		for id := range groupIDs {
-			if !found[id] {
-				return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		for _, id := range input.GroupIds {
+			if id != nil && !found[*id] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidGroupNotFound, "The security group '%s' does not exist", *id)
 			}
 		}
 	}

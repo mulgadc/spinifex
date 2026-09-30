@@ -546,6 +546,9 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 	eniIDs := make(map[string]bool)
 	for _, id := range input.NetworkInterfaceIds {
 		if id != nil {
+			if err := eniIDMalformedError(*id); err != nil {
+				return nil, err
+			}
 			eniIDs[*id] = true
 		}
 	}
@@ -594,9 +597,9 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 				found[*eni.NetworkInterfaceId] = true
 			}
 		}
-		for id := range eniIDs {
-			if !found[id] {
-				return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		for _, id := range input.NetworkInterfaceIds {
+			if id != nil && !found[*id] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidNetworkInterfaceIDNotFound, "The networkInterface ID '%s' does not exist", *id)
 			}
 		}
 	}

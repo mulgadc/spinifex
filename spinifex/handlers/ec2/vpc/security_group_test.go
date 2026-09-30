@@ -3,6 +3,7 @@ package handlers_ec2_vpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -177,10 +178,33 @@ func TestDescribeSecurityGroups_NotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 
 	_, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
-		GroupIds: []*string{aws.String("sg-nonexistent")},
+		GroupIds: []*string{aws.String("sg-0000000000000dead")},
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidGroup.NotFound")
+	requireAWSError(t, err, awserrors.ErrorInvalidGroupNotFound, "The security group 'sg-0000000000000dead' does not exist")
+}
+
+// The shapes below are the answers AWS gave for each ID; a 17-digit ID is
+// always treated as unknown here, though AWS decodes some of those as Malformed.
+func TestDescribeSecurityGroups_MalformedID(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	describe := func(ids ...string) error {
+		_, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+			GroupIds: aws.StringSlice(ids),
+		}, testAccountID)
+		return err
+	}
+
+	for _, id := range []string{"sg-xyz", "sg-", "sg-0AAAAAAAAAAAAAAA1", "sg-000000001", "sg-0000000000000001", "sg-000000000000000001"} {
+		requireAWSError(t, describe(id), awserrors.ErrorInvalidGroupIdMalformed, fmt.Sprintf("Invalid id: %q", id))
+	}
+	requireAWSError(t, describe("foo"), awserrors.ErrorInvalidGroupIdMalformed, `Invalid id: "foo" (expecting "sg-...")`)
+	for _, id := range []string{"sg-a", "sg-0aaaaaaa", "sg-01234567890abcdef"} {
+		requireAWSCode(t, describe(id), awserrors.ErrorInvalidGroupNotFound)
+	}
+
+	// A malformed ID wins over an unknown one, wherever it sits.
+	requireAWSCode(t, describe("sg-0aaaaaaa", "sg-xyz"), awserrors.ErrorInvalidGroupIdMalformed)
 }
 
 // --- AuthorizeSecurityGroupIngress ---
@@ -1550,8 +1574,7 @@ func TestCreateSecurityGroup_RejectsReservedDefaultName(t *testing.T) {
 		Description: aws.String("user-supplied"),
 		VpcId:       aws.String(vpcID),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidGroup.Reserved")
+	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue, "Cannot use reserved security group name: default")
 }
 
 func TestCreateSecurityGroup_RejectsSgPrefixedName(t *testing.T) {

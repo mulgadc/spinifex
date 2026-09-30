@@ -11,9 +11,10 @@ import (
 	"testing"
 	"time"
 
+	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -704,7 +705,7 @@ func stubEBSUnmount(t *testing.T, d *Daemon, resp types.EBSUnMountResponse) func
 func drainRunningInstance(id, volume string) *vm.VM {
 	instance := &vm.VM{ID: id, Status: vm.StateRunning, AccountID: "111122223333"}
 	instance.EBSRequests.Requests = []types.EBSRequest{
-		{Name: volume, VolType: types.VolumeTypeGP3, Boot: true},
+		{Name: volume, VolType: ebspolicy.VolumeTypeGP3, Boot: true},
 	}
 	return instance
 }

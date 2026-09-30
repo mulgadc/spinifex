@@ -9,10 +9,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -161,7 +161,7 @@ func TestDescribeVolumes_Provider_SeesInstanceRootVolume(t *testing.T) {
 	assert.Equal(t, rootVolumeID, aws.StringValue(got.VolumeId))
 	assert.Equal(t, "available", aws.StringValue(got.State))
 	assert.Equal(t, providerTestAZ, aws.StringValue(got.AvailabilityZone))
-	assert.Equal(t, spxtypes.VolumeTypeGP3, aws.StringValue(got.VolumeType))
-	assert.Equal(t, int64(spxtypes.DefaultGP3IOPS), aws.Int64Value(got.Iops))
+	assert.Equal(t, ebspolicy.VolumeTypeGP3, aws.StringValue(got.VolumeType))
+	assert.Equal(t, int64(ebspolicy.DefaultGP3IOPS), aws.Int64Value(got.Iops))
 	assert.Equal(t, "snap-src", aws.StringValue(got.SnapshotId))
 }

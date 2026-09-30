@@ -15,16 +15,17 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -125,10 +126,10 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	}
 
 	// Validate volume type: only gp3 supported (or empty defaults to gp3)
-	if input.VolumeType != nil && *input.VolumeType != "" && *input.VolumeType != types.VolumeTypeGP3 {
+	if input.VolumeType != nil && *input.VolumeType != "" && *input.VolumeType != ebspolicy.VolumeTypeGP3 {
 		return nil, errors.New(awserrors.ErrorUnknownVolumeType)
 	}
-	volumeType := types.VolumeTypeGP3
+	volumeType := ebspolicy.VolumeTypeGP3
 
 	// Validate availability zone matches this node's AZ
 	if input.AvailabilityZone == nil || *input.AvailabilityZone == "" {
@@ -180,22 +181,22 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	// Honor caller-supplied Iops for gp3, else the 3000 baseline. The ceiling is
 	// min(16000, 500*size) but never below the free baseline, so small volumes
 	// still get 3000.
-	iops := types.DefaultGP3IOPS
+	iops := ebspolicy.DefaultGP3IOPS
 	if input.Iops != nil {
 		iops = int(*input.Iops)
 	}
-	maxIOPS := min(max(int(size)*types.GP3IOPSPerGiB, types.DefaultGP3IOPS), types.MaxGP3IOPS)
-	if iops < types.DefaultGP3IOPS || iops > maxIOPS {
+	maxIOPS := min(max(int(size)*ebspolicy.GP3IOPSPerGiB, ebspolicy.DefaultGP3IOPS), ebspolicy.MaxGP3IOPS)
+	if iops < ebspolicy.DefaultGP3IOPS || iops > maxIOPS {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	// Honor caller-supplied Throughput for gp3, else the 125 MiB/s baseline.
 	// Range is flat (125-1000), unlike Iops it does not scale with size.
-	throughput := types.DefaultGP3Throughput
+	throughput := ebspolicy.DefaultGP3Throughput
 	if input.Throughput != nil {
 		throughput = int(*input.Throughput)
 	}
-	if throughput < types.DefaultGP3Throughput || throughput > types.MaxGP3Throughput {
+	if throughput < ebspolicy.DefaultGP3Throughput || throughput > ebspolicy.MaxGP3Throughput {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 

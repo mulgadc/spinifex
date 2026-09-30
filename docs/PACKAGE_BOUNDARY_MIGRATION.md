@@ -188,6 +188,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `53a614717` | `spinifex/types/cluster.go` (`SharedClusterData`) | `spinifex/daemon/config_hash.go` | Shared-config hash input is daemon-local implementation data; focused config-hash tests preserve deterministic, shared-only semantics. |
 | `78fd017e0` | `spinifex/types/telemetry.go` (`GuestTelemetryMeta`) | `contracts/telemetry/v1/guest_meta.go` | QMP collector sidecar JSON is a versioned file contract between VM runtime and telemetry role; `guest_meta_test.go` pins its filename and payload. |
 | `4b35a2a33` | `spinifex/types/node.go` (`NodeVMsResponse`, `VMInfo`, `VMGPUInfo`) | `contracts/cluster/v1/node_vms.go` | VM inventory is a versioned cluster fan-out payload used by SPX CLI and EKS host lookup; `node_vms_test.go` pins its subject and JSON shape. |
+| `08bd335f0` | `spinifex/types/node.go` (`NodeStatusResponse`, capacity and GPU inventory) | `contracts/cluster/v1/status.go` | Node status is a versioned fan-out observation contract for operator inspection and EC2/EKS scheduling consumers; `status_test.go` pins its subject and JSON shape. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS

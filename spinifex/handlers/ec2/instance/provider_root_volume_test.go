@@ -9,12 +9,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -159,9 +159,9 @@ func TestPrepareRootVolume_Provider_WritesMetadataDocument(t *testing.T) {
 		"attach flips the volume to in-use later; creation must not pre-empt it")
 	assert.False(t, doc.CreatedAt.IsZero())
 	assert.Equal(t, testRootAZ, doc.AvailabilityZone)
-	assert.Equal(t, spxtypes.VolumeTypeGP3, doc.VolumeType)
-	assert.Equal(t, spxtypes.DefaultGP3IOPS, doc.IOPS)
-	assert.Equal(t, spxtypes.DefaultGP3Throughput, doc.Throughput)
+	assert.Equal(t, ebspolicy.VolumeTypeGP3, doc.VolumeType)
+	assert.Equal(t, ebspolicy.DefaultGP3IOPS, doc.IOPS)
+	assert.Equal(t, ebspolicy.DefaultGP3Throughput, doc.Throughput)
 	assert.Equal(t, "snap-source", doc.SnapshotID)
 	assert.True(t, doc.DeleteOnTermination)
 	assert.False(t, doc.Encrypted, "no encryption key is configured in this service")

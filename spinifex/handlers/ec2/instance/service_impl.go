@@ -20,6 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
@@ -1660,7 +1661,7 @@ func (s *InstanceServiceImpl) createDataVolume(ctx context.Context, input *ec2.R
 	create := &ec2.CreateVolumeInput{
 		AvailabilityZone:  aws.String(s.config.AZ),
 		Size:              aws.Int64(p.sizeGiB),
-		VolumeType:        aws.String(spxtypes.VolumeTypeGP3),
+		VolumeType:        aws.String(ebspolicy.VolumeTypeGP3),
 		TagSpecifications: volumeTagSpecifications(input.TagSpecifications),
 	}
 	if p.iops > 0 {
@@ -1826,8 +1827,8 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 		CapacityGiB: safecast.IntToUint64(spec.sizeBytes / bytesPerGiB),
 		State:       string(ebsprovider.VolumeStateAvailable),
 		CreatedAt:   time.Now(), AvailabilityZone: s.config.AZ,
-		VolumeType: spxtypes.VolumeTypeGP3, IOPS: rootVolumeIOPS(spec.iops),
-		Throughput: spxtypes.DefaultGP3Throughput, SnapshotID: amiConfig.SnapshotID,
+		VolumeType: ebspolicy.VolumeTypeGP3, IOPS: rootVolumeIOPS(spec.iops),
+		Throughput: ebspolicy.DefaultGP3Throughput, SnapshotID: amiConfig.SnapshotID,
 		DeleteOnTermination: spec.deleteOnTermination, Encrypted: mkey != nil,
 		Tags:           spec.tags,
 		ProviderHandle: created.Handle,
@@ -1847,7 +1848,7 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 // no Iops, so DescribeVolumes never reports a root volume as having zero.
 func rootVolumeIOPS(requested int) int {
 	if requested <= 0 {
-		return spxtypes.DefaultGP3IOPS
+		return ebspolicy.DefaultGP3IOPS
 	}
 	return requested
 }

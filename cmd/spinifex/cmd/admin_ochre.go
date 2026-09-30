@@ -438,13 +438,9 @@ func parseWeightsS3URI(uri string) (bucket, prefix string, err error) {
 	if trimmed == uri {
 		return "", "", fmt.Errorf("invalid --s3-uri %q: expected s3://bucket/prefix", uri)
 	}
-	parts := strings.SplitN(trimmed, "/", 2)
-	bucket = parts[0]
+	bucket, prefix, _ = strings.Cut(trimmed, "/")
 	if bucket == "" {
 		return "", "", fmt.Errorf("invalid --s3-uri %q: missing bucket", uri)
-	}
-	if len(parts) == 2 {
-		prefix = parts[1]
 	}
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"

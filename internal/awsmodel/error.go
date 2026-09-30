@@ -114,9 +114,7 @@ func (m *Model) decodeErrorCode(body []byte) (string, error) {
 		if separator := strings.LastIndex(code, "#"); separator >= 0 {
 			code = code[separator+1:]
 		}
-		if separator := strings.Index(code, ":"); separator >= 0 {
-			code = code[:separator]
-		}
+		code, _, _ = strings.Cut(code, ":")
 		if code == "" {
 			return "", fmt.Errorf("JSON error envelope has no code")
 		}

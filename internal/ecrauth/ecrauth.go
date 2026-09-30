@@ -109,11 +109,9 @@ func GatewayHTTPClient(caPath string) (*http.Client, error) {
 // HostFromImage returns the host[:port] portion of an image ref or URL. It strips
 // any scheme and trims at the first path separator.
 func HostFromImage(image string) string {
-	if i := strings.Index(image, "://"); i >= 0 {
-		image = image[i+3:]
+	if _, rest, ok := strings.Cut(image, "://"); ok {
+		image = rest
 	}
-	if i := strings.IndexByte(image, '/'); i >= 0 {
-		image = image[:i]
-	}
-	return image
+	host, _, _ := strings.Cut(image, "/")
+	return host
 }

@@ -3499,11 +3499,11 @@ func resolvePublicPoolFlags(source, poolRange, bindBridge, gateway, defaultBindB
 		if gateway == "" {
 			return "", "", "", "", fmt.Errorf("--external-gateway is required with --external-source=static")
 		}
-		parts := strings.SplitN(poolRange, "-", 2)
-		if len(parts) != 2 || net.ParseIP(parts[0]) == nil || net.ParseIP(parts[1]) == nil {
+		var ok bool
+		start, end, ok = strings.Cut(poolRange, "-")
+		if !ok || net.ParseIP(start) == nil || net.ParseIP(end) == nil {
 			return "", "", "", "", fmt.Errorf("--external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s", poolRange)
 		}
-		start, end = parts[0], parts[1]
 	default:
 		return "", "", "", "", fmt.Errorf("--external-source must be 'static' or 'dhcp', got: %s", source)
 	}

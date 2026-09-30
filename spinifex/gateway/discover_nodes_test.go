@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/nats-io/nats.go"
 )
 
@@ -21,11 +21,11 @@ func respondAsNodes(t *testing.T, nc *nats.Conn, n int) *atomic.Int64 {
 	var rounds atomic.Int64
 	for i := range n {
 		node := string(rune('a' + i))
-		sub, err := nc.Subscribe("spinifex.nodes.discover", func(msg *nats.Msg) {
+		sub, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
 			if node == "a" {
 				rounds.Add(1)
 			}
-			payload, err := json.Marshal(types.NodeDiscoverResponse{Node: node})
+			payload, err := json.Marshal(clusterv1.NodeDiscoverResponse{Node: node})
 			if err != nil {
 				return
 			}

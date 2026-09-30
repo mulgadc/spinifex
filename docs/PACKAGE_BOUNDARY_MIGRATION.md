@@ -183,8 +183,9 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `248f0e005`, `8c4af3030` | `spinifex/formation` | `spinifex/runtime/formation` | Formation owns its protocol payloads and remains runtime membership/bootstrap work. |
 | `b8b97279c`, `c0c64cd53` | `spinifex/instancecache` | `spinifex/runtime/compute/cache` | Cache policy is decoupled from callers before becoming node-local compute runtime. |
 | `aa0c36ff4` | `spinifex/types/ec2.go` | `contracts/ec2/v1` | The EC2 instance-command subject and JSON payload are an explicit versioned cross-process contract; `commands_test.go` is its compatibility evidence. |
+| `c239fd897` | `spinifex/types/eni.go` | `spinifex/runtime/compute/vm/eni_requests.go` | PCIe hot-plug slot allocation is mutex-bearing, per-VM runtime state rather than a shared type or wire contract; `record_test.go` preserves its restart semantics. |
 
-The final row is intentionally different from the directory moves: it creates
+The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS
 subscription and permission shape, while callers use
 `InstanceCommandSubject` rather than reconstructing the subject. The

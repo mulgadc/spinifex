@@ -1,10 +1,5 @@
 package types
 
-// NodeDiscoverResponse is the response for node discovery requests.
-type NodeDiscoverResponse struct {
-	Node string `json:"node"`
-}
-
 // GPUSliceInfo describes a single MIG slice within a physical GPU.
 type GPUSliceInfo struct {
 	GIID       int    `json:"gi_id"`

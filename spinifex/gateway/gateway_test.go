@@ -18,10 +18,10 @@ import (
 	awssession "github.com/aws/aws-sdk-go/aws/session"
 	awsec2 "github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -509,8 +509,8 @@ func TestDiscoverActiveNodes_WithResponders(t *testing.T) {
 
 	for _, nodeName := range []string{"node-1", "node-2"} {
 		name := nodeName
-		_, err := nc.Subscribe("spinifex.nodes.discover", func(msg *nats.Msg) {
-			resp := types.NodeDiscoverResponse{Node: name}
+		_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
+			resp := clusterv1.NodeDiscoverResponse{Node: name}
 			data, _ := json.Marshal(resp)
 			msg.Respond(data)
 		})
@@ -530,7 +530,7 @@ func TestDiscoverActiveNodes_WithResponders(t *testing.T) {
 func TestDiscoverActiveNodes_InvalidJSON(t *testing.T) {
 	nc := startTestNATS(t)
 
-	_, err := nc.Subscribe("spinifex.nodes.discover", func(msg *nats.Msg) {
+	_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
 		msg.Respond([]byte("not json"))
 	})
 	require.NoError(t, err)
@@ -549,8 +549,8 @@ func TestDiscoverActiveNodes_DuplicateNodes(t *testing.T) {
 	nc := startTestNATS(t)
 
 	for range 2 {
-		_, err := nc.Subscribe("spinifex.nodes.discover", func(msg *nats.Msg) {
-			resp := types.NodeDiscoverResponse{Node: "same-node"}
+		_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
+			resp := clusterv1.NodeDiscoverResponse{Node: "same-node"}
 			data, _ := json.Marshal(resp)
 			msg.Respond(data)
 		})

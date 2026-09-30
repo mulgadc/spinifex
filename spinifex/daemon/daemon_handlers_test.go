@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/ebsfake"
@@ -344,15 +345,15 @@ func TestHandleNodeDiscover(t *testing.T) {
 
 	daemon := createTestDaemon(t, natsURL)
 
-	sub, err := daemon.natsConn.Subscribe("spinifex.nodes.discover", asMsgHandler(daemon.handleNodeDiscover))
+	sub, err := daemon.natsConn.Subscribe(clusterv1.NodesDiscoverSubject, asMsgHandler(daemon.handleNodeDiscover))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	reply, err := daemon.natsConn.Request("spinifex.nodes.discover", nil, 5*time.Second)
+	reply, err := daemon.natsConn.Request(clusterv1.NodesDiscoverSubject, nil, 5*time.Second)
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 
-	var resp types.NodeDiscoverResponse
+	var resp clusterv1.NodeDiscoverResponse
 	err = json.Unmarshal(reply.Data, &resp)
 	require.NoError(t, err)
 

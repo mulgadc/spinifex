@@ -28,6 +28,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
@@ -4623,7 +4624,7 @@ func TestNodeIDNamespace_Agrees(t *testing.T) {
 	assert.Equal(t, daemon.node, reply.Header.Get(utils.NodeIDHeader),
 		"the reply header must carry the same node ID as everything else")
 
-	var resp types.NodeDiscoverResponse
+	var resp clusterv1.NodeDiscoverResponse
 	require.NoError(t, json.Unmarshal(reply.Data, &resp))
 	assert.Equal(t, daemon.node, resp.Node)
 }

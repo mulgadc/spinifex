@@ -31,6 +31,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
@@ -1017,7 +1018,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.EnableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.EnableSerialConsoleAccess), "spinifex-workers"},
 		{"ec2.DisableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.DisableSerialConsoleAccess), "spinifex-workers"},
 		{fmt.Sprintf("spinifex.admin.%s.health", d.node), d.handleHealthCheck, ""},
-		{"spinifex.nodes.discover", d.handleNodeDiscover, ""},
+		{clusterv1.NodesDiscoverSubject, d.handleNodeDiscover, ""},
 		{"spinifex.node.status", d.handleNodeStatus, ""},
 		{"spinifex.node.vms", d.handleNodeVMs, ""},
 		{"spinifex.storage.config", d.handleStorageConfig, ""},

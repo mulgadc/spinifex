@@ -24,8 +24,10 @@ import (
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
@@ -36,8 +38,6 @@ import (
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -1039,7 +1039,7 @@ func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 		return count
 	}
 
-	frames, _, err := utils.Gather(ctx, gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
+	frames, _, err := utils.Gather(ctx, gw.NATSConn, clusterv1.NodesDiscoverSubject, []byte("{}"),
 		utils.GatherOpts{Timeout: 500 * time.Millisecond})
 	if err != nil {
 		slog.ErrorContext(ctx, "DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)
@@ -1048,7 +1048,7 @@ func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 
 	nodesSeen := make(map[string]bool)
 	for _, frame := range frames {
-		var response types.NodeDiscoverResponse
+		var response clusterv1.NodeDiscoverResponse
 		if err := json.Unmarshal(frame.Data, &response); err != nil {
 			slog.DebugContext(ctx, "DiscoverActiveNodes: Failed to unmarshal response", "err", err)
 			continue

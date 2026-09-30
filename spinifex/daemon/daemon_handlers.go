@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -361,7 +362,7 @@ func (d *Daemon) handleHealthCheck(msg *nats.Msg) string {
 // handleNodeDiscover responds to node discovery requests with this node's ID
 // Used by the gateway to dynamically discover active spinifex nodes in the cluster.
 func (d *Daemon) handleNodeDiscover(msg *nats.Msg) string {
-	response := types.NodeDiscoverResponse{
+	response := clusterv1.NodeDiscoverResponse{
 		Node: d.node,
 	}
 

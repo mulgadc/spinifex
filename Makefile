@@ -318,6 +318,17 @@ bench:
 	@echo -e "\n....Running benchmarks for $(GO_PROJECT_NAME)...."
 	LOG_IGNORE=1 go test -benchmem -run=. -bench=. ./...
 
+# Fuzz every Fuzz* target for FUZZTIME each; -fuzz takes one target per run.
+# Plain `go test` already replays the seeds and testdata/fuzz on preflight.
+FUZZTIME ?= 30s
+fuzz:
+	@set -e; grep -rlE '^func Fuzz\w+\(' --include='*_test.go' spinifex cmd internal | while read -r file; do \
+		for name in $$(grep -oE '^func Fuzz\w+' "$$file" | cut -d' ' -f2); do \
+			echo -e "\n....Fuzzing $$name ($$(dirname $$file)) for $(FUZZTIME)...."; \
+			LOG_IGNORE=1 go test -run='^$$' -fuzz="^$$name$$" -fuzztime=$(FUZZTIME) ./$$(dirname $$file); \
+		done; \
+	done
+
 # Fast iteration: build + install binary + restart all services.
 # Microvm artifacts are reinstalled when they already exist on disk — the rule's
 # input timestamps drive a rebuild only if anything actually changed. On a fresh
@@ -453,7 +464,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

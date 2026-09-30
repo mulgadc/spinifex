@@ -427,15 +427,27 @@ func TestCreateRoute_DuplicateDestination(t *testing.T) {
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		NatGatewayId:         aws.String("nat-test1"),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorRouteAlreadyExists)
+	requireAWSError(t, err, awserrors.ErrorRouteAlreadyExists, "The route identified by 0.0.0.0/0 already exists.")
 
-	// The local route's destination is never a no-op, even with target "local"
+	// AWS checks the target before the destination: "local" is no gateway
 	_, err = svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("10.0.0.0/16"),
 		GatewayId:            aws.String("local"),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorRouteAlreadyExists)
+	requireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'local' does not exist")
+
+	// A gateway route to the VPC's CIDR, or inside it, is refused before the
+	// existing local route is considered
+	for _, dest := range []string{"10.0.0.0/16", "10.0.5.0/24"} {
+		_, err = svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+			RouteTableId:         aws.String(rtbID),
+			DestinationCidrBlock: aws.String(dest),
+			GatewayId:            aws.String("igw-test1"),
+		}, testAccountID)
+		requireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+			"The destination CIDR block "+dest+" is equal to or more specific than one of this VPC's CIDR blocks. This route can target only an interface or an instance.")
+	}
 
 	record, err := svc.getRouteTable(t.Context(), testAccountID, rtbID)
 	require.NoError(t, err)

@@ -459,11 +459,24 @@ func sgRuleDuplicateError(rule SGRule) error {
 	if peer == "" {
 		peer = rule.SourceSG
 	}
-	desc := fmt.Sprintf("peer: %s, ALL, ALLOW", peer)
-	if rule.IpProtocol != allProtocols {
+	var desc string
+	switch rule.IpProtocol {
+	case allProtocols:
+		desc = fmt.Sprintf("peer: %s, ALL, ALLOW", peer)
+	case "icmp":
+		desc = fmt.Sprintf("peer: %s, ICMP, type: %s, code: %s, ALLOW", peer, icmpField(rule.FromPort), icmpField(rule.ToPort))
+	default:
 		desc = fmt.Sprintf("peer: %s, %s, from port: %d, to port: %d, ALLOW", peer, strings.ToUpper(rule.IpProtocol), rule.FromPort, rule.ToPort)
 	}
 	return awserrors.Errorf(awserrors.ErrorInvalidPermissionDuplicate, "the specified rule %q already exists", desc)
+}
+
+// icmpField renders an ICMP type or code as AWS does, with -1 as ALL.
+func icmpField(v int64) string {
+	if v == -1 {
+		return "ALL"
+	}
+	return strconv.FormatInt(v, 10)
 }
 
 // describeSecurityGroupsValidFilters defines the set of filter names accepted by DescribeSecurityGroups.

@@ -291,7 +291,6 @@ func (s *VPCServiceImpl) buildDefaultVPC(ctx context.Context, accountID string, 
 		State:               "available",
 		IsDefault:           true,
 		MapPublicIpOnLaunch: !s.disableDefaultPublicIP, // AWS default subnets auto-assign public IPs (unless external mode has none)
-		Tags:                map[string]string{"Name": "default"},
 		CreatedAt:           time.Now(),
 	})
 	if err != nil {

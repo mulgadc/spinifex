@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -688,6 +689,30 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 // CreateRoute adds a route to a route table.
 // gatewayNotFoundError is AWS's answer to a route naming a gateway that does
 // not exist, whatever the gateway's type.
+// checkRouteOutsideVPC rejects a gateway route whose destination is, or lies
+// inside, one of the VPC's CIDR blocks (the table's local routes). AWS allows
+// only an interface or instance there, which Spinifex does not route to.
+func checkRouteOutsideVPC(record *RouteTableRecord, destCidr string) error {
+	dest, parseErr := netip.ParsePrefix(destCidr)
+	if parseErr != nil {
+		return nil //nolint:nilerr // an unparseable destination is not a VPC-range conflict
+	}
+	for _, r := range record.Routes {
+		if r.GatewayId != "local" {
+			continue
+		}
+		vpc, err := netip.ParsePrefix(r.DestinationCidrBlock)
+		if err != nil {
+			continue
+		}
+		if dest.Bits() >= vpc.Bits() && vpc.Contains(dest.Addr()) {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"The destination CIDR block %s is equal to or more specific than one of this VPC's CIDR blocks. This route can target only an interface or an instance.", destCidr)
+		}
+	}
+	return nil
+}
+
 func rtbNotFoundError(id string) error {
 	return awserrors.IDNotFound(awserrors.ErrorInvalidRouteTableIDNotFound, "routeTable", id)
 }
@@ -716,19 +741,10 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 		return nil, err
 	}
 
-	// AWS treats a repeat of an existing route (same destination, same target)
-	// as a successful no-op; only a different target is a conflict.
-	for _, r := range record.Routes {
-		if r.DestinationCidrBlock != destCidr {
-			continue
-		}
-		if r.GatewayId != "local" && r.GatewayId == aws.StringValue(input.GatewayId) && r.NatGatewayId == aws.StringValue(input.NatGatewayId) {
-			return &ec2.CreateRouteOutput{Return: aws.Bool(true)}, nil
-		}
-		return nil, errors.New(awserrors.ErrorRouteAlreadyExists)
-	}
-
+	// AWS validates the target, then the destination, then looks for an
+	// existing route, so events are held back until all three pass.
 	var route RouteRecord
+	var publish func()
 
 	switch {
 	case input.GatewayId != nil && *input.GatewayId != "":
@@ -757,7 +773,9 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 
 		// Publish vpc.add-igw-route events for each subnet associated with this
 		// route table so the network subscriber installs per-subnet egress policies.
-		s.publishIGWRouteEvents(ctx, accountID, "vpc.add-igw-route", record, igwRecord.VpcId, igwID, destCidr)
+		publish = func() {
+			s.publishIGWRouteEvents(ctx, accountID, "vpc.add-igw-route", record, igwRecord.VpcId, igwID, destCidr)
+		}
 
 	case input.NatGatewayId != nil && *input.NatGatewayId != "":
 		natgwID := *input.NatGatewayId
@@ -785,11 +803,31 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 		}
 
 		// Publish vpc.add-nat-gateway events for each subnet associated with this route table
-		s.publishNatGatewayEvents(ctx, accountID, record, natgwRecord.VpcId, natgwID, natgwRecord.PublicIp, destCidr)
+		publish = func() {
+			s.publishNatGatewayEvents(ctx, accountID, record, natgwRecord.VpcId, natgwID, natgwRecord.PublicIp, destCidr)
+		}
 
 	default:
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+
+	if err := checkRouteOutsideVPC(record, destCidr); err != nil {
+		return nil, err
+	}
+
+	// A repeat of an existing route (same destination, same target) is a
+	// successful no-op; a different target is a conflict.
+	for _, r := range record.Routes {
+		if r.DestinationCidrBlock != destCidr {
+			continue
+		}
+		if r.GatewayId == route.GatewayId && r.NatGatewayId == route.NatGatewayId {
+			return &ec2.CreateRouteOutput{Return: aws.Bool(true)}, nil
+		}
+		return nil, awserrors.Errorf(awserrors.ErrorRouteAlreadyExists, "The route identified by %s already exists.", destCidr)
+	}
+
+	publish()
 
 	record.Routes = append(record.Routes, route)
 

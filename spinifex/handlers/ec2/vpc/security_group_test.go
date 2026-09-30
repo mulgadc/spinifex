@@ -2407,6 +2407,17 @@ func TestAuthorizeSecurityGroupIngress_RejectsContentDuplicate(t *testing.T) {
 	}, testAccountID)
 	requireAWSError(t, err, awserrors.ErrorInvalidPermissionDuplicate, `the specified rule "peer: 0.0.0.0/0, ALL, ALLOW" already exists`)
 
+	icmp := &ec2.IpPermission{
+		IpProtocol: aws.String("icmp"), FromPort: aws.Int64(8), ToPort: aws.Int64(-1),
+		IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/24")}},
+	}
+	for range 2 {
+		_, err = svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId: aws.String(sgID), IpPermissions: []*ec2.IpPermission{icmp},
+		}, testAccountID)
+	}
+	requireAWSError(t, err, awserrors.ErrorInvalidPermissionDuplicate, `the specified rule "peer: 10.0.0.0/24, ICMP, type: 8, code: ALL, ALLOW" already exists`)
+
 	_, err = svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{{

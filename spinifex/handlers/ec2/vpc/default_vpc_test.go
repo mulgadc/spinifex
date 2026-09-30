@@ -271,7 +271,7 @@ func TestEnsureDefaultVPC_UsesBootstrapIDs(t *testing.T) {
 	}
 }
 
-// AWS leaves the default VPC untagged.
+// AWS leaves the default VPC and its default subnet untagged.
 func TestEnsureDefaultVPC_LeavesVPCUntagged(t *testing.T) {
 	t.Parallel()
 	svcs, _, _ := newNodeServices(t, 1)
@@ -283,4 +283,9 @@ func TestEnsureDefaultVPC_LeavesVPCUntagged(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.Vpcs, 1)
 	assert.Empty(t, out.Vpcs[0].Tags)
+
+	subnets, err := svcs[0].DescribeSubnets(t.Context(), &ec2.DescribeSubnetsInput{SubnetIds: []*string{aws.String(info.SubnetId)}}, "000000000001")
+	require.NoError(t, err)
+	require.Len(t, subnets.Subnets, 1)
+	assert.Empty(t, subnets.Subnets[0].Tags)
 }

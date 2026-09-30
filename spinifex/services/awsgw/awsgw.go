@@ -88,22 +88,6 @@ func (svc *Service) Start() (int, error) {
 	return os.Getpid(), nil
 }
 
-func (svc *Service) Stop() (err error) {
-	return utils.StopProcessAt(svc.Config.NodeBaseDir(), serviceName)
-}
-
-func (svc *Service) Status() (string, error) {
-	return utils.ServiceStatus(svc.Config.NodeBaseDir(), serviceName)
-}
-
-func (svc *Service) Shutdown() (err error) {
-	return svc.Stop()
-}
-
-func (svc *Service) Reload() (err error) {
-	return nil
-}
-
 // awsgwTOML is the top-level structure of awsgw.toml used to extract the
 // ratelimit and quota sections. Other fields are parsed elsewhere (e.g. region,
 // debug).

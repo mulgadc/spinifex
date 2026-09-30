@@ -44,22 +44,6 @@ func (svc *Service) Start() (int, error) {
 	return os.Getpid(), nil
 }
 
-func (svc *Service) Stop() (err error) {
-	return utils.StopProcessAt(svc.Config.NodeBaseDir(), serviceName)
-}
-
-func (svc *Service) Status() (string, error) {
-	return utils.ServiceStatus(svc.Config.NodeBaseDir(), serviceName)
-}
-
-func (svc *Service) Shutdown() (err error) {
-	return svc.Stop()
-}
-
-func (svc *Service) Reload() (err error) {
-	return nil
-}
-
 func launchService(config *config.ClusterConfig, configPath string) (err error) {
 	d, err := daemon.NewDaemon(config)
 	if err != nil {

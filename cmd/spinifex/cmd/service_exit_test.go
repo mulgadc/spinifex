@@ -62,16 +62,8 @@ func writeMalformedToml(t *testing.T) string {
 	return writeSpinifexToml(t, "[section\nkey = value without quotes\n")
 }
 
-// isolateRuntimeDir redirects the pid-file fallback (utils.RuntimeDir, via
-// XDG_RUNTIME_DIR) to an empty temp dir, so a stop command with no explicit
-// directory override can't resolve against a real, shared, ambient pid dir.
-func isolateRuntimeDir(t *testing.T) {
-	t.Helper()
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-}
-
 // TestServiceStartCmdsReturnErrorOnMissingConfig exercises each service
-// start/stop command's RunE directly and asserts a fatal precondition
+// start command's RunE directly and asserts a fatal precondition
 // failure surfaces as a returned error, not a silent zero-exit return.
 // Cases with a setup func drive further into RunE toward a specific branch.
 func TestServiceStartCmdsReturnErrorOnMissingConfig(t *testing.T) {
@@ -339,99 +331,6 @@ func TestServiceStartCmdsReturnErrorOnMissingConfig(t *testing.T) {
 			},
 			wantErr: "start qmp-collector service",
 		},
-		// The stop commands below resolve their pid directory to an isolated,
-		// always-empty temp dir, so Stop() safely fails to find a pid file
-		// rather than risking a real running process via an ambient path.
-		{
-			name: "predastore stop (no running process)",
-			cmd:  predastoreStopCmd,
-			setup: func(t *testing.T) {
-				resetGlobalViper(t)
-				viper.Set("predastore-base-path", t.TempDir())
-			},
-			wantErr: "stop predastore service",
-		},
-		{
-			name: "viperblock stop (no running process)",
-			cmd:  viperblockStopCmd,
-			setup: func(t *testing.T) {
-				resetGlobalViper(t)
-				isolateRuntimeDir(t)
-			},
-			wantErr: "stop viperblock service",
-		},
-		{
-			name: "qemunbd stop (no running process)",
-			cmd:  qemunbdStopCmd,
-			setup: func(t *testing.T) {
-				resetGlobalViper(t)
-				isolateRuntimeDir(t)
-			},
-			wantErr: "stop qemunbd service",
-		},
-		{
-			name: "nats stop (no running process)",
-			cmd:  natsStopCmd,
-			setup: func(t *testing.T) {
-				resetGlobalViper(t)
-				isolateRuntimeDir(t)
-			},
-			wantErr: "stop nats service",
-		},
-		{
-			name: "spinifex stop (no running process)",
-			cmd:  spinifexStopCmd,
-			setup: func(t *testing.T) {
-				resetGlobalViper(t)
-				isolateRuntimeDir(t)
-			},
-			wantErr: "stop spinifex service",
-		},
-		{
-			name: "awsgw stop (no running process)",
-			cmd:  awsgwStopCmd,
-			setup: func(t *testing.T) {
-				resetGlobalViper(t)
-				isolateRuntimeDir(t)
-			},
-			wantErr: "stop awsgw service",
-		},
-		{
-			name: "spinifex-ui stop (no running process)",
-			cmd:  spinifexUIStopCmd,
-			setup: func(t *testing.T) {
-				resetGlobalViper(t)
-				isolateRuntimeDir(t)
-			},
-			wantErr: "stop spinifex-ui service",
-		},
-		{
-			name: "vpcd stop (no running process)",
-			cmd:  vpcdStopCmd,
-			setup: func(t *testing.T) {
-				resetGlobalViper(t)
-				isolateRuntimeDir(t)
-			},
-			wantErr: "stop vpcd service",
-		},
-		{
-			name: "northstar stop (no running process)",
-			cmd:  northstarStopCmd,
-			setup: func(t *testing.T) {
-				resetGlobalViper(t)
-				isolateRuntimeDir(t)
-			},
-			wantErr: "stop northstar service",
-		},
-		{
-			name: "qmp-collector stop (no running process)",
-			cmd:  qmpCollectorStopCmd,
-			setup: func(t *testing.T) {
-				resetGlobalViper(t)
-				isolateRuntimeDir(t)
-			},
-			wantErr: "stop qmp-collector service",
-		},
 	}
 
 	for _, tt := range tests {
@@ -449,36 +348,6 @@ func TestServiceStartCmdsReturnErrorOnMissingConfig(t *testing.T) {
 			assert.True(t, tt.cmd.SilenceUsage, "SilenceUsage must be set so a startup failure doesn't dump command usage")
 		})
 	}
-}
-
-// TestSpinifexUIStatusCmdReportsStoppedWithNoRunningProcess drives the
-// status command's success path: with no pid file at an isolated
-// XDG_RUNTIME_DIR, Status reports "stopped" and RunE must return nil.
-func TestSpinifexUIStatusCmdReportsStoppedWithNoRunningProcess(t *testing.T) {
-	isolateRuntimeDir(t)
-
-	require.NotNil(t, spinifexUIStatusCmd.RunE)
-	err := spinifexUIStatusCmd.RunE(spinifexUIStatusCmd, nil)
-	require.NoError(t, err)
-}
-
-// TestSpinifexUIStatusCmdReturnsErrorOnUnreadablePidDir drives the status
-// command's other branch: a genuine read failure (permission denied, not
-// ENOENT) must surface as an error rather than the benign "stopped" case.
-func TestSpinifexUIStatusCmdReturnsErrorOnUnreadablePidDir(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses directory permission checks")
-	}
-
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "spinifex-ui.pid"), []byte("123"), 0o600))
-	require.NoError(t, os.Chmod(dir, 0o000))
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-	t.Setenv("XDG_RUNTIME_DIR", dir)
-
-	require.NotNil(t, spinifexUIStatusCmd.RunE)
-	err := spinifexUIStatusCmd.RunE(spinifexUIStatusCmd, nil)
-	require.ErrorContains(t, err, "get spinifex-ui service status")
 }
 
 // TestServiceStartExitsNonZeroOnFailure proves a fatal service-start error

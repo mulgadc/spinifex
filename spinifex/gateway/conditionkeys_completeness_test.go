@@ -40,6 +40,7 @@ var allConditionKeys = []string{
 	iampolicy.KeyPrincipalAccount,
 	iampolicy.KeyUserID,
 	iampolicy.KeyPrincipalType,
+	iampolicy.KeyPassedToService,
 	// Deliberately outside the allowlist: there is no MFA in the stack, so the
 	// key could never be true. It is here to prove the validator says no.
 	"aws:MultiFactorAuthPresent",

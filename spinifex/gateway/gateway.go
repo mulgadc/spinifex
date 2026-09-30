@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -578,6 +579,26 @@ func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) er
 // checkPolicyResources evaluates every resource against one resolved policy
 // snapshot. Used when one API request authorizes multiple resource ARNs.
 func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action string, resources []string) error {
+	return gw.checkPolicyResourcesWithKeys(r, service, action, resources, nil)
+}
+
+// Service principals an iam:PassRole check reports as iam:PassedToService.
+const (
+	ec2ServicePrincipal      = "ec2.amazonaws.com"
+	ecsTasksServicePrincipal = "ecs-tasks.amazonaws.com"
+	eksServicePrincipal      = "eks.amazonaws.com"
+)
+
+// checkPassRole enforces iam:PassRole on roleARN. iam:PassedToService is fixed
+// by the call site handing the role over, never read from the request.
+func (gw *GatewayConfig) checkPassRole(r *http.Request, roleARN, passedTo string) error {
+	return gw.checkPolicyResourcesWithKeys(r, "iam", "PassRole", []string{roleARN},
+		iampolicy.ConditionKeys{iampolicy.KeyPassedToService: passedTo})
+}
+
+// checkPolicyResourcesWithKeys is checkPolicyResources with action-scoped
+// condition keys layered over the request's own.
+func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, action string, resources []string, actionKeys iampolicy.ConditionKeys) error {
 	// Every dispatcher — query-protocol and REST-JSON alike — reaches this
 	// point with its resolved action, so telemetry enrichment lives here.
 	recordResolvedAction(r.Context(), service, action)
@@ -617,8 +638,9 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
 		userID:            mustCtxString(r, ctxUserID),
 	}
-	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources,
-		requestConditionKeys(r, principal))
+	keys := requestConditionKeys(r, principal)
+	maps.Copy(keys, actionKeys)
+	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources, keys)
 }
 
 // requestConditionKeys resolves the IAM condition context keys available on the

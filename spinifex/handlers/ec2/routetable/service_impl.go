@@ -707,11 +707,16 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 		return nil, err
 	}
 
-	// Check for duplicate destination
+	// AWS treats a repeat of an existing route (same destination, same target)
+	// as a successful no-op; only a different target is a conflict.
 	for _, r := range record.Routes {
-		if r.DestinationCidrBlock == destCidr {
-			return nil, errors.New(awserrors.ErrorRouteAlreadyExists)
+		if r.DestinationCidrBlock != destCidr {
+			continue
 		}
+		if r.GatewayId != "local" && r.GatewayId == aws.StringValue(input.GatewayId) && r.NatGatewayId == aws.StringValue(input.NatGatewayId) {
+			return &ec2.CreateRouteOutput{Return: aws.Bool(true)}, nil
+		}
+		return nil, errors.New(awserrors.ErrorRouteAlreadyExists)
 	}
 
 	var route RouteRecord

@@ -410,13 +410,35 @@ func TestCreateRoute_DuplicateDestination(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Duplicate should fail
-	_, err = svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+	// Same destination and target: AWS returns success without a second route
+	out, err := svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
 	}, testAccountID)
+	require.NoError(t, err)
+	assert.True(t, aws.BoolValue(out.Return))
+
+	// Same destination, different target: still a conflict
+	_, err = svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		NatGatewayId:         aws.String("nat-test1"),
+	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorRouteAlreadyExists)
+
+	// The local route's destination is never a no-op, even with target "local"
+	_, err = svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("10.0.0.0/16"),
+		GatewayId:            aws.String("local"),
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorRouteAlreadyExists)
+
+	record, err := svc.getRouteTable(t.Context(), testAccountID, rtbID)
+	require.NoError(t, err)
+	require.Len(t, record.Routes, 2)
+	assert.Equal(t, "igw-test1", record.Routes[1].GatewayId)
 }
 
 func TestDeleteRoute(t *testing.T) {

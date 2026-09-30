@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
+	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -93,8 +93,8 @@ func (c *collector) reconcile(ctx context.Context) {
 	}
 }
 
-func readMeta(path string) (types.GuestTelemetryMeta, error) {
-	var meta types.GuestTelemetryMeta
+func readMeta(path string) (telemetryv1.GuestTelemetryMeta, error) {
+	var meta telemetryv1.GuestTelemetryMeta
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return meta, err

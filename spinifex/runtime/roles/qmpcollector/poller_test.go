@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
+	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -93,7 +93,7 @@ func TestReadSysfsCounter(t *testing.T) {
 }
 
 func TestBuildBatch(t *testing.T) {
-	meta := types.GuestTelemetryMeta{
+	meta := telemetryv1.GuestTelemetryMeta{
 		InstanceID: "i-0abc", AccountID: "123456789012", VCPUs: 2, PeriodSeconds: 60,
 	}
 	base := time.Unix(1000, 0)
@@ -147,7 +147,7 @@ func TestBuildBatch(t *testing.T) {
 }
 
 func TestBuildBatchCounterRegression(t *testing.T) {
-	meta := types.GuestTelemetryMeta{InstanceID: "i-0abc", VCPUs: 1, PeriodSeconds: 60}
+	meta := telemetryv1.GuestTelemetryMeta{InstanceID: "i-0abc", VCPUs: 1, PeriodSeconds: 60}
 	base := time.Unix(1000, 0)
 	prev := &sample{at: base, cpuJiffies: 5000, rdBytes: 900}
 	// QEMU restarted: counters reset below prev.
@@ -159,7 +159,7 @@ func TestBuildBatchCounterRegression(t *testing.T) {
 }
 
 func TestBuildBatchNoBalloon(t *testing.T) {
-	meta := types.GuestTelemetryMeta{InstanceID: "i-0abc", VCPUs: 1, PeriodSeconds: 60}
+	meta := telemetryv1.GuestTelemetryMeta{InstanceID: "i-0abc", VCPUs: 1, PeriodSeconds: 60}
 	base := time.Unix(1000, 0)
 	batch, ok := buildBatch(meta, "",
 		&sample{at: base}, &sample{at: base.Add(time.Minute)})
@@ -187,7 +187,7 @@ func TestPollerPeriod(t *testing.T) {
 		{17, 300 * time.Second}, // garbage -> basic
 	}
 	for _, tt := range tests {
-		p := newPoller(&Config{}, nil, types.GuestTelemetryMeta{PeriodSeconds: tt.secs})
+		p := newPoller(&Config{}, nil, telemetryv1.GuestTelemetryMeta{PeriodSeconds: tt.secs})
 		if got := p.period(); got != tt.want {
 			t.Errorf("period(%d) = %v, want %v", tt.secs, got, tt.want)
 		}
@@ -198,7 +198,7 @@ func TestPollerPeriod(t *testing.T) {
 // out the interval being replaced, so moving a 300s instance to the detailed
 // tier would take five minutes to take effect.
 func TestUpdateMetaSignalsOnlyTierChanges(t *testing.T) {
-	p := newPoller(&Config{}, nil, types.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 300})
+	p := newPoller(&Config{}, nil, telemetryv1.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 300})
 
 	signalled := func() bool {
 		select {
@@ -209,12 +209,12 @@ func TestUpdateMetaSignalsOnlyTierChanges(t *testing.T) {
 		}
 	}
 
-	p.updateMeta(types.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 300, Taps: []string{"tap0"}})
+	p.updateMeta(telemetryv1.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 300, Taps: []string{"tap0"}})
 	if signalled() {
 		t.Error("a taps-only rewrite must not signal a tier change")
 	}
 
-	p.updateMeta(types.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 60})
+	p.updateMeta(telemetryv1.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 60})
 	if !signalled() {
 		t.Fatal("moving to the detailed tier must signal")
 	}
@@ -224,8 +224,8 @@ func TestUpdateMetaSignalsOnlyTierChanges(t *testing.T) {
 
 	// The signal is coalesced, so a poller that has not woken yet cannot
 	// accumulate a backlog of resets.
-	p.updateMeta(types.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 300})
-	p.updateMeta(types.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 60})
+	p.updateMeta(telemetryv1.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 300})
+	p.updateMeta(telemetryv1.GuestTelemetryMeta{InstanceID: "i-0aaa", PeriodSeconds: 60})
 	if !signalled() {
 		t.Fatal("a pending tier change must be visible")
 	}

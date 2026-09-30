@@ -1,5 +1,6 @@
 // Package qmpcollector is the per-node guest-metrics producer:
-// it discovers running VMs via their qmp-telemetry-*.json sidecar files, polls
+// it discovers running VMs via the telemetryv1 qmp-telemetry-*.json sidecar
+// contract, polls
 // each VM's dedicated telemetry QMP socket (never the manager's control
 // socket) plus host tap counters, and publishes CloudWatch-mappable series to
 // NATS metrics.ec2.<instance-id>. A bridge goroutine forwards the series to

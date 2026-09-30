@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
+	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-func writeMeta(t *testing.T, dir string, meta types.GuestTelemetryMeta) string {
+func writeMeta(t *testing.T, dir string, meta telemetryv1.GuestTelemetryMeta) string {
 	t.Helper()
 	data, err := json.Marshal(meta)
 	if err != nil {
@@ -41,11 +41,11 @@ func TestReconcile(t *testing.T) {
 	// Live VM: metadata + socket present.
 	liveSock := filepath.Join(dir, utils.QMPTelemetryPrefix+"i-live.sock")
 	touch(t, liveSock)
-	writeMeta(t, dir, types.GuestTelemetryMeta{
+	writeMeta(t, dir, telemetryv1.GuestTelemetryMeta{
 		InstanceID: "i-live", Socket: liveSock, PeriodSeconds: 300})
 
 	// Stale VM: metadata but no socket (unclean QEMU exit) — must be GC'd.
-	stalePath := writeMeta(t, dir, types.GuestTelemetryMeta{
+	stalePath := writeMeta(t, dir, telemetryv1.GuestTelemetryMeta{
 		InstanceID: "i-stale", Socket: filepath.Join(dir, "gone.sock"), PeriodSeconds: 300})
 
 	// Garbage file matching the glob — skipped, not fatal.
@@ -70,7 +70,7 @@ func TestReconcile(t *testing.T) {
 	}
 
 	// Metadata refresh (ENI hotplug) must update the running poller in place.
-	writeMeta(t, dir, types.GuestTelemetryMeta{
+	writeMeta(t, dir, telemetryv1.GuestTelemetryMeta{
 		InstanceID: "i-live", Socket: liveSock, PeriodSeconds: 300,
 		Taps: []string{"tapnew"}})
 	c.reconcile(ctx)

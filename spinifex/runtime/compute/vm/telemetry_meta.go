@@ -7,7 +7,7 @@ import (
 	"sort"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -57,7 +57,7 @@ func writeTelemetryMeta(v *VM) error {
 	if v.Config.TelemetryQMPSocket == "" {
 		return nil
 	}
-	meta := types.GuestTelemetryMeta{
+	meta := telemetryv1.GuestTelemetryMeta{
 		InstanceID:    v.ID,
 		AccountID:     v.AccountID,
 		VCPUs:         v.Config.CPUCount,

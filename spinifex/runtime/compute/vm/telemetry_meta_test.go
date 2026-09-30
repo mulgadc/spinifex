@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -75,7 +75,7 @@ func TestTelemetryMetaRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	var meta types.GuestTelemetryMeta
+	var meta telemetryv1.GuestTelemetryMeta
 	if err := json.Unmarshal(data, &meta); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestRefreshTelemetryMetaCarriesTierChange(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read back: %v", err)
 		}
-		var meta types.GuestTelemetryMeta
+		var meta telemetryv1.GuestTelemetryMeta
 		if err := json.Unmarshal(data, &meta); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}

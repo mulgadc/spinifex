@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -56,17 +57,17 @@ type poller struct {
 	retier chan struct{}
 
 	mu   sync.Mutex
-	meta types.GuestTelemetryMeta
+	meta telemetryv1.GuestTelemetryMeta
 	prev *sample
 }
 
-func newPoller(cfg *Config, nc *nats.Conn, meta types.GuestTelemetryMeta) *poller {
+func newPoller(cfg *Config, nc *nats.Conn, meta telemetryv1.GuestTelemetryMeta) *poller {
 	return &poller{cfg: cfg, nc: nc, meta: meta, retier: make(chan struct{}, 1)}
 }
 
 // updateMeta refreshes taps/period after an ENI hot-plug or monitoring-tier
 // rewrite, waking the run loop when the period moved.
-func (p *poller) updateMeta(meta types.GuestTelemetryMeta) {
+func (p *poller) updateMeta(meta telemetryv1.GuestTelemetryMeta) {
 	p.mu.Lock()
 	retier := meta.PeriodSeconds != p.meta.PeriodSeconds
 	p.meta = meta
@@ -82,7 +83,7 @@ func (p *poller) updateMeta(meta types.GuestTelemetryMeta) {
 	}
 }
 
-func (p *poller) snapshotMeta() types.GuestTelemetryMeta {
+func (p *poller) snapshotMeta() telemetryv1.GuestTelemetryMeta {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.meta
@@ -196,7 +197,7 @@ func (p *poller) tick(ctx context.Context) {
 
 // collect dials the telemetry socket fresh each tick (no held connection to
 // leak across QEMU restarts) and reads QMP + procfs + sysfs counters.
-func (p *poller) collect(meta types.GuestTelemetryMeta) (*sample, error) {
+func (p *poller) collect(meta telemetryv1.GuestTelemetryMeta) (*sample, error) {
 	client, err := qmp.NewQMPClient(meta.Socket)
 	if err != nil {
 		return nil, fmt.Errorf("dial telemetry socket: %w", err)
@@ -298,7 +299,7 @@ func readSysfsCounter(sysRoot, iface, counter string) (uint64, error) {
 // buildBatch converts two snapshots into the locked goanna_ec2_* series set.
 // ok is false when a counter regressed (QEMU restart between ticks) — the
 // fresh snapshot then serves as the new baseline and nothing is published.
-func buildBatch(meta types.GuestTelemetryMeta, node string, prev, cur *sample) (types.TelemetryBatch, bool) {
+func buildBatch(meta telemetryv1.GuestTelemetryMeta, node string, prev, cur *sample) (types.TelemetryBatch, bool) {
 	elapsed := cur.at.Sub(prev.at).Seconds()
 	if elapsed <= 0 {
 		return types.TelemetryBatch{}, false

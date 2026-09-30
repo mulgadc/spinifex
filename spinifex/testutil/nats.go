@@ -101,6 +101,7 @@ var vpcdStubTopics = []string{
 	"vpc.update-port-sgs",
 	"vpc.create-port",
 	"vpc.delete-port",
+	"vpc.delete-nat",
 }
 
 // vpcdStubRegistry holds the per-conn response map. Per-conn so concurrent tests with separate conns don't interfere.

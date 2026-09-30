@@ -799,6 +799,7 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 	// rule vpcd may have committed after the AddNAT timeout window.
 	deleteNATCh := make(chan map[string]string, 1)
 	delSub, err := d.natsConn.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":true}`))
 		var p map[string]string
 		_ = json.Unmarshal(msg.Data, &p)
 		select {

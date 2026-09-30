@@ -3882,6 +3882,7 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	// half-committed rule from a waitForFlowsHV timeout.
 	deleteNATCh := make(chan natWirePayload, 1)
 	delSub, err := svc.natsConn.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":true}`))
 		var p natWirePayload
 		_ = json.Unmarshal(msg.Data, &p)
 		select {
@@ -3989,6 +3990,7 @@ func TestPrepareRunInstances_PartialLaunchReleasesSucceededInstances(t *testing.
 
 	deleteNATCh := make(chan natWirePayload, 2)
 	delSub, err := svc.natsConn.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":true}`))
 		var p natWirePayload
 		_ = json.Unmarshal(msg.Data, &p)
 		select {

@@ -54,18 +54,7 @@ func GuestExec(tgt SSHTarget, cmd string) (string, error) {
 func GuestExecTimeout(tgt SSHTarget, cmd string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	args := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"-o", "ConnectTimeout=5",
-		"-o", "BatchMode=yes",
-		"-p", strconv.Itoa(tgt.Port),
-		"-i", tgt.KeyPath,
-		tgt.User + "@" + tgt.Host,
-		cmd,
-	}
-	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "ssh", guestSSHArgs(tgt, 5, cmd)...).CombinedOutput()
 	if err != nil && ctx.Err() == context.DeadlineExceeded {
 		return string(out), fmt.Errorf("guest command exceeded its %s timeout (still running when the deadline hit): %w: %w", timeout, context.DeadlineExceeded, err)
 	}

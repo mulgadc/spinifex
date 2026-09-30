@@ -105,7 +105,7 @@ func sgDatapathRevokeRounds() int {
 func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Security Group Policy on a Real Datapath (OVN)")
 	harness.SkipIfNoOVN(t)
-	requireSSHHealthy(t)
+	sshHealth.Require(t)
 
 	// Bootstrap every prereq up front. runSGEInstance / primaryENI use
 	// `fix.AMIID / InstanceType / KeyName / KeyPath` indirectly; resolve
@@ -257,7 +257,7 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 		// Non-fatal probe so a timeout dumps the guest console + OVN/datapath
 		// state before Fatal. A full 2min unreachable window on a fresh public-IP
 		// VM is the flake signature; capture it from CI artifacts alone.
-		if !trySSHReady(clientHost, clientPort, keyPath, 2*time.Minute) {
+		if !sshHealth.TryReady(clientHost, clientPort, keyPath, 2*time.Minute) {
 			harness.DumpVPCFlowDiagnostics(t, fix.AWS, clientID,
 				fmt.Sprintf("8e-3 client-vm SSH timeout — vpc=%s sg=%s pub=%s", def.VPCID, clientSG, clientHost),
 				harness.VPCDiagnosticsOpts{
@@ -326,7 +326,7 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 			// so the only variable left is ovn-controller installing the
 			// chassis flows. Bash used 30 attempts at 2s; keep that budget.
 			harness.EventuallyErr(t, func() error {
-				out, err := runSSHCombined(clientTgt, curlCmd)
+				out, err := harness.RunSSHCombined(clientTgt, curlCmd)
 				if err != nil {
 					return fmt.Errorf("client -> target:8080 failed: %w (out=%q)", err, out)
 				}
@@ -343,7 +343,7 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 	// merits even if the 8080 path above failed.
 	t.Run("DeniedTraffic", func(t *testing.T) {
 		harness.Step(t, "8e-5 denied traffic client -> target:22 (no SSH ingress)")
-		if _, err := runSSHCombined(clientTgt, fmt.Sprintf("nc -z -w 5 %s 22", targetPriv)); err == nil {
+		if _, err := harness.RunSSHCombined(clientTgt, fmt.Sprintf("nc -z -w 5 %s 22", targetPriv)); err == nil {
 			t.Fatalf("FAIL: client reached target:22 — default-deny ACL not enforced")
 		}
 		harness.Detail(t, "step5", "denied_traffic_ok")
@@ -449,7 +449,7 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 				derived, clientLL, iface)
 
 			targetLL := linkLocalFromMAC(eniMAC(t, fix, targetENI)).String()
-			out, err := runSSHCombined(clientTgt, fmt.Sprintf("ping -6 -c 3 -W 3 %s%%%s", targetLL, iface))
+			out, err := harness.RunSSHCombined(clientTgt, fmt.Sprintf("ping -6 -c 3 -W 3 %s%%%s", targetLL, iface))
 			require.Errorf(t, err, "FAIL: client reached target over IPv6 at %s\n%s", targetLL, out)
 
 			// A non-zero exit alone also covers a broken ssh session, a missing
@@ -498,7 +498,7 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 				// Fresh TCP connection — conntrack does not affect new
 				// connections. Bash treats a single curl success as failure.
 				harness.Step(t, "8e-6 verify client -> target:8080 now blocked")
-				if _, err := runSSHCombined(clientTgt, curlCmd); err == nil {
+				if _, err := harness.RunSSHCombined(clientTgt, curlCmd); err == nil {
 					t.Fatalf("FAIL: client still reached target:8080 after revoke — propagation not immediate")
 				}
 				harness.Detail(t, "step6", "revoke_blocked_ok")
@@ -529,7 +529,7 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 				require.NoError(t, err, "re-authorize tcp/8080 from %s", clientSG)
 
 				harness.EventuallyErr(t, func() error {
-					out, err := runSSHCombined(clientTgt, curlCmd)
+					out, err := harness.RunSSHCombined(clientTgt, curlCmd)
 					if err != nil {
 						return fmt.Errorf("client -> target:8080 still blocked after re-add: %w (out=%q)", err, out)
 					}
@@ -706,12 +706,12 @@ func linkLocalFromMAC(mac net.HardwareAddr) net.IP {
 // link-local address configured on it.
 func guestLinkLocal(t *testing.T, tgt harness.SSHTarget) (string, string) {
 	t.Helper()
-	iface, err := runSSHCombined(tgt, "ip -o -4 route show default | awk '{print $5; exit}'")
+	iface, err := harness.RunSSHCombined(tgt, "ip -o -4 route show default | awk '{print $5; exit}'")
 	require.NoError(t, err, "guest could not report its default-route interface")
 	iface = strings.TrimSpace(iface)
 	require.NotEmpty(t, iface, "guest has no default-route interface")
 
-	ll, err := runSSHCombined(tgt,
+	ll, err := harness.RunSSHCombined(tgt,
 		fmt.Sprintf("ip -6 -o addr show dev %s scope link | awk '{print $4; exit}' | cut -d/ -f1", iface))
 	require.NoError(t, err, "guest could not report its link-local address")
 	ll = strings.TrimSpace(ll)

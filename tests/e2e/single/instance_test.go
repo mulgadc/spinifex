@@ -3,9 +3,6 @@
 package single
 
 import (
-	"bytes"
-	"os/exec"
-	"strconv"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -84,31 +81,4 @@ func runConsoleOutput(t *testing.T, fix *Fixture) {
 		"instance", aws.StringValue(out.InstanceId),
 		"has_output", out.Output != nil && aws.StringValue(out.Output) != "",
 	)
-}
-
-// runSSH is a thin wrapper around `ssh` matching the option set used by
-// harness.LsblkRootGiB. Returns stdout. t.Fatal on non-zero exit so callers
-// can chain assertions on the output without nil-checking err.
-func runSSH(t *testing.T, tgt harness.SSHTarget, command string) string {
-	t.Helper()
-	args := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"-o", "ConnectTimeout=5",
-		"-o", "BatchMode=yes",
-		"-p", strconv.Itoa(tgt.Port),
-		"-i", tgt.KeyPath,
-		tgt.User + "@" + tgt.Host,
-		command,
-	}
-	var stdout, stderr bytes.Buffer
-	cmd := exec.Command("ssh", args...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("ssh %s@%s:%d %q failed: %v\nstderr: %s",
-			tgt.User, tgt.Host, tgt.Port, command, err, stderr.String())
-	}
-	return stdout.String()
 }

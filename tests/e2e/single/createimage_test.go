@@ -145,10 +145,10 @@ func runBootVerifyAMI(t *testing.T, fix *Fixture, amiID, label string) {
 	probeInst := harness.WaitForInstanceState(t, fix.AWS, probeInstanceID, "running")
 
 	host, port := harness.InstancePublicSSHHost(t, probeInst)
-	waitForSSHReady(t, host, port, keyPath)
+	sshHealth.WaitReady(t, host, port, keyPath)
 
 	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
-	idOut := runSSH(t, tgt, "id")
+	idOut := harness.RunSSH(t, tgt, "id")
 	assert.Containsf(t, idOut, "ubuntu", "boot-verify %s: ssh id should report ubuntu\n%s", label, idOut)
 
 	harness.Detail(t, "boot_verify_"+label, "ok")

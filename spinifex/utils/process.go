@@ -21,25 +21,6 @@ func SetOOMScore(pid int, score int) error {
 	return os.WriteFile(path, []byte(strconv.Itoa(score)), 0600)
 }
 
-func StopProcess(serviceName string) error {
-	pid, err := ReadPidFile(serviceName)
-	if err != nil {
-		return err
-	}
-
-	err = KillProcess(pid)
-	if err != nil {
-		return err
-	}
-
-	err = RemovePidFile(serviceName)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // ProcessAlive reports whether the process is still running, via a
 // signal-0 liveness probe. A PID file going missing does NOT imply the
 // process exited, so callers that must reap a process check this directly.

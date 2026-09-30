@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
@@ -30,8 +29,7 @@ type Config struct {
 	TlsKey  string
 
 	// BasePath is where this service keeps its pid file. Predastore itself has
-	// no base path — its directories come from the configuration file — but
-	// Stop and Status find the running process through this one.
+	// no base path; its directories come from the configuration file.
 	BasePath string
 
 	// EncryptionKeyFile is the path to this node's 32-byte AES-256 master
@@ -48,12 +46,6 @@ type Config struct {
 // Service runs one predastore host in this process.
 type Service struct {
 	Config *Config
-
-	// stop cancels the process context Start runs under, so Shutdown can
-	// drain the gate and the nodes together. Guarded because Shutdown is
-	// called from a different goroutine than Start.
-	mu   sync.Mutex
-	stop context.CancelFunc
 }
 
 // New creates a new predastore service.
@@ -93,14 +85,10 @@ func (svc *Service) Start() (int, error) {
 		return 0, fmt.Errorf("load predastore master key: %w", err)
 	}
 
-	// One context for the whole service: a signal, a fatal node error or
-	// Shutdown stops the gate and every local node together.
+	// One context for the whole service: a signal or a fatal node error stops
+	// the gate and every local node together.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	svc.mu.Lock()
-	svc.stop = stop
-	svc.mu.Unlock()
 
 	if err := pds.Run(ctx, pds.Options{
 		Config:    cfg,
@@ -159,34 +147,4 @@ func (svc *Service) mergeHost(cfg *pds.Config) (pds.HostID, error) {
 	host.Nodes[gate].Port = cmp.Or(svc.Config.Port, host.Nodes[gate].Port)
 
 	return hostID, cfg.Validate()
-}
-
-// Stop stops the predastore service.
-func (svc *Service) Stop() error {
-	return utils.StopProcessAt(svc.Config.BasePath, serviceName)
-}
-
-// Status returns the status of the predastore service.
-func (svc *Service) Status() (string, error) {
-	return utils.ServiceStatus(svc.Config.BasePath, serviceName)
-}
-
-// Shutdown gracefully shuts down the predastore service. When this process is
-// the one running the host it cancels the service context, which drains the
-// gate and every local node; otherwise it signals the running process.
-func (svc *Service) Shutdown() error {
-	svc.mu.Lock()
-	stop := svc.stop
-	svc.mu.Unlock()
-
-	if stop != nil {
-		stop()
-		return nil
-	}
-	return svc.Stop()
-}
-
-// Reload reloads the predastore service configuration.
-func (svc *Service) Reload() error {
-	return nil
 }

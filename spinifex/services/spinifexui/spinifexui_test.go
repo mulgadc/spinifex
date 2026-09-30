@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -112,27 +113,6 @@ func TestNew_InvalidConfigTypeInt(t *testing.T) {
 
 	assert.Nil(t, svc)
 	assert.Error(t, err)
-}
-
-func TestStatus_ReturnsValidState(t *testing.T) {
-	svc := &Service{
-		Config: &Config{},
-	}
-
-	status, err := svc.Status()
-
-	assert.NoError(t, err)
-	// On a dev machine the spinifex-ui PID file may exist, so accept either outcome
-	assert.True(t, status == "stopped" || len(status) > 0, "status should be non-empty")
-}
-
-func TestReload_ReturnsNil(t *testing.T) {
-	svc := &Service{
-		Config: &Config{},
-	}
-
-	err := svc.Reload()
-	assert.NoError(t, err)
 }
 
 func TestServiceName(t *testing.T) {
@@ -459,28 +439,6 @@ func TestStart_WritesPidFileToNestedBaseDir(t *testing.T) {
 	assert.Equal(t, strconv.Itoa(os.Getpid()), string(data))
 }
 
-func TestShutdown_WithServer(t *testing.T) {
-	// Create a real server on a random port so Shutdown exercises the non-nil path
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	srv := &http.Server{Handler: mux}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	go srv.Serve(ln)
-
-	svc := &Service{
-		Config: &Config{},
-		server: srv,
-	}
-
-	err = svc.Shutdown()
-	assert.NoError(t, err)
-}
-
 // writeTestTLSFiles generates a self-signed cert/key pair on disk for a
 // launchService test, which needs real file paths (tls.LoadX509KeyPair),
 // unlike loadTLSCert's in-memory tls.Certificate used by the split-listener tests.
@@ -529,15 +487,16 @@ func freePort(t *testing.T) int {
 }
 
 // TestStart_GracefulShutdownIsNotAnError guards against Start propagating
-// http.ErrServerClosed -- Serve's documented return value after a deliberate
-// Shutdown -- as a failure. Before the fix this made a clean stop look like
+// http.ErrServerClosed -- Serve's documented return value after the SIGTERM
+// handler's Shutdown -- as a failure. Before the fix this made a clean stop look like
 // a crash (exit code 1) to systemd.
 func TestStart_GracefulShutdownIsNotAnError(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	certPath, keyPath := writeTestTLSFiles(t)
 
+	port := freePort(t)
 	svc, err := New(&Config{
-		Port:    freePort(t),
+		Port:    port,
 		Host:    "127.0.0.1",
 		TLSCert: certPath,
 		TLSKey:  keyPath,
@@ -550,19 +509,25 @@ func TestStart_GracefulShutdownIsNotAnError(t *testing.T) {
 		startErrCh <- startErr
 	}()
 
+	// Start registers for SIGTERM before it listens, so a successful dial means
+	// the signal will not kill the test binary.
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	require.Eventually(t, func() bool {
-		svc.mu.Lock()
-		defer svc.mu.Unlock()
-		return svc.server != nil
-	}, 2*time.Second, 10*time.Millisecond, "server never registered before shutdown")
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err != nil {
+			return false
+		}
+		conn.Close()
+		return true
+	}, 2*time.Second, 10*time.Millisecond, "server never listened on %s", addr)
 
-	require.NoError(t, svc.Shutdown())
+	require.NoError(t, syscall.Kill(os.Getpid(), syscall.SIGTERM))
 
 	select {
 	case startErr := <-startErrCh:
-		assert.NoError(t, startErr, "Start must treat a deliberate Shutdown's ErrServerClosed as success")
+		assert.NoError(t, startErr, "Start must treat a graceful shutdown's ErrServerClosed as success")
 	case <-time.After(2 * time.Second):
-		t.Fatal("Start did not return after Shutdown")
+		t.Fatal("Start did not return after SIGTERM")
 	}
 }
 

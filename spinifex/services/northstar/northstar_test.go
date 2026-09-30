@@ -31,9 +31,3 @@ func TestStartRequiresConfigPath(t *testing.T) {
 	_, err = svc.Start()
 	require.Error(t, err)
 }
-
-func TestReloadNilServerIsNoop(t *testing.T) {
-	svc, err := New(&Config{})
-	require.NoError(t, err)
-	require.NoError(t, svc.Reload())
-}

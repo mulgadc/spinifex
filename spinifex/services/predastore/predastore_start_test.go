@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -166,10 +167,10 @@ func TestStartRejectsUnprotectedMasterKey(t *testing.T) {
 	assert.Contains(t, err.Error(), "load predastore master key")
 }
 
-// TestStartServesUntilShutdown covers the service lifecycle end to end: Start
-// blocks for as long as the host serves, and Shutdown cancels the context the
+// TestStartServesUntilSIGTERM covers the service lifecycle end to end: Start
+// blocks for as long as the host serves, and SIGTERM cancels the context the
 // gate and the local nodes share, which is what lets Start return at all.
-func TestStartServesUntilShutdown(t *testing.T) {
+func TestStartServesUntilSIGTERM(t *testing.T) {
 	dir := t.TempDir()
 	basePath := t.TempDir()
 	gatePort := freePort(t)
@@ -191,8 +192,8 @@ func TestStartServesUntilShutdown(t *testing.T) {
 		done <- result{pid: pid, err: err}
 	}()
 
-	// Shutdown must not run before Start has published its cancel func, and an
-	// accepted connection is the first observable point at which it has.
+	// SIGTERM must not arrive before Start has registered for it, or it kills
+	// the test binary; an accepted connection is the first point it has.
 	addr := net.JoinHostPort(startAddr, strconv.Itoa(gatePort))
 	require.Eventually(t, func() bool {
 		conn, err := net.DialTimeout("tcp", addr, time.Second)
@@ -204,13 +205,13 @@ func TestStartServesUntilShutdown(t *testing.T) {
 	}, 60*time.Second, 100*time.Millisecond, "gate never accepted a connection on %s", addr)
 
 	assert.FileExists(t, filepath.Join(basePath, serviceName+".pid"))
-	require.NoError(t, svc.Shutdown())
+	require.NoError(t, syscall.Kill(os.Getpid(), syscall.SIGTERM))
 
 	select {
 	case res := <-done:
 		require.NoError(t, res.err)
 		assert.Equal(t, os.Getpid(), res.pid)
 	case <-time.After(60 * time.Second):
-		t.Fatal("Start did not return after Shutdown")
+		t.Fatal("Start did not return after SIGTERM")
 	}
 }

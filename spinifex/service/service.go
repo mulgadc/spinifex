@@ -17,10 +17,6 @@ import (
 
 type Service interface {
 	Start() (int, error)
-	Stop() error
-	Status() (string, error)
-	Shutdown() error
-	Reload() error
 }
 
 var (

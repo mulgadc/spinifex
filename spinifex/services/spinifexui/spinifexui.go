@@ -15,7 +15,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -83,8 +82,6 @@ func clusterConfigHandler(region string, ochreEnabled bool) http.HandlerFunc {
 // Service represents the spinifex-ui service.
 type Service struct {
 	Config *Config
-	server *http.Server
-	mu     sync.Mutex
 }
 
 // New creates a new spinifex-ui service.
@@ -139,35 +136,6 @@ func (svc *Service) Start() (int, error) {
 	}
 
 	return os.Getpid(), nil
-}
-
-// Stop stops the spinifex-ui service.
-func (svc *Service) Stop() error {
-	return utils.StopProcessAt(svc.Config.BaseDir, serviceName)
-}
-
-// Status returns the status of the spinifex-ui service.
-func (svc *Service) Status() (string, error) {
-	return utils.ServiceStatus(svc.Config.BaseDir, serviceName)
-}
-
-// Shutdown gracefully shuts down the spinifex-ui service.
-func (svc *Service) Shutdown() error {
-	svc.mu.Lock()
-	server := svc.server
-	svc.mu.Unlock()
-
-	if server != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		return server.Shutdown(ctx)
-	}
-	return svc.Stop()
-}
-
-// Reload reloads the spinifex-ui service configuration.
-func (svc *Service) Reload() error {
-	return nil
 }
 
 // launchService starts the HTTP server.
@@ -295,10 +263,6 @@ func (svc *Service) launchService() error {
 		IdleTimeout:       60 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-
-	svc.mu.Lock()
-	svc.server = server
-	svc.mu.Unlock()
 
 	// Setup graceful shutdown
 	sigChan := make(chan os.Signal, 1)

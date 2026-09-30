@@ -213,26 +213,6 @@ func (svc *Service) Start() (int, error) {
 	return os.Getpid(), nil
 }
 
-// Stop stops the vpcd service.
-func (svc *Service) Stop() error {
-	return utils.StopProcessAt(svc.Config.BaseDir, serviceName)
-}
-
-// Status returns the vpcd service status.
-func (svc *Service) Status() (string, error) {
-	return utils.ServiceStatus(svc.Config.BaseDir, serviceName)
-}
-
-// Shutdown gracefully shuts down the vpcd service.
-func (svc *Service) Shutdown() error {
-	return svc.Stop()
-}
-
-// Reload reloads the vpcd service configuration.
-func (svc *Service) Reload() error {
-	return nil
-}
-
 // checkBrInt verifies the OVS integration bridge (br-int) exists.
 // This is the bridge that all VM TAP devices connect to.
 var checkBrInt = func() error {

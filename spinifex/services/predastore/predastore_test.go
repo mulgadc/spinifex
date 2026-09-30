@@ -1,16 +1,13 @@
 package predastore
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	pds "github.com/mulgadc/predastore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -146,15 +143,6 @@ func TestNewRejectsForeignConfig(t *testing.T) {
 // TestServiceNameConstant tests the serviceName constant.
 func TestServiceNameConstant(t *testing.T) {
 	assert.Equal(t, "predastore", serviceName)
-}
-
-// TestReloadIsANoOp pins the current contract: predastore has no reload, and
-// the service reports success rather than an error a caller would have to
-// special-case.
-func TestReloadIsANoOp(t *testing.T) {
-	svc, err := New(&Config{})
-	require.NoError(t, err)
-	assert.NoError(t, svc.Reload())
 }
 
 // TestMergeHostFlagsBeatFile covers the precedence spinifex.toml relies on:
@@ -325,76 +313,4 @@ func TestStartRejectsMissingEncryptionKey(t *testing.T) {
 	require.Error(t, err)
 	assert.Zero(t, pid)
 	assert.Contains(t, err.Error(), "encryption key file is required")
-}
-
-// TestStatusReportsStoppedWithoutPidFile covers the resting state: no pid file
-// under BasePath means nothing is running, not an error.
-func TestStatusReportsStoppedWithoutPidFile(t *testing.T) {
-	svc, err := New(&Config{BasePath: t.TempDir()})
-	require.NoError(t, err)
-
-	status, err := svc.Status()
-
-	require.NoError(t, err)
-	assert.Equal(t, "stopped", status)
-}
-
-// TestStatusAndStopUseThePidFile covers the out-of-process path: Stop and
-// Status find a predastore started by an earlier invocation through the pid
-// file BasePath holds, and Stop clears it once the process is gone.
-func TestStatusAndStopUseThePidFile(t *testing.T) {
-	basePath := t.TempDir()
-	svc, err := New(&Config{BasePath: basePath})
-	require.NoError(t, err)
-
-	child := exec.CommandContext(t.Context(), "sleep", "60")
-	require.NoError(t, child.Start())
-	// Reaped as it dies, not at cleanup: an unwaited child of this process
-	// lingers as a zombie, which still answers signal 0, so Stop would wait out
-	// its whole grace period before escalating to SIGKILL.
-	reaped := make(chan struct{})
-	go func() {
-		defer close(reaped)
-		_ = child.Wait()
-	}()
-	t.Cleanup(func() { <-reaped })
-	require.NoError(t, utils.WritePidFileTo(basePath, serviceName, child.Process.Pid))
-
-	status, err := svc.Status()
-	require.NoError(t, err)
-	assert.Equal(t, fmt.Sprintf("running (pid: %d)", child.Process.Pid), status)
-
-	require.NoError(t, svc.Stop())
-	assert.NoFileExists(t, filepath.Join(basePath, serviceName+".pid"))
-
-	status, err = svc.Status()
-	require.NoError(t, err)
-	assert.Equal(t, "stopped", status)
-}
-
-// TestShutdownWithoutRunningClusterFallsBackToPidFile covers the fallback: with
-// no cluster in this process there is no context to cancel, so Shutdown goes
-// through the pid file, which reports rather than signalling anything.
-func TestShutdownWithoutRunningClusterFallsBackToPidFile(t *testing.T) {
-	svc, err := New(&Config{BasePath: t.TempDir()})
-	require.NoError(t, err)
-
-	assert.Error(t, svc.Shutdown())
-}
-
-// TestShutdownCancelsTheServiceContext covers the in-process path: once Start
-// has published its cancel func, Shutdown cancels the context the gate and the
-// local nodes share instead of signalling through the pid file.
-func TestShutdownCancelsTheServiceContext(t *testing.T) {
-	svc, err := New(&Config{BasePath: t.TempDir()})
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	svc.mu.Lock()
-	svc.stop = cancel
-	svc.mu.Unlock()
-
-	require.NoError(t, svc.Shutdown())
-	assert.Error(t, ctx.Err())
 }

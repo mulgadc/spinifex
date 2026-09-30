@@ -162,7 +162,7 @@ func TestExecProcessAndKill(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// Kill the process
-	err = StopProcess("utilsunittest")
+	err = StopProcessAt("", "utilsunittest")
 	assert.NoError(t, err)
 
 	// Test PID file removed
@@ -722,36 +722,6 @@ func TestForceKillProcess_AlreadyExitedIsSuccess(t *testing.T) {
 		"an already-exited process satisfies the request, it does not fail it")
 }
 
-func TestStopProcess(t *testing.T) {
-	// Create and start a test process
-	cmd := exec.Command("sleep", "60")
-	err := cmd.Start()
-	require.NoError(t, err)
-
-	// Write PID file
-	testName := "stopprocess-test"
-	err = WritePidFile(testName, cmd.Process.Pid)
-	require.NoError(t, err)
-
-	// Reap in background so StopProcess can detect termination
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_ = cmd.Wait()
-	})
-
-	err = StopProcess(testName)
-	assert.NoError(t, err)
-	wg.Wait()
-
-	// Verify PID file was removed
-	_, err = ReadPidFile(testName)
-	assert.Error(t, err, "PID file should be removed")
-
-	// Test stopping non-existent process
-	err = StopProcess("nonexistent-process")
-	assert.Error(t, err, "Should error when stopping non-existent process")
-}
-
 // Test file extraction process
 
 func TestExtractDiskImageFromFile(t *testing.T) {
@@ -1170,39 +1140,6 @@ func TestGeneratePidFile_InvalidPath(t *testing.T) {
 
 func TestReadPidFileFrom_EmptyDir(t *testing.T) {
 	_, err := ReadPidFileFrom("", fmt.Sprintf("nonexistent-service-%d", time.Now().UnixNano()))
-	assert.Error(t, err)
-}
-
-func TestServiceStatus_Stopped(t *testing.T) {
-	dir := t.TempDir()
-	status, err := ServiceStatus(dir, fmt.Sprintf("no-such-svc-%d", time.Now().UnixNano()))
-	require.NoError(t, err)
-	assert.Equal(t, "stopped", status)
-}
-
-func TestServiceStatus_Running(t *testing.T) {
-	dir := t.TempDir()
-
-	cmd := exec.Command("sleep", "60")
-	require.NoError(t, cmd.Start())
-	defer func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
-
-	require.NoError(t, WritePidFileTo(dir, "running-svc", cmd.Process.Pid))
-
-	status, err := ServiceStatus(dir, "running-svc")
-	require.NoError(t, err)
-	assert.Equal(t, fmt.Sprintf("running (pid: %d)", cmd.Process.Pid), status)
-}
-
-func TestServiceStatus_CorruptPidFile(t *testing.T) {
-	dir := t.TempDir()
-	// Write a non-numeric pid file — ReadPidFileFrom should fail to parse it.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "bad-svc.pid"), []byte("not-a-pid"), 0o644))
-
-	_, err := ServiceStatus(dir, "bad-svc")
 	assert.Error(t, err)
 }
 

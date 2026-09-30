@@ -16,6 +16,21 @@ func IAMRoleARN(account, name string) string {
 	return "arn:aws:iam::" + account + ":role/" + name
 }
 
+// CreateEKSClusterRole creates a role EKS can assume as a cluster role and
+// deletes it at cleanup. CreateCluster refuses a role that does not exist.
+func CreateEKSClusterRole(t *testing.T, c *AWSClient, name string) string {
+	t.Helper()
+	const eksTrustPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"eks.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	out, err := c.IAM.CreateRole(&iam.CreateRoleInput{
+		RoleName:                 aws.String(name),
+		AssumeRolePolicyDocument: aws.String(eksTrustPolicy),
+		Description:              aws.String("E2E EKS cluster role"),
+	})
+	require.NoError(t, err, "create-role (cluster) %s", name)
+	t.Cleanup(func() { IAMDeleteRoleAndProfilesBestEffort(c, name, nil) })
+	return aws.StringValue(out.Role.Arn)
+}
+
 // IAMPolicyARN builds the canonical policy ARN for a given account + policy
 // "key" (a bare name, or "path/name" without the leading slash).
 func IAMPolicyARN(account, key string) string {

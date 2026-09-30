@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mulgadc/bluebottle/pkg/auth"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 )
@@ -299,6 +300,9 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 	if err := gw.checkPolicyResources(r, "eks", action, resources); err != nil {
 		return err
 	}
+	if err := gw.checkEKSPassRole(r, action, accountID, body); err != nil {
+		return err
+	}
 
 	if gw.NATSConn == nil {
 		return errors.New(awserrors.ErrorServerInternal)
@@ -314,6 +318,44 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 
 	gateway_eks.WriteJSONResponse(w, output)
 	return nil
+}
+
+// errForeignRole marks a role ARN naming an account other than the caller's.
+var errForeignRole = errors.New("role is not in the caller's account")
+
+// checkEKSPassRole enforces iam:PassRole on each role action hands to EKS. Only
+// the exact ARN the store holds resolves, so the grant is evaluated against the
+// role's real path and an invented one cannot match a narrower Resource.
+func (gw *GatewayConfig) checkEKSPassRole(r *http.Request, action, accountID string, body []byte) error {
+	for _, roleARN := range gateway_eks.PassedRoleARNs(action, body) {
+		_, _, resolveErr := auth.ResolveRoleARN(roleARN, func(roleAccount, roleName string) (string, error) {
+			if roleAccount != accountID {
+				return "", errForeignRole
+			}
+			return gw.IAMService.CanonicalResourceARN(roleAccount, arn.IAMRole, roleName)
+		})
+		if errors.Is(resolveErr, auth.ErrInvalidRoleARN) || errors.Is(resolveErr, errForeignRole) {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s is not a role ARN in account %s", roleARN, accountID)
+		}
+		unknown := errors.Is(resolveErr, auth.ErrRoleARNMismatch) || isIAMNoSuchEntity(resolveErr)
+		if resolveErr != nil && !unknown {
+			return resolveErr
+		}
+		// Evaluated before an unknown role is reported, so a caller without
+		// iam:PassRole cannot use the reply to probe which roles exist.
+		if err := gw.checkPolicyResources(r, "iam", "PassRole", []string{roleARN}); err != nil {
+			return err
+		}
+		if unknown {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "role %s does not exist", roleARN)
+		}
+	}
+	return nil
+}
+
+func isIAMNoSuchEntity(err error) bool {
+	code, ok := awserrors.ResolveErrorCode(err)
+	return ok && code == awserrors.ErrorIAMNoSuchEntity
 }
 
 // eksCaller reads the principal behind the request. The role name comes from the

@@ -139,6 +139,57 @@ A broad `go test` run over those caller packages was stopped after two minutes
 without output. It is not recorded as a passing test; the normal full suite
 remains CI evidence for the branch.
 
+## Subsequent source moves
+
+The following slices follow the same rule as the first three: each is a
+structural move with import rewrites, no compatibility shim, focused package
+and direct-caller validation, and `git diff --check`. They are recorded here
+while the branch is in flight; they do not describe the umbrella repository's
+`main` until its Spinifex gitlink is updated.
+
+| Source commit | Old path | New path | Finding or boundary recorded |
+|---|---|---|---|
+| `04b41a62c` | `spinifex/idempotency` | `spinifex/foundation/lifecycle/idempotency` | Generic request coalescing is lifecycle infrastructure, not a domain owner. |
+| `25fa01a3d` | `spinifex/preflight` | `spinifex/bootstrap/preflight` | Startup validation is bootstrap input, not a generic service. |
+| `681fccc61` | `spinifex/systemd` | `spinifex/operator/host/systemd` | Host unit generation and reconciliation are operator-host work. |
+| `23ca5d8aa` | `spinifex/resource` | `spinifex/foundation/lifecycle/resource` | Resource metadata is a generic lifecycle primitive. |
+| `7a3c8de07` | `spinifex/nbd` | `spinifex/runtime/compute/nbd` | NBD process control is node-local compute runtime. |
+| `ea65616be` | `spinifex/hostdns` | `spinifex/runtime/host/dns` | Host resolver integration is runtime host work. |
+| `d80803807` | `spinifex/qmp` | `spinifex/runtime/compute/qmp` | QMP is local VM runtime control. |
+| `41e2c1f10` | `spinifex/gpu` | `spinifex/runtime/compute/gpu` | GPU discovery and attachment are local compute runtime work. |
+| `d78246d05` | `spinifex/instancetypes` | `spinifex/domains/ec2/instancetypes` | AWS-visible instance-type semantics belong to EC2. |
+| `b2ce46124` | `spinifex/service` | `spinifex/runtime/service` | The named-role catalogue is runtime composition. |
+| `573ee6761` | `spinifex/loadgen` | `internal/testkit/loadgen` | Load generation is qualification support, not product code. |
+| `afdb6618c` | `spinifex/otelsetup` | `spinifex/foundation/telemetry` | Spinifex instrumentation primitives are shared telemetry foundation. |
+| `956fe1490` | `spinifex/awserrors` | `spinifex/foundation/aws/errors` | AWS error vocabulary is shared AWS foundation. |
+| `cbbf252e6` | `spinifex/testutil` | `internal/testkit` | Test doubles remain compiler-private and cannot become application dependencies. |
+| `0c2d64413` | `spinifex/vm` | `spinifex/runtime/compute/vm` | VM lifecycle is node-local compute runtime, not EC2 API ownership. |
+| `a74adc48b` | `spinifex/ebsmetadata` | `spinifex/domains/ec2/ebs/metadata` | EBS API metadata remains EC2-domain state. |
+| `94ddc91a1` | `spinifex/ebsprovider` | `spinifex/providers/ebs` | The provider contract and conformance suite are replaceable storage adapters. |
+| `3c1bce1eb` | `spinifex/cloud/oci` | `spinifex/providers/cloud/oci` | OCI access is a replaceable cloud-provider adapter. |
+| `56970d079` | `spinifex/services/nats` | `spinifex/runtime/roles/nats` | NATS process startup is a named runtime role. |
+| `d87326f64` | `spinifex/network/listenerinventory` | `internal/testkit/listenerinventory` | Listener inventory is test-only qualification support. |
+| `4d4875b13` | `spinifex/services/spinifexui` | `spinifex/runtime/roles/spinifexui` | The web UI is a named runtime role, not a logical AWS domain. |
+| `f39bc64c9` | `spinifex/admin` listener helpers | `spinifex/foundation/netaddr` | Listener-address parsing is a small shared network primitive. |
+| `9e8e889fb` | `spinifex/services/qemunbdd` | `spinifex/runtime/roles/qemunbdd` | QEMU-NBD provider process startup is a runtime role. |
+| `3494ae131` | `spinifex/services/qmpcollector` | `spinifex/runtime/roles/qmpcollector` | QMP collection is a named runtime role. |
+| `f64931546` | `spinifex/services/spinifex` | `spinifex/runtime/roles/spinifex` | The core daemon executable role is runtime composition. |
+| `57f238a0c` | `spinifex/tags` | `spinifex/foundation/aws/tags` | System-tag vocabulary is shared AWS foundation. |
+| `7a6b00728`, `186ef7ebc` | `spinifex/kvutil` | `spinifex/foundation/state/kvutil` | Replica policy was made explicit before moving generic KV utilities to state foundation. |
+| `57f9d2ccc` | `spinifex/kvstore` | `spinifex/foundation/state/kvstore` | Generic KV storage mechanics are state foundation. |
+| `247e52ba3` | `spinifex/reconciler` | `spinifex/foundation/lifecycle/reconciler` | Generic reconciliation mechanics are lifecycle foundation. |
+| `b1d0eba89` | inline KV migration mechanics | `spinifex/foundation/state/migrate` | KV migration is a reusable state concern. |
+| `967f6904a` | `spinifex/kvlease` | `spinifex/foundation/state/kvlease` | Leases are state foundation, not a resource-domain owner. |
+| `248f0e005`, `8c4af3030` | `spinifex/formation` | `spinifex/runtime/formation` | Formation owns its protocol payloads and remains runtime membership/bootstrap work. |
+| `b8b97279c`, `c0c64cd53` | `spinifex/instancecache` | `spinifex/runtime/compute/cache` | Cache policy is decoupled from callers before becoming node-local compute runtime. |
+| `aa0c36ff4` | `spinifex/types/ec2.go` | `contracts/ec2/v1` | The EC2 instance-command subject and JSON payload are an explicit versioned cross-process contract; `commands_test.go` is its compatibility evidence. |
+
+The final row is intentionally different from the directory moves: it creates
+a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS
+subscription and permission shape, while callers use
+`InstanceCommandSubject` rather than reconstructing the subject. The
+contract's README states the route, scope and change rule.
+
 ## Recording rule
 
 For every later slice, add the old and new path, source commit, focused

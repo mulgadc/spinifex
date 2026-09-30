@@ -74,6 +74,8 @@ services:
       - "ec2.start"
       - "ec2.terminate"
       - "ec2.launch"
+      # contracts/ec2/v1 owns the command payload and this subject vocabulary.
+      # The wildcard is intentionally one final instance-ID token, not `>`.
       - "ec2.cmd.*"
       # EC2 VPC / network ops handled by daemon before delegation to vpcd.
       - "ec2.CreateVpc"

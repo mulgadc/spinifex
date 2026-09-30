@@ -108,6 +108,22 @@ func (s *NATSInstanceService) RunInstances(input *ec2.RunInstancesInput, account
 
 `RunInstances` uses a per-instance-type subject so NATS only delivers the request to a node with spare capacity for that type — no application-level reject-and-retry.
 
+### Cross-Process Contract Ownership
+
+NATS subjects and JSON payloads that cross a process boundary are contracts,
+not incidental implementation details. A domain owns its named and versioned
+contract under `contracts/<domain>/vN`; consumers own only their narrow
+in-process capability interfaces, and runtime composition wires the two.
+
+The first realised example is the [EC2 instance-command contract](../contracts/ec2/v1/README.md).
+`ec2.cmd.<instance-id>` is deliberately a targeted request/reply route: only
+the node that owns the QEMU process may execute a live-instance command. Its
+JSON shape and `ec2.cmd.*` subject form are compatibility-tested. The wildcard
+matches one final instance-ID token; it is not a broad descendant subscription.
+
+Changing that subject shape or a JSON field is a contract change, not a
+refactor. It needs a versioned successor or an explicit compatibility plan.
+
 ### 5. Daemon Processing
 
 Daemons (`spinifex/daemon/daemon.go`) subscribe to NATS topics and handle requests. A table-driven `subscribeAll()` registers the static EC2/ELBv2 surface at startup:

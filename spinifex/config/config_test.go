@@ -1332,3 +1332,45 @@ func TestLoadConfig_UnknownSourceErrorNamesOCI(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"oci"`)
 }
+
+func TestLoadConfig_NetworkPoolExoscaleSourceAccepted(t *testing.T) {
+	cfg, err := loadOCIPool(t, "nat", `
+source = "exoscale"
+exoscale_zone = "de-fra-1"
+exoscale_instance_id = "0f1e2d3c-0000-4000-8000-000000000001"
+exoscale_binary = "/usr/local/bin/exo"
+`)
+	require.NoError(t, err)
+	p := cfg.Network.ExternalPools[0]
+	assert.Equal(t, "exoscale", p.Source)
+	assert.Equal(t, "de-fra-1", p.ExoscaleZone)
+	assert.Equal(t, "0f1e2d3c-0000-4000-8000-000000000001", p.ExoscaleInstanceID)
+}
+
+func TestLoadConfig_NetworkPoolExoscaleRejections(t *testing.T) {
+	const base = `
+source = "exoscale"
+exoscale_zone = "de-fra-1"
+exoscale_instance_id = "0f1e2d3c-0000-4000-8000-000000000001"
+`
+	cases := []struct {
+		name, mode, body, want string
+	}{
+		{"pool mode", "pool", base, `requires [network] external_mode = "nat"`},
+		{"no zone", "nat", "source = \"exoscale\"\nexoscale_instance_id = \"i\"\n", "requires exoscale_zone and exoscale_instance_id"},
+		{"no instance", "nat", "source = \"exoscale\"\nexoscale_zone = \"de-fra-1\"\n", "requires exoscale_zone and exoscale_instance_id"},
+		{"range", "nat", base + "range_start = \"1.2.3.4\"\nrange_end = \"1.2.3.4\"\n", "Exoscale picks the address"},
+		{"gateway", "nat", base + "gateway = \"1.2.3.1\"\n", "Exoscale picks the address"},
+		{"gw lrp range", "nat", base + "gw_lrp_range_start = \"1.2.3.4\"\ngw_lrp_range_end = \"1.2.3.5\"\n", "per-organisation quota"},
+		{"relative binary", "nat", base + "exoscale_binary = \"exo\"\n", "absolute path"},
+		{"oci keys", "nat", base + "oci_compartment_id = \"c\"\n", `oci_* keys are only valid with source="oci"`},
+		{"exoscale keys on static", "nat", "exoscale_zone = \"de-fra-1\"\n", `exoscale_* keys are only valid with source="exoscale"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadOCIPool(t, tc.mode, tc.body)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}

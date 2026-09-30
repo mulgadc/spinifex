@@ -149,29 +149,31 @@ sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
 
 ### Step 4. Initialise
 
-Replace `EIP` with your Elastic IP:
+Spinifex creates each Elastic IP through the `exo` CLI when it needs one, so the pool names the zone and the instance rather than any addresses. The Terraform in `scripts/exo_terraform` installs `exo` and, given `exoscale_node_config_path`, the node's key. Its `nodes` output has the `instance_id`.
 
 ```bash
-EIP=89.145.163.1
 sudo spx admin init --node node1 --nodes 1 --region eu-central-1 --az eu-central-1a \
-  --ipsec=false --external-mode=nat --external-source=static \
-  --external-pool "$EIP-$EIP" --external-prefix-len 32
+  --ipsec=false --external-mode=nat
+sudo chown -R spinifex-daemon: /etc/spinifex/exoscale
 ```
 
-Then edit the public pool in `/etc/spinifex/spinifex.toml`, leaving the `nat-transit` pool alone. The pool must have **no** `gateway` line, and `gateway_ip` must be the instance's own address, so the Elastic IP is not reserved for the router:
+Then append the public pool to `/etc/spinifex/spinifex.toml`, leaving the `nat-transit` pool alone:
 
 ```toml
 [[network.external_pools]]
-name        = "exo"
-source      = "static"
-range_start = "89.145.163.1"
-range_end   = "89.145.163.1"
-gateway_ip  = "91.92.116.250"   # the instance's eth0 address
-prefix_len  = 32
+name                 = "exo"
+source               = "exoscale"
+exoscale_zone        = "de-fra-1"
+exoscale_instance_id = "<instance_id from terraform output nodes>"
+# exoscale_config_file = "/etc/spinifex/exoscale/exoscale.toml"   # default
+# exoscale_account     = ""                                       # default: the file's defaultaccount
+# exoscale_binary      = "/usr/bin/exo"                           # default
 ```
 
+Use a key scoped to Elastic IP operations and the node's own instance, never the key Terraform deploys with. Every Elastic IP Spinifex creates has the description `spinifex:<instance_id>:<allocation, ENI or instance ID>`, and Spinifex never touches an Elastic IP without that prefix.
+
 > [!IMPORTANT]
-> Both edits are needed on `v1.20.0`. With a `gateway`, every service refuses to start with `pool "wan" range [...] not inside <gateway>/32`. Without `gateway_ip`, the pool reserves its first address, and a one-address pool then fails every launch with `InsufficientAddressCapacity`. A pool is written to the cluster store the first time it is seen, so after a failed start rename it (`wan` → `exo`) rather than editing it in place.
+> The default Exoscale quota is five Elastic IPs per organisation, and each public address Spinifex hands out is one of them: an instance in a public subnet, an internet-facing load balancer, a NAT gateway, and the EKS API endpoint. Past the quota, `allocate-address` returns `AddressLimitExceeded` and a launch returns `InsufficientAddressCapacity`.
 
 ### Step 5. Arm the firewall, then start
 
@@ -208,7 +210,7 @@ aws ec2 run-instances --image-id "$AMI" --instance-type t3.small --key-name demo
 From outside, with the matching private key:
 
 ```bash
-ssh ubuntu@89.145.163.1 'curl -s ifconfig.me'   # prints 89.145.163.1
+ssh ubuntu@<PublicIpAddress> 'curl -s ifconfig.me'   # prints the same address
 ```
 
 A login proves inbound delivery. The printed address proves the guest's egress leaves from its own Elastic IP.
@@ -218,9 +220,8 @@ A login proves inbound delivery. The printed address proves the guest's egress l
 ## TODO
 
 - **Elastic IPs.**
-  - The static pool takes one contiguous range, but Elastic IPs are scattered, so today a node can hand out one. It needs either a static list of addresses or an Exoscale allocator (`source = "exoscale"`) that allocates, attaches and releases Elastic IPs through the Exoscale API, as the OCI integration does.
-  - `spx admin init` should write a pool Exoscale can use, removing the manual edit in Step 4.
-  - Moving an address with its guest between nodes needs the API allocator.
+  - `spx admin init` should write the `source = "exoscale"` pool, removing the manual edit in Step 4.
+  - Moving an address with its guest between nodes needs attach-on-associate, which the single-node allocator does not do.
 - **Block storage.**
   - Volumes back `/var/lib/spinifex` only. There is no native Exoscale block provider for EBS.
   - Guest disk performance on Exoscale volumes is not yet benchmarked.

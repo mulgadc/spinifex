@@ -11,10 +11,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -90,9 +90,9 @@ func (d *Daemon) TerminateWorkerInstances(ctx context.Context, instanceIDs []str
 // gone, which a retried teardown treats as success. A NotFound error payload
 // from the owner is likewise idempotent.
 func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accountID string) error {
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: spxtypes.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			StopInstance:      true,
 			TerminateInstance: true,
 		},
@@ -102,7 +102,7 @@ func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accoun
 		return fmt.Errorf("marshal terminate command: %w", err)
 	}
 
-	subject := fmt.Sprintf("ec2.cmd.%s", instanceID)
+	subject := ec2v1.InstanceCommandSubject(instanceID)
 	var msg *nats.Msg
 	for attempt := range 3 {
 		reqMsg := nats.NewMsg(subject)

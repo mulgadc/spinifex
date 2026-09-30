@@ -11,14 +11,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -569,16 +569,16 @@ func NewNATSVolumeAttacher(nc *nats.Conn) volumeAttacher {
 // Returns the device the attachment landed on, which can differ from the
 // requested one when the guest renames it.
 func (a *natsVolumeAttacher) AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device string) (string, error) {
-	cmd := types.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
-		Attributes: types.EC2CommandAttributes{AttachVolume: true},
-		AttachVolumeData: &types.AttachVolumeData{
+		Attributes: ec2v1.EC2CommandAttributes{AttachVolume: true},
+		AttachVolumeData: &ec2v1.AttachVolumeData{
 			VolumeID: volumeID,
 			Device:   device,
 		},
 	}
 	out, err := utils.NATSRequest[ec2.VolumeAttachment](ctx, a.nc,
-		"ec2.cmd."+instanceID, cmd, a.timeout, accountID)
+		ec2v1.InstanceCommandSubject(instanceID), cmd, a.timeout, accountID)
 	if err != nil {
 		if !errors.Is(err, nats.ErrNoResponders) {
 			return "", err

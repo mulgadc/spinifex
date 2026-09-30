@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -79,10 +79,10 @@ func (c *natsENIController) Allocate(ctx context.Context, accountID, subnetID st
 
 // Attach hot-plugs eniID onto instanceID and returns the attachment ID.
 func (c *natsENIController) Attach(ctx context.Context, accountID, instanceID, eniID string) (string, error) {
-	cmd := types.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
-		Attributes: types.EC2CommandAttributes{AttachENI: true},
-		AttachENIData: &types.AttachENIData{
+		Attributes: ec2v1.EC2CommandAttributes{AttachENI: true},
+		AttachENIData: &ec2v1.AttachENIData{
 			NetworkInterfaceID: eniID,
 			DeviceIndex:        taskENIDeviceIndex,
 		},
@@ -101,10 +101,10 @@ func (c *natsENIController) Release(ctx context.Context, accountID string, rec *
 		return nil
 	}
 	if rec.ENIAttachmentID != "" && rec.ContainerInstanceID != "" {
-		cmd := types.EC2InstanceCommand{
+		cmd := ec2v1.EC2InstanceCommand{
 			ID:         rec.ContainerInstanceID,
-			Attributes: types.EC2CommandAttributes{DetachENI: true},
-			DetachENIData: &types.DetachENIData{
+			Attributes: ec2v1.EC2CommandAttributes{DetachENI: true},
+			DetachENIData: &ec2v1.DetachENIData{
 				AttachmentID: rec.ENIAttachmentID,
 				Force:        true,
 			},
@@ -124,7 +124,7 @@ func (c *natsENIController) Release(ctx context.Context, accountID string, rec *
 }
 
 func eniCmdSubject(instanceID string) string {
-	return fmt.Sprintf("ec2.cmd.%s", instanceID)
+	return ec2v1.InstanceCommandSubject(instanceID)
 }
 
 // reclaimTaskENI releases an awsvpc task's ENI on the single-writer teardown

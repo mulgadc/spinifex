@@ -8,8 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -23,7 +23,7 @@ func TestRebootInstances_Success(t *testing.T) {
 	instanceID := "i-0123456789abcdef0"
 
 	nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
-		var cmd types.EC2InstanceCommand
+		var cmd ec2v1.EC2InstanceCommand
 		err := json.Unmarshal(msg.Data, &cmd)
 		require.NoError(t, err)
 

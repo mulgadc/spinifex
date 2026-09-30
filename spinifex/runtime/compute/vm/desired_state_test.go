@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -112,7 +112,7 @@ func TestVMMarshal_LegacyHostfwdNotWrittenBack(t *testing.T) {
 func TestVMMarshal_CommandBooleansAreNotPersisted(t *testing.T) {
 	legacy, err := json.Marshal(map[string]any{
 		"id": "i-1", "status": vm.StateRunning,
-		"attributes": types.EC2CommandAttributes{
+		"attributes": ec2v1.EC2CommandAttributes{
 			AttachVolume:                true,
 			DetachVolume:                true,
 			DrainVolume:                 true,

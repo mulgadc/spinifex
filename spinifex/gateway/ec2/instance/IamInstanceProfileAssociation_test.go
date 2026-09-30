@@ -10,10 +10,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -307,7 +307,7 @@ func TestAssociateIamInstanceProfile_Success(t *testing.T) {
 	ts := time.Date(2026, 5, 27, 10, 0, 0, 0, time.UTC)
 
 	_, err := nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
-		var cmd spxtypes.EC2InstanceCommand
+		var cmd ec2v1.EC2InstanceCommand
 		require.NoError(t, json.Unmarshal(msg.Data, &cmd))
 		assert.True(t, cmd.Attributes.AssociateIamInstanceProfile, "daemon must see the Associate flag set")
 		require.NotNil(t, cmd.IamProfileAssociationData)

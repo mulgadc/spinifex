@@ -13,18 +13,19 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/internal/testkit"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
+	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -3413,7 +3414,7 @@ func TestStartInstance_NotStopped(t *testing.T) {
 	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateRunning}})
 	v, _ := mgr.Get(id)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
-	err := svc.StartInstance(context.Background(), v, spxtypes.EC2InstanceCommand{ID: id})
+	err := svc.StartInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }
@@ -3423,9 +3424,9 @@ func TestStopOrTerminateInstance_TerminateIdempotent(t *testing.T) {
 	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateShuttingDown}})
 	v, _ := mgr.Get(id)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
-	err := svc.StopOrTerminateInstance(context.Background(), v, spxtypes.EC2InstanceCommand{
+	err := svc.StopOrTerminateInstance(context.Background(), v, ec2v1.EC2InstanceCommand{
 		ID:         id,
-		Attributes: spxtypes.EC2CommandAttributes{TerminateInstance: true},
+		Attributes: ec2v1.EC2CommandAttributes{TerminateInstance: true},
 	})
 	require.NoError(t, err)
 }
@@ -3435,9 +3436,9 @@ func TestStopOrTerminateInstance_InvalidTransition(t *testing.T) {
 	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped}})
 	v, _ := mgr.Get(id)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
-	err := svc.StopOrTerminateInstance(context.Background(), v, spxtypes.EC2InstanceCommand{
+	err := svc.StopOrTerminateInstance(context.Background(), v, ec2v1.EC2InstanceCommand{
 		ID:         id,
-		Attributes: spxtypes.EC2CommandAttributes{StopInstance: true},
+		Attributes: ec2v1.EC2CommandAttributes{StopInstance: true},
 	})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
@@ -3447,11 +3448,11 @@ func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
 	// DisableApiTermination must block Terminate but never Stop.
 	tests := []struct {
 		name    string
-		attrs   spxtypes.EC2CommandAttributes
+		attrs   ec2v1.EC2CommandAttributes
 		wantErr string
 	}{
-		{name: "terminate blocked", attrs: spxtypes.EC2CommandAttributes{TerminateInstance: true}, wantErr: awserrors.ErrorOperationNotPermitted},
-		{name: "stop allowed", attrs: spxtypes.EC2CommandAttributes{StopInstance: true}, wantErr: ""},
+		{name: "terminate blocked", attrs: ec2v1.EC2CommandAttributes{TerminateInstance: true}, wantErr: awserrors.ErrorOperationNotPermitted},
+		{name: "stop allowed", attrs: ec2v1.EC2CommandAttributes{StopInstance: true}, wantErr: ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3465,7 +3466,7 @@ func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
 			v, _ := mgr.Get(id)
 			svc := &InstanceServiceImpl{vmMgr: mgr}
 
-			err := svc.StopOrTerminateInstance(context.Background(), v, spxtypes.EC2InstanceCommand{ID: id, Attributes: tc.attrs})
+			err := svc.StopOrTerminateInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id, Attributes: tc.attrs})
 			if tc.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -4355,7 +4356,7 @@ func TestStartInstance_AllocateFails(t *testing.T) {
 		allocateErr:   errors.New("no capacity"),
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgr, resourceMgr: prov}
-	err := svc.StartInstance(context.Background(), v, spxtypes.EC2InstanceCommand{ID: id})
+	err := svc.StartInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -4374,7 +4375,7 @@ func TestStartInstance_ErrorStateStartable(t *testing.T) {
 		allocateErr:   errors.New("no capacity"),
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgr, resourceMgr: prov}
-	err := svc.StartInstance(context.Background(), v, spxtypes.EC2InstanceCommand{ID: id})
+	err := svc.StartInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
@@ -4383,7 +4384,7 @@ func TestRebootInstance_NotFound(t *testing.T) {
 	id := "i-missing"
 	mgr := mgrWith(nil)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
-	err := svc.RebootInstance(context.Background(), &vm.VM{ID: id}, spxtypes.EC2InstanceCommand{ID: id})
+	err := svc.RebootInstance(context.Background(), &vm.VM{ID: id}, ec2v1.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -4399,7 +4400,7 @@ func TestRebootInstance_QMPFailureIsNotTheCallersToHear(t *testing.T) {
 	t.Cleanup(mgr.WaitForBackgroundWork)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
 
-	require.NoError(t, svc.RebootInstance(context.Background(), instance, spxtypes.EC2InstanceCommand{ID: id}))
+	require.NoError(t, svc.RebootInstance(context.Background(), instance, ec2v1.EC2InstanceCommand{ID: id}))
 	assert.Equal(t, vm.StateRunning, mgr.Status(instance))
 }
 
@@ -4412,7 +4413,7 @@ func TestRebootInstance_NotRunning(t *testing.T) {
 	mgr := mgrWith(map[string]*vm.VM{id: instance})
 	svc := &InstanceServiceImpl{vmMgr: mgr}
 
-	err := svc.RebootInstance(context.Background(), instance, spxtypes.EC2InstanceCommand{ID: id})
+	err := svc.RebootInstance(context.Background(), instance, ec2v1.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }
@@ -4427,7 +4428,7 @@ func TestStartInstance_NotFound(t *testing.T) {
 		resourceMgr: &fakeResourceCapacityProvider{},
 	}
 	instance := &vm.VM{ID: id, Status: vm.StateStopped, InstanceType: "unknown"}
-	err := svc.StartInstance(context.Background(), instance, spxtypes.EC2InstanceCommand{ID: id})
+	err := svc.StartInstance(context.Background(), instance, ec2v1.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }

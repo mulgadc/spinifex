@@ -10,12 +10,13 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -165,7 +166,7 @@ func driveHandler(t *testing.T, nc *nats.Conn, subject string, handler func(*nat
 
 func TestHandleAttachNetworkInterface_NilData(t *testing.T) {
 	f := newENIHotPlugFixture(t)
-	cmd := spxtypes.EC2InstanceCommand{ID: f.vmInst.ID}
+	cmd := ec2v1.EC2InstanceCommand{ID: f.vmInst.ID}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.nildata", func(msg *nats.Msg) {
 		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
@@ -174,9 +175,9 @@ func TestHandleAttachNetworkInterface_NilData(t *testing.T) {
 
 func TestHandleAttachNetworkInterface_EmptyEniID(t *testing.T) {
 	f := newENIHotPlugFixture(t)
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            f.vmInst.ID,
-		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: "", DeviceIndex: 0},
+		AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: "", DeviceIndex: 0},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.emptyid", func(msg *nats.Msg) {
 		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
@@ -187,9 +188,9 @@ func TestHandleAttachNetworkInterface_EmptyEniID(t *testing.T) {
 func TestHandleAttachNetworkInterface_NotRunning(t *testing.T) {
 	f := newENIHotPlugFixture(t)
 	f.vmInst.Status = vm.StateStopped
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            f.vmInst.ID,
-		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
+		AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.notrunning", func(msg *nats.Msg) {
 		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
@@ -199,9 +200,9 @@ func TestHandleAttachNetworkInterface_NotRunning(t *testing.T) {
 
 func TestHandleAttachNetworkInterface_ENINotFound(t *testing.T) {
 	f := newENIHotPlugFixture(t)
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            f.vmInst.ID,
-		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: "eni-missing", DeviceIndex: 1},
+		AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: "eni-missing", DeviceIndex: 1},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.eninotfound", func(msg *nats.Msg) {
 		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
@@ -214,9 +215,9 @@ func TestHandleAttachNetworkInterface_WrongOwner(t *testing.T) {
 	_, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, "i-other-instance", 0)
 	require.NoError(t, err)
 
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            f.vmInst.ID,
-		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
+		AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.wrongowner", func(msg *nats.Msg) {
 		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
@@ -234,9 +235,9 @@ func TestHandleAttachNetworkInterface_Success(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = evtSub.Unsubscribe() })
 
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            f.vmInst.ID,
-		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
+		AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.success", func(msg *nats.Msg) {
 		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
@@ -271,9 +272,9 @@ func TestHandleAttachNetworkInterface_HotPlugFails_RollsBackKV(t *testing.T) {
 	f := newENIHotPlugFixture(t)
 	f.stub.SetFailNext("device_add", errors.New("simulated QMP failure"))
 
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            f.vmInst.ID,
-		AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
+		AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.attach.hotplugfails", func(msg *nats.Msg) {
 		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
@@ -315,7 +316,7 @@ func attachedFixture(t *testing.T) (*eniHotPlugFixture, string) {
 
 func TestHandleDetachNetworkInterface_NilData(t *testing.T) {
 	f, _ := attachedFixture(t)
-	cmd := spxtypes.EC2InstanceCommand{ID: f.vmInst.ID}
+	cmd := ec2v1.EC2InstanceCommand{ID: f.vmInst.ID}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.nildata", func(msg *nats.Msg) {
 		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
 	})
@@ -324,9 +325,9 @@ func TestHandleDetachNetworkInterface_NilData(t *testing.T) {
 
 func TestHandleDetachNetworkInterface_EmptyAttachID(t *testing.T) {
 	f, _ := attachedFixture(t)
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            f.vmInst.ID,
-		DetachENIData: &spxtypes.DetachENIData{AttachmentID: ""},
+		DetachENIData: &ec2v1.DetachENIData{AttachmentID: ""},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.emptyid", func(msg *nats.Msg) {
 		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
@@ -336,9 +337,9 @@ func TestHandleDetachNetworkInterface_EmptyAttachID(t *testing.T) {
 
 func TestHandleDetachNetworkInterface_UnknownAttachment(t *testing.T) {
 	f, _ := attachedFixture(t)
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            f.vmInst.ID,
-		DetachENIData: &spxtypes.DetachENIData{AttachmentID: "eni-attach-missing"},
+		DetachENIData: &ec2v1.DetachENIData{AttachmentID: "eni-attach-missing"},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.unknown", func(msg *nats.Msg) {
 		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
@@ -357,9 +358,9 @@ func TestHandleDetachNetworkInterface_WrongOwner(t *testing.T) {
 		},
 	}
 	f.daemon.vmMgr.Insert(otherVM)
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            otherVM.ID,
-		DetachENIData: &spxtypes.DetachENIData{AttachmentID: attachID},
+		DetachENIData: &ec2v1.DetachENIData{AttachmentID: attachID},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.wrongowner", func(msg *nats.Msg) {
 		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, otherVM)
@@ -370,9 +371,9 @@ func TestHandleDetachNetworkInterface_WrongOwner(t *testing.T) {
 func TestHandleDetachNetworkInterface_NotRunning(t *testing.T) {
 	f, attachID := attachedFixture(t)
 	f.vmInst.Status = vm.StateStopped
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            f.vmInst.ID,
-		DetachENIData: &spxtypes.DetachENIData{AttachmentID: attachID},
+		DetachENIData: &ec2v1.DetachENIData{AttachmentID: attachID},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.notrunning", func(msg *nats.Msg) {
 		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
@@ -390,9 +391,9 @@ func TestHandleDetachNetworkInterface_Success(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = evtSub.Unsubscribe() })
 
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            f.vmInst.ID,
-		DetachENIData: &spxtypes.DetachENIData{AttachmentID: attachID, Force: false},
+		DetachENIData: &ec2v1.DetachENIData{AttachmentID: attachID, Force: false},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.success", func(msg *nats.Msg) {
 		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
@@ -421,9 +422,9 @@ func TestHandleDetachNetworkInterface_HotUnplugFails(t *testing.T) {
 	f, attachID := attachedFixture(t)
 	f.stub.SetFailNext("device_del", errors.New("simulated QMP failure"))
 
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:            f.vmInst.ID,
-		DetachENIData: &spxtypes.DetachENIData{AttachmentID: attachID, Force: false},
+		DetachENIData: &ec2v1.DetachENIData{AttachmentID: attachID, Force: false},
 	}
 	payload := driveHandler(t, f.daemon.natsConn, "test.detach.hotunplugfails", func(msg *nats.Msg) {
 		f.daemon.handleDetachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
@@ -452,9 +453,9 @@ func TestHandleAttachNetworkInterface_DeviceIndexIsTheAllocatedSlot(t *testing.T
 	// Both attaches ask for device index 1, which is what the ECS task ENI path
 	// sends for every task.
 	for _, eniID := range []string{f.eniID, secondID} {
-		cmd := spxtypes.EC2InstanceCommand{
+		cmd := ec2v1.EC2InstanceCommand{
 			ID:            f.vmInst.ID,
-			AttachENIData: &spxtypes.AttachENIData{NetworkInterfaceID: eniID, DeviceIndex: 1},
+			AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: eniID, DeviceIndex: 1},
 		}
 		driveHandler(t, f.daemon.natsConn, "test.attach.slot."+eniID, func(msg *nats.Msg) {
 			f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)

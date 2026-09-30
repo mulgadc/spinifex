@@ -10,8 +10,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -50,9 +50,9 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 		}
 		instanceID := *instanceIDPtr
 
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				StopInstance:      true,
 				TerminateInstance: true,
 			},
@@ -65,7 +65,7 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 		}
 
 		// Retry on ErrNoResponders: per-instance NATS subscription may not have propagated yet after a cluster restart.
-		subject := fmt.Sprintf("ec2.cmd.%s", instanceID)
+		subject := ec2v1.InstanceCommandSubject(instanceID)
 		var msg *nats.Msg
 		for attempt := range 3 {
 			reqMsg := nats.NewMsg(subject)

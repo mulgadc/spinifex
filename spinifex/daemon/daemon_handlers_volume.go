@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )
 
@@ -21,7 +22,7 @@ import (
 // QMP/state-machine pipeline to vm.Manager.AttachVolume. The manager owns
 // every QMP and persistence side-effect; the daemon only emits the AWS API
 // response.
-func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	slog.InfoContext(ctx, "Attaching volume to instance", "instanceId", command.ID)
 
 	if command.AttachVolumeData == nil || command.AttachVolumeData.VolumeID == "" {
@@ -115,7 +116,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 
 // handleDetachVolume dispatches the QMP/state-machine pipeline to
 // vm.Manager.DetachVolume and emits the AWS API response.
-func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	slog.InfoContext(ctx, "Detaching volume from instance", "instanceId", command.ID)
 
 	if command.DetachVolumeData == nil || command.DetachVolumeData.VolumeID == "" {
@@ -145,7 +146,7 @@ func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command 
 //
 // Runs on its own goroutine (see handleEC2Events) so a long flush cannot hold
 // the instance's command subscription.
-func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	ctx, span := startOpSpan(ctx, "ec2.DrainVolume", command.ID)
 	var err error
 	defer func() { endOpSpan(span, err) }()
@@ -164,7 +165,7 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command t
 	if status == vm.StateStopped || status == vm.StateTerminated {
 		slog.InfoContext(ctx, "DrainVolume: instance teardown is complete, nothing to drain",
 			"volumeId", volumeID, "instanceId", command.ID, "status", status)
-		respondWithJSON(d.node, msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusNotRunning})
+		respondWithJSON(d.node, msg, ec2v1.DrainVolumeResponse{VolumeID: volumeID, Status: ec2v1.DrainVolumeStatusNotRunning})
 		return outcomeSuccess
 	}
 
@@ -178,7 +179,7 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command t
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
 	}
 
-	respondWithJSON(d.node, msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusDrained})
+	respondWithJSON(d.node, msg, ec2v1.DrainVolumeResponse{VolumeID: volumeID, Status: ec2v1.DrainVolumeStatusDrained})
 	return outcomeSuccess
 }
 

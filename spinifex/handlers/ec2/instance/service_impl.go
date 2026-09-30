@@ -17,20 +17,21 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )
 
@@ -441,7 +442,7 @@ func volumeTagsFromSpec(specs []*ec2.TagSpecification) map[string]string {
 // ApplyInstanceTagMutation applies a set or remove tag mutation to a tag list,
 // mirroring the central tag store's merge, value-match delete, and clear-all
 // semantics, and returns the resulting list sorted by key.
-func ApplyInstanceTagMutation(existing []*ec2.Tag, data *spxtypes.InstanceTagsData, remove bool) []*ec2.Tag {
+func ApplyInstanceTagMutation(existing []*ec2.Tag, data *ec2v1.InstanceTagsData, remove bool) []*ec2.Tag {
 	tags := make(map[string]string, len(existing))
 	for _, t := range existing {
 		if t == nil || t.Key == nil {
@@ -484,7 +485,7 @@ func TagsToMap(tags []*ec2.Tag) map[string]string {
 // of truth) and writes the resulting full tag set to the central tag store, so
 // both stores move together. Callers own record persistence and must not hold
 // the vm.Manager lock, since the central write is an S3 round-trip.
-func WriteInstanceTags(ctx context.Context, instance *vm.VM, data *spxtypes.InstanceTagsData, remove bool, central InstanceTagWriter, accountID string) error {
+func WriteInstanceTags(ctx context.Context, instance *vm.VM, data *ec2v1.InstanceTagsData, remove bool, central InstanceTagWriter, accountID string) error {
 	if instance == nil || instance.Instance == nil || central == nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
@@ -495,7 +496,7 @@ func WriteInstanceTags(ctx context.Context, instance *vm.VM, data *spxtypes.Inst
 // TagStoppedInstance applies a create-tags/delete-tags mutation to a stopped
 // instance's shared KV record and the central tag store together. A missing or
 // cross-account record returns InvalidID.NotFound and writes nothing.
-func (s *InstanceServiceImpl) TagStoppedInstance(ctx context.Context, instanceID string, data *spxtypes.InstanceTagsData, remove bool, central InstanceTagWriter, accountID string) error {
+func (s *InstanceServiceImpl) TagStoppedInstance(ctx context.Context, instanceID string, data *ec2v1.InstanceTagsData, remove bool, central InstanceTagWriter, accountID string) error {
 	if s.stoppedStore == nil {
 		slog.ErrorContext(ctx, "TagStoppedInstance: stopped store not available")
 		return errors.New(awserrors.ErrorServerInternal)
@@ -1164,7 +1165,7 @@ func (s *InstanceServiceImpl) RunInstances(ctx context.Context, input *ec2.RunIn
 }
 
 // RebootInstance handles an ec2.cmd reboot for a running instance on this node.
-func (s *InstanceServiceImpl) RebootInstance(ctx context.Context, instance *vm.VM, command spxtypes.EC2InstanceCommand) error {
+func (s *InstanceServiceImpl) RebootInstance(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) error {
 	slog.InfoContext(ctx, "RebootInstance: rebooting instance", "id", command.ID)
 
 	if err := s.vmMgr.Reboot(ctx, instance.ID); err != nil {
@@ -1186,7 +1187,7 @@ func (s *InstanceServiceImpl) RebootInstance(ctx context.Context, instance *vm.V
 }
 
 // StartInstance handles an ec2.cmd start for a locally stopped instance.
-func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM, command spxtypes.EC2InstanceCommand) error {
+func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) error {
 	slog.InfoContext(ctx, "StartInstance: starting instance", "id", command.ID)
 
 	status := s.vmMgr.Status(instance)
@@ -1231,7 +1232,7 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 
 // StopOrTerminateInstance handles an ec2.cmd stop or terminate. Validates the
 // transition synchronously, then dispatches Stop/Terminate in a goroutine.
-func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, instance *vm.VM, command spxtypes.EC2InstanceCommand) error {
+func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) error {
 	isTerminate := command.Attributes.TerminateInstance
 	action := "Stopping"
 	initialState := vm.StateStopping
@@ -1337,7 +1338,7 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, insta
 // AssociateIamInstanceProfile attaches an instance profile to a running instance.
 // Validates no existing profile, then atomically writes the ARN + new association ID.
 // InstanceProfile.Id is left nil; the gateway enriches it from IAMService.
-func (s *InstanceServiceImpl) AssociateIamInstanceProfile(ctx context.Context, instance *vm.VM, command spxtypes.EC2InstanceCommand) (*ec2.IamInstanceProfileAssociation, error) {
+func (s *InstanceServiceImpl) AssociateIamInstanceProfile(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) (*ec2.IamInstanceProfileAssociation, error) {
 	if command.IamProfileAssociationData == nil || command.IamProfileAssociationData.InstanceProfileArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -2515,7 +2516,7 @@ func (s *InstanceServiceImpl) startLocalRecord(ctx context.Context, local *vm.VM
 	case vm.StateError:
 		slog.InfoContext(ctx, "StartStoppedInstance: starting an error-state record the stopped store does not hold",
 			"instanceId", local.ID)
-		if err := s.StartInstance(ctx, local, spxtypes.EC2InstanceCommand{ID: local.ID}); err != nil {
+		if err := s.StartInstance(ctx, local, ec2v1.EC2InstanceCommand{ID: local.ID}); err != nil {
 			return nil, err
 		}
 		return &StartStoppedInstanceOutput{Status: "running", InstanceID: local.ID}, nil

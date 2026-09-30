@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -51,10 +51,10 @@ func stampSpotLineage(ctx context.Context, natsConn *nats.Conn, requests []*ec2.
 // A non-no-responders transport error or an owner-returned error code stops the
 // retry and is surfaced to the caller.
 func sendSpotLineageCommand(ctx context.Context, natsConn *nats.Conn, instanceID, sirID, accountID string) error {
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID:              instanceID,
-		Attributes:      types.EC2CommandAttributes{SetSpotLineage: true},
-		SpotLineageData: &types.SpotLineageData{SpotInstanceRequestId: sirID},
+		Attributes:      ec2v1.EC2CommandAttributes{SetSpotLineage: true},
+		SpotLineageData: &ec2v1.SpotLineageData{SpotInstanceRequestId: sirID},
 	}
 	jsonData, err := json.Marshal(command)
 	if err != nil {
@@ -63,7 +63,7 @@ func sendSpotLineageCommand(ctx context.Context, natsConn *nats.Conn, instanceID
 
 	var lastErr error
 	for attempt := range spotLineageRetries {
-		reqMsg := nats.NewMsg("ec2.cmd." + instanceID)
+		reqMsg := nats.NewMsg(ec2v1.InstanceCommandSubject(instanceID))
 		reqMsg.Data = jsonData
 		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
 		utils.InjectTraceContext(ctx, reqMsg.Header)

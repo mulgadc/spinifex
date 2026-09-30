@@ -10,14 +10,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -80,7 +80,7 @@ func drainResponder(t *testing.T, nc *nats.Conn, instanceID string, reply []byte
 // drainedAck is the reply of a node whose drain reached S3.
 func drainedAck(t *testing.T, volumeID string) []byte {
 	t.Helper()
-	data, err := json.Marshal(types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusDrained})
+	data, err := json.Marshal(ec2v1.DrainVolumeResponse{VolumeID: volumeID, Status: ec2v1.DrainVolumeStatusDrained})
 	require.NoError(t, err)
 	return data
 }
@@ -104,17 +104,17 @@ func requireReturnsWithin(t *testing.T, limit time.Duration, fn func() error) {
 
 // awaitDrainCommand returns the command the hosting node received, failing the
 // test if none arrives.
-func awaitDrainCommand(t *testing.T, got chan *nats.Msg) types.EC2InstanceCommand {
+func awaitDrainCommand(t *testing.T, got chan *nats.Msg) ec2v1.EC2InstanceCommand {
 	t.Helper()
 	select {
 	case msg := <-got:
-		var command types.EC2InstanceCommand
+		var command ec2v1.EC2InstanceCommand
 		require.NoError(t, json.Unmarshal(msg.Data, &command))
 		assert.Equal(t, testAccountID, msg.Header.Get(utils.AccountIDHeader))
 		return command
 	case <-time.After(2 * time.Second):
 		t.Fatal("the node hosting the volume never received a drain command")
-		return types.EC2InstanceCommand{}
+		return ec2v1.EC2InstanceCommand{}
 	}
 }
 
@@ -151,8 +151,8 @@ func TestDrainVolume_AttachedToStoppedInstanceTakesStoppedPath(t *testing.T) {
 func TestDrainVolume_NotRunningAckTakesStoppedPath(t *testing.T) {
 	svc, store, nc := setupDrainService(t)
 	seedVolumeAttachment(t, store, "vol-not-running", "in-use", drainInstanceID)
-	ack, err := json.Marshal(types.DrainVolumeResponse{
-		VolumeID: "vol-not-running", Status: types.DrainVolumeStatusNotRunning,
+	ack, err := json.Marshal(ec2v1.DrainVolumeResponse{
+		VolumeID: "vol-not-running", Status: ec2v1.DrainVolumeStatusNotRunning,
 	})
 	require.NoError(t, err)
 	got := drainResponder(t, nc, drainInstanceID, ack)

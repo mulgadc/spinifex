@@ -10,10 +10,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -68,17 +68,17 @@ func AssociateIamInstanceProfile(ctx context.Context, input *ec2.AssociateIamIns
 		return nil, err
 	}
 
-	command := spxtypes.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: *input.InstanceId,
-		Attributes: spxtypes.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			AssociateIamInstanceProfile: true,
 		},
-		IamProfileAssociationData: &spxtypes.IamProfileAssociationData{
+		IamProfileAssociationData: &ec2v1.IamProfileAssociationData{
 			InstanceProfileArn: profile.ARN,
 		},
 	}
 
-	subject := fmt.Sprintf("ec2.cmd.%s", *input.InstanceId)
+	subject := ec2v1.InstanceCommandSubject(*input.InstanceId)
 	assoc, err := utils.NATSRequest[ec2.IamInstanceProfileAssociation](ctx, natsConn, subject, command, fanOutTimeout, accountID)
 	if err != nil {
 		if errors.Is(err, nats.ErrNoResponders) {

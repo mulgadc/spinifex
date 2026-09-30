@@ -7,8 +7,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,7 +21,7 @@ func TestTerminateInstances_Success(t *testing.T) {
 	instanceID := "i-0123456789abcdef0"
 
 	nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
-		var cmd types.EC2InstanceCommand
+		var cmd ec2v1.EC2InstanceCommand
 		err := json.Unmarshal(msg.Data, &cmd)
 		require.NoError(t, err)
 
@@ -154,7 +154,7 @@ func TestTerminateInstances_VerifiesQMPAttributes(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	instanceID := "i-verify"
-	var receivedCmd types.EC2InstanceCommand
+	var receivedCmd ec2v1.EC2InstanceCommand
 
 	nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
 		json.Unmarshal(msg.Data, &receivedCmd)

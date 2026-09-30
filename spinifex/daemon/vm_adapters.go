@@ -9,18 +9,19 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -474,7 +475,7 @@ func (d *Daemon) onInstanceRecoveringHook() func(*vm.VM) {
 		if _, ok := d.natsSubscriptions[instance.ID]; ok {
 			return
 		}
-		sub, err := d.natsConn.Subscribe(fmt.Sprintf("ec2.cmd.%s", instance.ID), d.handleEC2Events)
+		sub, err := d.natsConn.Subscribe(ec2v1.InstanceCommandSubject(instance.ID), d.handleEC2Events)
 		if err != nil {
 			slog.Error("OnInstanceRecovering: failed to early-subscribe per-instance topic",
 				"instanceId", instance.ID, "err", err)
@@ -525,7 +526,7 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 			subject string
 			handler nats.MsgHandler
 		}{
-			{instance.ID, fmt.Sprintf("ec2.cmd.%s", instance.ID), d.handleEC2Events},
+			{instance.ID, ec2v1.InstanceCommandSubject(instance.ID), d.handleEC2Events},
 			{consoleSubKey, fmt.Sprintf("ec2.%s.GetConsoleOutput", instance.ID), d.handleEC2GetConsoleOutput},
 			{passwordSubKey, fmt.Sprintf("ec2.%s.GetPasswordData", instance.ID), d.handleEC2GetPasswordData},
 		}

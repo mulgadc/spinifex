@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -114,8 +114,8 @@ func TestServerFaultIsStillLoggedAsAnError(t *testing.T) {
 }
 
 // commandFor builds a per-instance command with one attribute set.
-func commandFor(id string, set func(*types.EC2CommandAttributes)) types.EC2InstanceCommand {
-	command := types.EC2InstanceCommand{ID: id}
+func commandFor(id string, set func(*ec2v1.EC2CommandAttributes)) ec2v1.EC2InstanceCommand {
+	command := ec2v1.EC2InstanceCommand{ID: id}
 	set(&command.Attributes)
 	return command
 }
@@ -126,26 +126,26 @@ func commandFor(id string, set func(*types.EC2CommandAttributes)) types.EC2Insta
 func TestEC2CommandNameCoversEveryCommand(t *testing.T) {
 	tests := []struct {
 		want string
-		set  func(*types.EC2CommandAttributes)
+		set  func(*ec2v1.EC2CommandAttributes)
 	}{
-		{"AttachVolume", func(a *types.EC2CommandAttributes) { a.AttachVolume = true }},
-		{"DetachVolume", func(a *types.EC2CommandAttributes) { a.DetachVolume = true }},
-		{"DrainVolume", func(a *types.EC2CommandAttributes) { a.DrainVolume = true }},
-		{"AttachNetworkInterface", func(a *types.EC2CommandAttributes) { a.AttachENI = true }},
-		{"DetachNetworkInterface", func(a *types.EC2CommandAttributes) { a.DetachENI = true }},
-		{"AssociateIamInstanceProfile", func(a *types.EC2CommandAttributes) { a.AssociateIamInstanceProfile = true }},
-		{"SetSpotLineage", func(a *types.EC2CommandAttributes) { a.SetSpotLineage = true }},
-		{"SetInstanceTags", func(a *types.EC2CommandAttributes) { a.SetInstanceTags = true }},
-		{"RemoveInstanceTags", func(a *types.EC2CommandAttributes) { a.RemoveInstanceTags = true }},
-		{"SetInstanceMonitoring", func(a *types.EC2CommandAttributes) { a.SetInstanceMonitoring = true }},
-		{"StartInstance", func(a *types.EC2CommandAttributes) { a.StartInstance = true }},
-		{"RebootInstance", func(a *types.EC2CommandAttributes) { a.RebootInstance = true }},
-		{"StopInstance", func(a *types.EC2CommandAttributes) { a.StopInstance = true }},
-		{"TerminateInstance", func(a *types.EC2CommandAttributes) { a.TerminateInstance = true }},
+		{"AttachVolume", func(a *ec2v1.EC2CommandAttributes) { a.AttachVolume = true }},
+		{"DetachVolume", func(a *ec2v1.EC2CommandAttributes) { a.DetachVolume = true }},
+		{"DrainVolume", func(a *ec2v1.EC2CommandAttributes) { a.DrainVolume = true }},
+		{"AttachNetworkInterface", func(a *ec2v1.EC2CommandAttributes) { a.AttachENI = true }},
+		{"DetachNetworkInterface", func(a *ec2v1.EC2CommandAttributes) { a.DetachENI = true }},
+		{"AssociateIamInstanceProfile", func(a *ec2v1.EC2CommandAttributes) { a.AssociateIamInstanceProfile = true }},
+		{"SetSpotLineage", func(a *ec2v1.EC2CommandAttributes) { a.SetSpotLineage = true }},
+		{"SetInstanceTags", func(a *ec2v1.EC2CommandAttributes) { a.SetInstanceTags = true }},
+		{"RemoveInstanceTags", func(a *ec2v1.EC2CommandAttributes) { a.RemoveInstanceTags = true }},
+		{"SetInstanceMonitoring", func(a *ec2v1.EC2CommandAttributes) { a.SetInstanceMonitoring = true }},
+		{"StartInstance", func(a *ec2v1.EC2CommandAttributes) { a.StartInstance = true }},
+		{"RebootInstance", func(a *ec2v1.EC2CommandAttributes) { a.RebootInstance = true }},
+		{"StopInstance", func(a *ec2v1.EC2CommandAttributes) { a.StopInstance = true }},
+		{"TerminateInstance", func(a *ec2v1.EC2CommandAttributes) { a.TerminateInstance = true }},
 	}
 	// The table is hand-written, so without this a new attribute would pass by
 	// simply not being listed — and its commands would report as "unknown".
-	assert.Len(t, tests, reflect.TypeFor[types.EC2CommandAttributes]().NumField(),
+	assert.Len(t, tests, reflect.TypeFor[ec2v1.EC2CommandAttributes]().NumField(),
 		"every EC2CommandAttributes field needs a case here and in ec2CommandName")
 
 	for _, tc := range tests {
@@ -154,7 +154,7 @@ func TestEC2CommandNameCoversEveryCommand(t *testing.T) {
 		})
 	}
 
-	assert.Equal(t, "unknown", ec2CommandName(types.EC2InstanceCommand{ID: "i-123"}),
+	assert.Equal(t, "unknown", ec2CommandName(ec2v1.EC2InstanceCommand{ID: "i-123"}),
 		"a command nothing handles must still be named, not dropped")
 }
 
@@ -173,7 +173,7 @@ func TestEC2CommandRecordsUnderTheCommandNotTheInstance(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	data, err := json.Marshal(commandFor(instanceID,
-		func(a *types.EC2CommandAttributes) { a.StopInstance = true }))
+		func(a *ec2v1.EC2CommandAttributes) { a.StopInstance = true }))
 	require.NoError(t, err)
 	_, err = daemon.natsConn.Request(subject, data, 5*time.Second)
 	require.NoError(t, err)
@@ -202,9 +202,9 @@ func TestDrainVolumeRecordsItsPointAfterTheWork(t *testing.T) {
 	before := len(requestOutcomesFor(t, ec2CmdAction("DrainVolume")))
 	reply := drainRequest(t, daemon, instanceID, volumeID)
 
-	var ack types.DrainVolumeResponse
+	var ack ec2v1.DrainVolumeResponse
 	require.NoError(t, json.Unmarshal(reply.Data, &ack))
-	require.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
+	require.Equal(t, ec2v1.DrainVolumeStatusDrained, ack.Status)
 
 	// The goroutine records after it replies, so poll rather than assume the
 	// point has landed by the time the reply arrives.

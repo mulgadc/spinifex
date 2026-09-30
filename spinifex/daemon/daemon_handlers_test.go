@@ -17,8 +17,11 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/internal/testkit/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -35,12 +38,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/internal/testkit/ebsfake"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
+	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -710,9 +711,9 @@ func TestHandleEC2Events_StopInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	cmd := types.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
-		Attributes: types.EC2CommandAttributes{StopInstance: true},
+		Attributes: ec2v1.EC2CommandAttributes{StopInstance: true},
 	}
 	cmdData, _ := json.Marshal(cmd)
 
@@ -767,9 +768,9 @@ func TestHandleEC2Events_TerminateInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	cmd := types.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
-		Attributes: types.EC2CommandAttributes{TerminateInstance: true},
+		Attributes: ec2v1.EC2CommandAttributes{TerminateInstance: true},
 	}
 	cmdData, _ := json.Marshal(cmd)
 
@@ -808,9 +809,9 @@ func TestHandleEC2Events_RebootRunningInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	cmd := types.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
-		Attributes: types.EC2CommandAttributes{RebootInstance: true},
+		Attributes: ec2v1.EC2CommandAttributes{RebootInstance: true},
 	}
 	cmdData, _ := json.Marshal(cmd)
 
@@ -859,9 +860,9 @@ func TestHandleEC2Events_RebootStoppedInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	cmd := types.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
-		Attributes: types.EC2CommandAttributes{RebootInstance: true},
+		Attributes: ec2v1.EC2CommandAttributes{RebootInstance: true},
 	}
 	cmdData, _ := json.Marshal(cmd)
 
@@ -903,9 +904,9 @@ func TestHandleEC2Events_RebootTerminatedInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	cmd := types.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
-		Attributes: types.EC2CommandAttributes{RebootInstance: true},
+		Attributes: ec2v1.EC2CommandAttributes{RebootInstance: true},
 	}
 	cmdData, _ := json.Marshal(cmd)
 
@@ -934,9 +935,9 @@ func TestHandleEC2Events_InstanceNotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	cmd := types.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:         "i-nonexistent",
-		Attributes: types.EC2CommandAttributes{StopInstance: true},
+		Attributes: ec2v1.EC2CommandAttributes{StopInstance: true},
 	}
 	cmdData, _ := json.Marshal(cmd)
 
@@ -1525,12 +1526,12 @@ func TestAttachVolume_ZoneMismatch(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			AttachVolume: true,
 		},
-		AttachVolumeData: &types.AttachVolumeData{
+		AttachVolumeData: &ec2v1.AttachVolumeData{
 			VolumeID: volumeID,
 		},
 	}
@@ -2864,9 +2865,9 @@ func TestAttachVolume_MissingVolumeData(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	// AttachVolume with nil AttachVolumeData
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			AttachVolume: true,
 		},
 		AttachVolumeData: nil,
@@ -2903,12 +2904,12 @@ func TestAttachVolume_InstanceNotRunning(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			AttachVolume: true,
 		},
-		AttachVolumeData: &types.AttachVolumeData{
+		AttachVolumeData: &ec2v1.AttachVolumeData{
 			VolumeID: "vol-test-123",
 		},
 	}
@@ -2944,12 +2945,12 @@ func TestAttachVolume_VolumeNotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			AttachVolume: true,
 		},
-		AttachVolumeData: &types.AttachVolumeData{
+		AttachVolumeData: &ec2v1.AttachVolumeData{
 			VolumeID: "vol-nonexistent-999",
 		},
 	}
@@ -2995,12 +2996,12 @@ func TestAttachVolume_VolumeInUse(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			AttachVolume: true,
 		},
-		AttachVolumeData: &types.AttachVolumeData{
+		AttachVolumeData: &ec2v1.AttachVolumeData{
 			VolumeID: volumeID,
 		},
 	}
@@ -3038,9 +3039,9 @@ func TestDetachVolume_MissingVolumeData(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
 		DetachVolumeData: nil,
@@ -3077,12 +3078,12 @@ func TestDetachVolume_InstanceNotRunning(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: "vol-test-123",
 		},
 	}
@@ -3118,12 +3119,12 @@ func TestDetachVolume_VolumeNotAttached(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: "vol-not-attached-999",
 		},
 	}
@@ -3162,12 +3163,12 @@ func TestDetachVolume_BootVolumeRejected(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: "vol-boot-001",
 		},
 	}
@@ -3206,12 +3207,12 @@ func TestDetachVolume_DeviceMismatch(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: "vol-mismatch-001",
 			Device:   "/dev/sdg",
 		},

@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -70,21 +70,21 @@ func drainImageResponder(t *testing.T, nc *nats.Conn, instanceID string, reply [
 
 func drainedImageAck(t *testing.T, volumeID string) []byte {
 	t.Helper()
-	data, err := json.Marshal(types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusDrained})
+	data, err := json.Marshal(ec2v1.DrainVolumeResponse{VolumeID: volumeID, Status: ec2v1.DrainVolumeStatusDrained})
 	require.NoError(t, err)
 	return data
 }
 
-func awaitImageDrainCommand(t *testing.T, got chan *nats.Msg) types.EC2InstanceCommand {
+func awaitImageDrainCommand(t *testing.T, got chan *nats.Msg) ec2v1.EC2InstanceCommand {
 	t.Helper()
 	select {
 	case msg := <-got:
-		var command types.EC2InstanceCommand
+		var command ec2v1.EC2InstanceCommand
 		require.NoError(t, json.Unmarshal(msg.Data, &command))
 		return command
 	case <-time.After(2 * time.Second):
 		t.Fatal("the node hosting the volume never received a drain command")
-		return types.EC2InstanceCommand{}
+		return ec2v1.EC2InstanceCommand{}
 	}
 }
 

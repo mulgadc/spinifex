@@ -10,11 +10,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -31,7 +31,7 @@ var startStoppedForwardTimeout = 30 * time.Second
 // instance: central store first, then the record under the manager lock, so a
 // failed S3 write leaves both stores untouched, matching the stopped path.
 // Ownership is checked by checkInstanceOwnership before dispatch.
-func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	remove := command.Attributes.RemoveInstanceTags
 	data := command.InstanceTagsData
 	if data == nil || (!remove && len(data.Tags) == 0) {
@@ -82,7 +82,7 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 // and rewrites its collector discovery file, so the poller resets its interval
 // without a restart. Ownership is checked by checkInstanceOwnership before
 // dispatch.
-func (d *Daemon) handleSetInstanceMonitoring(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleSetInstanceMonitoring(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	data := command.InstanceMonitoringData
 	if data == nil {
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorMissingParameter)
@@ -242,7 +242,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 	// than finding no responder. LaunchInstance replaces these on success.
 	d.mu.Lock()
 	for _, instance := range instances {
-		sub, subErr := d.natsConn.Subscribe(fmt.Sprintf("ec2.cmd.%s", instance.ID), d.handleEC2Events)
+		sub, subErr := d.natsConn.Subscribe(ec2v1.InstanceCommandSubject(instance.ID), d.handleEC2Events)
 		if subErr != nil {
 			slog.Error("Failed to early-subscribe to per-instance topic", "instanceId", instance.ID, "err", subErr)
 		} else {

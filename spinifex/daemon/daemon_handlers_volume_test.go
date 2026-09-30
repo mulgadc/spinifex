@@ -10,15 +10,15 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -159,12 +159,12 @@ func TestAttachVolume_IdempotentSameInstance(t *testing.T) {
 			require.NoError(t, err)
 			defer sub.Unsubscribe()
 
-			command := types.EC2InstanceCommand{
+			command := ec2v1.EC2InstanceCommand{
 				ID: instanceID,
-				Attributes: types.EC2CommandAttributes{
+				Attributes: ec2v1.EC2CommandAttributes{
 					AttachVolume: true,
 				},
-				AttachVolumeData: &types.AttachVolumeData{
+				AttachVolumeData: &ec2v1.AttachVolumeData{
 					VolumeID: volumeID,
 					Device:   tt.requestedDevice,
 				},
@@ -227,12 +227,12 @@ func TestAttachVolume_InUseDifferentInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			AttachVolume: true,
 		},
-		AttachVolumeData: &types.AttachVolumeData{
+		AttachVolumeData: &ec2v1.AttachVolumeData{
 			VolumeID: volumeID,
 		},
 	}
@@ -284,12 +284,12 @@ func TestAttachVolume_IdempotentSameInstance_DeviceMismatch(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			AttachVolume: true,
 		},
-		AttachVolumeData: &types.AttachVolumeData{
+		AttachVolumeData: &ec2v1.AttachVolumeData{
 			VolumeID: volumeID,
 			Device:   "/dev/sdg",
 		},
@@ -310,10 +310,10 @@ func TestAttachVolume_IdempotentSameInstance_DeviceMismatch(t *testing.T) {
 // hosting instanceID.
 func drainCommandFor(t *testing.T, instanceID, volumeID string) []byte {
 	t.Helper()
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID:              instanceID,
-		Attributes:      types.EC2CommandAttributes{DrainVolume: true},
-		DrainVolumeData: &types.DrainVolumeData{VolumeID: volumeID},
+		Attributes:      ec2v1.EC2CommandAttributes{DrainVolume: true},
+		DrainVolumeData: &ec2v1.DrainVolumeData{VolumeID: volumeID},
 	}
 	data, err := json.Marshal(command)
 	require.NoError(t, err)
@@ -381,10 +381,10 @@ func TestDrainVolume_HostNodeAcksLocalSocket(t *testing.T) {
 	resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
 		testAccountID, drainCommandFor(t, instanceID, volumeID))
 
-	var ack types.DrainVolumeResponse
+	var ack ec2v1.DrainVolumeResponse
 	require.NoError(t, json.Unmarshal(resp.Data, &ack))
 	assert.Equal(t, volumeID, ack.VolumeID)
-	assert.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
+	assert.Equal(t, ec2v1.DrainVolumeStatusDrained, ack.Status)
 }
 
 // The owning node having no socket for the volume means the writes cannot be
@@ -417,9 +417,9 @@ func TestDrainVolume_MissingVolumeDataIsInvalidParameter(t *testing.T) {
 	const instanceID = "i-drain-novol"
 	daemon := drainTestDaemon(t, instanceID)
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
-		Attributes: types.EC2CommandAttributes{DrainVolume: true},
+		Attributes: ec2v1.EC2CommandAttributes{DrainVolume: true},
 	}
 	data, err := json.Marshal(command)
 	require.NoError(t, err)
@@ -455,10 +455,10 @@ func TestDrainVolume_CompletedTeardownAcksNotRunning(t *testing.T) {
 			resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
 				testAccountID, drainCommandFor(t, instanceID, volumeID))
 
-			var ack types.DrainVolumeResponse
+			var ack ec2v1.DrainVolumeResponse
 			require.NoError(t, json.Unmarshal(resp.Data, &ack))
 			assert.Equal(t, volumeID, ack.VolumeID)
-			assert.Equal(t, types.DrainVolumeStatusNotRunning, ack.Status)
+			assert.Equal(t, ec2v1.DrainVolumeStatusNotRunning, ack.Status)
 		})
 	}
 }
@@ -519,16 +519,16 @@ func TestDrainVolume_SlowDrainDoesNotBlockTheCommandSubject(t *testing.T) {
 	}
 
 	fast := drainRequest(t, daemon, instanceID, "vol-drain-fast")
-	var ack types.DrainVolumeResponse
+	var ack ec2v1.DrainVolumeResponse
 	require.NoError(t, json.Unmarshal(fast.Data, &ack))
-	assert.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
+	assert.Equal(t, ec2v1.DrainVolumeStatusDrained, ack.Status)
 
 	release()
 	select {
 	case got := <-slow:
 		require.NoError(t, got.err)
 		require.NoError(t, json.Unmarshal(got.msg.Data, &ack))
-		assert.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
+		assert.Equal(t, ec2v1.DrainVolumeStatusDrained, ack.Status)
 	case <-time.After(5 * time.Second):
 		t.Fatal("the released drain never replied")
 	}
@@ -546,13 +546,13 @@ func TestDrainVolume_DispatchedGoroutineDoesNotLeak(t *testing.T) {
 	// Take the baseline after one full round trip: the first request is what
 	// makes nats.go stand up its long-lived response-inbox goroutine, which
 	// would otherwise read as the leak.
-	var ack types.DrainVolumeResponse
+	var ack ec2v1.DrainVolumeResponse
 	require.NoError(t, json.Unmarshal(drainRequest(t, daemon, instanceID, volumeID).Data, &ack))
-	require.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
+	require.Equal(t, ec2v1.DrainVolumeStatusDrained, ack.Status)
 	ignoreExisting := goleak.IgnoreCurrent()
 
 	require.NoError(t, json.Unmarshal(drainRequest(t, daemon, instanceID, volumeID).Data, &ack))
-	require.Equal(t, types.DrainVolumeStatusDrained, ack.Status)
+	require.Equal(t, ec2v1.DrainVolumeStatusDrained, ack.Status)
 
 	goleak.VerifyNone(t, ignoreExisting)
 }

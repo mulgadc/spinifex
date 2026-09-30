@@ -7,8 +7,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,10 +29,10 @@ func TestAssociateIamInstanceProfile_Success(t *testing.T) {
 	v := vmWithAccount("i-assoc1", testIAMAccount)
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
 
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:                        v.ID,
-		Attributes:                spxtypes.EC2CommandAttributes{AssociateIamInstanceProfile: true},
-		IamProfileAssociationData: &spxtypes.IamProfileAssociationData{InstanceProfileArn: testProfileArn1},
+		Attributes:                ec2v1.EC2CommandAttributes{AssociateIamInstanceProfile: true},
+		IamProfileAssociationData: &ec2v1.IamProfileAssociationData{InstanceProfileArn: testProfileArn1},
 	}
 	result, err := svc.AssociateIamInstanceProfile(context.Background(), v, cmd)
 	require.NoError(t, err)
@@ -54,10 +54,10 @@ func TestAssociateIamInstanceProfile_AlreadyAssociated(t *testing.T) {
 	v.IamInstanceProfileAssociationId = "iip-assoc-deadbeef00000001"
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
 
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:                        v.ID,
-		Attributes:                spxtypes.EC2CommandAttributes{AssociateIamInstanceProfile: true},
-		IamProfileAssociationData: &spxtypes.IamProfileAssociationData{InstanceProfileArn: testProfileArn2},
+		Attributes:                ec2v1.EC2CommandAttributes{AssociateIamInstanceProfile: true},
+		IamProfileAssociationData: &ec2v1.IamProfileAssociationData{InstanceProfileArn: testProfileArn2},
 	}
 	_, err := svc.AssociateIamInstanceProfile(context.Background(), v, cmd)
 	require.Error(t, err)
@@ -72,7 +72,7 @@ func TestAssociateIamInstanceProfile_MissingData(t *testing.T) {
 	v := vmWithAccount("i-assoc3", testIAMAccount)
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
 
-	cmd := spxtypes.EC2InstanceCommand{ID: v.ID, Attributes: spxtypes.EC2CommandAttributes{AssociateIamInstanceProfile: true}}
+	cmd := ec2v1.EC2InstanceCommand{ID: v.ID, Attributes: ec2v1.EC2CommandAttributes{AssociateIamInstanceProfile: true}}
 	_, err := svc.AssociateIamInstanceProfile(context.Background(), v, cmd)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
@@ -254,9 +254,9 @@ func TestStopOrTerminateInstance_AutoDisassociatesProfileOnTerminate(t *testing.
 		vmMgr: mgrWith(map[string]*vm.VM{v.ID: v}),
 	}
 
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:         v.ID,
-		Attributes: spxtypes.EC2CommandAttributes{TerminateInstance: true},
+		Attributes: ec2v1.EC2CommandAttributes{TerminateInstance: true},
 	}
 	// Run synchronously up to the lock-protected attribute stamp; the
 	// goroutine that follows mutates a fake-less Manager which is fine

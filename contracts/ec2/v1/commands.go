@@ -1,4 +1,26 @@
-package types
+// Package ec2v1 defines version 1 of the cross-process EC2 instance-command
+// contract. These payloads travel on ec2.cmd.<instance-id>; their JSON fields
+// are wire compatibility, not an implementation detail of a caller.
+package ec2v1
+
+const (
+	// InstanceCommandSubjectPrefix is the NATS subject family whose final token
+	// identifies the instance-owning daemon.
+	InstanceCommandSubjectPrefix = "ec2.cmd."
+
+	// InstanceCommandSubjectWildcard matches exactly one instance-ID token in
+	// this contract family. It is the NATS permission/subscription pattern for
+	// the per-instance command route, rather than the broader descendant match.
+	InstanceCommandSubjectWildcard = InstanceCommandSubjectPrefix + "*"
+)
+
+// InstanceCommandSubject returns the targeted command subject for instanceID.
+// It intentionally performs no validation: callers have always supplied the
+// already-validated instance identifier directly to NATS, and this structural
+// move must not change that behaviour.
+func InstanceCommandSubject(instanceID string) string {
+	return InstanceCommandSubjectPrefix + instanceID
+}
 
 // EC2InstanceCommand is the NATS wire format for EC2 instance commands
 // (stop, terminate, start, attach/detach-volume, attach/detach-eni).

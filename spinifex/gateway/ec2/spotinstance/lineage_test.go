@@ -9,8 +9,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -41,7 +41,7 @@ func TestStampSpotLineage_TargetsOwnerWithSIRAndAccount(t *testing.T) {
 	select {
 	case m := <-got:
 		assert.Equal(t, lineageTestAccount, m.Header.Get(utils.AccountIDHeader))
-		var cmd types.EC2InstanceCommand
+		var cmd ec2v1.EC2InstanceCommand
 		require.NoError(t, json.Unmarshal(m.Data, &cmd))
 		assert.Equal(t, "i-owner", cmd.ID)
 		assert.True(t, cmd.Attributes.SetSpotLineage)

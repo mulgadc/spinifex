@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -25,7 +26,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -385,14 +385,14 @@ func volumeAttachment(ctx context.Context, store objectstore.ObjectStore, bucket
 // failure — treating them as one would make every stopped instance's root
 // volume permanently unsnapshottable.
 func drainOnHostNode(ctx context.Context, natsConn *nats.Conn, volumeID, instanceID, accountID string) error {
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID:              instanceID,
-		Attributes:      types.EC2CommandAttributes{DrainVolume: true},
-		DrainVolumeData: &types.DrainVolumeData{VolumeID: volumeID},
+		Attributes:      ec2v1.EC2CommandAttributes{DrainVolume: true},
+		DrainVolumeData: &ec2v1.DrainVolumeData{VolumeID: volumeID},
 	}
 
-	resp, err := utils.NATSRequest[types.DrainVolumeResponse](ctx, natsConn,
-		"ec2.cmd."+instanceID, command, drainRequestTimeout, accountID)
+	resp, err := utils.NATSRequest[ec2v1.DrainVolumeResponse](ctx, natsConn,
+		ec2v1.InstanceCommandSubject(instanceID), command, drainRequestTimeout, accountID)
 	if err != nil {
 		// No subscriber at all: the instance runs nowhere in the cluster, so it
 		// was stopped (stop migrates it to shared KV before unsubscribing) and
@@ -409,12 +409,12 @@ func drainOnHostNode(ctx context.Context, natsConn *nats.Conn, volumeID, instanc
 	}
 
 	switch resp.Status {
-	case types.DrainVolumeStatusDrained:
+	case ec2v1.DrainVolumeStatusDrained:
 		return nil
 	// The host still holds the instance but it is not running: nothing is
 	// writing, so there is nothing to flush. This is a host-drain stop, which
 	// keeps the VM (and this subscription) in place after unmounting.
-	case types.DrainVolumeStatusNotRunning:
+	case ec2v1.DrainVolumeStatusNotRunning:
 		slog.InfoContext(ctx, "drainVolume: instance is not running on its host, snapshotting the volume's sealed checkpoint",
 			"volumeId", volumeID, "instanceId", instanceID)
 		return nil

@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -95,9 +96,9 @@ func TestRequestSpotInstances_Lifecycle(t *testing.T) {
 	// subject (ec2.cmd.{id}) asynchronously after the response. Capturing every command sent
 	// lets the write-back be asserted against the real SIR ids RequestSpotInstances just
 	// minted, rather than the hand-built fixture lineage_test.go uses in isolation.
-	lineageCmds := make(chan types.EC2InstanceCommand, count)
+	lineageCmds := make(chan ec2v1.EC2InstanceCommand, count)
 	cmdSub, err := gw.NATSConn.Subscribe("ec2.cmd.>", func(msg *nats.Msg) {
-		var cmd types.EC2InstanceCommand
+		var cmd ec2v1.EC2InstanceCommand
 		if jsonErr := json.Unmarshal(msg.Data, &cmd); jsonErr != nil {
 			t.Errorf("unmarshal spot lineage command: %v", jsonErr)
 			return

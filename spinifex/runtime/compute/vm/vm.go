@@ -15,6 +15,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -115,7 +116,7 @@ type VM struct {
 	// LegacyAttributes is the command last stamped onto records written before
 	// DesiredState existed. Read on decode to recover the operator-stop signal,
 	// then dropped; never written.
-	LegacyAttributes *types.EC2CommandAttributes `json:"attributes,omitempty"`
+	LegacyAttributes *ec2v1.EC2CommandAttributes `json:"attributes,omitempty"`
 
 	// EC2 API metadata stored for AWS API compatibility.
 	RunInstancesInput *ec2.RunInstancesInput `json:"run_instances_input,omitempty"`

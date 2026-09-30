@@ -4,14 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -46,10 +45,10 @@ func AttachNetworkInterface(ctx context.Context, input *ec2.AttachNetworkInterfa
 	eniID := *input.NetworkInterfaceId
 	deviceIndex := *input.DeviceIndex
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
-		Attributes: types.EC2CommandAttributes{AttachENI: true},
-		AttachENIData: &types.AttachENIData{
+		Attributes: ec2v1.EC2CommandAttributes{AttachENI: true},
+		AttachENIData: &ec2v1.AttachENIData{
 			NetworkInterfaceID: eniID,
 			DeviceIndex:        deviceIndex,
 		},
@@ -61,7 +60,7 @@ func AttachNetworkInterface(ctx context.Context, input *ec2.AttachNetworkInterfa
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	reqMsg := nats.NewMsg(fmt.Sprintf("ec2.cmd.%s", instanceID))
+	reqMsg := nats.NewMsg(ec2v1.InstanceCommandSubject(instanceID))
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
 	utils.InjectTraceContext(ctx, reqMsg.Header)

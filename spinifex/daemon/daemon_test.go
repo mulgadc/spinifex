@@ -28,10 +28,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -49,10 +50,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
+	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -1899,9 +1900,9 @@ func TestHandleEC2Events_AttachVolume(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	t.Run("MissingAttachVolumeData", func(t *testing.T) {
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				AttachVolume: true,
 			},
 			// No AttachVolumeData
@@ -1923,12 +1924,12 @@ func TestHandleEC2Events_AttachVolume(t *testing.T) {
 		// Temporarily set status to stopped under the manager lock so -race
 		// reflects production discipline.
 		daemon.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Status = vm.StateStopped })
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				AttachVolume: true,
 			},
-			AttachVolumeData: &types.AttachVolumeData{
+			AttachVolumeData: &ec2v1.AttachVolumeData{
 				VolumeID: volumeID,
 			},
 		}
@@ -1948,12 +1949,12 @@ func TestHandleEC2Events_AttachVolume(t *testing.T) {
 
 	t.Run("VolumeNotFound", func(t *testing.T) {
 		// volumeService.GetVolumeConfig will fail since we have no S3 backend
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				AttachVolume: true,
 			},
-			AttachVolumeData: &types.AttachVolumeData{
+			AttachVolumeData: &ec2v1.AttachVolumeData{
 				VolumeID: "vol-nonexistent",
 				Device:   "/dev/sdf",
 			},
@@ -2018,9 +2019,9 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	t.Run("MissingDetachVolumeData", func(t *testing.T) {
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
 			// No DetachVolumeData
@@ -2040,12 +2041,12 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 		// Temporarily set status to stopped under the manager lock so -race
 		// reflects production discipline.
 		daemon.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Status = vm.StateStopped })
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: volumeID,
 			},
 		}
@@ -2064,12 +2065,12 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 	})
 
 	t.Run("VolumeNotAttached", func(t *testing.T) {
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: "vol-nonexistent",
 			},
 		}
@@ -2095,12 +2096,12 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 		})
 		instance.EBSRequests.Mu.Unlock()
 
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: bootVolumeID,
 			},
 		}
@@ -2130,12 +2131,12 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 		})
 		instance.EBSRequests.Mu.Unlock()
 
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: efiVolumeID,
 			},
 		}
@@ -2155,12 +2156,12 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 	})
 
 	t.Run("DeviceMismatch", func(t *testing.T) {
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: volumeID,
 				Device:   "/dev/sdg", // actual is /dev/sdf
 			},
@@ -2179,12 +2180,12 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 	t.Run("QMPDeviceDelFails_NoForce", func(t *testing.T) {
 		// With nil QMPClient encoder/decoder, the QMP device_del returns
 		// error. Without force=true, this should return ServerInternal.
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: volumeID,
 				Force:    false,
 			},
@@ -2356,12 +2357,12 @@ func TestDetachVolume_SuccessPath(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: volumeID,
 		},
 	}
@@ -2493,12 +2494,12 @@ func TestDetachVolume_ForceFlag(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: volumeID,
 			Force:    true,
 		},
@@ -2598,12 +2599,12 @@ func TestDetachVolume_BlockdevDelFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: volumeID,
 		},
 	}
@@ -2696,12 +2697,12 @@ func TestDetachVolume_SuccessWithDeviceMatch(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: volumeID,
 			Device:   "/dev/sdh", // matches actual device
 		},
@@ -2773,12 +2774,12 @@ func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			AttachVolume: true,
 		},
-		AttachVolumeData: &types.AttachVolumeData{
+		AttachVolumeData: &ec2v1.AttachVolumeData{
 			VolumeID: volumeID,
 			Device:   "/dev/sdg", // new device
 		},
@@ -3709,9 +3710,9 @@ func TestStopTerminate_IncorrectInstanceState(t *testing.T) {
 
 	t.Run("StopAlreadyStoppedInstance", func(t *testing.T) {
 		daemon.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Status = vm.StateStopped })
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				StopInstance: true,
 			},
 		}
@@ -3729,9 +3730,9 @@ func TestStopTerminate_IncorrectInstanceState(t *testing.T) {
 
 	t.Run("TerminateAlreadyTerminatedInstance", func(t *testing.T) {
 		daemon.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Status = vm.StateTerminated })
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				TerminateInstance: true,
 			},
 		}

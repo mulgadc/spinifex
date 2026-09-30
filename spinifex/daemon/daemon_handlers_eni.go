@@ -9,18 +9,18 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
 // handleAttachNetworkInterface updates KV first (crash-safe attaching state),
 // then runs the QMP hot-plug pipeline. On QMP failure the KV record rolls
 // back to available with the error persisted in LastAttachError.
-func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	slog.InfoContext(ctx, "Attaching ENI to instance", "instanceId", command.ID)
 
 	if command.AttachENIData == nil || command.AttachENIData.NetworkInterfaceID == "" {
@@ -102,7 +102,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 // handleDetachNetworkInterface marks the KV record as detaching first
 // (crash-safe), runs the QMP hot-unplug pipeline, then returns the
 // record to available on success.
-func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	slog.InfoContext(ctx, "Detaching ENI from instance", "instanceId", command.ID)
 
 	if command.DetachENIData == nil || command.DetachENIData.AttachmentID == "" {

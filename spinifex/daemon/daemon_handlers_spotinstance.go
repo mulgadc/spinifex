@@ -5,8 +5,8 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )
@@ -15,7 +15,7 @@ import (
 // SpotInstanceRequestId) onto a launched VM. Dispatched from handleEC2Events,
 // which already verified ownership; the SIR id is the only datum on the wire as
 // the lifecycle is always spot for this command.
-func (d *Daemon) handleSetSpotLineage(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand) string {
+func (d *Daemon) handleSetSpotLineage(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand) string {
 	if command.SpotLineageData == nil {
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorMissingParameter)
 	}

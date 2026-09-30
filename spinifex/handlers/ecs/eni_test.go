@@ -10,9 +10,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -421,7 +421,7 @@ func TestNATSENIController_AllocateAttachRelease(t *testing.T) {
 		}}
 	})
 	respond(t, nc, "ec2.cmd.i-1", func(req []byte) any {
-		var cmd types.EC2InstanceCommand
+		var cmd ec2v1.EC2InstanceCommand
 		_ = json.Unmarshal(req, &cmd)
 		if cmd.Attributes.AttachENI {
 			return ec2.AttachNetworkInterfaceOutput{AttachmentId: aws.String("att-real")}

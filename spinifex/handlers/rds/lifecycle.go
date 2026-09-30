@@ -11,10 +11,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -415,22 +415,22 @@ func NewNATSInstanceCommander(nc *nats.Conn) instanceCommander {
 }
 
 func (c *natsInstanceCommander) StopInstance(ctx context.Context, instanceID string) error {
-	return c.send(ctx, instanceID, types.EC2CommandAttributes{StopInstance: true})
+	return c.send(ctx, instanceID, ec2v1.EC2CommandAttributes{StopInstance: true})
 }
 
 func (c *natsInstanceCommander) StartInstance(ctx context.Context, instanceID string) error {
-	return c.send(ctx, instanceID, types.EC2CommandAttributes{StartInstance: true})
+	return c.send(ctx, instanceID, ec2v1.EC2CommandAttributes{StartInstance: true})
 }
 
 func (c *natsInstanceCommander) RebootInstance(ctx context.Context, instanceID string) error {
-	return c.send(ctx, instanceID, types.EC2CommandAttributes{RebootInstance: true})
+	return c.send(ctx, instanceID, ec2v1.EC2CommandAttributes{RebootInstance: true})
 }
 
 // The VM runs in the system account, so every command is issued there — the
 // ownership check on the far side compares against that same account.
-func (c *natsInstanceCommander) send(ctx context.Context, instanceID string, attrs types.EC2CommandAttributes) error {
-	cmd := types.EC2InstanceCommand{ID: instanceID, Attributes: attrs}
-	_, err := utils.NATSRequest[struct{}](ctx, c.nc, "ec2.cmd."+instanceID, cmd, c.timeout, utils.GlobalAccountID)
+func (c *natsInstanceCommander) send(ctx context.Context, instanceID string, attrs ec2v1.EC2CommandAttributes) error {
+	cmd := ec2v1.EC2InstanceCommand{ID: instanceID, Attributes: attrs}
+	_, err := utils.NATSRequest[struct{}](ctx, c.nc, ec2v1.InstanceCommandSubject(instanceID), cmd, c.timeout, utils.GlobalAccountID)
 	if err == nil {
 		return nil
 	}

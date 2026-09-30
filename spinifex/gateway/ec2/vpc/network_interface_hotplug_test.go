@@ -7,9 +7,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -98,7 +98,7 @@ func TestAttachNetworkInterface_NoResponders(t *testing.T) {
 func TestAttachNetworkInterface_Success(t *testing.T) {
 	nc := newTestNATS(t)
 
-	var received types.EC2InstanceCommand
+	var received ec2v1.EC2InstanceCommand
 	var receivedAccount string
 	sub, err := nc.Subscribe("ec2.cmd.i-success", func(msg *nats.Msg) {
 		receivedAccount = msg.Header.Get(utils.AccountIDHeader)
@@ -252,7 +252,7 @@ func TestDetachNetworkInterface_Success(t *testing.T) {
 	nc := newTestNATS(t)
 	describeNetworkInterfacesResponder(context.Background(), t, nc, "eni-attach-ok", "i-detach", "eni-detachable")
 
-	var received types.EC2InstanceCommand
+	var received ec2v1.EC2InstanceCommand
 	var receivedAccount string
 	sub, err := nc.Subscribe("ec2.cmd.i-detach", func(msg *nats.Msg) {
 		receivedAccount = msg.Header.Get(utils.AccountIDHeader)

@@ -7,11 +7,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
 	"github.com/stretchr/testify/assert"
@@ -80,8 +80,8 @@ func tagsAsMap(tags []*ec2.Tag) map[string]string {
 	return out
 }
 
-func tagCommand(instanceID string, attrs types.EC2CommandAttributes, data *types.InstanceTagsData) []byte {
-	body, _ := json.Marshal(types.EC2InstanceCommand{ID: instanceID, Attributes: attrs, InstanceTagsData: data})
+func tagCommand(instanceID string, attrs ec2v1.EC2CommandAttributes, data *ec2v1.InstanceTagsData) []byte {
+	body, _ := json.Marshal(ec2v1.EC2InstanceCommand{ID: instanceID, Attributes: attrs, InstanceTagsData: data})
 	return body
 }
 
@@ -91,8 +91,8 @@ func TestHandleSetInstanceTags_MergesAndWritesCentral(t *testing.T) {
 	const id = "i-tag-set"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev"})
 
-	body := tagCommand(id, types.EC2CommandAttributes{SetInstanceTags: true},
-		&types.InstanceTagsData{Tags: map[string]string{"env": "prod", "team": "infra"}})
+	body := tagCommand(id, ec2v1.EC2CommandAttributes{SetInstanceTags: true},
+		&ec2v1.InstanceTagsData{Tags: map[string]string{"env": "prod", "team": "infra"}})
 	reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, body)
 	assert.JSONEq(t, `{}`, string(reply.Data))
 
@@ -109,8 +109,8 @@ func TestHandleSetInstanceTags_RemoveWritesBothStores(t *testing.T) {
 	require.NoError(t, d.tagsService.PutResourceTags(t.Context(), testAccountID, id,
 		map[string]string{"Name": "web", "env": "dev", "team": "infra"}))
 
-	body := tagCommand(id, types.EC2CommandAttributes{RemoveInstanceTags: true},
-		&types.InstanceTagsData{TagKeys: []string{"team"}, Tags: map[string]string{"env": "prod", "Name": "web"}})
+	body := tagCommand(id, ec2v1.EC2CommandAttributes{RemoveInstanceTags: true},
+		&ec2v1.InstanceTagsData{TagKeys: []string{"team"}, Tags: map[string]string{"env": "prod", "Name": "web"}})
 	reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, body)
 	assert.JSONEq(t, `{}`, string(reply.Data))
 
@@ -126,7 +126,7 @@ func TestHandleSetInstanceTags_RemoveClearAll(t *testing.T) {
 	require.NoError(t, d.tagsService.PutResourceTags(t.Context(), testAccountID, id,
 		map[string]string{"Name": "web", "env": "dev"}))
 
-	body := tagCommand(id, types.EC2CommandAttributes{RemoveInstanceTags: true}, &types.InstanceTagsData{})
+	body := tagCommand(id, ec2v1.EC2CommandAttributes{RemoveInstanceTags: true}, &ec2v1.InstanceTagsData{})
 	reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, body)
 	assert.JSONEq(t, `{}`, string(reply.Data))
 
@@ -141,8 +141,8 @@ func TestHandleSetInstanceTags_CrossAccountRejected(t *testing.T) {
 	const attacker = "999999999999"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web"})
 
-	body := tagCommand(id, types.EC2CommandAttributes{SetInstanceTags: true},
-		&types.InstanceTagsData{Tags: map[string]string{"stolen": "yes"}})
+	body := tagCommand(id, ec2v1.EC2CommandAttributes{SetInstanceTags: true},
+		&ec2v1.InstanceTagsData{Tags: map[string]string{"stolen": "yes"}})
 	reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, attacker, body)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"])
 
@@ -196,8 +196,8 @@ func TestHandleSetInstanceTags_RejectsMissingData(t *testing.T) {
 	const id = "i-tag-nodata"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web"})
 
-	for _, data := range []*types.InstanceTagsData{nil, {}} {
-		body := tagCommand(id, types.EC2CommandAttributes{SetInstanceTags: true}, data)
+	for _, data := range []*ec2v1.InstanceTagsData{nil, {}} {
+		body := tagCommand(id, ec2v1.EC2CommandAttributes{SetInstanceTags: true}, data)
 		reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, body)
 		assert.Equal(t, awserrors.ErrorMissingParameter, decodeError(t, reply.Data)["Code"])
 	}

@@ -7,8 +7,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
 	"github.com/stretchr/testify/assert"
@@ -33,7 +33,7 @@ func tagsAsMap(tags []*ec2.Tag) map[string]string {
 
 func TestApplyInstanceTagMutation_MergeUpsert(t *testing.T) {
 	existing := tagList("Name", "web", "env", "dev")
-	out := ApplyInstanceTagMutation(existing, &spxtypes.InstanceTagsData{
+	out := ApplyInstanceTagMutation(existing, &ec2v1.InstanceTagsData{
 		Tags: map[string]string{"env": "prod", "team": "infra"},
 	}, false)
 	assert.Equal(t, map[string]string{"Name": "web", "env": "prod", "team": "infra"}, tagsAsMap(out))
@@ -41,7 +41,7 @@ func TestApplyInstanceTagMutation_MergeUpsert(t *testing.T) {
 
 func TestApplyInstanceTagMutation_RemoveUnconditional(t *testing.T) {
 	existing := tagList("Name", "web", "env", "dev")
-	out := ApplyInstanceTagMutation(existing, &spxtypes.InstanceTagsData{
+	out := ApplyInstanceTagMutation(existing, &ec2v1.InstanceTagsData{
 		TagKeys: []string{"env", "missing"},
 	}, true)
 	assert.Equal(t, map[string]string{"Name": "web"}, tagsAsMap(out))
@@ -49,7 +49,7 @@ func TestApplyInstanceTagMutation_RemoveUnconditional(t *testing.T) {
 
 func TestApplyInstanceTagMutation_RemoveValueMatch(t *testing.T) {
 	existing := tagList("Name", "web", "env", "dev")
-	out := ApplyInstanceTagMutation(existing, &spxtypes.InstanceTagsData{
+	out := ApplyInstanceTagMutation(existing, &ec2v1.InstanceTagsData{
 		Tags: map[string]string{"env": "prod", "Name": "web"},
 	}, true)
 	assert.Equal(t, map[string]string{"env": "dev"}, tagsAsMap(out))
@@ -57,13 +57,13 @@ func TestApplyInstanceTagMutation_RemoveValueMatch(t *testing.T) {
 
 func TestApplyInstanceTagMutation_RemoveClearAll(t *testing.T) {
 	existing := tagList("Name", "web", "env", "dev")
-	out := ApplyInstanceTagMutation(existing, &spxtypes.InstanceTagsData{}, true)
+	out := ApplyInstanceTagMutation(existing, &ec2v1.InstanceTagsData{}, true)
 	assert.Empty(t, out)
 }
 
 func TestApplyInstanceTagMutation_SortedAndNilSafe(t *testing.T) {
 	existing := []*ec2.Tag{nil, {Key: aws.String("b"), Value: aws.String("2")}, {Key: nil}}
-	out := ApplyInstanceTagMutation(existing, &spxtypes.InstanceTagsData{
+	out := ApplyInstanceTagMutation(existing, &ec2v1.InstanceTagsData{
 		Tags: map[string]string{"a": "1"},
 	}, false)
 	require.Len(t, out, 2)
@@ -99,7 +99,7 @@ func TestWriteInstanceTags_WritesRecordAndCentral(t *testing.T) {
 	instance := &vm.VM{ID: "i-123", Instance: &ec2.Instance{Tags: tagList("Name", "web")}}
 	writer := &fakeTagWriter{}
 
-	err := WriteInstanceTags(context.Background(), instance, &spxtypes.InstanceTagsData{
+	err := WriteInstanceTags(context.Background(), instance, &ec2v1.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	require.NoError(t, err)
@@ -116,7 +116,7 @@ func TestWriteInstanceTags_CentralWriteErrorPropagates(t *testing.T) {
 	instance := &vm.VM{ID: "i-123", Instance: &ec2.Instance{}}
 	writer := &fakeTagWriter{err: errors.New("s3 down")}
 
-	err := WriteInstanceTags(context.Background(), instance, &spxtypes.InstanceTagsData{
+	err := WriteInstanceTags(context.Background(), instance, &ec2v1.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	assert.Error(t, err)
@@ -146,7 +146,7 @@ func TestTagStoppedInstance_WritesRecordAndCentral(t *testing.T) {
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	err := svc.TagStoppedInstance(context.Background(), "i-123", &spxtypes.InstanceTagsData{
+	err := svc.TagStoppedInstance(context.Background(), "i-123", &ec2v1.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	require.NoError(t, err)
@@ -167,7 +167,7 @@ func TestTagStoppedInstance_RemoveKeys(t *testing.T) {
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	err := svc.TagStoppedInstance(context.Background(), "i-123", &spxtypes.InstanceTagsData{
+	err := svc.TagStoppedInstance(context.Background(), "i-123", &ec2v1.InstanceTagsData{
 		TagKeys: []string{"env"},
 	}, true, writer, "111122223333")
 	require.NoError(t, err)
@@ -182,7 +182,7 @@ func TestTagStoppedInstance_NotFound(t *testing.T) {
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	err := svc.TagStoppedInstance(context.Background(), "i-missing", &spxtypes.InstanceTagsData{
+	err := svc.TagStoppedInstance(context.Background(), "i-missing", &ec2v1.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	require.Error(t, err)
@@ -197,7 +197,7 @@ func TestTagStoppedInstance_CrossAccountRejected(t *testing.T) {
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	err := svc.TagStoppedInstance(context.Background(), "i-123", &spxtypes.InstanceTagsData{
+	err := svc.TagStoppedInstance(context.Background(), "i-123", &ec2v1.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	require.Error(t, err)
@@ -217,7 +217,7 @@ func TestTagStoppedInstance_ConcurrentClaimDoesNotResurrect(t *testing.T) {
 	writer := &fakeTagWriter{}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	err := svc.TagStoppedInstance(context.Background(), "i-123", &spxtypes.InstanceTagsData{
+	err := svc.TagStoppedInstance(context.Background(), "i-123", &ec2v1.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	require.Error(t, err)
@@ -232,7 +232,7 @@ func TestTagStoppedInstance_CentralWriteErrorSkipsRecordWrite(t *testing.T) {
 	writer := &fakeTagWriter{err: errors.New("s3 down")}
 	svc := &InstanceServiceImpl{stoppedStore: store}
 
-	err := svc.TagStoppedInstance(context.Background(), "i-123", &spxtypes.InstanceTagsData{
+	err := svc.TagStoppedInstance(context.Background(), "i-123", &ec2v1.InstanceTagsData{
 		Tags: map[string]string{"env": "prod"},
 	}, false, writer, "111122223333")
 	require.Error(t, err)

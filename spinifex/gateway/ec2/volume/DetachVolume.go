@@ -4,15 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -75,12 +74,12 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 
 	force := input.Force != nil && *input.Force
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: volumeID,
 			Device:   device,
 			Force:    force,
@@ -93,7 +92,7 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	subject := fmt.Sprintf("ec2.cmd.%s", instanceID)
+	subject := ec2v1.InstanceCommandSubject(instanceID)
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)

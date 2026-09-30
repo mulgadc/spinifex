@@ -14,14 +14,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -190,7 +191,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 	ctx, span := utils.StartConsumerSpan(msg)
 	defer span.End()
 
-	var command types.EC2InstanceCommand
+	var command ec2v1.EC2InstanceCommand
 
 	if err := json.Unmarshal(msg.Data, &command); err != nil {
 		slog.ErrorContext(ctx, "Error unmarshaling EC2 instance command", "err", err)
@@ -294,7 +295,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 
 // ec2CommandName names the command an EC2InstanceCommand carries, for the
 // metric action. Order matches the dispatch switch.
-func ec2CommandName(command types.EC2InstanceCommand) string {
+func ec2CommandName(command ec2v1.EC2InstanceCommand) string {
 	switch {
 	case command.Attributes.AttachVolume:
 		return "AttachVolume"

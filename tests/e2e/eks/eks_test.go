@@ -69,7 +69,7 @@ func TestEKS(t *testing.T) {
 	t.Run("DescribeKubeconfigArtifacts", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		path := writeKubeconfig(t, artifacts, fx.Cluster)
-		raw, err := os.ReadFile(path) //nolint:gosec // artifact path built by the test
+		raw, err := os.ReadFile(path)
 		require.NoError(t, err)
 		kc := string(raw)
 		assert.Contains(t, kc, "server: "+aws.StringValue(fx.Cluster.Endpoint), "kubeconfig server = cluster endpoint")

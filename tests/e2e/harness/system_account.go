@@ -35,7 +35,7 @@ func SystemAWSClient(t *testing.T, env *Env) *AWSClient {
 		t.Fatalf("SystemAWSClient: no config dir located; set SPINIFEX_CONFIG_DIR")
 	}
 	path := filepath.Join(env.ConfigDir, systemCredentialsFile)
-	out, err := exec.Command("sudo", "-n", "cat", path).Output() //nolint:gosec // path is env-derived, not caller input
+	out, err := exec.Command("sudo", "-n", "cat", path).Output()
 	if err != nil {
 		t.Fatalf("SystemAWSClient: sudo -n cat %s: %v", path, err)
 	}

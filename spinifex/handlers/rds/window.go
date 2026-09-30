@@ -3,6 +3,7 @@ package handlers_rds
 import (
 	"fmt"
 	"hash/fnv"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -290,7 +291,10 @@ func assignDailySlot(block dailyWindow, identifier string, shift int64) dailyWin
 	if slots < 1 {
 		return block
 	}
-	slot := int64(windowHash(identifier) % uint64(slots)) //nolint:gosec // the modulus bounds it to the slot count
+	var slot int64
+	if h := windowHash(identifier) % uint64(slots); h <= math.MaxInt64 {
+		slot = int64(h)
+	}
 	start := (block.start + time.Duration((slot+shift)%slots)*windowSlot) % oneDay
 	return dailyWindow{start: start, end: (start + windowSlot) % oneDay}
 }

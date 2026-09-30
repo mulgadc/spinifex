@@ -43,7 +43,7 @@ func NewKubectl(t *testing.T, kubeconfig string, awsEnv []string) *Kubectl {
 // output. Errors are returned (not fatal) so callers can poll readiness.
 func (k *Kubectl) Run(timeout time.Duration, args ...string) (string, error) {
 	full := append([]string{"--kubeconfig", k.Kubeconfig}, args...)
-	cmd := exec.Command(k.Bin, full...) //nolint:gosec // bin is LookPath-resolved, args test-controlled
+	cmd := exec.Command(k.Bin, full...)
 	env := os.Environ()
 	env = append(env, k.AWSEnv...)
 	cmd.Env = env
@@ -116,7 +116,7 @@ func (k *Kubectl) execPluginProbe(timeout time.Duration) string {
 	if err != nil {
 		return "exec plugin " + argv[0] + " not on PATH: " + err.Error() + "\n"
 	}
-	cmd := exec.Command(bin, argv[1:]...) //nolint:gosec // argv comes from the kubeconfig this test wrote
+	cmd := exec.Command(bin, argv[1:]...)
 	cmd.Env = append(os.Environ(), k.AWSEnv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

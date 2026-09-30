@@ -55,7 +55,7 @@ func NewSkopeo(t *testing.T, dockerConfig string) *ExternalCLI {
 // Run executes the client with args and returns combined output. Errors are
 // returned (not fatal) so callers can assert on output or poll.
 func (c *ExternalCLI) Run(timeout time.Duration, args ...string) (string, error) {
-	cmd := exec.Command(c.Bin, args...) //nolint:gosec // bin is LookPath-resolved, args test-controlled
+	cmd := exec.Command(c.Bin, args...)
 	cmd.Env = append(os.Environ(), c.Env...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
@@ -78,7 +78,7 @@ func (c *ExternalCLI) Run(timeout time.Duration, args ...string) (string, error)
 // RunStdin is Run with data piped to the process stdin (docker login
 // --password-stdin).
 func (c *ExternalCLI) RunStdin(timeout time.Duration, stdin string, args ...string) (string, error) {
-	cmd := exec.Command(c.Bin, args...) //nolint:gosec // bin is LookPath-resolved, args test-controlled
+	cmd := exec.Command(c.Bin, args...)
 	cmd.Env = append(os.Environ(), c.Env...)
 	cmd.Stdin = strings.NewReader(stdin)
 	var buf bytes.Buffer

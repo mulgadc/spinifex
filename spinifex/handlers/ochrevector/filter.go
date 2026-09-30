@@ -46,10 +46,10 @@ var filterKeyPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`)
 // orAll) over Children. Construct via the Equals/GreaterThan/.../AndAll
 // helpers rather than the struct literal directly.
 type Filter struct {
-	Op       FilterOp
-	Key      string
-	Value    any
-	Children []*Filter
+	Op       FilterOp  `json:"Op"`
+	Key      string    `json:"Key"`
+	Value    any       `json:"Value"`
+	Children []*Filter `json:"Children"`
 }
 
 // Equals builds an `equals` leaf filter: metadata[key] as text equals value.

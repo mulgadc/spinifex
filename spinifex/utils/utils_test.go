@@ -994,7 +994,7 @@ func TestWritePidFileTo(t *testing.T) {
 }
 
 func TestWritePidFileTo_EmptyDir(t *testing.T) {
-	// With empty dir, should fall back to default pidPath()
+	// With empty dir, should fall back to default RuntimeDir()
 	cmd := exec.Command("cat")
 	require.NoError(t, cmd.Start())
 	defer cmd.Process.Kill()
@@ -1115,7 +1115,7 @@ func TestRuntimeDir(t *testing.T) {
 
 func TestPidPath_XDG(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/tmp/test-xdg-runtime")
-	assert.Equal(t, "/tmp/test-xdg-runtime", pidPath())
+	assert.Equal(t, "/tmp/test-xdg-runtime", RuntimeDir())
 }
 
 func TestPidPath_HomeSpinifexFallback(t *testing.T) {
@@ -1126,14 +1126,14 @@ func TestPidPath_HomeSpinifexFallback(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	t.Setenv("HOME", tmpHome)
 
-	assert.Equal(t, spinifexDir, pidPath())
+	assert.Equal(t, spinifexDir, RuntimeDir())
 }
 
 func TestPidPath_TempDirFallback(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	t.Setenv("HOME", "/nonexistent-home-dir-utils-test")
 
-	assert.Equal(t, os.TempDir(), pidPath())
+	assert.Equal(t, os.TempDir(), RuntimeDir())
 }
 
 func TestExtractDiskImagePath_NoMatch(t *testing.T) {

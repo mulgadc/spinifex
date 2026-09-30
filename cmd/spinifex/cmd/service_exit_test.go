@@ -62,7 +62,7 @@ func writeMalformedToml(t *testing.T) string {
 	return writeSpinifexToml(t, "[section\nkey = value without quotes\n")
 }
 
-// isolateRuntimeDir redirects the pid-file fallback (utils.pidPath, via
+// isolateRuntimeDir redirects the pid-file fallback (utils.RuntimeDir, via
 // XDG_RUNTIME_DIR) to an empty temp dir, so a stop command with no explicit
 // directory override can't resolve against a real, shared, ambient pid dir.
 func isolateRuntimeDir(t *testing.T) {

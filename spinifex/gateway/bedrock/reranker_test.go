@@ -34,7 +34,7 @@ func TestRerankProvider_Rerank_RequestShape(t *testing.T) {
 	defer ts.Close()
 
 	modelID := DefaultRerankModel
-	p := newRerankProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
+	p := NewReranker(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
 	p.httpClient = ts.Client()
 
 	_, err := p.Rerank(context.Background(), "what is spinifex?", []string{"spinifex is a control plane"})
@@ -60,7 +60,7 @@ func TestRerankProvider_Rerank_HappyPathOrdersByDescendingScore(t *testing.T) {
 	defer ts.Close()
 
 	modelID := DefaultRerankModel
-	p := newRerankProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
+	p := NewReranker(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
 	p.httpClient = ts.Client()
 
 	order, err := p.Rerank(context.Background(), "query", []string{"doc0", "doc1", "doc2"})
@@ -77,7 +77,7 @@ func TestRerankProvider_Rerank_EmptyDocsSkipsHTTPCall(t *testing.T) {
 	defer ts.Close()
 
 	modelID := DefaultRerankModel
-	p := newRerankProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
+	p := NewReranker(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
 	p.httpClient = ts.Client()
 
 	order, err := p.Rerank(context.Background(), "query", nil)
@@ -94,7 +94,7 @@ func TestRerankProvider_Rerank_NonOKStatusReturnsError(t *testing.T) {
 	defer ts.Close()
 
 	modelID := DefaultRerankModel
-	p := newRerankProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
+	p := NewReranker(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
 	p.httpClient = ts.Client()
 
 	_, err := p.Rerank(context.Background(), "query", []string{"doc0"})
@@ -111,7 +111,7 @@ func TestRerankProvider_Rerank_MalformedJSONReturnsError(t *testing.T) {
 	defer ts.Close()
 
 	modelID := DefaultRerankModel
-	p := newRerankProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
+	p := NewReranker(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
 	p.httpClient = ts.Client()
 
 	_, err := p.Rerank(context.Background(), "query", []string{"doc0"})
@@ -128,7 +128,7 @@ func TestRerankProvider_Rerank_CountMismatchReturnsError(t *testing.T) {
 	defer ts.Close()
 
 	modelID := DefaultRerankModel
-	p := newRerankProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
+	p := NewReranker(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
 	p.httpClient = ts.Client()
 
 	_, err := p.Rerank(context.Background(), "query", []string{"doc0", "doc1"})
@@ -145,7 +145,7 @@ func TestRerankProvider_Rerank_OutOfRangeIndexReturnsError(t *testing.T) {
 	defer ts.Close()
 
 	modelID := DefaultRerankModel
-	p := newRerankProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
+	p := NewReranker(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), modelID)
 	p.httpClient = ts.Client()
 
 	_, err := p.Rerank(context.Background(), "query", []string{"doc0"})
@@ -155,7 +155,7 @@ func TestRerankProvider_Rerank_OutOfRangeIndexReturnsError(t *testing.T) {
 
 func TestRerankProvider_Rerank_ConnectionRefusedReturnsServiceUnavailable(t *testing.T) {
 	modelID := DefaultRerankModel
-	p := newRerankProvider(NewStaticEndpointResolver(map[string]string{modelID: "http://127.0.0.1:1"}), modelID)
+	p := NewReranker(NewStaticEndpointResolver(map[string]string{modelID: "http://127.0.0.1:1"}), modelID)
 
 	_, err := p.Rerank(context.Background(), "query", []string{"doc0"})
 	require.Error(t, err)
@@ -164,7 +164,7 @@ func TestRerankProvider_Rerank_ConnectionRefusedReturnsServiceUnavailable(t *tes
 
 func TestRerankProvider_Rerank_UnresolvedEndpointReturnsModelNotReady(t *testing.T) {
 	modelID := DefaultRerankModel
-	p := newRerankProvider(NewStaticEndpointResolver(nil), modelID)
+	p := NewReranker(NewStaticEndpointResolver(nil), modelID)
 
 	_, err := p.Rerank(context.Background(), "query", []string{"doc0"})
 	require.Error(t, err)

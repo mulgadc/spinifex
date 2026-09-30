@@ -180,13 +180,6 @@ func (s *TagsServiceImpl) getResourceTags(ctx context.Context, accountID, resour
 	return s.legacyTags(ctx, accountID, resourceID)
 }
 
-// PutResourceTags overwrites the stored tag set for a resource. Used to
-// project an instance record's tags (the source of truth) into the central
-// store so describe-tags agrees with describe-instances.
-func (s *TagsServiceImpl) PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error {
-	return s.putTags(ctx, accountID, resourceID, tags)
-}
-
 // DeleteAllTags removes the stored tags for a resource, so describe-tags stops
 // reporting a resource that is gone. Instance terminate uses it while the
 // terminated record keeps its own tags until TTL; the vpc delete paths use it

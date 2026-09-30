@@ -18,7 +18,7 @@ func GenerateSocketFile(name string) (string, error) {
 		return "", errors.New("name is required")
 	}
 
-	pidPath := pidPath()
+	pidPath := RuntimeDir()
 
 	if pidPath == "" {
 		return "", errors.New("pid path is empty")
@@ -43,13 +43,13 @@ func GenerateUniqueSocketFile(volname string) (string, error) {
 	return filepath.Join(dir, filename), nil
 }
 
-// NBDSocketDir returns the NBD socket directory (/run/spinifex/nbd under systemd; pidPath() as fallback).
+// NBDSocketDir returns the NBD socket directory (/run/spinifex/nbd under systemd; RuntimeDir() as fallback).
 func NBDSocketDir() string {
 	const systemdNBDDir = "/run/spinifex/nbd"
 	if dirExists(systemdNBDDir) {
 		return systemdNBDDir
 	}
-	return pidPath()
+	return RuntimeDir()
 }
 
 // IsSocketURI reports whether the NBD URI refers to a Unix socket (ends with ".sock" or contains "unix:").

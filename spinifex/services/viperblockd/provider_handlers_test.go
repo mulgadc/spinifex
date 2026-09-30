@@ -1,6 +1,6 @@
 package viperblockd
 
-// Tests for the ebs.provider.v1.* handlers registered by registerProviderSubjects.
+// Tests for the ebs.provider.v1.* handlers registered by RegisterProviderSubjects.
 // Engine-backed cases (CreateVolume idempotency, ExpandVolume in-use, CreateSnapshot)
 // use a live mounted VB on the file backend (createTestVBWithState from
 // viperblockd_handlers_test.go), matching this package's existing convention for
@@ -81,7 +81,7 @@ type versionedErrorResponse struct {
 	Error *ebsprovider.ProviderError `json:"error,omitempty"`
 }
 
-// startProviderSubjects wires registerProviderSubjects onto a fresh NATS
+// startProviderSubjects wires RegisterProviderSubjects onto a fresh NATS
 // connection for cfg, without launching the rest of launchService (mount,
 // unmount, sync, config, delete), which are unrelated to the ebs.provider.v1.*
 // contract under test here.
@@ -90,7 +90,7 @@ func startProviderSubjects(t *testing.T, cfg *Config, natsURL string) *nats.Conn
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
-	require.NoError(t, registerProviderSubjects(cfg, nc))
+	require.NoError(t, RegisterProviderSubjects(cfg, nc))
 	return nc
 }
 
@@ -943,7 +943,7 @@ func TestProviderHandlers_UnpublishVolume_AbsentIsIdempotent(t *testing.T) {
 }
 
 // TestProviderHandlers_PublishUnpublish_RequireNodeName covers
-// registerProviderSubjects' NodeName gate: PublishVolume/UnpublishVolume must
+// RegisterProviderSubjects' NodeName gate: PublishVolume/UnpublishVolume must
 // not be registered when cfg.NodeName is empty (PublishSubject has no node to
 // address), while every other ebs.provider.v1.* subject still is.
 func TestProviderHandlers_PublishUnpublish_RequireNodeName(t *testing.T) {

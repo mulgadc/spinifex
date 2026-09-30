@@ -577,7 +577,7 @@ func ValidErrorCode(code string) string {
 
 // ResolveErrorCode returns the first registered AWS error code in err's unwrap tree.
 func ResolveErrorCode(err error) (string, bool) {
-	code, _, ok := resolveErrorDetail(err)
+	code, _, ok := ResolveErrorDetail(err)
 	return code, ok
 }
 
@@ -585,12 +585,6 @@ func ResolveErrorCode(err error) (string, bool) {
 // plus the message the producing call site attached via Errorf, if any. A
 // generic %w wrapper added purely for internal context carries no message.
 func ResolveErrorDetail(err error) (code, message string, ok bool) {
-	return resolveErrorDetail(err)
-}
-
-// resolveErrorDetail is the shared unwrap-tree walk behind ResolveErrorCode
-// and ResolveErrorDetail.
-func resolveErrorDetail(err error) (code, message string, ok bool) {
 	if err == nil {
 		return "", "", false
 	}
@@ -604,14 +598,14 @@ func resolveErrorDetail(err error) (code, message string, ok bool) {
 
 	if joined, isJoined := err.(interface{ Unwrap() []error }); isJoined {
 		for _, inner := range joined.Unwrap() {
-			if c, m, found := resolveErrorDetail(inner); found {
+			if c, m, found := ResolveErrorDetail(inner); found {
 				return c, m, true
 			}
 		}
 		return "", "", false
 	}
 	if wrapped, isWrapped := err.(interface{ Unwrap() error }); isWrapped {
-		return resolveErrorDetail(wrapped.Unwrap())
+		return ResolveErrorDetail(wrapped.Unwrap())
 	}
 	return "", "", false
 }
@@ -670,7 +664,7 @@ func RetryAfter(code string, d time.Duration) error {
 }
 
 // ResolveRetryAfter returns the Retry-After duration attached to err via
-// RetryAfter, if any, walking the same unwrap tree resolveErrorDetail does.
+// RetryAfter, if any, walking the same unwrap tree ResolveErrorDetail does.
 func ResolveRetryAfter(err error) (time.Duration, bool) {
 	if err == nil {
 		return 0, false

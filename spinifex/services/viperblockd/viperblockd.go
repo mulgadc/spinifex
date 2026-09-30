@@ -1062,7 +1062,7 @@ func launchService(cfg *Config) (err error) {
 		return fmt.Errorf("failed to subscribe to %s: %w", mountTopic, err)
 	}
 
-	if err := registerProviderSubjects(cfg, nc); err != nil {
+	if err := RegisterProviderSubjects(cfg, nc); err != nil {
 		return err
 	}
 

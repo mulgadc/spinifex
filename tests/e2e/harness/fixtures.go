@@ -45,7 +45,7 @@ import (
 type Fixture struct {
 	// parent is the testing.T that constructed the Fixture in test mode.
 	// nil in process mode (NewProcessFixture). Cleanup routing forks on
-	// this — see registerCleanup.
+	// this — see RegisterCleanup.
 	parent *testing.T
 
 	EC2   ec2iface.EC2API
@@ -165,13 +165,16 @@ func (f *Fixture) Close() error {
 	return fmt.Errorf("%d resource(s) left behind:\n  %s", len(leaks), strings.Join(leaks, "\n  "))
 }
 
-// registerCleanup routes a teardown callback to the appropriate sink based
+// RegisterCleanup routes a teardown callback to the appropriate sink based
 // on construction mode. Test mode: t.Cleanup on the bound parent. Process
 // mode: append to the LIFO drained by Close().
 //
 // Each callback is isolated from the rest: a panic in one teardown would
 // otherwise abort the whole chain and strand every resource behind it.
-func (f *Fixture) registerCleanup(fn func()) {
+//
+// Use it for resources created mid-suite outside ensureOnce, which must outlive
+// the calling subtest rather than be torn down before a dependent one runs.
+func (f *Fixture) RegisterCleanup(fn func()) {
 	isolated := func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -219,19 +222,6 @@ func (f *Fixture) logf(format string, args ...any) {
 // for tests that need to assert against names they didn't construct directly.
 func (f *Fixture) Scratch() string { return f.scratch }
 
-// RegisterCleanup runs fn at fixture teardown, not at the end of the
-// calling subtest. Use for resources created mid-suite by code paths that
-// don't flow through ensureOnce (e.g. IAM users threaded across multiple
-// phase subtests) — registering on the calling subtest would tear them
-// down before the next dependent subtest runs.
-//
-// Test mode (NewFixture): fn runs at parent t.Cleanup.
-// Process mode (NewProcessFixture): fn runs at f.Close() (typically called
-// from TestMain after m.Run()).
-func (f *Fixture) RegisterCleanup(fn func()) {
-	f.registerCleanup(fn)
-}
-
 // ensureOnce returns the cached resource ID for key, or calls create exactly
 // once (via singleflight) and caches the result. On failure no cleanup is
 // registered and the cache is untouched, so a retry triggers a fresh create.
@@ -267,7 +257,7 @@ func (f *Fixture) ensureOnce(t *testing.T, key string, create func() (string, fu
 		f.mu.Unlock()
 
 		if !dup && cleanup != nil {
-			f.registerCleanup(func() {
+			f.RegisterCleanup(func() {
 				if cerr := cleanup(); cerr != nil {
 					f.reportLeak("%s (%s): %v", key, id, cerr)
 				}

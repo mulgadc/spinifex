@@ -12,7 +12,7 @@ import (
 )
 
 func ReadPidFile(name string) (int, error) {
-	pidPath := pidPath()
+	pidPath := RuntimeDir()
 
 	pidFile, err := os.ReadFile(filepath.Join(pidPath, fmt.Sprintf("%s.pid", name)))
 
@@ -30,7 +30,7 @@ func GeneratePidFile(name string) (string, error) {
 		return "", errors.New("name is required")
 	}
 
-	pidPath := pidPath()
+	pidPath := RuntimeDir()
 
 	if pidPath == "" {
 		return "", errors.New("pid path is empty")
@@ -61,7 +61,7 @@ func WritePidFile(name string, pid int) error {
 	return nil
 }
 
-// WritePidFileTo writes a PID file to dir (or pidPath() if empty).
+// WritePidFileTo writes a PID file to dir (or RuntimeDir() if empty).
 // Per-service data directories prevent PID file collisions on multi-node hosts.
 func WritePidFileTo(dir string, name string, pid int) error {
 	if dir == "" {
@@ -85,7 +85,7 @@ func WritePidFileTo(dir string, name string, pid int) error {
 }
 
 // ReadPidFileFrom reads a PID from a file in a specific directory. If dir is
-// empty, falls back to the default pidPath().
+// empty, falls back to the default RuntimeDir().
 func ReadPidFileFrom(dir string, name string) (int, error) {
 	if dir == "" {
 		return ReadPidFile(name)
@@ -101,7 +101,7 @@ func ReadPidFileFrom(dir string, name string) (int, error) {
 }
 
 // RemovePidFileAt removes a PID file from a specific directory. If dir is
-// empty, falls back to the default pidPath().
+// empty, falls back to the default RuntimeDir().
 func RemovePidFileAt(dir string, name string) error {
 	if dir == "" {
 		return RemovePidFile(name)
@@ -110,7 +110,7 @@ func RemovePidFileAt(dir string, name string) error {
 }
 
 // ServiceStatus returns a human-readable status string for a service by
-// checking its PID file. If dir is empty, the default pidPath() is used.
+// checking its PID file. If dir is empty, the default RuntimeDir() is used.
 func ServiceStatus(dir, name string) (string, error) {
 	pid, err := ReadPidFileFrom(dir, name)
 	if err != nil {
@@ -139,7 +139,7 @@ func StopProcessAt(dir string, name string) error {
 }
 
 func RemovePidFile(serviceName string) error {
-	pidPath := pidPath()
+	pidPath := RuntimeDir()
 
 	err := os.Remove(filepath.Join(pidPath, fmt.Sprintf("%s.pid", serviceName)))
 	if err != nil {
@@ -147,11 +147,6 @@ func RemovePidFile(serviceName string) error {
 	}
 
 	return nil
-}
-
-// RuntimeDir returns the runtime directory used for PID files, sockets, and logs.
-func RuntimeDir() string {
-	return pidPath()
 }
 
 // QMPTelemetryPrefix names the per-VM telemetry QMP socket and its sidecar
@@ -163,7 +158,8 @@ func TelemetryMetaPath(instanceID string) string {
 	return filepath.Join(RuntimeDir(), QMPTelemetryPrefix+instanceID+".json")
 }
 
-func pidPath() string {
+// RuntimeDir returns the runtime directory used for PID files, sockets, and logs.
+func RuntimeDir() string {
 	if os.Getenv("XDG_RUNTIME_DIR") != "" {
 		return os.Getenv("XDG_RUNTIME_DIR")
 	}

@@ -180,4 +180,8 @@ func TestEC2_NetworkListsAWSOmitsWhenEmpty(t *testing.T) {
 		Ipv6CidrBlockAssociationSet: []*ec2.VpcIpv6CidrBlockAssociation{},
 	}})
 	assert.Contains(t, created, "<ipv6CidrBlockAssociationSet></ipv6CidrBlockAssociationSet>")
+
+	subnet := render[ec2.CreateSubnetInput](t, "CreateSubnet", ec2.CreateSubnetOutput{Subnet: &ec2.Subnet{SubnetId: aws.String("subnet-1")}})
+	assert.NotContains(t, subnet, "tagSet")
+	assert.Contains(t, subnet, "<ipv6CidrBlockAssociationSet></ipv6CidrBlockAssociationSet>")
 }

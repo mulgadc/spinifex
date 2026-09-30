@@ -2,6 +2,7 @@ package vm
 
 import (
 	"maps"
+	"slices"
 	"sync"
 	"time"
 )
@@ -191,11 +192,7 @@ func (m *Manager) ForEach(fn func(*VM)) {
 func (m *Manager) Snapshot() []*VM {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]*VM, 0, len(m.vms))
-	for _, v := range m.vms {
-		out = append(out, v)
-	}
-	return out
+	return slices.Collect(maps.Values(m.vms))
 }
 
 // SnapshotMap returns a copy of the id→VM map for serialization outside the lock.

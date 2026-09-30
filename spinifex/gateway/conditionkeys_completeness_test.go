@@ -7,8 +7,10 @@ package gateway
 import (
 	"crypto/tls"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
@@ -117,10 +119,7 @@ func TestRequestConditionKeys_EveryEmittedKeyIsUsableInAPolicy(t *testing.T) {
 // The door's key set as a whole, so a key gained or lost here is a deliberate
 // change made at both doors rather than a drift between them.
 func TestRequestConditionKeys_MatchesTheDoorKeySet(t *testing.T) {
-	emitted := make([]string, 0, len(gatewayDoorKeys))
-	for key := range emittedKeys(t) {
-		emitted = append(emitted, key)
-	}
+	emitted := slices.Collect(maps.Keys(emittedKeys(t)))
 	assert.ElementsMatch(t, gatewayDoorKeys, emitted,
 		"the AWS gateway door key set changed: update predastore's mirror in "+
 			"internal/gate/conditionkeys_completeness_test.go and the door table in bluebottle's door_test.go")

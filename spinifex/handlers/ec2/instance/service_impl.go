@@ -2116,10 +2116,7 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 		}
 	})
 
-	reservations := make([]*ec2.Reservation, 0, len(reservationMap))
-	for _, reservation := range reservationMap {
-		reservations = append(reservations, reservation)
-	}
+	reservations := slices.Collect(maps.Values(reservationMap))
 
 	slog.InfoContext(ctx, "DescribeInstances completed", "count", len(reservations))
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
@@ -2242,10 +2239,7 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 		reservationMap[resID].Instances = append(reservationMap[resID].Instances, projected)
 	}
 
-	reservations := make([]*ec2.Reservation, 0, len(reservationMap))
-	for _, reservation := range reservationMap {
-		reservations = append(reservations, reservation)
-	}
+	reservations := slices.Collect(maps.Values(reservationMap))
 
 	slog.InfoContext(ctx, opName+" completed", "count", len(reservations))
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil

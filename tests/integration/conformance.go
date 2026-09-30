@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -210,11 +212,7 @@ func (c *conformanceCollector) report(policy conformancePolicy, mode conformance
 	for service := range policy.promoted {
 		checkedServices[service] = true
 	}
-	services := make([]awsmodel.Service, 0, len(checkedServices))
-	for service := range checkedServices {
-		services = append(services, service)
-	}
-	sort.Slice(services, func(i, j int) bool { return services[i] < services[j] })
+	services := slices.Sorted(maps.Keys(checkedServices))
 	for _, service := range services {
 		fmt.Fprintf(&report, "CHECKED %s success=%d errors=%d unmodelled_errors=%d promoted=%t\n",
 			service, c.checkedByService[service], c.errorCheckedByService[service], c.errorUnmodelledByService[service], policy.isPromoted(service))

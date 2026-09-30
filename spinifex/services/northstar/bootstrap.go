@@ -3,7 +3,8 @@ package northstar
 import (
 	"fmt"
 	"log/slog"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -150,10 +151,5 @@ func ensureZone(s3cfg *nsconfig.S3Config, seed nsconfig.BaseZoneSeed) error {
 
 // nodeNames returns the sorted node keys of the cluster, for diagnostics.
 func nodeNames(cluster *config.ClusterConfig) []string {
-	names := make([]string, 0, len(cluster.Nodes))
-	for name := range cluster.Nodes {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(cluster.Nodes))
 }

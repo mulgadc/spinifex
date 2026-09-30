@@ -3,8 +3,10 @@ package ebsctl
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,12 +76,7 @@ func unionOps(a, b *RunResult) []string {
 	for name := range b.Operations {
 		seen[name] = struct{}{}
 	}
-	out := make([]string, 0, len(seen))
-	for name := range seen {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(seen))
 }
 
 // seriesFor picks the api or settle series from op, or nil if op is nil or

@@ -5,8 +5,10 @@ package harness
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -115,10 +117,7 @@ func WaitForNewGuestDisk(t *testing.T, tgt SSHTarget, before map[string]struct{}
 				return nil
 			}
 		}
-		names := make([]string, 0, len(now))
-		for name := range now {
-			names = append(names, name)
-		}
+		names := slices.Collect(maps.Keys(now))
 		return fmt.Errorf("no new disk yet (visible: %s)", strings.Join(names, ","))
 	}, timeout, 2*time.Second)
 	return found

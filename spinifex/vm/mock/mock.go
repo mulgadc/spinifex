@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
@@ -170,11 +171,7 @@ func (s *StateStore) ListStoppedInstances() ([]*vm.VM, error) {
 	if s.ListStoppedErr != nil {
 		return nil, s.ListStoppedErr
 	}
-	out := make([]*vm.VM, 0, len(s.Stopped))
-	for _, v := range s.Stopped {
-		out = append(out, v)
-	}
-	return out, nil
+	return slices.Collect(maps.Values(s.Stopped)), nil
 }
 
 // ClaimStoppedInstance mimics the real atomic delete-as-claim: under the
@@ -237,11 +234,7 @@ func (s *StateStore) ListTerminatedInstances() ([]*vm.VM, error) {
 	if s.ListTerminatedErr != nil {
 		return nil, s.ListTerminatedErr
 	}
-	out := make([]*vm.VM, 0, len(s.Terminated))
-	for _, v := range s.Terminated {
-		out = append(out, v)
-	}
-	return out, nil
+	return slices.Collect(maps.Values(s.Terminated)), nil
 }
 
 func (s *StateStore) DeleteTerminatedInstance(id string) error {

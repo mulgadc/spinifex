@@ -3,8 +3,8 @@ package loadgen
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -103,12 +103,7 @@ var DefaultOps = []string{"DescribeInstances", "DescribeVpcs", "DescribeVolumes"
 
 // OpNames lists every operation the registry knows, for the usage text.
 func OpNames() []string {
-	names := make([]string, 0, len(registry))
-	for name := range registry {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(registry))
 }
 
 // ResolveOps turns names into operations, rejecting an unknown one rather than

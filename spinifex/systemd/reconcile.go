@@ -9,12 +9,12 @@ package systemd
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -98,12 +98,7 @@ var systemctlDaemonReload = func() error {
 }
 
 func sortedUnitNames() []string {
-	names := make([]string, 0, len(Units))
-	for n := range Units {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(Units))
 }
 
 // Reconcile compares each embedded unit (Units, generated from

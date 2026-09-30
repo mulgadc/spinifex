@@ -2371,11 +2371,7 @@ func (d *Daemon) nodeRunningVMs() ([]*vm.VM, error) {
 	if err != nil {
 		return nil, err
 	}
-	vms := make([]*vm.VM, 0, len(running))
-	for _, v := range running {
-		vms = append(vms, v)
-	}
-	return vms, nil
+	return slices.Collect(maps.Values(running)), nil
 }
 
 // connectNATS connects to NATS with infinite retry (cap 60s backoff). Tests

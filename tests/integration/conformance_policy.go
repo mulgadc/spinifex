@@ -6,8 +6,9 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/mulgadc/spinifex/internal/awsmodel"
@@ -89,12 +90,7 @@ func (p conformancePolicy) isRequestPromoted(service awsmodel.Service) bool {
 }
 
 func (p conformancePolicy) services() []awsmodel.Service {
-	services := make([]awsmodel.Service, 0, len(p.promoted))
-	for service := range p.promoted {
-		services = append(services, service)
-	}
-	sort.Slice(services, func(i, j int) bool { return services[i] < services[j] })
-	return services
+	return slices.Sorted(maps.Keys(p.promoted))
 }
 
 func conformanceModeFromEnvironment() (conformanceMode, error) {

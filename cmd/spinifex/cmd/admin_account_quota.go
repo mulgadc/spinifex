@@ -3,7 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strconv"
 
 	"github.com/mulgadc/spinifex/spinifex/gateway"
@@ -166,11 +167,7 @@ func printAccountQuota(resp *gateway.AccountQuotaResponse) {
 	fmt.Printf("%-16s %10s  %s\n", "DIMENSION", "LIMIT", "SOURCE")
 	fmt.Printf("%-16s %10s  %s\n", "---------", "-----", "------")
 
-	names := make([]string, 0, len(resp.Limits))
-	for name := range resp.Limits {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(resp.Limits))
 	for _, name := range names {
 		limit := strconv.Itoa(resp.Limits[name])
 		if resp.Limits[name] == handlers_quota.Unlimited {

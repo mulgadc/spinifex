@@ -2,6 +2,7 @@ package resource_test
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -202,10 +203,5 @@ func TestObjectJSON_RoundTrips(t *testing.T) {
 }
 
 func sortedKeys(m map[string]json.RawMessage) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }

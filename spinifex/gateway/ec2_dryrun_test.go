@@ -4,6 +4,7 @@
 package gateway
 
 import (
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -43,11 +44,7 @@ func serveEC2(gw *GatewayConfig, body string) *httptest.ResponseRecorder {
 func TestEC2Request_DryRunAnswersEveryAction(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()}
 
-	actions := make([]string, 0, len(ec2Actions))
-	for action := range ec2Actions {
-		actions = append(actions, action)
-	}
-	slices.Sort(actions)
+	actions := slices.Sorted(maps.Keys(ec2Actions))
 
 	for _, action := range actions {
 		t.Run(action, func(t *testing.T) {

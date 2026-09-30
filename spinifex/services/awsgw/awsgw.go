@@ -6,10 +6,12 @@ import (
 	"crypto/x509"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -443,10 +445,7 @@ func launchService(config *config.ClusterConfig) error {
 	// nodeIDs is the configured cluster node set, in the same namespace as the
 	// daemon reply header, so a fan-out's completeness can be judged by
 	// responder identity rather than by count.
-	nodeIDs := make([]string, 0, len(config.Nodes))
-	for nodeID := range config.Nodes {
-		nodeIDs = append(nodeIDs, nodeID)
-	}
+	nodeIDs := slices.Collect(maps.Keys(config.Nodes))
 
 	gw := gateway.GatewayConfig{
 		Debug:                   nodeConfig.AWSGW.Debug,

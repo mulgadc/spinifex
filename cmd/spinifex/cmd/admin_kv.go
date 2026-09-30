@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -420,11 +421,7 @@ func hashStoredMsg(m *jetstream.RawStreamMsg) string {
 	field([]byte(m.Subject))
 	binary.BigEndian.PutUint64(n[:], uint64(m.Time.UnixNano()))
 	h.Write(n[:])
-	keys := make([]string, 0, len(m.Header))
-	for k := range m.Header {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(m.Header))
 	for _, k := range keys {
 		field([]byte(k))
 		for _, v := range m.Header[k] {

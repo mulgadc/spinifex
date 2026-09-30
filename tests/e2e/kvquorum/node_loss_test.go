@@ -4,6 +4,8 @@ package kvquorum
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -180,10 +182,6 @@ func peerNames(reports []kvutil.BucketReport) string {
 			seen[p] = struct{}{}
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for p := range seen {
-		out = append(out, p)
-	}
-	sort.Strings(out)
+	out := slices.Sorted(maps.Keys(seen))
 	return strings.Join(out, ",")
 }

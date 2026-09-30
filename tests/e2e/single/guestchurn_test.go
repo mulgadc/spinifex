@@ -4,8 +4,10 @@ package single
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -692,11 +694,7 @@ func guestMACSet(t *testing.T, tgt harness.SSHTarget) map[string]struct{} {
 
 // setKeys returns the keys of a string set as a slice for log/Detail output.
 func setKeys(m map[string]struct{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
+	return slices.Collect(maps.Keys(m))
 }
 
 // describeENI returns the single ENI record for eniID, erroring if absent.

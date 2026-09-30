@@ -60,15 +60,32 @@ func assertNotUnauthorized(t *testing.T, err error) {
 	assert.NotEqual(t, awserrors.ErrorUnauthorizedOperation, err.Error())
 }
 
+// Each EC2 action that hands over an instance profile builds its own PassRole
+// check, so every one is pinned to ec2.amazonaws.com.
 func TestPassedToService_EC2(t *testing.T) {
-	assertNotUnauthorized(t, associateProfile(t, passRoleToGateway(t,
-		statement("Allow", "ec2:*", "*"),
-		passRoleTo("Allow", iampolicy.OpStringEquals, "ec2.amazonaws.com"),
-	)))
-	assertUnauthorized(t, associateProfile(t, passRoleToGateway(t,
-		statement("Allow", "ec2:*", "*"),
-		passRoleTo("Allow", iampolicy.OpStringEquals, "ecs-tasks.amazonaws.com"),
-	)))
+	tests := []struct {
+		action string
+		body   string
+	}{
+		{"RunInstances", "Action=RunInstances&ImageId=ami-1&InstanceType=t3.micro&MinCount=1&MaxCount=1&IamInstanceProfile.Name=web"},
+		{"AssociateIamInstanceProfile", "Action=AssociateIamInstanceProfile&InstanceId=i-dev&IamInstanceProfile.Name=web"},
+		{"ReplaceIamInstanceProfileAssociation", "Action=ReplaceIamInstanceProfileAssociation" +
+			"&AssociationId=iip-assoc-dev&IamInstanceProfile.Name=web"},
+		{"RequestSpotInstances", "Action=RequestSpotInstances&LaunchSpecification.ImageId=ami-1" +
+			"&LaunchSpecification.InstanceType=t3.micro&LaunchSpecification.IamInstanceProfile.Name=web"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.action, func(t *testing.T) {
+			assertNotUnauthorized(t, dispatchEC2(t, passRoleToGateway(t,
+				statement("Allow", "ec2:*", "*"),
+				passRoleTo("Allow", iampolicy.OpStringEquals, "ec2.amazonaws.com"),
+			), tt.body))
+			assertUnauthorized(t, dispatchEC2(t, passRoleToGateway(t,
+				statement("Allow", "ec2:*", "*"),
+				passRoleTo("Allow", iampolicy.OpStringEquals, "ecs-tasks.amazonaws.com"),
+			), tt.body))
+		})
+	}
 }
 
 func TestPassedToService_ECS(t *testing.T) {
@@ -93,10 +110,13 @@ func TestPassedToService_EKS(t *testing.T) {
 	assertPermitted(t, dispatchEKS(t, allowed, http.MethodPost, "/clusters",
 		`{"name":"prod","roleArn":"`+eksNodeRoleARN+`"}`))
 
-	assertDenied(t, createNodegroup(t, eksPassRoleGateway(
+	denied := eksPassRoleGateway(
 		statement("Allow", "eks:*", "*"),
 		passRoleTo("Allow", iampolicy.OpStringEquals, "ec2.amazonaws.com"),
-	)))
+	)
+	assertDenied(t, createNodegroup(t, denied))
+	assertDenied(t, dispatchEKS(t, denied, http.MethodPost, "/clusters",
+		`{"name":"prod","roleArn":"`+eksNodeRoleARN+`"}`))
 }
 
 // A Deny scoped to one service fences that service and leaves the others to
